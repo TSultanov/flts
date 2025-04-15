@@ -3,9 +3,7 @@
 </script>
 
 <main>
-  <div class="card">
-    <Reader />
-  </div>
+  <Reader />
 </main>
 
 <style>
