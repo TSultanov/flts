@@ -12,8 +12,10 @@
     import type Contents from '../../vendor/epub-js/src/contents';
     import { extractParagraphs, getWordRangesFromTextNode } from './reader';
     import EpubCFI from '../../vendor/epub-js/src/epubcfi';
-    import { Dictionary } from './dictionary';
+    import { Dictionary, type ParagraphTranslation, type WordTranslation } from './dictionary';
     import { hashBuffer, hashFile } from './utils';
+    import { getConfig } from './config';
+    import { GoogleGenAI } from '@google/genai';
 
     let isLoading = $state(true);
 
@@ -24,28 +26,93 @@
     let atStart = $state(false);
     let atEnd = $state(false);
 
-    function annotateWords(rendition: Rendition, contents: Contents, node: Node) {
+    function* getWordRanges(contents: Contents, node: Node): Generator<string> {
         if (node.nodeType === Node.TEXT_NODE && node.textContent?.trim() != '') {
             let ranges = getWordRangesFromTextNode(node)
-            let cfiRanges = ranges.map((range) => new EpubCFI(range, contents.section.cfiBase).toString())
-            for (let cfiRange of cfiRanges) {
-                if (!annotations.has(cfiRange)) {
-                    rendition.annotations.append('underline', cfiRange, {
-                        cb: async (e: any) => console.log((await rendition.book.getRange(cfiRange)).toString()),
-                    });
-                    annotations.add(cfiRange);
+            for (let range of ranges) {
+                let cfiRange = new EpubCFI(range, contents.section.cfiBase).toString();
+
+                yield cfiRange;
+            }
+        }
+
+        for (let child of node.childNodes) {
+            yield* getWordRanges(contents, child);
+        }
+    }
+
+
+    async function annotateWords(rendition: Rendition, contents: Contents, node: Node, translation: ParagraphTranslation) {
+        function* translationWords(): Generator<{sentence: string, word: WordTranslation}> {
+            for (let sentence of translation.sentences) {
+                for (let word of sentence.words) {
+                    yield {sentence: sentence.fullTranslation, word}
                 }
             }
         }
-        for (let child of node.childNodes) {
-            annotateWords(rendition, contents, child);
+
+        let originalGen = getWordRanges(contents, node);
+        let translationGen = translationWords();
+
+        let currentOriginalCfi = originalGen.next()
+        let currentTranslation = translationGen.next()
+        while (!currentOriginalCfi.done && !currentTranslation.done) {
+            let currentCfi = currentOriginalCfi.value;
+            let cfis = [currentCfi];
+            let currentText = (await rendition.book.getRange(currentCfi)).toString();
+            let {sentence, word: currentTranslationValue} = currentTranslation.value;
+            let currentTranslationValueOriginal = currentTranslationValue.original.replaceAll('-', '').replaceAll(' ', '');
+
+            if (['!', ',', ';', '?', ':', '"'].includes(currentTranslationValueOriginal)) {
+                currentTranslation = translationGen.next();
+                continue;
+            }
+
+            while (currentText.toLowerCase() !== currentTranslationValueOriginal.toLowerCase()) {
+                if (currentTranslationValueOriginal.toLowerCase().startsWith(currentText.toLowerCase())) {
+                    currentOriginalCfi = originalGen.next();
+                    currentCfi = currentOriginalCfi.value;
+                    cfis.push(currentCfi);
+                    currentText = currentText + (await rendition.book.getRange(currentCfi)).toString();
+                } else {
+                    break;
+                }
+            }
+
+            if (currentText.toLowerCase() === currentTranslationValueOriginal.toLowerCase()) {
+                for (const cfi of cfis) {
+                    if (!annotations.has(cfi)) {
+                        rendition.annotations.append('underline', cfi, {
+                            cb: async (e: any) => {
+                                console.log(cfi);
+                                let original = (await rendition.book.getRange(cfi)).toString();
+                                
+                                console.log({
+                                    sentence,
+                                    original,
+                                    translation: currentTranslationValue
+                                });
+                            },
+                        });
+                        annotations.add(cfi);
+                    }
+                }
+            }
+
+            currentOriginalCfi = originalGen.next();
+            currentTranslation = translationGen.next();
         }
     }
+
+
 
     onMount(async () => {
         let book = ePub(alice);
         let book_hash = await hashBuffer(await (await fetch(alice)).arrayBuffer());
-        let dictionary = new Dictionary(book_hash);
+
+        let config = await getConfig();
+        let ai = new GoogleGenAI({apiKey: config.api_key})
+        let dictionary = await Dictionary.build(ai, book_hash, "English", "Russian");
 
         await book.opened;
 
@@ -55,25 +122,29 @@
             spread: "none"
         }) as RenditionWithOn;
 
-        rendition.hooks.content.register((e: Contents) => {
-            let paragraphs = extractParagraphs(e.content);
+        rendition.hooks.content.register(async (e: Contents) => {
+            const paragraphs = extractParagraphs(e.content);
             console.log(paragraphs);
             for (let paragraph of paragraphs) {
-                dictionary.translateParagraph(paragraph.textContent!.trim()).then((translation) => {
-                    if (translation) {
-                        annotateWords(rendition!, e, paragraph);
-                    }
-                });
+                const range = document.createRange();
+                range.selectNodeContents(paragraph);
+                const cfiRange = new EpubCFI(range, e.section.cfiBase);
+                const tempAnnotation = rendition?.annotations.append('highlight', cfiRange.toString(), {})!;
+
+                const translation = await dictionary.translateParagraph(paragraph.textContent!.trim());
+
+                rendition?.annotations.remove('highlight', tempAnnotation.cfiRange);
+
+                if (translation) {
+                    console.log(translation);
+                    await annotateWords(rendition!, e, paragraph, translation);
+                }
             }
         })
 
         rendition.on("relocated", (location) => {
             atStart = location.atStart;
             atEnd = location.atEnd;
-        })
-
-        rendition.on("selected", async (cfiRange, e) => {
-            let range = await book.getRange(cfiRange);
         })
 
         await rendition.display(6);

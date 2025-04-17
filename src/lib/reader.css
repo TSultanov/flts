@@ -28,7 +28,7 @@
     cursor: pointer;
     user-select: none;
     text-decoration: none;
-    z-index: 10;
+    z-index: 1;
 }
 
 .arrow:hover {
@@ -97,7 +97,7 @@
 
 #viewer {
     width: calc(100% - 200px);
-    height: 100vh;
+    height: 100%;
     display: flex;
     padding: 0;
     overflow: hidden;
