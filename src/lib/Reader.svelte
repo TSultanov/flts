@@ -9,6 +9,9 @@
     import type Rendition from '../../vendor/epub-js/src/rendition';
 
     import alice from '../../vendor/epub-js/assets/alice.epub?no-inline';
+    import type Contents from '../../vendor/epub-js/src/contents';
+    import { getWordRangesFromTextNode } from './reader';
+    import EpubCFI from '../../vendor/epub-js/src/epubcfi';
 
     let isLoading = $state(true);
 
@@ -17,47 +20,23 @@
     let atStart = $state(false);
     let atEnd = $state(false);
 
-    function getWordAtPoint(elem: HTMLElement | Node, x: number, y: number): string | null {
-        if (!elem) return null;
-        if (elem.nodeType === Node.TEXT_NODE) {
-            const text = elem.textContent || "";
-            if (!text) return null;
-            const range = elem.ownerDocument?.createRange();
-            if (!range) return null;
-            range.selectNodeContents(elem);
-            const endPos = text.length;
-            for (let currentPos = 0; currentPos < endPos; currentPos++) {
-                range.setStart(elem, currentPos);
-                range.setEnd(elem, currentPos + 1);
-                const rect = range.getBoundingClientRect();
-                if (rect.left <= x && rect.right >= x &&
-                    rect.top <= y && rect.bottom >= y) {
-                    // Found the character at the point.
-                    // Expand to cover the word using a simple regex-based check.
-                    let start = currentPos;
-                    let end = currentPos + 1;
-                    while (start > 0 && /\w/.test(text[start - 1])) {
-                        start--;
-                    }
-                    while (end < text.length && /\w/.test(text[end])) {
-                        end++;
-                    }
-                    range.setStart(elem, start);
-                    range.setEnd(elem, end);
-                    const ret = range.toString();
-                    range.detach();
-                    return ret;
-                }
+    function annotateWords(rendition: Rendition, contents: Contents, node: Node) {
+        if (node.nodeType === Node.TEXT_NODE && node.textContent?.trim() != '') {
+            let ranges = getWordRangesFromTextNode(node)
+            let cfiRanges = ranges.map((range) => new EpubCFI(range, contents.section.cfiBase).toString())
+            for (let cfiRange of cfiRanges) {
+                rendition.annotations.append('underline', cfiRange, {
+                    cb: async (e: any) => console.log((await rendition.book.getRange(cfiRange)).toString()),
+                });
             }
-            range.detach();
-            return null;
-        } else {
-            for (let i = 0; i < elem.childNodes.length; i++) {
-                const word = getWordAtPoint(elem.childNodes[i], x, y);
-                if (word) return word;
-            }
-            return null;
         }
+        for (let child of node.childNodes) {
+            annotateWords(rendition, contents, child);
+        }
+    }
+
+    function annotateEachWord(rendition: Rendition, contents: Contents) {
+        annotateWords(rendition, contents, contents.content);
     }
 
     onMount(async () => {
@@ -71,19 +50,20 @@
             spread: "none"
         }) as RenditionWithOn;
 
+        rendition.hooks.content.register((e: any) => {
+            annotateEachWord(rendition!, e);
+        })
+
         rendition.on("relocated", (location) => {
             atStart = location.atStart;
             atEnd = location.atEnd;
         })
 
-        rendition.on("click", (e) => {
-            console.log(getWordAtPoint(e.target, e.x, e.y));
+        rendition.on("selected", async (cfiRange, e) => {
+            console.log("A", cfiRange)
+            let range = await book.getRange(cfiRange);
+            console.log("A", range)
         })
-
-        rendition.on("selected", async (cfiRange, contents) => {
-            const range = (await book.getRange(cfiRange)).toString();
-            console.log(cfiRange, range, contents);
-        });
 
         await rendition.display(6);
     })
