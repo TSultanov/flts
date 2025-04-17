@@ -10,12 +10,14 @@
 
     import alice from '../../vendor/epub-js/assets/alice.epub?no-inline';
     import type Contents from '../../vendor/epub-js/src/contents';
-    import { getWordRangesFromTextNode } from './reader';
+    import { extractParagraphs, getWordRangesFromTextNode } from './reader';
     import EpubCFI from '../../vendor/epub-js/src/epubcfi';
 
     let isLoading = $state(true);
 
     let rendition: RenditionWithOn | null = $state(null);
+
+    let annotations = new Set<string>();
 
     let atStart = $state(false);
     let atEnd = $state(false);
@@ -25,18 +27,17 @@
             let ranges = getWordRangesFromTextNode(node)
             let cfiRanges = ranges.map((range) => new EpubCFI(range, contents.section.cfiBase).toString())
             for (let cfiRange of cfiRanges) {
-                rendition.annotations.append('underline', cfiRange, {
-                    cb: async (e: any) => console.log((await rendition.book.getRange(cfiRange)).toString()),
-                });
+                if (!annotations.has(cfiRange)) {
+                    rendition.annotations.append('underline', cfiRange, {
+                        cb: async (e: any) => console.log((await rendition.book.getRange(cfiRange)).toString()),
+                    });
+                    annotations.add(cfiRange);
+                }
             }
         }
         for (let child of node.childNodes) {
             annotateWords(rendition, contents, child);
         }
-    }
-
-    function annotateEachWord(rendition: Rendition, contents: Contents) {
-        annotateWords(rendition, contents, contents.content);
     }
 
     onMount(async () => {
@@ -50,8 +51,12 @@
             spread: "none"
         }) as RenditionWithOn;
 
-        rendition.hooks.content.register((e: any) => {
-            annotateEachWord(rendition!, e);
+        rendition.hooks.content.register((e: Contents) => {
+            let paragraphs = extractParagraphs(e.content);
+            console.log(paragraphs);
+            for (let paragraph of paragraphs) {
+                annotateWords(rendition!, e, paragraph);
+            }
         })
 
         rendition.on("relocated", (location) => {
@@ -60,9 +65,7 @@
         })
 
         rendition.on("selected", async (cfiRange, e) => {
-            console.log("A", cfiRange)
             let range = await book.getRange(cfiRange);
-            console.log("A", range)
         })
 
         await rendition.display(6);
