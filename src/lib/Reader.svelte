@@ -16,6 +16,7 @@
     import { hashBuffer, hashFile } from './utils';
     import { getConfig } from './config';
     import { GoogleGenAI } from '@google/genai';
+    import Popup from './Popup.svelte';
 
     let isLoading = $state(true);
 
@@ -25,6 +26,8 @@
 
     let atStart = $state(false);
     let atEnd = $state(false);
+
+    let popupData: { x:number, y: number, sentence: string; translation: WordTranslation } | null = $state(null);
 
     function* getWordRanges(contents: Contents, node: Node): Generator<string> {
         if (node.nodeType === Node.TEXT_NODE && node.textContent?.trim() != '') {
@@ -83,15 +86,18 @@
                 for (const cfi of cfis) {
                     if (!annotations.has(cfi)) {
                         rendition.annotations.append('underline', cfi, {
-                            cb: async (e: any) => {
+                            cb: async (e: MouseEvent) => {
                                 console.log(cfi);
-                                let original = (await rendition.book.getRange(cfi)).toString();
-                                
-                                console.log({
+
+                                const target = e.target as Element;
+                                const rect = target.getBoundingClientRect();
+
+                                popupData = {
+                                    x: rect.left,
+                                    y: rect.top + rect.height,
                                     sentence,
-                                    original,
                                     translation: currentTranslationValue
-                                });
+                                };
                             },
                         });
                         annotations.add(cfi);
@@ -177,6 +183,10 @@
                     rendition?.next();
                     e.preventDefault();
                 }}"></button>
+        {/if}
+
+        {#if popupData}
+            <Popup {...popupData} />
         {/if}
     </div>
 </main>

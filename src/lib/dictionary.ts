@@ -131,8 +131,8 @@ export class Dictionary {
 
         if (!translation) {
             const response = await this.ai.models.generateContent({
-                //model: "gemini-2.5-flash-preview-04-17",
-                model: "gemini-2.0-flash-lite",
+                model: "gemini-2.5-flash-preview-04-17",
+                //model: "gemini-2.0-flash-lite",
                 contents: p,
                 config: {
                     systemInstruction: `You are given text in ${this.from} language. Provide first a full ${this.to} translation of each sentence, and then a per-word translation of it into ${this.to}. Add several variants of translation for each word. Add note on the use of ech word if it's not clear how the translation maps to the original. Add grammatical information for each original word. Spell all notes and grammatical remarks in the target lagnuage. Skip punctuation.`,
