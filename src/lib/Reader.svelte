@@ -12,10 +12,12 @@
     import type Contents from '../../vendor/epub-js/src/contents';
     import { extractParagraphs, getWordRangesFromTextNode } from './reader';
     import EpubCFI from '../../vendor/epub-js/src/epubcfi';
+    import { Dictionary } from './dictionary';
+    import { hashBuffer, hashFile } from './utils';
 
     let isLoading = $state(true);
 
-    let rendition: RenditionWithOn | null = $state(null);
+    let rendition: RenditionWithOn | null;
 
     let annotations = new Set<string>();
 
@@ -42,6 +44,8 @@
 
     onMount(async () => {
         let book = ePub(alice);
+        let book_hash = await hashBuffer(await (await fetch(alice)).arrayBuffer());
+        let dictionary = new Dictionary(book_hash);
 
         await book.opened;
 
@@ -55,7 +59,11 @@
             let paragraphs = extractParagraphs(e.content);
             console.log(paragraphs);
             for (let paragraph of paragraphs) {
-                annotateWords(rendition!, e, paragraph);
+                dictionary.translateParagraph(paragraph.textContent!.trim()).then((translation) => {
+                    if (translation) {
+                        annotateWords(rendition!, e, paragraph);
+                    }
+                });
             }
         })
 
