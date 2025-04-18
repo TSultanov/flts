@@ -105,24 +105,22 @@ export class Dictionary {
     readonly book_hash: string
     readonly store: LocalForage
     readonly ai: GoogleGenAI;
-    readonly from: string;
     readonly to: string;
 
-    private constructor(ai: GoogleGenAI, book_hash: string, from: string, to: string, store: LocalForage) {
+    private constructor(ai: GoogleGenAI, book_hash: string, to: string, store: LocalForage) {
         this.ai = ai;
-        this.from = from;
         this.to = to;
         this.book_hash = book_hash;
         this.store = store;
     }
 
-    static async build(ai: GoogleGenAI, book_hash: string, from: string, to: string) {
+    static async build(ai: GoogleGenAI, book_hash: string, to: string) {
         const schemaHash = await hashString(JSON.stringify(schema));
-        const storeName = await hashString(book_hash + from + to + schemaHash);
+        const storeName = await hashString(book_hash + to + schemaHash);
         const store = localforage.createInstance({
             storeName: storeName,
         })
-        return new Dictionary(ai, book_hash, from ,to, store);
+        return new Dictionary(ai, book_hash, to, store);
     }
 
     async getCachedTranslation(p: string) {
@@ -140,7 +138,7 @@ export class Dictionary {
             //model: "gemini-2.0-flash-lite",
             contents: p,
             config: {
-                systemInstruction: `You are given text in ${this.from} language. Provide first a full ${this.to} translation of each sentence, and then a per-word translation of it into ${this.to}. Provide translations for words EXACTLY as they are written, do not combine then into phrases. Add several variants of translation for each word. Add note on the use of ech word if it's not clear how the translation maps to the original. Add grammatical information for each original word. Spell all notes and grammatical remarks in the target lagnuage. Skip punctuation.`,
+                systemInstruction: `You are given a text. Provide first a full ${this.to} translation of each sentence, and then a per-word translation of it into ${this.to}. Provide translations for words EXACTLY as they are written, do not combine then into phrases. Add several variants of translation for each word. Add note on the use of ech word if it's not clear how the translation maps to the original. Add grammatical information for each original word. Spell all notes and grammatical remarks in the target lagnuage. Skip punctuation.`,
                 responseMimeType: 'application/json',
                 responseSchema: schema,
             }

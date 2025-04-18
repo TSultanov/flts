@@ -28,7 +28,7 @@ export class Book {
     }
 
     async getDictionary(ai: GoogleGenAI) {
-        return await Dictionary.build(ai, this.metadata.bookHash, "English", "Russian")
+        return await Dictionary.build(ai, this.metadata.bookHash, "Russian")
     }
 }
 
