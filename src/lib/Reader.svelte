@@ -4,6 +4,7 @@
     }
 
     import './reader.css'
+    import readerStylesheet from './reader.css?inline';
     import ePub from '../../vendor/epub-js/src/epub'
     import { onMount } from 'svelte';
     import type Rendition from '../../vendor/epub-js/src/rendition';
@@ -72,7 +73,7 @@
             let currentText = (await rendition.book.getRange(currentCfi)).toString();
             let {sentence, word: currentTranslationValue} = currentTranslation.value;
 
-            const skipCharacters = ['!', ',', ';', '?', ':', '"', '’', '“', '”', '(', ')', '[', ']', '{', '}', '…', '—', '–', '•', '·', '•', '°', '\n', '\''];
+            const skipCharacters = ['.', '!', ',', ';', '?', ':', '"', '’', '“', '”', '(', ')', '[', ']', '{', '}', '…', '—', '–', '-', '•', '·', '•', '°', '\n', '\''];
             let currentTranslationValueOriginal = currentTranslationValue.original.replace(' ', '');
             for (const c of skipCharacters) {
                 currentTranslationValueOriginal = currentTranslationValueOriginal.replaceAll(c, '');
@@ -144,20 +145,18 @@
         }) as RenditionWithOn;
 
         rendition.hooks.content.register(async (contents: Contents) => {
+            const innerDocument = contents.document;
+            const style = innerDocument.createElement("style");
+            style.innerHTML = readerStylesheet;
+            innerDocument.head.appendChild(style);
+
             const paragraphs = extractParagraphs(contents.content);
             for (let paragraph of paragraphs) {
                 const textContent = paragraph.textContent!.trim();
                 const translation = await dictionary.getCachedTranslation(textContent);
 
-                const rect = paragraph.getBoundingClientRect();
-
                 const btn = document.createElement('button');
-                btn.style.height = "20px";
-                btn.style.position = "absolute";
-                btn.style.left = `${rect.left - 50}px`;
-                btn.style.top = `${rect.top}px`;
-
-                btn.innerText = "T";
+                btn.classList.add("translate-button");
 
                 if (translation) {
                     await annotateWords(rendition!, contents, paragraph, translation);
@@ -170,10 +169,10 @@
                     e.preventDefault();
 
                     btn.disabled = true;
-                    btn.innerText = "W";
+                    btn.classList.add("spin-button");
                     const translation = await dictionary.translateParagraph(textContent);
+                    btn.classList.remove("spin-button");
                     btn.disabled = false;
-                    btn.innerText = "T";
                     if (translation) {
                         console.log(translation);
                         await annotateWords(rendition!, contents, paragraph, translation);
