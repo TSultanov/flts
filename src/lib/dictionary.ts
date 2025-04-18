@@ -125,25 +125,28 @@ export class Dictionary {
         return new Dictionary(ai, book_hash, from ,to, store);
     }
 
+    async getCachedTranslation(p: string) {
+        const p_hash = await hashString(p);
+        p = p.replaceAll("’", "'");
+        const translation = await this.store.getItem(p_hash) as ParagraphTranslation;
+        return translation;
+    }
+
     async translateParagraph(p: string) {
         const p_hash = await hashString(p);
         p = p.replaceAll("’", "'");
-        let translation = await this.store.getItem(p_hash) as ParagraphTranslation;
-
-        if (!translation) {
-            const response = await this.ai.models.generateContent({
-                model: "gemini-2.5-flash-preview-04-17",
-                //model: "gemini-2.0-flash-lite",
-                contents: p,
-                config: {
-                    systemInstruction: `You are given text in ${this.from} language. Provide first a full ${this.to} translation of each sentence, and then a per-word translation of it into ${this.to}. Provide translations for words EXACTLY as they are written, do not combine then into phrases. Add several variants of translation for each word. Add note on the use of ech word if it's not clear how the translation maps to the original. Add grammatical information for each original word. Spell all notes and grammatical remarks in the target lagnuage. Skip punctuation.`,
-                    responseMimeType: 'application/json',
-                    responseSchema: schema,
-                }
-            });
-            translation = JSON.parse(response.text!) as ParagraphTranslation;
-            await this.store.setItem(p_hash, translation);
-        }
+        const response = await this.ai.models.generateContent({
+            model: "gemini-2.5-flash-preview-04-17",
+            //model: "gemini-2.0-flash-lite",
+            contents: p,
+            config: {
+                systemInstruction: `You are given text in ${this.from} language. Provide first a full ${this.to} translation of each sentence, and then a per-word translation of it into ${this.to}. Provide translations for words EXACTLY as they are written, do not combine then into phrases. Add several variants of translation for each word. Add note on the use of ech word if it's not clear how the translation maps to the original. Add grammatical information for each original word. Spell all notes and grammatical remarks in the target lagnuage. Skip punctuation.`,
+                responseMimeType: 'application/json',
+                responseSchema: schema,
+            }
+        });
+        const translation = JSON.parse(response.text!) as ParagraphTranslation;
+        await this.store.setItem(p_hash, translation);
 
         return translation;
     }

@@ -32,6 +32,8 @@
     let atStart = $state(false);
     let atEnd = $state(false);
 
+    let viewer = $state<HTMLDivElement | null>(null);
+
     let popupData: { x:number, y: number, sentence: string; translation: WordTranslation } | null = $state(null);
 
     function* getWordRanges(contents: Contents, node: Node): Generator<string> {
@@ -70,7 +72,7 @@
             let currentText = (await rendition.book.getRange(currentCfi)).toString();
             let {sentence, word: currentTranslationValue} = currentTranslation.value;
 
-            const skipCharacters = ['!', ',', ';', '?', ':', '"', '’'];
+            const skipCharacters = ['!', ',', ';', '?', ':', '"', '’', '“', '”', '(', ')', '[', ']', '{', '}', '…', '—', '–', '•', '·', '•', '°', '\n', '\''];
             let currentTranslationValueOriginal = currentTranslationValue.original.replace(' ', '');
             for (const c of skipCharacters) {
                 currentTranslationValueOriginal = currentTranslationValueOriginal.replaceAll(c, '');
@@ -141,22 +143,41 @@
             spread: "none"
         }) as RenditionWithOn;
 
-        rendition.hooks.content.register(async (e: Contents) => {
-            const paragraphs = extractParagraphs(e.content);
-            console.log(paragraphs);
+        rendition.hooks.content.register(async (contents: Contents) => {
+            const paragraphs = extractParagraphs(contents.content);
             for (let paragraph of paragraphs) {
-                const range = document.createRange();
-                range.selectNodeContents(paragraph);
-                const cfiRange = new EpubCFI(range, e.section.cfiBase);
-                const tempAnnotation = rendition?.annotations.append('highlight', cfiRange.toString(), {})!;
+                const textContent = paragraph.textContent!.trim();
+                const translation = await dictionary.getCachedTranslation(textContent);
 
-                const translation = await dictionary.translateParagraph(paragraph.textContent!.trim());
+                const rect = paragraph.getBoundingClientRect();
 
-                rendition?.annotations.remove('highlight', tempAnnotation.cfiRange);
+                const btn = document.createElement('button');
+                btn.style.height = "20px";
+                btn.style.position = "absolute";
+                btn.style.left = `${rect.left - 50}px`;
+                btn.style.top = `${rect.top}px`;
+
+                btn.innerText = "T";
 
                 if (translation) {
-                    console.log(translation);
-                    await annotateWords(rendition!, e, paragraph, translation);
+                    await annotateWords(rendition!, contents, paragraph, translation);
+                }
+
+                paragraph.appendChild(btn);
+
+                btn.onclick = async (e: MouseEvent) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+
+                    btn.disabled = true;
+                    btn.innerText = "W";
+                    const translation = await dictionary.translateParagraph(textContent);
+                    btn.disabled = false;
+                    btn.innerText = "T";
+                    if (translation) {
+                        console.log(translation);
+                        await annotateWords(rendition!, contents, paragraph, translation);
+                    }
                 }
             }
         })
@@ -184,7 +205,7 @@
     role="article"
     onclick="{(e) => {if (popupData !== null) popupData = null}}">
     <button id="home" onclick="{onClose}">Library</button>
-    <div id="viewer" class={["paginated", popupData !== null && "ignore-pointer-events" ]}>
+    <div bind:this={viewer} id="viewer" class={["paginated", popupData !== null && "ignore-pointer-events" ]}>
         {#if isLoading}
             <div id="loader"></div>
         {/if}
