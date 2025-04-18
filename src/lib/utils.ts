@@ -1,11 +1,7 @@
-export async function hashBuffer(data: BufferSource) {
-    let digest = await crypto.subtle.digest('SHA-256', data);
-    let hexes = [],
-    view = new DataView(digest);
-    for (let i = 0; i < view.byteLength; i += 4) {
-        hexes.push(('00000000' + view.getUint32(i).toString(16)).slice(-8));
-    }
-    return hexes.join('');
+import { sha256 } from 'js-sha256';
+
+export async function hashBuffer(data: ArrayBuffer | Uint8Array) {
+    return sha256(data);
 }
 
 export async function hashString(str: string) {
@@ -13,6 +9,6 @@ export async function hashString(str: string) {
 }
 
 export async function hashFile(file: File) {
-    let content = await file.bytes();
+    let content = await file.arrayBuffer();
     return await hashBuffer(content);
 }
