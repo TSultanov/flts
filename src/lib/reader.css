@@ -21,6 +21,7 @@
 .arrow {
     width: 60px;
     position: fixed;
+    padding: 0;
     margin: 0 20px;
     font-size: 64px;
     font-family: arial, sans-serif;
@@ -29,6 +30,8 @@
     user-select: none;
     text-decoration: none;
     z-index: 1;
+    border: 1px solid #ccc;
+    color: black;
 }
 
 #viewport.ltr #prev,
@@ -118,32 +121,6 @@
 #viewer.scrolled-doc {
     width: 100%;
     height: 100vh;
-}
-
-
-#annotations {
-    width: 600px;
-    height: calc((100% - 600px)/2 - 80px);
-    margin: 40px auto;
-    position: relative;
-    z-index: 10;
-}
-
-#annotations ul {
-    height: 100%;
-    margin-left: 0;
-    padding: 0;
-    overflow: auto;
-}
-
-#annotations li {
-    list-style: none;
-    border-top: 1px solid #E2E2E2;
-    padding: 10px;
-}
-
-#annotations a {
-    display: block;
 }
 
 #loader {

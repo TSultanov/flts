@@ -155,7 +155,7 @@
                 const textContent = paragraph.textContent!.trim();
                 const translation = await dictionary.getCachedTranslation(textContent);
 
-                const btn = document.createElement('button');
+                const btn = document.createElement('span');
                 btn.classList.add("translate-button");
 
                 if (translation) {
