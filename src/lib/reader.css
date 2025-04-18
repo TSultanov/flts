@@ -15,6 +15,7 @@
     align-items: center;
     justify-content: center;
     overflow: hidden;
+    background-color: white;
 }
 
 .arrow {
@@ -167,7 +168,8 @@
     }
 }
 
-button {
-    border: 1px solid black;
-    background-color: lightgray;
+#home {
+    position: absolute;
+    top: 0;
+    left: 0;
 }

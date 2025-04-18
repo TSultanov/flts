@@ -8,7 +8,6 @@
     import { onMount } from 'svelte';
     import type Rendition from '../../vendor/epub-js/src/rendition';
 
-    import alice from '../../vendor/epub-js/assets/alice.epub?no-inline';
     import type Contents from '../../vendor/epub-js/src/contents';
     import { extractParagraphs, getWordRangesFromTextNode } from './reader';
     import EpubCFI from '../../vendor/epub-js/src/epubcfi';
@@ -17,6 +16,12 @@
     import { getConfig } from './config';
     import { GoogleGenAI } from '@google/genai';
     import Popup from './Popup.svelte';
+    import type { Book } from './library';
+
+    let { book: bookSource, onClose } : {
+        book: Book,
+        onClose: (e: any) => void
+    } = $props();
 
     let isLoading = $state(true);
 
@@ -64,9 +69,15 @@
             let cfis = [currentCfi];
             let currentText = (await rendition.book.getRange(currentCfi)).toString();
             let {sentence, word: currentTranslationValue} = currentTranslation.value;
-            let currentTranslationValueOriginal = currentTranslationValue.original.replaceAll('-', '').replaceAll(' ', '');
 
-            if (['!', ',', ';', '?', ':', '"'].includes(currentTranslationValueOriginal)) {
+            const skipCharacters = ['!', ',', ';', '?', ':', '"', '’'];
+            let currentTranslationValueOriginal = currentTranslationValue.original.replace(' ', '');
+            for (const c of skipCharacters) {
+                currentTranslationValueOriginal = currentTranslationValueOriginal.replaceAll(c, '');
+                currentText.replaceAll(c, '');
+            }
+
+            if (skipCharacters.includes(currentTranslationValueOriginal)) {
                 currentTranslation = translationGen.next();
                 continue;
             }
@@ -111,12 +122,16 @@
     }
 
     onMount(async () => {
-        let book = ePub(alice);
-        let book_hash = await hashBuffer(await (await fetch(alice)).arrayBuffer());
+        const bookData = await bookSource.getContent();
+        if (!bookData) {
+            console.error("Failed to read data for book", bookSource);
+            return;
+        }
+        let book = ePub(bookData);
 
         let config = await getConfig();
         let ai = new GoogleGenAI({apiKey: config.api_key})
-        let dictionary = await Dictionary.build(ai, book_hash, "English", "Russian");
+        let dictionary = await bookSource.getDictionary(ai);
 
         await book.opened;
 
@@ -150,9 +165,14 @@
             atStart = location.atStart;
             atEnd = location.atEnd;
             popupData = null;
+            bookSource.updateCfi(location.start.cfi);
         })
 
-        await rendition.display(6);
+        if (bookSource.metadata.lastCfi) {
+            await rendition.display(bookSource.metadata.lastCfi);
+        } else {
+            await rendition.display();
+        }
     })
 </script>
 
@@ -162,7 +182,8 @@
     class="ltr"
     dir="ltr"
     role="article"
-    onclick="{(e) => {console.log(e); if (popupData !== null) popupData = null}}">
+    onclick="{(e) => {if (popupData !== null) popupData = null}}">
+    <button id="home" onclick="{onClose}">Library</button>
     <div id="viewer" class={["paginated", popupData !== null && "ignore-pointer-events" ]}>
         {#if isLoading}
             <div id="loader"></div>
