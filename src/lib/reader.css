@@ -22,7 +22,6 @@
     position: fixed;
     margin: 0 20px;
     font-size: 64px;
-    color: #E2E2E2;
     font-family: arial, sans-serif;
     font-weight: bold;
     cursor: pointer;
@@ -30,15 +29,6 @@
     text-decoration: none;
     z-index: 1;
 }
-
-.arrow:hover {
-    color: #777;
-}
-
-.arrow:active {
-    color: #000;
-}
-
 
 #viewport.ltr #prev,
 #content.ltr #prev {
@@ -178,6 +168,6 @@
 }
 
 button {
-    border: none;
-    border-radius: 5px;
+    border: 1px solid black;
+    background-color: lightgray;
 }

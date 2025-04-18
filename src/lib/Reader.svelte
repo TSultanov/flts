@@ -110,8 +110,6 @@
         }
     }
 
-
-
     onMount(async () => {
         let book = ePub(alice);
         let book_hash = await hashBuffer(await (await fetch(alice)).arrayBuffer());
@@ -151,43 +149,53 @@
         rendition.on("relocated", (location) => {
             atStart = location.atStart;
             atEnd = location.atEnd;
+            popupData = null;
         })
 
         await rendition.display(6);
     })
 </script>
 
-<main>
-    <div id="content" class="ltr" dir="ltr">
-        <div id="viewer" class="paginated">
-            {#if isLoading}
-                <div id="loader"></div>
-            {/if}
-        </div>
-        {#if !atStart}
-            <button
-                id="prev"
-                class="arrow" 
-                aria-label="previous"
-                onclick="{(e) => {
-                    rendition?.prev();
-                    e.preventDefault();
-                }}"></button>
-        {/if}
-        {#if !atEnd}
-            <button
-                id="next"
-                class="arrow"
-                aria-label="next"
-                onclick="{(e) => {
-                    rendition?.next();
-                    e.preventDefault();
-                }}"></button>
-        {/if}
-
-        {#if popupData}
-            <Popup {...popupData} />
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+<div id="content" 
+    class="ltr"
+    dir="ltr"
+    role="article"
+    onclick="{(e) => {console.log(e); if (popupData !== null) popupData = null}}">
+    <div id="viewer" class={["paginated", popupData !== null && "ignore-pointer-events" ]}>
+        {#if isLoading}
+            <div id="loader"></div>
         {/if}
     </div>
-</main>
+    {#if !atStart}
+        <button
+            id="prev"
+            class="arrow" 
+            aria-label="previous"
+            onclick="{(e) => {
+                rendition?.prev();
+                e.preventDefault();
+            }}"></button>
+    {/if}
+    {#if !atEnd}
+        <button
+            id="next"
+            class="arrow"
+            aria-label="next"
+            onclick="{(e) => {
+                rendition?.next();
+                e.preventDefault();
+            }}"></button>
+    {/if}
 
+    {#if popupData}
+        <Popup {...popupData} onclose={() => popupData = null} />
+    {/if}
+</div>
+
+<style>
+    .ignore-pointer-events {
+        pointer-events: none;
+    }
+</style>
