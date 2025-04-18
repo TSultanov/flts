@@ -174,16 +174,6 @@
     left: 0;
 }
 
-.translate-button {
-    position: absolute;
-    width: 20px;
-    height: 20px;
-    border-radius: 50%;
-    border: 1px solid grey;
-    background-color: transparent;
-}
-.spin-button {
-    animation: spin 1s linear infinite;
-    border: 1px solid #E2E2E2;
-    border-top: 1px solid #777;
+.epubjs-ul {
+    stroke-opacity: 0.05;
 }

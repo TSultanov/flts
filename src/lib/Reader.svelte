@@ -4,7 +4,7 @@
     }
 
     import './reader.css'
-    import readerStylesheet from './reader.css?inline';
+    import readerInnerStylesheet from './reader-inner.css?inline';
     import ePub from '../../vendor/epub-js/src/epub'
     import { onMount } from 'svelte';
     import type Rendition from '../../vendor/epub-js/src/rendition';
@@ -147,7 +147,7 @@
         rendition.hooks.content.register(async (contents: Contents) => {
             const innerDocument = contents.document;
             const style = innerDocument.createElement("style");
-            style.innerHTML = readerStylesheet;
+            style.innerHTML = readerInnerStylesheet;
             innerDocument.head.appendChild(style);
 
             const paragraphs = extractParagraphs(contents.content);
