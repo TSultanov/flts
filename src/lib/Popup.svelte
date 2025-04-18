@@ -1,6 +1,6 @@
 <script lang="ts">
-    import { stopPropagation } from "svelte/legacy";
-import type { WordTranslation } from "./dictionary";
+    import { onMount } from "svelte";
+    import type { WordTranslation } from "./dictionary";
 
     let {
         x,
@@ -18,6 +18,7 @@ import type { WordTranslation } from "./dictionary";
 
     let isDragging = true;
     let mouseInnerCoordinates = { x: 0, y: 0};
+    let popupEl: HTMLDivElement;
 
     function handleMouseDown(e: MouseEvent) {
         if (e.button === 0) {
@@ -44,11 +45,27 @@ import type { WordTranslation } from "./dictionary";
         window.removeEventListener('mousemove', movePopup);
         window.removeEventListener('mouseup', stopDragging);
     }
+
+    onMount(() => {
+        setTimeout(() => {
+            if (popupEl) {
+                const rect = popupEl.getBoundingClientRect();
+                // Adjust if right edge goes off screen
+                if (rect.right > window.innerWidth) {
+                    x = window.innerWidth - rect.width;
+                }
+                // Adjust if bottom edge goes off screen
+                if (rect.bottom > window.innerHeight) {
+                    y = window.innerHeight - rect.height;
+                }
+            }
+        });
+    });
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div id="popup" style:top={`${y}px`} style:left={`${x}px`} onclick="{(e) => e.stopPropagation()}">
+<div bind:this={popupEl} id="popup" style:top={`${y}px`} style:left={`${x}px`} onclick="{(e) => e.stopPropagation()}">
     <div class="popup-header">
         <div class="popup-header-title" role="button" tabindex="0" onmousedown={handleMouseDown}>Translation</div>
         <button class="popup-button" aria-label="Close" onclick={onclose}>x</button>
