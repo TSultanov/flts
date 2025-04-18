@@ -152,10 +152,11 @@
 
             const paragraphs = extractParagraphs(contents.content);
             for (let paragraph of paragraphs) {
+                console.log(paragraph);
                 const textContent = paragraph.textContent!.trim();
                 const translation = await dictionary.getCachedTranslation(textContent);
 
-                const btn = document.createElement('span');
+                const btn = document.createElement('div');
                 btn.classList.add("translate-button");
 
                 if (translation) {
@@ -168,11 +169,9 @@
                     e.stopPropagation();
                     e.preventDefault();
 
-                    btn.disabled = true;
                     btn.classList.add("spin-button");
                     const translation = await dictionary.translateParagraph(textContent);
                     btn.classList.remove("spin-button");
-                    btn.disabled = false;
                     if (translation) {
                         console.log(translation);
                         await annotateWords(rendition!, contents, paragraph, translation);
