@@ -30,6 +30,7 @@
     let viewer = $state<HTMLDivElement | null>(null);
 
     let popupData: { x:number, y: number, bookSource: Book, request: DictionaryRequest } | null = $state(null);
+    let contentClickEnabled = true; // FIXME: Without this flag the popup will open and immediately close on iPad, as #content element registers click for some reason
 
     onMount(async () => {
         const bookData = await bookSource.getContent();
@@ -64,6 +65,7 @@
                                 cb: (e: MouseEvent) => {
                                     const target = e.target as Element;
                                     const rect = target.getBoundingClientRect();
+                                    contentClickEnabled = false;
                                     popupData = {
                                         x: rect.left,
                                         y: rect.top + rect.height,
@@ -77,6 +79,9 @@
                                             }
                                         }
                                     }
+                                    setTimeout(() => {
+                                        contentClickEnabled = true;
+                                    }, 500);
                                 }
                             });
                             position++;
@@ -110,7 +115,10 @@
     class="ltr"
     dir="ltr"
     role="article"
-    onclick="{(e) => {if (popupData !== null) popupData = null}}">
+    onclick="{(e) => {
+        console.log(e);
+        if (popupData !== null && contentClickEnabled) popupData = null}
+    }">
     <button id="home" onclick="{onClose}">Library</button>
     <div bind:this={viewer} id="viewer" class={["paginated", popupData !== null && "ignore-pointer-events" ]}>
         {#if isLoading}

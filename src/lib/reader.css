@@ -91,7 +91,7 @@
 
 #viewer {
     width: calc(100% - 200px);
-    height: 100%;
+    height: calc(100% - 40px);
     display: flex;
     padding: 0;
     overflow: hidden;
@@ -104,7 +104,7 @@
 
 #viewer.scrolled .viewport-container,
 #viewer.paginated .viewport-container {
-    margin: 40px 0;
+    margin: 40px 0px;
     background: white;
     box-shadow: 0 0 4px #ccc;
     border-radius: 5px;
