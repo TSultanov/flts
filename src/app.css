@@ -55,3 +55,7 @@ h1 {
     color: #747bff;
   }
 }
+
+button {
+  min-height: 30px;;
+}

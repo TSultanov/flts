@@ -162,6 +162,7 @@
     .popup-header {
         display: flex;
         justify-content: space-between;
+        align-items: center;
         background-color: lightblue;
         border-bottom: 1px solid black;
         user-select: none;
