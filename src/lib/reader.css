@@ -90,7 +90,7 @@
 }
 
 #viewer {
-    width: calc(100% - 200px);
+    width: calc(100% - 150px);
     height: calc(100% - 40px);
     display: flex;
     padding: 0;
