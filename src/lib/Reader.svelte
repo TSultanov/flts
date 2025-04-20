@@ -47,40 +47,44 @@
             spread: "none"
         }) as RenditionWithOn;
 
-        rendition.hooks.content.register(async (contents: Contents) => {
+        rendition.hooks.content.register((contents: Contents) => {
+            console.time()
             for (const paragraph of extractParagraphs(contents.content)) {
                 if (!paragraph.textContent) {
                     continue;
                 }
 
-                for (const sentence of getSentences(paragraph)) {
-                    let position = 0;
-                    for (const word of getWords(sentence)) {
-                        let currentPosition = position;
-                        let cfi = new EpubCFI(word, contents.section.cfiBase).toString();
-                        rendition?.annotations.append("underline", cfi, {
-                            cb: (e: MouseEvent) => {
-                                const target = e.target as Element;
-                                const rect = target.getBoundingClientRect();
-                                popupData = {
-                                    x: rect.left,
-                                    y: rect.top + rect.height,
-                                    bookSource,
-                                    request: {
-                                        paragraph: paragraph.textContent!,
-                                        sentence: sentence.toString(),
-                                        word: {
-                                            position: currentPosition,
-                                            value: word.toString(),
+                setTimeout(() => {
+                    for (const sentence of getSentences(paragraph)) {
+                        let position = 0;
+                        for (const word of getWords(sentence)) {
+                            let currentPosition = position;
+                            let cfi = new EpubCFI(word, contents.section.cfiBase).toString();
+                            rendition?.annotations.append("underline", cfi, {
+                                cb: (e: MouseEvent) => {
+                                    const target = e.target as Element;
+                                    const rect = target.getBoundingClientRect();
+                                    popupData = {
+                                        x: rect.left,
+                                        y: rect.top + rect.height,
+                                        bookSource,
+                                        request: {
+                                            paragraph: paragraph.textContent!,
+                                            sentence: sentence.toString(),
+                                            word: {
+                                                position: currentPosition,
+                                                value: word.toString(),
+                                            }
                                         }
                                     }
                                 }
-                            }
-                        });
-                        position++;
+                            });
+                            position++;
+                        }
                     }
-                }
+                });
             }
+            console.timeEnd();
         })
 
         rendition.on("relocated", (location) => {
