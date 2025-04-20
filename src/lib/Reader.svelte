@@ -3,21 +3,23 @@
         on: (event: string, callback: (...args: any) => void) => void;
     }
 
-    import './reader.css'
-    import ePub from '../../vendor/epub-js/src/epub'
-    import { onMount } from 'svelte';
-    import type Rendition from '../../vendor/epub-js/src/rendition';
+    import "./reader.css";
+    import ePub from "../../vendor/epub-js/src/epub";
+    import { onMount } from "svelte";
+    import type Rendition from "../../vendor/epub-js/src/rendition";
 
-    import type Contents from '../../vendor/epub-js/src/contents';
-    import { extractParagraphs, getSentences, getWords } from './reader';
-    import EpubCFI from '../../vendor/epub-js/src/epubcfi';
-    import { type DictionaryRequest } from './dictionary';
-    import type { Book } from './library';
-    import Popup from './Popup.svelte';
+    import type Contents from "../../vendor/epub-js/src/contents";
+    import { extractParagraphs, getSentences, getWords } from "./reader";
+    import { type DictionaryRequest } from "./dictionary";
+    import type { Book } from "./library";
+    import Popup from "./Popup.svelte";
 
-    let { book: bookSource, onClose } : {
-        book: Book,
-        onClose: (e: any) => void
+    let {
+        book: bookSource,
+        onClose,
+    }: {
+        book: Book;
+        onClose: (e: any) => void;
     } = $props();
 
     let isLoading = $state(true);
@@ -29,7 +31,12 @@
 
     let viewer = $state<HTMLDivElement | null>(null);
 
-    let popupData: { x:number, y: number, bookSource: Book, request: DictionaryRequest } | null = $state(null);
+    let popupData: {
+        x: number;
+        y: number;
+        bookSource: Book;
+        request: DictionaryRequest;
+    } | null = $state(null);
     let contentClickEnabled = true; // FIXME: Without this flag the popup will open and immediately close on iPad, as #content element registers click for some reason
 
     onMount(async () => {
@@ -45,52 +52,89 @@
         isLoading = false;
 
         rendition = book.renderTo("viewer", {
-            spread: "none"
+            spread: "none",
         }) as RenditionWithOn;
+        const viewer = document.querySelector("#viewer");
 
         rendition.hooks.content.register((contents: Contents) => {
-            console.time()
+            console.time();
             for (const paragraph of extractParagraphs(contents.content)) {
                 if (!paragraph.textContent) {
                     continue;
                 }
 
-                setTimeout(() => {
-                    for (const sentence of getSentences(paragraph)) {
-                        let position = 0;
-                        for (const word of getWords(sentence)) {
-                            let currentPosition = position;
-                            let cfi = new EpubCFI(word, contents.section.cfiBase).toString();
-                            rendition?.annotations.append("underline", cfi, {
-                                cb: (e: MouseEvent) => {
-                                    const target = e.target as Element;
-                                    const rect = target.getBoundingClientRect();
-                                    contentClickEnabled = false;
-                                    popupData = {
-                                        x: rect.left,
-                                        y: rect.top + rect.height,
-                                        bookSource,
-                                        request: {
-                                            paragraph: paragraph.textContent!,
-                                            sentence: sentence.toString(),
-                                            word: {
-                                                position: currentPosition,
-                                                value: word.toString(),
-                                            }
-                                        }
+                const structure: Array<{
+                    sentence: Range;
+                    words: Array<{ position: number; range: Range }>;
+                }> = [];
+
+                for (const sentence of getSentences(paragraph)) {
+                    let position = 0;
+                    let s = {
+                        sentence,
+                        words: new Array(),
+                    };
+                    for (const word of getWords(sentence)) {
+                        s.words.push({
+                            position,
+                            range: word,
+                        });
+                        position++;
+                    }
+                    structure.push(s);
+                }
+
+                paragraph.addEventListener("click", (ev: Event) => {
+                    console.time("paragraph");
+                    const e = ev as MouseEvent;
+
+                    try {
+                        for (const sentence of structure) {
+                            for (const word of sentence.words) {
+                                for (const rect of word.range.getClientRects()) {
+                                    if (
+                                        e.clientX >= rect.left &&
+                                        e.clientX <= rect.right &&
+                                        e.clientY >= rect.top &&
+                                        e.clientY <= rect.bottom
+                                    ) {
+                                        contentClickEnabled = false;
+
+                                        const viewContainer = viewer!.querySelector('.view-container');
+                                        const viewRect = viewContainer!.getBoundingClientRect();
+                                        const offsetX = viewRect.left;
+                                        const offsetY = viewRect.top;
+
+                                        popupData = {
+                                            x: rect.left + offsetX,
+                                            y: rect.bottom + offsetY,
+                                            bookSource,
+                                            request: {
+                                                paragraph:
+                                                    paragraph.textContent!,
+                                                sentence:
+                                                    sentence.sentence.toString(),
+                                                word: {
+                                                    position: word.position,
+                                                    value: word.range.toString(),
+                                                },
+                                            },
+                                        };
+                                        setTimeout(() => {
+                                            contentClickEnabled = true;
+                                        }, 500);
+                                        return;
                                     }
-                                    setTimeout(() => {
-                                        contentClickEnabled = true;
-                                    }, 500);
                                 }
-                            });
-                            position++;
+                            }
                         }
+                    } finally {
+                        console.timeEnd("paragraph");
                     }
                 });
             }
             console.timeEnd();
-        })
+        });
 
         rendition.on("relocated", (location) => {
             atStart = location.atStart;
@@ -98,7 +142,7 @@
             popupData = null;
             console.log("Relocated to", location.start.cfi);
             bookSource.updateCfi(location.start.cfi);
-        })
+        });
 
         if (bookSource.metadata.lastCfi) {
             console.log("Last CFI", bookSource.metadata.lastCfi);
@@ -106,20 +150,26 @@
         } else {
             await rendition.display();
         }
-    })
+    });
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<div id="content" 
+<div
+    id="content"
     class="ltr"
     dir="ltr"
     role="article"
-    onclick="{(e) => {
-        if (popupData !== null && contentClickEnabled) popupData = null}
-    }">
-    <button id="home" onclick="{onClose}">Library</button>
-    <div bind:this={viewer} id="viewer" class={["paginated", popupData !== null && "ignore-pointer-events" ]}>
+    onclick={(e) => {
+        if (popupData !== null && contentClickEnabled) popupData = null;
+    }}
+>
+    <button id="home" onclick={onClose}>Library</button>
+    <div
+        bind:this={viewer}
+        id="viewer"
+        class={["paginated", popupData !== null && "ignore-pointer-events"]}
+    >
         {#if isLoading}
             <div id="loader"></div>
         {/if}
@@ -127,26 +177,28 @@
     {#if !atStart}
         <button
             id="prev"
-            class="arrow" 
+            class="arrow"
             aria-label="previous"
-            onclick="{(e) => {
+            onclick={(e) => {
                 rendition?.prev();
                 e.preventDefault();
-            }}"></button>
+            }}
+        ></button>
     {/if}
     {#if !atEnd}
         <button
             id="next"
             class="arrow"
             aria-label="next"
-            onclick="{(e) => {
+            onclick={(e) => {
                 rendition?.next();
                 e.preventDefault();
-            }}"></button>
+            }}
+        ></button>
     {/if}
 
     {#if popupData}
-        <Popup {...popupData} onclose={() => popupData = null} />
+        <Popup {...popupData} onclose={() => (popupData = null)} />
     {/if}
 </div>
 
