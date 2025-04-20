@@ -26,21 +26,23 @@
     let dictionary: Dictionary | null = null;
     let translation: Translation | null = $state(null);
 
-    function handleTouchStart(e: Touch) {
+    function handleTouchStart(e: TouchEvent) {
+        const touch = e.touches[0];
         isDragging = true;
         let rect = (e.target as Element).getBoundingClientRect();
-        mouseInnerCoordinates.x = e.pageX - rect.x;
-        mouseInnerCoordinates.y = e.pageY - rect.y;
+        mouseInnerCoordinates.x = touch.clientX - rect.x;
+        mouseInnerCoordinates.y = touch.clientY - rect.y;
     }
 
-    function handleTouchEnd(e: Touch) {
+    function handleTouchEnd(e: TouchEvent) {
         isDragging = false;
     }
 
-    function handleTouchMove(e: Touch) {
+    function handleTouchMove(e: TouchEvent) {
+        const touch = e.touches[0];
         if (isDragging) {
-            x = e.pageX - mouseInnerCoordinates.x;
-            y = e.pageY - mouseInnerCoordinates.y;
+            x = touch.clientX - mouseInnerCoordinates.x;
+            y = touch.clientY - mouseInnerCoordinates.y;
         }
     }
 
