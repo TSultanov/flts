@@ -26,6 +26,24 @@
     let dictionary: Dictionary | null = null;
     let translation: Translation | null = $state(null);
 
+    function handleTouchStart(e: Touch) {
+        isDragging = true;
+        let rect = (e.target as Element).getBoundingClientRect();
+        mouseInnerCoordinates.x = e.pageX - rect.x;
+        mouseInnerCoordinates.y = e.pageY - rect.y;
+    }
+
+    function handleTouchEnd(e: Touch) {
+        isDragging = false;
+    }
+
+    function handleTouchMove(e: Touch) {
+        if (isDragging) {
+            x = e.pageX - mouseInnerCoordinates.x;
+            y = e.pageY - mouseInnerCoordinates.y;
+        }
+    }
+
     function handleMouseDown(e: MouseEvent) {
         if (e.button === 0) {
             let rect = (e.target as Element).getBoundingClientRect();
@@ -103,8 +121,11 @@
             role="button"
             tabindex="0"
             onmousedown={handleMouseDown}
+            ontouchstart={handleTouchStart}
+            ontouchend={handleTouchEnd}
+            ontouchmove={handleTouchMove}
         >
-            Translation
+            {request.word.value}
         </div>
         <button class="popup-button" aria-label="Refresh" onclick={refresh}
             >Refresh</button
@@ -117,12 +138,6 @@
         {#if translation}
             <table>
                 <tbody>
-                    <tr>
-                        <td> Original </td>
-                        <td>
-                            {translation.original}
-                        </td>
-                    </tr>
                     <tr>
                         <td> Translations </td>
                         <td>
@@ -180,6 +195,7 @@
 
     .popup-body ul {
         margin: 0px;
+        padding: 0 0 0 20px;
     }
 
     #popup {
