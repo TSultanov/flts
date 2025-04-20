@@ -11,95 +11,79 @@ type Grammar = {
     other: string
 }
 
-export type WordTranslation = {
+export type Translation = {
+    sentenceTranslation: string,
     original: string,
     translations: string[],
     note: string,
     grammar: Grammar,
 };
 
-export type SentenceTranslation = {
-    fullTranslation: string,
-    words: Array<WordTranslation>,
-};
-
-export type ParagraphTranslation = {
-    sentences: Array<SentenceTranslation>,
-};
-
 const schema: Schema = {
     type: Type.OBJECT,
     properties: {
-        "sentences": {
+        "original": {
+            type: Type.STRING,
+        },
+        "translations": {
             type: Type.ARRAY,
             items: {
-                type: Type.OBJECT,
-                properties: {
-                    "fullTranslation": {
-                        type: Type.STRING
-                    },
-                    "words": {
-                        type: Type.ARRAY,
-                        items: {
-                            type: Type.OBJECT,
-                            properties: {
-                                "original": {
-                                    type: Type.STRING
-                                },
-                                "translations": {
-                                    type: Type.ARRAY,
-                                    "items": {
-                                        type: Type.STRING
-                                    }
-                                },
-                                "note": {
-                                    type: Type.STRING
-                                },
-                                "grammar": {
-                                    type: Type.OBJECT,
-                                    properties: {
-                                        "partOfSpeech": {
-                                            type: Type.STRING
-                                        },
-                                        "plurality": {
-                                            type: Type.STRING
-                                        },
-                                        "person": {
-                                            type: Type.STRING
-                                        },
-                                        "tense": {
-                                            type: Type.STRING
-                                        },
-                                        "case": {
-                                            type: Type.STRING
-                                        },
-                                        "other": {
-                                            type: Type.STRING
-                                        }
-                                    },
-                                    "required": [
-                                        "partOfSpeech"
-                                    ]
-                                }
-                            },
-                            "required": [
-                                "original",
-                                "translations"
-                            ]
-                        }
-                    }
-                },
-                "required": [
-                    "fullTranslation",
-                    "words"
-                ]
+                type: Type.STRING
             }
+        },
+        "note": {
+            type: Type.STRING
+        },
+        "grammar": {
+            type: Type.OBJECT,
+            "properties": {
+                "partOfSpeech": {
+                    type: Type.STRING
+                },
+                "tense": {
+                    type: Type.STRING
+                },
+                "person": {
+                    type: Type.STRING
+                },
+                "case": {
+                    type: Type.STRING
+                },
+                "plurality": {
+                    type: Type.STRING
+                },
+                "other": {
+                    type: Type.STRING
+                },
+                "initialForm": {
+                    type: Type.STRING
+                }
+            },
+            required: [
+                "partOfSpeech",
+                "initialForm"
+            ]
+        },
+        "sentenceTranslation": {
+            type: Type.STRING
         }
     },
-    "required": [
-        "sentences"
+    required: [
+        "original",
+        "translations",
+        "grammar",
+        "sentenceTranslation"
     ]
-};
+}
+
+export type DictionaryRequest = {
+    paragraph: string,
+    sentence: string,
+    word: {
+        position: number,
+        value: string,
+    }
+}
 
 export class Dictionary {
     readonly book_hash: string
@@ -123,29 +107,50 @@ export class Dictionary {
         return new Dictionary(ai, book_hash, to, store);
     }
 
-    async getCachedTranslation(p: string) {
-        const p_hash = await hashString(p);
-        p = p.replaceAll("’", "'");
-        const translation = await this.store.getItem(p_hash) as ParagraphTranslation;
+    async getCachedTranslation(p: DictionaryRequest) {
+        const p_hash = await hashString(JSON.stringify(p));
+        const translation = await this.store.getItem(p_hash) as Translation | null;
         return translation;
     }
 
-    async translateParagraph(p: string) {
-        const p_hash = await hashString(p);
-        p = p.replaceAll("’", "'");
+    async getTranslation(p: DictionaryRequest) {
+        const requestString = JSON.stringify(p);
+        const p_hash = await hashString(requestString);
         const response = await this.ai.models.generateContent({
             model: "gemini-2.5-flash-preview-04-17",
             //model: "gemini-2.0-flash-lite",
-            contents: p,
+            contents: requestString,
             config: {
-                systemInstruction: `You are given a text. Provide first a full ${this.to} translation of each sentence, and then a per-word translation of it into ${this.to}. Provide translations for words EXACTLY as they are written, do not combine then into phrases. Add several variants of translation for each word. Add note on the use of ech word if it's not clear how the translation maps to the original. Add grammatical information for each original word. Spell all notes and grammatical remarks in the target lagnuage. Skip punctuation.`,
+                systemInstruction: this.getPrompt(this.to),
                 responseMimeType: 'application/json',
                 responseSchema: schema,
             }
         });
-        const translation = JSON.parse(response.text!) as ParagraphTranslation;
+        const translation = JSON.parse(response.text!) as Translation;
         await this.store.setItem(p_hash, translation);
 
         return translation;
+    }
+
+    private getPrompt(to: string) {
+        return `You are given a paragraph, a sentence and a word with its position numbered form 0.
+        Provide original spelling of the word as given in the text.
+        Provide grammatical information for the word. Provide a full translation of the sentence, keeping it as close to the original as possible.
+        Provide a translation of this word into ${to} taking into account all the given context.
+        Give several variants if necessary.
+        Add a note on the use of the word if it's not clear how translation maps to the original.
+        All the information given must be in Russian language.
+        Initial form in the grammar section must be contain the form as it appears in the dictionaries in the language of the original text.
+
+        Input is given in JSON format, following this template:
+        {
+            paragraph: "string",
+            sentence: "string",
+            word: {
+                position: number,
+                value: "string"
+            }
+        }
+        `
     }
 }

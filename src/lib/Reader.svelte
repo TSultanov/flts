@@ -4,20 +4,16 @@
     }
 
     import './reader.css'
-    import readerInnerStylesheet from './reader-inner.css?inline';
     import ePub from '../../vendor/epub-js/src/epub'
     import { onMount } from 'svelte';
     import type Rendition from '../../vendor/epub-js/src/rendition';
 
     import type Contents from '../../vendor/epub-js/src/contents';
-    import { extractParagraphs, getWordRangesFromTextNode } from './reader';
+    import { extractParagraphs, getSentences, getWords } from './reader';
     import EpubCFI from '../../vendor/epub-js/src/epubcfi';
-    import { Dictionary, type ParagraphTranslation, type WordTranslation } from './dictionary';
-    import { hashBuffer, hashFile } from './utils';
-    import { getConfig } from './config';
-    import { GoogleGenAI } from '@google/genai';
-    import Popup from './Popup.svelte';
+    import { type DictionaryRequest } from './dictionary';
     import type { Book } from './library';
+    import Popup from './Popup.svelte';
 
     let { book: bookSource, onClose } : {
         book: Book,
@@ -28,101 +24,12 @@
 
     let rendition: RenditionWithOn | null;
 
-    let annotations = new Set<string>();
-
     let atStart = $state(false);
     let atEnd = $state(false);
 
     let viewer = $state<HTMLDivElement | null>(null);
 
-    let popupData: { x:number, y: number, sentence: string; translation: WordTranslation } | null = $state(null);
-
-    function* getWordRanges(contents: Contents, node: Node): Generator<string> {
-        if (node.nodeType === Node.TEXT_NODE && node.textContent?.trim() != '') {
-            let ranges = getWordRangesFromTextNode(node)
-            for (let range of ranges) {
-                let cfiRange = new EpubCFI(range, contents.section.cfiBase).toString();
-
-                yield cfiRange;
-            }
-        }
-
-        for (let child of node.childNodes) {
-            yield* getWordRanges(contents, child);
-        }
-    }
-
-
-    async function annotateWords(rendition: Rendition, contents: Contents, node: Node, translation: ParagraphTranslation) {
-        function* translationWords(): Generator<{sentence: string, word: WordTranslation}> {
-            for (let sentence of translation.sentences) {
-                for (let word of sentence.words) {
-                    yield {sentence: sentence.fullTranslation, word}
-                }
-            }
-        }
-
-        let originalGen = getWordRanges(contents, node);
-        let translationGen = translationWords();
-
-        let currentOriginalCfi = originalGen.next()
-        let currentTranslation = translationGen.next()
-        while (!currentOriginalCfi.done && !currentTranslation.done) {
-            let currentCfi = currentOriginalCfi.value;
-            let cfis = [currentCfi];
-            let currentText = (await rendition.book.getRange(currentCfi)).toString();
-            let {sentence, word: currentTranslationValue} = currentTranslation.value;
-
-            const skipCharacters = ['.', '!', ',', ';', '?', ':', '"', '’', '“', '”', '(', ')', '[', ']', '{', '}', '…', '—', '–', '-', '•', '·', '•', '°', '\n', '\''];
-            let currentTranslationValueOriginal = currentTranslationValue.original.replace(' ', '');
-            for (const c of skipCharacters) {
-                currentTranslationValueOriginal = currentTranslationValueOriginal.replaceAll(c, '');
-                currentText.replaceAll(c, '');
-            }
-
-            if (skipCharacters.includes(currentTranslationValueOriginal)) {
-                currentTranslation = translationGen.next();
-                continue;
-            }
-
-            while (currentText.toLowerCase() !== currentTranslationValueOriginal.toLowerCase()) {
-                if (currentTranslationValueOriginal.toLowerCase().startsWith(currentText.toLowerCase())) {
-                    currentOriginalCfi = originalGen.next();
-                    currentCfi = currentOriginalCfi.value;
-                    cfis.push(currentCfi);
-                    currentText = currentText + (await rendition.book.getRange(currentCfi)).toString();
-                } else {
-                    break;
-                }
-            }
-
-            if (currentText.toLowerCase() === currentTranslationValueOriginal.toLowerCase()) {
-                for (const cfi of cfis) {
-                    if (!annotations.has(cfi)) {
-                        rendition.annotations.append('underline', cfi, {
-                            cb: async (e: MouseEvent) => {
-                                console.log(cfi);
-
-                                const target = e.target as Element;
-                                const rect = target.getBoundingClientRect();
-
-                                popupData = {
-                                    x: rect.left,
-                                    y: rect.top + rect.height,
-                                    sentence,
-                                    translation: currentTranslationValue
-                                };
-                            },
-                        });
-                        annotations.add(cfi);
-                    }
-                }
-            }
-
-            currentOriginalCfi = originalGen.next();
-            currentTranslation = translationGen.next();
-        }
-    }
+    let popupData: { x:number, y: number, bookSource: Book, request: DictionaryRequest } | null = $state(null);
 
     onMount(async () => {
         const bookData = await bookSource.getContent();
@@ -131,10 +38,6 @@
             return;
         }
         let book = ePub(bookData);
-
-        let config = await getConfig();
-        let ai = new GoogleGenAI({apiKey: config.api_key})
-        let dictionary = await bookSource.getDictionary(ai);
 
         await book.opened;
 
@@ -145,36 +48,36 @@
         }) as RenditionWithOn;
 
         rendition.hooks.content.register(async (contents: Contents) => {
-            const innerDocument = contents.document;
-            const style = innerDocument.createElement("style");
-            style.innerHTML = readerInnerStylesheet;
-            innerDocument.head.appendChild(style);
-
-            const paragraphs = extractParagraphs(contents.content);
-            for (let paragraph of paragraphs) {
-                console.log(paragraph);
-                const textContent = paragraph.textContent!.trim();
-                const translation = await dictionary.getCachedTranslation(textContent);
-
-                const btn = document.createElement('div');
-                btn.classList.add("translate-button");
-
-                if (translation) {
-                    await annotateWords(rendition!, contents, paragraph, translation);
+            for (const paragraph of extractParagraphs(contents.content)) {
+                if (!paragraph.textContent) {
+                    continue;
                 }
 
-                paragraph.appendChild(btn);
-
-                btn.onclick = async (e: MouseEvent) => {
-                    e.stopPropagation();
-                    e.preventDefault();
-
-                    btn.classList.add("spin-button");
-                    const translation = await dictionary.translateParagraph(textContent);
-                    btn.classList.remove("spin-button");
-                    if (translation) {
-                        console.log(translation);
-                        await annotateWords(rendition!, contents, paragraph, translation);
+                for (const sentence of getSentences(paragraph)) {
+                    let position = 0;
+                    for (const word of getWords(sentence)) {
+                        let currentPosition = position;
+                        let cfi = new EpubCFI(word, contents.section.cfiBase).toString();
+                        rendition?.annotations.append("underline", cfi, {
+                            cb: (e: MouseEvent) => {
+                                const target = e.target as Element;
+                                const rect = target.getBoundingClientRect();
+                                popupData = {
+                                    x: rect.left,
+                                    y: rect.top + rect.height,
+                                    bookSource,
+                                    request: {
+                                        paragraph: paragraph.textContent!,
+                                        sentence: sentence.toString(),
+                                        word: {
+                                            position: currentPosition,
+                                            value: word.toString(),
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                        position++;
                     }
                 }
             }
@@ -184,10 +87,12 @@
             atStart = location.atStart;
             atEnd = location.atEnd;
             popupData = null;
+            console.log("Relocated to", location.start.cfi);
             bookSource.updateCfi(location.start.cfi);
         })
 
         if (bookSource.metadata.lastCfi) {
+            console.log("Last CFI", bookSource.metadata.lastCfi);
             await rendition.display(bookSource.metadata.lastCfi);
         } else {
             await rendition.display();
