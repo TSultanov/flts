@@ -116,7 +116,6 @@
     dir="ltr"
     role="article"
     onclick="{(e) => {
-        console.log(e);
         if (popupData !== null && contentClickEnabled) popupData = null}
     }">
     <button id="home" onclick="{onClose}">Library</button>
