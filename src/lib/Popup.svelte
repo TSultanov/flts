@@ -1,6 +1,6 @@
 <script lang="ts">
     import { onMount } from "svelte";
-    import type { DictionaryRequest, Translation } from "./dictionary";
+    import type { Dictionary, DictionaryRequest, Translation } from "./dictionary";
     import { getConfig } from "./config";
     import { GoogleGenAI } from "@google/genai";
     import type { Book } from "./library";
@@ -23,6 +23,7 @@
     let mouseInnerCoordinates = { x: 0, y: 0 };
     let popupEl: HTMLDivElement;
 
+    let dictionary: Dictionary | null = null;
     let translation: Translation | null = $state(null);
 
     function handleMouseDown(e: MouseEvent) {
@@ -65,13 +66,20 @@
                 }
             }
         });
-    };
+    }
+
+    async function refresh() {
+        if (dictionary) {
+            translation = null;
+            translation = await dictionary.getTranslation(request);
+        }
+    }
 
     onMount(async () => {
         fixPosition();
         let config = await getConfig();
         let ai = new GoogleGenAI({ apiKey: config.api_key });
-        let dictionary = await bookSource.getDictionary(ai);
+        dictionary = await bookSource.getDictionary(ai);
         translation = await dictionary.getCachedTranslation(request);
         if (!translation) {
             translation = await dictionary.getTranslation(request);
@@ -98,6 +106,9 @@
         >
             Translation
         </div>
+        <button class="popup-button" aria-label="Refresh" onclick={refresh}
+            >Refresh</button
+        >
         <button class="popup-button" aria-label="Close" onclick={onclose}
             >x</button
         >
