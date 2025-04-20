@@ -139,7 +139,7 @@ export class Dictionary {
         Provide a translation of this word into ${to} taking into account all the given context.
         Give several variants if necessary.
         Add a note on the use of the word if it's not clear how translation maps to the original.
-        All the information given must be in Russian language.
+        All the information given must be in ${to} language.
         Initial form in the grammar section must be contain the form as it appears in the dictionaries in the language of the original text.
 
         Input is given in JSON format, following this template:
