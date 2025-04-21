@@ -10,9 +10,11 @@
 
     import type Contents from "../../vendor/epub-js/src/contents";
     import { extractParagraphs, getSentences, getWords } from "./reader";
-    import { type DictionaryRequest } from "./dictionary";
+    import { Dictionary, type DictionaryRequest } from "./dictionary";
     import type { Book } from "./library";
     import Popup from "./Popup.svelte";
+    import { getConfig } from "./config";
+    import { GoogleGenAI } from "@google/genai";
 
     let {
         book: bookSource,
@@ -34,7 +36,7 @@
     let popupData: {
         x: number;
         y: number;
-        bookSource: Book;
+        dictionary: Dictionary;
         request: DictionaryRequest;
     } | null = $state(null);
     let contentClickEnabled = true; // FIXME: Without this flag the popup will open and immediately close on iPad, as #content element registers click for some reason
@@ -55,6 +57,10 @@
             spread: "none",
         }) as RenditionWithOn;
         const viewer = document.querySelector("#viewer");
+
+        let config = await getConfig();
+        let ai = new GoogleGenAI({ apiKey: config.api_key });
+        let dictionary = await bookSource.getDictionary(ai);
 
         rendition.hooks.content.register((contents: Contents) => {
             console.time();
@@ -108,7 +114,7 @@
                                         popupData = {
                                             x: rect.left + offsetX,
                                             y: rect.bottom + offsetY,
-                                            bookSource,
+                                            dictionary,
                                             request: {
                                                 paragraph:
                                                     paragraph.textContent!,

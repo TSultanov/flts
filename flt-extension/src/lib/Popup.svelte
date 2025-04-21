@@ -1,19 +1,17 @@
 <script lang="ts">
     import { onMount } from "svelte";
-    import type { Dictionary, DictionaryRequest, Translation } from "./dictionary";
+    import { Dictionary, DictionaryRequest, Translation } from "./dictionary";
     import { getConfig } from "./config";
     import { GoogleGenAI } from "@google/genai";
 
     let {
         x,
         y,
-        dictionary,
         request,
         onclose,
     }: {
         x: number;
         y: number;
-        dictionary: Dictionary;
         request: DictionaryRequest;
         onclose?: () => void;
     } = $props();
@@ -23,6 +21,8 @@
     let popupEl: HTMLDivElement;
 
     let translation: Translation | null = $state(null);
+    let errorMessage: string | null = $state(null);
+    let dictionary: Dictionary | null = null;
 
     function handleTouchStart(e: TouchEvent) {
         const touch = e.touches[0];
@@ -95,11 +95,27 @@
 
     onMount(async () => {
         fixPosition();
-        translation = await dictionary.getCachedTranslation(request);
-        if (!translation) {
-            translation = await dictionary.getTranslation(request);
+
+        try {
+            const config = await getConfig();
+            if (!config.apiKey) {
+                errorMessage = "API key is not set";
+                return;
+            }
+            if (!config.to) {
+                errorMessage = "Target language is not set";
+                return;
+            }
+            const ai = new GoogleGenAI({apiKey: config.apiKey})
+            dictionary = new Dictionary(ai, config.to);
+
+            translation = await dictionary.getCachedTranslation(request);
+            if (!translation) {
+                translation = await dictionary.getTranslation(request);
+            }
+        } finally {
+            fixPosition();
         }
-        fixPosition();
     });
 </script>
 
@@ -132,6 +148,9 @@
         >
     </div>
     <div class="popup-body">
+        {#if errorMessage}
+        <p class="error">{errorMessage}</p>
+        {/if}
         {#if translation}
             <table>
                 <tbody>
@@ -211,5 +230,9 @@
     td {
         border: 1px solid rgb(160 160 160);
         padding: 2px 4px;
+    }
+
+    .error {
+        color: red;
     }
 </style>
