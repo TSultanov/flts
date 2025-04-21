@@ -217,6 +217,7 @@
     #popup {
         border: 1px solid black;
         background-color: white;
+        color: black;
         position: absolute;
         width: 400px;
         z-index: 10;
@@ -225,6 +226,7 @@
     table {
         border-collapse: collapse;
         width: 100%;
+        color: black;
     }
 
     td {
