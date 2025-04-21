@@ -58,12 +58,20 @@ export default defineContentScript({
       },
     });
 
-    document.addEventListener('mouseup', (e: Event) => {
+    const showOverlayInner = () => {
       if (callOverlayDelegate) {
         callOverlayDelegate();
         callOverlayDelegate = null;
       }
+    }
+
+    document.addEventListener('mouseup', (e: Event) => {
+      showOverlayInner();
     });
+
+    document.addEventListener('touchend', (e: Event) => {
+      showOverlayInner();
+    })
 
     document.addEventListener('selectionchange', (e: Event) => {
       if (callOverlayDelegate) {
@@ -74,7 +82,6 @@ export default defineContentScript({
       }
 
       callOverlayDelegate = () => {
-
         const selection = document.getSelection();
         const selectedText = selection?.toString();
         if (selection && selectedText && selectedText.length > 0) {
