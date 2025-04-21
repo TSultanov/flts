@@ -1,6 +1,6 @@
 {
-  "name": "wxt-svelte-starter",
-  "description": "manifest.json description",
+  "name": "ai-translation-tool",
+  "description": "AI translation tool",
   "private": true,
   "version": "0.0.0",
   "type": "module",
