@@ -42,7 +42,7 @@ export default defineContentScript({
   async main(ctx) {
     ui = await createShadowRootUi(ctx, {
       name: 'example-ui',
-      position: 'inline',
+      position: 'modal',
       anchor: 'body',
       onMount(container) {
         // Define how your UI will be mounted inside the container
