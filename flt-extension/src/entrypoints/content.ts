@@ -23,9 +23,6 @@ function showOverlay({ x, y }: { x: number, y: number }, position: number, word:
       paragraph,
       onClose: hideOverlay
     };
-    ui.uiContainer.style.position = 'absolute';
-    ui.uiContainer.style.top = `0px`;
-    ui.uiContainer.style.left = `0px`;
 
     ui.mount();
   }
@@ -43,7 +40,7 @@ export default defineContentScript({
     ui = await createShadowRootUi(ctx, {
       name: 'example-ui',
       position: 'inline',
-      anchor: 'body',
+      anchor: 'html',
       onMount(container) {
         // Define how your UI will be mounted inside the container
         const target = document.createElement('div');
@@ -121,12 +118,11 @@ export default defineContentScript({
               }
             }
 
-            const offsetLeft = window.scrollX;
-            const offsetTop = window.scrollY;
+            const adjustedX = (rect?.left || 0) + scrollX;
+            const adjustedY = (rect?.bottom || 0) + scrollY;
 
-            const adjustedX = (rect?.left || 0) + offsetLeft;
-            const adjustedY = (rect?.bottom || 0)  + offsetTop;
-
+            console.log(`rect: { x: ${rect?.left}, y: ${rect.bottom}}`);
+            console.log(`Adjusted rect: { x: ${adjustedX}, y: ${adjustedY} }`);
             showOverlay({ x: adjustedX, y: adjustedY }, position, selectedText, sentence, paragraphText);
           }, 200);
         } else {
