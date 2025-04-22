@@ -42,7 +42,7 @@ export default defineContentScript({
   async main(ctx) {
     ui = await createShadowRootUi(ctx, {
       name: 'example-ui',
-      position: 'modal',
+      position: 'inline',
       anchor: 'body',
       onMount(container) {
         // Define how your UI will be mounted inside the container
@@ -121,8 +121,13 @@ export default defineContentScript({
               }
             }
 
-            console.log(rect);
-            showOverlay({ x: rect?.left || 0, y: rect?.bottom || 0 }, position, selectedText, sentence, paragraphText);
+            const offsetLeft = window.scrollX;
+            const offsetTop = window.scrollY;
+
+            const adjustedX = (rect?.left || 0) + offsetLeft;
+            const adjustedY = (rect?.bottom || 0)  + offsetTop;
+
+            showOverlay({ x: adjustedX, y: adjustedY }, position, selectedText, sentence, paragraphText);
           }, 200);
         } else {
           hideOverlay();
