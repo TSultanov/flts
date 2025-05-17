@@ -1,0 +1,1 @@
+<p>Config page</p>
