@@ -18,6 +18,7 @@
     "vite": "^6.3.5"
   },
   "dependencies": {
-    "@mateothegreat/svelte5-router": "^2.14.1"
+    "@mateothegreat/svelte5-router": "^2.14.1",
+    "localforage": "^1.10.0"
   }
 }

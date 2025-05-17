@@ -28,14 +28,14 @@
 
     a {
         display: inline-block;
-        background-color: #333333;
+        background-color: #555555;
         color: #f2f2f2;
         text-decoration: none;
         padding: 10px;
     }
 
     a.current {
-        background-color: #555555;
+        background-color: #333333;
     }
 
     a:hover {
