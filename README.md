@@ -1,1 +1,0 @@
-Epub reader with integrated AI translation

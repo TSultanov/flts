@@ -1,3 +1,0 @@
-[submodule "vendor/epub-js"]
-	path = vendor/epub-js
-	url = git@github.com:intity/epub-js.git
