@@ -80,7 +80,7 @@ export class TranslationJob {
 
                     this.text.translations[idx] = translation;
                     await this.saveCallback(this.text);
-                    this._ratio = idx / this.text.paragraphs.length;
+                    this._ratio = (idx + 1) / this.text.paragraphs.length;
                 }
                 idx++;
             }
