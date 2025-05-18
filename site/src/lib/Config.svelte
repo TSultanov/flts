@@ -7,8 +7,8 @@
 
     onMount(async () => {
         let config = await getConfig();
-        apiKey = config.apiKey;
-        targetLanguage = config.targetLanguage;
+        apiKey = config?.apiKey ?? '';
+        targetLanguage = config?.targetLanguage ?? '';
     })
 
     async function save() {

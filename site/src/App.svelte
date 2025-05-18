@@ -4,10 +4,23 @@
     import Config from "./lib/Config.svelte";
     import Nav from "./lib/Nav.svelte";
     import TranslatorView from "./lib/TranslatorView.svelte";
+    import ImportView from "./lib/ImportView.svelte";
     import { onMount, setContext } from "svelte";
+    import LibraryView from "./lib/LibraryView.svelte";
+    import { Library } from "./lib/library.svelte";
 
     const routes: RouteConfig[] = [
         {
+            name: "Library",
+            component: LibraryView,
+        },
+        {
+            path: "import",
+            name: "Import",
+            component: ImportView,
+        },
+        {
+            path: "translator",
             name: "Translator",
             component: TranslatorView,
         },
@@ -29,12 +42,16 @@
     setContext('mainHeight', mainHeight);
 
     function handleResize() {
-        mainHeight.value = window.innerHeight - (nav?.clientHeight ?? 0) - 20;
+        mainHeight.value = window.innerHeight - (nav?.clientHeight ?? 0);
     }
 
+    let library = new Library();
     onMount(async () => {
-        mainHeight.value = window.innerHeight - (nav?.clientHeight ?? 0) - 20;
+        mainHeight.value = window.innerHeight - (nav?.clientHeight ?? 0);
+        await library.loadState();
     })
+    setContext('library', library);
+
 </script>
 
 <svelte:window onresize={handleResize} />
@@ -42,13 +59,12 @@
 <div bind:this={nav}>
     <Nav {routes} {current} />
 </div>
-<div class="main">
+<div class="main" style="height: {mainHeight.value}px">
     <Router bind:instance={router} {routes} />
 </div>
 
 <style>
     .main {
         padding: 10px;
-        height: 100%;
     }
 </style>

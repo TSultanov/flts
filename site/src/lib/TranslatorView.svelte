@@ -8,7 +8,6 @@
         value: number;
     } = getContext("mainHeight");
     const mainHeight = $derived(mainHeightObj.value);
-    $inspect(mainHeight);
 
     let inputText = $state("");
     let output: ParagraphTranslation | null = $state(null);
@@ -39,7 +38,7 @@
     });
 </script>
 
-<div class="translation-test" style="height: {mainHeight}px;">
+<div class="translation-test">
     <textarea bind:value={inputText}></textarea>
     <button onclick={translate}>Translate</button>
     <div class="output">
@@ -74,6 +73,7 @@
         gap: 10px;
         max-width: 100%;
         margin: 0 80px 0 80px;
+        height: 100%;
     }
 
     .translation-test textarea {
