@@ -8,6 +8,7 @@
     import { onMount, setContext } from "svelte";
     import LibraryView from "./lib/LibraryView.svelte";
     import { Library } from "./lib/library.svelte";
+    import type { RouteLinkProps } from "./lib/Link.svelte";
 
     const routes: RouteConfig[] = [
         {
@@ -31,8 +32,32 @@
         },
     ];
 
+    const links: RouteLinkProps[] = [
+        {
+            href: "/",
+            label: "Library",
+            options: {
+                active: {
+                    absolute: false
+                }
+            },
+        },
+        {
+            href: "/import",
+            label: "Import",
+        },
+        {
+            href: "/translator",
+            label: "Translator",
+        },
+        {
+            href: "/config",
+            label: "Config",
+        }
+    ];
+
     let router = $state<RouterInstance>();
-    let current = $derived(router?.current);
+    let route = $derived(router?.current);
 
     let nav: HTMLElement | undefined = $state();
     const mainHeight: {
@@ -57,7 +82,7 @@
 <svelte:window onresize={handleResize} />
 
 <div bind:this={nav}>
-    <Nav {routes} {current} />
+    <Nav {router} {route} {links} />
 </div>
 <div class="main" style="height: {mainHeight.value}px">
     <Router bind:instance={router} {routes} />
