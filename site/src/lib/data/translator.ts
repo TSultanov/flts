@@ -2,7 +2,9 @@ import localforage from "localforage";
 import { hashString } from "./utils";
 import { Type, type GoogleGenAI, type Schema } from "@google/genai";
 
-type Grammar = {
+export type Grammar = {
+    originalInitialForm: string,
+    translationInitialForm: string,
     partOfSpeech: string
     plurality: string,
     person: string,
@@ -25,6 +27,8 @@ export type SentenceTranslation = {
 
 export type ParagraphTranslation = {
     sentences: SentenceTranslation[],
+    sourceLanguage: string,
+    targetLanguage: string,
 }
 
 const wordSchema: Schema = {
@@ -48,6 +52,12 @@ const wordSchema: Schema = {
         "grammar": {
             type: Type.OBJECT,
             properties: {
+                "originalInitialForm": {
+                    type: Type.STRING
+                },
+                "targetInitialForm": {
+                    type: Type.STRING
+                },
                 "partOfSpeech": {
                     type: Type.STRING
                 },
@@ -65,14 +75,12 @@ const wordSchema: Schema = {
                 },
                 "other": {
                     type: Type.STRING
-                },
-                "initialForm": {
-                    type: Type.STRING
                 }
             },
             required: [
                 "partOfSpeech",
-                "initialForm"
+                "originalInitialForm",
+                "targetInitialForm"
             ]
         },
     },
@@ -90,7 +98,10 @@ const sentenceSchema: Schema = {
             type: Type.ARRAY,
             items: wordSchema
         }
-    }
+    },
+    required: [
+        "words"
+    ]
 }
 
 const paragraphSchema: Schema = {
@@ -99,8 +110,19 @@ const paragraphSchema: Schema = {
         "sentences": {
             type: Type.ARRAY,
             items: sentenceSchema
+        },
+        "sourceLanguage": {
+            type: Type.STRING
+        },
+        "targetLanguage": {
+            type: Type.STRING
         }
-    }
+    },
+    required: [
+        "sentences",
+        "sourceLanguage",
+        "targetLanguage"
+    ]
 }
 
 export type DictionaryRequest = {
@@ -154,12 +176,13 @@ export class Translator {
     private static getPrompt(to: string) {
         return `You are given a paragraph in a foreign language.
         Provide a full translation of each word in the paragraph into ${to} language, grouping them in sentences.
-        Preserve all punctuation. Put HTML-encoded values for punctuation signs in the "original" field, e.g. comma turns into &comma;.
+        Preserve all punctuation. Put HTML-encoded values for punctuation signs in the 'original' field, e.g. comma turns into &comma;.
         Provide grammatical information for each word.
         Give several translation variants if necessary.
         Add a note on the use of the word if it's not clear how translation maps to the original.
-        All the information given must be in ${to} language.
-        Initial form in the grammar section must be contain the form as it appears in the dictionaries in the language of the original text.
+        All the information given must be in ${to} language except for the 'originalInitialForm', 'sourceLanguage' and 'targetLanguage' fields.
+        Initial forms in the grammar section must be contain the form as it appears in the dictionaries in the language of the original and target text.
+        'sourceLanguage' and 'targetLanguage' must contain ISO 639 Set 1 code of the corresponding language.
 
         Input is given in JSON format, following this template:
         {

@@ -1,5 +1,5 @@
 import localforage from "localforage";
-import { Translator, type ParagraphTranslation } from "./translator"
+import { Translator, type ParagraphTranslation } from "./data/translator"
 import { getConfig } from "./config";
 import { GoogleGenAI } from "@google/genai";
 
