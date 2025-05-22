@@ -74,7 +74,7 @@ interface Cache {
     value: any,
 }
 
-export const db = new Dexie('library') as Dexie & {
+export type DB = Dexie & {
     books: EntityTable<Book, 'id'>,
     bookChapters: EntityTable<BookChapter, 'id'>,
     paragraphs: EntityTable<Paragraph, 'id'>,
@@ -85,7 +85,9 @@ export const db = new Dexie('library') as Dexie & {
     wordTranslations: EntityTable<WordTranslation, 'id'>,
     sentenceWordTranslations: EntityTable<SentenceWordTranslation, 'id'>,
     queryCache: EntityTable<Cache, 'hash'>,
-}
+};
+
+export const db = new Dexie('library') as DB;
 
 db.version(1).stores({
     books: '++id, title',

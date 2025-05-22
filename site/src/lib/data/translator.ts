@@ -1,6 +1,7 @@
 import localforage from "localforage";
 import { hashString } from "./utils";
 import { Type, type GoogleGenAI, type Schema } from "@google/genai";
+import type { DB } from "./db";
 
 export type Grammar = {
     originalInitialForm: string,
@@ -130,29 +131,30 @@ export type DictionaryRequest = {
 }
 
 export class Translator {
-    readonly store: LocalForage
+    readonly db: DB
     readonly ai: GoogleGenAI;
     readonly to: string;
 
-    private constructor(ai: GoogleGenAI, to: string, store: LocalForage) {
+    constructor(ai: GoogleGenAI, to: string, db: DB) {
         this.ai = ai;
         this.to = to;
-        this.store = store;
-    }
-
-    static async build(ai: GoogleGenAI, to: string) {
-        const schemaHash = await hashString(JSON.stringify(paragraphSchema)+Translator.getPrompt(to));
-        const storeName = `${to}_${schemaHash}`;
-        const store = localforage.createInstance({
-            storeName: storeName,
-        })
-        return new Translator(ai, to, store);
+        this.db = db;
     }
 
     async getCachedTranslation(p: DictionaryRequest) {
         const p_hash = await hashString(JSON.stringify(p));
-        const translation = await this.store.getItem(p_hash) as ParagraphTranslation | null;
-        return translation;
+        const cacheItem = await this.db.queryCache.get(p_hash);
+        if (cacheItem) {
+            return cacheItem.value as ParagraphTranslation;
+        }
+        return null;
+    }
+
+    private async setCachedTranslation(p_hash: string, t: ParagraphTranslation) {
+        await this.db.queryCache.put({
+            hash: p_hash,
+            value: t
+        });
     }
 
     async getTranslation(p: DictionaryRequest) {
@@ -168,7 +170,7 @@ export class Translator {
             }
         });
         const translation = JSON.parse(response.text!) as ParagraphTranslation;
-        await this.store.setItem(p_hash, translation);
+        await this.setCachedTranslation(p_hash, translation);
 
         return translation;
     }
