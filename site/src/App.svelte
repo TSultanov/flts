@@ -3,7 +3,6 @@
     import type { RouterInstance } from "@mateothegreat/svelte5-router";
     import Config from "./lib/Config.svelte";
     import Nav from "./lib/Nav.svelte";
-    import TranslatorView from "./lib/TranslatorView.svelte";
     import ImportView from "./lib/ImportView.svelte";
     import { onMount, setContext } from "svelte";
     import LibraryView from "./lib/LibraryView.svelte";
@@ -19,11 +18,6 @@
             path: "import",
             name: "Import",
             component: ImportView,
-        },
-        {
-            path: "translator",
-            name: "Translator",
-            component: TranslatorView,
         },
         {
             path: "config",
@@ -45,10 +39,6 @@
         {
             href: "/import",
             label: "Import",
-        },
-        {
-            href: "/translator",
-            label: "Translator",
         },
         {
             href: "/config",
