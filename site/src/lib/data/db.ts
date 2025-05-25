@@ -54,10 +54,11 @@ interface SentenceWordTranslation {
     sentenceId: number,
     order: number,
     original: string,
-    wordTranslationId: number,
-    wordTranslationInContext: string[],
-    grammarContext: Grammar,
-    note: string,
+    isPunctuation: boolean,
+    wordTranslationId?: number,
+    wordTranslationInContext?: string[],
+    grammarContext?: Grammar,
+    note?: string,
 }
 
 interface Grammar {
