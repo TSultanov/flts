@@ -1,7 +1,7 @@
 <script lang="ts">
     import { GoogleGenAI } from "@google/genai";
     import { getConfig } from "./config";
-    import { Translator, type ParagraphTranslation } from "./translator";
+    import { Translator, type ParagraphTranslation } from "./data/translator";
     import { getContext, onMount } from "svelte";
 
     const mainHeightObj: {
