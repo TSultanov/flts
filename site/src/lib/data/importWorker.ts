@@ -57,7 +57,26 @@ onmessage = async (e: MessageEvent<ParagraphTranslationRequest | ScheduleTransla
 }
 
 async function scheduleTranslation() {
+    const config = await getConfig();
 
+    db.transaction(
+        'r',
+        [
+            db.paragraphTranslations,
+            db.paragraphs,
+        ],
+        async () => {
+            const translatedParagraphIds = await db.paragraphTranslations.offset(0).keys();
+            const notTranslatedParagraph = (await db.paragraphs.where("id").noneOf(translatedParagraphIds).first())?.id;
+
+            if (notTranslatedParagraph) {
+                self.postMessage({
+                    __brand: 'ParagraphTranslationRequest',
+                    paragraphId: notTranslatedParagraph,
+                    targetLanguage: config.targetLanguage,
+                });
+            }
+        });
 }
 
 async function handleParagraphTranslationEvent(e: ParagraphTranslationRequest) {
@@ -178,7 +197,7 @@ async function handleParagraphTranslationEvent(e: ParagraphTranslationRequest) {
 
                             return id;
                         })();
-                        
+
                         await db.sentenceWordTranslations.add({
                             order: wordOrder,
                             original: word.original,
