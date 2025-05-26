@@ -8,6 +8,8 @@
     import LibraryView from "./lib/LibraryView.svelte";
     import { Library } from "./lib/library.svelte";
     import type { RouteLinkProps } from "./lib/Link.svelte";
+    import ImportWorker from "./lib/data/importWorker?worker";
+    import type { ParagraphTranslatedResponse } from "./lib/data/importWorker";
 
     const routes: RouteConfig[] = [
         {
@@ -60,13 +62,21 @@
         mainHeight.value = window.innerHeight - (nav?.clientHeight ?? 0);
     }
 
-    let library = new Library();
-    onMount(async () => {
-        mainHeight.value = window.innerHeight - (nav?.clientHeight ?? 0);
-        await library.loadState();
-    })
+    const library = new Library();
     setContext('library', library);
 
+    const worker = new ImportWorker();
+    worker.addEventListener("message", async (msg: MessageEvent<ParagraphTranslatedResponse>) => {
+        switch (msg.data?.__brand) {
+            case 'ParagraphTranslatedResponse': {
+                await library.refresh();
+                break;
+            }
+            default: {
+                break;
+            }
+        }
+    });
 </script>
 
 <svelte:window onresize={handleResize} />
@@ -74,7 +84,7 @@
 <div bind:this={nav}>
     <Nav {router} {route} {links} />
 </div>
-<div class="main" style="height: {mainHeight.value}px">
+<div class="main">
     <Router bind:instance={router} {routes} />
 </div>
 

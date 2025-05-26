@@ -5,7 +5,10 @@ import { db } from "./db";
 
 const RETRY_INTERNAL = 5000;
 
-type MessageType = 'ParagraphTranslationRequest' | 'ScheduleTranslationRequest';
+type MessageType =
+    'ParagraphTranslationRequest'
+    | 'ScheduleTranslationRequest'
+    | 'ParagraphTranslatedResponse';
 
 interface Request {
     __brand: MessageType
@@ -18,7 +21,12 @@ interface ParagraphTranslationRequest extends Request {
 }
 
 interface ScheduleTranslationRequest extends Request {
-    __brand: 'ScheduleTranslationRequest';
+    __brand: 'ScheduleTranslationRequest',
+}
+
+export interface ParagraphTranslatedResponse extends Request {
+    __brand: 'ParagraphTranslatedResponse',
+    paragraphId: number,
 }
 
 function reschedule(e: any) {
@@ -29,6 +37,7 @@ function reschedule(e: any) {
 
 export function startScheduling() {
     self.postMessage({ __brand: 'ScheduleTranslationRequest' })
+    self.postMessage("test");
 }
 
 onmessage = async (e: MessageEvent<ParagraphTranslationRequest | ScheduleTranslationRequest>) => {
@@ -51,6 +60,9 @@ onmessage = async (e: MessageEvent<ParagraphTranslationRequest | ScheduleTransla
         }
         case 'ScheduleTranslationRequest': {
             await scheduleTranslation();
+            break;
+        }
+        default: {
             break;
         }
     }
@@ -216,6 +228,10 @@ async function handleParagraphTranslationEvent(e: ParagraphTranslationRequest) {
             }
 
         }).then(() => {
+            self.postMessage({
+                __brand: 'ParagraphTranslatedResponse',
+                paragraphId: e.paragraphId,
+            })
             console.log(`Worker: paragraph ${e.paragraphId} translation saved`);
         }).catch(err => {
             console.log("Worker: failed to save translation:", err);
