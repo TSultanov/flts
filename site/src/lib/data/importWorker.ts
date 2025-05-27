@@ -20,7 +20,7 @@ interface ParagraphTranslationRequest extends Request {
     targetLanguage: string
 }
 
-interface ScheduleTranslationRequest extends Request {
+export interface ScheduleTranslationRequest extends Request {
     __brand: 'ScheduleTranslationRequest',
 }
 
@@ -68,6 +68,7 @@ onmessage = async (e: MessageEvent<ParagraphTranslationRequest | ScheduleTransla
 }
 
 async function scheduleTranslation() {
+    console.log("Worker: starting scheduling");
     const config = await getConfig();
 
     db.transaction(
@@ -86,6 +87,9 @@ async function scheduleTranslation() {
                     paragraphId: notTranslatedParagraph,
                     targetLanguage: config.targetLanguage,
                 });
+                console.log(`Worker: scheduled ${notTranslatedParagraph}`);
+            } else {
+                console.log('Worker: nothing to schedule');
             }
         });
 }
@@ -127,7 +131,7 @@ async function handleParagraphTranslationEvent(e: ParagraphTranslationRequest) {
         async () => {
             const sourceLanguageId = await (async () => {
                 let id = (await db.languages
-                    .filter((l) => l.name.toLowerCase() === translation.sourceLanguage.toLowerCase())
+                    .filter((l) => l.name?.toLowerCase() === translation.sourceLanguage.toLowerCase())
                     .first())?.id;
 
                 if (!id) {
@@ -139,7 +143,7 @@ async function handleParagraphTranslationEvent(e: ParagraphTranslationRequest) {
 
             const targetLanguageId = await (async () => {
                 let id = (await db.languages
-                    .filter((l) => l.name.toLowerCase() === translation.targetLanguage.toLowerCase())
+                    .filter((l) => l.name?.toLowerCase() === translation.targetLanguage.toLowerCase())
                     .first())?.id;
 
                 if (!id) {
@@ -175,7 +179,7 @@ async function handleParagraphTranslationEvent(e: ParagraphTranslationRequest) {
                         const originalWordId = await (async () => {
                             const dictWord = await db.words.filter(w => {
                                 return w.originalLanguageId === sourceLanguageId &&
-                                    w.original.toLowerCase() === word.grammar.originalInitialForm.toLowerCase();
+                                    w.original?.toLowerCase() === word.grammar.originalInitialForm.toLowerCase();
                             }).first();
 
                             let id = dictWord?.id;
@@ -193,7 +197,7 @@ async function handleParagraphTranslationEvent(e: ParagraphTranslationRequest) {
                             const translation = await db.wordTranslations.filter(wt => {
                                 return wt.languageId === targetLanguageId &&
                                     wt.originalWordId === originalWordId &&
-                                    wt.translation.toLowerCase() === word.grammar.translationInitialForm.toLowerCase();
+                                    wt.translation?.toLowerCase() === word.grammar.targetInitialForm.toLowerCase();
                             }).first();
 
                             let id = translation?.id;
@@ -202,7 +206,7 @@ async function handleParagraphTranslationEvent(e: ParagraphTranslationRequest) {
                                 id = await db.wordTranslations.add({
                                     languageId: targetLanguageId,
                                     originalWordId,
-                                    translation: word.grammar.translationInitialForm
+                                    translation: word.grammar.targetInitialForm
                                 });
                             }
 

@@ -4,7 +4,7 @@
     import Config from "./lib/Config.svelte";
     import Nav from "./lib/Nav.svelte";
     import ImportView from "./lib/ImportView.svelte";
-    import { setContext } from "svelte";
+    import { onMount, setContext } from "svelte";
     import LibraryView from "./lib/LibraryView.svelte";
     import { Library } from "./lib/library.svelte";
     import type { RouteLinkProps } from "./lib/Link.svelte";
@@ -66,6 +66,11 @@
 
     const library = new Library(workerController);
     setContext('library', library);
+
+    onMount(async () => {
+        await library.refresh();
+        workerController.startScheduling();
+    });
 </script>
 
 <svelte:window onresize={handleResize} />

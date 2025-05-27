@@ -1,5 +1,4 @@
-import type { Library } from "../library.svelte";
-import type { ParagraphTranslatedResponse } from "./importWorker";
+import type { ParagraphTranslatedResponse, ScheduleTranslationRequest } from "./importWorker";
 import ImportWorker from "./importWorker?worker";
 
 export class ImportWorkerController {
@@ -16,6 +15,8 @@ export class ImportWorkerController {
                     break;
                 }
                 default: {
+                    // We want to make worker to send messages to itself, so anything we don't know how to handle we reflect back
+                    this.worker.postMessage(msg.data);
                     break;
                 }
             }
@@ -24,5 +25,12 @@ export class ImportWorkerController {
 
     addOnParagraphTranslatedHandler(handler: () => Promise<void>) {
         this.onParagraphTranslatedHandlers.push(handler);
+    }
+
+    startScheduling() {
+        const message: ScheduleTranslationRequest = {
+            __brand: "ScheduleTranslationRequest"
+        }
+        this.worker.postMessage(message);
     }
 }

@@ -5,7 +5,7 @@ import type { DB } from "./db";
 
 export type Grammar = {
     originalInitialForm: string,
-    translationInitialForm: string,
+    targetInitialForm: string,
     partOfSpeech: string
     plurality: string,
     person: string,

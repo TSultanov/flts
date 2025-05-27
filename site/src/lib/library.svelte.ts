@@ -6,12 +6,12 @@ export type LibraryBook = Book & {
 }
 
 export class Library {
-    $libraryBooks: LibraryBook[] = []
+    libraryBooks: LibraryBook[] = $state([]);
     workerController: ImportWorkerController;
 
     constructor(workerController: ImportWorkerController) {
         this.workerController = workerController;
-        this.workerController.addOnParagraphTranslatedHandler(this.refresh);
+        this.workerController.addOnParagraphTranslatedHandler(() => this.refresh());
     }
 
     async refresh() {
@@ -30,7 +30,7 @@ export class Library {
                             chapters,
                         }
                     }));
-                    this.$libraryBooks = lBooks;
+                    this.libraryBooks = lBooks;
                 }
             );
         }
@@ -68,6 +68,7 @@ export class Library {
                     }
                 }
             );
+            await this.refresh();
         }
 
     private splitParagraphs(text: string): string[] {

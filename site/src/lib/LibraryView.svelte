@@ -3,7 +3,12 @@
     import { Library, } from "./library.svelte";
 
     const library: Library = getContext("library");
-    const books = library.$libraryBooks;
+    const books = library.libraryBooks;
+    $inspect(books);
+
+    onMount(async () => {
+        await library.refresh();
+    })
 </script>
 
 {#if books && books.length > 0}

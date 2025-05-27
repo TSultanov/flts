@@ -19,7 +19,6 @@
     <input type="text" id="title" bind:value={title} />
     <label for="text">Text: </label>
     <textarea id="text" bind:value={text}></textarea>
-
     <button disabled={!canImport} onclick={save}>Import</button>
 </div>
 
@@ -32,5 +31,10 @@
         max-width: 100%;
         margin: 0 80px 0 80px;
         height: 100%;
+    }
+
+    #text {
+        min-height: 50vh;
+        resize: vertical;
     }
 </style>
