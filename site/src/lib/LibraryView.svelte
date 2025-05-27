@@ -3,12 +3,8 @@
     import { Library, } from "./library.svelte";
 
     const library: Library = getContext("library");
-    const books = library.libraryBooks;
+    const books = $derived(library.libraryBooks);
     $inspect(books);
-
-    onMount(async () => {
-        await library.refresh();
-    })
 </script>
 
 {#if books && books.length > 0}
@@ -18,7 +14,7 @@
             {#each books as book}
                 <li>
                     {book.id} - {book.title} - {book.chapters.length} chapter(s)
-                    <button>Delete</button>
+                    <button onclick="{() => library.deleteBook(book.id)}">Delete</button>
                 </li>
             {/each}
         </ul>

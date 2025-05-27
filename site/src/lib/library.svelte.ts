@@ -15,66 +15,99 @@ export class Library {
     }
 
     async refresh() {
-            await db.transaction(
-                'r',
-                [
-                    db.books,
-                    db.bookChapters,
-                ],
-                async () => {
-                    const books = await db.books.toArray();
-                    const lBooks: LibraryBook[] = await Promise.all(books.map(async b => {
-                        const chapters = await db.bookChapters.where("bookId").equals(b.id).sortBy("order");
-                        return {
-                            ...b,
-                            chapters,
-                        }
-                    }));
-                    this.libraryBooks = lBooks;
-                }
-            );
-        }
+        await db.transaction(
+            'r',
+            [
+                db.books,
+                db.bookChapters,
+            ],
+            async () => {
+                const books = await db.books.toArray();
+                const lBooks: LibraryBook[] = await Promise.all(books.map(async b => {
+                    const chapters = await db.bookChapters.where("bookId").equals(b.id).sortBy("order");
+                    return {
+                        ...b,
+                        chapters,
+                    }
+                }));
+                this.libraryBooks = lBooks;
+            }
+        );
+    }
 
     async importText(title: string, text: string) {
-            await db.transaction(
-                'rw',
-                [
-                    db.books,
-                    db.bookChapters,
-                    db.paragraphs,
-                ],
-                async () => {
-                    const bookId = await db.books.add({
-                        title
+        await db.transaction(
+            'rw',
+            [
+                db.books,
+                db.bookChapters,
+                db.paragraphs,
+            ],
+            async () => {
+                const bookId = await db.books.add({
+                    title
+                });
+
+                const chapterId = await db.bookChapters.add({
+                    bookId,
+                    order: 0,
+                });
+
+                const paragraphs = this.splitParagraphs(text);
+
+                const paragraphIds = [];
+                let order = 0;
+                for (const paragraph of paragraphs) {
+                    const paragraphId = await db.paragraphs.add({
+                        chapterId,
+                        order,
+                        originalText: paragraph,
                     });
-
-                    const chapterId = await db.bookChapters.add({
-                        bookId,
-                        order: 0,
-                    });
-
-                    const paragraphs = this.splitParagraphs(text);
-
-                    const paragraphIds = [];
-                    let order = 0;
-                    for (const paragraph of paragraphs) {
-                        const paragraphId = await db.paragraphs.add({
-                            chapterId,
-                            order,
-                            originalText: paragraph,
-                        });
-                        paragraphIds.push(paragraphId);
-                        order += 1;
-                    }
+                    paragraphIds.push(paragraphId);
+                    order += 1;
                 }
-            );
-            await this.refresh();
-        }
+            }
+        );
+        await this.refresh();
+    }
+
+    async deleteBook(bookId: number) {
+        await db.transaction('rw', [
+            db.books,
+            db.bookChapters,
+            db.paragraphs,
+            db.paragraphTranslations,
+            db.sentenceTranslations,
+            db.sentenceWordTranslations,
+        ],
+            async () => {
+                await db.books.delete(bookId);
+                const chapterIds = await db.bookChapters.where("bookId").equals(bookId).primaryKeys();
+                for (const chapterId of chapterIds) {
+                    const paragraphIds = await db.paragraphs.where("chapterId").equals(chapterId).primaryKeys();
+                    for (const paragraphId of paragraphIds) {
+                        const paragraphTranslationIds = await db.paragraphTranslations.where("paragraphId").equals(paragraphId).primaryKeys();
+                        for (const paragraphTranslationId of paragraphTranslationIds) {
+                            const sentenceTranslationIds = await db.sentenceTranslations.where("paragraphTranslationId").equals(paragraphTranslationId).primaryKeys();
+                            for (const sentenceTranslationId of sentenceTranslationIds) {
+                                await db.sentenceWordTranslations.where("sentenceId").equals(sentenceTranslationId).delete();
+                                await db.sentenceTranslations.delete(sentenceTranslationId);
+                            }
+                            await db.paragraphTranslations.delete(paragraphTranslationId);
+                        }
+                        await db.paragraphs.delete(paragraphId);
+                    }
+                    await db.bookChapters.delete(chapterId);
+                }
+            }
+        );
+        await this.refresh();
+    }
 
     private splitParagraphs(text: string): string[] {
-            return text
-                .split(/\n+/)
-                .map(p => p.trim())
-                .filter(p => p.length > 0);
-        }
+        return text
+            .split(/\n+/)
+            .map(p => p.trim())
+            .filter(p => p.length > 0);
+    }
 }

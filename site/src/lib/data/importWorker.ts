@@ -78,7 +78,7 @@ async function scheduleTranslation() {
             db.paragraphs,
         ],
         async () => {
-            const translatedParagraphIds = await db.paragraphTranslations.offset(0).keys();
+            const translatedParagraphIds = await db.paragraphTranslations.offset(0).primaryKeys();
             const notTranslatedParagraph = (await db.paragraphs.where("id").noneOf(translatedParagraphIds).first())?.id;
 
             if (notTranslatedParagraph) {
