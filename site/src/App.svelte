@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { Router, type RouteConfig } from "@mateothegreat/svelte5-router";
+    import { goto, Router, type RouteConfig } from "@mateothegreat/svelte5-router";
     import type { RouterInstance } from "@mateothegreat/svelte5-router";
     import Config from "./lib/Config.svelte";
     import Nav from "./lib/Nav.svelte";
@@ -12,6 +12,15 @@
 
     const routes: RouteConfig[] = [
         {
+            path: "",
+            hooks: {
+                pre: () => {
+                    goto("/library");
+                },
+            },
+        },
+        {
+            path: "/library",
             name: "Library",
             component: LibraryView,
         },
@@ -29,13 +38,8 @@
 
     const links: RouteLinkProps[] = [
         {
-            href: "/",
+            href: "/library",
             label: "Library",
-            options: {
-                active: {
-                    absolute: false
-                }
-            },
         },
         {
             href: "/import",
@@ -44,30 +48,30 @@
         {
             href: "/config",
             label: "Config",
-        }
+        },
     ];
 
     let router = $state<RouterInstance>();
-    let route = $derived(router?.current);
 
     let nav: HTMLElement | undefined = $state();
     const mainHeight: {
-        value: number
+        value: number;
     } = $state({ value: 700 });
 
-    setContext('mainHeight', mainHeight);
+    setContext("mainHeight", mainHeight);
 
     function handleResize() {
         mainHeight.value = window.innerHeight - (nav?.clientHeight ?? 0);
     }
 
     const workerController = new ImportWorkerController();
-    setContext('workerController', workerController);
+    setContext("workerController", workerController);
 
     const library = new Library(workerController);
-    setContext('library', library);
+    setContext("library", library);
 
     onMount(async () => {
+        setContext("router", router);
         await library.refresh();
         workerController.startScheduling();
     });
@@ -76,7 +80,7 @@
 <svelte:window onresize={handleResize} />
 
 <div bind:this={nav}>
-    <Nav {router} {route} {links} />
+    <Nav {router} {links} />
 </div>
 <div class="main">
     <Router bind:instance={router} {routes} />

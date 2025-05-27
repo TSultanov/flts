@@ -16,12 +16,22 @@
     if (!options) {
         options = new RouteOptions();
     }
+
+    if (!options.active) {
+        options.active = {
+            class: [
+                "current",
+            ],
+        };
+    }
+    if (!options.default) {
+        options.default = {
+            class: [],
+        };
+    }
 </script>
 
-<a
-    use:route={options}
-    href="{href}"
-    class={options.active ? "current" : ""}>{label}</a
+<a use:route={options} {href}>{label}</a
 >
 
 <style>
@@ -33,7 +43,7 @@
         padding: 10px;
     }
 
-    a.current {
+    :global(a.current) {
         background-color: #555555;
     }
 

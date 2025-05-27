@@ -12,7 +12,7 @@
         links: RouteLinkProps[];
     };
 
-    let { router = $bindable(), route, links }: NavProps = $props();
+    let { router = $bindable(), links }: NavProps = $props();
 </script>
 
 <nav>
