@@ -35,9 +35,8 @@ function reschedule(e: any) {
     }, RETRY_INTERNAL);
 }
 
-export function startScheduling() {
+function startScheduling() {
     self.postMessage({ __brand: 'ScheduleTranslationRequest' })
-    self.postMessage("test");
 }
 
 onmessage = async (e: MessageEvent<ParagraphTranslationRequest | ScheduleTranslationRequest>) => {

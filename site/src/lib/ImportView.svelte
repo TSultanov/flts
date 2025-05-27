@@ -6,12 +6,11 @@
     let text = $state("");
 
     const canImport = $derived(title.length > 0 && text.length > 0);
-    let importing = $state(false);
 
     const library: Library = getContext("library");
 
     async function save() {
-        // job = await library.addText(title, text);
+        await library.importText(title, text);
     }
 </script>
 
