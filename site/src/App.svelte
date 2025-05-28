@@ -9,6 +9,7 @@
     import { Library } from "./lib/library.svelte";
     import type { RouteLinkProps } from "./lib/Link.svelte";
     import { ImportWorkerController } from "./lib/data/importWorkerController";
+    import BookView from "./lib/bookView/BookView.svelte";
 
     const routes: RouteConfig[] = [
         {
@@ -23,6 +24,11 @@
             path: "/library",
             name: "Library",
             component: LibraryView,
+        },
+        {
+            path: "/book/(?<bookId>[0-9]+)(?:/(?<chapterId>[0-9]+))?",
+            name: "Book",
+            component: BookView,
         },
         {
             path: "import",

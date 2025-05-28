@@ -1,8 +1,26 @@
-import { db, type Book, type BookChapter } from "./data/db";
+import { db, type Book, type BookChapter, type Paragraph, type ParagraphTranslation, type SentenceTranslation, type WordTranslation } from "./data/db";
 import type { ImportWorkerController } from "./data/importWorkerController";
 
 export type LibraryBook = Book & {
-    chapters: BookChapter[]
+    chapters: BookChapter[],
+}
+
+export type LibraryWordTranslation = WordTranslation;
+
+export type LibrarySentenceTranslation = SentenceTranslation & {
+    words: LibraryWordTranslation[];
+}
+
+export type LibraryParagraphTranslation = ParagraphTranslation & {
+    sentences: LibrarySentenceTranslation[]
+}
+
+export type LibraryBookParagraph = Paragraph & {
+    translation: LibraryParagraphTranslation,
+}
+
+export type LibraryBookChapter = BookChapter & {
+    paragraphs: LibraryBookParagraph[],
 }
 
 export class Library {
@@ -12,6 +30,18 @@ export class Library {
     constructor(workerController: ImportWorkerController) {
         this.workerController = workerController;
         this.workerController.addOnParagraphTranslatedHandler(() => this.refresh());
+    }
+
+    async getBook(bookId: number): Promise<LibraryBook | null> {
+        const book = await db.books.get(bookId);
+        if (!book) {
+            return null;
+        }
+        const chapters = await db.bookChapters.where("bookId").equals(book.id).sortBy("order");
+        return {
+            ...book,
+            chapters,
+        }
     }
 
     async refresh() {

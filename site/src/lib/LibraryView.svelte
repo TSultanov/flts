@@ -13,7 +13,7 @@
         <ul>
             {#each books as book}
                 <li>
-                    {book.id} - {book.title} - {book.chapters.length} chapter(s)
+                    <a href="/book/{book.id}">{book.id} - {book.title} - {book.chapters.length} chapter(s)</a>
                     <button onclick="{() => library.deleteBook(book.id)}">Delete</button>
                 </li>
             {/each}
