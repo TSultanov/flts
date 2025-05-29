@@ -27,8 +27,7 @@
 <style>
     .chapter-container {
         background-color: var(--hover-color);
-        padding: 10px;
-        display: flex;
+        padding: 10px 25px;
         justify-content: center;
         height: 100%;
         overflow-y: auto;
@@ -36,11 +35,13 @@
 
     .chapter {
         padding: 1cm 1.5cm;
-        max-width: 900px;
+        max-width: 800px;
+        margin: 0 auto;
         border: 1px solid var(--background-color);
         background-color: white;
         box-shadow: 2px 2px var(--background-color);
         text-align: justify;
         line-height: 2;
+        min-height: 100%;
     }
 </style>

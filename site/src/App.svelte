@@ -77,6 +77,7 @@
     setContext("library", library);
 
     onMount(async () => {
+        mainHeight.value = window.innerHeight - (nav?.clientHeight ?? 0);
         setContext("router", router);
         await library.refresh();
         workerController.startScheduling();
@@ -88,7 +89,7 @@
 <div bind:this={nav}>
     <Nav {router} {links} />
 </div>
-<div class="main">
+<div class="main" style="height: {mainHeight.value}px;">
     <Router bind:instance={router} {routes} />
 </div>
 
