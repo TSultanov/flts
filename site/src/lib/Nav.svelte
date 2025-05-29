@@ -24,8 +24,7 @@
 <style>
     nav {
         display: flex;
-        background-color: #f2f2f2;
-        border-bottom: 1px solid #555555;
-        padding: 0px 10px 0px 10px;
+        background-color: var(--background-color);
+        border-bottom: 1px solid var(--background-color);
     }
 </style>

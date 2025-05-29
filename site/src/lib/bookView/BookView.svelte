@@ -26,19 +26,17 @@
     <!-- {#if book?.chapters && book.chapters.length > 1} -->
     {#if book?.chapters}
         <div class="chapters">
-            <ul>
-                {#each book.chapters as chapter}
-                    <li>
-                        <a href="/book/{bookId}/{chapter.id}"
-                            >{chapter.title ? chapter.title : "<no title>"}</a
-                        >
-                    </li>
-                {/each}
-            </ul>
+            {#each book.chapters as chapter}
+                <p>
+                    <a href="/book/{bookId}/{chapter.id}"
+                        >{chapter.title ? chapter.title : "<no title>"}</a
+                    >
+                </p>
+            {/each}
         </div>
     {/if}
     {#if chapterId}
-        <div>
+        <div class="chapter-view">
             <ChapterView {chapterId} />
         </div>
     {/if}
@@ -48,14 +46,16 @@
     .container {
         display: flex;
         flex-direction: row;
+        height: 100%;
     }
 
-    .container > *:nth-child(2) {
-        flex-grow: 1;
+    .chapter-view {
+        flex: 1 1 auto;
     }
 
     .chapters {
+        flex: 0 1 150px;
         padding: 10px;
-        border-right: 1px solid black;
+        border-right: 1px solid var(--background-color);
     }
 </style>

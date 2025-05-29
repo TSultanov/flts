@@ -1,6 +1,12 @@
 * {
     font-family:'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     box-sizing: border-box;
+
+    --background-color: #333333;
+    --hover-color: #777777;
+    --selected-color: #555555;
+    --text-inverted: #f2f2f2;
+    --text-inactive: #aaaaaa;
 }
 
 body {

@@ -37,17 +37,17 @@
 <style>
     a {
         display: inline-block;
-        background-color: #333333;
-        color: #f2f2f2;
+        background-color: var(--background-color);
+        color: var(--text-inverted);
         text-decoration: none;
         padding: 10px;
     }
 
     :global(a.current) {
-        background-color: #555555;
+        background-color: var(--selected-color);
     }
 
     a:hover {
-        background-color: #777777;
+        background-color: var(--hover-color);
     }
 </style>

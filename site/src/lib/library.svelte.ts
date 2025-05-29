@@ -1,14 +1,14 @@
-import { db, type Book, type BookChapter, type Paragraph, type ParagraphTranslation, type SentenceTranslation, type WordTranslation } from "./data/db";
+import { db, type Book, type BookChapter, type Paragraph, type ParagraphTranslation, type SentenceTranslation, type SentenceWordTranslation, type WordTranslation } from "./data/db";
 import type { ImportWorkerController } from "./data/importWorkerController";
 
 export type LibraryBook = Book & {
     chapters: BookChapter[],
 }
 
-export type LibraryWordTranslation = WordTranslation;
+export type LibrarySentenceWordTranslation = SentenceWordTranslation;
 
 export type LibrarySentenceTranslation = SentenceTranslation & {
-    words: LibraryWordTranslation[];
+    words: LibrarySentenceWordTranslation[];
 }
 
 export type LibraryParagraphTranslation = ParagraphTranslation & {
@@ -20,7 +20,7 @@ export type LibraryBookParagraph = Paragraph & {
 }
 
 export type LibraryBookChapter = BookChapter & {
-    paragraphs: LibraryBookParagraph[],
+    paragraphs: Paragraph[],
 }
 
 export class Library {
@@ -44,44 +44,48 @@ export class Library {
         }
     }
 
+    async getParagraph(paragraphId: number): Promise<LibraryBookParagraph | null> {
+        const paragraph = await db.paragraphs.get(paragraphId);
+        if (!paragraph) {
+            return null;
+        }
+
+        const translations = await db.paragraphTranslations.where('paragraphId').equals(paragraphId).toArray();
+        if (translations.length === 0) {
+            return {
+                ...paragraph,
+                translation: undefined,
+            };
+        }
+        const librarySentences: LibrarySentenceTranslation[] = [];
+        for (const translation of translations) {
+            const sentences = await db.sentenceTranslations.where('paragraphTranslationId').equals(translation.id).sortBy('order');
+            for (const sentence of sentences) {
+                const words = await db.sentenceWordTranslations.where('sentenceId').equals(sentence.id).toArray();
+                librarySentences.push({
+                    ...sentence,
+                    words,
+                });
+            }
+        }
+        return {
+            ...paragraph,
+            translation: {
+                ...translations[0],
+                sentences: librarySentences,
+            },
+        };
+    }
+
     async getChapter(chapterId: number): Promise<LibraryBookChapter | null> {
         const chapter = await db.bookChapters.get(chapterId);
         if (!chapter) {
             return null;
         }
         const paragraphs = await db.paragraphs.where('chapterId').equals(chapter.id).sortBy('order');
-        const libraryParagraphs: LibraryBookParagraph[] = [];
-        for (const paragraph of paragraphs) {
-            const translations = await db.paragraphTranslations.where('paragraphId').equals(paragraph.id).toArray();
-            if (translations.length === 0) {
-                libraryParagraphs.push({
-                    ...paragraph,
-                    translation: undefined,
-                });
-                continue;
-            }
-            const librarySentences: LibrarySentenceTranslation[] = [];
-            for (const translation of translations) {
-                const sentences = await db.sentenceTranslations.where('paragraphTranslationId').equals(translation.id).sortBy('order');
-                for (const sentence of sentences) {
-                    const words = await db.wordTranslations.where('sentenceId').equals(sentence.id).toArray();
-                    librarySentences.push({
-                        ...sentence,
-                        words,
-                    });
-                }
-            }
-            libraryParagraphs.push({
-                ...paragraph,
-                translation: {
-                    ...translations[0],
-                    sentences: librarySentences,
-                },
-            });
-        }
         return {
             ...chapter,
-            paragraphs: libraryParagraphs,
+            paragraphs: paragraphs,
         };
     }
 
