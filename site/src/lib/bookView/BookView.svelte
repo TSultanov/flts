@@ -62,6 +62,7 @@
 
     .chapter-view {
         flex: 1 1 auto;
+        hyphens: auto;
     }
 
     .chapters {
