@@ -31,6 +31,7 @@ export type LibraryWordTranslation = WordTranslation & {
 }
 
 export type LibrarySentenceWordTranslation = SentenceWordTranslation & {
+    fullSentenceTranslation: string,
     wordTranslation?: LibraryWordTranslation,
 }
 
@@ -48,6 +49,7 @@ export class Library {
             'r',
             [
                 db.sentenceWordTranslations,
+                db.sentenceTranslations,
                 db.wordTranslations,
                 db.languages,
                 db.words,
@@ -59,31 +61,42 @@ export class Library {
                     return null;
                 }
 
+                const sentenceTranslation = await db.sentenceTranslations.get(sentenceWordTranslation.sentenceId);
+                if (!sentenceTranslation) {
+                    return null;
+                }
+
+                const sentenceWordFullTranslation = {
+                    ...sentenceWordTranslation,
+                    fullSentenceTranslation: sentenceTranslation.fullTranslation,
+                };
+
                 const wordTranslation = sentenceWordTranslation.wordTranslationId != null ? await db.wordTranslations.get(sentenceWordTranslation.wordTranslationId) : null;
                 if (!wordTranslation) {
-                    return sentenceWordTranslation;
+                    return sentenceWordFullTranslation;
                 }
 
                 const targetLanguage = await db.languages.get(wordTranslation.languageId);
                 if (!targetLanguage) {
                     console.log(`Can't find targetLanguage id ${wordTranslation.languageId}`);
-                    return sentenceWordTranslation;
+                    return sentenceWordFullTranslation;
                 }
 
                 const originalWord = await db.words.get(wordTranslation.originalWordId);
                 if (!originalWord) {
                     console.log(`Can't find original word for wordTranslation id ${wordTranslation.id}`);
-                    return sentenceWordTranslation;
+                    return sentenceWordFullTranslation;
                 }
 
                 const originalLanguage = await db.languages.get(originalWord.originalLanguageId);
                 if (!originalLanguage) {
                     console.log(`Can't find originalLanguage id ${originalWord.originalLanguageId}`);
-                    return sentenceWordTranslation;
+                    return sentenceWordFullTranslation;
                 }
 
-                return {
+                let ret: LibrarySentenceWordTranslation = {
                     ...sentenceWordTranslation,
+                    fullSentenceTranslation: sentenceTranslation.fullTranslation,
                     wordTranslation: {
                         ...wordTranslation,
                         language: targetLanguage,
@@ -91,8 +104,10 @@ export class Library {
                             ...originalWord,
                             originalLanguage: originalLanguage
                         }
-                    }
+                    },
                 };
+
+                return ret;
             }
         )
     }
