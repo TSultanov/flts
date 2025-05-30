@@ -1,6 +1,7 @@
 <script lang="ts">
     import { getContext, onMount } from "svelte";
     import { Library, } from "./library.svelte";
+    import { route } from "@mateothegreat/svelte5-router";
 
     const library: Library = getContext("library");
     const books = $derived(library.libraryBooks);
@@ -13,7 +14,7 @@
         <ul>
             {#each books as book}
                 <li>
-                    <a href="/book/{book.id}">{book.id} - {book.title} - {book.chapters.length} chapter(s)</a>
+                    <a use:route href="/book/{book.id}">{book.id} - {book.title} - {book.chapters.length} chapter(s)</a>
                     <button onclick="{() => library.deleteBook(book.id)}">Delete</button>
                 </li>
             {/each}

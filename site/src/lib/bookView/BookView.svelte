@@ -4,19 +4,21 @@
     import { goto } from "@mateothegreat/svelte5-router";
     import ChapterView from "./ChapterView.svelte";
     import WordView from "./WordView.svelte";
+    import { route as r } from "@mateothegreat/svelte5-router";
 
     const { route } = $props();
 
     const bookId: number = parseInt(route.result.path.params.bookId);
-    const chapterId: number | null = route.result.path.params.chapterId
+    let chapterId: number | null = $state(route.result.path.params.chapterId
         ? parseInt(route.result.path.params.chapterId)
-        : null;
+        : null);
 
     const library: Library = getContext("library");
     let book: LibraryBook | null = $state(null);
     onMount(async () => {
         book = await library.getBook(bookId);
         if (book?.chapters.length === 1) {
+            chapterId = book.chapters[0].id;
             goto(`/book/${bookId}/${book.chapters[0].id}`);
         }
     });
@@ -30,7 +32,7 @@
         <div class="chapters">
             {#each book.chapters as chapter}
                 <p>
-                    <a href="/book/{bookId}/{chapter.id}"
+                    <a use:r href="/book/{bookId}/{chapter.id}"
                         >{chapter.title ? chapter.title : "<no title>"}</a
                     >
                 </p>
