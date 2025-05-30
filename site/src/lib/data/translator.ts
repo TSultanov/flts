@@ -24,6 +24,7 @@ export type WordTranslation = {
 
 export type SentenceTranslation = {
     words: WordTranslation[],
+    fullTranslation: string,
 }
 
 export type ParagraphTranslation = {
@@ -98,10 +99,14 @@ const sentenceSchema: Schema = {
         "words": {
             type: Type.ARRAY,
             items: wordSchema
+        },
+        "fullTranslation": {
+            type: Type.STRING,
         }
     },
     required: [
-        "words"
+        "words",
+        "fullTranslation"
     ]
 }
 
@@ -134,15 +139,21 @@ export class Translator {
     readonly db: DB
     readonly ai: GoogleGenAI;
     readonly to: string;
+    readonly model: string;
 
     constructor(ai: GoogleGenAI, to: string, db: DB) {
         this.ai = ai;
         this.to = to;
         this.db = db;
+        this.model = "gemini-2.5-flash-preview-05-20";
+    }
+
+    private async hashRequest(p: DictionaryRequest) {
+        return await hashString(JSON.stringify(p) + this.getPrompt() + JSON.stringify(paragraphSchema));
     }
 
     async getCachedTranslation(p: DictionaryRequest) {
-        const p_hash = await hashString(JSON.stringify(p));
+        const p_hash = await this.hashRequest(p);
         const cacheItem = await this.db.queryCache.get(p_hash);
         if (cacheItem) {
             return cacheItem.value as ParagraphTranslation;
@@ -159,12 +170,12 @@ export class Translator {
 
     async getTranslation(p: DictionaryRequest) {
         const requestString = JSON.stringify(p);
-        const p_hash = await hashString(requestString);
+        const p_hash = await this.hashRequest(p);
         const response = await this.ai.models.generateContent({
-            model: "gemini-2.5-flash-preview-04-17",
+            model: this.model,
             contents: requestString,
             config: {
-                systemInstruction: Translator.getPrompt(this.to),
+                systemInstruction: this.getPrompt(),
                 responseMimeType: 'application/json',
                 responseSchema: paragraphSchema,
             }
@@ -175,14 +186,14 @@ export class Translator {
         return translation;
     }
 
-    private static getPrompt(to: string) {
+    private getPrompt() {
         return `You are given a paragraph in a foreign language.
-        Provide a full translation of each word in the paragraph into ${to} language, grouping them in sentences.
-        Preserve all punctuation. Put HTML-encoded values for punctuation signs in the 'original' field, e.g. comma turns into &comma;.
-        Provide grammatical information for each word.
-        Give several translation variants if necessary.
+        For each sentence provide a good, but close to the original, translation into the ${this.to} language.
+        For each word in the sentence, provide a full translation into ${this.to} language. Give several translation variants if necessary.
         Add a note on the use of the word if it's not clear how translation maps to the original.
-        All the information given must be in ${to} language except for the 'originalInitialForm', 'sourceLanguage' and 'targetLanguage' fields.
+        Preserve all punctuation. Put HTML-encoded values for punctuation signs in the 'original' field, e.g. comma turns into &comma;.
+        Provide grammatical information for each word. Grammatical information should ONLY be about the original word and how it's used in the original language.
+        All the information given must be in ${this.to} language except for the 'originalInitialForm', 'sourceLanguage' and 'targetLanguage' fields.
         Initial forms in the grammar section must be contain the form as it appears in the dictionaries in the language of the original and target text.
         'sourceLanguage' and 'targetLanguage' must contain ISO 639 Set 1 code of the corresponding language.
 

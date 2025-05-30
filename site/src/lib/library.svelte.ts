@@ -44,90 +44,122 @@ export class Library {
     }
 
     async getWordTranslation(sentenceWordId: number): Promise<LibrarySentenceWordTranslation | null> {
-        const sentenceWordTranslation = await db.sentenceWordTranslations.get(sentenceWordId);
-        if (!sentenceWordTranslation) {
-            return null;
-        }
-
-        const wordTranslation = sentenceWordTranslation.wordTranslationId != null ? await db.wordTranslations.get(sentenceWordTranslation.wordTranslationId) : null;
-        if (!wordTranslation) {
-            return sentenceWordTranslation;
-        }
-
-        const targetLanguage = await db.languages.get(wordTranslation.languageId);
-        if (!targetLanguage) {
-            console.log(`Can't find targetLanguage id ${wordTranslation.languageId}`);
-            return sentenceWordTranslation;
-        }
-
-        const originalWord = await db.words.get(wordTranslation.originalWordId);
-        if (!originalWord) {
-            console.log(`Can't find original word for wordTranslation id ${wordTranslation.id}`);
-            return sentenceWordTranslation;
-        }
-
-        const originalLanguage = await db.languages.get(originalWord.originalLanguageId);
-        if (!originalLanguage) {
-            console.log(`Can't find originalLanguage id ${originalWord.originalLanguageId}`);
-            return sentenceWordTranslation;
-        }
-
-        return {
-            ...sentenceWordTranslation,
-            wordTranslation: {
-                ...wordTranslation,
-                language: targetLanguage,
-                originalWord: {
-                    ...originalWord,
-                    originalLanguage: originalLanguage
+        return await db.transaction(
+            'r',
+            [
+                db.sentenceWordTranslations,
+                db.wordTranslations,
+                db.languages,
+                db.words,
+                db.languages,
+            ],
+            async () => {
+                const sentenceWordTranslation = await db.sentenceWordTranslations.get(sentenceWordId);
+                if (!sentenceWordTranslation) {
+                    return null;
                 }
+
+                const wordTranslation = sentenceWordTranslation.wordTranslationId != null ? await db.wordTranslations.get(sentenceWordTranslation.wordTranslationId) : null;
+                if (!wordTranslation) {
+                    return sentenceWordTranslation;
+                }
+
+                const targetLanguage = await db.languages.get(wordTranslation.languageId);
+                if (!targetLanguage) {
+                    console.log(`Can't find targetLanguage id ${wordTranslation.languageId}`);
+                    return sentenceWordTranslation;
+                }
+
+                const originalWord = await db.words.get(wordTranslation.originalWordId);
+                if (!originalWord) {
+                    console.log(`Can't find original word for wordTranslation id ${wordTranslation.id}`);
+                    return sentenceWordTranslation;
+                }
+
+                const originalLanguage = await db.languages.get(originalWord.originalLanguageId);
+                if (!originalLanguage) {
+                    console.log(`Can't find originalLanguage id ${originalWord.originalLanguageId}`);
+                    return sentenceWordTranslation;
+                }
+
+                return {
+                    ...sentenceWordTranslation,
+                    wordTranslation: {
+                        ...wordTranslation,
+                        language: targetLanguage,
+                        originalWord: {
+                            ...originalWord,
+                            originalLanguage: originalLanguage
+                        }
+                    }
+                };
             }
-        };
+        )
     }
 
     async getBook(bookId: number): Promise<LibraryBook | null> {
-        const book = await db.books.get(bookId);
-        if (!book) {
-            return null;
-        }
-        const chapters = await db.bookChapters.where("bookId").equals(book.id).sortBy("order");
-        return {
-            ...book,
-            chapters,
-        }
+        return await db.transaction(
+            'r',
+            [
+                db.books,
+                db.bookChapters,
+            ],
+            async () => {
+                const book = await db.books.get(bookId);
+                if (!book) {
+                    return null;
+                }
+                const chapters = await db.bookChapters.where("bookId").equals(book.id).sortBy("order");
+                return {
+                    ...book,
+                    chapters,
+                }
+            }
+        )
     }
 
     async getParagraph(paragraphId: number): Promise<LibraryBookParagraph | null> {
-        const paragraph = await db.paragraphs.get(paragraphId);
-        if (!paragraph) {
-            return null;
-        }
+        return await db.transaction(
+            'r',
+            [
+                db.paragraphs,
+                db.paragraphTranslations,
+                db.sentenceTranslations,
+                db.sentenceWordTranslations,
+            ],
+            async () => {
+                const paragraph = await db.paragraphs.get(paragraphId);
+                if (!paragraph) {
+                    return null;
+                }
 
-        const translations = await db.paragraphTranslations.where('paragraphId').equals(paragraphId).toArray();
-        if (translations.length === 0) {
-            return {
-                ...paragraph,
-                translation: undefined,
-            };
-        }
-        const librarySentences: LibrarySentenceTranslation[] = [];
-        for (const translation of translations) {
-            const sentences = await db.sentenceTranslations.where('paragraphTranslationId').equals(translation.id).sortBy('order');
-            for (const sentence of sentences) {
-                const words = await db.sentenceWordTranslations.where('sentenceId').equals(sentence.id).toArray();
-                librarySentences.push({
-                    ...sentence,
-                    words,
-                });
+                const translations = await db.paragraphTranslations.where('paragraphId').equals(paragraphId).toArray();
+                if (translations.length === 0) {
+                    return {
+                        ...paragraph,
+                        translation: undefined,
+                    };
+                }
+                const librarySentences: LibrarySentenceTranslation[] = [];
+                for (const translation of translations) {
+                    const sentences = await db.sentenceTranslations.where('paragraphTranslationId').equals(translation.id).sortBy('order');
+                    for (const sentence of sentences) {
+                        const words = await db.sentenceWordTranslations.where('sentenceId').equals(sentence.id).toArray();
+                        librarySentences.push({
+                            ...sentence,
+                            words,
+                        });
+                    }
+                }
+                return {
+                    ...paragraph,
+                    translation: {
+                        ...translations[0],
+                        sentences: librarySentences,
+                    },
+                };
             }
-        }
-        return {
-            ...paragraph,
-            translation: {
-                ...translations[0],
-                sentences: librarySentences,
-            },
-        };
+        )
     }
 
     async getChapter(chapterId: number): Promise<LibraryBookChapter | null> {

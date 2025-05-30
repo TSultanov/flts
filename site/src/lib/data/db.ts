@@ -34,6 +34,7 @@ interface SentenceTranslation {
     id: number,
     paragraphTranslationId: number,
     order: number,
+    fullTranslation: string,
 }
 
 interface Word {

@@ -78,7 +78,7 @@ async function scheduleTranslation() {
             db.paragraphs,
         ],
         async () => {
-            const translatedParagraphIds = await db.paragraphTranslations.offset(0).primaryKeys();
+            const translatedParagraphIds = (await db.paragraphTranslations.toArray()).map(x => x.paragraphId);
             const notTranslatedParagraph = (await db.paragraphs.where("id").noneOf(translatedParagraphIds).first())?.id;
 
             if (notTranslatedParagraph) {
@@ -159,8 +159,7 @@ async function handleParagraphTranslationEvent(e: ParagraphTranslationRequest) {
                 .equals(e.paragraphId).and(pt => pt.languageId === targetLanguageId).first();
 
             if (existingParagraphTranslation) {
-                console.log(`Worker: paragraph ${e.paragraphId} is already translated to ${targetLanguageId}`);
-                startScheduling();
+                console.log(`Worker: paragraph ${e.paragraphId} is already translated to ${targetLanguageId} (id ${existingParagraphTranslation.id})`);
                 return;
             }
 
@@ -174,6 +173,7 @@ async function handleParagraphTranslationEvent(e: ParagraphTranslationRequest) {
                 const sentenceTranslationId = await db.sentenceTranslations.add({
                     paragraphTranslationId,
                     order: sentenceOrder,
+                    fullTranslation: sentence.fullTranslation,
                 });
 
                 let wordOrder = 0;
