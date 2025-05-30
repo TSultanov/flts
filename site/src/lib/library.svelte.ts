@@ -1,14 +1,12 @@
-import { db, type Book, type BookChapter, type Paragraph, type ParagraphTranslation, type SentenceTranslation, type SentenceWordTranslation, type WordTranslation } from "./data/db";
+import { db, type Book, type BookChapter, type Language, type Paragraph, type ParagraphTranslation, type SentenceTranslation, type SentenceWordTranslation, type Word, type WordTranslation } from "./data/db";
 import type { ImportWorkerController } from "./data/importWorkerController";
 
 export type LibraryBook = Book & {
     chapters: BookChapter[],
 }
 
-export type LibrarySentenceWordTranslation = SentenceWordTranslation;
-
 export type LibrarySentenceTranslation = SentenceTranslation & {
-    words: LibrarySentenceWordTranslation[];
+    words: SentenceWordTranslation[];
 }
 
 export type LibraryParagraphTranslation = ParagraphTranslation & {
@@ -23,6 +21,19 @@ export type LibraryBookChapter = BookChapter & {
     paragraphs: Paragraph[],
 }
 
+export type LibraryWord = Word & {
+    originalLanguage: Language,
+}
+
+export type LibraryWordTranslation = WordTranslation & {
+    language: Language,
+    originalWord: LibraryWord,
+}
+
+export type LibrarySentenceWordTranslation = SentenceWordTranslation & {
+    wordTranslation?: LibraryWordTranslation,
+}
+
 export class Library {
     libraryBooks: LibraryBook[] = $state([]);
     workerController: ImportWorkerController;
@@ -30,6 +41,48 @@ export class Library {
     constructor(workerController: ImportWorkerController) {
         this.workerController = workerController;
         this.workerController.addOnParagraphTranslatedHandler(() => this.refresh());
+    }
+
+    async getWordTranslation(sentenceWordId: number): Promise<LibrarySentenceWordTranslation | null> {
+        const sentenceWordTranslation = await db.sentenceWordTranslations.get(sentenceWordId);
+        if (!sentenceWordTranslation) {
+            return null;
+        }
+
+        const wordTranslation = sentenceWordTranslation.wordTranslationId != null ? await db.wordTranslations.get(sentenceWordTranslation.wordTranslationId) : null;
+        if (!wordTranslation) {
+            return sentenceWordTranslation;
+        }
+
+        const targetLanguage = await db.languages.get(wordTranslation.languageId);
+        if (!targetLanguage) {
+            console.log(`Can't find targetLanguage id ${wordTranslation.languageId}`);
+            return sentenceWordTranslation;
+        }
+
+        const originalWord = await db.words.get(wordTranslation.originalWordId);
+        if (!originalWord) {
+            console.log(`Can't find original word for wordTranslation id ${wordTranslation.id}`);
+            return sentenceWordTranslation;
+        }
+
+        const originalLanguage = await db.languages.get(originalWord.originalLanguageId);
+        if (!originalLanguage) {
+            console.log(`Can't find originalLanguage id ${originalWord.originalLanguageId}`);
+            return sentenceWordTranslation;
+        }
+
+        return {
+            ...sentenceWordTranslation,
+            wordTranslation: {
+                ...wordTranslation,
+                language: targetLanguage,
+                originalWord: {
+                    ...originalWord,
+                    originalLanguage: originalLanguage
+                }
+            }
+        };
     }
 
     async getBook(bookId: number): Promise<LibraryBook | null> {

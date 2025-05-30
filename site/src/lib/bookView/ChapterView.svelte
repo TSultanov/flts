@@ -3,7 +3,10 @@
     import type { Library, LibraryBookChapter } from "../library.svelte";
     import ParagraphView from "./ParagraphView.svelte";
 
-    const { chapterId }: { chapterId: number } = $props();
+    let { chapterId, sentenceWordId = $bindable() }: {
+        chapterId: number,
+        sentenceWordId: number | null,
+     } = $props();
 
     let chapter: LibraryBookChapter | null = $state(null);
 
@@ -12,13 +15,25 @@
     onMount(async () => {
         chapter = await library.getChapter(chapterId);
     });
+
+    function chapterClick(e: MouseEvent) {
+        const target = document.elementFromPoint(e.clientX, e.clientY);
+        if (target && target.classList.contains("word-span")) {
+            const wordId = parseInt(target.id.replace("sentence-word-", ""));
+            sentenceWordId = wordId;
+        } else {
+            sentenceWordId = null;
+        }
+    }
 </script>
 
 <div class="chapter-container">
-<section class="chapter">
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<section class="chapter" onclick="{chapterClick}">
 {#if chapter}
 {#each chapter.paragraphs as paragraph}
-    <ParagraphView paragraphId={paragraph.id} />
+    <ParagraphView paragraphId={paragraph.id} sentenceWordId={sentenceWordId} />
 {/each}
 {/if}
 </section>

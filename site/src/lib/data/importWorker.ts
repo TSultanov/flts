@@ -153,6 +153,17 @@ async function handleParagraphTranslationEvent(e: ParagraphTranslationRequest) {
                 return id;
             })();
 
+            // Check if paragraph translation already exists
+            const existingParagraphTranslation = await db.paragraphTranslations
+                .where("paragraphId")
+                .equals(e.paragraphId).and(pt => pt.languageId === targetLanguageId).first();
+
+            if (existingParagraphTranslation) {
+                console.log(`Worker: paragraph ${e.paragraphId} is already translated to ${targetLanguageId}`);
+                startScheduling();
+                return;
+            }
+
             const paragraphTranslationId = await db.paragraphTranslations.add({
                 paragraphId: e.paragraphId,
                 languageId: targetLanguageId,

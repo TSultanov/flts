@@ -63,11 +63,11 @@ interface SentenceWordTranslation {
 
 interface Grammar {
     partOfSpeech: string
-    plurality: string,
-    person: string,
-    tense: string,
-    case: string,
-    other: string
+    plurality?: string,
+    person?: string,
+    tense?: string,
+    case?: string,
+    other?: string
 }
 
 interface Cache {

@@ -1,10 +1,11 @@
 <script lang="ts">
     import { getContext, onMount } from "svelte";
-    import type { Library, LibraryBookParagraph, LibrarySentenceWordTranslation } from "../library.svelte";
-    import type { MouseEventHandler } from "svelte/elements";
+    import type { Library, LibraryBookParagraph } from "../library.svelte";
+    import type { SentenceWordTranslation } from "../data/db";
 
-    const { paragraphId }: {
-        paragraphId: number
+    let { paragraphId, sentenceWordId }: {
+        paragraphId: number,
+        sentenceWordId: number | null,
     } = $props();
 
     let paragraph: LibraryBookParagraph | null = $state(null);
@@ -15,6 +16,8 @@
         paragraph = await library.getParagraph(paragraphId);
     });
 
+    const wordIdPrefix = "sentence-word-";
+
     const translationHtml = $derived.by(() => {
         if (!paragraph || !paragraph.translation) {
             return "";
@@ -24,12 +27,12 @@
         for (const sentence of paragraph.translation.sentences) {
             let words = [];
             for (let i = 0; i < sentence.words.length; i++) {
-                const word: LibrarySentenceWordTranslation = sentence.words[i];
+                const word: SentenceWordTranslation = sentence.words[i];
                 if (word.isPunctuation) {
                     continue;
                 }
 
-                let nextWord: LibrarySentenceWordTranslation | null = null;
+                let nextWord: SentenceWordTranslation | null = null;
                 if (i < sentence.words.length - 1) {
                     nextWord = sentence.words[i + 1];
                 }
@@ -40,19 +43,15 @@
                 } else {
                     text = word.original;
                 }
-                words.push(`<span class="word-span" id="sentence-word-${word.id}">${text}</span>`);
+
+                const additionalClass = word.id === sentenceWordId ? " selected" : ""
+
+                words.push(`<span class="word-span${additionalClass}" id="${wordIdPrefix}${word.id}">${text}</span>`);
             }
             result.push(...words);
         }
         return result.join(" ");
     });
-
-    function paragraphClick(e: MouseEvent) {
-        const target = document.elementFromPoint(e.clientX, e.clientY);
-        if (target && target.classList.contains("word-span")) {
-            console.log(target.id);
-        }
-    }
 </script>
 
 {#if paragraph}
@@ -63,13 +62,17 @@
 {:else}
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<p onclick={paragraphClick}>
+<p>
     {@html translationHtml}
 </p>
 {/if}
 {/if}
 
 <style>
+    :global(.word-span.selected) {
+        outline: 1px dotted var(--selected-color);
+    }
+
     .original {
         color: var(--text-inactive);
     }

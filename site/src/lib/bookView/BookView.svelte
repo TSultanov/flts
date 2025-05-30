@@ -3,6 +3,7 @@
     import type { Library, LibraryBook } from "../library.svelte";
     import { goto } from "@mateothegreat/svelte5-router";
     import ChapterView from "./ChapterView.svelte";
+    import WordView from "./WordView.svelte";
 
     const { route } = $props();
 
@@ -19,7 +20,8 @@
             goto(`/book/${bookId}/${book.chapters[0].id}`);
         }
     });
-    $inspect(book);
+
+    let sentenceWordIdToDisplay: number | null = $state(null);
 </script>
 
 <div class="container">
@@ -37,9 +39,16 @@
     {/if}
     {#if chapterId}
         <div class="chapter-view">
-            <ChapterView {chapterId} />
+            <ChapterView {chapterId} bind:sentenceWordId={sentenceWordIdToDisplay} />
         </div>
     {/if}
+    <div class="word-view">
+        {#if sentenceWordIdToDisplay}
+            <WordView wordId={sentenceWordIdToDisplay} />
+        {:else}
+            Select word to show translation
+        {/if}
+    </div>
 </div>
 
 <style>
@@ -57,5 +66,12 @@
         flex: 0 1 150px;
         padding: 10px;
         border-right: 1px solid var(--background-color);
+    }
+
+    .word-view {
+        flex: 0 1 300px;
+        padding: 10px;
+        border-left: 1px solid var(--background-color);
+        overflow-y: auto;
     }
 </style>
