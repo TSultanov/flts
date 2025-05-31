@@ -5,6 +5,8 @@ import { readable, type Readable } from 'svelte/store';
 
 export type LibraryBook = Book & {
     chapters: BookChapter[],
+    paragraphsCount: number,
+    translatedParagraphsCount: number,
 }
 
 export type LibrarySentenceTranslation = SentenceTranslation & {
@@ -119,6 +121,8 @@ export class Library {
             [
                 db.books,
                 db.bookChapters,
+                db.paragraphs,
+                db.paragraphTranslations
             ],
             async () => {
                 const book = await db.books.get(bookId);
@@ -126,9 +130,15 @@ export class Library {
                     return null;
                 }
                 const chapters = await db.bookChapters.where("bookId").equals(book.id).sortBy("order");
+
+                const paragraphIds = (await db.paragraphs.where("chapterId").anyOf(chapters.map(c => c.id)).toArray()).map(p => p.id);
+                const translatedParagraphsCount = await db.paragraphTranslations.where("paragraphId").anyOf(paragraphIds).count()
+
                 return {
                     ...book,
                     chapters,
+                    paragraphsCount: paragraphIds.length,
+                    translatedParagraphsCount
                 }
             }
         ));
@@ -199,20 +209,28 @@ export class Library {
         ));
     }
 
-    getLibraryBooks() {
+    getLibraryBooks(): Readable<LibraryBook[]> {
         return this.useQuery(() => db.transaction(
             'r',
             [
                 db.books,
                 db.bookChapters,
+                db.paragraphs,
+                db.paragraphTranslations
             ],
             async () => {
                 const books = await db.books.toArray();
                 return await Promise.all(books.map(async b => {
                     const chapters = await db.bookChapters.where("bookId").equals(b.id).sortBy("order");
+
+                    const paragraphIds = (await db.paragraphs.where("chapterId").anyOf(chapters.map(c => c.id)).toArray()).map(p => p.id);
+                    const translatedParagraphsCount = await db.paragraphTranslations.where("paragraphId").anyOf(paragraphIds).count()
+
                     return {
                         ...b,
                         chapters,
+                        paragraphsCount: paragraphIds.length,
+                        translatedParagraphsCount
                     }
                 }));
             }

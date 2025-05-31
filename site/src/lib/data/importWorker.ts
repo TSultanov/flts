@@ -29,6 +29,9 @@ export interface ParagraphTranslatedResponse extends Request {
     paragraphId: number,
 }
 
+type State = 'Pending' | 'Running';
+let state: State = 'Pending';
+
 function reschedule(e: any) {
     setInterval(() => {
         self.postMessage(e)
@@ -51,7 +54,6 @@ onmessage = async (e: MessageEvent<ParagraphTranslationRequest | ScheduleTransla
         reschedule(e);
     }
 
-
     switch (e.data?.__brand) {
         case 'ParagraphTranslationRequest': {
             await handleParagraphTranslationEvent(e.data);
@@ -68,6 +70,10 @@ onmessage = async (e: MessageEvent<ParagraphTranslationRequest | ScheduleTransla
 }
 
 async function scheduleTranslation() {
+    if (state != 'Pending') {
+        return;
+    }
+    state = 'Running';
     console.log("Worker: starting scheduling");
     const config = await getConfig();
 
@@ -90,6 +96,7 @@ async function scheduleTranslation() {
                 console.log(`Worker: scheduled ${notTranslatedParagraph}`);
             } else {
                 console.log('Worker: nothing to schedule');
+                state = 'Pending';
             }
         });
 }
@@ -105,6 +112,7 @@ async function handleParagraphTranslationEvent(e: ParagraphTranslationRequest) {
 
     if (!paragraph) {
         console.log(`Worker: paragraph ${e.paragraphId} not found in the database, skipping.`);
+        state = 'Pending';
         startScheduling();
         return;
     }
@@ -122,6 +130,7 @@ async function handleParagraphTranslationEvent(e: ParagraphTranslationRequest) {
         'rw',
         [
             db.languages,
+            db.paragraphs,
             db.paragraphTranslations,
             db.sentenceTranslations,
             db.sentenceWordTranslations,
@@ -129,6 +138,13 @@ async function handleParagraphTranslationEvent(e: ParagraphTranslationRequest) {
             db.wordTranslations,
         ],
         async () => {
+            // check if paragraph indeed exists and was not removed while we waited for the LLM response
+            const paragraph = await db.paragraphs.get(e.paragraphId);
+            if (!paragraph) {
+                console.log(`Worker: paragraph ${e.paragraphId} was removed during while we were waiting for the LLM response. Skipping.`)
+                return;
+            }
+
             const sourceLanguageId = await (async () => {
                 let id = (await db.languages
                     .filter((l) => l.name?.toLowerCase() === translation.sourceLanguage.toLowerCase())
@@ -250,6 +266,7 @@ async function handleParagraphTranslationEvent(e: ParagraphTranslationRequest) {
         }).catch(err => {
             console.log("Worker: failed to save translation:", err);
         }).finally(() => {
+            state = 'Pending';
             startScheduling();
         });
 }
