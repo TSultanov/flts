@@ -14,17 +14,24 @@
 <div class="container">
     <nav>
         {#each tabs as tab, idx}
-            <button class="header-button {currentTab === idx ? "active" : ""}" onclick={() => (currentTab = idx)}
-                >{tab.header}</button
+            <button
+                class="header-button {currentTab === idx ? 'active' : ''}"
+                onclick={() => (currentTab = idx)}>{tab.header}</button
             >
         {/each}
     </nav>
-    <div class="content">
-        {@render tabs[currentTab].content()}
-    </div>
+    {#each tabs as tab, idx}
+        <div class="content {currentTab !== idx ? 'hidden' : ''}">
+            {@render tab.content()}
+        </div>
+    {/each}
 </div>
 
 <style>
+    .hidden {
+        display: none;
+    }
+
     .container {
         height: 100%;
         width: 100%;
