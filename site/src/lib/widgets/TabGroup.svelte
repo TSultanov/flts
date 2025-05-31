@@ -38,7 +38,7 @@
         display: flex;
         justify-content: center;
         gap: 10px;
-        flex: 0 1 25px;
+        flex: 0 1 auto;
     }
 
     .content {

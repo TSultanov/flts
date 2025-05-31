@@ -14,10 +14,11 @@ body {
 }
 
 button {
+    padding: 5px 7px;
     background-color: var(--background-color);
     color: var(--text-inverted);
     border: none;
-    
+
     &:active:not(:disabled) {
         transform: translate(0, 1px);
     }
@@ -29,4 +30,23 @@ button {
     &:disabled {
         color: var(--text-inactive)
     }
+}
+
+input::file-selector-button {
+    padding: 5px 7px;
+    background-color: var(--background-color);
+    color: var(--text-inverted);
+    border: none;
+}
+
+input::file-selector-button:active {
+    transform: translate(0, 1px);
+}
+
+input::file-selector-button:hover {
+    background-color: var(--hover-color);
+}
+
+input::file-selector-button:disabled {
+    color: var(--text-inactive)
 }
