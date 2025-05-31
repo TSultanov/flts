@@ -1,30 +1,25 @@
 <script lang="ts">
-    import { getContext, onMount } from "svelte";
-    import type { Library, LibraryBookParagraph } from "../library.svelte";
-    import type { SentenceWordTranslation } from "../data/db";
+    import { getContext } from "svelte";
+    import { type Library } from "../library.svelte";
+    import { type SentenceWordTranslation } from "../data/db";
 
     let { paragraphId, sentenceWordId }: {
         paragraphId: number,
         sentenceWordId: number | null,
     } = $props();
 
-    let paragraph: LibraryBookParagraph | null = $state(null);
-    
     const library: Library = getContext('library');
-
-    onMount(async () => {
-        paragraph = await library.getParagraph(paragraphId);
-    });
+    const paragraph = $derived(library.getParagraph(paragraphId));
 
     const wordIdPrefix = "sentence-word-";
 
     const translationHtml = $derived.by(() => {
-        if (!paragraph || !paragraph.translation) {
+        if (!$paragraph || !$paragraph.translation) {
             return "";
         }
 
         let result = [];
-        for (const sentence of paragraph.translation.sentences) {
+        for (const sentence of $paragraph.translation.sentences) {
             let words = [];
             for (let i = 0; i < sentence.words.length; i++) {
                 const word: SentenceWordTranslation = sentence.words[i];
@@ -54,10 +49,10 @@
     });
 </script>
 
-{#if paragraph}
-{#if !paragraph.translation}
+{#if $paragraph}
+{#if !$paragraph.translation}
 <p class="original">
-    {paragraph.originalText}
+    {$paragraph.originalText}
 </p>
 {:else}
 <!-- svelte-ignore a11y_click_events_have_key_events -->

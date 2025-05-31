@@ -1,5 +1,7 @@
+import { liveQuery } from "dexie";
 import { db, type Book, type BookChapter, type Language, type Paragraph, type ParagraphTranslation, type SentenceTranslation, type SentenceWordTranslation, type Word, type WordTranslation } from "./data/db";
 import type { ImportWorkerController } from "./data/importWorkerController";
+import { readable, type Readable } from 'svelte/store';
 
 export type LibraryBook = Book & {
     chapters: BookChapter[],
@@ -36,84 +38,83 @@ export type LibrarySentenceWordTranslation = SentenceWordTranslation & {
 }
 
 export class Library {
-    libraryBooks: LibraryBook[] = $state([]);
     workerController: ImportWorkerController;
 
     constructor(workerController: ImportWorkerController) {
         this.workerController = workerController;
-        this.workerController.addOnParagraphTranslatedHandler(() => this.refresh());
     }
 
-    async getWordTranslation(sentenceWordId: number): Promise<LibrarySentenceWordTranslation | null> {
-        return await db.transaction(
-            'r',
-            [
-                db.sentenceWordTranslations,
-                db.sentenceTranslations,
-                db.wordTranslations,
-                db.languages,
-                db.words,
-                db.languages,
-            ],
-            async () => {
-                const sentenceWordTranslation = await db.sentenceWordTranslations.get(sentenceWordId);
-                if (!sentenceWordTranslation) {
-                    return null;
+    getWordTranslation(sentenceWordId: number): Readable<LibrarySentenceWordTranslation | null> {
+        return this.useQuery(() =>
+            db.transaction(
+                'r',
+                [
+                    db.sentenceWordTranslations,
+                    db.sentenceTranslations,
+                    db.wordTranslations,
+                    db.languages,
+                    db.words,
+                    db.languages,
+                ],
+                async () => {
+                    const sentenceWordTranslation = await db.sentenceWordTranslations.get(sentenceWordId);
+                    if (!sentenceWordTranslation) {
+                        return null;
+                    }
+
+                    const sentenceTranslation = await db.sentenceTranslations.get(sentenceWordTranslation.sentenceId);
+                    if (!sentenceTranslation) {
+                        return null;
+                    }
+
+                    const sentenceWordFullTranslation = {
+                        ...sentenceWordTranslation,
+                        fullSentenceTranslation: sentenceTranslation.fullTranslation,
+                    };
+
+                    const wordTranslation = sentenceWordTranslation.wordTranslationId != null ? await db.wordTranslations.get(sentenceWordTranslation.wordTranslationId) : null;
+                    if (!wordTranslation) {
+                        return sentenceWordFullTranslation;
+                    }
+
+                    const targetLanguage = await db.languages.get(wordTranslation.languageId);
+                    if (!targetLanguage) {
+                        console.log(`Can't find targetLanguage id ${wordTranslation.languageId}`);
+                        return sentenceWordFullTranslation;
+                    }
+
+                    const originalWord = await db.words.get(wordTranslation.originalWordId);
+                    if (!originalWord) {
+                        console.log(`Can't find original word for wordTranslation id ${wordTranslation.id}`);
+                        return sentenceWordFullTranslation;
+                    }
+
+                    const originalLanguage = await db.languages.get(originalWord.originalLanguageId);
+                    if (!originalLanguage) {
+                        console.log(`Can't find originalLanguage id ${originalWord.originalLanguageId}`);
+                        return sentenceWordFullTranslation;
+                    }
+
+                    let ret: LibrarySentenceWordTranslation = {
+                        ...sentenceWordTranslation,
+                        fullSentenceTranslation: sentenceTranslation.fullTranslation,
+                        wordTranslation: {
+                            ...wordTranslation,
+                            language: targetLanguage,
+                            originalWord: {
+                                ...originalWord,
+                                originalLanguage: originalLanguage
+                            }
+                        },
+                    };
+
+                    return ret;
                 }
-
-                const sentenceTranslation = await db.sentenceTranslations.get(sentenceWordTranslation.sentenceId);
-                if (!sentenceTranslation) {
-                    return null;
-                }
-
-                const sentenceWordFullTranslation = {
-                    ...sentenceWordTranslation,
-                    fullSentenceTranslation: sentenceTranslation.fullTranslation,
-                };
-
-                const wordTranslation = sentenceWordTranslation.wordTranslationId != null ? await db.wordTranslations.get(sentenceWordTranslation.wordTranslationId) : null;
-                if (!wordTranslation) {
-                    return sentenceWordFullTranslation;
-                }
-
-                const targetLanguage = await db.languages.get(wordTranslation.languageId);
-                if (!targetLanguage) {
-                    console.log(`Can't find targetLanguage id ${wordTranslation.languageId}`);
-                    return sentenceWordFullTranslation;
-                }
-
-                const originalWord = await db.words.get(wordTranslation.originalWordId);
-                if (!originalWord) {
-                    console.log(`Can't find original word for wordTranslation id ${wordTranslation.id}`);
-                    return sentenceWordFullTranslation;
-                }
-
-                const originalLanguage = await db.languages.get(originalWord.originalLanguageId);
-                if (!originalLanguage) {
-                    console.log(`Can't find originalLanguage id ${originalWord.originalLanguageId}`);
-                    return sentenceWordFullTranslation;
-                }
-
-                let ret: LibrarySentenceWordTranslation = {
-                    ...sentenceWordTranslation,
-                    fullSentenceTranslation: sentenceTranslation.fullTranslation,
-                    wordTranslation: {
-                        ...wordTranslation,
-                        language: targetLanguage,
-                        originalWord: {
-                            ...originalWord,
-                            originalLanguage: originalLanguage
-                        }
-                    },
-                };
-
-                return ret;
-            }
-        )
+            ));
     }
 
-    async getBook(bookId: number): Promise<LibraryBook | null> {
-        return await db.transaction(
+    getBook(bookId: number): Readable<LibraryBook | null> {
+        return this.useQuery(() => db.transaction(
             'r',
             [
                 db.books,
@@ -130,11 +131,11 @@ export class Library {
                     chapters,
                 }
             }
-        )
+        ));
     }
 
-    async getParagraph(paragraphId: number): Promise<LibraryBookParagraph | null> {
-        return await db.transaction(
+    getParagraph(paragraphId: number): Readable<LibraryBookParagraph | null> {
+        return this.useQuery(() => db.transaction(
             'r',
             [
                 db.paragraphs,
@@ -174,23 +175,32 @@ export class Library {
                     },
                 };
             }
-        )
+        ));
     }
 
-    async getChapter(chapterId: number): Promise<LibraryBookChapter | null> {
-        const chapter = await db.bookChapters.get(chapterId);
-        if (!chapter) {
-            return null;
-        }
-        const paragraphs = await db.paragraphs.where('chapterId').equals(chapter.id).sortBy('order');
-        return {
-            ...chapter,
-            paragraphs: paragraphs,
-        };
+    getChapter(chapterId: number): Readable<LibraryBookChapter | null> {
+        return this.useQuery(() => db.transaction(
+            'r',
+            [
+                db.bookChapters,
+                db.paragraphs,
+            ],
+            async () => {
+                const chapter = await db.bookChapters.get(chapterId);
+                if (!chapter) {
+                    return null;
+                }
+                const paragraphs = await db.paragraphs.where('chapterId').equals(chapter.id).sortBy('order');
+                return {
+                    ...chapter,
+                    paragraphs: paragraphs,
+                };
+            }
+        ));
     }
 
-    async refresh() {
-        await db.transaction(
+    getLibraryBooks() {
+        return this.useQuery(() => db.transaction(
             'r',
             [
                 db.books,
@@ -198,16 +208,15 @@ export class Library {
             ],
             async () => {
                 const books = await db.books.toArray();
-                const lBooks: LibraryBook[] = await Promise.all(books.map(async b => {
+                return await Promise.all(books.map(async b => {
                     const chapters = await db.bookChapters.where("bookId").equals(b.id).sortBy("order");
                     return {
                         ...b,
                         chapters,
                     }
                 }));
-                this.libraryBooks = lBooks;
             }
-        );
+        ));
     }
 
     async importText(title: string, text: string) {
@@ -243,7 +252,7 @@ export class Library {
                 }
             }
         );
-        await this.refresh();
+        await this.workerController.startScheduling();
     }
 
     async deleteBook(bookId: number) {
@@ -276,7 +285,6 @@ export class Library {
                 }
             }
         );
-        await this.refresh();
     }
 
     private splitParagraphs(text: string): string[] {
@@ -284,5 +292,11 @@ export class Library {
             .split(/\n+/)
             .map(p => p.trim())
             .filter(p => p.length > 0);
+    }
+
+    private useQuery<T>(querier: () => T | Promise<T>): Readable<T> {
+        return readable<T>(undefined, (set) => {
+            return liveQuery(querier).subscribe(set).unsubscribe;
+        })
     }
 }

@@ -1,20 +1,18 @@
 <script lang="ts">
     import { getContext, onMount } from "svelte";
-    import type { Library, LibraryBookChapter } from "../library.svelte";
+    import {type Library, type LibraryBookChapter } from "../library.svelte";
     import ParagraphView from "./ParagraphView.svelte";
 
-    let { chapterId, sentenceWordId = $bindable() }: {
-        chapterId: number,
-        sentenceWordId: number | null,
-     } = $props();
-
-    let chapter: LibraryBookChapter | null = $state(null);
+    let {
+        chapterId,
+        sentenceWordId = $bindable(),
+    }: {
+        chapterId: number;
+        sentenceWordId: number | null;
+    } = $props();
 
     const library: Library = getContext("library");
-
-    onMount(async () => {
-        chapter = await library.getChapter(chapterId);
-    });
+    const chapter = $derived(library.getChapter(chapterId));
 
     function chapterClick(e: MouseEvent) {
         const target = document.elementFromPoint(e.clientX, e.clientY);
@@ -28,15 +26,15 @@
 </script>
 
 <div class="chapter-container">
-<!-- svelte-ignore a11y_click_events_have_key_events -->
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<section class="chapter" onclick="{chapterClick}">
-{#if chapter}
-{#each chapter.paragraphs as paragraph}
-    <ParagraphView paragraphId={paragraph.id} sentenceWordId={sentenceWordId} />
-{/each}
-{/if}
-</section>
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <section class="chapter" onclick={chapterClick}>
+        {#if $chapter}
+            {#each $chapter.paragraphs as paragraph}
+                <ParagraphView paragraphId={paragraph.id} {sentenceWordId} />
+            {/each}
+        {/if}
+    </section>
 </div>
 
 <style>

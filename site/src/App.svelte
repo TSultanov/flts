@@ -79,7 +79,6 @@
     onMount(async () => {
         mainHeight.value = window.innerHeight - (nav?.clientHeight ?? 0);
         setContext("router", router);
-        await library.refresh();
         workerController.startScheduling();
     });
 </script>

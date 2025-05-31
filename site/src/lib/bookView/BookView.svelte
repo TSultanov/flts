@@ -1,25 +1,28 @@
 <script lang="ts">
-    import { getContext, onMount } from "svelte";
-    import type { Library, LibraryBook } from "../library.svelte";
+    import { getContext } from "svelte";
+    import { type Library } from "../library.svelte";
     import { goto } from "@mateothegreat/svelte5-router";
     import ChapterView from "./ChapterView.svelte";
     import WordView from "./WordView.svelte";
     import { route as r } from "@mateothegreat/svelte5-router";
 
     const { route } = $props();
+    $inspect(route);
 
     const bookId: number = parseInt(route.result.path.params.bookId);
-    let chapterId: number | null = $state(route.result.path.params.chapterId
-        ? parseInt(route.result.path.params.chapterId)
-        : null);
+    const chapterId: number | null = $derived(
+        route.result.path.params.chapterId
+            ? parseInt(route.result.path.params.chapterId)
+            : null,
+    );
 
     const library: Library = getContext("library");
-    let book: LibraryBook | null = $state(null);
-    onMount(async () => {
-        book = await library.getBook(bookId);
-        if (book?.chapters.length === 1) {
-            chapterId = book.chapters[0].id;
-            goto(`/book/${bookId}/${book.chapters[0].id}`);
+    const book = $derived(library.getBook(bookId));
+
+    $effect(() => {
+        if ($book?.chapters.length === 1) {
+            // chapterId = $book.chapters[0].id;
+            goto(`/book/${bookId}/${$book.chapters[0].id}`);
         }
     });
 
@@ -28,9 +31,9 @@
 
 <div class="container">
     <!-- {#if book?.chapters && book.chapters.length > 1} -->
-    {#if book?.chapters}
+    {#if $book?.chapters}
         <div class="chapters">
-            {#each book.chapters as chapter}
+            {#each $book.chapters as chapter}
                 <p>
                     <a use:r href="/book/{bookId}/{chapter.id}"
                         >{chapter.title ? chapter.title : "<no title>"}</a
@@ -41,16 +44,19 @@
     {/if}
     {#if chapterId}
         <div class="chapter-view">
-            <ChapterView {chapterId} bind:sentenceWordId={sentenceWordIdToDisplay} />
+            <ChapterView
+                {chapterId}
+                bind:sentenceWordId={sentenceWordIdToDisplay}
+            />
+        </div>
+        <div class="word-view">
+            {#if sentenceWordIdToDisplay}
+                <WordView wordId={sentenceWordIdToDisplay} />
+            {:else}
+                Select word to show translation
+            {/if}
         </div>
     {/if}
-    <div class="word-view">
-        {#if sentenceWordIdToDisplay}
-            <WordView wordId={sentenceWordIdToDisplay} />
-        {:else}
-            Select word to show translation
-        {/if}
-    </div>
 </div>
 
 <style>
