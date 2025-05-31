@@ -1,9 +1,9 @@
 * {
-    font-family:'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     box-sizing: border-box;
 
     --background-color: #333333;
-    --hover-color: #777777;
+    --hover-color: #444444;
     --selected-color: #555555;
     --text-inverted: #f2f2f2;
     --text-inactive: #aaaaaa;
@@ -11,4 +11,22 @@
 
 body {
     margin: 0;
+}
+
+button {
+    background-color: var(--background-color);
+    color: var(--text-inverted);
+    border: none;
+    
+    &:active:not(:disabled) {
+        transform: translate(0, 1px);
+    }
+
+    &:hover:not(:disabled) {
+        background-color: var(--hover-color);
+    }
+
+    &:disabled {
+        color: var(--text-inactive)
+    }
 }

@@ -1,6 +1,6 @@
 <script lang="ts">
     import { getContext } from "svelte";
-    import { Library } from "./library.svelte";
+    import { Library } from "../library.svelte";
     import { goto } from "@mateothegreat/svelte5-router";
 
     let title = $state("");
@@ -12,7 +12,7 @@
 
     async function save() {
         await library.importText(title, text);
-        goto('/library');
+        goto("/library");
     }
 </script>
 
@@ -21,22 +21,32 @@
     <input type="text" id="title" bind:value={title} />
     <label for="text">Text: </label>
     <textarea id="text" bind:value={text}></textarea>
-    <button disabled={!canImport} onclick={save}>Import</button>
+    <div class="button">
+        <button disabled={!canImport} onclick={save}>Import</button>
+    </div>
 </div>
 
 <style>
     .import-view {
-        display: grid;
-        grid-auto-columns: auto;
-        grid-auto-rows: auto auto auto 1fr auto;
+        display: flex;
+        flex-direction: column;
         gap: 10px;
         max-width: 100%;
-        margin: 0 80px 0 80px;
         height: 100%;
+        align-items: stretch;
     }
 
     #text {
-        min-height: 50vh;
+        flex: 1 0 auto;
         resize: vertical;
+    }
+
+    .button {
+        flex: 0 1 25px;
+        text-align: right;
+
+        & button {
+            height: 100%;
+        }
     }
 </style>

@@ -3,7 +3,7 @@
     import type { RouterInstance } from "@mateothegreat/svelte5-router";
     import Config from "./lib/Config.svelte";
     import Nav from "./lib/Nav.svelte";
-    import ImportView from "./lib/ImportView.svelte";
+    import ImportView from "./lib/importView/ImportView.svelte";
     import { onMount, setContext } from "svelte";
     import LibraryView from "./lib/LibraryView.svelte";
     import { Library } from "./lib/library.svelte";
