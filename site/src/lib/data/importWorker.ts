@@ -123,7 +123,13 @@ async function handleParagraphTranslationEvent(e: ParagraphTranslationRequest) {
 
     let translation = await translator.getCachedTranslation(request);
     if (!translation) {
-        translation = await translator.getTranslation(request);
+        try {
+            translation = await translator.getTranslation(request);
+        } catch (err) {
+            console.log(`Worker: failed to translate paragraph ${e.paragraphId}`, err);
+            startScheduling();
+            return;
+        }
     }
 
     db.transaction(
