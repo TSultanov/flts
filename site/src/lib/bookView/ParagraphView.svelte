@@ -52,7 +52,7 @@
 {#if $paragraph}
 {#if !$paragraph.translation}
 <p class="original">
-    {$paragraph.originalText}
+    {@html $paragraph.originalText}
 </p>
 {:else}
 <!-- svelte-ignore a11y_click_events_have_key_events -->

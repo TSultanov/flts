@@ -2,6 +2,7 @@ import { liveQuery } from "dexie";
 import { db, type Book, type BookChapter, type Language, type Paragraph, type ParagraphTranslation, type SentenceTranslation, type SentenceWordTranslation, type Word, type WordTranslation } from "./data/db";
 import type { ImportWorkerController } from "./data/importWorkerController";
 import { readable, type Readable } from 'svelte/store';
+import type { EpubBook } from "./data/epubLoader";
 
 export type LibraryBook = Book & {
     chapters: BookChapter[],
@@ -235,6 +236,43 @@ export class Library {
                 }));
             }
         ));
+    }
+
+    async importEpub(book: EpubBook) {
+        await db.transaction(
+            'rw',
+            [
+                db.books,
+                db.bookChapters,
+                db.paragraphs,
+            ],
+            async () => {
+                const bookId = await db.books.add({
+                    title: book.title,
+                });
+
+                let chapterOrder = 0;
+                for (const c of book.chapters) {
+                    const chapterId = await db.bookChapters.add({
+                        bookId,
+                        order: chapterOrder,
+                        title: c.title,
+                    });
+
+                    let paragraphOrder = 0;
+                    for (const paragraph of c.paragraphs) {
+                        await db.paragraphs.add({
+                            chapterId,
+                            order: paragraphOrder,
+                            originalText: paragraph
+                        });
+                        paragraphOrder += 1;
+                    }
+                    chapterOrder += 1;
+                }
+            }
+        );
+        await this.workerController.startScheduling();
     }
 
     async importText(title: string, text: string) {
