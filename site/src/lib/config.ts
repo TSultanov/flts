@@ -2,7 +2,8 @@ import localforage from "localforage"
 
 export type Config = {
     apiKey: string,
-    targetLanguage: string
+    targetLanguage: string,
+    model: string,
 }
 
 let store = localforage.createInstance({storeName: "config"});
@@ -12,5 +13,9 @@ export async function setConfig(config:Config) {
 }
 
 export async function getConfig() {
-    return await store.getItem('config') as Config
+    let config = await store.getItem('config') as Config
+    if (!config.model) {
+        config.model = "gemini-2.5-flash-preview-05-20";
+    }
+    return config;
 }

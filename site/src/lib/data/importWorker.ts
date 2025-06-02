@@ -71,7 +71,7 @@ query.subscribe((ids: number[]) => {
 async function handleParagraphTranslationEvent(paragraphId: number) {
     const config = await getConfig();
     const ai = new GoogleGenAI({ apiKey: config.apiKey });
-    const translator = new Translator(ai, config.targetLanguage, db);
+    const translator = new Translator(ai, config.targetLanguage, db, config.model);
 
     console.log(`Worker: starting translation, paragraphId: ${paragraphId}`);
 

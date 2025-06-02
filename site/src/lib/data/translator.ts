@@ -153,11 +153,11 @@ export class Translator {
     readonly to: string;
     readonly model: string;
 
-    constructor(ai: GoogleGenAI, to: string, db: DB) {
+    constructor(ai: GoogleGenAI, to: string, db: DB, model: string) {
         this.ai = ai;
         this.to = to;
         this.db = db;
-        this.model = "gemini-2.5-flash-preview-05-20";
+        this.model = model;
     }
 
     private async hashRequest(p: DictionaryRequest) {
