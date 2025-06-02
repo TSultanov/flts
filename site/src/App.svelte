@@ -8,8 +8,8 @@
     import LibraryView from "./lib/LibraryView.svelte";
     import { Library } from "./lib/library.svelte";
     import type { RouteLinkProps } from "./lib/Link.svelte";
-    import { ImportWorkerController } from "./lib/data/importWorkerController";
     import BookView from "./lib/bookView/BookView.svelte";
+    import Worker from "./lib/data/importWorker?worker"
 
     const routes: RouteConfig[] = [
         {
@@ -70,16 +70,14 @@
         mainHeight.value = window.innerHeight - (nav?.clientHeight ?? 0);
     }
 
-    const workerController = new ImportWorkerController();
-    setContext("workerController", workerController);
+    new Worker(); // Start worker
 
-    const library = new Library(workerController);
+    const library = new Library();
     setContext("library", library);
 
     onMount(async () => {
         mainHeight.value = window.innerHeight - (nav?.clientHeight ?? 0);
         setContext("router", router);
-        workerController.startScheduling();
     });
 </script>
 

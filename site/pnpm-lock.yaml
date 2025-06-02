@@ -14,6 +14,9 @@ importers:
       '@mateothegreat/svelte5-router':
         specifier: ^2.14.1
         version: 2.14.1(svelte@5.30.2)
+      bottleneck:
+        specifier: ^2.19.5
+        version: 2.19.5
       dexie:
         specifier: ^4.0.11
         version: 4.0.11
@@ -380,6 +383,9 @@ packages:
 
   bignumber.js@9.3.0:
     resolution: {integrity: sha512-EM7aMFTXbptt/wZdMlBv2t8IViwQL+h6SLHosp8Yf0dqJMTnY6iL32opnAB6kAdL0SZPuvcAzFr31o0c/R3/RA==}
+
+  bottleneck@2.19.5:
+    resolution: {integrity: sha512-VHiNCbI1lKdl44tGrhNfU3lup0Tj/ZBMJB5/2ZbNXRCPuRCO7ed2mgcK4r17y+KB2EfuYuRaVlwNbAeaWGSpbw==}
 
   buffer-equal-constant-time@1.0.1:
     resolution: {integrity: sha512-zRpUiDwd/xk6ADqPMATG8vc9VPrkck7T07OIx0gnjmJAnHnTVXNQG3vfvWNuiZIkwu9KrKdA1iJKfsfTVxE6NA==}
@@ -1012,6 +1018,8 @@ snapshots:
   base64-js@1.5.1: {}
 
   bignumber.js@9.3.0: {}
+
+  bottleneck@2.19.5: {}
 
   buffer-equal-constant-time@1.0.1: {}
 

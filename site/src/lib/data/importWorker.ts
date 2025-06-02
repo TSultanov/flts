@@ -2,35 +2,15 @@ import { GoogleGenAI } from "@google/genai"
 import { getConfig } from "../config";
 import { Translator } from "./translator";
 import { db } from "./db";
+import Bottleneck from 'bottleneck';
+import { liveQuery } from "dexie";
 
 const RETRY_INTERNAL = 5000;
 
-type MessageType =
-    'ParagraphTranslationRequest'
-    | 'ScheduleTranslationRequest'
-    | 'ParagraphTranslatedResponse';
-
-interface Request {
-    __brand: MessageType
-}
-
-interface ParagraphTranslationRequest extends Request {
-    __brand: 'ParagraphTranslationRequest',
-    paragraphId: number,
-    targetLanguage: string
-}
-
-export interface ScheduleTranslationRequest extends Request {
-    __brand: 'ScheduleTranslationRequest',
-}
-
-export interface ParagraphTranslatedResponse extends Request {
-    __brand: 'ParagraphTranslatedResponse',
-    paragraphId: number,
-}
-
-type State = 'Pending' | 'Running';
-let state: State = 'Pending';
+const queue = new Bottleneck({
+    maxConcurrent: 10,
+});
+let paragraphTranslationBag: Set<number> = new Set();
 
 function reschedule(e: any) {
     setInterval(() => {
@@ -42,78 +22,63 @@ function startScheduling() {
     self.postMessage({ __brand: 'ScheduleTranslationRequest' })
 }
 
-onmessage = async (e: MessageEvent<ParagraphTranslationRequest | ScheduleTranslationRequest>) => {
-    const config = await getConfig();
-    if (!config.apiKey || config.apiKey.length === 0) {
-        console.log("Worker: apiKey is not set in config");
-        reschedule(e);
+const query = liveQuery(async () => await db.transaction(
+    'r',
+    [
+        db.paragraphTranslations,
+        db.paragraphs,
+    ],
+    async () => {
+        const translatedParagraphIds = (await db.paragraphTranslations.toArray()).map(x => x.paragraphId);
+        const notTranslatedParagraphs = (await db.paragraphs.where("id").noneOf(translatedParagraphIds).toArray()).map(x => x.id);
+        return notTranslatedParagraphs;
     }
+));
 
-    if (!config.targetLanguage || config.targetLanguage.length === 0) {
-        console.log("Worker: targetLanguage is not set in config");
-        reschedule(e);
-    }
-
-    switch (e.data?.__brand) {
-        case 'ParagraphTranslationRequest': {
-            await handleParagraphTranslationEvent(e.data);
-            break;
-        }
-        case 'ScheduleTranslationRequest': {
-            await scheduleTranslation();
-            break;
-        }
-        default: {
-            break;
-        }
-    }
-}
-
-async function scheduleTranslation() {
-    if (state != 'Pending') {
-        return;
-    }
-    state = 'Running';
-    console.log("Worker: starting scheduling");
-    const config = await getConfig();
-
-    db.transaction(
-        'r',
-        [
-            db.paragraphTranslations,
-            db.paragraphs,
-        ],
-        async () => {
-            const translatedParagraphIds = (await db.paragraphTranslations.toArray()).map(x => x.paragraphId);
-            const notTranslatedParagraph = (await db.paragraphs.where("id").noneOf(translatedParagraphIds).first())?.id;
-
-            if (notTranslatedParagraph) {
-                self.postMessage({
-                    __brand: 'ParagraphTranslationRequest',
-                    paragraphId: notTranslatedParagraph,
-                    targetLanguage: config.targetLanguage,
-                });
-                console.log(`Worker: scheduled ${notTranslatedParagraph}`);
+function scheduleTranslationWithRetries(id: number, retriesLeft = 5) {
+    function schedule(retriesLeft: number) {
+        paragraphTranslationBag.add(id);
+        queue.schedule(async () => {
+            await handleParagraphTranslationEvent(id);
+        }).then(() => {
+            console.log(`Worker: paragraph id ${id} translation task is completed`);
+            paragraphTranslationBag.delete(id);
+        })
+        .catch((err) => {
+            console.log(`Worker: error translating ${id}, retrying (${retriesLeft - 1} attempts left)`, err);
+            if (retriesLeft > 0) {
+                setTimeout(() => schedule(retriesLeft - 1), 300);
             } else {
-                console.log('Worker: nothing to schedule');
-                state = 'Pending';
+                console.log(`Failed to translate ${id}`);
+                paragraphTranslationBag.delete(id);
             }
-        });
+        })
+    }
+
+    if (!paragraphTranslationBag.has(id)) {
+        console.log(`Worker: scheduling ${id}`);
+        schedule(retriesLeft);
+    }
 }
 
-async function handleParagraphTranslationEvent(e: ParagraphTranslationRequest) {
+// We don't handle `unsubscribe` because the subject will be destroyed when the web worker terminates anyway.
+query.subscribe((ids: number[]) => {
+    for (const id of ids) {
+        scheduleTranslationWithRetries(id);
+    }
+});
+
+async function handleParagraphTranslationEvent(paragraphId: number) {
     const config = await getConfig();
     const ai = new GoogleGenAI({ apiKey: config.apiKey });
-    const translator = new Translator(ai, e.targetLanguage, db);
+    const translator = new Translator(ai, config.targetLanguage, db);
 
-    console.log(`Worker: starting translation, paragraphId: ${e.paragraphId}`);
+    console.log(`Worker: starting translation, paragraphId: ${paragraphId}`);
 
-    const paragraph = await db.paragraphs.get(e.paragraphId);
+    const paragraph = await db.paragraphs.get(paragraphId);
 
     if (!paragraph) {
-        console.log(`Worker: paragraph ${e.paragraphId} not found in the database, skipping.`);
-        state = 'Pending';
-        startScheduling();
+        console.log(`Worker: paragraph Id ${paragraphId} does not exist`);
         return;
     }
 
@@ -123,16 +88,10 @@ async function handleParagraphTranslationEvent(e: ParagraphTranslationRequest) {
 
     let translation = await translator.getCachedTranslation(request);
     if (!translation) {
-        try {
-            translation = await translator.getTranslation(request);
-        } catch (err) {
-            console.log(`Worker: failed to translate paragraph ${e.paragraphId}`, err);
-            startScheduling();
-            return;
-        }
+        translation = await translator.getTranslation(request);
     }
 
-    db.transaction(
+    await db.transaction(
         'rw',
         [
             db.languages,
@@ -145,9 +104,9 @@ async function handleParagraphTranslationEvent(e: ParagraphTranslationRequest) {
         ],
         async () => {
             // check if paragraph indeed exists and was not removed while we waited for the LLM response
-            const paragraph = await db.paragraphs.get(e.paragraphId);
+            const paragraph = await db.paragraphs.get(paragraphId);
             if (!paragraph) {
-                console.log(`Worker: paragraph ${e.paragraphId} was removed during while we were waiting for the LLM response. Skipping.`)
+                console.log(`Worker: paragraph ${paragraphId} was removed during while we were waiting for the LLM response. Skipping.`)
                 return;
             }
 
@@ -178,15 +137,15 @@ async function handleParagraphTranslationEvent(e: ParagraphTranslationRequest) {
             // Check if paragraph translation already exists
             const existingParagraphTranslation = await db.paragraphTranslations
                 .where("paragraphId")
-                .equals(e.paragraphId).and(pt => pt.languageId === targetLanguageId).first();
+                .equals(paragraphId).and(pt => pt.languageId === targetLanguageId).first();
 
             if (existingParagraphTranslation) {
-                console.log(`Worker: paragraph ${e.paragraphId} is already translated to ${targetLanguageId} (id ${existingParagraphTranslation.id})`);
+                console.log(`Worker: paragraph ${paragraphId} is already translated to ${targetLanguageId} (id ${existingParagraphTranslation.id})`);
                 return;
             }
 
             const paragraphTranslationId = await db.paragraphTranslations.add({
-                paragraphId: e.paragraphId,
+                paragraphId: paragraphId,
                 languageId: targetLanguageId,
             });
 
@@ -205,6 +164,9 @@ async function handleParagraphTranslationEvent(e: ParagraphTranslationRequest) {
                             order: wordOrder,
                             sentenceId: sentenceTranslationId,
                             isPunctuation: word.isPunctuation,
+                            isStandalonePunctuation: word.isStandalonePunctuation,
+                            isOpeningParenthesis: word.isOpeningParenthesis,
+                            isClosingParenthesis: word.isClosingParenthesis,
                             original: word.original
                         })
                     } else {
@@ -250,6 +212,9 @@ async function handleParagraphTranslationEvent(e: ParagraphTranslationRequest) {
                             order: wordOrder,
                             original: word.original,
                             isPunctuation: word.isPunctuation,
+                            isStandalonePunctuation: word.isStandalonePunctuation,
+                            isOpeningParenthesis: word.isOpeningParenthesis,
+                            isClosingParenthesis: word.isClosingParenthesis,
                             sentenceId: sentenceTranslationId,
                             wordTranslationId: wordTranslationId,
                             wordTranslationInContext: word.translations,
@@ -263,17 +228,6 @@ async function handleParagraphTranslationEvent(e: ParagraphTranslationRequest) {
                 sentenceOrder += 1;
             }
 
-        }).then(() => {
-            self.postMessage({
-                __brand: 'ParagraphTranslatedResponse',
-                paragraphId: e.paragraphId,
-            })
-            console.log(`Worker: paragraph ${e.paragraphId} translation saved`);
-        }).catch(err => {
-            console.log("Worker: failed to save translation:", err);
-        }).finally(() => {
-            state = 'Pending';
-            startScheduling();
         });
 }
 

@@ -1,6 +1,5 @@
 import { liveQuery } from "dexie";
 import { db, type Book, type BookChapter, type Language, type Paragraph, type ParagraphTranslation, type SentenceTranslation, type SentenceWordTranslation, type Word, type WordTranslation } from "./data/db";
-import type { ImportWorkerController } from "./data/importWorkerController";
 import { readable, type Readable } from 'svelte/store';
 import type { EpubBook } from "./data/epubLoader";
 
@@ -41,12 +40,6 @@ export type LibrarySentenceWordTranslation = SentenceWordTranslation & {
 }
 
 export class Library {
-    workerController: ImportWorkerController;
-
-    constructor(workerController: ImportWorkerController) {
-        this.workerController = workerController;
-    }
-
     getWordTranslation(sentenceWordId: number): Readable<LibrarySentenceWordTranslation | null> {
         return this.useQuery(() =>
             db.transaction(
@@ -272,7 +265,6 @@ export class Library {
                 }
             }
         );
-        await this.workerController.startScheduling();
     }
 
     async importText(title: string, text: string) {
@@ -308,7 +300,6 @@ export class Library {
                 }
             }
         );
-        await this.workerController.startScheduling();
     }
 
     async deleteBook(bookId: number) {
