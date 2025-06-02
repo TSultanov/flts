@@ -10,7 +10,7 @@
 </script>
 
 {#if $word}
-    <p class="word-original">{$word.original}</p>
+    <p class="word-original">{@html $word.original}</p>
     {#if $word.wordTranslationInContext && $word.wordTranslationInContext.length > 0}
         <details open>
             <summary>Meaning</summary>

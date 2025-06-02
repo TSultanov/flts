@@ -39,7 +39,7 @@ function parseChapter(chapter: string): EpubChapter {
 
     const paragraphs: string[] = []
     document.querySelectorAll("p").forEach(p => {
-        paragraphs.push(p.innerText.trim().replaceAll('\n', '<br>'));
+        paragraphs.push(p.innerText.trim().replaceAll(/\t+/g, '').replace(/\n+/g, '\n').replaceAll('\n', '<br>'));
     })
     
     return {

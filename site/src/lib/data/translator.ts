@@ -17,6 +17,9 @@ export type Grammar = {
 export type WordTranslation = {
     original: string,
     isPunctuation: boolean,
+    isStandalonePunctuation: boolean,
+    isOpeningParenthesis: boolean,
+    isClosingParenthesis: boolean,
     translations: string[],
     note: string,
     grammar: Grammar,
@@ -40,6 +43,15 @@ const wordSchema: Schema = {
             type: Type.STRING,
         },
         "isPunctuation": {
+            type: Type.BOOLEAN,
+        },
+        "isStandalonePunctuation": {
+            type: Type.BOOLEAN,
+        },
+        "isOpeningParenthesis": {
+            type: Type.BOOLEAN,
+        },
+        "isClosingParenthesis": {
             type: Type.BOOLEAN,
         },
         "translations": {
@@ -149,7 +161,7 @@ export class Translator {
     }
 
     private async hashRequest(p: DictionaryRequest) {
-        return await hashString(JSON.stringify(p) + this.getPrompt() + JSON.stringify(paragraphSchema));
+        return await hashString(JSON.stringify(p) + this.getPrompt() + JSON.stringify(paragraphSchema) + this.model);
     }
 
     async getCachedTranslation(p: DictionaryRequest) {
@@ -187,15 +199,20 @@ export class Translator {
     }
 
     private getPrompt() {
-        return `You are given a paragraph in a foreign language.
+        return `You are given a paragraph in a foreign language. The goal is to construct a translation which can be used by somebody who speaks the ${this.to} language to learn the original language.
         For each sentence provide a good, but close to the original, translation into the ${this.to} language.
         For each word in the sentence, provide a full translation into ${this.to} language. Give several translation variants if necessary.
         Add a note on the use of the word if it's not clear how translation maps to the original.
-        Preserve all punctuation. Put HTML-encoded values for punctuation signs in the 'original' field, e.g. comma turns into &comma;.
-        Provide grammatical information for each word. Grammatical information should ONLY be about the original word and how it's used in the original language.
+        Preserve all punctuation, including all quotation marks and various kinds of parenthesis or braces.
+        Put HTML-encoded values for punctuation signs in the 'original' field, e.g. comma turns into &comma;.
+        For quotation marks, parenthesis, braces and similar signs fill out 'isOpeningParenthesis', 'isClosingParenthesis' correspondingly so the reader could you this information to reconstruct the original formatting.
+        For punctuation signs which are meant to be written separately from words (e.g. em- and en-dashes) put 'true' in the 'isStandalonePunctuation' field. For punctuation signs which are written without space before it put 'false' into the 'isStandalonePunctuation' field.
+        If you see an HTML line break (<br>) treat it as a standalone punctuation and preserve it in the output correspondingly.
+        Provide grammatical information for each word. Grammatical information should ONLY be about the original word and how it's used in the original language. Do NOT use concepts from the target language when decribing the grammar. Use ONLY concepts which make sense and exist in the language of the original text, but use the ${this.to} language to describe it.
         All the information given must be in ${this.to} language except for the 'originalInitialForm', 'sourceLanguage' and 'targetLanguage' fields.
         Initial forms in the grammar section must be contain the form as it appears in the dictionaries in the language of the original and target text.
         'sourceLanguage' and 'targetLanguage' must contain ISO 639 Set 1 code of the corresponding language.
+        Before giving the final answer to the user, re-read it and fix mistakes. Double-check that you correctly carried over the punctuation. Make sure that you don't accidentally use concepts which only exist in the ${this.to} language to describe word in the source text.
 
         Input is given in JSON format, following this template:
         {

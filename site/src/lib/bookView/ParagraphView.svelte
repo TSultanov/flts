@@ -13,6 +13,8 @@
 
     const wordIdPrefix = "sentence-word-";
 
+    const openingParens = ["“", "(", "{", "[", "&ldquo;"];
+
     const translationHtml = $derived.by(() => {
         if (!$paragraph || !$paragraph.translation) {
             return "";
@@ -21,9 +23,13 @@
         let result = [];
         for (const sentence of $paragraph.translation.sentences) {
             let words = [];
+            let prevPunctuation: string|null = null;
             for (let i = 0; i < sentence.words.length; i++) {
                 const word: SentenceWordTranslation = sentence.words[i];
-                if (word.isPunctuation) {
+                if (word.isPunctuation && !word.isStandalonePunctuation && !word.isOpeningParenthesis && !openingParens.find(x => x === word.original.trim())) {
+                    continue;
+                } else if (word.isPunctuation && openingParens.find(x => x === word.original.trim())) {
+                    prevPunctuation = word.original;
                     continue;
                 }
 
@@ -32,16 +38,33 @@
                     nextWord = sentence.words[i + 1];
                 }
 
+                if (word.isPunctuation && (word.original === '<br>' || word.original === '<br/>' || word.original === '&lt;br&gt;')) {
+                    if (nextWord?.isPunctuation && (nextWord.original === '<br>' || nextWord.original === '<br/>' || nextWord.original === '&lt;br&gt;')) {
+                        continue;
+                    }
+                    words.push("<br>");
+                    continue;
+                }
+
                 let text;
-                if (nextWord && nextWord.isPunctuation) {
+                if (nextWord 
+                    && nextWord.isPunctuation
+                    && !nextWord.isStandalonePunctuation
+                    && !nextWord.isOpeningParenthesis
+                    && !openingParens.find(x => x === nextWord.original.trim())) {
                     text = `${word.original}${nextWord.original}`
                 } else {
                     text = word.original;
                 }
 
+                if (prevPunctuation) {
+                    text = `${prevPunctuation}${text}`
+                }
+
                 const additionalClass = word.id === sentenceWordId ? " selected" : ""
 
                 words.push(`<span class="word-span${additionalClass}" id="${wordIdPrefix}${word.id}">${text}</span>`);
+                prevPunctuation = null;
             }
             result.push(...words);
         }
