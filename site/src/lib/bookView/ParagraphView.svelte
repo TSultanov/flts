@@ -14,6 +14,7 @@
     const wordIdPrefix = "sentence-word-";
 
     const openingParens = ["“", "(", "{", "[", "&ldquo;"];
+    const closingParens = ["”", ")", "}", "]", "&rdquo;"];
 
     const translationHtml = $derived.by(() => {
         if (!$paragraph || !$paragraph.translation) {
@@ -26,9 +27,16 @@
             let prevPunctuation: string|null = null;
             for (let i = 0; i < sentence.words.length; i++) {
                 const word: SentenceWordTranslation = sentence.words[i];
-                if (word.isPunctuation && !word.isStandalonePunctuation && !word.isOpeningParenthesis && !openingParens.find(x => x === word.original.trim())) {
+                if (word.isPunctuation
+                    && !word.isStandalonePunctuation
+                    && !word.isOpeningParenthesis
+                    // && !word.isClosingParenthesis
+                    && !openingParens.find(x => x === word.original.trim())
+                    // && !closingParens.find(x => x === word.original.trim())
+                ) {
+                    prevPunctuation = null;
                     continue;
-                } else if (word.isPunctuation && openingParens.find(x => x === word.original.trim())) {
+                } else if (word.isPunctuation && (word.isOpeningParenthesis || openingParens.find(x => x === word.original.trim()))) {
                     prevPunctuation = word.original;
                     continue;
                 }
@@ -38,7 +46,7 @@
                     nextWord = sentence.words[i + 1];
                 }
 
-                if (word.isPunctuation && (word.original === '<br>' || word.original === '<br/>' || word.original === '&lt;br&gt;')) {
+                if (word.isPunctuation&& (word.original === '<br>' || word.original === '<br/>' || word.original === '&lt;br&gt;')) {
                     if (nextWord?.isPunctuation && (nextWord.original === '<br>' || nextWord.original === '<br/>' || nextWord.original === '&lt;br&gt;')) {
                         continue;
                     }
@@ -51,7 +59,10 @@
                     && nextWord.isPunctuation
                     && !nextWord.isStandalonePunctuation
                     && !nextWord.isOpeningParenthesis
-                    && !openingParens.find(x => x === nextWord.original.trim())) {
+                    // && !nextWord.isClosingParenthesis
+                    && !openingParens.find(x => x === nextWord.original.trim())
+                    // && !closingParens.find(x => x === word.original.trim())
+                ) {
                     text = `${word.original}${nextWord.original}`
                 } else {
                     text = word.original;
