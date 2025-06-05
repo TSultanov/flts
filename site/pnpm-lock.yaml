@@ -23,6 +23,9 @@ importers:
       epubts:
         specifier: ^0.2.0
         version: 0.2.0
+      html-entities:
+        specifier: ^2.6.0
+        version: 2.6.0
       js-sha256:
         specifier: ^0.11.0
         version: 0.11.0
@@ -480,6 +483,9 @@ packages:
   gtoken@7.1.0:
     resolution: {integrity: sha512-pCcEwRi+TKpMlxAQObHDQ56KawURgyAf6jtIY046fJ5tIv3zDe/LEIubckAO8fj6JnAxLdmWkUfNyulQ2iKdEw==}
     engines: {node: '>=14.0.0'}
+
+  html-entities@2.6.0:
+    resolution: {integrity: sha512-kig+rMn/QOVRvr7c86gQ8lWXq+Hkv6CbAH1hLu+RG338StTpE8Z0b44SDVaqVu7HGKf27frdmUYEs9hTUX/cLQ==}
 
   https-proxy-agent@7.0.6:
     resolution: {integrity: sha512-vK9P5/iUfdl95AI+JVyUuIcVtd4ofvtrOr3HNtM2yxC9bnMbEdp3x01OhQNnjb8IJYi38VlTE3mBXwcfvywuSw==}
@@ -1145,6 +1151,8 @@ snapshots:
     transitivePeerDependencies:
       - encoding
       - supports-color
+
+  html-entities@2.6.0: {}
 
   https-proxy-agent@7.0.6:
     dependencies:

@@ -23,6 +23,7 @@
     "bottleneck": "^2.19.5",
     "dexie": "^4.0.11",
     "epubts": "^0.2.0",
+    "html-entities": "^2.6.0",
     "js-sha256": "^0.11.0",
     "localforage": "^1.10.0"
   }
