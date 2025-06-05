@@ -34,6 +34,7 @@
         <select id="model" bind:value={model}>
             <option value="gemini-2.5-flash-preview-05-20">gemini-2.5-flash-preview-05-20</option>
             <option value="gemini-2.5-pro-preview-05-06">gemini-2.5-pro-preview-05-06</option>
+            <option value="gemini-2.5-pro-preview-05-06">gemini-2.5-pro-preview-06-05</option>
         </select>
 
         <button onclick={save}>Save</button>
