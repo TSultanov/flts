@@ -322,14 +322,14 @@ export class Library {
                             const sentenceTranslationIds = await db.sentenceTranslations.where("paragraphTranslationId").equals(paragraphTranslationId).primaryKeys();
                             for (const sentenceTranslationId of sentenceTranslationIds) {
                                 await db.sentenceWordTranslations.where("sentenceId").equals(sentenceTranslationId).delete();
-                                await db.sentenceTranslations.delete(sentenceTranslationId);
                             }
-                            await db.paragraphTranslations.delete(paragraphTranslationId);
+                            await db.sentenceTranslations.where("paragraphTranslationId").equals(paragraphTranslationId).delete();
                         }
-                        await db.paragraphs.delete(paragraphId);
+                        await await db.paragraphTranslations.where("paragraphId").equals(paragraphId).delete();
                     }
-                    await db.bookChapters.delete(chapterId);
+                    await await db.paragraphs.where("chapterId").equals(chapterId).delete();
                 }
+                await db.bookChapters.where("bookId").equals(bookId).delete();
             }
         );
     }
