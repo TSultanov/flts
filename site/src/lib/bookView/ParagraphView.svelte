@@ -19,6 +19,8 @@
             return "";
         }
 
+        const originalText = $paragraph.originalHtml ?? $paragraph.originalText;
+
         let pIdx = 0;
         let result = [];
         for (const sentence of $paragraph.translation.sentences) {
@@ -30,8 +32,8 @@
                 const w = decode(word.original);
                 const len = w.length;
                 let offset = 0;
-                for (; offset < $paragraph.originalText.length - pIdx; offset++) {
-                    const pWord = decode($paragraph.originalText.slice(pIdx+offset, pIdx+offset+len));
+                for (; offset < originalText.length - pIdx; offset++) {
+                    const pWord = decode(originalText.slice(pIdx+offset, pIdx+offset+len));
 
                     if (w.length <= 2) {
                         if (w.toLowerCase() === pWord.toLowerCase()) {
@@ -43,16 +45,16 @@
                 }
 
                 if (offset > 0) {
-                    result.push($paragraph.originalText.slice(pIdx, pIdx+offset));
+                    result.push(originalText.slice(pIdx, pIdx+offset));
                 }
 
                 pIdx += offset;
-                result.push(`<span class="word-span" id="${wordIdPrefix}${word.id}" data="${word.original}" data-offset="${offset}">${$paragraph.originalText.slice(pIdx, pIdx+len)}</span>`);
+                result.push(`<span class="word-span" id="${wordIdPrefix}${word.id}" data="${word.original}" data-offset="${offset}">${originalText.slice(pIdx, pIdx+len)}</span>`);
                 pIdx += len;
             }
         }
-        if (pIdx < $paragraph.originalText.length) {
-            result.push($paragraph.originalText.slice(pIdx, $paragraph.originalText.length));
+        if (pIdx < originalText.length) {
+            result.push(originalText.slice(pIdx, originalText.length));
         }
         return result.join("");
     });
@@ -86,7 +88,7 @@
 {#if $paragraph}
 {#if !$paragraph.translation}
 <p class="original">
-    {@html $paragraph.originalText}
+    {@html $paragraph.originalHtml ?? $paragraph.originalText}
 </p>
 {:else}
 <!-- svelte-ignore a11y_click_events_have_key_events -->

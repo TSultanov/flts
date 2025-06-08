@@ -17,6 +17,7 @@ interface Paragraph {
     chapterId: number,
     order: number,
     originalText: string,
+    originalHtml?: string,
 }
 
 interface Language {

@@ -87,7 +87,7 @@
                             >
                             <div class="chapter">
                                 {#each chapter.paragraphs as paragraph}
-                                    <p>{@html paragraph}</p>
+                                    <p>{@html paragraph.html}</p>
                                 {/each}
                             </div>
                         </details>

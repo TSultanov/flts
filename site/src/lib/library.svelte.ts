@@ -257,7 +257,8 @@ export class Library {
                         await db.paragraphs.add({
                             chapterId,
                             order: paragraphOrder,
-                            originalText: paragraph
+                            originalText: paragraph.text,
+                            originalHtml: paragraph.html
                         });
                         paragraphOrder += 1;
                     }
