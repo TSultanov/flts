@@ -1,8 +1,9 @@
 import { getConfig } from "../config";
 import { GoogleTranslator } from "./translators/google";
-import { db } from "./db";
+import { db, type TranslationRequest } from "./db";
 import Bottleneck from 'bottleneck';
 import { liveQuery } from "dexie";
+import { getTranslator, type ModelId, type ParagraphTranslation } from "./translators/translator";
 
 const RETRY_INTERNAL = 5000;
 
@@ -34,28 +35,28 @@ const query = liveQuery(async () => await db.transaction(
     }
 ));
 
-function scheduleTranslationWithRetries(id: number, retriesLeft = 5) {
+function scheduleTranslationWithRetries(paragraphId: number, retriesLeft = 5) {
     function schedule(retriesLeft: number) {
-        paragraphTranslationBag.add(id);
+        paragraphTranslationBag.add(paragraphId);
         queue.schedule(async () => {
-            await handleParagraphTranslationEvent(id);
+            await handleParagraphTranslationEvent(paragraphId);
         }).then(() => {
-            console.log(`Worker: paragraph id ${id} translation task is completed`);
-            paragraphTranslationBag.delete(id);
+            console.log(`Worker: paragraph id ${paragraphId} translation task is completed`);
+            paragraphTranslationBag.delete(paragraphId);
         })
-        .catch((err) => {
-            console.log(`Worker: error translating ${id}, retrying (${retriesLeft - 1} attempts left)`, err);
-            if (retriesLeft > 0) {
-                setTimeout(() => schedule(retriesLeft - 1), 300);
-            } else {
-                console.log(`Failed to translate ${id}`);
-                paragraphTranslationBag.delete(id);
-            }
-        })
+            .catch((err) => {
+                console.log(`Worker: error translating ${paragraphId}, retrying (${retriesLeft - 1} attempts left)`, err);
+                if (retriesLeft > 0) {
+                    setTimeout(() => schedule(retriesLeft - 1), 300);
+                } else {
+                    console.log(`Failed to translate ${paragraphId}`);
+                    paragraphTranslationBag.delete(paragraphId);
+                }
+            })
     }
 
-    if (!paragraphTranslationBag.has(id)) {
-        console.log(`Worker: scheduling ${id}`);
+    if (!paragraphTranslationBag.has(paragraphId)) {
+        console.log(`Worker: scheduling ${paragraphId}`);
         schedule(retriesLeft);
     }
 }
@@ -67,9 +68,44 @@ query.subscribe((ids: number[]) => {
     }
 });
 
+const paragraphDirectTranslationBag: Set<number> = new Set();
+const directTranslationRequestsQuery = liveQuery(async () => await db.directTranslationRequests.toArray());
+function scheduleDirectTranslationWithRetries(request: TranslationRequest, retriesLeft = 5) {
+    function schedule(retriesLeft: number) {
+        paragraphDirectTranslationBag.add(request.id);
+        queue.schedule(async () => {
+            await handleParagarphDirectTranslationEvent(request);
+        }).then(() => {
+            console.log(`Worker: paragraph id ${request.paragraphId} translation task is completed`);
+            paragraphDirectTranslationBag.delete(request.id);
+        })
+            .catch((err) => {
+                console.log(`Worker: error translating ${request.paragraphId}, retrying (${retriesLeft - 1} attempts left)`, err);
+                if (retriesLeft > 0) {
+                    setTimeout(() => schedule(retriesLeft - 1), 300);
+                } else {
+                    console.log(`Failed to translate ${request.paragraphId}`);
+                    paragraphDirectTranslationBag.delete(request.id);
+                }
+            })
+    }
+
+    if (!paragraphDirectTranslationBag.has(request.id)) {
+        console.log(`Worker: scheduling ${request.paragraphId}`);
+        schedule(retriesLeft);
+    }
+}
+directTranslationRequestsQuery.subscribe((requests: TranslationRequest[]) => {
+    for (const request of requests) {
+        scheduleDirectTranslationWithRetries(request);
+    }
+})
+
+// TODO: refactor to use TranslationRequest for all translations
 async function handleParagraphTranslationEvent(paragraphId: number) {
     const config = await getConfig();
-    const translator = new GoogleTranslator(config.geminiApiKey, config.targetLanguage, db, config.model);
+    const model = config.model;
+    const translator = await getTranslator(db, config.targetLanguage, model);
 
     console.log(`Worker: starting translation, paragraphId: ${paragraphId}`);
 
@@ -89,6 +125,50 @@ async function handleParagraphTranslationEvent(paragraphId: number) {
         translation = await translator.getTranslation(request);
     }
 
+    await addTranslation(paragraphId, translation, model);
+}
+
+async function handleParagarphDirectTranslationEvent(translationRequest: TranslationRequest) {
+    const config = await getConfig();
+    const translator = await getTranslator(db, config.targetLanguage, translationRequest.model);
+
+    console.log(`Worker: starting translation, paragraphId: ${translationRequest.paragraphId}`);
+
+    const paragraph = await db.paragraphs.get(translationRequest.paragraphId);
+
+    if (!paragraph) {
+        console.log(`Worker: paragraph Id ${translationRequest.paragraphId} does not exist`);
+        return;
+    }
+
+    const request = {
+        paragraph: paragraph.originalText
+    };
+
+    let translation = await translator.getCachedTranslation(request);
+    if (!translation) {
+        translation = await translator.getTranslation(request);
+    }
+
+    await db.transaction(
+        'rw',
+        [
+            db.languages,
+            db.paragraphs,
+            db.paragraphTranslations,
+            db.sentenceTranslations,
+            db.sentenceWordTranslations,
+            db.words,
+            db.wordTranslations,
+            db.directTranslationRequests
+        ],
+        async () => {
+            await addTranslation(translationRequest.paragraphId, translation, translationRequest.model);
+            await db.directTranslationRequests.where("id").equals(translationRequest.id).delete();
+        });
+}
+
+async function addTranslation(paragraphId: number, translation: ParagraphTranslation, model: ModelId) {
     await db.transaction(
         'rw',
         [
@@ -145,6 +225,7 @@ async function handleParagraphTranslationEvent(paragraphId: number) {
             const paragraphTranslationId = await db.paragraphTranslations.add({
                 paragraphId: paragraphId,
                 languageId: targetLanguageId,
+                translatingModel: model,
             });
 
             let sentenceOrder = 0;
@@ -228,4 +309,3 @@ async function handleParagraphTranslationEvent(paragraphId: number) {
 
         });
 }
-

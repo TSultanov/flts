@@ -2,6 +2,7 @@ import { liveQuery } from "dexie";
 import { db, type Book, type BookChapter, type Language, type Paragraph, type ParagraphTranslation, type SentenceTranslation, type SentenceWordTranslation, type Word, type WordTranslation } from "./data/db";
 import { readable, type Readable } from 'svelte/store';
 import type { EpubBook } from "./data/epubLoader";
+import type { ModelId } from "./data/translators/translator";
 
 export type LibraryBook = Book & {
     chapters: BookChapter[],
@@ -36,6 +37,8 @@ export type LibraryWordTranslation = WordTranslation & {
 
 export type LibrarySentenceWordTranslation = SentenceWordTranslation & {
     fullSentenceTranslation: string,
+    model: ModelId,
+    paragraphId: number,
     wordTranslation?: LibraryWordTranslation,
 }
 
@@ -45,6 +48,7 @@ export class Library {
             db.transaction(
                 'r',
                 [
+                    db.paragraphTranslations,
                     db.sentenceWordTranslations,
                     db.sentenceTranslations,
                     db.wordTranslations,
@@ -63,9 +67,16 @@ export class Library {
                         return null;
                     }
 
+                    const paragraphTranslation = await db.paragraphTranslations.get(sentenceTranslation.paragraphTranslationId);
+                    if (!paragraphTranslation) {
+                        return null;
+                    }
+
                     const sentenceWordFullTranslation = {
                         ...sentenceWordTranslation,
                         fullSentenceTranslation: sentenceTranslation.fullTranslation,
+                        model: paragraphTranslation.translatingModel,
+                        paragraphId: paragraphTranslation.paragraphId,
                     };
 
                     const wordTranslation = sentenceWordTranslation.wordTranslationId != null ? await db.wordTranslations.get(sentenceWordTranslation.wordTranslationId) : null;
@@ -94,6 +105,8 @@ export class Library {
                     let ret: LibrarySentenceWordTranslation = {
                         ...sentenceWordTranslation,
                         fullSentenceTranslation: sentenceTranslation.fullTranslation,
+                        model: paragraphTranslation.translatingModel,
+                        paragraphId: paragraphTranslation.paragraphId,
                         wordTranslation: {
                             ...wordTranslation,
                             language: targetLanguage,
@@ -171,6 +184,7 @@ export class Library {
                         });
                     }
                 }
+                translations.sort((a, b) => b.id - a.id);
                 return {
                     ...paragraph,
                     translation: {

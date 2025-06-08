@@ -94,4 +94,5 @@
         <summary>Full sentence</summary>
         <p>{$word.fullSentenceTranslation}</p>
     </details>
+    <p>Translated by: {$word.model}</p>
 {/if}

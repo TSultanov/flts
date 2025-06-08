@@ -1,4 +1,5 @@
 import Dexie, { type EntityTable } from "dexie";
+import type { ModelId } from "./translators/translator";
 
 interface Book {
     id: number,
@@ -29,6 +30,7 @@ interface ParagraphTranslation {
     id: number,
     paragraphId: number,
     languageId: number,
+    translatingModel: ModelId,
 }
 
 interface SentenceTranslation {
@@ -80,6 +82,12 @@ interface Cache {
     value: any,
 }
 
+export interface TranslationRequest {
+    id: number,
+    paragraphId: number,
+    model: ModelId,
+}
+
 export type DB = Dexie & {
     books: EntityTable<Book, 'id'>,
     bookChapters: EntityTable<BookChapter, 'id'>,
@@ -91,6 +99,7 @@ export type DB = Dexie & {
     wordTranslations: EntityTable<WordTranslation, 'id'>,
     sentenceWordTranslations: EntityTable<SentenceWordTranslation, 'id'>,
     queryCache: EntityTable<Cache, 'hash'>,
+    directTranslationRequests: EntityTable<TranslationRequest, 'id'>,
 };
 
 export const db = new Dexie('library') as DB;
@@ -105,7 +114,8 @@ db.version(1).stores({
     words: '++id, originalLanguageId, original',
     wordTranslations: '++id, languageId, originalWordId, translation',
     sentenceWordTranslations: '++id, sentenceId, order, original, wordTranslationId',
-    queryCache: '&hash'
+    queryCache: '&hash',
+    directTranslationRequests: '++id',
 });
 
 export type {

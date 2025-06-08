@@ -1,5 +1,5 @@
 import { getConfig } from "../../config"
-import type { DB } from "../db"
+import { db, type DB } from "../db"
 import { GoogleTranslator } from "./google"
 
 export type Grammar = {
@@ -88,4 +88,11 @@ export async function getTranslator(db: DB, targetLanguage: string, model: Model
     }
 
     throw new Error(`Unknown provider ${m.provider}`);
+}
+
+export async function addTranslation(paragraphId: number, model: ModelId) {
+    await db.directTranslationRequests.add({
+        paragraphId,
+        model
+    });
 }
