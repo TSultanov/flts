@@ -1,40 +1,8 @@
 import localforage from "localforage";
-import { hashString } from "./utils";
-import { Type, type GoogleGenAI, type Schema } from "@google/genai";
-import type { DB } from "./db";
-
-export type Grammar = {
-    originalInitialForm: string,
-    targetInitialForm: string,
-    partOfSpeech: string
-    plurality: string,
-    person: string,
-    tense: string,
-    case: string,
-    other: string
-}
-
-export type WordTranslation = {
-    original: string,
-    isPunctuation: boolean,
-    isStandalonePunctuation: boolean,
-    isOpeningParenthesis: boolean,
-    isClosingParenthesis: boolean,
-    translations: string[],
-    note: string,
-    grammar: Grammar,
-};
-
-export type SentenceTranslation = {
-    words: WordTranslation[],
-    fullTranslation: string,
-}
-
-export type ParagraphTranslation = {
-    sentences: SentenceTranslation[],
-    sourceLanguage: string,
-    targetLanguage: string,
-}
+import { hashString } from "../utils";
+import { GoogleGenAI, Type, type Schema } from "@google/genai";
+import type { DB } from "../db";
+import type { DictionaryRequest, ParagraphTranslation, Translator } from "./translator";
 
 const wordSchema: Schema = {
     type: Type.OBJECT,
@@ -143,18 +111,14 @@ const paragraphSchema: Schema = {
     ]
 }
 
-export type DictionaryRequest = {
-    paragraph: string,
-}
-
-export class Translator {
+export class GoogleTranslator implements Translator {
     readonly db: DB
     readonly ai: GoogleGenAI;
     readonly to: string;
     readonly model: string;
 
-    constructor(ai: GoogleGenAI, to: string, db: DB, model: string) {
-        this.ai = ai;
+    constructor(apiKey: string, to: string, db: DB, model: string) {
+        this.ai = new GoogleGenAI({ apiKey });
         this.to = to;
         this.db = db;
         this.model = model;
@@ -164,7 +128,7 @@ export class Translator {
         return await hashString(JSON.stringify(p) + this.getPrompt() + JSON.stringify(paragraphSchema) + this.model);
     }
 
-    async getCachedTranslation(p: DictionaryRequest) {
+    async getCachedTranslation(p: DictionaryRequest): Promise<ParagraphTranslation | null> {
         const p_hash = await this.hashRequest(p);
         const cacheItem = await this.db.queryCache.get(p_hash);
         if (cacheItem) {
@@ -180,7 +144,7 @@ export class Translator {
         });
     }
 
-    async getTranslation(p: DictionaryRequest) {
+    async getTranslation(p: DictionaryRequest): Promise<ParagraphTranslation> {
         const requestString = JSON.stringify(p);
         const p_hash = await this.hashRequest(p);
         const response = await this.ai.models.generateContent({

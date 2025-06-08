@@ -1,6 +1,5 @@
-import { GoogleGenAI } from "@google/genai"
 import { getConfig } from "../config";
-import { Translator } from "./translator";
+import { GoogleTranslator } from "./translators/google";
 import { db } from "./db";
 import Bottleneck from 'bottleneck';
 import { liveQuery } from "dexie";
@@ -70,8 +69,7 @@ query.subscribe((ids: number[]) => {
 
 async function handleParagraphTranslationEvent(paragraphId: number) {
     const config = await getConfig();
-    const ai = new GoogleGenAI({ apiKey: config.apiKey });
-    const translator = new Translator(ai, config.targetLanguage, db, config.model);
+    const translator = new GoogleTranslator(config.geminiApiKey, config.targetLanguage, db, config.model);
 
     console.log(`Worker: starting translation, paragraphId: ${paragraphId}`);
 

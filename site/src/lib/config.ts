@@ -1,9 +1,10 @@
 import localforage from "localforage"
+import type { ModelId } from "./data/translators/translator";
 
 export type Config = {
-    apiKey: string,
+    geminiApiKey: string,
     targetLanguage: string,
-    model: string,
+    model: ModelId,
 }
 
 let store = localforage.createInstance({storeName: "config"});
