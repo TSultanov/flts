@@ -112,8 +112,4 @@
         margin-top: 0;
         margin-bottom: 1.5em;
     }
-
-    :global(.word-span) {
-        outline: 1px solid lightblue;
-    }
 </style>
