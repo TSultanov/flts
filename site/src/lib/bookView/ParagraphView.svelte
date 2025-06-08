@@ -49,7 +49,9 @@
                 }
 
                 pIdx += offset;
-                result.push(`<span class="word-span" id="${wordIdPrefix}${word.id}" data="${word.original}" data-offset="${offset}">${originalText.slice(pIdx, pIdx+len)}</span>`);
+                const id = `${wordIdPrefix}${word.id}`;
+                const additionalClass = word.id === sentenceWordId ? "selected" : "";
+                result.push(`<span class="word-span ${additionalClass}" id="${id}" data="${word.original}" data-offset="${offset}">${originalText.slice(pIdx, pIdx+len)}</span>`);
                 pIdx += len;
             }
         }
