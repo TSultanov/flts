@@ -175,7 +175,7 @@ export class GoogleTranslator implements Translator {
         Provide grammatical information for each word. Grammatical information should ONLY be about the original word and how it's used in the original language. Do NOT use concepts from the target language when decribing the grammar. Use ONLY concepts which make sense and exist in the language of the original text, but use the ${this.to} language to describe it.
         All the information given must be in ${this.to} language except for the 'originalInitialForm', 'sourceLanguage' and 'targetLanguage' fields.
         Initial forms in the grammar section must be contain the form as it appears in the dictionaries in the language of the original and target text.
-        'sourceLanguage' and 'targetLanguage' must contain ISO 639 Set 1 code of the corresponding language.
+        'sourceLanguage' and 'targetLanguage' must contain ISO 639 Set 1 code of the corresponding language (e.g. 'en', 'de', 'ru', 'ja', etc.).
         Before giving the final answer to the user, re-read it and fix mistakes. Double-check that you correctly carried over the punctuation. Make sure that you don't accidentally use concepts which only exist in the ${this.to} language to describe word in the source text.
         Triple-check that you didn't miss any words!
 
