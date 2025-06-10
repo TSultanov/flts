@@ -1,6 +1,6 @@
 <script lang="ts">
     import { getContext, onMount } from "svelte";
-    import {type Library, type LibraryBookChapter } from "../library.svelte";
+    import { type Library, type LibraryBookChapter } from "../library.svelte";
     import ParagraphView from "./ParagraphView.svelte";
 
     let {
@@ -23,17 +23,28 @@
             sentenceWordId = null;
         }
     }
+
+    let sectionContentWidth = $state(200);
 </script>
 
 <div class="chapter-container">
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <section class="chapter" onclick={chapterClick}>
-        {#if $chapter}
-            {#each $chapter.paragraphs as paragraph}
-                <ParagraphView paragraphId={paragraph.id} {sentenceWordId} />
-            {/each}
-        {/if}
+        <div
+            class="paragraphs-container"
+            style="column-width: {sectionContentWidth}px"
+            bind:clientHeight={sectionContentWidth}
+        >
+            {#if $chapter}
+                {#each $chapter.paragraphs as paragraph}
+                    <ParagraphView
+                        paragraphId={paragraph.id}
+                        {sentenceWordId}
+                    />
+                {/each}
+            {/if}
+        </div>
     </section>
 </div>
 
@@ -43,7 +54,7 @@
         padding: 10px 25px;
         justify-content: center;
         height: 100%;
-        overflow-y: auto;
+        overflow: hidden;
     }
 
     .chapter {
@@ -55,6 +66,19 @@
         box-shadow: 2px 2px var(--background-color);
         text-align: justify;
         line-height: 2;
-        min-height: 100%;
+        height: 100%;
+    }
+
+    .paragraphs-container {
+        width: 100%;
+        height: 100%;
+        overflow-x: auto;
+        scroll-snap-type: x mandatory;
+        column-gap: 2cm;
+    }
+    
+    :global(.paragraphs-container > *) {
+        scroll-snap-align: center;
+        scroll-snap-stop: always;
     }
 </style>
