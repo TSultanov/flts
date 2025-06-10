@@ -112,6 +112,6 @@
 
     p {
         margin-top: 0;
-        margin-bottom: 1.5em;
+        margin-bottom: 1em;
     }
 </style>
