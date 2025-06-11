@@ -58,7 +58,7 @@
     }
 
     .chapter {
-        padding: 1cm 1.5cm;
+        padding: calc(1cm - 2px) calc(1.5cm - 2px);
         max-width: 800px;
         margin: 0 auto;
         border: 1px solid var(--background-color);
@@ -72,6 +72,7 @@
     .paragraphs-container {
         width: 100%;
         height: 100%;
+        padding: 2px;
         overflow-x: auto;
         scroll-snap-type: x mandatory;
         column-gap: 2cm;
