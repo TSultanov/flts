@@ -7,6 +7,20 @@
     --selected-color: #555555;
     --text-inverted: #f2f2f2;
     --text-inactive: #aaaaaa;
+    
+    /* Dialog colors */
+    --dialog-background: #ffffff;
+    --dialog-text: #333333;
+    --dialog-text-secondary: #666666;
+    --dialog-border: #e0e0e0;
+    --dialog-backdrop: rgba(0, 0, 0, 0.5);
+    
+    /* Button colors */
+    --button-danger: #dc3545;
+    --button-danger-hover: #c82333;
+    --button-cancel: #f8f9fa;
+    --button-cancel-hover: #e9ecef;
+    --button-cancel-text: #495057;
 }
 
 body {

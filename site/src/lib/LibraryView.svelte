@@ -1,16 +1,44 @@
 <script lang="ts">
     import { getContext } from "svelte";
-    import { Library, type LibraryFolder } from "./library.svelte";
+    import { Library, type LibraryFolder, type LibraryBook } from "./library.svelte";
     import { route } from "@mateothegreat/svelte5-router";
+    import ConfirmDialog from "./ConfirmDialog.svelte";
 
     const library: Library = getContext("library");
     const rootFolder = library.getLibraryBooks();
+
+    let showDeleteDialog = $state(false);
+    let bookToDelete: LibraryBook | null = $state(null);
+
+    function requestDeleteBook(book: LibraryBook) {
+        bookToDelete = book;
+        showDeleteDialog = true;
+    }
+
+    function confirmDeleteBook() {
+        if (bookToDelete) {
+            library.deleteBook(bookToDelete.id);
+            bookToDelete = null;
+        }
+    }
+
+    function cancelDeleteBook() {
+        bookToDelete = null;
+    }
 </script>
 
 {#if $rootFolder}
     <h1>Books</h1>
     {@render FolderComponent($rootFolder)}
 {/if}
+
+<ConfirmDialog 
+    bind:isOpen={showDeleteDialog}
+    title="Delete Book"
+    message={bookToDelete ? `Are you sure you want to delete "${bookToDelete.title}"? This action cannot be undone.` : ""}
+    onConfirm={confirmDeleteBook}
+    onCancel={cancelDeleteBook}
+/>
 
 <!-- Recursive folder component snippet -->
 {#snippet FolderComponent(folder: LibraryFolder)}
@@ -31,7 +59,7 @@
                                     - {(book.translatedParagraphsCount / book.paragraphsCount * 100).toFixed(0)}% translated
                                 {/if}
                             </a>
-                            <button onclick="{() => library.deleteBook(book.id)}">Delete</button>
+                            <button onclick="{() => requestDeleteBook(book)}">Delete</button>
                         </li>
                     {/each}
                 </ul>
