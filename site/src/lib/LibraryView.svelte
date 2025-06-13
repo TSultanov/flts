@@ -155,14 +155,15 @@
         {:else}
             <summary></summary>
         {/if}
-        <div class="{folder.name ? "subfolders" : ""}">        
-            <!-- Subfolders -->
+        <!-- Subfolders -->
+        <div class="subfolders">
             {#if folder.folders.length > 0}
                 {#each folder.folders as subfolder}
                     {@render FolderComponent(subfolder)}
                 {/each}
             {/if}
-
+        </div>
+        <div class="subfolder-books">        
             <!-- Books in this folder -->
             {#if folder.books.length > 0}
                 <ul>
@@ -261,10 +262,6 @@
         border-bottom: 1px solid var(--background-color);
     }
 
-    li:last-child {
-        border-bottom: none;
-    }
-
     li a {
         flex: 1;
         text-decoration: none;
@@ -277,10 +274,17 @@
 
     ul {
         padding: 0;
+        margin: 0;
     }
 
     .subfolders {
-        border-left: 1px dotted var(--background-color);
-        margin-left: 10px;
+        margin: 10px;
+    }
+
+    .subfolder-books {
+        border-left: 1px solid var(--background-color);
+        border-top: 1px solid var(--background-color);
+        border-right: 1px solid var(--background-color);
+        margin: 10px;
     }
 </style>
