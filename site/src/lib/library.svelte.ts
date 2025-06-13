@@ -3,6 +3,7 @@ import { db, type Book, type BookChapter, type Language, type Paragraph, type Pa
 import { readable, type Readable } from 'svelte/store';
 import type { EpubBook } from "./data/epubLoader";
 import type { ModelId } from "./data/translators/translator";
+import { getConfig } from "./config";
 
 export type LibraryFolder = {
     name?: string,
@@ -290,12 +291,16 @@ export class Library {
     }
 
     async importEpub(book: EpubBook) {
+        const config = await getConfig();
+        const model = config.model;
+
         await db.transaction(
             'rw',
             [
                 db.books,
                 db.bookChapters,
                 db.paragraphs,
+                db.directTranslationRequests,
             ],
             async () => {
                 const bookId = await db.books.add({
@@ -312,12 +317,19 @@ export class Library {
 
                     let paragraphOrder = 0;
                     for (const paragraph of c.paragraphs) {
-                        await db.paragraphs.add({
+                        const paragraphId = await db.paragraphs.add({
                             chapterId,
                             order: paragraphOrder,
                             originalText: paragraph.text,
                             originalHtml: paragraph.html
                         });
+
+                        // Add paragraph to translation requests
+                        await db.directTranslationRequests.add({
+                            paragraphId,
+                            model,
+                        });
+
                         paragraphOrder += 1;
                     }
                     chapterOrder += 1;
@@ -327,12 +339,16 @@ export class Library {
     }
 
     async importText(title: string, text: string) {
+        const config = await getConfig();
+        const model = config.model;
+
         await db.transaction(
             'rw',
             [
                 db.books,
                 db.bookChapters,
                 db.paragraphs,
+                db.directTranslationRequests,
             ],
             async () => {
                 const bookId = await db.books.add({
@@ -355,6 +371,13 @@ export class Library {
                         originalText: paragraph,
                     });
                     paragraphIds.push(paragraphId);
+
+                    // Add paragraph to translation requests
+                    await db.directTranslationRequests.add({
+                        paragraphId,
+                        model,
+                    });
+
                     order += 1;
                 }
             }
@@ -387,7 +410,7 @@ export class Library {
         const chapterIds = await db.bookChapters.where("bookId").equals(bookId).primaryKeys();
         for (const chapterId of chapterIds) {
             const paragraphIds = await db.paragraphs.where("chapterId").equals(chapterId).primaryKeys();
-            for (const paragraphId of paragraphIds) {
+            for (const paragraphId of paragraphIds) {                
                 const paragraphTranslationIds = await db.paragraphTranslations.where("paragraphId").equals(paragraphId).primaryKeys();
                 for (const paragraphTranslationId of paragraphTranslationIds) {
                     const sentenceTranslationIds = await db.sentenceTranslations.where("paragraphTranslationId").equals(paragraphTranslationId).primaryKeys();
@@ -415,6 +438,7 @@ export class Library {
             db.paragraphTranslations,
             db.sentenceTranslations,
             db.sentenceWordTranslations,
+            db.directTranslationRequests,
         ],
             async () => {
                 for (const bookId of bookIds) {

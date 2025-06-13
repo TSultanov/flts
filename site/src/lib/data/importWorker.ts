@@ -10,7 +10,6 @@ const RETRY_INTERNAL = 5000;
 const queue = new Bottleneck({
     maxConcurrent: 10,
 });
-let paragraphTranslationBag: Set<number> = new Set();
 
 function reschedule(e: any) {
     setInterval(() => {
@@ -22,62 +21,16 @@ function startScheduling() {
     self.postMessage({ __brand: 'ScheduleTranslationRequest' })
 }
 
-const query = liveQuery(async () => await db.transaction(
-    'r',
-    [
-        db.paragraphTranslations,
-        db.paragraphs,
-    ],
-    async () => {
-        const translatedParagraphIds = (await db.paragraphTranslations.toArray()).map(x => x.paragraphId);
-        const notTranslatedParagraphs = (await db.paragraphs.where("id").noneOf(translatedParagraphIds).toArray()).map(x => x.id);
-        return notTranslatedParagraphs;
-    }
-));
-
-function scheduleTranslationWithRetries(paragraphId: number, retriesLeft = 5) {
-    function schedule(retriesLeft: number) {
-        paragraphTranslationBag.add(paragraphId);
-        queue.schedule(async () => {
-            await handleParagraphTranslationEvent(paragraphId);
-        }).then(() => {
-            console.log(`Worker: paragraph id ${paragraphId} translation task is completed`);
-            paragraphTranslationBag.delete(paragraphId);
-        })
-            .catch((err) => {
-                console.log(`Worker: error translating ${paragraphId}, retrying (${retriesLeft - 1} attempts left)`, err);
-                if (retriesLeft > 0) {
-                    setTimeout(() => schedule(retriesLeft - 1), 300);
-                } else {
-                    console.log(`Failed to translate ${paragraphId}`);
-                    paragraphTranslationBag.delete(paragraphId);
-                }
-            })
-    }
-
-    if (!paragraphTranslationBag.has(paragraphId)) {
-        console.log(`Worker: scheduling ${paragraphId}`);
-        schedule(retriesLeft);
-    }
-}
-
-// We don't handle `unsubscribe` because the subject will be destroyed when the web worker terminates anyway.
-query.subscribe((ids: number[]) => {
-    for (const id of ids) {
-        scheduleTranslationWithRetries(id);
-    }
-});
-
-const paragraphDirectTranslationBag: Set<number> = new Set();
+const translationRequestBag: Set<number> = new Set();
 const directTranslationRequestsQuery = liveQuery(async () => await db.directTranslationRequests.toArray());
-function scheduleDirectTranslationWithRetries(request: TranslationRequest, retriesLeft = 5) {
+function scheduleTranslationWithRetries(request: TranslationRequest, retriesLeft = 5) {
     function schedule(retriesLeft: number) {
-        paragraphDirectTranslationBag.add(request.id);
+        translationRequestBag.add(request.id);
         queue.schedule(async () => {
-            await handleParagarphDirectTranslationEvent(request);
+            await handleTranslationEvent(request);
         }).then(() => {
             console.log(`Worker: paragraph id ${request.paragraphId} translation task is completed`);
-            paragraphDirectTranslationBag.delete(request.id);
+            translationRequestBag.delete(request.id);
         })
             .catch((err) => {
                 console.log(`Worker: error translating ${request.paragraphId}, retrying (${retriesLeft - 1} attempts left)`, err);
@@ -85,50 +38,31 @@ function scheduleDirectTranslationWithRetries(request: TranslationRequest, retri
                     setTimeout(() => schedule(retriesLeft - 1), 300);
                 } else {
                     console.log(`Failed to translate ${request.paragraphId}`);
-                    paragraphDirectTranslationBag.delete(request.id);
+                    translationRequestBag.delete(request.id);
                 }
             })
     }
 
-    if (!paragraphDirectTranslationBag.has(request.id)) {
+    if (!translationRequestBag.has(request.id)) {
         console.log(`Worker: scheduling ${request.paragraphId}`);
+        // Delete the request from the table immediately when scheduled
+        db.directTranslationRequests.where("id").equals(request.id).delete()
+            .then(() => {
+                console.log(`Worker: removed translation request ${request.id} from table`);
+            })
+            .catch((err) => {
+                console.log(`Worker: failed to remove translation request ${request.id} from table:`, err);
+            });
         schedule(retriesLeft);
     }
 }
 directTranslationRequestsQuery.subscribe((requests: TranslationRequest[]) => {
     for (const request of requests) {
-        scheduleDirectTranslationWithRetries(request);
+        scheduleTranslationWithRetries(request);
     }
 })
 
-// TODO: refactor to use TranslationRequest for all translations
-async function handleParagraphTranslationEvent(paragraphId: number) {
-    const config = await getConfig();
-    const model = config.model;
-    const translator = await getTranslator(db, config.targetLanguage, model);
-
-    console.log(`Worker: starting translation, paragraphId: ${paragraphId}`);
-
-    const paragraph = await db.paragraphs.get(paragraphId);
-
-    if (!paragraph) {
-        console.log(`Worker: paragraph Id ${paragraphId} does not exist`);
-        return;
-    }
-
-    const request = {
-        paragraph: paragraph.originalText
-    };
-
-    let translation = await translator.getCachedTranslation(request);
-    if (!translation) {
-        translation = await translator.getTranslation(request);
-    }
-
-    await addTranslation(paragraphId, translation, model);
-}
-
-async function handleParagarphDirectTranslationEvent(translationRequest: TranslationRequest) {
+async function handleTranslationEvent(translationRequest: TranslationRequest) {
     const config = await getConfig();
     const translator = await getTranslator(db, config.targetLanguage, translationRequest.model);
 
@@ -150,22 +84,7 @@ async function handleParagarphDirectTranslationEvent(translationRequest: Transla
         translation = await translator.getTranslation(request);
     }
 
-    await db.transaction(
-        'rw',
-        [
-            db.languages,
-            db.paragraphs,
-            db.paragraphTranslations,
-            db.sentenceTranslations,
-            db.sentenceWordTranslations,
-            db.words,
-            db.wordTranslations,
-            db.directTranslationRequests
-        ],
-        async () => {
-            await addTranslation(translationRequest.paragraphId, translation, translationRequest.model);
-            await db.directTranslationRequests.where("id").equals(translationRequest.id).delete();
-        });
+    await addTranslation(translationRequest.paragraphId, translation, translationRequest.model);
 }
 
 async function addTranslation(paragraphId: number, translation: ParagraphTranslation, model: ModelId) {
