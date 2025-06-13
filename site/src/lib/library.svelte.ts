@@ -4,6 +4,12 @@ import { readable, type Readable } from 'svelte/store';
 import type { EpubBook } from "./data/epubLoader";
 import type { ModelId } from "./data/translators/translator";
 
+export type LibraryFolder = {
+    name?: string,
+    folders: LibraryFolder[],
+    books: LibraryBook[],
+}
+
 export type LibraryBook = Book & {
     chapters: BookChapter[],
     paragraphsCount: number,
@@ -217,7 +223,7 @@ export class Library {
         ));
     }
 
-    getLibraryBooks(): Readable<LibraryBook[]> {
+    getLibraryBooks(): Readable<LibraryFolder> {
         return this.useQuery(() => db.transaction(
             'r',
             [
@@ -228,7 +234,7 @@ export class Library {
             ],
             async () => {
                 const books = await db.books.toArray();
-                return await Promise.all(books.map(async b => {
+                const libraryBooks = await Promise.all(books.map(async b => {
                     const chapters = await db.bookChapters.where("bookId").equals(b.id).sortBy("order");
 
                     const paragraphIds = (await db.paragraphs.where("chapterId").anyOf(chapters.map(c => c.id)).toArray()).map(p => p.id);
@@ -239,8 +245,46 @@ export class Library {
                         chapters,
                         paragraphsCount: paragraphIds.length,
                         translatedParagraphsCount
-                    }
+                    };
                 }));
+
+                const rootFolder: LibraryFolder = {
+                    name: undefined,
+                    folders: [],
+                    books: []
+                };
+
+                const findOrCreateFolder = (folder: LibraryFolder, pathSegments: string[]): LibraryFolder => {
+                    if (pathSegments.length === 0) {
+                        return folder;
+                    }
+
+                    const [currentSegment, ...remainingSegments] = pathSegments;
+                    let targetFolder = folder.folders.find(f => f.name === currentSegment);
+
+                    if (!targetFolder) {
+                        targetFolder = {
+                            name: currentSegment,
+                            folders: [],
+                            books: []
+                        };
+                        folder.folders.push(targetFolder);
+                    }
+
+                    return findOrCreateFolder(targetFolder, remainingSegments);
+                };
+
+                for (const book of libraryBooks) {
+                    if (!book.path || book.path.length === 0) {
+                        rootFolder.books.push(book);
+                    } else {
+                        // Book goes in nested folder
+                        const targetFolder = findOrCreateFolder(rootFolder, book.path);
+                        targetFolder.books.push(book);
+                    }
+                }
+
+                return rootFolder;
             }
         ));
     }

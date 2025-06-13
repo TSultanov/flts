@@ -4,6 +4,7 @@ import type { ModelId } from "./translators/translator";
 interface Book {
     id: number,
     title: string,
+    path?: string[],
 }
 
 interface BookChapter {
