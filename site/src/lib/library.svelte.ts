@@ -371,31 +371,64 @@ export class Library {
             db.sentenceWordTranslations,
         ],
             async () => {
-                await db.books.delete(bookId);
-                const chapterIds = await db.bookChapters.where("bookId").equals(bookId).primaryKeys();
-                for (const chapterId of chapterIds) {
-                    const paragraphIds = await db.paragraphs.where("chapterId").equals(chapterId).primaryKeys();
-                    for (const paragraphId of paragraphIds) {
-                        const paragraphTranslationIds = await db.paragraphTranslations.where("paragraphId").equals(paragraphId).primaryKeys();
-                        for (const paragraphTranslationId of paragraphTranslationIds) {
-                            const sentenceTranslationIds = await db.sentenceTranslations.where("paragraphTranslationId").equals(paragraphTranslationId).primaryKeys();
-                            for (const sentenceTranslationId of sentenceTranslationIds) {
-                                await db.sentenceWordTranslations.where("sentenceId").equals(sentenceTranslationId).delete();
-                            }
-                            await db.sentenceTranslations.where("paragraphTranslationId").equals(paragraphTranslationId).delete();
-                        }
-                        await await db.paragraphTranslations.where("paragraphId").equals(paragraphId).delete();
-                    }
-                    await await db.paragraphs.where("chapterId").equals(chapterId).delete();
-                }
-                await db.bookChapters.where("bookId").equals(bookId).delete();
+                await this.deleteBookInternal(bookId);
             }
         );
     }
 
     async moveBook(bookId: number, newPath: string[] | null) {
         await db.transaction('rw', [db.books], async () => {
-            await db.books.update(bookId, { path: newPath || undefined });
+            await this.moveBookInternal(bookId, newPath);
+        });
+    }
+
+    private async deleteBookInternal(bookId: number) {
+        await db.books.delete(bookId);
+        const chapterIds = await db.bookChapters.where("bookId").equals(bookId).primaryKeys();
+        for (const chapterId of chapterIds) {
+            const paragraphIds = await db.paragraphs.where("chapterId").equals(chapterId).primaryKeys();
+            for (const paragraphId of paragraphIds) {
+                const paragraphTranslationIds = await db.paragraphTranslations.where("paragraphId").equals(paragraphId).primaryKeys();
+                for (const paragraphTranslationId of paragraphTranslationIds) {
+                    const sentenceTranslationIds = await db.sentenceTranslations.where("paragraphTranslationId").equals(paragraphTranslationId).primaryKeys();
+                    for (const sentenceTranslationId of sentenceTranslationIds) {
+                        await db.sentenceWordTranslations.where("sentenceId").equals(sentenceTranslationId).delete();
+                    }
+                    await db.sentenceTranslations.where("paragraphTranslationId").equals(paragraphTranslationId).delete();
+                }
+                await db.paragraphTranslations.where("paragraphId").equals(paragraphId).delete();
+            }
+            await db.paragraphs.where("chapterId").equals(chapterId).delete();
+        }
+        await db.bookChapters.where("bookId").equals(bookId).delete();
+    }
+
+    private async moveBookInternal(bookId: number, newPath: string[] | null) {
+        await db.books.update(bookId, { path: newPath || undefined });
+    }
+
+    async deleteBooksInBatch(bookIds: number[]) {
+        await db.transaction('rw', [
+            db.books,
+            db.bookChapters,
+            db.paragraphs,
+            db.paragraphTranslations,
+            db.sentenceTranslations,
+            db.sentenceWordTranslations,
+        ],
+            async () => {
+                for (const bookId of bookIds) {
+                    await this.deleteBookInternal(bookId);
+                }
+            }
+        );
+    }
+
+    async moveBooksInBatch(bookIds: number[], newPath: string[] | null) {
+        await db.transaction('rw', [db.books], async () => {
+            for (const bookId of bookIds) {
+                await this.moveBookInternal(bookId, newPath);
+            }
         });
     }
 
