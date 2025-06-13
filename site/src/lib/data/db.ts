@@ -105,7 +105,7 @@ export type DB = Dexie & {
 
 export const db = new Dexie('library') as DB;
 
-db.version(1).stores({
+db.version(3).stores({
     books: '++id, title',
     bookChapters: '++id, bookId, order',
     paragraphs: '++id, chapterId, order',

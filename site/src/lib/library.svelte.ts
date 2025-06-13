@@ -393,6 +393,12 @@ export class Library {
         );
     }
 
+    async moveBook(bookId: number, newPath: string[] | null) {
+        await db.transaction('rw', [db.books], async () => {
+            await db.books.update(bookId, { path: newPath || undefined });
+        });
+    }
+
     private splitParagraphs(text: string): string[] {
         return text
             .split(/\n+/)
