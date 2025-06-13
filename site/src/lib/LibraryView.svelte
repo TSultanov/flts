@@ -59,7 +59,7 @@
                                     - {(book.translatedParagraphsCount / book.paragraphsCount * 100).toFixed(0)}% translated
                                 {/if}
                             </a>
-                            <button onclick="{() => requestDeleteBook(book)}">Delete</button>
+                            <button onclick="{() => requestDeleteBook(book)}" class="danger compact">Delete</button>
                         </li>
                     {/each}
                 </ul>

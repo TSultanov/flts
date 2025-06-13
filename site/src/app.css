@@ -12,7 +12,7 @@
     --dialog-background: #ffffff;
     --dialog-text: #333333;
     --dialog-text-secondary: #666666;
-    --dialog-border: #e0e0e0;
+    --dialog-border: #d1d5db;
     --dialog-backdrop: rgba(0, 0, 0, 0.5);
     
     /* Button colors */
@@ -28,29 +28,85 @@ body {
 }
 
 button {
-    padding: 5px 7px;
+    /* Base button styles */
+    padding: 8px 16px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    font-family: inherit;
     background-color: var(--background-color);
     color: var(--text-inverted);
-    border: none;
+    transition: all 0.15s ease;
+}
 
-    &:active:not(:disabled) {
-        transform: translate(0, 1px);
-    }
+button:active:not(:disabled) {
+    transform: translate(0, 1px);
+}
 
-    &:hover:not(:disabled) {
-        background-color: var(--hover-color);
-    }
+button:hover:not(:disabled) {
+    background-color: var(--hover-color);
+}
 
-    &:disabled {
-        color: var(--text-inactive)
-    }
+button:disabled {
+    color: var(--text-inactive);
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+
+button:focus-visible {
+    outline: 2px solid var(--selected-color);
+    outline-offset: 2px;
+}
+
+/* Button variants */
+button.primary {
+    background-color: var(--background-color);
+    color: var(--text-inverted);
+    border-color: var(--background-color);
+}
+
+button.primary:hover:not(:disabled) {
+    background-color: var(--hover-color);
+    border-color: var(--hover-color);
+}
+
+button.secondary {
+    background-color: var(--button-cancel);
+    color: var(--button-cancel-text);
+    border-color: var(--dialog-border);
+}
+
+button.secondary:hover:not(:disabled) {
+    background-color: var(--button-cancel-hover);
+}
+
+button.danger {
+    background-color: var(--button-danger);
+    color: var(--text-inverted);
+    border-color: var(--button-danger);
+}
+
+button.danger:hover:not(:disabled) {
+    background-color: var(--button-danger-hover);
+    border-color: var(--button-danger-hover);
+}
+
+/* Compact button variant for tight spaces */
+button.compact {
+    padding: 5px 7px;
+    font-size: 12px;
 }
 
 input::file-selector-button {
-    padding: 5px 7px;
+    padding: 8px 16px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
     background-color: var(--background-color);
     color: var(--text-inverted);
-    border: none;
+    transition: all 0.15s ease;
 }
 
 input::file-selector-button:active {
@@ -62,5 +118,7 @@ input::file-selector-button:hover {
 }
 
 input::file-selector-button:disabled {
-    color: var(--text-inactive)
+    color: var(--text-inactive);
+    cursor: not-allowed;
+    opacity: 0.6;
 }

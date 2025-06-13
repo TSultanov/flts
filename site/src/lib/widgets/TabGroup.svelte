@@ -15,7 +15,7 @@
     <nav>
         {#each tabs as tab, idx}
             <button
-                class="header-button {currentTab === idx ? 'active' : ''}"
+                class="secondary {currentTab === idx ? 'active' : ''}"
                 onclick={() => (currentTab = idx)}>{tab.header}</button
             >
         {/each}
@@ -54,7 +54,7 @@
     }
 
     .active {
-        background-color: var(--hover-color);
+        background-color: var(--button-cancel-hover);
         transform: translate(0, 1px);
     }
 </style>

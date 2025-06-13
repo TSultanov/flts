@@ -97,7 +97,7 @@
                 {/each}
             </div>
             <div class="button">
-                <button onclick={importBook}>Import</button>
+                <button onclick={importBook} class="primary">Import</button>
             </div>
         {/if}
     {/await}
@@ -135,11 +135,7 @@
     }
 
     .button {
-        flex: 0 1 25px;
+        flex: 0 1 auto;
         text-align: right;
-
-        & button {
-            height: 100%;
-        }
     }
 </style>

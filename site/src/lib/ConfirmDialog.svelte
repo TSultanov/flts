@@ -47,8 +47,8 @@
         <h3>{title}</h3>
         <p>{message}</p>
         <div class="dialog-buttons">
-            <button onclick={handleCancel} class="cancel">Cancel</button>
-            <button onclick={handleConfirm} class="confirm">Confirm</button>
+            <button onclick={handleCancel} class="secondary">Cancel</button>
+            <button onclick={handleConfirm} class="danger">Confirm</button>
         </div>
     </div>
 </dialog>
@@ -86,34 +86,5 @@
         display: flex;
         gap: 12px;
         justify-content: flex-end;
-    }
-
-    .dialog-buttons button {
-        padding: 8px 16px;
-        border: 1px solid var(--dialog-border);
-        border-radius: 4px;
-        cursor: pointer;
-        font-size: 14px;
-    }
-
-    .cancel {
-        background: var(--button-cancel);
-        color: var(--button-cancel-text);
-        border-color: var(--dialog-border);
-    }
-
-    .cancel:hover {
-        background: var(--button-cancel-hover);
-    }
-
-    .confirm {
-        background: var(--button-danger);
-        color: var(--text-inverted);
-        border-color: var(--button-danger);
-    }
-
-    .confirm:hover {
-        background: var(--button-danger-hover);
-        border-color: var(--button-danger-hover);
     }
 </style>

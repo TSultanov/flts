@@ -22,7 +22,7 @@
     <label for="text">Text: </label>
     <textarea id="text" bind:value={text}></textarea>
     <div class="button">
-        <button disabled={!canImport} onclick={save}>Import</button>
+        <button disabled={!canImport} onclick={save} class="primary">Import</button>
     </div>
 </div>
 
@@ -42,11 +42,7 @@
     }
 
     .button {
-        flex: 0 1 25px;
+        flex: 0 1 auto;
         text-align: right;
-
-        & button {
-            height: 100%;
-        }
     }
 </style>

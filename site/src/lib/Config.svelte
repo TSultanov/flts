@@ -38,7 +38,7 @@
             {/each}
         </select>
 
-        <button onclick={save}>Save</button>
+        <button onclick={save} class="primary">Save</button>
     </div>
 </div>
 
