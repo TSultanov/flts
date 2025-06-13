@@ -5,8 +5,12 @@
     --background-color: #333333;
     --hover-color: #444444;
     --selected-color: #555555;
+    --text-color: #333333;
+    --text-color-muted: #666666;
     --text-inverted: #f2f2f2;
     --text-inactive: #aaaaaa;
+    --accent-color: #007acc;
+    --accent-color-transparent: rgba(0, 122, 204, 0.2);
     
     /* Dialog colors */
     --dialog-background: #ffffff;

@@ -1,5 +1,6 @@
 <script lang="ts">
     import type { LibraryFolder } from "./library.svelte";
+    import CreateFolderDialog from "./CreateFolderDialog.svelte";
 
     let { 
         isOpen = $bindable(false),
@@ -17,6 +18,8 @@
     let localRootFolder = $state<LibraryFolder>();
 
     let selectedPath: string[] | null = $state(null);
+    let createFolderDialogOpen = $state(false);
+    let pendingParentPath: string[] = $state([]);
 
     // Initialize local copy of root folder when dialog opens
     $effect(() => {
@@ -74,10 +77,14 @@
     }
 
     function createNewFolder(parentPath: string[]) {
-        const folderName = prompt("Enter folder name:");
-        if (folderName && folderName.trim() && localRootFolder) {
+        pendingParentPath = parentPath;
+        createFolderDialogOpen = true;
+    }
+
+    function handleCreateFolder(folderName: string) {
+        if (localRootFolder) {
             const trimmedName = folderName.trim();
-            const newFolderPath = [...parentPath, trimmedName];
+            const newFolderPath = [...pendingParentPath, trimmedName];
             
             // Find or create the folder in the local structure
             const findOrCreateFolder = (folder: LibraryFolder, pathSegments: string[]): LibraryFolder => {
@@ -131,6 +138,11 @@
         </div>
     </div>
 </dialog>
+
+<CreateFolderDialog 
+    bind:isOpen={createFolderDialogOpen}
+    onConfirm={handleCreateFolder}
+/>
 
 <!-- Recursive folder tree component snippet -->
 {#snippet FolderTreeComponent(folder: LibraryFolder, currentPath: string[])}
