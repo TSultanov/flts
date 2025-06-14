@@ -27,29 +27,24 @@ async function checkAndScheduleUntranslatedParagraphs() {
             return;
         }
 
-        // Get all paragraphs
         const allParagraphs = await db.paragraphs.toArray();
         
         let untranslatedCount = 0;
         
         for (const paragraph of allParagraphs) {
-            // Check if paragraph already has translation in target language
             let hasTranslation = false;
-            
-            // Check for translation in specific target language
+
             hasTranslation = await db.paragraphTranslations
                 .where("paragraphId")
                 .equals(paragraph.id)
                 .count() > 0;
             
-            // Check if translation request already exists
             const hasRequest = await db.directTranslationRequests
                 .where("paragraphId")
                 .equals(paragraph.id)
                 .count() > 0;
             
             if (!hasTranslation && !hasRequest) {
-                // Use Library's scheduleTranslation method
                 await library.scheduleTranslation(paragraph.id);
                 untranslatedCount++;
             }
@@ -66,7 +61,6 @@ async function checkAndScheduleUntranslatedParagraphs() {
     }
 }
 
-// Run the check on worker startup
 checkAndScheduleUntranslatedParagraphs();
 
 const translationRequestBag: Set<number> = new Set();
