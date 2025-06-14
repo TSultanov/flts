@@ -1,28 +1,76 @@
 import { getConfig } from "../config";
-import { GoogleTranslator } from "./translators/google";
 import { db, type TranslationRequest } from "./db";
 import Bottleneck from 'bottleneck';
 import { liveQuery } from "dexie";
 import { getTranslator, type ModelId, type ParagraphTranslation } from "./translators/translator";
+import { Library } from "../library.svelte";
 
-const RETRY_INTERNAL = 5000;
+
 
 const queue = new Bottleneck({
     maxConcurrent: 10,
 });
 
-function reschedule(e: any) {
-    setInterval(() => {
-        self.postMessage(e)
-    }, RETRY_INTERNAL);
+// Create library instance for reusing translation scheduling logic
+const library = new Library();
+
+// Function to check all paragraphs and schedule translation for untranslated ones
+async function checkAndScheduleUntranslatedParagraphs() {
+    try {
+        console.log('Worker: Checking for untranslated paragraphs...');
+        
+        const config = await getConfig();
+        const targetLanguage = config.targetLanguage;
+        
+        if (!targetLanguage) {
+            console.log('Worker: No target language configured, skipping untranslated paragraph check');
+            return;
+        }
+
+        // Get all paragraphs
+        const allParagraphs = await db.paragraphs.toArray();
+        
+        let untranslatedCount = 0;
+        
+        for (const paragraph of allParagraphs) {
+            // Check if paragraph already has translation in target language
+            let hasTranslation = false;
+            
+            // Check for translation in specific target language
+            hasTranslation = await db.paragraphTranslations
+                .where("paragraphId")
+                .equals(paragraph.id)
+                .count() > 0;
+            
+            // Check if translation request already exists
+            const hasRequest = await db.directTranslationRequests
+                .where("paragraphId")
+                .equals(paragraph.id)
+                .count() > 0;
+            
+            if (!hasTranslation && !hasRequest) {
+                // Use Library's scheduleTranslation method
+                await library.scheduleTranslation(paragraph.id);
+                untranslatedCount++;
+            }
+        }
+        
+        if (untranslatedCount > 0) {
+            console.log(`Worker: Found ${untranslatedCount} untranslated paragraphs, scheduled for translation`);
+        } else {
+            console.log('Worker: No unstranslated paragraphs found');
+        }
+        
+    } catch (error) {
+        console.error('Worker: Error checking untranslated paragraphs:', error);
+    }
 }
 
-function startScheduling() {
-    self.postMessage({ __brand: 'ScheduleTranslationRequest' })
-}
+// Run the check on worker startup
+checkAndScheduleUntranslatedParagraphs();
 
 const translationRequestBag: Set<number> = new Set();
-const directTranslationRequestsQuery = liveQuery(async () => await db.directTranslationRequests.toArray());
+const directTranslationRequestsQuery = liveQuery(async () => await db.directTranslationRequests.limit(10).toArray());
 function scheduleTranslationWithRetries(request: TranslationRequest, retriesLeft = 5) {
     function schedule(retriesLeft: number) {
         translationRequestBag.add(request.id);
@@ -58,12 +106,13 @@ async function handleTranslationEvent(translationRequest: TranslationRequest) {
     const config = await getConfig();
     const translator = await getTranslator(db, config.targetLanguage, translationRequest.model);
 
-    console.log(`Worker: starting translation, paragraphId: ${translationRequest.paragraphId}`);
+    console.log(`Worker: starting translation, paragraphId: ${translationRequest.paragraphId} (request ${translationRequest.id})`);
 
     const paragraph = await db.paragraphs.get(translationRequest.paragraphId);
 
     if (!paragraph) {
         console.log(`Worker: paragraph Id ${translationRequest.paragraphId} does not exist`);
+        await db.directTranslationRequests.where("id").equals(translationRequest.id).delete()
         return;
     }
 
@@ -77,7 +126,7 @@ async function handleTranslationEvent(translationRequest: TranslationRequest) {
     }
 
     await addTranslation(translationRequest.paragraphId, translation, translationRequest.model);
-    await db.directTranslationRequests.where("id").equals(translationRequest.paragraphId).delete()
+    await db.directTranslationRequests.where("id").equals(translationRequest.id).delete()
 }
 
 async function addTranslation(paragraphId: number, translation: ParagraphTranslation, model: ModelId) {
