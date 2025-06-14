@@ -146,7 +146,8 @@ export class Library {
                 const chapters = await db.bookChapters.where("bookId").equals(book.id).sortBy("order");
 
                 const paragraphIds = (await db.paragraphs.where("chapterId").anyOf(chapters.map(c => c.id)).toArray()).map(p => p.id);
-                const translatedParagraphsCount = await db.paragraphTranslations.where("paragraphId").anyOf(paragraphIds).count()
+                const translatedParagraphs = await db.paragraphTranslations.where("paragraphId").anyOf(paragraphIds).toArray();
+                const translatedParagraphsCount = (new Set(translatedParagraphs.map(p => p.paragraphId))).size;
 
                 return {
                     ...book,
