@@ -63,11 +63,6 @@ export const models = [
         provider: "Google",
     },
     {
-        id: "gemini-2.5-pro-preview-05-06",
-        name: "gemini-2.5-pro-preview-05-06",
-        provider: "Google",
-    },
-    {
         id: "gemini-2.5-pro-preview-06-05",
         name: "gemini-2.5-pro-preview-06-05",
         provider: "Google",
