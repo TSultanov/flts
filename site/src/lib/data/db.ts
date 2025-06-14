@@ -45,6 +45,7 @@ interface Word {
     id: number,
     originalLanguageId: number,
     original: string,
+    originalNormalized: string,
 }
 
 interface WordTranslation {
@@ -52,6 +53,7 @@ interface WordTranslation {
     languageId: number,
     originalWordId: number,
     translation: string,
+    translationNormalized: string,
 }
 
 interface SentenceWordTranslation {
@@ -117,6 +119,28 @@ db.version(4).stores({
     sentenceWordTranslations: '++id, sentenceId, order, original, wordTranslationId',
     queryCache: '&hash',
     directTranslationRequests: '++id,paragraphId',
+});
+
+db.version(5).stores({
+    books: '++id, title',
+    bookChapters: '++id, bookId, order',
+    paragraphs: '++id, chapterId, order',
+    languages: '++id, name',
+    paragraphTranslations: '++id, paragraphId, languageId',
+    sentenceTranslations: '++id, paragraphTranslationId, order',
+    words: '++id, originalLanguageId, original, originalNormalized',
+    wordTranslations: '++id, languageId, originalWordId, translation, translationNormalized',
+    sentenceWordTranslations: '++id, sentenceId, order, original, wordTranslationId',
+    queryCache: '&hash',
+    directTranslationRequests: '++id,paragraphId',
+}).upgrade(t => {
+    return t.table("words").toCollection().modify((w: Word) => {
+        w.originalNormalized = w.original.toLowerCase();
+    });
+}).upgrade(t => {
+    return t.table("wordTranslations").toCollection().modify((wt: WordTranslation) => {
+        wt.translationNormalized = wt.translation.toLowerCase();
+    });
 });
 
 export type {

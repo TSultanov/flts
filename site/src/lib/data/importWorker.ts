@@ -5,10 +5,10 @@ import { liveQuery } from "dexie";
 import { getTranslator, type ModelId, type ParagraphTranslation } from "./translators/translator";
 import { Library } from "../library.svelte";
 
-
+const limit = 10;
 
 const queue = new Bottleneck({
-    maxConcurrent: 10,
+    maxConcurrent: limit,
 });
 
 // Create library instance for reusing translation scheduling logic
@@ -64,7 +64,7 @@ async function checkAndScheduleUntranslatedParagraphs() {
 checkAndScheduleUntranslatedParagraphs();
 
 const translationRequestBag: Set<number> = new Set();
-const directTranslationRequestsQuery = liveQuery(async () => await db.directTranslationRequests.limit(10).toArray());
+const directTranslationRequestsQuery = liveQuery(async () => await db.directTranslationRequests.limit(limit).toArray());
 function scheduleTranslationWithRetries(request: TranslationRequest, retriesLeft = 5) {
     function schedule(retriesLeft: number) {
         translationRequestBag.add(request.id);
@@ -97,12 +97,23 @@ directTranslationRequestsQuery.subscribe((requests: TranslationRequest[]) => {
 })
 
 async function handleTranslationEvent(translationRequest: TranslationRequest) {
-    const config = await getConfig();
-    const translator = await getTranslator(db, config.targetLanguage, translationRequest.model);
-
+    const startTime = performance.now();
     console.log(`Worker: starting translation, paragraphId: ${translationRequest.paragraphId} (request ${translationRequest.id})`);
 
+    // Get config
+    let stepStartTime = performance.now();
+    const config = await getConfig();
+    console.log(`Worker: getConfig took ${(performance.now() - stepStartTime).toFixed(2)}ms`);
+
+    // Get translator
+    stepStartTime = performance.now();
+    const translator = await getTranslator(db, config.targetLanguage, translationRequest.model);
+    console.log(`Worker: getTranslator took ${(performance.now() - stepStartTime).toFixed(2)}ms`);
+
+    // Get paragraph from database
+    stepStartTime = performance.now();
     const paragraph = await db.paragraphs.get(translationRequest.paragraphId);
+    console.log(`Worker: db.paragraphs.get took ${(performance.now() - stepStartTime).toFixed(2)}ms`);
 
     if (!paragraph) {
         console.log(`Worker: paragraph Id ${translationRequest.paragraphId} does not exist`);
@@ -114,16 +125,36 @@ async function handleTranslationEvent(translationRequest: TranslationRequest) {
         paragraph: paragraph.originalText
     };
 
+    // Check cached translation
+    stepStartTime = performance.now();
     let translation = await translator.getCachedTranslation(request);
+    console.log(`Worker: getCachedTranslation took ${(performance.now() - stepStartTime).toFixed(2)}ms`);
+    
     if (!translation) {
+        // Get new translation
+        stepStartTime = performance.now();
         translation = await translator.getTranslation(request);
+        console.log(`Worker: getTranslation took ${(performance.now() - stepStartTime).toFixed(2)}ms`);
     }
 
+    // Add translation to database
+    stepStartTime = performance.now();
     await addTranslation(translationRequest.paragraphId, translation, translationRequest.model);
+    console.log(`Worker: addTranslation took ${(performance.now() - stepStartTime).toFixed(2)}ms`);
+
+    // Clean up request
+    stepStartTime = performance.now();
     await db.directTranslationRequests.where("id").equals(translationRequest.id).delete()
+    console.log(`Worker: delete request took ${(performance.now() - stepStartTime).toFixed(2)}ms`);
+
+    const totalTime = performance.now() - startTime;
+    console.log(`Worker: handleTranslationEvent total time: ${totalTime.toFixed(2)}ms for paragraphId ${translationRequest.paragraphId}`);
 }
 
 async function addTranslation(paragraphId: number, translation: ParagraphTranslation, model: ModelId) {
+    const startTime = performance.now();
+    console.log(`Worker: addTranslation starting for paragraphId ${paragraphId}, ${translation.sentences.length} sentences`);
+    
     await db.transaction(
         'rw',
         [
@@ -137,15 +168,17 @@ async function addTranslation(paragraphId: number, translation: ParagraphTransla
         ],
         async () => {
             // check if paragraph indeed exists and was not removed while we waited for the LLM response
-            const paragraph = await db.paragraphs.get(paragraphId);
-            if (!paragraph) {
+            const paragraphCount = await db.paragraphs.where("id").equals(paragraphId).count();
+            
+            if (paragraphCount === 0) {
                 console.log(`Worker: paragraph ${paragraphId} was removed during while we were waiting for the LLM response. Skipping.`)
                 return;
             }
 
+            // Get or create source language
             const sourceLanguageId = await (async () => {
                 let id = (await db.languages
-                    .filter((l) => l.name?.toLowerCase() === translation.sourceLanguage.toLowerCase())
+                    .where("name").equals(translation.sourceLanguage.toLowerCase())
                     .first())?.id;
 
                 if (!id) {
@@ -155,9 +188,10 @@ async function addTranslation(paragraphId: number, translation: ParagraphTransla
                 return id;
             })();
 
+            // Get or create target language
             const targetLanguageId = await (async () => {
                 let id = (await db.languages
-                    .filter((l) => l.name?.toLowerCase() === translation.targetLanguage.toLowerCase())
+                    .where("name").equals(translation.targetLanguage.toLowerCase())
                     .first())?.id;
 
                 if (!id) {
@@ -169,22 +203,25 @@ async function addTranslation(paragraphId: number, translation: ParagraphTransla
 
             // Check if paragraph translation already exists
             const existingParagraphTranslation = await db.paragraphTranslations
-                .where("paragraphId")
-                .equals(paragraphId).and(pt => pt.languageId === targetLanguageId).first();
+                .where("paragraphId").equals(paragraphId)
+                .and(pt => pt.languageId === targetLanguageId).first();
 
             if (existingParagraphTranslation) {
                 console.log(`Worker: paragraph ${paragraphId} is already translated to ${targetLanguageId} (id ${existingParagraphTranslation.id})`);
                 return;
             }
 
+            // Create paragraph translation
             const paragraphTranslationId = await db.paragraphTranslations.add({
                 paragraphId: paragraphId,
                 languageId: targetLanguageId,
                 translatingModel: model,
             });
 
+            // Process sentences and words
             let sentenceOrder = 0;
             for (const sentence of translation.sentences) {
+                let sentenceStepStart = performance.now();
                 const sentenceTranslationId = await db.sentenceTranslations.add({
                     paragraphTranslationId,
                     order: sentenceOrder,
@@ -194,6 +231,7 @@ async function addTranslation(paragraphId: number, translation: ParagraphTransla
                 let wordOrder = 0;
                 for (const word of sentence.words) {
                     if (word.isPunctuation) {
+                        sentenceStepStart = performance.now();
                         await db.sentenceWordTranslations.add({
                             order: wordOrder,
                             sentenceId: sentenceTranslationId,
@@ -204,30 +242,30 @@ async function addTranslation(paragraphId: number, translation: ParagraphTransla
                             original: word.original
                         })
                     } else {
-
+                        sentenceStepStart = performance.now();
                         const originalWordId = await (async () => {
-                            const dictWord = await db.words.filter(w => {
-                                return w.originalLanguageId === sourceLanguageId &&
-                                    w.original?.toLowerCase() === word.grammar.originalInitialForm.toLowerCase();
-                            }).first();
+                            const dictWord = await db.words
+                            .where("originalNormalized").equals(word.grammar.originalInitialForm.toLowerCase())
+                            .and(w => w.originalLanguageId == sourceLanguageId).first();
 
                             let id = dictWord?.id;
                             if (!id) {
                                 id = await db.words.add({
                                     originalLanguageId: sourceLanguageId,
                                     original: word.grammar.originalInitialForm,
+                                    originalNormalized: word.grammar.originalInitialForm.toLowerCase(),
                                 });
                             }
 
                             return id;
                         })();
 
+                        sentenceStepStart = performance.now();
                         const wordTranslationId = await (async () => {
-                            const translation = await db.wordTranslations.filter(wt => {
-                                return wt.languageId === targetLanguageId &&
-                                    wt.originalWordId === originalWordId &&
-                                    wt.translation?.toLowerCase() === word.grammar.targetInitialForm.toLowerCase();
-                            }).first();
+                            const translation = await db.wordTranslations
+                            .where("originalWordId").equals(originalWordId)
+                            .and(wt => wt.translationNormalized === word.grammar.targetInitialForm.toLowerCase())
+                            .and(wt => wt.languageId == targetLanguageId).first();
 
                             let id = translation?.id;
 
@@ -235,13 +273,15 @@ async function addTranslation(paragraphId: number, translation: ParagraphTransla
                                 id = await db.wordTranslations.add({
                                     languageId: targetLanguageId,
                                     originalWordId,
-                                    translation: word.grammar.targetInitialForm
+                                    translation: word.grammar.targetInitialForm,
+                                    translationNormalized: word.grammar.targetInitialForm.toLowerCase(),
                                 });
                             }
 
                             return id;
                         })();
 
+                        sentenceStepStart = performance.now();
                         await db.sentenceWordTranslations.add({
                             order: wordOrder,
                             original: word.original,
@@ -261,6 +301,8 @@ async function addTranslation(paragraphId: number, translation: ParagraphTransla
                 }
                 sentenceOrder += 1;
             }
-
         });
+    
+    const totalTime = performance.now() - startTime;
+    console.log(`Worker: addTranslation total time: ${totalTime.toFixed(2)}ms for paragraphId ${paragraphId}`);
 }
