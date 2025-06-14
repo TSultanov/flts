@@ -428,25 +428,18 @@ export class Library {
     }
 
     private async deleteBookInternal(bookId: number) {
-        await db.books.delete(bookId);
         const chapterIds = await db.bookChapters.where("bookId").equals(bookId).primaryKeys();
-        for (const chapterId of chapterIds) {
-            const paragraphIds = await db.paragraphs.where("chapterId").equals(chapterId).primaryKeys();
-            for (const paragraphId of paragraphIds) {
-                await db.directTranslationRequests.where("paragraphId").equals(paragraphId).delete();
-                const paragraphTranslationIds = await db.paragraphTranslations.where("paragraphId").equals(paragraphId).primaryKeys();
-                for (const paragraphTranslationId of paragraphTranslationIds) {
-                    const sentenceTranslationIds = await db.sentenceTranslations.where("paragraphTranslationId").equals(paragraphTranslationId).primaryKeys();
-                    for (const sentenceTranslationId of sentenceTranslationIds) {
-                        await db.sentenceWordTranslations.where("sentenceId").equals(sentenceTranslationId).delete();
-                    }
-                    await db.sentenceTranslations.where("paragraphTranslationId").equals(paragraphTranslationId).delete();
-                }
-                await db.paragraphTranslations.where("paragraphId").equals(paragraphId).delete();
-            }
-            await db.paragraphs.where("chapterId").equals(chapterId).delete();
-        }
+        const paragraphIds = await db.paragraphs.where("chapterId").anyOf(chapterIds).primaryKeys();
+        const paragraphTranslationIds = await db.paragraphTranslations.where("paragraphId").anyOf(paragraphIds).primaryKeys();
+        const sentenceTranslationIds = await db.sentenceTranslations.where("paragraphTranslationId").anyOf(paragraphTranslationIds).primaryKeys();
+
+        await db.sentenceWordTranslations.where("sentenceId").anyOf(sentenceTranslationIds).delete();
+        await db.sentenceTranslations.where("paragraphTranslationId").anyOf(paragraphTranslationIds).delete();
+        await db.paragraphTranslations.where("paragraphId").anyOf(paragraphIds).delete();
+        await db.directTranslationRequests.where("paragraphId").anyOf(paragraphIds).delete();
+        await db.paragraphs.where("chapterId").anyOf(chapterIds).delete();
         await db.bookChapters.where("bookId").equals(bookId).delete();
+        await db.books.delete(bookId);
     }
 
     private async moveBookInternal(bookId: number, newPath: string[] | null) {
