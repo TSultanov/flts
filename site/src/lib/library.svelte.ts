@@ -307,6 +307,8 @@ export class Library {
                     title: book.title,
                 });
 
+                const paragraphIds: number[] = [];
+
                 let chapterOrder = 0;
                 for (const c of book.chapters) {
                     const chapterId = await db.bookChapters.add({
@@ -324,16 +326,14 @@ export class Library {
                             originalHtml: paragraph.html
                         });
 
-                        // Add paragraph to translation requests
-                        await db.directTranslationRequests.add({
-                            paragraphId,
-                            model,
-                        });
+                        paragraphIds.push(paragraphId);
 
                         paragraphOrder += 1;
                     }
                     chapterOrder += 1;
                 }
+
+                await Promise.all(paragraphIds.map(pid => this.scheduleTranslationInternal(pid, model)));
             }
         );
     }
@@ -362,7 +362,7 @@ export class Library {
 
                 const paragraphs = this.splitParagraphs(text);
 
-                const paragraphIds = [];
+                const paragraphIds: number[] = [];
                 let order = 0;
                 for (const paragraph of paragraphs) {
                     const paragraphId = await db.paragraphs.add({
@@ -371,17 +371,37 @@ export class Library {
                         originalText: paragraph,
                     });
                     paragraphIds.push(paragraphId);
-
-                    // Add paragraph to translation requests
-                    await db.directTranslationRequests.add({
-                        paragraphId,
-                        model,
-                    });
-
                     order += 1;
                 }
+
+                await Promise.all(paragraphIds.map(pid => this.scheduleTranslationInternal(pid, model)));
             }
         );
+    }
+
+    public async scheduleTranslation(paragraphId: number) {
+        const config = await getConfig();
+        const model = config.model;
+
+        await db.transaction(
+            'rw',
+            [
+                db.directTranslationRequests,
+            ],
+            async () => {
+                await this.scheduleTranslationInternal(paragraphId, model);
+            }
+        )
+    }
+
+    private async scheduleTranslationInternal(paragraphId: number, model: ModelId) {
+        const requestExists = await db.directTranslationRequests.where("paragraphId").equals(paragraphId).count() > 0;
+        if (!requestExists) {
+            await db.directTranslationRequests.add({
+                paragraphId,
+                model,
+            });
+        }
     }
 
     async deleteBook(bookId: number) {
@@ -411,7 +431,7 @@ export class Library {
         const chapterIds = await db.bookChapters.where("bookId").equals(bookId).primaryKeys();
         for (const chapterId of chapterIds) {
             const paragraphIds = await db.paragraphs.where("chapterId").equals(chapterId).primaryKeys();
-            for (const paragraphId of paragraphIds) {                
+            for (const paragraphId of paragraphIds) {
                 await db.directTranslationRequests.where("paragraphId").equals(paragraphId).delete();
                 const paragraphTranslationIds = await db.paragraphTranslations.where("paragraphId").equals(paragraphId).primaryKeys();
                 for (const paragraphTranslationId of paragraphTranslationIds) {
