@@ -1,6 +1,10 @@
 <script lang="ts">
     import { getContext } from "svelte";
-    import { Library, type LibraryFolder, type LibraryBook } from "./library.svelte";
+    import {
+        Library,
+        type LibraryFolder,
+        type LibraryBook,
+    } from "./library.svelte";
     import { route } from "@mateothegreat/svelte5-router";
     import ConfirmDialog from "./ConfirmDialog.svelte";
     import MoveFolderDialog from "./MoveFolderDialog.svelte";
@@ -38,15 +42,15 @@
 
     function getAllBookIds(folder: LibraryFolder): number[] {
         const bookIds: number[] = [];
-        
+
         // Add books from current folder
-        bookIds.push(...folder.books.map(book => book.id));
-        
+        bookIds.push(...folder.books.map((book) => book.id));
+
         // Recursively add books from subfolders
         for (const subfolder of folder.folders) {
             bookIds.push(...getAllBookIds(subfolder));
         }
-        
+
         return bookIds;
     }
 
@@ -64,21 +68,23 @@
 
     function getSelectedBooks(folder: LibraryFolder): LibraryBook[] {
         const books: LibraryBook[] = [];
-        
+
         // Add selected books from current folder
-        books.push(...folder.books.filter(book => selectedBookIds.has(book.id)));
-        
+        books.push(
+            ...folder.books.filter((book) => selectedBookIds.has(book.id)),
+        );
+
         // Recursively add selected books from subfolders
         for (const subfolder of folder.folders) {
             books.push(...getSelectedBooks(subfolder));
         }
-        
+
         return books;
     }
 
     function confirmBatchDelete() {
         if (booksToDelete.length > 0) {
-            library.deleteBooksInBatch(booksToDelete.map(book => book.id));
+            library.deleteBooksInBatch(booksToDelete.map((book) => book.id));
             booksToDelete = [];
             clearSelection();
         }
@@ -92,7 +98,10 @@
 
     function confirmBatchMove(newPath: string[] | null) {
         if (booksToMove.length > 0) {
-            library.moveBooksInBatch(booksToMove.map(book => book.id), newPath);
+            library.moveBooksInBatch(
+                booksToMove.map((book) => book.id),
+                newPath,
+            );
             booksToMove = [];
             clearSelection();
         }
@@ -114,14 +123,23 @@
             <h1>Books</h1>
             {#if hasSelection}
                 <div class="batch-actions">
-                    <span class="selection-count">{selectedCount} selected</span>
-                    <button onclick={requestBatchMove} class="compact">Move Selected</button>
-                    <button onclick={requestBatchDelete} class="danger compact">Delete Selected</button>
-                    <button onclick={clearSelection} class="secondary compact">Clear Selection</button>
+                    <span class="selection-count">{selectedCount} selected</span
+                    >
+                    <button onclick={requestBatchMove} class="compact"
+                        >Move Selected</button
+                    >
+                    <button onclick={requestBatchDelete} class="danger compact"
+                        >Delete Selected</button
+                    >
+                    <button onclick={clearSelection} class="secondary compact"
+                        >Clear Selection</button
+                    >
                 </div>
             {:else}
                 <div class="select-actions">
-                    <button onclick={selectAllBooks} class="secondary compact">Select All</button>
+                    <button onclick={selectAllBooks} class="secondary compact"
+                        >Select All</button
+                    >
                 </div>
             {/if}
         </div>
@@ -131,7 +149,7 @@
     </div>
 {/if}
 
-<MoveFolderDialog 
+<MoveFolderDialog
     bind:isOpen={showBatchMoveDialog}
     rootFolder={$rootFolder || { name: undefined, folders: [], books: [] }}
     onConfirm={confirmBatchMove}
@@ -139,56 +157,68 @@
 />
 
 <!-- Batch delete confirmation dialog -->
-<ConfirmDialog 
+<ConfirmDialog
     bind:isOpen={showBatchDeleteDialog}
     title="Delete Books"
-    message={booksToDelete.length > 0 ? `Are you sure you want to delete ${booksToDelete.length} book(s)? This action cannot be undone.` : ""}
+    message={booksToDelete.length > 0
+        ? `Are you sure you want to delete ${booksToDelete.length} book(s)? This action cannot be undone.`
+        : ""}
     onConfirm={confirmBatchDelete}
     onCancel={cancelBatchDelete}
 />
 
 <!-- Recursive folder component snippet -->
 {#snippet FolderComponent(folder: LibraryFolder)}
-    <details open={!folder.name}>
-        {#if folder.name}
+    {#if folder.name}
+        <details>
             <summary>{folder.name}</summary>
-        {:else}
-            <summary></summary>
+            {@render FolderComponentInternal(folder)}
+        </details>
+    {:else}
+        {@render FolderComponentInternal(folder)}
+    {/if}
+{/snippet}
+
+{#snippet FolderComponentInternal(folder: LibraryFolder)}
+    <!-- Subfolders -->
+    <div class="subfolders">
+        {#if folder.folders.length > 0}
+            {#each folder.folders as subfolder}
+                {@render FolderComponent(subfolder)}
+            {/each}
         {/if}
-        <!-- Subfolders -->
-        <div class="subfolders">
-            {#if folder.folders.length > 0}
-                {#each folder.folders as subfolder}
-                    {@render FolderComponent(subfolder)}
+    </div>
+    <div class="subfolder-books">
+        <!-- Books in this folder -->
+        {#if folder.books.length > 0}
+            <ul>
+                {#each folder.books as book}
+                    <li>
+                        <div class="book-selection">
+                            <label class="book-checkbox">
+                                <input
+                                    type="checkbox"
+                                    checked={selectedBookIds.has(book.id)}
+                                    onchange={() =>
+                                        toggleBookSelection(book.id)}
+                                />
+                            </label>
+                            <a use:route href="/book/{book.id}"
+                                >{book.title} - {book.chapters.length} chapter(s)
+                                {#if book.translatedParagraphsCount != book.paragraphsCount}
+                                    - {(
+                                        (book.translatedParagraphsCount /
+                                            book.paragraphsCount) *
+                                        100
+                                    ).toFixed(0)}% translated
+                                {/if}
+                            </a>
+                        </div>
+                    </li>
                 {/each}
-            {/if}
-        </div>
-        <div class="subfolder-books">        
-            <!-- Books in this folder -->
-            {#if folder.books.length > 0}
-                <ul>
-                    {#each folder.books as book}
-                        <li>
-                            <div class="book-selection">
-                                <label class="book-checkbox">
-                                    <input 
-                                        type="checkbox" 
-                                        checked={selectedBookIds.has(book.id)}
-                                        onchange={() => toggleBookSelection(book.id)}
-                                    />
-                                </label>
-                                <a use:route href="/book/{book.id}">{book.title} - {book.chapters.length} chapter(s)
-                                    {#if book.translatedParagraphsCount != book.paragraphsCount}
-                                        - {(book.translatedParagraphsCount / book.paragraphsCount * 100).toFixed(0)}% translated
-                                    {/if}
-                                </a>
-                            </div>
-                        </li>
-                    {/each}
-                </ul>
-            {/if}
-        </div>
-    </details>
+            </ul>
+        {/if}
+    </div>
 {/snippet}
 
 <style>
@@ -196,7 +226,7 @@
     summary:empty {
         list-style: none;
     }
-    
+
     summary:empty::-webkit-details-marker {
         display: none;
     }
@@ -217,14 +247,15 @@
         align-items: center;
         justify-content: space-between;
         padding: 10px 0;
-        border-bottom: 1px solid var(--background-color);
+        border-bottom: 1px solid var(--text-color-muted);
     }
 
     .header h1 {
         margin: 0;
     }
 
-    .batch-actions, .select-actions {
+    .batch-actions,
+    .select-actions {
         display: flex;
         align-items: center;
         gap: 8px;
@@ -259,7 +290,6 @@
         align-items: center;
         margin-bottom: 1px;
         padding: 8px 0 8px 10px;
-        border-bottom: 1px solid var(--background-color);
     }
 
     li a {
@@ -282,9 +312,7 @@
     }
 
     .subfolder-books {
-        border-left: 1px solid var(--background-color);
-        border-top: 1px solid var(--background-color);
-        border-right: 1px solid var(--background-color);
+        border-left: 1px solid var(--text-color-muted);
         margin: 10px;
     }
 </style>
