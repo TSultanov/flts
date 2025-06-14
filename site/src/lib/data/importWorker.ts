@@ -45,14 +45,6 @@ function scheduleTranslationWithRetries(request: TranslationRequest, retriesLeft
 
     if (!translationRequestBag.has(request.id)) {
         console.log(`Worker: scheduling ${request.paragraphId}`);
-        // Delete the request from the table immediately when scheduled
-        db.directTranslationRequests.where("id").equals(request.id).delete()
-            .then(() => {
-                console.log(`Worker: removed translation request ${request.id} from table`);
-            })
-            .catch((err) => {
-                console.log(`Worker: failed to remove translation request ${request.id} from table:`, err);
-            });
         schedule(retriesLeft);
     }
 }
@@ -85,6 +77,7 @@ async function handleTranslationEvent(translationRequest: TranslationRequest) {
     }
 
     await addTranslation(translationRequest.paragraphId, translation, translationRequest.model);
+    await db.directTranslationRequests.where("id").equals(translationRequest.paragraphId).delete()
 }
 
 async function addTranslation(paragraphId: number, translation: ParagraphTranslation, model: ModelId) {
