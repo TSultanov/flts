@@ -56,7 +56,7 @@ type ModelMeta = {
     provider: ModelProvider,
 }
 
-export const models = [
+export const models: ModelMeta[] = [
     {
         id: "gemini-2.5-flash-preview-05-20",
         name: "gemini-2.5-flash-preview-05-20",
