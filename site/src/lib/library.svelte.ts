@@ -392,6 +392,7 @@ export class Library {
             db.paragraphTranslations,
             db.sentenceTranslations,
             db.sentenceWordTranslations,
+            db.directTranslationRequests,
         ],
             async () => {
                 await this.deleteBookInternal(bookId);
@@ -411,6 +412,7 @@ export class Library {
         for (const chapterId of chapterIds) {
             const paragraphIds = await db.paragraphs.where("chapterId").equals(chapterId).primaryKeys();
             for (const paragraphId of paragraphIds) {                
+                await db.directTranslationRequests.where("paragraphId").equals(paragraphId).delete();
                 const paragraphTranslationIds = await db.paragraphTranslations.where("paragraphId").equals(paragraphId).primaryKeys();
                 for (const paragraphTranslationId of paragraphTranslationIds) {
                     const sentenceTranslationIds = await db.sentenceTranslations.where("paragraphTranslationId").equals(paragraphTranslationId).primaryKeys();
