@@ -1,8 +1,9 @@
 <script lang="ts">
     import { getContext } from "svelte";
     import { type Library } from "../library.svelte";
-    import { type SentenceWordTranslation } from "../data/db";
     import { decode } from 'html-entities';
+    import { hashString } from "../data/utils";
+    import { getCached, setCache } from "../data/cache";
 
     let { paragraphId, sentenceWordId }: {
         paragraphId: number,
@@ -12,15 +13,25 @@
     const library: Library = getContext('library');
     const paragraph = $derived(library.getParagraph(paragraphId));
 
+    const originalText = $derived($paragraph?.originalHtml ?? $paragraph?.originalText ?? "");
+
     const wordIdPrefix = "sentence-word-";
 
-    const translationHtml = $derived.by(() => {
+    const translationHtml = $derived.by(async () => {
         if (!$paragraph || !$paragraph.translation) {
             return "";
         }
 
-        const originalText = $paragraph.originalHtml ?? $paragraph.originalText;
-
+        let stepTime = performance.now();
+        const hashKey = `${await hashString(originalText + $paragraph.translation.id)}_htmlcache`;
+        console.log("Computing hash took " + (performance.now() - stepTime).toFixed(2) + "ms");
+        stepTime = performance.now();
+        const cachedHtml = await getCached<string>(hashKey);
+        if (cachedHtml) {
+            console.log("Retrieveing cache took " + (performance.now() - stepTime).toFixed(2) + "ms");
+            return cachedHtml;
+        }
+        
         let pIdx = 0;
         let result = [];
         for (const sentence of $paragraph.translation.sentences) {
@@ -58,7 +69,11 @@
         if (pIdx < originalText.length) {
             result.push(originalText.slice(pIdx, originalText.length));
         }
-        return result.join("");
+
+        const html = result.join("");
+        await setCache(hashKey, html);
+
+        return html;
     });
 
     function levenshteinDistance(str1: string, str2: string) {
@@ -90,13 +105,17 @@
 {#if $paragraph}
 {#if !$paragraph.translation}
 <p class="original">
-    {@html $paragraph.originalHtml ?? $paragraph.originalText}
+    {@html originalText}
 </p>
 {:else}
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <p>
-    {@html translationHtml}
+    {#await translationHtml}
+        {@html originalText}
+    {:then translationHtml} 
+        {@html translationHtml}
+    {/await}
 </p>
 {/if}
 {/if}

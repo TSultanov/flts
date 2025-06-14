@@ -105,7 +105,10 @@ export type DB = Dexie & {
     directTranslationRequests: EntityTable<TranslationRequest, 'id'>,
 };
 
-export const db = new Dexie('library') as DB;
+export const db = new Dexie('library', {
+    chromeTransactionDurability: "relaxed",
+    cache: "immutable",
+}) as DB;
 
 db.version(4).stores({
     books: '++id, title',
