@@ -35,17 +35,17 @@ async function checkAndScheduleUntranslatedParagraphs() {
             let hasTranslation = false;
 
             hasTranslation = await db.paragraphTranslations
-                .where("paragraphId")
-                .equals(paragraph.id)
+                .where("paragraphUid")
+                .equals(paragraph.uid)
                 .count() > 0;
             
             const hasRequest = await db.directTranslationRequests
-                .where("paragraphId")
-                .equals(paragraph.id)
+                .where("paragraphUid")
+                .equals(paragraph.uid)
                 .count() > 0;
             
             if (!hasTranslation && !hasRequest) {
-                await library.scheduleTranslation(paragraph.id);
+                await library.scheduleTranslation(paragraph.uid);
                 untranslatedCount++;
             }
         }
@@ -112,11 +112,11 @@ async function handleTranslationEvent(translationRequest: TranslationRequest) {
 
     // Get paragraph from database
     stepStartTime = performance.now();
-    const paragraph = await db.paragraphs.get(translationRequest.paragraphId);
-    console.log(`Worker: db.paragraphs.get took ${(performance.now() - stepStartTime).toFixed(2)}ms`);
+    const paragraph = await db.paragraphs.where('uid').equals(translationRequest.paragraphUid).first();
+    console.log(`Worker: db.paragraphs.where took ${(performance.now() - stepStartTime).toFixed(2)}ms`);
 
     if (!paragraph) {
-        console.log(`Worker: paragraph Id ${translationRequest.paragraphId} does not exist`);
+        console.log(`Worker: paragraph UID ${translationRequest.paragraphUid} does not exist`);
         await db.directTranslationRequests.where("id").equals(translationRequest.id).delete()
         return;
     }
@@ -139,7 +139,7 @@ async function handleTranslationEvent(translationRequest: TranslationRequest) {
 
     // Add translation to database
     stepStartTime = performance.now();
-    await addTranslation(translationRequest.paragraphId, translation, translationRequest.model);
+    await addTranslation(translationRequest.paragraphUid, translation, translationRequest.model);
     console.log(`Worker: addTranslation took ${(performance.now() - stepStartTime).toFixed(2)}ms`);
 
     // Clean up request
@@ -151,9 +151,9 @@ async function handleTranslationEvent(translationRequest: TranslationRequest) {
     console.log(`Worker: handleTranslationEvent total time: ${totalTime.toFixed(2)}ms for paragraphId ${translationRequest.paragraphId}`);
 }
 
-async function addTranslation(paragraphId: number, translation: ParagraphTranslation, model: ModelId) {
+async function addTranslation(paragraphUid: UUID, translation: ParagraphTranslation, model: ModelId) {
     const startTime = performance.now();
-    console.log(`Worker: addTranslation starting for paragraphId ${paragraphId}, ${translation.sentences.length} sentences`);
+    console.log(`Worker: addTranslation starting for paragraphUid ${paragraphUid}, ${translation.sentences.length} sentences`);
     
     await db.transaction(
         'rw',
@@ -168,10 +168,10 @@ async function addTranslation(paragraphId: number, translation: ParagraphTransla
         ],
         async () => {
             // check if paragraph indeed exists and was not removed while we waited for the LLM response
-            const paragraph = await db.paragraphs.get(paragraphId);
+            const paragraph = await db.paragraphs.where('uid').equals(paragraphUid).first();
             
             if (!paragraph) {
-                console.log(`Worker: paragraph ${paragraphId} was removed during while we were waiting for the LLM response. Skipping.`)
+                console.log(`Worker: paragraph ${paragraphUid} was removed during while we were waiting for the LLM response. Skipping.`)
                 return;
             }
 
@@ -217,18 +217,18 @@ async function addTranslation(paragraphId: number, translation: ParagraphTransla
 
             // Check if paragraph translation already exists
             const existingParagraphTranslation = await db.paragraphTranslations
-                .where("paragraphId").equals(paragraphId)
+                .where("paragraphUid").equals(paragraphUid)
                 .and(pt => pt.languageId === targetLanguageId).first();
 
             if (existingParagraphTranslation) {
-                console.log(`Worker: paragraph ${paragraphId} is already translated to ${targetLanguageId} (id ${existingParagraphTranslation.id})`);
+                console.log(`Worker: paragraph ${paragraphUid} is already translated to ${targetLanguageId} (id ${existingParagraphTranslation.id})`);
                 return;
             }
 
             // Create paragraph translation
             const paragraphTranslationUid = generateUID();
             const paragraphTranslationId = await db.paragraphTranslations.add({
-                paragraphId: paragraphId,
+                paragraphId: paragraph.id,
                 paragraphUid: paragraph.uid,
                 languageId: targetLanguageId,
                 languageUid: targetLanguageUid,
@@ -344,5 +344,5 @@ async function addTranslation(paragraphId: number, translation: ParagraphTransla
         });
     
     const totalTime = performance.now() - startTime;
-    console.log(`Worker: addTranslation total time: ${totalTime.toFixed(2)}ms for paragraphId ${paragraphId}`);
+    console.log(`Worker: addTranslation total time: ${totalTime.toFixed(2)}ms for paragraphUid ${paragraphUid}`);
 }

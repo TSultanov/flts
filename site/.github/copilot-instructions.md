@@ -97,7 +97,7 @@ All buttons use a unified design system with these classes:
 
 ### Navigation
 - File-based routing with `@mateothegreat/svelte5-router`
-- Book URLs: `/book/{bookId}/{chapterId?}`
+- Book URLs: `/book/{bookUid}/{chapterUid?}` (using UUIDs)
 
 ## Future Development Guidelines
 

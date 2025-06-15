@@ -1,17 +1,16 @@
 <script lang="ts">
     import { getContext } from "svelte";
     import { type Library } from "../library.svelte";
+    import type { UUID } from "../data/db";
     import { decode } from 'html-entities';
-    import { hashString } from "../data/utils";
-    import { getCached, setCache } from "../data/cache";
 
-    let { paragraphId, sentenceWordId }: {
-        paragraphId: number,
-        sentenceWordId: number | null,
+    let { paragraphUid, sentenceWordUid }: {
+        paragraphUid: UUID,
+        sentenceWordUid: UUID | null,
     } = $props();
 
     const library: Library = getContext('library');
-    const paragraph = $derived(library.getParagraph(paragraphId));
+    const paragraph = $derived(library.getParagraph(paragraphUid));
 
     const originalText = $derived($paragraph?.originalHtml ?? $paragraph?.originalText ?? "");
 
@@ -21,17 +20,7 @@
         if (!$paragraph || !$paragraph.translation) {
             return "";
         }
-
-        let stepTime = performance.now();
-        const hashKey = `${await hashString(originalText + $paragraph.translation.id)}_htmlcache`;
-        console.log("Computing hash took " + (performance.now() - stepTime).toFixed(2) + "ms");
-        stepTime = performance.now();
-        const cachedHtml = await getCached<string>(hashKey);
-        if (cachedHtml) {
-            console.log("Retrieveing cache took " + (performance.now() - stepTime).toFixed(2) + "ms");
-            return cachedHtml;
-        }
-        
+      
         let pIdx = 0;
         let result = [];
         for (const sentence of $paragraph.translation.sentences) {
@@ -60,8 +49,8 @@
                 }
 
                 pIdx += offset;
-                const id = `${wordIdPrefix}${word.id}`;
-                const additionalClass = word.id === sentenceWordId ? "selected" : "";
+                const id = `${wordIdPrefix}${word.uid}`;
+                const additionalClass = word.uid === sentenceWordUid ? "selected" : "";
                 result.push(`<span class="word-span ${additionalClass}" id="${id}" data="${word.original}" data-offset="${offset}">${originalText.slice(pIdx, pIdx+len)}</span>`);
                 pIdx += len;
             }
@@ -71,8 +60,6 @@
         }
 
         const html = result.join("");
-        await setCache(hashKey, html);
-
         return html;
     });
 

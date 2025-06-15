@@ -5,6 +5,7 @@
         type LibraryFolder,
         type LibraryBook,
     } from "./library.svelte";
+    import type { UUID } from "./data/db";
     import { route } from "@mateothegreat/svelte5-router";
     import ConfirmDialog from "./ConfirmDialog.svelte";
     import MoveFolderDialog from "./MoveFolderDialog.svelte";
@@ -13,45 +14,45 @@
     const rootFolder = library.getLibraryBooks();
 
     // Batch selection state
-    let selectedBookIds = $state(new Set<number>());
+    let selectedBookUids = $state(new Set<UUID>());
     let showBatchDeleteDialog = $state(false);
     let showBatchMoveDialog = $state(false);
     let booksToDelete: LibraryBook[] = $state([]);
     let booksToMove: LibraryBook[] = $state([]);
 
     // Batch selection functions
-    function toggleBookSelection(bookId: number) {
-        if (selectedBookIds.has(bookId)) {
-            selectedBookIds.delete(bookId);
+    function toggleBookSelection(bookUid: UUID) {
+        if (selectedBookUids.has(bookUid)) {
+            selectedBookUids.delete(bookUid);
         } else {
-            selectedBookIds.add(bookId);
+            selectedBookUids.add(bookUid);
         }
-        selectedBookIds = new Set(selectedBookIds); // Trigger reactivity
+        selectedBookUids = new Set(selectedBookUids); // Trigger reactivity
     }
 
     function selectAllBooks() {
         if (!$rootFolder) return;
-        const allBookIds = getAllBookIds($rootFolder);
-        selectedBookIds = new Set(allBookIds);
+        const allBookUids = getAllBookUids($rootFolder);
+        selectedBookUids = new Set(allBookUids);
     }
 
     function clearSelection() {
-        selectedBookIds.clear();
-        selectedBookIds = new Set(selectedBookIds); // Trigger reactivity
+        selectedBookUids.clear();
+        selectedBookUids = new Set(selectedBookUids); // Trigger reactivity
     }
 
-    function getAllBookIds(folder: LibraryFolder): number[] {
-        const bookIds: number[] = [];
+    function getAllBookUids(folder: LibraryFolder): UUID[] {
+        const bookUids: UUID[] = [];
 
         // Add books from current folder
-        bookIds.push(...folder.books.map((book) => book.id));
+        bookUids.push(...folder.books.map((book) => book.uid));
 
         // Recursively add books from subfolders
         for (const subfolder of folder.folders) {
-            bookIds.push(...getAllBookIds(subfolder));
+            bookUids.push(...getAllBookUids(subfolder));
         }
 
-        return bookIds;
+        return bookUids;
     }
 
     function requestBatchDelete() {
@@ -71,7 +72,7 @@
 
         // Add selected books from current folder
         books.push(
-            ...folder.books.filter((book) => selectedBookIds.has(book.id)),
+            ...folder.books.filter((book) => selectedBookUids.has(book.uid)),
         );
 
         // Recursively add selected books from subfolders
@@ -84,7 +85,7 @@
 
     function confirmBatchDelete() {
         if (booksToDelete.length > 0) {
-            library.deleteBooksInBatch(booksToDelete.map((book) => book.id));
+            library.deleteBooksInBatch(booksToDelete.map((book) => book.uid));
             booksToDelete = [];
             clearSelection();
         }
@@ -99,7 +100,7 @@
     function confirmBatchMove(newPath: string[] | null) {
         if (booksToMove.length > 0) {
             library.moveBooksInBatch(
-                booksToMove.map((book) => book.id),
+                booksToMove.map((book) => book.uid),
                 newPath,
             );
             booksToMove = [];
@@ -113,7 +114,7 @@
         showBatchMoveDialog = false;
     }
 
-    const selectedCount = $derived(selectedBookIds.size);
+    const selectedCount = $derived(selectedBookUids.size);
     const hasSelection = $derived(selectedCount > 0);
 </script>
 
@@ -198,12 +199,12 @@
                             <label class="book-checkbox">
                                 <input
                                     type="checkbox"
-                                    checked={selectedBookIds.has(book.id)}
+                                    checked={selectedBookUids.has(book.uid)}
                                     onchange={() =>
-                                        toggleBookSelection(book.id)}
+                                        toggleBookSelection(book.uid)}
                                 />
                             </label>
-                            <a use:route href="/book/{book.id}"
+                            <a use:route href="/book/{book.uid}"
                                 >{book.title} - {book.chapters.length} chapter(s)
                                 {#if book.translatedParagraphsCount != book.paragraphsCount}
                                     - {(

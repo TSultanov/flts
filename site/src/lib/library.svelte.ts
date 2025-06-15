@@ -1,5 +1,5 @@
 import { liveQuery } from "dexie";
-import { db, type Book, type BookChapter, type Language, type Paragraph, type ParagraphTranslation, type SentenceTranslation, type SentenceWordTranslation, type Word, type WordTranslation, generateUID } from "./data/db";
+import { db, type Book, type BookChapter, type Language, type Paragraph, type ParagraphTranslation, type SentenceTranslation, type SentenceWordTranslation, type Word, type WordTranslation, generateUID, type UUID } from "./data/db";
 import { readable, type Readable } from 'svelte/store';
 import type { EpubBook } from "./data/epubLoader";
 import type { ModelId } from "./data/translators/translator";
@@ -50,7 +50,7 @@ export type LibrarySentenceWordTranslation = SentenceWordTranslation & {
 }
 
 export class Library {
-    getWordTranslation(sentenceWordId: number): Readable<LibrarySentenceWordTranslation | null> {
+    getWordTranslation(sentenceWordUid: UUID): Readable<LibrarySentenceWordTranslation | null> {
         return this.useQuery(() =>
             db.transaction(
                 'r',
@@ -64,17 +64,17 @@ export class Library {
                     db.languages,
                 ],
                 async () => {
-                    const sentenceWordTranslation = await db.sentenceWordTranslations.get(sentenceWordId);
+                    const sentenceWordTranslation = await db.sentenceWordTranslations.where('uid').equals(sentenceWordUid).first();
                     if (!sentenceWordTranslation) {
                         return null;
                     }
 
-                    const sentenceTranslation = await db.sentenceTranslations.get(sentenceWordTranslation.sentenceId);
+                    const sentenceTranslation = await db.sentenceTranslations.where('uid').equals(sentenceWordTranslation.sentenceUid).first();
                     if (!sentenceTranslation) {
                         return null;
                     }
 
-                    const paragraphTranslation = await db.paragraphTranslations.get(sentenceTranslation.paragraphTranslationId);
+                    const paragraphTranslation = await db.paragraphTranslations.where('uid').equals(sentenceTranslation.paragraphTranslationUid).first();
                     if (!paragraphTranslation) {
                         return null;
                     }
@@ -86,26 +86,26 @@ export class Library {
                         paragraphId: paragraphTranslation.paragraphId,
                     };
 
-                    const wordTranslation = sentenceWordTranslation.wordTranslationId != null ? await db.wordTranslations.get(sentenceWordTranslation.wordTranslationId) : null;
+                    const wordTranslation = sentenceWordTranslation.wordTranslationUid != null ? await db.wordTranslations.where('uid').equals(sentenceWordTranslation.wordTranslationUid).first() : null;
                     if (!wordTranslation) {
                         return sentenceWordFullTranslation;
                     }
 
-                    const targetLanguage = await db.languages.get(wordTranslation.languageId);
+                    const targetLanguage = await db.languages.where('uid').equals(wordTranslation.languageUid).first();
                     if (!targetLanguage) {
-                        console.log(`Can't find targetLanguage id ${wordTranslation.languageId}`);
+                        console.log(`Can't find targetLanguage uid ${wordTranslation.languageUid}`);
                         return sentenceWordFullTranslation;
                     }
 
-                    const originalWord = await db.words.get(wordTranslation.originalWordId);
+                    const originalWord = await db.words.where('uid').equals(wordTranslation.originalWordUid).first();
                     if (!originalWord) {
-                        console.log(`Can't find original word for wordTranslation id ${wordTranslation.id}`);
+                        console.log(`Can't find original word for wordTranslation uid ${wordTranslation.uid}`);
                         return sentenceWordFullTranslation;
                     }
 
-                    const originalLanguage = await db.languages.get(originalWord.originalLanguageId);
+                    const originalLanguage = await db.languages.where('uid').equals(originalWord.originalLanguageUid).first();
                     if (!originalLanguage) {
-                        console.log(`Can't find originalLanguage id ${originalWord.originalLanguageId}`);
+                        console.log(`Can't find originalLanguage uid ${originalWord.originalLanguageUid}`);
                         return sentenceWordFullTranslation;
                     }
 
@@ -129,7 +129,7 @@ export class Library {
             ));
     }
 
-    getBook(bookId: number): Readable<LibraryBook | null> {
+    getBook(bookUid: UUID): Readable<LibraryBook | null> {
         return this.useQuery(() => db.transaction(
             'r',
             [
@@ -139,27 +139,28 @@ export class Library {
                 db.paragraphTranslations
             ],
             async () => {
-                const book = await db.books.get(bookId);
+                const book = await db.books.where('uid').equals(bookUid).first();
                 if (!book) {
                     return null;
                 }
-                const chapters = await db.bookChapters.where("bookId").equals(book.id).sortBy("order");
+                const chapters = await db.bookChapters.where("bookUid").equals(book.uid).sortBy("order");
 
-                const paragraphIds = (await db.paragraphs.where("chapterId").anyOf(chapters.map(c => c.id)).toArray()).map(p => p.id);
-                const translatedParagraphs = await db.paragraphTranslations.where("paragraphId").anyOf(paragraphIds).toArray();
-                const translatedParagraphsCount = (new Set(translatedParagraphs.map(p => p.paragraphId))).size;
+                const paragraphs = await db.paragraphs.where("chapterUid").anyOf(chapters.map(c => c.uid)).toArray();
+                const paragraphUids = paragraphs.map(p => p.uid);
+                const translatedParagraphs = await db.paragraphTranslations.where("paragraphUid").anyOf(paragraphUids).toArray();
+                const translatedParagraphsCount = (new Set(translatedParagraphs.map(p => p.paragraphUid))).size;
 
                 return {
                     ...book,
                     chapters,
-                    paragraphsCount: paragraphIds.length,
+                    paragraphsCount: paragraphs.length,
                     translatedParagraphsCount
                 }
             }
         ));
     }
 
-    getParagraph(paragraphId: number): Readable<LibraryBookParagraph | null> {
+    getParagraph(paragraphUid: UUID): Readable<LibraryBookParagraph | null> {
         return this.useQuery(() => db.transaction(
             'r',
             [
@@ -169,12 +170,12 @@ export class Library {
                 db.sentenceWordTranslations,
             ],
             async () => {
-                const paragraph = await db.paragraphs.get(paragraphId);
+                const paragraph = await db.paragraphs.where('uid').equals(paragraphUid).first();
                 if (!paragraph) {
                     return null;
                 }
 
-                const translations = await db.paragraphTranslations.where('paragraphId').equals(paragraphId).toArray();
+                const translations = await db.paragraphTranslations.where('paragraphUid').equals(paragraphUid).toArray();
                 if (translations.length === 0) {
                     return {
                         ...paragraph,
@@ -183,9 +184,9 @@ export class Library {
                 }
                 const librarySentences: LibrarySentenceTranslation[] = [];
                 for (const translation of translations) {
-                    const sentences = await db.sentenceTranslations.where('paragraphTranslationId').equals(translation.id).sortBy('order');
+                    const sentences = await db.sentenceTranslations.where('paragraphTranslationUid').equals(translation.uid).sortBy('order');
                     for (const sentence of sentences) {
-                        const words = await db.sentenceWordTranslations.where('sentenceId').equals(sentence.id).toArray();
+                        const words = await db.sentenceWordTranslations.where('sentenceUid').equals(sentence.uid).toArray();
                         librarySentences.push({
                             ...sentence,
                             words,
@@ -204,7 +205,7 @@ export class Library {
         ));
     }
 
-    getChapter(chapterId: number): Readable<LibraryBookChapter | null> {
+    getChapter(chapterUid: UUID): Readable<LibraryBookChapter | null> {
         return this.useQuery(() => db.transaction(
             'r',
             [
@@ -212,11 +213,11 @@ export class Library {
                 db.paragraphs,
             ],
             async () => {
-                const chapter = await db.bookChapters.get(chapterId);
+                const chapter = await db.bookChapters.where('uid').equals(chapterUid).first();
                 if (!chapter) {
                     return null;
                 }
-                const paragraphs = await db.paragraphs.where('chapterId').equals(chapter.id).sortBy('order');
+                const paragraphs = await db.paragraphs.where('chapterUid').equals(chapter.uid).sortBy('order');
                 return {
                     ...chapter,
                     paragraphs: paragraphs,
@@ -237,15 +238,16 @@ export class Library {
             async () => {
                 const books = await db.books.toArray();
                 const libraryBooks = await Promise.all(books.map(async b => {
-                    const chapters = await db.bookChapters.where("bookId").equals(b.id).sortBy("order");
+                    const chapters = await db.bookChapters.where("bookUid").equals(b.uid).sortBy("order");
 
-                    const paragraphIds = (await db.paragraphs.where("chapterId").anyOf(chapters.map(c => c.id)).toArray()).map(p => p.id);
-                    const translatedParagraphsCount = await db.paragraphTranslations.where("paragraphId").anyOf(paragraphIds).count()
+                    const paragraphs = await db.paragraphs.where("chapterUid").anyOf(chapters.map(c => c.uid)).toArray();
+                    const paragraphUids = paragraphs.map(p => p.uid);
+                    const translatedParagraphsCount = await db.paragraphTranslations.where("paragraphUid").anyOf(paragraphUids).count()
 
                     return {
                         ...b,
                         chapters,
-                        paragraphsCount: paragraphIds.length,
+                        paragraphsCount: paragraphs.length,
                         translatedParagraphsCount
                     };
                 }));
@@ -311,7 +313,7 @@ export class Library {
                     createdAt: Date.now(),
                 });
 
-                const paragraphIds: number[] = [];
+                const paragraphUids: UUID[] = [];
 
                 let chapterOrder = 0;
                 for (const c of book.chapters) {
@@ -327,24 +329,25 @@ export class Library {
 
                     let paragraphOrder = 0;
                     for (const paragraph of c.paragraphs) {
+                        const paragraphUid = generateUID();
                         const paragraphId = await db.paragraphs.add({
                             chapterId,
                             chapterUid,
                             order: paragraphOrder,
                             originalText: paragraph.text,
                             originalHtml: paragraph.html,
-                            uid: generateUID(),
+                            uid: paragraphUid,
                             createdAt: Date.now(),
                         });
 
-                        paragraphIds.push(paragraphId);
+                        paragraphUids.push(paragraphUid);
 
                         paragraphOrder += 1;
                     }
                     chapterOrder += 1;
                 }
 
-                await Promise.all(paragraphIds.map(pid => this.scheduleTranslationInternal(pid, model)));
+                await Promise.all(paragraphUids.map(puid => this.scheduleTranslationInternal(puid, model)));
             }
         );
     }
@@ -380,27 +383,28 @@ export class Library {
 
                 const paragraphs = this.splitParagraphs(text);
 
-                const paragraphIds: number[] = [];
+                const paragraphUids: UUID[] = [];
                 let order = 0;
                 for (const paragraph of paragraphs) {
+                    const paragraphUid = generateUID();
                     const paragraphId = await db.paragraphs.add({
                         chapterId,
                         chapterUid,
                         order,
                         originalText: paragraph,
-                        uid: generateUID(),
+                        uid: paragraphUid,
                         createdAt: Date.now(),
                     });
-                    paragraphIds.push(paragraphId);
+                    paragraphUids.push(paragraphUid);
                     order += 1;
                 }
 
-                await Promise.all(paragraphIds.map(pid => this.scheduleTranslationInternal(pid, model)));
+                await Promise.all(paragraphUids.map(puid => this.scheduleTranslationInternal(puid, model)));
             }
         );
     }
 
-    public async scheduleTranslation(paragraphId: number) {
+    public async scheduleTranslation(paragraphUid: UUID) {
         const config = await getConfig();
         const model = config.model;
 
@@ -411,30 +415,30 @@ export class Library {
                 db.directTranslationRequests,
             ],
             async () => {
-                await this.scheduleTranslationInternal(paragraphId, model);
+                await this.scheduleTranslationInternal(paragraphUid, model);
             }
         )
     }
 
-    private async scheduleTranslationInternal(paragraphId: number, model: ModelId) {
-        const requestExists = await db.directTranslationRequests.where("paragraphId").equals(paragraphId).count() > 0;
+    private async scheduleTranslationInternal(paragraphUid: UUID, model: ModelId) {
+        const requestExists = await db.directTranslationRequests.where("paragraphUid").equals(paragraphUid).count() > 0;
         if (!requestExists) {
-            // Get paragraph UID
-            const paragraph = await db.paragraphs.get(paragraphId);
+            // Get paragraph ID for backward compatibility
+            const paragraph = await db.paragraphs.where('uid').equals(paragraphUid).first();
             if (!paragraph) {
-                console.warn(`Cannot schedule translation: paragraph with id ${paragraphId} not found`);
+                console.warn(`Cannot schedule translation: paragraph with uid ${paragraphUid} not found`);
                 return;
             }
             
             await db.directTranslationRequests.add({
-                paragraphId,
-                paragraphUid: paragraph.uid,
+                paragraphId: paragraph.id,
+                paragraphUid: paragraphUid,
                 model,
             });
         }
     }
 
-    async deleteBook(bookId: number) {
+    async deleteBook(bookUid: UUID) {
         await db.transaction('rw', [
             db.books,
             db.bookChapters,
@@ -445,37 +449,37 @@ export class Library {
             db.directTranslationRequests,
         ],
             async () => {
-                await this.deleteBookInternal(bookId);
+                await this.deleteBookInternal(bookUid);
             }
         );
     }
 
-    async moveBook(bookId: number, newPath: string[] | null) {
+    async moveBook(bookUid: UUID, newPath: string[] | null) {
         await db.transaction('rw', [db.books], async () => {
-            await this.moveBookInternal(bookId, newPath);
+            await this.moveBookInternal(bookUid, newPath);
         });
     }
 
-    private async deleteBookInternal(bookId: number) {
-        const chapterIds = await db.bookChapters.where("bookId").equals(bookId).primaryKeys();
-        const paragraphIds = await db.paragraphs.where("chapterId").anyOf(chapterIds).primaryKeys();
-        const paragraphTranslationIds = await db.paragraphTranslations.where("paragraphId").anyOf(paragraphIds).primaryKeys();
-        const sentenceTranslationIds = await db.sentenceTranslations.where("paragraphTranslationId").anyOf(paragraphTranslationIds).primaryKeys();
+    private async deleteBookInternal(bookUid: UUID) {
+        const chapterUids = (await db.bookChapters.where("bookUid").equals(bookUid).toArray()).map(c => c.uid);
+        const paragraphUids = (await db.paragraphs.where("chapterUid").anyOf(chapterUids).toArray()).map(p => p.uid);
+        const paragraphTranslationUids = (await db.paragraphTranslations.where("paragraphUid").anyOf(paragraphUids).toArray()).map(pt => pt.uid);
+        const sentenceTranslationUids = (await db.sentenceTranslations.where("paragraphTranslationUid").anyOf(paragraphTranslationUids).toArray()).map(st => st.uid);
 
-        await db.sentenceWordTranslations.where("sentenceId").anyOf(sentenceTranslationIds).delete();
-        await db.sentenceTranslations.where("paragraphTranslationId").anyOf(paragraphTranslationIds).delete();
-        await db.paragraphTranslations.where("paragraphId").anyOf(paragraphIds).delete();
-        await db.directTranslationRequests.where("paragraphId").anyOf(paragraphIds).delete();
-        await db.paragraphs.where("chapterId").anyOf(chapterIds).delete();
-        await db.bookChapters.where("bookId").equals(bookId).delete();
-        await db.books.delete(bookId);
+        await db.sentenceWordTranslations.where("sentenceUid").anyOf(sentenceTranslationUids).delete();
+        await db.sentenceTranslations.where("paragraphTranslationUid").anyOf(paragraphTranslationUids).delete();
+        await db.paragraphTranslations.where("paragraphUid").anyOf(paragraphUids).delete();
+        await db.directTranslationRequests.where("paragraphUid").anyOf(paragraphUids).delete();
+        await db.paragraphs.where("chapterUid").anyOf(chapterUids).delete();
+        await db.bookChapters.where("bookUid").equals(bookUid).delete();
+        await db.books.where("uid").equals(bookUid).delete();
     }
 
-    private async moveBookInternal(bookId: number, newPath: string[] | null) {
-        await db.books.update(bookId, { path: newPath || undefined });
+    private async moveBookInternal(bookUid: UUID, newPath: string[] | null) {
+        await db.books.where("uid").equals(bookUid).modify({ path: newPath || undefined });
     }
 
-    async deleteBooksInBatch(bookIds: number[]) {
+    async deleteBooksInBatch(bookUids: UUID[]) {
         await db.transaction('rw', [
             db.books,
             db.bookChapters,
@@ -486,17 +490,17 @@ export class Library {
             db.directTranslationRequests,
         ],
             async () => {
-                for (const bookId of bookIds) {
-                    await this.deleteBookInternal(bookId);
+                for (const bookUid of bookUids) {
+                    await this.deleteBookInternal(bookUid);
                 }
             }
         );
     }
 
-    async moveBooksInBatch(bookIds: number[], newPath: string[] | null) {
+    async moveBooksInBatch(bookUids: UUID[], newPath: string[] | null) {
         await db.transaction('rw', [db.books], async () => {
-            for (const bookId of bookIds) {
-                await this.moveBookInternal(bookId, newPath);
+            for (const bookUid of bookUids) {
+                await this.moveBookInternal(bookUid, newPath);
             }
         });
     }

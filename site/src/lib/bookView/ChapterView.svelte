@@ -1,26 +1,27 @@
 <script lang="ts">
     import { getContext, onMount } from "svelte";
     import { type Library, type LibraryBookChapter } from "../library.svelte";
+    import type { UUID } from "../data/db";
     import ParagraphView from "./ParagraphView.svelte";
 
     let {
-        chapterId,
-        sentenceWordId = $bindable(),
+        chapterUid,
+        sentenceWordUid = $bindable(),
     }: {
-        chapterId: number;
-        sentenceWordId: number | null;
+        chapterUid: UUID;
+        sentenceWordUid: UUID | null;
     } = $props();
 
     const library: Library = getContext("library");
-    const chapter = $derived(library.getChapter(chapterId));
+    const chapter = $derived(library.getChapter(chapterUid));
 
     function chapterClick(e: MouseEvent) {
         const target = document.elementFromPoint(e.clientX, e.clientY);
         if (target && target.classList.contains("word-span")) {
-            const wordId = parseInt(target.id.replace("sentence-word-", ""));
-            sentenceWordId = wordId;
+            const wordUid = target.id.replace("sentence-word-", "");
+            sentenceWordUid = wordUid as UUID;
         } else {
-            sentenceWordId = null;
+            sentenceWordUid = null;
         }
     }
 
@@ -39,8 +40,8 @@
             {#if $chapter}
                 {#each $chapter.paragraphs as paragraph}
                     <ParagraphView
-                        paragraphId={paragraph.id}
-                        {sentenceWordId}
+                        paragraphUid={paragraph.uid}
+                        {sentenceWordUid}
                     />
                 {/each}
             {/if}

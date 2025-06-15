@@ -1,12 +1,13 @@
 <script lang="ts">
     import { getContext } from "svelte";
     import { type Library } from "../library.svelte";
+    import type { UUID } from "../data/db";
 
-    const { wordId }: { wordId: number } = $props();
+    const { wordUid }: { wordUid: UUID } = $props();
 
     const library: Library = getContext("library");
 
-    const word = $derived(library.getWordTranslation(wordId));
+    const word = $derived(library.getWordTranslation(wordUid));
 </script>
 
 {#if $word}

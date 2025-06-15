@@ -1,6 +1,7 @@
 <script lang="ts">
     import { getContext } from "svelte";
     import { type Library } from "../library.svelte";
+    import type { UUID } from "../data/db";
     import { goto } from "@mateothegreat/svelte5-router";
     import ChapterView from "./ChapterView.svelte";
     import WordView from "./WordView.svelte";
@@ -9,24 +10,22 @@
     const { route } = $props();
     $inspect(route);
 
-    const bookId: number = parseInt(route.result.path.params.bookId);
-    const chapterId: number | null = $derived(
-        route.result.path.params.chapterId
-            ? parseInt(route.result.path.params.chapterId)
-            : null,
+    const bookUid: UUID = route.result.path.params.bookId;
+    const chapterUid: UUID | null = $derived(
+        route.result.path.params.chapterId || null,
     );
 
     const library: Library = getContext("library");
-    const book = $derived(library.getBook(bookId));
+    const book = $derived(library.getBook(bookUid));
 
     $effect(() => {
         if ($book?.chapters.length === 1) {
-            // chapterId = $book.chapters[0].id;
-            goto(`/book/${bookId}/${$book.chapters[0].id}`);
+            // chapterUid = $book.chapters[0].uid;
+            goto(`/book/${bookUid}/${$book.chapters[0].uid}`);
         }
     });
 
-    let sentenceWordIdToDisplay: number | null = $state(null);
+    let sentenceWordUidToDisplay: UUID | null = $state(null);
 </script>
 
 <div class="container">
@@ -35,23 +34,23 @@
         <div class="chapters">
             {#each $book.chapters as chapter}
                 <p>
-                    <a use:r href="/book/{bookId}/{chapter.id}"
+                    <a use:r href="/book/{bookUid}/{chapter.uid}"
                         >{chapter.title ? chapter.title : "<no title>"}</a
                     >
                 </p>
             {/each}
         </div>
     {/if}
-    {#if chapterId}
+    {#if chapterUid}
         <div class="chapter-view">
             <ChapterView
-                {chapterId}
-                bind:sentenceWordId={sentenceWordIdToDisplay}
+                {chapterUid}
+                bind:sentenceWordUid={sentenceWordUidToDisplay}
             />
         </div>
         <div class="word-view">
-            {#if sentenceWordIdToDisplay}
-                <WordView wordId={sentenceWordIdToDisplay} />
+            {#if sentenceWordUidToDisplay}
+                <WordView wordUid={sentenceWordUidToDisplay} />
             {:else}
                 Select word to show translation
             {/if}
