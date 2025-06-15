@@ -238,7 +238,6 @@ async function addTranslation(paragraphUid: UUID, translation: ParagraphTranslat
             // Process sentences and words
             let sentenceOrder = 0;
             for (const sentence of translation.sentences) {
-                let sentenceStepStart = performance.now();
                 const sentenceTranslationUid = generateUID();
                 await db.sentenceTranslations.add({
                     paragraphTranslationUid,
@@ -251,7 +250,6 @@ async function addTranslation(paragraphUid: UUID, translation: ParagraphTranslat
                 let wordOrder = 0;
                 for (const word of sentence.words) {
                     if (word.isPunctuation) {
-                        sentenceStepStart = performance.now();
                         await db.sentenceWordTranslations.add({
                             order: wordOrder,
                             sentenceUid: sentenceTranslationUid,
@@ -264,7 +262,6 @@ async function addTranslation(paragraphUid: UUID, translation: ParagraphTranslat
                             createdAt: Date.now(),
                         })
                     } else {
-                        sentenceStepStart = performance.now();
                         const originalWordUid = await (async (): Promise<UUID> => {
                             const dictWord = await db.words
                             .where("originalNormalized").equals(word.grammar.originalInitialForm.toLowerCase())
@@ -286,7 +283,6 @@ async function addTranslation(paragraphUid: UUID, translation: ParagraphTranslat
                             return uid;
                         })();
 
-                        sentenceStepStart = performance.now();
                         const wordTranslationUid = await (async (): Promise<UUID> => {
                             const existingTranslation = await db.wordTranslations
                             .where("originalWordUid").equals(originalWordUid)
@@ -310,7 +306,6 @@ async function addTranslation(paragraphUid: UUID, translation: ParagraphTranslat
                             return uid;
                         })();
 
-                        sentenceStepStart = performance.now();
                         await db.sentenceWordTranslations.add({
                             order: wordOrder,
                             original: word.original,
