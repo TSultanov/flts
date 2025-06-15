@@ -74,6 +74,7 @@
         flex: 0 1 150px;
         padding: 10px;
         border-right: 1px solid var(--background-color);
+        overflow-y: auto;
     }
 
     .word-view {
