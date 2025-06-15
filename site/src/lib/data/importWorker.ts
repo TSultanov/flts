@@ -1,5 +1,5 @@
 import { getConfig } from "../config";
-import { db, type TranslationRequest } from "./db";
+import { db, type TranslationRequest, generateUID } from "./db";
 import Bottleneck from 'bottleneck';
 import { liveQuery } from "dexie";
 import { getTranslator, type ModelId, type ParagraphTranslation } from "./translators/translator";
@@ -182,7 +182,11 @@ async function addTranslation(paragraphId: number, translation: ParagraphTransla
                     .first())?.id;
 
                 if (!id) {
-                    id = await db.languages.add({ name: translation.sourceLanguage.toLowerCase() });
+                    id = await db.languages.add({ 
+                        name: translation.sourceLanguage.toLowerCase(),
+                        uid: generateUID(),
+                        createdAt: Date.now(),
+                    });
                 }
 
                 return id;
@@ -195,7 +199,11 @@ async function addTranslation(paragraphId: number, translation: ParagraphTransla
                     .first())?.id;
 
                 if (!id) {
-                    id = await db.languages.add({ name: translation.targetLanguage.toLowerCase() });
+                    id = await db.languages.add({ 
+                        name: translation.targetLanguage.toLowerCase(),
+                        uid: generateUID(),
+                        createdAt: Date.now(),
+                    });
                 }
 
                 return id;
@@ -216,6 +224,8 @@ async function addTranslation(paragraphId: number, translation: ParagraphTransla
                 paragraphId: paragraphId,
                 languageId: targetLanguageId,
                 translatingModel: model,
+                uid: generateUID(),
+                createdAt: Date.now(),
             });
 
             // Process sentences and words
@@ -226,6 +236,8 @@ async function addTranslation(paragraphId: number, translation: ParagraphTransla
                     paragraphTranslationId,
                     order: sentenceOrder,
                     fullTranslation: sentence.fullTranslation,
+                    uid: generateUID(),
+                    createdAt: Date.now(),
                 });
 
                 let wordOrder = 0;
@@ -239,7 +251,9 @@ async function addTranslation(paragraphId: number, translation: ParagraphTransla
                             isStandalonePunctuation: word.isStandalonePunctuation,
                             isOpeningParenthesis: word.isOpeningParenthesis,
                             isClosingParenthesis: word.isClosingParenthesis,
-                            original: word.original
+                            original: word.original,
+                            uid: generateUID(),
+                            createdAt: Date.now(),
                         })
                     } else {
                         sentenceStepStart = performance.now();
@@ -254,6 +268,8 @@ async function addTranslation(paragraphId: number, translation: ParagraphTransla
                                     originalLanguageId: sourceLanguageId,
                                     original: word.grammar.originalInitialForm,
                                     originalNormalized: word.grammar.originalInitialForm.toLowerCase(),
+                                    uid: generateUID(),
+                                    createdAt: Date.now(),
                                 });
                             }
 
@@ -275,6 +291,8 @@ async function addTranslation(paragraphId: number, translation: ParagraphTransla
                                     originalWordId,
                                     translation: word.grammar.targetInitialForm,
                                     translationNormalized: word.grammar.targetInitialForm.toLowerCase(),
+                                    uid: generateUID(),
+                                    createdAt: Date.now(),
                                 });
                             }
 
@@ -294,6 +312,8 @@ async function addTranslation(paragraphId: number, translation: ParagraphTransla
                             wordTranslationInContext: word.translations,
                             grammarContext: word.grammar,
                             note: word.note,
+                            uid: generateUID(),
+                            createdAt: Date.now(),
                         })
                     }
 

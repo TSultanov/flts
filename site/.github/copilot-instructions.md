@@ -12,6 +12,7 @@ FLTS is a language learning application built with Svelte 5, TypeScript, and Dex
 - **Svelte 5**: Using the latest Svelte version with runes (`$state`, `$derived`, `$effect`, `$props`)
 - **TypeScript**: Strict typing throughout the application
 - **Vite**: Build tool and development server
+- **pnpm**: Package manager for dependency management
 
 ### Data Layer
 - **Dexie.js**: IndexedDB wrapper for client-side data persistence
@@ -107,6 +108,7 @@ All buttons use a unified design system with these classes:
 5. **Keep styles centralized** in `app.css` using CSS variables
 6. **Use Svelte 5 patterns** consistently (runes, snippets)
 7. **Type everything** - maintain strict TypeScript compliance
+8. **Use pnpm for package management** - run `pnpm install`, `pnpm add`, etc. instead of npm
 
 ## Testing Considerations
 - Database operations should be wrapped in transactions

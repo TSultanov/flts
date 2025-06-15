@@ -1,5 +1,5 @@
 import { liveQuery } from "dexie";
-import { db, type Book, type BookChapter, type Language, type Paragraph, type ParagraphTranslation, type SentenceTranslation, type SentenceWordTranslation, type Word, type WordTranslation } from "./data/db";
+import { db, type Book, type BookChapter, type Language, type Paragraph, type ParagraphTranslation, type SentenceTranslation, type SentenceWordTranslation, type Word, type WordTranslation, generateUID } from "./data/db";
 import { readable, type Readable } from 'svelte/store';
 import type { EpubBook } from "./data/epubLoader";
 import type { ModelId } from "./data/translators/translator";
@@ -306,6 +306,8 @@ export class Library {
             async () => {
                 const bookId = await db.books.add({
                     title: book.title,
+                    uid: generateUID(),
+                    createdAt: Date.now(),
                 });
 
                 const paragraphIds: number[] = [];
@@ -316,6 +318,8 @@ export class Library {
                         bookId,
                         order: chapterOrder,
                         title: c.title,
+                        uid: generateUID(),
+                        createdAt: Date.now(),
                     });
 
                     let paragraphOrder = 0;
@@ -324,7 +328,9 @@ export class Library {
                             chapterId,
                             order: paragraphOrder,
                             originalText: paragraph.text,
-                            originalHtml: paragraph.html
+                            originalHtml: paragraph.html,
+                            uid: generateUID(),
+                            createdAt: Date.now(),
                         });
 
                         paragraphIds.push(paragraphId);
@@ -353,12 +359,16 @@ export class Library {
             ],
             async () => {
                 const bookId = await db.books.add({
-                    title
+                    title,
+                    uid: generateUID(),
+                    createdAt: Date.now(),
                 });
 
                 const chapterId = await db.bookChapters.add({
                     bookId,
                     order: 0,
+                    uid: generateUID(),
+                    createdAt: Date.now(),
                 });
 
                 const paragraphs = this.splitParagraphs(text);
@@ -370,6 +380,8 @@ export class Library {
                         chapterId,
                         order,
                         originalText: paragraph,
+                        uid: generateUID(),
+                        createdAt: Date.now(),
                     });
                     paragraphIds.push(paragraphId);
                     order += 1;
