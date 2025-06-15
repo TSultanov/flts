@@ -85,8 +85,16 @@ export async function getTranslator(db: DB, targetLanguage: string, model: Model
 }
 
 export async function addTranslation(paragraphId: number, model: ModelId) {
+    // Get paragraph UID
+    const paragraph = await db.paragraphs.get(paragraphId);
+    if (!paragraph) {
+        console.warn(`Cannot add translation: paragraph with id ${paragraphId} not found`);
+        return;
+    }
+    
     await db.directTranslationRequests.add({
         paragraphId,
+        paragraphUid: paragraph.uid,
         model,
     });
 }
