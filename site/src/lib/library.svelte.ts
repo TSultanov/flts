@@ -186,7 +186,7 @@ export class Library {
                 for (const translation of translations) {
                     const sentences = await db.sentenceTranslations.where('paragraphTranslationUid').equals(translation.uid).sortBy('order');
                     for (const sentence of sentences) {
-                        const words = await db.sentenceWordTranslations.where('sentenceUid').equals(sentence.uid).toArray();
+                        const words = await db.sentenceWordTranslations.where('sentenceUid').equals(sentence.uid).sortBy("order");
                         librarySentences.push({
                             ...sentence,
                             words,
