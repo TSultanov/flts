@@ -192,7 +192,7 @@ export class Library {
                         });
                     }
                 }
-                translations.sort((a, b) => b.id - a.id);
+                // translations.sort((a, b) => b.id - a.id);
                 return {
                     ...paragraph,
                     translation: {
