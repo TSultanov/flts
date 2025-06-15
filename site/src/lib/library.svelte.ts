@@ -45,7 +45,7 @@ export type LibraryWordTranslation = WordTranslation & {
 export type LibrarySentenceWordTranslation = SentenceWordTranslation & {
     fullSentenceTranslation: string,
     model: ModelId,
-    paragraphId: number,
+    paragraphUid: UUID,
     wordTranslation?: LibraryWordTranslation,
 }
 
@@ -83,7 +83,7 @@ export class Library {
                         ...sentenceWordTranslation,
                         fullSentenceTranslation: sentenceTranslation.fullTranslation,
                         model: paragraphTranslation.translatingModel,
-                        paragraphId: paragraphTranslation.paragraphId,
+                        paragraphUid: paragraphTranslation.paragraphUid,
                     };
 
                     const wordTranslation = sentenceWordTranslation.wordTranslationUid != null ? await db.wordTranslations.where('uid').equals(sentenceWordTranslation.wordTranslationUid).first() : null;
@@ -113,7 +113,7 @@ export class Library {
                         ...sentenceWordTranslation,
                         fullSentenceTranslation: sentenceTranslation.fullTranslation,
                         model: paragraphTranslation.translatingModel,
-                        paragraphId: paragraphTranslation.paragraphId,
+                        paragraphUid: paragraphTranslation.paragraphUid,
                         wordTranslation: {
                             ...wordTranslation,
                             language: targetLanguage,
@@ -307,7 +307,7 @@ export class Library {
             ],
             async () => {
                 const bookUid = generateUID();
-                const bookId = await db.books.add({
+                await db.books.add({
                     title: book.title,
                     uid: bookUid,
                     createdAt: Date.now(),
@@ -318,8 +318,7 @@ export class Library {
                 let chapterOrder = 0;
                 for (const c of book.chapters) {
                     const chapterUid = generateUID();
-                    const chapterId = await db.bookChapters.add({
-                        bookId,
+                    await db.bookChapters.add({
                         bookUid,
                         order: chapterOrder,
                         title: c.title,
@@ -330,8 +329,7 @@ export class Library {
                     let paragraphOrder = 0;
                     for (const paragraph of c.paragraphs) {
                         const paragraphUid = generateUID();
-                        const paragraphId = await db.paragraphs.add({
-                            chapterId,
+                        await db.paragraphs.add({
                             chapterUid,
                             order: paragraphOrder,
                             originalText: paragraph.text,
@@ -366,15 +364,14 @@ export class Library {
             ],
             async () => {
                 const bookUid = generateUID();
-                const bookId = await db.books.add({
+                await db.books.add({
                     title,
                     uid: bookUid,
                     createdAt: Date.now(),
                 });
 
                 const chapterUid = generateUID();
-                const chapterId = await db.bookChapters.add({
-                    bookId,
+                await db.bookChapters.add({
                     bookUid,
                     order: 0,
                     uid: chapterUid,
@@ -387,8 +384,7 @@ export class Library {
                 let order = 0;
                 for (const paragraph of paragraphs) {
                     const paragraphUid = generateUID();
-                    const paragraphId = await db.paragraphs.add({
-                        chapterId,
+                    await db.paragraphs.add({
                         chapterUid,
                         order,
                         originalText: paragraph,
@@ -423,15 +419,7 @@ export class Library {
     private async scheduleTranslationInternal(paragraphUid: UUID, model: ModelId) {
         const requestExists = await db.directTranslationRequests.where("paragraphUid").equals(paragraphUid).count() > 0;
         if (!requestExists) {
-            // Get paragraph ID for backward compatibility
-            const paragraph = await db.paragraphs.where('uid').equals(paragraphUid).first();
-            if (!paragraph) {
-                console.warn(`Cannot schedule translation: paragraph with uid ${paragraphUid} not found`);
-                return;
-            }
-            
             await db.directTranslationRequests.add({
-                paragraphId: paragraph.id,
                 paragraphUid: paragraphUid,
                 model,
             });

@@ -93,7 +93,6 @@ export async function addTranslation(paragraphUid: UUID, model: ModelId) {
     }
     
     await db.directTranslationRequests.add({
-        paragraphId: paragraph.id,
         paragraphUid,
         model,
     });

@@ -71,22 +71,22 @@ function scheduleTranslationWithRetries(request: TranslationRequest, retriesLeft
         queue.schedule(async () => {
             await handleTranslationEvent(request);
         }).then(() => {
-            console.log(`Worker: paragraph id ${request.paragraphId} translation task is completed`);
+            console.log(`Worker: paragraph uid ${request.paragraphUid} translation task is completed`);
             translationRequestBag.delete(request.id);
         })
             .catch((err) => {
-                console.log(`Worker: error translating ${request.paragraphId}, retrying (${retriesLeft - 1} attempts left)`, err);
+                console.log(`Worker: error translating ${request.paragraphUid}, retrying (${retriesLeft - 1} attempts left)`, err);
                 if (retriesLeft > 0) {
                     setTimeout(() => schedule(retriesLeft - 1), 300);
                 } else {
-                    console.log(`Failed to translate ${request.paragraphId}`);
+                    console.log(`Failed to translate ${request.paragraphUid}`);
                     translationRequestBag.delete(request.id);
                 }
             })
     }
 
     if (!translationRequestBag.has(request.id)) {
-        console.log(`Worker: scheduling ${request.paragraphId}`);
+        console.log(`Worker: scheduling ${request.paragraphUid}`);
         schedule(retriesLeft);
     }
 }
@@ -98,7 +98,7 @@ directTranslationRequestsQuery.subscribe((requests: TranslationRequest[]) => {
 
 async function handleTranslationEvent(translationRequest: TranslationRequest) {
     const startTime = performance.now();
-    console.log(`Worker: starting translation, paragraphId: ${translationRequest.paragraphId} (request ${translationRequest.id})`);
+    console.log(`Worker: starting translation, paragraphUid: ${translationRequest.paragraphUid} (request ${translationRequest.id})`);
 
     // Get config
     let stepStartTime = performance.now();
@@ -148,7 +148,7 @@ async function handleTranslationEvent(translationRequest: TranslationRequest) {
     console.log(`Worker: delete request took ${(performance.now() - stepStartTime).toFixed(2)}ms`);
 
     const totalTime = performance.now() - startTime;
-    console.log(`Worker: handleTranslationEvent total time: ${totalTime.toFixed(2)}ms for paragraphId ${translationRequest.paragraphId}`);
+    console.log(`Worker: handleTranslationEvent total time: ${totalTime.toFixed(2)}ms for paragraphUid ${translationRequest.paragraphUid}`);
 }
 
 async function addTranslation(paragraphUid: UUID, translation: ParagraphTranslation, model: ModelId) {
@@ -176,61 +176,59 @@ async function addTranslation(paragraphUid: UUID, translation: ParagraphTranslat
             }
 
             // Get or create source language
-            const [sourceLanguageId, sourceLanguageUid] = await (async (): Promise<[number, UUID]> => {
+            const sourceLanguageUid = await (async (): Promise<UUID> => {
                 const existingLanguage = await db.languages
                     .where("name").equals(translation.sourceLanguage.toLowerCase())
                     .first();
 
                 if (existingLanguage) {
-                    return [existingLanguage.id, existingLanguage.uid];
+                    return existingLanguage.uid;
                 }
 
                 const uid = generateUID();
-                const id = await db.languages.add({ 
+                await db.languages.add({ 
                     name: translation.sourceLanguage.toLowerCase(),
                     uid,
                     createdAt: Date.now(),
                 });
 
-                return [id, uid];
+                return uid;
             })();
 
             // Get or create target language
-            const [targetLanguageId, targetLanguageUid] = await (async (): Promise<[number, UUID]> => {
+            const targetLanguageUid = await (async (): Promise<UUID> => {
                 const existingLanguage = await db.languages
                     .where("name").equals(translation.targetLanguage.toLowerCase())
                     .first();
 
                 if (existingLanguage) {
-                    return [existingLanguage.id, existingLanguage.uid];
+                    return existingLanguage.uid;
                 }
 
                 const uid = generateUID();
-                const id = await db.languages.add({ 
+                await db.languages.add({ 
                     name: translation.targetLanguage.toLowerCase(),
                     uid,
                     createdAt: Date.now(),
                 });
 
-                return [id, uid];
+                return uid;
             })();
 
             // Check if paragraph translation already exists
             const existingParagraphTranslation = await db.paragraphTranslations
                 .where("paragraphUid").equals(paragraphUid)
-                .and(pt => pt.languageId === targetLanguageId).first();
+                .and(pt => pt.languageUid === targetLanguageUid).first();
 
             if (existingParagraphTranslation) {
-                console.log(`Worker: paragraph ${paragraphUid} is already translated to ${targetLanguageId} (id ${existingParagraphTranslation.id})`);
+                console.log(`Worker: paragraph ${paragraphUid} is already translated to ${targetLanguageUid}`);
                 return;
             }
 
             // Create paragraph translation
             const paragraphTranslationUid = generateUID();
-            const paragraphTranslationId = await db.paragraphTranslations.add({
-                paragraphId: paragraph.id,
+            await db.paragraphTranslations.add({
                 paragraphUid: paragraph.uid,
-                languageId: targetLanguageId,
                 languageUid: targetLanguageUid,
                 translatingModel: model,
                 uid: paragraphTranslationUid,
@@ -242,8 +240,7 @@ async function addTranslation(paragraphUid: UUID, translation: ParagraphTranslat
             for (const sentence of translation.sentences) {
                 let sentenceStepStart = performance.now();
                 const sentenceTranslationUid = generateUID();
-                const sentenceTranslationId = await db.sentenceTranslations.add({
-                    paragraphTranslationId,
+                await db.sentenceTranslations.add({
                     paragraphTranslationUid,
                     order: sentenceOrder,
                     fullTranslation: sentence.fullTranslation,
@@ -257,7 +254,6 @@ async function addTranslation(paragraphUid: UUID, translation: ParagraphTranslat
                         sentenceStepStart = performance.now();
                         await db.sentenceWordTranslations.add({
                             order: wordOrder,
-                            sentenceId: sentenceTranslationId,
                             sentenceUid: sentenceTranslationUid,
                             isPunctuation: word.isPunctuation,
                             isStandalonePunctuation: word.isStandalonePunctuation,
@@ -269,18 +265,17 @@ async function addTranslation(paragraphUid: UUID, translation: ParagraphTranslat
                         })
                     } else {
                         sentenceStepStart = performance.now();
-                        const [originalWordId, originalWordUid] = await (async (): Promise<[number, UUID]> => {
+                        const originalWordUid = await (async (): Promise<UUID> => {
                             const dictWord = await db.words
                             .where("originalNormalized").equals(word.grammar.originalInitialForm.toLowerCase())
-                            .and(w => w.originalLanguageId == sourceLanguageId).first();
+                            .and(w => w.originalLanguageUid == sourceLanguageUid).first();
 
                             if (dictWord) {
-                                return [dictWord.id, dictWord.uid];
+                                return dictWord.uid;
                             }
 
                             const uid = generateUID();
-                            const id = await db.words.add({
-                                originalLanguageId: sourceLanguageId,
+                            await db.words.add({
                                 originalLanguageUid: sourceLanguageUid,
                                 original: word.grammar.originalInitialForm,
                                 originalNormalized: word.grammar.originalInitialForm.toLowerCase(),
@@ -288,25 +283,23 @@ async function addTranslation(paragraphUid: UUID, translation: ParagraphTranslat
                                 createdAt: Date.now(),
                             });
 
-                            return [id, uid];
+                            return uid;
                         })();
 
                         sentenceStepStart = performance.now();
-                        const [wordTranslationId, wordTranslationUid] = await (async (): Promise<[number, UUID]> => {
+                        const wordTranslationUid = await (async (): Promise<UUID> => {
                             const existingTranslation = await db.wordTranslations
-                            .where("originalWordId").equals(originalWordId)
+                            .where("originalWordUid").equals(originalWordUid)
                             .and(wt => wt.translationNormalized === word.grammar.targetInitialForm.toLowerCase())
-                            .and(wt => wt.languageId == targetLanguageId).first();
+                            .and(wt => wt.languageUid == targetLanguageUid).first();
 
                             if (existingTranslation) {
-                                return [existingTranslation.id, existingTranslation.uid];
+                                return existingTranslation.uid;
                             }
 
                             const uid = generateUID();
-                            const id = await db.wordTranslations.add({
-                                languageId: targetLanguageId,
+                            await db.wordTranslations.add({
                                 languageUid: targetLanguageUid,
-                                originalWordId,
                                 originalWordUid,
                                 translation: word.grammar.targetInitialForm,
                                 translationNormalized: word.grammar.targetInitialForm.toLowerCase(),
@@ -314,7 +307,7 @@ async function addTranslation(paragraphUid: UUID, translation: ParagraphTranslat
                                 createdAt: Date.now(),
                             });
 
-                            return [id, uid];
+                            return uid;
                         })();
 
                         sentenceStepStart = performance.now();
@@ -325,9 +318,7 @@ async function addTranslation(paragraphUid: UUID, translation: ParagraphTranslat
                             isStandalonePunctuation: word.isStandalonePunctuation,
                             isOpeningParenthesis: word.isOpeningParenthesis,
                             isClosingParenthesis: word.isClosingParenthesis,
-                            sentenceId: sentenceTranslationId,
                             sentenceUid: sentenceTranslationUid,
-                            wordTranslationId: wordTranslationId,
                             wordTranslationUid: wordTranslationUid,
                             wordTranslationInContext: word.translations,
                             grammarContext: word.grammar,
