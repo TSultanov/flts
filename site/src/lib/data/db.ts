@@ -95,11 +95,6 @@ interface Grammar {
     other?: string
 }
 
-interface Cache {
-    hash: string,
-    value: any,
-}
-
 export interface TranslationRequest {
     id: number,
     paragraphUid: UUID,
@@ -116,7 +111,6 @@ export type DB = Dexie & {
     words: EntityTable<Word, 'uid'>,
     wordTranslations: EntityTable<WordTranslation, 'uid'>,
     sentenceWordTranslations: EntityTable<SentenceWordTranslation, 'uid'>,
-    queryCache: EntityTable<Cache, 'hash'>,
     directTranslationRequests: EntityTable<TranslationRequest, 'id'>,
 };
 
@@ -137,6 +131,20 @@ db.version(1).stores({
     sentenceWordTranslations: '&uid, sentenceUid, order, original, wordTranslationUid, createdAt',
     queryCache: '&hash',
     directTranslationRequests: '++id, paragraphUid',
+});
+
+db.version(2).stores({
+    books: '&uid, title, createdAt',
+    bookChapters: '&uid, bookUid, order, createdAt',
+    paragraphs: '&uid, chapterUid, order, createdAt',
+    languages: '&uid, name, createdAt',
+    paragraphTranslations: '&uid, paragraphUid, languageUid, createdAt',
+    sentenceTranslations: '&uid, paragraphTranslationUid, order, createdAt',
+    words: '&uid, originalLanguageUid, original, originalNormalized, createdAt',
+    wordTranslations: '&uid, languageUid, originalWordUid, translation, translationNormalized, createdAt',
+    sentenceWordTranslations: '&uid, sentenceUid, order, original, wordTranslationUid, createdAt',
+    directTranslationRequests: '++id, paragraphUid',
+    queryCache: null,
 });
 
 export type {

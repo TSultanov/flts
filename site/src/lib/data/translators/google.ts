@@ -2,6 +2,7 @@ import localforage from "localforage";
 import { hashString } from "../utils";
 import { GoogleGenAI, Type, type Schema } from "@google/genai";
 import type { DB } from "../db";
+import { getCached, setCache } from "../cache";
 import type { DictionaryRequest, ParagraphTranslation, Translator } from "./translator";
 
 const wordSchema: Schema = {
@@ -130,18 +131,12 @@ export class GoogleTranslator implements Translator {
 
     async getCachedTranslation(p: DictionaryRequest): Promise<ParagraphTranslation | null> {
         const p_hash = await this.hashRequest(p);
-        const cacheItem = await this.db.queryCache.get(p_hash);
-        if (cacheItem) {
-            return cacheItem.value as ParagraphTranslation;
-        }
-        return null;
+        const cachedValue = await getCached<ParagraphTranslation>(p_hash);
+        return cachedValue;
     }
 
     private async setCachedTranslation(p_hash: string, t: ParagraphTranslation) {
-        await this.db.queryCache.put({
-            hash: p_hash,
-            value: t
-        });
+        await setCache(p_hash, t);
     }
 
     async getTranslation(p: DictionaryRequest): Promise<ParagraphTranslation> {

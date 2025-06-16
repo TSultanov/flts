@@ -1,13 +1,31 @@
-import { db } from './db';
+import Dexie, { type EntityTable } from "dexie";
+
+export interface Cache {
+    hash: string,
+    value: any,
+}
+
+export type CacheDB = Dexie & {
+    queryCache: EntityTable<Cache, 'hash'>,
+};
+
+export const cacheDb = new Dexie('cache', {
+    chromeTransactionDurability: "relaxed",
+    cache: "immutable",
+}) as CacheDB;
+
+cacheDb.version(1).stores({
+    queryCache: '&hash',
+});
 
 export async function setCache<T>(key: string, data: T) {
-    await db.queryCache.put({
+    await cacheDb.queryCache.put({
         hash: key,
         value: data
     });
 }
 
 export async function getCached<T>(key: string) : Promise<T | null> {
-    const data = await db.queryCache.get(key);
+    const data = await cacheDb.queryCache.get(key);
     return data?.value;
 }

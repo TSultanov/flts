@@ -1,4 +1,4 @@
-import { db } from './data/db';
+import { cacheDb } from './data/cache';
 
 export const debug = {
     /**
@@ -7,7 +7,7 @@ export const debug = {
     async downloadCache(): Promise<void> {
         try {
             // Get all cache entries
-            const cacheEntries = await db.queryCache.toArray();
+            const cacheEntries = await cacheDb.queryCache.toArray();
             
             // Convert to JSON with pretty formatting
             const jsonData = JSON.stringify(cacheEntries, null, 2);
