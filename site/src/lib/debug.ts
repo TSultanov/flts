@@ -34,5 +34,81 @@ export const debug = {
             console.error('Failed to download cache:', error);
             throw error;
         }
+    },
+
+    /**
+     * Imports cache data from a JSON file selected by the user
+     */
+    async importCache(): Promise<void> {
+        return new Promise((resolve, reject) => {
+            // Create file input element
+            const fileInput = document.createElement('input');
+            fileInput.type = 'file';
+            fileInput.accept = '.json';
+            
+            fileInput.onchange = async (event) => {
+                try {
+                    const file = (event.target as HTMLInputElement).files?.[0];
+                    if (!file) {
+                        reject(new Error('No file selected'));
+                        return;
+                    }
+
+                    // Read file content
+                    const fileText = await file.text();
+                    
+                    // Parse JSON
+                    let cacheData;
+                    try {
+                        cacheData = JSON.parse(fileText);
+                    } catch (parseError) {
+                        reject(new Error('Invalid JSON file'));
+                        return;
+                    }
+
+                    // Validate data format
+                    if (!Array.isArray(cacheData)) {
+                        reject(new Error('Cache data must be an array'));
+                        return;
+                    }
+
+                    // Validate and normalize each cache entry
+                    const currentTime = Date.now();
+                    for (const entry of cacheData) {
+                        if (!entry.hash || typeof entry.hash !== 'string') {
+                            reject(new Error('Invalid cache entry: missing or invalid hash'));
+                            return;
+                        }
+                        if (entry.value === undefined) {
+                            reject(new Error('Invalid cache entry: missing value'));
+                            return;
+                        }
+                        // If createdAt is missing or invalid, use current time
+                        if (!entry.createdAt || typeof entry.createdAt !== 'number') {
+                            entry.createdAt = currentTime;
+                        }
+                    }
+
+                    // Clear existing cache and import new data
+                    await cacheDb.transaction('rw', cacheDb.queryCache, async () => {
+                        await cacheDb.queryCache.clear();
+                        await cacheDb.queryCache.bulkAdd(cacheData);
+                    });
+
+                    console.log(`Imported ${cacheData.length} cache entries`);
+                    resolve();
+                } catch (error) {
+                    console.error('Failed to import cache:', error);
+                    reject(error);
+                }
+            };
+
+            fileInput.oncancel = () => {
+                reject(new Error('File selection cancelled'));
+            };
+
+            // Trigger file selection dialog
+            fileInput.click();
+        });
     }
 };
