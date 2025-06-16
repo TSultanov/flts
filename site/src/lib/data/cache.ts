@@ -2,6 +2,7 @@ import Dexie, { type EntityTable } from "dexie";
 
 export interface Cache {
     hash: string,
+    createdAt: number,
     value: any,
 }
 
@@ -21,7 +22,8 @@ cacheDb.version(1).stores({
 export async function setCache<T>(key: string, data: T) {
     await cacheDb.queryCache.put({
         hash: key,
-        value: data
+        createdAt: Date.now(),
+        value: data,
     });
 }
 
