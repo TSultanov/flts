@@ -45,8 +45,9 @@ export interface Translator {
 }
 
 export type ModelId =
-"gemini-2.5-flash-preview-05-20" |
-"gemini-2.5-pro-preview-06-05"
+"gemini-2.5-flash" |
+"gemini-2.5-pro" |
+"gemini-2.5-flash-lite-preview-06-17"
 
 export type ModelProvider = "Google"
 
@@ -58,13 +59,18 @@ type ModelMeta = {
 
 export const models: ModelMeta[] = [
     {
-        id: "gemini-2.5-flash-preview-05-20",
-        name: "gemini-2.5-flash-preview-05-20",
+        id: "gemini-2.5-flash",
+        name: "gemini-2.5-flash",
         provider: "Google",
     },
     {
-        id: "gemini-2.5-pro-preview-06-05",
-        name: "gemini-2.5-pro-preview-06-05",
+        id: "gemini-2.5-pro",
+        name: "gemini-2.5-pro",
+        provider: "Google",
+    },
+    {
+        id: "gemini-2.5-flash-lite-preview-06-17",
+        name: "gemini-2.5-flash-lite-preview-06-17",
         provider: "Google",
     },
 ]

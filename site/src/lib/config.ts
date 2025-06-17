@@ -1,5 +1,5 @@
 import localforage from "localforage"
-import type { ModelId } from "./data/translators/translator";
+import { models, type ModelId } from "./data/translators/translator";
 
 export type Config = {
     geminiApiKey: string,
@@ -15,8 +15,9 @@ export async function setConfig(config:Config) {
 
 export async function getConfig() {
     let config = await store.getItem('config') as Config
-    if (!config.model) {
-        config.model = "gemini-2.5-flash-preview-05-20";
+    if (!config.model || models.map(m => m.id).indexOf(config.model) < 0) {
+        config.model = "gemini-2.5-flash";
+        await setConfig(config);
     }
     return config;
 }
