@@ -1,7 +1,7 @@
 import { cacheDb } from './data/cache';
 import { db } from './data/db';
 import JSZip from 'jszip';
-import { encode } from '@msgpack/msgpack';
+import { encode, decode } from '@msgpack/msgpack';
 
 export const debug = {
     /**
@@ -126,6 +126,45 @@ export const debug = {
     },
 
     /**
+     * Decompresses data using the Decompression Streams API with gzip decompression
+     */
+    async decompressData(compressedData: Uint8Array): Promise<Uint8Array> {
+        const decompressionStream = new DecompressionStream('gzip');
+        const writer = decompressionStream.writable.getWriter();
+        const reader = decompressionStream.readable.getReader();
+        
+        // Start writing the compressed data
+        const writePromise = writer.write(compressedData).then(() => writer.close());
+        
+        // Read the decompressed chunks
+        const chunks: Uint8Array[] = [];
+        const readPromise = (async () => {
+            let done = false;
+            while (!done) {
+                const { value, done: readerDone } = await reader.read();
+                done = readerDone;
+                if (value) {
+                    chunks.push(value);
+                }
+            }
+        })();
+        
+        // Wait for both operations to complete
+        await Promise.all([writePromise, readPromise]);
+        
+        // Combine all chunks into a single Uint8Array
+        const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+        const result = new Uint8Array(totalLength);
+        let offset = 0;
+        for (const chunk of chunks) {
+            result.set(chunk, offset);
+            offset += chunk.length;
+        }
+        
+        return result;
+    },
+
+    /**
      * Exports the entire library as a zip archive with MessagePack files.
      * - dictionary.pack: contains words and wordTranslations tables (compressed with gzip)
      * - books/book_<book uid>.pack: contains all chapters, paragraphs, sentences, and translations for each book (compressed with gzip)
@@ -208,6 +247,162 @@ export const debug = {
         
         console.timeEnd('exportLibrary-total');
         console.log(`Export completed successfully. File size: ${(blob.size / 1024 / 1024).toFixed(2)} MB`);
+    },
+
+    /**
+     * Imports a library from a zip archive with MessagePack files created by exportLibrary().
+     * Skips objects with existing UIDs to avoid duplicates.
+     */
+    async importLibrary(): Promise<void> {
+        return new Promise((resolve, reject) => {
+            const fileInput = document.createElement('input');
+            fileInput.type = 'file';
+            fileInput.accept = '.zip';
+            fileInput.onchange = async (event) => {
+                try {
+                    const file = (event.target as HTMLInputElement).files?.[0];
+                    if (!file) {
+                        reject(new Error('No file selected'));
+                        return;
+                    }
+
+                    console.time('importLibrary-total');
+                    console.log(`Importing library from file: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
+
+                    // Load and extract the zip file
+                    const zip = await JSZip.loadAsync(file);
+
+                    // Import dictionary data first
+                    const dictionaryFile = zip.file('dictionary.pack');
+                    if (dictionaryFile) {
+                        console.time('dictionary-import');
+                        
+                        const compressedDictionaryData = await dictionaryFile.async('uint8array');
+                        const dictionaryData = await this.decompressData(compressedDictionaryData);
+                        const dictionaryPack = decode(dictionaryData) as {
+                            words: any[],
+                            wordTranslations: any[]
+                        };
+
+                        // Import words (skip existing UIDs)
+                        const existingWordUids = new Set((await db.words.toCollection().primaryKeys()) as string[]);
+                        const newWords = dictionaryPack.words.filter(word => !existingWordUids.has(word.uid));
+                        if (newWords.length > 0) {
+                            await db.words.bulkAdd(newWords);
+                            console.log(`Imported ${newWords.length} new words (skipped ${dictionaryPack.words.length - newWords.length} existing)`);
+                        }
+
+                        // Import word translations (skip existing UIDs)
+                        const existingWordTranslationUids = new Set((await db.wordTranslations.toCollection().primaryKeys()) as string[]);
+                        const newWordTranslations = dictionaryPack.wordTranslations.filter(wt => !existingWordTranslationUids.has(wt.uid));
+                        if (newWordTranslations.length > 0) {
+                            await db.wordTranslations.bulkAdd(newWordTranslations);
+                            console.log(`Imported ${newWordTranslations.length} new word translations (skipped ${dictionaryPack.wordTranslations.length - newWordTranslations.length} existing)`);
+                        }
+
+                        console.timeEnd('dictionary-import');
+                    }
+
+                    // Import book data
+                    const booksFolder = zip.folder('books');
+                    if (booksFolder) {
+                        const bookFiles = Object.keys(booksFolder.files).filter(filename => 
+                            filename.startsWith('books/') && filename.endsWith('.pack')
+                        );
+
+                        console.log(`Found ${bookFiles.length} book files to import`);
+
+                        for (const bookFileName of bookFiles) {
+                            const bookFile = zip.file(bookFileName);
+                            if (!bookFile) continue;
+
+                            console.time(`book-import-${bookFileName}`);
+
+                            const compressedBookData = await bookFile.async('uint8array');
+                            const bookData = await this.decompressData(compressedBookData);
+                            const bookPack = decode(bookData) as {
+                                book: any,
+                                chapters: any[],
+                                paragraphs: any[],
+                                paragraphTranslations: any[],
+                                sentenceTranslations: any[],
+                                sentenceWordTranslations: any[]
+                            };
+
+                            // Check if book already exists
+                            const existingBook = await db.books.where('uid').equals(bookPack.book.uid).first();
+                            if (existingBook) {
+                                console.log(`Skipping book "${bookPack.book.title}" - already exists`);
+                                console.timeEnd(`book-import-${bookFileName}`);
+                                continue;
+                            }
+
+                            // Import book and related data in a transaction
+                            await db.transaction('rw', [
+                                db.books,
+                                db.bookChapters,
+                                db.paragraphs,
+                                db.paragraphTranslations,
+                                db.sentenceTranslations,
+                                db.sentenceWordTranslations
+                            ], async () => {
+                                // Import book
+                                await db.books.add(bookPack.book);
+
+                                // Import chapters (skip existing UIDs)
+                                const existingChapterUids = new Set((await db.bookChapters.toCollection().primaryKeys()) as string[]);
+                                const newChapters = bookPack.chapters.filter(chapter => !existingChapterUids.has(chapter.uid));
+                                if (newChapters.length > 0) {
+                                    await db.bookChapters.bulkAdd(newChapters);
+                                }
+
+                                // Import paragraphs (skip existing UIDs)
+                                const existingParagraphUids = new Set((await db.paragraphs.toCollection().primaryKeys()) as string[]);
+                                const newParagraphs = bookPack.paragraphs.filter(paragraph => !existingParagraphUids.has(paragraph.uid));
+                                if (newParagraphs.length > 0) {
+                                    await db.paragraphs.bulkAdd(newParagraphs);
+                                }
+
+                                // Import paragraph translations (skip existing UIDs)
+                                const existingParagraphTranslationUids = new Set((await db.paragraphTranslations.toCollection().primaryKeys()) as string[]);
+                                const newParagraphTranslations = bookPack.paragraphTranslations.filter(pt => !existingParagraphTranslationUids.has(pt.uid));
+                                if (newParagraphTranslations.length > 0) {
+                                    await db.paragraphTranslations.bulkAdd(newParagraphTranslations);
+                                }
+
+                                // Import sentence translations (skip existing UIDs)
+                                const existingSentenceTranslationUids = new Set((await db.sentenceTranslations.toCollection().primaryKeys()) as string[]);
+                                const newSentenceTranslations = bookPack.sentenceTranslations.filter(st => !existingSentenceTranslationUids.has(st.uid));
+                                if (newSentenceTranslations.length > 0) {
+                                    await db.sentenceTranslations.bulkAdd(newSentenceTranslations);
+                                }
+
+                                // Import sentence word translations (skip existing UIDs)
+                                const existingSentenceWordTranslationUids = new Set((await db.sentenceWordTranslations.toCollection().primaryKeys()) as string[]);
+                                const newSentenceWordTranslations = bookPack.sentenceWordTranslations.filter(swt => !existingSentenceWordTranslationUids.has(swt.uid));
+                                if (newSentenceWordTranslations.length > 0) {
+                                    await db.sentenceWordTranslations.bulkAdd(newSentenceWordTranslations);
+                                }
+                            });
+
+                            console.log(`Imported book "${bookPack.book.title}" with ${bookPack.chapters.length} chapters`);
+                            console.timeEnd(`book-import-${bookFileName}`);
+                        }
+                    }
+
+                    console.timeEnd('importLibrary-total');
+                    console.log('Library import completed successfully');
+                    resolve();
+                } catch (error) {
+                    console.error('Failed to import library:', error);
+                    reject(error);
+                }
+            };
+            fileInput.oncancel = () => {
+                reject(new Error('File selection cancelled'));
+            };
+            fileInput.click();
+        });
     }
 
 };
