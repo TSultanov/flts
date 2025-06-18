@@ -110,8 +110,38 @@ All buttons use a unified design system with these classes:
 7. **Type everything** - maintain strict TypeScript compliance
 8. **Use pnpm for package management** - run `pnpm install`, `pnpm add`, etc. instead of npm
 
-## Testing Considerations
-- Database operations should be wrapped in transactions
-- Test folder hierarchy creation and navigation
-- Verify button styling consistency across components
-- Test confirmation dialog workflows
+## Testing Setup & Guidelines
+
+### Test Framework
+- **Vitest**: Modern testing framework with jsdom environment
+- **fake-indexeddb**: IndexedDB mocking for database tests  
+- **fast-check**: Property-based testing for complex data structures
+- **Stryker**: Mutation testing for test quality assurance
+
+### Test Configuration
+Configuration files: `vitest.config.ts`, `stryker.conf.json`, and test scripts in `package.json`
+
+### Test Commands
+Run `pnpm test` (watch), `pnpm test:coverage`, `pnpm test:ui`, or `pnpm test:mutation`
+
+### Testing Patterns
+- **Database Tests**: Mock Dexie.js module, reset database in `beforeEach`, test reactive queries with promise-based subscriptions (see `src/lib/__tests__/library.spec.ts`)
+- **Component Tests**: Use jsdom, mock external dependencies, test props/events/reactive state
+- **Property-Based Tests**: Use fast-check for folder hierarchies and data transformations
+
+### Coverage & Quality
+- Coverage thresholds in `vitest.config.ts` (lines: 7%, functions: 25%, branches: 65%, statements: 7%)
+- Mutation testing thresholds: High 80%, Low 60%, Break 50%
+- Reports in `coverage/` and `reports/mutation/`
+
+### Best Practices
+1. Mock external dependencies (config, APIs, file system)
+2. Test database operations in transactions for consistency
+3. Use descriptive test names explaining scenarios
+4. Test both happy paths and error conditions
+5. Verify reactive updates work with Svelte stores
+6. Test folder hierarchy operations thoroughly
+7. Validate button styling and component consistency
+8. Test confirmation dialog workflows for destructive actions
+9. Use property-based testing for complex data operations
+10. Maintain high mutation test scores for test quality

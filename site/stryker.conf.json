@@ -1,0 +1,30 @@
+{
+  "packageManager": "pnpm",
+  "testRunner": "vitest",
+  "reporters": ["html", "clear-text", "progress"],
+  "coverageAnalysis": "off",
+  "plugins": [
+    "@stryker-mutator/vitest-runner"
+  ],
+  "mutate": [
+    "src/lib/**/*.ts",
+    "src/lib/**/*.svelte.ts",
+    "!src/lib/**/*.spec.ts",
+    "!src/lib/**/*.test.ts", 
+    "!src/lib/__tests__/**/*",
+    "!src/lib/**/*.d.ts"
+  ],
+  "timeoutMS": 60000,
+  "timeoutFactor": 1.5,
+  "concurrency": 2,
+  "htmlReporter": {
+    "fileName": "reports/mutation/mutation-report.html"
+  },
+  "thresholds": {
+    "high": 80,
+    "low": 60,
+    "break": 50
+  },
+  "incremental": true,
+  "incrementalFile": "reports/mutation/stryker-incremental.json"
+}
