@@ -1,5 +1,5 @@
 import { getConfig } from "../../config"
-import { db, type DB, generateUID, type UUID } from "../db"
+import { db, type DB, type UUID } from "../db"
 import { queueDb } from "../queueDb"
 import { GoogleTranslator } from "./google"
 

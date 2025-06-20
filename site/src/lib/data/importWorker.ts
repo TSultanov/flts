@@ -152,7 +152,7 @@ async function handleTranslationEvent(translationRequest: TranslationRequest) {
     console.log(`Worker: handleTranslationEvent total time: ${totalTime.toFixed(2)}ms for paragraphUid ${translationRequest.paragraphUid}`);
 }
 
-async function addTranslation(paragraphUid: UUID, translation: ParagraphTranslation, model: ModelId) {
+export async function addTranslation(paragraphUid: UUID, translation: ParagraphTranslation, model: ModelId) {
     const startTime = performance.now();
     console.log(`Worker: addTranslation starting for paragraphUid ${paragraphUid}, ${translation.sentences.length} sentences`);
     
