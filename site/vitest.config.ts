@@ -3,6 +3,17 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     environment: 'jsdom',
+    exclude: [
+      '**/node_modules/**',
+      '**/dist/**',
+      '**/cypress/**',
+      'test?(s)/**',
+      '**/*.e2e.{js,ts}',
+      '**/tests/e2e/**',
+      '**/e2e/**',
+      '**/.{idea,git,cache,output,temp}/**',
+      '**/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,build}.config.*'
+    ],
     coverage: {
       provider: 'v8', // or 'istanbul'
       reporter: ['text', 'json', 'html'],
@@ -30,7 +41,11 @@ export default defineConfig({
         'src/vite-env.d.ts',
         'src/app.css',
         'stryker.conf.json',
-        'reports/**'
+        'reports/**',
+        // Exclude Playwright tests from coverage
+        '**/tests/e2e/**',
+        '**/e2e/**',
+        '**/*.e2e.*'
       ],
       include: [
         'src/**/*.{js,ts,svelte}',
