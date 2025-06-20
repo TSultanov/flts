@@ -15,7 +15,7 @@ vi.mock('./config', () => ({
 }));
 
 // Mock the database before importing any library code that uses it.
-vi.mock('../data/db', async (importOriginal) => {
+vi.mock('./data/db', async (importOriginal) => {
     const DexiePackage = (await import('dexie')).default;
     const actual = await importOriginal() as typeof import('./data/db');
     
@@ -31,7 +31,6 @@ vi.mock('../data/db', async (importOriginal) => {
         words: 'uid, originalLanguageUid, &originalNormalized',
         wordTranslations: 'uid, languageUid, originalWordUid, &translationNormalized',
         sentenceWordTranslations: 'uid, sentenceUid, order, wordTranslationUid',
-        directTranslationRequests: '++id, paragraphUid',
     });
 
     return {
@@ -40,9 +39,26 @@ vi.mock('../data/db', async (importOriginal) => {
     };
 });
 
+// Mock the queue database
+vi.mock('./data/queueDb', async (importOriginal) => {
+    const DexiePackage = (await import('dexie')).default;
+    const actual = await importOriginal() as typeof import('./data/queueDb');
+    
+    const testQueueDb = new DexiePackage('test-queue-db');
+    testQueueDb.version(1).stores({
+        directTranslationRequests: '++id, paragraphUid',
+    });
+
+    return {
+        ...actual,
+        queueDb: testQueueDb,
+    };
+});
+
 // Dynamically import the modules after the mock is set up.
 const { Library } = await import('./library.svelte');
 const { db } = await import('./data/db');
+const { queueDb } = await import('./data/queueDb');
 
 describe('Library', () => {
     let library: LibType;
@@ -52,6 +68,8 @@ describe('Library', () => {
         vi.clearAllMocks();
         await (db as Dexie).delete();
         await (db as Dexie).open();
+        await (queueDb as Dexie).delete();
+        await (queueDb as Dexie).open();
         library = new Library();
     });
 

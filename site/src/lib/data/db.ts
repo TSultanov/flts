@@ -95,12 +95,6 @@ interface Grammar {
     other?: string
 }
 
-export interface TranslationRequest {
-    id: number,
-    paragraphUid: UUID,
-    model: ModelId,
-}
-
 export type DB = Dexie & {
     books: EntityTable<Book, 'uid'>,
     bookChapters: EntityTable<BookChapter, 'uid'>,
@@ -111,7 +105,6 @@ export type DB = Dexie & {
     words: EntityTable<Word, 'uid'>,
     wordTranslations: EntityTable<WordTranslation, 'uid'>,
     sentenceWordTranslations: EntityTable<SentenceWordTranslation, 'uid'>,
-    directTranslationRequests: EntityTable<TranslationRequest, 'id'>,
 };
 
 export const db = new Dexie('library', {
@@ -130,7 +123,6 @@ db.version(1).stores({
     wordTranslations: '&uid, languageUid, originalWordUid, translation, translationNormalized, createdAt',
     sentenceWordTranslations: '&uid, sentenceUid, order, original, wordTranslationUid, createdAt',
     queryCache: '&hash',
-    directTranslationRequests: '++id, paragraphUid',
 });
 
 db.version(2).stores({
@@ -143,7 +135,6 @@ db.version(2).stores({
     words: '&uid, originalLanguageUid, original, originalNormalized, createdAt',
     wordTranslations: '&uid, languageUid, originalWordUid, translation, translationNormalized, createdAt',
     sentenceWordTranslations: '&uid, sentenceUid, order, original, wordTranslationUid, createdAt',
-    directTranslationRequests: '++id, paragraphUid',
     queryCache: null,
 });
 

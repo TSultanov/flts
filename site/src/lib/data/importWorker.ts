@@ -1,5 +1,6 @@
 import { getConfig } from "../config";
-import { db, type TranslationRequest, generateUID, type UUID } from "./db";
+import { db, generateUID, type UUID } from "./db";
+import { queueDb, type TranslationRequest } from "./queueDb";
 import Bottleneck from 'bottleneck';
 import { liveQuery } from "dexie";
 import { getTranslator, type ModelId, type ParagraphTranslation } from "./translators/translator";
@@ -39,7 +40,7 @@ async function checkAndScheduleUntranslatedParagraphs() {
                 .equals(paragraph.uid)
                 .count() > 0;
             
-            const hasRequest = await db.directTranslationRequests
+            const hasRequest = await queueDb.directTranslationRequests
                 .where("paragraphUid")
                 .equals(paragraph.uid)
                 .count() > 0;
@@ -64,7 +65,7 @@ async function checkAndScheduleUntranslatedParagraphs() {
 checkAndScheduleUntranslatedParagraphs();
 
 const translationRequestBag: Set<number> = new Set();
-const directTranslationRequestsQuery = liveQuery(async () => await db.directTranslationRequests.limit(limit).toArray());
+const directTranslationRequestsQuery = liveQuery(async () => await queueDb.directTranslationRequests.limit(limit).toArray());
 function scheduleTranslationWithRetries(request: TranslationRequest, retriesLeft = 5) {
     function schedule(retriesLeft: number) {
         translationRequestBag.add(request.id);
@@ -117,7 +118,7 @@ async function handleTranslationEvent(translationRequest: TranslationRequest) {
 
     if (!paragraph) {
         console.log(`Worker: paragraph UID ${translationRequest.paragraphUid} does not exist`);
-        await db.directTranslationRequests.where("id").equals(translationRequest.id).delete()
+        await queueDb.directTranslationRequests.where("id").equals(translationRequest.id).delete()
         return;
     }
 
@@ -144,7 +145,7 @@ async function handleTranslationEvent(translationRequest: TranslationRequest) {
 
     // Clean up request
     stepStartTime = performance.now();
-    await db.directTranslationRequests.where("id").equals(translationRequest.id).delete()
+    await queueDb.directTranslationRequests.where("id").equals(translationRequest.id).delete()
     console.log(`Worker: delete request took ${(performance.now() - stepStartTime).toFixed(2)}ms`);
 
     const totalTime = performance.now() - startTime;

@@ -1,5 +1,6 @@
 import { getConfig } from "../../config"
 import { db, type DB, generateUID, type UUID } from "../db"
+import { queueDb } from "../queueDb"
 import { GoogleTranslator } from "./google"
 
 export type Grammar = {
@@ -91,14 +92,13 @@ export async function getTranslator(db: DB, targetLanguage: string, model: Model
 }
 
 export async function addTranslation(paragraphUid: UUID, model: ModelId) {
-    // Get paragraph ID for backward compatibility
     const paragraph = await db.paragraphs.where('uid').equals(paragraphUid).first();
     if (!paragraph) {
         console.warn(`Cannot add translation: paragraph with uid ${paragraphUid} not found`);
         return;
     }
     
-    await db.directTranslationRequests.add({
+    await queueDb.directTranslationRequests.add({
         paragraphUid,
         model,
     });

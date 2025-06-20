@@ -1,5 +1,6 @@
 import { liveQuery } from "dexie";
 import { db, type Book, type BookChapter, type Language, type Paragraph, type ParagraphTranslation, type SentenceTranslation, type SentenceWordTranslation, type Word, type WordTranslation, generateUID, type UUID } from "./data/db";
+import { queueDb } from "./data/queueDb";
 import { readable, type Readable } from 'svelte/store';
 import type { EpubBook } from "./data/epubLoader";
 import type { ModelId } from "./data/translators/translator";
@@ -297,13 +298,14 @@ export class Library {
         const config = await getConfig();
         const model = config.model;
 
+        const paragraphUids: UUID[] = [];
+
         await db.transaction(
             'rw',
             [
                 db.books,
                 db.bookChapters,
                 db.paragraphs,
-                db.directTranslationRequests,
             ],
             async () => {
                 const bookUid = generateUID();
@@ -312,8 +314,6 @@ export class Library {
                     uid: bookUid,
                     createdAt: Date.now(),
                 });
-
-                const paragraphUids: UUID[] = [];
 
                 let chapterOrder = 0;
                 for (const c of book.chapters) {
@@ -344,15 +344,18 @@ export class Library {
                     }
                     chapterOrder += 1;
                 }
-
-                await Promise.all(paragraphUids.map(puid => this.scheduleTranslationInternal(puid, model)));
             }
         );
+
+        // Schedule translations after the main transaction is complete
+        await Promise.all(paragraphUids.map(puid => this.scheduleTranslationInternal(puid, model)));
     }
 
     async importText(title: string, text: string) {
         const config = await getConfig();
         const model = config.model;
+
+        const paragraphUids: UUID[] = [];
 
         await db.transaction(
             'rw',
@@ -360,7 +363,6 @@ export class Library {
                 db.books,
                 db.bookChapters,
                 db.paragraphs,
-                db.directTranslationRequests,
             ],
             async () => {
                 const bookUid = generateUID();
@@ -380,7 +382,6 @@ export class Library {
 
                 const paragraphs = this.splitParagraphs(text);
 
-                const paragraphUids: UUID[] = [];
                 let order = 0;
                 for (const paragraph of paragraphs) {
                     const paragraphUid = generateUID();
@@ -394,39 +395,49 @@ export class Library {
                     paragraphUids.push(paragraphUid);
                     order += 1;
                 }
-
-                await Promise.all(paragraphUids.map(puid => this.scheduleTranslationInternal(puid, model)));
             }
         );
+
+        // Schedule translations after the main transaction is complete
+        await Promise.all(paragraphUids.map(puid => this.scheduleTranslationInternal(puid, model)));
     }
 
     public async scheduleTranslation(paragraphUid: UUID) {
         const config = await getConfig();
         const model = config.model;
 
-        await db.transaction(
-            'rw',
-            [
-                db.paragraphs,
-                db.directTranslationRequests,
-            ],
-            async () => {
-                await this.scheduleTranslationInternal(paragraphUid, model);
-            }
-        )
+        await this.scheduleTranslationInternal(paragraphUid, model);
     }
 
     private async scheduleTranslationInternal(paragraphUid: UUID, model: ModelId) {
-        const requestExists = await db.directTranslationRequests.where("paragraphUid").equals(paragraphUid).count() > 0;
+        const requestExists = await queueDb.directTranslationRequests.where("paragraphUid").equals(paragraphUid).count() > 0;
         if (!requestExists) {
-            await db.directTranslationRequests.add({
+            await queueDb.directTranslationRequests.add({
                 paragraphUid: paragraphUid,
                 model,
             });
         }
     }
 
+    private async cleanupTranslationRequests(bookUids: UUID[]): Promise<void> {
+        const allParagraphUids: UUID[] = [];
+        for (const bookUid of bookUids) {
+            const chapterUids = (await db.bookChapters.where("bookUid").equals(bookUid).toArray()).map(c => c.uid);
+            const paragraphUids = (await db.paragraphs.where("chapterUid").anyOf(chapterUids).toArray()).map(p => p.uid);
+            allParagraphUids.push(...paragraphUids);
+        }
+        
+        // Delete translation requests from queue database
+        if (allParagraphUids.length > 0) {
+            await queueDb.directTranslationRequests.where("paragraphUid").anyOf(allParagraphUids).delete();
+        }
+    }
+
     async deleteBook(bookUid: UUID) {
+        // First handle the queueDb operations separately
+        await this.cleanupTranslationRequests([bookUid]);
+        
+        // Then handle main database operations
         await db.transaction('rw', [
             db.books,
             db.bookChapters,
@@ -434,7 +445,6 @@ export class Library {
             db.paragraphTranslations,
             db.sentenceTranslations,
             db.sentenceWordTranslations,
-            db.directTranslationRequests,
         ],
             async () => {
                 await this.deleteBookInternal(bookUid);
@@ -457,7 +467,6 @@ export class Library {
         await db.sentenceWordTranslations.where("sentenceUid").anyOf(sentenceTranslationUids).delete();
         await db.sentenceTranslations.where("paragraphTranslationUid").anyOf(paragraphTranslationUids).delete();
         await db.paragraphTranslations.where("paragraphUid").anyOf(paragraphUids).delete();
-        await db.directTranslationRequests.where("paragraphUid").anyOf(paragraphUids).delete();
         await db.paragraphs.where("chapterUid").anyOf(chapterUids).delete();
         await db.bookChapters.where("bookUid").equals(bookUid).delete();
         await db.books.where("uid").equals(bookUid).delete();
@@ -468,6 +477,10 @@ export class Library {
     }
 
     async deleteBooksInBatch(bookUids: UUID[]) {
+        // First handle the queueDb operations for all books
+        await this.cleanupTranslationRequests(bookUids);
+        
+        // Then handle main database operations
         await db.transaction('rw', [
             db.books,
             db.bookChapters,
@@ -475,7 +488,6 @@ export class Library {
             db.paragraphTranslations,
             db.sentenceTranslations,
             db.sentenceWordTranslations,
-            db.directTranslationRequests,
         ],
             async () => {
                 for (const bookUid of bookUids) {
