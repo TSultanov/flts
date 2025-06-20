@@ -4,7 +4,8 @@
   "reporters": ["html", "clear-text", "progress"],
   "coverageAnalysis": "off",
   "plugins": [
-    "@stryker-mutator/vitest-runner"
+    "@stryker-mutator/vitest-runner",
+    "@stryker-mutator/typescript-checker"
   ],
   "mutate": [
     "src/lib/**/*.ts",

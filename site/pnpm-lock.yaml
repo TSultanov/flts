@@ -51,9 +51,6 @@ importers:
       '@stryker-mutator/core':
         specifier: ^9.0.1
         version: 9.0.1(@types/node@22.15.30)
-      '@stryker-mutator/javascript-mutator':
-        specifier: ^4.0.0
-        version: 4.0.0
       '@stryker-mutator/typescript-checker':
         specifier: ^9.0.1
         version: 9.0.1(@stryker-mutator/core@9.0.1(@types/node@22.15.30))(typescript@5.8.3)
@@ -731,10 +728,6 @@ packages:
   '@stryker-mutator/instrumenter@9.0.1':
     resolution: {integrity: sha512-ZIIS39w6X4LkYwsTdOneUSIBIY+QFKrmuJdI5LI4XI5FCwOQVN1UnBTFYpaKuKOBznBdRiBUEZXxm5Y42/To+A==}
     engines: {node: '>=20.0.0'}
-
-  '@stryker-mutator/javascript-mutator@4.0.0':
-    resolution: {integrity: sha512-Z1A8CU8t6lwP0PGkvWkZbSYq3Z0y+7jp4VbQrL0DvkW/5s6wiZdb+u6Uu7uqeacX0iulxsySNRkGhdl3pE9/LQ==}
-    engines: {node: '>=10'}
 
   '@stryker-mutator/typescript-checker@9.0.1':
     resolution: {integrity: sha512-S/oYlIAj9BysYNspk8gS4u42rFE8eBm4NujrW00ZJ6BcK86DM/OQEnfus3SzGxi5z9fDDcrrURBSafme2zW4IA==}
@@ -2662,8 +2655,6 @@ snapshots:
       weapon-regex: 1.3.2
     transitivePeerDependencies:
       - supports-color
-
-  '@stryker-mutator/javascript-mutator@4.0.0': {}
 
   '@stryker-mutator/typescript-checker@9.0.1(@stryker-mutator/core@9.0.1(@types/node@22.15.30))(typescript@5.8.3)':
     dependencies:
