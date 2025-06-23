@@ -6,10 +6,10 @@
     import ImportView from "./lib/importView/ImportView.svelte";
     import { onMount, setContext } from "svelte";
     import LibraryView from "./lib/LibraryView.svelte";
-    import { Library } from "./lib/library.svelte";
     import type { RouteLinkProps } from "./lib/Link.svelte";
     import BookView from "./lib/bookView/BookView.svelte";
     import Worker from "./lib/data/importWorker?worker"
+    import dbSql from "./lib/data/dbSql";
 
     const routes: RouteConfig[] = [
         {
@@ -72,7 +72,7 @@
 
     new Worker(); // Start worker
 
-    const library = new Library();
+    const library = dbSql.getLibrary();
     setContext("library", library);
 
     onMount(async () => {

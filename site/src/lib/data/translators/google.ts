@@ -1,7 +1,5 @@
-import localforage from "localforage";
 import { hashString } from "../utils";
 import { GoogleGenAI, Type, type Schema } from "@google/genai";
-import type { DB } from "../db";
 import { getCached, setCache } from "../cache";
 import type { DictionaryRequest, ParagraphTranslation, Translator } from "./translator";
 
@@ -113,15 +111,13 @@ const paragraphSchema: Schema = {
 }
 
 export class GoogleTranslator implements Translator {
-    readonly db: DB
     readonly ai: GoogleGenAI;
     readonly to: string;
     readonly model: string;
 
-    constructor(apiKey: string, to: string, db: DB, model: string) {
+    constructor(apiKey: string, to: string, model: string) {
         this.ai = new GoogleGenAI({ apiKey });
         this.to = to;
-        this.db = db;
         this.model = model;
     }
 

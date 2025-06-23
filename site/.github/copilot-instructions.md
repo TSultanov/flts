@@ -25,6 +25,7 @@ Books are organized in a hierarchical folder structure:
 - `null` or empty path = root folder
 - Path array represents folder hierarchy (e.g., `["Fiction", "Sci-Fi"]`)
 - The `getLibraryBooks()` method returns a `LibraryFolder` tree structure
+- Database schema is defined in migrations in `src/lib/data/sqt/migrations.ts`
 
 ## Design System & Styling
 

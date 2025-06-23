@@ -95,49 +95,6 @@ interface Grammar {
     other?: string
 }
 
-export type DB = Dexie & {
-    books: EntityTable<Book, 'uid'>,
-    bookChapters: EntityTable<BookChapter, 'uid'>,
-    paragraphs: EntityTable<Paragraph, 'uid'>,
-    languages: EntityTable<Language, 'uid'>,
-    paragraphTranslations: EntityTable<ParagraphTranslation, 'uid'>,
-    sentenceTranslations: EntityTable<SentenceTranslation, 'uid'>,
-    words: EntityTable<Word, 'uid'>,
-    wordTranslations: EntityTable<WordTranslation, 'uid'>,
-    sentenceWordTranslations: EntityTable<SentenceWordTranslation, 'uid'>,
-};
-
-export const db = new Dexie('library', {
-    chromeTransactionDurability: "relaxed",
-    cache: "immutable",
-}) as DB;
-
-db.version(1).stores({
-    books: '&uid, title, createdAt',
-    bookChapters: '&uid, bookUid, order, createdAt',
-    paragraphs: '&uid, chapterUid, order, createdAt',
-    languages: '&uid, name, createdAt',
-    paragraphTranslations: '&uid, paragraphUid, languageUid, createdAt',
-    sentenceTranslations: '&uid, paragraphTranslationUid, order, createdAt',
-    words: '&uid, originalLanguageUid, original, originalNormalized, createdAt',
-    wordTranslations: '&uid, languageUid, originalWordUid, translation, translationNormalized, createdAt',
-    sentenceWordTranslations: '&uid, sentenceUid, order, original, wordTranslationUid, createdAt',
-    queryCache: '&hash',
-});
-
-db.version(2).stores({
-    books: '&uid, title, createdAt',
-    bookChapters: '&uid, bookUid, order, createdAt',
-    paragraphs: '&uid, chapterUid, order, createdAt',
-    languages: '&uid, name, createdAt',
-    paragraphTranslations: '&uid, paragraphUid, languageUid, createdAt',
-    sentenceTranslations: '&uid, paragraphTranslationUid, order, createdAt',
-    words: '&uid, originalLanguageUid, original, originalNormalized, createdAt',
-    wordTranslations: '&uid, languageUid, originalWordUid, translation, translationNormalized, createdAt',
-    sentenceWordTranslations: '&uid, sentenceUid, order, original, wordTranslationUid, createdAt',
-    queryCache: null,
-});
-
 export type {
     Book,
     BookChapter,

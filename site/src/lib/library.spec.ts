@@ -2,8 +2,10 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import 'fake-indexeddb/auto';
 import * as fc from 'fast-check';
 import type { Library as LibType, LibraryFolder, LibraryBook } from './library.svelte';
-import type Dexie from 'dexie';
 import { type ParagraphTranslation, type WordTranslation, type SentenceTranslation } from './data/translators/translator';
+import dbSql from "./data/dbSql";
+import type Dexie from 'dexie';
+import type { UUID } from './data/db';
 
 // Mock the config module before anything else
 vi.mock('./config', () => ({
@@ -14,31 +16,6 @@ vi.mock('./config', () => ({
     }),
     setConfig: vi.fn(),
 }));
-
-// Mock the database before importing any library code that uses it.
-vi.mock('./data/db', async (importOriginal) => {
-    const DexiePackage = (await import('dexie')).default;
-    const actual = await importOriginal() as typeof import('./data/db');
-    
-    const testDb = new DexiePackage('test-db');
-    // This schema needs to match the one in the actual db.ts
-    testDb.version(1).stores({
-        books: '&uid, title, createdAt',
-        bookChapters: '&uid, bookUid, order, createdAt',
-        paragraphs: '&uid, chapterUid, order, createdAt',
-        languages: '&uid, name, createdAt',
-        paragraphTranslations: '&uid, paragraphUid, languageUid, createdAt',
-        sentenceTranslations: '&uid, paragraphTranslationUid, order, createdAt',
-        words: '&uid, originalLanguageUid, original, originalNormalized, createdAt',
-        wordTranslations: '&uid, languageUid, originalWordUid, translation, translationNormalized, createdAt',
-        sentenceWordTranslations: '&uid, sentenceUid, order, original, wordTranslationUid, createdAt',
-    });
-
-    return {
-        ...actual,
-        db: testDb,
-    };
-});
 
 // Mock the queue database
 vi.mock('./data/queueDb', async (importOriginal) => {
@@ -58,9 +35,7 @@ vi.mock('./data/queueDb', async (importOriginal) => {
 
 // Dynamically import the modules after the mock is set up.
 const { Library } = await import('./library.svelte');
-const { db } = await import('./data/db');
 const { queueDb } = await import('./data/queueDb');
-const { addTranslation } = await import('./data/importWorker');
 
 describe('Library', () => {
     let library: LibType;
@@ -68,11 +43,13 @@ describe('Library', () => {
     beforeEach(async () => {
         // Reset the database before each test
         vi.clearAllMocks();
-        await (db as Dexie).delete();
-        await (db as Dexie).open();
         await (queueDb as Dexie).delete();
         await (queueDb as Dexie).open();
-        library = new Library();
+        
+        // Reset the SQL database
+        await dbSql.resetDatabase();
+        
+        library = dbSql.getLibrary()
     });
 
     it('should start with an empty library', async () => {
@@ -190,15 +167,36 @@ describe('Library', () => {
     describe('Folder Structure', () => {
         it('should create nested folders correctly when importing books with paths', async () => {
             await library.importText('Book 1', 'c1');
-            let b1 = (await (db as any).books.where('title').equals('Book 1').first());
+            let libraryState = await new Promise<LibraryFolder>(resolve => {
+                library.getLibraryBooks().subscribe(value => {
+                    if (value && value.books.length > 0) {
+                        resolve(value);
+                    }
+                });
+            });
+            let b1 = libraryState.books.find(b => b.title === 'Book 1')!;
             await library.moveBook(b1.uid, ['A', 'B']);
 
             await library.importText('Book 2', 'c2');
-            let b2 = (await (db as any).books.where('title').equals('Book 2').first());
+            libraryState = await new Promise<LibraryFolder>(resolve => {
+                library.getLibraryBooks().subscribe(value => {
+                    if (value && (value.books.length > 0 || value.folders.length > 0)) {
+                        resolve(value);
+                    }
+                });
+            });
+            let b2 = libraryState.books.find(b => b.title === 'Book 2')!;
             await library.moveBook(b2.uid, ['A', 'C']);
             
             await library.importText('Book 3', 'c3');
-            let b3 = (await (db as any).books.where('title').equals('Book 3').first());
+            libraryState = await new Promise<LibraryFolder>(resolve => {
+                library.getLibraryBooks().subscribe(value => {
+                    if (value && (value.books.length > 0 || value.folders.length > 0)) {
+                        resolve(value);
+                    }
+                });
+            });
+            let b3 = libraryState.books.find(b => b.title === 'Book 3')!;
             await library.moveBook(b3.uid, ['A']);
 
             await library.importText('Book 4', 'c4');
@@ -244,16 +242,29 @@ describe('Library', () => {
         it('should correctly store and retrieve any imported book', async () => {
             await fc.assert(
                 fc.asyncProperty(bookArbitrary, async (book) => {
-                    await (db as Dexie).delete();
-                    await (db as Dexie).open();
-                    const propLib = new Library();
+                    // Reset the SQL database
+                    await dbSql.resetDatabase();
+                    const propLib = dbSql.getLibrary();
 
                     await propLib.importText(book.title, book.content);
-                    const savedBook = await (db as any).books.where('title').equals(book.title).first();
-                    expect(savedBook).toBeDefined();
+                    
+                    // Get the book UID through the library interface
+                    let importedBookUid: string | undefined;
+                    const initialState = await new Promise<LibraryFolder>(resolve => {
+                        propLib.getLibraryBooks().subscribe(value => {
+                            if (value && value.books.length > 0) {
+                                resolve(value);
+                            }
+                        });
+                    });
+                    
+                    const bookInRoot = initialState.books.find(b => b.title === book.title);
+                    if (bookInRoot) {
+                        importedBookUid = bookInRoot.uid;
+                    }
 
-                    if (book.path) {
-                        await propLib.moveBook(savedBook!.uid, book.path);
+                    if (book.path && importedBookUid) {
+                        await propLib.moveBook(importedBookUid as UUID, book.path);
                     }
 
                     const rootFolder = await new Promise<LibraryFolder>(resolve => {
@@ -298,9 +309,9 @@ describe('Library', () => {
         it('deleting a book should remove it from the library', async () => {
             await fc.assert(
                 fc.asyncProperty(nonEmptyString, async (title) => {
-                    await (db as Dexie).delete();
-                    await (db as Dexie).open();
-                    const propLib = new Library();
+                    // Reset the SQL database
+                    await dbSql.resetDatabase();
+                    const propLib = dbSql.getLibrary();
                     await propLib.importText(title, "content");
 
                     let root = await new Promise<LibraryFolder>(r => propLib.getLibraryBooks().subscribe(v => { if(v && v.books.length) r(v) }));
@@ -411,7 +422,7 @@ describe('Library', () => {
             const mockTranslation = createMockParagraphTranslation([sentence]);
 
             // Add translation using addTranslation function
-            await addTranslation(paragraph.uid, mockTranslation, 'gemini-2.5-flash');
+            await dbSql.addTranslation(paragraph.uid, mockTranslation, 'gemini-2.5-flash');
 
             // Verify translation is accessible through library interface
             const translatedParagraph = await new Promise(resolve => {
@@ -474,7 +485,7 @@ describe('Library', () => {
             ];
             const mockTranslation = createMockParagraphTranslation(sentences);
 
-            await addTranslation(paragraph.uid, mockTranslation, 'gemini-2.5-flash');
+            await dbSql.addTranslation(paragraph.uid, mockTranslation, 'gemini-2.5-flash');
 
             const translatedParagraph = await new Promise(resolve => {
                 library.getParagraph(paragraph.uid).subscribe(value => {
@@ -567,7 +578,7 @@ describe('Library', () => {
             const sentence = createMockSentenceTranslation(words, 'Hola, "mundo"!');
             const mockTranslation = createMockParagraphTranslation([sentence]);
 
-            await addTranslation(paragraph.uid, mockTranslation, 'gemini-2.5-flash');
+            await dbSql.addTranslation(paragraph.uid, mockTranslation, 'gemini-2.5-flash');
 
             const translatedParagraph = await new Promise(resolve => {
                 library.getParagraph(paragraph.uid).subscribe(value => {
@@ -621,7 +632,7 @@ describe('Library', () => {
             const sentence = createMockSentenceTranslation(words, "Hello world.");
             const mockTranslation = createMockParagraphTranslation([sentence], "fr", "en");
 
-            await addTranslation(paragraph.uid, mockTranslation, 'gemini-2.5-flash');
+            await dbSql.addTranslation(paragraph.uid, mockTranslation, 'gemini-2.5-flash');
 
             const translatedParagraph = await new Promise(resolve => {
                 library.getParagraph(paragraph.uid).subscribe(value => {
@@ -674,8 +685,8 @@ describe('Library', () => {
             const mockTranslation = createMockParagraphTranslation([sentence]);
 
             // Add same translation twice
-            await addTranslation(paragraph.uid, mockTranslation, 'gemini-2.5-flash');
-            await addTranslation(paragraph.uid, mockTranslation, 'gemini-2.5-flash');
+            await dbSql.addTranslation(paragraph.uid, mockTranslation, 'gemini-2.5-flash');
+            await dbSql.addTranslation(paragraph.uid, mockTranslation, 'gemini-2.5-flash');
 
             const translatedParagraph = await new Promise(resolve => {
                 library.getParagraph(paragraph.uid).subscribe(value => {
@@ -747,7 +758,7 @@ describe('Library', () => {
             const sentence = createMockSentenceTranslation(words, "Corre rápido.");
             const mockTranslation = createMockParagraphTranslation([sentence]);
 
-            await addTranslation(paragraph.uid, mockTranslation, 'gemini-2.5-flash');
+            await dbSql.addTranslation(paragraph.uid, mockTranslation, 'gemini-2.5-flash');
 
             const translatedParagraph = await new Promise(resolve => {
                 library.getParagraph(paragraph.uid).subscribe(value => {
@@ -770,7 +781,7 @@ describe('Library', () => {
             const mockTranslation = createMockParagraphTranslation([sentence]);
 
             // This should not throw an error and should return gracefully
-            await expect(addTranslation(fakeUid, mockTranslation, 'gemini-2.5-flash')).resolves.toBeUndefined();
+            await expect(dbSql.addTranslation(fakeUid, mockTranslation, 'gemini-2.5-flash')).resolves.toBeUndefined();
         });
     });
 });
