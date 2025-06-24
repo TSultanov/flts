@@ -283,12 +283,49 @@ async function primaryKeyHashIndexes(db: Transaction) {
     console.log(`Migration version ${version} is applied`);
 }
 
+async function compositeIndexesOptimization(db: Transaction) {
+    const version = 4;
+
+    console.log(`Applying migration version ${version}`);
+
+    // Check if migration is already applied
+    const migrationCheck = await db.query(`
+        SELECT 1 FROM migrations WHERE version = $1
+    `, [version]);
+    
+    if (migrationCheck.rows.length > 0) {
+        console.log(`Migration version ${version} already applied, skipping...`);
+        return;
+    }
+
+    // Create composite indexes for optimized query performance
+    // These indexes are specifically designed to optimize the sentence_word_translations query
+    // that joins across multiple tables and orders by sentence_uid and order
+    
+    await db.exec(`
+        -- Composite hash indexes for efficient joins
+        CREATE INDEX IF NOT EXISTS idx_book_chapters_book_uid_uid_hash ON book_chapters (book_uid, uid);
+        CREATE INDEX IF NOT EXISTS idx_paragraphs_chapter_uid_uid_hash ON paragraphs (chapter_uid, uid);
+        CREATE INDEX IF NOT EXISTS idx_paragraph_translations_paragraph_uid_uid_hash ON paragraph_translations (paragraph_uid, uid);
+        CREATE INDEX IF NOT EXISTS idx_sentence_translations_paragraph_translation_uid_uid_hash ON sentence_translations (paragraph_translation_uid, uid);
+    `);
+
+    // Insert migration record
+    await db.query(`
+        INSERT INTO migrations (version, applied_at) 
+        VALUES ($1, NOW());
+    `, [version]);
+
+    console.log(`Migration version ${version} is applied`);
+}
+
 export async function applyMigrations(db: PGliteInterface) {
     await db.transaction(async tx => 
         {
             await initialState(tx);
             await hashIndexes(tx);
             await primaryKeyHashIndexes(tx);
+            await compositeIndexesOptimization(tx);
         }
     );
 }

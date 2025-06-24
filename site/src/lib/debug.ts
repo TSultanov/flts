@@ -1,6 +1,7 @@
 import { cacheDb } from './data/cache';
 import JSZip from 'jszip';
 import { encode, decode } from '@msgpack/msgpack';
+import dbSql from './data/dbSql';
 
 export const debug = {
     /**
@@ -163,245 +164,345 @@ export const debug = {
         return result;
     },
 
-    // /**
-    //  * Exports the entire library as a zip archive with MessagePack files.
-    //  * - dictionary.pack: contains words and wordTranslations tables (compressed with gzip)
-    //  * - books/book_<book uid>.pack: contains all chapters, paragraphs, sentences, and translations for each book (compressed with gzip)
-    //  */
-    // async exportLibrary(): Promise<void> {
-    //     console.time('exportLibrary-total');
+    /**
+     * Exports the entire library as a zip archive with MessagePack files.
+     * - dictionary.pack: contains words and wordTranslations tables (compressed with gzip)
+     * - books/book_<book uid>.pack: contains all chapters, paragraphs, sentences, and translations for each book (compressed with gzip)
+     */
+    async exportLibrary(): Promise<void> {
+        console.time('exportLibrary-total');
         
-    //     // Fetch dictionary tables
-    //     const [words, wordTranslations] = await Promise.all([
-    //         db.words.toArray(),
-    //         db.wordTranslations.toArray()
-    //     ]);
-
-    //     // Prepare dictionary MessagePack and compress it
-    //     console.time('dictionary-encode');
-    //     const dictionaryPack = encode({ words, wordTranslations });
-    //     console.timeEnd('dictionary-encode');
+        const pg = dbSql.getPgInstance();
         
-    //     console.time('dictionary-compress');
-    //     const compressedDictionaryPack = await this.compressData(dictionaryPack);
-    //     console.timeEnd('dictionary-compress');
+        // Fetch dictionary tables
+        const [wordsResult, wordTranslationsResult] = await Promise.all([
+            pg.query('SELECT * FROM words ORDER BY created_at'),
+            pg.query('SELECT * FROM word_translations ORDER BY created_at')
+        ]);
 
-    //     // Fetch all books
-    //     const books = await db.books.toArray();
-    //     console.log(`Processing ${books.length} books for export`);
+        // Prepare dictionary MessagePack and compress it
+        console.time('dictionary-encode');
+        const dictionaryPack = encode({ 
+            words: wordsResult.rows, 
+            wordTranslations: wordTranslationsResult.rows 
+        });
+        console.timeEnd('dictionary-encode');
+        
+        console.time('dictionary-compress');
+        const compressedDictionaryPack = await this.compressData(dictionaryPack);
+        console.timeEnd('dictionary-compress');
 
-    //     // Prepare zip
-    //     const zip = new JSZip();
-    //     zip.file('dictionary.pack', compressedDictionaryPack);
-    //     const booksFolder = zip.folder('books');
+        // Fetch all books
+        const booksResult = await pg.query('SELECT * FROM books ORDER BY created_at');
+        const books = booksResult.rows;
+        console.log(`Processing ${books.length} books for export`);
 
-    //     // For each book, gather all related data and pack
-    //     for (const book of books) {
-    //         console.time(`book-${book.uid}-data-fetch`);
+        // Prepare zip
+        const zip = new JSZip();
+        zip.file('dictionary.pack', compressedDictionaryPack);
+        const booksFolder = zip.folder('books');
 
-    //         const chapterUids = await db.bookChapters.where('bookUid').equals(book.uid).primaryKeys();
-    //         const paragraphUids = await db.paragraphs.where('chapterUid').anyOf(chapterUids).primaryKeys();
-    //         const paragraphTranslationUids = await db.paragraphTranslations.where('paragraphUid').anyOf(paragraphUids).primaryKeys();
-    //         const sentenceTranslationUids = await db.sentenceTranslations.where('paragraphTranslationUid').anyOf(paragraphTranslationUids).primaryKeys();
+        // For each book, gather all related data and pack
+        for (const book of books as any[]) {
+            console.time(`book-${book.uid}-data-fetch`);
 
-    //         const [
-    //             chapters,
-    //             paragraphs,
-    //             paragraphTranslations,
-    //             sentenceTranslations,
-    //             sentenceWordTranslations
-    //         ] = await Promise.all([
-    //             db.bookChapters.where('bookUid').equals(book.uid).toArray(),
-    //             db.paragraphs.where('chapterUid').anyOf(chapterUids).toArray(),
-    //             db.paragraphTranslations.where('paragraphUid').anyOf(paragraphUids).toArray(),
-    //             db.sentenceTranslations.where('paragraphTranslationUid').anyOf(paragraphTranslationUids).toArray(),
-    //             db.sentenceWordTranslations.where('sentenceUid').anyOf(sentenceTranslationUids).toArray()
-    //         ]);
-    //         console.timeEnd(`book-${book.uid}-data-fetch`);
+            const [
+                chaptersResult,
+                paragraphsResult,
+                paragraphTranslationsResult,
+                sentenceTranslationsResult,
+                sentenceWordTranslationsResult
+            ] = await Promise.all([
+                pg.query('SELECT * FROM book_chapters WHERE book_uid = $1 ORDER BY "order"', [book.uid]),
+                pg.query(`
+                    SELECT p.* FROM paragraphs p
+                    JOIN book_chapters bc ON p.chapter_uid = bc.uid
+                    WHERE bc.book_uid = $1
+                    ORDER BY bc."order", p."order"
+                `, [book.uid]),
+                pg.query(`
+                    SELECT pt.* FROM paragraph_translations pt
+                    JOIN paragraphs p ON pt.paragraph_uid = p.uid
+                    JOIN book_chapters bc ON p.chapter_uid = bc.uid
+                    WHERE bc.book_uid = $1
+                    ORDER BY bc."order", p."order", pt.created_at
+                `, [book.uid]),
+                pg.query(`
+                    SELECT st.* FROM sentence_translations st
+                    JOIN paragraph_translations pt ON st.paragraph_translation_uid = pt.uid
+                    JOIN paragraphs p ON pt.paragraph_uid = p.uid
+                    JOIN book_chapters bc ON p.chapter_uid = bc.uid
+                    WHERE bc.book_uid = $1
+                    ORDER BY bc."order", p."order", st."order"
+                `, [book.uid]),
+                pg.query(`
+                    SELECT swt.* FROM sentence_word_translations swt
+                    JOIN sentence_translations st ON swt.sentence_uid = st.uid
+                    JOIN paragraph_translations pt ON st.paragraph_translation_uid = pt.uid
+                    JOIN paragraphs p ON pt.paragraph_uid = p.uid
+                    JOIN book_chapters bc ON p.chapter_uid = bc.uid
+                    WHERE bc.book_uid = $1
+                    ORDER BY bc."order", p."order", st."order", swt."order"
+                `, [book.uid])
+            ]);
             
-    //         console.time(`book-${book.uid}-encode`);
-    //         const bookPack = encode({ book, chapters, paragraphs, paragraphTranslations, sentenceTranslations, sentenceWordTranslations });
-    //         console.timeEnd(`book-${book.uid}-encode`);
+            console.timeEnd(`book-${book.uid}-data-fetch`);
             
-    //         console.time(`book-${book.uid}-compress`);
-    //         const compressedBookPack = await this.compressData(bookPack);
-    //         console.timeEnd(`book-${book.uid}-compress`);
+            console.time(`book-${book.uid}-encode`);
+            const bookPack = encode({
+                book,
+                chapters: chaptersResult.rows,
+                paragraphs: paragraphsResult.rows,
+                paragraphTranslations: paragraphTranslationsResult.rows,
+                sentenceTranslations: sentenceTranslationsResult.rows,
+                sentenceWordTranslations: sentenceWordTranslationsResult.rows
+            });
+            console.timeEnd(`book-${book.uid}-encode`);
             
-    //         booksFolder?.file(`book_${book.uid}.pack`, compressedBookPack);
-    //     }
+            console.time(`book-${book.uid}-compress`);
+            const compressedBookPack = await this.compressData(bookPack);
+            console.timeEnd(`book-${book.uid}-compress`);
+            
+            booksFolder?.file(`book_${book.uid}.pack`, compressedBookPack);
+        }
 
-    //     // Generate zip and trigger download
-    //     console.time('zip-generate');
-    //     const blob = await zip.generateAsync({ type: 'blob', compression: "DEFLATE" });
-    //     console.timeEnd('zip-generate');
+        // Generate zip and trigger download
+        console.time('zip-generate');
+        const blob = await zip.generateAsync({ type: 'blob', compression: "DEFLATE" });
+        console.timeEnd('zip-generate');
         
-    //     const url = URL.createObjectURL(blob);
-    //     const link = document.createElement('a');
-    //     link.href = url;
-    //     link.download = `flts-library-${new Date().toISOString().replace(/[:.]/g, '-')}.zip`;
-    //     document.body.appendChild(link);
-    //     link.click();
-    //     document.body.removeChild(link);
-    //     URL.revokeObjectURL(url);
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `flts-library-${new Date().toISOString().replace(/[:.]/g, '-')}.zip`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
         
-    //     console.timeEnd('exportLibrary-total');
-    //     console.log(`Export completed successfully. File size: ${(blob.size / 1024 / 1024).toFixed(2)} MB`);
-    // },
+        console.timeEnd('exportLibrary-total');
+        console.log(`Export completed successfully. File size: ${(blob.size / 1024 / 1024).toFixed(2)} MB`);
+    },
 
-    // /**
-    //  * Imports a library from a zip archive with MessagePack files created by exportLibrary().
-    //  * Skips objects with existing UIDs to avoid duplicates.
-    //  */
-    // async importLibrary(): Promise<void> {
-    //     return new Promise((resolve, reject) => {
-    //         const fileInput = document.createElement('input');
-    //         fileInput.type = 'file';
-    //         fileInput.accept = '.zip';
-    //         fileInput.onchange = async (event) => {
-    //             try {
-    //                 const file = (event.target as HTMLInputElement).files?.[0];
-    //                 if (!file) {
-    //                     reject(new Error('No file selected'));
-    //                     return;
-    //                 }
+    /**
+     * Imports a library from a zip archive with MessagePack files created by exportLibrary().
+     * Skips objects with existing UIDs to avoid duplicates.
+     */
+    async importLibrary(): Promise<void> {
+        return new Promise((resolve, reject) => {
+            const fileInput = document.createElement('input');
+            fileInput.type = 'file';
+            fileInput.accept = '.zip';
+            fileInput.onchange = async (event) => {
+                try {
+                    const file = (event.target as HTMLInputElement).files?.[0];
+                    if (!file) {
+                        reject(new Error('No file selected'));
+                        return;
+                    }
 
-    //                 console.time('importLibrary-total');
-    //                 console.log(`Importing library from file: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
+                    console.time('importLibrary-total');
+                    console.log(`Importing library from file: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
 
-    //                 // Load and extract the zip file
-    //                 const zip = await JSZip.loadAsync(file);
+                    const pg = dbSql.getPgInstance();
 
-    //                 // Import dictionary data first
-    //                 const dictionaryFile = zip.file('dictionary.pack');
-    //                 if (dictionaryFile) {
-    //                     console.time('dictionary-import');
+                    // Load and extract the zip file
+                    const zip = await JSZip.loadAsync(file);
+
+                    // Import dictionary data first
+                    const dictionaryFile = zip.file('dictionary.pack');
+                    if (dictionaryFile) {
+                        console.time('dictionary-import');
                         
-    //                     const compressedDictionaryData = await dictionaryFile.async('uint8array');
-    //                     const dictionaryData = await this.decompressData(compressedDictionaryData);
-    //                     const dictionaryPack = decode(dictionaryData) as {
-    //                         words: any[],
-    //                         wordTranslations: any[]
-    //                     };
+                        const compressedDictionaryData = await dictionaryFile.async('uint8array');
+                        const dictionaryData = await this.decompressData(compressedDictionaryData);
+                        const dictionaryPack = decode(dictionaryData) as {
+                            words: any[],
+                            wordTranslations: any[]
+                        };
 
-    //                     // Import words (skip existing UIDs)
-    //                     const existingWordUids = new Set((await db.words.toCollection().primaryKeys()) as string[]);
-    //                     const newWords = dictionaryPack.words.filter(word => !existingWordUids.has(word.uid));
-    //                     if (newWords.length > 0) {
-    //                         await db.words.bulkAdd(newWords);
-    //                         console.log(`Imported ${newWords.length} new words (skipped ${dictionaryPack.words.length - newWords.length} existing)`);
-    //                     }
+                        await pg.transaction(async (tx) => {
+                            // Import words (skip existing UIDs)
+                            const existingWordsResult = await tx.query('SELECT uid FROM words');
+                            const existingWordUids = new Set(existingWordsResult.rows.map((row: any) => row.uid));
+                            const newWords = dictionaryPack.words.filter(word => !existingWordUids.has(word.uid));
+                            
+                            for (const word of newWords) {
+                                await tx.query(`
+                                    INSERT INTO words (uid, original_language_uid, original, original_normalized, created_at)
+                                    VALUES ($1, $2, $3, $4, $5)
+                                    ON CONFLICT (uid) DO NOTHING
+                                `, [word.uid, word.original_language_uid, word.original, word.original_normalized, word.created_at]);
+                            }
+                            
+                            if (newWords.length > 0) {
+                                console.log(`Imported ${newWords.length} new words (skipped ${dictionaryPack.words.length - newWords.length} existing)`);
+                            }
 
-    //                     // Import word translations (skip existing UIDs)
-    //                     const existingWordTranslationUids = new Set((await db.wordTranslations.toCollection().primaryKeys()) as string[]);
-    //                     const newWordTranslations = dictionaryPack.wordTranslations.filter(wt => !existingWordTranslationUids.has(wt.uid));
-    //                     if (newWordTranslations.length > 0) {
-    //                         await db.wordTranslations.bulkAdd(newWordTranslations);
-    //                         console.log(`Imported ${newWordTranslations.length} new word translations (skipped ${dictionaryPack.wordTranslations.length - newWordTranslations.length} existing)`);
-    //                     }
+                            // Import word translations (skip existing UIDs)
+                            const existingWordTranslationsResult = await tx.query('SELECT uid FROM word_translations');
+                            const existingWordTranslationUids = new Set(existingWordTranslationsResult.rows.map((row: any) => row.uid));
+                            const newWordTranslations = dictionaryPack.wordTranslations.filter(wt => !existingWordTranslationUids.has(wt.uid));
+                            
+                            for (const wt of newWordTranslations) {
+                                await tx.query(`
+                                    INSERT INTO word_translations (uid, language_uid, original_word_uid, translation, translation_normalized, created_at)
+                                    VALUES ($1, $2, $3, $4, $5, $6)
+                                    ON CONFLICT (uid) DO NOTHING
+                                `, [wt.uid, wt.language_uid, wt.original_word_uid, wt.translation, wt.translation_normalized, wt.created_at]);
+                            }
+                            
+                            if (newWordTranslations.length > 0) {
+                                console.log(`Imported ${newWordTranslations.length} new word translations (skipped ${dictionaryPack.wordTranslations.length - newWordTranslations.length} existing)`);
+                            }
+                        });
 
-    //                     console.timeEnd('dictionary-import');
-    //                 }
+                        console.timeEnd('dictionary-import');
+                    }
 
-    //                 // Import book data
-    //                 const booksFolder = zip.folder('books');
-    //                 if (booksFolder) {
-    //                     const bookFiles = Object.keys(booksFolder.files).filter(filename => 
-    //                         filename.startsWith('books/') && filename.endsWith('.pack')
-    //                     );
+                    // Import book data
+                    const booksFolder = zip.folder('books');
+                    if (booksFolder) {
+                        const bookFiles = Object.keys(booksFolder.files).filter(filename => 
+                            filename.startsWith('books/') && filename.endsWith('.pack')
+                        );
 
-    //                     console.log(`Found ${bookFiles.length} book files to import`);
+                        console.log(`Found ${bookFiles.length} book files to import`);
 
-    //                     for (const bookFileName of bookFiles) {
-    //                         const bookFile = zip.file(bookFileName);
-    //                         if (!bookFile) continue;
+                        for (const bookFileName of bookFiles) {
+                            const bookFile = zip.file(bookFileName);
+                            if (!bookFile) continue;
 
-    //                         console.time(`book-import-${bookFileName}`);
+                            console.time(`book-import-${bookFileName}`);
 
-    //                         const compressedBookData = await bookFile.async('uint8array');
-    //                         const bookData = await this.decompressData(compressedBookData);
-    //                         const bookPack = decode(bookData) as {
-    //                             book: any,
-    //                             chapters: any[],
-    //                             paragraphs: any[],
-    //                             paragraphTranslations: any[],
-    //                             sentenceTranslations: any[],
-    //                             sentenceWordTranslations: any[]
-    //                         };
+                            const compressedBookData = await bookFile.async('uint8array');
+                            const bookData = await this.decompressData(compressedBookData);
+                            const bookPack = decode(bookData) as {
+                                book: any,
+                                chapters: any[],
+                                paragraphs: any[],
+                                paragraphTranslations: any[],
+                                sentenceTranslations: any[],
+                                sentenceWordTranslations: any[]
+                            };
 
-    //                         // Check if book already exists
-    //                         const existingBook = await db.books.where('uid').equals(bookPack.book.uid).first();
-    //                         if (existingBook) {
-    //                             console.log(`Skipping book "${bookPack.book.title}" - already exists`);
-    //                             console.timeEnd(`book-import-${bookFileName}`);
-    //                             continue;
-    //                         }
+                            // Check if book already exists
+                            const existingBookResult = await pg.query('SELECT uid FROM books WHERE uid = $1', [bookPack.book.uid]);
+                            if (existingBookResult.rows.length > 0) {
+                                console.log(`Skipping book "${bookPack.book.title}" - already exists`);
+                                console.timeEnd(`book-import-${bookFileName}`);
+                                continue;
+                            }
 
-    //                         // Import book and related data in a transaction
-    //                         await db.transaction('rw', [
-    //                             db.books,
-    //                             db.bookChapters,
-    //                             db.paragraphs,
-    //                             db.paragraphTranslations,
-    //                             db.sentenceTranslations,
-    //                             db.sentenceWordTranslations
-    //                         ], async () => {
-    //                             // Import book
-    //                             await db.books.add(bookPack.book);
+                            // Import book and related data in a transaction
+                            await pg.transaction(async (tx) => {
+                                // Import book
+                                await tx.query(`
+                                    INSERT INTO books (uid, title, path, created_at)
+                                    VALUES ($1, $2, $3, $4)
+                                    ON CONFLICT (uid) DO NOTHING
+                                `, [bookPack.book.uid, bookPack.book.title, bookPack.book.path, bookPack.book.created_at]);
 
-    //                             // Import chapters (skip existing UIDs)
-    //                             const existingChapterUids = new Set((await db.bookChapters.toCollection().primaryKeys()) as string[]);
-    //                             const newChapters = bookPack.chapters.filter(chapter => !existingChapterUids.has(chapter.uid));
-    //                             if (newChapters.length > 0) {
-    //                                 await db.bookChapters.bulkAdd(newChapters);
-    //                             }
+                                // Import chapters (skip existing UIDs)
+                                for (const chapter of bookPack.chapters) {
+                                    await tx.query(`
+                                        INSERT INTO book_chapters (uid, book_uid, "order", title, created_at)
+                                        VALUES ($1, $2, $3, $4, $5)
+                                        ON CONFLICT (uid) DO NOTHING
+                                    `, [chapter.uid, chapter.book_uid, chapter.order, chapter.title, chapter.created_at]);
+                                }
 
-    //                             // Import paragraphs (skip existing UIDs)
-    //                             const existingParagraphUids = new Set((await db.paragraphs.toCollection().primaryKeys()) as string[]);
-    //                             const newParagraphs = bookPack.paragraphs.filter(paragraph => !existingParagraphUids.has(paragraph.uid));
-    //                             if (newParagraphs.length > 0) {
-    //                                 await db.paragraphs.bulkAdd(newParagraphs);
-    //                             }
+                                // Import paragraphs (skip existing UIDs)
+                                for (const paragraph of bookPack.paragraphs) {
+                                    await tx.query(`
+                                        INSERT INTO paragraphs (uid, chapter_uid, "order", original_text, original_html, created_at)
+                                        VALUES ($1, $2, $3, $4, $5, $6)
+                                        ON CONFLICT (uid) DO NOTHING
+                                    `, [paragraph.uid, paragraph.chapter_uid, paragraph.order, paragraph.original_text, paragraph.original_html, paragraph.created_at]);
+                                }
 
-    //                             // Import paragraph translations (skip existing UIDs)
-    //                             const existingParagraphTranslationUids = new Set((await db.paragraphTranslations.toCollection().primaryKeys()) as string[]);
-    //                             const newParagraphTranslations = bookPack.paragraphTranslations.filter(pt => !existingParagraphTranslationUids.has(pt.uid));
-    //                             if (newParagraphTranslations.length > 0) {
-    //                                 await db.paragraphTranslations.bulkAdd(newParagraphTranslations);
-    //                             }
+                                // Import paragraph translations (skip existing UIDs)
+                                for (const pt of bookPack.paragraphTranslations) {
+                                    await tx.query(`
+                                        INSERT INTO paragraph_translations (uid, paragraph_uid, language_uid, translating_model, created_at)
+                                        VALUES ($1, $2, $3, $4, $5)
+                                        ON CONFLICT (uid) DO NOTHING
+                                    `, [pt.uid, pt.paragraph_uid, pt.language_uid, pt.translating_model, pt.created_at]);
+                                }
 
-    //                             // Import sentence translations (skip existing UIDs)
-    //                             const existingSentenceTranslationUids = new Set((await db.sentenceTranslations.toCollection().primaryKeys()) as string[]);
-    //                             const newSentenceTranslations = bookPack.sentenceTranslations.filter(st => !existingSentenceTranslationUids.has(st.uid));
-    //                             if (newSentenceTranslations.length > 0) {
-    //                                 await db.sentenceTranslations.bulkAdd(newSentenceTranslations);
-    //                             }
+                                // Import sentence translations (skip existing UIDs)
+                                for (const st of bookPack.sentenceTranslations) {
+                                    await tx.query(`
+                                        INSERT INTO sentence_translations (uid, paragraph_translation_uid, "order", full_translation, created_at)
+                                        VALUES ($1, $2, $3, $4, $5)
+                                        ON CONFLICT (uid) DO NOTHING
+                                    `, [st.uid, st.paragraph_translation_uid, st.order, st.full_translation, st.created_at]);
+                                }
 
-    //                             // Import sentence word translations (skip existing UIDs)
-    //                             const existingSentenceWordTranslationUids = new Set((await db.sentenceWordTranslations.toCollection().primaryKeys()) as string[]);
-    //                             const newSentenceWordTranslations = bookPack.sentenceWordTranslations.filter(swt => !existingSentenceWordTranslationUids.has(swt.uid));
-    //                             if (newSentenceWordTranslations.length > 0) {
-    //                                 await db.sentenceWordTranslations.bulkAdd(newSentenceWordTranslations);
-    //                             }
-    //                         });
+                                // Import sentence word translations (skip existing UIDs)
+                                for (const swt of bookPack.sentenceWordTranslations) {
+                                    await tx.query(`
+                                        INSERT INTO sentence_word_translations (
+                                            uid, sentence_uid, "order", original, is_punctuation,
+                                            is_standalone_punctuation, is_opening_parenthesis, is_closing_parenthesis,
+                                            word_translation_uid, word_translation_in_context, grammar_context, note, created_at
+                                        )
+                                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                                        ON CONFLICT (uid) DO NOTHING
+                                    `, [
+                                        swt.uid, swt.sentence_uid, swt.order, swt.original, swt.is_punctuation,
+                                        swt.is_standalone_punctuation, swt.is_opening_parenthesis, swt.is_closing_parenthesis,
+                                        swt.word_translation_uid, swt.word_translation_in_context, swt.grammar_context, swt.note, swt.created_at
+                                    ]);
+                                }
+                            });
 
-    //                         console.log(`Imported book "${bookPack.book.title}" with ${bookPack.chapters.length} chapters`);
-    //                         console.timeEnd(`book-import-${bookFileName}`);
-    //                     }
-    //                 }
+                            console.log(`Imported book "${bookPack.book.title}" with ${bookPack.chapters.length} chapters`);
+                            console.timeEnd(`book-import-${bookFileName}`);
+                        }
+                    }
 
-    //                 console.timeEnd('importLibrary-total');
-    //                 console.log('Library import completed successfully');
-    //                 resolve();
-    //             } catch (error) {
-    //                 console.error('Failed to import library:', error);
-    //                 reject(error);
-    //             }
-    //         };
-    //         fileInput.oncancel = () => {
-    //             reject(new Error('File selection cancelled'));
-    //         };
-    //         fileInput.click();
-    //     });
-    // }
+                    console.timeEnd('importLibrary-total');
+                    console.log('Library import completed successfully');
+                    resolve();
+                } catch (error) {
+                    console.error('Failed to import library:', error);
+                    reject(error);
+                }
+            };
+            fileInput.oncancel = () => {
+                reject(new Error('File selection cancelled'));
+            };
+            fileInput.click();
+        });
+    },
+
+    /**
+     * Executes an arbitrary SQL statement and returns the result
+     * @param query - The SQL query to execute
+     * @param params - Optional parameters for the query
+     * @returns Promise<any> - The query result
+     */
+    async sql(query: string, params?: any[]): Promise<any> {
+        try {
+            const pg = dbSql.getPgInstance();
+            const result = await pg.query(query, params);
+            console.log('SQL Query executed successfully');
+            console.log('Query:', query);
+            if (params && params.length > 0) {
+                console.log('Parameters:', params);
+            }
+            console.log('Result:', result);
+            console.log('Rows returned:', result.rows?.length || 0);
+            return result;
+        } catch (error) {
+            console.error('SQL Query failed:', error);
+            console.error('Query:', query);
+            if (params && params.length > 0) {
+                console.error('Parameters:', params);
+            }
+            throw error;
+        }
+    }
 
 };
