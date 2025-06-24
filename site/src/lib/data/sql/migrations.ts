@@ -242,11 +242,53 @@ async function hashIndexes(db: Transaction) {
     console.log(`Migration version ${version} is applied`);
 }
 
+async function primaryKeyHashIndexes(db: Transaction) {
+    const version = 3;
+
+    console.log(`Applying migration version ${version}`);
+
+    // Check if migration is already applied
+    const migrationCheck = await db.query(`
+        SELECT 1 FROM migrations WHERE version = $1
+    `, [version]);
+    
+    if (migrationCheck.rows.length > 0) {
+        console.log(`Migration version ${version} already applied, skipping...`);
+        return;
+    }
+
+    // Create hash indexes on primary keys for better UUID lookup performance
+    // Note: Primary key constraints already provide unique B-tree indexes,
+    // but hash indexes can be faster for equality lookups on UUIDs
+    
+    await db.exec(`
+        -- Create hash indexes on primary keys
+        CREATE INDEX IF NOT EXISTS idx_books_uid_hash ON books USING HASH (uid);
+        CREATE INDEX IF NOT EXISTS idx_book_chapters_uid_hash ON book_chapters USING HASH (uid);
+        CREATE INDEX IF NOT EXISTS idx_paragraphs_uid_hash ON paragraphs USING HASH (uid);
+        CREATE INDEX IF NOT EXISTS idx_languages_uid_hash ON languages USING HASH (uid);
+        CREATE INDEX IF NOT EXISTS idx_paragraph_translations_uid_hash ON paragraph_translations USING HASH (uid);
+        CREATE INDEX IF NOT EXISTS idx_sentence_translations_uid_hash ON sentence_translations USING HASH (uid);
+        CREATE INDEX IF NOT EXISTS idx_words_uid_hash ON words USING HASH (uid);
+        CREATE INDEX IF NOT EXISTS idx_word_translations_uid_hash ON word_translations USING HASH (uid);
+        CREATE INDEX IF NOT EXISTS idx_sentence_word_translations_uid_hash ON sentence_word_translations USING HASH (uid);
+    `);
+
+    // Insert migration record
+    await db.query(`
+        INSERT INTO migrations (version, applied_at) 
+        VALUES ($1, NOW());
+    `, [version]);
+
+    console.log(`Migration version ${version} is applied`);
+}
+
 export async function applyMigrations(db: PGliteInterface) {
     await db.transaction(async tx => 
         {
             await initialState(tx);
             await hashIndexes(tx);
+            await primaryKeyHashIndexes(tx);
         }
     );
 }
