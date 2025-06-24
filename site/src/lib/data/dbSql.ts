@@ -8,14 +8,17 @@ import { Library } from '../library.svelte';
 import { PGlite, type PGliteInterface } from '@electric-sql/pglite';
 
 let pg: PGliteInterface;
-if (globalThis.Worker) {
-    pg = new PGliteWorker(new Worker(), {
+// Use in-memory PGlite when running in Vitest, PGliteWorker otherwise
+if (import.meta.vitest || !globalThis.Worker) {
+    // In Vitest or when Worker is not available: use in-memory PGlite
+    pg = new PGlite('', {
         extensions: {
             live
         }
     });
 } else {
-    pg = new PGlite('', {
+    // In production with Worker support: use PGliteWorker for better performance
+    pg = new PGliteWorker(new Worker(), {
         extensions: {
             live
         }
@@ -211,9 +214,9 @@ async function addTranslation(paragraphUid: UUID, translation: ParagraphTranslat
                         wordOrder,
                         word.original,
                         word.isPunctuation,
-                        word.isStandalonePunctuation,
-                        word.isOpeningParenthesis,
-                        word.isClosingParenthesis,
+                        word.isStandalonePunctuation ?? false,
+                        word.isOpeningParenthesis ?? false,
+                        word.isClosingParenthesis ?? false,
                         Date.now()
                     ]);
                 } else {
@@ -292,10 +295,10 @@ async function addTranslation(paragraphUid: UUID, translation: ParagraphTranslat
                         sentenceTranslationUid,
                         wordOrder,
                         word.original,
-                        word.isPunctuation,
-                        word.isStandalonePunctuation,
-                        word.isOpeningParenthesis,
-                        word.isClosingParenthesis,
+                        word.isPunctuation ?? false,
+                        word.isStandalonePunctuation ?? false,
+                        word.isOpeningParenthesis ?? false,
+                        word.isClosingParenthesis ?? false,
                         wordTranslationUid,
                         word.translations,
                         JSON.stringify(word.grammar),

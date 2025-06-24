@@ -9,6 +9,9 @@ export default defineConfig({
   plugins: [
     svelte(),
   ],
+  define: {
+    'import.meta.vitest': 'undefined',
+  },
   optimizeDeps: {
     exclude: ['@electric-sql/pglite'],
   },

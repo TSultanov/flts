@@ -16,10 +16,10 @@ export type Grammar = {
 
 export type WordTranslation = {
     original: string,
-    isPunctuation: boolean,
-    isStandalonePunctuation: boolean,
-    isOpeningParenthesis: boolean,
-    isClosingParenthesis: boolean,
+    isPunctuation?: boolean,
+    isStandalonePunctuation?: boolean,
+    isOpeningParenthesis?: boolean,
+    isClosingParenthesis?: boolean,
     translations: string[],
     note: string,
     grammar: Grammar,

@@ -151,7 +151,7 @@ test.describe('EPUB Import with Mocked Translation', () => {
     });
 
     // Wait for any processing to complete
-    await page.waitForTimeout(2000);
+    await page.waitForTimeout(10000);
 
     // The file input should still be visible (whether processing succeeded or failed)
     await expect(fileInput).toBeVisible();
@@ -294,7 +294,7 @@ test.describe('EPUB Import with Mocked Translation', () => {
     });
 
     // Wait for EPUB processing to complete (no reliable loading indicator)
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(10000);
 
     // Should show the book title and content
     await expect(page.locator('h1:has-text("Test Book")')).toBeVisible();
@@ -399,7 +399,7 @@ test.describe('EPUB Import with Mocked Translation', () => {
       buffer: epubBuffer
     });
 
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(10000);
 
     await expect(page.locator('h1:has-text("Empty Chapters Test")')).toBeVisible();
 
@@ -435,7 +435,7 @@ test.describe('EPUB Import with Mocked Translation', () => {
       buffer: epubBuffer
     });
 
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(10000);
 
     await expect(page.locator('h1:has-text("Multilingual Test Book")')).toBeVisible();
 

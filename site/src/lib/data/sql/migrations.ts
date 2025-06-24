@@ -176,10 +176,77 @@ async function initialState(db: Transaction) {
     console.log(`Migration version ${version} is applied`);
 }
 
+async function hashIndexes(db: Transaction) {
+    const version = 2;
+
+    console.log(`Applying migration version ${version}`);
+
+    // Check if migration is already applied
+    const migrationCheck = await db.query(`
+        SELECT 1 FROM migrations WHERE version = $1
+    `, [version]);
+    
+    if (migrationCheck.rows.length > 0) {
+        console.log(`Migration version ${version} already applied, skipping...`);
+        return;
+    }
+
+    // Convert UUID field indexes to hash indexes
+    // Drop existing B-tree indexes and recreate as hash indexes
+    
+    await db.exec(`
+        -- book_chapters table UUID indexes
+        DROP INDEX IF EXISTS idx_book_chapters_book_uid;
+        CREATE INDEX idx_book_chapters_book_uid ON book_chapters USING HASH (book_uid);
+        
+        -- paragraphs table UUID indexes
+        DROP INDEX IF EXISTS idx_paragraphs_chapter_uid;
+        CREATE INDEX idx_paragraphs_chapter_uid ON paragraphs USING HASH (chapter_uid);
+        
+        -- paragraph_translations table UUID indexes
+        DROP INDEX IF EXISTS idx_paragraph_translations_paragraph_uid;
+        CREATE INDEX idx_paragraph_translations_paragraph_uid ON paragraph_translations USING HASH (paragraph_uid);
+        
+        DROP INDEX IF EXISTS idx_paragraph_translations_language_uid;
+        CREATE INDEX idx_paragraph_translations_language_uid ON paragraph_translations USING HASH (language_uid);
+        
+        -- sentence_translations table UUID indexes
+        DROP INDEX IF EXISTS idx_sentence_translations_paragraph_translation_uid;
+        CREATE INDEX idx_sentence_translations_paragraph_translation_uid ON sentence_translations USING HASH (paragraph_translation_uid);
+        
+        -- words table UUID indexes
+        DROP INDEX IF EXISTS idx_words_original_language_uid;
+        CREATE INDEX idx_words_original_language_uid ON words USING HASH (original_language_uid);
+        
+        -- word_translations table UUID indexes
+        DROP INDEX IF EXISTS idx_word_translations_language_uid;
+        CREATE INDEX idx_word_translations_language_uid ON word_translations USING HASH (language_uid);
+        
+        DROP INDEX IF EXISTS idx_word_translations_original_word_uid;
+        CREATE INDEX idx_word_translations_original_word_uid ON word_translations USING HASH (original_word_uid);
+        
+        -- sentence_word_translations table UUID indexes
+        DROP INDEX IF EXISTS idx_sentence_word_translations_sentence_uid;
+        CREATE INDEX idx_sentence_word_translations_sentence_uid ON sentence_word_translations USING HASH (sentence_uid);
+        
+        DROP INDEX IF EXISTS idx_sentence_word_translations_word_translation_uid;
+        CREATE INDEX idx_sentence_word_translations_word_translation_uid ON sentence_word_translations USING HASH (word_translation_uid);
+    `);
+
+    // Insert migration record
+    await db.query(`
+        INSERT INTO migrations (version, applied_at) 
+        VALUES ($1, NOW());
+    `, [version]);
+
+    console.log(`Migration version ${version} is applied`);
+}
+
 export async function applyMigrations(db: PGliteInterface) {
     await db.transaction(async tx => 
         {
             await initialState(tx);
+            await hashIndexes(tx);
         }
     );
 }
