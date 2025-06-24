@@ -174,11 +174,14 @@ export const debug = {
         
         const pg = dbSql.getPgInstance();
         
-        // Fetch dictionary tables
-        const [wordsResult, wordTranslationsResult] = await Promise.all([
-            pg.query('SELECT * FROM words ORDER BY created_at'),
-            pg.query('SELECT * FROM word_translations ORDER BY created_at')
-        ]);
+        // Fetch dictionary tables sequentially with timing logs
+        console.time('sql-words');
+        const wordsResult = await pg.query('SELECT * FROM words ORDER BY created_at');
+        console.timeEnd('sql-words');
+        
+        console.time('sql-wordTranslations');
+        const wordTranslationsResult = await pg.query('SELECT * FROM word_translations ORDER BY created_at');
+        console.timeEnd('sql-wordTranslations');
 
         // Prepare dictionary MessagePack and compress it
         console.time('dictionary-encode');
@@ -193,7 +196,9 @@ export const debug = {
         console.timeEnd('dictionary-compress');
 
         // Fetch all books
+        console.time('sql-books');
         const booksResult = await pg.query('SELECT * FROM books ORDER BY created_at');
+        console.timeEnd('sql-books');
         const books = booksResult.rows;
         console.log(`Processing ${books.length} books for export`);
 
@@ -206,45 +211,52 @@ export const debug = {
         for (const book of books as any[]) {
             console.time(`book-${book.uid}-data-fetch`);
 
-            const [
-                chaptersResult,
-                paragraphsResult,
-                paragraphTranslationsResult,
-                sentenceTranslationsResult,
-                sentenceWordTranslationsResult
-            ] = await Promise.all([
-                pg.query('SELECT * FROM book_chapters WHERE book_uid = $1 ORDER BY "order"', [book.uid]),
-                pg.query(`
-                    SELECT p.* FROM paragraphs p
-                    JOIN book_chapters bc ON p.chapter_uid = bc.uid
-                    WHERE bc.book_uid = $1
-                    ORDER BY bc."order", p."order"
-                `, [book.uid]),
-                pg.query(`
-                    SELECT pt.* FROM paragraph_translations pt
-                    JOIN paragraphs p ON pt.paragraph_uid = p.uid
-                    JOIN book_chapters bc ON p.chapter_uid = bc.uid
-                    WHERE bc.book_uid = $1
-                    ORDER BY bc."order", p."order", pt.created_at
-                `, [book.uid]),
-                pg.query(`
-                    SELECT st.* FROM sentence_translations st
-                    JOIN paragraph_translations pt ON st.paragraph_translation_uid = pt.uid
-                    JOIN paragraphs p ON pt.paragraph_uid = p.uid
-                    JOIN book_chapters bc ON p.chapter_uid = bc.uid
-                    WHERE bc.book_uid = $1
-                    ORDER BY bc."order", p."order", st."order"
-                `, [book.uid]),
-                pg.query(`
-                    SELECT swt.* FROM sentence_word_translations swt
-                    JOIN sentence_translations st ON swt.sentence_uid = st.uid
-                    JOIN paragraph_translations pt ON st.paragraph_translation_uid = pt.uid
-                    JOIN paragraphs p ON pt.paragraph_uid = p.uid
-                    JOIN book_chapters bc ON p.chapter_uid = bc.uid
-                    WHERE bc.book_uid = $1
-                    ORDER BY bc."order", p."order", st."order", swt."order"
-                `, [book.uid])
-            ]);
+            // Fetch related data sequentially with timing logs
+            console.time(`sql-book-${book.uid}-chapters`);
+            const chaptersResult = await pg.query('SELECT * FROM book_chapters WHERE book_uid = $1 ORDER BY "order"', [book.uid]);
+            console.timeEnd(`sql-book-${book.uid}-chapters`);
+
+            console.time(`sql-book-${book.uid}-paragraphs`);
+            const paragraphsResult = await pg.query(`
+                SELECT p.* FROM paragraphs p
+                JOIN book_chapters bc ON p.chapter_uid = bc.uid
+                WHERE bc.book_uid = $1
+                ORDER BY bc."order", p."order"
+            `, [book.uid]);
+            console.timeEnd(`sql-book-${book.uid}-paragraphs`);
+
+            console.time(`sql-book-${book.uid}-paragraphTranslations`);
+            const paragraphTranslationsResult = await pg.query(`
+                SELECT pt.* FROM paragraph_translations pt
+                JOIN paragraphs p ON pt.paragraph_uid = p.uid
+                JOIN book_chapters bc ON p.chapter_uid = bc.uid
+                WHERE bc.book_uid = $1
+                ORDER BY bc."order", p."order", pt.created_at
+            `, [book.uid]);
+            console.timeEnd(`sql-book-${book.uid}-paragraphTranslations`);
+
+            console.time(`sql-book-${book.uid}-sentenceTranslations`);
+            const sentenceTranslationsResult = await pg.query(`
+                SELECT st.* FROM sentence_translations st
+                JOIN paragraph_translations pt ON st.paragraph_translation_uid = pt.uid
+                JOIN paragraphs p ON pt.paragraph_uid = p.uid
+                JOIN book_chapters bc ON p.chapter_uid = bc.uid
+                WHERE bc.book_uid = $1
+                ORDER BY bc."order", p."order", st."order"
+            `, [book.uid]);
+            console.timeEnd(`sql-book-${book.uid}-sentenceTranslations`);
+
+            console.time(`sql-book-${book.uid}-sentenceWordTranslations`);
+            const sentenceWordTranslationsResult = await pg.query(`
+                SELECT swt.* FROM sentence_word_translations swt
+                JOIN sentence_translations st ON swt.sentence_uid = st.uid
+                JOIN paragraph_translations pt ON st.paragraph_translation_uid = pt.uid
+                JOIN paragraphs p ON pt.paragraph_uid = p.uid
+                JOIN book_chapters bc ON p.chapter_uid = bc.uid
+                WHERE bc.book_uid = $1
+                ORDER BY bc."order", p."order", st."order", swt."order"
+            `, [book.uid]);
+            console.timeEnd(`sql-book-${book.uid}-sentenceWordTranslations`);
             
             console.timeEnd(`book-${book.uid}-data-fetch`);
             
