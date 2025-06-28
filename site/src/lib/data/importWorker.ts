@@ -6,10 +6,15 @@ import { liveQuery } from "dexie";
 import { getTranslator, type ModelId, type ParagraphTranslation } from "./translators/translator";
 import { Library } from "../library.svelte";
 
-const limit = 10;
+const limit = 1;
 
 const queue = new Bottleneck({
     maxConcurrent: limit,
+});
+
+const translationSavingQueue = new Bottleneck({
+    maxConcurrent: 1, // Ensure only one translation saving at a time
+    minTime: 10, // Minimum time between tasks to avoid overwhelming the database
 });
 
 // Create library instance for reusing translation scheduling logic
@@ -138,15 +143,17 @@ async function handleTranslationEvent(translationRequest: TranslationRequest) {
         console.log(`Worker: getTranslation took ${(performance.now() - stepStartTime).toFixed(2)}ms`);
     }
 
-    // Add translation to database
-    stepStartTime = performance.now();
-    await addTranslation(translationRequest.paragraphUid, translation, translationRequest.model);
-    console.log(`Worker: addTranslation took ${(performance.now() - stepStartTime).toFixed(2)}ms`);
+    await translationSavingQueue.schedule(async () => {
+        // Add translation to database
+        stepStartTime = performance.now();
+        await addTranslation(translationRequest.paragraphUid, translation, translationRequest.model);
+        console.log(`Worker: addTranslation took ${(performance.now() - stepStartTime).toFixed(2)}ms`);
 
-    // Clean up request
-    stepStartTime = performance.now();
-    await queueDb.directTranslationRequests.where("id").equals(translationRequest.id).delete()
-    console.log(`Worker: delete request took ${(performance.now() - stepStartTime).toFixed(2)}ms`);
+        // Clean up request
+        stepStartTime = performance.now();
+        await queueDb.directTranslationRequests.where("id").equals(translationRequest.id).delete()
+        console.log(`Worker: delete request took ${(performance.now() - stepStartTime).toFixed(2)}ms`);
+    });
 
     const totalTime = performance.now() - startTime;
     console.log(`Worker: handleTranslationEvent total time: ${totalTime.toFixed(2)}ms for paragraphUid ${translationRequest.paragraphUid}`);
