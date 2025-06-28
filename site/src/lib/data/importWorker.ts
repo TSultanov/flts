@@ -153,10 +153,10 @@ async function handleTranslationEvent(translationRequest: TranslationRequest) {
         stepStartTime = performance.now();
         await queueDb.directTranslationRequests.where("id").equals(translationRequest.id).delete()
         console.log(`Worker: delete request took ${(performance.now() - stepStartTime).toFixed(2)}ms`);
-    });
 
-    const totalTime = performance.now() - startTime;
-    console.log(`Worker: handleTranslationEvent total time: ${totalTime.toFixed(2)}ms for paragraphUid ${translationRequest.paragraphUid}`);
+        const totalTime = performance.now() - startTime;
+        console.log(`Worker: handleTranslationEvent total time: ${totalTime.toFixed(2)}ms for paragraphUid ${translationRequest.paragraphUid}`);
+    });
 }
 
 export async function addTranslation(paragraphUid: UUID, translation: ParagraphTranslation, model: ModelId) {
