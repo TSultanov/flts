@@ -514,7 +514,43 @@ export class Library {
 
     private useQuery<T>(querier: () => T | Promise<T>): Readable<T> {
         return readable<T>(undefined, (set) => {
-            return liveQuery(querier).subscribe(set).unsubscribe;
+            let timeoutId: NodeJS.Timeout | null = null;
+            let lastValue: T;
+            let hasValue = false;
+            let lastUpdateTime = 0;
+
+            return liveQuery(querier).subscribe((x) => {
+                lastValue = x;
+                const now = Date.now();
+                
+                if (!hasValue) {
+                    hasValue = true;
+                    lastUpdateTime = now;
+                    set(x);
+                    return;
+                }
+
+                if (now - lastUpdateTime >= 1000) {
+                    lastUpdateTime = now;
+                    set(x);
+                    // Clear any pending timeout since we just updated
+                    if (timeoutId) {
+                        clearTimeout(timeoutId);
+                        timeoutId = null;
+                    }
+                    return;
+                }
+
+                if (timeoutId) {
+                    clearTimeout(timeoutId);
+                }
+
+                timeoutId = setTimeout(() => {
+                    lastUpdateTime = Date.now();
+                    set(lastValue);
+                    timeoutId = null;
+                }, 1000);
+            }).unsubscribe;
         })
     }
 }
