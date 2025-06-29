@@ -195,6 +195,7 @@ export async function addTranslation(book: IBook, paragraphId: ParagraphId, tran
                     w.grammar.targetInitialForm,
                     translation.targetLanguage,
                 ),
+                wordTranslationInContext: w.translations,
                 grammarContext: {
                     partOfSpeech: w.grammar.partOfSpeech,
                     plurality: w.grammar.plurality,
