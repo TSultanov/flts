@@ -1,27 +1,32 @@
 <script lang="ts">
     import { getContext, onMount } from "svelte";
-    import { type Library, type LibraryBookChapter } from "../library.svelte";
-    import type { UUID } from "../data/db";
+    import { type Library } from "../library.svelte";
     import ParagraphView from "./ParagraphView.svelte";
+    import type { ChapterId, IBook, ParagraphId, TranslatedWordId } from "../data/v2/book.svelte";
 
     let {
-        chapterUid,
-        sentenceWordUid = $bindable(),
+        book,
+        chapterId,
+        sentenceWordIdToDisplay = $bindable(),
     }: {
-        chapterUid: UUID;
-        sentenceWordUid: UUID | null;
+        book: IBook,
+        chapterId: ChapterId;
+        sentenceWordIdToDisplay: TranslatedWordId | null;
     } = $props();
 
-    const library: Library = getContext("library");
-    const chapter = $derived(library.getChapter(chapterUid));
+    const chapter = $derived(book.getChapterView(chapterId));
 
     function chapterClick(e: MouseEvent) {
-        const target = document.elementFromPoint(e.clientX, e.clientY);
+        const target = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement;
         if (target && target.classList.contains("word-span")) {
-            const wordUid = target.id.replace("sentence-word-", "");
-            sentenceWordUid = wordUid as UUID;
+            sentenceWordIdToDisplay = {
+                chapter: parseInt(target.dataset["chapter"]!),
+                paragraph: parseInt(target.dataset["paragraph"]!),
+                sentence: parseInt(target.dataset["sentence"]!),
+                word: parseInt(target.dataset["word"]!),
+            } as TranslatedWordId;
         } else {
-            sentenceWordUid = null;
+            sentenceWordIdToDisplay = null;
         }
     }
 
@@ -37,11 +42,11 @@
             style="column-width: {sectionContentWidth}px"
             bind:clientHeight={sectionContentWidth}
         >
-            {#if $chapter}
-                {#each $chapter.paragraphs as paragraph}
+            {#if chapter}
+                {#each chapter.paragraphs as paragraph}
                     <ParagraphView
-                        paragraphUid={paragraph.uid}
-                        {sentenceWordUid}
+                        {paragraph}
+                        {sentenceWordIdToDisplay}
                     />
                 {/each}
             {/if}

@@ -1,31 +1,28 @@
 <script lang="ts">
-    import { getContext } from "svelte";
-    import { type Library } from "../library.svelte";
-    import type { UUID } from "../data/db";
     import { decode } from 'html-entities';
+    import type { IParagraphView, TranslatedWordId } from "../data/v2/book.svelte";
 
-    let { paragraphUid, sentenceWordUid }: {
-        paragraphUid: UUID,
-        sentenceWordUid: UUID | null,
+    let { paragraph, sentenceWordIdToDisplay }: {
+        paragraph: IParagraphView,
+        sentenceWordIdToDisplay: TranslatedWordId | null,
     } = $props();
 
-    const library: Library = getContext('library');
-    const paragraph = $derived(library.getParagraph(paragraphUid));
+    const originalText = $derived(paragraph.original);
+    const translation = $derived(paragraph.translationStore);
 
-    const originalText = $derived($paragraph?.originalHtml ?? $paragraph?.originalText ?? "");
-
-    const wordIdPrefix = "sentence-word-";
-
-    const translationHtml = $derived.by(async () => {
-        if (!$paragraph || !$paragraph.translation) {
+    const translationHtml = $derived.by(() => {
+        if (!paragraph || !paragraph.translation || !$translation) {
             return "";
         }
       
         let pIdx = 0;
         let result = [];
-        for (const sentence of $paragraph.translation.sentences) {
+        let sentenceIdx = 0;
+        for (const sentence of $translation.sentences) {
+            let wordIdx = 0;
             for (const word of sentence.words) {
                 if (word.isPunctuation) {
+                    wordIdx++;
                     continue;
                 }
 
@@ -49,11 +46,17 @@
                 }
 
                 pIdx += offset;
-                const id = `${wordIdPrefix}${word.uid}`;
-                const additionalClass = word.uid === sentenceWordUid ? "selected" : "";
-                result.push(`<span class="word-span ${additionalClass}" id="${id}" data="${word.original}" data-offset="${offset}">${originalText.slice(pIdx, pIdx+len)}</span>`);
+                const additionalClass = (
+                    sentenceWordIdToDisplay?.chapter === paragraph.id.chapter && 
+                    sentenceWordIdToDisplay?.paragraph === paragraph.id.paragraph && 
+                    sentenceWordIdToDisplay?.sentence === sentenceIdx &&
+                    sentenceWordIdToDisplay?.word === wordIdx
+                ) ? "selected" : "";
+                result.push(`<span class="word-span ${additionalClass}" data-chapter="${paragraph.id.chapter}" data-paragraph="${paragraph.id.paragraph}" data-sentence="${sentenceIdx}" data-word="${wordIdx}" data="${word.original}" data-offset="${offset}">${originalText.slice(pIdx, pIdx+len)}</span>`);
                 pIdx += len;
+                wordIdx++;
             }
+            sentenceIdx++;
         }
         if (pIdx < originalText.length) {
             result.push(originalText.slice(pIdx, originalText.length));
@@ -89,22 +92,14 @@
     }
 </script>
 
-{#if $paragraph}
-{#if !$paragraph.translation}
+{#if !$translation}
 <p class="original">
     {@html originalText}
 </p>
 {:else}
-<!-- svelte-ignore a11y_click_events_have_key_events -->
-<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <p>
-    {#await translationHtml}
-        {@html originalText}
-    {:then translationHtml} 
-        {@html translationHtml}
-    {/await}
+    {@html translationHtml}
 </p>
-{/if}
 {/if}
 
 <style>

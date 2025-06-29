@@ -1,62 +1,79 @@
 <script lang="ts">
-    import { getContext } from "svelte";
-    import { type Library } from "../library.svelte";
-    import type { UUID } from "../data/db";
     import { goto } from "@mateothegreat/svelte5-router";
     import ChapterView from "./ChapterView.svelte";
     import WordView from "./WordView.svelte";
     import { route as r } from "@mateothegreat/svelte5-router";
+    import type { UUID } from "../data/v2/db";
+    import { books, type ChapterId, type TranslatedWordId } from "../data/v2/book.svelte";
+    import { onMount } from "svelte";
 
     const { route } = $props();
-    $inspect(route);
 
-    const bookUid: UUID = route.result.path.params.bookId;
-    const chapterUid: UUID | null = $derived(
-        route.result.path.params.chapterId || null,
+    const bookUid: UUID = route.result.path.params.bookId as UUID;
+    const chapterId: ChapterId | null = $derived(
+        route.result.path.params.chapterId
+            ? ({
+                  chapter: parseInt(route.result.path.params.chapterId),
+              } as ChapterId)
+            : null,
     );
 
-    const library: Library = getContext("library");
-    const book = $derived(library.getBook(bookUid));
+    $inspect(route);
+    $inspect(chapterId);
 
-    $effect(() => {
-        if ($book?.chapters.length === 1) {
-            // chapterUid = $book.chapters[0].uid;
-            goto(`/book/${bookUid}/${$book.chapters[0].uid}`);
-        }
+    const book = $derived(books.getBook(bookUid));
+
+    onMount(() => {
+        book.then((book) => {
+            if (book && book.chapters.length === 1) {
+                // chapterUid = $book.chapters[0].uid;
+                goto(`/book/${bookUid}/${book.chapters[0].id.chapter}`);
+            }
+        });
     });
 
-    let sentenceWordUidToDisplay: UUID | null = $state(null);
+    let sentenceWordIdToDisplay: TranslatedWordId | null = $state(null);
 </script>
 
-<div class="container">
-    <!-- {#if book?.chapters && book.chapters.length > 1} -->
-    {#if $book?.chapters}
-        <div class="chapters">
-            {#each $book.chapters as chapter}
-                <p>
-                    <a use:r href="/book/{bookUid}/{chapter.uid}"
-                        >{chapter.title ? chapter.title : "<no title>"}</a
-                    >
-                </p>
-            {/each}
-        </div>
-    {/if}
-    {#if chapterUid}
-        <div class="chapter-view">
-            <ChapterView
-                {chapterUid}
-                bind:sentenceWordUid={sentenceWordUidToDisplay}
-            />
-        </div>
-        <div class="word-view">
-            {#if sentenceWordUidToDisplay}
-                <WordView wordUid={sentenceWordUidToDisplay} />
-            {:else}
-                Select word to show translation
+{#await book}
+    <p>Loading...</p>
+{:then book}
+    {#if book}
+        <div class="container">
+            {#if book?.chapters}
+                <div class="chapters">
+                    {#each book.chapters as chapter}
+                        <p>
+                            <a use:r href="/book/{bookUid}/{chapter.id.chapter}"
+                                >{chapter.title
+                                    ? chapter.title
+                                    : "<no title>"}</a
+                            >
+                        </p>
+                    {/each}
+                </div>
+            {/if}
+            {#if chapterId}
+                <div class="chapter-view">
+                    <ChapterView
+                        {book}
+                        {chapterId}
+                        bind:sentenceWordIdToDisplay={sentenceWordIdToDisplay}
+                    />
+                </div>
+                <div class="word-view">
+                    {#if sentenceWordIdToDisplay}
+                        <WordView {book} {sentenceWordIdToDisplay} />
+                    {:else}
+                        Select word to show translation
+                    {/if}
+                </div>
             {/if}
         </div>
+    {:else}
+        <p>Failed to load book.</p>
     {/if}
-</div>
+{/await}
 
 <style>
     .container {

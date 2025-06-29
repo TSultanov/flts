@@ -10,14 +10,14 @@
     }: {
         isOpen: boolean,
         rootFolder: LibraryFolder,
-        onConfirm: (newPath: string[] | null) => void,
+        onConfirm: (newPath: string[]) => void,
         onCancel?: () => void
     } = $props();
 
     let dialog: HTMLDialogElement;
     let localRootFolder = $state<LibraryFolder>();
 
-    let selectedPath: string[] | null = $state(null);
+    let selectedPath: string[] = $state([]);
     let createFolderDialogOpen = $state(false);
     let pendingParentPath: string[] = $state([]);
 
@@ -25,7 +25,7 @@
     $effect(() => {
         if (isOpen) {
             localRootFolder = structuredClone(rootFolder);
-            selectedPath = null;
+            selectedPath = [];
         }
     });
 
@@ -55,7 +55,7 @@
         isOpen = false;
     }
 
-    function selectFolder(path: string[] | null) {
+    function selectFolder(path: string[]) {
         selectedPath = path;
     }
 

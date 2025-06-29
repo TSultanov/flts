@@ -1,14 +1,11 @@
 <script lang="ts">
     import { getContext } from "svelte";
-    import {
-        Library,
-        type LibraryFolder,
-        type LibraryBook,
-    } from "./library.svelte";
-    import type { UUID } from "./data/db";
+    import { Library, type LibraryFolder } from "./library.svelte";
     import { route } from "@mateothegreat/svelte5-router";
     import ConfirmDialog from "./ConfirmDialog.svelte";
     import MoveFolderDialog from "./MoveFolderDialog.svelte";
+    import type { UUID } from "./data/v2/db";
+    import type { IBookMeta } from "./data/v2/book.svelte";
 
     const library: Library = getContext("library");
     const rootFolder = library.getLibraryBooks();
@@ -17,8 +14,8 @@
     let selectedBookUids = $state(new Set<UUID>());
     let showBatchDeleteDialog = $state(false);
     let showBatchMoveDialog = $state(false);
-    let booksToDelete: LibraryBook[] = $state([]);
-    let booksToMove: LibraryBook[] = $state([]);
+    let booksToDelete: IBookMeta[] = $state([]);
+    let booksToMove: IBookMeta[] = $state([]);
 
     // Batch selection functions
     function toggleBookSelection(bookUid: UUID) {
@@ -67,8 +64,8 @@
         showBatchMoveDialog = true;
     }
 
-    function getSelectedBooks(folder: LibraryFolder): LibraryBook[] {
-        const books: LibraryBook[] = [];
+    function getSelectedBooks(folder: LibraryFolder): IBookMeta[] {
+        const books: IBookMeta[] = [];
 
         // Add selected books from current folder
         books.push(
@@ -97,7 +94,7 @@
         showBatchDeleteDialog = false;
     }
 
-    function confirmBatchMove(newPath: string[] | null) {
+    function confirmBatchMove(newPath: string[]) {
         if (booksToMove.length > 0) {
             library.moveBooksInBatch(
                 booksToMove.map((book) => book.uid),
@@ -205,13 +202,11 @@
                                 />
                             </label>
                             <a use:route href="/book/{book.uid}"
-                                >{book.title} - {book.chapters.length} chapter(s)
-                                {#if book.translatedParagraphsCount != book.paragraphsCount}
-                                    - {(
-                                        (book.translatedParagraphsCount /
-                                            book.paragraphsCount) *
-                                        100
-                                    ).toFixed(0)}% translated
+                                >{book.title} - {book.chapterCount} chapter(s)
+                                {#if book.translationRatio < 1.0}
+                                    - {(book.translationRatio * 100).toFixed(
+                                        0,
+                                    )}% translated
                                 {/if}
                             </a>
                         </div>

@@ -1,6 +1,4 @@
 import { getConfig } from "../../config"
-import { db, type DB, type UUID } from "../db"
-import { queueDb } from "../queueDb"
 import { GoogleTranslator } from "./google"
 
 export type Grammar = {
@@ -76,7 +74,7 @@ export const models: ModelMeta[] = [
     },
 ]
 
-export async function getTranslator(db: DB, targetLanguage: string, model: ModelId): Promise<Translator> {
+export async function getTranslator(targetLanguage: string, model: ModelId): Promise<Translator> {
     const m = models.find(m => m.id === model);
     if (!m) {
         throw new Error(`Cannot find model '${model}'`)
@@ -84,22 +82,9 @@ export async function getTranslator(db: DB, targetLanguage: string, model: Model
     const config = await getConfig();
     switch (m.provider) {
         case "Google": {
-            return new GoogleTranslator(config.geminiApiKey, config.targetLanguage, db, model);
+            return new GoogleTranslator(config.geminiApiKey, config.targetLanguage, model);
         }
     }
 
     throw new Error(`Unknown provider ${m.provider}`);
-}
-
-export async function addTranslation(paragraphUid: UUID, model: ModelId) {
-    const paragraph = await db.paragraphs.where('uid').equals(paragraphUid).first();
-    if (!paragraph) {
-        console.warn(`Cannot add translation: paragraph with uid ${paragraphUid} not found`);
-        return;
-    }
-    
-    await queueDb.directTranslationRequests.add({
-        paragraphUid,
-        model,
-    });
 }
