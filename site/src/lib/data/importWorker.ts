@@ -198,6 +198,8 @@ export async function addTranslation(book: IBook, paragraphId: ParagraphId, tran
                 wordTranslationInContext: w.translations,
                 grammarContext: {
                     partOfSpeech: w.grammar.partOfSpeech,
+                    originalInitialForm: w.grammar.originalInitialForm,
+                    targetInitialForm: w.grammar.targetInitialForm,
                     plurality: w.grammar.plurality,
                     person: w.grammar.person,
                     tense: w.grammar.tense,

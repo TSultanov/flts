@@ -58,9 +58,9 @@ export type SentenceTranslation = {
 export type SentenceWordTranslation = {
     readonly original: string,
     readonly isPunctuation: boolean,
-    readonly isStandalonePunctuation: boolean,
-    readonly isOpeningParenthesis: boolean,
-    readonly isClosingParenthesis: boolean,
+    readonly isStandalonePunctuation?: boolean | null,
+    readonly isOpeningParenthesis?: boolean | null,
+    readonly isClosingParenthesis?: boolean | null,
     readonly wordTranslationUid?: UUID,
     readonly wordTranslationInContext?: string[],
     readonly grammarContext?: Grammar,
@@ -68,12 +68,14 @@ export type SentenceWordTranslation = {
 }
 
 type Grammar = {
-    readonly partOfSpeech: string
-    readonly plurality?: string,
-    readonly person?: string,
-    readonly tense?: string,
-    readonly case?: string,
-    readonly other?: string
+    originalInitialForm: string,
+    targetInitialForm: string,
+    partOfSpeech: string
+    plurality?: string | null,
+    person?: string | null,
+    tense?: string | null,
+    case?: string | null,
+    other?: string | null,
 }
 
 export type ChapterId = {

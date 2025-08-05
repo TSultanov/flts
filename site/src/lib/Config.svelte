@@ -4,19 +4,22 @@
     import { models, type ModelId } from "./data/translators/translator";
 
     let geminiApiKey: string = $state('');
+    let openAIApiKey: string = $state('');
     let targetLanguage: string = $state('');
-    let model: ModelId = $state("gemini-2.5-flash-preview-05-20");
+    let model: ModelId = $state("gemini-2.5-flash");
 
     onMount(async () => {
         let config = await getConfig();
         geminiApiKey = config?.geminiApiKey ?? '';
+        openAIApiKey = config?.openAIApiKey ?? '';
         targetLanguage = config?.targetLanguage ?? '';
         model = config?.model;
     })
 
     async function save() {
         await setConfig({
-            geminiApiKey: geminiApiKey,
+            openAIApiKey,
+            geminiApiKey,
             targetLanguage,
             model,
         });
@@ -30,6 +33,9 @@
 
         <label for="apikey">Gemini API KEY</label>
         <input id="apikey" type="text" bind:value={geminiApiKey}>
+
+        <label for="apikey">OpenAI API KEY</label>
+        <input id="apikey" type="text" bind:value={openAIApiKey}>
 
         <label for="model">Model</label>
         <select id="model" bind:value={model}>

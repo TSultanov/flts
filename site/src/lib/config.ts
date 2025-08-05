@@ -3,6 +3,7 @@ import { models, type ModelId } from "./data/translators/translator";
 
 export type Config = {
     geminiApiKey: string,
+    openAIApiKey: string,
     targetLanguage: string,
     model: ModelId,
 }

@@ -57,6 +57,12 @@
                         <th scope="row">Part of speech</th>
                         <td>{word.grammarContext.partOfSpeech}</td>
                     </tr>
+                    {#if word.grammarContext.originalInitialForm}
+                        <tr>
+                            <th scope="row">Initial form</th>
+                            <td>{word.grammarContext.originalInitialForm}</td>
+                        </tr>
+                    {/if}
                     {#if word.grammarContext.plurality}
                         <tr>
                             <th scope="row">Plurality</th>
