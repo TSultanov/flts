@@ -10,6 +10,7 @@
     import type { RouteLinkProps } from "./lib/Link.svelte";
     import BookView from "./lib/bookView/BookView.svelte";
     import Worker from "./lib/data/importWorker?worker"
+    import { startTranslations } from "./lib/data/importWorker";
 
     const routes: RouteConfig[] = [
         {
@@ -70,14 +71,14 @@
         mainHeight.value = window.innerHeight - (nav?.clientHeight ?? 0);
     }
 
-    new Worker(); // Start worker
-
     const library = new Library();
     setContext("library", library);
 
     onMount(async () => {
         mainHeight.value = window.innerHeight - (nav?.clientHeight ?? 0);
         setContext("router", router);
+
+        await startTranslations();
     });
 </script>
 

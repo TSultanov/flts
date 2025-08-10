@@ -139,6 +139,7 @@ class ParagraphView implements IParagraphView {
             set(this.paragraph.translation);
 
             this.refersher = () => {
+                console.log(`Refreshing paragraph ${this.paragraphId} translation`);
                 set(this.paragraph.translation);
             }
         });

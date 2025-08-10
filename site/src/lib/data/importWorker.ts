@@ -6,7 +6,7 @@ import { getTranslator, type ModelId, type ParagraphTranslation } from "./transl
 import { books, type BookParagraphTranslation, type IBook, type ParagraphId, type SentenceTranslation, type SentenceWordTranslation } from "./v2/book.svelte";
 import { dictionary } from "./v2/dictionary";
 
-const limit = 1;
+const limit = 100;
 
 const queue = new Bottleneck({
     maxConcurrent: limit,
@@ -17,7 +17,7 @@ const translationSavingQueue = new Bottleneck({
 });
 
 // Function to check all paragraphs and schedule translation for untranslated ones
-async function checkAndScheduleUntranslatedParagraphs() {
+export async function checkAndScheduleUntranslatedParagraphs() {
     try {
         console.log('Worker: Checking for untranslated paragraphs...');
 
@@ -65,41 +65,43 @@ async function checkAndScheduleUntranslatedParagraphs() {
     }
 }
 
-checkAndScheduleUntranslatedParagraphs();
+export async function startTranslations() {
+    await checkAndScheduleUntranslatedParagraphs();
 
-const translationRequestBag: Set<number> = new Set();
-const directTranslationRequestsQuery = liveQuery(async () => await translationQueue.top(limit));
-function scheduleTranslationWithRetries(request: TranslationRequest, retriesLeft = 5) {
-    function schedule(retriesLeft: number) {
-        translationRequestBag.add(request.id);
-        queue.schedule(async () => {
-            await handleTranslationEvent(request);
-        }).then(() => {
-            console.log(`Worker: book uid ${request.bookUid} paragraph id ${request.paragraphId.chapter}/${request.paragraphId.paragraph} translation task is completed`);
-            translationRequestBag.delete(request.id);
-        })
-            .catch((err) => {
-                console.log(`Worker: error translating book uid ${request.bookUid} paragraph id ${request.paragraphId.chapter}/${request.paragraphId.paragraph}, retrying (${retriesLeft - 1} attempts left)`, err);
-                if (retriesLeft > 0) {
-                    setTimeout(() => schedule(retriesLeft - 1), 300);
-                } else {
-                    console.log(`Failed to translate book uid ${request.bookUid} paragraph id ${request.paragraphId.chapter}/${request.paragraphId.paragraph}`);
-                    translationRequestBag.delete(request.id);
-                }
+    const translationRequestBag: Set<number> = new Set();
+    const directTranslationRequestsQuery = liveQuery(async () => await translationQueue.top(limit));
+    function scheduleTranslationWithRetries(request: TranslationRequest, retriesLeft = 5) {
+        function schedule(retriesLeft: number) {
+            translationRequestBag.add(request.id);
+            queue.schedule(async () => {
+                await handleTranslationEvent(request);
+            }).then(() => {
+                console.log(`Worker: book uid ${request.bookUid} paragraph id ${request.paragraphId.chapter}/${request.paragraphId.paragraph} translation task is completed`);
+                translationRequestBag.delete(request.id);
             })
+                .catch((err) => {
+                    console.log(`Worker: error translating book uid ${request.bookUid} paragraph id ${request.paragraphId.chapter}/${request.paragraphId.paragraph}, retrying (${retriesLeft - 1} attempts left)`, err);
+                    if (retriesLeft > 0) {
+                        setTimeout(() => schedule(retriesLeft - 1), 300);
+                    } else {
+                        console.log(`Failed to translate book uid ${request.bookUid} paragraph id ${request.paragraphId.chapter}/${request.paragraphId.paragraph}`);
+                        translationRequestBag.delete(request.id);
+                    }
+                })
+        }
+
+        if (!translationRequestBag.has(request.id)) {
+            console.log(`Worker: scheduling book uid ${request.bookUid} paragraph id ${request.paragraphId.chapter}/${request.paragraphId.paragraph}`);
+            schedule(retriesLeft);
+        }
     }
 
-    if (!translationRequestBag.has(request.id)) {
-        console.log(`Worker: scheduling book uid ${request.bookUid} paragraph id ${request.paragraphId.chapter}/${request.paragraphId.paragraph}`);
-        schedule(retriesLeft);
-    }
+    directTranslationRequestsQuery.subscribe((requests: TranslationRequest[]) => {
+        for (const request of requests) {
+            scheduleTranslationWithRetries(request);
+        }
+    })
 }
-
-directTranslationRequestsQuery.subscribe((requests: TranslationRequest[]) => {
-    for (const request of requests) {
-        scheduleTranslationWithRetries(request);
-    }
-})
 
 async function handleTranslationEvent(translationRequest: TranslationRequest) {
     const startTime = performance.now();
