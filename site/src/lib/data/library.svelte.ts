@@ -1,11 +1,9 @@
 import { liveQuery } from "dexie";
 import { readable, type Readable } from 'svelte/store';
-import type { EpubBook } from "./data/epubLoader";
-import type { ModelId } from "./data/translators/translator";
-import { getConfig } from "./config";
-import type { UUID } from "./data/v2/db";
-import { books, type IBook, type IBookMeta } from "./data/v2/book.svelte";
-import { translationQueue } from "./data/queueDb";
+import type { EpubBook } from "../data/epubLoader";
+import type { UUID } from "../data/v2/db";
+import { books, type IBookMeta } from "../data/v2/book.svelte";
+import { translationQueue } from "../data/queueDb";
 
 export type LibraryFolder = {
     name?: string,

@@ -1,6 +1,6 @@
 <script lang="ts">
     import { getContext } from "svelte";
-    import { Library, type LibraryFolder } from "./library.svelte";
+    import { Library, type LibraryFolder } from "./data/library.svelte";
     import { route } from "@mateothegreat/svelte5-router";
     import ConfirmDialog from "./ConfirmDialog.svelte";
     import MoveFolderDialog from "./MoveFolderDialog.svelte";

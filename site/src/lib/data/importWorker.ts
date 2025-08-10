@@ -3,7 +3,6 @@ import { translationQueue, type TranslationRequest } from "./queueDb";
 import Bottleneck from 'bottleneck';
 import { liveQuery } from "dexie";
 import { getTranslator, type ModelId, type ParagraphTranslation } from "./translators/translator";
-import { Library } from "../library.svelte";
 import { books, type BookParagraphTranslation, type IBook, type ParagraphId, type SentenceTranslation, type SentenceWordTranslation } from "./v2/book.svelte";
 import { dictionary } from "./v2/dictionary";
 

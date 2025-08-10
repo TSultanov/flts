@@ -6,7 +6,7 @@
     import ImportView from "./lib/importView/ImportView.svelte";
     import { onMount, setContext } from "svelte";
     import LibraryView from "./lib/LibraryView.svelte";
-    import { Library } from "./lib/library.svelte";
+    import { Library } from "./lib/data/library.svelte";
     import type { RouteLinkProps } from "./lib/Link.svelte";
     import BookView from "./lib/bookView/BookView.svelte";
     import Worker from "./lib/data/importWorker?worker"
