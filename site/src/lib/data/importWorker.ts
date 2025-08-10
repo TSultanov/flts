@@ -6,7 +6,7 @@ import { getTranslator, type ModelId, type ParagraphTranslation } from "./transl
 import { books, type BookParagraphTranslation, type IBook, type ParagraphId, type SentenceTranslation, type SentenceWordTranslation } from "./v2/book.svelte";
 import { dictionary } from "./v2/dictionary";
 
-const limit = 1;
+const limit = 1000;
 
 const queue = new Bottleneck({
     maxConcurrent: limit,
