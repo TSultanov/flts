@@ -139,7 +139,6 @@ class ParagraphView implements IParagraphView {
             set(this.paragraph.translation);
 
             this.refersher = () => {
-                console.log(`Refreshing paragraph ${this.paragraphId} translation`);
                 set(this.paragraph.translation);
             }
         });
@@ -185,22 +184,22 @@ export interface IBook extends IBookMeta {
 }
 
 class Book implements IBook {
-    chapterViewCache = new Map<ChapterId, ChapterView>();
-    paragraphViewCache = new Map<ParagraphId, ParagraphView>();
+    chapterViewCache = new Map<string, ChapterView>();
+    paragraphViewCache = new Map<string, ParagraphView>();
 
     private persist: () => void;
-
+    
     paragraphsCount: number = 0;
     translatedParagraphsCount = $state(0);
     translationRatio = $derived(this.translatedParagraphsCount / this.paragraphsCount);
-
+    
     private constructor(public data: BookEntity) {
         this.persist = debounce(async () => {
             this.persistImmediately();
         }, 1000);
         this.updateMetrics();
     }
-
+    
     static async load(bookUid: UUID): Promise<IBook | null> {
         const book = await bookDb.books.get(bookUid);
         if (!book) {
@@ -326,13 +325,14 @@ class Book implements IBook {
         if (chapterId.chapter >= this.data.chapters.length) {
             return;
         }
-        const cached = this.chapterViewCache.get(chapterId);
+        const key = `${chapterId.chapter}`;
+        const cached = this.chapterViewCache.get(key);
         if (cached) {
             return cached;
         }
 
         const view = new ChapterView(this, chapterId);
-        this.chapterViewCache.set(chapterId, view);
+        this.chapterViewCache.set(key, view);
         return view;
     }
 
@@ -345,16 +345,19 @@ class Book implements IBook {
             return;
         }
 
-        const cached = this.paragraphViewCache.get(paragraphId);
+        const key = `${paragraphId.chapter}/${paragraphId.paragraph}`;
+        const cached = this.paragraphViewCache.get(key);
         if (cached) {
             return cached;
         }
 
         const view = new ParagraphView(this, paragraphId);
+        this.paragraphViewCache.set(key, view);
         return view;
     }
 
     private async persistImmediately() {
+        console.log(`Book: saving book ${this.uid} (${this.title})`)
         this.updateMetrics();
         for (const [_, obj] of this.paragraphViewCache) {
             obj.refresh();

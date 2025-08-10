@@ -6,7 +6,7 @@ import { getTranslator, type ModelId, type ParagraphTranslation } from "./transl
 import { books, type BookParagraphTranslation, type IBook, type ParagraphId, type SentenceTranslation, type SentenceWordTranslation } from "./v2/book.svelte";
 import { dictionary } from "./v2/dictionary";
 
-const limit = 100;
+const limit = 1;
 
 const queue = new Bottleneck({
     maxConcurrent: limit,
@@ -105,7 +105,7 @@ export async function startTranslations() {
 
 async function handleTranslationEvent(translationRequest: TranslationRequest) {
     const startTime = performance.now();
-    console.log(`Worker: starting translation,book uid ${translationRequest.bookUid} paragraph id ${translationRequest.paragraphId.chapter}/${translationRequest.paragraphId.paragraph}(request ${translationRequest.id})`);
+    console.log(`Worker: starting translation, book uid ${translationRequest.bookUid} paragraph id ${translationRequest.paragraphId.chapter}/${translationRequest.paragraphId.paragraph} (request ${translationRequest.id})`);
 
     // Get config
     let stepStartTime = performance.now();
@@ -128,6 +128,7 @@ async function handleTranslationEvent(translationRequest: TranslationRequest) {
     }
 
     const paragraph = book.getParagraphView(translationRequest.paragraphId);
+    console.log(`Worker: paragraph id ${translationRequest.paragraphId.chapter}/${translationRequest.paragraphId.paragraph}: ${paragraph?.originalPlain.substring(0, 20)}...`)
 
     if (!paragraph) {
         console.log(`Worker: book UID ${translationRequest.bookUid} paragraph Id ${translationRequest.paragraphId.chapter}/${translationRequest.paragraphId.paragraph} does not exist`);
@@ -177,6 +178,10 @@ export async function addTranslation(book: IBook, paragraphId: ParagraphId, tran
         sentences: []
     };
 
+    // Metrics for dictionary.addTranslation performance
+    let dictAddTotalTime = 0;
+    let dictAddCalls = 0;
+
     for (const s of translation.sentences) {
         const sentenceTranslation: SentenceTranslation = {
             fullTranslation: s.fullTranslation,
@@ -184,18 +189,23 @@ export async function addTranslation(book: IBook, paragraphId: ParagraphId, tran
         };
 
         for (const w of s.words) {
+            const dictStart = performance.now();
+            const wordTranslationUid = await dictionary.addTranslation(
+                w.grammar.originalInitialForm,
+                translation.sourceLanguage,
+                w.grammar.targetInitialForm,
+                translation.targetLanguage,
+            );
+            dictAddTotalTime += performance.now() - dictStart;
+            dictAddCalls++;
+
             const wordTranslation: SentenceWordTranslation = {
                 original: w.original,
                 isPunctuation: w.isPunctuation,
                 isStandalonePunctuation: w.isStandalonePunctuation,
                 isOpeningParenthesis: w.isOpeningParenthesis,
                 isClosingParenthesis: w.isClosingParenthesis,
-                wordTranslationUid: await dictionary.addTranslation(
-                    w.grammar.originalInitialForm,
-                    translation.sourceLanguage,
-                    w.grammar.targetInitialForm,
-                    translation.targetLanguage,
-                ),
+                wordTranslationUid: wordTranslationUid,
                 wordTranslationInContext: w.translations,
                 grammarContext: {
                     partOfSpeech: w.grammar.partOfSpeech,
@@ -216,6 +226,14 @@ export async function addTranslation(book: IBook, paragraphId: ParagraphId, tran
     }
 
     book.updateParagraphTranslation(paragraphId, pTranslations);
+
+    if (dictAddCalls > 0) {
+        console.log(
+            `Worker: addTranslation dictionary.addTranslation cumulative: ${dictAddTotalTime.toFixed(2)}ms over ${dictAddCalls} calls (avg ${(dictAddTotalTime / dictAddCalls).toFixed(2)}ms)`
+        );
+    } else {
+        console.log(`Worker: addTranslation dictionary.addTranslation had no calls (no words processed)`);
+    }
 
     const totalTime = performance.now() - startTime;
     console.log(`Worker: addTranslation total time: ${totalTime.toFixed(2)}ms for bookUid ${book.uid} paragraphId ${paragraphId.chapter}/${paragraphId.paragraph}`);
