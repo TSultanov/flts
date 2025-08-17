@@ -4,9 +4,9 @@ import Bottleneck from 'bottleneck';
 import { liveQuery } from "dexie";
 import { getTranslator, type ModelId, type ParagraphTranslation } from "./translators/translator";
 import { books, type BookParagraphTranslation, type IBook, type ParagraphId, type SentenceTranslation, type SentenceWordTranslation } from "./v2/book.svelte";
-import { dictionary } from "./v2/dictionary";
+import { dictionary } from "./sql/dictionary"
 
-const limit = 1000;
+const limit = 1;
 
 const queue = new Bottleneck({
     maxConcurrent: limit,
@@ -190,11 +190,12 @@ export async function addTranslation(book: IBook, paragraphId: ParagraphId, tran
 
         for (const w of s.words) {
             const dictStart = performance.now();
-            const wordTranslationUid = await dictionary.addTranslation(
-                w.grammar.originalInitialForm,
-                translation.sourceLanguage,
-                w.grammar.targetInitialForm,
-                translation.targetLanguage,
+            const wordTranslationUid = await dictionary.addTranslation({
+                originalWord: w.grammar.originalInitialForm,
+                originalLanguageCode: translation.sourceLanguage,
+                targetWord: w.grammar.targetInitialForm,
+                targetLanguageCode: translation.targetLanguage
+            },
             );
             dictAddTotalTime += performance.now() - dictStart;
             dictAddCalls++;

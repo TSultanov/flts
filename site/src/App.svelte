@@ -9,7 +9,8 @@
     import { Library } from "./lib/data/library.svelte";
     import type { RouteLinkProps } from "./lib/Link.svelte";
     import BookView from "./lib/bookView/BookView.svelte";
-    import Worker from "./lib/data/importWorker?worker"
+    import SqlWorker from "./lib/data/sql/sqlWorker?worker";
+    import { initDictionaryMessaging } from "./lib/data/sql/dictionary";
     import { startTranslations } from "./lib/data/importWorker";
 
     const routes: RouteConfig[] = [
@@ -71,14 +72,24 @@
         mainHeight.value = window.innerHeight - (nav?.clientHeight ?? 0);
     }
 
+    const sqlWorker = new SqlWorker();
+
+    sqlWorker.addEventListener("message", (event) => {
+        const { data } = event;
+        if (data.type === "ready") {
+            // Initialize MessageChannel for dictionary communication
+            initDictionaryMessaging(sqlWorker);
+
+            startTranslations();
+        }
+    });
+
     const library = new Library();
     setContext("library", library);
 
     onMount(async () => {
         mainHeight.value = window.innerHeight - (nav?.clientHeight ?? 0);
         setContext("router", router);
-
-        await startTranslations();
     });
 </script>
 
