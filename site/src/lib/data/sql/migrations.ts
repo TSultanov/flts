@@ -1,8 +1,9 @@
 import { type Database } from "./sqlWorker";
 
 const migrations = [
-    {id: 1, callback: initialMigration},
-]
+    { id: 1, callback: initialMigration },
+    { id: 2, callback: createBookTables },
+];
 
 const entityCommon = `
     uid BLOB PRIMARY KEY,
@@ -109,6 +110,124 @@ function initialMigration(db: Database) {
     }
 }
 
+function createBookTables(db: Database) {
+    // BOOK
+    {
+        const tableName = "book";
+        db.exec(`
+            CREATE TABLE IF NOT EXISTS ${tableName} (
+                ${entityCommon}
+                path TEXT NOT NULL, -- JSON encoded string[] representing folder path
+                title TEXT NOT NULL,
+                chapterCount INTEGER NOT NULL,
+                paragraphCount INTEGER NOT NULL,
+                translatedParagraphsCount INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_${tableName}_title ON ${tableName}(title);
+            CREATE INDEX IF NOT EXISTS idx_${tableName}_lower_title ON ${tableName}(lower(title));
+        `);
+        createCommonIndexes(db, tableName);
+    }
+
+    // CHAPTER
+    {
+        const tableName = "book_chapter";
+        db.exec(`
+            CREATE TABLE IF NOT EXISTS ${tableName} (
+                ${entityCommon}
+                bookUid BLOB NOT NULL,
+                chapterIndex INTEGER NOT NULL,
+                title TEXT,
+                FOREIGN KEY (bookUid) REFERENCES book(uid) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_${tableName}_bookUid ON ${tableName}(bookUid);
+            CREATE INDEX IF NOT EXISTS idx_${tableName}_chapterIndex ON ${tableName}(chapterIndex);
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_${tableName}_book_chapterIndex ON ${tableName}(bookUid, chapterIndex);
+        `);
+        createCommonIndexes(db, tableName);
+    }
+
+    // PARAGRAPH
+    {
+        const tableName = "book_chapter_paragraph";
+        db.exec(`
+            CREATE TABLE IF NOT EXISTS ${tableName} (
+                ${entityCommon}
+                chapterUid BLOB NOT NULL,
+                paragraphIndex INTEGER NOT NULL,
+                originalText TEXT NOT NULL,
+                originalHtml TEXT,
+                FOREIGN KEY (chapterUid) REFERENCES book_chapter(uid) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_${tableName}_chapterUid ON ${tableName}(chapterUid);
+            CREATE INDEX IF NOT EXISTS idx_${tableName}_paragraphIndex ON ${tableName}(paragraphIndex);
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_${tableName}_chapter_paragraphIndex ON ${tableName}(chapterUid, paragraphIndex);
+        `);
+        createCommonIndexes(db, tableName);
+    }
+
+    // PARAGRAPH TRANSLATION (paragraph-level)
+    {
+        const tableName = "book_chapter_paragraph_translation";
+        db.exec(`
+            CREATE TABLE IF NOT EXISTS ${tableName} (
+                ${entityCommon}
+                chapterParagraphUid BLOB NOT NULL,
+                languageUid BLOB NOT NULL,
+                translatingModel TEXT NOT NULL,
+                translationJson TEXT, -- JSON blob with translation data
+                FOREIGN KEY (chapterParagraphUid) REFERENCES book_chapter_paragraph(uid) ON DELETE CASCADE,
+                FOREIGN KEY (languageUid) REFERENCES language(uid) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_${tableName}_chapterParagraphUid ON ${tableName}(chapterParagraphUid);
+            CREATE INDEX IF NOT EXISTS idx_${tableName}_languageUid ON ${tableName}(languageUid);
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_${tableName}_paragraph_language ON ${tableName}(chapterParagraphUid, languageUid);
+        `);
+        createCommonIndexes(db, tableName);
+    }
+    {
+        const tableName = "book_paragraph_translation_sentence";
+        db.exec(`
+            CREATE TABLE IF NOT EXISTS ${tableName} (
+                ${entityCommon}
+                paragraphTranslationUid BLOB NOT NULL,
+                sentenceIndex INTEGER NOT NULL,
+                fullTranslation TEXT NOT NULL,
+                FOREIGN KEY (paragraphTranslationUid) REFERENCES book_chapter_paragraph_translation(uid) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_${tableName}_paragraphTranslationUid ON ${tableName}(paragraphTranslationUid);
+            CREATE INDEX IF NOT EXISTS idx_${tableName}_sentenceIndex ON ${tableName}(sentenceIndex);
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_${tableName}_translation_sentenceIndex ON ${tableName}(paragraphTranslationUid, sentenceIndex);
+        `);
+        createCommonIndexes(db, tableName);
+    }
+    {
+        const tableName = "book_paragraph_translation_sentence_word";
+        db.exec(`
+            CREATE TABLE IF NOT EXISTS ${tableName} (
+                ${entityCommon}
+                sentenceUid BLOB NOT NULL,
+                wordIndex INTEGER NOT NULL,
+                original TEXT NOT NULL,
+                isPunctuation INTEGER NOT NULL,
+                isStandalonePunctuation INTEGER,
+                isOpeningParenthesis INTEGER,
+                isClosingParenthesis INTEGER,
+                wordTranslationUid BLOB,
+                wordTranslationInContext TEXT,
+                grammarContext TEXT, -- stored as JSON blob (not normalized)
+                note TEXT,
+                FOREIGN KEY (sentenceUid) REFERENCES book_paragraph_translation_sentence(uid) ON DELETE CASCADE,
+                FOREIGN KEY (wordTranslationUid) REFERENCES word_translation(uid) ON DELETE SET NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_${tableName}_sentenceUid ON ${tableName}(sentenceUid);
+            CREATE INDEX IF NOT EXISTS idx_${tableName}_wordIndex ON ${tableName}(wordIndex);
+            CREATE INDEX IF NOT EXISTS idx_${tableName}_wordTranslationUid ON ${tableName}(wordTranslationUid);
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_${tableName}_sentence_wordIndex ON ${tableName}(sentenceUid, wordIndex);
+        `);
+        createCommonIndexes(db, tableName);
+    }
+}
 
 export function applyMigrations(db: Database) {
     initializeMigrations(db);

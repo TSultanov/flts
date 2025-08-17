@@ -1,6 +1,7 @@
 import sqlite3InitModule, { type Database, type Sqlite3Static } from '@sqlite.org/sqlite-wasm';
 import { applyMigrations } from './migrations';
 import { DictionaryBackend } from './dictionary';
+import { BookBackend } from './book';
 
 const log = (message: string, ...args: any[]) => {
   console.log(`[SQL Worker] ${message}`, ...args);
@@ -28,13 +29,16 @@ function start(sqlite3: Sqlite3Static) {
 function initialize(db: Database) {
   applyMigrations(db);
 
-  const dbBackend = new DictionaryBackend(db);
+  const dictionaryBackend = new DictionaryBackend(db);
+  const bookBackend = new BookBackend(db);
 
   self.addEventListener('message', (event: MessageEvent) => {
     const { data } = event;
     if (!data || typeof data !== 'object') return;
     if (data.type === 'init-dictionary-port' && event.ports && event.ports[0]) {
-      dbBackend.attachPort(event.ports[0]);
+      dictionaryBackend.attachPort(event.ports[0]);
+    } else if (data.type === 'init-book-port' && event.ports && event.ports[0]) {
+      bookBackend.attachPort(event.ports[0]);
     }
   });
 }
