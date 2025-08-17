@@ -2,7 +2,6 @@ import { type Database } from "./sqlWorker";
 
 const migrations = [
     {id: 1, callback: initialMigration},
-    {id: 2, callback: moreIndexes},
 ]
 
 const entityCommon = `
@@ -56,7 +55,7 @@ function initialMigration(db: Database) {
                 ${entityCommon}
                 code TEXT NOT NULL UNIQUE
             );
-            CREATE INDEX IF NOT EXISTS idx_${tableName}_code ON ${tableName}(code);
+            CREATE INDEX IF NOT EXISTS idx_language_lower_code ON language(lower(code));
             `);
         createCommonIndexes(db, tableName);
     }
@@ -71,12 +70,11 @@ function initialMigration(db: Database) {
             );
             -- Individual indexes to support common filtered queries
             CREATE INDEX IF NOT EXISTS idx_${tableName}_originalLanguageUid ON ${tableName}(originalLanguageUid);
-            CREATE INDEX IF NOT EXISTS idx_${tableName}_lower_original ON ${tableName}(original);
+            CREATE INDEX IF NOT EXISTS idx_${tableName}_original ON ${tableName}(original);
             -- Expression index for case-insensitive lookups
             CREATE INDEX IF NOT EXISTS idx_${tableName}_lower_original ON ${tableName}(lower(original));
-            -- Optional composite uniqueness (language + original)
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_${tableName}_uniq_lang_original ON ${tableName}(originalLanguageUid, original);
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_${tableName}_uniq_lang_original ON ${tableName}(originalLanguageUid, lower(original));
+            -- Case-insensitive uniqueness (language + original) using lower(original)
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_${tableName}_uniq_lang_lower_original ON ${tableName}(originalLanguageUid, lower(original));
         `);
         createCommonIndexes(db, tableName);
     }
@@ -93,25 +91,18 @@ function initialMigration(db: Database) {
             );
             CREATE INDEX IF NOT EXISTS idx_${tableName}_translationLanguageUid ON ${tableName}(translationLanguageUid);
             CREATE INDEX IF NOT EXISTS idx_${tableName}_originalWordUid ON ${tableName}(originalWordUid);
-            CREATE INDEX IF NOT EXISTS idx_${tableName}_lower_translation ON ${tableName}(translation);
+            -- Separate plain and lower() indexes with distinct names
+            CREATE INDEX IF NOT EXISTS idx_${tableName}_translation ON ${tableName}(translation);
+            CREATE INDEX IF NOT EXISTS idx_${tableName}_lower_translation ON ${tableName}(lower(translation));
             -- For fast lookup of translations per target language when iterating original words
             CREATE INDEX IF NOT EXISTS idx_${tableName}_lang_word ON ${tableName}(translationLanguageUid, originalWordUid);
-            -- Expression index for normalized translation lookups
-            CREATE INDEX IF NOT EXISTS idx_${tableName}_lower_translation ON ${tableName}(lower(translation));
-            -- Uniqueness: one translation (case-insensitive) per (target language, original word)
+            -- Case-insensitive uniqueness: one translation per (target language, original word)
             CREATE UNIQUE INDEX IF NOT EXISTS idx_${tableName}_uniq_lang_word_lower_translation ON ${tableName}(translationLanguageUid, originalWordUid, lower(translation));
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_${tableName}_uniq_lang_word_lower_translation ON ${tableName}(translationLanguageUid, originalWordUid, translation);
         `);
         createCommonIndexes(db, tableName);
     }
 }
 
-function moreIndexes(db: Database) {
-    db.exec(`
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_language_code_nocase ON language(code);
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_language_code_nocase ON language(lower(code));
-    `);
-}
 
 export function applyMigrations(db: Database) {
     initializeMigrations(db);
