@@ -74,9 +74,12 @@
 
     const sqlWorker = new SqlWorker();
 
+    let initialized = false;
     sqlWorker.addEventListener("message", (event) => {
+        if (initialized) return;
         const { data } = event;
         if (data.type === "ready") {
+            initialized = true;
             // Initialize MessageChannel for dictionary communication
             initDictionaryMessaging(sqlWorker);
 

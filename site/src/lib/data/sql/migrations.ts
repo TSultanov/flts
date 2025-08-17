@@ -56,6 +56,8 @@ function initialMigration(db: Database) {
                 code TEXT NOT NULL UNIQUE
             );
             CREATE INDEX IF NOT EXISTS idx_language_lower_code ON language(lower(code));
+            -- Additional NOCASE unique index to support ON CONFLICT(code) with case-insensitive semantics
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_language_code_nocase ON language(code COLLATE NOCASE);
             `);
         createCommonIndexes(db, tableName);
     }
@@ -75,6 +77,8 @@ function initialMigration(db: Database) {
             CREATE INDEX IF NOT EXISTS idx_${tableName}_lower_original ON ${tableName}(lower(original));
             -- Case-insensitive uniqueness (language + original) using lower(original)
             CREATE UNIQUE INDEX IF NOT EXISTS idx_${tableName}_uniq_lang_lower_original ON ${tableName}(originalLanguageUid, lower(original));
+            -- Additional NOCASE unique index to allow ON CONFLICT(originalLanguageUid, original)
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_word_lang_original_nocase ON ${tableName}(originalLanguageUid, original COLLATE NOCASE);
         `);
         createCommonIndexes(db, tableName);
     }
@@ -98,6 +102,8 @@ function initialMigration(db: Database) {
             CREATE INDEX IF NOT EXISTS idx_${tableName}_lang_word ON ${tableName}(translationLanguageUid, originalWordUid);
             -- Case-insensitive uniqueness: one translation per (target language, original word)
             CREATE UNIQUE INDEX IF NOT EXISTS idx_${tableName}_uniq_lang_word_lower_translation ON ${tableName}(translationLanguageUid, originalWordUid, lower(translation));
+            -- Additional NOCASE unique index to allow ON CONFLICT(translationLanguageUid, originalWordUid, translation)
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_translation_combo_nocase ON ${tableName}(translationLanguageUid, originalWordUid, translation COLLATE NOCASE);
         `);
         createCommonIndexes(db, tableName);
     }
