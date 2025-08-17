@@ -90,6 +90,88 @@ export function initDictionaryMessaging(worker: Worker) {
 export class DictionaryBackend {
     constructor(private db: Database) { }
 
+    // -----------------------
+    // In-memory caches
+    // -----------------------
+    // Key: lower(languageCode) -> languageUid
+    private languageCache = new Map<string, UUID>();
+    // Key: languageUid|lower(word) -> wordUid
+    private wordCache = new Map<string, UUID>();
+    // Key: translationLanguageUid|originalWordUid|lower(translation) -> translationUid
+    private translationCache = new Map<string, UUID>();
+
+    private getOrInsertLanguage(db: Database, code: string, proposedUid: UUID, now: number): UUID {
+        const norm = code.trim().toLowerCase();
+        const cached = this.languageCache.get(norm);
+        if (cached) return cached;
+        const existing = db.selectValue(
+            "SELECT uid FROM language WHERE lower(code)=lower(?) LIMIT 1",
+            [code]
+        ) as UUID | undefined;
+        const uid = existing ?? (() => {
+            db.exec(
+                "INSERT INTO language(uid, code, createdAt, updatedAt) VALUES(?1, ?2, ?3, ?3)",
+                { bind: [proposedUid, code, now] }
+            );
+            return proposedUid;
+        })();
+        this.languageCache.set(norm, uid);
+        return uid;
+    }
+
+    private getOrInsertWord(db: Database, languageUid: UUID, word: string, proposedUid: UUID, now: number): UUID {
+        const norm = word.trim().toLowerCase();
+        const key = `${languageUid}|${norm}`;
+        const cached = this.wordCache.get(key);
+        if (cached) return cached;
+        const existing = db.selectValue(
+            "SELECT uid FROM word WHERE originalLanguageUid=?1 AND lower(original)=lower(?2) LIMIT 1",
+            [languageUid, word]
+        ) as UUID | undefined;
+        const uid = existing ?? (() => {
+            db.exec(
+                "INSERT INTO word(uid, originalLanguageUid, original, createdAt, updatedAt) VALUES(?1, ?2, ?3, ?4, ?4)",
+                { bind: [proposedUid, languageUid, word, now] }
+            );
+            return proposedUid;
+        })();
+        this.wordCache.set(key, uid);
+        return uid;
+    }
+
+    private getOrInsertTranslation(
+        db: Database,
+        translationLanguageUid: UUID,
+        originalWordUid: UUID,
+        translation: string,
+        proposedUid: UUID,
+        now: number
+    ): UUID {
+        const norm = translation.trim().toLowerCase();
+        const key = `${translationLanguageUid}|${originalWordUid}|${norm}`;
+        const cached = this.translationCache.get(key);
+        if (cached) return cached;
+        const existing = db.selectValue(
+            `SELECT uid FROM word_translation
+                     WHERE translationLanguageUid=?1
+                       AND originalWordUid=?2
+                       AND lower(translation)=lower(?3)
+                     LIMIT 1`,
+            [translationLanguageUid, originalWordUid, translation]
+        ) as UUID | undefined;
+        const uid = existing ?? (() => {
+            db.exec(
+                `INSERT INTO word_translation
+                        (uid, translationLanguageUid, originalWordUid, translation, createdAt, updatedAt)
+                     VALUES(?1, ?2, ?3, ?4, ?5, ?5)`,
+                { bind: [proposedUid, translationLanguageUid, originalWordUid, translation, now] }
+            );
+            return proposedUid;
+        })();
+        this.translationCache.set(key, uid);
+        return uid;
+    }
+
     addTranslation(message: AddTranslationMessage): UUID {
         const now = Date.now();
         const origLangUid = generateUID();
@@ -100,61 +182,10 @@ export class DictionaryBackend {
         let resultUid: UUID | undefined;
 
         this.db.transaction(db => {
-
-            const getOrInsertLanguage = (code: string, proposedUid: UUID): UUID => {
-                const existing = db.selectValue(
-                    "SELECT uid FROM language WHERE lower(code)=lower(?) LIMIT 1",
-                    [code]
-                ) as UUID | undefined;
-                if (existing) return existing;
-                db.exec(
-                    "INSERT INTO language(uid, code, createdAt, updatedAt) VALUES(?1, ?2, ?3, ?3)",
-                    { bind: [proposedUid, code, now] }
-                );
-                return proposedUid;
-            };
-
-            const getOrInsertWord = (languageUid: UUID, word: string, proposedUid: UUID): UUID => {
-                const existing = db.selectValue(
-                    "SELECT uid FROM word WHERE originalLanguageUid=?1 AND lower(original)=lower(?2) LIMIT 1",
-                    [languageUid, word]
-                ) as UUID | undefined;
-                if (existing) return existing;
-                db.exec(
-                    "INSERT INTO word(uid, originalLanguageUid, original, createdAt, updatedAt) VALUES(?1, ?2, ?3, ?4, ?4)",
-                    { bind: [proposedUid, languageUid, word, now] }
-                );
-                return proposedUid;
-            };
-
-            const getOrInsertTranslation = (
-                translationLanguageUid: UUID,
-                originalWordUid: UUID,
-                translation: string,
-                proposedUid: UUID
-            ): UUID => {
-                const existing = db.selectValue(
-                    `SELECT uid FROM word_translation
-                     WHERE translationLanguageUid=?1
-                       AND originalWordUid=?2
-                       AND lower(translation)=lower(?3)
-                     LIMIT 1`,
-                    [translationLanguageUid, originalWordUid, translation]
-                ) as UUID | undefined;
-                if (existing) return existing;
-                db.exec(
-                    `INSERT INTO word_translation
-                        (uid, translationLanguageUid, originalWordUid, translation, createdAt, updatedAt)
-                     VALUES(?1, ?2, ?3, ?4, ?5, ?5)`,
-                    { bind: [proposedUid, translationLanguageUid, originalWordUid, translation, now] }
-                );
-                return proposedUid;
-            };
-
-            const origLang = getOrInsertLanguage(message.originalLanguageCode, origLangUid);
-            const targetLang = getOrInsertLanguage(message.targetLanguageCode, targetLangUid);
-            const originalWord = getOrInsertWord(origLang, message.originalWord, originalWordUid);
-            resultUid = getOrInsertTranslation(targetLang, originalWord, message.targetWord, translationUid);
+            const origLang = this.getOrInsertLanguage(db, message.originalLanguageCode, origLangUid, now);
+            const targetLang = this.getOrInsertLanguage(db, message.targetLanguageCode, targetLangUid, now);
+            const originalWord = this.getOrInsertWord(db, origLang, message.originalWord, originalWordUid, now);
+            resultUid = this.getOrInsertTranslation(db, targetLang, originalWord, message.targetWord, translationUid, now);
         });
 
         if (!resultUid) throw new Error("Failed to insert or retrieve translation UID");
