@@ -16,8 +16,8 @@ function start(sqlite3: Sqlite3Static) {
   log('Running SQLite3 version', sqlite3.version.libVersion);
   const db =
     'opfs' in sqlite3
-      ? new sqlite3.oo1.OpfsDb('/db2.sqlite3')
-      : new sqlite3.oo1.DB('/db2.sqlite3', 'ct');
+      ? new sqlite3.oo1.OpfsDb('/db3.sqlite3')
+      : new sqlite3.oo1.DB('/db3.sqlite3', 'ct');
   log(
     'opfs' in sqlite3
       ? `OPFS is available, created persisted database at ${db.filename}`

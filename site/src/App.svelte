@@ -12,6 +12,7 @@
     import SqlWorker from "./lib/data/sql/sqlWorker?worker";
     import { initDictionaryMessaging } from "./lib/data/sql/dictionary";
     import { startTranslations } from "./lib/data/importWorker";
+    import { initSqlBookMessaging } from "./lib/data/sql/book";
 
     const routes: RouteConfig[] = [
         {
@@ -82,6 +83,7 @@
             initialized = true;
             // Initialize MessageChannel for dictionary communication
             initDictionaryMessaging(sqlWorker);
+            initSqlBookMessaging(sqlWorker);
 
             startTranslations();
         }

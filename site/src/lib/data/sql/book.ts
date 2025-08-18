@@ -170,13 +170,22 @@ export class SqlBookWrapper {
         };
     }
 
-    private ensurePort(): MessagePort {
-        if (!this.port) throw new Error('SqlBookWrapper: port not attached');
+    private async ensurePort(): Promise<MessagePort> {
+        // Wait up to 10s for port to be attached (poll every 100ms)
+        const timeoutMs = 10_000;
+        const intervalMs = 100;
+        const start = Date.now();
+        while (!this.port) {
+            if (Date.now() - start >= timeoutMs) {
+                throw new Error('SqlBookWrapper: port not attached (timeout)');
+            }
+            await new Promise(r => setTimeout(r, intervalMs));
+        }
         return this.port;
     }
 
-    private send<TRet>(action: BookRequest['action'], payload: any): Promise<TRet> {
-        const port = this.ensurePort();
+    private async send<TRet>(action: BookRequest['action'], payload: any): Promise<TRet> {
+        const port = await this.ensurePort();
         const id = ++this.requestId;
         const req: BookRequest = { id, action, payload } as BookRequest;
         return new Promise<TRet>((resolve, reject) => {
@@ -381,6 +390,9 @@ export class BookBackend {
                 wordIdx++;
             }
             sentenceIdx++;
+        }
+            if (pIdx < originalText.length) {
+            ret.push({ text: originalText.slice(pIdx, originalText.length)});
         }
 
         return ret;
@@ -777,7 +789,7 @@ export class BookBackend {
             WHERE t.chapterParagraphUid = ?1 -- AND t.languageUid = ?2
             ORDER BY t.updatedAt DESC
             LIMIT 1
-        `, [paragraphUid, languageUid]); // TODO do not ignore target language
+        `, [paragraphUid/*, languageUid*/]); // TODO do not ignore target language
         if (!t) return;
         return {
             languageCode: t["languageCode"] as string,
