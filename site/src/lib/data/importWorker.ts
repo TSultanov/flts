@@ -3,8 +3,9 @@ import { translationQueue, type TranslationRequest } from "./queueDb";
 import Bottleneck from 'bottleneck';
 import { liveQuery } from "dexie";
 import { getTranslator, type ModelId, type ParagraphTranslation } from "./translators/translator";
-import { books, type BookParagraphTranslation, type IBook, type ParagraphId, type SentenceTranslation, type SentenceWordTranslation } from "./v2/book.svelte";
 import { dictionary } from "./sql/dictionary"
+import { sqlBooks, type UpdateParagraphTranslationMessageSentence, type UpdateParagraphTranslationMessageTranslation } from "./sql/book";
+import type { UUID } from "./v2/db";
 
 const limit = 1;
 
@@ -29,7 +30,7 @@ export async function checkAndScheduleUntranslatedParagraphs() {
             return;
         }
 
-        const allBooks = await books.listBooks();
+        const allBooks = await sqlBooks.listBooks();
 
         let untranslatedCount = 0;
 
@@ -38,19 +39,12 @@ export async function checkAndScheduleUntranslatedParagraphs() {
                 continue;
             }
 
-            const book = await books.getBook(bookMeta.uid);
-            if (!book) {
-                continue;
-            }
-            for (const chapter of book.chapters) {
-                for (const paragraph of chapter.paragraphs) {
-                    if (!paragraph.translation) {
-                        if (!await translationQueue.hasRequest(book.uid, paragraph.id)) {
-                            await translationQueue.scheduleTranslation(book.uid, paragraph.id);
-                            untranslatedCount++;
-                        }
-                    }
-                }
+
+            const untranslatedParagraphs = await sqlBooks.getNotTranslatedParagraphsUids(bookMeta.uid);
+            for (const p of untranslatedParagraphs) {
+                if (await translationQueue.hasRequest(bookMeta.uid, p)) continue;
+                await translationQueue.scheduleTranslation(bookMeta.uid, p);
+                untranslatedCount++;
             }
         }
 
@@ -76,22 +70,22 @@ export async function startTranslations() {
             queue.schedule(async () => {
                 await handleTranslationEvent(request);
             }).then(() => {
-                console.log(`Worker: book uid ${request.bookUid} paragraph id ${request.paragraphId.chapter}/${request.paragraphId.paragraph} translation task is completed`);
+                console.log(`Worker: book uid ${request.bookUid} paragraph id ${request.paragraphUid} translation task is completed`);
                 translationRequestBag.delete(request.id);
             })
                 .catch((err) => {
-                    console.log(`Worker: error translating book uid ${request.bookUid} paragraph id ${request.paragraphId.chapter}/${request.paragraphId.paragraph}, retrying (${retriesLeft - 1} attempts left)`, err);
+                    console.log(`Worker: error translating book uid ${request.bookUid} paragraph id ${request.paragraphUid} retrying (${retriesLeft - 1} attempts left)`, err);
                     if (retriesLeft > 0) {
                         setTimeout(() => schedule(retriesLeft - 1), 300);
                     } else {
-                        console.log(`Failed to translate book uid ${request.bookUid} paragraph id ${request.paragraphId.chapter}/${request.paragraphId.paragraph}`);
+                        console.log(`Failed to translate book uid ${request.bookUid} paragraph id ${request.paragraphUid}`);
                         translationRequestBag.delete(request.id);
                     }
                 })
         }
 
         if (!translationRequestBag.has(request.id)) {
-            console.log(`Worker: scheduling book uid ${request.bookUid} paragraph id ${request.paragraphId.chapter}/${request.paragraphId.paragraph}`);
+            console.log(`Worker: scheduling book uid ${request.bookUid} paragraph id ${request.paragraphUid}`);
             schedule(retriesLeft);
         }
     }
@@ -105,7 +99,7 @@ export async function startTranslations() {
 
 async function handleTranslationEvent(translationRequest: TranslationRequest) {
     const startTime = performance.now();
-    console.log(`Worker: starting translation, book uid ${translationRequest.bookUid} paragraph id ${translationRequest.paragraphId.chapter}/${translationRequest.paragraphId.paragraph} (request ${translationRequest.id})`);
+    console.log(`Worker: starting translation, book uid ${translationRequest.bookUid} paragraph id ${translationRequest.paragraphUid} (request ${translationRequest.id})`);
 
     // Get config
     let stepStartTime = performance.now();
@@ -119,25 +113,23 @@ async function handleTranslationEvent(translationRequest: TranslationRequest) {
 
     // Get paragraph from database
     stepStartTime = performance.now();
-    const book = await books.getBook(translationRequest.bookUid);
 
-    if (!book) {
-        console.log(`Worker: book UID ${translationRequest.bookUid} does not exist`);
+    const paragraph = await sqlBooks.getParagraph(translationRequest.paragraphUid);
+    if (!paragraph) {
+        console.log(`Worker: paragraph with UID ${translationRequest.paragraphUid} does not exist`);
         await translationQueue.removeRequest(translationRequest.id);
         return;
     }
-
-    const paragraph = book.getParagraphView(translationRequest.paragraphId);
-    console.log(`Worker: paragraph id ${translationRequest.paragraphId.chapter}/${translationRequest.paragraphId.paragraph}: ${paragraph?.originalPlain.substring(0, 20)}...`)
+    console.log(`Worker: paragraph id ${translationRequest.paragraphUid}: ${paragraph.originalText.substring(0, 20)}...`)
 
     if (!paragraph) {
-        console.log(`Worker: book UID ${translationRequest.bookUid} paragraph Id ${translationRequest.paragraphId.chapter}/${translationRequest.paragraphId.paragraph} does not exist`);
+        console.log(`Worker: book UID ${translationRequest.bookUid} paragraph Id ${translationRequest.paragraphUid} does not exist`);
         await translationQueue.removeRequest(translationRequest.id);
         return;
     }
 
     const request = {
-        paragraph: paragraph.originalPlain
+        paragraph: paragraph.originalText
     };
 
     // Check cached translation
@@ -155,7 +147,7 @@ async function handleTranslationEvent(translationRequest: TranslationRequest) {
     await translationSavingQueue.schedule(async () => {
         // Add translation to database
         stepStartTime = performance.now();
-        await addTranslation(book, translationRequest.paragraphId, translation, translationRequest.model);
+        await addTranslation(translationRequest.paragraphUid, translation, translationRequest.model);
         console.log(`Worker: addTranslation took ${(performance.now() - stepStartTime).toFixed(2)}ms`);
 
         // Clean up request
@@ -164,16 +156,18 @@ async function handleTranslationEvent(translationRequest: TranslationRequest) {
         console.log(`Worker: delete request took ${(performance.now() - stepStartTime).toFixed(2)}ms`);
 
         const totalTime = performance.now() - startTime;
-        console.log(`Worker: handleTranslationEvent total time: ${totalTime.toFixed(2)}ms for book UID ${translationRequest.bookUid} paragraph Id ${translationRequest.paragraphId.chapter}/${translationRequest.paragraphId.paragraph}`);
+        console.log(`Worker: handleTranslationEvent total time: ${totalTime.toFixed(2)}ms for book UID ${translationRequest.bookUid} paragraph Id ${translationRequest.paragraphUid}`);
     });
 }
 
-export async function addTranslation(book: IBook, paragraphId: ParagraphId, translation: ParagraphTranslation, model: ModelId) {
+export async function addTranslation(paragraphUid: UUID, translation: ParagraphTranslation, model: ModelId) {
     const startTime = performance.now();
-    console.log(`Worker: addTranslation starting for bookUid ${book.uid} paragraphId ${paragraphId.chapter}/${paragraphId.paragraph}, ${translation.sentences.length} sentences`);
+    console.log(`Worker: addTranslation starting for paragraphId ${paragraphUid}, ${translation.sentences.length} sentences`);
 
-    const pTranslations: BookParagraphTranslation = {
-        languageCode: translation.targetLanguage,
+    const targetLanguageUid = await dictionary.getLanguageUidByCode(translation.targetLanguage);
+
+    const pTranslations: UpdateParagraphTranslationMessageTranslation = {
+        languageUid: targetLanguageUid,
         translatingModel: model,
         sentences: []
     };
@@ -183,7 +177,7 @@ export async function addTranslation(book: IBook, paragraphId: ParagraphId, tran
     let dictAddCalls = 0;
 
     for (const s of translation.sentences) {
-        const sentenceTranslation: SentenceTranslation = {
+        const sentenceTranslation: UpdateParagraphTranslationMessageSentence = {
             fullTranslation: s.fullTranslation,
             words: []
         };
@@ -200,7 +194,7 @@ export async function addTranslation(book: IBook, paragraphId: ParagraphId, tran
             dictAddTotalTime += performance.now() - dictStart;
             dictAddCalls++;
 
-            const wordTranslation: SentenceWordTranslation = {
+            const wordTranslation = {
                 original: w.original,
                 isPunctuation: w.isPunctuation,
                 isStandalonePunctuation: w.isStandalonePunctuation,
@@ -226,7 +220,10 @@ export async function addTranslation(book: IBook, paragraphId: ParagraphId, tran
         pTranslations.sentences.push(sentenceTranslation);
     }
 
-    book.updateParagraphTranslation(paragraphId, pTranslations);
+    await sqlBooks.updateParagraphTranslation({
+        paragraphUid,
+        translation: pTranslations
+    });
 
     if (dictAddCalls > 0) {
         console.log(
@@ -237,5 +234,5 @@ export async function addTranslation(book: IBook, paragraphId: ParagraphId, tran
     }
 
     const totalTime = performance.now() - startTime;
-    console.log(`Worker: addTranslation total time: ${totalTime.toFixed(2)}ms for bookUid ${book.uid} paragraphId ${paragraphId.chapter}/${paragraphId.paragraph}`);
+    console.log(`Worker: addTranslation total time: ${totalTime.toFixed(2)}ms for paragraphId ${paragraphUid}`);
 }

@@ -5,7 +5,7 @@
     import ConfirmDialog from "./ConfirmDialog.svelte";
     import MoveFolderDialog from "./MoveFolderDialog.svelte";
     import type { UUID } from "./data/v2/db";
-    import type { IBookMeta } from "./data/v2/book.svelte";
+    import type { IBookMeta } from "./data/sql/book";
 
     const library: Library = getContext("library");
     const rootFolder = library.getLibraryBooks();

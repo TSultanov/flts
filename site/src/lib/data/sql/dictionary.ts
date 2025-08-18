@@ -11,11 +11,11 @@ export type AddTranslationMessage = {
     targetLanguageCode: string,
 };
 
-type DictionaryRequest = {
-    id: number;
-    action: 'addTranslation';
-    payload: AddTranslationMessage;
-};
+export type GetLanguageUidByCodeMessage = { code: string };
+
+type DictionaryRequest =
+    | { id: number; action: 'addTranslation'; payload: AddTranslationMessage }
+    | { id: number; action: 'getLanguageUidByCode'; payload: GetLanguageUidByCodeMessage };
 
 type DictionarySuccessResponse = {
     id: number;
@@ -63,6 +63,21 @@ export class DictionaryWrapper {
         const port = this.ensurePort();
         const id = ++this.requestId;
         const req: DictionaryRequest = { id, action: 'addTranslation', payload: message };
+        return new Promise<UUID>((resolve, reject) => {
+            this.pending.set(id, { resolve, reject });
+            try {
+                port.postMessage(req);
+            } catch (err) {
+                this.pending.delete(id);
+                reject(err);
+            }
+        });
+    }
+
+    getLanguageUidByCode(code: string): Promise<UUID> {
+        const port = this.ensurePort();
+        const id = ++this.requestId;
+        const req: DictionaryRequest = { id, action: 'getLanguageUidByCode', payload: { code } };
         return new Promise<UUID>((resolve, reject) => {
             this.pending.set(id, { resolve, reject });
             try {
@@ -192,6 +207,17 @@ export class DictionaryBackend {
         return resultUid;
     }
 
+    getLanguageUidByCode(message: GetLanguageUidByCodeMessage): UUID {
+        const now = Date.now();
+        const proposedUid = generateUID();
+        let langUid: UUID | undefined;
+        this.db.transaction(db => {
+            langUid = this.getOrInsertLanguage(db, message.code, proposedUid, now);
+        });
+        if (!langUid) throw new Error('Failed to get or insert language');
+        return langUid;
+    }
+
     // Attach a MessagePort for handling incoming dictionary requests inside the worker context
     attachPort(port: MessagePort) {
         port.onmessage = (ev: MessageEvent) => {
@@ -199,13 +225,16 @@ export class DictionaryBackend {
             if (!msg || typeof msg !== 'object') return;
             const { id, action, payload } = msg as { id: number; action: string; payload: any };
             if (typeof id !== 'number') return;
-            if (action === 'addTranslation') {
-                try {
+            try {
+                if (action === 'addTranslation') {
                     const result = this.addTranslation(payload as AddTranslationMessage);
                     port.postMessage({ id, result });
-                } catch (e: any) {
-                    port.postMessage({ id, error: e?.message || 'Unknown error' });
+                } else if (action === 'getLanguageUidByCode') {
+                    const result = this.getLanguageUidByCode(payload as GetLanguageUidByCodeMessage);
+                    port.postMessage({ id, result });
                 }
+            } catch (e: any) {
+                port.postMessage({ id, error: e?.message || 'Unknown error' });
             }
         };
     }

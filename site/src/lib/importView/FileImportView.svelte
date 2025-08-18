@@ -1,7 +1,7 @@
 <script lang="ts">
     import { getContext } from "svelte";
     import { parseEpub } from "../data/epubLoader";
-    import type { Library } from "../library.svelte";
+    import type { Library } from "../data/library.svelte";
     import { goto } from "@mateothegreat/svelte5-router";
 
     let files: FileList | null | undefined = $state();

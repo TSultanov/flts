@@ -19,7 +19,7 @@ type BookChapter = Entity & {
     readonly title?: string,
 }
 
-type Paragraph = Entity & {
+export type Paragraph = Entity & {
     readonly originalText: string,
     readonly originalHtml?: string,
 }
@@ -115,18 +115,24 @@ type BookRequest = {
     | 'createBookFromEpub'
     | 'updateParagraphTranslation'
     | 'updateBookPath'
+    | 'deleteBook'
     | 'listBooks'
     | 'getBookChapters'
     | 'getParagraphs'
+    | 'getParagraph'
     | 'getParagraphTranslation'
-    | 'getParagraphTranslationShort';
+    | 'getParagraphTranslationShort'
+    | 'getNotTranslatedParagraphsUids'
+    | 'getWordTranslation';
     payload: CreateBookFromTextBookRequestPayload
     | CreateBookFromEpubEpubRequestPayload
     | UpdateParagraphTranslationRequestPayload
     | UpdateBookPathRequestPayload
     | { bookUid: UUID }
     | { chapterUid: UUID }
+    | { paragraphUid: UUID }
     | { paragraphUid: UUID, languageUid: UUID }
+    | { wordUid: UUID }
     | {};
 };
 
@@ -200,6 +206,10 @@ export class SqlBookWrapper {
         return this.send('updateBookPath', message);
     }
 
+    deleteBook(bookUid: UUID): Promise<UUID> {
+        return this.send('deleteBook', { bookUid });
+    }
+
     listBooks(): Promise<IBookMeta[]> {
         return this.send('listBooks', {});
     }
@@ -212,12 +222,24 @@ export class SqlBookWrapper {
         return this.send('getParagraphs', { chapterUid });
     }
 
+    getParagraph(paragraphUid: UUID): Promise<Paragraph | undefined> {
+        return this.send('getParagraph', { paragraphUid });
+    }
+
     getParagraphTranslation(paragraphUid: UUID, languageUid: UUID): Promise<BookParagraphTranslation | undefined> {
         return this.send('getParagraphTranslation', { paragraphUid, languageUid });
     }
 
     getParagraphTranslationShort(paragraphUid: UUID, languageUid: UUID): Promise<ParagraphTranslationShort | undefined> {
-    return this.send('getParagraphTranslationShort', { paragraphUid, languageUid });
+        return this.send('getParagraphTranslationShort', { paragraphUid, languageUid });
+    }
+
+    getNotTranslatedParagraphsUids(bookUid: UUID): Promise<UUID[]> {
+        return this.send('getNotTranslatedParagraphsUids', { bookUid });
+    }
+
+    getWordTranslation(wordUid: UUID): Promise<SentenceWordTranslation | undefined> {
+        return this.send('getWordTranslation', { wordUid });
     }
 }
 
@@ -474,6 +496,14 @@ export class BookBackend {
         return bookUid;
     }
 
+    deleteBook(bookUid: UUID): UUID {
+        // Will cascade via foreign keys (chapters -> paragraphs -> translations -> sentences -> words)
+        const exists = this.db.selectValue("SELECT uid FROM book WHERE uid=?1 LIMIT 1", [bookUid]) as UUID | undefined;
+        if (!exists) throw new Error('Book not found');
+        this.db.exec({ sql: `DELETE FROM book WHERE uid=?1`, bind: [bookUid] });
+        return bookUid;
+    }
+
     createBookFromEpub(payload: CreateBookFromEpubMessage): UUID {
         const now = Date.now();
         const bookUid = generateUID();
@@ -526,6 +556,9 @@ export class BookBackend {
                 } else if (action === 'updateBookPath') {
                     const result = this.updateBookPath(payload as UpdateBookPathMessage);
                     port.postMessage({ id, result });
+                } else if (action === 'deleteBook') {
+                    const result = this.deleteBook(payload.bookUid as UUID);
+                    port.postMessage({ id, result });
                 } else if (action === 'listBooks') {
                     const result = this.listBooks();
                     port.postMessage({ id, result });
@@ -535,11 +568,20 @@ export class BookBackend {
                 } else if (action === 'getParagraphs') {
                     const result = this.getParagraphs(payload.chapterUid as UUID);
                     port.postMessage({ id, result });
+                } else if (action === 'getParagraph') {
+                    const result = this.getParagraph(payload.paragraphUid as UUID);
+                    port.postMessage({ id, result });
                 } else if (action === 'getParagraphTranslation') {
-                    const result = this.getParagraphTranslation(payload.paragraphUid as UUID, payload.languageUid as UUID) ?? null;
+                    const result = this.getParagraphTranslation(payload.paragraphUid as UUID, payload.languageUid as UUID);
                     port.postMessage({ id, result });
                 } else if (action === 'getParagraphTranslationShort') {
-                    const result = this.getParagraphTranslationShort(payload.paragraphUid as UUID, payload.languageUid as UUID) ?? null;
+                    const result = this.getParagraphTranslationShort(payload.paragraphUid as UUID, payload.languageUid as UUID);
+                    port.postMessage({ id, result });
+                } else if (action === 'getNotTranslatedParagraphsUids') {
+                    const result = this.getNotTranslatedParagraphsUids(payload.bookUid as UUID);
+                    port.postMessage({ id, result });
+                } else if (action === 'getWordTranslation') {
+                    const result = this.getWordTranslation(payload.wordUid as UUID);
                     port.postMessage({ id, result });
                 }
             } catch (e: any) {
@@ -732,48 +774,104 @@ export class BookBackend {
             SELECT l.code as languageCode, t.translationJson as translationJson
             FROM book_chapter_paragraph_translation t
             JOIN language l ON l.uid = t.languageUid
-            WHERE t.chapterParagraphUid = ?1 AND t.languageUid = ?2
+            WHERE t.chapterParagraphUid = ?1 -- AND t.languageUid = ?2
             ORDER BY t.updatedAt DESC
             LIMIT 1
-        `, [paragraphUid, languageUid]);
+        `, [paragraphUid, languageUid]); // TODO do not ignore target language
         if (!t) return;
         return {
             languageCode: t["languageCode"] as string,
             translationJson: t["translationJson"] ? JSON.parse(t["translationJson"] as string) : []
         } as ParagraphTranslationShort;
     }
+
+    // Returns UIDs of paragraphs within a book that have no translations (language-agnostic for now)
+    getNotTranslatedParagraphsUids(bookUid: UUID): UUID[] {
+        const rows: UUID[] = [];
+        this.db.exec({
+            sql: `SELECT p.uid AS uid
+                  FROM book_chapter_paragraph p
+                  JOIN book_chapter c ON c.uid = p.chapterUid
+                  WHERE c.bookUid = ?1
+                    AND NOT EXISTS (
+                        SELECT 1 FROM book_chapter_paragraph_translation t
+                        WHERE t.chapterParagraphUid = p.uid
+                    )`,
+            bind: [bookUid],
+            rowMode: 'object',
+            callback: (row: any) => { rows.push(row.uid as UUID); }
+        });
+        // TODO: support filtering by a specific language when multi-language differentiation is needed
+        return rows;
+    }
+
+    getWordTranslation(wordUid: UUID): SentenceWordTranslation | undefined {
+        const r = this.db.selectObject(`
+            SELECT uid, sentenceUid, wordIndex, original, isPunctuation, isStandalonePunctuation,
+                   isOpeningParenthesis, isClosingParenthesis, wordTranslationUid,
+                   wordTranslationInContext, grammarContext, note, createdAt, updatedAt
+            FROM book_paragraph_translation_sentence_word
+            WHERE uid = ?1
+            LIMIT 1
+        `, [wordUid]);
+        if (!r) return;
+        const word: SentenceWordTranslation = {
+            uid: r["uid"] as UUID,
+            createdAt: r["createdAt"] as number,
+            updatedAt: r["updatedAt"] as number,
+            original: r["original"] as string,
+            isPunctuation: !!r["isPunctuation"],
+            isStandalonePunctuation: r["isStandalonePunctuation"] == null ? null : !!r["isStandalonePunctuation"],
+            isOpeningParenthesis: r["isOpeningParenthesis"] == null ? null : !!r["isOpeningParenthesis"],
+            isClosingParenthesis: r["isClosingParenthesis"] == null ? null : !!r["isClosingParenthesis"],
+            wordTranslationUid: r["wordTranslationUid"] as UUID | undefined,
+            wordTranslationInContext: r["wordTranslationInContext"] ? JSON.parse(r["wordTranslationInContext"] as string) : undefined,
+            grammarContext: r["grammarContext"] ? JSON.parse(r["grammarContext"] as string) : undefined,
+            note: r["note"] as string | undefined,
+        };
+        return word;
+    }
 }
 
 // Public message shapes for paragraph translation update
+export type UpdateParagraphTranslationMessageGrammar = {
+    originalInitialForm: string;
+    targetInitialForm: string;
+    partOfSpeech: string;
+    plurality?: string | null;
+    person?: string | null;
+    tense?: string | null;
+    case?: string | null;
+    other?: string | null;
+};
+
+
+export type UpdateParagraphTranslationMessageWord = {
+    original: string;
+    isPunctuation: boolean;
+    isStandalonePunctuation?: boolean | null;
+    isOpeningParenthesis?: boolean | null;
+    isClosingParenthesis?: boolean | null;
+    wordTranslationUid?: UUID;
+    wordTranslationInContext?: string[];
+    grammarContext?: UpdateParagraphTranslationMessageGrammar;
+    note?: string;
+};
+
+export type UpdateParagraphTranslationMessageSentence = {
+    fullTranslation: string;
+    words: UpdateParagraphTranslationMessageWord[];
+};
+
+export type UpdateParagraphTranslationMessageTranslation = {
+    languageUid: UUID;
+    translatingModel: ModelId;
+    sentences: UpdateParagraphTranslationMessageSentence[];
+}
+
 export type UpdateParagraphTranslationMessage = {
     paragraphUid: UUID;
-    translation: {
-        languageUid: UUID;
-        translatingModel: ModelId;
-        sentences: {
-            fullTranslation: string;
-            words: {
-                original: string;
-                isPunctuation: boolean;
-                isStandalonePunctuation?: boolean | null;
-                isOpeningParenthesis?: boolean | null;
-                isClosingParenthesis?: boolean | null;
-                wordTranslationUid?: UUID;
-                wordTranslationInContext?: string[];
-                grammarContext?: {
-                    originalInitialForm: string;
-                    targetInitialForm: string;
-                    partOfSpeech: string;
-                    plurality?: string | null;
-                    person?: string | null;
-                    tense?: string | null;
-                    case?: string | null;
-                    other?: string | null;
-                };
-                note?: string;
-            }[];
-        }[];
-    };
+    translation: UpdateParagraphTranslationMessageTranslation;
 };
 
 // Public message shape for updating a book's path

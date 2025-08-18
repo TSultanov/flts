@@ -1,9 +1,8 @@
-import { liveQuery } from "dexie";
 import { readable, type Readable } from 'svelte/store';
 import type { EpubBook } from "../data/epubLoader";
 import type { UUID } from "../data/v2/db";
-import { books, type IBookMeta } from "../data/v2/book.svelte";
 import { translationQueue } from "../data/queueDb";
+import { sqlBooks, type IBookMeta } from "./sql/book";
 
 export type LibraryFolder = {
     name?: string,
@@ -14,7 +13,7 @@ export type LibraryFolder = {
 export class Library {
     getLibraryBooks(): Readable<LibraryFolder> {
         return this.useQuery(async () => {
-            const allBooks = await books.listBooks();
+            const allBooks = await sqlBooks.listBooks();
 
             const root: LibraryFolder = {
                 folders: [],
@@ -52,11 +51,16 @@ export class Library {
     }
 
     importEpub(book: EpubBook) {
-        return books.importEpub(book);
+        return sqlBooks.createFromEpub({
+            epub: book
+        });
     }
 
     async importText(title: string, text: string) {
-        return books.importText(title, text);
+        return sqlBooks.createFromText({
+            title,
+            text
+        });
     }
 
     private async cleanupTranslationRequests(bookUid: UUID): Promise<void> {
@@ -65,14 +69,14 @@ export class Library {
 
     async deleteBook(bookUid: UUID) {
         await this.cleanupTranslationRequests(bookUid);
-        await books.deleteBook(bookUid);
+        await sqlBooks.deleteBook(bookUid);
     }
 
     async moveBook(bookUid: UUID, newPath: string[]) {
-        const book = await books.getBook(bookUid);
-        if (book) {
-            book.path = newPath;
-        }
+        await sqlBooks.updateBookPath({
+            bookUid,
+            path: newPath
+        })
     }
 
     async deleteBooksInBatch(bookUids: UUID[]) {
@@ -83,45 +87,10 @@ export class Library {
         await Promise.all(bookUids.map(u => this.moveBook(u, newPath)));
     }
 
-    private useQuery<T>(querier: () => T | Promise<T>): Readable<T> {
+    private useQuery<T>(querier: () => Promise<T>): Readable<T> {
         return readable<T>(undefined, (set) => {
-            let timeoutId: NodeJS.Timeout | null = null;
-            let lastValue: T;
-            let hasValue = false;
-            let lastUpdateTime = 0;
-
-            return liveQuery(querier).subscribe((x) => {
-                lastValue = x;
-                const now = Date.now();
-
-                if (!hasValue) {
-                    hasValue = true;
-                    lastUpdateTime = now;
-                    set(x);
-                    return;
-                }
-
-                if (now - lastUpdateTime >= 1000) {
-                    lastUpdateTime = now;
-                    set(x);
-                    // Clear any pending timeout since we just updated
-                    if (timeoutId) {
-                        clearTimeout(timeoutId);
-                        timeoutId = null;
-                    }
-                    return;
-                }
-
-                if (timeoutId) {
-                    clearTimeout(timeoutId);
-                }
-
-                timeoutId = setTimeout(() => {
-                    lastUpdateTime = Date.now();
-                    set(lastValue);
-                    timeoutId = null;
-                }, 1000);
-            }).unsubscribe;
+            querier().then(res => set(res));
+            // TODO: broadcast DB changes and update readable stores
         })
     }
 }

@@ -4,66 +4,60 @@
     import WordView from "./WordView.svelte";
     import { route as r } from "@mateothegreat/svelte5-router";
     import type { UUID } from "../data/v2/db";
-    import { books, type ChapterId, type TranslatedWordId } from "../data/v2/book.svelte";
     import { onMount } from "svelte";
+    import { sqlBooks } from "../data/sql/book";
 
     const { route } = $props();
 
     const bookUid: UUID = route.result.path.params.bookId as UUID;
-    const chapterId: ChapterId | null = $derived(
+    const chapterId: UUID | null = $derived(
         route.result.path.params.chapterId
-            ? ({
-                  chapter: parseInt(route.result.path.params.chapterId),
-              } as ChapterId)
+            ? route.result.path.params.chapterId as UUID
             : null,
     );
 
     $inspect(route);
     $inspect(chapterId);
 
-    const book = $derived(books.getBook(bookUid));
+    const chaptersPromise = $derived(sqlBooks.getBookChapters(bookUid));
 
     onMount(() => {
-        book.then((book) => {
-            if (book && book.chapters.length === 1) {
-                // chapterUid = $book.chapters[0].uid;
-                goto(`/book/${bookUid}/${book.chapters[0].id.chapter}`);
+        chaptersPromise.then((chapters) => {
+            if (chapters && chapters.length === 1) {
+                goto(`/book/${bookUid}/${chapters[0].uid}`);
             }
         });
     });
 
-    let sentenceWordIdToDisplay: TranslatedWordId | null = $state(null);
+    let sentenceWordIdToDisplay: UUID | null = $state(null);
 </script>
 
-{#await book}
+{#await chaptersPromise}
     <p>Loading...</p>
-{:then book}
-    {#if book}
+{:then chapters}
+    {#if chapters}
         <div class="container">
-            {#if book?.chapters}
-                <div class="chapters">
-                    {#each book.chapters as chapter}
-                        <p>
-                            <a use:r href="/book/{bookUid}/{chapter.id.chapter}"
-                                >{chapter.title
-                                    ? chapter.title
-                                    : "<no title>"}</a
-                            >
-                        </p>
-                    {/each}
-                </div>
-            {/if}
+            <div class="chapters">
+                {#each chapters as chapter}
+                    <p>
+                        <a use:r href="/book/{bookUid}/{chapter.uid}"
+                            >{chapter.title
+                                ? chapter.title
+                                : "<no title>"}</a
+                        >
+                    </p>
+                {/each}
+            </div>
             {#if chapterId}
                 <div class="chapter-view">
                     <ChapterView
-                        {book}
                         {chapterId}
                         bind:sentenceWordIdToDisplay={sentenceWordIdToDisplay}
                     />
                 </div>
                 <div class="word-view">
                     {#if sentenceWordIdToDisplay}
-                        <WordView {book} {sentenceWordIdToDisplay} />
+                        <WordView {sentenceWordIdToDisplay} />
                     {:else}
                         Select word to show translation
                     {/if}

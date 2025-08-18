@@ -1,30 +1,23 @@
 <script lang="ts">
-    import { getContext, onMount } from "svelte";
-    import { type Library } from "../library.svelte";
+    import { sqlBooks } from "../data/sql/book";
+    import type { UUID } from "../data/v2/db";
     import ParagraphView from "./ParagraphView.svelte";
-    import type { ChapterId, IBook, ParagraphId, TranslatedWordId } from "../data/v2/book.svelte";
 
     let {
-        book,
         chapterId,
         sentenceWordIdToDisplay = $bindable(),
     }: {
-        book: IBook,
-        chapterId: ChapterId;
-        sentenceWordIdToDisplay: TranslatedWordId | null;
+        chapterId: UUID;
+        sentenceWordIdToDisplay: UUID | null;
     } = $props();
 
-    const chapter = $derived(book.getChapterView(chapterId));
+    const paragraphsPromise = $derived(sqlBooks.getParagraphs(chapterId));
 
     function chapterClick(e: MouseEvent) {
+        console.error("Click event is broken!");
         const target = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement;
         if (target && target.classList.contains("word-span")) {
-            sentenceWordIdToDisplay = {
-                chapter: parseInt(target.dataset["chapter"]!),
-                paragraph: parseInt(target.dataset["paragraph"]!),
-                sentence: parseInt(target.dataset["sentence"]!),
-                word: parseInt(target.dataset["word"]!),
-            } as TranslatedWordId;
+            sentenceWordIdToDisplay = target.dataset["paragraph"] as UUID;
         } else {
             sentenceWordIdToDisplay = null;
         }
@@ -42,14 +35,13 @@
             style="column-width: {sectionContentWidth}px"
             bind:clientHeight={sectionContentWidth}
         >
-            {#if chapter}
-                {#each chapter.paragraphs as paragraph}
-                    <ParagraphView
-                        {paragraph}
-                        {sentenceWordIdToDisplay}
-                    />
+            {#await paragraphsPromise}
+                <p>Loading...</p>
+            {:then paragraphs}
+                {#each paragraphs as paragraph}
+                    <ParagraphView {paragraph} {sentenceWordIdToDisplay} />
                 {/each}
-            {/if}
+            {/await}
         </div>
     </section>
 </div>
@@ -83,7 +75,7 @@
         scroll-snap-type: x mandatory;
         column-gap: 2cm;
     }
-    
+
     :global(.paragraphs-container > *) {
         scroll-snap-align: center;
         scroll-snap-stop: always;

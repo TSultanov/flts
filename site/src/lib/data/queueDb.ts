@@ -1,13 +1,13 @@
 import Dexie, { type EntityTable } from "dexie";
 import type { ModelId } from "./translators/translator";
 import type { UUID } from "./v2/db";
-import { books, type ParagraphId } from "./v2/book.svelte";
 import { getConfig } from "../config";
+import { sqlBooks } from "./sql/book";
 
 export interface TranslationRequest {
     id: number,
     bookUid: UUID,
-    paragraphId: ParagraphId,
+    paragraphUid: UUID,
     model: ModelId,
 }
 
@@ -21,7 +21,7 @@ const queueDb = new Dexie('translationQueue', {
 }) as QueueDB;
 
 queueDb.version(1).stores({
-    directTranslationRequests: '++id, bookUid, paragraphId',
+    directTranslationRequests: '++id, bookUid, paragraphUid',
 });
 
 export type {
@@ -33,36 +33,32 @@ export const translationQueue = {
         await queueDb.directTranslationRequests.where('bookUid').equals(bookUid).delete();
     },
 
-    scheduleTranslation: async (bookUid: UUID, paragraphId: ParagraphId) => {
+    scheduleTranslation: async (bookUid: UUID, paragraphUid: UUID) => {
         const config = await getConfig();
         await queueDb.directTranslationRequests.add({
             bookUid,
-            paragraphId,
+            paragraphUid,
             model: config.model,
         });
     },
 
     scheduleFullBookTranslation: async (bookUid: UUID) => {
         const config = await getConfig();
-        const book = await books.getBook(bookUid);
-        if (!book) {
-            return;
-        }
-        for (const c of book.chapters) {
-            for (const p of c.paragraphs) {
-                await queueDb.directTranslationRequests.add({
-                    bookUid,
-                    paragraphId: p.id,
-                    model: config.model,
-                });
-            }
+        const untranslatedParagraphs = await sqlBooks.getNotTranslatedParagraphsUids(bookUid);
+
+        for (const p of untranslatedParagraphs) {
+            await queueDb.directTranslationRequests.add({
+                bookUid,
+                paragraphUid: p,
+                model: config.model,
+            });
         }
     },
 
-    hasRequest: async (bookUid: UUID, paragraphId: ParagraphId) => {
+    hasRequest: async (bookUid: UUID, paragraphUid: UUID) => {
         return await queueDb.directTranslationRequests
             .where("bookUid").equals("bookUid")
-            .and(r => r.paragraphId === paragraphId) // FIXME this is not working apparently
+            .and(r => r.paragraphUid === paragraphUid)
             .count() > 0;
     },
 
