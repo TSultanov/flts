@@ -386,6 +386,7 @@ export class BookBackend {
                     },
                     text: originalText.slice(pIdx, pIdx + len),
                 });
+                pIdx += len;
 
                 wordIdx++;
             }
