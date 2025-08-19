@@ -2,6 +2,28 @@ import sqlite3InitModule, { type Database, type Sqlite3Static } from '@sqlite.or
 import { applyMigrations } from './migrations';
 import { DictionaryBackend } from './dictionary';
 import { BookBackend } from './book';
+import type { UUID } from '../v2/db';
+
+// NOTE: Keep this union in sync with all tables created in migrations.ts
+export type TableName =
+  | "migrations"
+  | "language"
+  | "word"
+  | "word_translation"
+  | "book"
+  | "book_chapter"
+  | "book_chapter_paragraph"
+  | "book_chapter_paragraph_translation"
+  | "book_paragraph_translation_sentence"
+  | "book_paragraph_translation_sentence_word";
+
+export type DbUpdateMessage = {
+  table: TableName,
+  uid: UUID,
+  action: 'insert' | 'update' | 'delete',
+};
+
+export const dbUpdatesChannelName = "db_updates_channel";
 
 const log = (message: string, ...args: any[]) => {
   console.log(`[SQL Worker] ${message}`, ...args);
@@ -9,8 +31,6 @@ const log = (message: string, ...args: any[]) => {
 const error = (message: string, ...args: any[]) => {
   console.error(`[SQL Worker] ${message}`, ...args);
 };
-
-log("Hi");
 
 function start(sqlite3: Sqlite3Static) {
   log('Running SQLite3 version', sqlite3.version.libVersion);
@@ -57,6 +77,8 @@ async function initializeSQLite() {
   }
 };
 
-initializeSQLite();
+if (typeof window === 'undefined' && typeof document === 'undefined') {
+  initializeSQLite();
+}
 
 export { type Database };

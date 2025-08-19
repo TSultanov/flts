@@ -1,7 +1,7 @@
 import type { Readable } from "svelte/store";
 import type { ModelId } from "../translators/translator";
 import { generateUID, type Entity, type UUID } from "../v2/db";
-import type { Database } from "./sqlWorker";
+import { dbUpdatesChannelName, type Database, type DbUpdateMessage } from "./sqlWorker";
 import type { EpubBook } from "../epubLoader";
 import { decode } from 'html-entities';
 
@@ -274,7 +274,15 @@ export function initSqlBookMessaging(worker: Worker) {
 // Worker-side Backend
 // -----------------------
 export class BookBackend {
-    constructor(private db: Database) { }
+    private updatesChannel: BroadcastChannel;
+
+    constructor(private db: Database) {
+        this.updatesChannel = new BroadcastChannel(dbUpdatesChannelName);
+    }
+
+    private sendUpdateMessage(message: DbUpdateMessage) {
+        this.updatesChannel.postMessage(message);
+    }
 
     private splitParagraphs(text: string): { text: string; html?: string }[] {
         return text
@@ -298,6 +306,11 @@ export class BookBackend {
                 sql: `INSERT INTO book(uid, path, title, chapterCount, paragraphCount, translatedParagraphsCount, createdAt, updatedAt) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)`,
                 bind: [bookUid, path, payload.title, chapterCount, paragraphCount, translatedParagraphsCount, now]
             });
+            this.sendUpdateMessage({
+                table: "book",
+                uid: bookUid,
+                action: 'insert',
+            });
 
             // Single implicit chapter index 0
             const chapterUid = generateUID();
@@ -305,12 +318,22 @@ export class BookBackend {
                 sql: `INSERT INTO book_chapter(uid, bookUid, chapterIndex, title, createdAt, updatedAt) VALUES(?1, ?2, ?3, ?4, ?5, ?5)`,
                 bind: [chapterUid, bookUid, 0, null, now]
             });
+            this.sendUpdateMessage({
+                table: "book_chapter",
+                uid: chapterUid,
+                action: 'insert',
+            });
 
             paragraphs.forEach((p, idx) => {
                 const paragraphUid = generateUID();
                 db.exec({
                     sql: `INSERT INTO book_chapter_paragraph(uid, chapterUid, paragraphIndex, originalText, originalHtml, createdAt, updatedAt) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?6)`,
                     bind: [paragraphUid, chapterUid, idx, p.text, p.html ?? null, now]
+                });
+                this.sendUpdateMessage({
+                    table: "book_chapter_paragraph",
+                    uid: paragraphUid,
+                    action: 'insert',
                 });
             });
         });
@@ -401,8 +424,8 @@ export class BookBackend {
             }
             sentenceIdx++;
         }
-            if (pIdx < originalText.length) {
-            ret.push({ text: originalText.slice(pIdx, originalText.length)});
+        if (pIdx < originalText.length) {
+            ret.push({ text: originalText.slice(pIdx, originalText.length) });
         }
 
         return ret;
@@ -429,6 +452,11 @@ export class BookBackend {
             if (existingTranslationUid) {
                 // Deleting parent cascades to sentences and words
                 db.exec({ sql: `DELETE FROM book_chapter_paragraph_translation WHERE uid=?1`, bind: [existingTranslationUid] });
+                this.sendUpdateMessage({
+                    table: "book_chapter_paragraph_translation",
+                    uid: existingTranslationUid,
+                    action: 'delete',
+                });
             }
 
             translationUid = generateUID();
@@ -436,12 +464,22 @@ export class BookBackend {
                 sql: `INSERT INTO book_chapter_paragraph_translation(uid, chapterParagraphUid, languageUid, translatingModel, createdAt, updatedAt) VALUES(?1, ?2, ?3, ?4, ?5, ?5)`,
                 bind: [translationUid, paragraphUid, languageUid, payload.translation.translatingModel, now]
             });
+            this.sendUpdateMessage({
+                table: "book_chapter_paragraph_translation",
+                uid: translationUid,
+                action: 'insert',
+            });
 
             payload.translation.sentences.forEach((sentence, sIdx) => {
                 const sentenceUid = generateUID();
                 db.exec({
                     sql: `INSERT INTO book_paragraph_translation_sentence(uid, paragraphTranslationUid, sentenceIndex, fullTranslation, createdAt, updatedAt) VALUES(?1, ?2, ?3, ?4, ?5, ?5)`,
                     bind: [sentenceUid, translationUid, sIdx, sentence.fullTranslation, now]
+                });
+                this.sendUpdateMessage({
+                    table: "book_paragraph_translation_sentence",
+                    uid: sentenceUid,
+                    action: 'insert',
                 });
                 sentence.words.forEach((word, wIdx) => {
                     const wordUid = generateUID();
@@ -464,6 +502,11 @@ export class BookBackend {
                             now
                         ]
                     });
+                    this.sendUpdateMessage({
+                        table: "book_paragraph_translation_sentence_word",
+                        uid: wordUid,
+                        action: 'insert',
+                    });
                 });
             });
 
@@ -475,7 +518,12 @@ export class BookBackend {
                     translationUid,
                     JSON.stringify(preparedDenormalizedTranslation),
                 ]
-            })
+            });
+            this.sendUpdateMessage({
+                table: "book_chapter_paragraph_translation",
+                uid: translationUid,
+                action: 'update',
+            });
 
             // Recompute translatedParagraphsCount for the parent book (distinct paragraphs having any translation)
             const bookUid = db.selectValue(
@@ -497,6 +545,11 @@ export class BookBackend {
                     sql: `UPDATE book SET translatedParagraphsCount=?2, updatedAt=?3 WHERE uid=?1`,
                     bind: [bookUid, translatedParagraphsCount ?? 0, now]
                 });
+                this.sendUpdateMessage({
+                    table: "book",
+                    uid: bookUid,
+                    action: 'update',
+                });
             }
         });
         return translationUid;
@@ -515,6 +568,11 @@ export class BookBackend {
             sql: `UPDATE book SET path=?2, updatedAt=?3 WHERE uid=?1`,
             bind: [bookUid, pathJson, now]
         });
+        this.sendUpdateMessage({
+            table: "book",
+            uid: bookUid,
+            action: 'update',
+        });
         return bookUid;
     }
 
@@ -523,6 +581,11 @@ export class BookBackend {
         const exists = this.db.selectValue("SELECT uid FROM book WHERE uid=?1 LIMIT 1", [bookUid]) as UUID | undefined;
         if (!exists) throw new Error('Book not found');
         this.db.exec({ sql: `DELETE FROM book WHERE uid=?1`, bind: [bookUid] });
+        this.sendUpdateMessage({
+            table: "book",
+            uid: bookUid,
+            action: 'delete',
+        });
         return bookUid;
     }
 
@@ -540,6 +603,11 @@ export class BookBackend {
                 sql: `INSERT INTO book(uid, path, title, chapterCount, paragraphCount, translatedParagraphsCount, createdAt, updatedAt) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)`,
                 bind: [bookUid, path, epub.title, chapterCount, paragraphCount, translatedParagraphsCount, now]
             });
+            this.sendUpdateMessage({
+                table: "book",
+                uid: bookUid,
+                action: 'insert',
+            });
 
             epub.chapters.forEach((chapter, chapterIndex) => {
                 const chapterUid = generateUID();
@@ -547,11 +615,21 @@ export class BookBackend {
                     sql: `INSERT INTO book_chapter(uid, bookUid, chapterIndex, title, createdAt, updatedAt) VALUES(?1, ?2, ?3, ?4, ?5, ?5)`,
                     bind: [chapterUid, bookUid, chapterIndex, chapter.title ?? null, now]
                 });
+                this.sendUpdateMessage({
+                    table: "book_chapter",
+                    uid: chapterUid,
+                    action: 'insert',
+                });
                 chapter.paragraphs.forEach((para, paragraphIndex) => {
                     const paragraphUid = generateUID();
                     db.exec({
                         sql: `INSERT INTO book_chapter_paragraph(uid, chapterUid, paragraphIndex, originalText, originalHtml, createdAt, updatedAt) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?6)`,
                         bind: [paragraphUid, chapterUid, paragraphIndex, para.text, para.html ?? null, now]
+                    });
+                    this.sendUpdateMessage({
+                        table: "book_chapter_paragraph",
+                        uid: paragraphUid,
+                        action: 'insert',
                     });
                 });
             });

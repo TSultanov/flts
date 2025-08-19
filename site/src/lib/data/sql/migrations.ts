@@ -1,4 +1,4 @@
-import { type Database } from "./sqlWorker";
+import { type Database, type TableName } from "./sqlWorker";
 
 const migrations = [
     { id: 1, callback: initialMigration },
@@ -50,7 +50,7 @@ function initialMigration(db: Database) {
     // Ensure foreign key enforcement
     db.exec(`PRAGMA foreign_keys = ON;`);
     {
-        const tableName = "language";
+        const tableName: TableName = "language";
         db.exec(`
             CREATE TABLE ${tableName} (
                 ${entityCommon}
@@ -63,7 +63,7 @@ function initialMigration(db: Database) {
         createCommonIndexes(db, tableName);
     }
     {
-        const tableName = "word";
+        const tableName: TableName = "word";
         db.exec(`
             CREATE TABLE ${tableName} (
                 ${entityCommon}
@@ -84,7 +84,7 @@ function initialMigration(db: Database) {
         createCommonIndexes(db, tableName);
     }
     {
-        const tableName = "word_translation";
+        const tableName: TableName = "word_translation";
         db.exec(`
             CREATE TABLE ${tableName} (
                 ${entityCommon}
@@ -113,7 +113,7 @@ function initialMigration(db: Database) {
 function createBookTables(db: Database) {
     // BOOK
     {
-        const tableName = "book";
+        const tableName: TableName = "book";
         db.exec(`
             CREATE TABLE IF NOT EXISTS ${tableName} (
                 ${entityCommon}
@@ -131,7 +131,7 @@ function createBookTables(db: Database) {
 
     // CHAPTER
     {
-        const tableName = "book_chapter";
+        const tableName: TableName = "book_chapter";
         db.exec(`
             CREATE TABLE IF NOT EXISTS ${tableName} (
                 ${entityCommon}
@@ -149,7 +149,7 @@ function createBookTables(db: Database) {
 
     // PARAGRAPH
     {
-        const tableName = "book_chapter_paragraph";
+        const tableName: TableName = "book_chapter_paragraph";
         db.exec(`
             CREATE TABLE IF NOT EXISTS ${tableName} (
                 ${entityCommon}
@@ -168,7 +168,7 @@ function createBookTables(db: Database) {
 
     // PARAGRAPH TRANSLATION (paragraph-level)
     {
-        const tableName = "book_chapter_paragraph_translation";
+        const tableName: TableName = "book_chapter_paragraph_translation";
         db.exec(`
             CREATE TABLE IF NOT EXISTS ${tableName} (
                 ${entityCommon}
@@ -186,7 +186,7 @@ function createBookTables(db: Database) {
         createCommonIndexes(db, tableName);
     }
     {
-        const tableName = "book_paragraph_translation_sentence";
+        const tableName: TableName = "book_paragraph_translation_sentence";
         db.exec(`
             CREATE TABLE IF NOT EXISTS ${tableName} (
                 ${entityCommon}
@@ -202,7 +202,7 @@ function createBookTables(db: Database) {
         createCommonIndexes(db, tableName);
     }
     {
-        const tableName = "book_paragraph_translation_sentence_word";
+        const tableName: TableName = "book_paragraph_translation_sentence_word";
         db.exec(`
             CREATE TABLE IF NOT EXISTS ${tableName} (
                 ${entityCommon}

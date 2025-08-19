@@ -1,5 +1,6 @@
 import type { Database } from "@sqlite.org/sqlite-wasm";
 import { generateUID, type UUID } from "../v2/db";
+import { dbUpdatesChannelName, type DbUpdateMessage, type TableName } from "./sqlWorker";
 
 // -----------------------
 // Messaging Types
@@ -103,7 +104,11 @@ export function initDictionaryMessaging(worker: Worker) {
 }
 
 export class DictionaryBackend {
-    constructor(private db: Database) { }
+    private updatesChannel: BroadcastChannel;
+
+    constructor(private db: Database) {
+        this.updatesChannel = new BroadcastChannel(dbUpdatesChannelName);
+    }
 
     // -----------------------
     // In-memory caches
@@ -114,6 +119,10 @@ export class DictionaryBackend {
     private wordCache = new Map<string, UUID>();
     // Key: translationLanguageUid|originalWordUid|lower(translation) -> translationUid
     private translationCache = new Map<string, UUID>();
+
+    private sendUpdateMessage(message: DbUpdateMessage) {
+        this.updatesChannel.postMessage(message);
+    }
 
     private getOrInsertLanguage(db: Database, code: string, proposedUid: UUID, now: number): UUID {
         const norm = code.trim().toLowerCase();
@@ -128,6 +137,11 @@ export class DictionaryBackend {
                 "INSERT INTO language(uid, code, createdAt, updatedAt) VALUES(?1, ?2, ?3, ?3)",
                 { bind: [proposedUid, code, now] }
             );
+            this.sendUpdateMessage({ // FIXME this implementation may cause read skew as the message might be sent
+                table: "language",   // before the transaction is committed.
+                uid: proposedUid,
+                action: 'insert',
+            });
             return proposedUid;
         })();
         this.languageCache.set(norm, uid);
@@ -148,6 +162,11 @@ export class DictionaryBackend {
                 "INSERT INTO word(uid, originalLanguageUid, original, createdAt, updatedAt) VALUES(?1, ?2, ?3, ?4, ?4)",
                 { bind: [proposedUid, languageUid, word, now] }
             );
+            this.sendUpdateMessage({
+                table: "word",
+                uid: proposedUid,
+                action: 'insert',
+            });
             return proposedUid;
         })();
         this.wordCache.set(key, uid);
@@ -181,6 +200,11 @@ export class DictionaryBackend {
                      VALUES(?1, ?2, ?3, ?4, ?5, ?5)`,
                 { bind: [proposedUid, translationLanguageUid, originalWordUid, translation, now] }
             );
+            this.sendUpdateMessage({
+                table: "word_translation",
+                uid: proposedUid,
+                action: 'insert',
+            });
             return proposedUid;
         })();
         this.translationCache.set(key, uid);
