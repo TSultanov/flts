@@ -4,7 +4,7 @@ This document contains design decisions and architectural guidelines for the FLT
 
 ## Project Overview
 
-FLTS is a language learning application built with Svelte 5, TypeScript, and Dexie.js (IndexedDB). It allows users to import books, organize them in folders, and translate text with word-level analysis.
+FLTS is a language learning application built with Svelte 5, TypeScript, and a client‑side SQLite (WASM) database. It allows users to import books, organize them in folders, and translate text with word-level analysis.
 
 ## Architecture Decisions
 
@@ -15,9 +15,10 @@ FLTS is a language learning application built with Svelte 5, TypeScript, and Dex
 - **pnpm**: Package manager for dependency management
 
 ### Data Layer
-- **Dexie.js**: IndexedDB wrapper for client-side data persistence
-- **Reactive Queries**: Using `liveQuery` from Dexie for reactive data binding
-- **Library Pattern**: Centralized data access through `Library` class in `library.svelte.ts`
+- **SQLite (WASM)**: Persistent structured storage using `@sqlite.org/sqlite-wasm`
+- **Abstraction Layer**: All SQL access consolidated in `src/lib/data/sql` (e.g. `book.ts`, `dictionary.ts`)
+- **Library Pattern**: Centralized higher-level data access via the `Library` class in `library.svelte.ts`
+- **Queue/Cache**: A minimal Dexie usage for translation queue & cache (`queueDb.ts`, `cache.ts`)
 
 ### Database Schema
 Books are organized in a hierarchical folder structure:
@@ -79,9 +80,11 @@ All buttons use a unified design system with these classes:
 - Global button styles, no component-specific button CSS
 
 ### Data Access
-- All database operations go through the `Library` class
-- Use reactive queries with `liveQuery` for real-time updates
-- Transaction-based operations for data consistency
+- All core content (books, chapters, paragraphs, sentences, words, translations) is stored in SQLite accessed through wrapper modules in `src/lib/data/sql/`
+- The `Library` class orchestrates higher-level operations (import, move, delete) without embedding raw SQL
+- Translation queue & cache still use Dexie temporarily; avoid adding new Dexie usage—prefer SQLite for new features
+- Plan for reactive layer: emit events after write operations; until then consumers should refetch when needed
+- Maintain transaction boundaries within SQL helper functions where consistency is required
 
 ## Key Implementation Details
 
@@ -104,11 +107,12 @@ All buttons use a unified design system with these classes:
 1. **Always use the unified button system** - don't create custom button styles
 2. **Follow the folder hierarchy pattern** - use `path` array for organization
 3. **Use confirmation dialogs** for all destructive actions
-4. **Maintain reactive data patterns** with `liveQuery`
-5. **Keep styles centralized** in `app.css` using CSS variables
-6. **Use Svelte 5 patterns** consistently (runes, snippets)
-7. **Type everything** - maintain strict TypeScript compliance
-8. **Use pnpm for package management** - run `pnpm install`, `pnpm add`, etc. instead of npm
+4. **Prefer SQLite for new persistence work** (do not introduce new Dexie stores)
+5. **Phase out legacy Dexie usage** (queue/cache) when practical, replacing with SQLite tables & batched queries
+6. **Keep styles centralized** in `app.css` using CSS variables
+7. **Use Svelte 5 patterns** consistently (runes, snippets)
+8. **Type everything** - maintain strict TypeScript compliance
+9. **Use pnpm for package management** - run `pnpm install`, `pnpm add`, etc. instead of npm
 
 ## Testing Setup & Guidelines
 
@@ -125,7 +129,8 @@ Configuration files: `vitest.config.ts`, `stryker.conf.json`, and test scripts i
 Run `pnpm test` (watch), `pnpm test:coverage`, `pnpm test:ui`, or `pnpm test:mutation`
 
 ### Testing Patterns
-- **Database Tests**: Mock Dexie.js module, reset database in `beforeEach`, test reactive queries with promise-based subscriptions (see `src/lib/__tests__/library.spec.ts`)
+- **SQLite Tests**: Initialize an in-memory / WASM database per test (or per suite) and apply migrations before exercising queries
+- **Legacy Dexie Tests**: Where queue/cache still rely on Dexie, continue to mock or use `fake-indexeddb` until migrated
 - **Component Tests**: Use jsdom, mock external dependencies, test props/events/reactive state
 - **Property-Based Tests**: Use fast-check for folder hierarchies and data transformations
 
@@ -136,12 +141,13 @@ Run `pnpm test` (watch), `pnpm test:coverage`, `pnpm test:ui`, or `pnpm test:mut
 
 ### Best Practices
 1. Mock external dependencies (config, APIs, file system)
-2. Test database operations in transactions for consistency
-3. Use descriptive test names explaining scenarios
-4. Test both happy paths and error conditions
-5. Verify reactive updates work with Svelte stores
+2. Apply and verify SQLite migrations before tests; reset DB state between tests
+3. Exercise transaction-bound operations to ensure atomicity (imports, cascading deletes)
+4. Use descriptive test names explaining scenarios
+5. Cover both happy paths and error conditions (missing UIDs, constraint violations)
 6. Test folder hierarchy operations thoroughly
 7. Validate button styling and component consistency
 8. Test confirmation dialog workflows for destructive actions
 9. Use property-based testing for complex data operations
 10. Maintain high mutation test scores for test quality
+11. Add tests for new SQLite query helpers (book / translation fetchers) as they are introduced
