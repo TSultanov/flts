@@ -24,7 +24,7 @@ export type Paragraph = Entity & {
     readonly originalHtml?: string,
 }
 
-type ParagraphTranslationShort = {
+export type ParagraphTranslationShort = {
     languageCode: string
     translationJson: TranslationDenormal[]
 }
@@ -42,15 +42,18 @@ export type BookParagraphTranslation = Entity & {
     readonly languageCode: string,
     readonly translatingModel: ModelId,
     readonly translationJson?: TranslationDenormal[]
-    readonly sentences: SentenceTranslation[],
+    readonly sentences?: SentenceTranslation[],
 }
 
 export type SentenceTranslation = Entity & {
+    readonly paragraphTranslationUid: UUID,
+    readonly translatingModel: ModelId,
     readonly fullTranslation: string,
-    readonly words: SentenceWordTranslation[],
+    readonly words?: SentenceWordTranslation[],
 }
 
 export type SentenceWordTranslation = Entity & {
+    readonly sentenceUid: UUID,
     readonly original: string,
     readonly isPunctuation: boolean,
     readonly isStandalonePunctuation?: boolean | null,
@@ -123,7 +126,8 @@ type BookRequest = {
     | 'getParagraphTranslation'
     | 'getParagraphTranslationShort'
     | 'getNotTranslatedParagraphsUids'
-    | 'getWordTranslation';
+    | 'getWordTranslation'
+    | 'getSentenceTranslation';
     payload: CreateBookFromTextBookRequestPayload
     | CreateBookFromEpubEpubRequestPayload
     | UpdateParagraphTranslationRequestPayload
@@ -133,6 +137,7 @@ type BookRequest = {
     | { paragraphUid: UUID }
     | { paragraphUid: UUID, languageUid: UUID }
     | { wordUid: UUID }
+    | { sentenceUid: UUID }
     | {};
 };
 
@@ -250,6 +255,10 @@ export class SqlBookWrapper {
     getWordTranslation(wordUid: UUID): Promise<SentenceWordTranslation | undefined> {
         return this.send('getWordTranslation', { wordUid });
     }
+
+    getSentenceTranslation(sentenceUid: UUID): Promise<SentenceTranslation | undefined> {
+        return this.send('getSentenceTranslation', { sentenceUid });
+    }
 }
 
 export const sqlBooks = new SqlBookWrapper();
@@ -347,9 +356,9 @@ export class BookBackend {
 
         let pIdx = 0;
         let sentenceIdx = 0;
-        for (const sentence of translation.sentences) {
+        for (const sentence of translation.sentences ?? []) {
             let wordIdx = 0;
-            for (const word of sentence.words) {
+            for (const word of sentence.words ?? []) {
                 if (word.isPunctuation) {
                     wordIdx++;
                     continue;
@@ -596,6 +605,9 @@ export class BookBackend {
                 } else if (action === 'getWordTranslation') {
                     const result = this.getWordTranslation(payload.wordUid as UUID);
                     port.postMessage({ id, result });
+                } else if (action === 'getSentenceTranslation') {
+                    const result = this.getSentenceTranslation(payload.sentenceUid as UUID);
+                    port.postMessage({ id, result });
                 }
             } catch (e: any) {
                 port.postMessage({ id, error: e?.message || 'Unknown error' });
@@ -708,10 +720,11 @@ export class BookBackend {
         // Collect sentences
         const sentences: SentenceTranslation[] = [];
         this.db.exec({
-            sql: `SELECT uid, sentenceIndex, fullTranslation, createdAt, updatedAt
-                  FROM book_paragraph_translation_sentence
-                  WHERE paragraphTranslationUid = ?1
-                  ORDER BY sentenceIndex ASC`,
+            sql: `SELECT s.uid, s.paragraphTranslationUid, s.sentenceIndex, s.fullTranslation, s.createdAt, s.updatedAt, p.translatingModel
+                  FROM book_paragraph_translation_sentence s
+                  JOIN book_chapter_paragraph_translation p
+                  WHERE s.paragraphTranslationUid = ?1
+                  ORDER BY s.sentenceIndex ASC`,
             bind: [translationUid],
             rowMode: 'object',
             callback: (row: any) => {
@@ -719,7 +732,9 @@ export class BookBackend {
                     uid: row.uid as UUID,
                     createdAt: row.createdAt as number,
                     updatedAt: row.updatedAt as number,
+                    paragraphTranslationUid: row.paragraphTranslationUid as UUID,
                     fullTranslation: row.fullTranslation as string,
+                    translatingModel: row.translatingModel as ModelId,
                     words: []
                 });
             }
@@ -749,11 +764,12 @@ export class BookBackend {
                 rowMode: 'object',
                 callback: (row: any) => {
                     const sentence = sentenceByUid.get(row.sentenceUid as UUID);
-                    if (!sentence) return;
+                    if (!sentence || !sentence.words) return;
                     const word: SentenceWordTranslation = {
                         uid: row.uid as UUID,
                         createdAt: row.createdAt as number,
                         updatedAt: row.updatedAt as number,
+                        sentenceUid: row.sentenceUid as UUID,
                         original: row.original as string,
                         isPunctuation: row.isPunctuation ? true : false,
                         isStandalonePunctuation: row.isStandalonePunctuation == null ? null : !!row.isStandalonePunctuation,
@@ -832,6 +848,7 @@ export class BookBackend {
             uid: r["uid"] as UUID,
             createdAt: r["createdAt"] as number,
             updatedAt: r["updatedAt"] as number,
+            sentenceUid: r["sentenceUid"] as UUID,
             original: r["original"] as string,
             isPunctuation: !!r["isPunctuation"],
             isStandalonePunctuation: r["isStandalonePunctuation"] == null ? null : !!r["isStandalonePunctuation"],
@@ -843,6 +860,27 @@ export class BookBackend {
             note: r["note"] as string | undefined,
         };
         return word;
+    }
+
+    getSentenceTranslation(sentenceUid: UUID): SentenceTranslation | undefined {
+        const r = this.db.selectObject(`
+            SELECT s.uid as uid, s.paragraphTranslationUid as paragraphTranslationUid,
+                   s.fullTranslation as fullTranslation, s.createdAt as createdAt, s.updatedAt as updatedAt, p.translatingModel
+            FROM book_paragraph_translation_sentence s
+            JOIN book_chapter_paragraph_translation p
+            WHERE s.uid = ?1
+            LIMIT 1
+        `, [sentenceUid]);
+        if (!r) return;
+        const sentence: SentenceTranslation = {
+            uid: r["uid"] as UUID,
+            paragraphTranslationUid: r["paragraphTranslationUid"] as UUID,
+            createdAt: r["createdAt"] as number,
+            updatedAt: r["updatedAt"] as number,
+            fullTranslation: r["fullTranslation"] as string,
+            translatingModel: r["translatingModel"] as ModelId,
+        };
+        return sentence;
     }
 }
 

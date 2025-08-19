@@ -1,16 +1,25 @@
 <script lang="ts">
-    import { sqlBooks } from "../data/sql/book";
+    import { onMount } from "svelte";
+    import { sqlBooks, type SentenceTranslation } from "../data/sql/book";
     import type { UUID } from "../data/v2/db";
 
     const { sentenceWordIdToDisplay }: { sentenceWordIdToDisplay: UUID } =
         $props();
 
-    const translationPromise = $derived(
+    const wordTranslationPromise = $derived(
         sqlBooks.getWordTranslation(sentenceWordIdToDisplay),
     );
+
+    let sentenceTranslationPromise = $derived.by(async () => {
+        const word = await wordTranslationPromise;
+        if (word) {
+            return sqlBooks.getSentenceTranslation(word.sentenceUid);
+        }
+        return null;
+    });
 </script>
 
-{#await translationPromise}
+{#await wordTranslationPromise}
     <p>Loading...</p>
 {:then word}
     {#if word}
@@ -104,13 +113,18 @@
                 </table>
             </details>
         {/if}
-        <!-- TODO fix displaying of full translation and model -->
-        <!-- {#if sentence}
-            <details>
-                <summary>Full sentence</summary>
-                <p>{sentence.fullTranslation}</p>
-            </details>
+        {#if sentenceTranslationPromise}
+            {#await sentenceTranslationPromise}
+                <p>Loading...</p>
+            {:then sentence}
+                {#if sentence}
+                    <details>
+                        <summary>Full sentence</summary>
+                        <p>{sentence.fullTranslation}</p>
+                    </details>
+                    <p>Translated by: {sentence.translatingModel}</p>
+                {/if}
+            {/await}
         {/if}
-        <p>Translated by: {$translation?.translatingModel}</p> -->
     {/if}
 {/await}

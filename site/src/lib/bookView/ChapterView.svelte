@@ -16,7 +16,8 @@
     function chapterClick(e: MouseEvent) {
         const target = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement;
         if (target && target.classList.contains("word-span")) {
-            sentenceWordIdToDisplay = target.dataset["paragraph"] as UUID;
+            const data = target.dataset["word"] as UUID;
+            sentenceWordIdToDisplay = data;
         } else {
             sentenceWordIdToDisplay = null;
         }
