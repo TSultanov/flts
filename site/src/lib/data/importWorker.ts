@@ -38,7 +38,6 @@ export async function checkAndScheduleUntranslatedParagraphs(allBooks: IBookMeta
                 continue;
             }
 
-
             const untranslatedParagraphs = await readableToPromise(sqlBooks.getNotTranslatedParagraphsUids(bookMeta.uid));
             if (!untranslatedParagraphs) {
                 continue;

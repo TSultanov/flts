@@ -37,7 +37,7 @@ export function readableToPromise<T>(store: Readable<T>): Promise<T | undefined>
         let count = 0;
 
         const resolver = (data: T | undefined) => {
-            if (data || count > 0) {
+            if (data && count > 0) {
                 setTimeout(() => {
                     unsubscriber();
                 })

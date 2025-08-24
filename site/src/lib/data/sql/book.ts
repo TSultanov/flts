@@ -236,11 +236,9 @@ export class SqlBookWrapper {
     private readable<T>(tables: TableName[], action: BookRequest['action']['type'], payload: BookRequest['action']['payload'], initial: T): Readable<T>;
     private readable<T>(tables: TableName[], action: BookRequest['action']['type'], payload: BookRequest['action']['payload'], initial?: T): Readable<T | undefined> | Readable<T> {
         return readable<T>(initial, (set) => {
-            const update = () => {
-                debounce(() => {
+            const update = debounce(() => {
                     this.send<T>(action, payload).then(res => set(res));
-                }, 50);
-            };
+            }, 50);
 
             update();
 
