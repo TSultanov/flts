@@ -113,6 +113,8 @@ export type CreateBookFromEpubMessage = {
     path?: string[];
 };
 
+// Requests which retrieve by a particular UUID must have
+// this UID passed in the payload in a field which ends with 'Uid'
 type BookRequestAction = {
     type: 'createBookFromText',
     payload: CreateBookFromTextBookRequestPayload,
@@ -234,14 +236,21 @@ export class SqlBookWrapper {
     private readable<T>(tables: TableName[], action: BookRequest['action']['type'], payload: BookRequest['action']['payload'], initial: T): Readable<T>;
     private readable<T>(tables: TableName[], action: BookRequest['action']['type'], payload: BookRequest['action']['payload'], initial?: T): Readable<T | undefined> | Readable<T> {
         return readable<T>(initial, (set) => {
+            const uidFieldsInPayload = Object.keys(payload).filter(n => n.endsWith("Uid"));
+            const uidValuesInPayload = uidFieldsInPayload.map(f => (payload as any)[f] as UUID);
+            
             const update = () => {
                 this.send<T>(action, payload).then(res => set(res));
             };
 
             update();
 
-            const listener = (ev: MessageEvent<DbUpdateMessage>) => {
+            const listener = uidFieldsInPayload.length == 0 ? (ev: MessageEvent<DbUpdateMessage>) => {
                 if (tables.includes(ev.data.table)) {
+                    update();
+                }
+            } : (ev: MessageEvent<DbUpdateMessage>) => {
+                if (tables.includes(ev.data.table) && uidValuesInPayload.includes(ev.data.uid)) {
                     update();
                 }
             };
