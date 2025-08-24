@@ -113,34 +113,54 @@ export type CreateBookFromEpubMessage = {
     path?: string[];
 };
 
-type BookRequest = {
-    id: number;
-    action: 'createBookFromText'
-    | 'createBookFromEpub'
-    | 'updateParagraphTranslation'
-    | 'updateBookPath'
-    | 'deleteBook'
-    | 'listBooks'
-    | 'getBookChapters'
-    | 'getParagraphs'
-    | 'getParagraph'
-    | 'getParagraphTranslation'
-    | 'getParagraphTranslationShort'
-    | 'getNotTranslatedParagraphsUids'
-    | 'getWordTranslation'
-    | 'getSentenceTranslation';
-    payload: CreateBookFromTextBookRequestPayload
-    | CreateBookFromEpubEpubRequestPayload
-    | UpdateParagraphTranslationRequestPayload
-    | UpdateBookPathRequestPayload
-    | { bookUid: UUID }
-    | { chapterUid: UUID }
-    | { paragraphUid: UUID }
-    | { paragraphUid: UUID, languageUid: UUID }
-    | { wordUid: UUID }
-    | { sentenceUid: UUID }
-    | {};
+type BookRequestAction = {
+    type: 'createBookFromText',
+    payload: CreateBookFromTextBookRequestPayload,
+} | {
+    type: 'createBookFromEpub',
+    payload: CreateBookFromEpubEpubRequestPayload,
+} | {
+    type: 'updateParagraphTranslation',
+    payload: UpdateParagraphTranslationRequestPayload,
+} | {
+    type: 'updateBookPath', 
+    payload: UpdateBookPathRequestPayload,
+} | {
+    type: 'deleteBook',
+    payload: { bookUid: UUID },
+} | {
+    type: 'listBooks',
+    payload: {},
+} | {
+    type: 'getBookChapters',
+    payload: { bookUid: UUID },
+} | {
+    type: 'getParagraphs',
+    payload: { chapterUid: UUID },
+} | {
+    type: 'getParagraph',
+    payload: { paragraphUid: UUID }
+} | {
+    type: 'getParagraphTranslation',
+    payload: { paragraphUid: UUID, languageUid: UUID },
+} | {
+    type: 'getParagraphTranslationShort',
+    payload: { paragraphUid: UUID, languageUid: UUID },
+} | {
+    type: 'getNotTranslatedParagraphsUids',
+    payload: { bookUid: UUID },
+} | {
+    type: 'getWordTranslation',
+    payload: { wordUid: UUID },
+} | {
+    type: 'getSentenceTranslation',
+    payload: { sentenceUid: UUID },
 };
+
+type BookRequest = {
+    id: number,
+    action: BookRequestAction,
+}
 
 type CreateBookFromTextBookRequestPayload = CreateBookFromTextMessage;
 type CreateBookFromEpubEpubRequestPayload = CreateBookFromEpubMessage;
@@ -195,10 +215,10 @@ export class SqlBookWrapper {
         return this.port;
     }
 
-    private async send<TRet>(action: BookRequest['action'], payload: BookRequest['payload']): Promise<TRet> {
+    private async send<TRet>(action: BookRequest['action']['type'], payload: BookRequest['action']['payload']): Promise<TRet> {
         const port = await this.ensurePort();
         const id = ++this.requestId;
-        const req: BookRequest = { id, action, payload } as BookRequest;
+        const req: BookRequest = { id, action: { type: action, payload }} as BookRequest;
         return new Promise<TRet>((resolve, reject) => {
             this.pending.set(id, { resolve, reject });
             try {
@@ -210,9 +230,9 @@ export class SqlBookWrapper {
         });
     }
 
-    private readable<T>(tables: TableName[], action: BookRequest['action'], payload: BookRequest['payload']): Readable<T | undefined>;
-    private readable<T>(tables: TableName[], action: BookRequest['action'], payload: BookRequest['payload'], initial: T): Readable<T>;
-    private readable<T>(tables: TableName[], action: BookRequest['action'], payload: BookRequest['payload'], initial?: T): Readable<T | undefined> | Readable<T> {
+    private readable<T>(tables: TableName[], action: BookRequest['action']['type'], payload: BookRequest['action']['payload']): Readable<T | undefined>;
+    private readable<T>(tables: TableName[], action: BookRequest['action']['type'], payload: BookRequest['action']['payload'], initial: T): Readable<T>;
+    private readable<T>(tables: TableName[], action: BookRequest['action']['type'], payload: BookRequest['action']['payload'], initial?: T): Readable<T | undefined> | Readable<T> {
         return readable<T>(initial, (set) => {
             const update = () => {
                 this.send<T>(action, payload).then(res => set(res));
@@ -674,46 +694,46 @@ export class BookBackend {
             const { id, action, payload } = msg as { id: number; action: BookRequest['action']; payload: any };
             if (typeof id !== 'number') return;
             try {
-                if (action === 'createBookFromText') {
+                if (action.type === 'createBookFromText') {
                     const result = this.createBookFromText(payload as CreateBookFromTextMessage);
                     port.postMessage({ id, result });
-                } else if (action === 'createBookFromEpub') {
+                } else if (action.type === 'createBookFromEpub') {
                     const result = this.createBookFromEpub(payload as CreateBookFromEpubMessage);
                     port.postMessage({ id, result });
-                } else if (action === 'updateParagraphTranslation') {
+                } else if (action.type === 'updateParagraphTranslation') {
                     const result = this.updateParagraphTranslation(payload as UpdateParagraphTranslationMessage);
                     port.postMessage({ id, result });
-                } else if (action === 'updateBookPath') {
+                } else if (action.type === 'updateBookPath') {
                     const result = this.updateBookPath(payload as UpdateBookPathMessage);
                     port.postMessage({ id, result });
-                } else if (action === 'deleteBook') {
+                } else if (action.type === 'deleteBook') {
                     const result = this.deleteBook(payload.bookUid as UUID);
                     port.postMessage({ id, result });
-                } else if (action === 'listBooks') {
+                } else if (action.type === 'listBooks') {
                     const result = this.listBooks();
                     port.postMessage({ id, result });
-                } else if (action === 'getBookChapters') {
+                } else if (action.type === 'getBookChapters') {
                     const result = this.getBookChapters(payload.bookUid as UUID);
                     port.postMessage({ id, result });
-                } else if (action === 'getParagraphs') {
+                } else if (action.type === 'getParagraphs') {
                     const result = this.getParagraphs(payload.chapterUid as UUID);
                     port.postMessage({ id, result });
-                } else if (action === 'getParagraph') {
+                } else if (action.type === 'getParagraph') {
                     const result = this.getParagraph(payload.paragraphUid as UUID);
                     port.postMessage({ id, result });
-                } else if (action === 'getParagraphTranslation') {
+                } else if (action.type === 'getParagraphTranslation') {
                     const result = this.getParagraphTranslation(payload.paragraphUid as UUID, payload.languageUid as UUID);
                     port.postMessage({ id, result });
-                } else if (action === 'getParagraphTranslationShort') {
+                } else if (action.type === 'getParagraphTranslationShort') {
                     const result = this.getParagraphTranslationShort(payload.paragraphUid as UUID, payload.languageUid as UUID);
                     port.postMessage({ id, result });
-                } else if (action === 'getNotTranslatedParagraphsUids') {
+                } else if (action.type === 'getNotTranslatedParagraphsUids') {
                     const result = this.getNotTranslatedParagraphsUids(payload.bookUid as UUID);
                     port.postMessage({ id, result });
-                } else if (action === 'getWordTranslation') {
+                } else if (action.type === 'getWordTranslation') {
                     const result = this.getWordTranslation(payload.wordUid as UUID);
                     port.postMessage({ id, result });
-                } else if (action === 'getSentenceTranslation') {
+                } else if (action.type === 'getSentenceTranslation') {
                     const result = this.getSentenceTranslation(payload.sentenceUid as UUID);
                     port.postMessage({ id, result });
                 }
