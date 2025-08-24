@@ -11,7 +11,7 @@
         sentenceWordIdToDisplay: UUID | null;
     } = $props();
 
-    const paragraphsPromise = $derived(sqlBooks.getParagraphs(chapterId));
+    const paragraphs = sqlBooks.getParagraphs(chapterId);
 
     function chapterClick(e: MouseEvent) {
         const target = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement;
@@ -35,13 +35,9 @@
             style="column-width: {sectionContentWidth}px"
             bind:clientHeight={sectionContentWidth}
         >
-            {#await paragraphsPromise}
-                <p>Loading...</p>
-            {:then paragraphs}
-                {#each paragraphs as paragraph}
-                    <ParagraphView {paragraph} {sentenceWordIdToDisplay} />
-                {/each}
-            {/await}
+            {#each $paragraphs as paragraph}
+                <ParagraphView {paragraph} {sentenceWordIdToDisplay} />
+            {/each}
         </div>
     </section>
 </div>

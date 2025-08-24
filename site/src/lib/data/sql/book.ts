@@ -4,7 +4,7 @@ import { generateUID, type Entity, type UUID } from "../v2/db";
 import { type StrictBroadcastChannel, type Database, type DbUpdateMessage, type TableName } from "./sqlWorker";
 import type { EpubBook } from "../epubLoader";
 import { decode } from 'html-entities';
-import { dbUpdatesChannelName } from "./utils";
+import { dbUpdatesChannelName, debounce } from "./utils";
 
 type BookData = {
     path: string[];
@@ -236,21 +236,16 @@ export class SqlBookWrapper {
     private readable<T>(tables: TableName[], action: BookRequest['action']['type'], payload: BookRequest['action']['payload'], initial: T): Readable<T>;
     private readable<T>(tables: TableName[], action: BookRequest['action']['type'], payload: BookRequest['action']['payload'], initial?: T): Readable<T | undefined> | Readable<T> {
         return readable<T>(initial, (set) => {
-            const uidFieldsInPayload = Object.keys(payload).filter(n => n.endsWith("Uid"));
-            const uidValuesInPayload = uidFieldsInPayload.map(f => (payload as any)[f] as UUID);
-            
             const update = () => {
-                this.send<T>(action, payload).then(res => set(res));
+                debounce(() => {
+                    this.send<T>(action, payload).then(res => set(res));
+                }, 50);
             };
 
             update();
 
-            const listener = uidFieldsInPayload.length == 0 ? (ev: MessageEvent<DbUpdateMessage>) => {
+            const listener = (ev: MessageEvent<DbUpdateMessage>) => {
                 if (tables.includes(ev.data.table)) {
-                    update();
-                }
-            } : (ev: MessageEvent<DbUpdateMessage>) => {
-                if (tables.includes(ev.data.table) && uidValuesInPayload.includes(ev.data.uid)) {
                     update();
                 }
             };
@@ -287,36 +282,36 @@ export class SqlBookWrapper {
         return this.readable<IBookMeta[]>(['book'], 'listBooks', {}, []);
     }
 
-    getBookChapters(bookUid: UUID): Promise<BookChapter[]> {
-        return this.send('getBookChapters', { bookUid });
+    getBookChapters(bookUid: UUID): Readable<BookChapter[]> {
+        return this.readable(['book_chapter'], 'getBookChapters', { bookUid }, []);
     }
 
-    getParagraphs(chapterUid: UUID): Promise<Paragraph[]> {
-        return this.send('getParagraphs', { chapterUid });
+    getParagraphs(chapterUid: UUID): Readable<Paragraph[]> {
+        return this.readable(['book_chapter_paragraph'], 'getParagraphs', { chapterUid }, []);
     }
 
-    getParagraph(paragraphUid: UUID): Promise<Paragraph | undefined> {
-        return this.send('getParagraph', { paragraphUid });
+    getParagraph(paragraphUid: UUID): Readable<Paragraph | undefined> {
+        return this.readable(['book_chapter_paragraph'], 'getParagraph', { paragraphUid });
     }
 
-    getParagraphTranslation(paragraphUid: UUID, languageUid: UUID): Promise<BookParagraphTranslation | undefined> {
-        return this.send('getParagraphTranslation', { paragraphUid, languageUid });
+    getParagraphTranslation(paragraphUid: UUID, languageUid: UUID): Readable<BookParagraphTranslation | undefined> {
+        return this.readable(['book_chapter_paragraph_translation', 'language'], 'getParagraphTranslation', { paragraphUid, languageUid });
     }
 
-    getParagraphTranslationShort(paragraphUid: UUID, languageUid: UUID): Promise<ParagraphTranslationShort | undefined> {
-        return this.send('getParagraphTranslationShort', { paragraphUid, languageUid });
+    getParagraphTranslationShort(paragraphUid: UUID, languageUid: UUID): Readable<ParagraphTranslationShort | undefined> {
+        return this.readable(['book_chapter_paragraph_translation', 'language'], 'getParagraphTranslationShort', { paragraphUid, languageUid });
     }
 
-    getNotTranslatedParagraphsUids(bookUid: UUID): Promise<UUID[]> {
-        return this.send('getNotTranslatedParagraphsUids', { bookUid });
+    getNotTranslatedParagraphsUids(bookUid: UUID): Readable<UUID[]> {
+        return this.readable(['book_chapter_paragraph', 'book_chapter'], 'getNotTranslatedParagraphsUids', { bookUid }, []);
     }
 
-    getWordTranslation(wordUid: UUID): Promise<SentenceWordTranslation | undefined> {
-        return this.send('getWordTranslation', { wordUid });
+    getWordTranslation(wordUid: UUID): Readable<SentenceWordTranslation | undefined> {
+        return this.readable(['book_paragraph_translation_sentence_word'], 'getWordTranslation', { wordUid });
     }
 
-    getSentenceTranslation(sentenceUid: UUID): Promise<SentenceTranslation | undefined> {
-        return this.send('getSentenceTranslation', { sentenceUid });
+    getSentenceTranslation(sentenceUid: UUID): Readable<SentenceTranslation | undefined> {
+        return this.readable(['book_paragraph_translation_sentence', 'book_chapter_paragraph_translation'], 'getSentenceTranslation', { sentenceUid });
     }
 }
 

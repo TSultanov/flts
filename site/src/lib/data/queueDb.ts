@@ -42,19 +42,6 @@ export const translationQueue = {
         });
     },
 
-    scheduleFullBookTranslation: async (bookUid: UUID) => {
-        const config = await getConfig();
-        const untranslatedParagraphs = await sqlBooks.getNotTranslatedParagraphsUids(bookUid);
-
-        for (const p of untranslatedParagraphs) {
-            await queueDb.directTranslationRequests.add({
-                bookUid,
-                paragraphUid: p,
-                model: config.model,
-            });
-        }
-    },
-
     hasRequest: async (bookUid: UUID, paragraphUid: UUID) => {
         return await queueDb.directTranslationRequests
             .where("bookUid").equals("bookUid")

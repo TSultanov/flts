@@ -6,6 +6,7 @@ import { getTranslator, type ModelId, type ParagraphTranslation } from "./transl
 import { dictionary } from "./sql/dictionary"
 import { sqlBooks, type IBookMeta, type UpdateParagraphTranslationMessageSentence, type UpdateParagraphTranslationMessageTranslation } from "./sql/book";
 import type { UUID } from "./v2/db";
+import { readableToPromise } from "./sql/utils";
 
 const limit = 1;
 
@@ -38,7 +39,10 @@ export async function checkAndScheduleUntranslatedParagraphs(allBooks: IBookMeta
             }
 
 
-            const untranslatedParagraphs = await sqlBooks.getNotTranslatedParagraphsUids(bookMeta.uid);
+            const untranslatedParagraphs = await readableToPromise(sqlBooks.getNotTranslatedParagraphsUids(bookMeta.uid));
+            if (!untranslatedParagraphs) {
+                continue;
+            }
             for (const p of untranslatedParagraphs) {
                 if (await translationQueue.hasRequest(bookMeta.uid, p)) continue;
                 await translationQueue.scheduleTranslation(bookMeta.uid, p);
@@ -114,7 +118,7 @@ async function handleTranslationEvent(translationRequest: TranslationRequest) {
     // Get paragraph from database
     stepStartTime = performance.now();
 
-    const paragraph = await sqlBooks.getParagraph(translationRequest.paragraphUid);
+    const paragraph = await readableToPromise(sqlBooks.getParagraph(translationRequest.paragraphUid));
     if (!paragraph) {
         console.log(`Worker: paragraph with UID ${translationRequest.paragraphUid} does not exist`);
         await translationQueue.removeRequest(translationRequest.id);

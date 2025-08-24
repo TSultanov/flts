@@ -18,46 +18,31 @@
     const originalText = $derived(
         paragraph.originalHtml ?? paragraph.originalText,
     );
-    const translationPromise = $derived(
-        sqlBooks.getParagraphTranslationShort(
-            paragraph.uid,
-            "ignoredTODO" as UUID,
-        ),
-    );
-
-    $inspect(translationPromise);
-
-    let translation: ParagraphTranslationShort | null = $state(null);
+    const translation = sqlBooks.getParagraphTranslationShort(paragraph.uid, "ignoredTODO" as UUID);
 
     const translationHtml = $derived.by(() => {
         if (translation) {
             const result = [];
 
-            for (const w of translation.translationJson) {
-                if (w.meta) {
-                    const additionalClass =
-                        w.meta.wordTranslationUid === sentenceWordIdToDisplay
-                            ? "selected"
-                            : "";
-                    result.push(
-                        `<span class="word-span ${additionalClass}" data-paragraph="${paragraph.uid}" data-sentence="${w.meta.sentenceTranslationUid}" data-word="${w.meta.wordTranslationUid}">${w.text}</span>`,
-                    );
-                } else {
-                    result.push(w.text);
+            if ($translation) {
+                for (const w of $translation.translationJson) {
+                    if (w.meta) {
+                        const additionalClass =
+                            w.meta.wordTranslationUid === sentenceWordIdToDisplay
+                                ? "selected"
+                                : "";
+                        result.push(
+                            `<span class="word-span ${additionalClass}" data-paragraph="${paragraph.uid}" data-sentence="${w.meta.sentenceTranslationUid}" data-word="${w.meta.wordTranslationUid}">${w.text}</span>`,
+                        );
+                    } else {
+                        result.push(w.text);
+                    }
                 }
             }
             return result.join("");
         }
 
         return null;
-    });
-
-    onMount(() => {
-        translationPromise.then((t) => {
-            if (t && t.translationJson) {
-                translation = t;
-            }
-        });
     });
 </script>
 
