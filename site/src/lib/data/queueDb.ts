@@ -3,6 +3,7 @@ import type { ModelId } from "./translators/translator";
 import type { UUID } from "./v2/db";
 import { getConfig } from "../config";
 import { sqlBooks } from "./sql/book";
+import { readableToPromise } from "./sql/utils";
 
 export interface TranslationRequest {
     id: number,
@@ -40,6 +41,21 @@ export const translationQueue = {
             paragraphUid,
             model: config.model,
         });
+    },
+
+    scheduleFullBookTranslation: async (bookUid: UUID) => {
+        const config = await getConfig();
+        const untranslatedParagraphs = await readableToPromise(sqlBooks.getNotTranslatedParagraphsUids(bookUid));
+
+        if (untranslatedParagraphs) {
+            for (const p of untranslatedParagraphs) {
+                await queueDb.directTranslationRequests.add({
+                    bookUid,
+                    paragraphUid: p,
+                    model: config.model,
+                });
+            }
+        }
     },
 
     hasRequest: async (bookUid: UUID, paragraphUid: UUID) => {

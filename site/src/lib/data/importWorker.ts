@@ -19,7 +19,7 @@ const translationSavingQueue = new Bottleneck({
 });
 
 // Function to check all paragraphs and schedule translation for untranslated ones
-export async function checkAndScheduleUntranslatedParagraphs(allBooks: IBookMeta[]) {
+export async function checkAndScheduleUntranslatedParagraphs() {
     try {
         console.log('Worker: Checking for untranslated paragraphs...');
 
@@ -33,19 +33,23 @@ export async function checkAndScheduleUntranslatedParagraphs(allBooks: IBookMeta
 
         let untranslatedCount = 0;
 
-        for (const bookMeta of allBooks) {
-            if (bookMeta.translationRatio >= 1.0) {
-                continue;
-            }
+        const allBooks = await readableToPromise(sqlBooks.listBooks());
 
-            const untranslatedParagraphs = await readableToPromise(sqlBooks.getNotTranslatedParagraphsUids(bookMeta.uid));
-            if (!untranslatedParagraphs) {
-                continue;
-            }
-            for (const p of untranslatedParagraphs) {
-                if (await translationQueue.hasRequest(bookMeta.uid, p)) continue;
-                await translationQueue.scheduleTranslation(bookMeta.uid, p);
-                untranslatedCount++;
+        if (allBooks) {
+            for (const bookMeta of allBooks) {
+                if (bookMeta.translationRatio >= 1.0) {
+                    continue;
+                }
+
+                const untranslatedParagraphs = await readableToPromise(sqlBooks.getNotTranslatedParagraphsUids(bookMeta.uid));
+                if (!untranslatedParagraphs) {
+                    continue;
+                }
+                for (const p of untranslatedParagraphs) {
+                    if (await translationQueue.hasRequest(bookMeta.uid, p)) continue;
+                    await translationQueue.scheduleTranslation(bookMeta.uid, p);
+                    untranslatedCount++;
+                }
             }
         }
 
@@ -61,9 +65,7 @@ export async function checkAndScheduleUntranslatedParagraphs(allBooks: IBookMeta
 }
 
 export async function startTranslations() {
-    sqlBooks.listBooks().subscribe(books => {
-        checkAndScheduleUntranslatedParagraphs(books);
-    });
+    checkAndScheduleUntranslatedParagraphs();
 
     const translationRequestBag: Set<number> = new Set();
     const directTranslationRequestsQuery = liveQuery(async () => await translationQueue.top(limit));

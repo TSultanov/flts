@@ -53,17 +53,19 @@ export class Library {
         })
     }
 
-    importEpub(book: EpubBook) {
-        return sqlBooks.createFromEpub({
+    async importEpub(book: EpubBook) {
+        const uid = await sqlBooks.createFromEpub({
             epub: book
         });
+        translationQueue.scheduleFullBookTranslation(uid)
     }
 
     async importText(title: string, text: string) {
-        return sqlBooks.createFromText({
+        const uid = await sqlBooks.createFromText({
             title,
             text
         });
+        translationQueue.scheduleFullBookTranslation(uid);
     }
 
     private async cleanupTranslationRequests(bookUid: UUID): Promise<void> {
@@ -71,8 +73,11 @@ export class Library {
     }
 
     async deleteBook(bookUid: UUID) {
+        console.log(`starting book deletion ${bookUid}`)
         await this.cleanupTranslationRequests(bookUid);
+        console.log(`cleaned up translation requests ${bookUid}`)
         await sqlBooks.deleteBook(bookUid);
+        console.log(`deleted book ${bookUid}`)
     }
 
     async moveBook(bookUid: UUID, newPath: string[]) {
