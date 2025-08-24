@@ -1,7 +1,7 @@
-import { readable, type Readable } from 'svelte/store';
-import type { EpubBook } from "../data/epubLoader";
-import type { UUID } from "../data/v2/db";
-import { translationQueue } from "../data/queueDb";
+import { derived, readable, type Readable } from 'svelte/store';
+import type { EpubBook } from "./epubLoader";
+import type { UUID } from "./v2/db";
+import { translationQueue } from "./queueDb";
 import { sqlBooks, type IBookMeta } from "./sql/book";
 
 export type LibraryFolder = {
@@ -12,13 +12,16 @@ export type LibraryFolder = {
 
 export class Library {
     getLibraryBooks(): Readable<LibraryFolder> {
-        return this.useQuery(async () => {
-            const allBooks = await sqlBooks.listBooks();
-
+        const booksStore = sqlBooks.listBooks();
+        return derived([booksStore], (allBooks) => {
             const root: LibraryFolder = {
                 folders: [],
                 books: []
             };
+
+            if (!allBooks || !allBooks[0]) {
+                return root;
+            }
 
             const getOrCreateFolder = (path: string[]): LibraryFolder => {
                 if (path.length === 0) {
@@ -41,7 +44,7 @@ export class Library {
                 return current;
             };
 
-            for (const book of allBooks) {
+            for (const book of allBooks[0]) {
                 const targetFolder = getOrCreateFolder(book.path || []);
                 targetFolder.books.push(book);
             }
@@ -85,12 +88,5 @@ export class Library {
 
     async moveBooksInBatch(bookUids: UUID[], newPath: string[]) {
         await Promise.all(bookUids.map(u => this.moveBook(u, newPath)));
-    }
-
-    private useQuery<T>(querier: () => Promise<T>): Readable<T> {
-        return readable<T>(undefined, (set) => {
-            querier().then(res => set(res));
-            // TODO: broadcast DB changes and update readable stores
-        })
     }
 }

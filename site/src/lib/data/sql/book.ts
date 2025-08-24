@@ -1,9 +1,10 @@
-import type { Readable } from "svelte/store";
+import { readable, type Readable } from "svelte/store";
 import type { ModelId } from "../translators/translator";
 import { generateUID, type Entity, type UUID } from "../v2/db";
-import { dbUpdatesChannelName, type Database, type DbUpdateMessage } from "./sqlWorker";
+import { type StrictBroadcastChannel, type Database, type DbUpdateMessage, type TableName } from "./sqlWorker";
 import type { EpubBook } from "../epubLoader";
 import { decode } from 'html-entities';
+import { dbUpdatesChannelName } from "./utils";
 
 type BookData = {
     path: string[];
@@ -157,6 +158,11 @@ export class SqlBookWrapper {
     private port?: MessagePort;
     private requestId = 0;
     private pending = new Map<number, { resolve: (v: any) => void; reject: (e: any) => void }>();
+    private updatesChannel: StrictBroadcastChannel<DbUpdateMessage>;
+
+    constructor() {
+        this.updatesChannel = new BroadcastChannel(dbUpdatesChannelName);
+    }
 
     attachPort(port: MessagePort) {
         if (this.port) return; // only attach once
@@ -189,7 +195,7 @@ export class SqlBookWrapper {
         return this.port;
     }
 
-    private async send<TRet>(action: BookRequest['action'], payload: any): Promise<TRet> {
+    private async send<TRet>(action: BookRequest['action'], payload: BookRequest['payload']): Promise<TRet> {
         const port = await this.ensurePort();
         const id = ++this.requestId;
         const req: BookRequest = { id, action, payload } as BookRequest;
@@ -200,6 +206,28 @@ export class SqlBookWrapper {
             } catch (err) {
                 this.pending.delete(id);
                 reject(err);
+            }
+        });
+    }
+
+    private readable<T>(tables: TableName[], action: BookRequest['action'], payload: BookRequest['payload']): Readable<T> {
+        return readable<T>(undefined, (set) => {
+            const update = () => {
+                this.send<T>(action, payload).then(res => set(res));
+            };
+
+            update();
+
+            const listener = (ev: MessageEvent<DbUpdateMessage>) => {
+                if (tables.includes(ev.data.table)) {
+                    update();
+                }
+            };
+
+            this.updatesChannel.addEventListener("message", listener);
+
+            return () => {
+                this.updatesChannel.removeEventListener("message", listener);
             }
         });
     }
@@ -224,8 +252,8 @@ export class SqlBookWrapper {
         return this.send('deleteBook', { bookUid });
     }
 
-    listBooks(): Promise<IBookMeta[]> {
-        return this.send('listBooks', {});
+    listBooks(): Readable<IBookMeta[]> {
+        return this.readable(['book'], 'listBooks', {});
     }
 
     getBookChapters(bookUid: UUID): Promise<BookChapter[]> {
@@ -274,7 +302,7 @@ export function initSqlBookMessaging(worker: Worker) {
 // Worker-side Backend
 // -----------------------
 export class BookBackend {
-    private updatesChannel: BroadcastChannel;
+    private updatesChannel: StrictBroadcastChannel<DbUpdateMessage>;
 
     constructor(private db: Database) {
         this.updatesChannel = new BroadcastChannel(dbUpdatesChannelName);

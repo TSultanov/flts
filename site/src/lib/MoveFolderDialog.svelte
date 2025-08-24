@@ -1,5 +1,5 @@
 <script lang="ts">
-    import type { LibraryFolder } from "./data/library.svelte";
+    import type { LibraryFolder } from "./data/library";
     import CreateFolderDialog from "./CreateFolderDialog.svelte";
 
     let { 

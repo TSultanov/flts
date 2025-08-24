@@ -4,8 +4,9 @@ import Bottleneck from 'bottleneck';
 import { liveQuery } from "dexie";
 import { getTranslator, type ModelId, type ParagraphTranslation } from "./translators/translator";
 import { dictionary } from "./sql/dictionary"
-import { sqlBooks, type UpdateParagraphTranslationMessageSentence, type UpdateParagraphTranslationMessageTranslation } from "./sql/book";
+import { sqlBooks, type IBookMeta, type UpdateParagraphTranslationMessageSentence, type UpdateParagraphTranslationMessageTranslation } from "./sql/book";
 import type { UUID } from "./v2/db";
+import { fromStore, type Unsubscriber } from "svelte/store";
 
 const limit = 1;
 
@@ -30,7 +31,21 @@ export async function checkAndScheduleUntranslatedParagraphs() {
             return;
         }
 
-        const allBooks = await sqlBooks.listBooks();
+
+        const allBooks = await new Promise<IBookMeta[]>(resolve => {
+            let unsubscriber: Unsubscriber;
+
+            const resolver = (data: IBookMeta[] | undefined) => {
+                if (data) {
+                    setTimeout(() => {
+                        unsubscriber();
+                    })
+                    resolve(data);
+                }
+            }
+
+            unsubscriber = sqlBooks.listBooks().subscribe(data => resolver(data));
+        })
 
         let untranslatedCount = 0;
 

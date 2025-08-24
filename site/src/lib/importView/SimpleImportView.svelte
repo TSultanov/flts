@@ -1,6 +1,6 @@
 <script lang="ts">
     import { getContext } from "svelte";
-    import { Library } from "../data/library.svelte";
+    import { Library } from "../data/library";
     import { goto } from "@mateothegreat/svelte5-router";
 
     let title = $state("");
