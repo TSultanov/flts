@@ -210,8 +210,10 @@ export class SqlBookWrapper {
         });
     }
 
-    private readable<T>(tables: TableName[], action: BookRequest['action'], payload: BookRequest['payload']): Readable<T> {
-        return readable<T>(undefined, (set) => {
+    private readable<T>(tables: TableName[], action: BookRequest['action'], payload: BookRequest['payload']): Readable<T | undefined>;
+    private readable<T>(tables: TableName[], action: BookRequest['action'], payload: BookRequest['payload'], initial: T): Readable<T>;
+    private readable<T>(tables: TableName[], action: BookRequest['action'], payload: BookRequest['payload'], initial?: T): Readable<T | undefined> | Readable<T> {
+        return readable<T>(initial, (set) => {
             const update = () => {
                 this.send<T>(action, payload).then(res => set(res));
             };
@@ -229,7 +231,7 @@ export class SqlBookWrapper {
             return () => {
                 this.updatesChannel.removeEventListener("message", listener);
             }
-        });
+    });
     }
 
     createFromText(message: CreateBookFromTextMessage): Promise<UUID> {
@@ -253,7 +255,7 @@ export class SqlBookWrapper {
     }
 
     listBooks(): Readable<IBookMeta[]> {
-        return this.readable(['book'], 'listBooks', {});
+        return this.readable<IBookMeta[]>(['book'], 'listBooks', {}, []);
     }
 
     getBookChapters(bookUid: UUID): Promise<BookChapter[]> {

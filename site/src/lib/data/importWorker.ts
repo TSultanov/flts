@@ -6,7 +6,6 @@ import { getTranslator, type ModelId, type ParagraphTranslation } from "./transl
 import { dictionary } from "./sql/dictionary"
 import { sqlBooks, type IBookMeta, type UpdateParagraphTranslationMessageSentence, type UpdateParagraphTranslationMessageTranslation } from "./sql/book";
 import type { UUID } from "./v2/db";
-import { fromStore, type Unsubscriber } from "svelte/store";
 
 const limit = 1;
 
@@ -19,7 +18,7 @@ const translationSavingQueue = new Bottleneck({
 });
 
 // Function to check all paragraphs and schedule translation for untranslated ones
-export async function checkAndScheduleUntranslatedParagraphs() {
+export async function checkAndScheduleUntranslatedParagraphs(allBooks: IBookMeta[]) {
     try {
         console.log('Worker: Checking for untranslated paragraphs...');
 
@@ -30,22 +29,6 @@ export async function checkAndScheduleUntranslatedParagraphs() {
             console.log('Worker: No target language configured, skipping untranslated paragraph check');
             return;
         }
-
-
-        const allBooks = await new Promise<IBookMeta[]>(resolve => {
-            let unsubscriber: Unsubscriber;
-
-            const resolver = (data: IBookMeta[] | undefined) => {
-                if (data) {
-                    setTimeout(() => {
-                        unsubscriber();
-                    })
-                    resolve(data);
-                }
-            }
-
-            unsubscriber = sqlBooks.listBooks().subscribe(data => resolver(data));
-        })
 
         let untranslatedCount = 0;
 
@@ -75,7 +58,9 @@ export async function checkAndScheduleUntranslatedParagraphs() {
 }
 
 export async function startTranslations() {
-    await checkAndScheduleUntranslatedParagraphs();
+    sqlBooks.listBooks().subscribe(books => {
+        checkAndScheduleUntranslatedParagraphs(books);
+    });
 
     const translationRequestBag: Set<number> = new Set();
     const directTranslationRequestsQuery = liveQuery(async () => await translationQueue.top(limit));
