@@ -1,12 +1,10 @@
 <script lang="ts">
-    import { onMount } from "svelte";
     import { sqlBooks, type SentenceTranslation } from "../data/sql/book";
     import type { UUID } from "../data/v2/db";
 
-    const { sentenceWordIdToDisplay }: { sentenceWordIdToDisplay: UUID } =
-        $props();
+    const { sentenceWordIdToDisplay }: { sentenceWordIdToDisplay: UUID } = $props();
 
-    const word = sqlBooks.getWordTranslation(sentenceWordIdToDisplay);
+    const word = $derived(sqlBooks.getWordTranslation(sentenceWordIdToDisplay));
 
     const sentenceTranslation = $derived.by(() => {
         if ($word) {
