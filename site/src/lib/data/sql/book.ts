@@ -236,8 +236,10 @@ export class SqlBookWrapper {
     private readable<T>(tables: TableName[], action: BookRequest['action']['type'], payload: BookRequest['action']['payload'], initial: T): Readable<T>;
     private readable<T>(tables: TableName[], action: BookRequest['action']['type'], payload: BookRequest['action']['payload'], initial?: T): Readable<T | undefined> | Readable<T> {
         return readable<T>(initial, (set) => {
+            let uids: Set<UUID> | undefined = undefined;
             const update = debounce(() => {
                 this.send<T>(action, payload).then(res => {
+                    uids = res.uids;
                     set(res.result)
                 });
             }, 100);
@@ -250,7 +252,8 @@ export class SqlBookWrapper {
             update();
 
             const listener = (ev: MessageEvent<DbUpdateMessage>) => {
-                if (tables.includes(ev.data.table)) {
+                if (tables.includes(ev.data.table) &&
+                    (uids === undefined || uids.has(ev.data.uid))) {
                     update();
                 }
             };
@@ -292,19 +295,19 @@ export class SqlBookWrapper {
     }
 
     getParagraphs(chapterUid: UUID): Readable<Paragraph[]> {
-        return this.readable(['book_chapter_paragraph'], 'getParagraphs', { chapterUid }, []);
+        return this.readable(['book_chapter_paragraph', 'book_chapter_paragraph_translation'], 'getParagraphs', { chapterUid }, []);
     }
 
     getParagraph(paragraphUid: UUID): Readable<Paragraph | undefined> {
-        return this.readable(['book_chapter_paragraph'], 'getParagraph', { paragraphUid });
+        return this.readable(['book_chapter_paragraph', 'book_chapter_paragraph_translation'], 'getParagraph', { paragraphUid });
     }
 
     getParagraphTranslation(paragraphUid: UUID, languageUid: UUID): Readable<BookParagraphTranslation | undefined> {
-        return this.readable(['book_chapter_paragraph_translation', 'language'], 'getParagraphTranslation', { paragraphUid, languageUid });
+        return this.readable(['book_chapter_paragraph', 'book_chapter_paragraph_translation', 'language'], 'getParagraphTranslation', { paragraphUid, languageUid });
     }
 
     getParagraphTranslationShort(paragraphUid: UUID, languageUid: UUID): Readable<ParagraphTranslationShort | undefined> {
-        return this.readable(['book_chapter_paragraph_translation', 'language'], 'getParagraphTranslationShort', { paragraphUid, languageUid });
+        return this.readable(['book_chapter_paragraph', 'book_chapter_paragraph_translation', 'language'], 'getParagraphTranslationShort', { paragraphUid, languageUid });
     }
 
     getNotTranslatedParagraphsUids(bookUid: UUID): Readable<UUID[]> {
@@ -722,6 +725,11 @@ export class BookBackend {
                 uids.add(bookUid);
             }
         });
+        this.sendUpdateMessage({
+            table: "book_chapter_paragraph",
+            uid: paragraphUid,
+            action: "update"
+        });
         return { result: translationUid, uids };
     }
 
@@ -997,6 +1005,7 @@ export class BookBackend {
     // -----------------------
     getParagraphTranslation(paragraphUid: UUID, languageUid: UUID): { result: BookParagraphTranslation | undefined, uids: Set<UUID> } {
         const uids = new Set<UUID>();
+        uids.add(paragraphUid);
         // Fetch parent translation (pick most recently updated if multiple exist TODO)
         const t = this.db.selectObject(`
             SELECT t.uid as uid, t.createdAt as createdAt, t.updatedAt as updatedAt,
@@ -1041,46 +1050,50 @@ export class BookBackend {
         const sentenceByUid = new Map<UUID, SentenceTranslation>();
         for (const s of sentences) sentenceByUid.set(s.uid, s);
 
-        // Load words for all sentences
+        // Load words for all sentences in batches of 10
         if (sentences.length > 0) {
-            const sentenceUidsPlaceholders = sentences.map(() => '?').join(',');
-            this.db.exec({
-                sql: `SELECT w.uid as uid, w.sentenceUid as sentenceUid, w.wordIndex as wordIndex,
-                             w.original as original, w.isPunctuation as isPunctuation,
-                             w.isStandalonePunctuation as isStandalonePunctuation,
-                             w.isOpeningParenthesis as isOpeningParenthesis,
-                             w.isClosingParenthesis as isClosingParenthesis,
-                             w.wordTranslationUid as wordTranslationUid,
-                             w.wordTranslationInContext as wordTranslationInContext,
-                             w.grammarContext as grammarContext,
-                             w.note as note, w.createdAt as createdAt, w.updatedAt as updatedAt
-                      FROM book_paragraph_translation_sentence_word w
-                      WHERE w.sentenceUid IN (${sentenceUidsPlaceholders})
-                      ORDER BY w.sentenceUid, w.wordIndex ASC`,
-                bind: sentences.map(s => s.uid),
-                rowMode: 'object',
-                callback: (row: any) => {
-                    const sentence = sentenceByUid.get(row.sentenceUid as UUID);
-                    if (!sentence || !sentence.words) return;
-                    const word: SentenceWordTranslation = {
-                        uid: row.uid as UUID,
-                        createdAt: row.createdAt as number,
-                        updatedAt: row.updatedAt as number,
-                        sentenceUid: row.sentenceUid as UUID,
-                        original: row.original as string,
-                        isPunctuation: row.isPunctuation ? true : false,
-                        isStandalonePunctuation: row.isStandalonePunctuation == null ? null : !!row.isStandalonePunctuation,
-                        isOpeningParenthesis: row.isOpeningParenthesis == null ? null : !!row.isOpeningParenthesis,
-                        isClosingParenthesis: row.isClosingParenthesis == null ? null : !!row.isClosingParenthesis,
-                        wordTranslationUid: row.wordTranslationUid as UUID | undefined,
-                        wordTranslationInContext: row.wordTranslationInContext ? JSON.parse(row.wordTranslationInContext) : undefined,
-                        grammarContext: row.grammarContext ? JSON.parse(row.grammarContext) : undefined,
-                        note: row.note as string | undefined,
-                    };
-                    sentence.words.push(word);
-                    uids.add(row.uid);
-                }
-            });
+            const batchSize = 10;
+            for (let start = 0; start < sentences.length; start += batchSize) {
+                const batch = sentences.slice(start, start + batchSize);
+                const placeholders = batch.map(() => '?').join(',');
+                this.db.exec({
+                    sql: `SELECT w.uid as uid, w.sentenceUid as sentenceUid, w.wordIndex as wordIndex,
+                                 w.original as original, w.isPunctuation as isPunctuation,
+                                 w.isStandalonePunctuation as isStandalonePunctuation,
+                                 w.isOpeningParenthesis as isOpeningParenthesis,
+                                 w.isClosingParenthesis as isClosingParenthesis,
+                                 w.wordTranslationUid as wordTranslationUid,
+                                 w.wordTranslationInContext as wordTranslationInContext,
+                                 w.grammarContext as grammarContext,
+                                 w.note as note, w.createdAt as createdAt, w.updatedAt as updatedAt
+                          FROM book_paragraph_translation_sentence_word w
+                          WHERE w.sentenceUid IN (${placeholders})
+                          ORDER BY w.sentenceUid, w.wordIndex ASC`,
+                    bind: batch.map(s => s.uid),
+                    rowMode: 'object',
+                    callback: (row: any) => {
+                        const sentence = sentenceByUid.get(row.sentenceUid as UUID);
+                        if (!sentence || !sentence.words) return;
+                        const word: SentenceWordTranslation = {
+                            uid: row.uid as UUID,
+                            createdAt: row.createdAt as number,
+                            updatedAt: row.updatedAt as number,
+                            sentenceUid: row.sentenceUid as UUID,
+                            original: row.original as string,
+                            isPunctuation: row.isPunctuation ? true : false,
+                            isStandalonePunctuation: row.isStandalonePunctuation == null ? null : !!row.isStandalonePunctuation,
+                            isOpeningParenthesis: row.isOpeningParenthesis == null ? null : !!row.isOpeningParenthesis,
+                            isClosingParenthesis: row.isClosingParenthesis == null ? null : !!row.isClosingParenthesis,
+                            wordTranslationUid: row.wordTranslationUid as UUID | undefined,
+                            wordTranslationInContext: row.wordTranslationInContext ? JSON.parse(row.wordTranslationInContext) : undefined,
+                            grammarContext: row.grammarContext ? JSON.parse(row.grammarContext) : undefined,
+                            note: row.note as string | undefined,
+                        };
+                        sentence.words.push(word);
+                        uids.add(row.uid);
+                    }
+                });
+            }
         }
 
         const ret: BookParagraphTranslation = {
@@ -1098,8 +1111,9 @@ export class BookBackend {
     // Lightweight fetch: only languageCode + denormalized translationJson without sentences/words expansion
     getParagraphTranslationShort(paragraphUid: UUID, languageUid: UUID): { result: ParagraphTranslationShort | undefined, uids: Set<UUID> } {
         const uids = new Set<UUID>();
+        uids.add(paragraphUid);
         const t = this.db.selectObject(`
-            SELECT l.code as languageCode, t.translationJson as translationJson
+            SELECT t.uid, l.code as languageCode, t.translationJson as translationJson
             FROM book_chapter_paragraph_translation t
             JOIN language l ON l.uid = t.languageUid
             WHERE t.chapterParagraphUid = ?1 -- AND t.languageUid = ?2
@@ -1107,7 +1121,8 @@ export class BookBackend {
             LIMIT 1
         `, [paragraphUid/*, languageUid*/]); // TODO do not ignore target language
         if (!t) return { result: undefined, uids };
-        uids.add(paragraphUid);
+        const translationUid = t["uid"] as UUID;
+        uids.add(translationUid);
         return {
             result: {
                 languageCode: t["languageCode"] as string,
