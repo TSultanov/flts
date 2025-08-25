@@ -69,7 +69,7 @@ function initialMigration(db: Database) {
                 ${entityCommon}
                 originalLanguageUid BLOB NOT NULL,
                 original TEXT NOT NULL,
-                FOREIGN KEY (originalLanguageUid) REFERENCES language(uid) ON DELETE CASCADE
+                FOREIGN KEY (originalLanguageUid) REFERENCES language(uid) ON DELETE RESTRICT
             );
             -- Individual indexes to support common filtered queries
             CREATE INDEX IF NOT EXISTS idx_${tableName}_originalLanguageUid ON ${tableName}(originalLanguageUid);
@@ -91,8 +91,8 @@ function initialMigration(db: Database) {
                 translationLanguageUid BLOB NOT NULL,
                 originalWordUid BLOB NOT NULL,
                 translation TEXT NOT NULL,
-                FOREIGN KEY (translationLanguageUid) REFERENCES language(uid) ON DELETE CASCADE,
-                FOREIGN KEY (originalWordUid) REFERENCES word(uid) ON DELETE CASCADE
+                FOREIGN KEY (translationLanguageUid) REFERENCES language(uid) ON DELETE RESTRICT,
+                FOREIGN KEY (originalWordUid) REFERENCES word(uid) ON DELETE RESTRICT
             );
             CREATE INDEX IF NOT EXISTS idx_${tableName}_translationLanguageUid ON ${tableName}(translationLanguageUid);
             CREATE INDEX IF NOT EXISTS idx_${tableName}_originalWordUid ON ${tableName}(originalWordUid);
@@ -138,7 +138,7 @@ function createBookTables(db: Database) {
                 bookUid BLOB NOT NULL,
                 chapterIndex INTEGER NOT NULL,
                 title TEXT,
-                FOREIGN KEY (bookUid) REFERENCES book(uid) ON DELETE CASCADE
+                FOREIGN KEY (bookUid) REFERENCES book(uid) ON DELETE RESTRICT
             );
             CREATE INDEX IF NOT EXISTS idx_${tableName}_bookUid ON ${tableName}(bookUid);
             CREATE INDEX IF NOT EXISTS idx_${tableName}_chapterIndex ON ${tableName}(chapterIndex);
@@ -157,7 +157,7 @@ function createBookTables(db: Database) {
                 paragraphIndex INTEGER NOT NULL,
                 originalText TEXT NOT NULL,
                 originalHtml TEXT,
-                FOREIGN KEY (chapterUid) REFERENCES book_chapter(uid) ON DELETE CASCADE
+                FOREIGN KEY (chapterUid) REFERENCES book_chapter(uid) ON DELETE RESTRICT
             );
             CREATE INDEX IF NOT EXISTS idx_${tableName}_chapterUid ON ${tableName}(chapterUid);
             CREATE INDEX IF NOT EXISTS idx_${tableName}_paragraphIndex ON ${tableName}(paragraphIndex);
@@ -176,8 +176,8 @@ function createBookTables(db: Database) {
                 languageUid BLOB NOT NULL,
                 translatingModel TEXT NOT NULL,
                 translationJson TEXT, -- JSON blob with translation data
-                FOREIGN KEY (chapterParagraphUid) REFERENCES book_chapter_paragraph(uid) ON DELETE CASCADE,
-                FOREIGN KEY (languageUid) REFERENCES language(uid) ON DELETE CASCADE
+                FOREIGN KEY (chapterParagraphUid) REFERENCES book_chapter_paragraph(uid) ON DELETE RESTRICT,
+                FOREIGN KEY (languageUid) REFERENCES language(uid) ON DELETE RESTRICT
             );
             CREATE INDEX IF NOT EXISTS idx_${tableName}_chapterParagraphUid ON ${tableName}(chapterParagraphUid);
             CREATE INDEX IF NOT EXISTS idx_${tableName}_languageUid ON ${tableName}(languageUid);
@@ -193,7 +193,7 @@ function createBookTables(db: Database) {
                 paragraphTranslationUid BLOB NOT NULL,
                 sentenceIndex INTEGER NOT NULL,
                 fullTranslation TEXT NOT NULL,
-                FOREIGN KEY (paragraphTranslationUid) REFERENCES book_chapter_paragraph_translation(uid) ON DELETE CASCADE
+                FOREIGN KEY (paragraphTranslationUid) REFERENCES book_chapter_paragraph_translation(uid) ON DELETE RESTRICT
             );
             CREATE INDEX IF NOT EXISTS idx_${tableName}_paragraphTranslationUid ON ${tableName}(paragraphTranslationUid);
             CREATE INDEX IF NOT EXISTS idx_${tableName}_sentenceIndex ON ${tableName}(sentenceIndex);
@@ -217,7 +217,7 @@ function createBookTables(db: Database) {
                 wordTranslationInContext TEXT,
                 grammarContext TEXT, -- stored as JSON blob (not normalized)
                 note TEXT,
-                FOREIGN KEY (sentenceUid) REFERENCES book_paragraph_translation_sentence(uid) ON DELETE CASCADE,
+                FOREIGN KEY (sentenceUid) REFERENCES book_paragraph_translation_sentence(uid) ON DELETE RESTRICT,
                 FOREIGN KEY (wordTranslationUid) REFERENCES word_translation(uid) ON DELETE SET NULL
             );
             CREATE INDEX IF NOT EXISTS idx_${tableName}_sentenceUid ON ${tableName}(sentenceUid);

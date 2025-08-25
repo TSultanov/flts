@@ -104,12 +104,10 @@
         </details>
     {/if}
     {#if sentenceTranslation && $sentenceTranslation}
-        {#if $sentenceTranslation}
-            <details>
-                <summary>Full sentence</summary>
-                <p>{$sentenceTranslation.fullTranslation}</p>
-            </details>
-            <p>Translated by: {$sentenceTranslation.translatingModel}</p>
-        {/if}
+        <details>
+            <summary>Full sentence</summary>
+            <p>{$sentenceTranslation.fullTranslation}</p>
+        </details>
+        <p>Translated by: {$sentenceTranslation.translatingModel}</p>
     {/if}
 {/if}

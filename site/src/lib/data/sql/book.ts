@@ -125,7 +125,7 @@ type BookRequestAction = {
     type: 'updateParagraphTranslation',
     payload: UpdateParagraphTranslationRequestPayload,
 } | {
-    type: 'updateBookPath', 
+    type: 'updateBookPath',
     payload: UpdateBookPathRequestPayload,
 } | {
     type: 'deleteBook',
@@ -160,7 +160,7 @@ type BookRequestAction = {
 };
 
 type BookRequest = {
-    id: number,
+    id: bigint,
     action: BookRequestAction,
 }
 
@@ -169,8 +169,8 @@ type CreateBookFromEpubEpubRequestPayload = CreateBookFromEpubMessage;
 type UpdateParagraphTranslationRequestPayload = UpdateParagraphTranslationMessage;
 type UpdateBookPathRequestPayload = UpdateBookPathMessage;
 
-type BookSuccessResponse = { id: number; result: UUID };
-type BookErrorResponse = { id: number; error: string };
+type BookSuccessResponse = { id: BigInt; uids: Set<UUID>, result: any };
+type BookErrorResponse = { id: BigInt; error: string };
 type BookResponse = BookSuccessResponse | BookErrorResponse;
 
 // -----------------------
@@ -178,8 +178,8 @@ type BookResponse = BookSuccessResponse | BookErrorResponse;
 // -----------------------
 export class SqlBookWrapper {
     private port?: MessagePort;
-    private requestId = 0;
-    private pending = new Map<number, { resolve: (v: any) => void; reject: (e: any) => void }>();
+    private requestId: bigint = BigInt(0);
+    private pending = new Map<bigint, { resolve: (data: { uids: Set<UUID>, result: any }) => void; reject: (e: any) => void }>();
     private updatesChannel: StrictBroadcastChannel<DbUpdateMessage>;
 
     constructor() {
@@ -198,7 +198,7 @@ export class SqlBookWrapper {
             if ('error' in data) {
                 handler.reject(new Error(data.error));
             } else {
-                handler.resolve(data.result);
+                handler.resolve({ uids: data.uids, result: data.result });
             }
         };
     }
@@ -217,11 +217,11 @@ export class SqlBookWrapper {
         return this.port;
     }
 
-    private async send<TRet>(action: BookRequest['action']['type'], payload: BookRequest['action']['payload']): Promise<TRet> {
+    private async send<TRet>(action: BookRequest['action']['type'], payload: BookRequest['action']['payload']): Promise<{ uids: Set<UUID>, result: TRet }> {
         const port = await this.ensurePort();
         const id = ++this.requestId;
-        const req: BookRequest = { id, action: { type: action, payload }} as BookRequest;
-        return new Promise<TRet>((resolve, reject) => {
+        const req: BookRequest = { id, action: { type: action, payload } } as BookRequest;
+        return new Promise<{ uids: Set<UUID>, result: TRet }>((resolve, reject) => {
             this.pending.set(id, { resolve, reject });
             try {
                 port.postMessage(req);
@@ -237,8 +237,13 @@ export class SqlBookWrapper {
     private readable<T>(tables: TableName[], action: BookRequest['action']['type'], payload: BookRequest['action']['payload'], initial?: T): Readable<T | undefined> | Readable<T> {
         return readable<T>(initial, (set) => {
             const update = debounce(() => {
-                    this.send<T>(action, payload).then(res => set(res));
-            }, 50);
+                this.send<T>(action, payload).then(res => set(res.result));
+            }, 100);
+            // Need to actually filter by UUIDs of returned objects to only udpate affected queries
+            // One idea is to establish a protocol where the returned obejct must list
+            // all of the GUIDs of all objects returned in the projection, and on first udpate we record them
+            // After that, only route updates to queries which are querying for those objects
+            // Also record GUIDs of requested objects
 
             update();
 
@@ -253,27 +258,27 @@ export class SqlBookWrapper {
             return () => {
                 this.updatesChannel.removeEventListener("message", listener);
             }
-    });
+        });
     }
 
-    createFromText(message: CreateBookFromTextMessage): Promise<UUID> {
-        return this.send('createBookFromText', message);
+    async createFromText(message: CreateBookFromTextMessage): Promise<UUID> {
+        return (await this.send<UUID>('createBookFromText', message)).result;
     }
 
-    createFromEpub(message: CreateBookFromEpubMessage): Promise<UUID> {
-        return this.send('createBookFromEpub', message);
+    async createFromEpub(message: CreateBookFromEpubMessage): Promise<UUID> {
+        return (await this.send<UUID>('createBookFromEpub', message)).result;
     }
 
-    updateParagraphTranslation(message: UpdateParagraphTranslationMessage): Promise<UUID> {
-        return this.send('updateParagraphTranslation', message);
+    async updateParagraphTranslation(message: UpdateParagraphTranslationMessage): Promise<UUID> {
+        return (await this.send<UUID>('updateParagraphTranslation', message)).result;
     }
 
-    updateBookPath(message: UpdateBookPathMessage): Promise<UUID> {
-        return this.send('updateBookPath', message);
+    async updateBookPath(message: UpdateBookPathMessage): Promise<UUID> {
+        return (await this.send<UUID>('updateBookPath', message)).result;
     }
 
-    deleteBook(bookUid: UUID): Promise<UUID> {
-        return this.send('deleteBook', { bookUid });
+    async deleteBook(bookUid: UUID): Promise<UUID> {
+        return (await this.send<UUID>('deleteBook', { bookUid })).result;
     }
 
     listBooks(): Readable<IBookMeta[]> {
@@ -309,7 +314,7 @@ export class SqlBookWrapper {
     }
 
     getSentenceTranslation(sentenceUid: UUID): Readable<SentenceTranslation | undefined> {
-        return this.readable(['book_paragraph_translation_sentence', 'book_chapter_paragraph_translation'], 'getSentenceTranslation', { sentenceUid });
+        return this.readable(['book_paragraph_translation_sentence'/*, 'book_chapter_paragraph_translation'*/], 'getSentenceTranslation', { sentenceUid });
     }
 }
 
@@ -344,7 +349,68 @@ export class BookBackend {
             .map(p => ({ text: p }));
     }
 
-    createBookFromText(payload: CreateBookFromTextMessage): UUID {
+    attachPort(port: MessagePort) {
+        const sendMessage = (message: BookResponse) => {
+            port.postMessage(message);
+        };
+
+        port.onmessage = (ev: MessageEvent) => {
+            const msg = ev.data;
+            if (!msg || typeof msg !== 'object') return;
+            const { id, action: { type, payload } } = msg as BookRequest;
+            if (typeof id !== 'bigint') return;
+            try {
+                if (type === 'createBookFromText') {
+                    const result = this.createBookFromText(payload);
+                    sendMessage({ id, ...result });
+                } else if (type === 'createBookFromEpub') {
+                    const result = this.createBookFromEpub(payload);
+                    sendMessage({ id, ...result });
+                } else if (type === 'updateParagraphTranslation') {
+                    const result = this.updateParagraphTranslation(payload);
+                    sendMessage({ id, ...result });
+                } else if (type === 'updateBookPath') {
+                    const result = this.updateBookPath(payload);
+                    sendMessage({ id, ...result });
+                } else if (type === 'deleteBook') {
+                    const result = this.deleteBook(payload.bookUid);
+                    // Include uids of deleted entities in the response
+                    sendMessage({ id, ...result });
+                } else if (type === 'listBooks') {
+                    const result = this.listBooks();
+                    sendMessage({ id, ...result });
+                } else if (type === 'getBookChapters') {
+                    const result = this.getBookChapters(payload.bookUid);
+                    sendMessage({ id, ...result });
+                } else if (type === 'getParagraphs') {
+                    const result = this.getParagraphs(payload.chapterUid);
+                    sendMessage({ id, ...result });
+                } else if (type === 'getParagraph') {
+                    const result = this.getParagraph(payload.paragraphUid);
+                    sendMessage({ id, ...result });
+                } else if (type === 'getParagraphTranslation') {
+                    const result = this.getParagraphTranslation(payload.paragraphUid, payload.languageUid);
+                    sendMessage({ id, ...result });
+                } else if (type === 'getParagraphTranslationShort') {
+                    const result = this.getParagraphTranslationShort(payload.paragraphUid, payload.languageUid);
+                    sendMessage({ id, ...result });
+                } else if (type === 'getNotTranslatedParagraphsUids') {
+                    const result = this.getNotTranslatedParagraphsUids(payload.bookUid);
+                    sendMessage({ id, ...result });
+                } else if (type === 'getWordTranslation') {
+                    const result = this.getWordTranslation(payload.wordUid);
+                    sendMessage({ id, ...result });
+                } else if (type === 'getSentenceTranslation') {
+                    const result = this.getSentenceTranslation(payload.sentenceUid);
+                    sendMessage({ id, ...result });
+                }
+            } catch (e: any) {
+                port.postMessage({ id, error: e?.message || 'Unknown error' });
+            }
+        };
+    }
+
+    createBookFromText(payload: CreateBookFromTextMessage): { result: UUID, uids: Set<UUID> } {
         const now = Date.now();
         const bookUid = generateUID();
         const path = JSON.stringify(payload.path ?? []);
@@ -352,6 +418,8 @@ export class BookBackend {
         const chapterCount = 1; // single implicit chapter
         const paragraphCount = paragraphs.length;
         const translatedParagraphsCount = 0; // none translated at creation time
+
+        const uids = new Set<UUID>();
 
         this.db.transaction(db => {
             db.exec({
@@ -363,6 +431,7 @@ export class BookBackend {
                 uid: bookUid,
                 action: 'insert',
             });
+            uids.add(bookUid);
 
             // Single implicit chapter index 0
             const chapterUid = generateUID();
@@ -375,6 +444,7 @@ export class BookBackend {
                 uid: chapterUid,
                 action: 'insert',
             });
+            uids.add(chapterUid);
 
             paragraphs.forEach((p, idx) => {
                 const paragraphUid = generateUID();
@@ -387,10 +457,11 @@ export class BookBackend {
                     uid: paragraphUid,
                     action: 'insert',
                 });
+                uids.add(paragraphUid);
             });
         });
 
-        return bookUid;
+        return { result: bookUid, uids };
     }
 
     private levenshteinDistance(str1: string, str2: string) {
@@ -420,12 +491,12 @@ export class BookBackend {
 
     private prepareTranslationObject(paragraphUid: UUID, languageUid: UUID): TranslationDenormal[] {
         const ret: TranslationDenormal[] = [];
-        const paragraph = this.getParagraph(paragraphUid);
+        const paragraph = this.getParagraph(paragraphUid).result;
         if (!paragraph) throw new Error("Paragraph not found");
 
         const originalText = paragraph.originalHtml ?? paragraph.originalText;
 
-        const translation = this.getParagraphTranslation(paragraphUid, languageUid);
+        const translation = this.getParagraphTranslation(paragraphUid, languageUid).result;
 
         if (!translation) throw new Error("Paragraph translation not found");
 
@@ -486,13 +557,17 @@ export class BookBackend {
     // -----------------------
     // Paragraph Translation Support
     // -----------------------
-    updateParagraphTranslation(payload: UpdateParagraphTranslationMessage): UUID {
+    updateParagraphTranslation(payload: UpdateParagraphTranslationMessage): { result: UUID, uids: Set<UUID> } {
         const now = Date.now();
         const paragraphUid = payload.paragraphUid;
         const languageUid = payload.translation.languageUid;
         // Validate paragraph exists
         const exists = this.db.selectValue("SELECT uid FROM book_chapter_paragraph WHERE uid=?1 LIMIT 1", [paragraphUid]) as UUID | undefined;
         if (!exists) throw new Error("Paragraph not found");
+
+        const uids = new Set<UUID>;
+        uids.add(paragraphUid);
+        uids.add(languageUid);
 
         let translationUid = generateUID();
         this.db.transaction(db => {
@@ -502,13 +577,49 @@ export class BookBackend {
                 [paragraphUid, languageUid]
             ) as UUID | undefined;
             if (existingTranslationUid) {
-                // Deleting parent cascades to sentences and words
+                // Manually delete dependent words -> sentences -> translation (FKs are RESTRICT)
+                const sentenceUids: UUID[] = [];
+                db.exec({
+                    sql: `SELECT uid FROM book_paragraph_translation_sentence WHERE paragraphTranslationUid = ?1`,
+                    bind: [existingTranslationUid],
+                    rowMode: 'object',
+                    callback: (row: any) => { sentenceUids.push(row.uid as UUID); }
+                });
+
+                if (sentenceUids.length > 0) {
+                    const placeholders = sentenceUids.map(() => '?').join(',');
+                    const wordUids: UUID[] = [];
+                    db.exec({
+                        sql: `SELECT uid FROM book_paragraph_translation_sentence_word WHERE sentenceUid IN (${placeholders})`,
+                        bind: sentenceUids,
+                        rowMode: 'object',
+                        callback: (row: any) => { wordUids.push(row.uid as UUID); }
+                    });
+                    if (wordUids.length > 0) {
+                        const wp = wordUids.map(() => '?').join(',');
+                        db.exec({ sql: `DELETE FROM book_paragraph_translation_sentence_word WHERE uid IN (${wp})`, bind: wordUids });
+                        wordUids.forEach(uid => {
+                            this.sendUpdateMessage({ table: 'book_paragraph_translation_sentence_word', uid, action: 'delete' });
+                            uids.add(uid);
+                        });
+                    }
+
+                    // Delete sentences next
+                    db.exec({ sql: `DELETE FROM book_paragraph_translation_sentence WHERE uid IN (${placeholders})`, bind: sentenceUids });
+                    sentenceUids.forEach(uid => {
+                        this.sendUpdateMessage({ table: 'book_paragraph_translation_sentence', uid, action: 'delete' });
+                        uids.add(uid);
+                    });
+                }
+
+                // Finally delete the parent translation row
                 db.exec({ sql: `DELETE FROM book_chapter_paragraph_translation WHERE uid=?1`, bind: [existingTranslationUid] });
                 this.sendUpdateMessage({
                     table: "book_chapter_paragraph_translation",
                     uid: existingTranslationUid,
                     action: 'delete',
                 });
+                uids.add(existingTranslationUid);
             }
 
             translationUid = generateUID();
@@ -521,6 +632,7 @@ export class BookBackend {
                 uid: translationUid,
                 action: 'insert',
             });
+            uids.add(translationUid);
 
             payload.translation.sentences.forEach((sentence, sIdx) => {
                 const sentenceUid = generateUID();
@@ -533,6 +645,7 @@ export class BookBackend {
                     uid: sentenceUid,
                     action: 'insert',
                 });
+                uids.add(sentenceUid);
                 sentence.words.forEach((word, wIdx) => {
                     const wordUid = generateUID();
                     db.exec({
@@ -559,6 +672,7 @@ export class BookBackend {
                         uid: wordUid,
                         action: 'insert',
                     });
+                    uids.add(wordUid);
                 });
             });
 
@@ -576,6 +690,7 @@ export class BookBackend {
                 uid: translationUid,
                 action: 'update',
             });
+            uids.add(translationUid);
 
             // Recompute translatedParagraphsCount for the parent book (distinct paragraphs having any translation)
             const bookUid = db.selectValue(
@@ -602,15 +717,16 @@ export class BookBackend {
                     uid: bookUid,
                     action: 'update',
                 });
+                uids.add(bookUid);
             }
         });
-        return translationUid;
+        return { result: translationUid, uids };
     }
 
     // -----------------------
     // Update Book Path
     // -----------------------
-    updateBookPath(payload: UpdateBookPathMessage): UUID {
+    updateBookPath(payload: UpdateBookPathMessage): { result: UUID, uids: Set<UUID> } {
         const { bookUid } = payload;
         const now = Date.now();
         const exists = this.db.selectValue("SELECT uid FROM book WHERE uid=?1 LIMIT 1", [bookUid]) as UUID | undefined;
@@ -625,23 +741,104 @@ export class BookBackend {
             uid: bookUid,
             action: 'update',
         });
-        return bookUid;
+
+        const uids = new Set<UUID>();
+        uids.add(bookUid);
+        return { result: bookUid, uids };
     }
 
-    deleteBook(bookUid: UUID): UUID {
-        // Will cascade via foreign keys (chapters -> paragraphs -> translations -> sentences -> words)
+    deleteBook(bookUid: UUID): { result: UUID, uids: Set<UUID> } {
+        // Manually cascade delete related records within a single transaction.
         const exists = this.db.selectValue("SELECT uid FROM book WHERE uid=?1 LIMIT 1", [bookUid]) as UUID | undefined;
         if (!exists) throw new Error('Book not found');
-        this.db.exec({ sql: `DELETE FROM book WHERE uid=?1`, bind: [bookUid] });
-        this.sendUpdateMessage({
-            table: "book",
-            uid: bookUid,
-            action: 'delete',
+
+        const uids = new Set<UUID>();
+
+        this.db.transaction(db => {
+            // Collect chapter UIDs
+            const chapterUids: UUID[] = [];
+            db.exec({
+                sql: `SELECT uid FROM book_chapter WHERE bookUid = ?1`,
+                bind: [bookUid],
+                rowMode: 'object',
+                callback: (row: any) => { chapterUids.push(row.uid as UUID); }
+            });
+
+            // Collect paragraph UIDs
+            const paragraphUids: UUID[] = [];
+            if (chapterUids.length > 0) {
+                const placeholders = chapterUids.map(() => '?').join(',');
+                db.exec({
+                    sql: `SELECT uid FROM book_chapter_paragraph WHERE chapterUid IN (${placeholders})`,
+                    bind: chapterUids,
+                    rowMode: 'object',
+                    callback: (row: any) => { paragraphUids.push(row.uid as UUID); }
+                });
+            }
+
+            // Collect paragraph translation UIDs
+            const translationUids: UUID[] = [];
+            if (paragraphUids.length > 0) {
+                const placeholders = paragraphUids.map(() => '?').join(',');
+                db.exec({
+                    sql: `SELECT uid FROM book_chapter_paragraph_translation WHERE chapterParagraphUid IN (${placeholders})`,
+                    bind: paragraphUids,
+                    rowMode: 'object',
+                    callback: (row: any) => { translationUids.push(row.uid as UUID); }
+                });
+            }
+
+            // Collect sentence UIDs
+            const sentenceUids: UUID[] = [];
+            if (translationUids.length > 0) {
+                const placeholders = translationUids.map(() => '?').join(',');
+                db.exec({
+                    sql: `SELECT uid FROM book_paragraph_translation_sentence WHERE paragraphTranslationUid IN (${placeholders})`,
+                    bind: translationUids,
+                    rowMode: 'object',
+                    callback: (row: any) => { sentenceUids.push(row.uid as UUID); }
+                });
+            }
+
+            // Collect word UIDs
+            const wordUids: UUID[] = [];
+            if (sentenceUids.length > 0) {
+                const placeholders = sentenceUids.map(() => '?').join(',');
+                db.exec({
+                    sql: `SELECT uid FROM book_paragraph_translation_sentence_word WHERE sentenceUid IN (${placeholders})`,
+                    bind: sentenceUids,
+                    rowMode: 'object',
+                    callback: (row: any) => { wordUids.push(row.uid as UUID); }
+                });
+            }
+
+            const deleteByUids = (table: TableName, ids: UUID[]) => {
+                if (!ids.length) return;
+                const placeholders = ids.map(() => '?').join(',');
+                db.exec({ sql: `DELETE FROM ${table} WHERE uid IN (${placeholders})`, bind: ids });
+                ids.forEach(uid => {
+                    this.sendUpdateMessage({ table, uid, action: 'delete' });
+                    uids.add(uid);
+                });
+            };
+
+            // Delete deepest-first to satisfy FK RESTRICT constraints
+            deleteByUids('book_paragraph_translation_sentence_word', wordUids);
+            deleteByUids('book_paragraph_translation_sentence', sentenceUids);
+            deleteByUids('book_chapter_paragraph_translation', translationUids);
+            deleteByUids('book_chapter_paragraph', paragraphUids);
+            deleteByUids('book_chapter', chapterUids);
+
+            // Finally, delete the book
+            db.exec({ sql: `DELETE FROM book WHERE uid=?1`, bind: [bookUid] });
+            this.sendUpdateMessage({ table: 'book', uid: bookUid, action: 'delete' });
+            uids.add(bookUid);
         });
-        return bookUid;
+
+        return { result: bookUid, uids };
     }
 
-    createBookFromEpub(payload: CreateBookFromEpubMessage): UUID {
+    createBookFromEpub(payload: CreateBookFromEpubMessage): { result: UUID, uids: Set<UUID> } {
         const now = Date.now();
         const bookUid = generateUID();
         const path = JSON.stringify(payload.path ?? []);
@@ -649,6 +846,8 @@ export class BookBackend {
         const chapterCount = epub.chapters.length;
         const paragraphCount = epub.chapters.reduce((acc, c) => acc + c.paragraphs.length, 0);
         const translatedParagraphsCount = 0; // none translated at creation time
+
+        const uids = new Set<UUID>;
 
         this.db.transaction(db => {
             db.exec({
@@ -660,6 +859,7 @@ export class BookBackend {
                 uid: bookUid,
                 action: 'insert',
             });
+            uids.add(bookUid);
 
             epub.chapters.forEach((chapter, chapterIndex) => {
                 const chapterUid = generateUID();
@@ -672,6 +872,7 @@ export class BookBackend {
                     uid: chapterUid,
                     action: 'insert',
                 });
+                uids.add(chapterUid);
                 chapter.paragraphs.forEach((para, paragraphIndex) => {
                     const paragraphUid = generateUID();
                     db.exec({
@@ -683,72 +884,17 @@ export class BookBackend {
                         uid: paragraphUid,
                         action: 'insert',
                     });
+                    uids.add(paragraphUid);
                 });
             });
         });
-        return bookUid;
-    }
-
-    attachPort(port: MessagePort) {
-        port.onmessage = (ev: MessageEvent) => {
-            const msg = ev.data;
-            if (!msg || typeof msg !== 'object') return;
-            const { id, action: {type, payload} } = msg as BookRequest;
-            if (typeof id !== 'number') return;
-            try {
-                if (type === 'createBookFromText') {
-                    const result = this.createBookFromText(payload as CreateBookFromTextMessage);
-                    port.postMessage({ id, result });
-                } else if (type === 'createBookFromEpub') {
-                    const result = this.createBookFromEpub(payload as CreateBookFromEpubMessage);
-                    port.postMessage({ id, result });
-                } else if (type === 'updateParagraphTranslation') {
-                    const result = this.updateParagraphTranslation(payload as UpdateParagraphTranslationMessage);
-                    port.postMessage({ id, result });
-                } else if (type === 'updateBookPath') {
-                    const result = this.updateBookPath(payload as UpdateBookPathMessage);
-                    port.postMessage({ id, result });
-                } else if (type === 'deleteBook') {
-                    const result = this.deleteBook(payload.bookUid as UUID);
-                    port.postMessage({ id, result });
-                } else if (type === 'listBooks') {
-                    const result = this.listBooks();
-                    port.postMessage({ id, result });
-                } else if (type === 'getBookChapters') {
-                    const result = this.getBookChapters(payload.bookUid as UUID);
-                    port.postMessage({ id, result });
-                } else if (type === 'getParagraphs') {
-                    const result = this.getParagraphs(payload.chapterUid as UUID);
-                    port.postMessage({ id, result });
-                } else if (type === 'getParagraph') {
-                    const result = this.getParagraph(payload.paragraphUid as UUID);
-                    port.postMessage({ id, result });
-                } else if (type === 'getParagraphTranslation') {
-                    const result = this.getParagraphTranslation(payload.paragraphUid as UUID, payload.languageUid as UUID);
-                    port.postMessage({ id, result });
-                } else if (type === 'getParagraphTranslationShort') {
-                    const result = this.getParagraphTranslationShort(payload.paragraphUid as UUID, payload.languageUid as UUID);
-                    port.postMessage({ id, result });
-                } else if (type === 'getNotTranslatedParagraphsUids') {
-                    const result = this.getNotTranslatedParagraphsUids(payload.bookUid as UUID);
-                    port.postMessage({ id, result });
-                } else if (type === 'getWordTranslation') {
-                    const result = this.getWordTranslation(payload.wordUid as UUID);
-                    port.postMessage({ id, result });
-                } else if (type === 'getSentenceTranslation') {
-                    const result = this.getSentenceTranslation(payload.sentenceUid as UUID);
-                    port.postMessage({ id, result });
-                }
-            } catch (e: any) {
-                port.postMessage({ id, error: e?.message || 'Unknown error' });
-            }
-        };
+        return { result: bookUid, uids };
     }
 
     // -----------------------
     // List Books
     // -----------------------
-    listBooks(): IBookMeta[] {
+    listBooks(): { result: IBookMeta[], uids: Set<UUID> } {
         const rows: { uid: UUID; path: string; title: string; chapterCount: number; paragraphCount: number; translatedParagraphsCount: number; }[] = [];
         this.db.exec({
             sql: `SELECT uid, path, title, chapterCount, paragraphCount, translatedParagraphsCount
@@ -759,7 +905,8 @@ export class BookBackend {
                 rows.push(row as any);
             }
         });
-        return rows.map(r => {
+        const uids = new Set<UUID>();
+        const result = rows.map(r => {
             const paragraphCount = r.paragraphCount;
             const translated = r.translatedParagraphsCount;
             const translationRatio = paragraphCount === 0 ? 0 : (translated / paragraphCount);
@@ -775,15 +922,18 @@ export class BookBackend {
                 translationRatio,
                 path
             };
+            uids.add(meta.uid);
             return meta;
         });
+        return { result, uids };
     }
 
     // -----------------------
     // Get Chapters for a Book
     // -----------------------
-    getBookChapters(bookUid: UUID): BookChapter[] {
+    getBookChapters(bookUid: UUID): { result: BookChapter[], uids: Set<UUID> } {
         const rows: BookChapter[] = [];
+        const uids = new Set<UUID>();
         this.db.exec({
             sql: `SELECT uid, createdAt, updatedAt, title, createdAt, updatedAt
                   FROM book_chapter
@@ -791,31 +941,40 @@ export class BookBackend {
                   ORDER BY chapterIndex ASC`,
             bind: [bookUid],
             rowMode: 'object',
-            callback: (row: any) => { rows.push(row as any); }
+            callback: (row: any) => {
+                rows.push(row as any);
+                uids.add(row.uid);
+            }
         });
-        return rows;
+        return { result: rows, uids };
     }
 
-    getParagraph(paragraphUid: UUID): Paragraph | undefined {
+    getParagraph(paragraphUid: UUID): { result: Paragraph | undefined, uids: Set<UUID> } {
         const r = this.db.selectObject(`
             SELECT uid, createdAt, updatedAt, originalText, originalHtml
             FROM book_chapter_paragraph
             WHERE uid = ?1
             `, [paragraphUid]);
         if (!r) {
-            return;
+            return { result: undefined, uids: new Set() };
         }
+        const uid = r["uid"]!.valueOf() as UUID;
+        const uids = new Set<UUID>();
+        uids.add(uid);
         return {
-            uid: r["uid"]!.valueOf() as UUID,
-            createdAt: r["createdAt"]?.valueOf() as number,
-            updatedAt: r["updatedAt"]?.valueOf() as number,
-            originalText: r["originalText"] as string,
-            originalHtml: r["originalHtml"] as string,
+            result: {
+                uid,
+                createdAt: r["createdAt"]?.valueOf() as number,
+                updatedAt: r["updatedAt"]?.valueOf() as number,
+                originalText: r["originalText"] as string,
+                originalHtml: r["originalHtml"] as string,
+            }, uids
         };
     }
 
-    getParagraphs(chapterUid: UUID): Paragraph[] {
+    getParagraphs(chapterUid: UUID): { result: Paragraph[], uids: Set<UUID> } {
         const rows: Paragraph[] = [];
+        const uids = new Set<UUID>();
         this.db.exec({
             sql: `SELECT uid, createdAt, updatedAt, originalText, originalHtml
                   FROM book_chapter_paragraph
@@ -823,15 +982,19 @@ export class BookBackend {
                   ORDER BY paragraphIndex ASC`,
             bind: [chapterUid],
             rowMode: 'object',
-            callback: (row: any) => { rows.push(row as any); }
+            callback: (row: any) => {
+                rows.push(row as any);
+                uids.add(row.uid);
+            }
         });
-        return rows;
+        return { result: rows, uids };
     }
 
     // -----------------------
     // Get full paragraph translation (latest by updatedAt) including sentences & words
     // -----------------------
-    getParagraphTranslation(paragraphUid: UUID, languageUid: UUID): BookParagraphTranslation | undefined {
+    getParagraphTranslation(paragraphUid: UUID, languageUid: UUID): { result: BookParagraphTranslation | undefined, uids: Set<UUID> } {
+        const uids = new Set<UUID>();
         // Fetch parent translation (pick most recently updated if multiple exist TODO)
         const t = this.db.selectObject(`
             SELECT t.uid as uid, t.createdAt as createdAt, t.updatedAt as updatedAt,
@@ -843,9 +1006,10 @@ export class BookBackend {
             ORDER BY t.updatedAt DESC
             LIMIT 1
         `, [paragraphUid, languageUid]);
-        if (!t) return;
+        if (!t) return { result: undefined, uids };
 
         const translationUid = (t["uid"] as any as UUID);
+        uids.add(translationUid);
 
         // Collect sentences
         const sentences: SentenceTranslation[] = [];
@@ -867,6 +1031,7 @@ export class BookBackend {
                     translatingModel: row.translatingModel as ModelId,
                     words: []
                 });
+                uids.add(row.uid);
             }
         });
 
@@ -911,6 +1076,7 @@ export class BookBackend {
                         note: row.note as string | undefined,
                     };
                     sentence.words.push(word);
+                    uids.add(row.uid);
                 }
             });
         }
@@ -924,11 +1090,12 @@ export class BookBackend {
             translationJson: t["translationJson"] ? JSON.parse(t["translationJson"] as string) : null,
             sentences,
         };
-        return ret;
+        return { result: ret, uids };
     }
 
     // Lightweight fetch: only languageCode + denormalized translationJson without sentences/words expansion
-    getParagraphTranslationShort(paragraphUid: UUID, languageUid: UUID): ParagraphTranslationShort | undefined {
+    getParagraphTranslationShort(paragraphUid: UUID, languageUid: UUID): { result: ParagraphTranslationShort | undefined, uids: Set<UUID> } {
+        const uids = new Set<UUID>();
         const t = this.db.selectObject(`
             SELECT l.code as languageCode, t.translationJson as translationJson
             FROM book_chapter_paragraph_translation t
@@ -937,15 +1104,20 @@ export class BookBackend {
             ORDER BY t.updatedAt DESC
             LIMIT 1
         `, [paragraphUid/*, languageUid*/]); // TODO do not ignore target language
-        if (!t) return;
+        if (!t) return { result: undefined, uids };
+        uids.add(paragraphUid);
         return {
-            languageCode: t["languageCode"] as string,
-            translationJson: t["translationJson"] ? JSON.parse(t["translationJson"] as string) : []
-        } as ParagraphTranslationShort;
+            result: {
+                languageCode: t["languageCode"] as string,
+                translationJson: t["translationJson"] ? JSON.parse(t["translationJson"] as string) : []
+            } as ParagraphTranslationShort,
+            uids
+        };
     }
 
     // Returns UIDs of paragraphs within a book that have no translations (language-agnostic for now)
-    getNotTranslatedParagraphsUids(bookUid: UUID): UUID[] {
+    getNotTranslatedParagraphsUids(bookUid: UUID): { result: UUID[], uids: Set<UUID> } {
+        const uids = new Set<UUID>();
         const rows: UUID[] = [];
         this.db.exec({
             sql: `SELECT p.uid AS uid
@@ -958,13 +1130,17 @@ export class BookBackend {
                     )`,
             bind: [bookUid],
             rowMode: 'object',
-            callback: (row: any) => { rows.push(row.uid as UUID); }
+            callback: (row: any) => {
+                rows.push(row.uid as UUID);
+                uids.add(row.uid);
+            }
         });
         // TODO: support filtering by a specific language when multi-language differentiation is needed
-        return rows;
+        return {result: rows, uids };
     }
 
-    getWordTranslation(wordUid: UUID): SentenceWordTranslation | undefined {
+    getWordTranslation(wordUid: UUID): { result: SentenceWordTranslation | undefined, uids: Set<UUID> } {
+        const uids = new Set<UUID>();
         const r = this.db.selectObject(`
             SELECT uid, sentenceUid, wordIndex, original, isPunctuation, isStandalonePunctuation,
                    isOpeningParenthesis, isClosingParenthesis, wordTranslationUid,
@@ -973,7 +1149,7 @@ export class BookBackend {
             WHERE uid = ?1
             LIMIT 1
         `, [wordUid]);
-        if (!r) return;
+        if (!r) return { result: undefined, uids };
         const word: SentenceWordTranslation = {
             uid: r["uid"] as UUID,
             createdAt: r["createdAt"] as number,
@@ -989,10 +1165,12 @@ export class BookBackend {
             grammarContext: r["grammarContext"] ? JSON.parse(r["grammarContext"] as string) : undefined,
             note: r["note"] as string | undefined,
         };
-        return word;
+        uids.add(word.uid);
+        return { result: word, uids };
     }
 
-    getSentenceTranslation(sentenceUid: UUID): SentenceTranslation | undefined {
+    getSentenceTranslation(sentenceUid: UUID): { result: SentenceTranslation | undefined, uids: Set<UUID> } {
+        const uids = new Set<UUID>();
         const r = this.db.selectObject(`
             SELECT s.uid as uid, s.paragraphTranslationUid as paragraphTranslationUid,
                    s.fullTranslation as fullTranslation, s.createdAt as createdAt, s.updatedAt as updatedAt, p.translatingModel
@@ -1001,7 +1179,7 @@ export class BookBackend {
             WHERE s.uid = ?1
             LIMIT 1
         `, [sentenceUid]);
-        if (!r) return;
+        if (!r) return { result: undefined, uids };
         const sentence: SentenceTranslation = {
             uid: r["uid"] as UUID,
             paragraphTranslationUid: r["paragraphTranslationUid"] as UUID,
@@ -1010,7 +1188,8 @@ export class BookBackend {
             fullTranslation: r["fullTranslation"] as string,
             translatingModel: r["translatingModel"] as ModelId,
         };
-        return sentence;
+        uids.add(sentence.uid);
+        return { result: sentence, uids };
     }
 }
 
