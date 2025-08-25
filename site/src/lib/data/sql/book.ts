@@ -763,6 +763,10 @@ export class BookBackend {
         if (!exists) throw new Error('Book not found');
 
         const uids = new Set<UUID>();
+        const batchSize = 50;
+        const forBatches = <T>(arr: T[], size: number, fn: (batch: T[]) => void) => {
+            for (let i = 0; i < arr.length; i += size) fn(arr.slice(i, i + size));
+        };
 
         this.db.transaction(db => {
             // Collect chapter UIDs
@@ -777,58 +781,68 @@ export class BookBackend {
             // Collect paragraph UIDs
             const paragraphUids: UUID[] = [];
             if (chapterUids.length > 0) {
-                const placeholders = chapterUids.map(() => '?').join(',');
-                db.exec({
-                    sql: `SELECT uid FROM book_chapter_paragraph WHERE chapterUid IN (${placeholders})`,
-                    bind: chapterUids,
-                    rowMode: 'object',
-                    callback: (row: any) => { paragraphUids.push(row.uid as UUID); }
+                forBatches(chapterUids, batchSize, (batch) => {
+                    const placeholders = batch.map(() => '?').join(',');
+                    db.exec({
+                        sql: `SELECT uid FROM book_chapter_paragraph WHERE chapterUid IN (${placeholders})`,
+                        bind: batch,
+                        rowMode: 'object',
+                        callback: (row: any) => { paragraphUids.push(row.uid as UUID); }
+                    });
                 });
             }
 
             // Collect paragraph translation UIDs
             const translationUids: UUID[] = [];
             if (paragraphUids.length > 0) {
-                const placeholders = paragraphUids.map(() => '?').join(',');
-                db.exec({
-                    sql: `SELECT uid FROM book_chapter_paragraph_translation WHERE chapterParagraphUid IN (${placeholders})`,
-                    bind: paragraphUids,
-                    rowMode: 'object',
-                    callback: (row: any) => { translationUids.push(row.uid as UUID); }
+                forBatches(paragraphUids, batchSize, (batch) => {
+                    const placeholders = batch.map(() => '?').join(',');
+                    db.exec({
+                        sql: `SELECT uid FROM book_chapter_paragraph_translation WHERE chapterParagraphUid IN (${placeholders})`,
+                        bind: batch,
+                        rowMode: 'object',
+                        callback: (row: any) => { translationUids.push(row.uid as UUID); }
+                    });
                 });
             }
 
             // Collect sentence UIDs
             const sentenceUids: UUID[] = [];
             if (translationUids.length > 0) {
-                const placeholders = translationUids.map(() => '?').join(',');
-                db.exec({
-                    sql: `SELECT uid FROM book_paragraph_translation_sentence WHERE paragraphTranslationUid IN (${placeholders})`,
-                    bind: translationUids,
-                    rowMode: 'object',
-                    callback: (row: any) => { sentenceUids.push(row.uid as UUID); }
+                forBatches(translationUids, batchSize, (batch) => {
+                    const placeholders = batch.map(() => '?').join(',');
+                    db.exec({
+                        sql: `SELECT uid FROM book_paragraph_translation_sentence WHERE paragraphTranslationUid IN (${placeholders})`,
+                        bind: batch,
+                        rowMode: 'object',
+                        callback: (row: any) => { sentenceUids.push(row.uid as UUID); }
+                    });
                 });
             }
 
             // Collect word UIDs
             const wordUids: UUID[] = [];
             if (sentenceUids.length > 0) {
-                const placeholders = sentenceUids.map(() => '?').join(',');
-                db.exec({
-                    sql: `SELECT uid FROM book_paragraph_translation_sentence_word WHERE sentenceUid IN (${placeholders})`,
-                    bind: sentenceUids,
-                    rowMode: 'object',
-                    callback: (row: any) => { wordUids.push(row.uid as UUID); }
+                forBatches(sentenceUids, batchSize, (batch) => {
+                    const placeholders = batch.map(() => '?').join(',');
+                    db.exec({
+                        sql: `SELECT uid FROM book_paragraph_translation_sentence_word WHERE sentenceUid IN (${placeholders})`,
+                        bind: batch,
+                        rowMode: 'object',
+                        callback: (row: any) => { wordUids.push(row.uid as UUID); }
+                    });
                 });
             }
 
             const deleteByUids = (table: TableName, ids: UUID[]) => {
                 if (!ids.length) return;
-                const placeholders = ids.map(() => '?').join(',');
-                db.exec({ sql: `DELETE FROM ${table} WHERE uid IN (${placeholders})`, bind: ids });
-                ids.forEach(uid => {
-                    this.sendUpdateMessage({ table, uid, action: 'delete' });
-                    uids.add(uid);
+                forBatches(ids, batchSize, (batch) => {
+                    const placeholders = batch.map(() => '?').join(',');
+                    db.exec({ sql: `DELETE FROM ${table} WHERE uid IN (${placeholders})`, bind: batch });
+                    batch.forEach(uid => {
+                        this.sendUpdateMessage({ table, uid, action: 'delete' });
+                        uids.add(uid);
+                    });
                 });
             };
 
