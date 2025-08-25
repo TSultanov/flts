@@ -4,7 +4,7 @@ import { generateUID, type Entity, type UUID } from "../v2/db";
 import { type StrictBroadcastChannel, type Database, type DbUpdateMessage, type TableName } from "./sqlWorker";
 import type { EpubBook } from "../epubLoader";
 import { decode } from 'html-entities';
-import { dbUpdatesChannelName, debounce } from "./utils";
+import { DB_UPDATES_CHANNEL_NAME, debounce } from "./utils";
 
 type BookData = {
     path: string[];
@@ -183,7 +183,7 @@ export class SqlBookWrapper {
     private updatesChannel: StrictBroadcastChannel<DbUpdateMessage>;
 
     constructor() {
-        this.updatesChannel = new BroadcastChannel(dbUpdatesChannelName);
+        this.updatesChannel = new BroadcastChannel(DB_UPDATES_CHANNEL_NAME);
     }
 
     attachPort(port: MessagePort) {
@@ -339,7 +339,7 @@ export class BookBackend {
     private updatesChannel: StrictBroadcastChannel<DbUpdateMessage>;
 
     constructor(private db: Database) {
-        this.updatesChannel = new BroadcastChannel(dbUpdatesChannelName);
+        this.updatesChannel = new BroadcastChannel(DB_UPDATES_CHANNEL_NAME);
     }
 
     private sendUpdateMessage(message: DbUpdateMessage) {

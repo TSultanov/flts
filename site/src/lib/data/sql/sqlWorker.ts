@@ -3,6 +3,7 @@ import { applyMigrations } from './migrations';
 import { DictionaryBackend } from './dictionary';
 import { BookBackend } from './book';
 import type { UUID } from '../v2/db';
+import { DB_FILE_NAME, DB_FILE_PATH } from './utils';
 
 interface StrictBroadcastChannelEventMap<T> {
   "message": MessageEvent<T>;
@@ -47,12 +48,60 @@ const error = (message: string, ...args: any[]) => {
   console.error(`[SQL Worker] ${message}`, ...args);
 };
 
-function start(sqlite3: Sqlite3Static) {
+async function prepareOpfsDatabaseFile(sqlite3: Sqlite3Static) {
+  // If an imported DB is staged (db3.sqlite3.import), move it into place before opening
+  try {
+    // Access OPFS root via sqlite3 helper (when available) or browser API
+    if (!('opfs' in sqlite3)) return; // nothing to do if OPFS is not used
+    const storage: any = (self as any).navigator?.storage;
+    if (!storage || typeof storage.getDirectory !== 'function') return;
+    const root = await storage.getDirectory();
+  const dbName = DB_FILE_NAME;
+  const tempName = `${dbName}.import`;
+
+    // Check temp file existence by trying to get a handle; if not present, exit
+    let tempHandle: FileSystemFileHandle | undefined;
+    try {
+      tempHandle = await (root as FileSystemDirectoryHandle).getFileHandle(tempName, { create: false });
+    } catch {
+      return; // no staged import
+    }
+    if (!tempHandle) return;
+
+    // Write temp contents into the target file (create if missing)
+    const targetHandle = await (root as FileSystemDirectoryHandle).getFileHandle(dbName, { create: true });
+    const tempFile = await tempHandle.getFile();
+    const buf = await tempFile.arrayBuffer();
+    const writable = await targetHandle.createWritable();
+    try {
+      await writable.truncate(0);
+      await writable.write(buf);
+    } finally {
+      await writable.close();
+    }
+
+    // Remove the temp file after successful write
+    try {
+      await (root as any).removeEntry(tempName);
+    } catch (e) {
+      // non-fatal
+      log('Could not remove temp import file; ignoring', e);
+    }
+    log('Imported OPFS database from staged file');
+  } catch (e) {
+    error('Failed to prepare OPFS database file:', e);
+  }
+}
+
+async function start(sqlite3: Sqlite3Static) {
   log('Running SQLite3 version', sqlite3.version.libVersion);
+  if ('opfs' in sqlite3) {
+    await prepareOpfsDatabaseFile(sqlite3);
+  }
   const db =
     'opfs' in sqlite3
-      ? new sqlite3.oo1.OpfsDb('/db3.sqlite3')
-      : new sqlite3.oo1.DB('/db3.sqlite3', 'ct');
+      ? new sqlite3.oo1.OpfsDb(DB_FILE_PATH)
+      : new sqlite3.oo1.DB(DB_FILE_PATH, 'ct');
   log(
     'opfs' in sqlite3
       ? `OPFS is available, created persisted database at ${db.filename}`
@@ -82,7 +131,7 @@ async function initializeSQLite() {
   try {
     log('Loading and initializing SQLite3 module...');
     const sqlite3 = await sqlite3InitModule({ print: log, printErr: error });
-    const db = start(sqlite3);
+  const db = await start(sqlite3);
     initialize(db);
     self.postMessage({ type: 'ready' });
     log('Done initializing.');

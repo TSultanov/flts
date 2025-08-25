@@ -1,7 +1,7 @@
 import type { Database } from "@sqlite.org/sqlite-wasm";
 import { generateUID, type UUID } from "../v2/db";
 import { type DbUpdateMessage, type TableName } from "./sqlWorker";
-import { dbUpdatesChannelName } from "./utils";
+import { DB_UPDATES_CHANNEL_NAME } from "./utils";
 
 // -----------------------
 // Messaging Types
@@ -108,7 +108,7 @@ export class DictionaryBackend {
     private updatesChannel: BroadcastChannel;
 
     constructor(private db: Database) {
-        this.updatesChannel = new BroadcastChannel(dbUpdatesChannelName);
+        this.updatesChannel = new BroadcastChannel(DB_UPDATES_CHANNEL_NAME);
     }
 
     // -----------------------
