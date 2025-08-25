@@ -37,7 +37,7 @@ export function readableToPromise<T>(store: Readable<T>): Promise<T | undefined>
         let count = 0;
 
         const resolver = (data: T | undefined) => {
-            if (data === undefined && count == 0) {
+            if (count == 0) {
                 count++;
                 return; // Discard first bogus result
             }
