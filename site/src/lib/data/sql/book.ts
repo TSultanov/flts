@@ -191,7 +191,7 @@ export class SqlBookWrapper {
         this.port = port;
         this.port.onmessage = (event: MessageEvent<BookResponse>) => {
             const data = event.data;
-            if (!data || typeof data !== 'object' || typeof data.id !== 'number') return;
+            if (!data || typeof data !== 'object' || typeof data.id !== 'bigint') return;
             const handler = this.pending.get(data.id);
             if (!handler) return;
             this.pending.delete(data.id);
@@ -237,7 +237,9 @@ export class SqlBookWrapper {
     private readable<T>(tables: TableName[], action: BookRequest['action']['type'], payload: BookRequest['action']['payload'], initial?: T): Readable<T | undefined> | Readable<T> {
         return readable<T>(initial, (set) => {
             const update = debounce(() => {
-                this.send<T>(action, payload).then(res => set(res.result));
+                this.send<T>(action, payload).then(res => {
+                    set(res.result)
+                });
             }, 100);
             // Need to actually filter by UUIDs of returned objects to only udpate affected queries
             // One idea is to establish a protocol where the returned obejct must list

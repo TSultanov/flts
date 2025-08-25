@@ -37,13 +37,14 @@ export function readableToPromise<T>(store: Readable<T>): Promise<T | undefined>
         let count = 0;
 
         const resolver = (data: T | undefined) => {
-            if (data && count > 0) {
-                setTimeout(() => {
-                    unsubscriber();
-                })
-                resolve(data);
+            if (data === undefined && count == 0) {
+                count++;
+                return; // Discard first bogus result
             }
-            count++;
+            setTimeout(() => {
+                unsubscriber();
+            })
+            resolve(data);
         }
 
         unsubscriber = store.subscribe(data => resolver(data));
