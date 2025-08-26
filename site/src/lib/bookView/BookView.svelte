@@ -16,12 +16,9 @@
             : null,
     );
 
-    $inspect(route);
-    $inspect(chapterId);
+    const chapters = $derived(sqlBooks.getBookChapters(bookUid));
 
-    const chapters = sqlBooks.getBookChapters(bookUid);
-
-    onMount(() => {
+    $effect(() => {
         if ($chapters && $chapters.length === 1) {
             goto(`/book/${bookUid}/${$chapters[0].uid}`);
         }
@@ -32,15 +29,17 @@
 
 {#if $chapters}
     <div class="container">
-        <div class="chapters">
-            {#each $chapters as chapter}
-                <p>
-                    <a use:r href="/book/{bookUid}/{chapter.uid}"
-                        >{chapter.title ? chapter.title : "<no title>"}</a
-                    >
-                </p>
-            {/each}
-        </div>
+        {#if $chapters.length > 1}
+            <div class="chapters">
+                {#each $chapters as chapter}
+                    <p>
+                        <a use:r href="/book/{bookUid}/{chapter.uid}"
+                            >{chapter.title ? chapter.title : "<no title>"}</a
+                        >
+                    </p>
+                {/each}
+            </div>
+        {/if}
         {#if chapterId}
             <div class="chapter-view">
                 <ChapterView {chapterId} bind:sentenceWordIdToDisplay />
