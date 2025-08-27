@@ -225,12 +225,10 @@ export async function addTranslation(paragraphUid: UUID, translation: ParagraphT
         pTranslations.sentences.push(sentenceTranslation);
     }
 
-    const updateStartTime = performance.now();
     await sqlBooks.updateParagraphTranslation({
         paragraphUid,
         translation: pTranslations
     });
-    console.log
 
     if (dictAddCalls > 0) {
         console.log(
