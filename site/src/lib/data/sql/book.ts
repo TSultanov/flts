@@ -345,6 +345,24 @@ export class BookBackend {
         this.updatesChannel.postMessage(message);
     }
 
+    // Batch insert helper to reduce per-row overhead and respect SQLite param limits (default 999)
+    // maxParamsPerStmt is set conservatively to 900 to leave headroom
+    private batchInsert(db: Database, table: string, columns: readonly string[], rows: any[][], maxParamsPerStmt = 900): number {
+        if (!rows.length) return 0;
+        const paramsPerRow = columns.length;
+        const chunkSize = Math.max(1, Math.floor(maxParamsPerStmt / paramsPerRow));
+        let total = 0;
+        for (let i = 0; i < rows.length; i += chunkSize) {
+            const chunk = rows.slice(i, i + chunkSize);
+            const valuesSql = chunk.map(() => `(${columns.map(() => '?').join(',')})`).join(',');
+            const sql = `INSERT INTO ${table}(${columns.join(',')}) VALUES ${valuesSql}`;
+            const bind = chunk.flat();
+            db.exec({ sql, bind });
+            total += chunk.length;
+        }
+        return total;
+    }
+
     private splitParagraphs(text: string): { text: string; html?: string }[] {
         return text
             .split(/\n+/)
@@ -562,11 +580,14 @@ export class BookBackend {
     // Paragraph Translation Support
     // -----------------------
     updateParagraphTranslation(payload: UpdateParagraphTranslationMessage): { result: UUID, uids: Set<UUID> } {
+        const totalStartTime = performance.now();
         const now = Date.now();
         const paragraphUid = payload.paragraphUid;
         const languageUid = payload.translation.languageUid;
         // Validate paragraph exists
+        let stepStart = performance.now();
         const exists = this.db.selectValue("SELECT uid FROM book_chapter_paragraph WHERE uid=?1 LIMIT 1", [paragraphUid]) as UUID | undefined;
+        console.log(`Worker: updateParagraphTranslation selectValue(paragraph exists) took ${(performance.now() - stepStart).toFixed(2)}ms`);
         if (!exists) throw new Error("Paragraph not found");
 
         const uids = new Set<UUID>;
@@ -574,34 +595,57 @@ export class BookBackend {
         uids.add(languageUid);
 
         let translationUid = generateUID();
+        // Metrics for operations inside transaction
+        let timeSelectExistingTranslation = 0;
+        let timeCollectSentenceUids = 0;
+        let timeCollectWordUids = 0;
+        let timeDeleteWords = 0;
+        let timeDeleteSentences = 0;
+        let timeDeleteParentTranslation = 0;
+        let timeInsertParentTranslation = 0;
+        let timeInsertSentencesTotal = 0; let insertSentencesCount = 0;
+        let timeInsertWordsTotal = 0; let insertWordsCount = 0;
+        let timeSelectBookUid = 0;
+        let timeSelectTranslatedCount = 0;
+        let timeUpdateBookTranslatedCount = 0;
+
+        const txStart = performance.now();
         this.db.transaction(db => {
             // Remove existing translation for (paragraph, language)
+            stepStart = performance.now();
             const existingTranslationUid = db.selectValue(
                 `SELECT uid FROM book_chapter_paragraph_translation WHERE chapterParagraphUid=?1 AND languageUid=?2 LIMIT 1`,
                 [paragraphUid, languageUid]
             ) as UUID | undefined;
+            timeSelectExistingTranslation += performance.now() - stepStart;
             if (existingTranslationUid) {
                 // Manually delete dependent words -> sentences -> translation (FKs are RESTRICT)
                 const sentenceUids: UUID[] = [];
+                stepStart = performance.now();
                 db.exec({
                     sql: `SELECT uid FROM book_paragraph_translation_sentence WHERE paragraphTranslationUid = ?1`,
                     bind: [existingTranslationUid],
                     rowMode: 'object',
                     callback: (row: any) => { sentenceUids.push(row.uid as UUID); }
                 });
+                timeCollectSentenceUids += performance.now() - stepStart;
 
                 if (sentenceUids.length > 0) {
                     const placeholders = sentenceUids.map(() => '?').join(',');
                     const wordUids: UUID[] = [];
+                    stepStart = performance.now();
                     db.exec({
                         sql: `SELECT uid FROM book_paragraph_translation_sentence_word WHERE sentenceUid IN (${placeholders})`,
                         bind: sentenceUids,
                         rowMode: 'object',
                         callback: (row: any) => { wordUids.push(row.uid as UUID); }
                     });
+                    timeCollectWordUids += performance.now() - stepStart;
                     if (wordUids.length > 0) {
                         const wp = wordUids.map(() => '?').join(',');
+                        stepStart = performance.now();
                         db.exec({ sql: `DELETE FROM book_paragraph_translation_sentence_word WHERE uid IN (${wp})`, bind: wordUids });
+                        timeDeleteWords += performance.now() - stepStart;
                         wordUids.forEach(uid => {
                             this.sendUpdateMessage({ table: 'book_paragraph_translation_sentence_word', uid, action: 'delete' });
                             uids.add(uid);
@@ -609,7 +653,9 @@ export class BookBackend {
                     }
 
                     // Delete sentences next
+                    stepStart = performance.now();
                     db.exec({ sql: `DELETE FROM book_paragraph_translation_sentence WHERE uid IN (${placeholders})`, bind: sentenceUids });
+                    timeDeleteSentences += performance.now() - stepStart;
                     sentenceUids.forEach(uid => {
                         this.sendUpdateMessage({ table: 'book_paragraph_translation_sentence', uid, action: 'delete' });
                         uids.add(uid);
@@ -617,7 +663,9 @@ export class BookBackend {
                 }
 
                 // Finally delete the parent translation row
+                stepStart = performance.now();
                 db.exec({ sql: `DELETE FROM book_chapter_paragraph_translation WHERE uid=?1`, bind: [existingTranslationUid] });
+                timeDeleteParentTranslation += performance.now() - stepStart;
                 this.sendUpdateMessage({
                     table: "book_chapter_paragraph_translation",
                     uid: existingTranslationUid,
@@ -627,10 +675,12 @@ export class BookBackend {
             }
 
             translationUid = generateUID();
+            stepStart = performance.now();
             db.exec({
                 sql: `INSERT INTO book_chapter_paragraph_translation(uid, chapterParagraphUid, languageUid, translatingModel, createdAt, updatedAt) VALUES(?1, ?2, ?3, ?4, ?5, ?5)`,
                 bind: [translationUid, paragraphUid, languageUid, payload.translation.translatingModel, now]
             });
+            timeInsertParentTranslation += performance.now() - stepStart;
             this.sendUpdateMessage({
                 table: "book_chapter_paragraph_translation",
                 uid: translationUid,
@@ -638,47 +688,70 @@ export class BookBackend {
             });
             uids.add(translationUid);
 
+            // Batched inserts for sentences
+            const sentenceCols = ['uid', 'paragraphTranslationUid', 'sentenceIndex', 'fullTranslation', 'createdAt', 'updatedAt'] as const;
+            const sentenceUids: UUID[] = [];
+            const sentenceRows: any[][] = [];
             payload.translation.sentences.forEach((sentence, sIdx) => {
-                const sentenceUid = generateUID();
-                db.exec({
-                    sql: `INSERT INTO book_paragraph_translation_sentence(uid, paragraphTranslationUid, sentenceIndex, fullTranslation, createdAt, updatedAt) VALUES(?1, ?2, ?3, ?4, ?5, ?5)`,
-                    bind: [sentenceUid, translationUid, sIdx, sentence.fullTranslation, now]
-                });
-                this.sendUpdateMessage({
-                    table: "book_paragraph_translation_sentence",
-                    uid: sentenceUid,
-                    action: 'insert',
-                });
-                uids.add(sentenceUid);
+                const sUid = generateUID();
+                sentenceUids.push(sUid);
+                uids.add(sUid);
+                sentenceRows.push([sUid, translationUid, sIdx, sentence.fullTranslation, now, now]);
+            });
+            if (sentenceRows.length) {
+                stepStart = performance.now();
+                this.batchInsert(db, 'book_paragraph_translation_sentence', sentenceCols as unknown as string[], sentenceRows);
+                timeInsertSentencesTotal += performance.now() - stepStart;
+                insertSentencesCount += sentenceRows.length;
+            }
+
+            // Batched inserts for words
+            const wordCols = [
+                'uid',
+                'sentenceUid',
+                'wordIndex',
+                'original',
+                'isPunctuation',
+                'isStandalonePunctuation',
+                'isOpeningParenthesis',
+                'isClosingParenthesis',
+                'wordTranslationUid',
+                'wordTranslationInContext',
+                'grammarContext',
+                'note',
+                'createdAt',
+                'updatedAt'
+            ] as const;
+            const wordRows: any[][] = [];
+            payload.translation.sentences.forEach((sentence, sIdx) => {
+                const sUid = sentenceUids[sIdx];
                 sentence.words.forEach((word, wIdx) => {
-                    const wordUid = generateUID();
-                    db.exec({
-                        sql: `INSERT INTO book_paragraph_translation_sentence_word(uid, sentenceUid, wordIndex, original, isPunctuation, isStandalonePunctuation, isOpeningParenthesis, isClosingParenthesis, wordTranslationUid, wordTranslationInContext, grammarContext, note, createdAt, updatedAt)
-                               VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)`,
-                        bind: [
-                            wordUid,
-                            sentenceUid,
-                            wIdx,
-                            word.original,
-                            word.isPunctuation ? 1 : 0,
-                            word.isStandalonePunctuation == null ? null : (word.isStandalonePunctuation ? 1 : 0),
-                            word.isOpeningParenthesis == null ? null : (word.isOpeningParenthesis ? 1 : 0),
-                            word.isClosingParenthesis == null ? null : (word.isClosingParenthesis ? 1 : 0),
-                            word.wordTranslationUid ?? null,
-                            word.wordTranslationInContext ? JSON.stringify(word.wordTranslationInContext) : null,
-                            word.grammarContext ? JSON.stringify(word.grammarContext) : null,
-                            word.note ?? null,
-                            now
-                        ]
-                    });
-                    this.sendUpdateMessage({
-                        table: "book_paragraph_translation_sentence_word",
-                        uid: wordUid,
-                        action: 'insert',
-                    });
-                    uids.add(wordUid);
+                    const wUid = generateUID();
+                    uids.add(wUid);
+                    wordRows.push([
+                        wUid,
+                        sUid,
+                        wIdx,
+                        word.original,
+                        word.isPunctuation ? 1 : 0,
+                        word.isStandalonePunctuation == null ? null : (word.isStandalonePunctuation ? 1 : 0),
+                        word.isOpeningParenthesis == null ? null : (word.isOpeningParenthesis ? 1 : 0),
+                        word.isClosingParenthesis == null ? null : (word.isClosingParenthesis ? 1 : 0),
+                        word.wordTranslationUid ?? null,
+                        word.wordTranslationInContext ? JSON.stringify(word.wordTranslationInContext) : null,
+                        word.grammarContext ? JSON.stringify(word.grammarContext) : null,
+                        word.note ?? null,
+                        now,
+                        now
+                    ]);
                 });
             });
+            if (wordRows.length) {
+                stepStart = performance.now();
+                this.batchInsert(db, 'book_paragraph_translation_sentence_word', wordCols as unknown as string[], wordRows);
+                timeInsertWordsTotal += performance.now() - stepStart;
+                insertWordsCount += wordRows.length;
+            }
 
             this.sendUpdateMessage({
                 table: "book_chapter_paragraph_translation",
@@ -688,6 +761,7 @@ export class BookBackend {
             uids.add(translationUid);
 
             // Recompute translatedParagraphsCount for the parent book (distinct paragraphs having any translation)
+            stepStart = performance.now();
             const bookUid = db.selectValue(
                 `SELECT b.uid FROM book b
                  JOIN book_chapter bc ON bc.bookUid = b.uid
@@ -695,7 +769,9 @@ export class BookBackend {
                  WHERE p.uid = ?1 LIMIT 1`,
                 [paragraphUid]
             ) as UUID | undefined;
+            timeSelectBookUid += performance.now() - stepStart;
             if (bookUid) {
+                stepStart = performance.now();
                 const translatedParagraphsCount = db.selectValue(
                     `SELECT COUNT(DISTINCT p.uid) FROM book_chapter_paragraph p
                      JOIN book_chapter_paragraph_translation t ON t.chapterParagraphUid = p.uid
@@ -703,10 +779,13 @@ export class BookBackend {
                      WHERE c.bookUid = ?1`,
                     [bookUid]
                 ) as number | null | undefined;
+                timeSelectTranslatedCount += performance.now() - stepStart;
+                stepStart = performance.now();
                 db.exec({
                     sql: `UPDATE book SET translatedParagraphsCount=?2, updatedAt=?3 WHERE uid=?1`,
                     bind: [bookUid, translatedParagraphsCount ?? 0, now]
                 });
+                timeUpdateBookTranslatedCount += performance.now() - stepStart;
                 this.sendUpdateMessage({
                     table: "book",
                     uid: bookUid,
@@ -715,11 +794,32 @@ export class BookBackend {
                 uids.add(bookUid);
             }
         });
+        const txTotal = performance.now() - txStart;
+
+        // Transaction metrics log
+        console.log(
+            `Worker: updateParagraphTranslation transaction took ${txTotal.toFixed(2)}ms` +
+            ` | select existing: ${timeSelectExistingTranslation.toFixed(2)}ms` +
+            ` | collect sentences: ${timeCollectSentenceUids.toFixed(2)}ms` +
+            ` | collect words: ${timeCollectWordUids.toFixed(2)}ms` +
+            ` | delete words: ${timeDeleteWords.toFixed(2)}ms` +
+            ` | delete sentences: ${timeDeleteSentences.toFixed(2)}ms` +
+            ` | delete parent: ${timeDeleteParentTranslation.toFixed(2)}ms` +
+            ` | insert parent: ${timeInsertParentTranslation.toFixed(2)}ms` +
+            ` | insert sentences: total ${timeInsertSentencesTotal.toFixed(2)}ms over ${insertSentencesCount} (avg ${insertSentencesCount ? (timeInsertSentencesTotal / insertSentencesCount).toFixed(2) : '0.00'}ms)` +
+            ` | insert words: total ${timeInsertWordsTotal.toFixed(2)}ms over ${insertWordsCount} (avg ${insertWordsCount ? (timeInsertWordsTotal / insertWordsCount).toFixed(2) : '0.00'}ms)` +
+            ` | select bookUid: ${timeSelectBookUid.toFixed(2)}ms` +
+            ` | select translatedCount: ${timeSelectTranslatedCount.toFixed(2)}ms` +
+            ` | update book: ${timeUpdateBookTranslatedCount.toFixed(2)}ms`
+        );
         this.sendUpdateMessage({
             table: "book_chapter_paragraph",
             uid: paragraphUid,
             action: "update"
         });
+        const totalTime = performance.now() - totalStartTime;
+        // Brief overall summary
+        console.log(`Worker: updateParagraphTranslation total time: ${totalTime.toFixed(2)}ms for paragraphUid ${paragraphUid}`);
         return { result: translationUid, uids };
     }
 
@@ -1033,7 +1133,7 @@ export class BookBackend {
         this.db.exec({
             sql: `SELECT s.uid, s.paragraphTranslationUid, s.sentenceIndex, s.fullTranslation, s.createdAt, s.updatedAt
                   FROM book_paragraph_translation_sentence s
-                                    WHERE s.paragraphTranslationUid = ?1
+                  WHERE s.paragraphTranslationUid = ?1
                   ORDER BY s.sentenceIndex ASC`,
             bind: [translationUid],
             rowMode: 'object',
@@ -1056,8 +1156,8 @@ export class BookBackend {
         for (const s of sentences) sentenceByUid.set(s.uid, s);
 
         if (sentences.length > 0) {
-                            this.db.exec({
-                    sql: `SELECT w.uid as uid, w.sentenceUid as sentenceUid, w.wordIndex as wordIndex,
+            this.db.exec({
+                sql: `SELECT w.uid as uid, w.sentenceUid as sentenceUid, w.wordIndex as wordIndex,
                                  w.original as original, w.isPunctuation as isPunctuation,
                                  w.isStandalonePunctuation as isStandalonePunctuation,
                                  w.isOpeningParenthesis as isOpeningParenthesis,
@@ -1070,30 +1170,30 @@ export class BookBackend {
                           JOIN book_paragraph_translation_sentence s ON w.sentenceUid = s.uid
                           WHERE s.paragraphTranslationUid = ?1
                           ORDER BY w.wordIndex ASC`,
-                    bind: [translationUid],
-                    rowMode: 'object',
-                    callback: (row: any) => {
-                        const sentence = sentenceByUid.get(row.sentenceUid as UUID);
-                        if (!sentence || !sentence.words) return;
-                        const word: SentenceWordTranslation = {
-                            uid: row.uid as UUID,
-                            createdAt: row.createdAt as number,
-                            updatedAt: row.updatedAt as number,
-                            sentenceUid: row.sentenceUid as UUID,
-                            original: row.original as string,
-                            isPunctuation: row.isPunctuation ? true : false,
-                            isStandalonePunctuation: row.isStandalonePunctuation == null ? null : !!row.isStandalonePunctuation,
-                            isOpeningParenthesis: row.isOpeningParenthesis == null ? null : !!row.isOpeningParenthesis,
-                            isClosingParenthesis: row.isClosingParenthesis == null ? null : !!row.isClosingParenthesis,
-                            wordTranslationUid: row.wordTranslationUid as UUID | undefined,
-                            wordTranslationInContext: row.wordTranslationInContext ? JSON.parse(row.wordTranslationInContext) : undefined,
-                            grammarContext: row.grammarContext ? JSON.parse(row.grammarContext) : undefined,
-                            note: row.note as string | undefined,
-                        };
-                        sentence.words.push(word);
-                        uids.add(row.uid);
-                    }
-                });
+                bind: [translationUid],
+                rowMode: 'object',
+                callback: (row: any) => {
+                    const sentence = sentenceByUid.get(row.sentenceUid as UUID);
+                    if (!sentence || !sentence.words) return;
+                    const word: SentenceWordTranslation = {
+                        uid: row.uid as UUID,
+                        createdAt: row.createdAt as number,
+                        updatedAt: row.updatedAt as number,
+                        sentenceUid: row.sentenceUid as UUID,
+                        original: row.original as string,
+                        isPunctuation: row.isPunctuation ? true : false,
+                        isStandalonePunctuation: row.isStandalonePunctuation == null ? null : !!row.isStandalonePunctuation,
+                        isOpeningParenthesis: row.isOpeningParenthesis == null ? null : !!row.isOpeningParenthesis,
+                        isClosingParenthesis: row.isClosingParenthesis == null ? null : !!row.isClosingParenthesis,
+                        wordTranslationUid: row.wordTranslationUid as UUID | undefined,
+                        wordTranslationInContext: row.wordTranslationInContext ? JSON.parse(row.wordTranslationInContext) : undefined,
+                        grammarContext: row.grammarContext ? JSON.parse(row.grammarContext) : undefined,
+                        note: row.note as string | undefined,
+                    };
+                    sentence.words.push(word);
+                    uids.add(row.uid);
+                }
+            });
         }
 
         const ret: BookParagraphTranslation = {
