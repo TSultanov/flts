@@ -1023,16 +1023,17 @@ export class BookBackend {
         `, [paragraphUid, languageUid]);
         if (!t) return { result: undefined, uids };
 
+        const translatingModel = t["translatingModel"] as ModelId;
+
         const translationUid = (t["uid"] as any as UUID);
         uids.add(translationUid);
 
         // Collect sentences
         const sentences: SentenceTranslation[] = [];
         this.db.exec({
-            sql: `SELECT s.uid, s.paragraphTranslationUid, s.sentenceIndex, s.fullTranslation, s.createdAt, s.updatedAt, p.translatingModel
+            sql: `SELECT s.uid, s.paragraphTranslationUid, s.sentenceIndex, s.fullTranslation, s.createdAt, s.updatedAt
                   FROM book_paragraph_translation_sentence s
-                  JOIN book_chapter_paragraph_translation p
-                  WHERE s.paragraphTranslationUid = ?1
+                                    WHERE s.paragraphTranslationUid = ?1
                   ORDER BY s.sentenceIndex ASC`,
             bind: [translationUid],
             rowMode: 'object',
@@ -1043,7 +1044,7 @@ export class BookBackend {
                     updatedAt: row.updatedAt as number,
                     paragraphTranslationUid: row.paragraphTranslationUid as UUID,
                     fullTranslation: row.fullTranslation as string,
-                    translatingModel: row.translatingModel as ModelId,
+                    translatingModel: translatingModel,
                     words: []
                 });
                 uids.add(row.uid);
@@ -1054,13 +1055,8 @@ export class BookBackend {
         const sentenceByUid = new Map<UUID, SentenceTranslation>();
         for (const s of sentences) sentenceByUid.set(s.uid, s);
 
-        // Load words for all sentences in batches of 10
         if (sentences.length > 0) {
-            const batchSize = 10;
-            for (let start = 0; start < sentences.length; start += batchSize) {
-                const batch = sentences.slice(start, start + batchSize);
-                const placeholders = batch.map(() => '?').join(',');
-                this.db.exec({
+                            this.db.exec({
                     sql: `SELECT w.uid as uid, w.sentenceUid as sentenceUid, w.wordIndex as wordIndex,
                                  w.original as original, w.isPunctuation as isPunctuation,
                                  w.isStandalonePunctuation as isStandalonePunctuation,
@@ -1071,9 +1067,10 @@ export class BookBackend {
                                  w.grammarContext as grammarContext,
                                  w.note as note, w.createdAt as createdAt, w.updatedAt as updatedAt
                           FROM book_paragraph_translation_sentence_word w
-                          WHERE w.sentenceUid IN (${placeholders})
-                          ORDER BY w.sentenceUid, w.wordIndex ASC`,
-                    bind: batch.map(s => s.uid),
+                          JOIN book_paragraph_translation_sentence s ON w.sentenceUid = s.uid
+                          WHERE s.paragraphTranslationUid = ?1
+                          ORDER BY w.wordIndex ASC`,
+                    bind: [translationUid],
                     rowMode: 'object',
                     callback: (row: any) => {
                         const sentence = sentenceByUid.get(row.sentenceUid as UUID);
@@ -1097,7 +1094,6 @@ export class BookBackend {
                         uids.add(row.uid);
                     }
                 });
-            }
         }
 
         const ret: BookParagraphTranslation = {
