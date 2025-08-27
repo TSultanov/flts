@@ -175,7 +175,6 @@ function createBookTables(db: Database) {
                 chapterParagraphUid BLOB NOT NULL,
                 languageUid BLOB NOT NULL,
                 translatingModel TEXT NOT NULL,
-                translationJson TEXT, -- JSON blob with translation data
                 FOREIGN KEY (chapterParagraphUid) REFERENCES book_chapter_paragraph(uid) ON DELETE RESTRICT,
                 FOREIGN KEY (languageUid) REFERENCES language(uid) ON DELETE RESTRICT
             );

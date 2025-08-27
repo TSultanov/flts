@@ -42,7 +42,6 @@ type TranslationDenormal = {
 export type BookParagraphTranslation = Entity & {
     readonly languageCode: string,
     readonly translatingModel: ModelId,
-    readonly translationJson?: TranslationDenormal[]
     readonly sentences?: SentenceTranslation[],
 }
 
@@ -494,14 +493,14 @@ export class BookBackend {
         return track[str2.length][str1.length];
     }
 
-    private prepareTranslationObject(paragraphUid: UUID, languageUid: UUID): TranslationDenormal[] {
+    private prepareTranslationObject(paragraphUid: UUID, languageUid: UUID): { result: TranslationDenormal[], uids: Set<UUID> } {
         const ret: TranslationDenormal[] = [];
         const paragraph = this.getParagraph(paragraphUid).result;
         if (!paragraph) throw new Error("Paragraph not found");
 
         const originalText = paragraph.originalHtml ?? paragraph.originalText;
 
-        const translation = this.getParagraphTranslation(paragraphUid, languageUid).result;
+        const { result: translation, uids } = this.getParagraphTranslation(paragraphUid, languageUid);
 
         if (!translation) throw new Error("Paragraph translation not found");
 
@@ -556,7 +555,7 @@ export class BookBackend {
             ret.push({ text: originalText.slice(pIdx, originalText.length) });
         }
 
-        return ret;
+        return { result: ret, uids };
     }
 
     // -----------------------
@@ -681,15 +680,6 @@ export class BookBackend {
                 });
             });
 
-            // Update translationJson field
-            const preparedDenormalizedTranslation = this.prepareTranslationObject(paragraphUid, languageUid);
-            db.exec({
-                sql: `UPDATE book_chapter_paragraph_translation SET translationJson = ?2 WHERE uid = ?1`,
-                bind: [
-                    translationUid,
-                    JSON.stringify(preparedDenormalizedTranslation),
-                ]
-            });
             this.sendUpdateMessage({
                 table: "book_chapter_paragraph_translation",
                 uid: translationUid,
@@ -1024,7 +1014,7 @@ export class BookBackend {
         const t = this.db.selectObject(`
             SELECT t.uid as uid, t.createdAt as createdAt, t.updatedAt as updatedAt,
                    t.languageUid as languageUid, l.code as languageCode,
-                   t.translatingModel as translatingModel, t.translationJson as translationJson
+                   t.translatingModel as translatingModel
             FROM book_chapter_paragraph_translation t
             JOIN language l ON l.uid = t.languageUid
             WHERE t.chapterParagraphUid = ?1 AND t.languageUid = ?2
@@ -1116,31 +1106,37 @@ export class BookBackend {
             updatedAt: (t["updatedAt"] as any as number),
             languageCode: t["languageCode"] as string,
             translatingModel: t["translatingModel"] as ModelId,
-            translationJson: t["translationJson"] ? JSON.parse(t["translationJson"] as string) : null,
             sentences,
         };
         return { result: ret, uids };
     }
 
-    // Lightweight fetch: only languageCode + denormalized translationJson without sentences/words expansion
-    getParagraphTranslationShort(paragraphUid: UUID, languageUid: UUID): { result: ParagraphTranslationShort | undefined, uids: Set<UUID> } {
+    // Lightweight fetch: only languageCode + translation without sentences/words expansion
+    getParagraphTranslationShort(paragraphUid: UUID, _: UUID): { result: ParagraphTranslationShort | undefined, uids: Set<UUID> } {
         const uids = new Set<UUID>();
         uids.add(paragraphUid);
         const t = this.db.selectObject(`
-            SELECT t.uid, l.code as languageCode, t.translationJson as translationJson
+            SELECT t.uid, l.code as languageCode, l.uid as languageUid
             FROM book_chapter_paragraph_translation t
             JOIN language l ON l.uid = t.languageUid
             WHERE t.chapterParagraphUid = ?1 -- AND t.languageUid = ?2
             ORDER BY t.updatedAt DESC
             LIMIT 1
-        `, [paragraphUid/*, languageUid*/]); // TODO do not ignore target language
+        `, [paragraphUid]);
         if (!t) return { result: undefined, uids };
         const translationUid = t["uid"] as UUID;
         uids.add(translationUid);
+
+        const languageUid = t["languageUid"] as UUID; // TODO do not ignore target language - need to figure out UI first
+        uids.add(languageUid);
+
+        const { result: translationJson, uids: translationUids } = this.prepareTranslationObject(paragraphUid, languageUid);
+        translationUids.forEach(uid => uids.add(uid));
+
         return {
             result: {
                 languageCode: t["languageCode"] as string,
-                translationJson: t["translationJson"] ? JSON.parse(t["translationJson"] as string) : []
+                translationJson
             } as ParagraphTranslationShort,
             uids
         };
@@ -1167,7 +1163,7 @@ export class BookBackend {
             }
         });
         // TODO: support filtering by a specific language when multi-language differentiation is needed
-        return {result: rows, uids };
+        return { result: rows, uids };
     }
 
     getWordTranslation(wordUid: UUID): { result: SentenceWordTranslation | undefined, uids: Set<UUID> } {
