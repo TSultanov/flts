@@ -1,6 +1,5 @@
 import type { Database } from "@sqlite.org/sqlite-wasm";
-import { generateUID, type UUID } from "../v2/db";
-import { type DbUpdateMessage, type TableName } from "./sqlWorker";
+import { generateUID, type DbUpdateMessage, type TableName, type UUID } from "./sqlWorker";
 import { DB_UPDATES_CHANNEL_NAME } from "./utils";
 
 // -----------------------

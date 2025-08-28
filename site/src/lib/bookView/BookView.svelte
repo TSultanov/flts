@@ -3,9 +3,8 @@
     import ChapterView from "./ChapterView.svelte";
     import WordView from "./WordView.svelte";
     import { route as r } from "@mateothegreat/svelte5-router";
-    import type { UUID } from "../data/v2/db";
-    import { onMount } from "svelte";
     import { sqlBooks } from "../data/sql/book";
+    import type { UUID } from "../data/sql/sqlWorker";
 
     const { route } = $props();
 

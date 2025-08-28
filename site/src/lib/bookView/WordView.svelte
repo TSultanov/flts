@@ -1,6 +1,6 @@
 <script lang="ts">
-    import { sqlBooks, type SentenceTranslation } from "../data/sql/book";
-    import type { UUID } from "../data/v2/db";
+    import { sqlBooks } from "../data/sql/book";
+    import type { UUID } from "../data/sql/sqlWorker";
 
     const { sentenceWordIdToDisplay }: { sentenceWordIdToDisplay: UUID } = $props();
 

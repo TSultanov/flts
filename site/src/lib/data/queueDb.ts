@@ -1,9 +1,9 @@
 import Dexie, { type EntityTable } from "dexie";
 import type { ModelId } from "./translators/translator";
-import type { UUID } from "./v2/db";
 import { getConfig } from "../config";
 import { sqlBooks } from "./sql/book";
 import { readableToPromise } from "./sql/utils";
+import type { UUID } from "./sql/sqlWorker";
 
 export interface TranslationRequest {
     id: number,

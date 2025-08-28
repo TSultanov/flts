@@ -1,7 +1,6 @@
 import { readable, type Readable } from "svelte/store";
 import type { ModelId } from "../translators/translator";
-import { generateUID, type Entity, type UUID } from "../v2/db";
-import { type StrictBroadcastChannel, type Database, type DbUpdateMessage, type TableName } from "./sqlWorker";
+import { type StrictBroadcastChannel, type Database, type DbUpdateMessage, type TableName, type Entity, type UUID, generateUID } from "./sqlWorker";
 import type { EpubBook } from "../epubLoader";
 import { decode } from 'html-entities';
 import { DB_UPDATES_CHANNEL_NAME, debounce } from "./utils";

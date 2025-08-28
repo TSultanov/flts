@@ -4,8 +4,8 @@
     import { route } from "@mateothegreat/svelte5-router";
     import ConfirmDialog from "./ConfirmDialog.svelte";
     import MoveFolderDialog from "./MoveFolderDialog.svelte";
-    import type { UUID } from "./data/v2/db";
     import type { IBookMeta } from "./data/sql/book";
+    import type { UUID } from "./data/sql/sqlWorker";
 
     const library: Library = getContext("library");
     const rootFolder = library.getLibraryBooks();

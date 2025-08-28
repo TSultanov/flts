@@ -4,9 +4,9 @@ import Bottleneck from 'bottleneck';
 import { liveQuery } from "dexie";
 import { getTranslator, type ModelId, type ParagraphTranslation } from "./translators/translator";
 import { dictionary } from "./sql/dictionary"
-import { sqlBooks, type IBookMeta, type UpdateParagraphTranslationMessageSentence, type UpdateParagraphTranslationMessageTranslation } from "./sql/book";
-import type { UUID } from "./v2/db";
+import { sqlBooks, type UpdateParagraphTranslationMessageSentence, type UpdateParagraphTranslationMessageTranslation } from "./sql/book";
 import { readableToPromise } from "./sql/utils";
+import type { UUID } from "./sql/sqlWorker";
 
 const limit = 1;
 

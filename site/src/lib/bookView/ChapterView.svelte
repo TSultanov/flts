@@ -1,6 +1,6 @@
 <script lang="ts">
     import { sqlBooks } from "../data/sql/book";
-    import type { UUID } from "../data/v2/db";
+    import type { UUID } from "../data/sql/sqlWorker";
     import ParagraphView from "./ParagraphView.svelte";
 
     let {

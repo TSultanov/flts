@@ -1,8 +1,8 @@
 import { derived, readable, type Readable } from 'svelte/store';
 import type { EpubBook } from "./epubLoader";
-import type { UUID } from "./v2/db";
 import { translationQueue } from "./queueDb";
 import { sqlBooks, type IBookMeta } from "./sql/book";
+import type { UUID } from './sql/sqlWorker';
 
 export type LibraryFolder = {
     name?: string,

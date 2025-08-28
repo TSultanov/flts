@@ -2,10 +2,8 @@
     import {
         sqlBooks,
         type Paragraph,
-        type ParagraphTranslationShort,
     } from "../data/sql/book";
-    import type { UUID } from "../data/v2/db";
-    import { onMount } from "svelte";
+    import type { UUID } from "../data/sql/sqlWorker";
 
     let {
         paragraph,
