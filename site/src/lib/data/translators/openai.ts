@@ -8,20 +8,20 @@ import { zodTextFormat } from "openai/helpers/zod";
 const wordSchema = z.object({
     original: z.string(),
     isPunctuation: z.boolean(),
-    isStandalonePunctuation: z.boolean().nullable().optional(),
-    isOpeningParenthesis: z.boolean().nullable().optional(),
-    isClosingParenthesis: z.boolean().nullable().optional(),
+    isStandalonePunctuation: z.boolean().nullable(),
+    isOpeningParenthesis: z.boolean().nullable(),
+    isClosingParenthesis: z.boolean().nullable(),
     translations: z.array(z.string()),
     note: z.string(),
     grammar: z.object({
         originalInitialForm: z.string(),
         targetInitialForm: z.string(),
         partOfSpeech: z.string(),
-        tense: z.string().nullable().optional(),
-        person: z.string().nullable().optional(),
-        case: z.string().nullable().optional(),
-        plurality: z.string().nullable().optional(),
-        other: z.string().nullable().optional()
+        tense: z.string().nullable(),
+        person: z.string().nullable(),
+        case: z.string().nullable(),
+        plurality: z.string().nullable(),
+        other: z.string().nullable()
     })
 });
 

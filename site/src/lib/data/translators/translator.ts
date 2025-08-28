@@ -6,19 +6,19 @@ export type Grammar = {
     originalInitialForm: string,
     targetInitialForm: string,
     partOfSpeech: string
-    plurality?: string | null,
-    person?: string | null,
-    tense?: string | null,
-    case?: string | null,
-    other?: string | null,
+    plurality: string | null,
+    person: string | null,
+    tense: string | null,
+    case: string | null,
+    other: string | null,
 }
 
 export type WordTranslation = {
     original: string,
     isPunctuation: boolean,
-    isStandalonePunctuation?: boolean | null,
-    isOpeningParenthesis?: boolean | null,
-    isClosingParenthesis?: boolean | null,
+    isStandalonePunctuation: boolean | null,
+    isOpeningParenthesis: boolean | null,
+    isClosingParenthesis: boolean | null,
     translations: string[],
     note: string,
     grammar: Grammar,

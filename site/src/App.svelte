@@ -60,7 +60,7 @@
         },
     ];
 
-    let router = $state<RouterInstance>();
+    let router = $state<RouterInstance | undefined>();
 
     let nav: HTMLElement | undefined = $state();
     const mainHeight: {
@@ -104,7 +104,7 @@
     <Nav {router} {links} />
 </div>
 <div class="main" style="height: {mainHeight.value}px;">
-    <Router bind:instance={router} {routes} />
+    <Router bind:instance={router!} {routes} />
 </div>
 
 <style>

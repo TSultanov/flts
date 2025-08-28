@@ -55,24 +55,24 @@ export type SentenceWordTranslation = Entity & {
     readonly sentenceUid: UUID,
     readonly original: string,
     readonly isPunctuation: boolean,
-    readonly isStandalonePunctuation?: boolean | null,
-    readonly isOpeningParenthesis?: boolean | null,
-    readonly isClosingParenthesis?: boolean | null,
-    readonly wordTranslationUid?: UUID,
-    readonly wordTranslationInContext?: string[],
-    readonly grammarContext?: Grammar,
-    readonly note?: string,
+    readonly isStandalonePunctuation: boolean | null,
+    readonly isOpeningParenthesis: boolean | null,
+    readonly isClosingParenthesis: boolean | null,
+    readonly wordTranslationUid: UUID,
+    readonly wordTranslationInContext: string[],
+    readonly grammarContext: Grammar,
+    readonly note: string,
 }
 
 type Grammar = {
     originalInitialForm: string,
     targetInitialForm: string,
     partOfSpeech: string
-    plurality?: string | null,
-    person?: string | null,
-    tense?: string | null,
-    case?: string | null,
-    other?: string | null,
+    plurality: string | null,
+    person: string | null,
+    tense: string | null,
+    case: string | null,
+    other: string | null,
 }
 
 export interface IParagraphView {
@@ -1184,10 +1184,10 @@ export class BookBackend {
                         isStandalonePunctuation: row.isStandalonePunctuation == null ? null : !!row.isStandalonePunctuation,
                         isOpeningParenthesis: row.isOpeningParenthesis == null ? null : !!row.isOpeningParenthesis,
                         isClosingParenthesis: row.isClosingParenthesis == null ? null : !!row.isClosingParenthesis,
-                        wordTranslationUid: row.wordTranslationUid as UUID | undefined,
-                        wordTranslationInContext: row.wordTranslationInContext ? JSON.parse(row.wordTranslationInContext) : undefined,
-                        grammarContext: row.grammarContext ? JSON.parse(row.grammarContext) : undefined,
-                        note: row.note as string | undefined,
+                        wordTranslationUid: row.wordTranslationUid as UUID,
+                        wordTranslationInContext: row.wordTranslationInContext ? JSON.parse(row.wordTranslationInContext) : [],
+                        grammarContext: row.grammarContext ? JSON.parse(row.grammarContext) : [],
+                        note: row.note as string,
                     };
                     sentence.words.push(word);
                     uids.add(row.uid);
@@ -1282,10 +1282,10 @@ export class BookBackend {
             isStandalonePunctuation: r["isStandalonePunctuation"] == null ? null : !!r["isStandalonePunctuation"],
             isOpeningParenthesis: r["isOpeningParenthesis"] == null ? null : !!r["isOpeningParenthesis"],
             isClosingParenthesis: r["isClosingParenthesis"] == null ? null : !!r["isClosingParenthesis"],
-            wordTranslationUid: r["wordTranslationUid"] as UUID | undefined,
-            wordTranslationInContext: r["wordTranslationInContext"] ? JSON.parse(r["wordTranslationInContext"] as string) : undefined,
-            grammarContext: r["grammarContext"] ? JSON.parse(r["grammarContext"] as string) : undefined,
-            note: r["note"] as string | undefined,
+            wordTranslationUid: r["wordTranslationUid"] as UUID,
+            wordTranslationInContext: r["wordTranslationInContext"] ? JSON.parse(r["wordTranslationInContext"] as string) : [],
+            grammarContext: r["grammarContext"] ? JSON.parse(r["grammarContext"] as string) : [],
+            note: r["note"] as string,
         };
         uids.add(word.uid);
         return { result: word, uids };
@@ -1320,24 +1320,24 @@ export type UpdateParagraphTranslationMessageGrammar = {
     originalInitialForm: string;
     targetInitialForm: string;
     partOfSpeech: string;
-    plurality?: string | null;
-    person?: string | null;
-    tense?: string | null;
-    case?: string | null;
-    other?: string | null;
+    plurality?: string | null | undefined;
+    person?: string | null | undefined;
+    tense?: string | null | undefined;
+    case?: string | null | undefined;
+    other?: string | null | undefined;
 };
 
 
 export type UpdateParagraphTranslationMessageWord = {
     original: string;
     isPunctuation: boolean;
-    isStandalonePunctuation?: boolean | null;
-    isOpeningParenthesis?: boolean | null;
-    isClosingParenthesis?: boolean | null;
-    wordTranslationUid?: UUID;
-    wordTranslationInContext?: string[];
-    grammarContext?: UpdateParagraphTranslationMessageGrammar;
-    note?: string;
+    isStandalonePunctuation?: boolean | null | undefined;
+    isOpeningParenthesis?: boolean | null | undefined;
+    isClosingParenthesis?: boolean | null | undefined;
+    wordTranslationUid?: UUID | undefined;
+    wordTranslationInContext?: string[] | undefined;
+    grammarContext?: UpdateParagraphTranslationMessageGrammar | undefined;
+    note?: string | undefined;
 };
 
 export type UpdateParagraphTranslationMessageSentence = {

@@ -7,7 +7,7 @@
     import Link from "./Link.svelte";
 
     export type NavProps = {
-        router?: RouterInstance;
+        router: RouterInstance | undefined;
         route?: RouteResult;
         links: RouteLinkProps[];
     };
