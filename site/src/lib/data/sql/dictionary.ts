@@ -1,6 +1,6 @@
 import type { Database } from "@sqlite.org/sqlite-wasm";
 import { generateUID, type DbUpdateMessage, type TableName, type UUID } from "./sqlWorker";
-import { DB_UPDATES_CHANNEL_NAME } from "./utils";
+import { DB_UPDATES_CHANNEL_NAME, uuidToBlob, blobToUuid } from "./utils";
 
 // -----------------------
 // Messaging Types
@@ -131,11 +131,11 @@ export class DictionaryBackend {
         const existing = db.selectValue(
             "SELECT uid FROM language WHERE lower(code)=lower(?) LIMIT 1",
             [code]
-        ) as UUID | undefined;
-        const uid = existing ?? (() => {
+        ) as Uint8Array | undefined;
+        const uid = (existing ? blobToUuid(existing) as UUID : (() => {
             db.exec(
                 "INSERT INTO language(uid, code, createdAt, updatedAt) VALUES(?1, ?2, ?3, ?3)",
-                { bind: [proposedUid, code, now] }
+                { bind: [uuidToBlob(proposedUid), code, now] }
             );
             this.sendUpdateMessage({ // FIXME this implementation may cause read skew as the message might be sent
                 table: "language",   // before the transaction is committed.
@@ -143,7 +143,7 @@ export class DictionaryBackend {
                 action: 'insert',
             });
             return proposedUid;
-        })();
+        })());
         this.languageCache.set(norm, uid);
         return uid;
     }
@@ -155,12 +155,12 @@ export class DictionaryBackend {
         if (cached) return cached;
         const existing = db.selectValue(
             "SELECT uid FROM word WHERE originalLanguageUid=?1 AND lower(original)=lower(?2) LIMIT 1",
-            [languageUid, word]
-        ) as UUID | undefined;
-        const uid = existing ?? (() => {
+            [uuidToBlob(languageUid), word]
+        ) as Uint8Array | undefined;
+        const uid = (existing ? blobToUuid(existing) as UUID : (() => {
             db.exec(
                 "INSERT INTO word(uid, originalLanguageUid, original, createdAt, updatedAt) VALUES(?1, ?2, ?3, ?4, ?4)",
-                { bind: [proposedUid, languageUid, word, now] }
+                { bind: [uuidToBlob(proposedUid), uuidToBlob(languageUid), word, now] }
             );
             this.sendUpdateMessage({
                 table: "word",
@@ -168,7 +168,7 @@ export class DictionaryBackend {
                 action: 'insert',
             });
             return proposedUid;
-        })();
+        })());
         this.wordCache.set(key, uid);
         return uid;
     }
@@ -191,14 +191,14 @@ export class DictionaryBackend {
                        AND originalWordUid=?2
                        AND lower(translation)=lower(?3)
                      LIMIT 1`,
-            [translationLanguageUid, originalWordUid, translation]
-        ) as UUID | undefined;
-        const uid = existing ?? (() => {
+            [uuidToBlob(translationLanguageUid), uuidToBlob(originalWordUid), translation]
+        ) as Uint8Array | undefined;
+        const uid = (existing ? blobToUuid(existing) as UUID : (() => {
             db.exec(
                 `INSERT INTO word_translation
                         (uid, translationLanguageUid, originalWordUid, translation, createdAt, updatedAt)
                      VALUES(?1, ?2, ?3, ?4, ?5, ?5)`,
-                { bind: [proposedUid, translationLanguageUid, originalWordUid, translation, now] }
+                { bind: [uuidToBlob(proposedUid), uuidToBlob(translationLanguageUid), uuidToBlob(originalWordUid), translation, now] }
             );
             this.sendUpdateMessage({
                 table: "word_translation",
@@ -206,7 +206,7 @@ export class DictionaryBackend {
                 action: 'insert',
             });
             return proposedUid;
-        })();
+        })());
         this.translationCache.set(key, uid);
         return uid;
     }

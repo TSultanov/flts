@@ -214,7 +214,7 @@ function createBookTables(db: Database) {
                 isClosingParenthesis INTEGER,
                 wordTranslationUid BLOB,
                 wordTranslationInContext TEXT,
-                grammarContext TEXT, -- stored as JSON blob (not normalized)
+                grammarContext BLOB, -- JSONB-encoded blob (not normalized)
                 note TEXT,
                 FOREIGN KEY (sentenceUid) REFERENCES book_paragraph_translation_sentence(uid) ON DELETE RESTRICT,
                 FOREIGN KEY (wordTranslationUid) REFERENCES word_translation(uid) ON DELETE SET NULL

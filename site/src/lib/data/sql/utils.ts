@@ -54,3 +54,26 @@ export function readableToPromise<T>(store: Readable<T>): Promise<T | undefined>
         unsubscriber = store.subscribe(data => resolver(data));
     });
 }
+
+// UUID <-> 16-byte BLOB helpers for SQLite
+// Store UUIDs as compact 16-byte blobs in SQLite and convert to strings in app code.
+export function uuidToBlob(u: string): Uint8Array {
+    const hex = u.replace(/-/g, '').toLowerCase();
+    if (hex.length !== 32) throw new Error(`uuidToBlob: invalid UUID string: ${u}`);
+    const out = new Uint8Array(16);
+    for (let i = 0; i < 16; i++) {
+        const byte = hex.slice(i * 2, i * 2 + 2);
+        const v = parseInt(byte, 16);
+        if (Number.isNaN(v)) throw new Error(`uuidToBlob: invalid hex in UUID: ${u}`);
+        out[i] = v;
+    }
+    return out;
+}
+
+export function blobToUuid(b: Uint8Array | ArrayBuffer | number[]): string {
+    const bytes = b instanceof Uint8Array ? b : b instanceof ArrayBuffer ? new Uint8Array(b) : new Uint8Array(b);
+    if (bytes.length !== 16) throw new Error(`blobToUuid: expected 16 bytes, got ${bytes.length}`);
+    const hex = Array.from(bytes, (v) => v.toString(16).padStart(2, '0')).join('');
+    const s = `${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}`;
+    return s;
+}
