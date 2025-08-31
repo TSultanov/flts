@@ -1,8 +1,9 @@
 <script lang="ts">
     import { getContext } from "svelte";
     import { parseEpub } from "../data/epubLoader";
-    import type { Library } from "../data/library";
     import { goto } from "@mateothegreat/svelte5-router";
+    import type { Books } from "../data/evolu/book";
+    import type { TranslationQueue } from "../data/queueDb";
 
     let files: FileList | null | undefined = $state();
 
@@ -41,17 +42,19 @@
         }
     }
 
-    const library: Library = getContext("library");
+    const books: Books = getContext("books");
+    const translationQueue: TranslationQueue = getContext("translationQueue");
 
     async function importBook() {
         const epubBook = await book;
         if (epubBook) {
-            await library.importEpub({
+            const id =books.createBookFromEpub({
                 title: epubBook.title,
                 chapters: epubBook.chapters.filter((_, idx) =>
                     selectedChapters.has(idx),
                 ),
             });
+            translationQueue.scheduleFullBookTranslation(id);
             goto("/library");
         }
     }

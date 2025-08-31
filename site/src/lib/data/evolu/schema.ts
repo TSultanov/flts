@@ -16,6 +16,12 @@ export type LanguageId = typeof LanguageId.Type;
 export const WordId = id("Word");
 export type WordId = typeof WordId.Type;
 
+export const WordSpellingVariantId = id("WordSpellingVariantId");
+export type WordSpellingVariantId = typeof WordSpellingVariantId.Type;
+
+export const WordTranslationSpellingVariantId = id("WordTranslationSpellingVariantId");
+export type WordTranslationSpellingVariantId = typeof WordTranslationSpellingVariantId.Type;
+
 export const WordTranslationId = id("WordTranslation");
 export type WordTranslationId = typeof WordTranslationId.Type;
 
@@ -79,26 +85,30 @@ export const Schema = {
 	word: {
 		id: WordId,
 		originalLanguageId: LanguageId,
-		original: TString,
+	},
+
+	wordSpellingVariant: {
+		id: WordSpellingVariantId,
+		wordId: WordId,
 	},
 
 	// word_translation(uid, translationLanguageUid -> language.id, originalWordUid -> word.id, translation)
 	wordTranslation: {
 		id: WordTranslationId,
 		translationLanguageId: LanguageId,
-		originalWordId: WordId,
-		translation: TString,
+		originalWordVariantId: WordSpellingVariantId,
+	},
+
+	wordTranslationSpellingVariant: {
+		id: WordTranslationSpellingVariantId,
+		wordTranslationId: WordTranslationId,
 	},
 
 	// book(uid, path JSON string[], title, chapterCount, paragraphCount, translatedParagraphsCount)
 	book: {
 		id: BookId,
-		// Stored as JSON string in SQL; kept as string here for parity
-		path: TString,
+		path: StringArrayJson,
 		title: TString,
-		chapterCount: FiniteNumber,
-		paragraphCount: FiniteNumber,
-		translatedParagraphsCount: FiniteNumber,
 	},
 
 	// book_chapter(uid, bookUid -> book.id, chapterIndex, title nullable)
@@ -144,9 +154,9 @@ export const Schema = {
 		isStandalonePunctuation: nullOr(SqliteBoolean),
 		isOpeningParenthesis: nullOr(SqliteBoolean),
 		isClosingParenthesis: nullOr(SqliteBoolean),
-		wordTranslationId: nullOr(WordTranslationId),
-		wordTranslationInContext: nullOr(StringArrayJson),
-		grammarContext: nullOr(GrammarJson),
+		wordTranslationId: WordTranslationId,
+		wordTranslationInContext: StringArrayJson,
+		grammarContext: GrammarJson,
 		note: nullOr(TString),
 	},
 } as const;

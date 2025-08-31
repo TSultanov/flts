@@ -1,66 +1,65 @@
 <script lang="ts">
     import { getContext } from "svelte";
-    import { Library, type LibraryFolder } from "./data/library";
+    import { Library, type IBookMeta, type LibraryFolder } from "./data/library.svelte";
     import { route } from "@mateothegreat/svelte5-router";
     import ConfirmDialog from "./ConfirmDialog.svelte";
     import MoveFolderDialog from "./MoveFolderDialog.svelte";
-    import type { IBookMeta } from "./data/sql/book";
-    import type { UUID } from "./data/sql/sqlWorker";
+    import type { BookId } from "./data/evolu/schema";
 
     const library: Library = getContext("library");
-    const rootFolder = library.getLibraryBooks();
+    const rootFolder = library.libraryBooks;
 
     // Batch selection state
-    let selectedBookUids = $state(new Set<UUID>());
+    let selectedBookIds = $state(new Set<BookId>());
     let showBatchDeleteDialog = $state(false);
     let showBatchMoveDialog = $state(false);
     let booksToDelete: IBookMeta[] = $state([]);
     let booksToMove: IBookMeta[] = $state([]);
 
     // Batch selection functions
-    function toggleBookSelection(bookUid: UUID) {
-        if (selectedBookUids.has(bookUid)) {
-            selectedBookUids.delete(bookUid);
+    function toggleBookSelection(bookId: BookId) {
+        if (selectedBookIds.has(bookId)) {
+            selectedBookIds.delete(bookId);
         } else {
-            selectedBookUids.add(bookUid);
+            selectedBookIds.add(bookId);
         }
-        selectedBookUids = new Set(selectedBookUids); // Trigger reactivity
+        selectedBookIds = new Set(selectedBookIds); // Trigger reactivity
     }
 
     function selectAllBooks() {
-        if (!$rootFolder) return;
-        const allBookUids = getAllBookUids($rootFolder);
-        selectedBookUids = new Set(allBookUids);
+        if (!rootFolder) return;
+        const allBookUids = getAllBookIds(rootFolder);
+        selectedBookIds = new Set(allBookUids);
     }
 
     function clearSelection() {
-        selectedBookUids.clear();
-        selectedBookUids = new Set(selectedBookUids); // Trigger reactivity
+        selectedBookIds.clear();
+        selectedBookIds = new Set(selectedBookIds); // Trigger reactivity
     }
 
-    function getAllBookUids(folder: LibraryFolder): UUID[] {
-        const bookUids: UUID[] = [];
+    function getAllBookIds(folder: LibraryFolder): BookId[] {
+        const bookUids: BookId[] = [];
 
         // Add books from current folder
-        bookUids.push(...folder.books.map((book) => book.uid));
+        bookUids.push(...folder.books.map((book) => book.id));
 
         // Recursively add books from subfolders
         for (const subfolder of folder.folders) {
-            bookUids.push(...getAllBookUids(subfolder));
+            bookUids.push(...getAllBookIds(subfolder));
         }
 
         return bookUids;
     }
 
     function requestBatchDelete() {
-        if (!$rootFolder) return;
-        booksToDelete = getSelectedBooks($rootFolder);
+        if (!rootFolder) return;
+        booksToDelete = getSelectedBooks(rootFolder);
         showBatchDeleteDialog = true;
     }
 
     function requestBatchMove() {
-        if (!$rootFolder) return;
-        booksToMove = getSelectedBooks($rootFolder);
+        if (!rootFolder) return;
+        booksToMove = getSelectedBooks(rootFolder);
         showBatchMoveDialog = true;
     }
 
@@ -69,7 +68,7 @@
 
         // Add selected books from current folder
         books.push(
-            ...folder.books.filter((book) => selectedBookUids.has(book.uid)),
+            ...folder.books.filter((book) => selectedBookIds.has(book.id)),
         );
 
         // Recursively add selected books from subfolders
@@ -82,7 +81,7 @@
 
     function confirmBatchDelete() {
         if (booksToDelete.length > 0) {
-            library.deleteBooksInBatch(booksToDelete.map((book) => book.uid));
+            library.deleteBooksInBatch(booksToDelete.map((book) => book.id));
             booksToDelete = [];
             clearSelection();
         }
@@ -97,7 +96,7 @@
     function confirmBatchMove(newPath: string[]) {
         if (booksToMove.length > 0) {
             library.moveBooksInBatch(
-                booksToMove.map((book) => book.uid),
+                booksToMove.map((book) => book.id),
                 newPath,
             );
             booksToMove = [];
@@ -111,45 +110,43 @@
         showBatchMoveDialog = false;
     }
 
-    const selectedCount = $derived(selectedBookUids.size);
+    const selectedCount = $derived(selectedBookIds.size);
     const hasSelection = $derived(selectedCount > 0);
 </script>
 
-{#if $rootFolder}
-    <div class="books">
-        <div class="header">
-            <h1>Books</h1>
-            {#if hasSelection}
-                <div class="batch-actions">
-                    <span class="selection-count">{selectedCount} selected</span
-                    >
-                    <button onclick={requestBatchMove} class="compact"
-                        >Move Selected</button
-                    >
-                    <button onclick={requestBatchDelete} class="danger compact"
-                        >Delete Selected</button
-                    >
-                    <button onclick={clearSelection} class="secondary compact"
-                        >Clear Selection</button
-                    >
-                </div>
-            {:else}
-                <div class="select-actions">
-                    <button onclick={selectAllBooks} class="secondary compact"
-                        >Select All</button
-                    >
-                </div>
-            {/if}
-        </div>
-        <div class="folders-container">
-            {@render FolderComponent($rootFolder)}
-        </div>
+<div class="books">
+    <div class="header">
+        <h1>Books</h1>
+        {#if hasSelection}
+            <div class="batch-actions">
+                <span class="selection-count">{selectedCount} selected</span
+                >
+                <button onclick={requestBatchMove} class="compact"
+                    >Move Selected</button
+                >
+                <button onclick={requestBatchDelete} class="danger compact"
+                    >Delete Selected</button
+                >
+                <button onclick={clearSelection} class="secondary compact"
+                    >Clear Selection</button
+                >
+            </div>
+        {:else}
+            <div class="select-actions">
+                <button onclick={selectAllBooks} class="secondary compact"
+                    >Select All</button
+                >
+            </div>
+        {/if}
     </div>
-{/if}
+    <div class="folders-container">
+        {@render FolderComponent(rootFolder)}
+    </div>
+</div>
 
 <MoveFolderDialog
     bind:isOpen={showBatchMoveDialog}
-    rootFolder={$rootFolder || { name: undefined, folders: [], books: [] }}
+    rootFolder={rootFolder || { name: undefined, folders: [], books: [] }}
     onConfirm={confirmBatchMove}
     onCancel={cancelBatchMove}
 />
@@ -196,12 +193,12 @@
                             <label class="book-checkbox">
                                 <input
                                     type="checkbox"
-                                    checked={selectedBookUids.has(book.uid)}
+                                    checked={selectedBookIds.has(book.id)}
                                     onchange={() =>
-                                        toggleBookSelection(book.uid)}
+                                        toggleBookSelection(book.id)}
                                 />
                             </label>
-                            <a use:route href="/book/{book.uid}"
+                            <a use:route href="/book/{book.id}"
                                 >{book.title} - {book.chapterCount} chapter(s)
                                 {#if book.translationRatio < 1.0}
                                     - {(book.translationRatio * 100).toFixed(

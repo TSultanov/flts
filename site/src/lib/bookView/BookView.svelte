@@ -3,58 +3,62 @@
     import ChapterView from "./ChapterView.svelte";
     import WordView from "./WordView.svelte";
     import { route as r } from "@mateothegreat/svelte5-router";
-    import { sqlBooks } from "../data/sql/book";
-    import type { UUID } from "../data/sql/sqlWorker";
+    import type { BookChapterId, BookId, BookParagraphTranslationSentenceWordId, DatabaseSchema } from "../data/evolu/schema";
+    import { getContext } from "svelte";
+    import type { Books } from "../data/evolu/book";
+    import { queryState } from "@evolu/svelte";
+    import type { Evolu } from "@evolu/common";
 
     const { route } = $props();
 
-    const bookUid: UUID = route.result.path.params.bookId as UUID;
-    const chapterId: UUID | null = $derived(
+    const bookId: BookId = route.result.path.params.bookId as BookId;
+    const chapterId: BookChapterId | null = $derived(
         route.result.path.params.chapterId
-            ? (route.result.path.params.chapterId as UUID)
+            ? (route.result.path.params.chapterId as BookChapterId)
             : null,
     );
 
-    const chapters = $derived(sqlBooks.getBookChapters(bookUid));
+    const books: Books = getContext("books");
+    const evolu: Evolu<DatabaseSchema> = getContext("evolu");
+
+    const chaptersQuery = $derived(books.bookChapters(bookId));
+
+    const chapters = queryState(evolu, () => chaptersQuery);
 
     $effect(() => {
-        if ($chapters && $chapters.length === 1) {
-            goto(`/book/${bookUid}/${$chapters[0].uid}`);
+        if (chapters.rows.length === 1) {
+            goto(`/book/${bookId}/${chapters.rows[0].id}`);
         }
     });
 
-    let sentenceWordIdToDisplay: UUID | null = $state(null);
+    let sentenceWordIdToDisplay: BookParagraphTranslationSentenceWordId | null = $state(null);
 </script>
 
-{#if $chapters}
-    <div class="container">
-        {#if $chapters.length > 1}
-            <div class="chapters">
-                {#each $chapters as chapter}
-                    <p>
-                        <a use:r href="/book/{bookUid}/{chapter.uid}"
-                            >{chapter.title ? chapter.title : "<no title>"}</a
-                        >
-                    </p>
-                {/each}
-            </div>
-        {/if}
-        {#if chapterId}
-            <div class="chapter-view">
-                <ChapterView {chapterId} bind:sentenceWordIdToDisplay />
-            </div>
-            <div class="word-view">
-                {#if sentenceWordIdToDisplay}
-                    <WordView {sentenceWordIdToDisplay} />
-                {:else}
-                    Select word to show translation
-                {/if}
-            </div>
-        {/if}
-    </div>
-{:else}
-    <p>Failed to load book.</p>
-{/if}
+<div class="container">
+    {#if chapters.rows.length > 1}
+        <div class="chapters">
+            {#each chapters.rows as chapter}
+                <p>
+                    <a use:r href="/book/{bookId}/{chapter.id}"
+                        >{chapter.title ? chapter.title : "<no title>"}</a
+                    >
+                </p>
+            {/each}
+        </div>
+    {/if}
+    {#if chapterId}
+        <div class="chapter-view">
+            <ChapterView {chapterId} bind:sentenceWordIdToDisplay />
+        </div>
+        <div class="word-view">
+            {#if sentenceWordIdToDisplay}
+                <WordView {sentenceWordIdToDisplay} />
+            {:else}
+                Select word to show translation
+            {/if}
+        </div>
+    {/if}
+</div>
 
 <style>
     .container {

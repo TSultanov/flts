@@ -53,6 +53,7 @@
     "html-entities": "^2.6.0",
     "js-sha256": "^0.11.1",
     "jszip": "^3.10.1",
+    "kysely": "^0.28.5",
     "localforage": "^1.10.0",
     "openai": "^5.12.2",
     "uuid": "^11.1.0",

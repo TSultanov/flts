@@ -1,17 +1,20 @@
 <script lang="ts">
     import { getContext } from "svelte";
-    import { Library } from "../data/library";
     import { goto } from "@mateothegreat/svelte5-router";
+    import type { Books } from "../data/evolu/book";
+    import type { TranslationQueue } from "../data/queueDb";
 
     let title = $state("");
     let text = $state("");
 
     const canImport = $derived(title.length > 0 && text.length > 0);
 
-    const library: Library = getContext("library");
+    const books: Books = getContext("books");
+    const translationQueue: TranslationQueue = getContext("translationQueue");
 
     async function save() {
-        await library.importText(title, text);
+        const id = books.createBookFromText(title, text);
+        translationQueue.scheduleFullBookTranslation(id);
         goto("/library");
     }
 </script>
@@ -22,7 +25,9 @@
     <label for="text">Text: </label>
     <textarea id="text" bind:value={text}></textarea>
     <div class="button">
-        <button disabled={!canImport} onclick={save} class="primary">Import</button>
+        <button disabled={!canImport} onclick={save} class="primary"
+            >Import</button
+        >
     </div>
 </div>
 

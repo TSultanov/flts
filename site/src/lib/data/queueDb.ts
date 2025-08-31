@@ -1,14 +1,13 @@
 import Dexie, { type EntityTable } from "dexie";
 import type { ModelId } from "./translators/translator";
 import { getConfig } from "../config";
-import { sqlBooks } from "./sql/book";
-import { readableToPromise } from "./sql/utils";
-import type { UUID } from "./sql/sqlWorker";
+import type { BookChapterParagraphId, BookId, DatabaseSchema } from "./evolu/schema";
+import type { Books } from "./evolu/book";
+import type { Evolu } from "@evolu/common";
 
 export interface TranslationRequest {
     id: number,
-    bookUid: UUID,
-    paragraphUid: UUID,
+    paragraphId: BookChapterParagraphId,
     model: ModelId,
 }
 
@@ -22,54 +21,52 @@ const queueDb = new Dexie('translationQueue', {
 }) as QueueDB;
 
 queueDb.version(1).stores({
-    directTranslationRequests: '++id, bookUid, paragraphUid',
+    directTranslationRequests: '++id, paragraphUid',
 });
 
 export type {
     TranslationRequest as QueueTranslationRequest
 }
 
-export const translationQueue = {
-    cleanupTranslationRequests: async (bookUid: UUID) => {
-        await queueDb.directTranslationRequests.where('bookUid').equals(bookUid).delete();
-    },
+export class TranslationQueue
+{
+    constructor(private evolu: Evolu<DatabaseSchema>, private books: Books) {}
 
-    scheduleTranslation: async (bookUid: UUID, paragraphUid: UUID) => {
+    async cleanupTranslationRequests(bookId: BookId) {
+        await queueDb.directTranslationRequests.where('bookId').equals(bookId).delete();
+    }
+
+    async scheduleTranslation(paragraphId: BookChapterParagraphId) {
         const config = await getConfig();
         await queueDb.directTranslationRequests.add({
-            bookUid,
-            paragraphUid,
+            paragraphId,
             model: config.model,
         });
-    },
+    }
 
-    scheduleFullBookTranslation: async (bookUid: UUID) => {
+    async scheduleFullBookTranslation(bookId: BookId) {
         const config = await getConfig();
-        const untranslatedParagraphs = await readableToPromise(sqlBooks.getNotTranslatedParagraphsUids(bookUid));
+        const untranslatedParagraphs = await this.evolu.loadQuery(this.books.nonTranslatedParagraphsIds(bookId));
 
-        if (untranslatedParagraphs) {
-            for (const p of untranslatedParagraphs) {
-                await queueDb.directTranslationRequests.add({
-                    bookUid,
-                    paragraphUid: p,
-                    model: config.model,
-                });
-            }
+        for (const p of untranslatedParagraphs) {
+            await queueDb.directTranslationRequests.add({
+                paragraphId: p.id,
+                model: config.model,
+            });
         }
-    },
+    }
 
-    hasRequest: async (bookUid: UUID, paragraphUid: UUID) => {
+    async hasRequest(paragraphId: BookChapterParagraphId) {
         return await queueDb.directTranslationRequests
-            .where("bookUid").equals("bookUid")
-            .and(r => r.paragraphUid === paragraphUid)
+            .where("paragraphId").equals(paragraphId)
             .count() > 0;
-    },
+    }
 
-    top: (limit: number) => {
+    top(limit: number) {
         return queueDb.directTranslationRequests.limit(limit).toArray();
-    },
+    }
 
-    removeRequest: async (id: number) => {
+    async removeRequest(id: number){
         await queueDb.directTranslationRequests.delete(id);
     }
 }

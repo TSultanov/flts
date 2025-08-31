@@ -1,22 +1,30 @@
 <script lang="ts">
-    import { sqlBooks } from "../data/sql/book";
-    import type { UUID } from "../data/sql/sqlWorker";
+    import { getContext } from "svelte";
+    import type { BookChapterId, BookParagraphTranslationSentenceWordId, DatabaseSchema } from "../data/evolu/schema";
     import ParagraphView from "./ParagraphView.svelte";
+    import type { Books } from "../data/evolu/book";
+    import type { Evolu } from "@evolu/common";
+    import { queryState } from "@evolu/svelte";
 
     let {
         chapterId,
         sentenceWordIdToDisplay = $bindable(),
     }: {
-        chapterId: UUID;
-        sentenceWordIdToDisplay: UUID | null;
+        chapterId: BookChapterId;
+        sentenceWordIdToDisplay: BookParagraphTranslationSentenceWordId | null;
     } = $props();
 
-    const paragraphs = sqlBooks.getParagraphs(chapterId);
+    const books: Books = getContext("books");
+    const evolu: Evolu<DatabaseSchema> = getContext("evolu");
+
+    const paragraphsQuery = $derived(books.paragraphs(chapterId));
+
+    const paragraphs = queryState(evolu, () => paragraphsQuery);
 
     function chapterClick(e: MouseEvent) {
         const target = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement;
         if (target && target.classList.contains("word-span")) {
-            const data = target.dataset["word"] as UUID;
+            const data = target.dataset["word"] as BookParagraphTranslationSentenceWordId;
             sentenceWordIdToDisplay = data;
         } else {
             sentenceWordIdToDisplay = null;
@@ -33,9 +41,9 @@
         <div
             class="paragraphs-container"
             style="column-width: {sectionContentWidth}px"
-            bind:clientHeight={sectionContentWidth}
+            bind:clientWidth={sectionContentWidth}
         >
-            {#each $paragraphs as paragraph}
+            {#each paragraphs.rows as paragraph}
                 <ParagraphView {paragraph} {sentenceWordIdToDisplay} />
             {/each}
         </div>

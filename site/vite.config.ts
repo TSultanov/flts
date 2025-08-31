@@ -13,6 +13,9 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
-    exclude: ['@sqlite.org/sqlite-wasm'],
+    exclude: [
+      '@sqlite.org/sqlite-wasm',
+      '@evolu/web',
+    ],
   },
 })

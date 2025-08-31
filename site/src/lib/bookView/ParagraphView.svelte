@@ -1,47 +1,129 @@
 <script lang="ts">
-    import {
-        sqlBooks,
-        type Paragraph,
-    } from "../data/sql/book";
-    import type { UUID } from "../data/sql/sqlWorker";
+    import type { Evolu } from "@evolu/common";
+    import type { Books } from "../data/evolu/book";
+    import type {
+        BookChapterParagraphId,
+        BookParagraphTranslationSentenceWordId,
+        DatabaseSchema,
+    } from "../data/evolu/schema";
+    import { getContext } from "svelte";
+    import { queryState } from "@evolu/svelte";
+    import { decode } from "html-entities";
 
     let {
         paragraph,
         sentenceWordIdToDisplay,
     }: {
-        paragraph: Paragraph;
-        sentenceWordIdToDisplay: UUID | null;
+        paragraph: {
+            id: BookChapterParagraphId;
+            originalHtml: string | null;
+            originalText: string | null;
+        };
+        sentenceWordIdToDisplay: BookParagraphTranslationSentenceWordId | null;
     } = $props();
 
     const originalText = $derived(
-        paragraph.originalHtml ?? paragraph.originalText,
+        paragraph.originalHtml ?? paragraph.originalText ?? "<failed to load >",
     );
-    const translation = sqlBooks.getParagraphTranslationShort(paragraph.uid, "ignoredTODO" as UUID);
+
+    const books: Books = getContext("books");
+    const evolu: Evolu<DatabaseSchema> = getContext("evolu");
+
+    const paragraphTranslationQuery = $derived(
+        books.paragraphTranslation(paragraph.id),
+    );
+
+    const paragraphTranslation = queryState(
+        evolu,
+        () => paragraphTranslationQuery,
+    );
 
     const translationHtml = $derived.by(() => {
-        if (translation) {
+        if (paragraphTranslation.rows.length > 0) {
             const result = [];
 
-            if ($translation) {
-                for (const w of $translation.translationJson) {
-                    if (w.meta) {
-                        const additionalClass =
-                            w.meta.wordTranslationUid === sentenceWordIdToDisplay
-                                ? "selected"
-                                : "";
-                        result.push(
-                            `<span class="word-span ${additionalClass}" data-paragraph="${paragraph.uid}" data-sentence="${w.meta.sentenceTranslationUid}" data-word="${w.meta.wordTranslationUid}">${w.text}</span>`,
-                        );
-                    } else {
-                        result.push(w.text);
+            let pIdx = 0;
+            let sentenceIdx = 0;
+            for (const word of paragraphTranslation.rows) {
+                if (word.isPunctuation) {
+                    continue;
+                }
+
+                const w = decode(word.original);
+                const len = w.length;
+                let offset = 0;
+                for (; offset < originalText.length - pIdx; offset++) {
+                    const pWord = decode(
+                        originalText.slice(pIdx + offset, pIdx + offset + len),
+                    );
+
+                    if (w.length <= 2) {
+                        if (w.toLowerCase() === pWord.toLowerCase()) {
+                            break;
+                        }
+                    } else if (
+                        levenshteinDistance(
+                            w.toLowerCase(),
+                            pWord.toLowerCase(),
+                        ) < 2
+                    ) {
+                        break;
                     }
                 }
+
+                if (offset > 0) {
+                    const text = originalText.slice(pIdx, pIdx + offset);
+                    result.push(text);
+                }
+
+                pIdx += offset;
+
+                const additionalClass =
+                    word.wordId === sentenceWordIdToDisplay ? "selected" : "";
+
+                const text = originalText.slice(pIdx, pIdx + len);
+                result.push(
+                    `<span class="word-span ${additionalClass}" data-sentence="${word.sentenceId}" data-word="${word.wordId}">${text}</span>`,
+                );
+
+                pIdx += len;
             }
+
+            if (pIdx < originalText.length) {
+                const text = originalText.slice(pIdx, originalText.length);
+                result.push(text);
+            }
+
             return result.join("");
         }
 
         return null;
     });
+
+    function levenshteinDistance(str1: string, str2: string) {
+        const track = Array(str2.length + 1)
+            .fill(null)
+            .map(() => Array(str1.length + 1).fill(null));
+
+        for (let i = 0; i <= str1.length; i += 1) {
+            track[0][i] = i;
+        }
+        for (let j = 0; j <= str2.length; j += 1) {
+            track[j][0] = j;
+        }
+
+        for (let j = 1; j <= str2.length; j += 1) {
+            for (let i = 1; i <= str1.length; i += 1) {
+                const indicator = str1[i - 1] === str2[j - 1] ? 0 : 1;
+                track[j][i] = Math.min(
+                    track[j][i - 1] + 1, // deletion
+                    track[j - 1][i] + 1, // insertion
+                    track[j - 1][i - 1] + indicator, // substitution
+                );
+            }
+        }
+        return track[str2.length][str1.length];
+    }
 </script>
 
 {#if !translationHtml}
