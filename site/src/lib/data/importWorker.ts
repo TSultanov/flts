@@ -47,12 +47,11 @@ export class TranslationWorker {
 
             let untranslatedCount = 0;
 
-
             const untranslatedParagraphs = await this.evolu.loadQuery(this.books.nonTranslatedParagraphsIds());
 
             for (const p of untranslatedParagraphs) {
-                if (await this.translationQueue.hasRequest(p.id)) continue;
-                await this.translationQueue.scheduleTranslation(p.id);
+                if (await this.translationQueue.hasRequest(p.paragraphId)) continue;
+                await this.translationQueue.scheduleTranslation(p.bookId, p.paragraphId);
                 untranslatedCount++;
             }
 
@@ -197,7 +196,7 @@ export class TranslationWorker {
 
             for (const w of s.words) {
                 const dictStart = performance.now();
-                const wordTranslationId = await this.dictionary.addTranslation(
+                const wordTranslationId = this.dictionary.addTranslation(
                     w.grammar.originalInitialForm,
                     translation.sourceLanguage,
                     w.grammar.targetInitialForm,

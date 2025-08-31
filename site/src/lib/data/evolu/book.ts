@@ -19,12 +19,16 @@ export class Books {
     get allBooks() {
         return this.evolu.createQuery(db =>
             db.selectFrom("book as b")
-                .groupBy("b.id")
-                .select(({ eb, selectFrom, or, val, lit }) => [
+                .where("b.isDeleted", "is not", 1)
+                .select(({ selectFrom }) => [
                     "b.id",
                     "b.title",
                     "b.path",
-                    sql<number>`count(bc.id)`.as("chapterCount"),
+                    "b.isDeleted",
+                    selectFrom("bookChapter as bc")
+                        .whereRef("bc.bookId", "=", "b.id")
+                        .select([sql<number>`count(bc.id)`.as("chapterCount")])
+                        .as("chapterCount"),
                     selectFrom("bookChapterParagraph as bcp")
                         .innerJoin("bookChapter as bc", "bcp.chapterId", "bc.id")
                         .whereRef("bc.bookId", "=", "b.id")
@@ -109,7 +113,7 @@ export class Books {
         const clearWordsForSentence = async (sentenceId: BookParagraphTranslationSentenceId, startingWordIdx: FiniteNumber) => {
             const queryWordIds = this.evolu.createQuery(db =>
                 db.selectFrom("bookParagraphTranslationSentenceWord as w")
-                    .where("w.isDeleted", "!=", 0)
+                    .where("w.isDeleted", "is not", 1)
                     .where("w.sentenceId", "=", sentenceId)
                     .where("w.wordIndex", ">=", startingWordIdx)
                     .select(["w.id"])
@@ -128,7 +132,7 @@ export class Books {
         const clearSentences = async (translationId: BookParagraphTranslationId, startingSentenceIdx: FiniteNumber) => {
             const querySentences = this.evolu.createQuery(db =>
                 db.selectFrom("bookParagraphTranslationSentence as s")
-                    .where("s.isDeleted", "!=", 0)
+                    .where("s.isDeleted", "is not", 1)
                     .where("s.paragraphTranslationId", "=", translationId)
                     .where("s.sentenceIndex", ">=", startingSentenceIdx)
                     .select(["s.id"])
@@ -214,7 +218,7 @@ export class Books {
         return this.evolu.createQuery(db =>
             db.selectFrom("bookChapter")
                 .where("bookId", "=", bookId).orderBy("chapterIndex", "asc")
-                .where("isDeleted", "=", 0)
+                // .where("isDeleted", "is not", 1)
                 .selectAll()
         );
     }
@@ -223,7 +227,7 @@ export class Books {
         return this.evolu.createQuery(db =>
             db.selectFrom("bookChapterParagraph")
                 .where("chapterId", "=", chapterId).orderBy("paragraphIndex", "asc")
-                .where("isDeleted", "=", 0)
+                .where("isDeleted", "is not", 1)
                 .selectAll()
         );
     }
@@ -231,7 +235,7 @@ export class Books {
     paragraph(paragraphId: BookChapterParagraphId) {
         return this.evolu.createQuery(db => db.selectFrom("bookChapterParagraph")
             .where("id", "=", paragraphId)
-            .where("isDeleted", "=", 0)
+            .where("isDeleted", "is not", 1)
             .selectAll()
             .limit(1)
         );
@@ -245,9 +249,9 @@ export class Books {
                 .innerJoin("bookParagraphTranslationSentenceWord as w", "w.sentenceId", "s.id")
                 .orderBy("s.sentenceIndex", "asc")
                 .orderBy("w.wordIndex", "asc")
-                .where("p.isDeleted", "=", 0)
-                .where("s.isDeleted", "=", 0)
-                .where("w.isDeleted", "=", 0)
+                .where("p.isDeleted", "is not", 1)
+                .where("s.isDeleted", "is not", 1)
+                .where("w.isDeleted", "is not", 1)
                 .select([
                     "p.id as paragraphId",
                     "s.id as sentenceId",
@@ -264,9 +268,9 @@ export class Books {
                 .innerJoin("bookParagraphTranslationSentence as s", "s.id", "w.sentenceId")
                 .innerJoin("bookParagraphTranslation as p", "p.id", "s.paragraphTranslationId")
                 .where("w.id", "=", sentnceWordId)
-                .where("w.isDeleted", "=", 0)
-                .where("s.isDeleted", "=", 0)
-                .where("p.isDeleted", "=", 0)
+                .where("w.isDeleted", "is not", 1)
+                .where("s.isDeleted", "is not", 1)
+                .where("p.isDeleted", "is not", 1)
                 .select([
                     "w.id as wordId",
                     "w.original",
@@ -290,20 +294,22 @@ export class Books {
                     .leftJoin("bookParagraphTranslation as t", "t.chapterParagraphId", "p.id")
                     .where("t.id", "is", null)
                     .where("b.id", "=", bookId)
-                    .where("p.isDeleted", "=", 0)
-                    .where("c.isDeleted", "=", 0)
-                    .where("b.isDeleted", "=", 0)
-                    .where("t.isDeleted", "=", 0)
-                    .select(["p.id"])
+                    .where("p.isDeleted", "is not", 1)
+                    .where("c.isDeleted", "is not", 1)
+                    .where("b.isDeleted", "is not", 1)
+                    .where("t.isDeleted", "is not", 1)
+                    .select(["p.id as paragraphId", "b.id as bookId"])
                     .distinct()
             ) :
             this.evolu.createQuery(db =>
                 db.selectFrom("bookChapterParagraph as p")
+                    .innerJoin("bookChapter as c", "p.chapterId", "c.id")
+                    .innerJoin("book as b", "c.bookId", "b.id")
                     .leftJoin("bookParagraphTranslation as t", "t.chapterParagraphId", "p.id")
                     .where("t.id", "is", null)
-                    .where("p.isDeleted", "=", 0)
-                    .where("t.isDeleted", "=", 0)
-                    .select(["p.id"])
+                    .where("p.isDeleted", "is not", 1)
+                    .where("t.isDeleted", "is not", 1)
+                    .select(["p.id as paragraphId", "b.id as bookId"])
                     .distinct()
             );
     }

@@ -36,7 +36,7 @@
             component: LibraryView,
         },
         {
-            path: "/book/(?<bookId>[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})(?:/(?<chapterId>[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}))?",
+            path: "/book/(?<bookId>[^/]+)(?:/(?<chapterId>[^/]+))?",
             name: "Book",
             component: BookView,
         },
@@ -81,7 +81,7 @@
     }
 
     const evolu = createEvolu(evoluSvelteDeps)(Schema, {
-        name: getOrThrow(SimpleName.from("your-app-name")),
+        name: getOrThrow(SimpleName.from("flts")),
         // syncUrl: "wss://your-sync-url", // optional, defaults to wss://free.evoluhq.com
     });
     setContext("evolu", evolu); // TODO: improve DI

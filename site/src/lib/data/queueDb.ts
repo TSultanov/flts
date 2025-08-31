@@ -7,6 +7,7 @@ import type { Evolu } from "@evolu/common";
 
 export interface TranslationRequest {
     id: number,
+    bookId: BookId,
     paragraphId: BookChapterParagraphId,
     model: ModelId,
 }
@@ -21,7 +22,7 @@ const queueDb = new Dexie('translationQueue', {
 }) as QueueDB;
 
 queueDb.version(1).stores({
-    directTranslationRequests: '++id, paragraphUid',
+    directTranslationRequests: '++id, bookId, paragraphId',
 });
 
 export type {
@@ -36,9 +37,10 @@ export class TranslationQueue
         await queueDb.directTranslationRequests.where('bookId').equals(bookId).delete();
     }
 
-    async scheduleTranslation(paragraphId: BookChapterParagraphId) {
+    async scheduleTranslation(bookId: BookId, paragraphId: BookChapterParagraphId) {
         const config = await getConfig();
         await queueDb.directTranslationRequests.add({
+            bookId,
             paragraphId,
             model: config.model,
         });
@@ -50,7 +52,8 @@ export class TranslationQueue
 
         for (const p of untranslatedParagraphs) {
             await queueDb.directTranslationRequests.add({
-                paragraphId: p.id,
+                bookId,
+                paragraphId: p.paragraphId,
                 model: config.model,
             });
         }

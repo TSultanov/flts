@@ -23,19 +23,19 @@
 
     const wordTranslation = queryState(evolu, () => wordQuery);
 
-    const word = $derived(wordTranslation.rows[0]);
+    const word = $derived(wordTranslation.rows.at(0));
 
     const wordTranslationInContext: string[] = $derived(
-        word.wordTranslationInContext
+        word?.wordTranslationInContext
             ? JSON.parse(word.wordTranslationInContext)
             : [],
     );
 
     const grammarContext: ParagraphTranslationSentenceWordGrammar | null =
-        $derived(word.grammarContext ? JSON.parse(word.grammarContext) : null);
+        $derived(word?.grammarContext ? JSON.parse(word.grammarContext) : null);
 </script>
 
-<p class="word-original">{@html word.original}</p>
+<p class="word-original">{@html word?.original}</p>
 {#if wordTranslationInContext.length > 0}
     <details open>
         <summary>Meaning</summary>
@@ -46,7 +46,7 @@
         </ul>
     </details>
 {/if}
-{#if word.note}
+{#if word?.note}
     <details open>
         <summary>Note</summary>
         <p>{word.note}</p>
@@ -120,12 +120,12 @@
         </table>
     </details>
 {/if}
-{#if word.fullTranslation}
+{#if word?.fullTranslation}
     <details>
         <summary>Full sentence</summary>
         <p>{word.fullTranslation}</p>
     </details>
 {/if}
-{#if word.translatingModel}
+{#if word?.translatingModel}
     <p>Translated by: {word.translatingModel}</p>
 {/if}

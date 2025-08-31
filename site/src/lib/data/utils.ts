@@ -25,6 +25,6 @@ export async function hashString(str: string) {
 }
 
 export async function hashFile(file: File) {
-    let content = await file.arrayBuffer();
+    const content = await file.arrayBuffer();
     return await hashBuffer(content);
 }

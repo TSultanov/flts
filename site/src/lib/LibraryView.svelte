@@ -4,10 +4,58 @@
     import { route } from "@mateothegreat/svelte5-router";
     import ConfirmDialog from "./ConfirmDialog.svelte";
     import MoveFolderDialog from "./MoveFolderDialog.svelte";
-    import type { BookId } from "./data/evolu/schema";
+    import type { BookId, DatabaseSchema } from "./data/evolu/schema";
+    import type { Books } from "./data/evolu/book";
+    import type { Evolu } from "@evolu/common";
+    import { queryState } from "@evolu/svelte";
 
     const library: Library = getContext("library");
-    const rootFolder = library.libraryBooks;
+    const evolu: Evolu<DatabaseSchema> = getContext("evolu");
+    const books: Books = getContext("books");
+
+    const allBooks = queryState(evolu, () => books.allBooks);
+        
+    const rootFolder = $derived.by(() => {
+        const root: LibraryFolder = {
+            folders: [],
+            books: []
+        };
+
+        const getOrCreateFolder = (path: string[]): LibraryFolder => {
+            if (path.length === 0) {
+                return root;
+            }
+
+            let current = root;
+            for (const folderName of path) {
+                let folder = current.folders.find(f => f.name === folderName);
+                if (!folder) {
+                    folder = {
+                        name: folderName,
+                        folders: [],
+                        books: []
+                    };
+                    current.folders.push(folder);
+                }
+                current = folder;
+            }
+            return current;
+        };
+
+        for (const book of allBooks.rows) {
+            const path: string[] = JSON.parse(book?.path ?? "[]")
+            const targetFolder = getOrCreateFolder(path);
+            targetFolder.books.push({
+                id: book.id,
+                title: book.title ?? "<unknown>",
+                path,
+                chapterCount: book.chapterCount ?? 0,
+                translationRatio: (book.paragraphsCount ?? 0) / (book.translatedParagraphsCount ?? 0),
+            });
+        }
+
+        return root;
+    });
 
     // Batch selection state
     let selectedBookIds = $state(new Set<BookId>());
