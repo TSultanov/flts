@@ -50,7 +50,7 @@
                 title: book.title ?? "<unknown>",
                 path,
                 chapterCount: book.chapterCount ?? 0,
-                translationRatio: (book.paragraphsCount ?? 0) / (book.translatedParagraphsCount ?? 0),
+                translationRatio: (book.translatedParagraphsCount ?? 0) / (book.paragraphsCount ?? 0),
             });
         }
 

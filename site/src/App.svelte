@@ -83,6 +83,55 @@
     const evolu = createEvolu(evoluSvelteDeps)(Schema, {
         name: getOrThrow(SimpleName.from("flts")),
         // syncUrl: "wss://your-sync-url", // optional, defaults to wss://free.evoluhq.com
+        indexes: (create) => [
+            // Foreign key indexes
+            create("word_originalLanguageId_idx").on("word").column("originalLanguageId"),
+            create("wordSpellingVariant_wordId_idx").on("wordSpellingVariant").column("wordId"),
+            create("wordTranslation_translationLanguageId_idx").on("wordTranslation").column("translationLanguageId"),
+            create("wordTranslation_originalWordVariantId_idx").on("wordTranslation").column("originalWordVariantId"),
+            create("wordTranslationSpellingVariant_wordTranslationId_idx")
+                .on("wordTranslationSpellingVariant")
+                .column("wordTranslationId"),
+            create("bookChapter_bookId_idx").on("bookChapter").column("bookId"),
+            create("bookChapterParagraph_chapterId_idx").on("bookChapterParagraph").column("chapterId"),
+            create("bookParagraphTranslation_chapterParagraphId_idx")
+                .on("bookParagraphTranslation")
+                .column("chapterParagraphId"),
+            create("bookParagraphTranslation_languageId_idx")
+                .on("bookParagraphTranslation")
+                .column("languageId"),
+            create("bookParagraphTranslationSentence_paragraphTranslationId_idx")
+                .on("bookParagraphTranslationSentence")
+                .column("paragraphTranslationId"),
+            create("bookParagraphTranslationSentenceWord_sentenceId_idx")
+                .on("bookParagraphTranslationSentenceWord")
+                .column("sentenceId"),
+            create("bookParagraphTranslationSentenceWord_wordTranslationId_idx")
+                .on("bookParagraphTranslationSentenceWord")
+                .column("wordTranslationId"),
+
+            // Query-pattern indexes (single-column fallbacks)
+            create("bookChapter_chapterIndex_idx").on("bookChapter").column("chapterIndex"),
+            create("bookChapterParagraph_paragraphIndex_idx").on("bookChapterParagraph").column("paragraphIndex"),
+
+            // Soft-delete filtering
+            create("book_isDeleted_idx").on("book").column("isDeleted"),
+            create("bookChapter_isDeleted_idx").on("bookChapter").column("isDeleted"),
+            create("bookChapterParagraph_isDeleted_idx").on("bookChapterParagraph").column("isDeleted"),
+            create("bookParagraphTranslation_isDeleted_idx").on("bookParagraphTranslation").column("isDeleted"),
+            create("bookParagraphTranslationSentence_isDeleted_idx").on("bookParagraphTranslationSentence").column("isDeleted"),
+            create("bookParagraphTranslationSentenceWord_isDeleted_idx")
+                .on("bookParagraphTranslationSentenceWord")
+                .column("isDeleted"),
+
+            // Existing non-FK indexes
+            create("bookParagraphTranslationSentence_sentenceIndex")
+                .on("bookParagraphTranslationSentence")
+                .column("sentenceIndex"),
+            create("bookParagraphTranslationSentenceWord_wordIndex")
+                .on("bookParagraphTranslationSentenceWord")
+                .column("wordIndex"),
+        ],
     });
     setContext("evolu", evolu); // TODO: improve DI
     const books = new Books(evolu);
@@ -90,8 +139,17 @@
     const dictionary = new Dictionary(evolu);
     const translationQueue = new TranslationQueue(evolu, books);
     setContext("translationQueue", translationQueue);
-    const translationWorker = new TranslationWorker(evolu, books, dictionary, translationQueue);
+    const translationWorker = new TranslationWorker(
+        evolu,
+        books,
+        dictionary,
+        translationQueue,
+    );
     translationWorker.startTranslations();
+
+    if (typeof window !== 'undefined') {
+        (window as any).evolu = evolu;
+    }
 
     const library = new Library(evolu, books, translationQueue);
     setContext("library", library); // TODO: perhaps move library funcitonality into Books

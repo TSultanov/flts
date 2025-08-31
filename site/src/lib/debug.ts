@@ -81,5 +81,41 @@ export const debug = {
             };
             fileInput.click();
         });
+    },
+
+    /**
+     * Exports the Evolu database and downloads it as a binary file.
+     */
+    async exportDatabase(): Promise<void> {
+        try {
+            if (typeof window === 'undefined')
+                throw new Error('Window is not available');
+
+            const evolu = (window as any).evolu as
+                | { exportDatabase: () => Promise<Uint8Array> }
+                | undefined;
+            if (!evolu || typeof evolu.exportDatabase !== 'function') {
+                throw new Error('Evolu instance is not available on window');
+            }
+
+            const bytes = await evolu.exportDatabase();
+            // Clone into a fresh Uint8Array whose buffer is an ArrayBuffer
+            const cloned = new Uint8Array(bytes);
+            const blob = new Blob([cloned], { type: 'application/octet-stream' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `flts-evolu-db-${new Date()
+                .toISOString()
+                .replace(/[:.]/g, '-')}.db`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+            console.log('Evolu database exported');
+        } catch (error) {
+            console.error('Failed to export Evolu database:', error);
+            throw error;
+        }
     }
 };
