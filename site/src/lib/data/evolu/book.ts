@@ -40,7 +40,9 @@ export class Books {
                         .whereRef("bc.bookId", "=", "b.id")
                         .select([sql<number>`count(bpt.id)`.as("translatedParagraphsCount")])
                         .as("translatedParagraphsCount")
-                ])
+                ]), {
+                    logQueryExecutionTime: true
+                }
         );
     }
 
@@ -175,9 +177,6 @@ export class Books {
                     wordIndex: idx,
                     original: w.original,
                     isPunctuation: w.isPunctuation,
-                    isStandalonePunctuation: w.isStandalonePunctuation ?? null,
-                    isOpeningParenthesis: w.isOpeningParenthesis ?? null,
-                    isClosingParenthesis: w.isClosingParenthesis ?? null,
                     wordTranslationId: w.wordTranslationId,
                     wordTranslationInContext: w.wordTranslationInContext,
                     grammarContext: {
@@ -329,9 +328,6 @@ export type ParagraphTranslationSentenceWordGrammar = {
 export type ParagraphTranslationSentenceWord = {
     original: string;
     isPunctuation: boolean;
-    isStandalonePunctuation: boolean | null;
-    isOpeningParenthesis: boolean | null;
-    isClosingParenthesis: boolean | null;
     wordTranslationId: WordTranslationSpellingVariantId;
     wordTranslationInContext: string[];
     grammarContext: ParagraphTranslationSentenceWordGrammar;

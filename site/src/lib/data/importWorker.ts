@@ -67,7 +67,7 @@ export class TranslationWorker {
     }
 
     async startTranslations() {
-        this.checkAndScheduleUntranslatedParagraphs();
+        // this.checkAndScheduleUntranslatedParagraphs();
 
         const translationRequestBag: Set<number> = new Set();
         const directTranslationRequestsQuery = liveQuery(async () => await this.translationQueue.top(limit));
@@ -219,9 +219,6 @@ export class TranslationWorker {
                 const wordTranslation: DBParagraphTranslationSentenceWord = {
                     original: w.original,
                     isPunctuation: w.isPunctuation,
-                    isStandalonePunctuation: w.isStandalonePunctuation,
-                    isOpeningParenthesis: w.isOpeningParenthesis,
-                    isClosingParenthesis: w.isClosingParenthesis,
                     wordTranslationId: wordTranslationId,
                     wordTranslationInContext: w.translations,
                     grammarContext: grammarContext,
