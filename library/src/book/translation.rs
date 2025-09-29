@@ -1,7 +1,6 @@
 use crate::book::{
     serialization::{
-        Magic, Serializable, Version, read_len_prefixed_string, read_u8, read_u64, read_vec_slice,
-        write_u64, write_vec_slice,
+        read_len_prefixed_string, read_opt, read_u64, read_u8, read_vec_slice, validate_hash, write_opt, write_u64, write_vec_slice, ChecksumedWriter, Magic, Serializable, Version
     },
     translation_import,
 };
@@ -220,7 +219,7 @@ impl Translation {
 }
 
 impl Serializable for Translation {
-    fn serialize(&self, output_stream: &mut dyn std::io::Write) -> std::io::Result<()> {
+    fn serialize<TWriter: io::Write>(&self, output_stream: &mut TWriter) -> std::io::Result<()> {
         // Binary format TR01 v1 (little endian):
         // magic[4] = TR01
         // u8 version = 1
@@ -244,101 +243,100 @@ impl Serializable for Translation {
         //   u8 has_previous (if 1 then u64 previous_index)
         //   u64 sentences.start,len
         // u64 paragraphs_count, then each: u8 has_translation (if 1 then u64 paragraph_translation_index)
-        Magic::Translation.write(output_stream)?;
-        Version::V1.write_version(output_stream)?;
+        // u64 fnv1 hash of the entire file except the hash itself
 
-        write_u64(output_stream, self.source_language.len() as u64)?;
-        output_stream.write_all(self.source_language.as_bytes())?;
-        write_u64(output_stream, self.target_language.len() as u64)?;
-        output_stream.write_all(self.target_language.as_bytes())?;
+        let mut hashing_stream = ChecksumedWriter::create(output_stream);
 
-        write_u64(output_stream, self.strings.len() as u64)?;
-        output_stream.write_all(&self.strings)?;
+        Magic::Translation.write(&mut hashing_stream)?;
+        Version::V1.write_version(&mut hashing_stream)?;
+
+        write_u64(&mut hashing_stream, self.source_language.len() as u64)?;
+        hashing_stream.write_all(self.source_language.as_bytes())?;
+        write_u64(&mut hashing_stream, self.target_language.len() as u64)?;
+        hashing_stream.write_all(self.target_language.as_bytes())?;
+
+        write_u64(&mut hashing_stream, self.strings.len() as u64)?;
+        hashing_stream.write_all(&self.strings)?;
 
         // Contextual translations
         write_u64(
-            output_stream,
+            &mut hashing_stream,
             self.word_contextual_translations.len() as u64,
         )?;
         for ct in &self.word_contextual_translations {
-            write_vec_slice(output_stream, &ct.translation)?;
+            write_vec_slice(&mut hashing_stream, &ct.translation)?;
         }
 
         // Words
-        write_u64(output_stream, self.words.len() as u64)?;
+        write_u64(&mut hashing_stream, self.words.len() as u64)?;
         for w in &self.words {
-            write_vec_slice(output_stream, &w.original)?;
-            write_vec_slice(output_stream, &w.note)?;
-            output_stream.write_all(&[if w.is_punctuation { 1 } else { 0 }])?;
+            write_vec_slice(&mut hashing_stream, &w.original)?;
+            write_vec_slice(&mut hashing_stream, &w.note)?;
+            hashing_stream.write_all(&[if w.is_punctuation { 1 } else { 0 }])?;
 
             // Grammar required fields
-            write_vec_slice(output_stream, &w.grammar.original_initial_form)?;
-            write_vec_slice(output_stream, &w.grammar.target_initial_form)?;
-            write_vec_slice(output_stream, &w.grammar.part_of_speech)?;
+            write_vec_slice(&mut hashing_stream, &w.grammar.original_initial_form)?;
+            write_vec_slice(&mut hashing_stream, &w.grammar.target_initial_form)?;
+            write_vec_slice(&mut hashing_stream, &w.grammar.part_of_speech)?;
 
-            // Optional grammar fields helper
-            fn write_opt(w: &mut dyn Write, slice: &Option<VecSlice<u8>>) -> io::Result<()> {
-                match slice {
-                    Some(s) => {
-                        w.write_all(&[1])?;
-                        w.write_all(&(s.start as u64).to_le_bytes())?;
-                        w.write_all(&(s.len as u64).to_le_bytes())?;
-                    }
-                    None => {
-                        w.write_all(&[0])?;
-                    }
-                }
-                Ok(())
-            }
-            write_opt(output_stream, &w.grammar.plurality)?;
-            write_opt(output_stream, &w.grammar.person)?;
-            write_opt(output_stream, &w.grammar.tense)?;
-            write_opt(output_stream, &w.grammar.case)?;
-            write_opt(output_stream, &w.grammar.other)?;
+            write_opt(&mut hashing_stream, &w.grammar.plurality)?;
+            write_opt(&mut hashing_stream, &w.grammar.person)?;
+            write_opt(&mut hashing_stream, &w.grammar.tense)?;
+            write_opt(&mut hashing_stream, &w.grammar.case)?;
+            write_opt(&mut hashing_stream, &w.grammar.other)?;
 
-            write_vec_slice(output_stream, &w.contextual_translations)?;
+            write_vec_slice(&mut hashing_stream, &w.contextual_translations)?;
         }
 
         // Sentences
-        write_u64(output_stream, self.sentences.len() as u64)?;
+        write_u64(&mut hashing_stream, self.sentences.len() as u64)?;
         for s in &self.sentences {
-            write_vec_slice(output_stream, &s.full_translation)?;
-            write_vec_slice(output_stream, &s.words)?;
+            write_vec_slice(&mut hashing_stream, &s.full_translation)?;
+            write_vec_slice(&mut hashing_stream, &s.words)?;
         }
 
         // Paragraph translations
-        write_u64(output_stream, self.paragraph_translations.len() as u64)?;
+        write_u64(&mut hashing_stream, self.paragraph_translations.len() as u64)?;
         for pt in &self.paragraph_translations {
-            write_u64(output_stream, pt.timestamp as u64)?;
+            write_u64(&mut hashing_stream, pt.timestamp as u64)?;
             match pt.previous_version {
                 Some(idx) => {
-                    output_stream.write_all(&[1])?;
-                    write_u64(output_stream, idx as u64)?;
+                    hashing_stream.write_all(&[1])?;
+                    write_u64(&mut hashing_stream, idx as u64)?;
                 }
-                None => output_stream.write_all(&[0])?,
+                None => hashing_stream.write_all(&[0])?,
             };
-            write_vec_slice(output_stream, &pt.sentences)?;
+            write_vec_slice(&mut hashing_stream, &pt.sentences)?;
         }
 
         // Paragraphs (Option indices)
-        write_u64(output_stream, self.paragraphs.len() as u64)?;
+        write_u64(&mut hashing_stream, self.paragraphs.len() as u64)?;
         for p in &self.paragraphs {
             match p {
                 Some(idx) => {
-                    output_stream.write_all(&[1])?;
-                    write_u64(output_stream, *idx as u64)?;
+                    hashing_stream.write_all(&[1])?;
+                    write_u64(&mut hashing_stream, *idx as u64)?;
                 }
-                None => output_stream.write_all(&[0])?,
+                None => hashing_stream.write_all(&[0])?,
             }
         }
+
+        // Hash
+        let hash = hashing_stream.current_hash();
+        write_u64(output_stream, hash)?;
 
         Ok(())
     }
 
-    fn deserialize(input_stream: &mut dyn std::io::Read) -> std::io::Result<Self>
+    fn deserialize<TReader: io::Read + Clone>(input_stream: &mut TReader) -> std::io::Result<Self>
     where
         Self: Sized,
     {
+        let hash_valid = validate_hash(input_stream)?;
+        if !hash_valid {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid hash"));
+        }
+
         let mut magic = [0u8; 4];
         input_stream.read_exact(&mut magic)?;
         if &magic != Magic::Translation.as_bytes() {
@@ -371,16 +369,6 @@ impl Serializable for Translation {
             let original_initial_form = read_vec_slice::<u8>(input_stream)?;
             let target_initial_form = read_vec_slice::<u8>(input_stream)?;
             let part_of_speech = read_vec_slice::<u8>(input_stream)?;
-            fn read_opt(r: &mut dyn Read) -> io::Result<Option<VecSlice<u8>>> {
-                let has = read_u8(r)?;
-                if has == 1 {
-                    let s = read_u64(r)? as usize;
-                    let l = read_u64(r)? as usize;
-                    Ok(Some(VecSlice::new(s, l)))
-                } else {
-                    Ok(None)
-                }
-            }
             let plurality = read_opt(input_stream)?;
             let person = read_opt(input_stream)?;
             let tense = read_opt(input_stream)?;
@@ -760,5 +748,86 @@ mod tests {
         let prev = latest.get_previous_version().unwrap();
         let prev_sentence = prev.sentence_view(0);
         assert_eq!(prev_sentence.full_translation, "Hi");
+    }
+
+    #[test]
+    fn translation_serialize_deserialize_corruption() {
+        let mut translation = Translation::create("en", "ru");
+        let paragraph_translation = translation_import::ParagraphTranslation {
+            timestamp: 1,
+            sentences: vec![translation_import::Sentence {
+                full_translation: "Hi".into(),
+                words: vec![translation_import::Word {
+                    original: "Hi".into(),
+                    contextual_translations: vec!["Привет".into()],
+                    note: "greet".into(),
+                    is_punctuation: false,
+                    grammar: translation_import::Grammar {
+                        original_initial_form: "hi".into(),
+                        target_initial_form: "привет".into(),
+                        part_of_speech: "interj".into(),
+                        plurality: None,
+                        person: None,
+                        tense: None,
+                        case: None,
+                        other: None,
+                    },
+                }],
+            }],
+        };
+        translation.add_paragraph_translation(0, &paragraph_translation);
+
+        // second version
+        let paragraph_translation2 = translation_import::ParagraphTranslation {
+            timestamp: 2,
+            sentences: vec![translation_import::Sentence {
+                full_translation: "Hi there".into(),
+                words: vec![
+                    translation_import::Word {
+                        original: "Hi".into(),
+                        contextual_translations: vec!["Привет".into()],
+                        note: "greet".into(),
+                        is_punctuation: false,
+                        grammar: translation_import::Grammar {
+                            original_initial_form: "hi".into(),
+                            target_initial_form: "привет".into(),
+                            part_of_speech: "interj".into(),
+                            plurality: None,
+                            person: None,
+                            tense: None,
+                            case: None,
+                            other: None,
+                        },
+                    },
+                    translation_import::Word {
+                        original: "there".into(),
+                        contextual_translations: vec!["там".into()],
+                        note: "".into(),
+                        is_punctuation: false,
+                        grammar: translation_import::Grammar {
+                            original_initial_form: "there".into(),
+                            target_initial_form: "там".into(),
+                            part_of_speech: "adv".into(),
+                            plurality: None,
+                            person: None,
+                            tense: None,
+                            case: None,
+                            other: None,
+                        },
+                    },
+                ],
+            }],
+        };
+        translation.add_paragraph_translation(0, &paragraph_translation2);
+
+        let mut buf: Vec<u8> = vec![];
+        translation.serialize(&mut buf).unwrap();
+
+        // Corrupt
+        buf[12] = 0xae;
+
+        let mut cursor: &[u8] = &buf;
+        let translation2 = Translation::deserialize(&mut cursor);
+        assert!(translation2.is_err());
     }
 }

@@ -1,9 +1,8 @@
 use crate::book::serialization::{
-    Magic, Serializable, Version, read_exact_array, read_u8, read_u64, read_vec_slice, write_u64,
-    write_vec_slice,
+    read_exact_array, read_u64, read_u8, read_vec_slice, validate_hash, write_u64, write_vec_slice, ChecksumedWriter, Magic, Serializable, Version
 };
 use std::borrow::Cow;
-use std::io::{self};
+use std::io::{self, Read, Write};
 
 use super::soa_helpers::*;
 
@@ -108,7 +107,7 @@ impl<'a> ChapterView<'a> {
 }
 
 impl Serializable for Book {
-    fn serialize(&self, output_stream: &mut dyn std::io::Write) -> std::io::Result<()> {
+    fn serialize<TWriter: io::Write>(&self, output_stream: &mut TWriter) -> std::io::Result<()> {
         // Binary format (little-endian):
         // magic[4] = BK01
         // u8 version = 1
@@ -123,46 +122,58 @@ impl Serializable for Book {
         //   repeat chapters_count times:
         //     u64 title.start, u64 title.len
         //     u64 paragraphs.start, u64 paragraphs.len
+        // u64 fnv1 hash of the entire file except the hash itself
+
+        let mut hashing_stream = ChecksumedWriter::create(output_stream);
 
         // Magic + version
-        Magic::Book.write(output_stream)?; // magic
-        Version::V1.write_version(output_stream)?; // version
+        Magic::Book.write(&mut hashing_stream)?; // magic
+        Version::V1.write_version(&mut hashing_stream)?; // version
 
         // Title
-        write_u64(output_stream, self.title.len() as u64)?;
-        output_stream.write_all(self.title.as_bytes())?;
+        write_u64(&mut hashing_stream, self.title.len() as u64)?;
+        hashing_stream.write_all(self.title.as_bytes())?;
 
         // Strings blob
-        write_u64(output_stream, self.strings.len() as u64)?;
-        output_stream.write_all(&self.strings)?;
+        write_u64(&mut hashing_stream, self.strings.len() as u64)?;
+        hashing_stream.write_all(&self.strings)?;
 
         // Paragraphs
-        write_u64(output_stream, self.paragraphs.len() as u64)?;
+        write_u64(&mut hashing_stream, self.paragraphs.len() as u64)?;
         for p in &self.paragraphs {
-            write_vec_slice(output_stream, &p.original_text)?;
+            write_vec_slice(&mut hashing_stream, &p.original_text)?;
             match p.original_html {
                 Some(slice) => {
-                    output_stream.write_all(&[1u8])?;
-                    write_vec_slice(output_stream, &slice)?;
+                    &mut hashing_stream.write_all(&[1u8])?;
+                    write_vec_slice(&mut hashing_stream, &slice)?;
                 }
-                None => output_stream.write_all(&[0u8])?,
+                None => hashing_stream.write_all(&[0u8])?,
             }
         }
 
         // Chapters
-        write_u64(output_stream, self.chapters.len() as u64)?;
+        write_u64(&mut hashing_stream, self.chapters.len() as u64)?;
         for c in &self.chapters {
-            write_vec_slice(output_stream, &c.title)?;
-            write_vec_slice(output_stream, &c.paragraphs)?;
+            write_vec_slice(&mut hashing_stream, &c.title)?;
+            write_vec_slice(&mut hashing_stream, &c.paragraphs)?;
         }
+
+        // Hash
+        let hash = hashing_stream.current_hash();
+        write_u64(output_stream, hash)?;
 
         Ok(())
     }
 
-    fn deserialize(input_stream: &mut dyn std::io::Read) -> std::io::Result<Self>
+    fn deserialize<TReader: io::Read + Clone>(input_stream: &mut TReader) -> std::io::Result<Self>
     where
         Self: Sized,
     {
+        let hash_valid = validate_hash(input_stream)?;
+        if !hash_valid {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid hash"));
+        }
+
         // Magic
         let magic = read_exact_array::<4>(input_stream)?;
         if &magic != Magic::Book.as_bytes() {
@@ -287,5 +298,26 @@ mod book_tests {
         let p2 = ch1.paragraph_view(0);
         assert_eq!(p2.original_text, "Another one");
         assert_eq!(p2.original_html.as_ref().unwrap(), "<i>Another</i> one");
+    }
+
+    #[test]
+    fn serialize_deserialize_corruption() {
+        let mut book = Book::create("My Book");
+        book.push_chapter("Intro");
+        book.push_paragraph(0, "Hello world", Some("<p>Hello <b>world</b></p>"));
+        book.push_paragraph(0, "Second paragraph", None);
+        book.push_chapter("Second Chapter");
+        book.push_paragraph(1, "Another one", Some("<i>Another</i> one"));
+
+        let mut buffer: Vec<u8> = vec![];
+        book.serialize(&mut buffer).unwrap();
+
+        // Corrupt data
+        buffer[12] = 0xae;
+
+        // Deserialize
+        let mut cursor: &[u8] = &buffer;
+        let book2 = Book::deserialize(&mut cursor);
+        assert!(book2.is_err());
     }
 }
