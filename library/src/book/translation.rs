@@ -1,3 +1,11 @@
+use crate::book::{
+    serialization::{
+        Magic, Serializable, Version, read_len_prefixed_string, read_u8, read_u64, read_vec_slice,
+        write_u64, write_vec_slice,
+    },
+    translation_import,
+};
+use std::io::{self, Read, Write};
 use std::{borrow::Cow, iter};
 
 use super::soa_helpers::*;
@@ -28,6 +36,7 @@ pub struct ParagraphTranslationView<'a> {
     sentences: &'a [Sentence],
 }
 
+#[derive(Clone)]
 struct Sentence {
     full_translation: VecSlice<u8>,
     words: VecSlice<Word>,
@@ -39,13 +48,16 @@ pub struct SentenceView<'a> {
     words: &'a [Word],
 }
 
+#[derive(Clone)]
 struct Word {
     original: VecSlice<u8>,
     contextual_translations: VecSlice<WordContextualTranslation>,
+    is_punctuation: bool,
     note: VecSlice<u8>,
     grammar: Grammar,
 }
 
+#[derive(Clone)]
 struct Grammar {
     original_initial_form: VecSlice<u8>,
     target_initial_form: VecSlice<u8>,
@@ -61,6 +73,7 @@ pub struct WordView<'a> {
     translation: &'a Translation,
     pub original: Cow<'a, str>,
     pub note: Cow<'a, str>,
+    pub is_punctuation: bool,
     pub grammar: GrammarView<'a>,
     contextual_translations: &'a [WordContextualTranslation],
 }
@@ -76,6 +89,7 @@ pub struct GrammarView<'a> {
     other: Option<Cow<'a, str>>,
 }
 
+#[derive(Clone)]
 struct WordContextualTranslation {
     translation: VecSlice<u8>,
 }
@@ -85,6 +99,19 @@ pub struct WordContextualTranslationView<'a> {
 }
 
 impl Translation {
+    pub fn create(source_language: &str, target_language: &str) -> Self {
+        Translation {
+            source_language: source_language.to_owned(),
+            target_language: target_language.to_owned(),
+            strings: vec![],
+            paragraphs: vec![],
+            paragraph_translations: vec![],
+            sentences: vec![],
+            words: vec![],
+            word_contextual_translations: vec![],
+        }
+    }
+
     pub fn paragraph_view(&self, paragraph: usize) -> Option<ParagraphTranslationView> {
         let paragraph = self.paragraphs[paragraph];
         let paragraph = paragraph.map(|p| &self.paragraph_translations[p]);
@@ -96,21 +123,344 @@ impl Translation {
         })
     }
 
-    pub fn add_paragraph_translation(&mut self, paragraph_index: usize, timestamp: usize) {
+    pub fn add_paragraph_translation(
+        &mut self,
+        paragraph_index: usize,
+        translation: &translation_import::ParagraphTranslation,
+    ) {
         if paragraph_index >= self.paragraphs.len() {
-            self.paragraphs.extend(iter::repeat(None).take(paragraph_index - self.paragraphs.len() + 1));
+            self.paragraphs
+                .extend(iter::repeat(None).take(paragraph_index - self.paragraphs.len() + 1));
         }
 
         let new_prev_version = self.paragraphs[paragraph_index];
 
         let new_paragraph = ParagraphTranslation {
-            timestamp: timestamp,
+            timestamp: translation.timestamp,
             previous_version: new_prev_version,
             sentences: VecSlice::empty(),
         };
         let new_index = self.paragraph_translations.len();
         self.paragraph_translations.push(new_paragraph);
         self.paragraphs[paragraph_index] = Some(new_index);
+
+        let mut sentences = VecSlice::empty();
+        for sentence in &translation.sentences {
+            let full_translation = push_string(&mut self.strings, &sentence.full_translation);
+            let mut words = VecSlice::empty();
+            for word in &sentence.words {
+                let original = push_string(&mut self.strings, &word.original);
+                let note = push_string(&mut self.strings, &word.note);
+                let grammar = Grammar {
+                    original_initial_form: push_string(
+                        &mut self.strings,
+                        &word.grammar.original_initial_form,
+                    ),
+                    target_initial_form: push_string(
+                        &mut self.strings,
+                        &word.grammar.target_initial_form,
+                    ),
+                    part_of_speech: push_string(&mut self.strings, &word.grammar.part_of_speech),
+                    plurality: word
+                        .grammar
+                        .plurality
+                        .as_ref()
+                        .map(|s| push_string(&mut self.strings, s)),
+                    person: word
+                        .grammar
+                        .person
+                        .as_ref()
+                        .map(|s| push_string(&mut self.strings, s)),
+                    tense: word
+                        .grammar
+                        .tense
+                        .as_ref()
+                        .map(|s| push_string(&mut self.strings, s)),
+                    case: word
+                        .grammar
+                        .case
+                        .as_ref()
+                        .map(|s| push_string(&mut self.strings, s)),
+                    other: word
+                        .grammar
+                        .other
+                        .as_ref()
+                        .map(|s| push_string(&mut self.strings, s)),
+                };
+                let mut contextual_translations = VecSlice::empty();
+                for contextual_translation in &word.contextual_translations {
+                    let contextual_translation = WordContextualTranslation {
+                        translation: push_string(&mut self.strings, contextual_translation),
+                    };
+                    contextual_translations = push(
+                        &mut self.word_contextual_translations,
+                        &contextual_translations,
+                        contextual_translation,
+                    )
+                    .unwrap();
+                }
+                let new_word = Word {
+                    original,
+                    contextual_translations,
+                    is_punctuation: word.is_punctuation,
+                    note,
+                    grammar,
+                };
+                words = push(&mut self.words, &words, new_word).unwrap();
+            }
+            let new_sentence = Sentence {
+                full_translation,
+                words,
+            };
+            sentences = push(&mut self.sentences, &sentences, new_sentence).unwrap();
+        }
+
+        self.paragraph_translations[new_index].sentences = sentences;
+    }
+}
+
+impl Serializable for Translation {
+    fn serialize(&self, output_stream: &mut dyn std::io::Write) -> std::io::Result<()> {
+        // Binary format TR01 v1 (little endian):
+        // magic[4] = TR01
+        // u8 version = 1
+        // u64 source_lang_len, [u8]*
+        // u64 target_lang_len, [u8]*
+        // u64 strings_len, [u8]* (strings blob)
+        // u64 contextual_translations_count, then each: u64 translation.start, u64 translation.len
+        // u64 words_count, then each:
+        //   u64 original.start,len
+        //   u64 note.start,len
+        //   u8 is_punctuation
+        //   grammar block:
+        //     u64 original_initial_form.start,len
+        //     u64 target_initial_form.start,len
+        //     u64 part_of_speech.start,len
+        //     optionals (plurality, person, tense, case, other): for each u8 has + if 1 then u64 start,len
+        //   u64 contextual_translations.start,len
+        // u64 sentences_count, then each: u64 full_translation.start,len u64 words.start,len
+        // u64 paragraph_translations_count, then each:
+        //   u64 timestamp
+        //   u8 has_previous (if 1 then u64 previous_index)
+        //   u64 sentences.start,len
+        // u64 paragraphs_count, then each: u8 has_translation (if 1 then u64 paragraph_translation_index)
+        Magic::Translation.write(output_stream)?;
+        Version::V1.write_version(output_stream)?;
+
+        write_u64(output_stream, self.source_language.len() as u64)?;
+        output_stream.write_all(self.source_language.as_bytes())?;
+        write_u64(output_stream, self.target_language.len() as u64)?;
+        output_stream.write_all(self.target_language.as_bytes())?;
+
+        write_u64(output_stream, self.strings.len() as u64)?;
+        output_stream.write_all(&self.strings)?;
+
+        // Contextual translations
+        write_u64(
+            output_stream,
+            self.word_contextual_translations.len() as u64,
+        )?;
+        for ct in &self.word_contextual_translations {
+            write_vec_slice(output_stream, &ct.translation)?;
+        }
+
+        // Words
+        write_u64(output_stream, self.words.len() as u64)?;
+        for w in &self.words {
+            write_vec_slice(output_stream, &w.original)?;
+            write_vec_slice(output_stream, &w.note)?;
+            output_stream.write_all(&[if w.is_punctuation { 1 } else { 0 }])?;
+
+            // Grammar required fields
+            write_vec_slice(output_stream, &w.grammar.original_initial_form)?;
+            write_vec_slice(output_stream, &w.grammar.target_initial_form)?;
+            write_vec_slice(output_stream, &w.grammar.part_of_speech)?;
+
+            // Optional grammar fields helper
+            fn write_opt(w: &mut dyn Write, slice: &Option<VecSlice<u8>>) -> io::Result<()> {
+                match slice {
+                    Some(s) => {
+                        w.write_all(&[1])?;
+                        w.write_all(&(s.start as u64).to_le_bytes())?;
+                        w.write_all(&(s.len as u64).to_le_bytes())?;
+                    }
+                    None => {
+                        w.write_all(&[0])?;
+                    }
+                }
+                Ok(())
+            }
+            write_opt(output_stream, &w.grammar.plurality)?;
+            write_opt(output_stream, &w.grammar.person)?;
+            write_opt(output_stream, &w.grammar.tense)?;
+            write_opt(output_stream, &w.grammar.case)?;
+            write_opt(output_stream, &w.grammar.other)?;
+
+            write_vec_slice(output_stream, &w.contextual_translations)?;
+        }
+
+        // Sentences
+        write_u64(output_stream, self.sentences.len() as u64)?;
+        for s in &self.sentences {
+            write_vec_slice(output_stream, &s.full_translation)?;
+            write_vec_slice(output_stream, &s.words)?;
+        }
+
+        // Paragraph translations
+        write_u64(output_stream, self.paragraph_translations.len() as u64)?;
+        for pt in &self.paragraph_translations {
+            write_u64(output_stream, pt.timestamp as u64)?;
+            match pt.previous_version {
+                Some(idx) => {
+                    output_stream.write_all(&[1])?;
+                    write_u64(output_stream, idx as u64)?;
+                }
+                None => output_stream.write_all(&[0])?,
+            };
+            write_vec_slice(output_stream, &pt.sentences)?;
+        }
+
+        // Paragraphs (Option indices)
+        write_u64(output_stream, self.paragraphs.len() as u64)?;
+        for p in &self.paragraphs {
+            match p {
+                Some(idx) => {
+                    output_stream.write_all(&[1])?;
+                    write_u64(output_stream, *idx as u64)?;
+                }
+                None => output_stream.write_all(&[0])?,
+            }
+        }
+
+        Ok(())
+    }
+
+    fn deserialize(input_stream: &mut dyn std::io::Read) -> std::io::Result<Self>
+    where
+        Self: Sized,
+    {
+        let mut magic = [0u8; 4];
+        input_stream.read_exact(&mut magic)?;
+        if &magic != Magic::Translation.as_bytes() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid magic"));
+        }
+        Version::read_version(input_stream)?;
+
+        let source_language = read_len_prefixed_string(input_stream)?;
+        let target_language = read_len_prefixed_string(input_stream)?;
+
+        let strings_len = read_u64(input_stream)? as usize;
+        let mut strings = vec![0u8; strings_len];
+        input_stream.read_exact(&mut strings)?;
+
+        // Contextual translations
+        let ct_len = read_u64(input_stream)? as usize;
+        let mut word_contextual_translations = Vec::with_capacity(ct_len);
+        for _ in 0..ct_len {
+            let slice = read_vec_slice::<u8>(input_stream)?;
+            word_contextual_translations.push(WordContextualTranslation { translation: slice });
+        }
+
+        // Words
+        let words_len = read_u64(input_stream)? as usize;
+        let mut words = Vec::with_capacity(words_len);
+        for _ in 0..words_len {
+            let original = read_vec_slice::<u8>(input_stream)?;
+            let note = read_vec_slice::<u8>(input_stream)?;
+            let is_punctuation = read_u8(input_stream)? == 1;
+            let original_initial_form = read_vec_slice::<u8>(input_stream)?;
+            let target_initial_form = read_vec_slice::<u8>(input_stream)?;
+            let part_of_speech = read_vec_slice::<u8>(input_stream)?;
+            fn read_opt(r: &mut dyn Read) -> io::Result<Option<VecSlice<u8>>> {
+                let has = read_u8(r)?;
+                if has == 1 {
+                    let s = read_u64(r)? as usize;
+                    let l = read_u64(r)? as usize;
+                    Ok(Some(VecSlice::new(s, l)))
+                } else {
+                    Ok(None)
+                }
+            }
+            let plurality = read_opt(input_stream)?;
+            let person = read_opt(input_stream)?;
+            let tense = read_opt(input_stream)?;
+            let case = read_opt(input_stream)?;
+            let other = read_opt(input_stream)?;
+            let contextual_translations =
+                read_vec_slice::<WordContextualTranslation>(input_stream)?;
+            let grammar = Grammar {
+                original_initial_form,
+                target_initial_form,
+                part_of_speech,
+                plurality,
+                person,
+                tense,
+                case,
+                other,
+            };
+            words.push(Word {
+                original,
+                contextual_translations,
+                is_punctuation,
+                note,
+                grammar,
+            });
+        }
+
+        // Sentences
+        let sentences_len = read_u64(input_stream)? as usize;
+        let mut sentences = Vec::with_capacity(sentences_len);
+        for _ in 0..sentences_len {
+            let full_translation = read_vec_slice::<u8>(input_stream)?;
+            let words_slice = read_vec_slice::<Word>(input_stream)?;
+            sentences.push(Sentence {
+                full_translation,
+                words: words_slice,
+            });
+        }
+
+        // Paragraph translations
+        let pt_len = read_u64(input_stream)? as usize;
+        let mut paragraph_translations = Vec::with_capacity(pt_len);
+        for _ in 0..pt_len {
+            let timestamp = read_u64(input_stream)? as usize;
+            let has_prev = read_u8(input_stream)?;
+            let previous_version = if has_prev == 1 {
+                Some(read_u64(input_stream)? as usize)
+            } else {
+                None
+            };
+            let sentences_slice = read_vec_slice::<Sentence>(input_stream)?;
+            paragraph_translations.push(ParagraphTranslation {
+                timestamp,
+                previous_version,
+                sentences: sentences_slice,
+            });
+        }
+
+        // Paragraphs (Option indices)
+        let paragraphs_len = read_u64(input_stream)? as usize;
+        let mut paragraphs = Vec::with_capacity(paragraphs_len);
+        for _ in 0..paragraphs_len {
+            let has = read_u8(input_stream)?;
+            let val = if has == 1 {
+                Some(read_u64(input_stream)? as usize)
+            } else {
+                None
+            };
+            paragraphs.push(val);
+        }
+
+        Ok(Translation {
+            source_language,
+            target_language,
+            strings,
+            paragraphs,
+            paragraph_translations,
+            sentences,
+            words,
+            word_contextual_translations,
+        })
     }
 }
 
@@ -155,15 +505,41 @@ impl<'a> SentenceView<'a> {
             original: String::from_utf8_lossy(word.original.slice(&self.translation.strings)),
             note: String::from_utf8_lossy(word.note.slice(&self.translation.strings)),
             grammar: GrammarView {
-                original_initial_form: String::from_utf8_lossy(word.grammar.original_initial_form.slice(&self.translation.strings)),
-                target_initial_form: String::from_utf8_lossy(word.grammar.target_initial_form.slice(&self.translation.strings)),
-                part_of_speech: String::from_utf8_lossy(word.grammar.part_of_speech.slice(&self.translation.strings)),
-                plurality: word.grammar.plurality.map(|s| String::from_utf8_lossy(s.slice(&self.translation.strings))),
-                person: word.grammar.person.map(|s| String::from_utf8_lossy(s.slice(&self.translation.strings))),
-                tense: word.grammar.tense.map(|s| String::from_utf8_lossy(s.slice(&self.translation.strings))),
-                case: word.grammar.case.map(|s| String::from_utf8_lossy(s.slice(&self.translation.strings))),
-                other: word.grammar.other.map(|s| String::from_utf8_lossy(s.slice(&self.translation.strings))),
+                original_initial_form: String::from_utf8_lossy(
+                    word.grammar
+                        .original_initial_form
+                        .slice(&self.translation.strings),
+                ),
+                target_initial_form: String::from_utf8_lossy(
+                    word.grammar
+                        .target_initial_form
+                        .slice(&self.translation.strings),
+                ),
+                part_of_speech: String::from_utf8_lossy(
+                    word.grammar.part_of_speech.slice(&self.translation.strings),
+                ),
+                plurality: word
+                    .grammar
+                    .plurality
+                    .map(|s| String::from_utf8_lossy(s.slice(&self.translation.strings))),
+                person: word
+                    .grammar
+                    .person
+                    .map(|s| String::from_utf8_lossy(s.slice(&self.translation.strings))),
+                tense: word
+                    .grammar
+                    .tense
+                    .map(|s| String::from_utf8_lossy(s.slice(&self.translation.strings))),
+                case: word
+                    .grammar
+                    .case
+                    .map(|s| String::from_utf8_lossy(s.slice(&self.translation.strings))),
+                other: word
+                    .grammar
+                    .other
+                    .map(|s| String::from_utf8_lossy(s.slice(&self.translation.strings))),
             },
+            is_punctuation: word.is_punctuation,
             contextual_translations: word
                 .contextual_translations
                 .slice(&self.translation.word_contextual_translations),
@@ -185,5 +561,204 @@ impl<'a> WordView<'a> {
                     .slice(&self.translation.strings),
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_translation_add_paragraph_translation() {
+        let mut translation = Translation::create("en", "ru");
+        let paragraph_translation = translation_import::ParagraphTranslation {
+            timestamp: 1234567890,
+            sentences: vec![translation_import::Sentence {
+                full_translation: "Hello, world!".to_string(),
+                words: vec![
+                    translation_import::Word {
+                        original: "Hello".to_string(),
+                        contextual_translations: vec!["Привет".to_string()],
+                        note: "A common greeting".to_string(),
+                        is_punctuation: false,
+                        grammar: translation_import::Grammar {
+                            original_initial_form: "hello".to_string(),
+                            target_initial_form: "привет".to_string(),
+                            part_of_speech: "interjection".to_string(),
+                            plurality: None,
+                            person: None,
+                            tense: None,
+                            case: None,
+                            other: None,
+                        },
+                    },
+                    translation_import::Word {
+                        original: ",".to_string(),
+                        contextual_translations: vec![",".to_string()],
+                        note: "".to_string(),
+                        is_punctuation: true,
+                        grammar: translation_import::Grammar {
+                            original_initial_form: ",".to_string(),
+                            target_initial_form: ",".to_string(),
+                            part_of_speech: "punctuation".to_string(),
+                            plurality: None,
+                            person: None,
+                            tense: None,
+                            case: None,
+                            other: None,
+                        },
+                    },
+                    translation_import::Word {
+                        original: "world".to_string(),
+                        contextual_translations: vec!["мир".to_string()],
+                        note: "".to_string(),
+                        is_punctuation: false,
+                        grammar: translation_import::Grammar {
+                            original_initial_form: "world".to_string(),
+                            target_initial_form: "мир".to_string(),
+                            part_of_speech: "noun".to_string(),
+                            plurality: Some("singular".to_string()),
+                            person: None,
+                            tense: None,
+                            case: Some("nominative".to_string()),
+                            other: None,
+                        },
+                    },
+                    translation_import::Word {
+                        original: "!".to_string(),
+                        contextual_translations: vec!["!".to_string()],
+                        note: "".to_string(),
+                        is_punctuation: true,
+                        grammar: translation_import::Grammar {
+                            original_initial_form: "!".to_string(),
+                            target_initial_form: "!".to_string(),
+                            part_of_speech: "punctuation".to_string(),
+                            plurality: None,
+                            person: None,
+                            tense: None,
+                            case: None,
+                            other: None,
+                        },
+                    },
+                ],
+            }],
+        };
+        translation.add_paragraph_translation(0, &paragraph_translation);
+        let paragraph_view = translation.paragraph_view(0).unwrap();
+        assert_eq!(paragraph_view.timestamp, 1234567890);
+        assert_eq!(paragraph_view.previous_version, None);
+        assert_eq!(paragraph_view.sentence_count(), 1);
+        let sentence_view = paragraph_view.sentence_view(0);
+        assert_eq!(sentence_view.full_translation, "Hello, world!");
+        assert_eq!(sentence_view.word_count(), 4);
+        let word_view_0 = sentence_view.word_view(0);
+        assert_eq!(word_view_0.original, "Hello");
+        assert_eq!(word_view_0.note, "A common greeting");
+        assert_eq!(word_view_0.is_punctuation, false);
+        assert_eq!(word_view_0.grammar.original_initial_form, "hello");
+        assert_eq!(word_view_0.grammar.target_initial_form, "привет");
+        assert_eq!(word_view_0.grammar.part_of_speech, "interjection");
+        assert_eq!(word_view_0.grammar.plurality, None);
+        assert_eq!(word_view_0.grammar.person, None);
+        assert_eq!(word_view_0.grammar.tense, None);
+        assert_eq!(word_view_0.grammar.case, None);
+        assert_eq!(word_view_0.grammar.other, None);
+        assert_eq!(word_view_0.contextual_translations_count(), 1);
+        let contextual_translation_view_0 = word_view_0.contextual_translations_view(0);
+        assert_eq!(contextual_translation_view_0.translation, "Привет");
+    }
+
+    #[test]
+    fn translation_serialize_deserialize_round_trip() {
+        let mut translation = Translation::create("en", "ru");
+        let paragraph_translation = translation_import::ParagraphTranslation {
+            timestamp: 1,
+            sentences: vec![translation_import::Sentence {
+                full_translation: "Hi".into(),
+                words: vec![translation_import::Word {
+                    original: "Hi".into(),
+                    contextual_translations: vec!["Привет".into()],
+                    note: "greet".into(),
+                    is_punctuation: false,
+                    grammar: translation_import::Grammar {
+                        original_initial_form: "hi".into(),
+                        target_initial_form: "привет".into(),
+                        part_of_speech: "interj".into(),
+                        plurality: None,
+                        person: None,
+                        tense: None,
+                        case: None,
+                        other: None,
+                    },
+                }],
+            }],
+        };
+        translation.add_paragraph_translation(0, &paragraph_translation);
+
+        // second version
+        let paragraph_translation2 = translation_import::ParagraphTranslation {
+            timestamp: 2,
+            sentences: vec![translation_import::Sentence {
+                full_translation: "Hi there".into(),
+                words: vec![
+                    translation_import::Word {
+                        original: "Hi".into(),
+                        contextual_translations: vec!["Привет".into()],
+                        note: "greet".into(),
+                        is_punctuation: false,
+                        grammar: translation_import::Grammar {
+                            original_initial_form: "hi".into(),
+                            target_initial_form: "привет".into(),
+                            part_of_speech: "interj".into(),
+                            plurality: None,
+                            person: None,
+                            tense: None,
+                            case: None,
+                            other: None,
+                        },
+                    },
+                    translation_import::Word {
+                        original: "there".into(),
+                        contextual_translations: vec!["там".into()],
+                        note: "".into(),
+                        is_punctuation: false,
+                        grammar: translation_import::Grammar {
+                            original_initial_form: "there".into(),
+                            target_initial_form: "там".into(),
+                            part_of_speech: "adv".into(),
+                            plurality: None,
+                            person: None,
+                            tense: None,
+                            case: None,
+                            other: None,
+                        },
+                    },
+                ],
+            }],
+        };
+        translation.add_paragraph_translation(0, &paragraph_translation2);
+
+        let mut buf: Vec<u8> = vec![];
+        translation.serialize(&mut buf).unwrap();
+        let mut cursor: &[u8] = &buf;
+        let translation2 = Translation::deserialize(&mut cursor).unwrap();
+
+        assert_eq!(translation2.source_language, "en");
+        assert_eq!(translation2.target_language, "ru");
+        // Latest paragraph view
+        let latest = translation2.paragraph_view(0).unwrap();
+        assert_eq!(latest.sentence_count(), 1);
+        let sentence = latest.sentence_view(0);
+        assert_eq!(sentence.full_translation, "Hi there");
+        assert_eq!(sentence.word_count(), 2);
+        let word0 = sentence.word_view(0);
+        assert_eq!(word0.original, "Hi");
+        assert_eq!(word0.contextual_translations_count(), 1);
+        let word1 = sentence.word_view(1);
+        assert_eq!(word1.original, "there");
+        // Previous version chain
+        let prev = latest.get_previous_version().unwrap();
+        let prev_sentence = prev.sentence_view(0);
+        assert_eq!(prev_sentence.full_translation, "Hi");
     }
 }

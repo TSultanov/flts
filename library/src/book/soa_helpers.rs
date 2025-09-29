@@ -45,10 +45,10 @@ pub fn push_string<'a>(strings: &'a mut Vec<u8>, string: &str) -> VecSlice<u8> {
 
 pub fn push<'a, T: Clone>(
     items: &'a mut Vec<T>,
-    slice: VecSlice<T>,
+    slice: &VecSlice<T>,
     item: T,
 ) -> Option<VecSlice<T>> {
-    let mut slice = slice;
+    let mut slice = slice.clone();
     if slice.end() > items.len() {
         return None;
     }
@@ -76,7 +76,7 @@ mod tests {
             len: 0,
             phantom: PhantomData,
         };
-        let slice = push(&mut vec, slice, 4).unwrap();
+        let slice = push(&mut vec, &slice, 4).unwrap();
         let slice = slice.slice(&vec);
         assert_eq!(slice, vec![4]);
         assert_eq!(vec, vec![4]);
@@ -90,7 +90,7 @@ mod tests {
             len: 2,
             phantom: PhantomData,
         };
-        let slice = push(&mut vec, slice, 4).unwrap();
+        let slice = push(&mut vec, &slice, 4).unwrap();
         let slice = slice.slice(&vec);
         assert_eq!(slice, vec![2, 3, 4]);
         assert_eq!(vec, vec![1, 2, 3, 4]);
@@ -104,7 +104,7 @@ mod tests {
             len: 1,
             phantom: PhantomData,
         };
-        let slice = push(&mut vec, slice, 4).unwrap();
+        let slice = push(&mut vec, &slice, 4).unwrap();
         let slice = slice.slice(&vec);
         assert_eq!(slice, vec![1, 4]);
         assert_eq!(vec, vec![1, 2, 3, 1, 4]);
@@ -118,7 +118,7 @@ mod tests {
             len: 1,
             phantom: PhantomData,
         };
-        let slice = push(&mut vec, slice, 4).unwrap();
+        let slice = push(&mut vec, &slice, 4).unwrap();
         let slice = slice.slice(&vec);
         assert_eq!(slice, vec![3, 4]);
         assert_eq!(vec, vec![1, 2, 3, 4]);
@@ -132,7 +132,7 @@ mod tests {
             len: 1,
             phantom: PhantomData,
         };
-        let slice = push(&mut vec, slice, 4);
+        let slice = push(&mut vec, &slice, 4);
         assert_eq!(slice, None);
         assert_eq!(vec, vec![1, 2, 3]);
     }

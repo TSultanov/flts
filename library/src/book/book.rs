@@ -1,4 +1,10 @@
+use crate::book::serialization::{
+    Magic, Serializable, Version, read_exact_array, read_u8, read_u64, read_vec_slice, write_u64,
+    write_vec_slice,
+};
 use std::borrow::Cow;
+use std::io::{self};
+
 use super::soa_helpers::*;
 
 pub struct Book {
@@ -75,7 +81,7 @@ impl Book {
         };
         let paragraphs_slice = push(
             &mut self.paragraphs,
-            self.chapters[chapter_index].paragraphs,
+            &self.chapters[chapter_index].paragraphs,
             new_paragraph,
         )
         .unwrap();
@@ -98,6 +104,120 @@ impl<'a> ChapterView<'a> {
                 paragraph.original_text.slice(&self.book.strings),
             ),
         };
+    }
+}
+
+impl Serializable for Book {
+    fn serialize(&self, output_stream: &mut dyn std::io::Write) -> std::io::Result<()> {
+        // Binary format (little-endian):
+        // magic[4] = BK01
+        // u8 version = 1
+        // u64 title_len, [u8]*
+        // u64 strings_len, [u8]* (strings blob)
+        // u64 paragraphs_count
+        //   repeat paragraphs_count times:
+        //     u64 original_text.start, u64 original_text.len
+        //     u8 has_html (0/1)
+        //       if 1: u64 original_html.start, u64 original_html.len
+        // u64 chapters_count
+        //   repeat chapters_count times:
+        //     u64 title.start, u64 title.len
+        //     u64 paragraphs.start, u64 paragraphs.len
+
+        // Magic + version
+        Magic::Book.write(output_stream)?; // magic
+        Version::V1.write_version(output_stream)?; // version
+
+        // Title
+        write_u64(output_stream, self.title.len() as u64)?;
+        output_stream.write_all(self.title.as_bytes())?;
+
+        // Strings blob
+        write_u64(output_stream, self.strings.len() as u64)?;
+        output_stream.write_all(&self.strings)?;
+
+        // Paragraphs
+        write_u64(output_stream, self.paragraphs.len() as u64)?;
+        for p in &self.paragraphs {
+            write_vec_slice(output_stream, &p.original_text)?;
+            match p.original_html {
+                Some(slice) => {
+                    output_stream.write_all(&[1u8])?;
+                    write_vec_slice(output_stream, &slice)?;
+                }
+                None => output_stream.write_all(&[0u8])?,
+            }
+        }
+
+        // Chapters
+        write_u64(output_stream, self.chapters.len() as u64)?;
+        for c in &self.chapters {
+            write_vec_slice(output_stream, &c.title)?;
+            write_vec_slice(output_stream, &c.paragraphs)?;
+        }
+
+        Ok(())
+    }
+
+    fn deserialize(input_stream: &mut dyn std::io::Read) -> std::io::Result<Self>
+    where
+        Self: Sized,
+    {
+        // Magic
+        let magic = read_exact_array::<4>(input_stream)?;
+        if &magic != Magic::Book.as_bytes() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid magic"));
+        }
+        Version::read_version(input_stream)?; // ensure supported
+
+        // Title
+        let title_len = read_u64(input_stream)? as usize;
+        let mut title_buf = vec![0u8; title_len];
+        input_stream.read_exact(&mut title_buf)?;
+        let title = String::from_utf8(title_buf)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8 in title"))?;
+
+        // Strings blob
+        let strings_len = read_u64(input_stream)? as usize;
+        let mut strings = vec![0u8; strings_len];
+        input_stream.read_exact(&mut strings)?;
+
+        // Paragraphs
+        let paragraphs_len = read_u64(input_stream)? as usize;
+        let mut paragraphs = Vec::with_capacity(paragraphs_len);
+        for _ in 0..paragraphs_len {
+            let original_text = read_vec_slice::<u8>(input_stream)?;
+            let has_html = read_u8(input_stream)?;
+            let original_html = if has_html == 1 {
+                Some(read_vec_slice::<u8>(input_stream)?)
+            } else {
+                None
+            };
+            let paragraph = Paragraph {
+                original_html,
+                original_text,
+            };
+            paragraphs.push(paragraph);
+        }
+
+        // Chapters
+        let chapters_len = read_u64(input_stream)? as usize;
+        let mut chapters = Vec::with_capacity(chapters_len);
+        for _ in 0..chapters_len {
+            let title = read_vec_slice::<u8>(input_stream)?;
+            let paragraphs_slice = read_vec_slice::<Paragraph>(input_stream)?;
+            chapters.push(Chapter {
+                title,
+                paragraphs: paragraphs_slice,
+            });
+        }
+
+        Ok(Book {
+            title,
+            chapters,
+            paragraphs,
+            strings,
+        })
     }
 }
 
@@ -129,5 +249,43 @@ mod book_tests {
 
         assert_eq!("Test", first_paragraph.original_text);
         assert_eq!("<b>Test</b>", first_paragraph.original_html.unwrap());
+    }
+
+    #[test]
+    fn serialize_deserialize_round_trip() {
+        let mut book = Book::create("My Book");
+        book.push_chapter("Intro");
+        book.push_paragraph(0, "Hello world", Some("<p>Hello <b>world</b></p>"));
+        book.push_paragraph(0, "Second paragraph", None);
+        book.push_chapter("Second Chapter");
+        book.push_paragraph(1, "Another one", Some("<i>Another</i> one"));
+
+        let mut buffer: Vec<u8> = vec![];
+        book.serialize(&mut buffer).unwrap();
+
+        // Deserialize
+        let mut cursor: &[u8] = &buffer;
+        let book2 = Book::deserialize(&mut cursor).unwrap();
+
+        assert_eq!(book2.title, "My Book");
+        assert_eq!(book2.chapter_count(), 2);
+        let ch0 = book2.chapter_view(0);
+        assert_eq!(ch0.title, "Intro");
+        assert_eq!(ch0.paragraph_count(), 2);
+        let p0 = ch0.paragraph_view(0);
+        assert_eq!(p0.original_text, "Hello world");
+        assert_eq!(
+            p0.original_html.as_ref().unwrap(),
+            "<p>Hello <b>world</b></p>"
+        );
+        let p1 = ch0.paragraph_view(1);
+        assert_eq!(p1.original_text, "Second paragraph");
+        assert!(p1.original_html.is_none());
+        let ch1 = book2.chapter_view(1);
+        assert_eq!(ch1.title, "Second Chapter");
+        assert_eq!(ch1.paragraph_count(), 1);
+        let p2 = ch1.paragraph_view(0);
+        assert_eq!(p2.original_text, "Another one");
+        assert_eq!(p2.original_html.as_ref().unwrap(), "<i>Another</i> one");
     }
 }
