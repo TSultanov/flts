@@ -1,5 +1,5 @@
 use crate::book::serialization::{
-    read_exact_array, read_u64, read_u8, read_vec_slice, validate_hash, write_u64, write_vec_slice, ChecksumedWriter, Magic, Serializable, Version
+    read_exact_array, read_u64, read_u8, read_var_u64, read_vec_slice, validate_hash, write_u64, write_var_u64, write_vec_slice, ChecksumedWriter, Magic, Serializable, Version
 };
 use std::borrow::Cow;
 use std::io::{self, Read, Write};
@@ -131,15 +131,15 @@ impl Serializable for Book {
         Version::V1.write_version(&mut hashing_stream)?; // version
 
         // Title
-        write_u64(&mut hashing_stream, self.title.len() as u64)?;
+        write_var_u64(&mut hashing_stream, self.title.len() as u64)?;
         hashing_stream.write_all(self.title.as_bytes())?;
 
         // Strings blob
-        write_u64(&mut hashing_stream, self.strings.len() as u64)?;
+        write_var_u64(&mut hashing_stream, self.strings.len() as u64)?;
         hashing_stream.write_all(&self.strings)?;
 
         // Paragraphs
-        write_u64(&mut hashing_stream, self.paragraphs.len() as u64)?;
+        write_var_u64(&mut hashing_stream, self.paragraphs.len() as u64)?;
         for p in &self.paragraphs {
             write_vec_slice(&mut hashing_stream, &p.original_text)?;
             match p.original_html {
@@ -152,7 +152,7 @@ impl Serializable for Book {
         }
 
         // Chapters
-        write_u64(&mut hashing_stream, self.chapters.len() as u64)?;
+        write_var_u64(&mut hashing_stream, self.chapters.len() as u64)?;
         for c in &self.chapters {
             write_vec_slice(&mut hashing_stream, &c.title)?;
             write_vec_slice(&mut hashing_stream, &c.paragraphs)?;
@@ -182,19 +182,19 @@ impl Serializable for Book {
         Version::read_version(input_stream)?; // ensure supported
 
         // Title
-        let title_len = read_u64(input_stream)? as usize;
+        let title_len = read_var_u64(input_stream)? as usize;
         let mut title_buf = vec![0u8; title_len];
         input_stream.read_exact(&mut title_buf)?;
         let title = String::from_utf8(title_buf)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8 in title"))?;
 
         // Strings blob
-        let strings_len = read_u64(input_stream)? as usize;
+        let strings_len = read_var_u64(input_stream)? as usize;
         let mut strings = vec![0u8; strings_len];
         input_stream.read_exact(&mut strings)?;
 
         // Paragraphs
-        let paragraphs_len = read_u64(input_stream)? as usize;
+        let paragraphs_len = read_var_u64(input_stream)? as usize;
         let mut paragraphs = Vec::with_capacity(paragraphs_len);
         for _ in 0..paragraphs_len {
             let original_text = read_vec_slice::<u8>(input_stream)?;
@@ -212,7 +212,7 @@ impl Serializable for Book {
         }
 
         // Chapters
-        let chapters_len = read_u64(input_stream)? as usize;
+        let chapters_len = read_var_u64(input_stream)? as usize;
         let mut chapters = Vec::with_capacity(chapters_len);
         for _ in 0..chapters_len {
             let title = read_vec_slice::<u8>(input_stream)?;

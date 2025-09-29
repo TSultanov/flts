@@ -1,6 +1,6 @@
 use crate::book::{
     serialization::{
-        read_len_prefixed_string, read_opt, read_u64, read_u8, read_vec_slice, validate_hash, write_opt, write_u64, write_vec_slice, ChecksumedWriter, Magic, Serializable, Version
+        read_len_prefixed_string, read_opt, read_u64, read_u8, read_var_u64, read_vec_slice, validate_hash, write_opt, write_u64, write_var_u64, write_vec_slice, ChecksumedWriter, Magic, Serializable, Version
     },
     translation_import,
 };
@@ -250,16 +250,16 @@ impl Serializable for Translation {
         Magic::Translation.write(&mut hashing_stream)?;
         Version::V1.write_version(&mut hashing_stream)?;
 
-        write_u64(&mut hashing_stream, self.source_language.len() as u64)?;
+        write_var_u64(&mut hashing_stream, self.source_language.len() as u64)?;
         hashing_stream.write_all(self.source_language.as_bytes())?;
-        write_u64(&mut hashing_stream, self.target_language.len() as u64)?;
+        write_var_u64(&mut hashing_stream, self.target_language.len() as u64)?;
         hashing_stream.write_all(self.target_language.as_bytes())?;
 
-        write_u64(&mut hashing_stream, self.strings.len() as u64)?;
+        write_var_u64(&mut hashing_stream, self.strings.len() as u64)?;
         hashing_stream.write_all(&self.strings)?;
 
         // Contextual translations
-        write_u64(
+        write_var_u64(
             &mut hashing_stream,
             self.word_contextual_translations.len() as u64,
         )?;
@@ -268,7 +268,7 @@ impl Serializable for Translation {
         }
 
         // Words
-        write_u64(&mut hashing_stream, self.words.len() as u64)?;
+        write_var_u64(&mut hashing_stream, self.words.len() as u64)?;
         for w in &self.words {
             write_vec_slice(&mut hashing_stream, &w.original)?;
             write_vec_slice(&mut hashing_stream, &w.note)?;
@@ -289,20 +289,20 @@ impl Serializable for Translation {
         }
 
         // Sentences
-        write_u64(&mut hashing_stream, self.sentences.len() as u64)?;
+        write_var_u64(&mut hashing_stream, self.sentences.len() as u64)?;
         for s in &self.sentences {
             write_vec_slice(&mut hashing_stream, &s.full_translation)?;
             write_vec_slice(&mut hashing_stream, &s.words)?;
         }
 
         // Paragraph translations
-        write_u64(&mut hashing_stream, self.paragraph_translations.len() as u64)?;
+        write_var_u64(&mut hashing_stream, self.paragraph_translations.len() as u64)?;
         for pt in &self.paragraph_translations {
-            write_u64(&mut hashing_stream, pt.timestamp as u64)?;
+            write_var_u64(&mut hashing_stream, pt.timestamp as u64)?;
             match pt.previous_version {
                 Some(idx) => {
                     hashing_stream.write_all(&[1])?;
-                    write_u64(&mut hashing_stream, idx as u64)?;
+                    write_var_u64(&mut hashing_stream, idx as u64)?;
                 }
                 None => hashing_stream.write_all(&[0])?,
             };
@@ -310,12 +310,12 @@ impl Serializable for Translation {
         }
 
         // Paragraphs (Option indices)
-        write_u64(&mut hashing_stream, self.paragraphs.len() as u64)?;
+        write_var_u64(&mut hashing_stream, self.paragraphs.len() as u64)?;
         for p in &self.paragraphs {
             match p {
                 Some(idx) => {
                     hashing_stream.write_all(&[1])?;
-                    write_u64(&mut hashing_stream, *idx as u64)?;
+                    write_var_u64(&mut hashing_stream, *idx as u64)?;
                 }
                 None => hashing_stream.write_all(&[0])?,
             }
@@ -347,12 +347,12 @@ impl Serializable for Translation {
         let source_language = read_len_prefixed_string(input_stream)?;
         let target_language = read_len_prefixed_string(input_stream)?;
 
-        let strings_len = read_u64(input_stream)? as usize;
+        let strings_len = read_var_u64(input_stream)? as usize;
         let mut strings = vec![0u8; strings_len];
         input_stream.read_exact(&mut strings)?;
 
         // Contextual translations
-        let ct_len = read_u64(input_stream)? as usize;
+        let ct_len = read_var_u64(input_stream)? as usize;
         let mut word_contextual_translations = Vec::with_capacity(ct_len);
         for _ in 0..ct_len {
             let slice = read_vec_slice::<u8>(input_stream)?;
@@ -360,7 +360,7 @@ impl Serializable for Translation {
         }
 
         // Words
-        let words_len = read_u64(input_stream)? as usize;
+        let words_len = read_var_u64(input_stream)? as usize;
         let mut words = Vec::with_capacity(words_len);
         for _ in 0..words_len {
             let original = read_vec_slice::<u8>(input_stream)?;
@@ -396,7 +396,7 @@ impl Serializable for Translation {
         }
 
         // Sentences
-        let sentences_len = read_u64(input_stream)? as usize;
+        let sentences_len = read_var_u64(input_stream)? as usize;
         let mut sentences = Vec::with_capacity(sentences_len);
         for _ in 0..sentences_len {
             let full_translation = read_vec_slice::<u8>(input_stream)?;
@@ -408,13 +408,13 @@ impl Serializable for Translation {
         }
 
         // Paragraph translations
-        let pt_len = read_u64(input_stream)? as usize;
+        let pt_len = read_var_u64(input_stream)? as usize;
         let mut paragraph_translations = Vec::with_capacity(pt_len);
         for _ in 0..pt_len {
-            let timestamp = read_u64(input_stream)? as usize;
+            let timestamp = read_var_u64(input_stream)? as usize;
             let has_prev = read_u8(input_stream)?;
             let previous_version = if has_prev == 1 {
-                Some(read_u64(input_stream)? as usize)
+                Some(read_var_u64(input_stream)? as usize)
             } else {
                 None
             };
@@ -427,12 +427,12 @@ impl Serializable for Translation {
         }
 
         // Paragraphs (Option indices)
-        let paragraphs_len = read_u64(input_stream)? as usize;
+        let paragraphs_len = read_var_u64(input_stream)? as usize;
         let mut paragraphs = Vec::with_capacity(paragraphs_len);
         for _ in 0..paragraphs_len {
             let has = read_u8(input_stream)?;
             let val = if has == 1 {
-                Some(read_u64(input_stream)? as usize)
+                Some(read_var_u64(input_stream)? as usize)
             } else {
                 None
             };
