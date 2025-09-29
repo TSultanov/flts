@@ -1,6 +1,6 @@
 use crate::book::{
     serialization::{
-        read_len_prefixed_string, read_opt, read_u64, read_u8, read_var_u64, read_vec_slice, validate_hash, write_opt, write_u64, write_var_u64, write_vec_slice, ChecksumedWriter, Magic, Serializable, Version
+        read_len_prefixed_string, read_len_prefixed_vec, read_opt, read_u64, read_u8, read_var_u64, read_vec_slice, validate_hash, write_opt, write_u64, write_var_u64, write_vec_slice, ChecksumedWriter, Magic, Serializable, Version
     },
     translation_import,
 };
@@ -225,7 +225,7 @@ impl Serializable for Translation {
         // u8 version = 1
         // u64 source_lang_len, [u8]*
         // u64 target_lang_len, [u8]*
-        // u64 strings_len, [u8]* (strings blob)
+        // u64 strings_len (compressed), [u8]* (strings blob (zstd compressed))
         // u64 contextual_translations_count, then each: u64 translation.start, u64 translation.len
         // u64 words_count, then each:
         //   u64 original.start,len
@@ -255,8 +255,9 @@ impl Serializable for Translation {
         write_var_u64(&mut hashing_stream, self.target_language.len() as u64)?;
         hashing_stream.write_all(self.target_language.as_bytes())?;
 
-        write_var_u64(&mut hashing_stream, self.strings.len() as u64)?;
-        hashing_stream.write_all(&self.strings)?;
+        let encoded = zstd::stream::encode_all(self.strings.as_slice(), 5)?;
+        write_var_u64(&mut hashing_stream, encoded.len() as u64)?;
+        hashing_stream.write_all(&encoded)?;
 
         // Contextual translations
         write_var_u64(
@@ -347,9 +348,8 @@ impl Serializable for Translation {
         let source_language = read_len_prefixed_string(input_stream)?;
         let target_language = read_len_prefixed_string(input_stream)?;
 
-        let strings_len = read_var_u64(input_stream)? as usize;
-        let mut strings = vec![0u8; strings_len];
-        input_stream.read_exact(&mut strings)?;
+        let encoded_data = read_len_prefixed_vec(input_stream)?;
+        let strings = zstd::stream::decode_all(encoded_data.as_slice())?;
 
         // Contextual translations
         let ct_len = read_var_u64(input_stream)? as usize;

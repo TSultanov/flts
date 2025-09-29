@@ -1,5 +1,5 @@
 use crate::book::serialization::{
-    read_exact_array, read_u64, read_u8, read_var_u64, read_vec_slice, validate_hash, write_u64, write_var_u64, write_vec_slice, ChecksumedWriter, Magic, Serializable, Version
+    read_exact_array, read_len_prefixed_vec, read_u64, read_u8, read_var_u64, read_vec_slice, validate_hash, write_u64, write_var_u64, write_vec_slice, ChecksumedWriter, Magic, Serializable, Version
 };
 use std::borrow::Cow;
 use std::io::{self, Read, Write};
@@ -112,7 +112,7 @@ impl Serializable for Book {
         // magic[4] = BK01
         // u8 version = 1
         // u64 title_len, [u8]*
-        // u64 strings_len, [u8]* (strings blob)
+        // u64 strings_len (compressed), [u8]* (strings blob (zstd compressed))
         // u64 paragraphs_count
         //   repeat paragraphs_count times:
         //     u64 original_text.start, u64 original_text.len
@@ -135,8 +135,9 @@ impl Serializable for Book {
         hashing_stream.write_all(self.title.as_bytes())?;
 
         // Strings blob
-        write_var_u64(&mut hashing_stream, self.strings.len() as u64)?;
-        hashing_stream.write_all(&self.strings)?;
+        let encoded = zstd::stream::encode_all(self.strings.as_slice(), 5)?;
+        write_var_u64(&mut hashing_stream, encoded.len() as u64)?;
+        hashing_stream.write_all(&encoded)?;
 
         // Paragraphs
         write_var_u64(&mut hashing_stream, self.paragraphs.len() as u64)?;
@@ -144,7 +145,7 @@ impl Serializable for Book {
             write_vec_slice(&mut hashing_stream, &p.original_text)?;
             match p.original_html {
                 Some(slice) => {
-                    &mut hashing_stream.write_all(&[1u8])?;
+                    hashing_stream.write_all(&[1u8])?;
                     write_vec_slice(&mut hashing_stream, &slice)?;
                 }
                 None => hashing_stream.write_all(&[0u8])?,
@@ -189,9 +190,8 @@ impl Serializable for Book {
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8 in title"))?;
 
         // Strings blob
-        let strings_len = read_var_u64(input_stream)? as usize;
-        let mut strings = vec![0u8; strings_len];
-        input_stream.read_exact(&mut strings)?;
+        let encoded_data = read_len_prefixed_vec(input_stream)?;
+        let strings = zstd::stream::decode_all(encoded_data.as_slice())?;
 
         // Paragraphs
         let paragraphs_len = read_var_u64(input_stream)? as usize;
