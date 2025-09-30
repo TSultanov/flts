@@ -13,11 +13,6 @@ impl BookMetadata {
     where
         Self: Sized,
     {
-        let hash_valid = validate_hash(input_stream)?;
-        if !hash_valid {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid hash"));
-        }
-
         // Magic
         let magic = read_exact_array::<4>(input_stream)?;
         if &magic != Magic::Book.as_bytes() {
@@ -46,10 +41,8 @@ impl BookMetadata {
         let title = String::from_utf8(title_buf)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8 in title"))?;
 
-        // skip chapters count
         let chapters_count = read_var_u64(&mut cursor)?;
 
-        // skip paragraphs count
         let paragraphs_count = read_var_u64(&mut cursor)?;
 
         Ok(BookMetadata {
