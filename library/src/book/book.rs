@@ -111,7 +111,12 @@ impl Serializable for Book {
         // Binary format (little-endian):
         // magic[4] = BK01
         // u8 version = 1
+        // Metadata section
+        // u64 metadata hash
         // u64 title_len, [u8]*
+        // u64 chapters_count
+        // u64 paragraphs_count
+        // Data section
         // u64 strings_len (compressed), [u8]* (strings blob (zstd compressed))
         // u64 paragraphs_count
         //   repeat paragraphs_count times:
@@ -130,9 +135,28 @@ impl Serializable for Book {
         Magic::Book.write(&mut hashing_stream)?; // magic
         Version::V1.write_version(&mut hashing_stream)?; // version
 
+        let mut metadata_buf = Vec::new();
+        let mut metadata_buf_hasher = ChecksumedWriter::create(&mut metadata_buf);
+
         // Title
-        write_var_u64(&mut hashing_stream, self.title.len() as u64)?;
-        hashing_stream.write_all(self.title.as_bytes())?;
+        write_var_u64(&mut metadata_buf_hasher, self.title.len() as u64)?;
+        metadata_buf_hasher.write_all(self.title.as_bytes())?;
+
+        // chapters count
+        let chapters_count = self.chapter_count();
+        write_var_u64(&mut metadata_buf_hasher, chapters_count as u64)?;
+
+        // paragraphs count
+        let paragraphs_count = (0..self.chapter_count()).into_iter().fold(0, |acc, ch| acc + self.chapter_view(ch).paragraph_count());
+        write_var_u64(&mut metadata_buf_hasher, paragraphs_count as u64)?;
+
+        // Write metadata
+        // hash
+        let metadata_hash = metadata_buf_hasher.current_hash();
+        write_u64(&mut hashing_stream, metadata_hash)?;
+        // metadata
+        write_var_u64(&mut hashing_stream, metadata_buf.len() as u64)?;
+        hashing_stream.write_all(&metadata_buf)?;
 
         // Strings blob
         let encoded = zstd::stream::encode_all(self.strings.as_slice(), 5)?;
@@ -182,12 +206,24 @@ impl Serializable for Book {
         }
         Version::read_version(input_stream)?; // ensure supported
 
+        // Skip metadata hash - it's only for when read only metadata
+        _ = read_u64(input_stream)?;
+
+        // Skip metadata size
+        _ = read_var_u64(input_stream)?;
+
         // Title
         let title_len = read_var_u64(input_stream)? as usize;
         let mut title_buf = vec![0u8; title_len];
         input_stream.read_exact(&mut title_buf)?;
         let title = String::from_utf8(title_buf)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8 in title"))?;
+
+        // skip chapters count
+        _ = read_var_u64(input_stream)?;
+
+        // skip paragraphs count
+        _ = read_var_u64(input_stream)?;
 
         // Strings blob
         let encoded_data = read_len_prefixed_vec(input_stream)?;

@@ -122,6 +122,10 @@ impl Translation {
         })
     }
 
+    pub fn translated_paragraphs_count(&self) -> usize {
+        self.paragraphs.iter().filter(|p| p.is_some()).count()
+    }
+
     pub fn add_paragraph_translation(
         &mut self,
         paragraph_index: usize,
@@ -225,6 +229,7 @@ impl Serializable for Translation {
         // u8 version = 1
         // u64 source_lang_len, [u8]*
         // u64 target_lang_len, [u8]*
+        // u64 translated_paragraphs_count
         // u64 strings_len (compressed), [u8]* (strings blob (zstd compressed))
         // u64 contextual_translations_count, then each: u64 translation.start, u64 translation.len
         // u64 words_count, then each:
@@ -254,6 +259,8 @@ impl Serializable for Translation {
         hashing_stream.write_all(self.source_language.as_bytes())?;
         write_var_u64(&mut hashing_stream, self.target_language.len() as u64)?;
         hashing_stream.write_all(self.target_language.as_bytes())?;
+
+        write_var_u64(&mut hashing_stream, self.translated_paragraphs_count() as u64)?;
 
         let encoded = zstd::stream::encode_all(self.strings.as_slice(), 5)?;
         write_var_u64(&mut hashing_stream, encoded.len() as u64)?;
@@ -347,6 +354,9 @@ impl Serializable for Translation {
 
         let source_language = read_len_prefixed_string(input_stream)?;
         let target_language = read_len_prefixed_string(input_stream)?;
+
+        // Skip translated_paragraphs_count
+        _ = read_var_u64(input_stream)?;
 
         let encoded_data = read_len_prefixed_vec(input_stream)?;
         let strings = zstd::stream::decode_all(encoded_data.as_slice())?;

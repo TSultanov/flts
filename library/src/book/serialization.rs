@@ -163,13 +163,13 @@ impl Version {
     }
 }
 
-pub struct ChecksumedWriter<'a, T: io::Write> {
-    backing_writer: &'a mut T,
+pub struct ChecksumedWriter<'a> {
+    backing_writer: &'a mut dyn io::Write,
     hasher: fnv::FnvHasher,
 }
 
-impl<'a, T: io::Write> ChecksumedWriter<'a, T> {
-    pub fn create(backing_writer: &'a mut T) -> Self {
+impl<'a> ChecksumedWriter<'a> {
+    pub fn create(backing_writer: &'a mut dyn io::Write) -> Self {
         ChecksumedWriter {
             backing_writer: backing_writer,
             hasher: fnv::FnvHasher::default(),
@@ -181,7 +181,7 @@ impl<'a, T: io::Write> ChecksumedWriter<'a, T> {
     }
 }
 
-impl<'a, T: io::Write> io::Write for ChecksumedWriter<'a, T> {
+impl<'a> io::Write for ChecksumedWriter<'a> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.hasher.write(buf);
 
