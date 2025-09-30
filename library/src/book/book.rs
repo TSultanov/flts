@@ -187,6 +187,8 @@ impl Serializable for Book {
         let hash = hashing_stream.current_hash();
         write_u64(output_stream, hash)?;
 
+        output_stream.flush()?;
+
         Ok(())
     }
 

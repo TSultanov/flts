@@ -4,12 +4,12 @@ use crate::book::serialization::{read_exact_array, read_len_prefixed_vec, read_u
 
 pub struct BookMetadata {
     pub title: String,
-    pub chapters_count: u64,
-    pub paragraphs_count: u64,
+    pub chapters_count: usize,
+    pub paragraphs_count: usize,
 }
 
 impl BookMetadata {
-    pub fn read_metadata<TReader: io::Read + Clone>(input_stream: &mut TReader) -> io::Result<Self>
+    pub fn read_metadata<TReader: io::Read>(input_stream: &mut TReader) -> io::Result<Self>
     where
         Self: Sized,
     {
@@ -41,9 +41,9 @@ impl BookMetadata {
         let title = String::from_utf8(title_buf)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8 in title"))?;
 
-        let chapters_count = read_var_u64(&mut cursor)?;
+        let chapters_count = read_var_u64(&mut cursor)? as usize;
 
-        let paragraphs_count = read_var_u64(&mut cursor)?;
+        let paragraphs_count = read_var_u64(&mut cursor)? as usize;
 
         Ok(BookMetadata {
             title: title,

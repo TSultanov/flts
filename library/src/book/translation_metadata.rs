@@ -15,7 +15,7 @@ pub struct TranslationMetadata {
 }
 
 impl TranslationMetadata {
-    pub fn read_metadata<TReader: io::Read + Clone>(input_stream: &mut TReader) -> io::Result<Self>
+    pub fn read_metadata<TReader: io::Read>(input_stream: &mut TReader) -> io::Result<Self>
     where
         Self: Sized,
     {
