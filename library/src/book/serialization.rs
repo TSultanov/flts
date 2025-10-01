@@ -1,7 +1,10 @@
 use ringbuffer::{AllocRingBuffer, RingBuffer};
 
 use super::soa_helpers::VecSlice;
-use std::{hash::Hasher, io::{self, ErrorKind}};
+use std::{
+    hash::Hasher,
+    io::{self, ErrorKind},
+};
 
 pub trait Serializable {
     fn serialize<TWriter: io::Write>(&self, output_stream: &mut TWriter) -> io::Result<()>;
@@ -63,7 +66,10 @@ pub fn read_var_u64(r: &mut dyn io::Read) -> io::Result<u64> {
     let mut shift = 0u32;
     loop {
         if shift >= 64 {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "Varint too long"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Varint too long",
+            ));
         }
         let mut b = [0u8; 1];
         r.read_exact(&mut b)?;
@@ -222,7 +228,8 @@ pub fn validate_hash<T: io::Read + Clone>(reader: &mut T) -> io::Result<bool> {
         return Err(io::Error::new(ErrorKind::InvalidData, "Not enough data"));
     }
 
-    let read_hash = u64::from_le_bytes(last_u64.into_iter().collect::<Vec<_>>().try_into().unwrap());
+    let read_hash =
+        u64::from_le_bytes(last_u64.into_iter().collect::<Vec<_>>().try_into().unwrap());
     let computed_hash = *last_hashes.front().unwrap();
 
     Ok(read_hash == computed_hash)
@@ -258,13 +265,18 @@ mod serialization_tests {
             (300, &[0xAC, 0x02]), // standard varint example
             (16384, &[0x80, 0x80, 0x01]), // 2^14
             // 4-byte maximum where each 7-bit group is all ones: (1 << 28) - 1
-            (0x0FFF_FFFFu64, &[0xFF,0xFF,0xFF,0x7F]),
+            (0x0FFF_FFFFu64, &[0xFF, 0xFF, 0xFF, 0x7F]),
             // 5-byte example: exactly 1 << 28 requires five groups
-            (1u64 << 28, &[0x80,0x80,0x80,0x80,0x01]),
+            (1u64 << 28, &[0x80, 0x80, 0x80, 0x80, 0x01]),
         ];
         for (v, expected) in cases.iter() {
             assert_eq!(&encode(*v), expected, "encoding mismatch for {v}");
-            assert_eq!(decode(expected), *v, "decoding mismatch for bytes {:?}", expected);
+            assert_eq!(
+                decode(expected),
+                *v,
+                "decoding mismatch for bytes {:?}",
+                expected
+            );
         }
     }
 
@@ -272,14 +284,15 @@ mod serialization_tests {
     fn test_roundtrip_powers_of_two_and_boundaries() {
         let mut values = vec![0u64, 1, 2, 3, 127, 128, 129];
         // Add powers of two around 7-bit boundaries
-        for shift in (7..=63).step_by(7) { // 7,14,21,...,63
+        for shift in (7..=63).step_by(7) {
+            // 7,14,21,...,63
             let base = 1u64 << shift;
             values.push(base - 1);
             values.push(base);
             values.push(base + 1);
         }
         values.push(u64::MAX);
-        for v in values { 
+        for v in values {
             let enc = encode(v);
             let dec = decode(&enc);
             assert_eq!(dec, v, "roundtrip failed for {v} -> {:?}", enc);
@@ -290,9 +303,11 @@ mod serialization_tests {
     fn test_streaming_multiple_varints_back_to_back() {
         let nums = [0u64, 1, 127, 128, 300, 16384, u32::MAX as u64, u64::MAX];
         let mut buf: Vec<u8> = Vec::new();
-        for n in nums.iter() { write_var_u64(&mut buf, *n).unwrap(); }
+        for n in nums.iter() {
+            write_var_u64(&mut buf, *n).unwrap();
+        }
         let mut cursor = Cursor::new(buf);
-        for expected in nums.iter() { 
+        for expected in nums.iter() {
             let v = read_var_u64(&mut cursor).unwrap();
             assert_eq!(&v, expected);
         }
@@ -306,7 +321,7 @@ mod serialization_tests {
     fn test_incomplete_varint() {
         // 0x80 indicates continuation but stream ends
         let bytes = [0x80u8];
-        let mut cur = Cursor::new(bytes); 
+        let mut cur = Cursor::new(bytes);
         let r = read_var_u64(&mut cur);
         assert!(r.is_err());
         assert_eq!(r.err().unwrap().kind(), io::ErrorKind::UnexpectedEof);
@@ -316,14 +331,14 @@ mod serialization_tests {
     fn test_varint_too_long() {
         // Construct 11 bytes where the first 10 have continuation bit set; for valid u64 max is 10 bytes
         // This will create shift >= 64 and should error with InvalidData
-    let bytes = vec![0x80u8; 11];
+        let bytes = vec![0x80u8; 11];
         // Last byte also has continuation bit to force loop past 64 bits
         let mut cur = Cursor::new(bytes);
         let r = read_var_u64(&mut cur);
         assert!(r.is_err());
         assert_eq!(r.err().unwrap().kind(), io::ErrorKind::InvalidData);
     }
-    
+
     #[test]
     fn test_max_u64_encoding() {
         let v = u64::MAX; // 0xFFFF_FFFF_FFFF_FFFF

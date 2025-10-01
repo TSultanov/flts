@@ -1,7 +1,9 @@
 use uuid::Uuid;
 
 use crate::book::serialization::{
-    read_exact_array, read_len_prefixed_vec, read_u64, read_u8, read_var_u64, read_vec_slice, validate_hash, write_u64, write_var_u64, write_vec_slice, ChecksumedWriter, Magic, Serializable, Version
+    ChecksumedWriter, Magic, Serializable, Version, read_exact_array, read_len_prefixed_vec,
+    read_u8, read_u64, read_var_u64, read_vec_slice, validate_hash, write_u64, write_var_u64,
+    write_vec_slice,
 };
 use std::borrow::Cow;
 use std::io::{self, Read, Write};
@@ -140,10 +142,9 @@ impl Serializable for Book {
         Magic::Book.write(&mut hashing_stream)?; // magic
         Version::V1.write_version(&mut hashing_stream)?; // version
 
-        
         let mut metadata_buf = Vec::new();
         let mut metadata_buf_hasher = ChecksumedWriter::create(&mut metadata_buf);
-        
+
         metadata_buf_hasher.write_all(self.id.as_bytes())?;
         // Title
         write_var_u64(&mut metadata_buf_hasher, self.title.len() as u64)?;
@@ -154,7 +155,9 @@ impl Serializable for Book {
         write_var_u64(&mut metadata_buf_hasher, chapters_count as u64)?;
 
         // paragraphs count
-        let paragraphs_count = (0..self.chapter_count()).into_iter().fold(0, |acc, ch| acc + self.chapter_view(ch).paragraph_count());
+        let paragraphs_count = (0..self.chapter_count())
+            .into_iter()
+            .fold(0, |acc, ch| acc + self.chapter_view(ch).paragraph_count());
         write_var_u64(&mut metadata_buf_hasher, paragraphs_count as u64)?;
 
         // Write metadata
@@ -215,10 +218,9 @@ impl Serializable for Book {
         }
         Version::read_version(input_stream)?; // ensure supported
 
-        
         // Skip metadata hash - it's only for when read only metadata
         _ = read_u64(input_stream)?;
-        
+
         // Skip metadata size
         _ = read_var_u64(input_stream)?;
 
