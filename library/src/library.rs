@@ -1,5 +1,6 @@
 use std::{fs, io, time::SystemTime};
 
+use itertools::Itertools;
 use uuid::Uuid;
 use vfs::{VfsError, VfsPath};
 
@@ -12,12 +13,14 @@ pub struct LibraryTranslationMetadata {
     pub source_langugage: String,
     pub target_language: String,
     pub translated_paragraphs_count: usize,
-    pub last_modified: SystemTime,
+    pub main_path: VfsPath,
+    pub conflicting_paths: Vec<VfsPath>,
 }
 
 pub struct LibraryBookMetadata {
     pub title: String,
-    pub last_modified: SystemTime,
+    pub main_path: VfsPath,
+    pub conflicting_paths: Vec<VfsPath>,
     pub paragraphs_count: usize,
     pub translations_metadata: Vec<LibraryTranslationMetadata>,
 }
@@ -25,38 +28,83 @@ pub struct LibraryBookMetadata {
 impl LibraryBookMetadata {
     pub fn load(path: &VfsPath) -> Result<Self, VfsError> {
         let book_dat = path.join("book.dat")?;
-        let book_last_modified = book_dat.metadata()?.modified.unwrap();
-
         let mut book_dat_file = book_dat.open_file()?;
-
         let book_metadata = BookMetadata::read_metadata(&mut book_dat_file)?;
 
-        let mut translations = Vec::new();
+        let conflicting_paths = {
+            let conflicting_paths = path
+                .read_dir()?
+                .filter(|d| d.filename().starts_with("book") && d.filename().ends_with(".dat"));
+
+            let mut result = Vec::new();
+
+            for path in conflicting_paths {
+                let mut file = path.open_file()?;
+                let metadata = BookMetadata::read_metadata(&mut file);
+                match metadata {
+                    Ok(metadata) => {
+                        if metadata.id == book_metadata.id {
+                            result.push(path);
+                        } else {
+                            println!(
+                                "Conflicting version ({:?}) with different book id, skipping...",
+                                path
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        println!("Failed to read metadata from {:?}, skipping: {}", path, err);
+                    }
+                }
+            }
+
+            result
+        };
+
+        let mut all_translations = Vec::new();
 
         let book_dir_content = path.read_dir()?;
+
         for file in book_dir_content {
             if file.is_file()?
                 && file.filename().starts_with("translation_")
                 && file.filename().ends_with(".dat")
-            // TODO: handle conflicting versions
             {
-                let last_modified = file.metadata()?.modified.unwrap();
                 let mut data = file.open_file()?;
                 let metadata = TranslationMetadata::read_metadata(&mut data)?;
-                translations.push(LibraryTranslationMetadata {
-                    source_langugage: metadata.source_language,
-                    target_language: metadata.target_language,
-                    translated_paragraphs_count: metadata.translated_paragraphs_count,
-                    last_modified: last_modified,
-                });
+                all_translations.push((file, metadata));
             }
+        }
+
+        let grouped_translations = all_translations
+            .into_iter()
+            .chunk_by(|(_, translation)| translation.id);
+        let grouped_translations = grouped_translations
+            .into_iter()
+            .map(|(id, chunk)| (id, chunk.sorted_by_key(|(p, _)| p.filename().len())));
+
+        let mut translations_metadata = Vec::new();
+
+        for (_, mut translations) in grouped_translations {
+            let (main_path, main_translation) = translations.next().unwrap(); // There is always at least one translation in chunk
+
+            let conflicting_iterations = translations.map(|(p, _)| p).collect();
+
+            translations_metadata.push(LibraryTranslationMetadata {
+                source_langugage: main_translation.source_language,
+                target_language: main_translation.target_language,
+                translated_paragraphs_count: main_translation.translated_paragraphs_count,
+                main_path: main_path,
+                conflicting_paths: conflicting_iterations,
+            })
         }
 
         Ok(LibraryBookMetadata {
             title: book_metadata.title,
-            last_modified: book_last_modified,
+            main_path: book_dat,
+            conflicting_paths,
             paragraphs_count: book_metadata.paragraphs_count,
-            translations_metadata: translations,
+            translations_metadata,
         })
     }
 }
@@ -106,6 +154,7 @@ impl Library {
 
         Ok(LibraryBook {
             path: book_root,
+            last_modified: None,
             book: Book::create(title),
             translations: vec![],
         })
@@ -114,8 +163,14 @@ impl Library {
 
 pub struct LibraryBook {
     path: VfsPath,
+    last_modified: Option<SystemTime>,
     book: Book,
-    translations: Vec<Translation>,
+    translations: Vec<LibraryTranslation>,
+}
+
+pub struct LibraryTranslation {
+    translation: Translation,
+    last_modified: Option<SystemTime>,
 }
 
 impl LibraryBook {
@@ -127,23 +182,49 @@ impl LibraryBook {
         if !self.path.exists()? {
             self.path.create_dir()?
         }
+
+        let book_path = self.path.join("book.dat")?;
+        if let Some(last_modified) = self.last_modified {
+            if book_path.exists()? {
+                let saved_book_last_modified = book_path.metadata()?.modified.unwrap();
+                if saved_book_last_modified > last_modified {
+                    todo!("Implement book data merging");
+                }
+            }
+        } else if book_path.exists()? {
+            todo!("Implement book data merging");
+        }
+
         let book_path_temp = self.path.join("book.dat~")?;
         let mut file = book_path_temp.create_file()?;
         self.book.serialize(&mut file)?;
-        let book_path = self.path.join("book.dat")?;
+
         book_path_temp.move_file(&book_path)?; // TODO verify modified date
 
         for translation in &self.translations {
             let translation_file_name = format!(
                 "translation_{}_{}.dat",
-                translation.source_language, translation.target_language
+                translation.translation.source_language, translation.translation.target_language
             );
+            let translation_path = self.path.join(&translation_file_name)?;
+
+            if let Some(last_modified) = translation.last_modified {
+                if translation_path.exists()? {
+                    let saved_translation_last_modified =
+                        translation_path.metadata()?.modified.unwrap();
+                    if saved_translation_last_modified > last_modified {
+                        todo!("Implement translation data merging");
+                    }
+                }
+            } else if translation_path.exists()? {
+                todo!("Implement translation data merging");
+            }
+
             let translation_path_temp = self.path.join(format!("{translation_file_name}~"))?;
 
             let mut translation_file = translation_path_temp.create_file()?;
-            translation.serialize(&mut translation_file)?;
+            translation.translation.serialize(&mut translation_file)?;
 
-            let translation_path = self.path.join(translation_file_name)?;
             translation_path_temp.move_file(&translation_path)?; // TODO verify modified data
         }
 

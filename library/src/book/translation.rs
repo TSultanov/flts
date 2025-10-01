@@ -1,6 +1,8 @@
+use uuid::Uuid;
+
 use crate::book::{
     serialization::{
-        read_len_prefixed_string, read_len_prefixed_vec, read_opt, read_u64, read_u8, read_var_u64, read_vec_slice, validate_hash, write_len_prefixed_bytes, write_opt, write_u64, write_var_u64, write_vec_slice, ChecksumedWriter, Magic, Serializable, Version
+        read_exact_array, read_len_prefixed_string, read_len_prefixed_vec, read_opt, read_u64, read_u8, read_var_u64, read_vec_slice, validate_hash, write_len_prefixed_bytes, write_opt, write_u64, write_var_u64, write_vec_slice, ChecksumedWriter, Magic, Serializable, Version
     },
     translation_import,
 };
@@ -10,6 +12,7 @@ use std::{borrow::Cow, iter};
 use super::soa_helpers::*;
 
 pub struct Translation {
+    pub id: Uuid,
     pub source_language: String,
     pub target_language: String,
 
@@ -100,6 +103,7 @@ pub struct WordContextualTranslationView<'a> {
 impl Translation {
     pub fn create(source_language: &str, target_language: &str) -> Self {
         Translation {
+            id: Uuid::new_v4(),
             source_language: source_language.to_owned(),
             target_language: target_language.to_owned(),
             strings: vec![],
@@ -228,6 +232,7 @@ impl Serializable for Translation {
         // magic[4] = TR01
         // u8 version = 1
         // Metadata section
+        // u8[16] id
         // u64 metadata hash
         // u64 metadata_length
         // u64 source_lang_len, [u8]*
@@ -259,8 +264,11 @@ impl Serializable for Translation {
         Magic::Translation.write(&mut hashing_stream)?;
         Version::V1.write_version(&mut hashing_stream)?;
 
+        
         let mut metadata_buf = Vec::new();
         let mut metadata_buf_hasher = ChecksumedWriter::create(&mut metadata_buf);
+        
+        metadata_buf_hasher.write_all(self.id.as_bytes())?;
 
         write_var_u64(&mut metadata_buf_hasher, self.source_language.len() as u64)?;
         metadata_buf_hasher.write_all(self.source_language.as_bytes())?;
@@ -365,11 +373,14 @@ impl Serializable for Translation {
         }
         Version::read_version(input_stream)?;
 
+        
         // Skip metadata hash
         _ = read_u64(input_stream)?;
-
+        
         // Skip metadata length
         _ = read_var_u64(input_stream)?;
+        
+        let id = Uuid::from_bytes(read_exact_array::<16>(input_stream)?);
 
         let source_language = read_len_prefixed_string(input_stream)?;
         let target_language = read_len_prefixed_string(input_stream)?;
@@ -469,6 +480,7 @@ impl Serializable for Translation {
         }
 
         Ok(Translation {
+            id,
             source_language,
             target_language,
             strings,
@@ -482,7 +494,7 @@ impl Serializable for Translation {
 }
 
 impl<'a> ParagraphTranslationView<'a> {
-    pub fn get_previous_version(&self) -> Option<ParagraphTranslationView> {
+    pub fn get_previous_version(&self) -> Option<ParagraphTranslationView<'a>> {
         let paragraph = self
             .previous_version
             .map(|p| &self.translation.paragraph_translations[p]);
@@ -498,7 +510,7 @@ impl<'a> ParagraphTranslationView<'a> {
         self.sentences.len()
     }
 
-    pub fn sentence_view(&self, sentence: usize) -> SentenceView {
+    pub fn sentence_view(&self, sentence: usize) -> SentenceView<'a> {
         let sentence = &self.sentences[sentence];
         SentenceView {
             translation: self.translation,
@@ -515,7 +527,7 @@ impl<'a> SentenceView<'a> {
         self.words.len()
     }
 
-    pub fn word_view(&self, word: usize) -> WordView {
+    pub fn word_view(&self, word: usize) -> WordView<'a> {
         let word = &self.words[word];
         WordView {
             translation: self.translation,
@@ -569,7 +581,7 @@ impl<'a> WordView<'a> {
         self.contextual_translations.len()
     }
 
-    pub fn contextual_translations_view(&self, index: usize) -> WordContextualTranslationView {
+    pub fn contextual_translations_view(&self, index: usize) -> WordContextualTranslationView<'a> {
         let contextual_translation = &self.contextual_translations[index];
         WordContextualTranslationView {
             translation: String::from_utf8_lossy(

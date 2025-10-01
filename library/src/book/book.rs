@@ -1,3 +1,5 @@
+use uuid::Uuid;
+
 use crate::book::serialization::{
     read_exact_array, read_len_prefixed_vec, read_u64, read_u8, read_var_u64, read_vec_slice, validate_hash, write_u64, write_var_u64, write_vec_slice, ChecksumedWriter, Magic, Serializable, Version
 };
@@ -7,6 +9,7 @@ use std::io::{self, Read, Write};
 use super::soa_helpers::*;
 
 pub struct Book {
+    pub id: Uuid,
     pub title: String,
     chapters: Vec<Chapter>,
     paragraphs: Vec<Paragraph>,
@@ -39,6 +42,7 @@ impl Book {
     pub fn create(title: &str) -> Self {
         Book {
             title: title.to_owned(),
+            id: Uuid::new_v4(),
             chapters: vec![],
             paragraphs: vec![],
             strings: vec![],
@@ -49,7 +53,7 @@ impl Book {
         return self.chapters.len();
     }
 
-    pub fn chapter_view(&self, chapter_index: usize) -> ChapterView {
+    pub fn chapter_view(&self, chapter_index: usize) -> ChapterView<'_> {
         let chapter = &self.chapters[chapter_index];
         return ChapterView {
             book: self,
@@ -113,6 +117,7 @@ impl Serializable for Book {
         // u8 version = 1
         // Metadata section
         // u64 metadata hash
+        // u8[16] id
         // u64 title_len, [u8]*
         // u64 chapters_count
         // u64 paragraphs_count
@@ -135,9 +140,11 @@ impl Serializable for Book {
         Magic::Book.write(&mut hashing_stream)?; // magic
         Version::V1.write_version(&mut hashing_stream)?; // version
 
+        
         let mut metadata_buf = Vec::new();
         let mut metadata_buf_hasher = ChecksumedWriter::create(&mut metadata_buf);
-
+        
+        metadata_buf_hasher.write_all(self.id.as_bytes())?;
         // Title
         write_var_u64(&mut metadata_buf_hasher, self.title.len() as u64)?;
         metadata_buf_hasher.write_all(self.title.as_bytes())?;
@@ -208,11 +215,14 @@ impl Serializable for Book {
         }
         Version::read_version(input_stream)?; // ensure supported
 
+        
         // Skip metadata hash - it's only for when read only metadata
         _ = read_u64(input_stream)?;
-
+        
         // Skip metadata size
         _ = read_var_u64(input_stream)?;
+
+        let id = Uuid::from_bytes(read_exact_array::<16>(input_stream)?);
 
         // Title
         let title_len = read_var_u64(input_stream)? as usize;
@@ -262,6 +272,7 @@ impl Serializable for Book {
         }
 
         Ok(Book {
+            id,
             title,
             chapters,
             paragraphs,

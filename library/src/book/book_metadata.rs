@@ -1,8 +1,16 @@
-use std::{hash::Hasher, io::{self, Cursor, Read}};
+use std::{
+    hash::Hasher,
+    io::{self, Cursor, Read},
+};
 
-use crate::book::serialization::{read_exact_array, read_len_prefixed_vec, read_u64, read_var_u64, validate_hash, Magic, Version};
+use uuid::Uuid;
+
+use crate::book::serialization::{
+    Magic, Version, read_exact_array, read_len_prefixed_vec, read_u64, read_var_u64, validate_hash,
+};
 
 pub struct BookMetadata {
+    pub id: Uuid,
     pub title: String,
     pub chapters_count: usize,
     pub paragraphs_count: usize,
@@ -29,10 +37,15 @@ impl BookMetadata {
         let mut hasher = fnv::FnvHasher::default();
         hasher.write(&metadata_buf);
         if hasher.finish() != metadata_hash {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid metadata hash"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Invalid metadata hash",
+            ));
         }
 
         let mut cursor = Cursor::new(metadata_buf);
+
+        let id = Uuid::from_bytes(read_exact_array(&mut cursor)?);
 
         // Title
         let title_len = read_var_u64(&mut cursor)? as usize;
@@ -46,6 +59,7 @@ impl BookMetadata {
         let paragraphs_count = read_var_u64(&mut cursor)? as usize;
 
         Ok(BookMetadata {
+            id,
             title: title,
             chapters_count,
             paragraphs_count,

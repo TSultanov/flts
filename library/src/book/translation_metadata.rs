@@ -3,12 +3,15 @@ use std::{
     io::{self, Cursor},
 };
 
+use uuid::Uuid;
+
 use crate::book::serialization::{
     Magic, Version, read_exact_array, read_len_prefixed_string, read_len_prefixed_vec, read_u64,
     read_var_u64,
 };
 
 pub struct TranslationMetadata {
+    pub id: Uuid,
     pub source_language: String,
     pub target_language: String,
     pub translated_paragraphs_count: usize,
@@ -43,12 +46,15 @@ impl TranslationMetadata {
 
         let mut cursor = Cursor::new(metadata_buf);
 
+        let id = Uuid::from_bytes(read_exact_array(&mut cursor)?);
+
         let source_language = read_len_prefixed_string(&mut cursor)?;
         let target_language = read_len_prefixed_string(&mut cursor)?;
 
         let translated_paragraphs_count = read_var_u64(&mut cursor)? as usize;
 
         Ok(TranslationMetadata {
+            id,
             source_language,
             target_language,
             translated_paragraphs_count,
@@ -60,7 +66,10 @@ impl TranslationMetadata {
 mod translation_metadata_test {
     use std::io::Cursor;
 
-    use crate::book::{serialization::Serializable, translation::Translation, translation_import, translation_metadata::TranslationMetadata};
+    use crate::book::{
+        serialization::Serializable, translation::Translation, translation_import,
+        translation_metadata::TranslationMetadata,
+    };
 
     #[test]
     fn test_metadata_roundtrip() {
