@@ -202,7 +202,7 @@ impl Serializable for Book {
         Ok(())
     }
 
-    fn deserialize<TReader: io::Read + Clone>(input_stream: &mut TReader) -> std::io::Result<Self>
+    fn deserialize<TReader: io::Seek + io::Read>(input_stream: &mut TReader) -> std::io::Result<Self>
     where
         Self: Sized,
     {
@@ -285,6 +285,8 @@ impl Serializable for Book {
 
 #[cfg(test)]
 mod book_tests {
+    use std::io::Cursor;
+
     use super::*;
 
     #[test]
@@ -326,7 +328,7 @@ mod book_tests {
         book.serialize(&mut buffer).unwrap();
 
         // Deserialize
-        let mut cursor: &[u8] = &buffer;
+        let mut cursor = Cursor::new(buffer);
         let book2 = Book::deserialize(&mut cursor).unwrap();
 
         assert_eq!(book2.title, "My Book");
@@ -367,7 +369,7 @@ mod book_tests {
         buffer[12] = 0xae;
 
         // Deserialize
-        let mut cursor: &[u8] = &buffer;
+        let mut cursor = Cursor::new(buffer);
         let book2 = Book::deserialize(&mut cursor);
         assert!(book2.is_err());
     }

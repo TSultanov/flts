@@ -365,7 +365,7 @@ impl Serializable for Translation {
         Ok(())
     }
 
-    fn deserialize<TReader: io::Read + Clone>(input_stream: &mut TReader) -> std::io::Result<Self>
+    fn deserialize<TReader: io::Seek + io::Read>(input_stream: &mut TReader) -> std::io::Result<Self>
     where
         Self: Sized,
     {
@@ -602,6 +602,8 @@ impl<'a> WordView<'a> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
     use super::*;
 
     #[test]
@@ -776,7 +778,7 @@ mod tests {
 
         let mut buf: Vec<u8> = vec![];
         translation.serialize(&mut buf).unwrap();
-        let mut cursor: &[u8] = &buf;
+        let mut cursor = Cursor::new(buf);
         let translation2 = Translation::deserialize(&mut cursor).unwrap();
 
         assert_eq!(translation2.source_language, "en");
@@ -874,7 +876,7 @@ mod tests {
         // Corrupt
         buf[12] = 0xae;
 
-        let mut cursor: &[u8] = &buf;
+        let mut cursor = Cursor::new(buf);
         let translation2 = Translation::deserialize(&mut cursor);
         assert!(translation2.is_err());
     }

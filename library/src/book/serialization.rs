@@ -8,7 +8,7 @@ use std::{
 
 pub trait Serializable {
     fn serialize<TWriter: io::Write>(&self, output_stream: &mut TWriter) -> io::Result<()>;
-    fn deserialize<TReader: io::Read + Clone>(input_stream: &mut TReader) -> io::Result<Self>
+    fn deserialize<TReader: io::Seek + io::Read>(input_stream: &mut TReader) -> io::Result<Self>
     where
         Self: Sized;
 }
@@ -199,8 +199,7 @@ impl<'a> io::Write for ChecksumedWriter<'a> {
     }
 }
 
-pub fn validate_hash<T: io::Read + Clone>(reader: &mut T) -> io::Result<bool> {
-    let mut reader = reader.clone();
+pub fn validate_hash<T: io::Seek + io::Read>(reader: &mut T) -> io::Result<bool> {
     let mut hasher = fnv::FnvHasher::default();
 
     let mut last_u64 = AllocRingBuffer::new(8);
@@ -223,6 +222,8 @@ pub fn validate_hash<T: io::Read + Clone>(reader: &mut T) -> io::Result<bool> {
         hasher.write(&b);
         last_hashes.enqueue(hasher.finish());
     }
+
+    reader.seek(io::SeekFrom::Start(0));
 
     if last_u64.len() < 8 || last_hashes.len() < 9 {
         return Err(io::Error::new(ErrorKind::InvalidData, "Not enough data"));

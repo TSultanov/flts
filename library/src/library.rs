@@ -1,17 +1,15 @@
-use std::{fs, io, time::SystemTime};
-
 use itertools::Itertools;
 use uuid::Uuid;
 use vfs::{VfsError, VfsPath};
 
-use crate::{book::{
-    book::Book, book_metadata::BookMetadata, serialization::Serializable, translation::Translation,
-    translation_metadata::TranslationMetadata,
-}, library::library_book::LibraryBook};
+use crate::book::{book_metadata::BookMetadata, translation_metadata::TranslationMetadata};
 
+mod book_merge;
 pub mod library_book;
+mod translation_merge;
 
 pub struct LibraryTranslationMetadata {
+    pub id: Uuid,
     pub source_langugage: String,
     pub target_language: String,
     pub translated_paragraphs_count: usize,
@@ -95,6 +93,7 @@ impl LibraryBookMetadata {
             let conflicting_iterations = translations.map(|(p, _)| p).collect();
 
             translations_metadata.push(LibraryTranslationMetadata {
+                id: main_translation.id,
                 source_langugage: main_translation.source_language,
                 target_language: main_translation.target_language,
                 translated_paragraphs_count: main_translation.translated_paragraphs_count,
