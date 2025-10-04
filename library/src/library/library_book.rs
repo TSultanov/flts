@@ -1,4 +1,4 @@
-use std::{collections::HashSet, time::SystemTime};
+use std::{collections::HashSet, io::SeekFrom, time::SystemTime};
 
 use uuid::Uuid;
 use vfs::VfsPath;
@@ -44,7 +44,21 @@ impl LibraryTranslation {
     fn load_from_metadata(
         metadata: LibraryTranslationMetadata,
     ) -> Result<Self, vfs::error::VfsError> {
-        todo!("Merge!");
+        if metadata.conflicting_paths.len() > 0 {
+            let mut translation = {
+                let mut main_file = metadata.main_path.open_file()?;
+                Translation::deserialize(&mut main_file)?
+            };
+
+            for conflict in metadata.conflicting_paths {
+                let mut conflict_file = conflict.open_file()?;
+                let conflict_translation = Translation::deserialize(&mut conflict_file)?;
+                translation = translation.merge(conflict_translation);
+            }
+
+            let mut main_file = metadata.main_path.create_file()?;
+            translation.serialize(&mut main_file)?;
+        }
 
         Self::load(&metadata.main_path)
     }
@@ -221,8 +235,10 @@ mod library_book_tests {
     use vfs::VfsPath;
 
     use crate::{
-        book::{book::Book, serialization::Serializable, translation::Translation, translation_import},
-        library::Library,
+        book::{
+            book::Book, serialization::Serializable, translation::Translation, translation_import,
+        },
+        library::{Library, LibraryTranslationMetadata},
     };
 
     #[test]
@@ -365,7 +381,10 @@ mod library_book_tests {
             }],
         };
         tr.add_paragraph_translation(0, &initial_pt);
-        book.translations.push(super::LibraryTranslation { translation: tr, last_modified: None });
+        book.translations.push(super::LibraryTranslation {
+            translation: tr,
+            last_modified: None,
+        });
         let mut book = book.save().unwrap();
 
         // Treat as loaded: refresh last_modified and translations from disk
@@ -452,7 +471,10 @@ mod library_book_tests {
             }],
         };
         tr.add_paragraph_translation(0, &pt1);
-        book.translations.push(super::LibraryTranslation { translation: tr, last_modified: None });
+        book.translations.push(super::LibraryTranslation {
+            translation: tr,
+            last_modified: None,
+        });
         let mut book = book.save().unwrap();
 
         // Treat as loaded instance with last_modified
@@ -537,5 +559,195 @@ mod library_book_tests {
         assert_eq!(prev2.timestamp, 1);
         assert_eq!(prev2.sentence_view(0).full_translation, "v1");
         assert!(prev2.get_previous_version().is_none());
+    }
+
+    #[test]
+    fn load_from_metadata_no_conflicts() {
+        // Arrange: create a single main translation file with a simple history
+        let fs = vfs::MemoryFS::new();
+        let root: VfsPath = fs.into();
+        let dir = root.join("book").unwrap();
+        dir.create_dir().unwrap();
+
+        let main_path = dir.join("translation_en_ru.dat").unwrap();
+        let mut t_main = Translation::create("en", "ru");
+        let pt2 = translation_import::ParagraphTranslation {
+            timestamp: 2,
+            sentences: vec![translation_import::Sentence {
+                full_translation: "m2".into(),
+                words: vec![translation_import::Word {
+                    original: "m2".into(),
+                    contextual_translations: vec!["m2".into()],
+                    note: String::new(),
+                    is_punctuation: false,
+                    grammar: translation_import::Grammar {
+                        original_initial_form: "m2".into(),
+                        target_initial_form: "m2".into(),
+                        part_of_speech: "n".into(),
+                        plurality: None,
+                        person: None,
+                        tense: None,
+                        case: None,
+                        other: None,
+                    },
+                }],
+            }],
+        };
+        t_main.add_paragraph_translation(0, &pt2);
+        {
+            let mut f = main_path.create_file().unwrap();
+            t_main.serialize(&mut f).unwrap();
+        }
+
+        let meta = LibraryTranslationMetadata {
+            id: t_main.id,
+            source_langugage: "en".into(),
+            target_language: "ru".into(),
+            translated_paragraphs_count: 1,
+            main_path: main_path.clone(),
+            conflicting_paths: vec![],
+        };
+
+        // Act
+        let loaded = super::LibraryTranslation::load_from_metadata(meta).unwrap();
+
+        // Assert: translation loaded and unchanged, latest ts=2
+        let latest = loaded.translation.paragraph_view(0).unwrap();
+        assert_eq!(latest.timestamp, 2);
+        assert_eq!(latest.sentence_view(0).full_translation, "m2");
+    }
+
+    #[test]
+    fn load_from_metadata_merges_conflicts_and_persists() {
+        // Arrange: create main + two conflict files with different timestamps
+        let fs = vfs::MemoryFS::new();
+        let root: VfsPath = fs.into();
+        let dir = root.join("book2").unwrap();
+        dir.create_dir().unwrap();
+
+        let main_path = dir.join("translation_en_ru.dat").unwrap();
+        let conflict1 = dir.join("translation_en_ru.conflict1.dat").unwrap();
+        let conflict2 = dir.join("translation_en_ru.conflict2.dat").unwrap();
+
+        // main: ts=2
+        let mut t_main = Translation::create("en", "ru");
+        let pt2 = translation_import::ParagraphTranslation {
+            timestamp: 2,
+            sentences: vec![translation_import::Sentence {
+                full_translation: "m2".into(),
+                words: vec![translation_import::Word {
+                    original: "m2".into(),
+                    contextual_translations: vec!["m2".into()],
+                    note: String::new(),
+                    is_punctuation: false,
+                    grammar: translation_import::Grammar {
+                        original_initial_form: "m2".into(),
+                        target_initial_form: "m2".into(),
+                        part_of_speech: "n".into(),
+                        plurality: None,
+                        person: None,
+                        tense: None,
+                        case: None,
+                        other: None,
+                    },
+                }],
+            }],
+        };
+        t_main.add_paragraph_translation(0, &pt2);
+        {
+            let mut f = main_path.create_file().unwrap();
+            t_main.serialize(&mut f).unwrap();
+        }
+
+        // conflict1: ts=1
+        let mut t_c1 = Translation::create("en", "ru");
+        let pt1 = translation_import::ParagraphTranslation {
+            timestamp: 1,
+            sentences: vec![translation_import::Sentence {
+                full_translation: "c1".into(),
+                words: vec![translation_import::Word {
+                    original: "c1".into(),
+                    contextual_translations: vec!["c1".into()],
+                    note: String::new(),
+                    is_punctuation: false,
+                    grammar: translation_import::Grammar {
+                        original_initial_form: "c1".into(),
+                        target_initial_form: "c1".into(),
+                        part_of_speech: "n".into(),
+                        plurality: None,
+                        person: None,
+                        tense: None,
+                        case: None,
+                        other: None,
+                    },
+                }],
+            }],
+        };
+        t_c1.add_paragraph_translation(0, &pt1);
+        {
+            let mut f = conflict1.create_file().unwrap();
+            t_c1.serialize(&mut f).unwrap();
+        }
+
+        // conflict2: ts=3
+        let mut t_c2 = Translation::create("en", "ru");
+        let pt3 = translation_import::ParagraphTranslation {
+            timestamp: 3,
+            sentences: vec![translation_import::Sentence {
+                full_translation: "c3".into(),
+                words: vec![translation_import::Word {
+                    original: "c3".into(),
+                    contextual_translations: vec!["c3".into()],
+                    note: String::new(),
+                    is_punctuation: false,
+                    grammar: translation_import::Grammar {
+                        original_initial_form: "c3".into(),
+                        target_initial_form: "c3".into(),
+                        part_of_speech: "n".into(),
+                        plurality: None,
+                        person: None,
+                        tense: None,
+                        case: None,
+                        other: None,
+                    },
+                }],
+            }],
+        };
+        t_c2.add_paragraph_translation(0, &pt3);
+        {
+            let mut f = conflict2.create_file().unwrap();
+            t_c2.serialize(&mut f).unwrap();
+        }
+
+        let meta = LibraryTranslationMetadata {
+            id: t_main.id,
+            source_langugage: "en".into(),
+            target_language: "ru".into(),
+            translated_paragraphs_count: 1,
+            main_path: main_path.clone(),
+            conflicting_paths: vec![conflict1.clone(), conflict2.clone()],
+        };
+
+        // Act
+        let loaded = super::LibraryTranslation::load_from_metadata(meta).unwrap();
+
+        // Assert: merged order latest=3, then 2, then 1
+        let latest = loaded.translation.paragraph_view(0).unwrap();
+        assert_eq!(latest.timestamp, 3);
+        assert_eq!(latest.sentence_view(0).full_translation, "c3");
+        let prev = latest.get_previous_version().unwrap();
+        assert_eq!(prev.timestamp, 2);
+        assert_eq!(prev.sentence_view(0).full_translation, "m2");
+        let prev2 = prev.get_previous_version().unwrap();
+        assert_eq!(prev2.timestamp, 1);
+        assert_eq!(prev2.sentence_view(0).full_translation, "c1");
+        assert!(prev2.get_previous_version().is_none());
+
+        // Also verify that the main file now contains the merged result (latest ts=3)
+        let mut f = main_path.open_file().unwrap();
+        let on_disk = Translation::deserialize(&mut f).unwrap();
+        let on_disk_latest = on_disk.paragraph_view(0).unwrap();
+        assert_eq!(on_disk_latest.timestamp, 3);
+        assert_eq!(on_disk_latest.sentence_view(0).full_translation, "c3");
     }
 }
