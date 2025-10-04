@@ -140,6 +140,9 @@ impl LibraryBook {
                 if get_modified_if_exists(&translation_path)? == translation_path_modified_pre_save
                     || translation_path_modified_pre_save.is_none()
                 {
+                    if translation_path.exists()? {
+                        translation_path.remove_file()?;
+                    }
                     translation_path_temp.move_file(&translation_path)?;
                     merged_translations.push(translation);
                     break;
@@ -171,6 +174,9 @@ impl LibraryBook {
             if get_modified_if_exists(&book_path)? == book_path_modified_pre_save
                 || book_path_modified_pre_save.is_none()
             {
+                if book_path.exists()? {
+                    book_path.remove_file()?;
+                }
                 book_path_temp.move_file(&book_path)?;
                 break;
             }
@@ -214,7 +220,10 @@ impl Library {
 mod library_book_tests {
     use vfs::VfsPath;
 
-    use crate::library::Library;
+    use crate::{
+        book::{book::Book, serialization::Serializable, translation::Translation, translation_import},
+        library::Library,
+    };
 
     #[test]
     fn list_books_conflicting_versions() {
@@ -293,5 +302,240 @@ mod library_book_tests {
             library_books[0].translations_metadata[0].conflicting_paths[0].filename(),
             conflict_path.filename()
         );
+    }
+
+    #[test]
+    fn save_after_load_trivial_book_change() {
+        let fs = vfs::MemoryFS::new();
+        let root: VfsPath = fs.into();
+        let library_path = root.join("lib").unwrap();
+        let library = Library::open(library_path.clone()).unwrap();
+
+        // Create and save
+        let book = library.create_book("First Title").unwrap();
+        let mut book = book.save().unwrap();
+
+        // Simulate "loaded": set last_modified from disk
+        let book_file = book.path.join("book.dat").unwrap();
+        book.last_modified = book_file.metadata().unwrap().modified;
+
+        // Change and save again
+        book.book.title = "Updated Title".into();
+        let saved = book.save().unwrap();
+
+        // Verify on-disk
+        let mut f = book_file.open_file().unwrap();
+        let loaded_book = Book::deserialize(&mut f).unwrap();
+        assert_eq!(loaded_book.title, "Updated Title");
+
+        // Returned object path preserved
+        assert_eq!(saved.path.filename(), saved.path.filename());
+    }
+
+    #[test]
+    fn save_after_load_book_and_translation_changed() {
+        let fs = vfs::MemoryFS::new();
+        let root: VfsPath = fs.into();
+        let library_path = root.join("lib").unwrap();
+        let library = Library::open(library_path.clone()).unwrap();
+
+        // Create a book and attach a translation with an initial version
+        let mut book = library.create_book("First Book").unwrap();
+        let mut tr = Translation::create("es", "en");
+        let initial_pt = translation_import::ParagraphTranslation {
+            timestamp: 1,
+            sentences: vec![translation_import::Sentence {
+                full_translation: "Hola".into(),
+                words: vec![translation_import::Word {
+                    original: "Hola".into(),
+                    contextual_translations: vec!["Hello".into()],
+                    note: String::new(),
+                    is_punctuation: false,
+                    grammar: translation_import::Grammar {
+                        original_initial_form: "hola".into(),
+                        target_initial_form: "hello".into(),
+                        part_of_speech: "interj".into(),
+                        plurality: None,
+                        person: None,
+                        tense: None,
+                        case: None,
+                        other: None,
+                    },
+                }],
+            }],
+        };
+        tr.add_paragraph_translation(0, &initial_pt);
+        book.translations.push(super::LibraryTranslation { translation: tr, last_modified: None });
+        let mut book = book.save().unwrap();
+
+        // Treat as loaded: refresh last_modified and translations from disk
+        let book_file = book.path.join("book.dat").unwrap();
+        let tr_file = book.path.join("translation_es_en.dat").unwrap();
+        book.last_modified = book_file.metadata().unwrap().modified;
+        book.translations.clear();
+        let loaded_tr = super::LibraryTranslation::load(&tr_file).unwrap();
+        book.translations.push(loaded_tr);
+
+        // Modify both book and translation
+        book.book.title = "Second Edition".into();
+        let new_pt = translation_import::ParagraphTranslation {
+            timestamp: 2,
+            sentences: vec![translation_import::Sentence {
+                full_translation: "Hola mundo".into(),
+                words: vec![translation_import::Word {
+                    original: "Hola".into(),
+                    contextual_translations: vec!["Hello".into()],
+                    note: String::new(),
+                    is_punctuation: false,
+                    grammar: translation_import::Grammar {
+                        original_initial_form: "hola".into(),
+                        target_initial_form: "hello".into(),
+                        part_of_speech: "interj".into(),
+                        plurality: None,
+                        person: None,
+                        tense: None,
+                        case: None,
+                        other: None,
+                    },
+                }],
+            }],
+        };
+        book.translations[0]
+            .translation
+            .add_paragraph_translation(0, &new_pt);
+
+        let _saved = book.save().unwrap();
+
+        // Verify book updated
+        let mut bf = book_file.open_file().unwrap();
+        let loaded_book = Book::deserialize(&mut bf).unwrap();
+        assert_eq!(loaded_book.title, "Second Edition");
+
+        // Verify translation latest version
+        let mut tf = tr_file.open_file().unwrap();
+        let tr2 = Translation::deserialize(&mut tf).unwrap();
+        let latest = tr2.paragraph_view(0).unwrap();
+        assert_eq!(latest.timestamp, 2);
+        assert_eq!(latest.sentence_view(0).full_translation, "Hola mundo");
+    }
+
+    #[test]
+    fn save_merges_translation_with_concurrent_on_disk_change() {
+        let fs = vfs::MemoryFS::new();
+        let root: VfsPath = fs.into();
+        let library_path = root.join("lib").unwrap();
+        let library = Library::open(library_path.clone()).unwrap();
+
+        // Create a book with a translation ts=1
+        let mut book = library.create_book("Merge Book").unwrap();
+        let mut tr = Translation::create("en", "ru");
+        let pt1 = translation_import::ParagraphTranslation {
+            timestamp: 1,
+            sentences: vec![translation_import::Sentence {
+                full_translation: "v1".into(),
+                words: vec![translation_import::Word {
+                    original: "v1".into(),
+                    contextual_translations: vec!["v1".into()],
+                    note: String::new(),
+                    is_punctuation: false,
+                    grammar: translation_import::Grammar {
+                        original_initial_form: "v1".into(),
+                        target_initial_form: "v1".into(),
+                        part_of_speech: "n".into(),
+                        plurality: None,
+                        person: None,
+                        tense: None,
+                        case: None,
+                        other: None,
+                    },
+                }],
+            }],
+        };
+        tr.add_paragraph_translation(0, &pt1);
+        book.translations.push(super::LibraryTranslation { translation: tr, last_modified: None });
+        let mut book = book.save().unwrap();
+
+        // Treat as loaded instance with last_modified
+        let book_file = book.path.join("book.dat").unwrap();
+        let tr_path = book.path.join("translation_en_ru.dat").unwrap();
+        book.last_modified = book_file.metadata().unwrap().modified;
+        book.translations.clear();
+        let loaded_tr = super::LibraryTranslation::load(&tr_path).unwrap();
+        book.translations.push(loaded_tr);
+
+        // In-memory change ts=2
+        let mem_pt = translation_import::ParagraphTranslation {
+            timestamp: 2,
+            sentences: vec![translation_import::Sentence {
+                full_translation: "mem".into(),
+                words: vec![translation_import::Word {
+                    original: "mem".into(),
+                    contextual_translations: vec!["mem".into()],
+                    note: String::new(),
+                    is_punctuation: false,
+                    grammar: translation_import::Grammar {
+                        original_initial_form: "mem".into(),
+                        target_initial_form: "mem".into(),
+                        part_of_speech: "n".into(),
+                        plurality: None,
+                        person: None,
+                        tense: None,
+                        case: None,
+                        other: None,
+                    },
+                }],
+            }],
+        };
+        book.translations[0]
+            .translation
+            .add_paragraph_translation(0, &mem_pt);
+
+        // Concurrent on-disk change ts=3
+        {
+            let mut on_disk = {
+                let mut f = tr_path.open_file().unwrap();
+                Translation::deserialize(&mut f).unwrap()
+            };
+            let disk_pt = translation_import::ParagraphTranslation {
+                timestamp: 3,
+                sentences: vec![translation_import::Sentence {
+                    full_translation: "disk".into(),
+                    words: vec![translation_import::Word {
+                        original: "disk".into(),
+                        contextual_translations: vec!["disk".into()],
+                        note: String::new(),
+                        is_punctuation: false,
+                        grammar: translation_import::Grammar {
+                            original_initial_form: "disk".into(),
+                            target_initial_form: "disk".into(),
+                            part_of_speech: "n".into(),
+                            plurality: None,
+                            person: None,
+                            tense: None,
+                            case: None,
+                            other: None,
+                        },
+                    }],
+                }],
+            };
+            on_disk.add_paragraph_translation(0, &disk_pt);
+            let mut wf = tr_path.create_file().unwrap();
+            on_disk.serialize(&mut wf).unwrap();
+        }
+
+        // Save should merge: latest ts=3 -> ts=2 -> ts=1
+        let _merged = book.save().unwrap();
+        let mut tf = tr_path.open_file().unwrap();
+        let merged_tr = Translation::deserialize(&mut tf).unwrap();
+        let latest = merged_tr.paragraph_view(0).unwrap();
+        assert_eq!(latest.timestamp, 3);
+        assert_eq!(latest.sentence_view(0).full_translation, "disk");
+        let prev = latest.get_previous_version().unwrap();
+        assert_eq!(prev.timestamp, 2);
+        assert_eq!(prev.sentence_view(0).full_translation, "mem");
+        let prev2 = prev.get_previous_version().unwrap();
+        assert_eq!(prev2.timestamp, 1);
+        assert_eq!(prev2.sentence_view(0).full_translation, "v1");
+        assert!(prev2.get_previous_version().is_none());
     }
 }
