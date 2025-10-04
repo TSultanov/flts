@@ -340,7 +340,6 @@ impl Translation {
         for paragraph_idx in 0..self.paragraphs.len().max(other.paragraphs.len()) {
             if let Some(paragarph) = self.paragraph_view(paragraph_idx)
                 && let Some(other_paragraph) = other.paragraph_view(paragraph_idx)
-                && paragarph.timestamp != other_paragraph.timestamp
             {
                 let mut versions = Vec::new();
                 let mut curr_paragraph = paragarph;
@@ -380,12 +379,33 @@ impl Translation {
             } else if let Some(paragarph) = self.paragraph_view(paragraph_idx)
                 && other.paragraph_view(paragraph_idx).is_none()
             {
-                merged_translation.add_paragraph_translation_from_view(paragraph_idx, &paragarph);
+                // Copy entire history from self
+                let mut versions = Vec::new();
+                let mut curr = Some(paragarph);
+                while let Some(p) = curr {
+                    let prev = p.get_previous_version();
+                    versions.push((p.timestamp, p));
+                    curr = prev;
+                }
+                versions.sort_by_key(|(ts, _)| *ts);
+                for (_, v) in versions {
+                    merged_translation.add_paragraph_translation_from_view(paragraph_idx, &v);
+                }
             } else if self.paragraph_view(paragraph_idx).is_none()
                 && let Some(other_paragraph) = other.paragraph_view(paragraph_idx)
             {
-                merged_translation
-                    .add_paragraph_translation_from_view(paragraph_idx, &other_paragraph);
+                // Copy entire history from other
+                let mut versions = Vec::new();
+                let mut curr = Some(other_paragraph);
+                while let Some(p) = curr {
+                    let prev = p.get_previous_version();
+                    versions.push((p.timestamp, p));
+                    curr = prev;
+                }
+                versions.sort_by_key(|(ts, _)| *ts);
+                for (_, v) in versions {
+                    merged_translation.add_paragraph_translation_from_view(paragraph_idx, &v);
+                }
             }
         }
         merged_translation
@@ -786,6 +806,35 @@ mod tests {
 
     use super::*;
 
+    fn make_word(original: &str) -> translation_import::Word {
+        translation_import::Word {
+            original: original.to_string(),
+            contextual_translations: vec![format!("{}-ct", original)],
+            note: String::new(),
+            is_punctuation: false,
+            grammar: translation_import::Grammar {
+                original_initial_form: original.to_string(),
+                target_initial_form: original.to_string(),
+                part_of_speech: "n".into(),
+                plurality: None,
+                person: None,
+                tense: None,
+                case: None,
+                other: None,
+            },
+        }
+    }
+
+    fn make_paragraph(ts: usize, text: &str) -> translation_import::ParagraphTranslation {
+        translation_import::ParagraphTranslation {
+            timestamp: ts,
+            sentences: vec![translation_import::Sentence {
+                full_translation: text.to_string(),
+                words: vec![make_word(text)],
+            }],
+        }
+    }
+
     #[test]
     fn test_translation_add_paragraph_translation() {
         let mut translation = Translation::create("en", "ru");
@@ -1059,5 +1108,112 @@ mod tests {
         let mut cursor = Cursor::new(buf);
         let translation2 = Translation::deserialize(&mut cursor);
         assert!(translation2.is_err());
+    }
+
+    #[test]
+    fn merge_same_history() {
+        let mut a = Translation::create("en", "ru");
+        a.add_paragraph_translation(0, &make_paragraph(1, "v1"));
+        a.add_paragraph_translation(0, &make_paragraph(2, "v2"));
+
+        let mut b = Translation::create("en", "ru");
+        b.add_paragraph_translation(0, &make_paragraph(1, "v1"));
+        b.add_paragraph_translation(0, &make_paragraph(2, "v2"));
+
+        let merged = a.merge(b);
+
+        let latest = merged.paragraph_view(0).expect("merged paragraph");
+        assert_eq!(latest.timestamp, 2);
+        assert_eq!(latest.sentence_view(0).full_translation, "v2");
+        let prev = latest.get_previous_version().expect("prev exists");
+        assert_eq!(prev.timestamp, 1);
+        assert_eq!(prev.sentence_view(0).full_translation, "v1");
+        assert!(prev.get_previous_version().is_none());
+    }
+
+    #[test]
+    fn merge_diverged_common_root() {
+        // a: 1 -> 2 -> 4
+        let mut a = Translation::create("en", "ru");
+        a.add_paragraph_translation(0, &make_paragraph(1, "a1"));
+        a.add_paragraph_translation(0, &make_paragraph(2, "a2"));
+        a.add_paragraph_translation(0, &make_paragraph(4, "a4"));
+
+        // b: 1 -> 3 -> 5
+        let mut b = Translation::create("en", "ru");
+        b.add_paragraph_translation(0, &make_paragraph(1, "a1")); // same ts as a1 (dedup)
+        b.add_paragraph_translation(0, &make_paragraph(3, "a3"));
+        b.add_paragraph_translation(0, &make_paragraph(5, "a5"));
+
+        let merged = a.merge(b);
+
+        // Expect order by ts: 1,2,3,4,5 (latest=5)
+        let mut ts = Vec::new();
+        let mut v = merged.paragraph_view(0).unwrap();
+        ts.push(v.timestamp);
+        while let Some(prev) = v.get_previous_version() {
+            ts.push(prev.timestamp);
+            v = prev;
+        }
+        assert_eq!(ts, vec![5, 4, 3, 2, 1]);
+        // Verify content for unique timestamps
+        assert_eq!(merged.paragraph_view(0).unwrap().sentence_view(0).full_translation, "a5");
+        let v4 = merged.paragraph_view(0).unwrap().get_previous_version().unwrap();
+        assert_eq!(v4.sentence_view(0).full_translation, "a4");
+    }
+
+    #[test]
+    fn merge_no_common_root() {
+        // a: 10 -> 20
+        let mut a = Translation::create("en", "ru");
+        a.add_paragraph_translation(0, &make_paragraph(10, "a10"));
+        a.add_paragraph_translation(0, &make_paragraph(20, "a20"));
+
+        // b: 5 -> 15 -> 25
+        let mut b = Translation::create("en", "ru");
+        b.add_paragraph_translation(0, &make_paragraph(5, "b5"));
+        b.add_paragraph_translation(0, &make_paragraph(15, "b15"));
+        b.add_paragraph_translation(0, &make_paragraph(25, "b25"));
+
+        let merged = a.merge(b);
+        let mut ts = Vec::new();
+        let mut v = merged.paragraph_view(0).unwrap();
+        ts.push(v.timestamp);
+        while let Some(prev) = v.get_previous_version() {
+            ts.push(prev.timestamp);
+            v = prev;
+        }
+        assert_eq!(ts, vec![25, 20, 15, 10, 5]);
+    }
+
+    #[test]
+    fn merge_present_only_in_one_side() {
+        // Paragraph 0 only in left, with history 1 -> 2
+        let mut a = Translation::create("en", "ru");
+        a.add_paragraph_translation(0, &make_paragraph(1, "a1"));
+        a.add_paragraph_translation(0, &make_paragraph(2, "a2"));
+        // Paragraph 1 only in right, with single version 3
+        let b = {
+            let mut t = Translation::create("en", "ru");
+            t.add_paragraph_translation(1, &make_paragraph(3, "b3"));
+            t
+        };
+
+        let merged = a.merge(b);
+
+        // Paragraph 0 preserved history
+        let mut ts0 = Vec::new();
+        let mut v0 = merged.paragraph_view(0).unwrap();
+        ts0.push(v0.timestamp);
+        while let Some(prev) = v0.get_previous_version() {
+            ts0.push(prev.timestamp);
+            v0 = prev;
+        }
+        assert_eq!(ts0, vec![2, 1]);
+
+        // Paragraph 1 from right present
+        let v1 = merged.paragraph_view(1).unwrap();
+        assert_eq!(v1.timestamp, 3);
+        assert!(v1.get_previous_version().is_none());
     }
 }
