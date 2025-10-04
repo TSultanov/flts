@@ -97,6 +97,14 @@ impl LibraryBook {
             self.path.create_dir()?
         }
 
+        let get_modified_if_exists = |path: &VfsPath| {
+            if path.exists()? {
+                Ok::<_, vfs::error::VfsError>(path.metadata()?.modified)
+            } else {
+                Ok(None)
+            }
+        };
+
         let mut book = self;
 
         let mut merged_translations = Vec::new();
@@ -110,7 +118,7 @@ impl LibraryBook {
             let translation_path_temp = book.path.join(format!("{translation_file_name}~"))?;
 
             loop {
-                let translation_path_modified_pre_save = translation_path.metadata()?.modified;
+                let translation_path_modified_pre_save = get_modified_if_exists(&translation_path)?;
 
                 if let Some(last_modified) = translation.last_modified {
                     if translation_path.exists()? {
@@ -129,7 +137,9 @@ impl LibraryBook {
                 let mut translation_file = translation_path_temp.create_file()?;
                 translation.translation.serialize(&mut translation_file)?;
 
-                if translation_path.metadata()?.modified == translation_path_modified_pre_save {
+                if get_modified_if_exists(&translation_path)? == translation_path_modified_pre_save
+                    || translation_path_modified_pre_save.is_none()
+                {
                     translation_path_temp.move_file(&translation_path)?;
                     merged_translations.push(translation);
                     break;
@@ -140,7 +150,7 @@ impl LibraryBook {
         let book_path = book.path.join("book.dat")?;
         let book_path_temp = book.path.join("book.dat~")?;
         loop {
-            let book_path_modified_pre_save = book_path.metadata()?.modified;
+            let book_path_modified_pre_save = get_modified_if_exists(&book_path)?;
 
             if let Some(last_modified) = book.last_modified {
                 if book_path.exists()? {
@@ -158,7 +168,9 @@ impl LibraryBook {
             let mut file = book_path_temp.create_file()?;
             book.book.serialize(&mut file)?;
 
-            if book_path.metadata()?.modified == book_path_modified_pre_save {
+            if get_modified_if_exists(&book_path)? == book_path_modified_pre_save
+                || book_path_modified_pre_save.is_none()
+            {
                 book_path_temp.move_file(&book_path)?;
                 break;
             }
