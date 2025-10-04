@@ -1,3 +1,5 @@
+use crate::book::translation::{ParagraphTranslationView, SentenceView, WordView};
+
 pub struct ParagraphTranslation {
     pub timestamp: usize,
     pub sentences: Vec<Sentence>,

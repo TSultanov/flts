@@ -9,8 +9,11 @@ use crate::book::{
     },
     translation_import,
 };
-use std::io::{self, Read, Write};
 use std::{borrow::Cow, iter};
+use std::{
+    collections::HashSet,
+    io::{self, Read, Write},
+};
 
 use super::soa_helpers::*;
 
@@ -35,8 +38,9 @@ struct ParagraphTranslation {
 }
 
 pub struct ParagraphTranslationView<'a> {
+    idx: usize,
     translation: &'a Translation,
-    timestamp: usize,
+    pub timestamp: usize,
     previous_version: Option<usize>,
     sentences: &'a [Sentence],
 }
@@ -118,10 +122,14 @@ impl Translation {
         }
     }
 
-    pub fn paragraph_view(&self, paragraph: usize) -> Option<ParagraphTranslationView> {
+    pub fn paragraph_view(&'_ self, paragraph: usize) -> Option<ParagraphTranslationView<'_>> {
+        if paragraph >= self.paragraphs.len() {
+            return None;
+        }
         let paragraph = self.paragraphs[paragraph];
-        let paragraph = paragraph.map(|p| &self.paragraph_translations[p]);
-        paragraph.map(|p| ParagraphTranslationView {
+        let paragraph = paragraph.map(|p| (p, &self.paragraph_translations[p]));
+        paragraph.map(|(idx, p)| ParagraphTranslationView {
+            idx,
             translation: self,
             timestamp: p.timestamp,
             previous_version: p.previous_version,
@@ -226,6 +234,161 @@ impl Translation {
         }
 
         self.paragraph_translations[new_index].sentences = sentences;
+    }
+
+    fn add_paragraph_translation_from_view(
+        &mut self,
+        paragraph_index: usize,
+        translation: &ParagraphTranslationView,
+    ) {
+        if paragraph_index >= self.paragraphs.len() {
+            self.paragraphs
+                .extend(iter::repeat(None).take(paragraph_index - self.paragraphs.len() + 1));
+        }
+
+        let new_prev_version = self.paragraphs[paragraph_index];
+
+        let new_paragraph = ParagraphTranslation {
+            timestamp: translation.timestamp,
+            previous_version: new_prev_version,
+            sentences: VecSlice::empty(),
+        };
+
+        let new_index = self.paragraph_translations.len();
+        self.paragraph_translations.push(new_paragraph);
+        self.paragraphs[paragraph_index] = Some(new_index);
+
+        let mut sentences = VecSlice::empty();
+        for sentence in translation.sentences() {
+            let full_translation = push_string(&mut self.strings, &sentence.full_translation);
+            let mut words = VecSlice::empty();
+            for word in sentence.words() {
+                let original = push_string(&mut self.strings, &word.original);
+                let note = push_string(&mut self.strings, &word.note);
+                let grammar = Grammar {
+                    original_initial_form: push_string(
+                        &mut self.strings,
+                        &word.grammar.original_initial_form,
+                    ),
+                    target_initial_form: push_string(
+                        &mut self.strings,
+                        &word.grammar.target_initial_form,
+                    ),
+                    part_of_speech: push_string(&mut self.strings, &word.grammar.part_of_speech),
+                    plurality: word
+                        .grammar
+                        .plurality
+                        .as_ref()
+                        .map(|s| push_string(&mut self.strings, &s)),
+                    person: word
+                        .grammar
+                        .person
+                        .as_ref()
+                        .map(|s| push_string(&mut self.strings, &s)),
+                    tense: word
+                        .grammar
+                        .tense
+                        .as_ref()
+                        .map(|s| push_string(&mut self.strings, &s)),
+                    case: word
+                        .grammar
+                        .case
+                        .as_ref()
+                        .map(|s| push_string(&mut self.strings, &s)),
+                    other: word
+                        .grammar
+                        .other
+                        .as_ref()
+                        .map(|s| push_string(&mut self.strings, &s)),
+                };
+                let mut contextual_translations = VecSlice::empty();
+                for contextual_translation in word.contextual_translations() {
+                    let contextual_translation = WordContextualTranslation {
+                        translation: push_string(
+                            &mut self.strings,
+                            &contextual_translation.translation,
+                        ),
+                    };
+                    contextual_translations = push(
+                        &mut self.word_contextual_translations,
+                        &contextual_translations,
+                        contextual_translation,
+                    )
+                    .unwrap();
+                }
+                let new_word = Word {
+                    original,
+                    contextual_translations,
+                    is_punctuation: word.is_punctuation,
+                    note,
+                    grammar,
+                };
+                words = push(&mut self.words, &words, new_word).unwrap();
+            }
+            let new_sentence = Sentence {
+                full_translation,
+                words,
+            };
+            sentences = push(&mut self.sentences, &sentences, new_sentence).unwrap();
+        }
+
+        self.paragraph_translations[new_index].sentences = sentences;
+    }
+
+    pub fn merge(self, other: Self) -> Self {
+        let mut merged_translation = Self::create(&self.source_language, &self.target_language);
+        for paragraph_idx in 0..self.paragraphs.len().max(other.paragraphs.len()) {
+            if let Some(paragarph) = self.paragraph_view(paragraph_idx)
+                && let Some(other_paragraph) = other.paragraph_view(paragraph_idx)
+                && paragarph.timestamp != other_paragraph.timestamp
+            {
+                let mut versions = Vec::new();
+                let mut curr_paragraph = paragarph;
+                loop {
+                    let prev_paragraph = curr_paragraph.get_previous_version();
+                    versions.push((curr_paragraph.timestamp, curr_paragraph));
+                    match prev_paragraph {
+                        Some(prev) => curr_paragraph = prev,
+                        None => break,
+                    }
+                }
+
+                let existing_versions = versions
+                    .iter()
+                    .map(|(timestamp, _)| *timestamp)
+                    .collect::<HashSet<_>>();
+
+                curr_paragraph = other_paragraph;
+
+                loop {
+                    let prev_paragraph = curr_paragraph.get_previous_version();
+                    if !existing_versions.contains(&curr_paragraph.timestamp) {
+                        versions.push((curr_paragraph.timestamp, curr_paragraph));
+                    }
+                    match prev_paragraph {
+                        Some(prev) => curr_paragraph = prev,
+                        None => break,
+                    }
+                }
+
+                versions.sort_by_key(|(timestamp, _)| *timestamp);
+
+                for (_, translation) in versions {
+                    merged_translation
+                        .add_paragraph_translation_from_view(paragraph_idx, &translation);
+                }
+            } else if let Some(paragarph) = self.paragraph_view(paragraph_idx)
+                && other.paragraph_view(paragraph_idx).is_none()
+            {
+                merged_translation.add_paragraph_translation_from_view(paragraph_idx, &paragarph);
+            } else if self.paragraph_view(paragraph_idx).is_none()
+                && let Some(other_paragraph) = other.paragraph_view(paragraph_idx)
+            {
+                merged_translation
+                    .add_paragraph_translation_from_view(paragraph_idx, &other_paragraph);
+            }
+        }
+        merged_translation
     }
 }
 
@@ -365,7 +528,9 @@ impl Serializable for Translation {
         Ok(())
     }
 
-    fn deserialize<TReader: io::Seek + io::Read>(input_stream: &mut TReader) -> std::io::Result<Self>
+    fn deserialize<TReader: io::Seek + io::Read>(
+        input_stream: &mut TReader,
+    ) -> std::io::Result<Self>
     where
         Self: Sized,
     {
@@ -504,8 +669,9 @@ impl<'a> ParagraphTranslationView<'a> {
     pub fn get_previous_version(&self) -> Option<ParagraphTranslationView<'a>> {
         let paragraph = self
             .previous_version
-            .map(|p| &self.translation.paragraph_translations[p]);
-        paragraph.map(|p| ParagraphTranslationView {
+            .map(|p| (p, &self.translation.paragraph_translations[p]));
+        paragraph.map(|(idx, p)| ParagraphTranslationView {
+            idx,
             translation: self.translation,
             timestamp: p.timestamp,
             previous_version: p.previous_version,
@@ -526,6 +692,10 @@ impl<'a> ParagraphTranslationView<'a> {
             ),
             words: sentence.words.slice(&self.translation.words),
         }
+    }
+
+    pub fn sentences(&'_ self) -> impl Iterator<Item = SentenceView<'_>> {
+        (0..self.sentence_count()).map(|s| self.sentence_view(s))
     }
 }
 
@@ -581,6 +751,10 @@ impl<'a> SentenceView<'a> {
                 .slice(&self.translation.word_contextual_translations),
         }
     }
+
+    pub fn words(&'_ self) -> impl Iterator<Item = WordView<'_>> {
+        (0..self.word_count()).map(|w| self.word_view(w))
+    }
 }
 
 impl<'a> WordView<'a> {
@@ -597,6 +771,12 @@ impl<'a> WordView<'a> {
                     .slice(&self.translation.strings),
             ),
         }
+    }
+
+    pub fn contextual_translations(
+        &self,
+    ) -> impl Iterator<Item = WordContextualTranslationView<'_>> {
+        (0..self.contextual_translations_count()).map(|t| self.contextual_translations_view(t))
     }
 }
 

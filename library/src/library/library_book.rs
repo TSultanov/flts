@@ -51,31 +51,6 @@ impl LibraryTranslation {
 }
 
 impl LibraryBook {
-    fn merge(self, other: LibraryBook) -> LibraryBook {
-        let merged_book = self.book.merge(other.book);
-
-        let other_translation_ids = other
-            .translations
-            .iter()
-            .map(|t| t.translation.id)
-            .collect::<HashSet<_>>();
-
-        LibraryBook {
-            path: self.path,
-            last_modified: self.last_modified.max(other.last_modified),
-            book: merged_book,
-            translations: other
-                .translations
-                .into_iter()
-                .chain(
-                    self.translations
-                        .into_iter()
-                        .filter(|t| !other_translation_ids.contains(&t.translation.id)),
-                )
-                .collect(),
-        }
-    }
-
     pub fn get_or_create_translation(
         &mut self,
         source_language: &str,
@@ -172,12 +147,12 @@ impl LibraryBook {
                     let saved_book_last_modified = book_path.metadata()?.modified.unwrap();
                     if saved_book_last_modified > last_modified {
                         let saved_book = Self::load(&book_path)?;
-                        book = book.merge(saved_book);
+                        book = saved_book;
                     }
                 }
             } else if book_path.exists()? {
                 let saved_book = Self::load(&book_path)?;
-                book = book.merge(saved_book);
+                book = saved_book;
             }
 
             let mut file = book_path_temp.create_file()?;

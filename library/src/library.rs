@@ -4,9 +4,7 @@ use vfs::{VfsError, VfsPath};
 
 use crate::book::{book_metadata::BookMetadata, translation_metadata::TranslationMetadata};
 
-mod book_merge;
 pub mod library_book;
-mod translation_merge;
 
 pub struct LibraryTranslationMetadata {
     pub id: Uuid,
