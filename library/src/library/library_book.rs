@@ -1,4 +1,4 @@
-use std::{collections::HashSet, io::SeekFrom, time::SystemTime};
+use std::{collections::HashSet, time::SystemTime};
 
 use uuid::Uuid;
 use vfs::VfsPath;
@@ -88,7 +88,37 @@ impl LibraryBook {
     }
 
     pub fn load_from_metadata(metadata: LibraryBookMetadata) -> Result<Self, vfs::error::VfsError> {
-        todo!("Merge on load!");
+        let mut candidates: Vec<(&VfsPath, Option<SystemTime>)> = Vec::new();
+        candidates.push((&metadata.main_path, metadata.main_path.metadata()?.modified));
+        for p in &metadata.conflicting_paths {
+            candidates.push((p, p.metadata()?.modified));
+        }
+
+        let mut newest_idx = 0usize;
+        let mut newest_time = candidates[0].1.unwrap_or(SystemTime::UNIX_EPOCH);
+        for (i, (_, m)) in candidates.iter().enumerate().skip(1) {
+            if m.unwrap_or(SystemTime::UNIX_EPOCH) > newest_time {
+                newest_idx = i;
+                newest_time = m.unwrap_or(SystemTime::UNIX_EPOCH);
+            }
+        }
+
+        if newest_idx != 0 {
+            if metadata.main_path.exists()? {
+                metadata.main_path.remove_file()?;
+            }
+            let source = &candidates[newest_idx].0;
+            if source.exists()? {
+                source.move_file(&metadata.main_path)?;
+            }
+        }
+
+        for p in metadata.conflicting_paths {
+            if p.exists()? {
+                // It's possible we've just moved the newest conflict into main, so ignore missing
+                let _ = p.remove_file();
+            }
+        }
 
         Self::load(&metadata.main_path)
     }
@@ -749,5 +779,132 @@ mod library_book_tests {
         let on_disk_latest = on_disk.paragraph_view(0).unwrap();
         assert_eq!(on_disk_latest.timestamp, 3);
         assert_eq!(on_disk_latest.sentence_view(0).full_translation, "c3");
+    }
+
+    #[test]
+    fn library_book_load_from_metadata_no_conflicts() {
+        // Arrange
+        let fs = vfs::MemoryFS::new();
+        let root: VfsPath = fs.into();
+        let library_path = root.join("lib").unwrap();
+        let library = Library::open(library_path.clone()).unwrap();
+
+        let book = library.create_book("Original Title").unwrap();
+        let _saved = book.save().unwrap();
+
+        // Acquire metadata for the only book
+        let mut books = library.list_books().unwrap();
+        assert_eq!(books.len(), 1);
+        let meta = books.remove(0);
+        assert!(meta.conflicting_paths.is_empty());
+
+        // Act
+        let loaded = super::LibraryBook::load_from_metadata(meta).unwrap();
+
+        // Assert
+        assert_eq!(loaded.book.title, "Original Title");
+    }
+
+    #[test]
+    fn library_book_load_from_metadata_selects_newest_conflict_and_cleans() {
+        use std::{thread::sleep, time::Duration};
+
+        // Arrange
+        let fs = vfs::MemoryFS::new();
+        let root: VfsPath = fs.into();
+        let library_path = root.join("lib").unwrap();
+        let library = Library::open(library_path.clone()).unwrap();
+
+        let book = library.create_book("Main V1").unwrap();
+        let saved = book.save().unwrap();
+
+        let book_file = saved.path.join("book.dat").unwrap();
+        let conflict_path = saved
+            .path
+            .join(
+                book_file
+                    .filename()
+                    .replace(".dat", ".syncconflict-newer.dat"),
+            )
+            .unwrap();
+
+        // Create conflict as a copy first (same id)
+        book_file.copy_file(&conflict_path).unwrap();
+
+        // Ensure timestamp difference and update conflict content to be "newer"
+        sleep(Duration::from_millis(5));
+        let mut rf = conflict_path.open_file().unwrap();
+        let mut conflict_book = Book::deserialize(&mut rf).unwrap();
+        conflict_book.title = "From Conflict".into();
+        let mut wf = conflict_path.create_file().unwrap();
+        conflict_book.serialize(&mut wf).unwrap();
+
+        // Acquire metadata (should include the conflict)
+        let mut books = library.list_books().unwrap();
+        assert_eq!(books.len(), 1);
+        assert_eq!(books[0].conflicting_paths.len(), 1);
+        let meta = books.remove(0);
+
+        // Act: load should select the newest (conflict), move it to main, and delete conflicts
+        let loaded = super::LibraryBook::load_from_metadata(meta).unwrap();
+
+        // Assert: loaded content is from conflict (newest)
+        assert_eq!(loaded.book.title, "From Conflict");
+        // On-disk main should now contain the conflict content and conflict file should be gone
+        let mut f = book_file.open_file().unwrap();
+        let on_disk = Book::deserialize(&mut f).unwrap();
+        assert_eq!(on_disk.title, "From Conflict");
+        assert!(!conflict_path.exists().unwrap());
+    }
+
+    #[test]
+    fn library_book_load_from_metadata_keeps_main_if_newest_and_cleans() {
+        use std::{thread::sleep, time::Duration};
+
+        // Arrange
+        let fs = vfs::MemoryFS::new();
+        let root: VfsPath = fs.into();
+        let library_path = root.join("lib").unwrap();
+        let library = Library::open(library_path.clone()).unwrap();
+
+        let book = library.create_book("V1").unwrap();
+        let saved = book.save().unwrap();
+
+        let book_file = saved.path.join("book.dat").unwrap();
+        let conflict_path = saved
+            .path
+            .join(
+                book_file
+                    .filename()
+                    .replace(".dat", ".syncconflict-older.dat"),
+            )
+            .unwrap();
+
+        // Create conflict as a copy (same id)
+        book_file.copy_file(&conflict_path).unwrap();
+
+        // Now update the MAIN file to be newer with a different title
+        sleep(Duration::from_millis(5));
+        let mut rf = book_file.open_file().unwrap();
+        let mut main_book = Book::deserialize(&mut rf).unwrap();
+        main_book.title = "V2".into();
+        let mut wf = book_file.create_file().unwrap();
+        main_book.serialize(&mut wf).unwrap();
+
+        // Acquire metadata (should include conflict)
+        let mut books = library.list_books().unwrap();
+        assert_eq!(books.len(), 1);
+        assert_eq!(books[0].conflicting_paths.len(), 1);
+        let meta = books.remove(0);
+
+        // Act
+        let loaded = super::LibraryBook::load_from_metadata(meta).unwrap();
+
+        // Assert: main is kept, conflict removed
+        assert_eq!(loaded.book.title, "V2");
+        let mut f = book_file.open_file().unwrap();
+        let on_disk = Book::deserialize(&mut f).unwrap();
+        assert_eq!(on_disk.title, "V2");
+        assert!(!conflict_path.exists().unwrap());
     }
 }
