@@ -41,8 +41,8 @@ pub fn write_opt(w: &mut dyn io::Write, slice: &Option<VecSlice<u8>>) -> io::Res
     match slice {
         Some(s) => {
             w.write_all(&[1])?;
-            w.write_all(&(s.start as u64).to_le_bytes())?;
-            w.write_all(&(s.len as u64).to_le_bytes())?;
+            write_var_u64(w, s.start as u64)?;
+            write_var_u64(w, s.len as u64)?;
         }
         None => {
             w.write_all(&[0])?;
@@ -349,5 +349,46 @@ mod serialization_tests {
         assert_eq!(dec, v);
         // Length should be 10 bytes per standard LEB128 for 64-bit max
         assert_eq!(enc.len(), 10);
+    }
+
+    #[test]
+    fn test_write_read_opt_none() {
+        let mut buf: Vec<u8> = Vec::new();
+        let none: Option<VecSlice<u8>> = None;
+        write_opt(&mut buf, &none).unwrap();
+        // Expect a single 0 marker
+        assert_eq!(buf, vec![0u8]);
+
+        let mut cur = Cursor::new(buf);
+        let decoded = read_opt(&mut cur).unwrap();
+        assert!(decoded.is_none());
+    }
+
+    #[test]
+    fn test_write_read_opt_some_small_literals() {
+        // Small values fit in one varint byte each
+        let slice = Some(VecSlice::<u8>::new(5, 3));
+        let mut buf: Vec<u8> = Vec::new();
+        write_opt(&mut buf, &slice).unwrap();
+        // 1 (present), then start=5, len=3
+        assert_eq!(buf, vec![1u8, 5u8, 3u8]);
+
+        let mut cur = Cursor::new(buf);
+        let decoded = read_opt(&mut cur).unwrap();
+        assert_eq!(decoded, slice);
+    }
+
+    #[test]
+    fn test_write_read_opt_some_multibyte_literals() {
+        // Use values that require multi-byte varints
+        let slice = Some(VecSlice::<u8>::new(128, 300));
+        let mut buf: Vec<u8> = Vec::new();
+        write_opt(&mut buf, &slice).unwrap();
+        // 1 (present), start=128 -> 0x80 0x01, len=300 -> 0xAC 0x02
+        assert_eq!(buf, vec![1u8, 0x80, 0x01, 0xAC, 0x02]);
+
+        let mut cur = Cursor::new(buf);
+        let decoded = read_opt(&mut cur).unwrap();
+        assert_eq!(decoded, slice);
     }
 }

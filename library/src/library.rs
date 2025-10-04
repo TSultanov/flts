@@ -2,7 +2,10 @@ use itertools::Itertools;
 use uuid::Uuid;
 use vfs::{VfsError, VfsPath};
 
-use crate::book::{book_metadata::BookMetadata, translation_metadata::TranslationMetadata};
+use crate::{
+    book::{book_metadata::BookMetadata, translation_metadata::TranslationMetadata},
+    library::library_book::LibraryBook,
+};
 
 pub mod library_book;
 
@@ -144,6 +147,26 @@ impl Library {
 
         Ok(books)
     }
+
+    pub fn create_book_plain(
+        &self,
+        title: &str,
+        text: &str,
+    ) -> Result<LibraryBook, vfs::error::VfsError> {
+        let mut book = self.create_book(title)?;
+        let chapter_index = book.book.push_chapter(None);
+        let paragraphs = split_paragraphs(text);
+
+        for paragraph in paragraphs {
+            book.book.push_paragraph(chapter_index, paragraph, None);
+        }
+
+        Ok(book.save()?)
+    }
+}
+
+fn split_paragraphs(text: &str) -> impl Iterator<Item = &str> {
+    text.lines().map(str::trim).filter(|p| !p.is_empty())
 }
 
 #[cfg(test)]
@@ -193,5 +216,19 @@ mod library_tests {
         assert_eq!(books[1].title, "Second Book");
         assert_eq!(books[1].paragraphs_count, 0);
         assert!(books[1].translations_metadata.is_empty());
+    }
+
+    #[test]
+    fn split_paragraphs_js_equivalence_basic() {
+        let input = "Hello\n\n  world  \r\n\nNext line\n";
+        let result: Vec<_> = split_paragraphs(input).collect();
+        assert_eq!(result, vec!["Hello", "world", "Next line"]);
+    }
+
+    #[test]
+    fn split_paragraphs_whitespace_only() {
+        let input = "  \n\n\t\n\r\n";
+        let result: Vec<_> = split_paragraphs(input).collect();
+        assert!(result.is_empty());
     }
 }

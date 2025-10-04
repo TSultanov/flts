@@ -2,8 +2,8 @@ use uuid::Uuid;
 
 use crate::book::serialization::{
     ChecksumedWriter, Magic, Serializable, Version, read_exact_array, read_len_prefixed_vec,
-    read_u8, read_u64, read_var_u64, read_vec_slice, validate_hash, write_u64, write_var_u64,
-    write_vec_slice,
+    read_opt, read_u8, read_u64, read_var_u64, read_vec_slice, validate_hash, write_opt, write_u64,
+    write_var_u64, write_vec_slice,
 };
 use std::borrow::Cow;
 use std::io::{self, Write};
@@ -19,7 +19,7 @@ pub struct Book {
 }
 
 struct Chapter {
-    pub title: VecSlice<u8>,
+    pub title: Option<VecSlice<u8>>,
     pub paragraphs: VecSlice<Paragraph>,
 }
 
@@ -32,7 +32,7 @@ struct Paragraph {
 pub struct ChapterView<'a> {
     book: &'a Book,
     paragraphs: &'a [Paragraph],
-    pub title: Cow<'a, str>,
+    pub title: Option<Cow<'a, str>>,
 }
 
 pub struct ParagraphView<'a> {
@@ -59,17 +59,20 @@ impl Book {
         let chapter = &self.chapters[chapter_index];
         ChapterView {
             book: self,
-            title: String::from_utf8_lossy(chapter.title.slice(&self.strings)),
+            title: chapter
+                .title
+                .map(|t| String::from_utf8_lossy(t.slice(&self.strings))),
             paragraphs: chapter.paragraphs.slice(&self.paragraphs),
         }
     }
 
-    pub fn push_chapter(&mut self, title: &str) {
-        let title = push_string(&mut self.strings, title);
+    pub fn push_chapter(&mut self, title: Option<&str>) -> usize {
+        let title = title.map(|t| push_string(&mut self.strings, t));
         self.chapters.push(Chapter {
             title,
             paragraphs: VecSlice::new(0, 0),
         });
+        self.chapters.len() - 1
     }
 
     pub fn push_paragraph(
@@ -77,7 +80,7 @@ impl Book {
         chapter_index: usize,
         original_text: &str,
         original_html: Option<&str>,
-    ) {
+    ) -> usize {
         let original_text = push_string(&mut self.strings, original_text);
         let original_html = original_html.map(|s| push_string(&mut self.strings, s));
         let new_paragraph = Paragraph {
@@ -91,6 +94,7 @@ impl Book {
         )
         .unwrap();
         self.chapters[chapter_index].paragraphs = paragraphs_slice;
+        paragraphs_slice.len - 1
     }
 }
 
@@ -188,7 +192,7 @@ impl Serializable for Book {
         // Chapters
         write_var_u64(&mut hashing_stream, self.chapters.len() as u64)?;
         for c in &self.chapters {
-            write_vec_slice(&mut hashing_stream, &c.title)?;
+            write_opt(&mut hashing_stream, &c.title)?;
             write_vec_slice(&mut hashing_stream, &c.paragraphs)?;
         }
 
@@ -266,7 +270,7 @@ impl Serializable for Book {
         let chapters_len = read_var_u64(input_stream)? as usize;
         let mut chapters = Vec::with_capacity(chapters_len);
         for _ in 0..chapters_len {
-            let title = read_vec_slice::<u8>(input_stream)?;
+            let title = read_opt(input_stream)?;
             let paragraphs_slice = read_vec_slice::<Paragraph>(input_stream)?;
             chapters.push(Chapter {
                 title,
@@ -299,19 +303,22 @@ mod book_tests {
     #[test]
     fn create_book_empty_chapter() {
         let mut book = Book::create("Test");
-        book.push_chapter("Test chapter");
-        let first_chapter = book.chapter_view(0);
-        assert_eq!("Test chapter", first_chapter.title);
+        let chapter_index = book.push_chapter(Some("Test chapter"));
+        let first_chapter = book.chapter_view(chapter_index);
+        assert_eq!(0, chapter_index);
+        assert_eq!("Test chapter", first_chapter.title.unwrap());
     }
 
     #[test]
     fn create_book_one_chapter_one_paragraph() {
         let mut book = Book::create("Test");
-        book.push_chapter("Test chapter");
-        book.push_paragraph(0, "Test", Some("<b>Test</b>"));
+        let chapter_index = book.push_chapter(Some("Test chapter"));
+        let paragraph_index = book.push_paragraph(chapter_index, "Test", Some("<b>Test</b>"));
         let first_chapter = book.chapter_view(0);
         let first_paragraph = first_chapter.paragraph_view(0);
 
+        assert_eq!(0, chapter_index);
+        assert_eq!(0, paragraph_index);
         assert_eq!("Test", first_paragraph.original_text);
         assert_eq!("<b>Test</b>", first_paragraph.original_html.unwrap());
     }
@@ -319,11 +326,19 @@ mod book_tests {
     #[test]
     fn serialize_deserialize_round_trip() {
         let mut book = Book::create("My Book");
-        book.push_chapter("Intro");
-        book.push_paragraph(0, "Hello world", Some("<p>Hello <b>world</b></p>"));
-        book.push_paragraph(0, "Second paragraph", None);
-        book.push_chapter("Second Chapter");
-        book.push_paragraph(1, "Another one", Some("<i>Another</i> one"));
+        let chapter_index = book.push_chapter(Some("Intro"));
+        let first_paragraph = book.push_paragraph(
+            chapter_index,
+            "Hello world",
+            Some("<p>Hello <b>world</b></p>"),
+        );
+        let second_paragraph = book.push_paragraph(chapter_index, "Second paragraph", None);
+        let second_chapter_index = book.push_chapter(Some("Second Chapter"));
+        let second_chapter_first_paragraph = book.push_paragraph(
+            second_chapter_index,
+            "Another one",
+            Some("<i>Another</i> one"),
+        );
 
         let mut buffer: Vec<u8> = vec![];
         book.serialize(&mut buffer).unwrap();
@@ -332,10 +347,15 @@ mod book_tests {
         let mut cursor = Cursor::new(buffer);
         let book2 = Book::deserialize(&mut cursor).unwrap();
 
+        assert_eq!(0, chapter_index);
+        assert_eq!(1, second_chapter_index);
+        assert_eq!(0, first_paragraph);
+        assert_eq!(1, second_paragraph);
+        assert_eq!(0, second_chapter_first_paragraph);
         assert_eq!(book2.title, "My Book");
         assert_eq!(book2.chapter_count(), 2);
         let ch0 = book2.chapter_view(0);
-        assert_eq!(ch0.title, "Intro");
+        assert_eq!(ch0.title.as_ref().unwrap(), "Intro");
         assert_eq!(ch0.paragraph_count(), 2);
         let p0 = ch0.paragraph_view(0);
         assert_eq!(p0.original_text, "Hello world");
@@ -347,7 +367,7 @@ mod book_tests {
         assert_eq!(p1.original_text, "Second paragraph");
         assert!(p1.original_html.is_none());
         let ch1 = book2.chapter_view(1);
-        assert_eq!(ch1.title, "Second Chapter");
+        assert_eq!(ch1.title.as_ref().unwrap(), "Second Chapter");
         assert_eq!(ch1.paragraph_count(), 1);
         let p2 = ch1.paragraph_view(0);
         assert_eq!(p2.original_text, "Another one");
@@ -357,10 +377,10 @@ mod book_tests {
     #[test]
     fn serialize_deserialize_corruption() {
         let mut book = Book::create("My Book");
-        book.push_chapter("Intro");
+        book.push_chapter(Some("Intro"));
         book.push_paragraph(0, "Hello world", Some("<p>Hello <b>world</b></p>"));
         book.push_paragraph(0, "Second paragraph", None);
-        book.push_chapter("Second Chapter");
+        book.push_chapter(Some("Second Chapter"));
         book.push_paragraph(1, "Another one", Some("<i>Another</i> one"));
 
         let mut buffer: Vec<u8> = vec![];

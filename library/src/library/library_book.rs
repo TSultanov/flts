@@ -11,7 +11,7 @@ use crate::{
 pub struct LibraryBook {
     path: VfsPath,
     last_modified: Option<SystemTime>,
-    book: Book,
+    pub book: Book,
     translations: Vec<LibraryTranslation>,
 }
 

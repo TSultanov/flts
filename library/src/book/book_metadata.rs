@@ -74,10 +74,10 @@ mod book_metadata_tests {
     #[test]
     fn test_metadata_roundtrip() {
         let mut book = Book::create("My Book");
-        book.push_chapter("Intro");
+        book.push_chapter(Some("Intro"));
         book.push_paragraph(0, "Hello world", Some("<p>Hello <b>world</b></p>"));
         book.push_paragraph(0, "Second paragraph", None);
-        book.push_chapter("Second Chapter");
+        book.push_chapter(Some("Second Chapter"));
         book.push_paragraph(1, "Another one", Some("<i>Another</i> one"));
 
         let mut buffer: Vec<u8> = vec![];
@@ -94,10 +94,10 @@ mod book_metadata_tests {
     #[test]
     fn test_metadata_corruption() {
         let mut book = Book::create("My Book");
-        book.push_chapter("Intro");
+        book.push_chapter(Some("Intro"));
         book.push_paragraph(0, "Hello world", Some("<p>Hello <b>world</b></p>"));
         book.push_paragraph(0, "Second paragraph", None);
-        book.push_chapter("Second Chapter");
+        book.push_chapter(Some("Second Chapter"));
         book.push_paragraph(1, "Another one", Some("<i>Another</i> one"));
 
         let mut buffer: Vec<u8> = vec![];
