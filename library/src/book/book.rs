@@ -6,7 +6,7 @@ use crate::book::serialization::{
     write_vec_slice,
 };
 use std::borrow::Cow;
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 
 use super::soa_helpers::*;
 
@@ -52,22 +52,22 @@ impl Book {
     }
 
     pub fn chapter_count(&self) -> usize {
-        return self.chapters.len();
+        self.chapters.len()
     }
 
     pub fn chapter_view(&self, chapter_index: usize) -> ChapterView<'_> {
         let chapter = &self.chapters[chapter_index];
-        return ChapterView {
+        ChapterView {
             book: self,
             title: String::from_utf8_lossy(chapter.title.slice(&self.strings)),
             paragraphs: chapter.paragraphs.slice(&self.paragraphs),
-        };
+        }
     }
 
     pub fn push_chapter(&mut self, title: &str) {
         let title = push_string(&mut self.strings, title);
         self.chapters.push(Chapter {
-            title: title,
+            title,
             paragraphs: VecSlice::new(0, 0),
         });
     }
@@ -96,19 +96,19 @@ impl Book {
 
 impl<'a> ChapterView<'a> {
     pub fn paragraph_count(&self) -> usize {
-        return self.paragraphs.len();
+        self.paragraphs.len()
     }
 
     pub fn paragraph_view(&'a self, paragraph: usize) -> ParagraphView<'a> {
         let paragraph = &self.paragraphs[paragraph];
-        return ParagraphView {
+        ParagraphView {
             original_html: paragraph
                 .original_html
                 .map(|s| String::from_utf8_lossy(s.slice(&self.book.strings))),
             original_text: String::from_utf8_lossy(
                 paragraph.original_text.slice(&self.book.strings),
             ),
-        };
+        }
     }
 }
 
@@ -156,7 +156,6 @@ impl Serializable for Book {
 
         // paragraphs count
         let paragraphs_count = (0..self.chapter_count())
-            .into_iter()
             .fold(0, |acc, ch| acc + self.chapter_view(ch).paragraph_count());
         write_var_u64(&mut metadata_buf_hasher, paragraphs_count as u64)?;
 
@@ -202,7 +201,9 @@ impl Serializable for Book {
         Ok(())
     }
 
-    fn deserialize<TReader: io::Seek + io::Read>(input_stream: &mut TReader) -> std::io::Result<Self>
+    fn deserialize<TReader: io::Seek + io::Read>(
+        input_stream: &mut TReader,
+    ) -> std::io::Result<Self>
     where
         Self: Sized,
     {

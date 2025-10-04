@@ -95,7 +95,7 @@ impl LibraryBookMetadata {
                 source_langugage: main_translation.source_language,
                 target_language: main_translation.target_language,
                 translated_paragraphs_count: main_translation.translated_paragraphs_count,
-                main_path: main_path,
+                main_path,
                 conflicting_paths: conflicting_iterations,
             })
         }
@@ -137,11 +137,7 @@ impl Library {
             match book {
                 Ok(book) => books.push(book),
                 Err(err) => {
-                    println!(
-                        "Failed to load book at path {:?}: error {}",
-                        path,
-                        err.to_string()
-                    )
+                    println!("Failed to load book at path {:?}: error {}", path, err)
                 } // TODO logging
             };
         }

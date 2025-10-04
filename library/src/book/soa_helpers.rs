@@ -33,35 +33,31 @@ impl<T> VecSlice<T> {
     }
 }
 
-pub fn push_string<'a>(strings: &'a mut Vec<u8>, string: &str) -> VecSlice<u8> {
+pub fn push_string(strings: &mut Vec<u8>, string: &str) -> VecSlice<u8> {
     let start = strings.len();
     strings.extend(string.bytes());
-    return VecSlice {
+    VecSlice {
         start,
         len: string.len(),
         phantom: PhantomData,
-    };
+    }
 }
 
-pub fn push<'a, T: Clone>(
-    items: &'a mut Vec<T>,
-    slice: &VecSlice<T>,
-    item: T,
-) -> Option<VecSlice<T>> {
+pub fn push<T: Clone>(items: &mut Vec<T>, slice: &VecSlice<T>, item: T) -> Option<VecSlice<T>> {
     let mut slice = slice.clone();
     if slice.end() > items.len() {
         return None;
     }
 
     if slice.end() < items.len() {
-        let slice_items_copy: Vec<T> = slice.slice(items).iter().cloned().collect();
+        let slice_items_copy = slice.slice(items).to_vec();
         slice.start = items.len();
         items.extend(slice_items_copy);
     }
 
     items.push(item);
     slice.len += 1;
-    return Some(slice);
+    Some(slice)
 }
 
 #[cfg(test)]

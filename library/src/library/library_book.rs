@@ -44,7 +44,7 @@ impl LibraryTranslation {
     fn load_from_metadata(
         metadata: LibraryTranslationMetadata,
     ) -> Result<Self, vfs::error::VfsError> {
-        if metadata.conflicting_paths.len() > 0 {
+        if !metadata.conflicting_paths.is_empty() {
             let mut translation = {
                 let mut main_file = metadata.main_path.open_file()?;
                 Translation::deserialize(&mut main_file)?

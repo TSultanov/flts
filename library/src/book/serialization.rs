@@ -177,7 +177,7 @@ pub struct ChecksumedWriter<'a> {
 impl<'a> ChecksumedWriter<'a> {
     pub fn create(backing_writer: &'a mut dyn io::Write) -> Self {
         ChecksumedWriter {
-            backing_writer: backing_writer,
+            backing_writer,
             hasher: fnv::FnvHasher::default(),
         }
     }
@@ -223,7 +223,7 @@ pub fn validate_hash<T: io::Seek + io::Read>(reader: &mut T) -> io::Result<bool>
         last_hashes.enqueue(hasher.finish());
     }
 
-    reader.seek(io::SeekFrom::Start(0));
+    reader.seek(io::SeekFrom::Start(0))?;
 
     if last_u64.len() < 8 || last_hashes.len() < 9 {
         return Err(io::Error::new(ErrorKind::InvalidData, "Not enough data"));

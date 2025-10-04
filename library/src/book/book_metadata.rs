@@ -6,7 +6,7 @@ use std::{
 use uuid::Uuid;
 
 use crate::book::serialization::{
-    Magic, Version, read_exact_array, read_len_prefixed_vec, read_u64, read_var_u64, validate_hash,
+    Magic, Version, read_exact_array, read_len_prefixed_vec, read_u64, read_var_u64,
 };
 
 pub struct BookMetadata {
@@ -60,7 +60,7 @@ impl BookMetadata {
 
         Ok(BookMetadata {
             id,
-            title: title,
+            title,
             chapters_count,
             paragraphs_count,
         })

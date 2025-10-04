@@ -12,7 +12,7 @@ use crate::book::{
 use std::{borrow::Cow, iter};
 use std::{
     collections::HashSet,
-    io::{self, Read, Write},
+    io::{self, Write},
 };
 
 use super::soa_helpers::*;
@@ -38,7 +38,6 @@ struct ParagraphTranslation {
 }
 
 pub struct ParagraphTranslationView<'a> {
-    idx: usize,
     translation: &'a Translation,
     pub timestamp: usize,
     previous_version: Option<usize>,
@@ -127,9 +126,8 @@ impl Translation {
             return None;
         }
         let paragraph = self.paragraphs[paragraph];
-        let paragraph = paragraph.map(|p| (p, &self.paragraph_translations[p]));
-        paragraph.map(|(idx, p)| ParagraphTranslationView {
-            idx,
+        let paragraph = paragraph.map(|p| &self.paragraph_translations[p]);
+        paragraph.map(|p| ParagraphTranslationView {
             translation: self,
             timestamp: p.timestamp,
             previous_version: p.previous_version,
@@ -147,8 +145,10 @@ impl Translation {
         translation: &translation_import::ParagraphTranslation,
     ) {
         if paragraph_index >= self.paragraphs.len() {
-            self.paragraphs
-                .extend(iter::repeat(None).take(paragraph_index - self.paragraphs.len() + 1));
+            self.paragraphs.extend(iter::repeat_n(
+                None,
+                paragraph_index - self.paragraphs.len() + 1,
+            ));
         }
 
         let new_prev_version = self.paragraphs[paragraph_index];
@@ -242,8 +242,10 @@ impl Translation {
         translation: &ParagraphTranslationView,
     ) {
         if paragraph_index >= self.paragraphs.len() {
-            self.paragraphs
-                .extend(iter::repeat(None).take(paragraph_index - self.paragraphs.len() + 1));
+            self.paragraphs.extend(iter::repeat_n(
+                None,
+                paragraph_index - self.paragraphs.len() + 1,
+            ));
         }
 
         let new_prev_version = self.paragraphs[paragraph_index];
@@ -279,27 +281,27 @@ impl Translation {
                         .grammar
                         .plurality
                         .as_ref()
-                        .map(|s| push_string(&mut self.strings, &s)),
+                        .map(|s| push_string(&mut self.strings, s)),
                     person: word
                         .grammar
                         .person
                         .as_ref()
-                        .map(|s| push_string(&mut self.strings, &s)),
+                        .map(|s| push_string(&mut self.strings, s)),
                     tense: word
                         .grammar
                         .tense
                         .as_ref()
-                        .map(|s| push_string(&mut self.strings, &s)),
+                        .map(|s| push_string(&mut self.strings, s)),
                     case: word
                         .grammar
                         .case
                         .as_ref()
-                        .map(|s| push_string(&mut self.strings, &s)),
+                        .map(|s| push_string(&mut self.strings, s)),
                     other: word
                         .grammar
                         .other
                         .as_ref()
-                        .map(|s| push_string(&mut self.strings, &s)),
+                        .map(|s| push_string(&mut self.strings, s)),
                 };
                 let mut contextual_translations = VecSlice::empty();
                 for contextual_translation in word.contextual_translations() {
@@ -689,9 +691,8 @@ impl<'a> ParagraphTranslationView<'a> {
     pub fn get_previous_version(&self) -> Option<ParagraphTranslationView<'a>> {
         let paragraph = self
             .previous_version
-            .map(|p| (p, &self.translation.paragraph_translations[p]));
-        paragraph.map(|(idx, p)| ParagraphTranslationView {
-            idx,
+            .map(|p| &self.translation.paragraph_translations[p]);
+        paragraph.map(|p| ParagraphTranslationView {
             translation: self.translation,
             timestamp: p.timestamp,
             previous_version: p.previous_version,
@@ -1157,8 +1158,19 @@ mod tests {
         }
         assert_eq!(ts, vec![5, 4, 3, 2, 1]);
         // Verify content for unique timestamps
-        assert_eq!(merged.paragraph_view(0).unwrap().sentence_view(0).full_translation, "a5");
-        let v4 = merged.paragraph_view(0).unwrap().get_previous_version().unwrap();
+        assert_eq!(
+            merged
+                .paragraph_view(0)
+                .unwrap()
+                .sentence_view(0)
+                .full_translation,
+            "a5"
+        );
+        let v4 = merged
+            .paragraph_view(0)
+            .unwrap()
+            .get_previous_version()
+            .unwrap();
         assert_eq!(v4.sentence_view(0).full_translation, "a4");
     }
 
