@@ -123,6 +123,7 @@ pub fn read_vec_slice<T>(r: &mut dyn io::Read) -> io::Result<VecSlice<T>> {
 pub enum Magic {
     Book,
     Translation,
+    Dictionary,
 }
 
 impl Magic {
@@ -130,6 +131,7 @@ impl Magic {
         match self {
             Magic::Book => b"BK01", // includes version indicator but still treat version separately
             Magic::Translation => b"TR01",
+            Magic::Dictionary => b"DC01",
         }
     }
 
