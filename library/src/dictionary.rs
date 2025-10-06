@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::collections::btree_map::Entry;
 
 use crate::book::serialization::{
     ChecksumedWriter, Magic, Serializable, Version, read_len_prefixed_string,
@@ -30,7 +31,46 @@ impl Dictionary {
 
         self.translations.get_mut(&original_lowercase).unwrap().insert(translation.to_lowercase());
     }
+
+    pub fn merge(self, other: Self) -> Self {
+        Self::try_merge(self, other).expect("merge should not fail; use try_merge for error handling")
+    }
+
+    pub fn try_merge(mut self, other: Self) -> Result<Self, DictionaryMergeError> {
+        if self.source_language != other.source_language || self.target_language != other.target_language {
+            return Err(DictionaryMergeError::LanguageMismatch);
+        }
+
+        // Efficiently merge without cloning sets: move entries from `other` into `self`.
+        for (orig, set) in other.translations.into_iter() {
+            match self.translations.entry(orig) {
+                Entry::Vacant(v) => {
+                    v.insert(set);
+                }
+                Entry::Occupied(mut o) => {
+                    o.get_mut().extend(set);
+                }
+            }
+        }
+
+        Ok(self)
+    }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DictionaryMergeError {
+    LanguageMismatch,
+}
+
+impl std::fmt::Display for DictionaryMergeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DictionaryMergeError::LanguageMismatch => write!(f, "Cannot merge dictionaries with different languages"),
+        }
+    }
+}
+
+impl std::error::Error for DictionaryMergeError {}
 
 impl Serializable for Dictionary {
     fn serialize<TWriter: std::io::Write>(&self, output_stream: &mut TWriter) -> std::io::Result<()> {
@@ -192,5 +232,44 @@ mod tests {
         let mut cur = Cursor::new(buf);
         let r = Dictionary::deserialize(&mut cur);
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn dictionary_merge_success() {
+        let mut d1 = Dictionary::create("en".into(), "ru".into());
+        d1.add_translation("Hello", "Привет");
+        d1.add_translation("world", "мир");
+
+        let mut d2 = Dictionary::create("en".into(), "ru".into());
+        d2.add_translation("hello", "Здравствуй");
+        d2.add_translation("new", "новый");
+
+        let merged = d1.try_merge(d2).unwrap();
+
+        assert_eq!(merged.source_language, "en");
+        assert_eq!(merged.target_language, "ru");
+        assert_eq!(merged.translations.len(), 3);
+
+        let hello = merged.translations.get("hello").unwrap();
+        assert!(hello.contains("привет"));
+        assert!(hello.contains("здравствуй"));
+
+        let world = merged.translations.get("world").unwrap();
+        assert!(world.contains("мир"));
+
+        let neww = merged.translations.get("new").unwrap();
+        assert!(neww.contains("новый"));
+    }
+
+    #[test]
+    fn dictionary_merge_language_mismatch_returns_err() {
+        let mut d1 = Dictionary::create("en".into(), "ru".into());
+        d1.add_translation("Hello", "Привет");
+
+        let mut d2 = Dictionary::create("en".into(), "de".into());
+        d2.add_translation("Hello", "Hallo");
+
+        let err = d1.try_merge(d2);
+        assert!(matches!(err, Err(DictionaryMergeError::LanguageMismatch)));
     }
 }
