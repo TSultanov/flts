@@ -1,3 +1,5 @@
+use std::{error::Error, fmt::Display};
+
 use itertools::Itertools;
 use uuid::Uuid;
 use vfs::{VfsError, VfsPath};
@@ -8,6 +10,21 @@ use crate::{
 };
 
 pub mod library_book;
+
+#[derive(Debug)]
+pub enum LibraryError {
+    DuplicateTitle(String),
+}
+
+impl Display for LibraryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LibraryError::DuplicateTitle(title) => write!(f, "Failed to create book: duplicate title ({title})"),
+        }
+    }
+}
+
+impl Error for LibraryError {}
 
 pub struct LibraryTranslationMetadata {
     pub id: Uuid,
@@ -152,7 +169,7 @@ impl Library {
         &self,
         title: &str,
         text: &str,
-    ) -> Result<LibraryBook, vfs::error::VfsError> {
+    ) -> anyhow::Result<LibraryBook> {
         let mut book = self.create_book(title)?;
         let chapter_index = book.book.push_chapter(None);
         let paragraphs = split_paragraphs(text);

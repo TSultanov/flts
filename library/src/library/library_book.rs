@@ -4,8 +4,8 @@ use uuid::Uuid;
 use vfs::VfsPath;
 
 use crate::{
-    book::{book::Book, serialization::Serializable, translation::Translation},
-    library::{Library, LibraryBookMetadata, LibraryTranslationMetadata},
+    book::{self, book::Book, serialization::Serializable, translation::Translation},
+    library::{Library, LibraryBookMetadata, LibraryError, LibraryTranslationMetadata},
 };
 
 pub struct LibraryBook {
@@ -247,7 +247,12 @@ impl LibraryBook {
 }
 
 impl Library {
-    pub fn create_book(&self, title: &str) -> Result<LibraryBook, vfs::error::VfsError> {
+    pub fn create_book(&self, title: &str) -> anyhow::Result<LibraryBook> {
+        let books = self.list_books()?;
+        if books.iter().any(|b| b.title == title) {
+            Err(LibraryError::DuplicateTitle(title.to_owned()))?
+        }
+
         let guid = Uuid::new_v4();
         let book_root = self.library_root.join(guid.to_string())?;
 
