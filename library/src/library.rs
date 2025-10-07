@@ -36,9 +36,11 @@ pub struct LibraryTranslationMetadata {
 }
 
 pub struct LibraryBookMetadata {
+    pub id: Uuid,
     pub title: String,
     pub main_path: VfsPath,
     pub conflicting_paths: Vec<VfsPath>,
+    pub chapters_count: usize,
     pub paragraphs_count: usize,
     pub translations_metadata: Vec<LibraryTranslationMetadata>,
 }
@@ -121,9 +123,11 @@ impl LibraryBookMetadata {
         }
 
         Ok(LibraryBookMetadata {
+            id: book_metadata.id,
             title: book_metadata.title,
             main_path: book_dat,
             conflicting_paths,
+            chapters_count: book_metadata.chapters_count,
             paragraphs_count: book_metadata.paragraphs_count,
             translations_metadata,
         })

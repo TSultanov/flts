@@ -25,6 +25,8 @@ enum Commands {
         #[arg(short, long, value_name = "FILE")]
         path: PathBuf,
     },
+    /// List books
+    List {}
 }
 
 #[derive(Debug)]
@@ -59,6 +61,23 @@ fn add_book(library: &Library, title: &str, path: &PathBuf) -> anyhow::Result<()
     Ok(())
 }
 
+fn list_books(library: &Library) -> anyhow::Result<()> {
+    let books = library.list_books()?;
+    println!("id                                \ttitle\tchapters\tparagraphs");
+    for book in books {
+        println!("{}\t{}\t{}\t{}", book.id, book.title, book.chapters_count, book.paragraphs_count);
+        if !book.translations_metadata.is_empty() {
+            println!("\tTranslations:");
+            println!("\tid                                \tsrc\ttgt\tparagraphs");
+            for t in book.translations_metadata {
+                println!("\t{}\t{}\t{}\t{}", t.id, t.source_langugage, t.target_language, t.translated_paragraphs_count);
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
@@ -73,6 +92,9 @@ fn main() -> anyhow::Result<()> {
         Some(cmd) => match cmd {
             Commands::ImportBook { title, path } => {
                 add_book(&library, title, path)?;
+            },
+            Commands::List {  } => {
+                list_books(&library)?;
             }
         },
         None => {
