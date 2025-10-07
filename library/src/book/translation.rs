@@ -829,6 +829,8 @@ mod tests {
     fn make_paragraph(ts: usize, text: &str) -> translation_import::ParagraphTranslation {
         translation_import::ParagraphTranslation {
             timestamp: ts,
+            source_language: "en".to_owned(),
+            target_language: "ru".to_owned(),
             sentences: vec![translation_import::Sentence {
                 full_translation: text.to_string(),
                 words: vec![make_word(text)],
@@ -841,6 +843,8 @@ mod tests {
         let mut translation = Translation::create("en", "ru");
         let paragraph_translation = translation_import::ParagraphTranslation {
             timestamp: 1234567890,
+            source_language: "en".to_owned(),
+            target_language: "ru".to_owned(),
             sentences: vec![translation_import::Sentence {
                 full_translation: "Hello, world!".to_string(),
                 words: vec![
@@ -941,6 +945,8 @@ mod tests {
         let mut translation = Translation::create("en", "ru");
         let paragraph_translation = translation_import::ParagraphTranslation {
             timestamp: 1,
+            source_language: "en".to_owned(),
+            target_language: "ru".to_owned(),
             sentences: vec![translation_import::Sentence {
                 full_translation: "Hi".into(),
                 words: vec![translation_import::Word {
@@ -966,6 +972,8 @@ mod tests {
         // second version
         let paragraph_translation2 = translation_import::ParagraphTranslation {
             timestamp: 2,
+            source_language: "en".to_owned(),
+            target_language: "ru".to_owned(),
             sentences: vec![translation_import::Sentence {
                 full_translation: "Hi there".into(),
                 words: vec![
@@ -1035,6 +1043,8 @@ mod tests {
         let mut translation = Translation::create("en", "ru");
         let paragraph_translation = translation_import::ParagraphTranslation {
             timestamp: 1,
+            source_language: "en".to_owned(),
+            target_language: "ru".to_owned(),
             sentences: vec![translation_import::Sentence {
                 full_translation: "Hi".into(),
                 words: vec![translation_import::Word {
@@ -1060,6 +1070,8 @@ mod tests {
         // second version
         let paragraph_translation2 = translation_import::ParagraphTranslation {
             timestamp: 2,
+            source_language: "en".to_owned(),
+            target_language: "ru".to_owned(),
             sentences: vec![translation_import::Sentence {
                 full_translation: "Hi there".into(),
                 words: vec![

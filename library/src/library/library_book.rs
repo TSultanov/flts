@@ -390,6 +390,8 @@ mod library_book_tests {
         let mut tr = Translation::create("es", "en");
         let initial_pt = translation_import::ParagraphTranslation {
             timestamp: 1,
+            source_language: "es".to_owned(),
+            target_language: "en".to_owned(),
             sentences: vec![translation_import::Sentence {
                 full_translation: "Hola".into(),
                 words: vec![translation_import::Word {
@@ -429,6 +431,8 @@ mod library_book_tests {
         book.book.title = "Second Edition".into();
         let new_pt = translation_import::ParagraphTranslation {
             timestamp: 2,
+            source_language: "es".to_owned(),
+            target_language: "en".to_owned(),
             sentences: vec![translation_import::Sentence {
                 full_translation: "Hola mundo".into(),
                 words: vec![translation_import::Word {
@@ -480,6 +484,8 @@ mod library_book_tests {
         let mut tr = Translation::create("en", "ru");
         let pt1 = translation_import::ParagraphTranslation {
             timestamp: 1,
+            source_language: "en".to_owned(),
+            target_language: "ru".to_owned(),
             sentences: vec![translation_import::Sentence {
                 full_translation: "v1".into(),
                 words: vec![translation_import::Word {
@@ -518,6 +524,8 @@ mod library_book_tests {
         // In-memory change ts=2
         let mem_pt = translation_import::ParagraphTranslation {
             timestamp: 2,
+            source_language: "en".to_owned(),
+            target_language: "ru".to_owned(),
             sentences: vec![translation_import::Sentence {
                 full_translation: "mem".into(),
                 words: vec![translation_import::Word {
@@ -550,6 +558,8 @@ mod library_book_tests {
             };
             let disk_pt = translation_import::ParagraphTranslation {
                 timestamp: 3,
+                source_language: "en".to_owned(),
+                target_language: "ru".to_owned(),
                 sentences: vec![translation_import::Sentence {
                     full_translation: "disk".into(),
                     words: vec![translation_import::Word {
@@ -603,6 +613,8 @@ mod library_book_tests {
         let mut t_main = Translation::create("en", "ru");
         let pt2 = translation_import::ParagraphTranslation {
             timestamp: 2,
+            source_language: "en".to_owned(),
+            target_language: "ru".to_owned(),
             sentences: vec![translation_import::Sentence {
                 full_translation: "m2".into(),
                 words: vec![translation_import::Word {
@@ -663,6 +675,8 @@ mod library_book_tests {
         let mut t_main = Translation::create("en", "ru");
         let pt2 = translation_import::ParagraphTranslation {
             timestamp: 2,
+            source_language: "en".to_owned(),
+            target_language: "ru".to_owned(),
             sentences: vec![translation_import::Sentence {
                 full_translation: "m2".into(),
                 words: vec![translation_import::Word {
@@ -693,6 +707,8 @@ mod library_book_tests {
         let mut t_c1 = Translation::create("en", "ru");
         let pt1 = translation_import::ParagraphTranslation {
             timestamp: 1,
+            source_language: "en".to_owned(),
+            target_language: "ru".to_owned(),
             sentences: vec![translation_import::Sentence {
                 full_translation: "c1".into(),
                 words: vec![translation_import::Word {
@@ -723,6 +739,8 @@ mod library_book_tests {
         let mut t_c2 = Translation::create("en", "ru");
         let pt3 = translation_import::ParagraphTranslation {
             timestamp: 3,
+            source_language: "en".to_owned(),
+            target_language: "ru".to_owned(),
             sentences: vec![translation_import::Sentence {
                 full_translation: "c3".into(),
                 words: vec![translation_import::Word {

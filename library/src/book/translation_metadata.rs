@@ -76,6 +76,8 @@ mod translation_metadata_test {
         let mut translation = Translation::create("en", "ru");
         let paragraph_translation = translation_import::ParagraphTranslation {
             timestamp: 1,
+            source_language: "en".to_owned(),
+            target_language: "ru".to_owned(),
             sentences: vec![translation_import::Sentence {
                 full_translation: "Hi".into(),
                 words: vec![translation_import::Word {
@@ -101,6 +103,8 @@ mod translation_metadata_test {
         // another paragraph
         let paragraph_translation2 = translation_import::ParagraphTranslation {
             timestamp: 2,
+            source_language: "en".to_owned(),
+            target_language: "ru".to_owned(),
             sentences: vec![translation_import::Sentence {
                 full_translation: "Hi there".into(),
                 words: vec![
@@ -157,6 +161,8 @@ mod translation_metadata_test {
         let mut translation = Translation::create("en", "ru");
         let paragraph_translation = translation_import::ParagraphTranslation {
             timestamp: 1,
+            source_language: "en".to_owned(),
+            target_language: "ru".to_owned(),
             sentences: vec![translation_import::Sentence {
                 full_translation: "Hi".into(),
                 words: vec![translation_import::Word {
@@ -182,6 +188,8 @@ mod translation_metadata_test {
         // another paragraph
         let paragraph_translation2 = translation_import::ParagraphTranslation {
             timestamp: 2,
+            source_language: "en".to_owned(),
+            target_language: "ru".to_owned(),
             sentences: vec![translation_import::Sentence {
                 full_translation: "Hi there".into(),
                 words: vec![
