@@ -3,7 +3,7 @@ mod gemini;
 use crate::book::translation_import::ParagraphTranslation;
 
 pub trait Translator {
-    async fn get_translation(&self, paragraph: &str) -> anyhow::Result<ParagraphTranslation>;
+    fn get_translation(&self, paragraph: &str) -> impl std::future::Future<Output = anyhow::Result<ParagraphTranslation>> + Send;
 
     fn get_prompt(to: &str) -> String {
         format!(

@@ -1,16 +1,17 @@
 use gemini_rust::{Gemini};
 use serde_json::{json, Value};
 
-use crate::{book::translation_import::ParagraphTranslation, translator::Translator};
+use crate::{book::translation_import::ParagraphTranslation, cache::TranslationsCache, translator::Translator};
 
-pub struct GeminiTranslator {
+pub struct GeminiTranslator<'a> {
+    cache: &'a TranslationsCache,
     client: Gemini,
     schema: Value,
     to: String,
 }
 
-impl GeminiTranslator {
-    pub fn create(api_key: String, to: String) -> anyhow::Result<GeminiTranslator> {
+impl<'a> GeminiTranslator<'a> {
+    pub fn create(cache: &'a TranslationsCache, api_key: String, to: String) -> anyhow::Result<GeminiTranslator<'a>> {
         let schema = json!(
             {
                 "type": "object",
@@ -112,6 +113,7 @@ impl GeminiTranslator {
         let client = Gemini::new(api_key)?;
 
         Ok(Self {
+            cache,
             schema,
             client,
             to
@@ -119,8 +121,12 @@ impl GeminiTranslator {
     }
 }
 
-impl Translator for GeminiTranslator {
+impl<'a> Translator for GeminiTranslator<'a> {
     async fn get_translation(&self, paragraph: &str) -> anyhow::Result<ParagraphTranslation> {
+        if let Some(cached_result) = self.cache.get(paragraph).await? {
+            return Ok(cached_result);
+        }
+
         let result = self.client.generate_content()
         .with_system_prompt(Self::get_prompt(&self.to))
         .with_user_message(paragraph)
@@ -129,6 +135,10 @@ impl Translator for GeminiTranslator {
         .execute()
         .await?;
 
-        Ok(serde_json::from_str(&result.text())?)
+        let result: ParagraphTranslation = serde_json::from_str(&result.text())?;
+
+        self.cache.set(paragraph, &result);
+
+        Ok(result)
     }
 }

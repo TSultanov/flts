@@ -21,3 +21,9 @@ version = "1.18.1"
 features = [
     "v4",
 ]
+
+[dependencies.foyer]
+version = "0.20.0"
+features = [
+    "serde"
+]
