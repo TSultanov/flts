@@ -6,6 +6,11 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.100"
 clap = { version = "4.5.48", features = ["derive"] }
+directories = "6.0.0"
+display-error-chain = "0.2.2"
 file-format = { version = "0.28.0", features = ["reader"] }
+isolang = "2.4.0"
 library = { path = "../library" }
+tokio = { version = "1.47.1", features = ["full"] }
+uuid = { version = "1.18.1", features = ["v4"] }
 vfs = "0.12.2"

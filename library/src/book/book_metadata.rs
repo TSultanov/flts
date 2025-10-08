@@ -69,11 +69,13 @@ impl BookMetadata {
 
 #[cfg(test)]
 mod book_metadata_tests {
+    use uuid::Uuid;
+
     use crate::book::{book::Book, book_metadata::BookMetadata, serialization::Serializable};
 
     #[test]
     fn test_metadata_roundtrip() {
-        let mut book = Book::create("My Book");
+        let mut book = Book::create(Uuid::new_v4(), "My Book");
         book.push_chapter(Some("Intro"));
         book.push_paragraph(0, "Hello world", Some("<p>Hello <b>world</b></p>"));
         book.push_paragraph(0, "Second paragraph", None);
@@ -93,7 +95,7 @@ mod book_metadata_tests {
 
     #[test]
     fn test_metadata_corruption() {
-        let mut book = Book::create("My Book");
+        let mut book = Book::create(Uuid::new_v4(), "My Book");
         book.push_chapter(Some("Intro"));
         book.push_paragraph(0, "Hello world", Some("<p>Hello <b>world</b></p>"));
         book.push_paragraph(0, "Second paragraph", None);

@@ -14,38 +14,43 @@ pub struct Book {
     pub id: Uuid,
     pub title: String,
     chapters: Vec<Chapter>,
+    paragraph_map: Vec<usize>,
     paragraphs: Vec<Paragraph>,
     strings: Vec<u8>,
 }
 
 struct Chapter {
     pub title: Option<VecSlice<u8>>,
-    pub paragraphs: VecSlice<Paragraph>,
+    pub paragraphs: VecSlice<usize>,
 }
 
 #[derive(Clone, Copy)]
 struct Paragraph {
+    id: usize,
     original_html: Option<VecSlice<u8>>,
     original_text: VecSlice<u8>,
 }
 
 pub struct ChapterView<'a> {
+    pub idx: usize,
     book: &'a Book,
-    paragraphs: &'a [Paragraph],
+    paragraphs: Vec<&'a Paragraph>,
     pub title: Option<Cow<'a, str>>,
 }
 
 pub struct ParagraphView<'a> {
+    pub id: usize,
     pub original_html: Option<Cow<'a, str>>,
     pub original_text: Cow<'a, str>,
 }
 
 impl Book {
-    pub fn create(title: &str) -> Self {
+    pub fn create(id: Uuid, title: &str) -> Self {
         Book {
             title: title.to_owned(),
-            id: Uuid::new_v4(),
+            id: id,
             chapters: vec![],
+            paragraph_map: vec![],
             paragraphs: vec![],
             strings: vec![],
         }
@@ -57,12 +62,32 @@ impl Book {
 
     pub fn chapter_view(&self, chapter_index: usize) -> ChapterView<'_> {
         let chapter = &self.chapters[chapter_index];
+        let paragraph_indexes = chapter.paragraphs.slice(&self.paragraph_map);
         ChapterView {
+            idx: chapter_index,
             book: self,
             title: chapter
                 .title
                 .map(|t| String::from_utf8_lossy(t.slice(&self.strings))),
-            paragraphs: chapter.paragraphs.slice(&self.paragraphs),
+            paragraphs: paragraph_indexes
+                .iter()
+                .map(|p| &self.paragraphs[*p])
+                .collect(),
+        }
+    }
+
+    pub fn chapter_views(&self) -> impl Iterator<Item = ChapterView<'_>> {
+        (0..self.chapter_count()).map(|c| self.chapter_view(c))
+    }
+
+    pub fn paragraph_view(&self, paragraph_id: usize) -> ParagraphView<'_> {
+        let paragraph = &self.paragraphs[paragraph_id];
+        ParagraphView {
+            id: paragraph_id,
+            original_html: paragraph
+                .original_html
+                .map(|h| String::from_utf8_lossy(h.slice(&self.strings))),
+            original_text: String::from_utf8_lossy(paragraph.original_text.slice(&self.strings)),
         }
     }
 
@@ -84,17 +109,26 @@ impl Book {
         let original_text = push_string(&mut self.strings, original_text);
         let original_html = original_html.map(|s| push_string(&mut self.strings, s));
         let new_paragraph = Paragraph {
+            id: 0,
             original_html,
             original_text,
         };
+        self.paragraphs.push(new_paragraph);
+        let paragraph_id = self.paragraphs.len() - 1;
+        self.paragraphs[paragraph_id].id = paragraph_id;
+
         let paragraphs_slice = push(
-            &mut self.paragraphs,
+            &mut self.paragraph_map,
             &self.chapters[chapter_index].paragraphs,
-            new_paragraph,
+            paragraph_id,
         )
         .unwrap();
         self.chapters[chapter_index].paragraphs = paragraphs_slice;
         paragraphs_slice.len - 1
+    }
+
+    pub fn paragraphs_count(&self) -> usize {
+        self.chapter_views().map(|v| v.paragraph_count()).sum()
     }
 }
 
@@ -104,8 +138,9 @@ impl<'a> ChapterView<'a> {
     }
 
     pub fn paragraph_view(&'a self, paragraph: usize) -> ParagraphView<'a> {
-        let paragraph = &self.paragraphs[paragraph];
+        let paragraph = self.paragraphs[paragraph];
         ParagraphView {
+            id: paragraph.id,
             original_html: paragraph
                 .original_html
                 .map(|s| String::from_utf8_lossy(s.slice(&self.book.strings))),
@@ -113,6 +148,10 @@ impl<'a> ChapterView<'a> {
                 paragraph.original_text.slice(&self.book.strings),
             ),
         }
+    }
+
+    pub fn paragraphs(&'a self) -> impl Iterator<Item = ParagraphView<'a>> {
+        (0..self.paragraph_count()).map(|p| self.paragraph_view(p))
     }
 }
 
@@ -179,6 +218,7 @@ impl Serializable for Book {
         // Paragraphs
         write_var_u64(&mut hashing_stream, self.paragraphs.len() as u64)?;
         for p in &self.paragraphs {
+            write_var_u64(&mut hashing_stream, p.id as u64)?;
             write_vec_slice(&mut hashing_stream, &p.original_text)?;
             match p.original_html {
                 Some(slice) => {
@@ -187,6 +227,12 @@ impl Serializable for Book {
                 }
                 None => hashing_stream.write_all(&[0u8])?,
             }
+        }
+
+        // Paragraphs map
+        write_var_u64(&mut hashing_stream, self.paragraph_map.len() as u64)?;
+        for p in &self.paragraph_map {
+            write_var_u64(&mut hashing_stream, *p as u64)?;
         }
 
         // Chapters
@@ -252,6 +298,7 @@ impl Serializable for Book {
         let paragraphs_len = read_var_u64(input_stream)? as usize;
         let mut paragraphs = Vec::with_capacity(paragraphs_len);
         for _ in 0..paragraphs_len {
+            let id = read_var_u64(input_stream)? as usize;
             let original_text = read_vec_slice::<u8>(input_stream)?;
             let has_html = read_u8(input_stream)?;
             let original_html = if has_html == 1 {
@@ -260,10 +307,19 @@ impl Serializable for Book {
                 None
             };
             let paragraph = Paragraph {
+                id,
                 original_html,
                 original_text,
             };
             paragraphs.push(paragraph);
+        }
+
+        // Paragraphs map
+        let paragraph_map_len = read_var_u64(input_stream)?;
+        let mut paragraph_map = Vec::with_capacity(paragraph_map_len as usize);
+        for _ in 0..paragraph_map_len {
+            let p = read_var_u64(input_stream)? as usize;
+            paragraph_map.push(p);
         }
 
         // Chapters
@@ -271,7 +327,7 @@ impl Serializable for Book {
         let mut chapters = Vec::with_capacity(chapters_len);
         for _ in 0..chapters_len {
             let title = read_opt(input_stream)?;
-            let paragraphs_slice = read_vec_slice::<Paragraph>(input_stream)?;
+            let paragraphs_slice = read_vec_slice::<usize>(input_stream)?;
             chapters.push(Chapter {
                 title,
                 paragraphs: paragraphs_slice,
@@ -283,6 +339,7 @@ impl Serializable for Book {
             title,
             chapters,
             paragraphs,
+            paragraph_map,
             strings,
         })
     }
@@ -296,13 +353,13 @@ mod book_tests {
 
     #[test]
     fn create_book() {
-        let book = Book::create("Test");
+        let book = Book::create(Uuid::new_v4(), "Test");
         assert_eq!("Test", book.title);
     }
 
     #[test]
     fn create_book_empty_chapter() {
-        let mut book = Book::create("Test");
+        let mut book = Book::create(Uuid::new_v4(), "Test");
         let chapter_index = book.push_chapter(Some("Test chapter"));
         let first_chapter = book.chapter_view(chapter_index);
         assert_eq!(0, chapter_index);
@@ -311,7 +368,7 @@ mod book_tests {
 
     #[test]
     fn create_book_one_chapter_one_paragraph() {
-        let mut book = Book::create("Test");
+        let mut book = Book::create(Uuid::new_v4(), "Test");
         let chapter_index = book.push_chapter(Some("Test chapter"));
         let paragraph_index = book.push_paragraph(chapter_index, "Test", Some("<b>Test</b>"));
         let first_chapter = book.chapter_view(0);
@@ -325,7 +382,7 @@ mod book_tests {
 
     #[test]
     fn serialize_deserialize_round_trip() {
-        let mut book = Book::create("My Book");
+        let mut book = Book::create(Uuid::new_v4(), "My Book");
         let chapter_index = book.push_chapter(Some("Intro"));
         let first_paragraph = book.push_paragraph(
             chapter_index,
@@ -376,7 +433,7 @@ mod book_tests {
 
     #[test]
     fn serialize_deserialize_corruption() {
-        let mut book = Book::create("My Book");
+        let mut book = Book::create(Uuid::new_v4(), "My Book");
         book.push_chapter(Some("Intro"));
         book.push_paragraph(0, "Hello world", Some("<p>Hello <b>world</b></p>"));
         book.push_paragraph(0, "Second paragraph", None);

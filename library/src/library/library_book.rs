@@ -1,10 +1,10 @@
-use std::{collections::HashSet, time::SystemTime};
+use std::{cell::RefCell, collections::HashSet, rc::Rc, time::SystemTime};
 
 use uuid::Uuid;
 use vfs::VfsPath;
 
 use crate::{
-    book::{self, book::Book, serialization::Serializable, translation::Translation},
+    book::{book::Book, serialization::Serializable, translation::Translation},
     library::{Library, LibraryBookMetadata, LibraryError, LibraryTranslationMetadata},
 };
 
@@ -16,13 +16,13 @@ pub struct LibraryBook {
 }
 
 pub struct LibraryTranslation {
-    translation: Translation,
+    translation: Rc<RefCell<Translation>>,
     last_modified: Option<SystemTime>,
 }
 
 impl LibraryTranslation {
     fn merge(self, other: LibraryTranslation) -> LibraryTranslation {
-        let merged_translation = self.translation.merge(other.translation);
+        let merged_translation = Rc::new(RefCell::new(self.translation.borrow().merge(&other.translation.borrow())));
 
         LibraryTranslation {
             translation: merged_translation,
@@ -33,7 +33,7 @@ impl LibraryTranslation {
     fn load(path: &VfsPath) -> Result<Self, vfs::error::VfsError> {
         let last_modified = path.metadata()?.modified;
         let mut file = path.open_file()?;
-        let translation = Translation::deserialize(&mut file)?;
+        let translation = Rc::new(RefCell::new(Translation::deserialize(&mut file)?));
 
         Ok(Self {
             translation,
@@ -53,7 +53,7 @@ impl LibraryTranslation {
             for conflict in metadata.conflicting_paths {
                 let mut conflict_file = conflict.open_file()?;
                 let conflict_translation = Translation::deserialize(&mut conflict_file)?;
-                translation = translation.merge(conflict_translation);
+                translation = translation.merge(&conflict_translation);
             }
 
             let mut main_file = metadata.main_path.create_file()?;
@@ -69,22 +69,22 @@ impl LibraryBook {
         &mut self,
         source_language: &str,
         target_language: &str,
-    ) -> &Translation {
+    ) -> Rc<RefCell<Translation>> {
         if let Some(idx) = self.translations.iter().position(|t| {
-            t.translation.source_language == source_language
-                && t.translation.target_language == target_language
+            t.translation.borrow().source_language == source_language
+                && t.translation.borrow().target_language == target_language
         }) {
-            return &self.translations[idx].translation;
+            return self.translations[idx].translation.clone();
         }
 
         // Not found: create and push
         self.translations.push(LibraryTranslation {
-            translation: Translation::create(source_language, target_language),
+            translation: Rc::new(RefCell::new(Translation::create(source_language, target_language))),
             last_modified: None,
         });
 
         let last = self.translations.len() - 1;
-        &self.translations[last].translation
+        self.translations[last].translation.clone()
     }
 
     pub fn load_from_metadata(metadata: LibraryBookMetadata) -> Result<Self, vfs::error::VfsError> {
@@ -120,7 +120,14 @@ impl LibraryBook {
             }
         }
 
-        Self::load(&metadata.main_path)
+        let mut book = Self::load(&metadata.main_path)?;
+
+        for tm in metadata.translations_metadata {
+            let translation = LibraryTranslation::load_from_metadata(tm)?;
+            book.translations.push(translation);
+        }
+
+        Ok(book)
     }
 
     fn load(path: &VfsPath) -> Result<Self, vfs::error::VfsError> {
@@ -129,7 +136,7 @@ impl LibraryBook {
         let book = Book::deserialize(&mut file)?;
 
         Ok(Self {
-            path: path.clone(),
+            path: path.parent(),
             last_modified,
             book,
             translations: vec![],
@@ -156,7 +163,7 @@ impl LibraryBook {
         for mut translation in book.translations.drain(0..) {
             let translation_file_name = format!(
                 "translation_{}_{}.dat",
-                translation.translation.source_language, translation.translation.target_language
+                translation.translation.borrow().source_language, translation.translation.borrow().target_language
             );
             let translation_path = book.path.join(&translation_file_name)?;
             let translation_path_temp = book.path.join(format!("{translation_file_name}~"))?;
@@ -179,7 +186,7 @@ impl LibraryBook {
                 }
 
                 let mut translation_file = translation_path_temp.create_file()?;
-                translation.translation.serialize(&mut translation_file)?;
+                translation.translation.borrow().serialize(&mut translation_file)?;
 
                 if get_modified_if_exists(&translation_path)? == translation_path_modified_pre_save
                     || translation_path_modified_pre_save.is_none()
@@ -230,7 +237,7 @@ impl LibraryBook {
         let all_book_translations = LibraryBookMetadata::load(&book.path)?;
         let loaded_translations = merged_translations
             .iter()
-            .map(|t| t.translation.id)
+            .map(|t| t.translation.borrow().id)
             .collect::<HashSet<_>>();
         for translation_metadata in all_book_translations.translations_metadata {
             if !loaded_translations.contains(&translation_metadata.id) {
@@ -259,7 +266,7 @@ impl Library {
         Ok(LibraryBook {
             path: book_root,
             last_modified: None,
-            book: Book::create(title),
+            book: Book::create(guid, title),
             translations: vec![],
         })
     }
@@ -267,6 +274,8 @@ impl Library {
 
 #[cfg(test)]
 mod library_book_tests {
+    use std::{cell::RefCell, rc::Rc};
+
     use vfs::VfsPath;
 
     use crate::{
@@ -419,7 +428,7 @@ mod library_book_tests {
         };
         tr.add_paragraph_translation(0, &initial_pt);
         book.translations.push(super::LibraryTranslation {
-            translation: tr,
+            translation: Rc::new(RefCell::new(tr)),
             last_modified: None,
         });
         let mut book = book.save().unwrap();
@@ -459,7 +468,7 @@ mod library_book_tests {
             }],
         };
         book.translations[0]
-            .translation
+            .translation.borrow_mut()
             .add_paragraph_translation(0, &new_pt);
 
         let _saved = book.save().unwrap();
@@ -513,7 +522,7 @@ mod library_book_tests {
         };
         tr.add_paragraph_translation(0, &pt1);
         book.translations.push(super::LibraryTranslation {
-            translation: tr,
+            translation: Rc::new(RefCell::new(tr)),
             last_modified: None,
         });
         let mut book = book.save().unwrap();
@@ -552,7 +561,7 @@ mod library_book_tests {
             }],
         };
         book.translations[0]
-            .translation
+            .translation.borrow_mut()
             .add_paragraph_translation(0, &mem_pt);
 
         // Concurrent on-disk change ts=3
@@ -659,7 +668,8 @@ mod library_book_tests {
         let loaded = super::LibraryTranslation::load_from_metadata(meta).unwrap();
 
         // Assert: translation loaded and unchanged, latest ts=2
-        let latest = loaded.translation.paragraph_view(0).unwrap();
+        let translation_ref = loaded.translation.borrow();
+        let latest = translation_ref.paragraph_view(0).unwrap();
         assert_eq!(latest.timestamp, 2);
         assert_eq!(latest.sentence_view(0).full_translation, "m2");
     }
@@ -785,7 +795,8 @@ mod library_book_tests {
         let loaded = super::LibraryTranslation::load_from_metadata(meta).unwrap();
 
         // Assert: merged order latest=3, then 2, then 1
-        let latest = loaded.translation.paragraph_view(0).unwrap();
+        let translation_ref = loaded.translation.borrow();
+        let latest = translation_ref.paragraph_view(0).unwrap();
         assert_eq!(latest.timestamp, 3);
         assert_eq!(latest.sentence_view(0).full_translation, "c3");
         let prev = latest.get_previous_version().unwrap();

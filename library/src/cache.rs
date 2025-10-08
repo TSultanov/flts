@@ -1,4 +1,6 @@
-use foyer::{BlockEngineBuilder, DeviceBuilder, FsDeviceBuilder, HybridCache, HybridCacheBuilder};
+use std::path::{Path};
+
+use foyer::{BlockEngineBuilder, DeviceBuilder, FsDeviceBuilder, HybridCache, HybridCacheBuilder, HybridCachePolicy};
 
 use crate::book::translation_import::ParagraphTranslation;
 
@@ -7,11 +9,12 @@ pub struct TranslationsCache {
 }
 
 impl TranslationsCache {
-    pub async fn create(cache_file: &str) -> anyhow::Result<Self> {
-        let device = FsDeviceBuilder::new(cache_file)
+    pub async fn create(cache_dir: &Path) -> anyhow::Result<Self> {
+        let device = FsDeviceBuilder::new(cache_dir)
             .with_capacity(1024 * 1024 * 1024)
             .build()?;
         let cache = HybridCacheBuilder::new()
+            .with_policy(HybridCachePolicy::WriteOnInsertion)
             .memory(256 * 1024 * 1024)
             .storage()
             .with_engine_config(BlockEngineBuilder::new(device))

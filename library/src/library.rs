@@ -169,6 +169,12 @@ impl Library {
         Ok(books)
     }
 
+    pub fn get_book(&self, uuid: &Uuid) -> anyhow::Result<LibraryBook> {
+        let path = &self.library_root.join(uuid.to_string())?;
+        let metadata = LibraryBookMetadata::load(path)?;
+        Ok(LibraryBook::load_from_metadata(metadata)?)
+    }
+
     pub fn create_book_plain(
         &self,
         title: &str,

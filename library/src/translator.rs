@@ -1,6 +1,13 @@
 mod gemini;
 
-use crate::book::translation_import::ParagraphTranslation;
+use gemini_rust::Model;
+
+use crate::{book::translation_import::ParagraphTranslation, cache::TranslationsCache, translator::gemini::GeminiTranslator};
+
+pub enum TranslationModel {
+    GeminiFlash,
+    GeminiPro,
+}
 
 pub trait Translator {
     fn get_translation(&self, paragraph: &str) -> impl std::future::Future<Output = anyhow::Result<ParagraphTranslation>> + Send;
@@ -22,4 +29,13 @@ pub trait Translator {
         Before giving the final answer to the user, re-read it and fix mistakes. Double-check that you correctly carried over the punctuation. Make sure that you don't accidentally use concepts which only exist in the {to} language to describe word in the source text.
         Triple-check that you didn't miss any words!")
     }
+}
+
+pub fn get_translator(cache: &TranslationsCache, translation_model: TranslationModel, api_key: &str, to: &str) -> anyhow::Result<impl Translator> {
+    let model = match translation_model {
+        TranslationModel::GeminiFlash => Model::Gemini25Flash,
+        TranslationModel::GeminiPro => Model::Gemini25Pro,
+    };
+
+    GeminiTranslator::create(cache, model, api_key, to)
 }

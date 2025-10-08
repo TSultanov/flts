@@ -1,7 +1,12 @@
-use gemini_rust::{Gemini};
-use serde_json::{json, Value};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::{book::translation_import::ParagraphTranslation, cache::TranslationsCache, translator::Translator};
+use gemini_rust::{Gemini, Model};
+use serde_json::{Value, json};
+
+use crate::{
+    book::translation_import::ParagraphTranslation, cache::TranslationsCache,
+    translator::Translator,
+};
 
 pub struct GeminiTranslator<'a> {
     cache: &'a TranslationsCache,
@@ -11,7 +16,12 @@ pub struct GeminiTranslator<'a> {
 }
 
 impl<'a> GeminiTranslator<'a> {
-    pub fn create(cache: &'a TranslationsCache, api_key: String, to: String) -> anyhow::Result<GeminiTranslator<'a>> {
+    pub fn create(
+        cache: &'a TranslationsCache,
+        model: Model,
+        api_key: &str,
+        to: &str,
+    ) -> anyhow::Result<GeminiTranslator<'a>> {
         let schema = json!(
             {
                 "type": "object",
@@ -78,7 +88,7 @@ impl<'a> GeminiTranslator<'a> {
                                         },
                                         "required": [
                                             "original",
-                                            "translations",
+                                            "contextualTranslations",
                                             "note",
                                             "grammar",
                                             "isPunctuation"
@@ -110,13 +120,13 @@ impl<'a> GeminiTranslator<'a> {
             }
         );
 
-        let client = Gemini::new(api_key)?;
+        let client = Gemini::with_model(api_key, model)?;
 
         Ok(Self {
             cache,
             schema,
             client,
-            to
+            to: to.to_owned(),
         })
     }
 }
@@ -127,15 +137,21 @@ impl<'a> Translator for GeminiTranslator<'a> {
             return Ok(cached_result);
         }
 
-        let result = self.client.generate_content()
-        .with_system_prompt(Self::get_prompt(&self.to))
-        .with_user_message(paragraph)
-        .with_response_mime_type("application/json")
-        .with_response_schema(self.schema.clone())
-        .execute()
-        .await?;
+        let result = self
+            .client
+            .generate_content()
+            .with_system_prompt(Self::get_prompt(&self.to))
+            .with_user_message(paragraph)
+            .with_response_mime_type("application/json")
+            .with_response_schema(self.schema.clone())
+            .execute()
+            .await?;
 
-        let result: ParagraphTranslation = serde_json::from_str(&result.text())?;
+        let mut result: ParagraphTranslation = serde_json::from_str(&result.text())?;
+
+        let now = SystemTime::now();
+        let duration_since_epoch = now.duration_since(UNIX_EPOCH)?;
+        result.timestamp = duration_since_epoch.as_secs();
 
         self.cache.set(paragraph, &result);
 

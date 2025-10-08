@@ -32,14 +32,14 @@ pub struct Translation {
 }
 
 struct ParagraphTranslation {
-    timestamp: usize,
+    timestamp: u64,
     previous_version: Option<usize>,
     sentences: VecSlice<Sentence>,
 }
 
 pub struct ParagraphTranslationView<'a> {
     translation: &'a Translation,
-    pub timestamp: usize,
+    pub timestamp: u64,
     previous_version: Option<usize>,
     sentences: &'a [Sentence],
 }
@@ -337,7 +337,7 @@ impl Translation {
         self.paragraph_translations[new_index].sentences = sentences;
     }
 
-    pub fn merge(self, other: Self) -> Self {
+    pub fn merge(&self, other: &Self) -> Self {
         let mut merged_translation = Self::create(&self.source_language, &self.target_language);
         for paragraph_idx in 0..self.paragraphs.len().max(other.paragraphs.len()) {
             if let Some(paragarph) = self.paragraph_view(paragraph_idx)
@@ -645,7 +645,7 @@ impl Serializable for Translation {
         let pt_len = read_var_u64(input_stream)? as usize;
         let mut paragraph_translations = Vec::with_capacity(pt_len);
         for _ in 0..pt_len {
-            let timestamp = read_var_u64(input_stream)? as usize;
+            let timestamp = read_var_u64(input_stream)?;
             let has_prev = read_u8(input_stream)?;
             let previous_version = if has_prev == 1 {
                 Some(read_var_u64(input_stream)? as usize)
@@ -826,7 +826,7 @@ mod tests {
         }
     }
 
-    fn make_paragraph(ts: usize, text: &str) -> translation_import::ParagraphTranslation {
+    fn make_paragraph(ts: u64, text: &str) -> translation_import::ParagraphTranslation {
         translation_import::ParagraphTranslation {
             timestamp: ts,
             source_language: "en".to_owned(),
@@ -1133,7 +1133,7 @@ mod tests {
         b.add_paragraph_translation(0, &make_paragraph(1, "v1"));
         b.add_paragraph_translation(0, &make_paragraph(2, "v2"));
 
-        let merged = a.merge(b);
+        let merged = a.merge(&b);
 
         let latest = merged.paragraph_view(0).expect("merged paragraph");
         assert_eq!(latest.timestamp, 2);
@@ -1158,7 +1158,7 @@ mod tests {
         b.add_paragraph_translation(0, &make_paragraph(3, "a3"));
         b.add_paragraph_translation(0, &make_paragraph(5, "a5"));
 
-        let merged = a.merge(b);
+        let merged = a.merge(&b);
 
         // Expect order by ts: 1,2,3,4,5 (latest=5)
         let mut ts = Vec::new();
@@ -1199,7 +1199,7 @@ mod tests {
         b.add_paragraph_translation(0, &make_paragraph(15, "b15"));
         b.add_paragraph_translation(0, &make_paragraph(25, "b25"));
 
-        let merged = a.merge(b);
+        let merged = a.merge(&b);
         let mut ts = Vec::new();
         let mut v = merged.paragraph_view(0).unwrap();
         ts.push(v.timestamp);
@@ -1223,7 +1223,7 @@ mod tests {
             t
         };
 
-        let merged = a.merge(b);
+        let merged = a.merge(&b);
 
         // Paragraph 0 preserved history
         let mut ts0 = Vec::new();

@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ParagraphTranslation {
-    pub timestamp: usize,
+    #[serde(skip)]
+    pub timestamp: u64,
     pub sentences: Vec<Sentence>,
     #[serde(alias = "sourceLanguage")]
     pub source_language: String,
