@@ -1,8 +1,14 @@
 mod gemini;
 
-use gemini_rust::Model;
+use std::sync::Arc;
 
-use crate::{book::translation_import::ParagraphTranslation, cache::TranslationsCache, translator::gemini::GeminiTranslator};
+use gemini_rust::Model;
+use tokio::sync::Mutex;
+
+use crate::{
+    book::translation_import::ParagraphTranslation, cache::TranslationsCache,
+    translator::gemini::GeminiTranslator,
+};
 
 pub enum TranslationModel {
     GeminiFlash,
@@ -10,7 +16,10 @@ pub enum TranslationModel {
 }
 
 pub trait Translator {
-    fn get_translation(&self, paragraph: &str) -> impl std::future::Future<Output = anyhow::Result<ParagraphTranslation>> + Send;
+    fn get_translation(
+        &self,
+        paragraph: &str,
+    ) -> impl std::future::Future<Output = anyhow::Result<ParagraphTranslation>> + Send;
 
     fn get_prompt(to: &str) -> String {
         format!(
@@ -31,9 +40,14 @@ pub trait Translator {
     }
 }
 
-pub fn get_translator(cache: &TranslationsCache, translation_model: TranslationModel, api_key: &str, to: &str) -> anyhow::Result<impl Translator> {
+pub fn get_translator(
+    cache: Arc<Mutex<TranslationsCache>>,
+    translation_model: TranslationModel,
+    api_key: String,
+    to: String,
+) -> anyhow::Result<impl Translator> {
     let model = match translation_model {
-        TranslationModel::GeminiFlash => Model::Gemini25Flash,
+        TranslationModel::GeminiFlash => Model::Custom("models/gemini-flash-latest".to_owned()),
         TranslationModel::GeminiPro => Model::Gemini25Pro,
     };
 

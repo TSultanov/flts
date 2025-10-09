@@ -1,6 +1,9 @@
-use std::path::{Path};
+use std::path::Path;
 
-use foyer::{BlockEngineBuilder, DeviceBuilder, FsDeviceBuilder, HybridCache, HybridCacheBuilder, HybridCachePolicy};
+use foyer::{
+    BlockEngineBuilder, DeviceBuilder, FsDeviceBuilder, HybridCache, HybridCacheBuilder,
+    HybridCachePolicy,
+};
 
 use crate::book::translation_import::ParagraphTranslation;
 

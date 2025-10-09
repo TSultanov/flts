@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use epub::doc::EpubDoc;
-use scraper::{Html, Selector, ElementRef, Node};
+use scraper::{ElementRef, Html, Node, Selector};
 
 const ALLOWED_TAGS: &[&str] = &["em", "i", "b", "br"];
 
@@ -33,9 +33,11 @@ impl EpubBook {
         // Process spine contents
         for spine_item in &spine_items {
             // Get TOC elements that match this spine item
-            let toc_elements: Vec<_> = toc_items.iter()
+            let toc_elements: Vec<_> = toc_items
+                .iter()
                 .filter(|t| {
-                    let t_href_doc = t.content
+                    let t_href_doc = t
+                        .content
                         .to_string_lossy()
                         .split('#')
                         .next()
@@ -73,7 +75,10 @@ impl EpubBook {
     }
 }
 
-fn parse_chapter(chapter_html: &str, toc: &[&epub::doc::NavPoint]) -> anyhow::Result<Vec<EpubChapter>> {
+fn parse_chapter(
+    chapter_html: &str,
+    toc: &[&epub::doc::NavPoint],
+) -> anyhow::Result<Vec<EpubChapter>> {
     let document = Html::parse_document(chapter_html);
 
     if toc.is_empty() {
@@ -107,10 +112,7 @@ fn parse_chapter(chapter_html: &str, toc: &[&epub::doc::NavPoint]) -> anyhow::Re
 }
 
 fn split_anchor(href: &str) -> String {
-    href.split('#')
-        .nth(1)
-        .unwrap_or("")
-        .to_string()
+    href.split('#').nth(1).unwrap_or("").to_string()
 }
 
 fn extract_title(document: &Html) -> String {
@@ -122,7 +124,11 @@ fn extract_title(document: &Html) -> String {
     }
 }
 
-fn text_between_anchors(document: &Html, anchor1: &str, anchor2: Option<&str>) -> anyhow::Result<Vec<EpubParagraph>> {
+fn text_between_anchors(
+    document: &Html,
+    anchor1: &str,
+    anchor2: Option<&str>,
+) -> anyhow::Result<Vec<EpubParagraph>> {
     let start_element = if anchor1.is_empty() {
         find_body_element(document)
     } else {
@@ -163,9 +169,30 @@ fn is_inline_element(tag_name: &str) -> bool {
     // Common inline elements
     matches!(
         tag_name.to_lowercase().as_str(),
-        "a" | "abbr" | "b" | "bdi" | "bdo" | "br" | "cite" | "code" | "data" | "dfn" |
-        "em" | "i" | "kbd" | "mark" | "q" | "s" | "samp" | "small" | "span" | "strong" |
-        "sub" | "sup" | "time" | "u" | "var"
+        "a" | "abbr"
+            | "b"
+            | "bdi"
+            | "bdo"
+            | "br"
+            | "cite"
+            | "code"
+            | "data"
+            | "dfn"
+            | "em"
+            | "i"
+            | "kbd"
+            | "mark"
+            | "q"
+            | "s"
+            | "samp"
+            | "small"
+            | "span"
+            | "strong"
+            | "sub"
+            | "sup"
+            | "time"
+            | "u"
+            | "var"
     )
 }
 
@@ -233,7 +260,7 @@ fn find_next_sibling(element: ElementRef) -> Option<ElementRef> {
 
 fn get_sanitized_html(element: ElementRef, keep_bounding_tag: bool) -> String {
     let tag_lower = element.value().name().to_lowercase();
-    
+
     if keep_bounding_tag && !ALLOWED_TAGS.contains(&tag_lower.as_str()) {
         return element.text().collect::<String>();
     }

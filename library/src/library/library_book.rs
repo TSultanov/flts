@@ -1,5 +1,6 @@
-use std::{cell::RefCell, collections::HashSet, rc::Rc, time::SystemTime};
+use std::{collections::HashSet, sync::Arc, time::SystemTime};
 
+use tokio::sync::Mutex;
 use uuid::Uuid;
 use vfs::VfsPath;
 
@@ -16,13 +17,16 @@ pub struct LibraryBook {
 }
 
 pub struct LibraryTranslation {
-    translation: Rc<RefCell<Translation>>,
+    translation: Arc<Mutex<Translation>>,
     last_modified: Option<SystemTime>,
 }
 
 impl LibraryTranslation {
-    fn merge(self, other: LibraryTranslation) -> LibraryTranslation {
-        let merged_translation = Rc::new(RefCell::new(self.translation.borrow().merge(&other.translation.borrow())));
+    async fn merge(self, other: LibraryTranslation) -> LibraryTranslation {
+        let other_t = other.translation.lock().await;
+
+        let merged_translation =
+            Arc::new(Mutex::new(self.translation.lock().await.merge(&other_t)));
 
         LibraryTranslation {
             translation: merged_translation,
@@ -33,7 +37,7 @@ impl LibraryTranslation {
     fn load(path: &VfsPath) -> Result<Self, vfs::error::VfsError> {
         let last_modified = path.metadata()?.modified;
         let mut file = path.open_file()?;
-        let translation = Rc::new(RefCell::new(Translation::deserialize(&mut file)?));
+        let translation = Arc::new(Mutex::new(Translation::deserialize(&mut file)?));
 
         Ok(Self {
             translation,
@@ -65,21 +69,25 @@ impl LibraryTranslation {
 }
 
 impl LibraryBook {
-    pub fn get_or_create_translation(
+    pub async fn get_or_create_translation(
         &mut self,
         source_language: &str,
         target_language: &str,
-    ) -> Rc<RefCell<Translation>> {
-        if let Some(idx) = self.translations.iter().position(|t| {
-            t.translation.borrow().source_language == source_language
-                && t.translation.borrow().target_language == target_language
-        }) {
-            return self.translations[idx].translation.clone();
+    ) -> Arc<Mutex<Translation>> {
+        for (t_idx, t) in self.translations.iter().enumerate() {
+            if t.translation.lock().await.source_language == source_language
+                && t.translation.lock().await.target_language == target_language
+            {
+                return self.translations[t_idx].translation.clone();
+            }
         }
 
         // Not found: create and push
         self.translations.push(LibraryTranslation {
-            translation: Rc::new(RefCell::new(Translation::create(source_language, target_language))),
+            translation: Arc::new(Mutex::new(Translation::create(
+                source_language,
+                target_language,
+            ))),
             last_modified: None,
         });
 
@@ -143,7 +151,7 @@ impl LibraryBook {
         })
     }
 
-    pub fn save(&mut self) -> Result<(), vfs::error::VfsError> {
+    pub async fn save(&mut self) -> Result<(), vfs::error::VfsError> {
         if !self.path.exists()? {
             self.path.create_dir()?
         }
@@ -156,14 +164,15 @@ impl LibraryBook {
             }
         };
 
-        let mut book = self;
+        let book = self;
 
         let mut merged_translations = Vec::new();
 
         for mut translation in book.translations.drain(0..) {
             let translation_file_name = format!(
                 "translation_{}_{}.dat",
-                translation.translation.borrow().source_language, translation.translation.borrow().target_language
+                translation.translation.lock().await.source_language,
+                translation.translation.lock().await.target_language
             );
             let translation_path = book.path.join(&translation_file_name)?;
             let translation_path_temp = book.path.join(format!("{translation_file_name}~"))?;
@@ -177,16 +186,20 @@ impl LibraryBook {
                             translation_path.metadata()?.modified.unwrap();
                         if saved_translation_last_modified > last_modified {
                             let saved_translation = LibraryTranslation::load(&translation_path)?;
-                            translation = translation.merge(saved_translation);
+                            translation = translation.merge(saved_translation).await;
                         }
                     }
                 } else if translation_path.exists()? {
                     let saved_translation = LibraryTranslation::load(&translation_path)?;
-                    translation = translation.merge(saved_translation);
+                    translation = translation.merge(saved_translation).await;
                 }
 
                 let mut translation_file = translation_path_temp.create_file()?;
-                translation.translation.borrow().serialize(&mut translation_file)?;
+                translation
+                    .translation
+                    .lock()
+                    .await
+                    .serialize(&mut translation_file)?;
 
                 if get_modified_if_exists(&translation_path)? == translation_path_modified_pre_save
                     || translation_path_modified_pre_save.is_none()
@@ -239,7 +252,7 @@ impl LibraryBook {
         let all_book_translations = LibraryBookMetadata::load(&book.path)?;
         let loaded_translations = merged_translations
             .iter()
-            .map(|t| t.translation.borrow().id)
+            .map(|t| t.translation.blocking_lock().id)
             .collect::<HashSet<_>>();
         for translation_metadata in all_book_translations.translations_metadata {
             if !loaded_translations.contains(&translation_metadata.id) {
@@ -276,8 +289,9 @@ impl Library {
 
 #[cfg(test)]
 mod library_book_tests {
-    use std::{cell::RefCell, rc::Rc};
+    use std::{cell::RefCell, rc::Rc, sync::Arc};
 
+    use tokio::sync::Mutex;
     use vfs::VfsPath;
 
     use crate::{
@@ -287,15 +301,15 @@ mod library_book_tests {
         library::{Library, LibraryTranslationMetadata},
     };
 
-    #[test]
-    fn list_books_conflicting_versions() {
+    #[tokio::test]
+    async fn list_books_conflicting_versions() {
         let fs = vfs::MemoryFS::new();
         let root: VfsPath = fs.into();
         let library_path = root.join("lib").unwrap();
         let library = Library::open(library_path.clone()).unwrap();
 
         let mut book1 = library.create_book("First Book").unwrap();
-        book1.save().unwrap();
+        book1.save().await.unwrap();
 
         let book_file = book1.path.join("book.dat").unwrap();
 
@@ -321,16 +335,16 @@ mod library_book_tests {
         );
     }
 
-    #[test]
-    fn list_books_conflicting_translation_versions() {
+    #[tokio::test]
+    async fn list_books_conflicting_translation_versions() {
         let fs = vfs::MemoryFS::new();
         let root: VfsPath = fs.into();
         let library_path = root.join("lib").unwrap();
         let library = Library::open(library_path.clone()).unwrap();
 
         let mut book1 = library.create_book("First Book").unwrap();
-        let _translation = book1.get_or_create_translation("es", "en");
-        book1.save().unwrap();
+        let _translation = book1.get_or_create_translation("es", "en").await;
+        book1.save().await.unwrap();
 
         let translation_file = book1.path.join("translation_es_en.dat").unwrap();
 
@@ -366,8 +380,8 @@ mod library_book_tests {
         );
     }
 
-    #[test]
-    fn save_after_load_trivial_book_change() {
+    #[tokio::test]
+    async fn save_after_load_trivial_book_change() {
         let fs = vfs::MemoryFS::new();
         let root: VfsPath = fs.into();
         let library_path = root.join("lib").unwrap();
@@ -375,7 +389,7 @@ mod library_book_tests {
 
         // Create and save
         let mut book = library.create_book("First Title").unwrap();
-        book.save().unwrap();
+        book.save().await.unwrap();
 
         // Simulate "loaded": set last_modified from disk
         let book_file = book.path.join("book.dat").unwrap();
@@ -383,7 +397,7 @@ mod library_book_tests {
 
         // Change and save again
         book.book.title = "Updated Title".into();
-        book.save().unwrap();
+        book.save().await.unwrap();
 
         // Verify on-disk
         let mut f = book_file.open_file().unwrap();
@@ -391,8 +405,8 @@ mod library_book_tests {
         assert_eq!(loaded_book.title, "Updated Title");
     }
 
-    #[test]
-    fn save_after_load_book_and_translation_changed() {
+    #[tokio::test]
+    async fn save_after_load_book_and_translation_changed() {
         let fs = vfs::MemoryFS::new();
         let root: VfsPath = fs.into();
         let library_path = root.join("lib").unwrap();
@@ -427,10 +441,10 @@ mod library_book_tests {
         };
         tr.add_paragraph_translation(0, &initial_pt);
         book.translations.push(super::LibraryTranslation {
-            translation: Rc::new(RefCell::new(tr)),
+            translation: Arc::new(Mutex::new(tr)),
             last_modified: None,
         });
-        book.save().unwrap();
+        book.save().await.unwrap();
 
         // Treat as loaded: refresh last_modified and translations from disk
         let book_file = book.path.join("book.dat").unwrap();
@@ -467,10 +481,12 @@ mod library_book_tests {
             }],
         };
         book.translations[0]
-            .translation.borrow_mut()
+            .translation
+            .lock()
+            .await
             .add_paragraph_translation(0, &new_pt);
 
-        let _saved = book.save().unwrap();
+        let _saved = book.save().await.unwrap();
 
         // Verify book updated
         let mut bf = book_file.open_file().unwrap();
@@ -485,8 +501,8 @@ mod library_book_tests {
         assert_eq!(latest.sentence_view(0).full_translation, "Hola mundo");
     }
 
-    #[test]
-    fn save_merges_translation_with_concurrent_on_disk_change() {
+    #[tokio::test]
+    async fn save_merges_translation_with_concurrent_on_disk_change() {
         let fs = vfs::MemoryFS::new();
         let root: VfsPath = fs.into();
         let library_path = root.join("lib").unwrap();
@@ -521,10 +537,10 @@ mod library_book_tests {
         };
         tr.add_paragraph_translation(0, &pt1);
         book.translations.push(super::LibraryTranslation {
-            translation: Rc::new(RefCell::new(tr)),
+            translation: Arc::new(Mutex::new(tr)),
             last_modified: None,
         });
-        book.save().unwrap();
+        book.save().await.unwrap();
 
         // Treat as loaded instance with last_modified
         let book_file = book.path.join("book.dat").unwrap();
@@ -560,7 +576,9 @@ mod library_book_tests {
             }],
         };
         book.translations[0]
-            .translation.borrow_mut()
+            .translation
+            .lock()
+            .await
             .add_paragraph_translation(0, &mem_pt);
 
         // Concurrent on-disk change ts=3
@@ -599,7 +617,7 @@ mod library_book_tests {
         }
 
         // Save should merge: latest ts=3 -> ts=2 -> ts=1
-        let _merged = book.save().unwrap();
+        let _merged = book.save().await.unwrap();
         let mut tf = tr_path.open_file().unwrap();
         let merged_tr = Translation::deserialize(&mut tf).unwrap();
         let latest = merged_tr.paragraph_view(0).unwrap();
@@ -614,8 +632,8 @@ mod library_book_tests {
         assert!(prev2.get_previous_version().is_none());
     }
 
-    #[test]
-    fn load_from_metadata_no_conflicts() {
+    #[tokio::test]
+    async fn load_from_metadata_no_conflicts() {
         // Arrange: create a single main translation file with a simple history
         let fs = vfs::MemoryFS::new();
         let root: VfsPath = fs.into();
@@ -667,14 +685,14 @@ mod library_book_tests {
         let loaded = super::LibraryTranslation::load_from_metadata(meta).unwrap();
 
         // Assert: translation loaded and unchanged, latest ts=2
-        let translation_ref = loaded.translation.borrow();
+        let translation_ref = loaded.translation.lock().await;
         let latest = translation_ref.paragraph_view(0).unwrap();
         assert_eq!(latest.timestamp, 2);
         assert_eq!(latest.sentence_view(0).full_translation, "m2");
     }
 
-    #[test]
-    fn load_from_metadata_merges_conflicts_and_persists() {
+    #[tokio::test]
+    async fn load_from_metadata_merges_conflicts_and_persists() {
         // Arrange: create main + two conflict files with different timestamps
         let fs = vfs::MemoryFS::new();
         let root: VfsPath = fs.into();
@@ -794,7 +812,7 @@ mod library_book_tests {
         let loaded = super::LibraryTranslation::load_from_metadata(meta).unwrap();
 
         // Assert: merged order latest=3, then 2, then 1
-        let translation_ref = loaded.translation.borrow();
+        let translation_ref = loaded.translation.lock().await;
         let latest = translation_ref.paragraph_view(0).unwrap();
         assert_eq!(latest.timestamp, 3);
         assert_eq!(latest.sentence_view(0).full_translation, "c3");
@@ -814,8 +832,8 @@ mod library_book_tests {
         assert_eq!(on_disk_latest.sentence_view(0).full_translation, "c3");
     }
 
-    #[test]
-    fn library_book_load_from_metadata_no_conflicts() {
+    #[tokio::test]
+    async fn library_book_load_from_metadata_no_conflicts() {
         // Arrange
         let fs = vfs::MemoryFS::new();
         let root: VfsPath = fs.into();
@@ -823,7 +841,7 @@ mod library_book_tests {
         let library = Library::open(library_path.clone()).unwrap();
 
         let mut book = library.create_book("Original Title").unwrap();
-        book.save().unwrap();
+        book.save().await.unwrap();
 
         // Acquire metadata for the only book
         let mut books = library.list_books().unwrap();
@@ -838,8 +856,8 @@ mod library_book_tests {
         assert_eq!(loaded.book.title, "Original Title");
     }
 
-    #[test]
-    fn library_book_load_from_metadata_selects_newest_conflict_and_cleans() {
+    #[tokio::test]
+    async fn library_book_load_from_metadata_selects_newest_conflict_and_cleans() {
         use std::{thread::sleep, time::Duration};
 
         // Arrange
@@ -849,7 +867,7 @@ mod library_book_tests {
         let library = Library::open(library_path.clone()).unwrap();
 
         let mut book = library.create_book("Main V1").unwrap();
-        book.save().unwrap();
+        book.save().await.unwrap();
 
         let book_file = book.path.join("book.dat").unwrap();
         let conflict_path = book
@@ -890,8 +908,8 @@ mod library_book_tests {
         assert!(!conflict_path.exists().unwrap());
     }
 
-    #[test]
-    fn library_book_load_from_metadata_keeps_main_if_newest_and_cleans() {
+    #[tokio::test]
+    async fn library_book_load_from_metadata_keeps_main_if_newest_and_cleans() {
         use std::{thread::sleep, time::Duration};
 
         // Arrange
@@ -901,7 +919,7 @@ mod library_book_tests {
         let library = Library::open(library_path.clone()).unwrap();
 
         let mut book = library.create_book("V1").unwrap();
-        book.save().unwrap();
+        book.save().await.unwrap();
 
         let book_file = book.path.join("book.dat").unwrap();
         let conflict_path = book

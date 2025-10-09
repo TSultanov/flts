@@ -1,11 +1,14 @@
-use std::{cell::RefCell, collections::HashMap, error::Error, fmt::Display, rc::Rc};
+use std::{collections::HashMap, error::Error, fmt::Display, sync::Arc};
 
 use itertools::Itertools;
+use tokio::sync::Mutex;
 use uuid::Uuid;
 use vfs::{VfsError, VfsPath};
 
 use crate::{
-    book::{book_metadata::BookMetadata, translation_metadata::TranslationMetadata}, epub_importer::EpubBook, library::library_book::LibraryBook
+    book::{book_metadata::BookMetadata, translation_metadata::TranslationMetadata},
+    epub_importer::EpubBook,
+    library::library_book::LibraryBook,
 };
 
 pub mod library_book;
@@ -18,7 +21,9 @@ pub enum LibraryError {
 impl Display for LibraryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LibraryError::DuplicateTitle(title) => write!(f, "Failed to create book: duplicate title ({title})"),
+            LibraryError::DuplicateTitle(title) => {
+                write!(f, "Failed to create book: duplicate title ({title})")
+            }
         }
     }
 }
@@ -135,7 +140,7 @@ impl LibraryBookMetadata {
 
 pub struct Library {
     library_root: VfsPath,
-    books_cache: HashMap<Uuid, Rc<RefCell<LibraryBook>>>,
+    books_cache: HashMap<Uuid, Arc<Mutex<LibraryBook>>>,
 }
 
 impl Library {
@@ -172,24 +177,20 @@ impl Library {
         Ok(books)
     }
 
-    pub fn get_book(&mut self, uuid: &Uuid) -> anyhow::Result<Rc<RefCell<LibraryBook>>> {
+    pub fn get_book(&mut self, uuid: &Uuid) -> anyhow::Result<Arc<Mutex<LibraryBook>>> {
         if let Some(book) = self.books_cache.get(uuid) {
             return Ok(book.clone());
         }
 
         let path = &self.library_root.join(uuid.to_string())?;
         let metadata = LibraryBookMetadata::load(path)?;
-        let book = Rc::new(RefCell::new(LibraryBook::load_from_metadata(metadata)?));
+        let book = Arc::new(Mutex::new(LibraryBook::load_from_metadata(metadata)?));
 
         self.books_cache.insert(*uuid, book.clone());
         Ok(book)
     }
 
-    pub fn create_book_plain(
-        &self,
-        title: &str,
-        text: &str,
-    ) -> anyhow::Result<Uuid> {
+    pub async fn create_book_plain(&self, title: &str, text: &str) -> anyhow::Result<Uuid> {
         let mut book = self.create_book(title)?;
         let chapter_index = book.book.push_chapter(None);
         let paragraphs = split_paragraphs(text);
@@ -198,12 +199,12 @@ impl Library {
             book.book.push_paragraph(chapter_index, paragraph, None);
         }
 
-        book.save()?;
+        book.save().await?;
 
         Ok(book.book.id)
     }
 
-    pub fn create_book_epub(&self, epub: &EpubBook) -> anyhow::Result<Uuid> {
+    pub async fn create_book_epub(&self, epub: &EpubBook) -> anyhow::Result<Uuid> {
         let mut book = self.create_book(&epub.title)?;
 
         for ch in &epub.chapters {
@@ -213,7 +214,7 @@ impl Library {
             }
         }
 
-        book.save()?;
+        book.save().await?;
 
         Ok(book.book.id)
     }
@@ -249,17 +250,17 @@ mod library_tests {
         assert!(books.is_empty(), "Expected no books, got {:?}", books.len());
     }
 
-    #[test]
-    fn list_books_multiple_empty_books() {
+    #[tokio::test]
+    async fn list_books_multiple_empty_books() {
         let fs = vfs::MemoryFS::new();
         let root: VfsPath = fs.into();
         let library_path = root.join("lib").unwrap();
         let library = Library::open(library_path.clone()).unwrap();
 
         let mut book1 = library.create_book("First Book").unwrap();
-        book1.save().unwrap();
+        book1.save().await.unwrap();
         let mut book2 = library.create_book("Second Book").unwrap();
-        book2.save().unwrap();
+        book2.save().await.unwrap();
 
         let mut books = library.list_books().unwrap();
         assert_eq!(books.len(), 2);

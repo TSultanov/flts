@@ -1,27 +1,31 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use gemini_rust::{Gemini, Model};
 use serde_json::{Value, json};
+use tokio::sync::Mutex;
 
 use crate::{
     book::translation_import::ParagraphTranslation, cache::TranslationsCache,
     translator::Translator,
 };
 
-pub struct GeminiTranslator<'a> {
-    cache: &'a TranslationsCache,
+pub struct GeminiTranslator {
+    cache: Arc<Mutex<TranslationsCache>>,
     client: Gemini,
     schema: Value,
     to: String,
 }
 
-impl<'a> GeminiTranslator<'a> {
+impl GeminiTranslator {
     pub fn create(
-        cache: &'a TranslationsCache,
+        cache: Arc<Mutex<TranslationsCache>>,
         model: Model,
-        api_key: &str,
-        to: &str,
-    ) -> anyhow::Result<GeminiTranslator<'a>> {
+        api_key: String,
+        to: String,
+    ) -> anyhow::Result<GeminiTranslator> {
         let schema = json!(
             {
                 "type": "object",
@@ -126,14 +130,14 @@ impl<'a> GeminiTranslator<'a> {
             cache,
             schema,
             client,
-            to: to.to_owned(),
+            to,
         })
     }
 }
 
-impl<'a> Translator for GeminiTranslator<'a> {
+impl Translator for GeminiTranslator {
     async fn get_translation(&self, paragraph: &str) -> anyhow::Result<ParagraphTranslation> {
-        if let Some(cached_result) = self.cache.get(paragraph).await? {
+        if let Some(cached_result) = self.cache.lock().await.get(paragraph).await? {
             return Ok(cached_result);
         }
 
@@ -153,7 +157,7 @@ impl<'a> Translator for GeminiTranslator<'a> {
         let duration_since_epoch = now.duration_since(UNIX_EPOCH)?;
         result.timestamp = duration_since_epoch.as_secs();
 
-        self.cache.set(paragraph, &result);
+        self.cache.lock().await.set(paragraph, &result);
 
         Ok(result)
     }

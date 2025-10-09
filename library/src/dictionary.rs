@@ -1,10 +1,10 @@
-use std::collections::{BTreeMap, BTreeSet};
 use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::book::serialization::{
-    ChecksumedWriter, Magic, Serializable, Version, read_len_prefixed_string,
-    read_u64, read_var_u64, validate_hash, write_len_prefixed_bytes,
-    write_len_prefixed_str, write_u64, write_var_u64,
+    ChecksumedWriter, Magic, Serializable, Version, read_len_prefixed_string, read_u64,
+    read_var_u64, validate_hash, write_len_prefixed_bytes, write_len_prefixed_str, write_u64,
+    write_var_u64,
 };
 use std::io;
 
@@ -26,18 +26,25 @@ impl Dictionary {
     pub fn add_translation(&mut self, original_word: &str, translation: &str) {
         let original_lowercase = original_word.to_lowercase();
         if !self.translations.contains_key(&original_lowercase) {
-            self.translations.insert(original_lowercase.clone(), BTreeSet::new());
+            self.translations
+                .insert(original_lowercase.clone(), BTreeSet::new());
         }
 
-        self.translations.get_mut(&original_lowercase).unwrap().insert(translation.to_lowercase());
+        self.translations
+            .get_mut(&original_lowercase)
+            .unwrap()
+            .insert(translation.to_lowercase());
     }
 
     pub fn merge(self, other: Self) -> Self {
-        Self::try_merge(self, other).expect("merge should not fail; use try_merge for error handling")
+        Self::try_merge(self, other)
+            .expect("merge should not fail; use try_merge for error handling")
     }
 
     pub fn try_merge(mut self, other: Self) -> Result<Self, DictionaryMergeError> {
-        if self.source_language != other.source_language || self.target_language != other.target_language {
+        if self.source_language != other.source_language
+            || self.target_language != other.target_language
+        {
             return Err(DictionaryMergeError::LanguageMismatch);
         }
 
@@ -65,7 +72,9 @@ pub enum DictionaryMergeError {
 impl std::fmt::Display for DictionaryMergeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DictionaryMergeError::LanguageMismatch => write!(f, "Cannot merge dictionaries with different languages"),
+            DictionaryMergeError::LanguageMismatch => {
+                write!(f, "Cannot merge dictionaries with different languages")
+            }
         }
     }
 }
@@ -73,7 +82,10 @@ impl std::fmt::Display for DictionaryMergeError {
 impl std::error::Error for DictionaryMergeError {}
 
 impl Serializable for Dictionary {
-    fn serialize<TWriter: std::io::Write>(&self, output_stream: &mut TWriter) -> std::io::Result<()> {
+    fn serialize<TWriter: std::io::Write>(
+        &self,
+        output_stream: &mut TWriter,
+    ) -> std::io::Result<()> {
         // Binary format DC01 v1 (little-endian):
         // magic[4] = DC01
         // u8 version = 1
@@ -102,10 +114,7 @@ impl Serializable for Dictionary {
         let mut metadata_hasher = ChecksumedWriter::create(&mut metadata_buf);
         write_len_prefixed_str(&mut metadata_hasher, &self.source_language)?;
         write_len_prefixed_str(&mut metadata_hasher, &self.target_language)?;
-        write_var_u64(
-            &mut metadata_hasher,
-            self.translations.len() as u64,
-        )?;
+        write_var_u64(&mut metadata_hasher, self.translations.len() as u64)?;
 
         let metadata_hash = metadata_hasher.current_hash();
         write_u64(&mut hashing_stream, metadata_hash)?;
@@ -134,9 +143,12 @@ impl Serializable for Dictionary {
         Ok(())
     }
 
-    fn deserialize<TReader: std::io::Seek + std::io::Read>(input_stream: &mut TReader) -> std::io::Result<Self>
+    fn deserialize<TReader: std::io::Seek + std::io::Read>(
+        input_stream: &mut TReader,
+    ) -> std::io::Result<Self>
     where
-        Self: Sized {
+        Self: Sized,
+    {
         // Validate full-file hash
         let hash_valid = validate_hash(input_stream)?;
         if !hash_valid {
