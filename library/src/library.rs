@@ -1,12 +1,11 @@
-use std::{error::Error, fmt::Display};
+use std::{cell::RefCell, collections::HashMap, error::Error, fmt::Display, rc::Rc};
 
 use itertools::Itertools;
 use uuid::Uuid;
 use vfs::{VfsError, VfsPath};
 
 use crate::{
-    book::{book_metadata::BookMetadata, translation_metadata::TranslationMetadata},
-    library::library_book::LibraryBook,
+    book::{book_metadata::BookMetadata, translation_metadata::TranslationMetadata}, epub_importer::EpubBook, library::library_book::LibraryBook
 };
 
 pub mod library_book;
@@ -136,6 +135,7 @@ impl LibraryBookMetadata {
 
 pub struct Library {
     library_root: VfsPath,
+    books_cache: HashMap<Uuid, Rc<RefCell<LibraryBook>>>,
 }
 
 impl Library {
@@ -144,7 +144,10 @@ impl Library {
             library_root.create_dir()?
         }
 
-        Ok(Library { library_root })
+        Ok(Library {
+            library_root,
+            books_cache: HashMap::new(),
+        })
     }
 
     pub fn list_books(&self) -> Result<Vec<LibraryBookMetadata>, vfs::error::VfsError> {
@@ -169,17 +172,24 @@ impl Library {
         Ok(books)
     }
 
-    pub fn get_book(&self, uuid: &Uuid) -> anyhow::Result<LibraryBook> {
+    pub fn get_book(&mut self, uuid: &Uuid) -> anyhow::Result<Rc<RefCell<LibraryBook>>> {
+        if let Some(book) = self.books_cache.get(uuid) {
+            return Ok(book.clone());
+        }
+
         let path = &self.library_root.join(uuid.to_string())?;
         let metadata = LibraryBookMetadata::load(path)?;
-        Ok(LibraryBook::load_from_metadata(metadata)?)
+        let book = Rc::new(RefCell::new(LibraryBook::load_from_metadata(metadata)?));
+
+        self.books_cache.insert(*uuid, book.clone());
+        Ok(book)
     }
 
     pub fn create_book_plain(
         &self,
         title: &str,
         text: &str,
-    ) -> anyhow::Result<LibraryBook> {
+    ) -> anyhow::Result<Uuid> {
         let mut book = self.create_book(title)?;
         let chapter_index = book.book.push_chapter(None);
         let paragraphs = split_paragraphs(text);
@@ -188,7 +198,24 @@ impl Library {
             book.book.push_paragraph(chapter_index, paragraph, None);
         }
 
-        Ok(book.save()?)
+        book.save()?;
+
+        Ok(book.book.id)
+    }
+
+    pub fn create_book_epub(&self, epub: &EpubBook) -> anyhow::Result<Uuid> {
+        let mut book = self.create_book(&epub.title)?;
+
+        for ch in &epub.chapters {
+            let ch_idx = book.book.push_chapter(Some(&ch.title));
+            for p in &ch.paragraphs {
+                book.book.push_paragraph(ch_idx, &p.text, Some(&p.html));
+            }
+        }
+
+        book.save()?;
+
+        Ok(book.book.id)
     }
 }
 
@@ -229,9 +256,9 @@ mod library_tests {
         let library_path = root.join("lib").unwrap();
         let library = Library::open(library_path.clone()).unwrap();
 
-        let book1 = library.create_book("First Book").unwrap();
+        let mut book1 = library.create_book("First Book").unwrap();
         book1.save().unwrap();
-        let book2 = library.create_book("Second Book").unwrap();
+        let mut book2 = library.create_book("Second Book").unwrap();
         book2.save().unwrap();
 
         let mut books = library.list_books().unwrap();

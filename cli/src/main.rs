@@ -13,10 +13,9 @@ use clap::{Parser, Subcommand};
 use directories::ProjectDirs;
 use display_error_chain::DisplayErrorChain;
 use file_format::FileFormat;
+use isolang::Language;
 use library::{
-    cache::TranslationsCache,
-    library::Library,
-    translator::{TranslationModel, Translator, get_translator},
+    cache::TranslationsCache, epub_importer::EpubBook, library::Library, translator::{get_translator, TranslationModel, Translator}
 };
 use uuid::Uuid;
 use vfs::PhysicalFS;
@@ -39,6 +38,11 @@ enum Commands {
         title: String,
         /// Path to book file
         #[arg(short, long, value_name = "FILE")]
+        path: PathBuf,
+    },
+    /// Add book to library from EPUB
+    ImportEpub {
+        /// Path to EPUB file
         path: PathBuf,
     },
     /// List books
@@ -74,7 +78,7 @@ impl Display for CliError {
     }
 }
 
-fn add_book(library: &Library, title: &str, path: &PathBuf) -> anyhow::Result<()> {
+fn add_book(library: &mut Library, title: &str, path: &PathBuf) -> anyhow::Result<()> {
     let fmt = FileFormat::from_file(path)?;
 
     if fmt.media_type() == "text/plain" {
@@ -82,11 +86,30 @@ fn add_book(library: &Library, title: &str, path: &PathBuf) -> anyhow::Result<()
         let mut text = String::new();
         data.read_to_string(&mut text)?;
 
-        let book = library.create_book_plain(title, &text)?;
-        println!("Created book {} (id: {})", book.book.title, book.book.id);
+        let book_id = library.create_book_plain(title, &text)?;
+        let book = library.get_book(&book_id)?;
+        println!(
+            "Created book {} (id: {})",
+            book.borrow().book.title,
+            book.borrow().book.id
+        );
     } else {
         Err(CliError::UnsupportedFormat(fmt.media_type().to_owned()))?
     }
+
+    Ok(())
+}
+
+fn add_epub(library: &mut Library, path: &PathBuf) -> anyhow::Result<()> {
+    let epub = EpubBook::load(path)?;
+
+    let book_id = library.create_book_epub(&epub)?;
+    let book = library.get_book(&book_id)?;
+            println!(
+            "Created book {} (id: {})",
+            book.borrow().book.title,
+            book.borrow().book.id
+        );
 
     Ok(())
 }
@@ -114,8 +137,35 @@ fn list_books(library: &Library) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn translate_paragraph(
+    library: &mut Library,
+    translator: &impl Translator,
+    book_id: &Uuid,
+    src_lang: &Language,
+    tgt_lang: &Language,
+    paragraph_id: usize,
+) -> anyhow::Result<()> {
+    let book = library.get_book(book_id)?;
+    let mut book = book.borrow_mut();
+    let translation = book.get_or_create_translation(src_lang.to_639_3(), tgt_lang.to_639_3());
+    let paragraph = book.book.paragraph_view(paragraph_id);
+    println!(
+        "Translating paragraph {}: \"{}...\"",
+        paragraph_id,
+        String::from_iter(paragraph.original_text.chars().take(40))
+    );
+    let p_translation = translator.get_translation(&paragraph.original_text).await?;
+    println!("Translated");
+
+    translation
+        .borrow_mut()
+        .add_paragraph_translation(paragraph.id, &p_translation);
+
+    Ok(())
+}
+
 async fn translate_book(
-    library: &Library,
+    library: &mut Library,
     cache: &TranslationsCache,
     api_key: &str,
     book_id: &Uuid,
@@ -125,57 +175,54 @@ async fn translate_book(
     let source_lang = isolang::Language::from_str(src_lang)?;
     let target_lang = isolang::Language::from_str(tgt_lang)?;
 
-    let mut book = library.get_book(book_id)?;
-    let paragraph_count = book.book.paragraphs_count();
-
     let translator = get_translator(
         cache,
         TranslationModel::GeminiFlash,
         api_key,
         target_lang.to_name(),
     )?;
-    let translation =
-        book.get_or_create_translation(source_lang.to_639_3(), target_lang.to_639_3());
-    let untranslated_paragraphs_count =
-        paragraph_count - translation.borrow().translated_paragraphs_count();
-    println!(
-        "Translating book {} from {} to {}",
-        book.book.title,
-        source_lang.to_name(),
-        target_lang.to_name()
-    );
-    println!(
-        "Found {untranslated_paragraphs_count} untranslated paragraphs out of {}",
-        paragraph_count
-    );
 
     let mut queue = VecDeque::new();
 
-    for chapter in book.book.chapter_views() {
-        for paragraph in chapter.paragraphs() {
-            if translation.borrow().paragraph_view(paragraph.id).is_none() {
-                queue.push_back(paragraph.id);
+    {
+        let book = library.get_book(book_id)?;
+        let mut book = book.borrow_mut();
+        let paragraph_count = book.book.paragraphs_count();
+
+        let translation =
+            book.get_or_create_translation(source_lang.to_639_3(), target_lang.to_639_3());
+        let untranslated_paragraphs_count =
+            paragraph_count - translation.borrow().translated_paragraphs_count();
+        println!(
+            "Translating book {} from {} to {}",
+            book.book.title,
+            source_lang.to_name(),
+            target_lang.to_name()
+        );
+        println!(
+            "Found {untranslated_paragraphs_count} untranslated paragraphs out of {}",
+            paragraph_count
+        );
+
+        for chapter in book.book.chapter_views() {
+            for paragraph in chapter.paragraphs() {
+                if translation.borrow().paragraph_view(paragraph.id).is_none() {
+                    queue.push_back(paragraph.id);
+                }
             }
         }
     }
 
     for p_id in queue.drain(0..) {
-        let paragraph = book.book.paragraph_view(p_id);
-        println!(
-            "Translating paragraph {}: \"{}...\"",
-            p_id,
-            String::from_iter(paragraph.original_text.chars().take(40))
-        );
-        let p_translation = translator.get_translation(&paragraph.original_text).await?;
-        println!("Translated");
-        translation
-            .borrow_mut()
-            .add_paragraph_translation(paragraph.id, &p_translation);
+        translate_paragraph(library, &translator, book_id, &source_lang, &target_lang, p_id).await?;
     }
 
-    println!("Saving...");
-    book.save()?;
-    println!("Saved.");
+    {
+        println!("Saving...");
+        let book = library.get_book(book_id)?;
+        book.borrow_mut().save()?;
+        println!("Saved.");
+    }
 
     Ok(())
 }
@@ -208,12 +255,15 @@ async fn do_main() -> anyhow::Result<()> {
     }
 
     let fs = PhysicalFS::new(cli.library_path);
-    let library = Library::open(fs.into())?;
+    let mut library = Library::open(fs.into())?;
 
     match &cli.command {
         Some(cmd) => match cmd {
             Commands::ImportBook { title, path } => {
-                add_book(&library, title, path)?;
+                add_book(&mut library, title, path)?;
+            }
+            Commands::ImportEpub { path } => {
+                add_epub(&mut library, path)?;
             }
             Commands::List {} => {
                 list_books(&library)?;
@@ -226,7 +276,7 @@ async fn do_main() -> anyhow::Result<()> {
             } => {
                 let cache = &get_cache().await?;
                 translate_book(
-                    &library,
+                    &mut library,
                     cache,
                     api_key,
                     id,

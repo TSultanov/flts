@@ -3,3 +3,4 @@ pub mod library;
 pub mod dictionary;
 pub mod translator;
 pub mod cache;
+pub mod epub_importer;

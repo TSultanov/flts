@@ -143,7 +143,7 @@ impl LibraryBook {
         })
     }
 
-    pub fn save(self) -> Result<Self, vfs::error::VfsError> {
+    pub fn save(&mut self) -> Result<(), vfs::error::VfsError> {
         if !self.path.exists()? {
             self.path.create_dir()?
         }
@@ -211,12 +211,14 @@ impl LibraryBook {
                     let saved_book_last_modified = book_path.metadata()?.modified.unwrap();
                     if saved_book_last_modified > last_modified {
                         let saved_book = Self::load(&book_path)?;
-                        book = saved_book;
+                        book.book = saved_book.book;
+                        book.last_modified = saved_book.last_modified;
                     }
                 }
             } else if book_path.exists()? {
                 let saved_book = Self::load(&book_path)?;
-                book = saved_book;
+                book.book = saved_book.book;
+                book.last_modified = saved_book.last_modified;
             }
 
             let mut file = book_path_temp.create_file()?;
@@ -249,7 +251,7 @@ impl LibraryBook {
 
         book.translations = merged_translations;
 
-        Ok(book)
+        Ok(())
     }
 }
 
@@ -292,8 +294,8 @@ mod library_book_tests {
         let library_path = root.join("lib").unwrap();
         let library = Library::open(library_path.clone()).unwrap();
 
-        let book1 = library.create_book("First Book").unwrap();
-        let book1 = book1.save().unwrap();
+        let mut book1 = library.create_book("First Book").unwrap();
+        book1.save().unwrap();
 
         let book_file = book1.path.join("book.dat").unwrap();
 
@@ -328,7 +330,7 @@ mod library_book_tests {
 
         let mut book1 = library.create_book("First Book").unwrap();
         let _translation = book1.get_or_create_translation("es", "en");
-        let book1 = book1.save().unwrap();
+        book1.save().unwrap();
 
         let translation_file = book1.path.join("translation_es_en.dat").unwrap();
 
@@ -372,8 +374,8 @@ mod library_book_tests {
         let library = Library::open(library_path.clone()).unwrap();
 
         // Create and save
-        let book = library.create_book("First Title").unwrap();
-        let mut book = book.save().unwrap();
+        let mut book = library.create_book("First Title").unwrap();
+        book.save().unwrap();
 
         // Simulate "loaded": set last_modified from disk
         let book_file = book.path.join("book.dat").unwrap();
@@ -381,15 +383,12 @@ mod library_book_tests {
 
         // Change and save again
         book.book.title = "Updated Title".into();
-        let saved = book.save().unwrap();
+        book.save().unwrap();
 
         // Verify on-disk
         let mut f = book_file.open_file().unwrap();
         let loaded_book = Book::deserialize(&mut f).unwrap();
         assert_eq!(loaded_book.title, "Updated Title");
-
-        // Returned object path preserved
-        assert_eq!(saved.path.filename(), saved.path.filename());
     }
 
     #[test]
@@ -431,7 +430,7 @@ mod library_book_tests {
             translation: Rc::new(RefCell::new(tr)),
             last_modified: None,
         });
-        let mut book = book.save().unwrap();
+        book.save().unwrap();
 
         // Treat as loaded: refresh last_modified and translations from disk
         let book_file = book.path.join("book.dat").unwrap();
@@ -525,7 +524,7 @@ mod library_book_tests {
             translation: Rc::new(RefCell::new(tr)),
             last_modified: None,
         });
-        let mut book = book.save().unwrap();
+        book.save().unwrap();
 
         // Treat as loaded instance with last_modified
         let book_file = book.path.join("book.dat").unwrap();
@@ -823,8 +822,8 @@ mod library_book_tests {
         let library_path = root.join("lib").unwrap();
         let library = Library::open(library_path.clone()).unwrap();
 
-        let book = library.create_book("Original Title").unwrap();
-        let _saved = book.save().unwrap();
+        let mut book = library.create_book("Original Title").unwrap();
+        book.save().unwrap();
 
         // Acquire metadata for the only book
         let mut books = library.list_books().unwrap();
@@ -849,11 +848,11 @@ mod library_book_tests {
         let library_path = root.join("lib").unwrap();
         let library = Library::open(library_path.clone()).unwrap();
 
-        let book = library.create_book("Main V1").unwrap();
-        let saved = book.save().unwrap();
+        let mut book = library.create_book("Main V1").unwrap();
+        book.save().unwrap();
 
-        let book_file = saved.path.join("book.dat").unwrap();
-        let conflict_path = saved
+        let book_file = book.path.join("book.dat").unwrap();
+        let conflict_path = book
             .path
             .join(
                 book_file
@@ -901,11 +900,11 @@ mod library_book_tests {
         let library_path = root.join("lib").unwrap();
         let library = Library::open(library_path.clone()).unwrap();
 
-        let book = library.create_book("V1").unwrap();
-        let saved = book.save().unwrap();
+        let mut book = library.create_book("V1").unwrap();
+        book.save().unwrap();
 
-        let book_file = saved.path.join("book.dat").unwrap();
-        let conflict_path = saved
+        let book_file = book.path.join("book.dat").unwrap();
+        let conflict_path = book
             .path
             .join(
                 book_file
