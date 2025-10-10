@@ -6,7 +6,7 @@ use crate::book::serialization::{
     read_var_u64, validate_hash, write_len_prefixed_bytes, write_len_prefixed_str, write_u64,
     write_var_u64,
 };
-use std::io;
+use std::io::{self, BufWriter};
 use std::time::Instant;
 
 pub struct Dictionary {
@@ -105,7 +105,8 @@ impl Serializable for Dictionary {
         // u64 fnv1 hash of the entire file except the hash itself
 
         let total_start = Instant::now();
-        let mut hashing_stream = ChecksumedWriter::create(output_stream);
+        let mut hashing_stream_unbuffered = ChecksumedWriter::create(output_stream);
+        let mut hashing_stream = BufWriter::new(hashing_stream_unbuffered);
 
         // Magic + version
         let t_magic = Instant::now();
@@ -152,7 +153,8 @@ impl Serializable for Dictionary {
 
         // Finalize
         let t_finalize = Instant::now();
-        let hash = hashing_stream.current_hash();
+        hashing_stream_unbuffered = hashing_stream.into_inner()?;
+        let hash = hashing_stream_unbuffered.current_hash();
         write_u64(output_stream, hash)?;
         output_stream.flush()?;
         let d_finalize = t_finalize.elapsed();

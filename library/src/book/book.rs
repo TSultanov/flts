@@ -6,7 +6,7 @@ use crate::book::serialization::{
     write_var_u64, write_vec_slice,
 };
 use std::borrow::Cow;
-use std::io::{self, Write};
+use std::io::{self, BufWriter, Write};
 use std::time::Instant;
 
 use super::soa_helpers::*;
@@ -182,8 +182,9 @@ impl Serializable for Book {
 
         let total_start = Instant::now();
 
-        let mut hashing_stream = ChecksumedWriter::create(output_stream);
-
+        let mut hashing_stream_unbuffered = ChecksumedWriter::create(output_stream);
+        let mut hashing_stream = BufWriter::new(hashing_stream_unbuffered);
+        
         // Magic + version
         let t_magic = Instant::now();
         Magic::Book.write(&mut hashing_stream)?; // magic
@@ -261,7 +262,8 @@ impl Serializable for Book {
 
         // Hash
         let t_finalize = Instant::now();
-        let hash = hashing_stream.current_hash();
+        hashing_stream_unbuffered = hashing_stream.into_inner()?;
+        let hash = hashing_stream_unbuffered.current_hash();
         write_u64(output_stream, hash)?;
         output_stream.flush()?;
         let d_finalize = t_finalize.elapsed();

@@ -9,7 +9,7 @@ use crate::book::{
     },
     translation_import,
 };
-use std::{borrow::Cow, iter, time::Instant};
+use std::{borrow::Cow, io::BufWriter, iter, time::Instant};
 use std::{
     collections::HashSet,
     io::{self, Write},
@@ -449,8 +449,9 @@ impl Serializable for Translation {
 
         let total_start = Instant::now();
 
-        let mut hashing_stream = ChecksumedWriter::create(output_stream);
+        let mut hashing_stream_unbuffered = ChecksumedWriter::create(output_stream);
 
+        let mut hashing_stream = BufWriter::new(hashing_stream_unbuffered);
         // magic + version
         let t_magic = Instant::now();
         Magic::Translation.write(&mut hashing_stream)?;
@@ -568,7 +569,8 @@ impl Serializable for Translation {
 
         // Finalize hash and flush
         let t_finalize = Instant::now();
-        let hash = hashing_stream.current_hash();
+        hashing_stream_unbuffered = hashing_stream.into_inner()?;
+        let hash = hashing_stream_unbuffered.current_hash();
         write_u64(output_stream, hash)?;
         output_stream.flush()?;
         let d_finalize = t_finalize.elapsed();
