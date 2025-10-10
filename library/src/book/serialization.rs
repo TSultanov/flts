@@ -1,9 +1,7 @@
-use ringbuffer::{AllocRingBuffer, RingBuffer};
-
 use super::soa_helpers::VecSlice;
 use std::{
     hash::Hasher,
-    io::{self, ErrorKind},
+    io::{self},
 };
 
 pub trait Serializable {
@@ -202,38 +200,37 @@ impl<'a> io::Write for ChecksumedWriter<'a> {
 }
 
 pub fn validate_hash<T: io::Seek + io::Read>(reader: &mut T) -> io::Result<bool> {
+    reader.seek(io::SeekFrom::End(-8))?;
+
+    let end = reader.stream_position()?;
+
+    let mut hash_buf = [0u8; 8];
+    reader.read_exact(&mut hash_buf)?;
+    let read_hash = u64::from_le_bytes(hash_buf);
+
+    reader.seek(io::SeekFrom::Start(0))?;
+
     let mut hasher = fnv::FnvHasher::default();
 
-    let mut last_u64 = AllocRingBuffer::new(8);
-    let mut last_hashes = AllocRingBuffer::new(9);
-    let mut b = [0u8; 1];
-    loop {
-        let data = reader.read_exact(&mut b);
-        if let Some(err) = data.err() {
-            match err.kind() {
-                ErrorKind::UnexpectedEof => {
-                    break;
-                }
-                _ => {
-                    return Err(err);
-                }
-            }
+    // Read in chunks up to the position of the stored hash (end)
+    let mut remaining: u64 = end;
+    let mut buf = [0u8; 8192];
+    while remaining > 0 {
+        let to_read = std::cmp::min(buf.len() as u64, remaining) as usize;
+        let n = reader.read(&mut buf[..to_read])?;
+        if n == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "Unexpected EOF while computing checksum",
+            ));
         }
-
-        last_u64.enqueue(b[0]);
-        hasher.write(&b);
-        last_hashes.enqueue(hasher.finish());
+        hasher.write(&buf[..n]);
+        remaining -= n as u64;
     }
 
     reader.seek(io::SeekFrom::Start(0))?;
 
-    if last_u64.len() < 8 || last_hashes.len() < 9 {
-        return Err(io::Error::new(ErrorKind::InvalidData, "Not enough data"));
-    }
-
-    let read_hash =
-        u64::from_le_bytes(last_u64.into_iter().collect::<Vec<_>>().try_into().unwrap());
-    let computed_hash = *last_hashes.front().unwrap();
+    let computed_hash = hasher.finish();
 
     Ok(read_hash == computed_hash)
 }
