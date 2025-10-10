@@ -234,13 +234,7 @@ impl Serializable for Dictionary {
         let total = total_start.elapsed();
         println!(
             "Deserialization timings (Dictionary):\n  - hash validate: {:?}\n  - magic+version: {:?}\n  - metadata (incl. read): {:?}\n  - pairs read: {:?}\n  - entries ({} originals): {:?}\n  - TOTAL: {:?}",
-            d_hash,
-            d_magic,
-            d_meta,
-            d_pairs,
-            originals_len,
-            d_entries,
-            total
+            d_hash, d_magic, d_meta, d_pairs, originals_len, d_entries, total
         );
 
         Ok(Dictionary {

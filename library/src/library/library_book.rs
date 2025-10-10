@@ -294,7 +294,7 @@ impl Library {
 
 #[cfg(test)]
 mod library_book_tests {
-    use std::{cell::RefCell, rc::Rc, sync::Arc};
+    use std::sync::Arc;
 
     use tokio::sync::Mutex;
     use vfs::VfsPath;
