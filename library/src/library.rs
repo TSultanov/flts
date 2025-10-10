@@ -140,7 +140,7 @@ impl LibraryBookMetadata {
 
 pub struct Library {
     library_root: VfsPath,
-    books_cache: HashMap<Uuid, Arc<Mutex<LibraryBook>>>,
+    books_cache: HashMap<Uuid, Arc<Mutex<LibraryBook>>>, // TODO: eviction
 }
 
 impl Library {

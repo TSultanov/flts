@@ -7,6 +7,7 @@ use crate::book::serialization::{
 };
 use std::borrow::Cow;
 use std::io::{self, Write};
+use std::time::Instant;
 
 use super::soa_helpers::*;
 
@@ -179,6 +180,8 @@ impl Serializable for Book {
         //     u64 paragraphs.start, u64 paragraphs.len
         // u64 fnv1 hash of the entire file except the hash itself
 
+        let start_time = Instant::now();
+
         let mut hashing_stream = ChecksumedWriter::create(output_stream);
 
         // Magic + version
@@ -211,7 +214,7 @@ impl Serializable for Book {
         hashing_stream.write_all(&metadata_buf)?;
 
         // Strings blob
-        let encoded = zstd::stream::encode_all(self.strings.as_slice(), 5)?;
+        let encoded = zstd::stream::encode_all(self.strings.as_slice(), 2)?;
         write_var_u64(&mut hashing_stream, encoded.len() as u64)?;
         hashing_stream.write_all(&encoded)?;
 
@@ -248,6 +251,10 @@ impl Serializable for Book {
 
         output_stream.flush()?;
 
+        let elapsed_time = start_time.elapsed();
+
+        println!("Serialized book in: {:?}", elapsed_time);
+
         Ok(())
     }
 
@@ -257,6 +264,8 @@ impl Serializable for Book {
     where
         Self: Sized,
     {
+        let start_time = Instant::now();
+
         let hash_valid = validate_hash(input_stream)?;
         if !hash_valid {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid hash"));
@@ -333,6 +342,10 @@ impl Serializable for Book {
                 paragraphs: paragraphs_slice,
             });
         }
+
+        let elapsed_time = start_time.elapsed();
+
+        println!("Deserialized book in: {:?}", elapsed_time);
 
         Ok(Book {
             id,

@@ -9,7 +9,7 @@ use crate::book::{
     },
     translation_import,
 };
-use std::{borrow::Cow, iter};
+use std::{borrow::Cow, iter, time::Instant};
 use std::{
     collections::HashSet,
     io::{self, Write},
@@ -447,6 +447,8 @@ impl Serializable for Translation {
         // u64 paragraphs_count, then each: u8 has_translation (if 1 then u64 paragraph_translation_index)
         // u64 fnv1 hash of the entire file except the hash itself
 
+        let start_time = Instant::now();
+
         let mut hashing_stream = ChecksumedWriter::create(output_stream);
 
         Magic::Translation.write(&mut hashing_stream)?;
@@ -471,7 +473,7 @@ impl Serializable for Translation {
         write_u64(&mut hashing_stream, metadata_hash)?;
         write_len_prefixed_bytes(&mut hashing_stream, &metadata_buf)?;
 
-        let encoded = zstd::stream::encode_all(self.strings.as_slice(), 5)?;
+        let encoded = zstd::stream::encode_all(self.strings.as_slice(), 2)?;
         write_var_u64(&mut hashing_stream, encoded.len() as u64)?;
         hashing_stream.write_all(&encoded)?;
 
@@ -547,6 +549,10 @@ impl Serializable for Translation {
 
         output_stream.flush()?;
 
+        let elapsed_time = start_time.elapsed();
+
+        println!("Serialized translation in: {:?}", elapsed_time);
+
         Ok(())
     }
 
@@ -556,6 +562,8 @@ impl Serializable for Translation {
     where
         Self: Sized,
     {
+        let start_time = Instant::now();
+
         let hash_valid = validate_hash(input_stream)?;
         if !hash_valid {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid hash"));
@@ -672,6 +680,10 @@ impl Serializable for Translation {
             };
             paragraphs.push(val);
         }
+
+        let elapsed_time = start_time.elapsed();
+
+        println!("Deserialized translation in: {:?}", elapsed_time);
 
         Ok(Translation {
             id,

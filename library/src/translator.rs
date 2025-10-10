@@ -47,7 +47,7 @@ pub fn get_translator(
     to: String,
 ) -> anyhow::Result<impl Translator> {
     let model = match translation_model {
-        TranslationModel::GeminiFlash => Model::Custom("models/gemini-flash-latest".to_owned()),
+        TranslationModel::GeminiFlash => Model::Custom("models/gemini-2.5-flash".to_owned()),
         TranslationModel::GeminiPro => Model::Gemini25Pro,
     };
 

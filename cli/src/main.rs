@@ -21,7 +21,8 @@ use library::{
     library::Library,
     translator::{TranslationModel, Translator, get_translator},
 };
-use tokio::sync::{Mutex};
+use tokio::time::{Duration, sleep};
+use tokio::{sync::Mutex, task::JoinSet};
 use uuid::Uuid;
 use vfs::PhysicalFS;
 
@@ -65,6 +66,9 @@ enum Commands {
         /// Translation language
         #[arg(short, long, value_name = "LANG")]
         translation_language: String,
+        /// Number of parallel LLM requests
+        #[arg(short, long, value_name = "NUM")]
+        n_parallel: Option<usize>,
     },
 }
 
@@ -169,9 +173,7 @@ async fn translate_paragraph(
         paragraph_id,
         String::from_iter(paragraph_text.chars().take(40))
     );
-    let p_translation = 
-        translator.get_translation(&paragraph_text)
-        .await?;
+    let p_translation = translator.get_translation(&paragraph_text).await?;
     println!("Worker {worker_id}: Translated paragraph {}", paragraph_id);
 
     translation
@@ -189,6 +191,7 @@ async fn translate_book(
     book_id: Uuid,
     src_lang: &str,
     tgt_lang: &str,
+    n_workers: usize,
 ) -> anyhow::Result<()> {
     let source_lang = isolang::Language::from_str(src_lang)?;
     let target_lang = isolang::Language::from_str(tgt_lang)?;
@@ -230,49 +233,72 @@ async fn translate_book(
         }
     }
 
-    let (tx, rx) = flume::bounded(100);
+    let (tx, rx) = flume::unbounded();
 
-    for i in 0..100 {
+    let mut set = JoinSet::new();
+    for i in 0..n_workers {
         let library1 = library.clone();
-        let queue1 = queue.clone();
         let rx = rx.clone();
-            let translator = get_translator(
+        let translator = get_translator(
             cache.clone(),
             TranslationModel::GeminiFlash,
             api_key.to_owned(),
             target_lang.to_name().to_owned(),
         )?;
-        tokio::spawn(async move {
+        set.spawn(async move {
             println!("Worker {}: spawning...", i);
             let source_lang1 = source_lang.clone();
             let target_lang1 = target_lang.clone();
-            while let Some(p_id) = rx.recv_async().await.ok() {
-                let result = translate_paragraph(
-                    library1.clone(),
-                    &translator,
-                    book_id,
-                    &source_lang1,
-                    &target_lang1,
-                    p_id,
-                    i
-                )
-                .await;
+            // Receive until the channel is closed (all senders dropped)
+            while let Ok(p_id) = rx.recv_async().await {
+                // Bounded retry inside the worker instead of re-queuing
+                let mut attempt = 1u32;
+                loop {
+                    let result = translate_paragraph(
+                        library1.clone(),
+                        &translator,
+                        book_id,
+                        &source_lang1,
+                        &target_lang1,
+                        p_id,
+                        i,
+                    )
+                    .await;
 
-                match result {
-                    Ok(_) => {}
-                    Err(err) => {
-                        eprintln!("Worker {i}: Error translating paragarph {p_id}: {}", err);
-                        println!("Worker {i}: Retrying paragraph {p_id}");
-                        queue1.lock().await.push_front(p_id);
+                    match result {
+                        Ok(_) => break,
+                        Err(err) => {
+                            eprintln!(
+                                "Worker {i}: Error translating paragraph {p_id} (attempt {attempt}): {}",
+                                err
+                            );
+                            if attempt >= 3 {
+                                eprintln!(
+                                    "Worker {i}: Giving up on paragraph {p_id} after {attempt} attempts"
+                                );
+                                break;
+                            }
+                            let backoff = Duration::from_secs((attempt * 2) as u64);
+                            println!(
+                                "Worker {i}: Backing off {backoff:?} before retrying paragraph {p_id}"
+                            );
+                            sleep(backoff).await;
+                            attempt += 1;
+                        }
                     }
                 }
             }
+            println!("Worker {i}: terminated");
         });
     }
 
     while let Some(p_id) = queue.lock().await.pop_front() {
         tx.send_async(p_id).await?;
     }
+
+    drop(tx);
+
+    set.join_all().await;
 
     {
         println!("Saving...");
@@ -330,6 +356,7 @@ async fn do_main() -> anyhow::Result<()> {
                 api_key,
                 book_language,
                 translation_language,
+                n_parallel,
             } => {
                 let cache = Arc::new(Mutex::new(get_cache().await?));
                 translate_book(
@@ -339,6 +366,7 @@ async fn do_main() -> anyhow::Result<()> {
                     *id,
                     book_language,
                     translation_language,
+                    n_parallel.unwrap_or(5),
                 )
                 .await?;
             }

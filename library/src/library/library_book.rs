@@ -1,4 +1,9 @@
-use std::{collections::HashSet, sync::Arc, time::SystemTime};
+use std::{
+    collections::HashSet,
+    io::{BufReader, BufWriter},
+    sync::Arc,
+    time::SystemTime,
+};
 
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -36,7 +41,7 @@ impl LibraryTranslation {
 
     fn load(path: &VfsPath) -> Result<Self, vfs::error::VfsError> {
         let last_modified = path.metadata()?.modified;
-        let mut file = path.open_file()?;
+        let mut file = BufReader::new(path.open_file()?);
         let translation = Arc::new(Mutex::new(Translation::deserialize(&mut file)?));
 
         Ok(Self {
@@ -50,12 +55,12 @@ impl LibraryTranslation {
     ) -> Result<Self, vfs::error::VfsError> {
         if !metadata.conflicting_paths.is_empty() {
             let mut translation = {
-                let mut main_file = metadata.main_path.open_file()?;
+                let mut main_file = BufReader::new(metadata.main_path.open_file()?);
                 Translation::deserialize(&mut main_file)?
             };
 
             for conflict in metadata.conflicting_paths {
-                let mut conflict_file = conflict.open_file()?;
+                let mut conflict_file = BufReader::new(conflict.open_file()?);
                 let conflict_translation = Translation::deserialize(&mut conflict_file)?;
                 translation = translation.merge(&conflict_translation);
             }
@@ -140,7 +145,7 @@ impl LibraryBook {
 
     fn load(path: &VfsPath) -> Result<Self, vfs::error::VfsError> {
         let last_modified = path.metadata()?.modified;
-        let mut file = path.open_file()?;
+        let mut file = BufReader::new(path.open_file()?);
         let book = Book::deserialize(&mut file)?;
 
         Ok(Self {
@@ -169,11 +174,10 @@ impl LibraryBook {
         let mut merged_translations = Vec::new();
 
         for mut translation in book.translations.drain(0..) {
-            let translation_file_name = format!(
-                "translation_{}_{}.dat",
-                translation.translation.lock().await.source_language,
-                translation.translation.lock().await.target_language
-            );
+            let source_language = translation.translation.lock().await.source_language.clone();
+            let target_language = translation.translation.lock().await.target_language.clone();
+            let translation_file_name =
+                format!("translation_{}_{}.dat", source_language, target_language);
             let translation_path = book.path.join(&translation_file_name)?;
             let translation_path_temp = book.path.join(format!("{translation_file_name}~"))?;
 
@@ -194,7 +198,7 @@ impl LibraryBook {
                     translation = translation.merge(saved_translation).await;
                 }
 
-                let mut translation_file = translation_path_temp.create_file()?;
+                let mut translation_file = BufWriter::new(translation_path_temp.create_file()?);
                 translation
                     .translation
                     .lock()
@@ -234,7 +238,7 @@ impl LibraryBook {
                 book.last_modified = saved_book.last_modified;
             }
 
-            let mut file = book_path_temp.create_file()?;
+            let mut file = BufWriter::new(book_path_temp.create_file()?);
             book.book.serialize(&mut file)?;
 
             if get_modified_if_exists(&book_path)? == book_path_modified_pre_save
@@ -250,10 +254,11 @@ impl LibraryBook {
         }
 
         let all_book_translations = LibraryBookMetadata::load(&book.path)?;
-        let loaded_translations = merged_translations
-            .iter()
-            .map(|t| t.translation.blocking_lock().id)
-            .collect::<HashSet<_>>();
+        let mut loaded_translations = HashSet::new();
+        for t in &merged_translations {
+            loaded_translations.insert(t.translation.lock().await.id);
+        }
+
         for translation_metadata in all_book_translations.translations_metadata {
             if !loaded_translations.contains(&translation_metadata.id) {
                 merged_translations.push(LibraryTranslation::load_from_metadata(

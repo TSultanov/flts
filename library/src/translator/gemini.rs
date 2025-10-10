@@ -137,7 +137,7 @@ impl GeminiTranslator {
 
 impl Translator for GeminiTranslator {
     async fn get_translation(&self, paragraph: &str) -> anyhow::Result<ParagraphTranslation> {
-        if let Some(cached_result) = self.cache.lock().await.get(paragraph).await? {
+        if let Some(cached_result) = self.cache.lock().await.get(paragraph).await.ok().flatten() {
             return Ok(cached_result);
         }
 
