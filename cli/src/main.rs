@@ -2,12 +2,12 @@ use std::{
     collections::VecDeque,
     error::Error,
     fmt::Display,
-    fs::{File, create_dir},
+    fs::{create_dir, File},
     io::Read,
     path::PathBuf,
     process::ExitCode,
     str::FromStr,
-    sync::Arc,
+    sync::Arc, time::Instant,
 };
 
 use clap::{Parser, Subcommand};
@@ -233,6 +233,8 @@ async fn translate_book(
         }
     }
 
+    let start_time = Instant::now();
+
     let (tx, rx) = flume::unbounded();
 
     let mut set = JoinSet::new();
@@ -299,6 +301,9 @@ async fn translate_book(
     drop(tx);
 
     set.join_all().await;
+
+    let elapsed_time = start_time.elapsed();
+    println!("Translated in: {:?}", elapsed_time);
 
     {
         println!("Saving...");

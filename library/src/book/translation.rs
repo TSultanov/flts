@@ -447,37 +447,51 @@ impl Serializable for Translation {
         // u64 paragraphs_count, then each: u8 has_translation (if 1 then u64 paragraph_translation_index)
         // u64 fnv1 hash of the entire file except the hash itself
 
-        let start_time = Instant::now();
+        let total_start = Instant::now();
 
         let mut hashing_stream = ChecksumedWriter::create(output_stream);
 
+        // magic + version
+        let t_magic = Instant::now();
         Magic::Translation.write(&mut hashing_stream)?;
         Version::V1.write_version(&mut hashing_stream)?;
+        let d_magic = t_magic.elapsed();
 
+        // Build metadata and compute its hash
+        let t_meta_build = Instant::now();
         let mut metadata_buf = Vec::new();
         let mut metadata_buf_hasher = ChecksumedWriter::create(&mut metadata_buf);
-
         metadata_buf_hasher.write_all(self.id.as_bytes())?;
-
         write_var_u64(&mut metadata_buf_hasher, self.source_language.len() as u64)?;
         metadata_buf_hasher.write_all(self.source_language.as_bytes())?;
         write_var_u64(&mut metadata_buf_hasher, self.target_language.len() as u64)?;
         metadata_buf_hasher.write_all(self.target_language.as_bytes())?;
-
         write_var_u64(
             &mut metadata_buf_hasher,
             self.translated_paragraphs_count() as u64,
         )?;
-
         let metadata_hash = metadata_buf_hasher.current_hash();
+        let d_meta_build = t_meta_build.elapsed();
+
+        // Write metadata
+        let t_meta_write = Instant::now();
         write_u64(&mut hashing_stream, metadata_hash)?;
         write_len_prefixed_bytes(&mut hashing_stream, &metadata_buf)?;
+        let d_meta_write = t_meta_write.elapsed();
 
+        // Compress strings blob
+        let t_compress = Instant::now();
         let encoded = zstd::stream::encode_all(self.strings.as_slice(), 2)?;
+        let d_compress = t_compress.elapsed();
+
+        // Write compressed strings
+        let t_write_strings = Instant::now();
         write_var_u64(&mut hashing_stream, encoded.len() as u64)?;
         hashing_stream.write_all(&encoded)?;
+        let d_write_strings = t_write_strings.elapsed();
 
         // Contextual translations
+        let t_ct = Instant::now();
         write_var_u64(
             &mut hashing_stream,
             self.word_contextual_translations.len() as u64,
@@ -485,8 +499,10 @@ impl Serializable for Translation {
         for ct in &self.word_contextual_translations {
             write_vec_slice(&mut hashing_stream, &ct.translation)?;
         }
+        let d_ct = t_ct.elapsed();
 
         // Words
+        let t_words = Instant::now();
         write_var_u64(&mut hashing_stream, self.words.len() as u64)?;
         for w in &self.words {
             write_vec_slice(&mut hashing_stream, &w.original)?;
@@ -506,15 +522,19 @@ impl Serializable for Translation {
 
             write_vec_slice(&mut hashing_stream, &w.contextual_translations)?;
         }
+        let d_words = t_words.elapsed();
 
         // Sentences
+        let t_sentences = Instant::now();
         write_var_u64(&mut hashing_stream, self.sentences.len() as u64)?;
         for s in &self.sentences {
             write_vec_slice(&mut hashing_stream, &s.full_translation)?;
             write_vec_slice(&mut hashing_stream, &s.words)?;
         }
+        let d_sentences = t_sentences.elapsed();
 
         // Paragraph translations
+        let t_pt = Instant::now();
         write_var_u64(
             &mut hashing_stream,
             self.paragraph_translations.len() as u64,
@@ -530,8 +550,10 @@ impl Serializable for Translation {
             };
             write_vec_slice(&mut hashing_stream, &pt.sentences)?;
         }
+        let d_pt = t_pt.elapsed();
 
         // Paragraphs (Option indices)
+        let t_paragraphs = Instant::now();
         write_var_u64(&mut hashing_stream, self.paragraphs.len() as u64)?;
         for p in &self.paragraphs {
             match p {
@@ -542,16 +564,39 @@ impl Serializable for Translation {
                 None => hashing_stream.write_all(&[0])?,
             }
         }
+        let d_paragraphs = t_paragraphs.elapsed();
 
-        // Hash
+        // Finalize hash and flush
+        let t_finalize = Instant::now();
         let hash = hashing_stream.current_hash();
         write_u64(output_stream, hash)?;
-
         output_stream.flush()?;
+        let d_finalize = t_finalize.elapsed();
 
-        let elapsed_time = start_time.elapsed();
+        let total = total_start.elapsed();
 
-        println!("Serialized translation in: {:?}", elapsed_time);
+        println!(
+            "Serialization timings (Translation):\n  - magic+version: {:?}\n  - metadata build: {:?}\n  - metadata write: {:?}\n  - strings compress ({} -> {} bytes): {:?}\n  - strings write: {:?}\n  - contextual translations ({}): {:?}\n  - words ({}): {:?}\n  - sentences ({}): {:?}\n  - paragraph translations ({}): {:?}\n  - paragraphs ({}): {:?}\n  - finalize hash+flush: {:?}\n  - TOTAL: {:?}",
+            d_magic,
+            d_meta_build,
+            d_meta_write,
+            self.strings.len(),
+            encoded.len(),
+            d_compress,
+            d_write_strings,
+            self.word_contextual_translations.len(),
+            d_ct,
+            self.words.len(),
+            d_words,
+            self.sentences.len(),
+            d_sentences,
+            self.paragraph_translations.len(),
+            d_pt,
+            self.paragraphs.len(),
+            d_paragraphs,
+            d_finalize,
+            total
+        );
 
         Ok(())
     }
@@ -562,21 +607,28 @@ impl Serializable for Translation {
     where
         Self: Sized,
     {
-        let start_time = Instant::now();
+        let total_start = Instant::now();
 
+        // Validate checksum
+        let t_hash = Instant::now();
         let hash_valid = validate_hash(input_stream)?;
         if !hash_valid {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid hash"));
         }
+        let d_hash = t_hash.elapsed();
 
+        // Read magic + version
+        let t_magic = Instant::now();
         let mut magic = [0u8; 4];
         input_stream.read_exact(&mut magic)?;
         if &magic != Magic::Translation.as_bytes() {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid magic"));
         }
         Version::read_version(input_stream)?;
+        let d_magic = t_magic.elapsed();
 
         // Skip metadata hash
+        let t_meta = Instant::now();
         _ = read_u64(input_stream)?;
 
         // Skip metadata length
@@ -589,19 +641,28 @@ impl Serializable for Translation {
 
         // Skip translated_paragraphs_count
         _ = read_var_u64(input_stream)?;
+        let d_meta = t_meta.elapsed();
 
+        // Read and decompress strings
+        let t_strings_read = Instant::now();
         let encoded_data = read_len_prefixed_vec(input_stream)?;
+        let d_strings_read = t_strings_read.elapsed();
+        let t_strings_decompress = Instant::now();
         let strings = zstd::stream::decode_all(encoded_data.as_slice())?;
+        let d_strings_decompress = t_strings_decompress.elapsed();
 
         // Contextual translations
+        let t_ct = Instant::now();
         let ct_len = read_var_u64(input_stream)? as usize;
         let mut word_contextual_translations = Vec::with_capacity(ct_len);
         for _ in 0..ct_len {
             let slice = read_vec_slice::<u8>(input_stream)?;
             word_contextual_translations.push(WordContextualTranslation { translation: slice });
         }
+        let d_ct = t_ct.elapsed();
 
         // Words
+        let t_words = Instant::now();
         let words_len = read_var_u64(input_stream)? as usize;
         let mut words = Vec::with_capacity(words_len);
         for _ in 0..words_len {
@@ -636,8 +697,10 @@ impl Serializable for Translation {
                 grammar,
             });
         }
+        let d_words = t_words.elapsed();
 
         // Sentences
+        let t_sentences = Instant::now();
         let sentences_len = read_var_u64(input_stream)? as usize;
         let mut sentences = Vec::with_capacity(sentences_len);
         for _ in 0..sentences_len {
@@ -648,8 +711,10 @@ impl Serializable for Translation {
                 words: words_slice,
             });
         }
+        let d_sentences = t_sentences.elapsed();
 
         // Paragraph translations
+        let t_pt = Instant::now();
         let pt_len = read_var_u64(input_stream)? as usize;
         let mut paragraph_translations = Vec::with_capacity(pt_len);
         for _ in 0..pt_len {
@@ -667,8 +732,10 @@ impl Serializable for Translation {
                 sentences: sentences_slice,
             });
         }
+        let d_pt = t_pt.elapsed();
 
         // Paragraphs (Option indices)
+        let t_paragraphs = Instant::now();
         let paragraphs_len = read_var_u64(input_stream)? as usize;
         let mut paragraphs = Vec::with_capacity(paragraphs_len);
         for _ in 0..paragraphs_len {
@@ -680,10 +747,31 @@ impl Serializable for Translation {
             };
             paragraphs.push(val);
         }
+        let d_paragraphs = t_paragraphs.elapsed();
 
-        let elapsed_time = start_time.elapsed();
+        let total = total_start.elapsed();
 
-        println!("Deserialized translation in: {:?}", elapsed_time);
+        println!(
+            "Deserialization timings (Translation):\n  - hash validate: {:?}\n  - magic+version: {:?}\n  - metadata (incl. read): {:?}\n  - strings read: {:?}\n  - strings decompress ({} -> {} bytes): {:?}\n  - contextual translations ({}): {:?}\n  - words ({}): {:?}\n  - sentences ({}): {:?}\n  - paragraph translations ({}): {:?}\n  - paragraphs ({}): {:?}\n  - TOTAL: {:?}",
+            d_hash,
+            d_magic,
+            d_meta,
+            d_strings_read,
+            encoded_data.len(),
+            strings.len(),
+            d_strings_decompress,
+            word_contextual_translations.len(),
+            d_ct,
+            words_len,
+            d_words,
+            sentences_len,
+            d_sentences,
+            pt_len,
+            d_pt,
+            paragraphs_len,
+            d_paragraphs,
+            total
+        );
 
         Ok(Translation {
             id,

@@ -7,6 +7,7 @@ use crate::book::serialization::{
     write_var_u64,
 };
 use std::io;
+use std::time::Instant;
 
 pub struct Dictionary {
     pub source_language: String,
@@ -103,31 +104,42 @@ impl Serializable for Dictionary {
         //       repeat translations_count times: translation (len-prefixed string)
         // u64 fnv1 hash of the entire file except the hash itself
 
+        let total_start = Instant::now();
         let mut hashing_stream = ChecksumedWriter::create(output_stream);
 
         // Magic + version
+        let t_magic = Instant::now();
         Magic::Dictionary.write(&mut hashing_stream)?;
         Version::V1.write_version(&mut hashing_stream)?;
+        let d_magic = t_magic.elapsed();
 
         // Build metadata buf with its own hasher
+        let t_meta_build = Instant::now();
         let mut metadata_buf = Vec::new();
         let mut metadata_hasher = ChecksumedWriter::create(&mut metadata_buf);
         write_len_prefixed_str(&mut metadata_hasher, &self.source_language)?;
         write_len_prefixed_str(&mut metadata_hasher, &self.target_language)?;
         write_var_u64(&mut metadata_hasher, self.translations.len() as u64)?;
-
         let metadata_hash = metadata_hasher.current_hash();
+        let d_meta_build = t_meta_build.elapsed();
+
+        // Write metadata
+        let t_meta_write = Instant::now();
         write_u64(&mut hashing_stream, metadata_hash)?;
         write_len_prefixed_bytes(&mut hashing_stream, &metadata_buf)?;
+        let d_meta_write = t_meta_write.elapsed();
 
         // Compute total pairs (optional, informational). We'll still write per-original blocks.
+        let t_pairs = Instant::now();
         let mut total_pairs = 0u64;
         for (_orig, tr_set) in &self.translations {
             total_pairs += tr_set.len() as u64;
         }
         write_var_u64(&mut hashing_stream, total_pairs)?;
+        let d_pairs = t_pairs.elapsed();
 
         // Write entries: we want deterministic ordering -> BTreeMap + BTreeSet already provide it
+        let t_entries = Instant::now();
         write_var_u64(&mut hashing_stream, self.translations.len() as u64)?;
         for (original, translations) in &self.translations {
             write_len_prefixed_str(&mut hashing_stream, original)?;
@@ -136,10 +148,28 @@ impl Serializable for Dictionary {
                 write_len_prefixed_str(&mut hashing_stream, t)?;
             }
         }
+        let d_entries = t_entries.elapsed();
 
+        // Finalize
+        let t_finalize = Instant::now();
         let hash = hashing_stream.current_hash();
         write_u64(output_stream, hash)?;
         output_stream.flush()?;
+        let d_finalize = t_finalize.elapsed();
+
+        let total = total_start.elapsed();
+        println!(
+            "Serialization timings (Dictionary):\n  - magic+version: {:?}\n  - metadata build: {:?}\n  - metadata write: {:?}\n  - count pairs ({}): {:?}\n  - entries ({} originals): {:?}\n  - finalize hash+flush: {:?}\n  - TOTAL: {:?}",
+            d_magic,
+            d_meta_build,
+            d_meta_write,
+            total_pairs,
+            d_pairs,
+            self.translations.len(),
+            d_entries,
+            d_finalize,
+            total
+        );
         Ok(())
     }
 
@@ -149,21 +179,28 @@ impl Serializable for Dictionary {
     where
         Self: Sized,
     {
+        let total_start = Instant::now();
+
         // Validate full-file hash
+        let t_hash = Instant::now();
         let hash_valid = validate_hash(input_stream)?;
         if !hash_valid {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid hash"));
         }
+        let d_hash = t_hash.elapsed();
 
         // Magic + version
+        let t_magic = Instant::now();
         let mut magic = [0u8; 4];
         input_stream.read_exact(&mut magic)?;
         if &magic != Magic::Dictionary.as_bytes() {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid magic"));
         }
         Version::read_version(input_stream)?;
+        let d_magic = t_magic.elapsed();
 
         // Skip metadata hash and length; then read metadata payload
+        let t_meta = Instant::now();
         _ = read_u64(input_stream)?; // metadata hash (unused on full read)
         _ = read_var_u64(input_stream)?; // metadata len
 
@@ -171,11 +208,15 @@ impl Serializable for Dictionary {
         let target_language = read_len_prefixed_string(input_stream)?;
         // unique original count (informational)
         _ = read_var_u64(input_stream)?;
+        let d_meta = t_meta.elapsed();
 
         // Total pairs (informational)
+        let t_pairs = Instant::now();
         _ = read_var_u64(input_stream)?;
+        let d_pairs = t_pairs.elapsed();
 
         // Entries
+        let t_entries = Instant::now();
         let originals_len = read_var_u64(input_stream)? as usize;
         let mut translations: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for _ in 0..originals_len {
@@ -188,6 +229,19 @@ impl Serializable for Dictionary {
             }
             translations.insert(original, set);
         }
+        let d_entries = t_entries.elapsed();
+
+        let total = total_start.elapsed();
+        println!(
+            "Deserialization timings (Dictionary):\n  - hash validate: {:?}\n  - magic+version: {:?}\n  - metadata (incl. read): {:?}\n  - pairs read: {:?}\n  - entries ({} originals): {:?}\n  - TOTAL: {:?}",
+            d_hash,
+            d_magic,
+            d_meta,
+            d_pairs,
+            originals_len,
+            d_entries,
+            total
+        );
 
         Ok(Dictionary {
             source_language,
