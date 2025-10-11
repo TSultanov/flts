@@ -1,15 +1,18 @@
+pub mod dictionary_metadata;
+
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 
+use uuid::Uuid;
+
 use crate::book::serialization::{
-    ChecksumedWriter, Magic, Serializable, Version, read_len_prefixed_string, read_u64,
-    read_var_u64, validate_hash, write_len_prefixed_bytes, write_len_prefixed_str, write_u64,
-    write_var_u64,
+    read_exact_array, read_len_prefixed_string, read_u64, read_var_u64, validate_hash, write_len_prefixed_bytes, write_len_prefixed_str, write_u64, write_var_u64, ChecksumedWriter, Magic, Serializable, Version
 };
-use std::io::{self, BufWriter};
+use std::io::{self, BufWriter, Write};
 use std::time::Instant;
 
 pub struct Dictionary {
+    pub id: Uuid,
     pub source_language: String,
     pub target_language: String,
     translations: BTreeMap<String, BTreeSet<String>>,
@@ -18,6 +21,7 @@ pub struct Dictionary {
 impl Dictionary {
     pub fn create(source_language: String, target_language: String) -> Self {
         Self {
+            id: Uuid::new_v4(),
             source_language,
             target_language,
             translations: BTreeMap::new(),
@@ -37,12 +41,12 @@ impl Dictionary {
             .insert(translation.to_lowercase());
     }
 
-    pub fn merge(self, other: Self) -> Self {
+    pub fn merge(&mut self, other: Self) {
         Self::try_merge(self, other)
             .expect("merge should not fail; use try_merge for error handling")
     }
 
-    pub fn try_merge(mut self, other: Self) -> Result<Self, DictionaryMergeError> {
+    pub fn try_merge(&mut self, other: Self) -> Result<(), DictionaryMergeError> {
         if self.source_language != other.source_language
             || self.target_language != other.target_language
         {
@@ -61,7 +65,7 @@ impl Dictionary {
             }
         }
 
-        Ok(self)
+        Ok(())
     }
 }
 
@@ -118,6 +122,7 @@ impl Serializable for Dictionary {
         let t_meta_build = Instant::now();
         let mut metadata_buf = Vec::new();
         let mut metadata_hasher = ChecksumedWriter::create(&mut metadata_buf);
+        metadata_hasher.write_all(self.id.as_bytes())?;
         write_len_prefixed_str(&mut metadata_hasher, &self.source_language)?;
         write_len_prefixed_str(&mut metadata_hasher, &self.target_language)?;
         write_var_u64(&mut metadata_hasher, self.translations.len() as u64)?;
@@ -206,6 +211,7 @@ impl Serializable for Dictionary {
         _ = read_u64(input_stream)?; // metadata hash (unused on full read)
         _ = read_var_u64(input_stream)?; // metadata len
 
+        let id = Uuid::from_bytes(read_exact_array::<16>(input_stream)?);
         let source_language = read_len_prefixed_string(input_stream)?;
         let target_language = read_len_prefixed_string(input_stream)?;
         // unique original count (informational)
@@ -240,6 +246,7 @@ impl Serializable for Dictionary {
         );
 
         Ok(Dictionary {
+            id,
             source_language,
             target_language,
             translations,
@@ -255,6 +262,7 @@ mod tests {
     #[test]
     fn dictionary_add_and_roundtrip() {
         let mut d = Dictionary {
+            id: Uuid::new_v4(),
             source_language: "en".into(),
             target_language: "ru".into(),
             translations: BTreeMap::new(),
@@ -282,6 +290,7 @@ mod tests {
     #[test]
     fn dictionary_corruption_detection() {
         let mut d = Dictionary {
+            id: Uuid::new_v4(),
             source_language: "en".into(),
             target_language: "ru".into(),
             translations: BTreeMap::new(),
@@ -306,20 +315,20 @@ mod tests {
         d2.add_translation("hello", "Здравствуй");
         d2.add_translation("new", "новый");
 
-        let merged = d1.try_merge(d2).unwrap();
+        d1.try_merge(d2).unwrap();
 
-        assert_eq!(merged.source_language, "en");
-        assert_eq!(merged.target_language, "ru");
-        assert_eq!(merged.translations.len(), 3);
+        assert_eq!(d1.source_language, "en");
+        assert_eq!(d1.target_language, "ru");
+        assert_eq!(d1.translations.len(), 3);
 
-        let hello = merged.translations.get("hello").unwrap();
+        let hello = d1.translations.get("hello").unwrap();
         assert!(hello.contains("привет"));
         assert!(hello.contains("здравствуй"));
 
-        let world = merged.translations.get("world").unwrap();
+        let world = d1.translations.get("world").unwrap();
         assert!(world.contains("мир"));
 
-        let neww = merged.translations.get("new").unwrap();
+        let neww = d1.translations.get("new").unwrap();
         assert!(neww.contains("новый"));
     }
 

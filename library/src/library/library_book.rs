@@ -274,7 +274,7 @@ impl LibraryBook {
 }
 
 impl Library {
-    pub fn create_book(&self, title: &str) -> anyhow::Result<LibraryBook> {
+    pub fn create_book(&mut self, title: &str) -> anyhow::Result<Arc<Mutex<LibraryBook>>> {
         let books = self.list_books()?;
         if books.iter().any(|b| b.title == title) {
             Err(LibraryError::DuplicateTitle(title.to_owned()))?
@@ -283,12 +283,16 @@ impl Library {
         let guid = Uuid::new_v4();
         let book_root = self.library_root.join(guid.to_string())?;
 
-        Ok(LibraryBook {
+        let book = Arc::new(Mutex::new(LibraryBook {
             path: book_root,
             last_modified: None,
             book: Book::create(guid, title),
             translations: vec![],
-        })
+        }));
+
+        self.books_cache.insert(guid, book.clone());
+
+        Ok(book)
     }
 }
 
@@ -311,14 +315,16 @@ mod library_book_tests {
         let fs = vfs::MemoryFS::new();
         let root: VfsPath = fs.into();
         let library_path = root.join("lib").unwrap();
-        let library = Library::open(library_path.clone()).unwrap();
+        let mut library = Library::open(library_path.clone()).unwrap();
 
-        let mut book1 = library.create_book("First Book").unwrap();
-        book1.save().await.unwrap();
+        let book1 = library.create_book("First Book").unwrap();
+        book1.lock().await.save().await.unwrap();
 
-        let book_file = book1.path.join("book.dat").unwrap();
+        let book_file = book1.lock().await.path.join("book.dat").unwrap();
 
         let conflict_path = book1
+            .lock()
+            .await
             .path
             .join(
                 book_file
@@ -345,15 +351,15 @@ mod library_book_tests {
         let fs = vfs::MemoryFS::new();
         let root: VfsPath = fs.into();
         let library_path = root.join("lib").unwrap();
-        let library = Library::open(library_path.clone()).unwrap();
+        let mut library = Library::open(library_path.clone()).unwrap();
 
-        let mut book1 = library.create_book("First Book").unwrap();
-        let _translation = book1.get_or_create_translation("es", "en").await;
-        book1.save().await.unwrap();
+        let book1 = library.create_book("First Book").unwrap();
+        let _translation = book1.lock().await.get_or_create_translation("es", "en").await;
+        book1.lock().await.save().await.unwrap();
 
-        let translation_file = book1.path.join("translation_es_en.dat").unwrap();
+        let translation_file = book1.lock().await.path.join("translation_es_en.dat").unwrap();
 
-        let conflict_path = book1
+        let conflict_path = book1.lock().await
             .path
             .join(
                 translation_file
@@ -390,19 +396,19 @@ mod library_book_tests {
         let fs = vfs::MemoryFS::new();
         let root: VfsPath = fs.into();
         let library_path = root.join("lib").unwrap();
-        let library = Library::open(library_path.clone()).unwrap();
+        let mut library = Library::open(library_path.clone()).unwrap();
 
         // Create and save
-        let mut book = library.create_book("First Title").unwrap();
-        book.save().await.unwrap();
+        let book = library.create_book("First Title").unwrap();
+        book.lock().await.save().await.unwrap();
 
         // Simulate "loaded": set last_modified from disk
-        let book_file = book.path.join("book.dat").unwrap();
-        book.last_modified = book_file.metadata().unwrap().modified;
+        let book_file = book.lock().await.path.join("book.dat").unwrap();
+        book.lock().await.last_modified = book_file.metadata().unwrap().modified;
 
         // Change and save again
-        book.book.title = "Updated Title".into();
-        book.save().await.unwrap();
+        book.lock().await.book.title = "Updated Title".into();
+        book.lock().await.save().await.unwrap();
 
         // Verify on-disk
         let mut f = book_file.open_file().unwrap();
@@ -415,10 +421,11 @@ mod library_book_tests {
         let fs = vfs::MemoryFS::new();
         let root: VfsPath = fs.into();
         let library_path = root.join("lib").unwrap();
-        let library = Library::open(library_path.clone()).unwrap();
+        let mut library = Library::open(library_path.clone()).unwrap();
 
         // Create a book and attach a translation with an initial version
-        let mut book = library.create_book("First Book").unwrap();
+        let book = library.create_book("First Book").unwrap();
+        let mut book = book.lock().await;
         let mut tr = Translation::create("es", "en");
         let initial_pt = translation_import::ParagraphTranslation {
             timestamp: 1,
@@ -511,10 +518,11 @@ mod library_book_tests {
         let fs = vfs::MemoryFS::new();
         let root: VfsPath = fs.into();
         let library_path = root.join("lib").unwrap();
-        let library = Library::open(library_path.clone()).unwrap();
+        let mut library = Library::open(library_path.clone()).unwrap();
 
         // Create a book with a translation ts=1
-        let mut book = library.create_book("Merge Book").unwrap();
+        let book = library.create_book("Merge Book").unwrap();
+        let mut book = book.lock().await;
         let mut tr = Translation::create("en", "ru");
         let pt1 = translation_import::ParagraphTranslation {
             timestamp: 1,
@@ -843,9 +851,10 @@ mod library_book_tests {
         let fs = vfs::MemoryFS::new();
         let root: VfsPath = fs.into();
         let library_path = root.join("lib").unwrap();
-        let library = Library::open(library_path.clone()).unwrap();
+        let mut library = Library::open(library_path.clone()).unwrap();
 
-        let mut book = library.create_book("Original Title").unwrap();
+        let book = library.create_book("Original Title").unwrap();
+        let mut book = book.lock().await;
         book.save().await.unwrap();
 
         // Acquire metadata for the only book
@@ -869,9 +878,10 @@ mod library_book_tests {
         let fs = vfs::MemoryFS::new();
         let root: VfsPath = fs.into();
         let library_path = root.join("lib").unwrap();
-        let library = Library::open(library_path.clone()).unwrap();
+        let mut library = Library::open(library_path.clone()).unwrap();
 
-        let mut book = library.create_book("Main V1").unwrap();
+        let book = library.create_book("Main V1").unwrap();
+        let mut book = book.lock().await;
         book.save().await.unwrap();
 
         let book_file = book.path.join("book.dat").unwrap();
@@ -921,9 +931,10 @@ mod library_book_tests {
         let fs = vfs::MemoryFS::new();
         let root: VfsPath = fs.into();
         let library_path = root.join("lib").unwrap();
-        let library = Library::open(library_path.clone()).unwrap();
+        let mut library = Library::open(library_path.clone()).unwrap();
 
-        let mut book = library.create_book("V1").unwrap();
+        let book = library.create_book("V1").unwrap();
+        let mut book = book.lock().await;
         book.save().await.unwrap();
 
         let book_file = book.path.join("book.dat").unwrap();

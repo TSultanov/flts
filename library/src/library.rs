@@ -12,6 +12,7 @@ use crate::{
 };
 
 pub mod library_book;
+pub mod library_dictionary;
 
 #[derive(Debug)]
 pub enum LibraryError {
@@ -190,8 +191,9 @@ impl Library {
         Ok(book)
     }
 
-    pub async fn create_book_plain(&self, title: &str, text: &str) -> anyhow::Result<Uuid> {
-        let mut book = self.create_book(title)?;
+    pub async fn create_book_plain(&mut self, title: &str, text: &str) -> anyhow::Result<Uuid> {
+        let book = self.create_book(title)?;
+        let mut book = book.lock().await;
         let chapter_index = book.book.push_chapter(None);
         let paragraphs = split_paragraphs(text);
 
@@ -204,8 +206,9 @@ impl Library {
         Ok(book.book.id)
     }
 
-    pub async fn create_book_epub(&self, epub: &EpubBook) -> anyhow::Result<Uuid> {
-        let mut book = self.create_book(&epub.title)?;
+    pub async fn create_book_epub(&mut self, epub: &EpubBook) -> anyhow::Result<Uuid> {
+        let book = self.create_book(&epub.title)?;
+        let mut book = book.lock().await;
 
         for ch in &epub.chapters {
             let ch_idx = book.book.push_chapter(Some(&ch.title));
@@ -255,12 +258,12 @@ mod library_tests {
         let fs = vfs::MemoryFS::new();
         let root: VfsPath = fs.into();
         let library_path = root.join("lib").unwrap();
-        let library = Library::open(library_path.clone()).unwrap();
+        let mut library = Library::open(library_path.clone()).unwrap();
 
-        let mut book1 = library.create_book("First Book").unwrap();
-        book1.save().await.unwrap();
-        let mut book2 = library.create_book("Second Book").unwrap();
-        book2.save().await.unwrap();
+        let book1 = library.create_book("First Book").unwrap();
+        book1.lock().await.save().await.unwrap();
+        let book2 = library.create_book("Second Book").unwrap();
+        book2.lock().await.save().await.unwrap();
 
         let mut books = library.list_books().unwrap();
         assert_eq!(books.len(), 2);
