@@ -18,6 +18,7 @@ pub fn write_u8(w: &mut dyn io::Write, v: u8) -> io::Result<()> {
 pub fn write_u64(w: &mut dyn io::Write, v: u64) -> io::Result<()> {
     w.write_all(&v.to_le_bytes())
 }
+#[inline(always)]
 pub fn write_var_u64(w: &mut dyn io::Write, mut v: u64) -> io::Result<()> {
     while v >= 0x80 {
         // Set continuation bit
