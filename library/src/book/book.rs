@@ -218,7 +218,7 @@ impl Serializable for Book {
 
         // Strings blob compress
         let t_compress = Instant::now();
-        let encoded = zstd::stream::encode_all(self.strings.as_slice(), 2)?;
+        let encoded = zstd::stream::encode_all(self.strings.as_slice(), -7)?;
         let d_compress = t_compress.elapsed();
 
         // Strings write

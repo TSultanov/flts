@@ -415,6 +415,7 @@ impl Translation {
 }
 
 impl Serializable for Translation {
+    #[inline(never)]
     fn serialize<TWriter: io::Write>(&self, output_stream: &mut TWriter) -> std::io::Result<()> {
         // Binary format TR01 v1 (little endian):
         // magic[4] = TR01
@@ -482,7 +483,7 @@ impl Serializable for Translation {
 
         // Compress strings blob
         let t_compress = Instant::now();
-        let encoded = zstd::stream::encode_all(self.strings.as_slice(), 2)?;
+        let encoded = zstd::stream::encode_all(self.strings.as_slice(), -7)?;
         let d_compress = t_compress.elapsed();
 
         // Write compressed strings
