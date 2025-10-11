@@ -1,3 +1,4 @@
+use fnv::FnvHashSet;
 use uuid::Uuid;
 
 use crate::book::{
@@ -9,7 +10,9 @@ use crate::book::{
     },
     translation_import,
 };
-use std::{borrow::Cow, io::BufWriter, iter, time::Instant};
+use std::{
+    borrow::Cow, collections::HashMap, hash::BuildHasherDefault, io::BufWriter, iter, time::Instant,
+};
 use std::{
     collections::HashSet,
     io::{self, Write},
@@ -18,6 +21,8 @@ use std::{
 use super::soa_helpers::*;
 
 pub struct Translation {
+    strings_cache: HashMap<String, VecSlice<u8>>,
+
     pub id: Uuid,
     pub source_language: String,
     pub target_language: String,
@@ -109,6 +114,7 @@ pub struct WordContextualTranslationView<'a> {
 impl Translation {
     pub fn create(source_language: &str, target_language: &str) -> Self {
         Translation {
+            strings_cache: HashMap::new(),
             id: Uuid::new_v4(),
             source_language: source_language.to_owned(),
             target_language: target_language.to_owned(),
@@ -139,6 +145,16 @@ impl Translation {
         self.paragraphs.iter().filter(|p| p.is_some()).count()
     }
 
+    fn push_string(&mut self, string: &str) -> VecSlice<u8> {
+        if let Some(cached) = self.strings_cache.get(string) {
+            return cached.clone();
+        }
+
+        let vs = push_string(&mut self.strings, string);
+        self.strings_cache.insert(string.to_owned(), vs.clone());
+        vs
+    }
+
     pub fn add_paragraph_translation(
         &mut self,
         paragraph_index: usize,
@@ -164,11 +180,11 @@ impl Translation {
 
         let mut sentences = VecSlice::empty();
         for sentence in &translation.sentences {
-            let full_translation = push_string(&mut self.strings, &sentence.full_translation);
+            let full_translation = self.push_string(&sentence.full_translation);
             let mut words = VecSlice::empty();
             for word in &sentence.words {
-                let original = push_string(&mut self.strings, &word.original);
-                let note = push_string(&mut self.strings, &word.note);
+                let original = self.push_string(&word.original);
+                let note = self.push_string(&word.note);
                 let grammar = Grammar {
                     original_initial_form: push_string(
                         &mut self.strings,
@@ -178,37 +194,17 @@ impl Translation {
                         &mut self.strings,
                         &word.grammar.target_initial_form,
                     ),
-                    part_of_speech: push_string(&mut self.strings, &word.grammar.part_of_speech),
-                    plurality: word
-                        .grammar
-                        .plurality
-                        .as_ref()
-                        .map(|s| push_string(&mut self.strings, s)),
-                    person: word
-                        .grammar
-                        .person
-                        .as_ref()
-                        .map(|s| push_string(&mut self.strings, s)),
-                    tense: word
-                        .grammar
-                        .tense
-                        .as_ref()
-                        .map(|s| push_string(&mut self.strings, s)),
-                    case: word
-                        .grammar
-                        .case
-                        .as_ref()
-                        .map(|s| push_string(&mut self.strings, s)),
-                    other: word
-                        .grammar
-                        .other
-                        .as_ref()
-                        .map(|s| push_string(&mut self.strings, s)),
+                    part_of_speech: self.push_string(&word.grammar.part_of_speech),
+                    plurality: word.grammar.plurality.as_ref().map(|s| self.push_string(s)),
+                    person: word.grammar.person.as_ref().map(|s| self.push_string(s)),
+                    tense: word.grammar.tense.as_ref().map(|s| self.push_string(s)),
+                    case: word.grammar.case.as_ref().map(|s| self.push_string(s)),
+                    other: word.grammar.other.as_ref().map(|s| self.push_string(s)),
                 };
                 let mut contextual_translations = VecSlice::empty();
                 for contextual_translation in &word.contextual_translations {
                     let contextual_translation = WordContextualTranslation {
-                        translation: push_string(&mut self.strings, contextual_translation),
+                        translation: self.push_string(contextual_translation),
                     };
                     contextual_translations = push(
                         &mut self.word_contextual_translations,
@@ -262,11 +258,11 @@ impl Translation {
 
         let mut sentences = VecSlice::empty();
         for sentence in translation.sentences() {
-            let full_translation = push_string(&mut self.strings, &sentence.full_translation);
+            let full_translation = self.push_string(&sentence.full_translation);
             let mut words = VecSlice::empty();
             for word in sentence.words() {
-                let original = push_string(&mut self.strings, &word.original);
-                let note = push_string(&mut self.strings, &word.note);
+                let original = self.push_string(&word.original);
+                let note = self.push_string(&word.note);
                 let grammar = Grammar {
                     original_initial_form: push_string(
                         &mut self.strings,
@@ -276,32 +272,12 @@ impl Translation {
                         &mut self.strings,
                         &word.grammar.target_initial_form,
                     ),
-                    part_of_speech: push_string(&mut self.strings, &word.grammar.part_of_speech),
-                    plurality: word
-                        .grammar
-                        .plurality
-                        .as_ref()
-                        .map(|s| push_string(&mut self.strings, s)),
-                    person: word
-                        .grammar
-                        .person
-                        .as_ref()
-                        .map(|s| push_string(&mut self.strings, s)),
-                    tense: word
-                        .grammar
-                        .tense
-                        .as_ref()
-                        .map(|s| push_string(&mut self.strings, s)),
-                    case: word
-                        .grammar
-                        .case
-                        .as_ref()
-                        .map(|s| push_string(&mut self.strings, s)),
-                    other: word
-                        .grammar
-                        .other
-                        .as_ref()
-                        .map(|s| push_string(&mut self.strings, s)),
+                    part_of_speech: self.push_string(&word.grammar.part_of_speech),
+                    plurality: word.grammar.plurality.as_ref().map(|s| self.push_string(s)),
+                    person: word.grammar.person.as_ref().map(|s| self.push_string(s)),
+                    tense: word.grammar.tense.as_ref().map(|s| self.push_string(s)),
+                    case: word.grammar.case.as_ref().map(|s| self.push_string(s)),
+                    other: word.grammar.other.as_ref().map(|s| self.push_string(s)),
                 };
                 let mut contextual_translations = VecSlice::empty();
                 for contextual_translation in word.contextual_translations() {
@@ -620,6 +596,8 @@ impl Serializable for Translation {
         }
         let d_hash = t_hash.elapsed();
 
+        let mut strings_cache: HashMap<String, VecSlice<u8>> = HashMap::new();
+
         // Read magic + version
         let t_magic = Instant::now();
         let mut magic = [0u8; 4];
@@ -654,12 +632,24 @@ impl Serializable for Translation {
         let strings = zstd::stream::decode_all(encoded_data.as_slice())?;
         let d_strings_decompress = t_strings_decompress.elapsed();
 
+        let mut seen_slices = FnvHashSet::with_hasher(BuildHasherDefault::new());
+
+        let mut cache_vec_slice = |slice: VecSlice<u8>| {
+            if seen_slices.contains(&slice) {
+                return slice;
+            }
+            let string = String::from_utf8_lossy(slice.slice(&strings)).to_string();
+            strings_cache.insert(string, slice);
+            seen_slices.insert(slice);
+            slice
+        };
+
         // Contextual translations
         let t_ct = Instant::now();
         let ct_len = read_var_u64(input_stream)? as usize;
         let mut word_contextual_translations = Vec::with_capacity(ct_len);
         for _ in 0..ct_len {
-            let slice = read_vec_slice::<u8>(input_stream)?;
+            let slice = cache_vec_slice(read_vec_slice::<u8>(input_stream)?);
             word_contextual_translations.push(WordContextualTranslation { translation: slice });
         }
         let d_ct = t_ct.elapsed();
@@ -669,12 +659,12 @@ impl Serializable for Translation {
         let words_len = read_var_u64(input_stream)? as usize;
         let mut words = Vec::with_capacity(words_len);
         for _ in 0..words_len {
-            let original = read_vec_slice::<u8>(input_stream)?;
-            let note = read_vec_slice::<u8>(input_stream)?;
+            let original = cache_vec_slice(read_vec_slice::<u8>(input_stream)?);
+            let note = cache_vec_slice(read_vec_slice::<u8>(input_stream)?);
             let is_punctuation = read_u8(input_stream)? == 1;
-            let original_initial_form = read_vec_slice::<u8>(input_stream)?;
-            let target_initial_form = read_vec_slice::<u8>(input_stream)?;
-            let part_of_speech = read_vec_slice::<u8>(input_stream)?;
+            let original_initial_form = cache_vec_slice(read_vec_slice::<u8>(input_stream)?);
+            let target_initial_form = cache_vec_slice(read_vec_slice::<u8>(input_stream)?);
+            let part_of_speech = cache_vec_slice(read_vec_slice::<u8>(input_stream)?);
             let plurality = read_opt(input_stream)?;
             let person = read_opt(input_stream)?;
             let tense = read_opt(input_stream)?;
@@ -707,7 +697,7 @@ impl Serializable for Translation {
         let sentences_len = read_var_u64(input_stream)? as usize;
         let mut sentences = Vec::with_capacity(sentences_len);
         for _ in 0..sentences_len {
-            let full_translation = read_vec_slice::<u8>(input_stream)?;
+            let full_translation = cache_vec_slice(read_vec_slice::<u8>(input_stream)?);
             let words_slice = read_vec_slice::<Word>(input_stream)?;
             sentences.push(Sentence {
                 full_translation,
@@ -777,6 +767,7 @@ impl Serializable for Translation {
         );
 
         Ok(Translation {
+            strings_cache,
             id,
             source_language,
             target_language,

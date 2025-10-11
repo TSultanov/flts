@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug, Eq, Hash)]
 pub struct VecSlice<T> {
     pub start: usize,
     pub len: usize,

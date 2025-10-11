@@ -184,7 +184,7 @@ impl Serializable for Book {
 
         let mut hashing_stream_unbuffered = ChecksumedWriter::create(output_stream);
         let mut hashing_stream = BufWriter::new(hashing_stream_unbuffered);
-        
+
         // Magic + version
         let t_magic = Instant::now();
         Magic::Book.write(&mut hashing_stream)?; // magic
