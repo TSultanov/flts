@@ -1,4 +1,4 @@
-use fnv::FnvHashSet;
+use ahash::{AHashMap, AHashSet};
 use uuid::Uuid;
 
 use crate::book::{
@@ -11,7 +11,7 @@ use crate::book::{
     translation_import,
 };
 use std::{
-    borrow::Cow, collections::HashMap, hash::BuildHasherDefault, io::BufWriter, iter, time::Instant,
+    borrow::Cow, io::BufWriter, iter, time::Instant
 };
 use std::{
     collections::HashSet,
@@ -21,7 +21,7 @@ use std::{
 use super::soa_helpers::*;
 
 pub struct Translation {
-    strings_cache: HashMap<String, VecSlice<u8>>,
+    strings_cache: AHashMap<String, VecSlice<u8>>,
 
     pub id: Uuid,
     pub source_language: String,
@@ -114,7 +114,7 @@ pub struct WordContextualTranslationView<'a> {
 impl Translation {
     pub fn create(source_language: &str, target_language: &str) -> Self {
         Translation {
-            strings_cache: HashMap::new(),
+            strings_cache: AHashMap::new(),
             id: Uuid::new_v4(),
             source_language: source_language.to_owned(),
             target_language: target_language.to_owned(),
@@ -596,7 +596,7 @@ impl Serializable for Translation {
         }
         let d_hash = t_hash.elapsed();
 
-        let mut strings_cache: HashMap<String, VecSlice<u8>> = HashMap::new();
+        let mut strings_cache = AHashMap::new();
 
         // Read magic + version
         let t_magic = Instant::now();
@@ -632,7 +632,7 @@ impl Serializable for Translation {
         let strings = zstd::stream::decode_all(encoded_data.as_slice())?;
         let d_strings_decompress = t_strings_decompress.elapsed();
 
-        let mut seen_slices = FnvHashSet::with_hasher(BuildHasherDefault::new());
+        let mut seen_slices = AHashSet::default();
 
         let mut cache_vec_slice = |slice: VecSlice<u8>| {
             if seen_slices.contains(&slice) {
