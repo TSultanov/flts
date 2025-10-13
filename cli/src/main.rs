@@ -2,12 +2,13 @@ use std::{
     collections::VecDeque,
     error::Error,
     fmt::Display,
-    fs::{create_dir, File},
+    fs::{File, create_dir},
     io::Read,
     path::PathBuf,
     process::ExitCode,
     str::FromStr,
-    sync::Arc, time::Instant,
+    sync::Arc,
+    time::Instant,
 };
 
 use clap::{Parser, Subcommand};
@@ -162,9 +163,7 @@ async fn translate_paragraph(
     let (translation, paragraph_text) = {
         let book = library.lock().await.get_book(&book_id)?;
         let mut book = book.lock().await;
-        let translation = book
-            .get_or_create_translation(src_lang.to_639_3(), tgt_lang.to_639_3())
-            .await;
+        let translation = book.get_or_create_translation(src_lang, tgt_lang).await;
         let paragraph = book.book.paragraph_view(paragraph_id);
         (translation, paragraph.original_text.to_string())
     };
@@ -179,7 +178,8 @@ async fn translate_paragraph(
     translation
         .lock()
         .await
-        .add_paragraph_translation(paragraph_id, &p_translation);
+        .add_paragraph_translation(paragraph_id, &p_translation)
+        .await?;
 
     Ok(())
 }
@@ -204,7 +204,7 @@ async fn translate_book(
         let paragraph_count = book.book.paragraphs_count();
 
         let translation = book
-            .get_or_create_translation(source_lang.to_639_3(), target_lang.to_639_3())
+            .get_or_create_translation(&source_lang, &target_lang)
             .await;
         let untranslated_paragraphs_count =
             paragraph_count - translation.lock().await.translated_paragraphs_count();

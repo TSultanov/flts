@@ -66,10 +66,10 @@ impl TranslationMetadata {
 mod translation_metadata_test {
     use std::io::Cursor;
 
-    use crate::book::{
+    use crate::{book::{
         serialization::Serializable, translation::Translation, translation_import,
         translation_metadata::TranslationMetadata,
-    };
+    }, dictionary::Dictionary};
 
     #[test]
     fn test_metadata_roundtrip() {
@@ -98,7 +98,10 @@ mod translation_metadata_test {
                 }],
             }],
         };
-        translation.add_paragraph_translation(0, &paragraph_translation);
+
+        let mut dict = Dictionary::create("en".to_owned(), "ru".to_owned());
+
+        translation.add_paragraph_translation(0, &paragraph_translation, &mut dict);
 
         // another paragraph
         let paragraph_translation2 = translation_import::ParagraphTranslation {
@@ -143,7 +146,7 @@ mod translation_metadata_test {
                 ],
             }],
         };
-        translation.add_paragraph_translation(3, &paragraph_translation2);
+        translation.add_paragraph_translation(3, &paragraph_translation2, &mut dict);
 
         let mut buf: Vec<u8> = vec![];
         translation.serialize(&mut buf).unwrap();
@@ -183,7 +186,8 @@ mod translation_metadata_test {
                 }],
             }],
         };
-        translation.add_paragraph_translation(0, &paragraph_translation);
+        let mut dict = Dictionary::create("en".to_owned(), "ru".to_owned());
+        translation.add_paragraph_translation(0, &paragraph_translation, &mut dict);
 
         // another paragraph
         let paragraph_translation2 = translation_import::ParagraphTranslation {
@@ -228,7 +232,7 @@ mod translation_metadata_test {
                 ],
             }],
         };
-        translation.add_paragraph_translation(3, &paragraph_translation2);
+        translation.add_paragraph_translation(3, &paragraph_translation2, &mut dict);
 
         let mut buf: Vec<u8> = vec![];
         translation.serialize(&mut buf).unwrap();

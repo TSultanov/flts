@@ -1,18 +1,15 @@
 use ahash::{AHashMap, AHashSet};
 use uuid::Uuid;
 
-use crate::book::{
-    serialization::{
-        ChecksumedWriter, Magic, Serializable, Version, read_exact_array, read_len_prefixed_string,
-        read_len_prefixed_vec, read_opt, read_u8, read_u64, read_var_u64, read_vec_slice,
-        validate_hash, write_len_prefixed_bytes, write_opt, write_u64, write_var_u64,
-        write_vec_slice,
-    },
-    translation_import,
+use crate::{
+    book::{
+        serialization::{
+            read_exact_array, read_len_prefixed_string, read_len_prefixed_vec, read_opt, read_u64, read_u8, read_var_u64, read_vec_slice, validate_hash, write_len_prefixed_bytes, write_opt, write_u64, write_var_u64, write_vec_slice, ChecksumedWriter, Magic, Serializable, Version
+        },
+        translation_import,
+    }, dictionary::Dictionary
 };
-use std::{
-    borrow::Cow, io::BufWriter, iter, time::Instant
-};
+use std::{borrow::Cow, io::BufWriter, iter, time::Instant};
 use std::{
     collections::HashSet,
     io::{self, Write},
@@ -112,7 +109,10 @@ pub struct WordContextualTranslationView<'a> {
 }
 
 impl Translation {
-    pub fn create(source_language: &str, target_language: &str) -> Self {
+    pub fn create(
+        source_language: &str,
+        target_language: &str,
+    ) -> Self {
         Translation {
             strings_cache: AHashMap::new(),
             id: Uuid::new_v4(),
@@ -159,6 +159,7 @@ impl Translation {
         &mut self,
         paragraph_index: usize,
         translation: &translation_import::ParagraphTranslation,
+        dictionary: &mut Dictionary
     ) {
         if paragraph_index >= self.paragraphs.len() {
             self.paragraphs.extend(iter::repeat_n(
@@ -183,6 +184,8 @@ impl Translation {
             let full_translation = self.push_string(&sentence.full_translation);
             let mut words = VecSlice::empty();
             for word in &sentence.words {
+                dictionary.add_translation(&word.grammar.original_initial_form, &word.grammar.target_initial_form);
+
                 let original = self.push_string(&word.original);
                 let note = self.push_string(&word.note);
                 let grammar = Grammar {
@@ -1009,7 +1012,8 @@ mod tests {
                 ],
             }],
         };
-        translation.add_paragraph_translation(0, &paragraph_translation);
+        let mut dict = Dictionary::create("en".to_owned(), "ru".to_owned());
+        translation.add_paragraph_translation(0, &paragraph_translation, &mut dict);
         let paragraph_view = translation.paragraph_view(0).unwrap();
         assert_eq!(paragraph_view.timestamp, 1234567890);
         assert_eq!(paragraph_view.previous_version, None);
@@ -1061,7 +1065,8 @@ mod tests {
                 }],
             }],
         };
-        translation.add_paragraph_translation(0, &paragraph_translation);
+        let mut dict = Dictionary::create("en".to_owned(), "ru".to_owned());
+        translation.add_paragraph_translation(0, &paragraph_translation, &mut dict);
 
         // second version
         let paragraph_translation2 = translation_import::ParagraphTranslation {
@@ -1106,7 +1111,7 @@ mod tests {
                 ],
             }],
         };
-        translation.add_paragraph_translation(0, &paragraph_translation2);
+        translation.add_paragraph_translation(0, &paragraph_translation2, &mut dict);
 
         let mut buf: Vec<u8> = vec![];
         translation.serialize(&mut buf).unwrap();
@@ -1159,7 +1164,8 @@ mod tests {
                 }],
             }],
         };
-        translation.add_paragraph_translation(0, &paragraph_translation);
+        let mut dict = Dictionary::create("en".to_owned(), "ru".to_owned());
+        translation.add_paragraph_translation(0, &paragraph_translation, &mut dict);
 
         // second version
         let paragraph_translation2 = translation_import::ParagraphTranslation {
@@ -1204,7 +1210,7 @@ mod tests {
                 ],
             }],
         };
-        translation.add_paragraph_translation(0, &paragraph_translation2);
+        translation.add_paragraph_translation(0, &paragraph_translation2, &mut dict);
 
         let mut buf: Vec<u8> = vec![];
         translation.serialize(&mut buf).unwrap();
@@ -1219,13 +1225,14 @@ mod tests {
 
     #[test]
     fn merge_same_history() {
+        let mut dict = Dictionary::create("en".to_owned(), "ru".to_owned());
         let mut a = Translation::create("en", "ru");
-        a.add_paragraph_translation(0, &make_paragraph(1, "v1"));
-        a.add_paragraph_translation(0, &make_paragraph(2, "v2"));
+        a.add_paragraph_translation(0, &make_paragraph(1, "v1"), &mut dict);
+        a.add_paragraph_translation(0, &make_paragraph(2, "v2"), &mut dict);
 
         let mut b = Translation::create("en", "ru");
-        b.add_paragraph_translation(0, &make_paragraph(1, "v1"));
-        b.add_paragraph_translation(0, &make_paragraph(2, "v2"));
+        b.add_paragraph_translation(0, &make_paragraph(1, "v1"), &mut dict);
+        b.add_paragraph_translation(0, &make_paragraph(2, "v2"), &mut dict);
 
         let merged = a.merge(&b);
 
@@ -1240,17 +1247,18 @@ mod tests {
 
     #[test]
     fn merge_diverged_common_root() {
+        let mut dict = Dictionary::create("en".to_owned(), "ru".to_owned());
         // a: 1 -> 2 -> 4
         let mut a = Translation::create("en", "ru");
-        a.add_paragraph_translation(0, &make_paragraph(1, "a1"));
-        a.add_paragraph_translation(0, &make_paragraph(2, "a2"));
-        a.add_paragraph_translation(0, &make_paragraph(4, "a4"));
+        a.add_paragraph_translation(0, &make_paragraph(1, "a1"), &mut dict);
+        a.add_paragraph_translation(0, &make_paragraph(2, "a2"), &mut dict);
+        a.add_paragraph_translation(0, &make_paragraph(4, "a4"), &mut dict);
 
         // b: 1 -> 3 -> 5
         let mut b = Translation::create("en", "ru");
-        b.add_paragraph_translation(0, &make_paragraph(1, "a1")); // same ts as a1 (dedup)
-        b.add_paragraph_translation(0, &make_paragraph(3, "a3"));
-        b.add_paragraph_translation(0, &make_paragraph(5, "a5"));
+        b.add_paragraph_translation(0, &make_paragraph(1, "a1"), &mut dict); // same ts as a1 (dedup)
+        b.add_paragraph_translation(0, &make_paragraph(3, "a3"), &mut dict);
+        b.add_paragraph_translation(0, &make_paragraph(5, "a5"), &mut dict);
 
         let merged = a.merge(&b);
 
@@ -1282,16 +1290,17 @@ mod tests {
 
     #[test]
     fn merge_no_common_root() {
+        let mut dict = Dictionary::create("en".to_owned(), "ru".to_owned());
         // a: 10 -> 20
         let mut a = Translation::create("en", "ru");
-        a.add_paragraph_translation(0, &make_paragraph(10, "a10"));
-        a.add_paragraph_translation(0, &make_paragraph(20, "a20"));
+        a.add_paragraph_translation(0, &make_paragraph(10, "a10"), &mut dict);
+        a.add_paragraph_translation(0, &make_paragraph(20, "a20"), &mut dict);
 
         // b: 5 -> 15 -> 25
         let mut b = Translation::create("en", "ru");
-        b.add_paragraph_translation(0, &make_paragraph(5, "b5"));
-        b.add_paragraph_translation(0, &make_paragraph(15, "b15"));
-        b.add_paragraph_translation(0, &make_paragraph(25, "b25"));
+        b.add_paragraph_translation(0, &make_paragraph(5, "b5"), &mut dict);
+        b.add_paragraph_translation(0, &make_paragraph(15, "b15"), &mut dict);
+        b.add_paragraph_translation(0, &make_paragraph(25, "b25"), &mut dict);
 
         let merged = a.merge(&b);
         let mut ts = Vec::new();
@@ -1306,14 +1315,15 @@ mod tests {
 
     #[test]
     fn merge_present_only_in_one_side() {
+        let mut dict = Dictionary::create("en".to_owned(), "ru".to_owned());
         // Paragraph 0 only in left, with history 1 -> 2
         let mut a = Translation::create("en", "ru");
-        a.add_paragraph_translation(0, &make_paragraph(1, "a1"));
-        a.add_paragraph_translation(0, &make_paragraph(2, "a2"));
+        a.add_paragraph_translation(0, &make_paragraph(1, "a1"), &mut dict);
+        a.add_paragraph_translation(0, &make_paragraph(2, "a2"), &mut dict);
         // Paragraph 1 only in right, with single version 3
         let b = {
             let mut t = Translation::create("en", "ru");
-            t.add_paragraph_translation(1, &make_paragraph(3, "b3"));
+            t.add_paragraph_translation(1, &make_paragraph(3, "b3"), &mut dict);
             t
         };
 

@@ -1,5 +1,13 @@
-use std::{io::BufReader, io::BufWriter, time::SystemTime};
+use std::{
+    collections::HashMap,
+    io::{BufReader, BufWriter},
+    sync::Arc,
+    time::SystemTime,
+};
 
+use isolang::Language;
+use itertools::Itertools;
+use tokio::sync::Mutex;
 use uuid::Uuid;
 use vfs::VfsPath;
 
@@ -182,6 +190,99 @@ impl LibraryDictionary {
         }
 
         Ok(())
+    }
+}
+
+pub struct DictionaryCache {
+    library_root: VfsPath,
+    cache: HashMap<(Language, Language), Arc<Mutex<LibraryDictionary>>>,
+}
+
+impl DictionaryCache {
+    pub fn new(library_root: &VfsPath) -> Self {
+        Self {
+            library_root: library_root.clone(),
+            cache: HashMap::new(),
+        }
+    }
+
+    fn create_dictionary(&self, src: Language, tgt: Language) -> anyhow::Result<LibraryDictionary> {
+        let filename = format!("dictionary_{}_{}.dat", src.to_639_3(), tgt.to_639_3());
+
+        let file = self.library_root.join(filename)?;
+
+        Ok(LibraryDictionary {
+            path: file,
+            last_modified: None,
+            dictionary: Dictionary::create(src.to_639_3().to_owned(), tgt.to_639_3().to_owned()),
+        })
+    }
+
+    pub fn list_dictionaries(&self) -> anyhow::Result<Vec<LibraryDictionaryMetadata>> {
+        let library_root_content = self.library_root.read_dir()?;
+
+        let mut all_dictionaries = Vec::new();
+
+        for path in library_root_content {
+            if !path.is_file()? {
+                continue;
+            }
+
+            if path.filename().starts_with("dictionary_") && path.filename().ends_with(".dat") {
+                let mut data = path.open_file()?;
+                let metadata = DictionaryMetadata::read_metadata(&mut data)?;
+                all_dictionaries.push((path, metadata));
+            }
+        }
+
+        let grouped_dictionaries = all_dictionaries.into_iter().chunk_by(|(_, dict)| dict.id);
+        let grouped_dictionaries = grouped_dictionaries
+            .into_iter()
+            .map(|(id, chunk)| (id, chunk.sorted_by_key(|(p, _)| p.filename().len())));
+
+        let mut dictionaries_metadata = Vec::new();
+
+        for (_, mut dictionaries) in grouped_dictionaries {
+            let (main_path, main_dictionary) = dictionaries.next().unwrap();
+
+            let conflicting_dictionaries = dictionaries.map(|(p, _)| p).collect();
+
+            dictionaries_metadata.push(LibraryDictionaryMetadata {
+                id: main_dictionary.id,
+                source_language: main_dictionary.source_language,
+                target_language: main_dictionary.target_language,
+                main_path: main_path,
+                conflicting_paths: conflicting_dictionaries,
+            })
+        }
+
+        Ok(dictionaries_metadata)
+    }
+
+    pub fn get_dictionary(
+        &mut self,
+        src: Language,
+        tgt: Language,
+    ) -> anyhow::Result<Arc<Mutex<LibraryDictionary>>> {
+        if let Some(cached_dict) = self.cache.get(&(src, tgt)) {
+            return Ok(cached_dict.clone());
+        }
+
+        let dictionaries = self.list_dictionaries()?;
+        let dictionary = if let Some(dictionary_metadata) = dictionaries
+            .into_iter()
+            .find(|d| d.source_language == src.to_639_3() && d.target_language == tgt.to_639_3())
+        {
+            LibraryDictionary::load_from_metadata(dictionary_metadata)?
+        } else {
+            self.create_dictionary(src, tgt)?
+        };
+
+        let dictionary = Arc::new(Mutex::new(dictionary));
+
+        self.cache.insert((src, tgt), dictionary.clone());
+
+        Ok(dictionary)
     }
 }
 

@@ -1,58 +1,79 @@
 use std::{
     collections::HashSet,
     io::{BufReader, BufWriter},
+    str::FromStr,
     sync::Arc,
     time::SystemTime,
 };
 
+use ahash::AHashSet;
+use isolang::Language;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 use vfs::VfsPath;
 
 use crate::{
-    book::{book::Book, serialization::Serializable, translation::Translation},
-    library::{Library, LibraryBookMetadata, LibraryError, LibraryTranslationMetadata},
+    book::{
+        book::Book,
+        serialization::Serializable,
+        translation::{ParagraphTranslationView, Translation},
+        translation_import,
+    },
+    library::{
+        Library, LibraryBookMetadata, LibraryError, LibraryTranslationMetadata,
+        library_dictionary::DictionaryCache,
+    },
 };
 
 pub struct LibraryBook {
+    dict_cache: Arc<Mutex<DictionaryCache>>,
     path: VfsPath,
     last_modified: Option<SystemTime>,
     pub book: Book,
-    translations: Vec<LibraryTranslation>,
+    translations: Vec<Arc<Mutex<LibraryTranslation>>>,
 }
 
 pub struct LibraryTranslation {
-    translation: Arc<Mutex<Translation>>,
+    dict_cache: Arc<Mutex<DictionaryCache>>,
+    translation: Translation,
+    source_language: Language,
+    target_language: Language,
     last_modified: Option<SystemTime>,
+    changed: bool,
 }
 
 impl LibraryTranslation {
-    async fn merge(self, other: LibraryTranslation) -> LibraryTranslation {
-        let other_t = other.translation.lock().await;
+    fn merge(&mut self, other: LibraryTranslation) {
+        let other_t = other.translation;
 
-        let merged_translation =
-            Arc::new(Mutex::new(self.translation.lock().await.merge(&other_t)));
+        let merged_translation = self.translation.merge(&other_t);
 
-        LibraryTranslation {
-            translation: merged_translation,
-            last_modified: self.last_modified.max(other.last_modified),
-        }
+        self.translation = merged_translation;
+        self.last_modified = self.last_modified.max(other.last_modified);
+        self.changed = true;
     }
 
-    fn load(path: &VfsPath) -> Result<Self, vfs::error::VfsError> {
+    fn load(dict_cache: Arc<Mutex<DictionaryCache>>, path: &VfsPath) -> anyhow::Result<Self> {
         let last_modified = path.metadata()?.modified;
         let mut file = BufReader::new(path.open_file()?);
-        let translation = Arc::new(Mutex::new(Translation::deserialize(&mut file)?));
+        let translation = Translation::deserialize(&mut file)?;
+        let source_language = Language::from_str(&translation.source_language)?;
+        let target_language = Language::from_str(&translation.target_language)?;
 
         Ok(Self {
+            dict_cache,
             translation,
+            source_language,
+            target_language,
             last_modified,
+            changed: false,
         })
     }
 
     fn load_from_metadata(
+        dict_cache: Arc<Mutex<DictionaryCache>>,
         metadata: LibraryTranslationMetadata,
-    ) -> Result<Self, vfs::error::VfsError> {
+    ) -> anyhow::Result<Self> {
         if !metadata.conflicting_paths.is_empty() {
             let mut translation = {
                 let mut main_file = BufReader::new(metadata.main_path.open_file()?);
@@ -69,38 +90,73 @@ impl LibraryTranslation {
             translation.serialize(&mut main_file)?;
         }
 
-        Self::load(&metadata.main_path)
+        Self::load(dict_cache, &metadata.main_path)
+    }
+
+    pub async fn add_paragraph_translation(
+        &mut self,
+        paragraph_index: usize,
+        translation: &translation_import::ParagraphTranslation,
+    ) -> anyhow::Result<()> {
+        let dictionary = self
+            .dict_cache
+            .lock()
+            .await
+            .get_dictionary(self.source_language, self.target_language)?;
+        self.translation.add_paragraph_translation(
+            paragraph_index,
+            translation,
+            &mut dictionary.lock().await.dictionary,
+        );
+        self.changed = true;
+        Ok(())
+    }
+
+    pub fn translated_paragraphs_count(&self) -> usize {
+        self.translation.translated_paragraphs_count()
+    }
+
+    pub fn paragraph_view(&'_ self, paragraph: usize) -> Option<ParagraphTranslationView<'_>> {
+        self.translation.paragraph_view(paragraph)
     }
 }
 
 impl LibraryBook {
     pub async fn get_or_create_translation(
         &mut self,
-        source_language: &str,
-        target_language: &str,
-    ) -> Arc<Mutex<Translation>> {
+        source_language: &Language,
+        target_language: &Language,
+    ) -> Arc<Mutex<LibraryTranslation>> {
         for (t_idx, t) in self.translations.iter().enumerate() {
-            if t.translation.lock().await.source_language == source_language
-                && t.translation.lock().await.target_language == target_language
+            if t.lock().await.translation.source_language == source_language.to_639_3()
+                && t.lock().await.translation.target_language == target_language.to_639_3()
             {
-                return self.translations[t_idx].translation.clone();
+                return self.translations[t_idx].clone();
             }
         }
 
         // Not found: create and push
-        self.translations.push(LibraryTranslation {
-            translation: Arc::new(Mutex::new(Translation::create(
-                source_language,
-                target_language,
-            ))),
-            last_modified: None,
-        });
+        self.translations
+            .push(Arc::new(Mutex::new(LibraryTranslation {
+                dict_cache: self.dict_cache.clone(),
+                translation: Translation::create(
+                    source_language.to_639_3(),
+                    target_language.to_639_3(),
+                ),
+                source_language: *source_language,
+                target_language: *target_language,
+                last_modified: None,
+                changed: true,
+            })));
 
         let last = self.translations.len() - 1;
-        self.translations[last].translation.clone()
+        self.translations[last].clone()
     }
 
-    pub fn load_from_metadata(metadata: LibraryBookMetadata) -> Result<Self, vfs::error::VfsError> {
+    pub fn load_from_metadata(
+        dict_cache: Arc<Mutex<DictionaryCache>>,
+        metadata: LibraryBookMetadata,
+    ) -> anyhow::Result<Self> {
         let mut candidates: Vec<(&VfsPath, Option<SystemTime>)> = Vec::new();
         candidates.push((&metadata.main_path, metadata.main_path.metadata()?.modified));
         for p in &metadata.conflicting_paths {
@@ -133,22 +189,29 @@ impl LibraryBook {
             }
         }
 
-        let mut book = Self::load(&metadata.main_path)?;
+        let mut book = Self::load(dict_cache.clone(), &metadata.main_path)?;
 
         for tm in metadata.translations_metadata {
-            let translation = LibraryTranslation::load_from_metadata(tm)?;
+            let translation = Arc::new(Mutex::new(LibraryTranslation::load_from_metadata(
+                dict_cache.clone(),
+                tm,
+            )?));
             book.translations.push(translation);
         }
 
         Ok(book)
     }
 
-    fn load(path: &VfsPath) -> Result<Self, vfs::error::VfsError> {
+    fn load(
+        dict_cache: Arc<Mutex<DictionaryCache>>,
+        path: &VfsPath,
+    ) -> Result<Self, vfs::error::VfsError> {
         let last_modified = path.metadata()?.modified;
         let mut file = BufReader::new(path.open_file()?);
         let book = Book::deserialize(&mut file)?;
 
         Ok(Self {
+            dict_cache,
             path: path.parent(),
             last_modified,
             book,
@@ -156,7 +219,7 @@ impl LibraryBook {
         })
     }
 
-    pub async fn save(&mut self) -> Result<(), vfs::error::VfsError> {
+    pub async fn save(&mut self) -> anyhow::Result<()> {
         if !self.path.exists()? {
             self.path.create_dir()?
         }
@@ -173,9 +236,12 @@ impl LibraryBook {
 
         let mut merged_translations = Vec::new();
 
-        for mut translation in book.translations.drain(0..) {
-            let source_language = translation.translation.lock().await.source_language.clone();
-            let target_language = translation.translation.lock().await.target_language.clone();
+        let mut languages_to_save = AHashSet::new();
+
+        for translation_arc in book.translations.drain(0..) {
+            let mut translation = translation_arc.lock().await;
+            let source_language = translation.translation.source_language.clone();
+            let target_language = translation.translation.target_language.clone();
             let translation_file_name =
                 format!("translation_{}_{}.dat", source_language, target_language);
             let translation_path = book.path.join(&translation_file_name)?;
@@ -189,33 +255,47 @@ impl LibraryBook {
                         let saved_translation_last_modified =
                             translation_path.metadata()?.modified.unwrap();
                         if saved_translation_last_modified > last_modified {
-                            let saved_translation = LibraryTranslation::load(&translation_path)?;
-                            translation = translation.merge(saved_translation).await;
+                            let saved_translation = LibraryTranslation::load(
+                                book.dict_cache.clone(),
+                                &translation_path,
+                            )?;
+                            translation.merge(saved_translation);
                         }
                     }
                 } else if translation_path.exists()? {
-                    let saved_translation = LibraryTranslation::load(&translation_path)?;
-                    translation = translation.merge(saved_translation).await;
+                    let saved_translation =
+                        LibraryTranslation::load(book.dict_cache.clone(), &translation_path)?;
+                    translation.merge(saved_translation);
                 }
 
-                let mut translation_file = BufWriter::new(translation_path_temp.create_file()?);
-                translation
-                    .translation
-                    .lock()
-                    .await
-                    .serialize(&mut translation_file)?;
+                if translation.changed {
+                    let mut translation_file = BufWriter::new(translation_path_temp.create_file()?);
+                    translation.translation.serialize(&mut translation_file)?;
+                    languages_to_save.insert((source_language.clone(), target_language.clone()));
 
-                if get_modified_if_exists(&translation_path)? == translation_path_modified_pre_save
-                    || translation_path_modified_pre_save.is_none()
-                {
-                    if translation_path.exists()? {
-                        translation_path.remove_file()?;
+                    if get_modified_if_exists(&translation_path)?
+                        == translation_path_modified_pre_save
+                        || translation_path_modified_pre_save.is_none()
+                    {
+                        if translation_path.exists()? {
+                            translation_path.remove_file()?;
+                        }
+                        translation_path_temp.move_file(&translation_path)?;
+                        merged_translations.push(translation_arc.clone());
+                        break;
                     }
-                    translation_path_temp.move_file(&translation_path)?;
-                    merged_translations.push(translation);
+                } else {
+                    merged_translations.push(translation_arc.clone());
                     break;
                 }
             }
+        }
+
+        for (src, tgt) in languages_to_save {
+            let src = Language::from_str(&src)?;
+            let tgt = Language::from_str(&tgt)?;
+            let dict = book.dict_cache.lock().await.get_dictionary(src, tgt)?;
+            dict.lock().await.save()?;
         }
 
         let book_path = book.path.join("book.dat")?;
@@ -227,13 +307,13 @@ impl LibraryBook {
                 if book_path.exists()? {
                     let saved_book_last_modified = book_path.metadata()?.modified.unwrap();
                     if saved_book_last_modified > last_modified {
-                        let saved_book = Self::load(&book_path)?;
+                        let saved_book = Self::load(book.dict_cache.clone(), &book_path)?;
                         book.book = saved_book.book;
                         book.last_modified = saved_book.last_modified;
                     }
                 }
             } else if book_path.exists()? {
-                let saved_book = Self::load(&book_path)?;
+                let saved_book = Self::load(book.dict_cache.clone(), &book_path)?;
                 book.book = saved_book.book;
                 book.last_modified = saved_book.last_modified;
             }
@@ -256,14 +336,17 @@ impl LibraryBook {
         let all_book_translations = LibraryBookMetadata::load(&book.path)?;
         let mut loaded_translations = HashSet::new();
         for t in &merged_translations {
-            loaded_translations.insert(t.translation.lock().await.id);
+            loaded_translations.insert(t.lock().await.translation.id);
         }
 
         for translation_metadata in all_book_translations.translations_metadata {
             if !loaded_translations.contains(&translation_metadata.id) {
-                merged_translations.push(LibraryTranslation::load_from_metadata(
-                    translation_metadata,
-                )?);
+                merged_translations.push(Arc::new(Mutex::new(
+                    LibraryTranslation::load_from_metadata(
+                        book.dict_cache.clone(),
+                        translation_metadata,
+                    )?,
+                )));
             }
         }
 
@@ -284,6 +367,7 @@ impl Library {
         let book_root = self.library_root.join(guid.to_string())?;
 
         let book = Arc::new(Mutex::new(LibraryBook {
+            dict_cache: self.dictionaries_cache.clone(),
             path: book_root,
             last_modified: None,
             book: Book::create(guid, title),
@@ -298,8 +382,9 @@ impl Library {
 
 #[cfg(test)]
 mod library_book_tests {
-    use std::sync::Arc;
+    use std::{str::FromStr, sync::Arc};
 
+    use isolang::Language;
     use tokio::sync::Mutex;
     use vfs::VfsPath;
 
@@ -307,7 +392,7 @@ mod library_book_tests {
         book::{
             book::Book, serialization::Serializable, translation::Translation, translation_import,
         },
-        library::{Library, LibraryTranslationMetadata},
+        library::{Library, LibraryTranslationMetadata, library_dictionary::DictionaryCache},
     };
 
     #[tokio::test]
@@ -354,12 +439,30 @@ mod library_book_tests {
         let mut library = Library::open(library_path.clone()).unwrap();
 
         let book1 = library.create_book("First Book").unwrap();
-        let _translation = book1.lock().await.get_or_create_translation("es", "en").await;
+        let _translation = book1
+            .lock()
+            .await
+            .get_or_create_translation(
+                &Language::from_str("es").unwrap(),
+                &Language::from_str("en").unwrap(),
+            )
+            .await;
         book1.lock().await.save().await.unwrap();
 
-        let translation_file = book1.lock().await.path.join("translation_es_en.dat").unwrap();
+        let translation_file = book1
+            .lock()
+            .await
+            .path
+            .join(format!(
+                "translation_{}_{}.dat",
+                Language::from_str("es").unwrap().to_639_3(),
+                Language::from_str("en").unwrap().to_639_3()
+            ))
+            .unwrap();
 
-        let conflict_path = book1.lock().await
+        let conflict_path = book1
+            .lock()
+            .await
             .path
             .join(
                 translation_file
@@ -423,10 +526,20 @@ mod library_book_tests {
         let library_path = root.join("lib").unwrap();
         let mut library = Library::open(library_path.clone()).unwrap();
 
+        let source_language = Language::from_str("es").unwrap();
+        let target_language = Language::from_str("en").unwrap();
+
+        let dict = library
+            .dictionaries_cache
+            .lock()
+            .await
+            .get_dictionary(source_language, target_language)
+            .unwrap();
+
         // Create a book and attach a translation with an initial version
         let book = library.create_book("First Book").unwrap();
         let mut book = book.lock().await;
-        let mut tr = Translation::create("es", "en");
+        let mut tr = Translation::create(source_language.to_639_3(), target_language.to_639_3());
         let initial_pt = translation_import::ParagraphTranslation {
             timestamp: 1,
             source_language: "es".to_owned(),
@@ -451,20 +564,33 @@ mod library_book_tests {
                 }],
             }],
         };
-        tr.add_paragraph_translation(0, &initial_pt);
-        book.translations.push(super::LibraryTranslation {
-            translation: Arc::new(Mutex::new(tr)),
-            last_modified: None,
-        });
+        tr.add_paragraph_translation(0, &initial_pt, &mut dict.lock().await.dictionary);
+        book.translations
+            .push(Arc::new(Mutex::new(super::LibraryTranslation {
+                dict_cache: library.dictionaries_cache.clone(),
+                translation: tr,
+                source_language,
+                target_language,
+                last_modified: None,
+                changed: true,
+            })));
         book.save().await.unwrap();
 
         // Treat as loaded: refresh last_modified and translations from disk
         let book_file = book.path.join("book.dat").unwrap();
-        let tr_file = book.path.join("translation_es_en.dat").unwrap();
+        let tr_file = book
+            .path
+            .join(format!(
+                "translation_{}_{}.dat",
+                source_language.to_639_3(),
+                target_language.to_639_3()
+            ))
+            .unwrap();
         book.last_modified = book_file.metadata().unwrap().modified;
         book.translations.clear();
-        let loaded_tr = super::LibraryTranslation::load(&tr_file).unwrap();
-        book.translations.push(loaded_tr);
+        let loaded_tr =
+            super::LibraryTranslation::load(library.dictionaries_cache, &tr_file).unwrap();
+        book.translations.push(Arc::new(Mutex::new(loaded_tr)));
 
         // Modify both book and translation
         book.book.title = "Second Edition".into();
@@ -493,10 +619,10 @@ mod library_book_tests {
             }],
         };
         book.translations[0]
-            .translation
             .lock()
             .await
-            .add_paragraph_translation(0, &new_pt);
+            .translation
+            .add_paragraph_translation(0, &new_pt, &mut dict.lock().await.dictionary);
 
         let _saved = book.save().await.unwrap();
 
@@ -520,10 +646,20 @@ mod library_book_tests {
         let library_path = root.join("lib").unwrap();
         let mut library = Library::open(library_path.clone()).unwrap();
 
+        let source_language = Language::from_str("en").unwrap();
+        let target_language = Language::from_str("ru").unwrap();
+
+        let dict = library
+            .dictionaries_cache
+            .lock()
+            .await
+            .get_dictionary(source_language, target_language)
+            .unwrap();
+
         // Create a book with a translation ts=1
         let book = library.create_book("Merge Book").unwrap();
         let mut book = book.lock().await;
-        let mut tr = Translation::create("en", "ru");
+        let mut tr = Translation::create(source_language.to_639_3(), target_language.to_639_3());
         let pt1 = translation_import::ParagraphTranslation {
             timestamp: 1,
             source_language: "en".to_owned(),
@@ -548,20 +684,33 @@ mod library_book_tests {
                 }],
             }],
         };
-        tr.add_paragraph_translation(0, &pt1);
-        book.translations.push(super::LibraryTranslation {
-            translation: Arc::new(Mutex::new(tr)),
-            last_modified: None,
-        });
+        tr.add_paragraph_translation(0, &pt1, &mut dict.lock().await.dictionary);
+        book.translations
+            .push(Arc::new(Mutex::new(super::LibraryTranslation {
+                dict_cache: library.dictionaries_cache.clone(),
+                translation: tr,
+                source_language,
+                target_language,
+                last_modified: None,
+                changed: true,
+            })));
         book.save().await.unwrap();
 
         // Treat as loaded instance with last_modified
         let book_file = book.path.join("book.dat").unwrap();
-        let tr_path = book.path.join("translation_en_ru.dat").unwrap();
+        let tr_path = book
+            .path
+            .join(format!(
+                "translation_{}_{}.dat",
+                source_language.to_639_3(),
+                target_language.to_639_3()
+            ))
+            .unwrap();
         book.last_modified = book_file.metadata().unwrap().modified;
         book.translations.clear();
-        let loaded_tr = super::LibraryTranslation::load(&tr_path).unwrap();
-        book.translations.push(loaded_tr);
+        let loaded_tr =
+            super::LibraryTranslation::load(library.dictionaries_cache.clone(), &tr_path).unwrap();
+        book.translations.push(Arc::new(Mutex::new(loaded_tr)));
 
         // In-memory change ts=2
         let mem_pt = translation_import::ParagraphTranslation {
@@ -589,10 +738,10 @@ mod library_book_tests {
             }],
         };
         book.translations[0]
-            .translation
             .lock()
             .await
-            .add_paragraph_translation(0, &mem_pt);
+            .translation
+            .add_paragraph_translation(0, &mem_pt, &mut dict.lock().await.dictionary);
 
         // Concurrent on-disk change ts=3
         {
@@ -624,7 +773,7 @@ mod library_book_tests {
                     }],
                 }],
             };
-            on_disk.add_paragraph_translation(0, &disk_pt);
+            on_disk.add_paragraph_translation(0, &disk_pt, &mut dict.lock().await.dictionary);
             let mut wf = tr_path.create_file().unwrap();
             on_disk.serialize(&mut wf).unwrap();
         }
@@ -653,8 +802,20 @@ mod library_book_tests {
         let dir = root.join("book").unwrap();
         dir.create_dir().unwrap();
 
+        let dict_cache = Arc::new(Mutex::new(DictionaryCache::new(&root)));
+
+        let source_language = Language::from_str("en").unwrap();
+        let target_language = Language::from_str("ru").unwrap();
+
+        let dict = dict_cache
+            .lock()
+            .await
+            .get_dictionary(source_language, target_language)
+            .unwrap();
+
         let main_path = dir.join("translation_en_ru.dat").unwrap();
-        let mut t_main = Translation::create("en", "ru");
+        let mut t_main =
+            Translation::create(source_language.to_639_3(), target_language.to_639_3());
         let pt2 = translation_import::ParagraphTranslation {
             timestamp: 2,
             source_language: "en".to_owned(),
@@ -679,7 +840,7 @@ mod library_book_tests {
                 }],
             }],
         };
-        t_main.add_paragraph_translation(0, &pt2);
+        t_main.add_paragraph_translation(0, &pt2, &mut dict.lock().await.dictionary);
         {
             let mut f = main_path.create_file().unwrap();
             t_main.serialize(&mut f).unwrap();
@@ -695,11 +856,10 @@ mod library_book_tests {
         };
 
         // Act
-        let loaded = super::LibraryTranslation::load_from_metadata(meta).unwrap();
+        let loaded = super::LibraryTranslation::load_from_metadata(dict_cache, meta).unwrap();
 
         // Assert: translation loaded and unchanged, latest ts=2
-        let translation_ref = loaded.translation.lock().await;
-        let latest = translation_ref.paragraph_view(0).unwrap();
+        let latest = loaded.translation.paragraph_view(0).unwrap();
         assert_eq!(latest.timestamp, 2);
         assert_eq!(latest.sentence_view(0).full_translation, "m2");
     }
@@ -712,16 +872,40 @@ mod library_book_tests {
         let dir = root.join("book2").unwrap();
         dir.create_dir().unwrap();
 
-        let main_path = dir.join("translation_en_ru.dat").unwrap();
-        let conflict1 = dir.join("translation_en_ru.conflict1.dat").unwrap();
+        let dict_cache = Arc::new(Mutex::new(DictionaryCache::new(&root)));
+
+        let source_language = Language::from_str("en").unwrap();
+        let target_language = Language::from_str("ru").unwrap();
+
+        let dict = dict_cache
+            .lock()
+            .await
+            .get_dictionary(source_language, target_language)
+            .unwrap();
+
+        let main_path = dir
+            .join(format!(
+                "translation_{}_{}.dat",
+                source_language.to_639_3(),
+                target_language.to_639_3()
+            ))
+            .unwrap();
+        let conflict1 = dir
+            .join(format!(
+                "translation_{}_{}.conflict1.dat",
+                source_language.to_639_3(),
+                target_language.to_639_3()
+            ))
+            .unwrap();
         let conflict2 = dir.join("translation_en_ru.conflict2.dat").unwrap();
 
         // main: ts=2
-        let mut t_main = Translation::create("en", "ru");
+        let mut t_main =
+            Translation::create(source_language.to_639_3(), target_language.to_639_3());
         let pt2 = translation_import::ParagraphTranslation {
             timestamp: 2,
-            source_language: "en".to_owned(),
-            target_language: "ru".to_owned(),
+            source_language: source_language.to_639_3().to_owned(),
+            target_language: target_language.to_639_3().to_owned(),
             sentences: vec![translation_import::Sentence {
                 full_translation: "m2".into(),
                 words: vec![translation_import::Word {
@@ -742,18 +926,18 @@ mod library_book_tests {
                 }],
             }],
         };
-        t_main.add_paragraph_translation(0, &pt2);
+        t_main.add_paragraph_translation(0, &pt2, &mut dict.lock().await.dictionary);
         {
             let mut f = main_path.create_file().unwrap();
             t_main.serialize(&mut f).unwrap();
         }
 
         // conflict1: ts=1
-        let mut t_c1 = Translation::create("en", "ru");
+        let mut t_c1 = Translation::create(source_language.to_639_3(), target_language.to_639_3());
         let pt1 = translation_import::ParagraphTranslation {
             timestamp: 1,
-            source_language: "en".to_owned(),
-            target_language: "ru".to_owned(),
+            source_language: source_language.to_639_3().to_owned(),
+            target_language: target_language.to_639_3().to_owned(),
             sentences: vec![translation_import::Sentence {
                 full_translation: "c1".into(),
                 words: vec![translation_import::Word {
@@ -774,7 +958,7 @@ mod library_book_tests {
                 }],
             }],
         };
-        t_c1.add_paragraph_translation(0, &pt1);
+        t_c1.add_paragraph_translation(0, &pt1, &mut dict.lock().await.dictionary);
         {
             let mut f = conflict1.create_file().unwrap();
             t_c1.serialize(&mut f).unwrap();
@@ -806,7 +990,7 @@ mod library_book_tests {
                 }],
             }],
         };
-        t_c2.add_paragraph_translation(0, &pt3);
+        t_c2.add_paragraph_translation(0, &pt3, &mut dict.lock().await.dictionary);
         {
             let mut f = conflict2.create_file().unwrap();
             t_c2.serialize(&mut f).unwrap();
@@ -822,11 +1006,10 @@ mod library_book_tests {
         };
 
         // Act
-        let loaded = super::LibraryTranslation::load_from_metadata(meta).unwrap();
+        let loaded = super::LibraryTranslation::load_from_metadata(dict_cache, meta).unwrap();
 
         // Assert: merged order latest=3, then 2, then 1
-        let translation_ref = loaded.translation.lock().await;
-        let latest = translation_ref.paragraph_view(0).unwrap();
+        let latest = loaded.translation.paragraph_view(0).unwrap();
         assert_eq!(latest.timestamp, 3);
         assert_eq!(latest.sentence_view(0).full_translation, "c3");
         let prev = latest.get_previous_version().unwrap();
@@ -864,7 +1047,8 @@ mod library_book_tests {
         assert!(meta.conflicting_paths.is_empty());
 
         // Act
-        let loaded = super::LibraryBook::load_from_metadata(meta).unwrap();
+        let loaded =
+            super::LibraryBook::load_from_metadata(library.dictionaries_cache, meta).unwrap();
 
         // Assert
         assert_eq!(loaded.book.title, "Original Title");
@@ -912,7 +1096,8 @@ mod library_book_tests {
         let meta = books.remove(0);
 
         // Act: load should select the newest (conflict), move it to main, and delete conflicts
-        let loaded = super::LibraryBook::load_from_metadata(meta).unwrap();
+        let loaded =
+            super::LibraryBook::load_from_metadata(library.dictionaries_cache, meta).unwrap();
 
         // Assert: loaded content is from conflict (newest)
         assert_eq!(loaded.book.title, "From Conflict");
@@ -965,7 +1150,8 @@ mod library_book_tests {
         let meta = books.remove(0);
 
         // Act
-        let loaded = super::LibraryBook::load_from_metadata(meta).unwrap();
+        let loaded =
+            super::LibraryBook::load_from_metadata(library.dictionaries_cache, meta).unwrap();
 
         // Assert: main is kept, conflict removed
         assert_eq!(loaded.book.title, "V2");

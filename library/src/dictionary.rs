@@ -29,7 +29,7 @@ impl Dictionary {
     }
 
     pub fn add_translation(&mut self, original_word: &str, translation: &str) {
-        let original_lowercase = original_word.to_lowercase();
+        let original_lowercase = original_word.to_lowercase(); // FIXME: this case folding is not language aware and can cause problems
         if !self.translations.contains_key(&original_lowercase) {
             self.translations
                 .insert(original_lowercase.clone(), BTreeSet::new());

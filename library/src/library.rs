@@ -8,7 +8,7 @@ use vfs::{VfsError, VfsPath};
 use crate::{
     book::{book_metadata::BookMetadata, translation_metadata::TranslationMetadata},
     epub_importer::EpubBook,
-    library::library_book::LibraryBook,
+    library::{library_book::LibraryBook, library_dictionary::DictionaryCache},
 };
 
 pub mod library_book;
@@ -142,6 +142,7 @@ impl LibraryBookMetadata {
 pub struct Library {
     library_root: VfsPath,
     books_cache: HashMap<Uuid, Arc<Mutex<LibraryBook>>>, // TODO: eviction
+    dictionaries_cache: Arc<Mutex<DictionaryCache>>,
 }
 
 impl Library {
@@ -150,9 +151,12 @@ impl Library {
             library_root.create_dir()?
         }
 
+        let dictionaries_cache = Arc::new(Mutex::new(DictionaryCache::new(&library_root)));
+
         Ok(Library {
             library_root,
             books_cache: HashMap::new(),
+            dictionaries_cache,
         })
     }
 
@@ -185,7 +189,10 @@ impl Library {
 
         let path = &self.library_root.join(uuid.to_string())?;
         let metadata = LibraryBookMetadata::load(path)?;
-        let book = Arc::new(Mutex::new(LibraryBook::load_from_metadata(metadata)?));
+        let book = Arc::new(Mutex::new(LibraryBook::load_from_metadata(
+            self.dictionaries_cache.clone(),
+            metadata,
+        )?));
 
         self.books_cache.insert(*uuid, book.clone());
         Ok(book)
