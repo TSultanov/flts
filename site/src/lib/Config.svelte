@@ -1,24 +1,24 @@
 <script lang="ts">
     import { onMount } from "svelte";
-    import { getConfig, setConfig, type Config } from "./config";
-    import { models, type ModelId } from "./data/translators/translator";
+    import { getConfig, getLanguages, getModels, setConfig, type Language, type Model } from "./config";
 
+    
     let geminiApiKey: string = $state('');
-    let openAIApiKey: string = $state('');
     let targetLanguage: string = $state('');
-    let model: ModelId = $state("gemini-2.5-flash");
+    let model: number = $state(0);
+    let models: Model[] = $state([]);
 
+    let languages: Language[] = $state([]);
+    let language = $state("rus");
+    
     onMount(async () => {
+        models = await getModels();
+        languages = await getLanguages();
         let config = await getConfig();
-        geminiApiKey = config?.geminiApiKey ?? '';
-        openAIApiKey = config?.openAIApiKey ?? '';
-        targetLanguage = config?.targetLanguage ?? '';
-        model = config?.model;
     })
 
     async function save() {
         await setConfig({
-            openAIApiKey,
             geminiApiKey,
             targetLanguage,
             model,
@@ -29,13 +29,14 @@
 <div class="container">
     <div class="config-form">
         <label for="targetlanguage">Target Language</label>
-        <input id="targetlanguage" type="text" bind:value={targetLanguage}>
+        <select id="targetlanguage" bind:value={language}>
+            {#each languages as language}
+                <option value="{language.id}">{language.name} {language.localName ? `(${language.localName})` : ""}</option>
+            {/each}
+        </select>
 
         <label for="apikey">Gemini API KEY</label>
         <input id="apikey" type="text" bind:value={geminiApiKey}>
-
-        <label for="apikey">OpenAI API KEY</label>
-        <input id="apikey" type="text" bind:value={openAIApiKey}>
 
         <label for="model">Model</label>
         <select id="model" bind:value={model}>

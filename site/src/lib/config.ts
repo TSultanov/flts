@@ -1,24 +1,36 @@
-import localforage from "localforage"
-import { models, type ModelId } from "./data/translators/translator";
+import { invoke } from '@tauri-apps/api/core';
+
+export type Model = {
+    id: number,
+    name: string,
+}
+
+export type Language = {
+    id: string,
+    name: string,
+    localName?: string,
+}
 
 export type Config = {
     geminiApiKey: string,
-    openAIApiKey: string,
     targetLanguage: string,
-    model: ModelId,
+    model: number,
 }
 
-let store = localforage.createInstance({storeName: "config"});
+export async function getModels(): Promise<Model[]> {
+    let models = await invoke<Model[]>("get_models");
+    return models;
+}
+
+export async function getLanguages() {
+    let languages = await invoke<Language[]>("get_languages");
+    return languages;
+}
 
 export async function setConfig(config:Config) {
-    await store.setItem('config', config);
+    // await store.setItem('config', config);
 }
 
 export async function getConfig() {
-    let config = await store.getItem('config') as Config
-    if (!config.model || models.map(m => m.id).indexOf(config.model) < 0) {
-        config.model = "gemini-2.5-flash";
-        await setConfig(config);
-    }
-    return config;
+
 }

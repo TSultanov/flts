@@ -1,18 +1,18 @@
 <script lang="ts">
-    import { sqlBooks, type SentenceTranslation } from "../data/sql/book";
+    import { type SentenceTranslation } from "../data/sql/book";
     import type { UUID } from "../data/v2/db";
 
     const { sentenceWordIdToDisplay }: { sentenceWordIdToDisplay: UUID } = $props();
 
-    const word = $derived(sqlBooks.getWordTranslation(sentenceWordIdToDisplay));
+    // const word = $derived(sqlBooks.getWordTranslation(sentenceWordIdToDisplay));
 
-    const sentenceTranslation = $derived.by(() => {
-        if ($word) {
-            return sqlBooks.getSentenceTranslation($word.sentenceUid);
-        }
-    });
+    // const sentenceTranslation = $derived.by(() => {
+    //     if ($word) {
+    //         return sqlBooks.getSentenceTranslation($word.sentenceUid);
+    //     }
+    // });
 </script>
-
+<!-- 
 {#if $word}
     <p class="word-original">{@html $word.original}</p>
     {#if $word.wordTranslationInContext && $word.wordTranslationInContext.length > 0}
@@ -30,7 +30,7 @@
             <summary>Note</summary>
             <p>{$word.note}</p>
         </details>
-    {/if}
+    {/if} -->
     <!-- TODO -->
     <!-- {#if $word.wordTranslation}
         <details>
@@ -52,7 +52,7 @@
             </table>
         </details>
     {/if} -->
-    {#if $word.grammarContext}
+    <!-- {#if $word.grammarContext}
         <details>
             <summary>Grammar</summary>
             <table>
@@ -108,4 +108,4 @@
         </details>
         <p>Translated by: {$sentenceTranslation.translatingModel}</p>
     {/if}
-{/if}
+{/if} -->

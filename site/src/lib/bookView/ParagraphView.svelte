@@ -1,6 +1,5 @@
 <script lang="ts">
     import {
-        sqlBooks,
         type Paragraph,
         type ParagraphTranslationShort,
     } from "../data/sql/book";
@@ -18,35 +17,35 @@
     const originalText = $derived(
         paragraph.originalHtml ?? paragraph.originalText,
     );
-    const translation = sqlBooks.getParagraphTranslationShort(paragraph.uid, "ignoredTODO" as UUID);
+    // const translation = sqlBooks.getParagraphTranslationShort(paragraph.uid, "ignoredTODO" as UUID);
 
-    const translationHtml = $derived.by(() => {
-        if (translation) {
-            const result = [];
+    // const translationHtml = $derived.by(() => {
+    //     if (translation) {
+    //         const result = [];
 
-            if ($translation) {
-                for (const w of $translation.translationJson) {
-                    if (w.meta) {
-                        const additionalClass =
-                            w.meta.wordTranslationUid === sentenceWordIdToDisplay
-                                ? "selected"
-                                : "";
-                        result.push(
-                            `<span class="word-span ${additionalClass}" data-paragraph="${paragraph.uid}" data-sentence="${w.meta.sentenceTranslationUid}" data-word="${w.meta.wordTranslationUid}">${w.text}</span>`,
-                        );
-                    } else {
-                        result.push(w.text);
-                    }
-                }
-            }
-            return result.join("");
-        }
+    //         if ($translation) {
+    //             for (const w of $translation.translationJson) {
+    //                 if (w.meta) {
+    //                     const additionalClass =
+    //                         w.meta.wordTranslationUid === sentenceWordIdToDisplay
+    //                             ? "selected"
+    //                             : "";
+    //                     result.push(
+    //                         `<span class="word-span ${additionalClass}" data-paragraph="${paragraph.uid}" data-sentence="${w.meta.sentenceTranslationUid}" data-word="${w.meta.wordTranslationUid}">${w.text}</span>`,
+    //                     );
+    //                 } else {
+    //                     result.push(w.text);
+    //                 }
+    //             }
+    //         }
+    //         return result.join("");
+    //     }
 
-        return null;
-    });
+    //     return null;
+    // });
 </script>
 
-{#if !translationHtml}
+<!-- {#if !translationHtml}
     <p class="original">
         {@html originalText}
     </p>
@@ -54,7 +53,7 @@
     <p>
         {@html translationHtml}
     </p>
-{/if}
+{/if} -->
 
 <style>
     :global(.word-span.selected) {

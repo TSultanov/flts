@@ -9,10 +9,10 @@
     import { Library } from "./lib/data/library";
     import type { RouteLinkProps } from "./lib/Link.svelte";
     import BookView from "./lib/bookView/BookView.svelte";
-    import SqlWorker from "./lib/data/sql/sqlWorker?worker";
-    import { initDictionaryMessaging } from "./lib/data/sql/dictionary";
-    import { startTranslations } from "./lib/data/importWorker";
-    import { initSqlBookMessaging } from "./lib/data/sql/book";
+    import { invoke } from '@tauri-apps/api/core';
+
+    invoke('test_command');
+
 
     const routes: RouteConfig[] = [
         {
@@ -72,22 +72,6 @@
     function handleResize() {
         mainHeight.value = window.innerHeight - (nav?.clientHeight ?? 0);
     }
-
-    const sqlWorker = new SqlWorker();
-
-    let initialized = false;
-    sqlWorker.addEventListener("message", (event) => {
-        if (initialized) return;
-        const { data } = event;
-        if (data.type === "ready") {
-            initialized = true;
-            // Initialize MessageChannel for dictionary communication
-            initDictionaryMessaging(sqlWorker);
-            initSqlBookMessaging(sqlWorker);
-
-            startTranslations();
-        }
-    });
 
     const library = new Library();
     setContext("library", library);

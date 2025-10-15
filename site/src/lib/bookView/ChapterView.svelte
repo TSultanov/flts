@@ -1,5 +1,4 @@
 <script lang="ts">
-    import { sqlBooks } from "../data/sql/book";
     import type { UUID } from "../data/v2/db";
     import ParagraphView from "./ParagraphView.svelte";
 
@@ -11,7 +10,7 @@
         sentenceWordIdToDisplay: UUID | null;
     } = $props();
 
-    const paragraphs = sqlBooks.getParagraphs(chapterId);
+    // const paragraphs = sqlBooks.getParagraphs(chapterId);
 
     function chapterClick(e: MouseEvent) {
         const target = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement;
@@ -35,9 +34,9 @@
             style="column-width: {sectionContentWidth}px"
             bind:clientHeight={sectionContentWidth}
         >
-            {#each $paragraphs as paragraph}
+            <!-- {#each $paragraphs as paragraph}
                 <ParagraphView {paragraph} {sentenceWordIdToDisplay} />
-            {/each}
+            {/each} -->
         </div>
     </section>
 </div>

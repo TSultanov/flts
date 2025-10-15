@@ -16,9 +16,3 @@ export function createUUID(value: string): UUID {
 export function generateUID(): UUID {
     return createUUID(uuidv4());
 }
-
-export type Entity = {
-    uid: UUID,
-    createdAt: number,
-    updatedAt: number,
-}

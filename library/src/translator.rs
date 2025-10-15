@@ -3,6 +3,7 @@ mod gemini;
 use std::sync::Arc;
 
 use gemini_rust::Model;
+use strum::EnumIter;
 use tokio::sync::Mutex;
 
 use crate::{
@@ -10,6 +11,7 @@ use crate::{
     translator::gemini::GeminiTranslator,
 };
 
+#[derive(Debug, Clone, Copy, EnumIter)]
 pub enum TranslationModel {
     GeminiFlash,
     GeminiPro,

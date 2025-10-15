@@ -4,8 +4,6 @@
     import WordView from "./WordView.svelte";
     import { route as r } from "@mateothegreat/svelte5-router";
     import type { UUID } from "../data/v2/db";
-    import { onMount } from "svelte";
-    import { sqlBooks } from "../data/sql/book";
 
     const { route } = $props();
 
@@ -16,17 +14,17 @@
             : null,
     );
 
-    const chapters = $derived(sqlBooks.getBookChapters(bookUid));
+    // const chapters = $derived.by(sqlBooks.getBookChapters(bookUid));
 
-    $effect(() => {
-        if ($chapters && $chapters.length === 1) {
-            goto(`/book/${bookUid}/${$chapters[0].uid}`);
-        }
-    });
+    // $effect(() => {
+    //     if ($chapters && $chapters.length === 1) {
+    //         goto(`/book/${bookUid}/${$chapters[0].uid}`);
+    //     }
+    // });
 
     let sentenceWordIdToDisplay: UUID | null = $state(null);
 </script>
-
+<!-- 
 {#if $chapters}
     <div class="container">
         {#if $chapters.length > 1}
@@ -55,7 +53,7 @@
     </div>
 {:else}
     <p>Failed to load book.</p>
-{/if}
+{/if} -->
 
 <style>
     .container {
