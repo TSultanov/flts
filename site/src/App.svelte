@@ -9,10 +9,9 @@
     import { Library } from "./lib/data/library";
     import type { RouteLinkProps } from "./lib/Link.svelte";
     import BookView from "./lib/bookView/BookView.svelte";
-    import { invoke } from '@tauri-apps/api/core';
+    import { configStore } from "./lib/config";
 
-    invoke('test_command');
-
+    $inspect($configStore);
 
     const routes: RouteConfig[] = [
         {

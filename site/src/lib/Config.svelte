@@ -1,53 +1,71 @@
 <script lang="ts">
     import { onMount } from "svelte";
-    import { getConfig, getLanguages, getModels, setConfig, type Language, type Model } from "./config";
+    import {
+        getConfig,
+        getLanguages,
+        getModels,
+        setConfig,
+        type Model,
+    } from "./config";
 
-    
-    let geminiApiKey: string = $state('');
-    let targetLanguage: string = $state('');
+    let geminiApiKey: string | undefined = $state(undefined);
+    let targetLanguage: string | undefined = $state("rus");
+    let libraryPath: string | undefined = $state(undefined);
     let model: number = $state(0);
     let models: Model[] = $state([]);
 
-    let languages: Language[] = $state([]);
-    let language = $state("rus");
-    
+    let languages = getLanguages();
+
     onMount(async () => {
         models = await getModels();
-        languages = await getLanguages();
         let config = await getConfig();
-    })
+        geminiApiKey = config.geminiApiKey;
+        targetLanguage = config.targetLanguageId;
+        libraryPath = config.libraryPath;
+        model = config.model;
+    });
 
     async function save() {
         await setConfig({
             geminiApiKey,
-            targetLanguage,
+            targetLanguageId: targetLanguage,
             model,
+            libraryPath,
         });
     }
 </script>
 
-<div class="container">
-    <div class="config-form">
-        <label for="targetlanguage">Target Language</label>
-        <select id="targetlanguage" bind:value={language}>
-            {#each languages as language}
-                <option value="{language.id}">{language.name} {language.localName ? `(${language.localName})` : ""}</option>
-            {/each}
-        </select>
+{#await languages}
+    Loading...
+{:then languages}
+    <div class="container">
+        <div class="config-form">
+            <label for="targetlanguage">Target Language</label>
+            <select id="targetlanguage" bind:value={targetLanguage}>
+                {#each languages as language}
+                    <option value={language.id}
+                        >{language.name}
+                        {language.localName
+                            ? `(${language.localName})`
+                            : ""}</option
+                    >
+                {/each}
+            </select>
 
-        <label for="apikey">Gemini API KEY</label>
-        <input id="apikey" type="text" bind:value={geminiApiKey}>
+            <label for="apikey">Gemini API KEY</label>
+            <input id="apikey" type="text" bind:value={geminiApiKey} />
 
-        <label for="model">Model</label>
-        <select id="model" bind:value={model}>
-            {#each models as model}
-                <option value="{model.id}">{model.name}</option>
-            {/each}
-        </select>
+            <label for="model">Model</label>
+            <select id="model" bind:value={model}>
+                {#each models as model}
+                    <option value={model.id}>{model.name}</option>
+                {/each}
+            </select>
 
-        <button onclick={save} class="primary">Save</button>
+            <button onclick={save} class="primary">Save</button>
+        </div>
     </div>
-</div>
+{/await}
 
 <style>
     .container {

@@ -26,3 +26,6 @@ tauri = { version = "2.8.5", features = [] }
 tauri-plugin-log = "2"
 strum = { version = "0.27.2", features = ["derive"] }
 isolang = { version = "2.4.0", features = ["list_languages", "local_names", "serde"] }
+directories = "6.0.0"
+anyhow = "1.0.100"
+tracing = "0.1.41"

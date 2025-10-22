@@ -1,9 +1,15 @@
-pub mod config;
+use std::sync::Mutex;
+use tauri::{Builder, Manager};
+
+pub mod app;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    Builder::default()
         .setup(|app| {
+            let app_state = crate::app::App::init(app.handle().clone())?;
+            app.manage(Mutex::new(app_state));
+
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -14,15 +20,11 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            test_command,
-            config::get_models,
-            config::get_languages
+            app::config::get_models,
+            app::config::get_languages,
+            app::get_config,
+            app::update_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-}
-
-#[tauri::command]
-fn test_command() {
-    println!("I was invoked from JavaScript!");
 }
