@@ -6,6 +6,7 @@ pub mod app;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let app_state = crate::app::App::init(app.handle().clone())?;
             app.manage(Mutex::new(app_state));

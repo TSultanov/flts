@@ -42,6 +42,7 @@
     "@google/genai": "^0.14.1",
     "@mateothegreat/svelte5-router": "^2.16.8",
     "@tauri-apps/api": "^2.8.0",
+    "@tauri-apps/plugin-dialog": "2.4.0",
     "@types/jsdom": "^21.1.7",
     "bottleneck": "^2.19.5",
     "dexie": "^4.0.11",

@@ -7,6 +7,7 @@
         setConfig,
         type Model,
     } from "./config";
+    import { open } from '@tauri-apps/plugin-dialog';
 
     let geminiApiKey: string | undefined = $state(undefined);
     let targetLanguage: string | undefined = $state("rus");
@@ -31,6 +32,13 @@
             targetLanguageId: targetLanguage,
             model,
             libraryPath,
+        });
+    }
+
+    async function selectDirectory() {
+        libraryPath = await open({
+            multiple: false,
+            directory: true,
         });
     }
 </script>
@@ -62,7 +70,11 @@
                 {/each}
             </select>
 
-            <button onclick={save} class="primary">Save</button>
+            <label for="library">Library</label>
+            <input id="library" type="text" bind:value={libraryPath} />
+            <button id="selectDirectory" onclick={selectDirectory}>Select directory</button>
+
+            <button id="save" onclick={save} class="primary">Save</button>
         </div>
     </div>
 {/await}
@@ -79,10 +91,25 @@
         max-width: 500px;
         display: grid;
         gap: 10px;
-        grid-auto-columns: repeat(3, 1fr) auto;
     }
 
-    button {
-        grid-column: 1/3;
+    label {
+        grid-column: 1/2;
+    }
+
+    input, select {
+        grid-column: 2/4;
+    }
+
+    input#library {
+        grid-column: 2/3;
+    }
+
+    button#selectDirectory {
+        grid-column: 3/4;
+    }
+
+    button#save {
+        grid-column: 1/4;
     }
 </style>

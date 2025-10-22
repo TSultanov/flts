@@ -44,7 +44,7 @@
         },
     ];
 
-    const links: RouteLinkProps[] = [
+    const fullLinks = [
         {
             href: "/library",
             label: "Library",
@@ -58,6 +58,22 @@
             label: "Config",
         },
     ];
+
+    const configOnlyLinks = [
+        {
+            href: "/config",
+            label: "Config",
+        },
+    ];
+
+    const links = $derived.by(() => {
+        if (!$configStore.geminiApiKey || !$configStore.libraryPath || !$configStore.targetLanguageId) {
+            goto("/config");
+            return configOnlyLinks;
+        } else {
+            return fullLinks;
+        }
+    })
 
     let router = $state<RouterInstance>();
 
