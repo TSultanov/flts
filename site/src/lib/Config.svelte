@@ -11,7 +11,7 @@
 
     let geminiApiKey: string | undefined = $state(undefined);
     let targetLanguage: string | undefined = $state("rus");
-    let libraryPath: string | undefined = $state(undefined);
+    let libraryPath: string | null = $state(null);
     let model: number = $state(0);
     let models: Model[] = $state([]);
 
@@ -22,7 +22,7 @@
         let config = await getConfig();
         geminiApiKey = config.geminiApiKey;
         targetLanguage = config.targetLanguageId;
-        libraryPath = config.libraryPath;
+        libraryPath = config.libraryPath ?? null;
         model = config.model;
     });
 
@@ -31,7 +31,7 @@
             geminiApiKey,
             targetLanguageId: targetLanguage,
             model,
-            libraryPath,
+            libraryPath: libraryPath ?? undefined,
         });
     }
 
@@ -39,7 +39,7 @@
         libraryPath = await open({
             multiple: false,
             directory: true,
-        });
+        }) ?? libraryPath;
     }
 </script>
 
@@ -91,6 +91,9 @@
         max-width: 500px;
         display: grid;
         gap: 10px;
+        grid-template-columns: auto 1fr auto;
+        align-items: stretch;
+        justify-items: stretch;
     }
 
     label {
