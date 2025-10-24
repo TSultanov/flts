@@ -1,29 +1,26 @@
 <script lang="ts">
     import { onMount } from "svelte";
     import {
-        getConfig,
+        configStore,
         getLanguages,
         getModels,
         setConfig,
         type Model,
     } from "./config";
-    import { open } from '@tauri-apps/plugin-dialog';
+    import { open } from "@tauri-apps/plugin-dialog";
 
-    let geminiApiKey: string | undefined = $state(undefined);
-    let targetLanguage: string | undefined = $state("rus");
-    let libraryPath: string | null = $state(null);
-    let model: number = $state(0);
+    let geminiApiKey: string | undefined = $derived($configStore?.geminiApiKey);
+    let targetLanguage: string | undefined = $derived(
+        $configStore?.targetLanguageId,
+    );
+    let libraryPath: string | undefined = $derived($configStore?.libraryPath);
+    let model: number = $derived($configStore?.model ?? 0);
     let models: Model[] = $state([]);
 
     let languages = getLanguages();
 
     onMount(async () => {
         models = await getModels();
-        let config = await getConfig();
-        geminiApiKey = config.geminiApiKey;
-        targetLanguage = config.targetLanguageId;
-        libraryPath = config.libraryPath ?? null;
-        model = config.model;
     });
 
     async function save() {
@@ -36,10 +33,11 @@
     }
 
     async function selectDirectory() {
-        libraryPath = await open({
-            multiple: false,
-            directory: true,
-        }) ?? libraryPath;
+        libraryPath =
+            (await open({
+                multiple: false,
+                directory: true,
+            })) ?? libraryPath;
     }
 </script>
 
@@ -72,7 +70,9 @@
 
             <label for="library">Library</label>
             <input id="library" type="text" bind:value={libraryPath} />
-            <button id="selectDirectory" onclick={selectDirectory}>Select directory</button>
+            <button id="selectDirectory" onclick={selectDirectory}
+                >Select directory</button
+            >
 
             <button id="save" onclick={save} class="primary">Save</button>
         </div>
@@ -100,7 +100,8 @@
         grid-column: 1/2;
     }
 
-    input, select {
+    input,
+    select {
         grid-column: 2/4;
     }
 

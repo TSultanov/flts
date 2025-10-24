@@ -25,6 +25,7 @@ pub fn run() {
             app::config::get_languages,
             app::get_config,
             app::update_config,
+            app::library_view::list_books,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

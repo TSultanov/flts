@@ -30,3 +30,5 @@ directories = "6.0.0"
 anyhow = "1.0.100"
 tracing = "0.1.41"
 tauri-plugin-dialog = "2"
+vfs = "0.12.2"
+uuid = { version = "1.18.1", features = ["v4"] }

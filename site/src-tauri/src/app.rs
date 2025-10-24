@@ -1,17 +1,20 @@
-use std::{error::Error, fmt::{write, Display}, fs, path::{Path, PathBuf}, sync::Mutex};
+use std::{error::Error, fmt::Display, fs, path::PathBuf, sync::Mutex};
 
 use directories::ProjectDirs;
+use library::library::Library;
 use tauri::Emitter;
-use tracing::{event, info, Level};
+use tracing::info;
+use vfs::PhysicalFS;
 
-use crate::app::config::Config;
+use crate::app::{config::Config, library_view::LibraryView};
 
 pub mod config;
+pub mod library_view;
 
 #[derive(Debug)]
 pub enum AppError {
     StatePoisonError,
-    ProjectDirsError
+    ProjectDirsError,
 }
 
 impl Error for AppError {}
@@ -29,6 +32,7 @@ pub struct App {
     app: tauri::AppHandle,
     config_path: PathBuf,
     config: Config,
+    library: Option<LibraryView>,
 }
 
 impl App {
@@ -46,32 +50,52 @@ impl App {
             Config::default()
         };
 
-        app.emit("config_updated", config.clone())?;
-
-        Ok(Self {
+        let mut app = Self {
             app,
             config_path,
-            config
-        })
+            config,
+            library: None,
+        };
+
+        app.eval_config()?;
+
+        Ok(app)
     }
 
     pub fn update_config(&mut self, config: Config) -> anyhow::Result<()> {
         self.config = config;
         self.config.save(&self.config_path)?;
         self.app.emit("config_updated", self.config.clone())?;
+        self.eval_config()?;
+        Ok(())
+    }
+
+    fn eval_config(&mut self) -> anyhow::Result<()> {
+        if let Some(library_path) = &self.config.library_path {
+            let fs = PhysicalFS::new(library_path);
+            self.library = Some(LibraryView::create(Library::open(fs.into())?));
+            if let Some(library) = &self.library {
+                self.app.emit("library_updated", library.list_books()?)?;
+            }
+        }
+
         Ok(())
     }
 }
 
 #[tauri::command]
 pub fn update_config(state: tauri::State<'_, Mutex<App>>, config: Config) -> Result<(), String> {
-    let mut app = state.lock().map_err(|_| AppError::StatePoisonError.to_string())?;
+    let mut app = state
+        .lock()
+        .map_err(|_| AppError::StatePoisonError.to_string())?;
     app.update_config(config).map_err(|err| err.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
 pub fn get_config(state: tauri::State<'_, Mutex<App>>) -> Result<Config, String> {
-    let app = state.lock().map_err(|_| AppError::StatePoisonError.to_string())?;
+    let app = state
+        .lock()
+        .map_err(|_| AppError::StatePoisonError.to_string())?;
     Ok(app.config.clone())
 }

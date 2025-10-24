@@ -7,7 +7,6 @@
     import { onMount, setContext } from "svelte";
     import LibraryView from "./lib/LibraryView.svelte";
     import { Library } from "./lib/data/library";
-    import type { RouteLinkProps } from "./lib/Link.svelte";
     import BookView from "./lib/bookView/BookView.svelte";
     import { configStore } from "./lib/config";
 
@@ -67,7 +66,7 @@
     ];
 
     const links = $derived.by(() => {
-        if (!$configStore.geminiApiKey || !$configStore.libraryPath || !$configStore.targetLanguageId) {
+        if (!$configStore?.geminiApiKey || !$configStore?.libraryPath || !$configStore?.targetLanguageId) {
             goto("/config");
             return configOnlyLinks;
         } else {

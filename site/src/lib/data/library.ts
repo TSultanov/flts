@@ -2,6 +2,14 @@ import { derived, readable, type Readable } from 'svelte/store';
 import type { EpubBook } from "./epubLoader";
 import type { UUID } from "./v2/db";
 import { type IBookMeta } from "./sql/book";
+import { eventToReadable } from './tauri';
+
+type LibraryBookMetadataView = {
+    id: UUID,
+    title: string,
+    chapters_count: number,
+    paragraphs_count: number,
+}
 
 export type LibraryFolder = {
     name?: string,
@@ -11,46 +19,51 @@ export type LibraryFolder = {
 
 export class Library {
     getLibraryBooks(): Readable<LibraryFolder> {
-        return readable();
-        // const booksStore = sqlBooks.listBooks();
-        // return derived([booksStore], (allBooks) => {
-        //     const root: LibraryFolder = {
-        //         folders: [],
-        //         books: []
-        //     };
+        const booksStore = eventToReadable<LibraryBookMetadataView[]>("library_updated", "list_books")
+        return derived([booksStore], (allBooks) => {
+            const root: LibraryFolder = {
+                folders: [],
+                books: []
+            };
 
-        //     if (!allBooks || !allBooks[0]) {
-        //         return root;
-        //     }
+            if (!allBooks || !allBooks[0]) {
+                return root;
+            }
 
-        //     const getOrCreateFolder = (path: string[]): LibraryFolder => {
-        //         if (path.length === 0) {
-        //             return root;
-        //         }
+            const getOrCreateFolder = (path: string[]): LibraryFolder => {
+                if (path.length === 0) {
+                    return root;
+                }
 
-        //         let current = root;
-        //         for (const folderName of path) {
-        //             let folder = current.folders.find(f => f.name === folderName);
-        //             if (!folder) {
-        //                 folder = {
-        //                     name: folderName,
-        //                     folders: [],
-        //                     books: []
-        //                 };
-        //                 current.folders.push(folder);
-        //             }
-        //             current = folder;
-        //         }
-        //         return current;
-        //     };
+                let current = root;
+                for (const folderName of path) {
+                    let folder = current.folders.find(f => f.name === folderName);
+                    if (!folder) {
+                        folder = {
+                            name: folderName,
+                            folders: [],
+                            books: []
+                        };
+                        current.folders.push(folder);
+                    }
+                    current = folder;
+                }
+                return current;
+            };
 
-        //     for (const book of allBooks[0]) {
-        //         const targetFolder = getOrCreateFolder(book.path || []);
-        //         targetFolder.books.push(book);
-        //     }
+            for (const book of allBooks[0]) {
+                const targetFolder = getOrCreateFolder(/*book.path || */[]);
+                targetFolder.books.push({
+                    uid: book.id,
+                    chapterCount: book.chapters_count,
+                    translationRatio: 0, // TODO
+                    title: book.title,
+                    path: [] // TODO
+                });
+            }
 
-        //     return root;
-        // })
+            return root;
+        })
     }
 
     async importEpub(book: EpubBook) {
