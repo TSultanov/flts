@@ -13,6 +13,12 @@ pub struct LibraryBookMetadataView {
     paragraphs_count: usize,
 }
 
+#[derive(Clone, serde::Serialize)]
+pub struct ChapterView {
+    id: usize,
+    title: String,
+}
+
 pub struct LibraryView {
     library: Library
 }
@@ -33,6 +39,17 @@ impl LibraryView {
             paragraphs_count: b.paragraphs_count,
         }).collect())
     }
+
+    pub fn list_book_chapters(&mut self, book_id: Uuid) -> anyhow::Result<Vec<ChapterView>> {
+        let book = self.library.get_book(&book_id)?;
+        let book = book.blocking_lock();
+        let book = &book.book;
+        let chapters = book.chapter_views().map(|v| ChapterView {
+            id: v.idx,
+            title: v.title.map(|s| s.to_string()).unwrap_or("<no title>".to_owned()),
+        }).collect();
+        Ok(chapters)
+    }
 }
 
 #[tauri::command]
@@ -42,6 +59,18 @@ pub fn list_books(state: tauri::State<'_, Mutex<App>>) -> Result<Vec<LibraryBook
         .map_err(|_| AppError::StatePoisonError.to_string())?;
     if let Some(library) = &app.library {
         library.list_books().map_err(|err| err.to_string())
+    } else {
+        Ok(vec![])
+    }
+}
+
+#[tauri::command]
+pub fn list_book_chapters(state: tauri::State<'_, Mutex<App>>, book_id: Uuid) -> Result<Vec<ChapterView>, String> {
+    let mut app = state
+        .lock()
+        .map_err(|_| AppError::StatePoisonError.to_string())?;
+    if let Some(library) = &mut app.library {
+        library.list_book_chapters(book_id).map_err(|err| err.to_string())
     } else {
         Ok(vec![])
     }

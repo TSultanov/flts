@@ -26,6 +26,7 @@ pub fn run() {
             app::get_config,
             app::update_config,
             app::library_view::list_books,
+            app::library_view::list_book_chapters,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

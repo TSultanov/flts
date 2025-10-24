@@ -82,7 +82,6 @@ export interface IParagraphView {
 export interface IChapterView {
     get id(): UUID,
     get title(): string | undefined,
-    get paragraphs(): IParagraphView[];
 }
 
 export interface IBookMeta {
