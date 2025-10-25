@@ -67,12 +67,19 @@
 
     const links = $derived.by(() => {
         if (!$configStore?.geminiApiKey || !$configStore?.libraryPath || !$configStore?.targetLanguageId) {
-            goto("/config");
             return configOnlyLinks;
         } else {
             return fullLinks;
         }
     })
+
+    $effect(() => {
+        if (!$configStore?.geminiApiKey || !$configStore?.libraryPath || !$configStore?.targetLanguageId) {
+            goto("/config");
+        } else {
+            goto("/library");
+        }
+    });
 
     let router = $state<RouterInstance>();
 
