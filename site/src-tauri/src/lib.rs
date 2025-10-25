@@ -1,5 +1,4 @@
-use std::sync::Mutex;
-use tauri::{Builder, Manager};
+use tauri::{async_runtime::Mutex, Builder, Manager};
 
 pub mod app;
 

@@ -1,8 +1,8 @@
-use std::{error::Error, fmt::Display, fs, path::PathBuf, sync::Mutex};
+use std::{error::Error, fmt::Display, fs, path::PathBuf};
 
 use directories::ProjectDirs;
 use library::library::Library;
-use tauri::Emitter;
+use tauri::{async_runtime::Mutex, Emitter};
 use tracing::info;
 use vfs::PhysicalFS;
 
@@ -86,8 +86,7 @@ impl App {
 #[tauri::command]
 pub fn update_config(state: tauri::State<'_, Mutex<App>>, config: Config) -> Result<(), String> {
     let mut app = state
-        .lock()
-        .map_err(|_| AppError::StatePoisonError.to_string())?;
+        .blocking_lock();
     app.update_config(config).map_err(|err| err.to_string())?;
     Ok(())
 }
@@ -95,7 +94,6 @@ pub fn update_config(state: tauri::State<'_, Mutex<App>>, config: Config) -> Res
 #[tauri::command]
 pub fn get_config(state: tauri::State<'_, Mutex<App>>) -> Result<Config, String> {
     let app = state
-        .lock()
-        .map_err(|_| AppError::StatePoisonError.to_string())?;
+        .blocking_lock();
     Ok(app.config.clone())
 }

@@ -122,6 +122,17 @@ impl LibraryTranslation {
 }
 
 impl LibraryBook {
+    pub async fn get_translation(&self, target_language: &Language) -> Option<Arc<Mutex<LibraryTranslation>>> {
+        for (t_idx, t) in self.translations.iter().enumerate() {
+            if t.lock().await.translation.target_language == target_language.to_639_3()
+            {
+                return Some(self.translations[t_idx].clone());
+            }
+        }
+
+        None
+    }
+
     pub async fn get_or_create_translation(
         &mut self,
         source_language: &Language,

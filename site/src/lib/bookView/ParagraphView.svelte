@@ -12,35 +12,7 @@
     } = $props();
 
     const originalText = $derived(paragraph.original);
-
-    // const translation = sqlBooks.getParagraphTranslationShort(paragraph.uid, "ignoredTODO" as UUID);
-
-    const translationHtml = null;
-
-    // const translationHtml = $derived.by(() => {
-    //     if (translation) {
-    //         const result = [];
-
-    //         if ($translation) {
-    //             for (const w of $translation.translationJson) {
-    //                 if (w.meta) {
-    //                     const additionalClass =
-    //                         w.meta.wordTranslationUid === sentenceWordIdToDisplay
-    //                             ? "selected"
-    //                             : "";
-    //                     result.push(
-    //                         `<span class="word-span ${additionalClass}" data-paragraph="${paragraph.uid}" data-sentence="${w.meta.sentenceTranslationUid}" data-word="${w.meta.wordTranslationUid}">${w.text}</span>`,
-    //                     );
-    //                 } else {
-    //                     result.push(w.text);
-    //                 }
-    //             }
-    //         }
-    //         return result.join("");
-    //     }
-
-    //     return null;
-    // });
+    const translationHtml = $derived(paragraph.translation);
 </script>
 
 {#if !translationHtml}
@@ -54,6 +26,10 @@
 {/if}
 
 <style>
+    :global(.word-span) {
+        background-color: #dcf4fc;
+    }
+
     :global(.word-span.selected) {
         outline: 1px dotted var(--selected-color);
     }

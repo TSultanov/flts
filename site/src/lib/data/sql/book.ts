@@ -74,6 +74,7 @@ type Grammar = {
 export type ParagraphView = {
     id: number,
     original: string,
+    translation?: string,
 }
 
 export type ChapterMetaView = {
