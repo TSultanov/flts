@@ -1,16 +1,21 @@
 <script lang="ts">
+    import { getContext } from "svelte";
     import type { UUID } from "../data/v2/db";
     import ParagraphView from "./ParagraphView.svelte";
+    import type { Library } from "../data/library";
 
     let {
+        bookId,
         chapterId,
         sentenceWordIdToDisplay = $bindable(),
     }: {
-        chapterId: UUID;
+        bookId: UUID,
+        chapterId: number;
         sentenceWordIdToDisplay: UUID | null;
     } = $props();
 
-    // const paragraphs = sqlBooks.getParagraphs(chapterId);
+    const library: Library = getContext("library");
+    const paragraphs = $derived(library.getBookChapterParagraphs(bookId, chapterId));
 
     function chapterClick(e: MouseEvent) {
         const target = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement;
@@ -34,9 +39,9 @@
             style="column-width: {sectionContentWidth}px"
             bind:clientHeight={sectionContentWidth}
         >
-            <!-- {#each $paragraphs as paragraph}
+            {#each $paragraphs as paragraph}
                 <ParagraphView {paragraph} {sentenceWordIdToDisplay} />
-            {/each} -->
+            {/each}
         </div>
     </section>
 </div>

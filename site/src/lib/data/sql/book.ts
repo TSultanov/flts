@@ -71,17 +71,14 @@ type Grammar = {
     other?: string | null,
 }
 
-export interface IParagraphView {
-    get id(): UUID,
-    get originalPlain(): string,
-    get original(): string,
-    get translation(): BookParagraphTranslation | undefined,
-    get translationStore(): Readable<BookParagraphTranslation | undefined>;
+export type ParagraphView = {
+    id: number,
+    original: string,
 }
 
-export interface IChapterView {
-    get id(): UUID,
-    get title(): string | undefined,
+export type ChapterMetaView = {
+    id: number,
+    title: string,
 }
 
 export interface IBookMeta {

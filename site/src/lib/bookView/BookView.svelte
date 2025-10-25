@@ -9,15 +9,15 @@
 
     const { route } = $props();
 
-    const bookUid: UUID = route.result.path.params.bookId as UUID;
-    const chapterId: UUID | null = $derived(
+    const bookId: UUID = route.result.path.params.bookId as UUID;
+    const chapterId: number | null = $derived(
         route.result.path.params.chapterId
-            ? (route.result.path.params.chapterId as UUID)
+            ? (+route.result.path.params.chapterId as number)
             : null,
     );
 
     const library: Library = getContext("library");
-    const chapters = $derived(library.getBookChapters(bookUid));
+    const chapters = $derived(library.getBookChapters(bookId));
 
     // $effect(() => {
     //     if ($chapters && $chapters.length === 1) {
@@ -34,7 +34,7 @@
             <div class="chapters">
                 {#each $chapters as chapter}
                     <p>
-                        <a use:r href="/book/{bookUid}/{chapter.id}"
+                        <a use:r href="/book/{bookId}/{chapter.id}"
                             >{chapter.title ? chapter.title : "<no title>"}</a
                         >
                     </p>
@@ -43,7 +43,7 @@
         {/if}
         {#if chapterId}
             <div class="chapter-view">
-                <ChapterView {chapterId} bind:sentenceWordIdToDisplay />
+                <ChapterView {bookId} {chapterId} bind:sentenceWordIdToDisplay />
             </div>
             <div class="word-view">
                 {#if sentenceWordIdToDisplay}

@@ -1,7 +1,7 @@
 import { derived, readable, type Readable } from 'svelte/store';
 import type { EpubBook } from "./epubLoader";
 import type { UUID } from "./v2/db";
-import { type IBookMeta, type IChapterView } from "./sql/book";
+import { type ChapterMetaView, type IBookMeta, type ParagraphView } from "./sql/book";
 import { eventToReadable, getterToReadable } from './tauri';
 
 type LibraryBookMetadataView = {
@@ -66,8 +66,12 @@ export class Library {
         })
     }
 
-    getBookChapters(bookId: UUID): Readable<IChapterView[]> {
+    getBookChapters(bookId: UUID): Readable<ChapterMetaView[]> {
         return getterToReadable("list_book_chapters", {"bookId": bookId} ,[]);
+    }
+
+    getBookChapterParagraphs(bookId: UUID, chapterId: number): Readable<ParagraphView[]> {
+        return getterToReadable("get_book_chapter_paragraphs", {"bookId": bookId, "chapterId": chapterId}, []);
     }
 
     async importEpub(book: EpubBook) {

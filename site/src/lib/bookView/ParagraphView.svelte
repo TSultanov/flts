@@ -1,8 +1,5 @@
 <script lang="ts">
-    import {
-        type Paragraph,
-        type ParagraphTranslationShort,
-    } from "../data/sql/book";
+    import type { ParagraphView } from "../data/sql/book";
     import type { UUID } from "../data/v2/db";
     import { onMount } from "svelte";
 
@@ -10,14 +7,15 @@
         paragraph,
         sentenceWordIdToDisplay,
     }: {
-        paragraph: Paragraph;
+        paragraph: ParagraphView;
         sentenceWordIdToDisplay: UUID | null;
     } = $props();
 
-    const originalText = $derived(
-        paragraph.originalHtml ?? paragraph.originalText,
-    );
+    const originalText = $derived(paragraph.original);
+
     // const translation = sqlBooks.getParagraphTranslationShort(paragraph.uid, "ignoredTODO" as UUID);
+
+    const translationHtml = null;
 
     // const translationHtml = $derived.by(() => {
     //     if (translation) {
@@ -45,7 +43,7 @@
     // });
 </script>
 
-<!-- {#if !translationHtml}
+{#if !translationHtml}
     <p class="original">
         {@html originalText}
     </p>
@@ -53,7 +51,7 @@
     <p>
         {@html translationHtml}
     </p>
-{/if} -->
+{/if}
 
 <style>
     :global(.word-span.selected) {

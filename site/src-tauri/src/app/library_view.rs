@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+use std::{sync::Mutex};
 
 use library::library::Library;
 use uuid::Uuid;
@@ -17,6 +17,12 @@ pub struct LibraryBookMetadataView {
 pub struct ChapterView {
     id: usize,
     title: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct ParagraphView {
+    id: usize,
+    original: String,
 }
 
 pub struct LibraryView {
@@ -50,6 +56,16 @@ impl LibraryView {
         }).collect();
         Ok(chapters)
     }
+
+    pub fn list_book_chapter_paragraphs(&mut self, book_id: Uuid, chapter_id: usize) -> anyhow::Result<Vec<ParagraphView>> {
+        let book = self.library.get_book(&book_id)?;
+        let book = book.blocking_lock();
+        let book = &book.book;
+        Ok(book.chapter_view(chapter_id).paragraphs().map(|p| ParagraphView {
+            id: p.id,
+            original: p.original_html.unwrap_or(p.original_text).to_string()
+        }).collect())
+    }
 }
 
 #[tauri::command]
@@ -71,6 +87,18 @@ pub fn list_book_chapters(state: tauri::State<'_, Mutex<App>>, book_id: Uuid) ->
         .map_err(|_| AppError::StatePoisonError.to_string())?;
     if let Some(library) = &mut app.library {
         library.list_book_chapters(book_id).map_err(|err| err.to_string())
+    } else {
+        Ok(vec![])
+    }
+}
+
+#[tauri::command]
+pub fn get_book_chapter_paragraphs(state: tauri::State<'_, Mutex<App>>, book_id: Uuid, chapter_id: usize) -> Result<Vec<ParagraphView>, String> {
+    let mut app = state
+        .lock()
+        .map_err(|_| AppError::StatePoisonError.to_string())?;
+    if let Some(library) = &mut app.library {
+        library.list_book_chapter_paragraphs(book_id, chapter_id).map_err(|err| err.to_string())
     } else {
         Ok(vec![])
     }
