@@ -27,6 +27,32 @@ pub struct ParagraphView {
     translation: Option<String>,
 }
 
+#[derive(Clone, serde::Serialize)]
+pub struct WordView {
+    original: String,
+    note: String,
+    #[serde(rename = "isPunctuation")]
+    is_punctuation: bool,
+    grammar: GrammarView,
+    #[serde(rename = "contextualTranslations")]
+    contextual_translations: Vec<String>,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct GrammarView {
+    #[serde(rename = "originalInitialForm")]
+    original_initial_form: String,
+    #[serde(rename = "targetInitialForm")]
+    target_initial_form: String,
+    #[serde(rename = "partOfSpeech")]
+    part_of_speech: String,
+    plurality: Option<String>,
+    person: Option<String>,
+    tense: Option<String>,
+    case: Option<String>,
+    other: Option<String>,
+}
+
 pub struct LibraryView {
     library: Library,
 }
@@ -86,7 +112,7 @@ impl LibraryView {
                 let bt = bt.lock().await;
                 let t_view = bt.paragraph_view(p.id);
                 translation = t_view.map(|t| {
-                    translation_to_html(&original, &t).unwrap_or_else(|err| err.to_string())
+                    translation_to_html(p.id, &original, &t).unwrap_or_else(|err| err.to_string())
                 })
             }
 
@@ -98,6 +124,50 @@ impl LibraryView {
         }
 
         Ok(views)
+    }
+
+    pub async fn get_word_info(
+        &mut self,
+        book_id: Uuid,
+        paragraph_id: usize,
+        sentence_id: usize,
+        word_id: usize,
+        target_language: &Language,
+    ) -> anyhow::Result<Option<WordView>> {
+        let book = self.library.get_book(&book_id)?;
+        let book = book.lock().await;
+
+        let book_translation = book.get_translation(target_language).await;
+
+        Ok(
+            if let Some(bt) = book_translation
+                && let Some(paragraph) = bt.lock().await.paragraph_view(paragraph_id)
+            {
+                let sentence = paragraph.sentence_view(sentence_id);
+                let word = sentence.word_view(word_id);
+                Some(WordView {
+                    original: word.original.to_string(),
+                    note: word.note.to_string(),
+                    is_punctuation: word.is_punctuation,
+                    contextual_translations: word
+                        .contextual_translations()
+                        .map(|ct| ct.translation.to_string())
+                        .collect(),
+                    grammar: GrammarView {
+                        original_initial_form: word.grammar.original_initial_form.to_string(),
+                        target_initial_form: word.grammar.target_initial_form.to_string(),
+                        part_of_speech: word.grammar.part_of_speech.to_string(),
+                        plurality: word.grammar.plurality.map(|p| p.to_string()),
+                        person: word.grammar.person.map(|p| p.to_string()),
+                        tense: word.grammar.tense.map(|t| t.to_string()),
+                        case: word.grammar.case.map(|c| c.to_string()),
+                        other: word.grammar.other.map(|o| o.to_string()),
+                    },
+                })
+            } else {
+                None
+            },
+        )
     }
 }
 
@@ -154,7 +224,42 @@ pub async fn get_book_chapter_paragraphs(
     }
 }
 
+#[tauri::command]
+pub async fn get_word_info(
+    state: tauri::State<'_, Mutex<App>>,
+    book_id: Uuid,
+    paragraph_id: usize,
+    sentence_id: usize,
+    word_id: usize,
+) -> Result<Option<WordView>, String> {
+    let mut app = state.lock().await;
+
+    let target_language = app
+        .config
+        .target_language_id
+        .as_ref()
+        .and_then(|l| Language::from_639_3(l));
+
+    if let Some(library) = &mut app.library
+        && let Some(target_language) = target_language
+    {
+        library
+            .get_word_info(
+                book_id,
+                paragraph_id,
+                sentence_id,
+                word_id,
+                &target_language,
+            )
+            .await
+            .map_err(|err| err.to_string())
+    } else {
+        Ok(None)
+    }
+}
+
 fn translation_to_html(
+    paragraph_id: usize,
     original: &str,
     translation: &ParagraphTranslationView,
 ) -> anyhow::Result<String> {
@@ -215,7 +320,7 @@ fn translation_to_html(
 
             if p_idx < clamped_end {
                 let text = String::from_iter(original[p_idx..clamped_end].iter());
-                result.push(format!("<span class=\"word-span\" data-sentence=\"{sentence_idx}\" data-word=\"{word_idx}\">{text}</span>"));
+                result.push(format!("<span class=\"word-span\" data-paragraph=\"{paragraph_id}\" data-sentence=\"{sentence_idx}\" data-word=\"{word_idx}\">{text}</span>"));
             }
 
             p_idx += len;

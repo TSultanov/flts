@@ -1,10 +1,24 @@
 <script lang="ts">
-    import { type SentenceTranslation } from "../data/sql/book";
+    import { getContext } from "svelte";
+    import type { Library } from "../data/library";
     import type { UUID } from "../data/v2/db";
 
-    const { sentenceWordIdToDisplay }: { sentenceWordIdToDisplay: UUID } = $props();
+    const {
+        bookId,
+        sentenceWordIdToDisplay,
+    }: { bookId: UUID; sentenceWordIdToDisplay: [number, number, number] } =
+        $props();
 
-    // const word = $derived(sqlBooks.getWordTranslation(sentenceWordIdToDisplay));
+    $inspect(sentenceWordIdToDisplay);
+    const library: Library = getContext("library");
+    const word = $derived(
+        library.getWordInfo(
+            bookId,
+            sentenceWordIdToDisplay[0],
+            sentenceWordIdToDisplay[1],
+            sentenceWordIdToDisplay[2],
+        ),
+    );
 
     // const sentenceTranslation = $derived.by(() => {
     //     if ($word) {
@@ -12,14 +26,14 @@
     //     }
     // });
 </script>
-<!-- 
+
 {#if $word}
     <p class="word-original">{@html $word.original}</p>
-    {#if $word.wordTranslationInContext && $word.wordTranslationInContext.length > 0}
+    {#if $word.contextualTranslations && $word.contextualTranslations.length > 0}
         <details open>
             <summary>Meaning</summary>
             <ul>
-                {#each $word.wordTranslationInContext as translation}
+                {#each $word.contextualTranslations as translation}
                     <li>{translation}</li>
                 {/each}
             </ul>
@@ -30,7 +44,7 @@
             <summary>Note</summary>
             <p>{$word.note}</p>
         </details>
-    {/if} -->
+    {/if}
     <!-- TODO -->
     <!-- {#if $word.wordTranslation}
         <details>
@@ -40,8 +54,8 @@
                     <tr>
                         <th scope="row">Language</th>
                         <td
-                            >{$word.wordTranslation.originalWord.originalLanguage
-                                .name}</td
+                            >{$word.wordTranslation.originalWord
+                                .originalLanguage.name}</td
                         >
                     </tr>
                     <tr>
@@ -52,60 +66,60 @@
             </table>
         </details>
     {/if} -->
-    <!-- {#if $word.grammarContext}
+    {#if $word.grammar}
         <details>
             <summary>Grammar</summary>
             <table>
                 <tbody>
                     <tr>
                         <th scope="row">Part of speech</th>
-                        <td>{$word.grammarContext.partOfSpeech}</td>
+                        <td>{$word.grammar.partOfSpeech}</td>
                     </tr>
-                    {#if $word.grammarContext.originalInitialForm}
+                    {#if $word.grammar.originalInitialForm}
                         <tr>
                             <th scope="row">Initial form</th>
-                            <td>{$word.grammarContext.originalInitialForm}</td>
+                            <td>{$word.grammar.originalInitialForm}</td>
                         </tr>
                     {/if}
-                    {#if $word.grammarContext.plurality}
+                    {#if $word.grammar.plurality}
                         <tr>
                             <th scope="row">Plurality</th>
-                            <td>{$word.grammarContext.plurality}</td>
+                            <td>{$word.grammar.plurality}</td>
                         </tr>
                     {/if}
-                    {#if $word.grammarContext.person}
+                    {#if $word.grammar.person}
                         <tr>
                             <th scope="row">Person</th>
-                            <td>{$word.grammarContext.person}</td>
+                            <td>{$word.grammar.person}</td>
                         </tr>
                     {/if}
-                    {#if $word.grammarContext.tense}
+                    {#if $word.grammar.tense}
                         <tr>
                             <th scope="row">Tense</th>
-                            <td>{$word.grammarContext.tense}</td>
+                            <td>{$word.grammar.tense}</td>
                         </tr>
                     {/if}
-                    {#if $word.grammarContext.case}
+                    {#if $word.grammar.case}
                         <tr>
                             <th scope="row">Case</th>
-                            <td>{$word.grammarContext.case}</td>
+                            <td>{$word.grammar.case}</td>
                         </tr>
                     {/if}
-                    {#if $word.grammarContext.other}
+                    {#if $word.grammar.other}
                         <tr>
                             <th scope="row">Other</th>
-                            <td>{$word.grammarContext.other}</td>
+                            <td>{$word.grammar.other}</td>
                         </tr>
                     {/if}
                 </tbody>
             </table>
         </details>
     {/if}
-    {#if sentenceTranslation && $sentenceTranslation}
+    <!-- {#if sentenceTranslation && $sentenceTranslation}
         <details>
             <summary>Full sentence</summary>
             <p>{$sentenceTranslation.fullTranslation}</p>
         </details>
         <p>Translated by: {$sentenceTranslation.translatingModel}</p>
-    {/if}
-{/if} -->
+    {/if} -->
+{/if}

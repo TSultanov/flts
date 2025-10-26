@@ -89,14 +89,14 @@ pub struct WordView<'a> {
 }
 
 pub struct GrammarView<'a> {
-    original_initial_form: Cow<'a, str>,
-    target_initial_form: Cow<'a, str>,
-    part_of_speech: Cow<'a, str>,
-    plurality: Option<Cow<'a, str>>,
-    person: Option<Cow<'a, str>>,
-    tense: Option<Cow<'a, str>>,
-    case: Option<Cow<'a, str>>,
-    other: Option<Cow<'a, str>>,
+    pub original_initial_form: Cow<'a, str>,
+    pub target_initial_form: Cow<'a, str>,
+    pub part_of_speech: Cow<'a, str>,
+    pub plurality: Option<Cow<'a, str>>,
+    pub person: Option<Cow<'a, str>>,
+    pub tense: Option<Cow<'a, str>>,
+    pub case: Option<Cow<'a, str>>,
+    pub other: Option<Cow<'a, str>>,
 }
 
 #[derive(Clone)]

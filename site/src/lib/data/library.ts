@@ -1,7 +1,7 @@
 import { derived, readable, type Readable } from 'svelte/store';
 import type { EpubBook } from "./epubLoader";
 import type { UUID } from "./v2/db";
-import { type ChapterMetaView, type IBookMeta, type ParagraphView } from "./sql/book";
+import { type ChapterMetaView, type IBookMeta, type ParagraphView, type SentenceWordTranslation } from "./sql/book";
 import { eventToReadable, getterToReadable } from './tauri';
 
 type LibraryBookMetadataView = {
@@ -67,11 +67,15 @@ export class Library {
     }
 
     getBookChapters(bookId: UUID): Readable<ChapterMetaView[]> {
-        return getterToReadable("list_book_chapters", {"bookId": bookId} ,[]);
+        return getterToReadable("list_book_chapters", { "bookId": bookId }, []);
     }
 
     getBookChapterParagraphs(bookId: UUID, chapterId: number): Readable<ParagraphView[]> {
-        return getterToReadable("get_book_chapter_paragraphs", {"bookId": bookId, "chapterId": chapterId}, []);
+        return getterToReadable("get_book_chapter_paragraphs", { "bookId": bookId, "chapterId": chapterId }, []);
+    }
+
+    getWordInfo(bookId: UUID, paragraphId: number, sentenceId: number, wordId: number): Readable<SentenceWordTranslation | undefined> {
+        return getterToReadable("get_word_info", { "bookId": bookId, "paragraphId": paragraphId, "sentenceId": sentenceId, "wordId": wordId });
     }
 
     async importEpub(book: EpubBook) {

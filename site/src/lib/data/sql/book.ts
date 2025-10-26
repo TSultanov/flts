@@ -48,16 +48,11 @@ export type SentenceTranslation = {
 }
 
 export type SentenceWordTranslation = {
-    readonly sentenceUid: UUID,
     readonly original: string,
+    readonly note: string,
     readonly isPunctuation: boolean,
-    readonly isStandalonePunctuation?: boolean | null,
-    readonly isOpeningParenthesis?: boolean | null,
-    readonly isClosingParenthesis?: boolean | null,
-    readonly wordTranslationUid?: UUID,
-    readonly wordTranslationInContext?: string[],
-    readonly grammarContext?: Grammar,
-    readonly note?: string,
+    readonly contextualTranslations: string[],
+    readonly grammar: Grammar,
 }
 
 type Grammar = {

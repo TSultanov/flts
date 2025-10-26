@@ -41,8 +41,9 @@ export function eventToReadable<T>(eventName: string, getterName: string, defaul
     });
 }
 
+export function getterToReadable<T>(getterName: string, args: InvokeArgs): Readable<T | undefined>
 export function getterToReadable<T>(getterName: string, args: InvokeArgs, defaultValue: T): Readable<T>
-export function getterToReadable<T>(getterName: string, args: InvokeArgs, defaultValue: T | undefined): Readable<T | undefined> {
+export function getterToReadable<T>(getterName: string, args: InvokeArgs, defaultValue: T | undefined = undefined): Readable<T | undefined> {
     let setter: ((value: T) => void) | null = null;
     invoke<T>(getterName, args).then((v) => {
         let setInitial = () => {

@@ -9,19 +9,35 @@
         chapterId,
         sentenceWordIdToDisplay = $bindable(),
     }: {
-        bookId: UUID,
+        bookId: UUID;
         chapterId: number;
-        sentenceWordIdToDisplay: UUID | null;
+        sentenceWordIdToDisplay: [number, number, number] | null;
     } = $props();
 
     const library: Library = getContext("library");
-    const paragraphs = $derived(library.getBookChapterParagraphs(bookId, chapterId));
+    const paragraphs = $derived(
+        library.getBookChapterParagraphs(bookId, chapterId),
+    );
 
     function chapterClick(e: MouseEvent) {
-        const target = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement;
+        const target = document.elementFromPoint(
+            e.clientX,
+            e.clientY,
+        ) as HTMLElement;
         if (target && target.classList.contains("word-span")) {
-            const data = target.dataset["word"] as UUID;
-            sentenceWordIdToDisplay = data;
+            const paragraph = target.dataset["paragraph"]
+                ? parseInt(target.dataset["paragraph"])
+                : null;
+            const sentence = target.dataset["sentence"]
+                ? parseInt(target.dataset["sentence"])
+                : null;
+            const word = target.dataset["word"]
+                ? parseInt(target.dataset["word"])
+                : null;
+            sentenceWordIdToDisplay =
+                paragraph != null && sentence != null && word != null
+                    ? [paragraph, sentence, word]
+                    : null;
         } else {
             sentenceWordIdToDisplay = null;
         }

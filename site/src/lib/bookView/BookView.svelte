@@ -19,13 +19,13 @@
     const library: Library = getContext("library");
     const chapters = $derived(library.getBookChapters(bookId));
 
-    // $effect(() => {
-    //     if ($chapters && $chapters.length === 1) {
-    //         goto(`/book/${bookUid}/${$chapters[0].uid}`);
-    //     }
-    // });
+    $effect(() => {
+        if ($chapters && $chapters.length === 1) {
+            goto(`/book/${bookId}/${$chapters[0].id}`);
+        }
+    });
 
-    let sentenceWordIdToDisplay: UUID | null = $state(null);
+    let sentenceWordIdToDisplay: [number, number, number] | null = $state(null);
 </script>
 
 {#if $chapters}
@@ -47,7 +47,7 @@
             </div>
             <div class="word-view">
                 {#if sentenceWordIdToDisplay}
-                    <WordView {sentenceWordIdToDisplay} />
+                    <WordView {bookId} {sentenceWordIdToDisplay} />
                 {:else}
                     Select word to show translation
                 {/if}

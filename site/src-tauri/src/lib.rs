@@ -27,6 +27,7 @@ pub fn run() {
             app::library_view::list_books,
             app::library_view::list_book_chapters,
             app::library_view::get_book_chapter_paragraphs,
+            app::library_view::get_word_info,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

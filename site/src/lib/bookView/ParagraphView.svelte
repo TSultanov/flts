@@ -1,14 +1,12 @@
 <script lang="ts">
     import type { ParagraphView } from "../data/sql/book";
-    import type { UUID } from "../data/v2/db";
-    import { onMount } from "svelte";
 
     let {
         paragraph,
         sentenceWordIdToDisplay,
     }: {
         paragraph: ParagraphView;
-        sentenceWordIdToDisplay: UUID | null;
+        sentenceWordIdToDisplay: [number, number, number] | null;
     } = $props();
 
     const originalText = $derived(paragraph.original);
@@ -26,10 +24,6 @@
 {/if}
 
 <style>
-    :global(.word-span) {
-        background-color: #dcf4fc;
-    }
-
     :global(.word-span.selected) {
         outline: 1px dotted var(--selected-color);
     }
