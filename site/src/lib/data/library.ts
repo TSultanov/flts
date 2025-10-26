@@ -7,8 +7,9 @@ import { eventToReadable, getterToReadable } from './tauri';
 type LibraryBookMetadataView = {
     id: UUID,
     title: string,
-    chapters_count: number,
-    paragraphs_count: number,
+    chaptersCount: number,
+    paragraphsCount: number,
+    translationRatio: number,
 }
 
 export type LibraryFolder = {
@@ -55,8 +56,8 @@ export class Library {
                 const targetFolder = getOrCreateFolder(/*book.path || */[]);
                 targetFolder.books.push({
                     uid: book.id,
-                    chapterCount: book.chapters_count,
-                    translationRatio: 0, // TODO
+                    chapterCount: book.chaptersCount,
+                    translationRatio: book.translationRatio,
                     title: book.title,
                     path: [] // TODO
                 });

@@ -1,6 +1,7 @@
 use std::{error::Error, fmt::Display, fs, path::PathBuf};
 
 use directories::ProjectDirs;
+use isolang::Language;
 use library::library::Library;
 use tauri::{async_runtime::Mutex, Emitter};
 use tracing::info;
@@ -71,11 +72,13 @@ impl App {
     }
 
     fn eval_config(&mut self) -> anyhow::Result<()> {
+        let target_language = self.config.target_language_id.as_ref().and_then(|l| Language::from_639_3(l));
+
         if let Some(library_path) = &self.config.library_path {
             let fs = PhysicalFS::new(library_path);
             self.library = Some(LibraryView::create(Library::open(fs.into())?));
             if let Some(library) = &self.library {
-                self.app.emit("library_updated", library.list_books()?)?;
+                self.app.emit("library_updated", library.list_books(target_language.as_ref())?)?;
             }
         }
 

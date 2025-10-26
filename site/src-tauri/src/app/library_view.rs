@@ -4,14 +4,18 @@ use library::{book::translation::ParagraphTranslationView, library::Library};
 use tauri::async_runtime::Mutex;
 use uuid::Uuid;
 
-use crate::app::{App, AppError};
+use crate::app::App;
 
 #[derive(Clone, serde::Serialize)]
 pub struct LibraryBookMetadataView {
     id: Uuid,
     title: String,
+    #[serde(rename = "chaptersCount")]
     chapters_count: usize,
+    #[serde(rename = "paragraphsCount")]
     paragraphs_count: usize,
+    #[serde(rename = "translationRatio")]
+    translation_ratio: f64,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -62,15 +66,30 @@ impl LibraryView {
         Self { library }
     }
 
-    pub fn list_books(&self) -> anyhow::Result<Vec<LibraryBookMetadataView>> {
+    pub fn list_books(
+        &self,
+        target_language: Option<&Language>,
+    ) -> anyhow::Result<Vec<LibraryBookMetadataView>> {
         let books = self.library.list_books()?;
         Ok(books
             .into_iter()
-            .map(|b| LibraryBookMetadataView {
-                id: b.id,
-                title: b.title,
-                chapters_count: b.chapters_count,
-                paragraphs_count: b.paragraphs_count,
+            .map(|b| {
+                let translation = target_language.and_then(|tl| b
+                    .translations_metadata
+                    .iter()
+                    .find(|t| t.target_language == tl.to_639_3()));
+
+                let translation_ratio = translation
+                    .map(|t| t.translated_paragraphs_count as f64 / b.paragraphs_count as f64)
+                    .unwrap_or(0.0);
+
+                LibraryBookMetadataView {
+                    id: b.id,
+                    title: b.title,
+                    chapters_count: b.chapters_count,
+                    paragraphs_count: b.paragraphs_count,
+                    translation_ratio,
+                }
             })
             .collect())
     }
@@ -172,12 +191,21 @@ impl LibraryView {
 }
 
 #[tauri::command]
-pub fn list_books(
+pub async fn list_books(
     state: tauri::State<'_, Mutex<App>>,
 ) -> Result<Vec<LibraryBookMetadataView>, String> {
-    let app = state.blocking_lock();
+    let app = state.lock().await;
+
+    let target_language = app
+        .config
+        .target_language_id
+        .as_ref()
+        .and_then(|l| Language::from_639_3(l));
+
     if let Some(library) = &app.library {
-        library.list_books().map_err(|err| err.to_string())
+        library
+            .list_books(target_language.as_ref())
+            .map_err(|err| err.to_string())
     } else {
         Ok(vec![])
     }
