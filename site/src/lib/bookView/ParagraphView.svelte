@@ -11,6 +11,19 @@
 
     const originalText = $derived(paragraph.original);
     const translationHtml = $derived(paragraph.translation);
+
+    $effect(() => {
+        const selectedElements = document.querySelectorAll(".word-span.selected");
+        selectedElements.forEach((el) => {
+            el.classList.remove("selected");
+        })
+        if (sentenceWordIdToDisplay) {
+            let element = document.querySelector(`.word-span[data-paragraph="${sentenceWordIdToDisplay[0]}"][data-sentence="${sentenceWordIdToDisplay[1]}"][data-word="${sentenceWordIdToDisplay[2]}"]`);
+            if (element) {
+                element.classList.add("selected");
+            }
+        }
+    });
 </script>
 
 {#if !translationHtml}
