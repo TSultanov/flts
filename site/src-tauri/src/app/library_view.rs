@@ -284,7 +284,7 @@ fn translation_to_html(
                 let start = p_idx + offset;
                 let mut clamped_end = p_idx + offset + len;
                 if clamped_end >= original.len() {
-                    clamped_end = original.len() - 1;
+                    clamped_end = original.len();
                 }
 
                 if start >= clamped_end {
@@ -315,7 +315,7 @@ fn translation_to_html(
 
             let mut clamped_end = p_idx + len;
             if clamped_end >= original.len() {
-                clamped_end = original.len() - 1;
+                clamped_end = original.len();
             }
 
             if p_idx < clamped_end {
