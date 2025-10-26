@@ -301,6 +301,7 @@ fn translation_to_html(
         let mut word_idx = 0;
         for word in sentence.words() {
             if word.is_punctuation {
+                word_idx += 1;
                 continue;
             }
 
