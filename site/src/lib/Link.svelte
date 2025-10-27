@@ -1,37 +1,15 @@
 <script lang="ts">
-    import {
-        route,
-        RouteOptions,
-        type RouteConfig,
-        type RouteResult,
-    } from "@mateothegreat/svelte5-router";
+    import { p } from '../router';
 
     export type RouteLinkProps = {
-        options?: RouteOptions;
         href: string;
         label: string;
     };
 
-    let { options, href, label }: RouteLinkProps = $props();
-    if (!options) {
-        options = new RouteOptions();
-    }
-
-    if (!options.active) {
-        options.active = {
-            class: [
-                "current",
-            ],
-        };
-    }
-    if (!options.default) {
-        options.default = {
-            class: [],
-        };
-    }
+    let { href, label }: RouteLinkProps = $props();
 </script>
 
-<a use:route={options} {href}>{label}</a
+<a {href}>{label}</a
 >
 
 <style>

@@ -1,7 +1,6 @@
 <script lang="ts">
     import { getContext } from "svelte";
     import { Library, type LibraryFolder } from "./data/library";
-    import { route } from "@mateothegreat/svelte5-router";
     import ConfirmDialog from "./ConfirmDialog.svelte";
     import MoveFolderDialog from "./MoveFolderDialog.svelte";
     import type { UUID } from "./data/v2/db";
@@ -201,7 +200,7 @@
                                         toggleBookSelection(book.uid)}
                                 />
                             </label>
-                            <a use:route href="/book/{book.uid}"
+                            <a href="/book/{book.uid}"
                                 >{book.title} - {book.chapterCount} chapter(s)
                                 {#if book.translationRatio < 1.0}
                                     - {(book.translationRatio * 100).toFixed(

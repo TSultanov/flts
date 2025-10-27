@@ -40,7 +40,6 @@
   },
   "dependencies": {
     "@google/genai": "^0.14.1",
-    "@mateothegreat/svelte5-router": "^2.16.8",
     "@tauri-apps/api": "^2.8.0",
     "@tauri-apps/plugin-dialog": "2.4.0",
     "@types/jsdom": "^21.1.7",
@@ -52,6 +51,7 @@
     "jszip": "^3.10.1",
     "localforage": "^1.10.0",
     "openai": "^5.12.2",
+    "sv-router": "^0.10.2",
     "uuid": "^11.1.0",
     "zod": "^3.25.76"
   }

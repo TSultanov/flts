@@ -1,27 +1,31 @@
 <script lang="ts">
-    import { goto } from "@mateothegreat/svelte5-router";
-    import ChapterView from "./ChapterView.svelte";
     import WordView from "./WordView.svelte";
-    import { route as r } from "@mateothegreat/svelte5-router";
     import type { UUID } from "../data/v2/db";
-    import { getContext } from "svelte";
+    import { getContext, type Snippet } from "svelte";
     import type { Library } from "../data/library";
+    import { route, navigate } from "../../router";
+    import ChapterView from "./ChapterView.svelte";
+    import ChapterPlaceholderView from "./ChapterPlaceholderView.svelte";
 
-    const { route } = $props();
+    const params = $derived(route.params);
 
-    const bookId: UUID = route.result.path.params.bookId as UUID;
-    const chapterId: number | null = $derived(
-        route.result.path.params.chapterId != null
-            ? parseInt(route.result.path.params.chapterId)
-            : null,
+    const bookId = $derived(params.bookId! as UUID);
+    const chapterId = $derived(
+        params.chapterId != undefined ? parseInt(params.chapterId) : null,
     );
 
     const library: Library = getContext("library");
-    const chapters = $derived(library.getBookChapters(bookId));
+    const chapters = $derived(library.getBookChapters(bookId as UUID));
 
     $effect(() => {
         if ($chapters && $chapters.length === 1) {
-            goto(`/book/${bookId}/${$chapters[0].id}`);
+            navigate("/book/:bookId/:chapterId", {
+                params: {
+                    bookId: bookId,
+                    chapterId: $chapters[0].id.toString(),
+                },
+                search: {},
+            });
         }
     });
 
@@ -31,15 +35,15 @@
 {#if $chapters}
     <div class="container">
         {#if $chapters.length > 1}
-        <div class="chapters">
-            {#each $chapters as chapter}
-                <p>
-                    <a use:r href="/book/{bookId}/{chapter.id}"
-                        >{chapter.title ? chapter.title : "<no title>"}</a
-                    >
-                </p>
-            {/each}
-        </div>
+            <div class="chapters">
+                {#each $chapters as chapter}
+                    <p>
+                        <a href="/book/{bookId}/{chapter.id}"
+                            >{chapter.title ? chapter.title : "<no title>"}</a
+                        >
+                    </p>
+                {/each}
+            </div>
         {/if}
         {#if chapterId != null}
             <div class="chapter-view">
@@ -55,6 +59,10 @@
                 {:else}
                     Select word to show translation
                 {/if}
+            </div>
+        {:else}
+            <div class="chapter-view">
+                <ChapterPlaceholderView />
             </div>
         {/if}
     </div>

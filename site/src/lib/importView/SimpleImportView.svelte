@@ -1,7 +1,6 @@
 <script lang="ts">
     import { getContext } from "svelte";
     import { Library } from "../data/library";
-    import { goto } from "@mateothegreat/svelte5-router";
 
     let title = $state("");
     let text = $state("");
@@ -12,7 +11,7 @@
 
     async function save() {
         await library.importText(title, text);
-        goto("/library");
+        // goto("/library");
     }
 </script>
 

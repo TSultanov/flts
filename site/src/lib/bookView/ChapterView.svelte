@@ -5,13 +5,13 @@
     import type { Library } from "../data/library";
 
     let {
+        sentenceWordIdToDisplay = $bindable(),
         bookId,
         chapterId,
-        sentenceWordIdToDisplay = $bindable(),
     }: {
-        bookId: UUID;
-        chapterId: number;
         sentenceWordIdToDisplay: [number, number, number] | null;
+        bookId: UUID,
+        chapterId: number
     } = $props();
 
     const library: Library = getContext("library");

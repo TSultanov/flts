@@ -1,18 +1,12 @@
 <script lang="ts">
-    import type {
-        RouteResult,
-        RouterInstance,
-    } from "@mateothegreat/svelte5-router";
     import type { RouteLinkProps } from "./Link.svelte";
     import Link from "./Link.svelte";
 
     export type NavProps = {
-        router?: RouterInstance;
-        route?: RouteResult;
         links: RouteLinkProps[];
     };
 
-    let { router = $bindable(), links }: NavProps = $props();
+    let { links }: NavProps = $props();
 </script>
 
 <nav>

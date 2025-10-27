@@ -1,5 +1,3 @@
-import { getConfig } from "../../config"
-
 export type Grammar = {
     originalInitialForm: string,
     targetInitialForm: string,
