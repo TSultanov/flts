@@ -186,6 +186,12 @@ async fn translate_paragraph(
         .add_paragraph_translation(paragraph_id, &p_translation)
         .await?;
 
+    {
+        let book = library.lock().await.get_book(&book_id)?;
+        let mut book = book.lock().await;
+        book.save().await?;
+    }
+
     Ok(())
 }
 
