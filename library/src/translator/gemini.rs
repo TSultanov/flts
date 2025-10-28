@@ -3,7 +3,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use gemini_rust::{Gemini, Model};
+use gemini_rust::{Gemini, Model, ThinkingConfig};
 use isolang::Language;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
@@ -17,6 +17,7 @@ pub struct GeminiTranslator {
     cache: Arc<Mutex<TranslationsCache>>,
     client: Gemini,
     schema: Value,
+    model: Model,
     from: Language,
     to: Language,
 }
@@ -127,12 +128,13 @@ impl GeminiTranslator {
             }
         );
 
-        let client = Gemini::with_model(api_key, model)?;
+        let client = Gemini::with_model(api_key, model.clone())?;
 
         Ok(Self {
             cache,
             schema,
             client,
+            model,
             from: from.clone(),
             to: to.clone(),
         })
@@ -141,9 +143,28 @@ impl GeminiTranslator {
 
 impl Translator for GeminiTranslator {
     async fn get_translation(&self, paragraph: &str) -> anyhow::Result<ParagraphTranslation> {
-        if let Some(cached_result) = self.cache.lock().await.get(&self.from, &self.to, paragraph).await.ok().flatten() {
+        if let Some(cached_result) = self
+            .cache
+            .lock()
+            .await
+            .get(&self.from, &self.to, paragraph)
+            .await
+            .ok()
+            .flatten()
+        {
             return Ok(cached_result);
         }
+
+        let thinking_config = match &self.model {
+            Model::Gemini25Flash | Model::Gemini25FlashLite => ThinkingConfig {
+                thinking_budget: Some(0),
+                include_thoughts: Some(false),
+            },
+            _ => ThinkingConfig {
+                thinking_budget: None,
+                include_thoughts: None,
+            },
+        };
 
         let result = self
             .client
@@ -152,6 +173,7 @@ impl Translator for GeminiTranslator {
             .with_user_message(paragraph)
             .with_response_mime_type("application/json")
             .with_response_schema(self.schema.clone())
+            .with_thinking_config(thinking_config)
             .execute()
             .await?;
 
@@ -161,7 +183,10 @@ impl Translator for GeminiTranslator {
         let duration_since_epoch = now.duration_since(UNIX_EPOCH)?;
         result.timestamp = duration_since_epoch.as_secs();
 
-        self.cache.lock().await.set(&self.from, &self.to, paragraph, &result);
+        self.cache
+            .lock()
+            .await
+            .set(&self.from, &self.to, paragraph, &result);
 
         Ok(result)
     }
