@@ -4,6 +4,7 @@ use foyer::{
     BlockEngineBuilder, DeviceBuilder, FsDeviceBuilder, HybridCache, HybridCacheBuilder,
     HybridCachePolicy,
 };
+use isolang::Language;
 
 use crate::book::translation_import::ParagraphTranslation;
 
@@ -26,14 +27,38 @@ impl TranslationsCache {
         Ok(Self { cache })
     }
 
-    pub fn set(&self, paragraph: &str, data: &ParagraphTranslation) {
-        self.cache.insert(paragraph.to_owned(), data.clone());
+    pub fn set(
+        &self,
+        source_language: &Language,
+        target_language: &Language,
+        paragraph: &str,
+        data: &ParagraphTranslation,
+    ) {
+        self.cache.insert(
+            format!(
+                "{}\n{}\n{}",
+                source_language.to_639_3(),
+                target_language.to_639_3(),
+                paragraph.to_owned()
+            ),
+            data.clone(),
+        );
     }
 
-    pub async fn get(&self, paragraph: &str) -> anyhow::Result<Option<ParagraphTranslation>> {
+    pub async fn get(
+        &self,
+        source_language: &Language,
+        target_language: &Language,
+        paragraph: &str,
+    ) -> anyhow::Result<Option<ParagraphTranslation>> {
         Ok(self
             .cache
-            .get(&paragraph.to_owned())
+            .get(&format!(
+                "{}\n{}\n{}",
+                source_language.to_639_3(),
+                target_language.to_639_3(),
+                paragraph.to_owned()
+            ))
             .await?
             .map(|r| r.value().clone()))
     }

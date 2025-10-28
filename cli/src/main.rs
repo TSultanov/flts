@@ -42,13 +42,19 @@ enum Commands {
     /// Add book to library
     ImportBook {
         /// Book title
+        #[arg(short, long, value_name = "TITLE")]
         title: String,
+        /// Book language
+        #[arg(short, long, value_name = "LANG")]
+        language: String,
         /// Path to book file
-        #[arg(short, long, value_name = "FILE")]
         path: PathBuf,
     },
     /// Add book to library from EPUB
     ImportEpub {
+        /// Book language
+        #[arg(short, long, value_name = "LANG")]
+        language: String,
         /// Path to EPUB file
         path: PathBuf,
     },
@@ -61,9 +67,6 @@ enum Commands {
         /// Gemini API key
         #[arg(short, long, value_name = "KEY")]
         api_key: String,
-        /// Book language
-        #[arg(short, long, value_name = "LANG")]
-        book_language: String,
         /// Translation language
         #[arg(short, long, value_name = "LANG")]
         translation_language: String,
@@ -92,6 +95,7 @@ async fn add_book(
     library: &Arc<Mutex<Library>>,
     title: &str,
     path: &PathBuf,
+    lang: &str,
 ) -> anyhow::Result<()> {
     let fmt = FileFormat::from_file(path)?;
 
@@ -100,12 +104,13 @@ async fn add_book(
         let mut text = String::new();
         data.read_to_string(&mut text)?;
 
-        let book_id = library.lock().await.create_book_plain(title, &text).await?;
+        let book_id = library.lock().await.create_book_plain(title, &text, &Language::from_str(lang)?).await?;
         let book = library.lock().await.get_book(&book_id)?;
+        let book = book.lock().await;
         println!(
             "Created book {} (id: {})",
-            book.lock().await.book.title,
-            book.lock().await.book.id
+            book.book.title,
+            book.book.id
         );
     } else {
         Err(CliError::UnsupportedFormat(fmt.media_type().to_owned()))?
@@ -114,15 +119,16 @@ async fn add_book(
     Ok(())
 }
 
-async fn add_epub(library: &Arc<Mutex<Library>>, path: &PathBuf) -> anyhow::Result<()> {
+async fn add_epub(library: &Arc<Mutex<Library>>, path: &PathBuf, lang: &str) -> anyhow::Result<()> {
     let epub = EpubBook::load(path)?;
 
-    let book_id = library.lock().await.create_book_epub(&epub).await?;
+    let book_id = library.lock().await.create_book_epub(&epub, &Language::from_str(lang)?).await?;
     let book = library.lock().await.get_book(&book_id)?;
+    let book = book.lock().await;
     println!(
         "Created book {} (id: {})",
-        book.lock().await.book.title,
-        book.lock().await.book.id
+        book.book.title,
+        book.book.id
     );
 
     Ok(())
@@ -155,7 +161,6 @@ async fn translate_paragraph(
     library: Arc<Mutex<Library>>,
     translator: &impl Translator,
     book_id: Uuid,
-    src_lang: &Language,
     tgt_lang: &Language,
     paragraph_id: usize,
     worker_id: usize,
@@ -163,7 +168,7 @@ async fn translate_paragraph(
     let (translation, paragraph_text) = {
         let book = library.lock().await.get_book(&book_id)?;
         let mut book = book.lock().await;
-        let translation = book.get_or_create_translation(src_lang, tgt_lang).await;
+        let translation = book.get_or_create_translation(tgt_lang).await;
         let paragraph = book.book.paragraph_view(paragraph_id);
         (translation, paragraph.original_text.to_string())
     };
@@ -189,22 +194,22 @@ async fn translate_book(
     cache: Arc<Mutex<TranslationsCache>>,
     api_key: &str,
     book_id: Uuid,
-    src_lang: &str,
     tgt_lang: &str,
     n_workers: usize,
 ) -> anyhow::Result<()> {
-    let source_lang = isolang::Language::from_str(src_lang)?;
     let target_lang = isolang::Language::from_str(tgt_lang)?;
 
     let queue = Arc::new(Mutex::new(VecDeque::new()));
 
-    {
+    let source_lang = {
         let book = library.lock().await.get_book(&book_id)?;
         let mut book = book.lock().await;
+        let source_lang = Language::from_639_3(&book.book.language).unwrap();
+
         let paragraph_count = book.book.paragraphs_count();
 
         let translation = book
-            .get_or_create_translation(&source_lang, &target_lang)
+            .get_or_create_translation(&target_lang)
             .await;
         let untranslated_paragraphs_count =
             paragraph_count - translation.lock().await.translated_paragraphs_count();
@@ -231,7 +236,9 @@ async fn translate_book(
                 }
             }
         }
-    }
+
+        source_lang
+    };
 
     let start_time = Instant::now();
 
@@ -245,11 +252,11 @@ async fn translate_book(
             cache.clone(),
             TranslationModel::GeminiFlash,
             api_key.to_owned(),
-            target_lang.to_name().to_owned(),
+            source_lang,
+            target_lang,
         )?;
         set.spawn(async move {
             println!("Worker {}: spawning...", i);
-            let source_lang1 = source_lang.clone();
             let target_lang1 = target_lang.clone();
             // Receive until the channel is closed (all senders dropped)
             while let Ok(p_id) = rx.recv_async().await {
@@ -260,7 +267,6 @@ async fn translate_book(
                         library1.clone(),
                         &translator,
                         book_id,
-                        &source_lang1,
                         &target_lang1,
                         p_id,
                         i,
@@ -347,11 +353,11 @@ async fn do_main() -> anyhow::Result<()> {
 
     match &cli.command {
         Some(cmd) => match cmd {
-            Commands::ImportBook { title, path } => {
-                add_book(&library, title, path).await?;
+            Commands::ImportBook { title, path, language } => {
+                add_book(&library, title, path, &language).await?;
             }
-            Commands::ImportEpub { path } => {
-                add_epub(&library, path).await?;
+            Commands::ImportEpub { path, language } => {
+                add_epub(&library, path, &language).await?;
             }
             Commands::List {} => {
                 list_books(&library).await?;
@@ -359,7 +365,6 @@ async fn do_main() -> anyhow::Result<()> {
             Commands::Translate {
                 id,
                 api_key,
-                book_language,
                 translation_language,
                 n_parallel,
             } => {
@@ -369,7 +374,6 @@ async fn do_main() -> anyhow::Result<()> {
                     cache,
                     api_key,
                     *id,
-                    book_language,
                     translation_language,
                     n_parallel.unwrap_or(5),
                 )

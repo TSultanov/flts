@@ -122,24 +122,14 @@ impl LibraryTranslation {
 }
 
 impl LibraryBook {
-    pub async fn get_translation(&self, target_language: &Language) -> Option<Arc<Mutex<LibraryTranslation>>> {
-        for (t_idx, t) in self.translations.iter().enumerate() {
-            if t.lock().await.translation.target_language == target_language.to_639_3()
-            {
-                return Some(self.translations[t_idx].clone());
-            }
-        }
-
-        None
-    }
-
     pub async fn get_or_create_translation(
         &mut self,
-        source_language: &Language,
         target_language: &Language,
     ) -> Arc<Mutex<LibraryTranslation>> {
+        let source_language = &self.book.language;
+
         for (t_idx, t) in self.translations.iter().enumerate() {
-            if t.lock().await.translation.source_language == source_language.to_639_3()
+            if &t.lock().await.translation.source_language == source_language
                 && t.lock().await.translation.target_language == target_language.to_639_3()
             {
                 return self.translations[t_idx].clone();
@@ -151,10 +141,10 @@ impl LibraryBook {
             .push(Arc::new(Mutex::new(LibraryTranslation {
                 dict_cache: self.dict_cache.clone(),
                 translation: Translation::create(
-                    source_language.to_639_3(),
+                    source_language,
                     target_language.to_639_3(),
                 ),
-                source_language: *source_language,
+                source_language: Language::from_639_3(source_language).unwrap(),
                 target_language: *target_language,
                 last_modified: None,
                 changed: true,
@@ -339,6 +329,8 @@ impl LibraryBook {
                     book_path.remove_file()?;
                 }
                 book_path_temp.move_file(&book_path)?;
+
+                book.last_modified = get_modified_if_exists(&book_path)?;
                 break;
             }
             // Attempt to merge and save again otherwise
@@ -368,7 +360,11 @@ impl LibraryBook {
 }
 
 impl Library {
-    pub fn create_book(&mut self, title: &str) -> anyhow::Result<Arc<Mutex<LibraryBook>>> {
+    pub fn create_book(
+        &mut self,
+        title: &str,
+        language: &Language,
+    ) -> anyhow::Result<Arc<Mutex<LibraryBook>>> {
         let books = self.list_books()?;
         if books.iter().any(|b| b.title == title) {
             Err(LibraryError::DuplicateTitle(title.to_owned()))?
@@ -381,7 +377,7 @@ impl Library {
             dict_cache: self.dictionaries_cache.clone(),
             path: book_root,
             last_modified: None,
-            book: Book::create(guid, title),
+            book: Book::create(guid, title, language),
             translations: vec![],
         }));
 
@@ -413,7 +409,9 @@ mod library_book_tests {
         let library_path = root.join("lib").unwrap();
         let mut library = Library::open(library_path.clone()).unwrap();
 
-        let book1 = library.create_book("First Book").unwrap();
+        let book1 = library
+            .create_book("First Book", &Language::from_639_3("eng").unwrap())
+            .unwrap();
         book1.lock().await.save().await.unwrap();
 
         let book_file = book1.lock().await.path.join("book.dat").unwrap();
@@ -449,12 +447,13 @@ mod library_book_tests {
         let library_path = root.join("lib").unwrap();
         let mut library = Library::open(library_path.clone()).unwrap();
 
-        let book1 = library.create_book("First Book").unwrap();
+        let book1 = library
+            .create_book("First Book", &Language::from_639_3("spa").unwrap())
+            .unwrap();
         let _translation = book1
             .lock()
             .await
             .get_or_create_translation(
-                &Language::from_str("es").unwrap(),
                 &Language::from_str("en").unwrap(),
             )
             .await;
@@ -513,7 +512,9 @@ mod library_book_tests {
         let mut library = Library::open(library_path.clone()).unwrap();
 
         // Create and save
-        let book = library.create_book("First Title").unwrap();
+        let book = library
+            .create_book("First Title", &Language::from_639_3("eng").unwrap())
+            .unwrap();
         book.lock().await.save().await.unwrap();
 
         // Simulate "loaded": set last_modified from disk
@@ -548,94 +549,98 @@ mod library_book_tests {
             .unwrap();
 
         // Create a book and attach a translation with an initial version
-        let book = library.create_book("First Book").unwrap();
-        let mut book = book.lock().await;
-        let mut tr = Translation::create(source_language.to_639_3(), target_language.to_639_3());
-        let initial_pt = translation_import::ParagraphTranslation {
-            timestamp: 1,
-            source_language: "es".to_owned(),
-            target_language: "en".to_owned(),
-            sentences: vec![translation_import::Sentence {
-                full_translation: "Hola".into(),
-                words: vec![translation_import::Word {
-                    original: "Hola".into(),
-                    contextual_translations: vec!["Hello".into()],
-                    note: String::new(),
-                    is_punctuation: false,
-                    grammar: translation_import::Grammar {
-                        original_initial_form: "hola".into(),
-                        target_initial_form: "hello".into(),
-                        part_of_speech: "interj".into(),
-                        plurality: None,
-                        person: None,
-                        tense: None,
-                        case: None,
-                        other: None,
-                    },
+        let book_id = {
+            let book = library.create_book("First Book", &source_language).unwrap();
+            let mut book = book.lock().await;
+            let mut tr =
+                Translation::create(source_language.to_639_3(), target_language.to_639_3());
+            let initial_pt = translation_import::ParagraphTranslation {
+                timestamp: 1,
+                source_language: source_language.to_639_3().to_owned(),
+                target_language: target_language.to_639_3().to_owned(),
+                sentences: vec![translation_import::Sentence {
+                    full_translation: "Hola".into(),
+                    words: vec![translation_import::Word {
+                        original: "Hola".into(),
+                        contextual_translations: vec!["Hello".into()],
+                        note: String::new(),
+                        is_punctuation: false,
+                        grammar: translation_import::Grammar {
+                            original_initial_form: "hola".into(),
+                            target_initial_form: "hello".into(),
+                            part_of_speech: "interj".into(),
+                            plurality: None,
+                            person: None,
+                            tense: None,
+                            case: None,
+                            other: None,
+                        },
+                    }],
                 }],
-            }],
+            };
+            tr.add_paragraph_translation(0, &initial_pt, &mut dict.lock().await.dictionary);
+            book.translations
+                .push(Arc::new(Mutex::new(super::LibraryTranslation {
+                    dict_cache: library.dictionaries_cache.clone(),
+                    translation: tr,
+                    source_language,
+                    target_language,
+                    last_modified: None,
+                    changed: true,
+                })));
+            book.save().await.unwrap();
+            book.book.id
         };
-        tr.add_paragraph_translation(0, &initial_pt, &mut dict.lock().await.dictionary);
-        book.translations
-            .push(Arc::new(Mutex::new(super::LibraryTranslation {
-                dict_cache: library.dictionaries_cache.clone(),
-                translation: tr,
-                source_language,
-                target_language,
-                last_modified: None,
-                changed: true,
-            })));
-        book.save().await.unwrap();
 
-        // Treat as loaded: refresh last_modified and translations from disk
-        let book_file = book.path.join("book.dat").unwrap();
-        let tr_file = book
-            .path
+        // Reload book
+        let path ={
+            let book = library.get_book(&book_id).unwrap();
+            let mut book = book.lock().await;
+
+            // Modify both book and translation
+            book.book.title = "Second Edition".into();
+            let new_pt = translation_import::ParagraphTranslation {
+                timestamp: 2,
+                source_language: source_language.to_639_3().to_owned(),
+                target_language: target_language.to_639_3().to_owned(),
+                sentences: vec![translation_import::Sentence {
+                    full_translation: "Hola mundo".into(),
+                    words: vec![translation_import::Word {
+                        original: "Hola".into(),
+                        contextual_translations: vec!["Hello".into()],
+                        note: String::new(),
+                        is_punctuation: false,
+                        grammar: translation_import::Grammar {
+                            original_initial_form: "hola".into(),
+                            target_initial_form: "hello".into(),
+                            part_of_speech: "interj".into(),
+                            plurality: None,
+                            person: None,
+                            tense: None,
+                            case: None,
+                            other: None,
+                        },
+                    }],
+                }],
+            };
+            book.translations[0]
+                .lock()
+                .await
+                .translation
+                .add_paragraph_translation(0, &new_pt, &mut dict.lock().await.dictionary);
+
+            book.save().await.unwrap();
+            book.path.clone()
+        };
+
+        let book_file = path.join("book.dat").unwrap();
+        let tr_file = path
             .join(format!(
                 "translation_{}_{}.dat",
                 source_language.to_639_3(),
                 target_language.to_639_3()
             ))
             .unwrap();
-        book.last_modified = book_file.metadata().unwrap().modified;
-        book.translations.clear();
-        let loaded_tr =
-            super::LibraryTranslation::load(library.dictionaries_cache, &tr_file).unwrap();
-        book.translations.push(Arc::new(Mutex::new(loaded_tr)));
-
-        // Modify both book and translation
-        book.book.title = "Second Edition".into();
-        let new_pt = translation_import::ParagraphTranslation {
-            timestamp: 2,
-            source_language: "es".to_owned(),
-            target_language: "en".to_owned(),
-            sentences: vec![translation_import::Sentence {
-                full_translation: "Hola mundo".into(),
-                words: vec![translation_import::Word {
-                    original: "Hola".into(),
-                    contextual_translations: vec!["Hello".into()],
-                    note: String::new(),
-                    is_punctuation: false,
-                    grammar: translation_import::Grammar {
-                        original_initial_form: "hola".into(),
-                        target_initial_form: "hello".into(),
-                        part_of_speech: "interj".into(),
-                        plurality: None,
-                        person: None,
-                        tense: None,
-                        case: None,
-                        other: None,
-                    },
-                }],
-            }],
-        };
-        book.translations[0]
-            .lock()
-            .await
-            .translation
-            .add_paragraph_translation(0, &new_pt, &mut dict.lock().await.dictionary);
-
-        let _saved = book.save().await.unwrap();
 
         // Verify book updated
         let mut bf = book_file.open_file().unwrap();
@@ -668,7 +673,9 @@ mod library_book_tests {
             .unwrap();
 
         // Create a book with a translation ts=1
-        let book = library.create_book("Merge Book").unwrap();
+        let book = library
+            .create_book("Merge Book", &Language::from_639_3("eng").unwrap())
+            .unwrap();
         let mut book = book.lock().await;
         let mut tr = Translation::create(source_language.to_639_3(), target_language.to_639_3());
         let pt1 = translation_import::ParagraphTranslation {
@@ -1047,7 +1054,9 @@ mod library_book_tests {
         let library_path = root.join("lib").unwrap();
         let mut library = Library::open(library_path.clone()).unwrap();
 
-        let book = library.create_book("Original Title").unwrap();
+        let book = library
+            .create_book("Original Title", &Language::from_639_3("eng").unwrap())
+            .unwrap();
         let mut book = book.lock().await;
         book.save().await.unwrap();
 
@@ -1075,7 +1084,9 @@ mod library_book_tests {
         let library_path = root.join("lib").unwrap();
         let mut library = Library::open(library_path.clone()).unwrap();
 
-        let book = library.create_book("Main V1").unwrap();
+        let book = library
+            .create_book("Main V1", &Language::from_639_3("eng").unwrap())
+            .unwrap();
         let mut book = book.lock().await;
         book.save().await.unwrap();
 
@@ -1129,7 +1140,9 @@ mod library_book_tests {
         let library_path = root.join("lib").unwrap();
         let mut library = Library::open(library_path.clone()).unwrap();
 
-        let book = library.create_book("V1").unwrap();
+        let book = library
+            .create_book("V1", &Language::from_639_3("eng").unwrap())
+            .unwrap();
         let mut book = book.lock().await;
         book.save().await.unwrap();
 

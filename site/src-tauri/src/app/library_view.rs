@@ -118,22 +118,19 @@ impl LibraryView {
         target_language: &Language,
     ) -> anyhow::Result<Vec<ParagraphView>> {
         let book = self.library.get_book(&book_id)?;
-        let book = book.lock().await;
+        let mut book = book.lock().await;
 
-        let book_translation = book.get_translation(target_language).await;
+        let book_translation = book.get_or_create_translation(target_language).await;
 
         let mut views = Vec::new();
         for p in book.book.chapter_view(chapter_id).paragraphs() {
             let original = p.original_html.unwrap_or(p.original_text);
 
-            let mut translation: Option<_> = None;
-            if let Some(bt) = &book_translation {
-                let bt = bt.lock().await;
-                let t_view = bt.paragraph_view(p.id);
-                translation = t_view.map(|t| {
-                    translation_to_html(p.id, &original, &t).unwrap_or_else(|err| err.to_string())
-                })
-            }
+            let bt = book_translation.lock().await;
+            let t_view = bt.paragraph_view(p.id);
+            let translation = t_view.map(|t| {
+                translation_to_html(p.id, &original, &t).unwrap_or_else(|err| err.to_string())
+            });
 
             views.push(ParagraphView {
                 id: p.id,
@@ -154,13 +151,12 @@ impl LibraryView {
         target_language: &Language,
     ) -> anyhow::Result<Option<WordView>> {
         let book = self.library.get_book(&book_id)?;
-        let book = book.lock().await;
+        let mut book = book.lock().await;
 
-        let book_translation = book.get_translation(target_language).await;
+        let book_translation = book.get_or_create_translation(target_language).await;
 
         Ok(
-            if let Some(bt) = book_translation
-                && let Some(paragraph) = bt.lock().await.paragraph_view(paragraph_id)
+            if let Some(paragraph) = book_translation.lock().await.paragraph_view(paragraph_id)
             {
                 let sentence = paragraph.sentence_view(sentence_id);
                 let word = sentence.word_view(word_id);

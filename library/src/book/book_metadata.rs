@@ -12,6 +12,7 @@ use crate::book::serialization::{
 pub struct BookMetadata {
     pub id: Uuid,
     pub title: String,
+    pub language: String,
     pub chapters_count: usize,
     pub paragraphs_count: usize,
 }
@@ -54,6 +55,13 @@ impl BookMetadata {
         let title = String::from_utf8(title_buf)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8 in title"))?;
 
+        // Language
+        let language_len = read_var_u64(&mut cursor)? as usize;
+        let mut language_buf = vec![0u8; language_len];
+        cursor.read_exact(&mut language_buf)?;
+        let language = String::from_utf8(language_buf)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8 in language"))?;
+
         let chapters_count = read_var_u64(&mut cursor)? as usize;
 
         let paragraphs_count = read_var_u64(&mut cursor)? as usize;
@@ -61,6 +69,7 @@ impl BookMetadata {
         Ok(BookMetadata {
             id,
             title,
+            language,
             chapters_count,
             paragraphs_count,
         })
@@ -69,13 +78,15 @@ impl BookMetadata {
 
 #[cfg(test)]
 mod book_metadata_tests {
+    use isolang::Language;
     use uuid::Uuid;
 
     use crate::book::{book::Book, book_metadata::BookMetadata, serialization::Serializable};
 
     #[test]
     fn test_metadata_roundtrip() {
-        let mut book = Book::create(Uuid::new_v4(), "My Book");
+        let language = "eng";
+        let mut book = Book::create(Uuid::new_v4(), "My Book", &Language::from_639_3(language).unwrap());
         book.push_chapter(Some("Intro"));
         book.push_paragraph(0, "Hello world", Some("<p>Hello <b>world</b></p>"));
         book.push_paragraph(0, "Second paragraph", None);
@@ -91,11 +102,13 @@ mod book_metadata_tests {
         assert_eq!(metadata.title, "My Book");
         assert_eq!(metadata.chapters_count, 2);
         assert_eq!(metadata.paragraphs_count, 3);
+        assert_eq!(metadata.language, language);
     }
 
     #[test]
     fn test_metadata_corruption() {
-        let mut book = Book::create(Uuid::new_v4(), "My Book");
+        let language = "eng";
+        let mut book = Book::create(Uuid::new_v4(), "My Book", &Language::from_639_3(language).unwrap());
         book.push_chapter(Some("Intro"));
         book.push_paragraph(0, "Hello world", Some("<p>Hello <b>world</b></p>"));
         book.push_paragraph(0, "Second paragraph", None);

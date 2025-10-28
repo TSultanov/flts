@@ -4,6 +4,7 @@ use std::{
 };
 
 use gemini_rust::{Gemini, Model};
+use isolang::Language;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
@@ -16,7 +17,8 @@ pub struct GeminiTranslator {
     cache: Arc<Mutex<TranslationsCache>>,
     client: Gemini,
     schema: Value,
-    to: String,
+    from: Language,
+    to: Language,
 }
 
 impl GeminiTranslator {
@@ -24,7 +26,8 @@ impl GeminiTranslator {
         cache: Arc<Mutex<TranslationsCache>>,
         model: Model,
         api_key: String,
-        to: String,
+        from: &Language,
+        to: &Language,
     ) -> anyhow::Result<GeminiTranslator> {
         let schema = json!(
             {
@@ -130,21 +133,22 @@ impl GeminiTranslator {
             cache,
             schema,
             client,
-            to,
+            from: from.clone(),
+            to: to.clone(),
         })
     }
 }
 
 impl Translator for GeminiTranslator {
     async fn get_translation(&self, paragraph: &str) -> anyhow::Result<ParagraphTranslation> {
-        if let Some(cached_result) = self.cache.lock().await.get(paragraph).await.ok().flatten() {
+        if let Some(cached_result) = self.cache.lock().await.get(&self.from, &self.to, paragraph).await.ok().flatten() {
             return Ok(cached_result);
         }
 
         let result = self
             .client
             .generate_content()
-            .with_system_prompt(Self::get_prompt(&self.to))
+            .with_system_prompt(Self::get_prompt(&self.from.to_name(), &self.to.to_name()))
             .with_user_message(paragraph)
             .with_response_mime_type("application/json")
             .with_response_schema(self.schema.clone())
@@ -157,7 +161,7 @@ impl Translator for GeminiTranslator {
         let duration_since_epoch = now.duration_since(UNIX_EPOCH)?;
         result.timestamp = duration_since_epoch.as_secs();
 
-        self.cache.lock().await.set(paragraph, &result);
+        self.cache.lock().await.set(&self.from, &self.to, paragraph, &result);
 
         Ok(result)
     }

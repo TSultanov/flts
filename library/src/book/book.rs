@@ -14,6 +14,7 @@ use super::soa_helpers::*;
 pub struct Book {
     pub id: Uuid,
     pub title: String,
+    pub language: String,
     chapters: Vec<Chapter>,
     paragraph_map: Vec<usize>,
     paragraphs: Vec<Paragraph>,
@@ -46,10 +47,11 @@ pub struct ParagraphView<'a> {
 }
 
 impl Book {
-    pub fn create(id: Uuid, title: &str) -> Self {
+    pub fn create(id: Uuid, title: &str, language: &isolang::Language) -> Self {
         Book {
             title: title.to_owned(),
             id: id,
+            language: language.to_639_3().to_string(),
             chapters: vec![],
             paragraph_map: vec![],
             paragraphs: vec![],
@@ -165,6 +167,7 @@ impl Serializable for Book {
         // u64 metadata hash
         // u8[16] id
         // u64 title_len, [u8]*
+        // u64 language_len, [u8]*
         // u64 chapters_count
         // u64 paragraphs_count
         // Data section
@@ -199,6 +202,9 @@ impl Serializable for Book {
         // Title
         write_var_u64(&mut metadata_buf_hasher, self.title.len() as u64)?;
         metadata_buf_hasher.write_all(self.title.as_bytes())?;
+        // Language
+        write_var_u64(&mut metadata_buf_hasher, self.language.len() as u64)?;
+        metadata_buf_hasher.write_all(self.language.as_bytes())?;
         // chapters count
         let chapters_count = self.chapter_count();
         write_var_u64(&mut metadata_buf_hasher, chapters_count as u64)?;
@@ -334,6 +340,13 @@ impl Serializable for Book {
         let title = String::from_utf8(title_buf)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8 in title"))?;
 
+        // Language
+        let language_len = read_var_u64(input_stream)? as usize;
+        let mut language_buf = vec![0u8; language_len];
+        input_stream.read_exact(&mut language_buf)?;
+        let language = String::from_utf8(language_buf)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8 in language"))?;
+
         // skip chapters count
         _ = read_var_u64(input_stream)?;
 
@@ -418,6 +431,7 @@ impl Serializable for Book {
         Ok(Book {
             id,
             title,
+            language,
             chapters,
             paragraphs,
             paragraph_map,
@@ -430,17 +444,19 @@ impl Serializable for Book {
 mod book_tests {
     use std::io::Cursor;
 
+    use isolang::Language;
+
     use super::*;
 
     #[test]
     fn create_book() {
-        let book = Book::create(Uuid::new_v4(), "Test");
+        let book = Book::create(Uuid::new_v4(), "Test", &Language::from_639_3("eng").unwrap());
         assert_eq!("Test", book.title);
     }
 
     #[test]
     fn create_book_empty_chapter() {
-        let mut book = Book::create(Uuid::new_v4(), "Test");
+        let mut book = Book::create(Uuid::new_v4(), "Test", &Language::from_639_3("eng").unwrap());
         let chapter_index = book.push_chapter(Some("Test chapter"));
         let first_chapter = book.chapter_view(chapter_index);
         assert_eq!(0, chapter_index);
@@ -449,7 +465,7 @@ mod book_tests {
 
     #[test]
     fn create_book_one_chapter_one_paragraph() {
-        let mut book = Book::create(Uuid::new_v4(), "Test");
+        let mut book = Book::create(Uuid::new_v4(), "Test", &Language::from_639_3("eng").unwrap());
         let chapter_index = book.push_chapter(Some("Test chapter"));
         let paragraph_index = book.push_paragraph(chapter_index, "Test", Some("<b>Test</b>"));
         let first_chapter = book.chapter_view(0);
@@ -463,7 +479,7 @@ mod book_tests {
 
     #[test]
     fn serialize_deserialize_round_trip() {
-        let mut book = Book::create(Uuid::new_v4(), "My Book");
+        let mut book = Book::create(Uuid::new_v4(), "My Book", &Language::from_639_3("eng").unwrap());
         let chapter_index = book.push_chapter(Some("Intro"));
         let first_paragraph = book.push_paragraph(
             chapter_index,
@@ -514,7 +530,7 @@ mod book_tests {
 
     #[test]
     fn serialize_deserialize_corruption() {
-        let mut book = Book::create(Uuid::new_v4(), "My Book");
+        let mut book = Book::create(Uuid::new_v4(), "My Book", &Language::from_639_3("eng").unwrap());
         book.push_chapter(Some("Intro"));
         book.push_paragraph(0, "Hello world", Some("<p>Hello <b>world</b></p>"));
         book.push_paragraph(0, "Second paragraph", None);
