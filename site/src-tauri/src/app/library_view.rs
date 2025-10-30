@@ -1,7 +1,9 @@
 use htmlentity::entity::{ICodedDataTrait, decode};
 use isolang::Language;
 use library::{book::translation::ParagraphTranslationView, library::Library};
+use library::epub_importer::EpubBook;
 use tauri::async_runtime::Mutex;
+use tauri::Emitter;
 use uuid::Uuid;
 
 use crate::app::App;
@@ -58,12 +60,13 @@ pub struct GrammarView {
 }
 
 pub struct LibraryView {
+    app: tauri::AppHandle,
     library: Library,
 }
 
 impl LibraryView {
-    pub fn create(library: Library) -> Self {
-        Self { library }
+    pub fn create(app: tauri::AppHandle, library: Library) -> Self {
+        Self { app, library }
     }
 
     pub fn list_books(
@@ -184,6 +187,43 @@ impl LibraryView {
             },
         )
     }
+
+    pub async fn import_plain_text(
+        &mut self,
+        title: &str,
+        text: &str,
+        source_language: &Language,
+        target_language: Option<&Language>,
+    ) -> anyhow::Result<Uuid> {
+        let id = self
+            .library
+            .create_book_plain(title, text, source_language)
+            .await?;
+
+        // Emit updated library view after successful import
+        let books = self.list_books(target_language)?;
+        self.app.emit("library_updated", books)?;
+
+        Ok(id)
+    }
+
+    pub async fn import_epub(
+        &mut self,
+        book: &EpubBook,
+        source_language: &Language,
+        target_language: Option<&Language>,
+    ) -> anyhow::Result<Uuid> {
+        let id = self
+            .library
+            .create_book_epub(book, source_language)
+            .await?;
+
+        // Emit updated library view after successful import
+        let books = self.list_books(target_language)?;
+        self.app.emit("library_updated", books)?;
+
+        Ok(id)
+    }
 }
 
 #[tauri::command]
@@ -279,6 +319,64 @@ pub async fn get_word_info(
             .map_err(|err| err.to_string())
     } else {
         Ok(None)
+    }
+}
+
+#[tauri::command]
+pub async fn import_plain_text(
+    state: tauri::State<'_, Mutex<App>>,
+    title: String,
+    text: String,
+    source_language_id: String,
+) -> Result<Uuid, String> {
+    let mut app = state.lock().await;
+
+    let target_language = app
+        .config
+        .target_language_id
+        .as_ref()
+        .and_then(|l| Language::from_639_3(l));
+
+    if let Some(library) = &mut app.library {
+        let source_language = Language::from_639_3(&source_language_id)
+            .ok_or_else(|| format!("Failed to resolve source language: {}", source_language_id))?;
+        let id = library
+            .import_plain_text(&title, &text, &source_language, target_language.as_ref())
+            .await
+            .map_err(|err| err.to_string())?;
+
+        Ok(id)
+    } else {
+        Err("Library is not configured".into())
+    }
+}
+
+#[tauri::command]
+pub async fn import_epub(
+    state: tauri::State<'_, Mutex<App>>,
+    book: EpubBook,
+    source_language_id: String,
+) -> Result<Uuid, String> {
+    let mut app = state.lock().await;
+
+    // Pre-compute target language for later emit while avoiding borrow conflicts
+    let target_language = app
+        .config
+        .target_language_id
+        .as_ref()
+        .and_then(|l| Language::from_639_3(l));
+
+    if let Some(library) = &mut app.library {
+        let source_language = Language::from_639_3(&source_language_id)
+            .ok_or_else(|| format!("Failed to resolve source language: {}", source_language_id))?;
+        let id = library
+            .import_epub(&book, &source_language, target_language.as_ref())
+            .await
+            .map_err(|err| err.to_string())?;
+
+        Ok(id)
+    } else {
+        Err("Library is not configured".into())
     }
 }
 

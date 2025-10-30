@@ -2,6 +2,9 @@
     import { getContext } from "svelte";
     import { parseEpub } from "../data/epubLoader";
     import type { Library } from "../data/library";
+    import type { Language } from "../config";
+    import { getterToReadable } from "../data/tauri";
+    import { navigate } from "../../router";
 
     let files: FileList | null | undefined = $state();
 
@@ -15,6 +18,8 @@
     });
 
     const selectedChapters = $state(new Set<number>());
+    const languages = getterToReadable<Language[]>("get_languages", {}, []);
+    let sourceLanguageId = $state("eng");
 
     $effect(() => {
         book.then((book) => {
@@ -45,13 +50,14 @@
     async function importBook() {
         const epubBook = await book;
         if (epubBook) {
+            const langId = sourceLanguageId;
             await library.importEpub({
                 title: epubBook.title,
                 chapters: epubBook.chapters.filter((_, idx) =>
                     selectedChapters.has(idx),
                 ),
-            });
-            // goto("/library");
+            }, langId);
+            navigate("/library");
         }
     }
 </script>
@@ -62,6 +68,12 @@
         <p>Loading...</p>
     {:then book}
         {#if book}
+            <label for="src-lang">Source language:</label>
+            <select id="src-lang" bind:value={sourceLanguageId}>
+                {#each $languages as l}
+                    <option value={l.id}>{l.name}{l.localName ? ` (${l.localName})` : ""}</option>
+                {/each}
+            </select>
             <div class="preview">
                 <h1>{book.title}</h1>
                 <h2>Select chapters to import</h2>

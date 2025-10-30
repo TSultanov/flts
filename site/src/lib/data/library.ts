@@ -3,6 +3,7 @@ import type { EpubBook } from "./epubLoader";
 import type { UUID } from "./v2/db";
 import { type ChapterMetaView, type IBookMeta, type ParagraphView, type SentenceWordTranslation } from "./sql/book";
 import { eventToReadable, getterToReadable } from './tauri';
+import { invoke } from "@tauri-apps/api/core";
 
 type LibraryBookMetadataView = {
     id: UUID,
@@ -79,12 +80,12 @@ export class Library {
         return getterToReadable("get_word_info", { "bookId": bookId, "paragraphId": paragraphId, "sentenceId": sentenceId, "wordId": wordId });
     }
 
-    async importEpub(book: EpubBook) {
-
+    async importEpub(book: EpubBook, sourceLanguageId: string) {
+        await invoke<UUID>("import_epub", { book, sourceLanguageId });
     }
 
-    async importText(title: string, text: string) {
-
+    async importText(title: string, text: string, sourceLanguageId: string) {
+        await invoke<UUID>("import_plain_text", { title, text, sourceLanguageId });
     }
 
     private async cleanupTranslationRequests(bookUid: UUID): Promise<void> {

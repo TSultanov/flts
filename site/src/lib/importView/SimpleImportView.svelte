@@ -1,17 +1,23 @@
 <script lang="ts">
     import { getContext } from "svelte";
     import { Library } from "../data/library";
+    import type { Language } from "../config";
+    import { getterToReadable } from "../data/tauri";
+    import { navigate } from "../../router";
 
     let title = $state("");
     let text = $state("");
+    const languages = getterToReadable<Language[]>("get_languages", {}, []);
+    let sourceLanguageId = $state("eng");
 
     const canImport = $derived(title.length > 0 && text.length > 0);
 
     const library: Library = getContext("library");
 
     async function save() {
-        await library.importText(title, text);
-        // goto("/library");
+        const langId = sourceLanguageId;
+        await library.importText(title, text, langId);
+        navigate("/library");
     }
 </script>
 
@@ -20,6 +26,12 @@
     <input type="text" id="title" bind:value={title} />
     <label for="text">Text: </label>
     <textarea id="text" bind:value={text}></textarea>
+    <label for="src-lang">Source language:</label>
+    <select id="src-lang" bind:value={sourceLanguageId}>
+        {#each $languages as l}
+            <option value={l.id}>{l.name}{l.localName ? ` (${l.localName})` : ""}</option>
+        {/each}
+    </select>
     <div class="button">
         <button disabled={!canImport} onclick={save} class="primary">Import</button>
     </div>

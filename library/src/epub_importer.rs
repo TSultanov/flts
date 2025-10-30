@@ -1,20 +1,24 @@
 use std::path::Path;
 
 use epub::doc::EpubDoc;
+use serde::{Deserialize, Serialize};
 use scraper::{ElementRef, Html, Node, Selector};
 
 const ALLOWED_TAGS: &[&str] = &["em", "i", "b", "br"];
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EpubBook {
     pub title: String,
     pub chapters: Vec<EpubChapter>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EpubChapter {
     pub title: String,
     pub paragraphs: Vec<EpubParagraph>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EpubParagraph {
     pub text: String,
     pub html: String,

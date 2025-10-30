@@ -76,7 +76,7 @@ impl App {
 
         if let Some(library_path) = &self.config.library_path {
             let fs = PhysicalFS::new(library_path);
-            self.library = Some(LibraryView::create(Library::open(fs.into())?));
+            self.library = Some(LibraryView::create(self.app.clone(), Library::open(fs.into())?));
             if let Some(library) = &self.library {
                 self.app.emit("library_updated", library.list_books(target_language.as_ref())?)?;
             }
