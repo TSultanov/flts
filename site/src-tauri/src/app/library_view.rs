@@ -1,7 +1,11 @@
+use std::sync::Arc;
+
 use htmlentity::entity::{ICodedDataTrait, decode};
 use isolang::Language;
+use library::library::file_watcher::LibraryFileChange;
 use library::{book::translation::ParagraphTranslationView, library::Library};
 use library::epub_importer::EpubBook;
+use log::info;
 use tauri::async_runtime::Mutex;
 use tauri::Emitter;
 use uuid::Uuid;
@@ -224,11 +228,15 @@ impl LibraryView {
 
         Ok(id)
     }
+
+    pub async fn handle_file_change_event(&mut self, event: &LibraryFileChange) -> anyhow::Result<()> {
+        self.library.handle_file_change_event(event).await
+    }
 }
 
 #[tauri::command]
 pub async fn list_books(
-    state: tauri::State<'_, Mutex<App>>,
+    state: tauri::State<'_, Arc<Mutex<App>>>,
 ) -> Result<Vec<LibraryBookMetadataView>, String> {
     let app = state.lock().await;
 
@@ -249,7 +257,7 @@ pub async fn list_books(
 
 #[tauri::command]
 pub fn list_book_chapters(
-    state: tauri::State<'_, Mutex<App>>,
+    state: tauri::State<'_, Arc<Mutex<App>>>,
     book_id: Uuid,
 ) -> Result<Vec<ChapterView>, String> {
     let mut app = state.blocking_lock();
@@ -264,7 +272,7 @@ pub fn list_book_chapters(
 
 #[tauri::command]
 pub async fn get_book_chapter_paragraphs(
-    state: tauri::State<'_, Mutex<App>>,
+    state: tauri::State<'_, Arc<Mutex<App>>>,
     book_id: Uuid,
     chapter_id: usize,
 ) -> Result<Vec<ParagraphView>, String> {
@@ -290,7 +298,7 @@ pub async fn get_book_chapter_paragraphs(
 
 #[tauri::command]
 pub async fn get_word_info(
-    state: tauri::State<'_, Mutex<App>>,
+    state: tauri::State<'_, Arc<Mutex<App>>>,
     book_id: Uuid,
     paragraph_id: usize,
     sentence_id: usize,
@@ -324,7 +332,7 @@ pub async fn get_word_info(
 
 #[tauri::command]
 pub async fn import_plain_text(
-    state: tauri::State<'_, Mutex<App>>,
+    state: tauri::State<'_, Arc<Mutex<App>>>,
     title: String,
     text: String,
     source_language_id: String,
@@ -353,7 +361,7 @@ pub async fn import_plain_text(
 
 #[tauri::command]
 pub async fn import_epub(
-    state: tauri::State<'_, Mutex<App>>,
+    state: tauri::State<'_, Arc<Mutex<App>>>,
     book: EpubBook,
     source_language_id: String,
 ) -> Result<Uuid, String> {

@@ -1,10 +1,18 @@
-use std::{error::Error, fmt::Display, fs, path::PathBuf};
+use std::{
+    error::Error,
+    fmt::Display,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use directories::ProjectDirs;
 use isolang::Language;
-use library::library::Library;
-use tauri::{async_runtime::Mutex, Emitter};
-use tracing::info;
+use library::library::{
+    Library,
+    file_watcher::{LibraryFileChange, LibraryWatcher},
+};
+use tauri::{Emitter, async_runtime::Mutex};
+use log::{info, warn};
 use vfs::PhysicalFS;
 
 use crate::app::{config::Config, library_view::LibraryView};
@@ -34,15 +42,18 @@ pub struct App {
     config_path: PathBuf,
     config: Config,
     library: Option<LibraryView>,
+    watcher: Option<Arc<Mutex<LibraryWatcher>>>,
 }
 
 impl App {
-    pub fn init(app: tauri::AppHandle) -> anyhow::Result<Self> {
+    pub fn init(
+        app: tauri::AppHandle,
+        watcher: Option<Arc<Mutex<LibraryWatcher>>>,
+    ) -> anyhow::Result<Self> {
         let dirs = ProjectDirs::from("", "TS", "FLTS").ok_or(AppError::ProjectDirsError)?;
 
         let config_dir = dirs.config_dir();
         info!("config_dir = {:?}", config_dir);
-        fs::create_dir_all(config_dir)?;
         let config_path = config_dir.join("config.json");
 
         let config = if config_path.exists() {
@@ -56,6 +67,7 @@ impl App {
             config_path,
             config,
             library: None,
+            watcher,
         };
 
         app.eval_config()?;
@@ -72,31 +84,60 @@ impl App {
     }
 
     fn eval_config(&mut self) -> anyhow::Result<()> {
-        let target_language = self.config.target_language_id.as_ref().and_then(|l| Language::from_639_3(l));
+        let target_language = self
+            .config
+            .target_language_id
+            .as_ref()
+            .and_then(|l| Language::from_639_3(l));
 
         if let Some(library_path) = &self.config.library_path {
+            if let Some(watcher) = &self.watcher {
+                watcher
+                    .blocking_lock()
+                    .set_path(&Path::new(library_path).to_path_buf())
+                    .unwrap_or_else(|err| {
+                        warn!("Failed to set watcher path to {}: {}", library_path, err)
+                    });
+            }
             let fs = PhysicalFS::new(library_path);
-            self.library = Some(LibraryView::create(self.app.clone(), Library::open(fs.into())?));
+            self.library = Some(LibraryView::create(
+                self.app.clone(),
+                Library::open(fs.into())?,
+            ));
             if let Some(library) = &self.library {
-                self.app.emit("library_updated", library.list_books(target_language.as_ref())?)?;
+                self.app.emit(
+                    "library_updated",
+                    library.list_books(target_language.as_ref())?,
+                )?;
             }
         }
 
         Ok(())
     }
+
+    pub async fn handle_file_change_event(
+        &mut self,
+        event: &LibraryFileChange,
+    ) -> anyhow::Result<()> {
+        if let Some(library) = &mut self.library {
+            library.handle_file_change_event(event).await?;
+        }
+        Ok(())
+    }
 }
 
 #[tauri::command]
-pub fn update_config(state: tauri::State<'_, Mutex<App>>, config: Config) -> Result<(), String> {
-    let mut app = state
-        .blocking_lock();
+pub fn update_config(
+    state: tauri::State<'_, Arc<Mutex<App>>>,
+    config: Config,
+) -> Result<(), String> {
+    let mut app = state.blocking_lock();
     app.update_config(config).map_err(|err| err.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
-pub fn get_config(state: tauri::State<'_, Mutex<App>>) -> Result<Config, String> {
-    let app = state
-        .blocking_lock();
+pub fn get_config(state: tauri::State<'_, Arc<Mutex<App>>>) -> Result<Config, String> {
+    let app = state.blocking_lock();
     Ok(app.config.clone())
 }

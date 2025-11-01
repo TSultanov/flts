@@ -19,7 +19,7 @@ use isolang::Language;
 use library::{
     cache::TranslationsCache,
     epub_importer::EpubBook,
-    library::Library,
+    library::{Library, file_watcher::LibraryWatcher},
     translator::{TranslationModel, Translator, get_translator},
 };
 use tokio::time::{Duration, sleep};

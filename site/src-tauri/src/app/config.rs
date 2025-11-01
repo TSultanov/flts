@@ -1,9 +1,9 @@
 use std::{fs::{File, OpenOptions}, path::Path};
 
 use library::translator::TranslationModel;
+use log::warn;
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
-use tracing::{event, Level};
 
 #[derive(Serialize)]
 pub struct Model {
@@ -53,7 +53,7 @@ pub fn get_languages() -> Vec<Language> {
     languages
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     #[serde(rename = "targetLanguageId")]
     pub target_language_id: Option<String>,
@@ -81,7 +81,7 @@ impl Config {
         Ok(match serde_json::from_reader::<_, Self>(file) {
             Ok(json) => json,
             Err(err) => {
-                event!(Level::WARN, "Failed to parse config: {}. Loading default values.", err);
+                warn!("Failed to parse config: {}. Loading default values.", err);
                 Self::default()
             },
         })

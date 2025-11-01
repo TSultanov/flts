@@ -284,6 +284,14 @@ impl DictionaryCache {
 
         Ok(dictionary)
     }
+
+    pub async fn reload_dictionary(&mut self, src: Language, tgt: Language) -> anyhow::Result<()> {
+        if let Some(cached_dict) = self.cache.get(&(src, tgt)) {
+            cached_dict.lock().await.save()?;
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]

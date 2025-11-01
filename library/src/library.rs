@@ -9,9 +9,13 @@ use vfs::{VfsError, VfsPath};
 use crate::{
     book::{book_metadata::BookMetadata, translation_metadata::TranslationMetadata},
     epub_importer::EpubBook,
-    library::{library_book::LibraryBook, library_dictionary::DictionaryCache},
+    library::{
+        file_watcher::LibraryFileChange, library_book::LibraryBook,
+        library_dictionary::DictionaryCache,
+    },
 };
 
+pub mod file_watcher;
 pub mod library_book;
 pub mod library_dictionary;
 
@@ -199,7 +203,12 @@ impl Library {
         Ok(book)
     }
 
-    pub async fn create_book_plain(&mut self, title: &str, text: &str, language: &Language) -> anyhow::Result<Uuid> {
+    pub async fn create_book_plain(
+        &mut self,
+        title: &str,
+        text: &str,
+        language: &Language,
+    ) -> anyhow::Result<Uuid> {
         let book = self.create_book(title, language)?;
         let mut book = book.lock().await;
         let chapter_index = book.book.push_chapter(None);
@@ -214,7 +223,11 @@ impl Library {
         Ok(book.book.id)
     }
 
-    pub async fn create_book_epub(&mut self, epub: &EpubBook, language: &Language) -> anyhow::Result<Uuid> {
+    pub async fn create_book_epub(
+        &mut self,
+        epub: &EpubBook,
+        language: &Language,
+    ) -> anyhow::Result<Uuid> {
         let book = self.create_book(&epub.title, language)?;
         let mut book = book.lock().await;
 
@@ -228,6 +241,27 @@ impl Library {
         book.save().await?;
 
         Ok(book.book.id)
+    }
+
+    pub async fn handle_file_change_event(
+        &mut self,
+        event: &LibraryFileChange,
+    ) -> anyhow::Result<()> {
+        match event {
+            LibraryFileChange::BookChanged(uuid) => {
+                if let Some(book) = self.books_cache.get(&uuid) {
+                    book.lock().await.save().await?;
+                }
+            }
+            LibraryFileChange::DictionaryChanged(src, tgt) => {
+                self.dictionaries_cache
+                    .lock()
+                    .await
+                    .reload_dictionary(*src, *tgt)
+                    .await?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -268,9 +302,13 @@ mod library_tests {
         let library_path = root.join("lib").unwrap();
         let mut library = Library::open(library_path.clone()).unwrap();
 
-        let book1 = library.create_book("First Book", &Language::from_639_3("eng").unwrap()).unwrap();
+        let book1 = library
+            .create_book("First Book", &Language::from_639_3("eng").unwrap())
+            .unwrap();
         book1.lock().await.save().await.unwrap();
-        let book2 = library.create_book("Second Book", &Language::from_639_3("eng").unwrap()).unwrap();
+        let book2 = library
+            .create_book("Second Book", &Language::from_639_3("eng").unwrap())
+            .unwrap();
         book2.lock().await.save().await.unwrap();
 
         let mut books = library.list_books().unwrap();
