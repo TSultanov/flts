@@ -1,14 +1,15 @@
 use isolang::Language;
+use itertools::Itertools;
+use log::{error, info, warn};
 use notify::{Event, EventKind, RecursiveMode};
 use notify_debouncer_full::{DebounceEventResult, Debouncer, FileIdMap, new_debouncer};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use log::{error, info, warn};
 use uuid::Uuid;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LibraryFileChange {
     BookChanged(Uuid),
     DictionaryChanged(Language, Language),
@@ -30,10 +31,18 @@ impl LibraryWatcher {
             None,
             move |result: DebounceEventResult| match result {
                 Ok(events) => {
-                    for event in events {
-                        if let Some(change) = Self::classify_event(&event) {
-                            let _ = tx.send(change);
+                    let deduplicated_changes = events
+                        .into_iter()
+                        .map(|ev| Self::classify_event(&ev))
+                        .filter_map(|ev| ev)
+                        .unique();
+
+                    for change in deduplicated_changes {
+                        match &change {
+                            LibraryFileChange::BookChanged(uuid) => info!("Book {uuid} change detected"),
+                            LibraryFileChange::DictionaryChanged(src, tgt) => info!("Dictionary {src} -> {tgt} change detected"),
                         }
+                        let _ = tx.send(change);
                     }
                 }
                 Err(errors) => {
@@ -51,9 +60,9 @@ impl LibraryWatcher {
 
     pub fn set_path(&mut self, library_path: &PathBuf) -> anyhow::Result<()> {
         if let Some(path) = &self.path {
-            self.debouncer.unwatch(path).unwrap_or_else(|err| {
-                warn!("Failed to unwatch path {:?}: {}", path, err)
-            });
+            self.debouncer
+                .unwatch(path)
+                .unwrap_or_else(|err| warn!("Failed to unwatch path {:?}: {}", path, err));
         }
         self.path = Some(library_path.clone());
         self.debouncer
@@ -85,13 +94,11 @@ impl LibraryWatcher {
                 || filename.starts_with("translation_") && filename.ends_with(".dat")
             {
                 let uuid = path.parent()?.file_name()?.to_str()?;
-                info!("Book {uuid} update detected");
                 return Some(LibraryFileChange::BookChanged(Uuid::from_str(uuid).ok()?));
             }
 
             // Dictionary file: dictionary_{src}_{tgt}{some junk from conflicts}.dat
             if filename.starts_with("dictionary_") && filename.ends_with(".dat") {
-                info!("Dictionary update detected");
                 let parts: Vec<&str> = filename
                     .trim_start_matches("dictionary_")
                     .trim_end_matches(".dat")
