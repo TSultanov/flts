@@ -11,8 +11,8 @@ use library::library::{
     Library,
     file_watcher::{LibraryFileChange, LibraryWatcher},
 };
-use tauri::{Emitter, async_runtime::Mutex};
 use log::{info, warn};
+use tauri::{Emitter, async_runtime::Mutex};
 use vfs::PhysicalFS;
 
 use crate::app::{config::Config, library_view::LibraryView};
@@ -121,6 +121,30 @@ impl App {
     ) -> anyhow::Result<()> {
         if let Some(library) = &mut self.library {
             library.handle_file_change_event(event).await?;
+        }
+        match event {
+            LibraryFileChange::BookChanged(uuid) => {
+                info!("Emitting book_updated event");
+                self.app.emit("book_updated", uuid)?;
+                if let Some(library) = &self.library {
+                    let target_language = self
+                        .config
+                        .target_language_id
+                        .as_ref()
+                        .and_then(|l| Language::from_639_3(l));
+
+                    info!("Emitting library_updated event");
+                    self.app.emit(
+                        "library_updated",
+                        library.list_books(target_language.as_ref())?,
+                    )?;
+                }
+            }
+            LibraryFileChange::DictionaryChanged(src, tgt) => {
+                info!("Emitting dictionary_updated event");
+                self.app
+                    .emit("dictionary_updated", (src.to_639_3(), tgt.to_639_3()))?;
+            }
         }
         Ok(())
     }
