@@ -249,7 +249,7 @@ impl Library {
     ) -> anyhow::Result<()> {
         match event {
             LibraryFileChange::BookChanged(uuid) => {
-                if let Some(book) = self.books_cache.get(&uuid) {
+                if let Some(book) = self.books_cache.get(uuid) {
                     book.lock().await.save().await?;
                 }
             }

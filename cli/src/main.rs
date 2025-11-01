@@ -4,7 +4,7 @@ use std::{
     fmt::Display,
     fs::{File, create_dir},
     io::Read,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::ExitCode,
     str::FromStr,
     sync::Arc,
@@ -19,7 +19,7 @@ use isolang::Language;
 use library::{
     cache::TranslationsCache,
     epub_importer::EpubBook,
-    library::{Library, file_watcher::LibraryWatcher},
+    library::Library,
     translator::{TranslationModel, Translator, get_translator},
 };
 use tokio::time::{Duration, sleep};
@@ -119,7 +119,7 @@ async fn add_book(
     Ok(())
 }
 
-async fn add_epub(library: &Arc<Mutex<Library>>, path: &PathBuf, lang: &str) -> anyhow::Result<()> {
+async fn add_epub(library: &Arc<Mutex<Library>>, path: &Path, lang: &str) -> anyhow::Result<()> {
     let epub = EpubBook::load(path)?;
 
     let book_id = library.lock().await.create_book_epub(&epub, &Language::from_str(lang)?).await?;
@@ -263,7 +263,7 @@ async fn translate_book(
         )?;
         set.spawn(async move {
             println!("Worker {}: spawning...", i);
-            let target_lang1 = target_lang.clone();
+            let target_lang1 = target_lang;
             // Receive until the channel is closed (all senders dropped)
             while let Ok(p_id) = rx.recv_async().await {
                 // Bounded retry inside the worker instead of re-queuing
@@ -330,7 +330,7 @@ async fn translate_book(
 async fn get_cache() -> anyhow::Result<TranslationsCache> {
     let dirs = ProjectDirs::from("", "TS", "FLTS").unwrap();
     let cache_dir = dirs.cache_dir();
-    Ok(TranslationsCache::create(cache_dir).await?)
+    TranslationsCache::create(cache_dir).await
 }
 
 #[tokio::main]
@@ -360,10 +360,10 @@ async fn do_main() -> anyhow::Result<()> {
     match &cli.command {
         Some(cmd) => match cmd {
             Commands::ImportBook { title, path, language } => {
-                add_book(&library, title, path, &language).await?;
+                add_book(&library, title, path, language).await?;
             }
             Commands::ImportEpub { path, language } => {
-                add_epub(&library, path, &language).await?;
+                add_epub(&library, path, language).await?;
             }
             Commands::List {} => {
                 list_books(&library).await?;

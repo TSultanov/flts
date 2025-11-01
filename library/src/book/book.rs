@@ -50,7 +50,7 @@ impl Book {
     pub fn create(id: Uuid, title: &str, language: &isolang::Language) -> Self {
         Book {
             title: title.to_owned(),
-            id: id,
+            id,
             language: language.to_639_3().to_string(),
             chapters: vec![],
             paragraph_map: vec![],

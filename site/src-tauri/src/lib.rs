@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use library::library::file_watcher::LibraryWatcher;
 use tauri::{Builder, Manager, async_runtime::Mutex};
-use log::{info, warn};
+use log::warn;
 
 pub mod app;
 

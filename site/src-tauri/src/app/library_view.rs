@@ -5,7 +5,6 @@ use isolang::Language;
 use library::library::file_watcher::LibraryFileChange;
 use library::{book::translation::ParagraphTranslationView, library::Library};
 use library::epub_importer::EpubBook;
-use log::info;
 use tauri::async_runtime::Mutex;
 use tauri::Emitter;
 use uuid::Uuid;

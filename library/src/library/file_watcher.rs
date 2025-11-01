@@ -52,7 +52,7 @@ impl LibraryWatcher {
     pub fn set_path(&mut self, library_path: &PathBuf) -> anyhow::Result<()> {
         if let Some(path) = &self.path {
             self.debouncer.unwatch(path).unwrap_or_else(|err| {
-                warn!("Failed to unwatch path {:?}: {}", path, err.to_string())
+                warn!("Failed to unwatch path {:?}: {}", path, err)
             });
         }
         self.path = Some(library_path.clone());

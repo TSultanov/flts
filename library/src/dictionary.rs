@@ -138,7 +138,7 @@ impl Serializable for Dictionary {
         // Compute total pairs (optional, informational). We'll still write per-original blocks.
         let t_pairs = Instant::now();
         let mut total_pairs = 0u64;
-        for (_orig, tr_set) in &self.translations {
+        for tr_set in self.translations.values() {
             total_pairs += tr_set.len() as u64;
         }
         write_var_u64(&mut hashing_stream, total_pairs)?;

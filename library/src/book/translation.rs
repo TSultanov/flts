@@ -147,11 +147,11 @@ impl Translation {
 
     fn push_string(&mut self, string: &str) -> VecSlice<u8> {
         if let Some(cached) = self.strings_cache.get(string) {
-            return cached.clone();
+            return *cached;
         }
 
         let vs = push_string(&mut self.strings, string);
-        self.strings_cache.insert(string.to_owned(), vs.clone());
+        self.strings_cache.insert(string.to_owned(), vs);
         vs
     }
 
@@ -521,7 +521,7 @@ impl Serializable for Translation {
             self.paragraph_translations.len() as u64,
         )?;
         for pt in &self.paragraph_translations {
-            write_var_u64(&mut hashing_stream, pt.timestamp as u64)?;
+            write_var_u64(&mut hashing_stream, pt.timestamp)?;
             match pt.previous_version {
                 Some(idx) => {
                     hashing_stream.write_all(&[1])?;

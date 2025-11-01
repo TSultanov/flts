@@ -61,16 +61,14 @@ impl EpubBook {
 
         // Build title
         let mut title_parts = Vec::new();
-        if let Some(creator) = epub.metadata.get("creator") {
-            if !creator.is_empty() {
+        if let Some(creator) = epub.metadata.get("creator")
+            && !creator.is_empty() {
                 title_parts.push(creator[0].clone());
             }
-        }
-        if let Some(title) = epub.metadata.get("title") {
-            if !title.is_empty() {
+        if let Some(title) = epub.metadata.get("title")
+            && !title.is_empty() {
                 title_parts.push(title[0].clone());
             }
-        }
 
         Ok(EpubBook {
             title: title_parts.join(" - "),
@@ -160,11 +158,10 @@ fn find_element_by_id<'a>(document: &'a Html, id: &str) -> Option<ElementRef<'a>
 
 fn all_children_are_inline(element: ElementRef) -> bool {
     for child in element.children() {
-        if let Some(child_element) = ElementRef::wrap(child) {
-            if !is_inline_element(child_element.value().name()) {
+        if let Some(child_element) = ElementRef::wrap(child)
+            && !is_inline_element(child_element.value().name()) {
                 return false;
             }
-        }
     }
     true
 }
@@ -206,11 +203,10 @@ fn text_between(start: ElementRef, end: Option<ElementRef>) -> Vec<EpubParagraph
 
     while let Some(elem) = current {
         // Check if we've reached the end
-        if let Some(end_elem) = end {
-            if elem.id() == end_elem.id() {
+        if let Some(end_elem) = end
+            && elem.id() == end_elem.id() {
                 break;
             }
-        }
 
         // Check if this is a paragraph-like element
         let has_text = elem.text().any(|t| !t.trim().is_empty());
@@ -223,12 +219,11 @@ fn text_between(start: ElementRef, end: Option<ElementRef>) -> Vec<EpubParagraph
         }
 
         // Traverse: children first, then siblings, then up to parent's sibling
-        if !all_children_are_inline(elem) {
-            if let Some(first_child) = elem.children().find_map(ElementRef::wrap) {
+        if !all_children_are_inline(elem)
+            && let Some(first_child) = elem.children().find_map(ElementRef::wrap) {
                 current = Some(first_child);
                 continue;
             }
-        }
 
         // Try next sibling
         current = find_next_sibling(elem).or_else(|| {

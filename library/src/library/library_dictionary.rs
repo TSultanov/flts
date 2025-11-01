@@ -155,16 +155,14 @@ impl LibraryDictionary {
 
             // Reconcile with on-disk changes
             if let Some(last) = self.last_modified {
-                if main_path.exists()? {
-                    if let Some(saved_mod) = main_path.metadata()?.modified {
-                        if saved_mod > last {
+                if main_path.exists()?
+                    && let Some(saved_mod) = main_path.metadata()?.modified
+                        && saved_mod > last {
                             // On-disk is newer; merge into memory
                             let on_disk = Self::load(&main_path)?;
                             self.merge(on_disk);
                             // do not update last_modified yet; we'll write a new version below
                         }
-                    }
-                }
             } else if main_path.exists()? {
                 // Unknown last_modified (newly created object) but file already exists -> merge
                 let on_disk = Self::load(&main_path)?;
@@ -251,7 +249,7 @@ impl DictionaryCache {
                 id: main_dictionary.id,
                 source_language: main_dictionary.source_language,
                 target_language: main_dictionary.target_language,
-                main_path: main_path,
+                main_path,
                 conflicting_paths: conflicting_dictionaries,
             })
         }
