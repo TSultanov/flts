@@ -120,58 +120,60 @@ impl App {
         event: &LibraryFileChange,
     ) -> anyhow::Result<()> {
         if let Some(library) = &mut self.library {
-            library.handle_file_change_event(event).await?;
-        }
-        match event {
-            LibraryFileChange::BookChanged { modified: _, uuid } => {
-                info!("Emitting book_updated event");
-                self.app.emit("book_updated", uuid)?;
-                if let Some(library) = &self.library {
-                    let target_language = self
-                        .config
-                        .target_language_id
-                        .as_ref()
-                        .and_then(|l| Language::from_639_3(l));
+            let had_effect = library.handle_file_change_event(event).await?;
+            if had_effect {
+                match event {
+                    LibraryFileChange::BookChanged { modified: _, uuid } => {
+                        info!("Emitting book_updated event");
+                        self.app.emit("book_updated", uuid)?;
+                        if let Some(library) = &self.library {
+                            let target_language = self
+                                .config
+                                .target_language_id
+                                .as_ref()
+                                .and_then(|l| Language::from_639_3(l));
 
-                    info!("Emitting library_updated event");
-                    self.app.emit(
-                        "library_updated",
-                        library.list_books(target_language.as_ref())?,
-                    )?;
-                }
-            }
-            LibraryFileChange::TranslationChanged {
-                modified: _,
-                from: _,
-                to,
-                uuid,
-            } => {
-                let target_language = self
-                    .config
-                    .target_language_id
-                    .as_ref()
-                    .and_then(|l| Language::from_639_3(l));
+                            info!("Emitting library_updated event");
+                            self.app.emit(
+                                "library_updated",
+                                library.list_books(target_language.as_ref())?,
+                            )?;
+                        }
+                    }
+                    LibraryFileChange::TranslationChanged {
+                        modified: _,
+                        from: _,
+                        to,
+                        uuid,
+                    } => {
+                        let target_language = self
+                            .config
+                            .target_language_id
+                            .as_ref()
+                            .and_then(|l| Language::from_639_3(l));
 
-                if target_language.map_or(false, |tl| tl == *to) {
-                    info!("Emitting book_updated event");
-                    self.app.emit("book_updated", uuid)?;
-                    if let Some(library) = &self.library {
-                        info!("Emitting library_updated event");
-                        self.app.emit(
-                            "library_updated",
-                            library.list_books(target_language.as_ref())?,
-                        )?;
+                        if target_language.map_or(false, |tl| tl == *to) {
+                            info!("Emitting book_updated event");
+                            self.app.emit("book_updated", uuid)?;
+                            if let Some(library) = &self.library {
+                                info!("Emitting library_updated event");
+                                self.app.emit(
+                                    "library_updated",
+                                    library.list_books(target_language.as_ref())?,
+                                )?;
+                            }
+                        }
+                    }
+                    LibraryFileChange::DictionaryChanged {
+                        modified: _,
+                        from,
+                        to,
+                    } => {
+                        info!("Emitting dictionary_updated event");
+                        self.app
+                            .emit("dictionary_updated", (from.to_639_3(), to.to_639_3()))?;
                     }
                 }
-            }
-            LibraryFileChange::DictionaryChanged {
-                modified: _,
-                from,
-                to,
-            } => {
-                info!("Emitting dictionary_updated event");
-                self.app
-                    .emit("dictionary_updated", (from.to_639_3(), to.to_639_3()))?;
             }
         }
         Ok(())

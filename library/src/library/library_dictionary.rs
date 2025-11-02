@@ -290,16 +290,19 @@ impl DictionaryCache {
         modified: SystemTime,
         src: Language,
         tgt: Language,
-    ) -> anyhow::Result<()> {
-        if let Some(cached_dict) = self.cache.get(&(src, tgt)) {
+    ) -> anyhow::Result<bool> {
+        Ok(if let Some(cached_dict) = self.cache.get(&(src, tgt)) {
             let mut cached_dict = cached_dict.lock().await;
 
             if cached_dict.last_modified.map_or(true, |lm| lm < modified) {
                 cached_dict.save()?;
+                true
+            } else {
+                false
             }
-        }
-
-        Ok(())
+        } else {
+            false
+        })
     }
 }
 

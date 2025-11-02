@@ -69,15 +69,15 @@ export class Library {
     }
 
     getBookChapters(bookId: UUID): Readable<ChapterMetaView[]> {
-        return getterToReadable("list_book_chapters", { "bookId": bookId }, []);
+        return getterToReadable("list_book_chapters", { "bookId": bookId }, "book_updated", (updatedId: UUID) => updatedId === bookId, []);
     }
 
     getBookChapterParagraphs(bookId: UUID, chapterId: number): Readable<ParagraphView[]> {
-        return getterToReadable("get_book_chapter_paragraphs", { "bookId": bookId, "chapterId": chapterId }, []);
+        return getterToReadable("get_book_chapter_paragraphs", { "bookId": bookId, "chapterId": chapterId }, "book_updated", (updatedId: UUID) => updatedId === bookId, []);
     }
 
     getWordInfo(bookId: UUID, paragraphId: number, sentenceId: number, wordId: number): Readable<SentenceWordTranslation | undefined> {
-        return getterToReadable("get_word_info", { "bookId": bookId, "paragraphId": paragraphId, "sentenceId": sentenceId, "wordId": wordId });
+        return getterToReadable("get_word_info", { "bookId": bookId, "paragraphId": paragraphId, "sentenceId": sentenceId, "wordId": wordId }, "book_updated", (updatedId: UUID) => updatedId === bookId);
     }
 
     async importEpub(book: EpubBook, sourceLanguageId: string) {

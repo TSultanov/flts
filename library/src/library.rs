@@ -248,11 +248,13 @@ impl Library {
     pub async fn handle_file_change_event(
         &mut self,
         event: &LibraryFileChange,
-    ) -> anyhow::Result<()> {
-        match event {
+    ) -> anyhow::Result<bool> {
+        Ok(match event {
             LibraryFileChange::BookChanged { modified, uuid } => {
                 if let Some(book) = self.books_cache.get(uuid) {
-                    book.lock().await.reload_book(*modified).await?;
+                    book.lock().await.reload_book(*modified).await?
+                } else {
+                    false
                 }
             }
             LibraryFileChange::TranslationChanged {
@@ -265,7 +267,9 @@ impl Library {
                     book.lock()
                         .await
                         .reload_translations(*modified, *from, *to)
-                        .await?;
+                        .await?
+                } else {
+                    false
                 }
             }
             LibraryFileChange::DictionaryChanged { modified, from, to } => {
@@ -273,10 +277,9 @@ impl Library {
                     .lock()
                     .await
                     .reload_dictionary(*modified, *from, *to)
-                    .await?;
+                    .await?
             }
-        }
-        Ok(())
+        })
     }
 }
 

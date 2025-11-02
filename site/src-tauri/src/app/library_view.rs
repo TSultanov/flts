@@ -228,7 +228,7 @@ impl LibraryView {
         Ok(id)
     }
 
-    pub async fn handle_file_change_event(&mut self, event: &LibraryFileChange) -> anyhow::Result<()> {
+    pub async fn handle_file_change_event(&mut self, event: &LibraryFileChange) -> anyhow::Result<bool> {
         self.library.handle_file_change_event(event).await
     }
 }

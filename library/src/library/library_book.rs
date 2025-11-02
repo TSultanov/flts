@@ -217,12 +217,13 @@ impl LibraryBook {
         })
     }
 
-    pub async fn reload_book(&mut self, modified: SystemTime) -> anyhow::Result<()> {
-        if self.last_modified.map_or(true, |lm| lm < modified) {
+    pub async fn reload_book(&mut self, modified: SystemTime) -> anyhow::Result<bool> {
+        Ok(if self.last_modified.map_or(true, |lm| lm < modified) {
             self.save().await?;
-        }
-
-        Ok(())
+            true
+        } else {
+            false
+        })
     }
 
     pub async fn reload_translations(
@@ -230,7 +231,7 @@ impl LibraryBook {
         modified: SystemTime,
         from: Language,
         to: Language,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<bool> {
         let mut needs_save = false;
 
         for translation in &self.translations {
@@ -243,11 +244,12 @@ impl LibraryBook {
             }
         }
 
-        if needs_save {
+        Ok(if needs_save {
             self.save().await?;
-        }
-
-        Ok(())
+            true
+        } else {
+            false
+        })
     }
 
     pub async fn save(&mut self) -> anyhow::Result<()> {
