@@ -186,13 +186,43 @@ async fn translate_paragraph(
         .add_paragraph_translation(paragraph_id, &p_translation)
         .await?;
 
-    {
-        let book = library.lock().await.get_book(&book_id)?;
-        let mut book = book.lock().await;
-        book.save().await?;
+    Ok(())
+}
+
+async fn save_book(library: &Arc<Mutex<Library>>, book_id: Uuid) -> anyhow::Result<()> {
+    let book = library.lock().await.get_book(&book_id)?;
+    let mut book = book.lock().await;
+    book.save().await?;
+    Ok(())
+}
+
+async fn run_saver(
+    library: Arc<Mutex<Library>>,
+    book_id: Uuid,
+    rx: flume::Receiver<()>,
+) {
+    use std::time::Instant as StdInstant;
+
+    let mut last_save = StdInstant::now() - Duration::from_secs(1);
+    let mut pending = false;
+
+    while let Ok(_) = rx.recv_async().await {
+        pending = true;
+        let now = StdInstant::now();
+        if now.duration_since(last_save) >= Duration::from_secs(1) {
+            if let Err(err) = save_book(&library, book_id).await {
+                eprintln!("Autosave error: {err}");
+            }
+            last_save = now;
+            pending = false;
+        }
     }
 
-    Ok(())
+    if pending {
+        if let Err(err) = save_book(&library, book_id).await {
+            eprintln!("Final save error: {err}");
+        }
+    }
 }
 
 async fn translate_book(
@@ -250,10 +280,18 @@ async fn translate_book(
 
     let (tx, rx) = flume::unbounded();
 
+    // Channel to notify saver about new changes
+    let (tx_save, rx_save) = flume::unbounded::<()>();
+    let saver_library = library.clone();
+    let saver_handle = tokio::spawn(async move {
+        run_saver(saver_library, book_id, rx_save).await;
+    });
+
     let mut set = JoinSet::new();
     for i in 0..n_workers {
         let library1 = library.clone();
         let rx = rx.clone();
+        let tx_save_w = tx_save.clone();
         let translator = get_translator(
             cache.clone(),
             TranslationModel::GeminiFlash,
@@ -280,7 +318,11 @@ async fn translate_book(
                     .await;
 
                     match result {
-                        Ok(_) => break,
+                        Ok(_) => {
+                            // Notify saver that new data is available
+                            let _ = tx_save_w.send_async(()).await;
+                            break
+                        },
                         Err(err) => {
                             eprintln!(
                                 "Worker {i}: Error translating paragraph {p_id} (attempt {attempt}): {}",
@@ -311,18 +353,16 @@ async fn translate_book(
     }
 
     drop(tx);
+    // Drop main saver sender so channel can close when workers finish
+    drop(tx_save);
 
     set.join_all().await;
 
+    // Wait for saver to flush any pending changes
+    let _ = saver_handle.await;
+
     let elapsed_time = start_time.elapsed();
     println!("Translated in: {:?}", elapsed_time);
-
-    {
-        println!("Saving...");
-        let book = library.lock().await.get_book(&book_id)?;
-        book.lock().await.save().await?;
-        println!("Saved.");
-    }
 
     Ok(())
 }
