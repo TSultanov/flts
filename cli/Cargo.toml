@@ -12,6 +12,7 @@ file-format = { version = "0.28.0", features = ["reader"] }
 flume = "0.11.1"
 isolang = "2.4.0"
 library = { path = "../library" }
+log = "0.4"
 tokio = { version = "1.47.1", features = ["full"] }
 uuid = { version = "1.18.1", features = ["v4"] }
 vfs = "0.12.2"

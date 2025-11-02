@@ -3,6 +3,7 @@ pub mod dictionary_metadata;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 
+use log::{info};
 use uuid::Uuid;
 
 use crate::book::serialization::{
@@ -165,7 +166,7 @@ impl Serializable for Dictionary {
         let d_finalize = t_finalize.elapsed();
 
         let total = total_start.elapsed();
-        println!(
+        info!(
             "Serialization timings (Dictionary):\n  - magic+version: {:?}\n  - metadata build: {:?}\n  - metadata write: {:?}\n  - count pairs ({}): {:?}\n  - entries ({} originals): {:?}\n  - finalize hash+flush: {:?}\n  - TOTAL: {:?}",
             d_magic,
             d_meta_build,
@@ -192,6 +193,7 @@ impl Serializable for Dictionary {
         let t_hash = Instant::now();
         let hash_valid = validate_hash(input_stream)?;
         if !hash_valid {
+            log::error!("Failed to read dictionary: Invalid hash");
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid hash"));
         }
         let d_hash = t_hash.elapsed();
@@ -240,7 +242,7 @@ impl Serializable for Dictionary {
         let d_entries = t_entries.elapsed();
 
         let total = total_start.elapsed();
-        println!(
+        info!(
             "Deserialization timings (Dictionary):\n  - hash validate: {:?}\n  - magic+version: {:?}\n  - metadata (incl. read): {:?}\n  - pairs read: {:?}\n  - entries ({} originals): {:?}\n  - TOTAL: {:?}",
             d_hash, d_magic, d_meta, d_pairs, originals_len, d_entries, total
         );

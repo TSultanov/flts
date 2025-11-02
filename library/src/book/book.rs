@@ -1,3 +1,4 @@
+use log::info;
 use uuid::Uuid;
 
 use crate::book::serialization::{
@@ -276,7 +277,7 @@ impl Serializable for Book {
 
         let total = total_start.elapsed();
 
-        println!(
+        info!(
             "Serialization timings (Book):\n  - magic+version: {:?}\n  - metadata build: {:?}\n  - metadata write: {:?}\n  - strings compress ({} -> {} bytes): {:?}\n  - strings write: {:?}\n  - paragraphs ({}): {:?}\n  - paragraph map ({}): {:?}\n  - chapters ({}): {:?}\n  - finalize hash+flush: {:?}\n  - TOTAL: {:?}",
             d_magic,
             d_meta_build,
@@ -310,6 +311,7 @@ impl Serializable for Book {
         let t_hash = Instant::now();
         let hash_valid = validate_hash(input_stream)?;
         if !hash_valid {
+            log::error!("Failed to read book: Invalid hash");
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid hash"));
         }
         let d_hash = t_hash.elapsed();
@@ -410,7 +412,7 @@ impl Serializable for Book {
 
         let total = total_start.elapsed();
 
-        println!(
+        info!(
             "Deserialization timings (Book):\n  - hash validate: {:?}\n  - magic+version: {:?}\n  - metadata (incl. read): {:?}\n  - strings read: {:?}\n  - strings decompress ({} -> {} bytes): {:?}\n  - paragraphs ({}): {:?}\n  - paragraph map ({}): {:?}\n  - chapters ({}): {:?}\n  - TOTAL: {:?}",
             d_hash,
             d_magic,

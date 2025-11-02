@@ -1,3 +1,5 @@
+use rand::{Rng, distr::Alphanumeric};
+
 use super::soa_helpers::VecSlice;
 use std::{
     hash::Hasher,
@@ -116,6 +118,14 @@ pub fn read_vec_slice<T>(r: &mut dyn io::Read) -> io::Result<VecSlice<T>> {
     let start = read_var_u64(r)? as usize;
     let len = read_var_u64(r)? as usize;
     Ok(VecSlice::new(start, len))
+}
+
+pub fn create_random_string(len: usize) -> String {
+    rand::rng()
+        .sample_iter(&Alphanumeric)
+        .take(len)
+        .map(char::from)
+        .collect()
 }
 
 // Magic identifiers for binary blobs (4 bytes)

@@ -3,16 +3,30 @@ use itertools::Itertools;
 use log::{error, info, warn};
 use notify::{Event, EventKind, RecursiveMode};
 use notify_debouncer_full::{DebounceEventResult, Debouncer, FileIdMap, new_debouncer};
+use std::fs;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LibraryFileChange {
-    BookChanged(Uuid),
-    DictionaryChanged(Language, Language),
+    BookChanged {
+        modified: SystemTime,
+        uuid: Uuid,
+    },
+    TranslationChanged {
+        modified: SystemTime,
+        from: Language,
+        to: Language,
+        uuid: Uuid,
+    },
+    DictionaryChanged {
+        modified: SystemTime,
+        from: Language,
+        to: Language,
+    },
 }
 
 pub struct LibraryWatcher {
@@ -39,8 +53,29 @@ impl LibraryWatcher {
 
                     for change in deduplicated_changes {
                         match &change {
-                            LibraryFileChange::BookChanged(uuid) => info!("Book {uuid} change detected"),
-                            LibraryFileChange::DictionaryChanged(src, tgt) => info!("Dictionary {src} -> {tgt} change detected"),
+                            LibraryFileChange::BookChanged { modified: _, uuid } => {
+                                info!("Book {uuid} change detected")
+                            }
+                            LibraryFileChange::TranslationChanged {
+                                modified: _,
+                                from,
+                                to,
+                                uuid,
+                            } => info!(
+                                "Translation {} {}->{} change detected",
+                                uuid,
+                                from.to_639_3(),
+                                to.to_639_3()
+                            ),
+                            LibraryFileChange::DictionaryChanged {
+                                modified: _,
+                                from,
+                                to,
+                            } => info!(
+                                "Dictionary {} -> {} change detected",
+                                from.to_639_3(),
+                                to.to_639_3()
+                            ),
                         }
                         let _ = tx.send(change);
                     }
@@ -84,17 +119,49 @@ impl LibraryWatcher {
             let filename = path.file_name()?.to_str()?;
 
             // Skip temp files
-            if filename.ends_with('~') {
+            if filename.contains('~') {
                 continue;
             }
 
+            let metadata = fs::metadata(path);
+            if metadata.is_err() {
+                warn!(
+                    "Failed to read metadata of {:?}: {}",
+                    path,
+                    &metadata.err().unwrap()
+                );
+                continue;
+            }
+            let metadata = metadata.unwrap();
+
             // Book file: {uuid}/book{some junk from conflicts}.dat
             // Translation file: {uuid}/translation_{src}_{tgt}{some junk from conflicts}.dat
-            if filename.starts_with("book") && filename.ends_with(".dat")
-                || filename.starts_with("translation_") && filename.ends_with(".dat")
-            {
+            if filename.starts_with("book") && filename.ends_with(".dat") {
                 let uuid = path.parent()?.file_name()?.to_str()?;
-                return Some(LibraryFileChange::BookChanged(Uuid::from_str(uuid).ok()?));
+                return Some(LibraryFileChange::BookChanged {
+                    modified: metadata.modified().unwrap(),
+                    uuid: Uuid::from_str(uuid).ok()?,
+                });
+            }
+
+            if filename.starts_with("translation_") && filename.ends_with(".dat") {
+                let uuid = path.parent()?.file_name()?.to_str()?;
+                let parts: Vec<&str> = filename
+                    .trim_start_matches("translation_")
+                    .trim_end_matches(".dat")
+                    .split('_')
+                    .collect();
+
+                if parts.len() >= 2 {
+                    let from: String = parts[0].chars().take(3).collect();
+                    let to: String = parts[1].chars().take(3).collect();
+                    return Some(LibraryFileChange::TranslationChanged {
+                        modified: metadata.modified().unwrap(),
+                        from: Language::from_639_3(&from)?,
+                        to: Language::from_639_3(&to)?,
+                        uuid: Uuid::from_str(uuid).ok()?,
+                    });
+                }
             }
 
             // Dictionary file: dictionary_{src}_{tgt}{some junk from conflicts}.dat
@@ -108,10 +175,11 @@ impl LibraryWatcher {
                 if parts.len() >= 2 {
                     let from: String = parts[0].chars().take(3).collect();
                     let to: String = parts[1].chars().take(3).collect();
-                    return Some(LibraryFileChange::DictionaryChanged(
-                        Language::from_639_3(&from)?,
-                        Language::from_639_3(&to)?,
-                    ));
+                    return Some(LibraryFileChange::DictionaryChanged {
+                        modified: metadata.modified().unwrap(),
+                        from: Language::from_639_3(&from)?,
+                        to: Language::from_639_3(&to)?,
+                    });
                 }
             }
         }

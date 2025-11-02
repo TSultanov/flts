@@ -2,6 +2,7 @@ use std::{collections::HashMap, error::Error, fmt::Display, sync::Arc};
 
 use isolang::Language;
 use itertools::Itertools;
+use log::info;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 use vfs::{VfsError, VfsPath};
@@ -132,6 +133,7 @@ impl LibraryBookMetadata {
             })
         }
 
+        info!("Loaded metadata for {path:?}");
         Ok(LibraryBookMetadata {
             id: book_metadata.id,
             title: book_metadata.title,
@@ -248,16 +250,29 @@ impl Library {
         event: &LibraryFileChange,
     ) -> anyhow::Result<()> {
         match event {
-            LibraryFileChange::BookChanged(uuid) => {
+            LibraryFileChange::BookChanged { modified, uuid } => {
                 if let Some(book) = self.books_cache.get(uuid) {
-                    book.lock().await.save().await?;
+                    book.lock().await.reload_book(*modified).await?;
                 }
             }
-            LibraryFileChange::DictionaryChanged(src, tgt) => {
+            LibraryFileChange::TranslationChanged {
+                modified,
+                from,
+                to,
+                uuid,
+            } => {
+                if let Some(book) = self.books_cache.get(uuid) {
+                    book.lock()
+                        .await
+                        .reload_translations(*modified, *from, *to)
+                        .await?;
+                }
+            }
+            LibraryFileChange::DictionaryChanged { modified, from, to } => {
                 self.dictionaries_cache
                     .lock()
                     .await
-                    .reload_dictionary(*src, *tgt)
+                    .reload_dictionary(*modified, *from, *to)
                     .await?;
             }
         }

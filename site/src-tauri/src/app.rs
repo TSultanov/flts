@@ -123,7 +123,7 @@ impl App {
             library.handle_file_change_event(event).await?;
         }
         match event {
-            LibraryFileChange::BookChanged(uuid) => {
+            LibraryFileChange::BookChanged { modified: _, uuid } => {
                 info!("Emitting book_updated event");
                 self.app.emit("book_updated", uuid)?;
                 if let Some(library) = &self.library {
@@ -140,10 +140,38 @@ impl App {
                     )?;
                 }
             }
-            LibraryFileChange::DictionaryChanged(src, tgt) => {
+            LibraryFileChange::TranslationChanged {
+                modified: _,
+                from: _,
+                to,
+                uuid,
+            } => {
+                let target_language = self
+                    .config
+                    .target_language_id
+                    .as_ref()
+                    .and_then(|l| Language::from_639_3(l));
+
+                if target_language.map_or(false, |tl| tl == *to) {
+                    info!("Emitting book_updated event");
+                    self.app.emit("book_updated", uuid)?;
+                    if let Some(library) = &self.library {
+                        info!("Emitting library_updated event");
+                        self.app.emit(
+                            "library_updated",
+                            library.list_books(target_language.as_ref())?,
+                        )?;
+                    }
+                }
+            }
+            LibraryFileChange::DictionaryChanged {
+                modified: _,
+                from,
+                to,
+            } => {
                 info!("Emitting dictionary_updated event");
                 self.app
-                    .emit("dictionary_updated", (src.to_639_3(), tgt.to_639_3()))?;
+                    .emit("dictionary_updated", (from.to_639_3(), to.to_639_3()))?;
             }
         }
         Ok(())

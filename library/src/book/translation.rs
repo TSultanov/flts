@@ -1,4 +1,5 @@
 use ahash::{AHashMap, AHashSet};
+use log::info;
 use uuid::Uuid;
 
 use crate::{
@@ -557,7 +558,7 @@ impl Serializable for Translation {
 
         let total = total_start.elapsed();
 
-        println!(
+        info!(
             "Serialization timings (Translation):\n  - magic+version: {:?}\n  - metadata build: {:?}\n  - metadata write: {:?}\n  - strings compress ({} -> {} bytes): {:?}\n  - strings write: {:?}\n  - contextual translations ({}): {:?}\n  - words ({}): {:?}\n  - sentences ({}): {:?}\n  - paragraph translations ({}): {:?}\n  - paragraphs ({}): {:?}\n  - finalize hash+flush: {:?}\n  - TOTAL: {:?}",
             d_magic,
             d_meta_build,
@@ -595,6 +596,7 @@ impl Serializable for Translation {
         let t_hash = Instant::now();
         let hash_valid = validate_hash(input_stream)?;
         if !hash_valid {
+            log::error!("Failed to read translation: Invalid hash");
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid hash"));
         }
         let d_hash = t_hash.elapsed();
@@ -747,7 +749,7 @@ impl Serializable for Translation {
 
         let total = total_start.elapsed();
 
-        println!(
+        info!(
             "Deserialization timings (Translation):\n  - hash validate: {:?}\n  - magic+version: {:?}\n  - metadata (incl. read): {:?}\n  - strings read: {:?}\n  - strings decompress ({} -> {} bytes): {:?}\n  - contextual translations ({}): {:?}\n  - words ({}): {:?}\n  - sentences ({}): {:?}\n  - paragraph translations ({}): {:?}\n  - paragraphs ({}): {:?}\n  - TOTAL: {:?}",
             d_hash,
             d_magic,

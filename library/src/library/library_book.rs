@@ -15,7 +15,7 @@ use vfs::VfsPath;
 use crate::{
     book::{
         book::Book,
-        serialization::Serializable,
+        serialization::{Serializable, create_random_string},
         translation::{ParagraphTranslationView, Translation},
         translation_import,
     },
@@ -140,10 +140,7 @@ impl LibraryBook {
         self.translations
             .push(Arc::new(Mutex::new(LibraryTranslation {
                 dict_cache: self.dict_cache.clone(),
-                translation: Translation::create(
-                    source_language,
-                    target_language.to_639_3(),
-                ),
+                translation: Translation::create(source_language, target_language.to_639_3()),
                 source_language: Language::from_639_3(source_language).unwrap(),
                 target_language: *target_language,
                 last_modified: None,
@@ -220,6 +217,39 @@ impl LibraryBook {
         })
     }
 
+    pub async fn reload_book(&mut self, modified: SystemTime) -> anyhow::Result<()> {
+        if self.last_modified.map_or(true, |lm| lm < modified) {
+            self.save().await?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn reload_translations(
+        &mut self,
+        modified: SystemTime,
+        from: Language,
+        to: Language,
+    ) -> anyhow::Result<()> {
+        let mut needs_save = false;
+
+        for translation in &self.translations {
+            let t = translation.lock().await;
+            if t.source_language == from
+                && t.target_language == to
+                && t.last_modified.map_or(true, |lm| lm < modified)
+            {
+                needs_save = true;
+            }
+        }
+
+        if needs_save {
+            self.save().await?;
+        }
+
+        Ok(())
+    }
+
     pub async fn save(&mut self) -> anyhow::Result<()> {
         if !self.path.exists()? {
             self.path.create_dir()?
@@ -246,7 +276,10 @@ impl LibraryBook {
             let translation_file_name =
                 format!("translation_{}_{}.dat", source_language, target_language);
             let translation_path = book.path.join(&translation_file_name)?;
-            let translation_path_temp = book.path.join(format!("{translation_file_name}~"))?;
+            let translation_path_temp = book.path.join(format!(
+                "{translation_file_name}~{}",
+                create_random_string(8)
+            ))?;
 
             loop {
                 let translation_path_modified_pre_save = get_modified_if_exists(&translation_path)?;
@@ -282,6 +315,7 @@ impl LibraryBook {
                             translation_path.remove_file()?;
                         }
                         translation_path_temp.move_file(&translation_path)?;
+                        translation.last_modified = get_modified_if_exists(&translation_path)?;
                         merged_translations.push(translation_arc.clone());
                         break;
                     }
@@ -300,7 +334,9 @@ impl LibraryBook {
         }
 
         let book_path = book.path.join("book.dat")?;
-        let book_path_temp = book.path.join("book.dat~")?;
+        let book_path_temp = book
+            .path
+            .join(format!("book.dat~{}", create_random_string(8)))?;
         loop {
             let book_path_modified_pre_save = get_modified_if_exists(&book_path)?;
 
@@ -453,9 +489,7 @@ mod library_book_tests {
         let _translation = book1
             .lock()
             .await
-            .get_or_create_translation(
-                &Language::from_str("en").unwrap(),
-            )
+            .get_or_create_translation(&Language::from_str("en").unwrap())
             .await;
         book1.lock().await.save().await.unwrap();
 
@@ -593,7 +627,7 @@ mod library_book_tests {
         };
 
         // Reload book
-        let path ={
+        let path = {
             let book = library.get_book(&book_id).unwrap();
             let mut book = book.lock().await;
 

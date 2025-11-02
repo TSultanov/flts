@@ -157,12 +157,13 @@ impl LibraryDictionary {
             if let Some(last) = self.last_modified {
                 if main_path.exists()?
                     && let Some(saved_mod) = main_path.metadata()?.modified
-                        && saved_mod > last {
-                            // On-disk is newer; merge into memory
-                            let on_disk = Self::load(&main_path)?;
-                            self.merge(on_disk);
-                            // do not update last_modified yet; we'll write a new version below
-                        }
+                    && saved_mod > last
+                {
+                    // On-disk is newer; merge into memory
+                    let on_disk = Self::load(&main_path)?;
+                    self.merge(on_disk);
+                    // do not update last_modified yet; we'll write a new version below
+                }
             } else if main_path.exists()? {
                 // Unknown last_modified (newly created object) but file already exists -> merge
                 let on_disk = Self::load(&main_path)?;
@@ -181,6 +182,7 @@ impl LibraryDictionary {
                     main_path.remove_file()?;
                 }
                 temp_path.move_file(&main_path)?;
+                self.last_modified = get_modified_if_exists(&main_path)?;
                 break;
             }
 
@@ -283,9 +285,18 @@ impl DictionaryCache {
         Ok(dictionary)
     }
 
-    pub async fn reload_dictionary(&mut self, src: Language, tgt: Language) -> anyhow::Result<()> {
+    pub async fn reload_dictionary(
+        &mut self,
+        modified: SystemTime,
+        src: Language,
+        tgt: Language,
+    ) -> anyhow::Result<()> {
         if let Some(cached_dict) = self.cache.get(&(src, tgt)) {
-            cached_dict.lock().await.save()?;
+            let mut cached_dict = cached_dict.lock().await;
+
+            if cached_dict.last_modified.map_or(true, |lm| lm < modified) {
+                cached_dict.save()?;
+            }
         }
 
         Ok(())
