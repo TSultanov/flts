@@ -10,8 +10,8 @@
         chapterId,
     }: {
         sentenceWordIdToDisplay: [number, number, number] | null;
-        bookId: UUID,
-        chapterId: number
+        bookId: UUID;
+        chapterId: number;
     } = $props();
 
     const library: Library = getContext("library");
@@ -56,7 +56,7 @@
             bind:clientHeight={sectionContentWidth}
         >
             {#each $paragraphs as paragraph}
-                <ParagraphView {paragraph} {sentenceWordIdToDisplay} />
+                <ParagraphView {bookId} {paragraph} {sentenceWordIdToDisplay} />
             {/each}
         </div>
     </section>

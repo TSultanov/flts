@@ -88,6 +88,10 @@ export class Library {
         await invoke<UUID>("import_plain_text", { title, text, sourceLanguageId });
     }
 
+    async transalteParagraph(bookId: UUID, paragraphId: number) {
+        await invoke<UUID>("translate_paragraph", { bookId, paragraphId });
+    }
+
     private async cleanupTranslationRequests(bookUid: UUID): Promise<void> {
     }
 

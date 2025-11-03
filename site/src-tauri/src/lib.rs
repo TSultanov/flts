@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use library::library::file_watcher::LibraryWatcher;
-use tauri::{Builder, Manager, async_runtime::Mutex};
 use log::warn;
+use tauri::{Builder, Manager, async_runtime::Mutex};
 
 pub mod app;
 
@@ -53,6 +53,7 @@ pub fn run() {
             app::config::get_languages,
             app::get_config,
             app::update_config,
+            app::translate_paragraph,
             app::library_view::list_books,
             app::library_view::list_book_chapters,
             app::library_view::get_book_chapter_paragraphs,

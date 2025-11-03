@@ -14,8 +14,18 @@ use crate::{
 
 #[derive(Debug, Clone, Copy, EnumIter)]
 pub enum TranslationModel {
-    GeminiFlash,
-    GeminiPro,
+    GeminiFlash = 0,
+    GeminiPro = 1,
+}
+
+impl From<usize> for TranslationModel {
+    fn from(value: usize) -> Self {
+        match value {
+            0 => TranslationModel::GeminiFlash,
+            1 => TranslationModel::GeminiPro,
+            _ => TranslationModel::GeminiFlash,
+        }
+    }
 }
 
 pub trait Translator {

@@ -7,18 +7,24 @@ use std::{
 
 use directories::ProjectDirs;
 use isolang::Language;
-use library::library::{
-    Library,
-    file_watcher::{LibraryFileChange, LibraryWatcher},
+use library::{
+    cache::TranslationsCache,
+    library::{
+        Library,
+        file_watcher::{LibraryFileChange, LibraryWatcher},
+    },
 };
 use log::{info, warn};
 use tauri::{Emitter, async_runtime::Mutex};
+use tokio::runtime::Runtime;
+use uuid::Uuid;
 use vfs::PhysicalFS;
 
-use crate::app::{config::Config, library_view::LibraryView};
+use crate::app::{config::Config, library_view::LibraryView, translation_queue::TranslationQueue};
 
 pub mod config;
 pub mod library_view;
+pub mod translation_queue;
 
 #[derive(Debug)]
 pub enum AppError {
@@ -41,7 +47,9 @@ pub struct App {
     app: tauri::AppHandle,
     config_path: PathBuf,
     config: Config,
-    library: Option<LibraryView>,
+    library: Option<Arc<Mutex<Library>>>,
+    library_view: Option<LibraryView>,
+    translation_queue: Option<TranslationQueue>,
     watcher: Option<Arc<Mutex<LibraryWatcher>>>,
 }
 
@@ -67,6 +75,8 @@ impl App {
             config_path,
             config,
             library: None,
+            library_view: None,
+            translation_queue: None,
             watcher,
         };
 
@@ -84,11 +94,7 @@ impl App {
     }
 
     fn eval_config(&mut self) -> anyhow::Result<()> {
-        let target_language = self
-            .config
-            .target_language_id
-            .as_ref()
-            .and_then(|l| Language::from_639_3(l));
+        let target_language = Language::from_639_3(&self.config.target_language_id);
 
         if let Some(library_path) = &self.config.library_path {
             if let Some(watcher) = &self.watcher {
@@ -100,43 +106,47 @@ impl App {
                     });
             }
             let fs = PhysicalFS::new(library_path);
-            self.library = Some(LibraryView::create(
-                self.app.clone(),
-                Library::open(fs.into())?,
-            ));
-            if let Some(library) = &self.library {
-                self.app.emit(
-                    "library_updated",
-                    library.list_books(target_language.as_ref())?,
-                )?;
+
+            let library = Arc::new(Mutex::new(Library::open(fs.into())?));
+            self.library = Some(library.clone());
+
+            self.library_view = Some(LibraryView::create(self.app.clone(), library.clone()));
+            if let Some(library) = &self.library_view {
+                let rt = Runtime::new().unwrap();
+                let books = rt.block_on(library.list_books(target_language.as_ref()))?;
+
+                self.app.emit("library_updated", books)?;
             }
         }
 
         Ok(())
     }
 
+    async fn get_cache() -> anyhow::Result<TranslationsCache> {
+        let dirs = ProjectDirs::from("", "TS", "FLTS").unwrap();
+        let cache_dir = dirs.cache_dir();
+        TranslationsCache::create(cache_dir).await
+    }
+
     pub async fn handle_file_change_event(
         &mut self,
         event: &LibraryFileChange,
     ) -> anyhow::Result<()> {
-        if let Some(library) = &mut self.library {
+        if let Some(library) = &mut self.library_view {
             let had_effect = library.handle_file_change_event(event).await?;
             if had_effect {
                 match event {
                     LibraryFileChange::BookChanged { modified: _, uuid } => {
                         info!("Emitting book_updated event");
                         self.app.emit("book_updated", uuid)?;
-                        if let Some(library) = &self.library {
-                            let target_language = self
-                                .config
-                                .target_language_id
-                                .as_ref()
-                                .and_then(|l| Language::from_639_3(l));
+                        if let Some(library) = &self.library_view {
+                            let target_language =
+                                Language::from_639_3(&self.config.target_language_id);
 
                             info!("Emitting library_updated event");
                             self.app.emit(
                                 "library_updated",
-                                library.list_books(target_language.as_ref())?,
+                                library.list_books(target_language.as_ref()).await?,
                             )?;
                         }
                     }
@@ -146,20 +156,16 @@ impl App {
                         to,
                         uuid,
                     } => {
-                        let target_language = self
-                            .config
-                            .target_language_id
-                            .as_ref()
-                            .and_then(|l| Language::from_639_3(l));
+                        let target_language = Language::from_639_3(&self.config.target_language_id);
 
                         if target_language.map_or(false, |tl| tl == *to) {
                             info!("Emitting book_updated event");
                             self.app.emit("book_updated", uuid)?;
-                            if let Some(library) = &self.library {
+                            if let Some(library) = &self.library_view {
                                 info!("Emitting library_updated event");
                                 self.app.emit(
                                     "library_updated",
-                                    library.list_books(target_language.as_ref())?,
+                                    library.list_books(target_language.as_ref()).await?,
                                 )?;
                             }
                         }
@@ -175,6 +181,24 @@ impl App {
                     }
                 }
             }
+        }
+        Ok(())
+    }
+
+    pub async fn translate_paragraph(
+        &mut self,
+        book_id: Uuid,
+        paragraph_id: usize,
+    ) -> anyhow::Result<()> {
+        if let Some(library) = &self.library
+            && self.translation_queue.is_none()
+        {
+            let cache = Arc::new(Mutex::new(Self::get_cache().await?));
+            self.translation_queue = TranslationQueue::init(library.clone(), cache, &self.config);
+        }
+
+        if let Some(q) = &self.translation_queue {
+            q.translate(book_id, paragraph_id).await?;
         }
         Ok(())
     }
@@ -194,4 +218,17 @@ pub fn update_config(
 pub fn get_config(state: tauri::State<'_, Arc<Mutex<App>>>) -> Result<Config, String> {
     let app = state.blocking_lock();
     Ok(app.config.clone())
+}
+
+#[tauri::command]
+pub async fn translate_paragraph(
+    state: tauri::State<'_, Arc<Mutex<App>>>,
+    book_id: Uuid,
+    paragraph_id: usize,
+) -> Result<(), String> {
+    let mut app = state.lock().await;
+    app.translate_paragraph(book_id, paragraph_id)
+        .await
+        .map_err(|err| err.to_string())?;
+    Ok(())
 }

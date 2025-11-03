@@ -1,18 +1,25 @@
 <script lang="ts">
-    import Fa from 'svelte-fa'
-    import { faLanguage } from '@fortawesome/free-solid-svg-icons'
+    import Fa from "svelte-fa";
+    import { faLanguage } from "@fortawesome/free-solid-svg-icons";
     import type { ParagraphView } from "../data/sql/book";
+    import { getContext } from "svelte";
+    import type { Library } from "../data/library";
+    import type { UUID } from "../data/v2/db";
 
     let {
+        bookId,
         paragraph,
         sentenceWordIdToDisplay,
     }: {
+        bookId: UUID;
         paragraph: ParagraphView;
         sentenceWordIdToDisplay: [number, number, number] | null;
     } = $props();
 
     const originalText = $derived(paragraph.original);
     const translationHtml = $derived(paragraph.translation);
+
+    const library: Library = getContext("library");
 
     $effect(() => {
         const selectedElements = document.querySelectorAll(
@@ -34,7 +41,12 @@
 
 <div class="paragraph-wrapper">
     {#if !translationHtml}
-        <button class="translate" aria-label="Translate paragraph"><Fa icon={faLanguage} /></button>
+        <button
+            class="translate"
+            aria-label="Translate paragraph"
+            onclick={() => library.transalteParagraph(bookId, paragraph.id)}
+            ><Fa icon={faLanguage} /></button
+        >
         <p class="original">
             {@html originalText}
         </p>

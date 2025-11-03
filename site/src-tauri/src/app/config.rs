@@ -56,10 +56,10 @@ pub fn get_languages() -> Vec<Language> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     #[serde(rename = "targetLanguageId")]
-    pub target_language_id: Option<String>,
+    pub target_language_id: String,
     #[serde(rename = "geminiApiKey")]
     pub gemini_api_key: Option<String>,
-    pub model: i32,
+    pub model: usize,
     #[serde(rename = "libraryPath")]
     pub library_path: Option<String>,
 }
@@ -67,9 +67,9 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            target_language_id: None,
+            target_language_id: "eng".to_owned(),
             gemini_api_key: None,
-            model: TranslationModel::GeminiFlash as i32,
+            model: TranslationModel::GeminiFlash as usize,
             library_path: None,
         }
     }

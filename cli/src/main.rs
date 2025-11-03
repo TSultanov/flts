@@ -201,14 +201,12 @@ async fn run_saver(
     book_id: Uuid,
     rx: flume::Receiver<()>,
 ) {
-    use std::time::Instant as StdInstant;
-
-    let mut last_save = StdInstant::now() - Duration::from_secs(1);
+    let mut last_save = Instant::now() - Duration::from_secs(1);
     let mut pending = false;
 
     while let Ok(_) = rx.recv_async().await {
         pending = true;
-        let now = StdInstant::now();
+        let now = Instant::now();
         if now.duration_since(last_save) >= Duration::from_secs(1) {
             if let Err(err) = save_book(&library, book_id).await {
                 eprintln!("Autosave error: {err}");

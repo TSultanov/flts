@@ -2,11 +2,11 @@ use std::sync::Arc;
 
 use htmlentity::entity::{ICodedDataTrait, decode};
 use isolang::Language;
+use library::epub_importer::EpubBook;
 use library::library::file_watcher::LibraryFileChange;
 use library::{book::translation::ParagraphTranslationView, library::Library};
-use library::epub_importer::EpubBook;
-use tauri::async_runtime::Mutex;
 use tauri::Emitter;
+use tauri::async_runtime::Mutex;
 use uuid::Uuid;
 
 use crate::app::App;
@@ -64,26 +64,27 @@ pub struct GrammarView {
 
 pub struct LibraryView {
     app: tauri::AppHandle,
-    library: Library,
+    library: Arc<Mutex<Library>>,
 }
 
 impl LibraryView {
-    pub fn create(app: tauri::AppHandle, library: Library) -> Self {
+    pub fn create(app: tauri::AppHandle, library: Arc<Mutex<Library>>) -> Self {
         Self { app, library }
     }
 
-    pub fn list_books(
+    pub async fn list_books(
         &self,
         target_language: Option<&Language>,
     ) -> anyhow::Result<Vec<LibraryBookMetadataView>> {
-        let books = self.library.list_books()?;
+        let books = self.library.lock().await.list_books()?;
         Ok(books
             .into_iter()
             .map(|b| {
-                let translation = target_language.and_then(|tl| b
-                    .translations_metadata
-                    .iter()
-                    .find(|t| t.target_language == tl.to_639_3()));
+                let translation = target_language.and_then(|tl| {
+                    b.translations_metadata
+                        .iter()
+                        .find(|t| t.target_language == tl.to_639_3())
+                });
 
                 let translation_ratio = translation
                     .map(|t| t.translated_paragraphs_count as f64 / b.paragraphs_count as f64)
@@ -101,7 +102,7 @@ impl LibraryView {
     }
 
     pub fn list_book_chapters(&mut self, book_id: Uuid) -> anyhow::Result<Vec<ChapterView>> {
-        let book = self.library.get_book(&book_id)?;
+        let book = self.library.blocking_lock().get_book(&book_id)?;
         let book = book.blocking_lock();
         let book = &book.book;
         let chapters = book
@@ -123,7 +124,7 @@ impl LibraryView {
         chapter_id: usize,
         target_language: &Language,
     ) -> anyhow::Result<Vec<ParagraphView>> {
-        let book = self.library.get_book(&book_id)?;
+        let book = self.library.lock().await.get_book(&book_id)?;
         let mut book = book.lock().await;
 
         let book_translation = book.get_or_create_translation(target_language).await;
@@ -156,14 +157,13 @@ impl LibraryView {
         word_id: usize,
         target_language: &Language,
     ) -> anyhow::Result<Option<WordView>> {
-        let book = self.library.get_book(&book_id)?;
+        let book = self.library.lock().await.get_book(&book_id)?;
         let mut book = book.lock().await;
 
         let book_translation = book.get_or_create_translation(target_language).await;
 
         Ok(
-            if let Some(paragraph) = book_translation.lock().await.paragraph_view(paragraph_id)
-            {
+            if let Some(paragraph) = book_translation.lock().await.paragraph_view(paragraph_id) {
                 let sentence = paragraph.sentence_view(sentence_id);
                 let word = sentence.word_view(word_id);
                 Some(WordView {
@@ -200,11 +200,13 @@ impl LibraryView {
     ) -> anyhow::Result<Uuid> {
         let id = self
             .library
+            .lock()
+            .await
             .create_book_plain(title, text, source_language)
             .await?;
 
         // Emit updated library view after successful import
-        let books = self.list_books(target_language)?;
+        let books = self.list_books(target_language).await?;
         self.app.emit("library_updated", books)?;
 
         Ok(id)
@@ -218,18 +220,27 @@ impl LibraryView {
     ) -> anyhow::Result<Uuid> {
         let id = self
             .library
+            .lock()
+            .await
             .create_book_epub(book, source_language)
             .await?;
 
         // Emit updated library view after successful import
-        let books = self.list_books(target_language)?;
+        let books = self.list_books(target_language).await?;
         self.app.emit("library_updated", books)?;
 
         Ok(id)
     }
 
-    pub async fn handle_file_change_event(&mut self, event: &LibraryFileChange) -> anyhow::Result<bool> {
-        self.library.handle_file_change_event(event).await
+    pub async fn handle_file_change_event(
+        &mut self,
+        event: &LibraryFileChange,
+    ) -> anyhow::Result<bool> {
+        self.library
+            .lock()
+            .await
+            .handle_file_change_event(event)
+            .await
     }
 }
 
@@ -239,15 +250,12 @@ pub async fn list_books(
 ) -> Result<Vec<LibraryBookMetadataView>, String> {
     let app = state.lock().await;
 
-    let target_language = app
-        .config
-        .target_language_id
-        .as_ref()
-        .and_then(|l| Language::from_639_3(l));
+    let target_language = Language::from_639_3(&app.config.target_language_id);
 
-    if let Some(library) = &app.library {
+    if let Some(library) = &app.library_view {
         library
             .list_books(target_language.as_ref())
+            .await
             .map_err(|err| err.to_string())
     } else {
         Ok(vec![])
@@ -260,7 +268,7 @@ pub fn list_book_chapters(
     book_id: Uuid,
 ) -> Result<Vec<ChapterView>, String> {
     let mut app = state.blocking_lock();
-    if let Some(library) = &mut app.library {
+    if let Some(library) = &mut app.library_view {
         library
             .list_book_chapters(book_id)
             .map_err(|err| err.to_string())
@@ -277,13 +285,9 @@ pub async fn get_book_chapter_paragraphs(
 ) -> Result<Vec<ParagraphView>, String> {
     let mut app = state.lock().await;
 
-    let target_language = app
-        .config
-        .target_language_id
-        .as_ref()
-        .and_then(|l| Language::from_639_3(l));
+    let target_language = Language::from_639_3(&app.config.target_language_id);
 
-    if let Some(library) = &mut app.library
+    if let Some(library) = &mut app.library_view
         && let Some(target_language) = target_language
     {
         library
@@ -305,13 +309,9 @@ pub async fn get_word_info(
 ) -> Result<Option<WordView>, String> {
     let mut app = state.lock().await;
 
-    let target_language = app
-        .config
-        .target_language_id
-        .as_ref()
-        .and_then(|l| Language::from_639_3(l));
+    let target_language = Language::from_639_3(&app.config.target_language_id);
 
-    if let Some(library) = &mut app.library
+    if let Some(library) = &mut app.library_view
         && let Some(target_language) = target_language
     {
         library
@@ -338,13 +338,9 @@ pub async fn import_plain_text(
 ) -> Result<Uuid, String> {
     let mut app = state.lock().await;
 
-    let target_language = app
-        .config
-        .target_language_id
-        .as_ref()
-        .and_then(|l| Language::from_639_3(l));
+    let target_language = Language::from_639_3(&app.config.target_language_id);
 
-    if let Some(library) = &mut app.library {
+    if let Some(library) = &mut app.library_view {
         let source_language = Language::from_639_3(&source_language_id)
             .ok_or_else(|| format!("Failed to resolve source language: {}", source_language_id))?;
         let id = library
@@ -367,13 +363,9 @@ pub async fn import_epub(
     let mut app = state.lock().await;
 
     // Pre-compute target language for later emit while avoiding borrow conflicts
-    let target_language = app
-        .config
-        .target_language_id
-        .as_ref()
-        .and_then(|l| Language::from_639_3(l));
+    let target_language = Language::from_639_3(&app.config.target_language_id);
 
-    if let Some(library) = &mut app.library {
+    if let Some(library) = &mut app.library_view {
         let source_language = Language::from_639_3(&source_language_id)
             .ok_or_else(|| format!("Failed to resolve source language: {}", source_language_id))?;
         let id = library
