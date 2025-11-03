@@ -39,6 +39,7 @@
     "vitest": "^3.2.4"
   },
   "dependencies": {
+    "@fortawesome/free-solid-svg-icons": "^7.1.0",
     "@google/genai": "^0.14.1",
     "@tauri-apps/api": "^2.8.0",
     "@tauri-apps/plugin-dialog": "2.4.0",
@@ -52,6 +53,7 @@
     "localforage": "^1.10.0",
     "openai": "^5.12.2",
     "sv-router": "^0.10.2",
+    "svelte-fa": "^4.0.4",
     "uuid": "^11.1.0",
     "zod": "^3.25.76"
   }

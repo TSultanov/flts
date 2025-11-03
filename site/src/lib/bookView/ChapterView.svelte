@@ -72,7 +72,7 @@
     }
 
     .chapter {
-        padding: calc(1cm - 2px) calc(1.5cm - 2px);
+        padding: 1cm 0;
         max-width: 800px;
         margin: 0 auto;
         border: 1px solid var(--background-color);
@@ -86,10 +86,10 @@
     .paragraphs-container {
         width: 100%;
         height: 100%;
-        padding: 2px;
+        /* padding: 2px; */
         overflow-x: auto;
         scroll-snap-type: x mandatory;
-        column-gap: 2cm;
+        column-gap: 0;
     }
 
     :global(.paragraphs-container > *) {

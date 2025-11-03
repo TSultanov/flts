@@ -2,6 +2,11 @@
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     box-sizing: border-box;
 
+    --font-size: 16px;
+    --ui-font-size: calc(var(--font-size) - 2px);
+
+    font-size: var(--font-size);
+
     --background-color: #333333;
     --hover-color: #444444;
     --selected-color: #555555;
@@ -37,7 +42,7 @@ button {
     border: 1px solid transparent;
     border-radius: 4px;
     cursor: pointer;
-    font-size: 14px;
+    font-size: var(--ui-font-size);
     font-family: inherit;
     background-color: var(--background-color);
     color: var(--text-inverted);
@@ -107,7 +112,7 @@ input::file-selector-button {
     border: 1px solid transparent;
     border-radius: 4px;
     cursor: pointer;
-    font-size: 14px;
+    font-size: var(--ui-font-size);
     background-color: var(--background-color);
     color: var(--text-inverted);
     transition: all 0.15s ease;
@@ -125,4 +130,12 @@ input::file-selector-button:disabled {
     color: var(--text-inactive);
     cursor: not-allowed;
     opacity: 0.6;
+}
+
+a {
+    color: var(--text-color);
+}
+
+p {
+    margin: 0.25em 0;
 }
