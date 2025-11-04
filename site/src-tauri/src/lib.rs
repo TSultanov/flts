@@ -21,27 +21,35 @@ pub fn run() {
 
             let watcher = Arc::new(Mutex::new(LibraryWatcher::new()?));
             app.manage(watcher.clone());
-            let app_state = Arc::new(Mutex::new(crate::app::App::init(
+            let app_state = Arc::new(Mutex::new(crate::app::App::new(
                 app.handle().clone(),
                 Some(watcher.clone()),
             )?));
             app.manage(app_state.clone());
 
             tauri::async_runtime::spawn(async move {
+                if let Err(err) = app_state.lock().await.eval_config().await {
+                    warn!("Failed to evaluate config at startup: {err}");
+                }
+                let recv = {
+                    let mut watcher = watcher.lock().await;
+                    watcher.get_recv()
+                };
+
                 loop {
-                    let event = {
-                        let mut watcher = watcher.lock().await;
-                        watcher.recv().await
-                    };
-                    if let Some(event) = event {
-                        app_state
-                            .lock()
-                            .await
-                            .handle_file_change_event(&event)
-                            .await
-                            .unwrap_or_else(|err| {
-                                warn!("Failed to process event {event:?}: {err}")
-                            });
+                    let event = recv.recv();
+                    match event {
+                        Ok(event) => {
+                            app_state
+                                .lock()
+                                .await
+                                .handle_file_change_event(&event)
+                                .await
+                                .unwrap_or_else(|err| {
+                                    warn!("Failed to process event {event:?}: {err}")
+                                });
+                        }
+                        Err(err) => warn!("Failed to recieve event from watcher: {}", err),
                     }
                 }
             });

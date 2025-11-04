@@ -32,12 +32,12 @@ pub enum LibraryFileChange {
 pub struct LibraryWatcher {
     path: Option<PathBuf>,
     debouncer: Debouncer<notify::RecommendedWatcher, FileIdMap>,
-    change_rx: mpsc::UnboundedReceiver<LibraryFileChange>,
+    change_rx: flume::Receiver<LibraryFileChange>,
 }
 
 impl LibraryWatcher {
     pub fn new() -> anyhow::Result<Self> {
-        let (change_tx, change_rx) = mpsc::unbounded_channel();
+        let (change_tx, change_rx) = flume::unbounded();
 
         let tx = change_tx.clone();
         let debouncer = new_debouncer(
@@ -106,8 +106,8 @@ impl LibraryWatcher {
         Ok(())
     }
 
-    pub async fn recv(&mut self) -> Option<LibraryFileChange> {
-        self.change_rx.recv().await
+    pub fn get_recv(&mut self) -> flume::Receiver<LibraryFileChange> {
+        self.change_rx.clone()
     }
 
     fn classify_event(event: &Event) -> Option<LibraryFileChange> {

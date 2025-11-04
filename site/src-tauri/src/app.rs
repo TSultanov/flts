@@ -16,7 +16,6 @@ use library::{
 };
 use log::{info, warn};
 use tauri::{Emitter, async_runtime::Mutex};
-use tokio::runtime::Runtime;
 use uuid::Uuid;
 use vfs::PhysicalFS;
 
@@ -41,7 +40,10 @@ impl Display for AppError {
         match self {
             AppError::ProjectDirsError => write!(f, "Failed to find app configuration directories"),
             AppError::StatePoisonError => write!(f, "Fatal: state poisoned"),
-            AppError::NoTranslationQueueError => write!(f, "Failed to translate paragraph: no translation queue initialized"),
+            AppError::NoTranslationQueueError => write!(
+                f,
+                "Failed to translate paragraph: no translation queue initialized"
+            ),
             AppError::TestError => write!(f, "Test error"),
         }
     }
@@ -58,7 +60,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn init(
+    pub fn new(
         app: tauri::AppHandle,
         watcher: Option<Arc<Mutex<LibraryWatcher>>>,
     ) -> anyhow::Result<Self> {
@@ -74,7 +76,7 @@ impl App {
             Config::default()
         };
 
-        let mut app = Self {
+        let app = Self {
             app,
             config_path,
             config,
@@ -84,26 +86,28 @@ impl App {
             watcher,
         };
 
-        app.eval_config()?;
+        // app.eval_config()?;
 
         Ok(app)
     }
 
-    pub fn update_config(&mut self, config: Config) -> anyhow::Result<()> {
+    pub async fn update_config(&mut self, config: Config) -> anyhow::Result<()> {
         self.config = config;
         self.config.save(&self.config_path)?;
+        info!("Emitting \"config_updated\"");
         self.app.emit("config_updated", self.config.clone())?;
-        self.eval_config()?;
+        self.eval_config().await?;
         Ok(())
     }
 
-    fn eval_config(&mut self) -> anyhow::Result<()> {
+    pub async fn eval_config(&mut self) -> anyhow::Result<()> {
         let target_language = Language::from_639_3(&self.config.target_language_id);
 
         if let Some(library_path) = &self.config.library_path {
             if let Some(watcher) = &self.watcher {
                 watcher
-                    .blocking_lock()
+                    .lock()
+                    .await
                     .set_path(&Path::new(library_path).to_path_buf())
                     .unwrap_or_else(|err| {
                         warn!("Failed to set watcher path to {}: {}", library_path, err)
@@ -116,9 +120,8 @@ impl App {
 
             self.library_view = Some(LibraryView::create(self.app.clone(), library.clone()));
             if let Some(library) = &self.library_view {
-                let rt = Runtime::new().unwrap();
-                let books = rt.block_on(library.list_books(target_language.as_ref()))?;
-
+                let books = library.list_books(target_language.as_ref()).await?;
+                info!("Emitting \"library_updated\"");
                 self.app.emit("library_updated", books)?;
             }
         }
@@ -231,18 +234,20 @@ impl App {
 }
 
 #[tauri::command]
-pub fn update_config(
+pub async fn update_config(
     state: tauri::State<'_, Arc<Mutex<App>>>,
     config: Config,
 ) -> Result<(), String> {
-    let mut app = state.blocking_lock();
-    app.update_config(config).map_err(|err| err.to_string())?;
+    let mut app = state.lock().await;
+    app.update_config(config)
+        .await
+        .map_err(|err| err.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
-pub fn get_config(state: tauri::State<'_, Arc<Mutex<App>>>) -> Result<Config, String> {
-    let app = state.blocking_lock();
+pub async fn get_config(state: tauri::State<'_, Arc<Mutex<App>>>) -> Result<Config, String> {
+    let app = state.lock().await;
     Ok(app.config.clone())
 }
 

@@ -7,8 +7,6 @@
     import { configStore } from "./lib/config";
     import { navigate } from './router';
 
-    $inspect($configStore);
-
     const fullLinks = [
         {
             href: "/library",

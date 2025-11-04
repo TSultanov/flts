@@ -2691,6 +2691,7 @@ dependencies = [
  "ahash 0.8.12",
  "anyhow",
  "epub",
+ "flume",
  "fnv",
  "foyer",
  "gemini-rust",
