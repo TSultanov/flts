@@ -53,6 +53,7 @@ export type SentenceWordTranslation = {
     readonly isPunctuation: boolean,
     readonly contextualTranslations: string[],
     readonly grammar: Grammar,
+    readonly fullSentenceTranslation: string,
 }
 
 type Grammar = {

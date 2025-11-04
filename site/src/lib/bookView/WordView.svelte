@@ -19,12 +19,6 @@
             sentenceWordIdToDisplay[2],
         ),
     );
-
-    // const sentenceTranslation = $derived.by(() => {
-    //     if ($word) {
-    //         return sqlBooks.getSentenceTranslation($word.sentenceUid);
-    //     }
-    // });
 </script>
 
 {#if $word}
@@ -114,12 +108,9 @@
                 </tbody>
             </table>
         </details>
-    {/if}
-    <!-- {#if sentenceTranslation && $sentenceTranslation}
         <details>
             <summary>Full sentence</summary>
-            <p>{$sentenceTranslation.fullTranslation}</p>
+            <p>{$word.fullSentenceTranslation}</p>
         </details>
-        <p>Translated by: {$sentenceTranslation.translatingModel}</p>
-    {/if} -->
+    {/if}
 {/if}

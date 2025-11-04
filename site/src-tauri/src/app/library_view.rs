@@ -45,6 +45,8 @@ pub struct WordView {
     grammar: GrammarView,
     #[serde(rename = "contextualTranslations")]
     contextual_translations: Vec<String>,
+    #[serde(rename = "fullSentenceTranslation")]
+    full_sentence_translation: String,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -185,6 +187,7 @@ impl LibraryView {
                         case: word.grammar.case.map(|c| c.to_string()),
                         other: word.grammar.other.map(|o| o.to_string()),
                     },
+                    full_sentence_translation: sentence.full_translation.to_string(),
                 })
             } else {
                 None
