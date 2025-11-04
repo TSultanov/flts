@@ -599,7 +599,7 @@ mod library_book_tests {
                     words: vec![translation_import::Word {
                         original: "Hola".into(),
                         contextual_translations: vec!["Hello".into()],
-                        note: String::new(),
+                        note: Some(String::new()),
                         is_punctuation: false,
                         grammar: translation_import::Grammar {
                             original_initial_form: "hola".into(),
@@ -644,7 +644,7 @@ mod library_book_tests {
                     words: vec![translation_import::Word {
                         original: "Hola".into(),
                         contextual_translations: vec!["Hello".into()],
-                        note: String::new(),
+                        note: Some(String::new()),
                         is_punctuation: false,
                         grammar: translation_import::Grammar {
                             original_initial_form: "hola".into(),
@@ -723,7 +723,7 @@ mod library_book_tests {
                 words: vec![translation_import::Word {
                     original: "v1".into(),
                     contextual_translations: vec!["v1".into()],
-                    note: String::new(),
+                    note: Some(String::new()),
                     is_punctuation: false,
                     grammar: translation_import::Grammar {
                         original_initial_form: "v1".into(),
@@ -776,7 +776,7 @@ mod library_book_tests {
                 words: vec![translation_import::Word {
                     original: "mem".into(),
                     contextual_translations: vec!["mem".into()],
-                    note: String::new(),
+                    note: Some(String::new()),
                     is_punctuation: false,
                     grammar: translation_import::Grammar {
                         original_initial_form: "mem".into(),
@@ -812,7 +812,7 @@ mod library_book_tests {
                     words: vec![translation_import::Word {
                         original: "disk".into(),
                         contextual_translations: vec!["disk".into()],
-                        note: String::new(),
+                        note: Some(String::new()),
                         is_punctuation: false,
                         grammar: translation_import::Grammar {
                             original_initial_form: "disk".into(),
@@ -879,7 +879,7 @@ mod library_book_tests {
                 words: vec![translation_import::Word {
                     original: "m2".into(),
                     contextual_translations: vec!["m2".into()],
-                    note: String::new(),
+                    note: Some(String::new()),
                     is_punctuation: false,
                     grammar: translation_import::Grammar {
                         original_initial_form: "m2".into(),
@@ -965,7 +965,7 @@ mod library_book_tests {
                 words: vec![translation_import::Word {
                     original: "m2".into(),
                     contextual_translations: vec!["m2".into()],
-                    note: String::new(),
+                    note: Some(String::new()),
                     is_punctuation: false,
                     grammar: translation_import::Grammar {
                         original_initial_form: "m2".into(),
@@ -997,7 +997,7 @@ mod library_book_tests {
                 words: vec![translation_import::Word {
                     original: "c1".into(),
                     contextual_translations: vec!["c1".into()],
-                    note: String::new(),
+                    note: Some(String::new()),
                     is_punctuation: false,
                     grammar: translation_import::Grammar {
                         original_initial_form: "c1".into(),
@@ -1029,7 +1029,7 @@ mod library_book_tests {
                 words: vec![translation_import::Word {
                     original: "c3".into(),
                     contextual_translations: vec!["c3".into()],
-                    note: String::new(),
+                    note: Some(String::new()),
                     is_punctuation: false,
                     grammar: translation_import::Grammar {
                         original_initial_form: "c3".into(),

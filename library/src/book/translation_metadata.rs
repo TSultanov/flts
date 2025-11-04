@@ -83,7 +83,7 @@ mod translation_metadata_test {
                 words: vec![translation_import::Word {
                     original: "Hi".into(),
                     contextual_translations: vec!["Привет".into()],
-                    note: "greet".into(),
+                    note: Some("greet".into()),
                     is_punctuation: false,
                     grammar: translation_import::Grammar {
                         original_initial_form: "hi".into(),
@@ -114,7 +114,7 @@ mod translation_metadata_test {
                     translation_import::Word {
                         original: "Hi".into(),
                         contextual_translations: vec!["Привет".into()],
-                        note: "greet".into(),
+                        note: Some("greet".into()),
                         is_punctuation: false,
                         grammar: translation_import::Grammar {
                             original_initial_form: "hi".into(),
@@ -130,7 +130,7 @@ mod translation_metadata_test {
                     translation_import::Word {
                         original: "there".into(),
                         contextual_translations: vec!["там".into()],
-                        note: "".into(),
+                        note: Some("".into()),
                         is_punctuation: false,
                         grammar: translation_import::Grammar {
                             original_initial_form: "there".into(),
@@ -171,7 +171,7 @@ mod translation_metadata_test {
                 words: vec![translation_import::Word {
                     original: "Hi".into(),
                     contextual_translations: vec!["Привет".into()],
-                    note: "greet".into(),
+                    note: Some("greet".into()),
                     is_punctuation: false,
                     grammar: translation_import::Grammar {
                         original_initial_form: "hi".into(),
@@ -200,7 +200,7 @@ mod translation_metadata_test {
                     translation_import::Word {
                         original: "Hi".into(),
                         contextual_translations: vec!["Привет".into()],
-                        note: "greet".into(),
+                        note: Some("greet".into()),
                         is_punctuation: false,
                         grammar: translation_import::Grammar {
                             original_initial_form: "hi".into(),
@@ -216,7 +216,7 @@ mod translation_metadata_test {
                     translation_import::Word {
                         original: "there".into(),
                         contextual_translations: vec!["там".into()],
-                        note: "".into(),
+                        note: Some("".into()),
                         is_punctuation: false,
                         grammar: translation_import::Grammar {
                             original_initial_form: "there".into(),

@@ -45,16 +45,19 @@ impl GeminiTranslator {
                                         "type": "object",
                                         "properties": {
                                             "original": {
-                                                "type": "string"
+                                                "type": "string",
+                                                "description": "Original word",
                                             },
                                             "contextualTranslations": {
                                                 "type": "array",
                                                 "items": {
                                                     "type": "string"
-                                                }
+                                                },
+                                                "description": "Translation variants which are suitable for the current context",
                                             },
                                             "note": {
-                                                "type": "string"
+                                                "type": "string",
+                                                "description": "Note about the translation, if necessary for understanding",
                                             },
                                             "isPunctuation": {
                                                 "type": "boolean"
@@ -63,28 +66,36 @@ impl GeminiTranslator {
                                                 "type": "object",
                                                 "properties": {
                                                     "originalInitialForm": {
-                                                        "type": "string"
+                                                        "type": "string",
+                                                        "description": "Original word in its initial (dictionary) form",
                                                     },
                                                     "targetInitialForm": {
-                                                        "type": "string"
+                                                        "type": "string",
+                                                        "description": "Translated word in its initial (dictionary) form",
                                                     },
                                                     "partOfSpeech": {
-                                                        "type": "string"
+                                                        "type": "string",
+                                                        "description": "Which part of speech the original word is",
                                                     },
                                                     "plurality": {
-                                                        "type": "string"
+                                                        "type": "string",
+                                                        "description": "Plurality of the original word, if applicable",
                                                     },
                                                     "person": {
-                                                        "type": "string"
+                                                        "type": "string",
+                                                        "description": "Person of the original word, if applicable",
                                                     },
                                                     "tense": {
-                                                        "type": "string"
+                                                        "type": "string",
+                                                        "description": "Tense of the original word, if applicable",
                                                     },
                                                     "case": {
-                                                        "type": "string"
+                                                        "type": "string",
+                                                        "description": "What case the original word is in, if applicable",
                                                     },
                                                     "other": {
-                                                        "type": "string"
+                                                        "type": "string",
+                                                        "description": "Other grammatical information about the original word, if not described by other fields",
                                                     }
                                                 },
                                                 "required": [
@@ -97,14 +108,14 @@ impl GeminiTranslator {
                                         "required": [
                                             "original",
                                             "contextualTranslations",
-                                            "note",
                                             "grammar",
                                             "isPunctuation"
                                         ]
                                     }
                                 },
                                 "fullTranslation": {
-                                    "type": "string"
+                                    "type": "string",
+                                    "description": "Full translation of the sentence",
                                 }
                             },
                             "required": [

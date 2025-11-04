@@ -23,7 +23,7 @@ pub struct Word {
     pub original: String,
     #[serde(alias = "contextualTranslations")]
     pub contextual_translations: Vec<String>,
-    pub note: String,
+    pub note: Option<String>,
     #[serde(alias = "isPunctuation")]
     pub is_punctuation: bool,
     pub grammar: Grammar,

@@ -188,7 +188,7 @@ impl Translation {
                 dictionary.add_translation(&word.grammar.original_initial_form, &word.grammar.target_initial_form);
 
                 let original = self.push_string(&word.original);
-                let note = self.push_string(&word.note);
+                let note = self.push_string(&word.note.clone().unwrap_or("".to_string()));
                 let grammar = Grammar {
                     original_initial_form: push_string(
                         &mut self.strings,
@@ -910,7 +910,7 @@ mod tests {
         translation_import::Word {
             original: original.to_string(),
             contextual_translations: vec![format!("{}-ct", original)],
-            note: String::new(),
+            note: Some(String::new()),
             is_punctuation: false,
             grammar: translation_import::Grammar {
                 original_initial_form: original.to_string(),
@@ -950,7 +950,7 @@ mod tests {
                     translation_import::Word {
                         original: "Hello".to_string(),
                         contextual_translations: vec!["Привет".to_string()],
-                        note: "A common greeting".to_string(),
+                        note: Some("A common greeting".to_string()),
                         is_punctuation: false,
                         grammar: translation_import::Grammar {
                             original_initial_form: "hello".to_string(),
@@ -966,7 +966,7 @@ mod tests {
                     translation_import::Word {
                         original: ",".to_string(),
                         contextual_translations: vec![",".to_string()],
-                        note: "".to_string(),
+                        note: Some("".to_string()),
                         is_punctuation: true,
                         grammar: translation_import::Grammar {
                             original_initial_form: ",".to_string(),
@@ -982,7 +982,7 @@ mod tests {
                     translation_import::Word {
                         original: "world".to_string(),
                         contextual_translations: vec!["мир".to_string()],
-                        note: "".to_string(),
+                        note: Some("".to_string()),
                         is_punctuation: false,
                         grammar: translation_import::Grammar {
                             original_initial_form: "world".to_string(),
@@ -998,7 +998,7 @@ mod tests {
                     translation_import::Word {
                         original: "!".to_string(),
                         contextual_translations: vec!["!".to_string()],
-                        note: "".to_string(),
+                        note: Some("".to_string()),
                         is_punctuation: true,
                         grammar: translation_import::Grammar {
                             original_initial_form: "!".to_string(),
@@ -1052,7 +1052,7 @@ mod tests {
                 words: vec![translation_import::Word {
                     original: "Hi".into(),
                     contextual_translations: vec!["Привет".into()],
-                    note: "greet".into(),
+                    note: Some("greet".into()),
                     is_punctuation: false,
                     grammar: translation_import::Grammar {
                         original_initial_form: "hi".into(),
@@ -1081,7 +1081,7 @@ mod tests {
                     translation_import::Word {
                         original: "Hi".into(),
                         contextual_translations: vec!["Привет".into()],
-                        note: "greet".into(),
+                        note: Some("greet".into()),
                         is_punctuation: false,
                         grammar: translation_import::Grammar {
                             original_initial_form: "hi".into(),
@@ -1097,7 +1097,7 @@ mod tests {
                     translation_import::Word {
                         original: "there".into(),
                         contextual_translations: vec!["там".into()],
-                        note: "".into(),
+                        note: Some("".into()),
                         is_punctuation: false,
                         grammar: translation_import::Grammar {
                             original_initial_form: "there".into(),
@@ -1151,7 +1151,7 @@ mod tests {
                 words: vec![translation_import::Word {
                     original: "Hi".into(),
                     contextual_translations: vec!["Привет".into()],
-                    note: "greet".into(),
+                    note: Some("greet".into()),
                     is_punctuation: false,
                     grammar: translation_import::Grammar {
                         original_initial_form: "hi".into(),
@@ -1180,7 +1180,7 @@ mod tests {
                     translation_import::Word {
                         original: "Hi".into(),
                         contextual_translations: vec!["Привет".into()],
-                        note: "greet".into(),
+                        note: Some("greet".into()),
                         is_punctuation: false,
                         grammar: translation_import::Grammar {
                             original_initial_form: "hi".into(),
@@ -1196,7 +1196,7 @@ mod tests {
                     translation_import::Word {
                         original: "there".into(),
                         contextual_translations: vec!["там".into()],
-                        note: "".into(),
+                        note: Some("".into()),
                         is_punctuation: false,
                         grammar: translation_import::Grammar {
                             original_initial_form: "there".into(),
