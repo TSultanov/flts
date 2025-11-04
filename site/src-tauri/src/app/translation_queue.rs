@@ -25,6 +25,8 @@ struct TranslationRequest {
     request_id: usize,
     book_id: Uuid,
     paragraph_id: usize,
+    model: TranslationModel,
+    use_cache: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -61,7 +63,6 @@ impl TranslationQueue {
     ) -> Option<Self> {
         let api_key = config.gemini_api_key.clone()?;
         let target_language = Language::from_639_3(&config.target_language_id)?;
-        let model = TranslationModel::from(config.model);
 
         let (tx_save, rx_save) = flume::unbounded::<SaveNotify>();
 
@@ -86,33 +87,25 @@ impl TranslationQueue {
                         .await
                         .insert(request.request_id, TranslationRequestState::Translating);
 
-                    handle_request(
-                        library,
-                        cache,
-                        model,
-                        target_language,
-                        api_key,
-                        &tx_save,
-                        &request,
-                    )
-                    .await
-                    .unwrap_or_else(|err| {
-                        warn!(
-                            "Failed to translate {}/{}: {}",
-                            request.book_id, request.paragraph_id, err
-                        );
-                        info!(
-                            "Emitting \"translation_request_complete\" for request {}",
-                            request.request_id
-                        );
-                        app.emit("translation_request_complete", request.request_id)
-                            .unwrap_or_else(|err| {
-                                warn!(
-                                    "Failed to notify frontend about failed translation: {}",
-                                    err
-                                )
-                            });
-                    });
+                    handle_request(library, cache, target_language, api_key, &tx_save, &request)
+                        .await
+                        .unwrap_or_else(|err| {
+                            warn!(
+                                "Failed to translate {}/{}: {}",
+                                request.book_id, request.paragraph_id, err
+                            );
+                            info!(
+                                "Emitting \"translation_request_complete\" for request {}",
+                                request.request_id
+                            );
+                            app.emit("translation_request_complete", request.request_id)
+                                .unwrap_or_else(|err| {
+                                    warn!(
+                                        "Failed to notify frontend about failed translation: {}",
+                                        err
+                                    )
+                                });
+                        });
 
                     request_state.lock().await.remove(&request.request_id);
                     paragraph_request_id_map
@@ -133,7 +126,13 @@ impl TranslationQueue {
         })
     }
 
-    pub async fn translate(&self, book_id: Uuid, paragraph_id: usize) -> anyhow::Result<usize> {
+    pub async fn translate(
+        &self,
+        book_id: Uuid,
+        paragraph_id: usize,
+        model: TranslationModel,
+        use_cache: bool,
+    ) -> anyhow::Result<usize> {
         if let Some(id) = self.get_request_id(book_id, paragraph_id).await {
             return Ok(id);
         }
@@ -145,6 +144,8 @@ impl TranslationQueue {
                 request_id,
                 book_id,
                 paragraph_id,
+                model,
+                use_cache,
             })
             .await?;
 
@@ -172,7 +173,6 @@ impl TranslationQueue {
 async fn handle_request(
     library: Arc<Mutex<Library>>,
     cache: Arc<Mutex<TranslationsCache>>,
-    model: TranslationModel,
     target_language: Language,
     api_key: String,
     save_notify: &flume::Sender<SaveNotify>,
@@ -191,20 +191,23 @@ async fn handle_request(
     };
 
     info!(
-        "Translating paragraph {}: \"{}...\"",
+        "Translating paragraph {} with model {:?}: \"{}...\"",
         request.paragraph_id,
+        request.model,
         String::from_iter(paragraph_text.chars().take(40))
     );
 
     let translator = get_translator(
         cache,
-        model,
+        request.model,
         api_key.clone(),
         source_language,
         target_language,
     )?;
 
-    let p_translation = translator.get_translation(&paragraph_text).await?;
+    let p_translation = translator
+        .get_translation(&paragraph_text, request.use_cache)
+        .await?;
     info!("Translated paragraph {}", request.paragraph_id);
 
     translation

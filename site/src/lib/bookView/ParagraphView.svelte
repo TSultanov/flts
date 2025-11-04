@@ -5,7 +5,7 @@
         faArrowsRotate,
     } from "@fortawesome/free-solid-svg-icons";
     import type { ParagraphView } from "../data/sql/book";
-    import { getContext, onDestroy, onMount } from "svelte";
+    import { getContext, onDestroy } from "svelte";
     import type { Library } from "../data/library";
     import type { UUID } from "../data/v2/db";
     import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -89,6 +89,7 @@
         <button
             class="translate"
             aria-label="Translate paragraph"
+            title="Translate paragraph"
             onclick={translateParagraph}
             disabled={translationRequestId !== null}
         >

@@ -32,6 +32,7 @@ pub trait Translator {
     fn get_translation(
         &self,
         paragraph: &str,
+        use_cache: bool,
     ) -> impl std::future::Future<Output = anyhow::Result<ParagraphTranslation>> + Send;
 
     fn get_prompt(from: &str, to: &str) -> String {

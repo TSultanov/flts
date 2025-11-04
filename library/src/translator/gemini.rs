@@ -153,15 +153,20 @@ impl GeminiTranslator {
 }
 
 impl Translator for GeminiTranslator {
-    async fn get_translation(&self, paragraph: &str) -> anyhow::Result<ParagraphTranslation> {
-        if let Some(cached_result) = self
-            .cache
-            .lock()
-            .await
-            .get(&self.from, &self.to, paragraph)
-            .await
-            .ok()
-            .flatten()
+    async fn get_translation(
+        &self,
+        paragraph: &str,
+        use_cache: bool,
+    ) -> anyhow::Result<ParagraphTranslation> {
+        if use_cache
+            && let Some(cached_result) = self
+                .cache
+                .lock()
+                .await
+                .get(&self.from, &self.to, paragraph)
+                .await
+                .ok()
+                .flatten()
         {
             return Ok(cached_result);
         }

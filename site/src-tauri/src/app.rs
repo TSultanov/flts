@@ -13,6 +13,7 @@ use library::{
         Library,
         file_watcher::{LibraryFileChange, LibraryWatcher},
     },
+    translator::TranslationModel,
 };
 use log::{info, warn};
 use tauri::{Emitter, async_runtime::Mutex};
@@ -196,6 +197,8 @@ impl App {
         &mut self,
         book_id: Uuid,
         paragraph_id: usize,
+        model: TranslationModel,
+        use_cache: bool,
     ) -> anyhow::Result<usize> {
         if let Some(library) = &self.library
             && self.translation_queue.is_none()
@@ -206,7 +209,7 @@ impl App {
         }
 
         if let Some(q) = &self.translation_queue {
-            Ok(q.translate(book_id, paragraph_id).await?)
+            Ok(q.translate(book_id, paragraph_id, model, use_cache).await?)
         } else {
             Err(AppError::NoTranslationQueueError.into())
         }
@@ -256,11 +259,18 @@ pub async fn translate_paragraph(
     state: tauri::State<'_, Arc<Mutex<App>>>,
     book_id: Uuid,
     paragraph_id: usize,
+    model: usize,
+    use_cache: bool,
 ) -> Result<usize, String> {
     let mut app = state.lock().await;
-    app.translate_paragraph(book_id, paragraph_id)
-        .await
-        .map_err(|err| err.to_string())
+    app.translate_paragraph(
+        book_id,
+        paragraph_id,
+        TranslationModel::from(model),
+        use_cache,
+    )
+    .await
+    .map_err(|err| err.to_string())
 }
 
 #[tauri::command]

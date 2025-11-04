@@ -57,6 +57,9 @@ export type UpdateEvent<TEvent = any> = {
 
 export function getterToReadableWithEvents<T>(
     getterName: string,
+): Readable<T | undefined>;
+export function getterToReadableWithEvents<T>(
+    getterName: string,
     args: InvokeArgs,
     events: UpdateEvent[],
 ): Readable<T | undefined>;
@@ -68,8 +71,8 @@ export function getterToReadableWithEvents<T>(
 ): Readable<T>;
 export function getterToReadableWithEvents<T>(
     getterName: string,
-    args: InvokeArgs,
-    events: UpdateEvent[],
+    args: InvokeArgs = {},
+    events: UpdateEvent[] = [],
     defaultValue: T | undefined = undefined,
 ): Readable<T | undefined> {
     let setter: ((value: T) => void) | null = null;

@@ -4,7 +4,7 @@ import type { UUID } from "./v2/db";
 import { type ChapterMetaView, type IBookMeta, type ParagraphView, type SentenceWordTranslation } from "./sql/book";
 import { eventToReadable, getterToReadable, getterToReadableWithEvents } from './tauri';
 import { invoke } from "@tauri-apps/api/core";
-import { configStore } from "../config";
+import { configStore, getConfig } from "../config";
 
 type LibraryBookMetadataView = {
     id: UUID,
@@ -111,8 +111,9 @@ export class Library {
         await invoke<UUID>("import_plain_text", { title, text, sourceLanguageId });
     }
 
-    async translateParagraph(bookId: UUID, paragraphId: number) {
-        return await invoke<number>("translate_paragraph", { bookId, paragraphId });
+    async translateParagraph(bookId: UUID, paragraphId: number, model: number | undefined = undefined, useCache: boolean = true) {
+        let config = await getConfig();
+        return await invoke<number>("translate_paragraph", { bookId, paragraphId, model: model ?? config.model, useCache });
     }
 
     async getParagraphTranslationRequestId(bookId: UUID, paragraphId: number) {

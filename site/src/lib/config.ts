@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { eventToReadable } from './data/tauri';
+import { eventToReadable, getterToReadableWithEvents } from './data/tauri';
 
 export type Model = {
     id: number,
@@ -33,4 +33,9 @@ export async function setConfig(config: Config) {
     await invoke("update_config", { config: config });
 }
 
+export async function getConfig() {
+    return await invoke<Config>("get_config");
+}
+
 export const configStore = eventToReadable<Config>("config_updated", "get_config");
+export const models = getterToReadableWithEvents<Model[]>("get_models", {}, [], []);

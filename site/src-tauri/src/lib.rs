@@ -37,7 +37,7 @@ pub fn run() {
                 };
 
                 loop {
-                    let event = recv.recv();
+                    let event = recv.recv_async().await;
                     match event {
                         Ok(event) => {
                             app_state
