@@ -37,7 +37,7 @@
         {#if $chapters.length > 1}
             <div class="chapters">
                 {#each $chapters as chapter}
-                    <p>
+                    <p class="{chapter.id === chapterId ? "current" : ""}">
                         <a href="/book/{bookId}/{chapter.id}"
                             >{chapter.title ? chapter.title : "<no title>"}</a
                         >
@@ -88,6 +88,10 @@
         border-right: 1px solid var(--background-color);
         overflow-y: auto;
         overflow-x: none;
+    }
+
+    .chapters .current {
+        outline: 1px dotted var(--selected-color);
     }
 
     .word-view {
