@@ -54,6 +54,7 @@ pub fn run() {
             app::get_config,
             app::update_config,
             app::translate_paragraph,
+            app::get_paragraph_translation_request_id,
             app::library_view::list_books,
             app::library_view::list_book_chapters,
             app::library_view::get_book_chapter_paragraphs,

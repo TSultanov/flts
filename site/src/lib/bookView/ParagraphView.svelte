@@ -1,10 +1,14 @@
 <script lang="ts">
     import Fa from "svelte-fa";
-    import { faLanguage } from "@fortawesome/free-solid-svg-icons";
+    import {
+        faLanguage,
+        faArrowsRotate,
+    } from "@fortawesome/free-solid-svg-icons";
     import type { ParagraphView } from "../data/sql/book";
-    import { getContext } from "svelte";
+    import { getContext, onDestroy, onMount } from "svelte";
     import type { Library } from "../data/library";
     import type { UUID } from "../data/v2/db";
+    import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
     let {
         bookId,
@@ -21,6 +25,31 @@
 
     const library: Library = getContext("library");
 
+    let translationRequestId: number | null = $state(null);
+    let unsub: UnlistenFn | null = null;
+
+    onDestroy(() => {
+        if (unsub) {
+            unsub();
+        }
+    });
+
+    async function listenToTranslationRequestChanges() {
+        if (translationRequestId !== null) {
+            console.log(
+                `Listening for translation request ${translationRequestId}`,
+            );
+            unsub = await listen<number>(
+                "translation_request_complete",
+                (cb) => {
+                    if (translationRequestId === cb.payload) {
+                        translationRequestId = null;
+                    }
+                },
+            );
+        }
+    }
+
     $effect(() => {
         const selectedElements = document.querySelectorAll(
             ".word-span.selected",
@@ -36,7 +65,23 @@
                 element.classList.add("selected");
             }
         }
+
+        library
+            .getParagraphTranslationRequestId(bookId, paragraph.id)
+            .then((id) => {
+                translationRequestId = id;
+                listenToTranslationRequestChanges();
+            });
     });
+
+    async function translateParagraph() {
+        translationRequestId = await library.translateParagraph(
+            bookId,
+            paragraph.id,
+        );
+
+        await listenToTranslationRequestChanges();
+    }
 </script>
 
 <div class="paragraph-wrapper">
@@ -44,9 +89,17 @@
         <button
             class="translate"
             aria-label="Translate paragraph"
-            onclick={() => library.transalteParagraph(bookId, paragraph.id)}
-            ><Fa icon={faLanguage} /></button
+            onclick={translateParagraph}
+            disabled={translationRequestId !== null}
         >
+            {#if translationRequestId !== null}
+                <div class="spin">
+                    <Fa icon={faArrowsRotate} />
+                </div>
+            {:else}
+                <Fa icon={faLanguage} />
+            {/if}
+        </button>
         <p class="original">
             {@html originalText}
         </p>
@@ -64,7 +117,7 @@
     }
 
     .original {
-        color: var(--text-inactive);
+        color: var(--text-untranslated);
     }
 
     p {
@@ -84,5 +137,18 @@
         height: calc(2 * var(--font-size));
         padding: 0;
         justify-self: center;
+    }
+
+    @keyframes spin {
+        from {
+            transform: rotate(0deg);
+        }
+        to {
+            transform: rotate(360deg);
+        }
+    }
+
+    .spin {
+        animation: spin 2s linear infinite;
     }
 </style>

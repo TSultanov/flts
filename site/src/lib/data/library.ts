@@ -111,8 +111,12 @@ export class Library {
         await invoke<UUID>("import_plain_text", { title, text, sourceLanguageId });
     }
 
-    async transalteParagraph(bookId: UUID, paragraphId: number) {
-        await invoke<UUID>("translate_paragraph", { bookId, paragraphId });
+    async translateParagraph(bookId: UUID, paragraphId: number) {
+        return await invoke<number>("translate_paragraph", { bookId, paragraphId });
+    }
+
+    async getParagraphTranslationRequestId(bookId: UUID, paragraphId: number) {
+        return await invoke<number>("get_paragraph_translation_request_id", { bookId, paragraphId });
     }
 
     private async cleanupTranslationRequests(bookUid: UUID): Promise<void> {

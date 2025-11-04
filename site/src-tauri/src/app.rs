@@ -30,6 +30,8 @@ pub mod translation_queue;
 pub enum AppError {
     StatePoisonError,
     ProjectDirsError,
+    NoTranslationQueueError,
+    TestError,
 }
 
 impl Error for AppError {}
@@ -39,6 +41,8 @@ impl Display for AppError {
         match self {
             AppError::ProjectDirsError => write!(f, "Failed to find app configuration directories"),
             AppError::StatePoisonError => write!(f, "Fatal: state poisoned"),
+            AppError::NoTranslationQueueError => write!(f, "Failed to translate paragraph: no translation queue initialized"),
+            AppError::TestError => write!(f, "Test error"),
         }
     }
 }
@@ -189,7 +193,7 @@ impl App {
         &mut self,
         book_id: Uuid,
         paragraph_id: usize,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<usize> {
         if let Some(library) = &self.library
             && self.translation_queue.is_none()
         {
@@ -199,9 +203,30 @@ impl App {
         }
 
         if let Some(q) = &self.translation_queue {
-            q.translate(book_id, paragraph_id).await?;
+            Ok(q.translate(book_id, paragraph_id).await?)
+        } else {
+            Err(AppError::NoTranslationQueueError.into())
         }
-        Ok(())
+    }
+
+    pub async fn get_paragraph_translation_request_id(
+        &mut self,
+        book_id: Uuid,
+        paragraph_id: usize,
+    ) -> anyhow::Result<Option<usize>> {
+        if let Some(library) = &self.library
+            && self.translation_queue.is_none()
+        {
+            let cache = Arc::new(Mutex::new(Self::get_cache().await?));
+            self.translation_queue =
+                TranslationQueue::init(library.clone(), cache, &self.config, self.app.clone());
+        }
+
+        if let Some(q) = &self.translation_queue {
+            Ok(q.get_request_id(book_id, paragraph_id).await)
+        } else {
+            Err(AppError::NoTranslationQueueError.into())
+        }
     }
 }
 
@@ -226,10 +251,21 @@ pub async fn translate_paragraph(
     state: tauri::State<'_, Arc<Mutex<App>>>,
     book_id: Uuid,
     paragraph_id: usize,
-) -> Result<(), String> {
+) -> Result<usize, String> {
     let mut app = state.lock().await;
     app.translate_paragraph(book_id, paragraph_id)
         .await
-        .map_err(|err| err.to_string())?;
-    Ok(())
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub async fn get_paragraph_translation_request_id(
+    state: tauri::State<'_, Arc<Mutex<App>>>,
+    book_id: Uuid,
+    paragraph_id: usize,
+) -> Result<Option<usize>, String> {
+    let mut app = state.lock().await;
+    app.get_paragraph_translation_request_id(book_id, paragraph_id)
+        .await
+        .map_err(|err| err.to_string())
 }
