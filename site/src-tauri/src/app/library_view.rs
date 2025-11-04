@@ -101,9 +101,9 @@ impl LibraryView {
             .collect())
     }
 
-    pub fn list_book_chapters(&mut self, book_id: Uuid) -> anyhow::Result<Vec<ChapterView>> {
-        let book = self.library.blocking_lock().get_book(&book_id)?;
-        let book = book.blocking_lock();
+    pub async fn list_book_chapters(&mut self, book_id: Uuid) -> anyhow::Result<Vec<ChapterView>> {
+        let book = self.library.lock().await.get_book(&book_id)?;
+        let book = book.lock().await;
         let book = &book.book;
         let chapters = book
             .chapter_views()
@@ -157,10 +157,11 @@ impl LibraryView {
         word_id: usize,
         target_language: &Language,
     ) -> anyhow::Result<Option<WordView>> {
-        let book = self.library.lock().await.get_book(&book_id)?;
-        let mut book = book.lock().await;
-
-        let book_translation = book.get_or_create_translation(target_language).await;
+        let book_translation = {
+            let book = self.library.lock().await.get_book(&book_id)?;
+            let mut book = book.lock().await;
+            book.get_or_create_translation(target_language).await
+        };
 
         Ok(
             if let Some(paragraph) = book_translation.lock().await.paragraph_view(paragraph_id) {
@@ -263,14 +264,15 @@ pub async fn list_books(
 }
 
 #[tauri::command]
-pub fn list_book_chapters(
+pub async fn list_book_chapters(
     state: tauri::State<'_, Arc<Mutex<App>>>,
     book_id: Uuid,
 ) -> Result<Vec<ChapterView>, String> {
-    let mut app = state.blocking_lock();
+    let mut app = state.lock().await;
     if let Some(library) = &mut app.library_view {
         library
             .list_book_chapters(book_id)
+            .await
             .map_err(|err| err.to_string())
     } else {
         Ok(vec![])

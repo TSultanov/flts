@@ -2,8 +2,9 @@ import { derived, readable, type Readable } from 'svelte/store';
 import type { EpubBook } from "./epubLoader";
 import type { UUID } from "./v2/db";
 import { type ChapterMetaView, type IBookMeta, type ParagraphView, type SentenceWordTranslation } from "./sql/book";
-import { eventToReadable, getterToReadable } from './tauri';
+import { eventToReadable, getterToReadable, getterToReadableWithEvents } from './tauri';
 import { invoke } from "@tauri-apps/api/core";
+import { configStore } from "../config";
 
 type LibraryBookMetadataView = {
     id: UUID,
@@ -77,7 +78,29 @@ export class Library {
     }
 
     getWordInfo(bookId: UUID, paragraphId: number, sentenceId: number, wordId: number): Readable<SentenceWordTranslation | undefined> {
-        return getterToReadable("get_word_info", { "bookId": bookId, "paragraphId": paragraphId, "sentenceId": sentenceId, "wordId": wordId }, "book_updated", (updatedId: UUID) => updatedId === bookId);
+        // Track current target language to filter dictionary updates
+        let currentTarget: string | undefined;
+        const unsub = configStore.subscribe((cfg) => {
+            currentTarget = cfg?.targetLanguageId;
+        });
+
+        const store = getterToReadableWithEvents<SentenceWordTranslation | undefined>(
+            "get_word_info",
+            { bookId, paragraphId, sentenceId, wordId },
+            [
+                { name: "book_updated", filter: (updatedId: UUID) => updatedId === bookId },
+                // dictionary_updated payload is [from, to] (639-3)
+                { name: "dictionary_updated", filter: (payload: [string, string]) => !!currentTarget && payload?.[1] === currentTarget },
+            ],
+        );
+
+        // Ensure we detach the config subscription when the consumer unsubscribes
+        return {
+            subscribe(run, invalidate) {
+                const un = store.subscribe(run, invalidate);
+                return () => { un(); unsub(); };
+            }
+        } as Readable<SentenceWordTranslation | undefined>;
     }
 
     async importEpub(book: EpubBook, sourceLanguageId: string) {

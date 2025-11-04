@@ -137,13 +137,13 @@ impl App {
             if had_effect {
                 match event {
                     LibraryFileChange::BookChanged { modified: _, uuid } => {
-                        info!("Emitting book_updated event");
+                        info!("Emitting \"book_updated\" for {uuid}");
                         self.app.emit("book_updated", uuid)?;
                         if let Some(library) = &self.library_view {
                             let target_language =
                                 Language::from_639_3(&self.config.target_language_id);
 
-                            info!("Emitting library_updated event");
+                            info!("Emitting \"library_updated\"");
                             self.app.emit(
                                 "library_updated",
                                 library.list_books(target_language.as_ref()).await?,
@@ -159,10 +159,10 @@ impl App {
                         let target_language = Language::from_639_3(&self.config.target_language_id);
 
                         if target_language.map_or(false, |tl| tl == *to) {
-                            info!("Emitting book_updated event");
+                            info!("Emitting \"book_updated\" for {uuid}");
                             self.app.emit("book_updated", uuid)?;
                             if let Some(library) = &self.library_view {
-                                info!("Emitting library_updated event");
+                                info!("Emitting \"library_updated\"");
                                 self.app.emit(
                                     "library_updated",
                                     library.list_books(target_language.as_ref()).await?,
@@ -175,9 +175,9 @@ impl App {
                         from,
                         to,
                     } => {
-                        info!("Emitting dictionary_updated event");
-                        self.app
-                            .emit("dictionary_updated", (from.to_639_3(), to.to_639_3()))?;
+                        let payload = (from.to_639_3(), to.to_639_3());
+                        info!("Emitting \"dictionary_updated\" for {payload:?}",);
+                        self.app.emit("dictionary_updated", payload)?;
                     }
                 }
             }
@@ -194,7 +194,8 @@ impl App {
             && self.translation_queue.is_none()
         {
             let cache = Arc::new(Mutex::new(Self::get_cache().await?));
-            self.translation_queue = TranslationQueue::init(library.clone(), cache, &self.config);
+            self.translation_queue =
+                TranslationQueue::init(library.clone(), cache, &self.config, self.app.clone());
         }
 
         if let Some(q) = &self.translation_queue {

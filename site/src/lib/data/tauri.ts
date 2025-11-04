@@ -44,43 +44,66 @@ export function eventToReadable<T>(eventName: string, getterName: string, defaul
 export function getterToReadable<T, TEvent>(getterName: string, args: InvokeArgs, updateEventName: string, eventFilter: (ev: TEvent) => boolean): Readable<T | undefined>
 export function getterToReadable<T, TEvent>(getterName: string, args: InvokeArgs, updateEventName: string, eventFilter: (ev: TEvent) => boolean, defaultValue: T): Readable<T>
 export function getterToReadable<T, TEvent>(getterName: string, args: InvokeArgs, updateEventName: string, eventFilter: (ev: TEvent) => boolean, defaultValue: T | undefined = undefined): Readable<T | undefined> {
-    let setter: ((value: T) => void) | null = null;
-    let unsub: UnlistenFn | null = null;
+    // Delegate to the multi-event version with a single event descriptor
+    const events = [{ name: updateEventName, filter: (ev: unknown) => eventFilter(ev as TEvent) }];
+    return getterToReadableWithEvents<T>(getterName, args, events, defaultValue as any) as Readable<T | undefined>;
+}
 
-    let getter = () => {
+// Listen to multiple events and refresh the getter when any filter matches
+export type UpdateEvent<TEvent = any> = {
+    name: string,
+    filter: (ev: TEvent) => boolean,
+};
+
+export function getterToReadableWithEvents<T>(
+    getterName: string,
+    args: InvokeArgs,
+    events: UpdateEvent[],
+): Readable<T | undefined>;
+export function getterToReadableWithEvents<T>(
+    getterName: string,
+    args: InvokeArgs,
+    events: UpdateEvent[],
+    defaultValue: T,
+): Readable<T>;
+export function getterToReadableWithEvents<T>(
+    getterName: string,
+    args: InvokeArgs,
+    events: UpdateEvent[],
+    defaultValue: T | undefined = undefined,
+): Readable<T | undefined> {
+    let setter: ((value: T) => void) | null = null;
+    const unsubs: UnlistenFn[] = [];
+
+    const getter = () => {
         invoke<T>(getterName, args).then((v) => {
-            let setInitial = () => {
+            const setInitial = () => {
                 if (setter) {
                     setter(v);
                 } else {
                     setTimeout(setInitial, 10);
-                };
+                }
             };
             setInitial();
-        })
+        });
     };
 
-    listen<TEvent>(updateEventName, (event) => {
-        if (eventFilter(event.payload)) {
-            getter();
-        }
-    }).then((u) => {
-        unsub = u;
-    });
+    for (const ev of events) {
+        listen(ev.name, (event) => {
+            if (ev.filter((event as any).payload)) {
+                getter();
+            }
+        }).then((u) => unsubs.push(u));
+    }
 
     getter();
 
     return readable<T>(defaultValue, (set) => {
         setter = set;
         return () => {
-            let doUnsub = () => {
-                if (unsub) {
-                    unsub();
-                } else {
-                    setTimeout(doUnsub, 10);
-                }
-            };
-            doUnsub();
+            for (const u of unsubs) {
+                try { u(); } catch { }
+            }
         };
     });
 }

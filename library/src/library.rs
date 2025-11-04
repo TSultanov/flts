@@ -2,7 +2,7 @@ use std::{collections::HashMap, error::Error, fmt::Display, sync::Arc};
 
 use isolang::Language;
 use itertools::Itertools;
-use log::info;
+use log::{info, trace};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 use vfs::{VfsError, VfsPath};
@@ -249,7 +249,8 @@ impl Library {
         &mut self,
         event: &LibraryFileChange,
     ) -> anyhow::Result<bool> {
-        Ok(match event {
+        trace!("Starting file change event handling: {:?}...", event);
+        let result = Ok(match event {
             LibraryFileChange::BookChanged { modified, uuid } => {
                 if let Some(book) = self.books_cache.get(uuid) {
                     book.lock().await.reload_book(*modified).await?
@@ -279,7 +280,9 @@ impl Library {
                     .reload_dictionary(*modified, *from, *to)
                     .await?
             }
-        })
+        });
+        trace!("Finish file change event handling");
+        result
     }
 }
 

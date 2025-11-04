@@ -11,10 +11,19 @@ use tokio::{sync::Mutex, task::JoinHandle};
 use uuid::Uuid;
 
 use crate::app::config::Config;
+use crate::app::library_view::LibraryView;
+use tauri::Emitter;
 
 struct TranslationRequest {
     book_id: Uuid,
     paragraph_id: usize,
+}
+
+#[derive(Clone, Copy)]
+struct SaveNotify {
+    book_id: Uuid,
+    source_language: Language,
+    target_language: Language,
 }
 
 pub struct TranslationQueue {
@@ -29,14 +38,19 @@ impl TranslationQueue {
         library: Arc<Mutex<Library>>,
         cache: Arc<Mutex<TranslationsCache>>,
         config: &Config,
+        app: tauri::AppHandle,
     ) -> Option<Self> {
         let api_key = config.gemini_api_key.clone()?;
         let target_language = Language::from_639_3(&config.target_language_id)?;
         let model = TranslationModel::from(config.model);
 
-        let (tx_save, rx_save) = flume::unbounded::<Uuid>();
+        let (tx_save, rx_save) = flume::unbounded::<SaveNotify>();
 
-        let saver = tokio::spawn(run_saver(library.clone(), rx_save));
+        let saver = tokio::spawn(run_saver(
+            library.clone(),
+            app.clone(),
+            rx_save,
+        ));
 
         let (tx_translate, rx_translate) = flume::unbounded::<TranslationRequest>();
 
@@ -90,7 +104,7 @@ async fn handle_request(
     model: TranslationModel,
     target_language: Language,
     api_key: String,
-    save_notify: &flume::Sender<Uuid>,
+    save_notify: &flume::Sender<SaveNotify>,
     request: &TranslationRequest,
 ) -> anyhow::Result<()> {
     let (translation, paragraph_text, source_language) = {
@@ -128,17 +142,28 @@ async fn handle_request(
         .add_paragraph_translation(request.paragraph_id, &p_translation)
         .await?;
 
-    save_notify.send_async(request.book_id).await?;
+    save_notify
+        .send_async(SaveNotify {
+            book_id: request.book_id,
+            source_language,
+            target_language,
+        })
+        .await?;
 
     Ok(())
 }
 
-async fn run_saver(library: Arc<Mutex<Library>>, rx: flume::Receiver<Uuid>) {
+async fn run_saver(
+    library: Arc<Mutex<Library>>,
+    app: tauri::AppHandle,
+    rx: flume::Receiver<SaveNotify>,
+) {
     let savers = Arc::new(Mutex::new(HashMap::new()));
 
-    while let Ok(book_id) = rx.recv_async().await {
+    while let Ok(msg) = rx.recv_async().await {
+        let book_id = msg.book_id;
         if !savers.lock().await.contains_key(&book_id) {
-            save_book(library.clone(), book_id)
+            save_and_emit(library.clone(), app.clone(), msg)
                 .await
                 .unwrap_or_else(|err| warn!("Failed to autosave book {book_id}: {err}"));
             continue;
@@ -146,10 +171,12 @@ async fn run_saver(library: Arc<Mutex<Library>>, rx: flume::Receiver<Uuid>) {
 
         let saver = {
             let library = library.clone();
+            let app = app.clone();
             let savers = savers.clone();
+            let msg = msg;
             async move {
                 tokio::time::sleep(Duration::from_secs(1)).await;
-                save_book(library, book_id)
+                save_and_emit(library.clone(), app.clone(), msg)
                     .await
                     .unwrap_or_else(|err| warn!("Failed to autosave book {book_id}: {err}"));
                 savers.lock().await.remove(&book_id);
@@ -162,8 +189,39 @@ async fn run_saver(library: Arc<Mutex<Library>>, rx: flume::Receiver<Uuid>) {
 }
 
 async fn save_book(library: Arc<Mutex<Library>>, book_id: Uuid) -> anyhow::Result<()> {
-    let book = library.lock().await.get_book(&book_id)?;
-    let mut book = book.lock().await;
-    book.save().await?;
+    let book_handle = {
+        let mut library = library.lock().await;
+        library.get_book(&book_id)?
+    };
+    let mut book = book_handle.lock().await;
+    book.save().await
+}
+
+async fn save_and_emit(
+    library: Arc<Mutex<Library>>,
+    app: tauri::AppHandle,
+    msg: SaveNotify,
+) -> anyhow::Result<()> {
+    save_book(library.clone(), msg.book_id).await?;
+    emit_updates(library, app, msg).await?;
+    Ok(())
+}
+
+async fn emit_updates(
+    library: Arc<Mutex<Library>>,
+    app: tauri::AppHandle,
+    msg: SaveNotify,
+) -> anyhow::Result<()> {
+    info!("Emitting \"book_updated\" for {}", msg.book_id);
+    app.emit("book_updated", msg.book_id)?;
+
+    let lv = LibraryView::create(app.clone(), library.clone());
+    let books = lv.list_books(Some(&msg.target_language)).await?;
+    info!("Emitting \"library_updated\"");
+    app.emit("library_updated", books)?;
+
+    let payload = (msg.source_language.to_639_3(), msg.target_language.to_639_3());
+    info!("Emitting \"dictionary_updated\" for {payload:?}",);
+    app.emit("dictionary_updated", payload)?;
     Ok(())
 }
