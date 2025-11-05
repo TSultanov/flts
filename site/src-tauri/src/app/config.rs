@@ -1,9 +1,12 @@
-use std::{fs::{File, OpenOptions}, path::Path};
+use std::{
+    fs::File, path::Path
+};
 
 use library::translator::TranslationModel;
-use log::warn;
+use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
+use std::fs::{self, OpenOptions};
 
 #[derive(Serialize)]
 pub struct Model {
@@ -48,6 +51,7 @@ pub fn get_languages() -> Vec<Language> {
             name: l.to_name(),
             local_name: l.to_autonym(),
         })
+        .filter(|l| l.id == "rus" || l.id == "eng")
         .collect();
     languages.sort_by_key(|l| l.name);
     languages
@@ -83,13 +87,20 @@ impl Config {
             Err(err) => {
                 warn!("Failed to parse config: {}. Loading default values.", err);
                 Self::default()
-            },
+            }
         })
     }
 
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
-        let file = OpenOptions::new().truncate(true).write(true).create(true).open(path)?;
+        info!("Open {path:?}");
+        let file = OpenOptions::new()
+            .truncate(true)
+            .write(true)
+            .create(true)
+            .open(path)?;
+        info!("File opened");
         serde_json::to_writer(file, self)?;
+        info!("File written");
         Ok(())
     }
 }

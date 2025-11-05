@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "flts",
+  "productName": "FLTS",
   "version": "0.1.0",
-  "identifier": "ts.flts",
+  "identifier": "com.TS.FLTS",
   "build": {
     "frontendDist": ".",
     "devUrl": "http://localhost:5173",

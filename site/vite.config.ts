@@ -11,6 +11,7 @@ export default defineConfig({
       'Cross-Origin-Opener-Policy': 'same-origin',
       'Cross-Origin-Embedder-Policy': 'require-corp',
     },
+    host: process.env.TAURI_DEV_HOST || 'localhost',
   },
   optimizeDeps: {
     exclude: ['@sqlite.org/sqlite-wasm'],

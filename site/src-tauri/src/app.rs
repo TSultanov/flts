@@ -1,8 +1,5 @@
 use std::{
-    error::Error,
-    fmt::Display,
-    path::{Path, PathBuf},
-    sync::Arc,
+    error::Error, fmt::Display, fs, path::{Path, PathBuf}, sync::Arc
 };
 
 use directories::ProjectDirs;
@@ -21,6 +18,11 @@ use uuid::Uuid;
 use vfs::PhysicalFS;
 
 use crate::app::{config::Config, library_view::LibraryView, translation_queue::TranslationQueue};
+
+#[cfg(mobile)]
+use dirs_next::{document_dir, config_dir};
+#[cfg(mobile)]
+use std::fs;
 
 pub mod config;
 pub mod library_view;
@@ -65,9 +67,18 @@ impl App {
         app: tauri::AppHandle,
         watcher: Option<Arc<Mutex<LibraryWatcher>>>,
     ) -> anyhow::Result<Self> {
-        let dirs = ProjectDirs::from("", "TS", "FLTS").ok_or(AppError::ProjectDirsError)?;
+        info!("Startup!");
 
+        let dirs = ProjectDirs::from("com", "TS", "FLTS").ok_or(AppError::ProjectDirsError)?;
         let config_dir = dirs.config_dir();
+
+        if !fs::exists(config_dir)? {
+            fs::create_dir(config_dir)?;
+        }
+
+        // #[cfg(mobile)]
+        // let config_dir = config_dir().unwrap();
+
         info!("config_dir = {:?}", config_dir);
         let config_path = config_dir.join("config.json");
 
@@ -87,13 +98,30 @@ impl App {
             watcher,
         };
 
-        // app.eval_config()?;
-
         Ok(app)
     }
 
     pub async fn update_config(&mut self, config: Config) -> anyhow::Result<()> {
         self.config = config;
+
+        #[cfg(mobile)]
+        {
+            let library_path = {
+                let documents = document_dir();
+                if let Some(documents) = &documents && !fs::exists(documents)? {
+                    fs::create_dir(documents)?;
+                };
+                let library_directory = documents.map(|p| p.join("FLTSLibrary"));
+                if let Some(library_directory) = &library_directory && !fs::exists(library_directory)? {
+                    fs::create_dir(library_directory)?;
+                };
+                library_directory.map(|d| d.to_string_lossy().to_string())
+            };
+
+            self.config.library_path = library_path;
+        }
+        info!("config = {:?}", self.config);
+
         self.config.save(&self.config_path)?;
         info!("Emitting \"config_updated\"");
         self.app.emit("config_updated", self.config.clone())?;
@@ -104,7 +132,15 @@ impl App {
     pub async fn eval_config(&mut self) -> anyhow::Result<()> {
         let target_language = Language::from_639_3(&self.config.target_language_id);
 
-        if let Some(library_path) = &self.config.library_path {
+        let library_path = &self.config.library_path;
+
+        info!("library_path = {library_path:?}");
+
+        if let Some(library_path) = library_path {
+            let fs = PhysicalFS::new(library_path);
+
+            let library = Arc::new(Mutex::new(Library::open(fs.into())?));
+            self.library = Some(library.clone());
             if let Some(watcher) = &self.watcher {
                 watcher
                     .lock()
@@ -114,10 +150,6 @@ impl App {
                         warn!("Failed to set watcher path to {}: {}", library_path, err)
                     });
             }
-            let fs = PhysicalFS::new(library_path);
-
-            let library = Arc::new(Mutex::new(Library::open(fs.into())?));
-            self.library = Some(library.clone());
 
             self.library_view = Some(LibraryView::create(self.app.clone(), library.clone()));
             if let Some(library) = &self.library_view {
@@ -241,10 +273,13 @@ pub async fn update_config(
     state: tauri::State<'_, Arc<Mutex<App>>>,
     config: Config,
 ) -> Result<(), String> {
+    info!("Update config request");
     let mut app = state.lock().await;
+    info!("App lock acquired");
     app.update_config(config)
         .await
         .map_err(|err| err.to_string())?;
+    info!("Config processed");
     Ok(())
 }
 

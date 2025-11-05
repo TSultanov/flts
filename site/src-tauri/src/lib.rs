@@ -1,13 +1,14 @@
 use std::sync::Arc;
 
 use library::library::file_watcher::LibraryWatcher;
-use log::warn;
+use log::{info, warn};
 use tauri::{Builder, Manager, async_runtime::Mutex};
 
 pub mod app;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(debug_assertions)]
     Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -15,18 +16,29 @@ pub fn run() {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
                         .level(log::LevelFilter::Info)
+                        .targets([
+                            tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                            tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
+                                file_name: Some("logs".to_string()),
+                            }),
+                        ])
                         .build(),
                 )?;
             }
 
+            info!("Creating watcher");
             let watcher = Arc::new(Mutex::new(LibraryWatcher::new()?));
+            info!("Watcher created");
             app.manage(watcher.clone());
+            info!("Creating app");
             let app_state = Arc::new(Mutex::new(crate::app::App::new(
                 app.handle().clone(),
-                Some(watcher.clone()),
+                None,
             )?));
+            info!("App created");
             app.manage(app_state.clone());
 
+            info!("Spawning async init");
             tauri::async_runtime::spawn(async move {
                 if let Err(err) = app_state.lock().await.eval_config().await {
                     warn!("Failed to evaluate config at startup: {err}");
