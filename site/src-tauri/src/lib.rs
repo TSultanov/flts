@@ -15,13 +15,13 @@ pub fn run() {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
                         .targets([
                             tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
                             tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
                                 file_name: Some("logs".to_string()),
                             }),
                         ])
+                        .level(log::LevelFilter::Info)
                         .build(),
                 )?;
             }

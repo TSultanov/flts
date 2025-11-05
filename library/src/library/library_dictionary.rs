@@ -26,13 +26,13 @@ pub struct LibraryDictionaryMetadata {
 
 impl LibraryDictionaryMetadata {
     /// Load dictionary metadata from a specific dictionary file path and detect conflicting files
-    /// with the same dictionary id in the same directory.
+    /// with the same language pair in the same directory.
     pub fn load(path: &VfsPath) -> anyhow::Result<Self> {
         // Read metadata from the main file
         let mut file = path.open_file()?;
         let metadata = DictionaryMetadata::read_metadata(&mut file)?;
 
-        // Scan sibling files for conflicts (same id)
+        // Scan sibling files for conflicts (same language pair)
         let mut conflicting_paths = Vec::new();
         let parent = path.parent();
         let parent_entries = parent.read_dir()?;
@@ -54,7 +54,9 @@ impl LibraryDictionaryMetadata {
             match p.open_file() {
                 Ok(mut f) => match DictionaryMetadata::read_metadata(&mut f) {
                     Ok(md) => {
-                        if md.id == metadata.id {
+                        if md.source_language == metadata.source_language
+                            && md.target_language == md.target_language
+                        {
                             conflicting_paths.push(p);
                         }
                     }
@@ -120,9 +122,12 @@ impl LibraryDictionary {
 
             // Merge each conflict into base
             for p in metadata.conflicting_paths {
-                let mut cf = BufReader::new(p.open_file()?);
-                let conflict = Dictionary::deserialize(&mut cf)?;
-                base.merge(conflict);
+                {
+                    let mut cf = BufReader::new(p.open_file()?);
+                    let conflict = Dictionary::deserialize(&mut cf)?;
+                    base.merge(conflict);
+                }
+                p.remove_file()?;
             }
 
             // Persist merged back to main
@@ -235,7 +240,9 @@ impl DictionaryCache {
             }
         }
 
-        let grouped_dictionaries = all_dictionaries.into_iter().chunk_by(|(_, dict)| dict.id);
+        let grouped_dictionaries = all_dictionaries
+            .into_iter()
+            .chunk_by(|(_, dict)| (dict.source_language.clone(), dict.target_language.clone()));
         let grouped_dictionaries = grouped_dictionaries
             .into_iter()
             .map(|(id, chunk)| (id, chunk.sorted_by_key(|(p, _)| p.filename().len())));

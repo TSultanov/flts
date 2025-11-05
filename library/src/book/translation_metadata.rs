@@ -10,6 +10,7 @@ use crate::book::serialization::{
     read_var_u64,
 };
 
+#[derive(Debug)]
 pub struct TranslationMetadata {
     pub id: Uuid,
     pub source_language: String,

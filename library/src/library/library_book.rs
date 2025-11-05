@@ -8,6 +8,7 @@ use std::{
 
 use ahash::AHashSet;
 use isolang::Language;
+use log::info;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 use vfs::VfsPath;
@@ -81,9 +82,12 @@ impl LibraryTranslation {
             };
 
             for conflict in metadata.conflicting_paths {
-                let mut conflict_file = BufReader::new(conflict.open_file()?);
-                let conflict_translation = Translation::deserialize(&mut conflict_file)?;
-                translation = translation.merge(&conflict_translation);
+                {
+                    let mut conflict_file = BufReader::new(conflict.open_file()?);
+                    let conflict_translation = Translation::deserialize(&mut conflict_file)?;
+                    translation = translation.merge(&conflict_translation);
+                }
+                conflict.remove_file()?;
             }
 
             let mut main_file = metadata.main_path.create_file()?;

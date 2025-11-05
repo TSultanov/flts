@@ -319,6 +319,7 @@ impl Translation {
 
     pub fn merge(&self, other: &Self) -> Self {
         let mut merged_translation = Self::create(&self.source_language, &self.target_language);
+        merged_translation.id = self.id;
         for paragraph_idx in 0..self.paragraphs.len().max(other.paragraphs.len()) {
             if let Some(paragarph) = self.paragraph_view(paragraph_idx)
                 && let Some(other_paragraph) = other.paragraph_view(paragraph_idx)
