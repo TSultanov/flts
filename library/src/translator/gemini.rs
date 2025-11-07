@@ -172,13 +172,13 @@ impl Translator for GeminiTranslator {
         }
 
         let thinking_config = match &self.model {
-            Model::Gemini25Flash | Model::Gemini25FlashLite => ThinkingConfig {
+            Model::Gemini25Flash => ThinkingConfig {
                 thinking_budget: Some(0),
                 include_thoughts: Some(false),
             },
             _ => ThinkingConfig {
                 thinking_budget: None,
-                include_thoughts: None,
+                include_thoughts: Some(false),
             },
         };
 

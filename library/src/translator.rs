@@ -16,6 +16,7 @@ use crate::{
 pub enum TranslationModel {
     GeminiFlash = 0,
     GeminiPro = 1,
+    GeminiFlashLight = 2,
 }
 
 impl From<usize> for TranslationModel {
@@ -23,6 +24,7 @@ impl From<usize> for TranslationModel {
         match value {
             0 => TranslationModel::GeminiFlash,
             1 => TranslationModel::GeminiPro,
+            2 => TranslationModel::GeminiFlashLight,
             _ => TranslationModel::GeminiFlash,
         }
     }
@@ -64,6 +66,7 @@ pub fn get_translator(
     let model = match translation_model {
         TranslationModel::GeminiFlash => Model::Gemini25Flash,
         TranslationModel::GeminiPro => Model::Gemini25Pro,
+        TranslationModel::GeminiFlashLight => Model::Gemini25FlashLite,
     };
 
     GeminiTranslator::create(cache, model, api_key, &from, &to)

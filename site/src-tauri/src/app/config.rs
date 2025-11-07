@@ -16,6 +16,7 @@ pub struct Model {
 
 fn model_pretty_name(model: TranslationModel) -> &'static str {
     match model {
+        TranslationModel::GeminiFlashLight => "Gemini 2.5 Flash Light",
         TranslationModel::GeminiFlash => "Gemini 2.5 Flash",
         TranslationModel::GeminiPro => "Gemini 2.5 Pro",
     }
