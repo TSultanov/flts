@@ -78,29 +78,11 @@ export class Library {
     }
 
     getWordInfo(bookId: UUID, paragraphId: number, sentenceId: number, wordId: number): Readable<SentenceWordTranslation | undefined> {
-        // Track current target language to filter dictionary updates
-        let currentTarget: string | undefined;
-        const unsub = configStore.subscribe((cfg) => {
-            currentTarget = cfg?.targetLanguageId;
-        });
-
-        const store = getterToReadableWithEvents<SentenceWordTranslation | undefined>(
+        return getterToReadable<SentenceWordTranslation | undefined, UUID>(
             "get_word_info",
             { bookId, paragraphId, sentenceId, wordId },
-            [
-                { name: "book_updated", filter: (updatedId: UUID) => updatedId === bookId },
-                // dictionary_updated payload is [from, to] (639-3)
-                { name: "dictionary_updated", filter: (payload: [string, string]) => !!currentTarget && payload?.[1] === currentTarget },
-            ],
+            "book_updated", (updatedId: UUID) => updatedId === bookId,
         );
-
-        // Ensure we detach the config subscription when the consumer unsubscribes
-        return {
-            subscribe(run, invalidate) {
-                const un = store.subscribe(run, invalidate);
-                return () => { un(); unsub(); };
-            }
-        } as Readable<SentenceWordTranslation | undefined>;
     }
 
     async importEpub(book: EpubBook, sourceLanguageId: string) {
