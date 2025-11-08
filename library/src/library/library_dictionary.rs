@@ -55,7 +55,7 @@ impl LibraryDictionaryMetadata {
                 Ok(mut f) => match DictionaryMetadata::read_metadata(&mut f) {
                     Ok(md) => {
                         if md.source_language == metadata.source_language
-                            && md.target_language == md.target_language
+                            && md.target_language == metadata.target_language
                         {
                             conflicting_paths.push(p);
                         }
@@ -335,13 +335,13 @@ mod library_dictionary_test {
         let mut buf: Vec<u8> = vec![];
         d.serialize(&mut buf).unwrap();
 
-        let main_path = dir.join("dictionary_en_ru.dat").unwrap();
+        let main_path = dir.join("dictionary_eng_rus.dat").unwrap();
         let mut f1 = main_path.create_file().unwrap();
         f1.write_all(&buf).unwrap();
         f1.flush().unwrap();
         drop(f1);
 
-        let conflict_path = dir.join("dictionary_en_ru.conflict.dat").unwrap();
+        let conflict_path = dir.join("dictionary_eng_rus.conflict.dat").unwrap();
         let mut f2 = conflict_path.create_file().unwrap();
         f2.write_all(&buf).unwrap();
         f2.flush().unwrap();
@@ -353,7 +353,7 @@ mod library_dictionary_test {
         let mut buf2: Vec<u8> = vec![];
         d2.serialize(&mut buf2).unwrap();
         {
-            let other_path = dir.join("dictionary_en_de.dat").unwrap();
+            let other_path = dir.join("dictionary_eng_deu.dat").unwrap();
             let mut other = other_path.create_file().unwrap();
             other.write_all(&buf2).unwrap();
             other.flush().unwrap();
