@@ -74,10 +74,14 @@
             });
     });
 
-    async function translateParagraph() {
+    async function translateParagraph(event: MouseEvent) {
+        const useCache = !(event.metaKey || event.ctrlKey);
+
         translationRequestId = await library.translateParagraph(
             bookId,
             paragraph.id,
+            undefined,
+            useCache
         );
 
         await listenToTranslationRequestChanges();
