@@ -72,18 +72,35 @@
 
 <style>
     .container {
-        display: flex;
-        flex-direction: row;
+        display: grid;
+        /* flex-direction: row; */
+        grid-template-columns: 150px auto 300px;
         height: 100%;
+    }
+
+    @media (max-aspect-ratio: 1/1) {
+        .container {
+            grid-template-columns: 150px auto;
+            grid-template-rows: auto 300px;
+        }
+
+        .word-view {
+            grid-row: 2 / 3;
+            grid-column: 2 / 3;
+        }
+
+        .chapters {
+            grid-row: 1 / 3;
+        }
     }
 
     .chapter-view {
         flex: 1 1 auto;
         hyphens: auto;
+        overflow: auto;
     }
 
     .chapters {
-        flex: 0 1 150px;
         padding: 10px;
         border-right: 1px solid var(--background-color);
         overflow-y: auto;
@@ -95,7 +112,6 @@
     }
 
     .word-view {
-        flex: 0 1 300px;
         padding: 10px;
         border-left: 1px solid var(--background-color);
         overflow-y: auto;
