@@ -21,8 +21,6 @@ use crate::app::{config::Config, library_view::LibraryView, translation_queue::T
 
 #[cfg(mobile)]
 use dirs_next::{document_dir, config_dir};
-#[cfg(mobile)]
-use std::fs;
 
 pub mod config;
 pub mod library_view;
