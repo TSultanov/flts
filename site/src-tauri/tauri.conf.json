@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.TS.FLTS",
   "build": {
-    "frontendDist": ".",
+    "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
     "beforeDevCommand": "pnpm dev",
     "beforeBuildCommand": "pnpm build"
@@ -32,6 +32,9 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "iOS": {
+      "bundleVersion": "100"
+    }
   }
 }
