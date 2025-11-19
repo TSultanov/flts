@@ -76,6 +76,7 @@ mod translation_metadata_test {
     fn test_metadata_roundtrip() {
         let mut translation = Translation::create("en", "ru");
         let paragraph_translation = translation_import::ParagraphTranslation {
+            total_tokens: None,
             timestamp: 1,
             source_language: "en".to_owned(),
             target_language: "ru".to_owned(),
@@ -106,6 +107,7 @@ mod translation_metadata_test {
 
         // another paragraph
         let paragraph_translation2 = translation_import::ParagraphTranslation {
+            total_tokens: None,
             timestamp: 2,
             source_language: "en".to_owned(),
             target_language: "ru".to_owned(),
@@ -164,6 +166,7 @@ mod translation_metadata_test {
     fn test_metadata_corruption() {
         let mut translation = Translation::create("en", "ru");
         let paragraph_translation = translation_import::ParagraphTranslation {
+            total_tokens: None,
             timestamp: 1,
             source_language: "en".to_owned(),
             target_language: "ru".to_owned(),
@@ -192,6 +195,7 @@ mod translation_metadata_test {
 
         // another paragraph
         let paragraph_translation2 = translation_import::ParagraphTranslation {
+            total_tokens: None,
             timestamp: 2,
             source_language: "en".to_owned(),
             target_language: "ru".to_owned(),

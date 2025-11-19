@@ -596,6 +596,7 @@ mod library_book_tests {
             let mut tr =
                 Translation::create(source_language.to_639_3(), target_language.to_639_3());
             let initial_pt = translation_import::ParagraphTranslation {
+                total_tokens: None,
                 timestamp: 1,
                 source_language: source_language.to_639_3().to_owned(),
                 target_language: target_language.to_639_3().to_owned(),
@@ -641,6 +642,7 @@ mod library_book_tests {
             // Modify both book and translation
             book.book.title = "Second Edition".into();
             let new_pt = translation_import::ParagraphTranslation {
+                total_tokens: None,
                 timestamp: 2,
                 source_language: source_language.to_639_3().to_owned(),
                 target_language: target_language.to_639_3().to_owned(),
@@ -720,6 +722,7 @@ mod library_book_tests {
         let mut book = book.lock().await;
         let mut tr = Translation::create(source_language.to_639_3(), target_language.to_639_3());
         let pt1 = translation_import::ParagraphTranslation {
+            total_tokens: None,
             timestamp: 1,
             source_language: "en".to_owned(),
             target_language: "ru".to_owned(),
@@ -773,6 +776,7 @@ mod library_book_tests {
 
         // In-memory change ts=2
         let mem_pt = translation_import::ParagraphTranslation {
+            total_tokens: None,
             timestamp: 2,
             source_language: "en".to_owned(),
             target_language: "ru".to_owned(),
@@ -809,6 +813,7 @@ mod library_book_tests {
                 Translation::deserialize(&mut f).unwrap()
             };
             let disk_pt = translation_import::ParagraphTranslation {
+                total_tokens: None,
                 timestamp: 3,
                 source_language: "en".to_owned(),
                 target_language: "ru".to_owned(),
@@ -876,6 +881,7 @@ mod library_book_tests {
         let mut t_main =
             Translation::create(source_language.to_639_3(), target_language.to_639_3());
         let pt2 = translation_import::ParagraphTranslation {
+            total_tokens: None,
             timestamp: 2,
             source_language: "en".to_owned(),
             target_language: "ru".to_owned(),
@@ -962,6 +968,7 @@ mod library_book_tests {
         let mut t_main =
             Translation::create(source_language.to_639_3(), target_language.to_639_3());
         let pt2 = translation_import::ParagraphTranslation {
+            total_tokens: None,
             timestamp: 2,
             source_language: source_language.to_639_3().to_owned(),
             target_language: target_language.to_639_3().to_owned(),
@@ -994,6 +1001,7 @@ mod library_book_tests {
         // conflict1: ts=1
         let mut t_c1 = Translation::create(source_language.to_639_3(), target_language.to_639_3());
         let pt1 = translation_import::ParagraphTranslation {
+            total_tokens: None,
             timestamp: 1,
             source_language: source_language.to_639_3().to_owned(),
             target_language: target_language.to_639_3().to_owned(),
@@ -1026,6 +1034,7 @@ mod library_book_tests {
         // conflict2: ts=3
         let mut t_c2 = Translation::create("en", "ru");
         let pt3 = translation_import::ParagraphTranslation {
+            total_tokens: None,
             timestamp: 3,
             source_language: "en".to_owned(),
             target_language: "ru".to_owned(),

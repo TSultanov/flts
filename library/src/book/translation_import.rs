@@ -9,6 +9,8 @@ pub struct ParagraphTranslation {
     pub source_language: String,
     #[serde(alias = "targetLanguage")]
     pub target_language: String,
+    #[serde(skip)]
+    pub total_tokens: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]

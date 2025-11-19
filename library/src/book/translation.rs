@@ -5,10 +5,7 @@ use uuid::Uuid;
 use crate::{
     book::{
         serialization::{
-            ChecksumedWriter, Magic, Serializable, Version, read_exact_array,
-            read_len_prefixed_string, read_len_prefixed_vec, read_opt, read_u8, read_u64,
-            read_var_u64, read_vec_slice, validate_hash, write_len_prefixed_bytes, write_opt,
-            write_u64, write_var_u64, write_vec_slice,
+            ChecksumedWriter, Magic, Serializable, Version, read_exact_array, read_len_prefixed_string, read_len_prefixed_vec, read_opt, read_opt_var_u64, read_u8, read_u64, read_var_u64, read_vec_slice, validate_hash, write_len_prefixed_bytes, write_opt, write_opt_var_u64, write_u64, write_var_u64, write_vec_slice
         },
         translation_import,
     },
@@ -62,6 +59,7 @@ impl Display for FieldTagError {
 
 enum FieldTag {
     TranslationModel = 1,
+    TotalTokens = 2,
 }
 
 impl TryFrom<u64> for FieldTag {
@@ -70,6 +68,7 @@ impl TryFrom<u64> for FieldTag {
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         match value {
             1 => Ok(FieldTag::TranslationModel),
+            2 => Ok(FieldTag::TotalTokens),
             _ => Err(FieldTagError::InvalidValue(value)),
         }
     }
@@ -80,6 +79,7 @@ struct ParagraphTranslation {
     previous_version: Option<usize>,
     sentences: VecSlice<Sentence>,
     model: TranslationModel,
+    total_tokens: Option<u64>,
 }
 
 pub struct ParagraphTranslationView<'a> {
@@ -88,6 +88,7 @@ pub struct ParagraphTranslationView<'a> {
     previous_version: Option<usize>,
     sentences: &'a [Sentence],
     pub model: TranslationModel,
+    pub total_tokens: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -180,6 +181,7 @@ impl Translation {
             previous_version: p.previous_version,
             sentences: p.sentences.slice(&self.sentences),
             model: p.model,
+            total_tokens: p.total_tokens,
         })
     }
 
@@ -218,6 +220,7 @@ impl Translation {
             previous_version: new_prev_version,
             sentences: VecSlice::empty(),
             model,
+            total_tokens: translation.total_tokens,
         };
         let new_index = self.paragraph_translations.len();
         self.paragraph_translations.push(new_paragraph);
@@ -301,6 +304,7 @@ impl Translation {
             previous_version: new_prev_version,
             sentences: VecSlice::empty(),
             model: translation.model,
+            total_tokens: translation.total_tokens,
         };
 
         let new_index = self.paragraph_translations.len();
@@ -780,9 +784,21 @@ impl Translation {
                 write_var_u64(&mut cursor, pt.model as u64)?;
                 cursor.into_inner()
             };
-            write_var_u64(&mut hashing_stream, 1)?;
+
+            let tokens_count_field = {
+                let buf = Vec::new();
+                let mut cursor = Cursor::new(buf);
+
+                // Tokens
+                write_var_u64(&mut cursor, FieldTag::TotalTokens as u64)?;
+                write_opt_var_u64(&mut cursor, pt.total_tokens)?;
+                cursor.into_inner()
+            };
+            write_var_u64(&mut hashing_stream, 2)?;
             write_var_u64(&mut hashing_stream, translation_model_field.len() as u64)?;
+            write_var_u64(&mut hashing_stream, tokens_count_field.len() as u64)?;
             hashing_stream.write_all(&translation_model_field)?;
+            hashing_stream.write_all(&tokens_count_field)?;
         }
         let d_pt = t_pt.elapsed();
 
@@ -994,6 +1010,7 @@ impl Translation {
                 previous_version,
                 sentences: sentences_slice,
                 model: TranslationModel::Unknown,
+                total_tokens: None,
             };
             paragraph_translations.push(translation);
         }
@@ -1184,6 +1201,7 @@ impl Translation {
                 previous_version,
                 sentences: sentences_slice,
                 model: TranslationModel::Unknown,
+                total_tokens: None,
             };
 
             // Tagged fields
@@ -1207,6 +1225,10 @@ impl Translation {
                         let model: TranslationModel = (read_var_u64(&mut cursor)? as usize).into();
                         translation.model = model;
                     }
+                    FieldTag::TotalTokens => {
+                        let tokens = read_opt_var_u64(&mut cursor)?;
+                        translation.total_tokens = tokens;
+                    },
                 }
             }
 
@@ -1296,6 +1318,7 @@ impl<'a> ParagraphTranslationView<'a> {
             previous_version: p.previous_version,
             sentences: p.sentences.slice(&self.translation.sentences),
             model: p.model,
+            total_tokens: p.total_tokens,
         })
     }
 
@@ -1434,6 +1457,7 @@ mod tests {
                 full_translation: text.to_string(),
                 words: vec![make_word(text)],
             }],
+            total_tokens: None,
         }
     }
 
@@ -1441,6 +1465,7 @@ mod tests {
     fn test_translation_add_paragraph_translation() {
         let mut translation = Translation::create("en", "ru");
         let paragraph_translation = translation_import::ParagraphTranslation {
+            total_tokens: None,
             timestamp: 1234567890,
             source_language: "en".to_owned(),
             target_language: "ru".to_owned(),
@@ -1550,6 +1575,7 @@ mod tests {
     fn translation_serialize_deserialize_round_trip() {
         let mut translation = Translation::create("en", "ru");
         let paragraph_translation = translation_import::ParagraphTranslation {
+            total_tokens: Some(1234),
             timestamp: 1,
             source_language: "en".to_owned(),
             target_language: "ru".to_owned(),
@@ -1583,6 +1609,7 @@ mod tests {
 
         // second version
         let paragraph_translation2 = translation_import::ParagraphTranslation {
+            total_tokens: Some(4321),
             timestamp: 2,
             source_language: "en".to_owned(),
             target_language: "ru".to_owned(),
@@ -1642,6 +1669,7 @@ mod tests {
         let latest = translation2.paragraph_view(0).unwrap();
         assert_eq!(latest.sentence_count(), 1);
         assert_eq!(latest.model, TranslationModel::Gemini25FlashLight);
+        assert_eq!(latest.total_tokens, Some(4321));
         let sentence = latest.sentence_view(0);
         assert_eq!(sentence.full_translation, "Hi there");
         assert_eq!(sentence.word_count(), 2);
@@ -1660,6 +1688,7 @@ mod tests {
     fn translation_serialize_v1_deserialize_round_trip() {
         let mut translation = Translation::create("en", "ru");
         let paragraph_translation = translation_import::ParagraphTranslation {
+            total_tokens: None,
             timestamp: 1,
             source_language: "en".to_owned(),
             target_language: "ru".to_owned(),
@@ -1693,6 +1722,7 @@ mod tests {
 
         // second version
         let paragraph_translation2 = translation_import::ParagraphTranslation {
+            total_tokens: None,
             timestamp: 2,
             source_language: "en".to_owned(),
             target_language: "ru".to_owned(),
@@ -1770,6 +1800,7 @@ mod tests {
     fn translation_serialize_deserialize_corruption() {
         let mut translation = Translation::create("en", "ru");
         let paragraph_translation = translation_import::ParagraphTranslation {
+            total_tokens: None,
             timestamp: 1,
             source_language: "en".to_owned(),
             target_language: "ru".to_owned(),
@@ -1803,6 +1834,7 @@ mod tests {
 
         // second version
         let paragraph_translation2 = translation_import::ParagraphTranslation {
+            total_tokens: None,
             timestamp: 2,
             source_language: "en".to_owned(),
             target_language: "ru".to_owned(),

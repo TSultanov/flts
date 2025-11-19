@@ -207,17 +207,20 @@ impl Translator for GeminiTranslator {
             .execute()
             .await?;
 
-        let mut result: ParagraphTranslation = serde_json::from_str(&result.text())?;
+        let mut translation: ParagraphTranslation = serde_json::from_str(&result.text())?;
+
+        let tokens = result.usage_metadata.map(|m| m.total_token_count).flatten();
+        translation.total_tokens = tokens.map(|t| t as u64);
 
         let now = SystemTime::now();
         let duration_since_epoch = now.duration_since(UNIX_EPOCH)?;
-        result.timestamp = duration_since_epoch.as_secs();
+        translation.timestamp = duration_since_epoch.as_secs();
 
         self.cache
             .lock()
             .await
-            .set(&self.from, &self.to, paragraph, &result);
+            .set(&self.from, &self.to, paragraph, &translation);
 
-        Ok(result)
+        Ok(translation)
     }
 }

@@ -51,6 +51,16 @@ pub fn write_opt(w: &mut dyn io::Write, slice: &Option<VecSlice<u8>>) -> io::Res
     }
     Ok(())
 }
+pub fn write_opt_var_u64(w: &mut dyn io::Write, value: Option<u64>) -> io::Result<()> {
+    match value {
+        Some(v) => {
+            w.write_all(&[1])?;
+            write_var_u64(w, v)?;
+        },
+        None => w.write_all(&[0])?,
+    }
+    Ok(())
+}
 
 pub fn read_u8(r: &mut dyn io::Read) -> io::Result<u8> {
     let mut b = [0u8; 1];
@@ -104,6 +114,14 @@ pub fn read_opt(r: &mut dyn io::Read) -> io::Result<Option<VecSlice<u8>>> {
         let s = read_var_u64(r)? as usize;
         let l = read_var_u64(r)? as usize;
         Ok(Some(VecSlice::new(s, l)))
+    } else {
+        Ok(None)
+    }
+}
+pub fn read_opt_var_u64(r: &mut dyn io::Read) -> io::Result<Option<u64>> {
+    let has = read_u8(r)?;
+    if has == 1 {
+        Ok(Some(read_var_u64(r)?))
     } else {
         Ok(None)
     }
