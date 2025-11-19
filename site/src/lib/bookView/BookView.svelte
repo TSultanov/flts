@@ -33,7 +33,7 @@
 </script>
 
 {#if $chapters}
-    <div class="container">
+    <div class="container {$chapters.length <= 1 ? "container-twocolumn" : ""}">
         {#if $chapters.length > 1}
             <div class="chapters">
                 {#each $chapters as chapter}
@@ -78,15 +78,28 @@
         height: 100%;
     }
 
+    .container-twocolumn {
+        grid-template-columns: auto 300px;
+    }
+
     @media (max-aspect-ratio: 1/1) {
         .container {
             grid-template-columns: 150px auto;
             grid-template-rows: auto 300px;
         }
 
+        .container-twocolumn {
+            grid-template-columns: auto;
+        }
+
         .word-view {
             grid-row: 2 / 3;
             grid-column: 2 / 3;
+        }
+
+        .container-twocolumn .word-view {
+            grid-row: 2 / 3;
+            grid-column: 1 / 2;
         }
 
         .chapters {

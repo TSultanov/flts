@@ -16,9 +16,10 @@ pub struct Model {
 
 fn model_pretty_name(model: TranslationModel) -> &'static str {
     match model {
-        TranslationModel::GeminiFlashLight => "Gemini 2.5 Flash Light",
-        TranslationModel::GeminiFlash => "Gemini 2.5 Flash",
-        TranslationModel::GeminiPro => "Gemini 2.5 Pro",
+        TranslationModel::Gemini25FlashLight => "Gemini 2.5 Flash Light",
+        TranslationModel::Gemini25Flash => "Gemini 2.5 Flash",
+        TranslationModel::Gemini25Pro => "Gemini 2.5 Pro",
+        TranslationModel::Unknown => "Not set",
     }
 }
 
@@ -74,7 +75,7 @@ impl Default for Config {
         Self {
             target_language_id: "eng".to_owned(),
             gemini_api_key: None,
-            model: TranslationModel::GeminiFlash as usize,
+            model: TranslationModel::Gemini25Flash as usize,
             library_path: None,
         }
     }

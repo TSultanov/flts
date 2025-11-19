@@ -8,7 +8,6 @@ use std::{
 
 use ahash::AHashSet;
 use isolang::Language;
-use log::info;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 use vfs::VfsPath;
@@ -23,7 +22,7 @@ use crate::{
     library::{
         Library, LibraryBookMetadata, LibraryError, LibraryTranslationMetadata,
         library_dictionary::DictionaryCache,
-    },
+    }, translator::TranslationModel,
 };
 
 pub struct LibraryBook {
@@ -101,6 +100,7 @@ impl LibraryTranslation {
         &mut self,
         paragraph_index: usize,
         translation: &translation_import::ParagraphTranslation,
+        model: TranslationModel
     ) -> anyhow::Result<()> {
         let dictionary = self
             .dict_cache
@@ -110,6 +110,7 @@ impl LibraryTranslation {
         self.translation.add_paragraph_translation(
             paragraph_index,
             translation,
+            model,
             &mut dictionary.lock().await.dictionary,
         );
         self.changed = true;
@@ -441,7 +442,7 @@ mod library_book_tests {
         book::{
             book::Book, serialization::Serializable, translation::Translation, translation_import,
         },
-        library::{Library, LibraryTranslationMetadata, library_dictionary::DictionaryCache},
+        library::{Library, LibraryTranslationMetadata, library_dictionary::DictionaryCache}, translator::TranslationModel,
     };
 
     #[tokio::test]
@@ -618,7 +619,7 @@ mod library_book_tests {
                     }],
                 }],
             };
-            tr.add_paragraph_translation(0, &initial_pt, &mut dict.lock().await.dictionary);
+            tr.add_paragraph_translation(0, &initial_pt, TranslationModel::Gemini25Flash, &mut dict.lock().await.dictionary);
             book.translations
                 .push(Arc::new(Mutex::new(super::LibraryTranslation {
                     dict_cache: library.dictionaries_cache.clone(),
@@ -667,7 +668,7 @@ mod library_book_tests {
                 .lock()
                 .await
                 .translation
-                .add_paragraph_translation(0, &new_pt, &mut dict.lock().await.dictionary);
+                .add_paragraph_translation(0, &new_pt, TranslationModel::Gemini25Flash, &mut dict.lock().await.dictionary);
 
             book.save().await.unwrap();
             book.path.clone()
@@ -742,7 +743,7 @@ mod library_book_tests {
                 }],
             }],
         };
-        tr.add_paragraph_translation(0, &pt1, &mut dict.lock().await.dictionary);
+        tr.add_paragraph_translation(0, &pt1, TranslationModel::Gemini25Flash, &mut dict.lock().await.dictionary);
         book.translations
             .push(Arc::new(Mutex::new(super::LibraryTranslation {
                 dict_cache: library.dictionaries_cache.clone(),
@@ -799,7 +800,7 @@ mod library_book_tests {
             .lock()
             .await
             .translation
-            .add_paragraph_translation(0, &mem_pt, &mut dict.lock().await.dictionary);
+            .add_paragraph_translation(0, &mem_pt, TranslationModel::Gemini25Flash, &mut dict.lock().await.dictionary);
 
         // Concurrent on-disk change ts=3
         {
@@ -831,7 +832,7 @@ mod library_book_tests {
                     }],
                 }],
             };
-            on_disk.add_paragraph_translation(0, &disk_pt, &mut dict.lock().await.dictionary);
+            on_disk.add_paragraph_translation(0, &disk_pt, TranslationModel::Gemini25Flash, &mut dict.lock().await.dictionary);
             let mut wf = tr_path.create_file().unwrap();
             on_disk.serialize(&mut wf).unwrap();
         }
@@ -898,7 +899,7 @@ mod library_book_tests {
                 }],
             }],
         };
-        t_main.add_paragraph_translation(0, &pt2, &mut dict.lock().await.dictionary);
+        t_main.add_paragraph_translation(0, &pt2, TranslationModel::Gemini25Flash, &mut dict.lock().await.dictionary);
         {
             let mut f = main_path.create_file().unwrap();
             t_main.serialize(&mut f).unwrap();
@@ -984,7 +985,7 @@ mod library_book_tests {
                 }],
             }],
         };
-        t_main.add_paragraph_translation(0, &pt2, &mut dict.lock().await.dictionary);
+        t_main.add_paragraph_translation(0, &pt2, TranslationModel::Gemini25Flash, &mut dict.lock().await.dictionary);
         {
             let mut f = main_path.create_file().unwrap();
             t_main.serialize(&mut f).unwrap();
@@ -1016,7 +1017,7 @@ mod library_book_tests {
                 }],
             }],
         };
-        t_c1.add_paragraph_translation(0, &pt1, &mut dict.lock().await.dictionary);
+        t_c1.add_paragraph_translation(0, &pt1, TranslationModel::Gemini25Flash, &mut dict.lock().await.dictionary);
         {
             let mut f = conflict1.create_file().unwrap();
             t_c1.serialize(&mut f).unwrap();
@@ -1048,7 +1049,7 @@ mod library_book_tests {
                 }],
             }],
         };
-        t_c2.add_paragraph_translation(0, &pt3, &mut dict.lock().await.dictionary);
+        t_c2.add_paragraph_translation(0, &pt3, TranslationModel::Gemini25Flash, &mut dict.lock().await.dictionary);
         {
             let mut f = conflict2.create_file().unwrap();
             t_c2.serialize(&mut f).unwrap();

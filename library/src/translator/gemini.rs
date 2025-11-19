@@ -9,8 +9,9 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use crate::{
-    book::translation_import::ParagraphTranslation, cache::TranslationsCache,
-    translator::Translator,
+    book::translation_import::ParagraphTranslation,
+    cache::TranslationsCache,
+    translator::{TranslationErrors, TranslationModel, Translator},
 };
 
 pub struct GeminiTranslator {
@@ -18,6 +19,7 @@ pub struct GeminiTranslator {
     client: Gemini,
     schema: Value,
     model: Model,
+    translation_model: TranslationModel,
     from: Language,
     to: Language,
 }
@@ -25,7 +27,7 @@ pub struct GeminiTranslator {
 impl GeminiTranslator {
     pub fn create(
         cache: Arc<Mutex<TranslationsCache>>,
-        model: Model,
+        translation_model: TranslationModel,
         api_key: String,
         from: &Language,
         to: &Language,
@@ -139,6 +141,13 @@ impl GeminiTranslator {
             }
         );
 
+        let model = match translation_model {
+            TranslationModel::Gemini25Flash => Model::Gemini25Flash,
+            TranslationModel::Gemini25Pro => Model::Gemini25Pro,
+            TranslationModel::Gemini25FlashLight => Model::Gemini25FlashLite,
+            _ => Err(TranslationErrors::UnknownModel)?,
+        };
+
         let client = Gemini::with_model(api_key, model.clone())?;
 
         Ok(Self {
@@ -146,6 +155,7 @@ impl GeminiTranslator {
             schema,
             client,
             model,
+            translation_model,
             from: *from,
             to: *to,
         })
@@ -153,6 +163,10 @@ impl GeminiTranslator {
 }
 
 impl Translator for GeminiTranslator {
+    fn get_model(&self) -> super::TranslationModel {
+        self.translation_model
+    }
+
     async fn get_translation(
         &self,
         paragraph: &str,

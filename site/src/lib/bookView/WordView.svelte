@@ -28,7 +28,7 @@
     );
 
     let defaultModel = $configStore?.model;
-    let model = $state(defaultModel ?? 0);
+    let model = $derived($word?.translationModel);
     let translationRequestId: number | null = $state(null);
 
     let unsub: UnlistenFn | null = null;
@@ -65,14 +65,16 @@
     });
 
     async function translateParagraph() {
-        translationRequestId = await library.translateParagraph(
-            bookId,
-            paragraphId,
-            model,
-            false,
-        );
+        if (model !== 0) {
+            translationRequestId = await library.translateParagraph(
+                bookId,
+                paragraphId,
+                model,
+                false,
+            );
 
-        await listenToTranslationRequestChanges();
+            await listenToTranslationRequestChanges();
+        }
     }
 </script>
 

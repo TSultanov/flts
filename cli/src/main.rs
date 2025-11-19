@@ -183,7 +183,7 @@ async fn translate_paragraph(
     translation
         .lock()
         .await
-        .add_paragraph_translation(paragraph_id, &p_translation)
+        .add_paragraph_translation(paragraph_id, &p_translation, translator.get_model())
         .await?;
 
     Ok(())
@@ -292,7 +292,7 @@ async fn translate_book(
         let tx_save_w = tx_save.clone();
         let translator = get_translator(
             cache.clone(),
-            TranslationModel::GeminiFlash,
+            TranslationModel::Gemini25Flash,
             api_key.to_owned(),
             source_lang,
             target_lang,

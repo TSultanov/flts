@@ -158,21 +158,25 @@ impl Magic {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Version {
     V1,
+    V2,
 }
 
 impl Version {
     pub fn write_version(&self, w: &mut dyn io::Write) -> io::Result<()> {
-        write_u8(w, 1)
+        match self {
+            Version::V1 => write_u8(w, 1),
+            Version::V2 => write_u8(w, 2),
+        }
     }
     pub fn read_version(r: &mut dyn io::Read) -> io::Result<Self> {
         let v = read_u8(r)?;
-        if v == 1 {
-            Ok(Version::V1)
-        } else {
-            Err(io::Error::new(
+        match v {
+            1 => Ok(Version::V1),
+            2 => Ok(Version::V2),
+            _ => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "Unsupported version",
             ))

@@ -5,12 +5,23 @@ use uuid::Uuid;
 use crate::{
     book::{
         serialization::{
-            read_exact_array, read_len_prefixed_string, read_len_prefixed_vec, read_opt, read_u64, read_u8, read_var_u64, read_vec_slice, validate_hash, write_len_prefixed_bytes, write_opt, write_u64, write_var_u64, write_vec_slice, ChecksumedWriter, Magic, Serializable, Version
+            ChecksumedWriter, Magic, Serializable, Version, read_exact_array,
+            read_len_prefixed_string, read_len_prefixed_vec, read_opt, read_u8, read_u64,
+            read_var_u64, read_vec_slice, validate_hash, write_len_prefixed_bytes, write_opt,
+            write_u64, write_var_u64, write_vec_slice,
         },
         translation_import,
-    }, dictionary::Dictionary
+    },
+    dictionary::Dictionary,
+    translator::TranslationModel,
 };
-use std::{borrow::Cow, io::BufWriter, iter, time::Instant};
+use std::{
+    borrow::Cow,
+    fmt::Display,
+    io::{BufWriter, Cursor},
+    iter,
+    time::Instant,
+};
 use std::{
     collections::HashSet,
     io::{self, Write},
@@ -34,10 +45,41 @@ pub struct Translation {
     word_contextual_translations: Vec<WordContextualTranslation>,
 }
 
+#[derive(Debug)]
+enum FieldTagError {
+    InvalidValue(u64),
+}
+
+impl std::error::Error for FieldTagError {}
+
+impl Display for FieldTagError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FieldTagError::InvalidValue(val) => write!(f, "Unknown ag value {}", val),
+        }
+    }
+}
+
+enum FieldTag {
+    TranslationModel = 1,
+}
+
+impl TryFrom<u64> for FieldTag {
+    type Error = FieldTagError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(FieldTag::TranslationModel),
+            _ => Err(FieldTagError::InvalidValue(value)),
+        }
+    }
+}
+
 struct ParagraphTranslation {
     timestamp: u64,
     previous_version: Option<usize>,
     sentences: VecSlice<Sentence>,
+    model: TranslationModel,
 }
 
 pub struct ParagraphTranslationView<'a> {
@@ -45,6 +87,7 @@ pub struct ParagraphTranslationView<'a> {
     pub timestamp: u64,
     previous_version: Option<usize>,
     sentences: &'a [Sentence],
+    pub model: TranslationModel,
 }
 
 #[derive(Clone)]
@@ -110,10 +153,7 @@ pub struct WordContextualTranslationView<'a> {
 }
 
 impl Translation {
-    pub fn create(
-        source_language: &str,
-        target_language: &str,
-    ) -> Self {
+    pub fn create(source_language: &str, target_language: &str) -> Self {
         Translation {
             strings_cache: AHashMap::new(),
             id: Uuid::new_v4(),
@@ -139,6 +179,7 @@ impl Translation {
             timestamp: p.timestamp,
             previous_version: p.previous_version,
             sentences: p.sentences.slice(&self.sentences),
+            model: p.model,
         })
     }
 
@@ -160,7 +201,8 @@ impl Translation {
         &mut self,
         paragraph_index: usize,
         translation: &translation_import::ParagraphTranslation,
-        dictionary: &mut Dictionary
+        model: TranslationModel,
+        dictionary: &mut Dictionary,
     ) {
         if paragraph_index >= self.paragraphs.len() {
             self.paragraphs.extend(iter::repeat_n(
@@ -175,6 +217,7 @@ impl Translation {
             timestamp: translation.timestamp,
             previous_version: new_prev_version,
             sentences: VecSlice::empty(),
+            model,
         };
         let new_index = self.paragraph_translations.len();
         self.paragraph_translations.push(new_paragraph);
@@ -185,7 +228,10 @@ impl Translation {
             let full_translation = self.push_string(&sentence.full_translation);
             let mut words = VecSlice::empty();
             for word in &sentence.words {
-                dictionary.add_translation(&word.grammar.original_initial_form, &word.grammar.target_initial_form);
+                dictionary.add_translation(
+                    &word.grammar.original_initial_form,
+                    &word.grammar.target_initial_form,
+                );
 
                 let original = self.push_string(&word.original);
                 let note = self.push_string(&word.note.clone().unwrap_or("".to_string()));
@@ -254,6 +300,7 @@ impl Translation {
             timestamp: translation.timestamp,
             previous_version: new_prev_version,
             sentences: VecSlice::empty(),
+            model: translation.model,
         };
 
         let new_index = self.paragraph_translations.len();
@@ -393,11 +440,9 @@ impl Translation {
         }
         merged_translation
     }
-}
 
-impl Serializable for Translation {
-    #[inline(never)]
-    fn serialize<TWriter: io::Write>(&self, output_stream: &mut TWriter) -> std::io::Result<()> {
+    #[cfg(test)]
+    fn serialize_v1<TWriter: io::Write>(&self, output_stream: &mut TWriter) -> std::io::Result<()> {
         // Binary format TR01 v1 (little endian):
         // magic[4] = TR01
         // u8 version = 1
@@ -585,34 +630,252 @@ impl Serializable for Translation {
         Ok(())
     }
 
-    fn deserialize<TReader: io::Seek + io::Read>(
+    #[inline(never)]
+    fn serialize_v2<TWriter: io::Write>(&self, output_stream: &mut TWriter) -> std::io::Result<()> {
+        // Binary format TR01 v2 (little endian):
+        // magic[4] = TR01
+        // u8 version = 2
+        // Metadata section
+        // u8[16] id
+        // u64 metadata hash
+        // u64 metadata_length
+        // u64 source_lang_len, [u8]*
+        // u64 target_lang_len, [u8]*
+        // u64 translated_paragraphs_count
+        // Data section
+        // u64 strings_len (compressed), [u8]* (strings blob (zstd compressed))
+        // u64 contextual_translations_count, then each: u64 translation.start, u64 translation.len
+        // u64 words_count, then each:
+        //   u64 original.start,len
+        //   u64 note.start,len
+        //   u8 is_punctuation
+        //   grammar block:
+        //     u64 original_initial_form.start,len
+        //     u64 target_initial_form.start,len
+        //     u64 part_of_speech.start,len
+        //     optionals (plurality, person, tense, case, other): for each u8 has + if 1 then u64 start,len
+        //   u64 contextual_translations.start,len
+        // u64 sentences_count, then each: u64 full_translation.start,len u64 words.start,len
+        // u64 paragraph_translations_count, then each:
+        //   u64 timestamp
+        //   u8 has_previous (if 1 then u64 previous_index)
+        //   u64 sentences.start,len
+        // u64 paragraphs_count, then each: u8 has_translation (if 1 then u64 paragraph_translation_index)
+        // u64 fnv1 hash of the entire file except the hash itself
+
+        let total_start = Instant::now();
+
+        let mut hashing_stream_unbuffered = ChecksumedWriter::create(output_stream);
+
+        let mut hashing_stream = BufWriter::new(hashing_stream_unbuffered);
+        // magic + version
+        let t_magic = Instant::now();
+        Magic::Translation.write(&mut hashing_stream)?;
+        Version::V2.write_version(&mut hashing_stream)?;
+        let d_magic = t_magic.elapsed();
+
+        // Build metadata and compute its hash
+        let t_meta_build = Instant::now();
+        let mut metadata_buf = Vec::new();
+        let mut metadata_buf_hasher = ChecksumedWriter::create(&mut metadata_buf);
+        metadata_buf_hasher.write_all(self.id.as_bytes())?;
+        write_var_u64(&mut metadata_buf_hasher, self.source_language.len() as u64)?;
+        metadata_buf_hasher.write_all(self.source_language.as_bytes())?;
+        write_var_u64(&mut metadata_buf_hasher, self.target_language.len() as u64)?;
+        metadata_buf_hasher.write_all(self.target_language.as_bytes())?;
+        write_var_u64(
+            &mut metadata_buf_hasher,
+            self.translated_paragraphs_count() as u64,
+        )?;
+        let metadata_hash = metadata_buf_hasher.current_hash();
+        let d_meta_build = t_meta_build.elapsed();
+
+        // Write metadata
+        let t_meta_write = Instant::now();
+        write_u64(&mut hashing_stream, metadata_hash)?;
+        write_len_prefixed_bytes(&mut hashing_stream, &metadata_buf)?;
+        let d_meta_write = t_meta_write.elapsed();
+
+        // Compress strings blob
+        let t_compress = Instant::now();
+        let encoded = zstd::stream::encode_all(self.strings.as_slice(), -7)?;
+        let d_compress = t_compress.elapsed();
+
+        // Write compressed strings
+        let t_write_strings = Instant::now();
+        write_var_u64(&mut hashing_stream, encoded.len() as u64)?;
+        hashing_stream.write_all(&encoded)?;
+        let d_write_strings = t_write_strings.elapsed();
+
+        // Contextual translations
+        let t_ct = Instant::now();
+        write_var_u64(
+            &mut hashing_stream,
+            self.word_contextual_translations.len() as u64,
+        )?;
+        for ct in &self.word_contextual_translations {
+            write_vec_slice(&mut hashing_stream, &ct.translation)?;
+        }
+        let d_ct = t_ct.elapsed();
+
+        // Words
+        let t_words = Instant::now();
+        write_var_u64(&mut hashing_stream, self.words.len() as u64)?;
+        for w in &self.words {
+            write_vec_slice(&mut hashing_stream, &w.original)?;
+            write_vec_slice(&mut hashing_stream, &w.note)?;
+            hashing_stream.write_all(&[if w.is_punctuation { 1 } else { 0 }])?;
+
+            // Grammar required fields
+            write_vec_slice(&mut hashing_stream, &w.grammar.original_initial_form)?;
+            write_vec_slice(&mut hashing_stream, &w.grammar.target_initial_form)?;
+            write_vec_slice(&mut hashing_stream, &w.grammar.part_of_speech)?;
+
+            write_opt(&mut hashing_stream, &w.grammar.plurality)?;
+            write_opt(&mut hashing_stream, &w.grammar.person)?;
+            write_opt(&mut hashing_stream, &w.grammar.tense)?;
+            write_opt(&mut hashing_stream, &w.grammar.case)?;
+            write_opt(&mut hashing_stream, &w.grammar.other)?;
+
+            write_vec_slice(&mut hashing_stream, &w.contextual_translations)?;
+        }
+        let d_words = t_words.elapsed();
+
+        // Sentences
+        let t_sentences = Instant::now();
+        write_var_u64(&mut hashing_stream, self.sentences.len() as u64)?;
+        for s in &self.sentences {
+            write_vec_slice(&mut hashing_stream, &s.full_translation)?;
+            write_vec_slice(&mut hashing_stream, &s.words)?;
+        }
+        let d_sentences = t_sentences.elapsed();
+
+        // Paragraph translations
+        let t_pt = Instant::now();
+        write_var_u64(
+            &mut hashing_stream,
+            self.paragraph_translations.len() as u64,
+        )?;
+        for pt in &self.paragraph_translations {
+            write_var_u64(&mut hashing_stream, pt.timestamp)?;
+            match pt.previous_version {
+                Some(idx) => {
+                    hashing_stream.write_all(&[1])?;
+                    write_var_u64(&mut hashing_stream, idx as u64)?;
+                }
+                None => hashing_stream.write_all(&[0])?,
+            };
+            write_vec_slice(&mut hashing_stream, &pt.sentences)?;
+
+            // Write tagged fields
+            // v64 number of fields
+            // for each field: v64 lengths of a field
+            // for each field: v64 tag, data
+            let translation_model_field = {
+                let buf = Vec::new();
+                let mut cursor = Cursor::new(buf);
+
+                // Translation model
+                write_var_u64(&mut cursor, FieldTag::TranslationModel as u64)?;
+                write_var_u64(&mut cursor, pt.model as u64)?;
+                cursor.into_inner()
+            };
+            write_var_u64(&mut hashing_stream, 1)?;
+            write_var_u64(&mut hashing_stream, translation_model_field.len() as u64)?;
+            hashing_stream.write_all(&translation_model_field)?;
+        }
+        let d_pt = t_pt.elapsed();
+
+        // Paragraphs (Option indices)
+        let t_paragraphs = Instant::now();
+        write_var_u64(&mut hashing_stream, self.paragraphs.len() as u64)?;
+        for p in &self.paragraphs {
+            match p {
+                Some(idx) => {
+                    hashing_stream.write_all(&[1])?;
+                    write_var_u64(&mut hashing_stream, *idx as u64)?;
+                }
+                None => hashing_stream.write_all(&[0])?,
+            }
+        }
+        let d_paragraphs = t_paragraphs.elapsed();
+
+        // Finalize hash and flush
+        let t_finalize = Instant::now();
+        hashing_stream_unbuffered = hashing_stream.into_inner()?;
+        let hash = hashing_stream_unbuffered.current_hash();
+        write_u64(output_stream, hash)?;
+        output_stream.flush()?;
+        let d_finalize = t_finalize.elapsed();
+
+        let total = total_start.elapsed();
+
+        info!(
+            "Serialization timings (Translation):\n  - magic+version: {:?}\n  - metadata build: {:?}\n  - metadata write: {:?}\n  - strings compress ({} -> {} bytes): {:?}\n  - strings write: {:?}\n  - contextual translations ({}): {:?}\n  - words ({}): {:?}\n  - sentences ({}): {:?}\n  - paragraph translations ({}): {:?}\n  - paragraphs ({}): {:?}\n  - finalize hash+flush: {:?}\n  - TOTAL: {:?}",
+            d_magic,
+            d_meta_build,
+            d_meta_write,
+            self.strings.len(),
+            encoded.len(),
+            d_compress,
+            d_write_strings,
+            self.word_contextual_translations.len(),
+            d_ct,
+            self.words.len(),
+            d_words,
+            self.sentences.len(),
+            d_sentences,
+            self.paragraph_translations.len(),
+            d_pt,
+            self.paragraphs.len(),
+            d_paragraphs,
+            d_finalize,
+            total
+        );
+
+        Ok(())
+    }
+
+    fn read_header_to_version<TReader: io::Seek + io::Read>(
         input_stream: &mut TReader,
-    ) -> std::io::Result<Self>
+    ) -> std::io::Result<Version>
     where
         Self: Sized,
     {
-        let total_start = Instant::now();
-
         // Validate checksum
-        let t_hash = Instant::now();
         let hash_valid = validate_hash(input_stream)?;
         if !hash_valid {
             log::error!("Failed to read translation: Invalid hash");
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid hash"));
         }
-        let d_hash = t_hash.elapsed();
-
-        let mut strings_cache = AHashMap::new();
 
         // Read magic + version
-        let t_magic = Instant::now();
         let mut magic = [0u8; 4];
         input_stream.read_exact(&mut magic)?;
         if &magic != Magic::Translation.as_bytes() {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid magic"));
         }
-        Version::read_version(input_stream)?;
-        let d_magic = t_magic.elapsed();
+        let version = Version::read_version(input_stream)?;
+
+        Ok(version)
+    }
+
+    fn deserialize_v1<TReader: io::Seek + io::Read>(
+        input_stream: &mut TReader,
+        version: Version,
+    ) -> std::io::Result<Self>
+    where
+        Self: Sized,
+    {
+        if version != Version::V1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Unsupported version {:?}", version),
+            ));
+        }
+        let total_start = Instant::now();
+
+        let mut strings_cache = AHashMap::new();
 
         // Skip metadata hash
         let t_meta = Instant::now();
@@ -725,11 +988,14 @@ impl Serializable for Translation {
                 None
             };
             let sentences_slice = read_vec_slice::<Sentence>(input_stream)?;
-            paragraph_translations.push(ParagraphTranslation {
+
+            let translation = ParagraphTranslation {
                 timestamp,
                 previous_version,
                 sentences: sentences_slice,
-            });
+                model: TranslationModel::Unknown,
+            };
+            paragraph_translations.push(translation);
         }
         let d_pt = t_pt.elapsed();
 
@@ -751,9 +1017,222 @@ impl Serializable for Translation {
         let total = total_start.elapsed();
 
         info!(
-            "Deserialization timings (Translation):\n  - hash validate: {:?}\n  - magic+version: {:?}\n  - metadata (incl. read): {:?}\n  - strings read: {:?}\n  - strings decompress ({} -> {} bytes): {:?}\n  - contextual translations ({}): {:?}\n  - words ({}): {:?}\n  - sentences ({}): {:?}\n  - paragraph translations ({}): {:?}\n  - paragraphs ({}): {:?}\n  - TOTAL: {:?}",
-            d_hash,
-            d_magic,
+            "Deserialization timings (Translation):\n - metadata (incl. read): {:?}\n  - strings read: {:?}\n  - strings decompress ({} -> {} bytes): {:?}\n  - contextual translations ({}): {:?}\n  - words ({}): {:?}\n  - sentences ({}): {:?}\n  - paragraph translations ({}): {:?}\n  - paragraphs ({}): {:?}\n  - TOTAL: {:?}",
+            d_meta,
+            d_strings_read,
+            encoded_data.len(),
+            strings.len(),
+            d_strings_decompress,
+            word_contextual_translations.len(),
+            d_ct,
+            words_len,
+            d_words,
+            sentences_len,
+            d_sentences,
+            pt_len,
+            d_pt,
+            paragraphs_len,
+            d_paragraphs,
+            total
+        );
+
+        Ok(Translation {
+            strings_cache,
+            id,
+            source_language,
+            target_language,
+            strings,
+            paragraphs,
+            paragraph_translations,
+            sentences,
+            words,
+            word_contextual_translations,
+        })
+    }
+
+    fn deserialize_v2<TReader: io::Seek + io::Read>(
+        input_stream: &mut TReader,
+        version: Version,
+    ) -> std::io::Result<Self>
+    where
+        Self: Sized,
+    {
+        if version != Version::V2 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Unsupported version {:?}", version),
+            ));
+        }
+        let total_start = Instant::now();
+
+        let mut strings_cache = AHashMap::new();
+
+        // Skip metadata hash
+        let t_meta = Instant::now();
+        _ = read_u64(input_stream)?;
+
+        // Skip metadata length
+        _ = read_var_u64(input_stream)?;
+
+        let id = Uuid::from_bytes(read_exact_array::<16>(input_stream)?);
+
+        let source_language = read_len_prefixed_string(input_stream)?;
+        let target_language = read_len_prefixed_string(input_stream)?;
+
+        // Skip translated_paragraphs_count
+        _ = read_var_u64(input_stream)?;
+        let d_meta = t_meta.elapsed();
+
+        // Read and decompress strings
+        let t_strings_read = Instant::now();
+        let encoded_data = read_len_prefixed_vec(input_stream)?;
+        let d_strings_read = t_strings_read.elapsed();
+        let t_strings_decompress = Instant::now();
+        let strings = zstd::stream::decode_all(encoded_data.as_slice())?;
+        let d_strings_decompress = t_strings_decompress.elapsed();
+
+        let mut seen_slices = AHashSet::default();
+
+        let mut cache_vec_slice = |slice: VecSlice<u8>| {
+            if seen_slices.contains(&slice) {
+                return slice;
+            }
+            let string = String::from_utf8_lossy(slice.slice(&strings)).to_string();
+            strings_cache.insert(string, slice);
+            seen_slices.insert(slice);
+            slice
+        };
+
+        // Contextual translations
+        let t_ct = Instant::now();
+        let ct_len = read_var_u64(input_stream)? as usize;
+        let mut word_contextual_translations = Vec::with_capacity(ct_len);
+        for _ in 0..ct_len {
+            let slice = cache_vec_slice(read_vec_slice::<u8>(input_stream)?);
+            word_contextual_translations.push(WordContextualTranslation { translation: slice });
+        }
+        let d_ct = t_ct.elapsed();
+
+        // Words
+        let t_words = Instant::now();
+        let words_len = read_var_u64(input_stream)? as usize;
+        let mut words = Vec::with_capacity(words_len);
+        for _ in 0..words_len {
+            let original = cache_vec_slice(read_vec_slice::<u8>(input_stream)?);
+            let note = cache_vec_slice(read_vec_slice::<u8>(input_stream)?);
+            let is_punctuation = read_u8(input_stream)? == 1;
+            let original_initial_form = cache_vec_slice(read_vec_slice::<u8>(input_stream)?);
+            let target_initial_form = cache_vec_slice(read_vec_slice::<u8>(input_stream)?);
+            let part_of_speech = cache_vec_slice(read_vec_slice::<u8>(input_stream)?);
+            let plurality = read_opt(input_stream)?;
+            let person = read_opt(input_stream)?;
+            let tense = read_opt(input_stream)?;
+            let case = read_opt(input_stream)?;
+            let other = read_opt(input_stream)?;
+            let contextual_translations =
+                read_vec_slice::<WordContextualTranslation>(input_stream)?;
+            let grammar = Grammar {
+                original_initial_form,
+                target_initial_form,
+                part_of_speech,
+                plurality,
+                person,
+                tense,
+                case,
+                other,
+            };
+            words.push(Word {
+                original,
+                contextual_translations,
+                is_punctuation,
+                note,
+                grammar,
+            });
+        }
+        let d_words = t_words.elapsed();
+
+        // Sentences
+        let t_sentences = Instant::now();
+        let sentences_len = read_var_u64(input_stream)? as usize;
+        let mut sentences = Vec::with_capacity(sentences_len);
+        for _ in 0..sentences_len {
+            let full_translation = cache_vec_slice(read_vec_slice::<u8>(input_stream)?);
+            let words_slice = read_vec_slice::<Word>(input_stream)?;
+            sentences.push(Sentence {
+                full_translation,
+                words: words_slice,
+            });
+        }
+        let d_sentences = t_sentences.elapsed();
+
+        // Paragraph translations
+        let t_pt = Instant::now();
+        let pt_len = read_var_u64(input_stream)? as usize;
+        let mut paragraph_translations = Vec::with_capacity(pt_len);
+        for _ in 0..pt_len {
+            let timestamp = read_var_u64(input_stream)?;
+            let has_prev = read_u8(input_stream)?;
+            let previous_version = if has_prev == 1 {
+                Some(read_var_u64(input_stream)? as usize)
+            } else {
+                None
+            };
+            let sentences_slice = read_vec_slice::<Sentence>(input_stream)?;
+
+            let mut translation = ParagraphTranslation {
+                timestamp,
+                previous_version,
+                sentences: sentences_slice,
+                model: TranslationModel::Unknown,
+            };
+
+            // Tagged fields
+
+            let tagged_fields_count = read_var_u64(input_stream)?;
+            let mut fields_length = Vec::with_capacity(tagged_fields_count as usize);
+            for _ in 0..tagged_fields_count {
+                fields_length.push(read_var_u64(input_stream)?);
+            }
+            for fl in fields_length {
+                let mut buf = vec![0; fl as usize];
+                input_stream.read_exact(&mut buf)?;
+                let mut cursor = Cursor::new(buf);
+
+                let tag: FieldTag = read_var_u64(&mut cursor)?
+                    .try_into()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+
+                match tag {
+                    FieldTag::TranslationModel => {
+                        let model: TranslationModel = (read_var_u64(&mut cursor)? as usize).into();
+                        translation.model = model;
+                    }
+                }
+            }
+
+            paragraph_translations.push(translation);
+        }
+        let d_pt = t_pt.elapsed();
+
+        // Paragraphs (Option indices)
+        let t_paragraphs = Instant::now();
+        let paragraphs_len = read_var_u64(input_stream)? as usize;
+        let mut paragraphs = Vec::with_capacity(paragraphs_len);
+        for _ in 0..paragraphs_len {
+            let has = read_u8(input_stream)?;
+            let val = if has == 1 {
+                Some(read_var_u64(input_stream)? as usize)
+            } else {
+                None
+            };
+            paragraphs.push(val);
+        }
+        let d_paragraphs = t_paragraphs.elapsed();
+
+        let total = total_start.elapsed();
+
+        info!(
+            "Deserialization timings (Translation):\n - metadata (incl. read): {:?}\n  - strings read: {:?}\n  - strings decompress ({} -> {} bytes): {:?}\n  - contextual translations ({}): {:?}\n  - words ({}): {:?}\n  - sentences ({}): {:?}\n  - paragraph translations ({}): {:?}\n  - paragraphs ({}): {:?}\n  - TOTAL: {:?}",
             d_meta,
             d_strings_read,
             encoded_data.len(),
@@ -787,6 +1266,25 @@ impl Serializable for Translation {
     }
 }
 
+impl Serializable for Translation {
+    fn serialize<TWriter: io::Write>(&self, output_stream: &mut TWriter) -> io::Result<()> {
+        self.serialize_v2(output_stream)
+    }
+
+    fn deserialize<TReader: io::Seek + io::Read>(
+        input_stream: &mut TReader,
+    ) -> std::io::Result<Self>
+    where
+        Self: Sized,
+    {
+        let version = Self::read_header_to_version(input_stream)?;
+        match version {
+            Version::V1 => Self::deserialize_v1(input_stream, version),
+            Version::V2 => Self::deserialize_v2(input_stream, version),
+        }
+    }
+}
+
 impl<'a> ParagraphTranslationView<'a> {
     pub fn get_previous_version(&self) -> Option<ParagraphTranslationView<'a>> {
         let paragraph = self
@@ -797,6 +1295,7 @@ impl<'a> ParagraphTranslationView<'a> {
             timestamp: p.timestamp,
             previous_version: p.previous_version,
             sentences: p.sentences.slice(&self.translation.sentences),
+            model: p.model,
         })
     }
 
@@ -1016,11 +1515,17 @@ mod tests {
             }],
         };
         let mut dict = Dictionary::create("en".to_owned(), "ru".to_owned());
-        translation.add_paragraph_translation(0, &paragraph_translation, &mut dict);
+        translation.add_paragraph_translation(
+            0,
+            &paragraph_translation,
+            TranslationModel::Gemini25Pro,
+            &mut dict,
+        );
         let paragraph_view = translation.paragraph_view(0).unwrap();
         assert_eq!(paragraph_view.timestamp, 1234567890);
         assert_eq!(paragraph_view.previous_version, None);
         assert_eq!(paragraph_view.sentence_count(), 1);
+        assert_eq!(paragraph_view.model, TranslationModel::Gemini25Pro);
         let sentence_view = paragraph_view.sentence_view(0);
         assert_eq!(sentence_view.full_translation, "Hello, world!");
         assert_eq!(sentence_view.word_count(), 4);
@@ -1069,7 +1574,12 @@ mod tests {
             }],
         };
         let mut dict = Dictionary::create("en".to_owned(), "ru".to_owned());
-        translation.add_paragraph_translation(0, &paragraph_translation, &mut dict);
+        translation.add_paragraph_translation(
+            0,
+            &paragraph_translation,
+            TranslationModel::Gemini25Flash,
+            &mut dict,
+        );
 
         // second version
         let paragraph_translation2 = translation_import::ParagraphTranslation {
@@ -1114,7 +1624,12 @@ mod tests {
                 ],
             }],
         };
-        translation.add_paragraph_translation(0, &paragraph_translation2, &mut dict);
+        translation.add_paragraph_translation(
+            0,
+            &paragraph_translation2,
+            TranslationModel::Gemini25FlashLight,
+            &mut dict,
+        );
 
         let mut buf: Vec<u8> = vec![];
         translation.serialize(&mut buf).unwrap();
@@ -1126,6 +1641,117 @@ mod tests {
         // Latest paragraph view
         let latest = translation2.paragraph_view(0).unwrap();
         assert_eq!(latest.sentence_count(), 1);
+        assert_eq!(latest.model, TranslationModel::Gemini25FlashLight);
+        let sentence = latest.sentence_view(0);
+        assert_eq!(sentence.full_translation, "Hi there");
+        assert_eq!(sentence.word_count(), 2);
+        let word0 = sentence.word_view(0);
+        assert_eq!(word0.original, "Hi");
+        assert_eq!(word0.contextual_translations_count(), 1);
+        let word1 = sentence.word_view(1);
+        assert_eq!(word1.original, "there");
+        // Previous version chain
+        let prev = latest.get_previous_version().unwrap();
+        let prev_sentence = prev.sentence_view(0);
+        assert_eq!(prev_sentence.full_translation, "Hi");
+    }
+
+    #[test]
+    fn translation_serialize_v1_deserialize_round_trip() {
+        let mut translation = Translation::create("en", "ru");
+        let paragraph_translation = translation_import::ParagraphTranslation {
+            timestamp: 1,
+            source_language: "en".to_owned(),
+            target_language: "ru".to_owned(),
+            sentences: vec![translation_import::Sentence {
+                full_translation: "Hi".into(),
+                words: vec![translation_import::Word {
+                    original: "Hi".into(),
+                    contextual_translations: vec!["Привет".into()],
+                    note: Some("greet".into()),
+                    is_punctuation: false,
+                    grammar: translation_import::Grammar {
+                        original_initial_form: "hi".into(),
+                        target_initial_form: "привет".into(),
+                        part_of_speech: "interj".into(),
+                        plurality: None,
+                        person: None,
+                        tense: None,
+                        case: None,
+                        other: None,
+                    },
+                }],
+            }],
+        };
+        let mut dict = Dictionary::create("en".to_owned(), "ru".to_owned());
+        translation.add_paragraph_translation(
+            0,
+            &paragraph_translation,
+            TranslationModel::Gemini25Flash,
+            &mut dict,
+        );
+
+        // second version
+        let paragraph_translation2 = translation_import::ParagraphTranslation {
+            timestamp: 2,
+            source_language: "en".to_owned(),
+            target_language: "ru".to_owned(),
+            sentences: vec![translation_import::Sentence {
+                full_translation: "Hi there".into(),
+                words: vec![
+                    translation_import::Word {
+                        original: "Hi".into(),
+                        contextual_translations: vec!["Привет".into()],
+                        note: Some("greet".into()),
+                        is_punctuation: false,
+                        grammar: translation_import::Grammar {
+                            original_initial_form: "hi".into(),
+                            target_initial_form: "привет".into(),
+                            part_of_speech: "interj".into(),
+                            plurality: None,
+                            person: None,
+                            tense: None,
+                            case: None,
+                            other: None,
+                        },
+                    },
+                    translation_import::Word {
+                        original: "there".into(),
+                        contextual_translations: vec!["там".into()],
+                        note: Some("".into()),
+                        is_punctuation: false,
+                        grammar: translation_import::Grammar {
+                            original_initial_form: "there".into(),
+                            target_initial_form: "там".into(),
+                            part_of_speech: "adv".into(),
+                            plurality: None,
+                            person: None,
+                            tense: None,
+                            case: None,
+                            other: None,
+                        },
+                    },
+                ],
+            }],
+        };
+        translation.add_paragraph_translation(
+            0,
+            &paragraph_translation2,
+            TranslationModel::Gemini25FlashLight,
+            &mut dict,
+        );
+
+        let mut buf: Vec<u8> = vec![];
+        translation.serialize_v1(&mut buf).unwrap();
+        let mut cursor = Cursor::new(buf);
+        let translation2 = Translation::deserialize(&mut cursor).unwrap();
+
+        assert_eq!(translation2.source_language, "en");
+        assert_eq!(translation2.target_language, "ru");
+        // Latest paragraph view
+        let latest = translation2.paragraph_view(0).unwrap();
+        assert_eq!(latest.sentence_count(), 1);
+        assert_eq!(latest.model, TranslationModel::Unknown);
         let sentence = latest.sentence_view(0);
         assert_eq!(sentence.full_translation, "Hi there");
         assert_eq!(sentence.word_count(), 2);
@@ -1168,7 +1794,12 @@ mod tests {
             }],
         };
         let mut dict = Dictionary::create("en".to_owned(), "ru".to_owned());
-        translation.add_paragraph_translation(0, &paragraph_translation, &mut dict);
+        translation.add_paragraph_translation(
+            0,
+            &paragraph_translation,
+            TranslationModel::Gemini25Flash,
+            &mut dict,
+        );
 
         // second version
         let paragraph_translation2 = translation_import::ParagraphTranslation {
@@ -1213,7 +1844,12 @@ mod tests {
                 ],
             }],
         };
-        translation.add_paragraph_translation(0, &paragraph_translation2, &mut dict);
+        translation.add_paragraph_translation(
+            0,
+            &paragraph_translation2,
+            TranslationModel::Gemini25Flash,
+            &mut dict,
+        );
 
         let mut buf: Vec<u8> = vec![];
         translation.serialize(&mut buf).unwrap();
@@ -1230,12 +1866,32 @@ mod tests {
     fn merge_same_history() {
         let mut dict = Dictionary::create("en".to_owned(), "ru".to_owned());
         let mut a = Translation::create("en", "ru");
-        a.add_paragraph_translation(0, &make_paragraph(1, "v1"), &mut dict);
-        a.add_paragraph_translation(0, &make_paragraph(2, "v2"), &mut dict);
+        a.add_paragraph_translation(
+            0,
+            &make_paragraph(1, "v1"),
+            TranslationModel::Gemini25Flash,
+            &mut dict,
+        );
+        a.add_paragraph_translation(
+            0,
+            &make_paragraph(2, "v2"),
+            TranslationModel::Gemini25Flash,
+            &mut dict,
+        );
 
         let mut b = Translation::create("en", "ru");
-        b.add_paragraph_translation(0, &make_paragraph(1, "v1"), &mut dict);
-        b.add_paragraph_translation(0, &make_paragraph(2, "v2"), &mut dict);
+        b.add_paragraph_translation(
+            0,
+            &make_paragraph(1, "v1"),
+            TranslationModel::Gemini25Flash,
+            &mut dict,
+        );
+        b.add_paragraph_translation(
+            0,
+            &make_paragraph(2, "v2"),
+            TranslationModel::Gemini25Flash,
+            &mut dict,
+        );
 
         let merged = a.merge(&b);
 
@@ -1253,15 +1909,45 @@ mod tests {
         let mut dict = Dictionary::create("en".to_owned(), "ru".to_owned());
         // a: 1 -> 2 -> 4
         let mut a = Translation::create("en", "ru");
-        a.add_paragraph_translation(0, &make_paragraph(1, "a1"), &mut dict);
-        a.add_paragraph_translation(0, &make_paragraph(2, "a2"), &mut dict);
-        a.add_paragraph_translation(0, &make_paragraph(4, "a4"), &mut dict);
+        a.add_paragraph_translation(
+            0,
+            &make_paragraph(1, "a1"),
+            TranslationModel::Gemini25Flash,
+            &mut dict,
+        );
+        a.add_paragraph_translation(
+            0,
+            &make_paragraph(2, "a2"),
+            TranslationModel::Gemini25Flash,
+            &mut dict,
+        );
+        a.add_paragraph_translation(
+            0,
+            &make_paragraph(4, "a4"),
+            TranslationModel::Gemini25Flash,
+            &mut dict,
+        );
 
         // b: 1 -> 3 -> 5
         let mut b = Translation::create("en", "ru");
-        b.add_paragraph_translation(0, &make_paragraph(1, "a1"), &mut dict); // same ts as a1 (dedup)
-        b.add_paragraph_translation(0, &make_paragraph(3, "a3"), &mut dict);
-        b.add_paragraph_translation(0, &make_paragraph(5, "a5"), &mut dict);
+        b.add_paragraph_translation(
+            0,
+            &make_paragraph(1, "a1"),
+            TranslationModel::Gemini25Flash,
+            &mut dict,
+        ); // same ts as a1 (dedup)
+        b.add_paragraph_translation(
+            0,
+            &make_paragraph(3, "a3"),
+            TranslationModel::Gemini25Flash,
+            &mut dict,
+        );
+        b.add_paragraph_translation(
+            0,
+            &make_paragraph(5, "a5"),
+            TranslationModel::Gemini25Flash,
+            &mut dict,
+        );
 
         let merged = a.merge(&b);
 
@@ -1296,14 +1982,39 @@ mod tests {
         let mut dict = Dictionary::create("en".to_owned(), "ru".to_owned());
         // a: 10 -> 20
         let mut a = Translation::create("en", "ru");
-        a.add_paragraph_translation(0, &make_paragraph(10, "a10"), &mut dict);
-        a.add_paragraph_translation(0, &make_paragraph(20, "a20"), &mut dict);
+        a.add_paragraph_translation(
+            0,
+            &make_paragraph(10, "a10"),
+            TranslationModel::Gemini25Flash,
+            &mut dict,
+        );
+        a.add_paragraph_translation(
+            0,
+            &make_paragraph(20, "a20"),
+            TranslationModel::Gemini25Flash,
+            &mut dict,
+        );
 
         // b: 5 -> 15 -> 25
         let mut b = Translation::create("en", "ru");
-        b.add_paragraph_translation(0, &make_paragraph(5, "b5"), &mut dict);
-        b.add_paragraph_translation(0, &make_paragraph(15, "b15"), &mut dict);
-        b.add_paragraph_translation(0, &make_paragraph(25, "b25"), &mut dict);
+        b.add_paragraph_translation(
+            0,
+            &make_paragraph(5, "b5"),
+            TranslationModel::Gemini25Flash,
+            &mut dict,
+        );
+        b.add_paragraph_translation(
+            0,
+            &make_paragraph(15, "b15"),
+            TranslationModel::Gemini25Flash,
+            &mut dict,
+        );
+        b.add_paragraph_translation(
+            0,
+            &make_paragraph(25, "b25"),
+            TranslationModel::Gemini25Flash,
+            &mut dict,
+        );
 
         let merged = a.merge(&b);
         let mut ts = Vec::new();
@@ -1321,12 +2032,27 @@ mod tests {
         let mut dict = Dictionary::create("en".to_owned(), "ru".to_owned());
         // Paragraph 0 only in left, with history 1 -> 2
         let mut a = Translation::create("en", "ru");
-        a.add_paragraph_translation(0, &make_paragraph(1, "a1"), &mut dict);
-        a.add_paragraph_translation(0, &make_paragraph(2, "a2"), &mut dict);
+        a.add_paragraph_translation(
+            0,
+            &make_paragraph(1, "a1"),
+            TranslationModel::Gemini25Flash,
+            &mut dict,
+        );
+        a.add_paragraph_translation(
+            0,
+            &make_paragraph(2, "a2"),
+            TranslationModel::Gemini25Flash,
+            &mut dict,
+        );
         // Paragraph 1 only in right, with single version 3
         let b = {
             let mut t = Translation::create("en", "ru");
-            t.add_paragraph_translation(1, &make_paragraph(3, "b3"), &mut dict);
+            t.add_paragraph_translation(
+                1,
+                &make_paragraph(3, "b3"),
+                TranslationModel::Gemini25Flash,
+                &mut dict,
+            );
             t
         };
 

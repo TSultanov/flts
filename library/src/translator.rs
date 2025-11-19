@@ -1,8 +1,7 @@
 mod gemini;
 
-use std::sync::Arc;
+use std::{fmt::Display, sync::Arc};
 
-use gemini_rust::Model;
 use isolang::Language;
 use strum::EnumIter;
 use tokio::sync::Mutex;
@@ -12,25 +11,41 @@ use crate::{
     translator::gemini::GeminiTranslator,
 };
 
-#[derive(Debug, Clone, Copy, EnumIter)]
+#[derive(Debug)]
+pub enum TranslationErrors {
+    UnknownModel
+}
+
+impl std::error::Error for TranslationErrors {}
+
+impl Display for TranslationErrors {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Unknown model")
+    }
+}
+
+#[derive(Debug, Clone, Copy, EnumIter, PartialEq, Eq)]
 pub enum TranslationModel {
-    GeminiFlash = 0,
-    GeminiPro = 1,
-    GeminiFlashLight = 2,
+    Unknown = 0,
+    Gemini25Flash = 1,
+    Gemini25Pro = 2,
+    Gemini25FlashLight = 3,
 }
 
 impl From<usize> for TranslationModel {
     fn from(value: usize) -> Self {
         match value {
-            0 => TranslationModel::GeminiFlash,
-            1 => TranslationModel::GeminiPro,
-            2 => TranslationModel::GeminiFlashLight,
-            _ => TranslationModel::GeminiFlash,
+            1 => TranslationModel::Gemini25Flash,
+            2 => TranslationModel::Gemini25Pro,
+            3 => TranslationModel::Gemini25FlashLight,
+            _ => TranslationModel::Unknown,
         }
     }
 }
 
 pub trait Translator {
+    fn get_model(&self) -> TranslationModel;
+
     fn get_translation(
         &self,
         paragraph: &str,
@@ -85,11 +100,5 @@ pub fn get_translator(
     from: Language,
     to: Language,
 ) -> anyhow::Result<impl Translator> {
-    let model = match translation_model {
-        TranslationModel::GeminiFlash => Model::Gemini25Flash,
-        TranslationModel::GeminiPro => Model::Gemini25Pro,
-        TranslationModel::GeminiFlashLight => Model::Gemini25FlashLite,
-    };
-
-    GeminiTranslator::create(cache, model, api_key, &from, &to)
+    GeminiTranslator::create(cache, translation_model, api_key, &from, &to)
 }

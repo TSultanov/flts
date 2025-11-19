@@ -213,7 +213,7 @@ async fn handle_request(
     translation
         .lock()
         .await
-        .add_paragraph_translation(request.paragraph_id, &p_translation)
+        .add_paragraph_translation(request.paragraph_id, &p_translation, request.model)
         .await?;
 
     save_notify

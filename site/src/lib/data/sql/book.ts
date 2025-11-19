@@ -54,6 +54,7 @@ export type SentenceWordTranslation = {
     readonly contextualTranslations: string[],
     readonly grammar: Grammar,
     readonly fullSentenceTranslation: string,
+    readonly translationModel: number,
 }
 
 type Grammar = {
