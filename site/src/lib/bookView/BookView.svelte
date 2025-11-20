@@ -2,7 +2,7 @@
     import WordView from "./WordView.svelte";
     import type { UUID } from "../data/v2/db";
     import { getContext, type Snippet } from "svelte";
-    import type { Library } from "../data/library";
+    import type { BookReadingState, Library } from "../data/library";
     import { route, navigate } from "../../router";
     import ChapterView from "./ChapterView.svelte";
     import ChapterPlaceholderView from "./ChapterPlaceholderView.svelte";
@@ -17,8 +17,57 @@
     const library: Library = getContext("library");
     const chapters = $derived(library.getBookChapters(bookId as UUID));
 
+    let readingState: BookReadingState | null = $state(null);
+    let readingStateRequestId = 0;
+    let initialNavigationDone = $state(false);
+    let previousBookId: UUID | null = null;
+
     $effect(() => {
-        if ($chapters && $chapters.length === 1) {
+        if (previousBookId !== bookId) {
+            previousBookId = bookId;
+            initialNavigationDone = false;
+            readingState = null;
+            const currentRequest = ++readingStateRequestId;
+            library
+                .getBookReadingState(bookId as UUID)
+                .then((state) => {
+                    if (currentRequest === readingStateRequestId) {
+                        readingState = state;
+                    }
+                })
+                .catch((err) => console.error("Failed to load reading state", err));
+        }
+    });
+
+    $effect(() => {
+        if (!$chapters || initialNavigationDone) {
+            return;
+        }
+
+        if (chapterId != null) {
+            initialNavigationDone = true;
+            return;
+        }
+
+        const state = readingState;
+        const chapterFromState = state
+            ? $chapters.find((ch) => ch.id === state.chapterId)
+            : null;
+
+        if (chapterFromState) {
+            initialNavigationDone = true;
+            navigate("/book/:bookId/:chapterId", {
+                params: {
+                    bookId: bookId,
+                    chapterId: chapterFromState.id.toString(),
+                },
+                search: {},
+            });
+            return;
+        }
+
+        if ($chapters.length === 1) {
+            initialNavigationDone = true;
             navigate("/book/:bookId/:chapterId", {
                 params: {
                     bookId: bookId,
@@ -47,11 +96,16 @@
         {/if}
         {#if chapterId != null}
             <div class="chapter-view">
-                <ChapterView
-                    {bookId}
-                    {chapterId}
-                    bind:sentenceWordIdToDisplay
-                />
+                {#key chapterId}
+                    <ChapterView
+                        {bookId}
+                        {chapterId}
+                        initialParagraphId={readingState && readingState.chapterId === chapterId
+                            ? readingState.paragraphId
+                            : null}
+                        bind:sentenceWordIdToDisplay
+                    />
+                {/key}
             </div>
             <div class="word-view">
                 {#if sentenceWordIdToDisplay}

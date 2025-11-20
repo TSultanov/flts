@@ -88,7 +88,7 @@
     }
 </script>
 
-<div class="paragraph-wrapper">
+<div class="paragraph-wrapper" data-paragraph-id={paragraph.id}>
     {#if !translationHtml}
         <button
             class="translate"

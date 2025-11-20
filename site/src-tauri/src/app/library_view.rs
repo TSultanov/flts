@@ -4,7 +4,10 @@ use htmlentity::entity::{ICodedDataTrait, decode};
 use isolang::Language;
 use library::epub_importer::EpubBook;
 use library::library::file_watcher::LibraryFileChange;
-use library::{book::translation::ParagraphTranslationView, library::Library};
+use library::{
+    book::translation::ParagraphTranslationView,
+    library::{library_book::BookReadingState, Library},
+};
 use tauri::Emitter;
 use tauri::async_runtime::Mutex;
 use uuid::Uuid;
@@ -49,6 +52,23 @@ pub struct WordView {
     full_sentence_translation: String,
     #[serde(rename = "translationModel")]
     translation_model: usize,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct BookReadingStateView {
+    #[serde(rename = "chapterId")]
+    chapter_id: usize,
+    #[serde(rename = "paragraphId")]
+    paragraph_id: usize,
+}
+
+impl From<BookReadingState> for BookReadingStateView {
+    fn from(value: BookReadingState) -> Self {
+        Self {
+            chapter_id: value.chapter_id,
+            paragraph_id: value.paragraph_id,
+        }
+    }
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -239,6 +259,29 @@ impl LibraryView {
         Ok(id)
     }
 
+    pub async fn get_book_reading_state(
+        &self,
+        book_id: Uuid,
+    ) -> anyhow::Result<Option<BookReadingStateView>> {
+        let book = self.library.lock().await.get_book(&book_id)?;
+        let mut book = book.lock().await;
+        Ok(book.reading_state()?.map(BookReadingStateView::from))
+    }
+
+    pub async fn save_book_reading_state(
+        &self,
+        book_id: Uuid,
+        chapter_id: usize,
+        paragraph_id: usize,
+    ) -> anyhow::Result<()> {
+        let book = self.library.lock().await.get_book(&book_id)?;
+        let mut book = book.lock().await;
+        book.update_reading_state(BookReadingState {
+            chapter_id,
+            paragraph_id,
+        })
+    }
+
     pub async fn handle_file_change_event(
         &mut self,
         event: &LibraryFileChange,
@@ -382,6 +425,40 @@ pub async fn import_epub(
             .map_err(|err| err.to_string())?;
 
         Ok(id)
+    } else {
+        Err("Library is not configured".into())
+    }
+}
+
+#[tauri::command]
+pub async fn get_book_reading_state(
+    state: tauri::State<'_, Arc<Mutex<App>>>,
+    book_id: Uuid,
+) -> Result<Option<BookReadingStateView>, String> {
+    let app = state.lock().await;
+    if let Some(library) = &app.library_view {
+        library
+            .get_book_reading_state(book_id)
+            .await
+            .map_err(|err| err.to_string())
+    } else {
+        Ok(None)
+    }
+}
+
+#[tauri::command]
+pub async fn save_book_reading_state(
+    state: tauri::State<'_, Arc<Mutex<App>>>,
+    book_id: Uuid,
+    chapter_id: usize,
+    paragraph_id: usize,
+) -> Result<(), String> {
+    let app = state.lock().await;
+    if let Some(library) = &app.library_view {
+        library
+            .save_book_reading_state(book_id, chapter_id, paragraph_id)
+            .await
+            .map_err(|err| err.to_string())
     } else {
         Err("Library is not configured".into())
     }

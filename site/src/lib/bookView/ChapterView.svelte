@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { getContext } from "svelte";
+    import { getContext, onDestroy, onMount, tick } from "svelte";
     import type { UUID } from "../data/v2/db";
     import ParagraphView from "./ParagraphView.svelte";
     import type { Library } from "../data/library";
@@ -8,10 +8,12 @@
         sentenceWordIdToDisplay = $bindable(),
         bookId,
         chapterId,
+        initialParagraphId = null,
     }: {
         sentenceWordIdToDisplay: [number, number, number] | null;
         bookId: UUID;
         chapterId: number;
+        initialParagraphId?: number | null;
     } = $props();
 
     const library: Library = getContext("library");
@@ -44,6 +46,148 @@
     }
 
     let sectionContentWidth = $state(200);
+    let paragraphsContainer: HTMLDivElement | null = null;
+    let visibleParagraphId: number | null = null;
+    let saveTimeout: ReturnType<typeof setTimeout> | null = null;
+    let lastSavedParagraph: number | null = null;
+    let initialScrollApplied = false;
+
+    function handleScroll() {
+        updateVisibleParagraph();
+    }
+
+    function scheduleSave(paragraphId: number) {
+        if (saveTimeout) {
+            clearTimeout(saveTimeout);
+        }
+
+        saveTimeout = setTimeout(() => {
+            if (lastSavedParagraph === paragraphId) {
+                return;
+            }
+            lastSavedParagraph = paragraphId;
+            library
+                .saveBookReadingState(bookId, chapterId, paragraphId)
+                .catch((err) =>
+                    console.error("Failed to save reading state", err),
+                );
+        }, 400);
+    }
+
+    function updateVisibleParagraph() {
+        const nextParagraph = findVisibleParagraph();
+        if (nextParagraph == null || nextParagraph === visibleParagraphId) {
+            return;
+        }
+        visibleParagraphId = nextParagraph;
+        scheduleSave(nextParagraph);
+    }
+
+    function findVisibleParagraph(): number | null {
+        if (!paragraphsContainer) {
+            return null;
+        }
+        const containerRect = paragraphsContainer.getBoundingClientRect();
+        const elements =
+            paragraphsContainer.querySelectorAll<HTMLElement>(".paragraph-wrapper");
+
+        let bestId: number | null = null;
+        let bestDistance = Number.POSITIVE_INFINITY;
+
+        elements.forEach((el) => {
+            const rect = el.getBoundingClientRect();
+            const horizontallyVisible =
+                rect.right > containerRect.left + 5 &&
+                rect.left < containerRect.right - 5;
+            const verticallyVisible =
+                rect.bottom > containerRect.top + 5 &&
+                rect.top < containerRect.bottom - 5;
+            if (!horizontallyVisible || !verticallyVisible) {
+                return;
+            }
+
+            const idAttr = el.dataset["paragraphId"];
+            if (!idAttr) {
+                return;
+            }
+            const id = parseInt(idAttr, 10);
+            if (Number.isNaN(id)) {
+                return;
+            }
+
+            const distance = Math.abs(rect.left - containerRect.left);
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                bestId = id;
+            }
+        });
+
+        if (bestId !== null) {
+            return bestId;
+        }
+
+        const fallback = elements[elements.length - 1];
+        if (!fallback) {
+            return null;
+        }
+        const fallbackId = parseInt(fallback.dataset["paragraphId"] ?? "", 10);
+        return Number.isNaN(fallbackId) ? null : fallbackId;
+    }
+
+    async function syncInitialParagraph() {
+        await tick();
+        if (!paragraphsContainer) {
+            return;
+        }
+
+        if (!initialScrollApplied && initialParagraphId != null) {
+            const target = paragraphsContainer.querySelector<HTMLElement>(
+                `[data-paragraph-id="${initialParagraphId}"]`,
+            );
+            if (target) {
+                target.scrollIntoView({
+                    behavior: "auto",
+                    block: "center",
+                    inline: "center",
+                });
+                visibleParagraphId = initialParagraphId;
+                scheduleSave(initialParagraphId);
+                initialScrollApplied = true;
+                return;
+            }
+        }
+
+        initialScrollApplied = true;
+        updateVisibleParagraph();
+    }
+
+    $effect(() => {
+        if ($paragraphs && $paragraphs.length > 0) {
+            void syncInitialParagraph();
+        }
+    });
+
+    onMount(() => {
+        const listener = () => updateVisibleParagraph();
+        window.addEventListener("resize", listener);
+        return () => window.removeEventListener("resize", listener);
+    });
+
+    onDestroy(() => {
+        if (saveTimeout) {
+            clearTimeout(saveTimeout);
+        }
+        if (
+            visibleParagraphId != null &&
+            lastSavedParagraph !== visibleParagraphId
+        ) {
+            library
+                .saveBookReadingState(bookId, chapterId, visibleParagraphId)
+                .catch((err) =>
+                    console.error("Failed to save reading state", err),
+                );
+        }
+    });
 </script>
 
 <div class="chapter-container">
@@ -54,6 +198,8 @@
             class="paragraphs-container"
             style="column-width: {sectionContentWidth}px"
             bind:clientHeight={sectionContentWidth}
+            bind:this={paragraphsContainer}
+            onscroll={handleScroll}
         >
             {#each $paragraphs as paragraph}
                 <ParagraphView {bookId} {paragraph} {sentenceWordIdToDisplay} />

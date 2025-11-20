@@ -14,6 +14,11 @@ type LibraryBookMetadataView = {
     translationRatio: number,
 }
 
+export type BookReadingState = {
+    chapterId: number,
+    paragraphId: number,
+}
+
 export type LibraryFolder = {
     name?: string,
     folders: LibraryFolder[],
@@ -100,6 +105,14 @@ export class Library {
 
     async getParagraphTranslationRequestId(bookId: UUID, paragraphId: number) {
         return await invoke<number>("get_paragraph_translation_request_id", { bookId, paragraphId });
+    }
+
+    async getBookReadingState(bookId: UUID): Promise<BookReadingState | null> {
+        return await invoke<BookReadingState | null>("get_book_reading_state", { bookId });
+    }
+
+    async saveBookReadingState(bookId: UUID, chapterId: number, paragraphId: number): Promise<void> {
+        await invoke("save_book_reading_state", { bookId, chapterId, paragraphId });
     }
 
     private async cleanupTranslationRequests(bookUid: UUID): Promise<void> {

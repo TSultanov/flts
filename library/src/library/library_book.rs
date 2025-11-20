@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    io::{BufReader, BufWriter},
+    io::{BufReader, BufWriter, Read},
     str::FromStr,
     sync::Arc,
     time::SystemTime,
@@ -8,6 +8,8 @@ use std::{
 
 use ahash::AHashSet;
 use isolang::Language;
+use serde::{Deserialize, Serialize};
+use serde_json;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 use vfs::VfsPath;
@@ -25,12 +27,21 @@ use crate::{
     }, translator::TranslationModel,
 };
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BookReadingState {
+    #[serde(alias = "chapterId")]
+    pub chapter_id: usize,
+    #[serde(alias = "paragraphId")]
+    pub paragraph_id: usize,
+}
+
 pub struct LibraryBook {
     dict_cache: Arc<Mutex<DictionaryCache>>,
     path: VfsPath,
     last_modified: Option<SystemTime>,
     pub book: Book,
     translations: Vec<Arc<Mutex<LibraryTranslation>>>,
+    reading_state: Option<BookReadingState>,
 }
 
 pub struct LibraryTranslation {
@@ -127,6 +138,106 @@ impl LibraryTranslation {
 }
 
 impl LibraryBook {
+    fn reading_state_files(
+        &self,
+    ) -> Result<Vec<(VfsPath, SystemTime)>, vfs::error::VfsError> {
+        let mut files = Vec::new();
+        for entry in self.path.read_dir()? {
+            if entry.is_file()? {
+                let filename = entry.filename();
+                if filename.starts_with("state") && filename.ends_with(".json") {
+                    let modified = entry
+                        .metadata()?
+                        .modified
+                        .unwrap_or(SystemTime::UNIX_EPOCH);
+                    files.push((entry, modified));
+                }
+            }
+        }
+        Ok(files)
+    }
+
+    fn resolve_reading_state_file(&self) -> anyhow::Result<Option<(VfsPath, SystemTime)>> {
+        let mut candidates = self.reading_state_files()?;
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+
+        candidates.sort_by(|a, b| a.1.cmp(&b.1));
+        let (latest_path, latest_modified) = candidates
+            .last()
+            .cloned()
+            .unwrap_or_else(|| unreachable!("candidates is not empty"));
+
+        let canonical_path = self.path.join("state.json")?;
+        let canonical_name = canonical_path.filename();
+        let mut effective_modified = latest_modified;
+
+        if latest_path.filename() != canonical_name {
+            if canonical_path.exists()? {
+                canonical_path.remove_file()?;
+            }
+            latest_path.move_file(&canonical_path)?;
+            effective_modified = canonical_path
+                .metadata()?
+                .modified
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+        }
+
+        for (path, _) in candidates {
+            if path.filename() != canonical_name && path.exists()? {
+                let _ = path.remove_file();
+            }
+        }
+
+        Ok(Some((canonical_path, effective_modified)))
+    }
+
+    fn reload_reading_state(&mut self) -> anyhow::Result<()> {
+        if let Some((state_path, _modified)) = self.resolve_reading_state_file()? {
+            let mut reader = BufReader::new(state_path.open_file()?);
+            let state: BookReadingState = serde_json::from_reader(&mut reader)?;
+            self.reading_state = Some(state);
+        } else {
+            self.reading_state = None;
+        }
+        Ok(())
+    }
+
+    fn persist_reading_state(&self, state: &BookReadingState) -> anyhow::Result<()> {
+        if !self.path.exists()? {
+            self.path.create_dir()?;
+        }
+
+        let state_path = self.path.join("state.json")?;
+        let temp_path = self
+            .path
+            .join(format!("state.json~{}", create_random_string(8)))?;
+
+        {
+            let mut writer = BufWriter::new(temp_path.create_file()?);
+            serde_json::to_writer_pretty(&mut writer, state)?;
+        }
+
+        if state_path.exists()? {
+            state_path.remove_file()?;
+        }
+        temp_path.move_file(&state_path)?;
+
+        Ok(())
+    }
+
+    pub fn reading_state(&mut self) -> anyhow::Result<Option<BookReadingState>> {
+        self.reload_reading_state()?;
+        Ok(self.reading_state.clone())
+    }
+
+    pub fn update_reading_state(&mut self, state: BookReadingState) -> anyhow::Result<()> {
+        self.persist_reading_state(&state)?;
+        self.reading_state = Some(state);
+        Ok(())
+    }
+
     pub async fn get_or_create_translation(
         &mut self,
         target_language: &Language,
@@ -202,6 +313,8 @@ impl LibraryBook {
             book.translations.push(translation);
         }
 
+        book.reload_reading_state()?;
+
         Ok(book)
     }
 
@@ -219,6 +332,7 @@ impl LibraryBook {
             last_modified,
             book,
             translations: vec![],
+            reading_state: None,
         })
     }
 
@@ -422,6 +536,7 @@ impl Library {
             last_modified: None,
             book: Book::create(guid, title, language),
             translations: vec![],
+            reading_state: None,
         }));
 
         self.books_cache.insert(guid, book.clone());
@@ -432,7 +547,7 @@ impl Library {
 
 #[cfg(test)]
 mod library_book_tests {
-    use std::{str::FromStr, sync::Arc};
+    use std::{io::Write, str::FromStr, sync::Arc};
 
     use isolang::Language;
     use tokio::sync::Mutex;
@@ -442,7 +557,11 @@ mod library_book_tests {
         book::{
             book::Book, serialization::Serializable, translation::Translation, translation_import,
         },
-        library::{Library, LibraryTranslationMetadata, library_dictionary::DictionaryCache}, translator::TranslationModel,
+        library::{
+            Library, LibraryTranslationMetadata, library_book::BookReadingState,
+            library_dictionary::DictionaryCache,
+        },
+        translator::TranslationModel,
     };
 
     #[tokio::test]
@@ -856,6 +975,82 @@ mod library_book_tests {
         assert_eq!(prev2.timestamp, 1);
         assert_eq!(prev2.sentence_view(0).full_translation, "v1");
         assert!(prev2.get_previous_version().is_none());
+    }
+
+    #[tokio::test]
+    async fn reading_state_roundtrip() {
+        let fs = vfs::MemoryFS::new();
+        let root: VfsPath = fs.into();
+        let library_path = root.join("lib").unwrap();
+        let mut library = Library::open(library_path.clone()).unwrap();
+
+        let book = library
+            .create_book("Stateful", &Language::from_639_3("eng").unwrap())
+            .unwrap();
+        let book_id = {
+            let mut book = book.lock().await;
+            book.save().await.unwrap();
+            book.update_reading_state(BookReadingState {
+                chapter_id: 2,
+                paragraph_id: 15,
+            })
+            .unwrap();
+            book.book.id
+        };
+
+        let book = library.get_book(&book_id).unwrap();
+        let mut book = book.lock().await;
+        let state = book.reading_state().unwrap();
+        assert_eq!(state.as_ref().map(|s| s.chapter_id), Some(2));
+        assert_eq!(state.as_ref().map(|s| s.paragraph_id), Some(15));
+    }
+
+    #[tokio::test]
+    async fn reading_state_prefers_latest_conflict() {
+        let fs = vfs::MemoryFS::new();
+        let root: VfsPath = fs.into();
+        let library_root = root.join("lib").unwrap();
+        let mut library = Library::open(library_root.clone()).unwrap();
+
+        let book = library
+            .create_book("Conflicted", &Language::from_639_3("eng").unwrap())
+            .unwrap();
+        let book_id = {
+            let mut book = book.lock().await;
+            book.save().await.unwrap();
+            book.update_reading_state(BookReadingState {
+                chapter_id: 1,
+                paragraph_id: 1,
+            })
+            .unwrap();
+            book.book.id
+        };
+
+        {
+            let book = library.get_book(&book_id).unwrap();
+            let book = book.lock().await;
+            let conflict_path = book
+                .path
+                .join("state (conflict copy).json")
+                .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            let serialized = serde_json::to_vec(&BookReadingState {
+                chapter_id: 4,
+                paragraph_id: 8,
+            })
+            .unwrap();
+            let mut file = conflict_path.create_file().unwrap();
+            file.write_all(&serialized).unwrap();
+        }
+
+        drop(library);
+
+        let mut library = Library::open(library_root).unwrap();
+        let book = library.get_book(&book_id).unwrap();
+        let mut book = book.lock().await;
+        let state = book.reading_state().unwrap();
+        assert_eq!(state.as_ref().map(|s| s.chapter_id), Some(4));
+        assert_eq!(state.as_ref().map(|s| s.paragraph_id), Some(8));
     }
 
     #[tokio::test]
