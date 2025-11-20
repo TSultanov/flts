@@ -1,12 +1,10 @@
-use std::{
-    fs::File, path::Path
-};
+use std::{fs::File, path::Path};
 
 use library::translator::TranslationModel;
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
-use strum::IntoEnumIterator;
 use std::fs::{self, OpenOptions};
+use strum::IntoEnumIterator;
 
 #[derive(Serialize)]
 pub struct Model {

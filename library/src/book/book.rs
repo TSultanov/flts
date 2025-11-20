@@ -452,13 +452,21 @@ mod book_tests {
 
     #[test]
     fn create_book() {
-        let book = Book::create(Uuid::new_v4(), "Test", &Language::from_639_3("eng").unwrap());
+        let book = Book::create(
+            Uuid::new_v4(),
+            "Test",
+            &Language::from_639_3("eng").unwrap(),
+        );
         assert_eq!("Test", book.title);
     }
 
     #[test]
     fn create_book_empty_chapter() {
-        let mut book = Book::create(Uuid::new_v4(), "Test", &Language::from_639_3("eng").unwrap());
+        let mut book = Book::create(
+            Uuid::new_v4(),
+            "Test",
+            &Language::from_639_3("eng").unwrap(),
+        );
         let chapter_index = book.push_chapter(Some("Test chapter"));
         let first_chapter = book.chapter_view(chapter_index);
         assert_eq!(0, chapter_index);
@@ -467,7 +475,11 @@ mod book_tests {
 
     #[test]
     fn create_book_one_chapter_one_paragraph() {
-        let mut book = Book::create(Uuid::new_v4(), "Test", &Language::from_639_3("eng").unwrap());
+        let mut book = Book::create(
+            Uuid::new_v4(),
+            "Test",
+            &Language::from_639_3("eng").unwrap(),
+        );
         let chapter_index = book.push_chapter(Some("Test chapter"));
         let paragraph_index = book.push_paragraph(chapter_index, "Test", Some("<b>Test</b>"));
         let first_chapter = book.chapter_view(0);
@@ -481,7 +493,11 @@ mod book_tests {
 
     #[test]
     fn serialize_deserialize_round_trip() {
-        let mut book = Book::create(Uuid::new_v4(), "My Book", &Language::from_639_3("eng").unwrap());
+        let mut book = Book::create(
+            Uuid::new_v4(),
+            "My Book",
+            &Language::from_639_3("eng").unwrap(),
+        );
         let chapter_index = book.push_chapter(Some("Intro"));
         let first_paragraph = book.push_paragraph(
             chapter_index,
@@ -532,7 +548,11 @@ mod book_tests {
 
     #[test]
     fn serialize_deserialize_corruption() {
-        let mut book = Book::create(Uuid::new_v4(), "My Book", &Language::from_639_3("eng").unwrap());
+        let mut book = Book::create(
+            Uuid::new_v4(),
+            "My Book",
+            &Language::from_639_3("eng").unwrap(),
+        );
         book.push_chapter(Some("Intro"));
         book.push_paragraph(0, "Hello world", Some("<p>Hello <b>world</b></p>"));
         book.push_paragraph(0, "Second paragraph", None);

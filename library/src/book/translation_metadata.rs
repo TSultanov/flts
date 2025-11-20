@@ -67,10 +67,14 @@ impl TranslationMetadata {
 mod translation_metadata_test {
     use std::io::Cursor;
 
-    use crate::{book::{
-        serialization::Serializable, translation::Translation, translation_import,
-        translation_metadata::TranslationMetadata,
-    }, dictionary::Dictionary, translator::TranslationModel};
+    use crate::{
+        book::{
+            serialization::Serializable, translation::Translation, translation_import,
+            translation_metadata::TranslationMetadata,
+        },
+        dictionary::Dictionary,
+        translator::TranslationModel,
+    };
 
     #[test]
     fn test_metadata_roundtrip() {
@@ -103,7 +107,12 @@ mod translation_metadata_test {
 
         let mut dict = Dictionary::create("en".to_owned(), "ru".to_owned());
 
-        translation.add_paragraph_translation(0, &paragraph_translation, TranslationModel::Gemini25Flash, &mut dict);
+        translation.add_paragraph_translation(
+            0,
+            &paragraph_translation,
+            TranslationModel::Gemini25Flash,
+            &mut dict,
+        );
 
         // another paragraph
         let paragraph_translation2 = translation_import::ParagraphTranslation {
@@ -149,7 +158,12 @@ mod translation_metadata_test {
                 ],
             }],
         };
-        translation.add_paragraph_translation(3, &paragraph_translation2,TranslationModel::Gemini25Flash, &mut dict);
+        translation.add_paragraph_translation(
+            3,
+            &paragraph_translation2,
+            TranslationModel::Gemini25Flash,
+            &mut dict,
+        );
 
         let mut buf: Vec<u8> = vec![];
         translation.serialize(&mut buf).unwrap();
@@ -191,7 +205,12 @@ mod translation_metadata_test {
             }],
         };
         let mut dict = Dictionary::create("en".to_owned(), "ru".to_owned());
-        translation.add_paragraph_translation(0, &paragraph_translation,TranslationModel::Gemini25Flash, &mut dict);
+        translation.add_paragraph_translation(
+            0,
+            &paragraph_translation,
+            TranslationModel::Gemini25Flash,
+            &mut dict,
+        );
 
         // another paragraph
         let paragraph_translation2 = translation_import::ParagraphTranslation {
@@ -237,7 +256,12 @@ mod translation_metadata_test {
                 ],
             }],
         };
-        translation.add_paragraph_translation(3, &paragraph_translation2,TranslationModel::Gemini25Flash, &mut dict);
+        translation.add_paragraph_translation(
+            3,
+            &paragraph_translation2,
+            TranslationModel::Gemini25Flash,
+            &mut dict,
+        );
 
         let mut buf: Vec<u8> = vec![];
         translation.serialize(&mut buf).unwrap();

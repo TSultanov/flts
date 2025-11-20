@@ -1,5 +1,9 @@
 use std::{
-    error::Error, fmt::Display, fs, path::{Path, PathBuf}, sync::Arc
+    error::Error,
+    fmt::Display,
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use directories::ProjectDirs;
@@ -20,7 +24,7 @@ use vfs::PhysicalFS;
 use crate::app::{config::Config, library_view::LibraryView, translation_queue::TranslationQueue};
 
 #[cfg(mobile)]
-use dirs_next::{document_dir, config_dir};
+use dirs_next::{config_dir, document_dir};
 
 pub mod config;
 pub mod library_view;
@@ -106,11 +110,15 @@ impl App {
         {
             let library_path = {
                 let documents = document_dir();
-                if let Some(documents) = &documents && !fs::exists(documents)? {
+                if let Some(documents) = &documents
+                    && !fs::exists(documents)?
+                {
                     fs::create_dir(documents)?;
                 };
                 let library_directory = documents.map(|p| p.join("FLTSLibrary"));
-                if let Some(library_directory) = &library_directory && !fs::exists(library_directory)? {
+                if let Some(library_directory) = &library_directory
+                    && !fs::exists(library_directory)?
+                {
                     fs::create_dir(library_directory)?;
                 };
                 library_directory.map(|d| d.to_string_lossy().to_string())

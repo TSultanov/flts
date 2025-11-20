@@ -648,14 +648,12 @@ impl Library {
                 let physical_path = root.join(uuid.to_string());
                 info!(
                     "Attempting to move {:?} (physical {:?}) to trash",
-                    book_path,
-                    physical_path
+                    book_path, physical_path
                 );
                 if try_move_to_trash(&physical_path)? {
                     info!(
                         "Book at {:?} moved to system recycle bin {:?}",
-                        book_path,
-                        physical_path
+                        book_path, physical_path
                     );
                     return Ok(());
                 }

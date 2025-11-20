@@ -5,7 +5,10 @@ use uuid::Uuid;
 use crate::{
     book::{
         serialization::{
-            ChecksumedWriter, Magic, Serializable, Version, read_exact_array, read_len_prefixed_string, read_len_prefixed_vec, read_opt, read_opt_var_u64, read_u8, read_u64, read_var_u64, read_vec_slice, validate_hash, write_len_prefixed_bytes, write_opt, write_opt_var_u64, write_u64, write_var_u64, write_vec_slice
+            ChecksumedWriter, Magic, Serializable, Version, read_exact_array,
+            read_len_prefixed_string, read_len_prefixed_vec, read_opt, read_opt_var_u64, read_u8,
+            read_u64, read_var_u64, read_vec_slice, validate_hash, write_len_prefixed_bytes,
+            write_opt, write_opt_var_u64, write_u64, write_var_u64, write_vec_slice,
         },
         translation_import,
     },
@@ -1228,7 +1231,7 @@ impl Translation {
                     FieldTag::TotalTokens => {
                         let tokens = read_opt_var_u64(&mut cursor)?;
                         translation.total_tokens = tokens;
-                    },
+                    }
                 }
             }
 

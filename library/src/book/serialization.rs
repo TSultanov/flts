@@ -56,7 +56,7 @@ pub fn write_opt_var_u64(w: &mut dyn io::Write, value: Option<u64>) -> io::Resul
         Some(v) => {
             w.write_all(&[1])?;
             write_var_u64(w, v)?;
-        },
+        }
         None => w.write_all(&[0])?,
     }
     Ok(())
@@ -197,7 +197,7 @@ impl Version {
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "Unsupported version",
-            ))
+            )),
         }
     }
 }

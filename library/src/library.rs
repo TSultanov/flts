@@ -375,14 +375,16 @@ mod library_tests {
         {
             let mut book = book.lock().await;
             book.save().await.unwrap();
-            book
-                .update_folder_path(vec!["Shelf".into(), "Modern".into()])
+            book.update_folder_path(vec!["Shelf".into(), "Modern".into()])
                 .unwrap();
         }
 
         let books = library.list_books().unwrap();
         assert_eq!(books.len(), 1);
-        assert_eq!(books[0].folder_path, vec!["Shelf".to_string(), "Modern".to_string()]);
+        assert_eq!(
+            books[0].folder_path,
+            vec!["Shelf".to_string(), "Modern".to_string()]
+        );
     }
 
     #[test]

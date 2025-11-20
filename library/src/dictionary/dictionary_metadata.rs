@@ -1,8 +1,13 @@
-use std::{hash::Hasher, io::{self, Cursor}};
+use std::{
+    hash::Hasher,
+    io::{self, Cursor},
+};
 
 use uuid::Uuid;
 
-use crate::book::serialization::{read_exact_array, read_len_prefixed_string, read_len_prefixed_vec, read_u64, Magic, Version};
+use crate::book::serialization::{
+    Magic, Version, read_exact_array, read_len_prefixed_string, read_len_prefixed_vec, read_u64,
+};
 
 pub struct DictionaryMetadata {
     pub id: Uuid,
@@ -31,10 +36,7 @@ impl DictionaryMetadata {
         let mut hasher = fnv::FnvHasher::default();
         hasher.write(&metadata_buf);
         if hasher.finish() != metadata_hash {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Invalid metadata hash",
-            ).into());
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid metadata hash").into());
         }
 
         let mut cursor = Cursor::new(metadata_buf);
@@ -46,7 +48,7 @@ impl DictionaryMetadata {
         Ok(Self {
             id,
             source_language,
-            target_language
+            target_language,
         })
     }
 }
@@ -55,8 +57,8 @@ impl DictionaryMetadata {
 mod dictionary_metadata_tests {
     use std::io::Cursor;
 
-    use crate::dictionary::{dictionary_metadata::DictionaryMetadata, Dictionary};
     use crate::book::serialization::Serializable;
+    use crate::dictionary::{Dictionary, dictionary_metadata::DictionaryMetadata};
 
     #[test]
     fn dictionary_metadata_roundtrip() {
@@ -87,7 +89,9 @@ mod dictionary_metadata_tests {
         // Corrupt a byte within the header/metadata region to break the metadata hash
         // Index 10 is within the u64 metadata hash (after 4-byte magic and 1-byte version),
         // which guarantees a mismatch when the hash is verified.
-        if buf.len() > 10 { buf[10] ^= 0xFF; }
+        if buf.len() > 10 {
+            buf[10] ^= 0xFF;
+        }
 
         let mut cur = Cursor::new(buf);
         let r = DictionaryMetadata::read_metadata(&mut cur);

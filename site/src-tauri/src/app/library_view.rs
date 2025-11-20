@@ -6,7 +6,7 @@ use library::epub_importer::EpubBook;
 use library::library::file_watcher::LibraryFileChange;
 use library::{
     book::translation::ParagraphTranslationView,
-    library::{library_book::BookReadingState, Library},
+    library::{Library, library_book::BookReadingState},
 };
 use tauri::Emitter;
 use tauri::async_runtime::Mutex;
@@ -603,7 +603,13 @@ fn translation_to_html(
                     .map(|t| {
                         format!(
                             "<span class=\"word-translation\" aria-hidden=\"true\">{}</span>",
-                            encode(t.as_bytes(), &EncodeType::Named, &CharacterSet::SpecialChars).to_string().unwrap_or("&lt;err&gt;".to_owned())
+                            encode(
+                                t.as_bytes(),
+                                &EncodeType::Named,
+                                &CharacterSet::SpecialChars
+                            )
+                            .to_string()
+                            .unwrap_or("&lt;err&gt;".to_owned())
                         )
                     })
                     .unwrap_or_default();

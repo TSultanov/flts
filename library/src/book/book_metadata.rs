@@ -86,7 +86,11 @@ mod book_metadata_tests {
     #[test]
     fn test_metadata_roundtrip() {
         let language = "eng";
-        let mut book = Book::create(Uuid::new_v4(), "My Book", &Language::from_639_3(language).unwrap());
+        let mut book = Book::create(
+            Uuid::new_v4(),
+            "My Book",
+            &Language::from_639_3(language).unwrap(),
+        );
         book.push_chapter(Some("Intro"));
         book.push_paragraph(0, "Hello world", Some("<p>Hello <b>world</b></p>"));
         book.push_paragraph(0, "Second paragraph", None);
@@ -108,7 +112,11 @@ mod book_metadata_tests {
     #[test]
     fn test_metadata_corruption() {
         let language = "eng";
-        let mut book = Book::create(Uuid::new_v4(), "My Book", &Language::from_639_3(language).unwrap());
+        let mut book = Book::create(
+            Uuid::new_v4(),
+            "My Book",
+            &Language::from_639_3(language).unwrap(),
+        );
         book.push_chapter(Some("Intro"));
         book.push_paragraph(0, "Hello world", Some("<p>Hello <b>world</b></p>"));
         book.push_paragraph(0, "Second paragraph", None);

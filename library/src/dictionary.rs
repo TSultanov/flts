@@ -3,11 +3,13 @@ pub mod dictionary_metadata;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 
-use log::{info};
+use log::info;
 use uuid::Uuid;
 
 use crate::book::serialization::{
-    read_exact_array, read_len_prefixed_string, read_u64, read_var_u64, validate_hash, write_len_prefixed_bytes, write_len_prefixed_str, write_u64, write_var_u64, ChecksumedWriter, Magic, Serializable, Version
+    ChecksumedWriter, Magic, Serializable, Version, read_exact_array, read_len_prefixed_string,
+    read_u64, read_var_u64, validate_hash, write_len_prefixed_bytes, write_len_prefixed_str,
+    write_u64, write_var_u64,
 };
 use std::io::{self, BufWriter, Write};
 use std::time::Instant;

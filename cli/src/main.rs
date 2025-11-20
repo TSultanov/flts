@@ -104,14 +104,14 @@ async fn add_book(
         let mut text = String::new();
         data.read_to_string(&mut text)?;
 
-        let book_id = library.lock().await.create_book_plain(title, &text, &Language::from_str(lang)?).await?;
+        let book_id = library
+            .lock()
+            .await
+            .create_book_plain(title, &text, &Language::from_str(lang)?)
+            .await?;
         let book = library.lock().await.get_book(&book_id)?;
         let book = book.lock().await;
-        println!(
-            "Created book {} (id: {})",
-            book.book.title,
-            book.book.id
-        );
+        println!("Created book {} (id: {})", book.book.title, book.book.id);
     } else {
         Err(CliError::UnsupportedFormat(fmt.media_type().to_owned()))?
     }
@@ -122,14 +122,14 @@ async fn add_book(
 async fn add_epub(library: &Arc<Mutex<Library>>, path: &Path, lang: &str) -> anyhow::Result<()> {
     let epub = EpubBook::load(path)?;
 
-    let book_id = library.lock().await.create_book_epub(&epub, &Language::from_str(lang)?).await?;
+    let book_id = library
+        .lock()
+        .await
+        .create_book_epub(&epub, &Language::from_str(lang)?)
+        .await?;
     let book = library.lock().await.get_book(&book_id)?;
     let book = book.lock().await;
-    println!(
-        "Created book {} (id: {})",
-        book.book.title,
-        book.book.id
-    );
+    println!("Created book {} (id: {})", book.book.title, book.book.id);
 
     Ok(())
 }
@@ -196,11 +196,7 @@ async fn save_book(library: &Arc<Mutex<Library>>, book_id: Uuid) -> anyhow::Resu
     Ok(())
 }
 
-async fn run_saver(
-    library: Arc<Mutex<Library>>,
-    book_id: Uuid,
-    rx: flume::Receiver<()>,
-) {
+async fn run_saver(library: Arc<Mutex<Library>>, book_id: Uuid, rx: flume::Receiver<()>) {
     let mut last_save = Instant::now() - Duration::from_secs(1);
     let mut pending = false;
 
@@ -242,9 +238,7 @@ async fn translate_book(
 
         let paragraph_count = book.book.paragraphs_count();
 
-        let translation = book
-            .get_or_create_translation(&target_lang)
-            .await;
+        let translation = book.get_or_create_translation(&target_lang).await;
         let untranslated_paragraphs_count =
             paragraph_count - translation.lock().await.translated_paragraphs_count();
         println!(
@@ -394,14 +388,15 @@ async fn do_main() -> anyhow::Result<()> {
     }
 
     let fs = PhysicalFS::new(library_path.clone());
-    let library = Arc::new(Mutex::new(Library::open(
-        fs.into(),
-        Some(library_path),
-    )?));
+    let library = Arc::new(Mutex::new(Library::open(fs.into(), Some(library_path))?));
 
     match &cli.command {
         Some(cmd) => match cmd {
-            Commands::ImportBook { title, path, language } => {
+            Commands::ImportBook {
+                title,
+                path,
+                language,
+            } => {
                 add_book(&library, title, path, language).await?;
             }
             Commands::ImportEpub { path, language } => {

@@ -13,7 +13,7 @@ use crate::{
 
 #[derive(Debug)]
 pub enum TranslationErrors {
-    UnknownModel
+    UnknownModel,
 }
 
 impl std::error::Error for TranslationErrors {}
