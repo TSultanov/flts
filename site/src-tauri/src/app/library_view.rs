@@ -302,6 +302,17 @@ impl LibraryView {
         Ok(())
     }
 
+    pub async fn delete_book(
+        &self,
+        book_id: Uuid,
+        target_language: Option<&Language>,
+    ) -> anyhow::Result<()> {
+        self.library.lock().await.delete_book(&book_id)?;
+        let books = self.list_books(target_language).await?;
+        self.app.emit("library_updated", books)?;
+        Ok(())
+    }
+
     pub async fn handle_file_change_event(
         &mut self,
         event: &LibraryFileChange,
@@ -496,6 +507,24 @@ pub async fn move_book(
     if let Some(library) = &app.library_view {
         library
             .move_book(book_id, path, target_language.as_ref())
+            .await
+            .map_err(|err| err.to_string())
+    } else {
+        Err("Library is not configured".into())
+    }
+}
+
+#[tauri::command]
+pub async fn delete_book(
+    state: tauri::State<'_, Arc<Mutex<App>>>,
+    book_id: Uuid,
+) -> Result<(), String> {
+    let app = state.lock().await;
+    let target_language = Language::from_639_3(&app.config.target_language_id);
+
+    if let Some(library) = &app.library_view {
+        library
+            .delete_book(book_id, target_language.as_ref())
             .await
             .map_err(|err| err.to_string())
     } else {

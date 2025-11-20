@@ -6,6 +6,13 @@ use std::{
     time::SystemTime,
 };
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+use std::path::Path;
+
+use log::info;
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+use log::warn;
+
 use ahash::AHashSet;
 use isolang::Language;
 use serde::{Deserialize, Serialize};
@@ -554,6 +561,48 @@ impl LibraryBook {
     }
 }
 
+fn remove_dir_recursive(path: &VfsPath) -> Result<(), vfs::error::VfsError> {
+    if !path.exists()? {
+        return Ok(());
+    }
+
+    if path.is_file()? {
+        path.remove_file()?;
+        return Ok(());
+    }
+
+    for entry in path.read_dir()? {
+        if entry.is_dir()? {
+            remove_dir_recursive(&entry)?;
+        } else {
+            entry.remove_file()?;
+        }
+    }
+
+    path.remove_dir()?;
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn try_move_to_trash(physical_path: &Path) -> anyhow::Result<bool> {
+    if std::fs::metadata(physical_path).is_err() {
+        return Ok(false);
+    }
+
+    match trash::delete(physical_path) {
+        Ok(_) => Ok(true),
+        Err(err) => {
+            warn!("Failed to move {:?} to recycle bin: {}", physical_path, err);
+            Ok(false)
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+fn try_move_to_trash(_path: &std::path::Path) -> anyhow::Result<bool> {
+    Ok(false)
+}
+
 impl Library {
     pub fn create_book(
         &mut self,
@@ -581,6 +630,42 @@ impl Library {
 
         Ok(book)
     }
+
+    pub fn delete_book(&mut self, uuid: &Uuid) -> anyhow::Result<()> {
+        self.books_cache.remove(uuid);
+        let book_path = self.library_root.join(uuid.to_string())?;
+
+        if !book_path.exists()? {
+            return Ok(());
+        }
+
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        let _ = &self.physical_root;
+
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        {
+            if let Some(root) = &self.physical_root {
+                let physical_path = root.join(uuid.to_string());
+                info!(
+                    "Attempting to move {:?} (physical {:?}) to trash",
+                    book_path,
+                    physical_path
+                );
+                if try_move_to_trash(&physical_path)? {
+                    info!(
+                        "Book at {:?} moved to system recycle bin {:?}",
+                        book_path,
+                        physical_path
+                    );
+                    return Ok(());
+                }
+            }
+        }
+
+        remove_dir_recursive(&book_path)?;
+        info!("Book at {:?} removed completely", book_path);
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -607,7 +692,7 @@ mod library_book_tests {
         let fs = vfs::MemoryFS::new();
         let root: VfsPath = fs.into();
         let library_path = root.join("lib").unwrap();
-        let mut library = Library::open(library_path.clone()).unwrap();
+        let mut library = Library::open(library_path.clone(), None).unwrap();
 
         let book1 = library
             .create_book("First Book", &Language::from_639_3("eng").unwrap())
@@ -645,7 +730,7 @@ mod library_book_tests {
         let fs = vfs::MemoryFS::new();
         let root: VfsPath = fs.into();
         let library_path = root.join("lib").unwrap();
-        let mut library = Library::open(library_path.clone()).unwrap();
+        let mut library = Library::open(library_path.clone(), None).unwrap();
 
         let book1 = library
             .create_book("First Book", &Language::from_639_3("spa").unwrap())
@@ -707,7 +792,7 @@ mod library_book_tests {
         let fs = vfs::MemoryFS::new();
         let root: VfsPath = fs.into();
         let library_path = root.join("lib").unwrap();
-        let mut library = Library::open(library_path.clone()).unwrap();
+        let mut library = Library::open(library_path.clone(), None).unwrap();
 
         // Create and save
         let book = library
@@ -734,7 +819,7 @@ mod library_book_tests {
         let fs = vfs::MemoryFS::new();
         let root: VfsPath = fs.into();
         let library_path = root.join("lib").unwrap();
-        let mut library = Library::open(library_path.clone()).unwrap();
+        let mut library = Library::open(library_path.clone(), None).unwrap();
 
         let source_language = Language::from_str("es").unwrap();
         let target_language = Language::from_str("en").unwrap();
@@ -870,7 +955,7 @@ mod library_book_tests {
         let fs = vfs::MemoryFS::new();
         let root: VfsPath = fs.into();
         let library_path = root.join("lib").unwrap();
-        let mut library = Library::open(library_path.clone()).unwrap();
+        let mut library = Library::open(library_path.clone(), None).unwrap();
 
         let source_language = Language::from_str("en").unwrap();
         let target_language = Language::from_str("ru").unwrap();
@@ -1045,7 +1130,7 @@ mod library_book_tests {
         let fs = vfs::MemoryFS::new();
         let root: VfsPath = fs.into();
         let library_path = root.join("lib").unwrap();
-        let mut library = Library::open(library_path.clone()).unwrap();
+        let mut library = Library::open(library_path.clone(), None).unwrap();
 
         let book = library
             .create_book("Stateful", &Language::from_639_3("eng").unwrap())
@@ -1073,7 +1158,7 @@ mod library_book_tests {
         let fs = vfs::MemoryFS::new();
         let root: VfsPath = fs.into();
         let library_path = root.join("lib").unwrap();
-        let mut library = Library::open(library_path.clone()).unwrap();
+        let mut library = Library::open(library_path.clone(), None).unwrap();
 
         let book = library
             .create_book("Shelved", &Language::from_639_3("eng").unwrap())
@@ -1100,7 +1185,7 @@ mod library_book_tests {
         let fs = vfs::MemoryFS::new();
         let root: VfsPath = fs.into();
         let library_root = root.join("lib").unwrap();
-        let mut library = Library::open(library_root.clone()).unwrap();
+        let mut library = Library::open(library_root.clone(), None).unwrap();
 
         let book = library
             .create_book("Conflicted", &Language::from_639_3("eng").unwrap())
@@ -1132,7 +1217,7 @@ mod library_book_tests {
 
         drop(library);
 
-        let mut library = Library::open(library_root).unwrap();
+        let mut library = Library::open(library_root, None).unwrap();
         let book = library.get_book(&book_id).unwrap();
         let mut book = book.lock().await;
         let state = book.reading_state().unwrap();
@@ -1427,7 +1512,7 @@ mod library_book_tests {
         let fs = vfs::MemoryFS::new();
         let root: VfsPath = fs.into();
         let library_path = root.join("lib").unwrap();
-        let mut library = Library::open(library_path.clone()).unwrap();
+        let mut library = Library::open(library_path.clone(), None).unwrap();
 
         let book = library
             .create_book("Original Title", &Language::from_639_3("eng").unwrap())
@@ -1457,7 +1542,7 @@ mod library_book_tests {
         let fs = vfs::MemoryFS::new();
         let root: VfsPath = fs.into();
         let library_path = root.join("lib").unwrap();
-        let mut library = Library::open(library_path.clone()).unwrap();
+        let mut library = Library::open(library_path.clone(), None).unwrap();
 
         let book = library
             .create_book("Main V1", &Language::from_639_3("eng").unwrap())
@@ -1513,7 +1598,7 @@ mod library_book_tests {
         let fs = vfs::MemoryFS::new();
         let root: VfsPath = fs.into();
         let library_path = root.join("lib").unwrap();
-        let mut library = Library::open(library_path.clone()).unwrap();
+        let mut library = Library::open(library_path.clone(), None).unwrap();
 
         let book = library
             .create_book("V1", &Language::from_639_3("eng").unwrap())
@@ -1558,5 +1643,30 @@ mod library_book_tests {
         let on_disk = Book::deserialize(&mut f).unwrap();
         assert_eq!(on_disk.title, "V2");
         assert!(!conflict_path.exists().unwrap());
+    }
+
+    #[tokio::test]
+    async fn delete_book_removes_directory() {
+        let fs = vfs::MemoryFS::new();
+        let root: VfsPath = fs.into();
+        let library_path = root.join("lib").unwrap();
+        let mut library = Library::open(library_path.clone(), None).unwrap();
+
+        let book = library
+            .create_book("Disposable", &Language::from_639_3("eng").unwrap())
+            .unwrap();
+        let book_id = {
+            let mut book = book.lock().await;
+            book.save().await.unwrap();
+            book.book.id
+        };
+
+        let book_dir = library_path.join(book_id.to_string()).unwrap();
+        assert!(book_dir.exists().unwrap());
+
+        library.delete_book(&book_id).unwrap();
+
+        assert!(!book_dir.exists().unwrap());
+        assert!(library.list_books().unwrap().is_empty());
     }
 }

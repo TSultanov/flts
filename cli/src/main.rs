@@ -388,12 +388,16 @@ async fn main() -> ExitCode {
 async fn do_main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    if !cli.library_path.exists() {
-        create_dir(cli.library_path.clone())?;
+    let library_path = cli.library_path.clone();
+    if !library_path.exists() {
+        create_dir(library_path.clone())?;
     }
 
-    let fs = PhysicalFS::new(cli.library_path);
-    let library = Arc::new(Mutex::new(Library::open(fs.into())?));
+    let fs = PhysicalFS::new(library_path.clone());
+    let library = Arc::new(Mutex::new(Library::open(
+        fs.into(),
+        Some(library_path),
+    )?));
 
     match &cli.command {
         Some(cmd) => match cmd {

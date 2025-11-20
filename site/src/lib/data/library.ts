@@ -121,11 +121,8 @@ export class Library {
     }
 
     async deleteBook(bookUid: UUID) {
-        console.log(`starting book deletion ${bookUid}`)
         await this.cleanupTranslationRequests(bookUid);
-        console.log(`cleaned up translation requests ${bookUid}`)
-        // await sqlBooks.deleteBook(bookUid);
-        console.log(`deleted book ${bookUid}`)
+        await invoke('delete_book', { bookId: bookUid });
     }
 
     async moveBook(bookUid: UUID, newPath: string[]) {

@@ -137,7 +137,10 @@ impl App {
         if let Some(library_path) = library_path {
             let fs = PhysicalFS::new(library_path);
 
-            let library = Arc::new(Mutex::new(Library::open(fs.into())?));
+            let library = Arc::new(Mutex::new(Library::open(
+                fs.into(),
+                Some(PathBuf::from(library_path)),
+            )?));
             self.library = Some(library.clone());
             if let Some(watcher) = &self.watcher {
                 watcher

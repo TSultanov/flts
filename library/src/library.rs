@@ -1,4 +1,4 @@
-use std::{collections::HashMap, error::Error, fmt::Display, sync::Arc};
+use std::{collections::HashMap, error::Error, fmt::Display, path::PathBuf, sync::Arc};
 
 use isolang::Language;
 use itertools::Itertools;
@@ -162,12 +162,16 @@ impl LibraryBookMetadata {
 
 pub struct Library {
     library_root: VfsPath,
+    physical_root: Option<PathBuf>,
     books_cache: HashMap<Uuid, Arc<Mutex<LibraryBook>>>, // TODO: eviction
     dictionaries_cache: Arc<Mutex<DictionaryCache>>,
 }
 
 impl Library {
-    pub fn open(library_root: VfsPath) -> Result<Self, vfs::error::VfsError> {
+    pub fn open(
+        library_root: VfsPath,
+        physical_root: Option<PathBuf>,
+    ) -> Result<Self, vfs::error::VfsError> {
         if !library_root.exists()? {
             library_root.create_dir()?
         }
@@ -176,6 +180,7 @@ impl Library {
 
         Ok(Library {
             library_root,
+            physical_root,
             books_cache: HashMap::new(),
             dictionaries_cache,
         })
@@ -313,7 +318,7 @@ mod library_tests {
         let fs = vfs::MemoryFS::new();
         let root: VfsPath = fs.into();
         let library_path = root.join("test").unwrap();
-        _ = Library::open(library_path);
+        _ = Library::open(library_path, None);
 
         let root_directories = root.read_dir().unwrap().collect::<Vec<_>>();
         assert_eq!(root_directories, vec![root.join("test").unwrap()]);
@@ -324,7 +329,7 @@ mod library_tests {
         let fs = vfs::MemoryFS::new();
         let root: VfsPath = fs.into();
         let library_path = root.join("lib").unwrap();
-        let library = Library::open(library_path).unwrap();
+        let library = Library::open(library_path, None).unwrap();
 
         let books = library.list_books().unwrap();
         assert!(books.is_empty(), "Expected no books, got {:?}", books.len());
@@ -335,7 +340,7 @@ mod library_tests {
         let fs = vfs::MemoryFS::new();
         let root: VfsPath = fs.into();
         let library_path = root.join("lib").unwrap();
-        let mut library = Library::open(library_path.clone()).unwrap();
+        let mut library = Library::open(library_path.clone(), None).unwrap();
 
         let book1 = library
             .create_book("First Book", &Language::from_639_3("eng").unwrap())
@@ -362,7 +367,7 @@ mod library_tests {
         let fs = vfs::MemoryFS::new();
         let root: VfsPath = fs.into();
         let library_path = root.join("lib").unwrap();
-        let mut library = Library::open(library_path.clone()).unwrap();
+        let mut library = Library::open(library_path.clone(), None).unwrap();
 
         let book = library
             .create_book("Categorized", &Language::from_639_3("eng").unwrap())
