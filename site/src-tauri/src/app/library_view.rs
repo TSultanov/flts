@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use htmlentity::entity::{ICodedDataTrait, decode};
+use htmlentity::entity::{CharacterSet, EncodeType, ICodedDataTrait, decode, encode};
 use isolang::Language;
 use library::epub_importer::EpubBook;
 use library::library::file_watcher::LibraryFileChange;
@@ -527,7 +527,20 @@ fn translation_to_html(
 
             if p_idx < clamped_end {
                 let text = String::from_iter(original[p_idx..clamped_end].iter());
-                result.push(format!("<span class=\"word-span\" data-paragraph=\"{paragraph_id}\" data-sentence=\"{sentence_idx}\" data-word=\"{word_idx}\">{text}</span>"));
+                let translation_fragment = word
+                    .contextual_translations()
+                    .next()
+                    .map(|ct| sanitize_translation_text(ct.translation.as_ref()))
+                    .filter(|t| !t.is_empty())
+                    .map(|t| {
+                        format!(
+                            "<span class=\"word-translation\" aria-hidden=\"true\">{}</span>",
+                            encode(t.as_bytes(), &EncodeType::Named, &CharacterSet::SpecialChars).to_string().unwrap_or("&lt;err&gt;".to_owned())
+                        )
+                    })
+                    .unwrap_or_default();
+
+                result.push(format!("<span class=\"word-span\" data-paragraph=\"{paragraph_id}\" data-sentence=\"{sentence_idx}\" data-word=\"{word_idx}\">{translation_fragment}{text}</span>"));
             }
 
             p_idx += len;
@@ -543,6 +556,14 @@ fn translation_to_html(
     }
 
     Ok(result.join(""))
+}
+
+fn sanitize_translation_text(value: &str) -> String {
+    value
+        .split_whitespace()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn levenshtein_distance(str1: &str, str2: &str) -> usize {
