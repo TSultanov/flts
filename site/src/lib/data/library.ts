@@ -12,6 +12,7 @@ type LibraryBookMetadataView = {
     chaptersCount: number,
     paragraphsCount: number,
     translationRatio: number,
+    path: string[],
 }
 
 export type BookReadingState = {
@@ -60,13 +61,14 @@ export class Library {
             };
 
             for (const book of allBooks[0]) {
-                const targetFolder = getOrCreateFolder(/*book.path || */[]);
+                const folderPath = book.path ?? [];
+                const targetFolder = getOrCreateFolder(folderPath);
                 targetFolder.books.push({
                     uid: book.id,
                     chapterCount: book.chaptersCount,
                     translationRatio: book.translationRatio,
                     title: book.title,
-                    path: [] // TODO
+                    path: [...folderPath]
                 });
             }
 
@@ -127,7 +129,7 @@ export class Library {
     }
 
     async moveBook(bookUid: UUID, newPath: string[]) {
-
+        await invoke("move_book", { bookId: bookUid, path: newPath });
     }
 
     async deleteBooksInBatch(bookUids: UUID[]) {

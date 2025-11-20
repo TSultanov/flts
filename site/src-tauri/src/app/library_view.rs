@@ -24,6 +24,8 @@ pub struct LibraryBookMetadataView {
     paragraphs_count: usize,
     #[serde(rename = "translationRatio")]
     translation_ratio: f64,
+    #[serde(rename = "path")]
+    path: Vec<String>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -120,6 +122,7 @@ impl LibraryView {
                     chapters_count: b.chapters_count,
                     paragraphs_count: b.paragraphs_count,
                     translation_ratio,
+                    path: b.folder_path.clone(),
                 }
             })
             .collect())
@@ -280,6 +283,23 @@ impl LibraryView {
             chapter_id,
             paragraph_id,
         })
+    }
+
+    pub async fn move_book(
+        &self,
+        book_id: Uuid,
+        new_path: Vec<String>,
+        target_language: Option<&Language>,
+    ) -> anyhow::Result<()> {
+        let book = self.library.lock().await.get_book(&book_id)?;
+        {
+            let mut book = book.lock().await;
+            book.update_folder_path(new_path)?;
+        }
+
+        let books = self.list_books(target_language).await?;
+        self.app.emit("library_updated", books)?;
+        Ok(())
     }
 
     pub async fn handle_file_change_event(
@@ -457,6 +477,25 @@ pub async fn save_book_reading_state(
     if let Some(library) = &app.library_view {
         library
             .save_book_reading_state(book_id, chapter_id, paragraph_id)
+            .await
+            .map_err(|err| err.to_string())
+    } else {
+        Err("Library is not configured".into())
+    }
+}
+
+#[tauri::command]
+pub async fn move_book(
+    state: tauri::State<'_, Arc<Mutex<App>>>,
+    book_id: Uuid,
+    path: Vec<String>,
+) -> Result<(), String> {
+    let app = state.lock().await;
+    let target_language = Language::from_639_3(&app.config.target_language_id);
+
+    if let Some(library) = &app.library_view {
+        library
+            .move_book(book_id, path, target_language.as_ref())
             .await
             .map_err(|err| err.to_string())
     } else {

@@ -11,7 +11,8 @@ use crate::{
     book::{book_metadata::BookMetadata, translation_metadata::TranslationMetadata},
     epub_importer::EpubBook,
     library::{
-        file_watcher::LibraryFileChange, library_book::LibraryBook,
+        file_watcher::LibraryFileChange,
+        library_book::{LibraryBook, load_book_user_state},
         library_dictionary::DictionaryCache,
     },
 };
@@ -54,6 +55,7 @@ pub struct LibraryBookMetadata {
     pub chapters_count: usize,
     pub paragraphs_count: usize,
     pub translations_metadata: Vec<LibraryTranslationMetadata>,
+    pub folder_path: Vec<String>,
 }
 
 impl LibraryBookMetadata {
@@ -133,6 +135,17 @@ impl LibraryBookMetadata {
             })
         }
 
+        let folder_path = match load_book_user_state(path) {
+            Ok(state) => state.folder_path,
+            Err(err) => {
+                println!(
+                    "Failed to load state for {:?}, continuing with empty folder path: {}",
+                    path, err
+                );
+                Vec::new()
+            }
+        };
+
         info!("Loaded metadata for {path:?}");
         Ok(LibraryBookMetadata {
             id: book_metadata.id,
@@ -142,6 +155,7 @@ impl LibraryBookMetadata {
             chapters_count: book_metadata.chapters_count,
             paragraphs_count: book_metadata.paragraphs_count,
             translations_metadata,
+            folder_path,
         })
     }
 }
@@ -341,6 +355,29 @@ mod library_tests {
         assert_eq!(books[1].title, "Second Book");
         assert_eq!(books[1].paragraphs_count, 0);
         assert!(books[1].translations_metadata.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_books_includes_folder_path() {
+        let fs = vfs::MemoryFS::new();
+        let root: VfsPath = fs.into();
+        let library_path = root.join("lib").unwrap();
+        let mut library = Library::open(library_path.clone()).unwrap();
+
+        let book = library
+            .create_book("Categorized", &Language::from_639_3("eng").unwrap())
+            .unwrap();
+        {
+            let mut book = book.lock().await;
+            book.save().await.unwrap();
+            book
+                .update_folder_path(vec!["Shelf".into(), "Modern".into()])
+                .unwrap();
+        }
+
+        let books = library.list_books().unwrap();
+        assert_eq!(books.len(), 1);
+        assert_eq!(books[0].folder_path, vec!["Shelf".to_string(), "Modern".to_string()]);
     }
 
     #[test]

@@ -24,7 +24,8 @@ use crate::{
     library::{
         Library, LibraryBookMetadata, LibraryError, LibraryTranslationMetadata,
         library_dictionary::DictionaryCache,
-    }, translator::TranslationModel,
+    },
+    translator::TranslationModel,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -35,13 +36,21 @@ pub struct BookReadingState {
     pub paragraph_id: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct BookUserState {
+    #[serde(default, rename = "readingState")]
+    pub reading_state: Option<BookReadingState>,
+    #[serde(default, rename = "folderPath")]
+    pub folder_path: Vec<String>,
+}
+
 pub struct LibraryBook {
     dict_cache: Arc<Mutex<DictionaryCache>>,
     path: VfsPath,
     last_modified: Option<SystemTime>,
     pub book: Book,
     translations: Vec<Arc<Mutex<LibraryTranslation>>>,
-    reading_state: Option<BookReadingState>,
+    user_state: BookUserState,
 }
 
 pub struct LibraryTranslation {
@@ -111,7 +120,7 @@ impl LibraryTranslation {
         &mut self,
         paragraph_index: usize,
         translation: &translation_import::ParagraphTranslation,
-        model: TranslationModel
+        model: TranslationModel,
     ) -> anyhow::Result<()> {
         let dictionary = self
             .dict_cache
@@ -137,105 +146,134 @@ impl LibraryTranslation {
     }
 }
 
+fn reading_state_files(path: &VfsPath) -> Result<Vec<(VfsPath, SystemTime)>, vfs::error::VfsError> {
+    let mut files = Vec::new();
+    for entry in path.read_dir()? {
+        if entry.is_file()? {
+            let filename = entry.filename();
+            if filename.starts_with("state") && filename.ends_with(".json") {
+                let modified = entry.metadata()?.modified.unwrap_or(SystemTime::UNIX_EPOCH);
+                files.push((entry, modified));
+            }
+        }
+    }
+    Ok(files)
+}
+
+fn resolve_reading_state_file(path: &VfsPath) -> anyhow::Result<Option<(VfsPath, SystemTime)>> {
+    let mut candidates = reading_state_files(path)?;
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+
+    candidates.sort_by(|a, b| a.1.cmp(&b.1));
+    let (latest_path, latest_modified) = candidates
+        .last()
+        .cloned()
+        .unwrap_or_else(|| unreachable!("candidates is not empty"));
+
+    let canonical_path = path.join("state.json")?;
+    let canonical_name = canonical_path.filename();
+    let mut effective_modified = latest_modified;
+
+    if latest_path.filename() != canonical_name {
+        if canonical_path.exists()? {
+            canonical_path.remove_file()?;
+        }
+        latest_path.move_file(&canonical_path)?;
+        effective_modified = canonical_path
+            .metadata()?
+            .modified
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+    }
+
+    for (candidate_path, _) in candidates {
+        if candidate_path.filename() != canonical_name && candidate_path.exists()? {
+            let _ = candidate_path.remove_file();
+        }
+    }
+
+    Ok(Some((canonical_path, effective_modified)))
+}
+
+fn load_user_state_from_dir(path: &VfsPath) -> anyhow::Result<BookUserState> {
+    if let Some((state_path, _)) = resolve_reading_state_file(path)? {
+        let mut reader = BufReader::new(state_path.open_file()?);
+        let mut contents = String::new();
+        reader.read_to_string(&mut contents)?;
+
+        if contents.trim().is_empty() {
+            return Ok(BookUserState::default());
+        }
+
+        let value: serde_json::Value = serde_json::from_str(&contents)?;
+        if value.get("readingState").is_some() || value.get("folderPath").is_some() {
+            return Ok(serde_json::from_value(value)?);
+        }
+
+        let legacy: BookReadingState = serde_json::from_value(value)?;
+        return Ok(BookUserState {
+            reading_state: Some(legacy),
+            ..BookUserState::default()
+        });
+    }
+
+    Ok(BookUserState::default())
+}
+
+fn persist_user_state(path: &VfsPath, state: &BookUserState) -> anyhow::Result<()> {
+    if !path.exists()? {
+        path.create_dir()?;
+    }
+
+    let state_path = path.join("state.json")?;
+    let temp_path = path.join(format!("state.json~{}", create_random_string(8)))?;
+
+    {
+        let mut writer = BufWriter::new(temp_path.create_file()?);
+        serde_json::to_writer_pretty(&mut writer, state)?;
+    }
+
+    if state_path.exists()? {
+        state_path.remove_file()?;
+    }
+    temp_path.move_file(&state_path)?;
+
+    Ok(())
+}
+
+pub fn load_book_user_state(path: &VfsPath) -> anyhow::Result<BookUserState> {
+    load_user_state_from_dir(path)
+}
+
 impl LibraryBook {
-    fn reading_state_files(
-        &self,
-    ) -> Result<Vec<(VfsPath, SystemTime)>, vfs::error::VfsError> {
-        let mut files = Vec::new();
-        for entry in self.path.read_dir()? {
-            if entry.is_file()? {
-                let filename = entry.filename();
-                if filename.starts_with("state") && filename.ends_with(".json") {
-                    let modified = entry
-                        .metadata()?
-                        .modified
-                        .unwrap_or(SystemTime::UNIX_EPOCH);
-                    files.push((entry, modified));
-                }
-            }
-        }
-        Ok(files)
-    }
-
-    fn resolve_reading_state_file(&self) -> anyhow::Result<Option<(VfsPath, SystemTime)>> {
-        let mut candidates = self.reading_state_files()?;
-        if candidates.is_empty() {
-            return Ok(None);
-        }
-
-        candidates.sort_by(|a, b| a.1.cmp(&b.1));
-        let (latest_path, latest_modified) = candidates
-            .last()
-            .cloned()
-            .unwrap_or_else(|| unreachable!("candidates is not empty"));
-
-        let canonical_path = self.path.join("state.json")?;
-        let canonical_name = canonical_path.filename();
-        let mut effective_modified = latest_modified;
-
-        if latest_path.filename() != canonical_name {
-            if canonical_path.exists()? {
-                canonical_path.remove_file()?;
-            }
-            latest_path.move_file(&canonical_path)?;
-            effective_modified = canonical_path
-                .metadata()?
-                .modified
-                .unwrap_or(SystemTime::UNIX_EPOCH);
-        }
-
-        for (path, _) in candidates {
-            if path.filename() != canonical_name && path.exists()? {
-                let _ = path.remove_file();
-            }
-        }
-
-        Ok(Some((canonical_path, effective_modified)))
-    }
-
-    fn reload_reading_state(&mut self) -> anyhow::Result<()> {
-        if let Some((state_path, _modified)) = self.resolve_reading_state_file()? {
-            let mut reader = BufReader::new(state_path.open_file()?);
-            let state: BookReadingState = serde_json::from_reader(&mut reader)?;
-            self.reading_state = Some(state);
-        } else {
-            self.reading_state = None;
-        }
-        Ok(())
-    }
-
-    fn persist_reading_state(&self, state: &BookReadingState) -> anyhow::Result<()> {
-        if !self.path.exists()? {
-            self.path.create_dir()?;
-        }
-
-        let state_path = self.path.join("state.json")?;
-        let temp_path = self
-            .path
-            .join(format!("state.json~{}", create_random_string(8)))?;
-
-        {
-            let mut writer = BufWriter::new(temp_path.create_file()?);
-            serde_json::to_writer_pretty(&mut writer, state)?;
-        }
-
-        if state_path.exists()? {
-            state_path.remove_file()?;
-        }
-        temp_path.move_file(&state_path)?;
-
+    fn reload_user_state(&mut self) -> anyhow::Result<()> {
+        self.user_state = load_user_state_from_dir(&self.path)?;
         Ok(())
     }
 
     pub fn reading_state(&mut self) -> anyhow::Result<Option<BookReadingState>> {
-        self.reload_reading_state()?;
-        Ok(self.reading_state.clone())
+        self.reload_user_state()?;
+        Ok(self.user_state.reading_state.clone())
     }
 
     pub fn update_reading_state(&mut self, state: BookReadingState) -> anyhow::Result<()> {
-        self.persist_reading_state(&state)?;
-        self.reading_state = Some(state);
+        self.reload_user_state()?;
+        self.user_state.reading_state = Some(state);
+        persist_user_state(&self.path, &self.user_state)?;
         Ok(())
+    }
+
+    pub fn update_folder_path(&mut self, folder_path: Vec<String>) -> anyhow::Result<()> {
+        self.reload_user_state()?;
+        self.user_state.folder_path = folder_path;
+        persist_user_state(&self.path, &self.user_state)?;
+        Ok(())
+    }
+
+    pub fn folder_path(&mut self) -> anyhow::Result<Vec<String>> {
+        self.reload_user_state()?;
+        Ok(self.user_state.folder_path.clone())
     }
 
     pub async fn get_or_create_translation(
@@ -313,7 +351,7 @@ impl LibraryBook {
             book.translations.push(translation);
         }
 
-        book.reload_reading_state()?;
+        book.reload_user_state()?;
 
         Ok(book)
     }
@@ -332,7 +370,7 @@ impl LibraryBook {
             last_modified,
             book,
             translations: vec![],
-            reading_state: None,
+            user_state: BookUserState::default(),
         })
     }
 
@@ -536,7 +574,7 @@ impl Library {
             last_modified: None,
             book: Book::create(guid, title, language),
             translations: vec![],
-            reading_state: None,
+            user_state: BookUserState::default(),
         }));
 
         self.books_cache.insert(guid, book.clone());
@@ -739,7 +777,12 @@ mod library_book_tests {
                     }],
                 }],
             };
-            tr.add_paragraph_translation(0, &initial_pt, TranslationModel::Gemini25Flash, &mut dict.lock().await.dictionary);
+            tr.add_paragraph_translation(
+                0,
+                &initial_pt,
+                TranslationModel::Gemini25Flash,
+                &mut dict.lock().await.dictionary,
+            );
             book.translations
                 .push(Arc::new(Mutex::new(super::LibraryTranslation {
                     dict_cache: library.dictionaries_cache.clone(),
@@ -789,7 +832,12 @@ mod library_book_tests {
                 .lock()
                 .await
                 .translation
-                .add_paragraph_translation(0, &new_pt, TranslationModel::Gemini25Flash, &mut dict.lock().await.dictionary);
+                .add_paragraph_translation(
+                    0,
+                    &new_pt,
+                    TranslationModel::Gemini25Flash,
+                    &mut dict.lock().await.dictionary,
+                );
 
             book.save().await.unwrap();
             book.path.clone()
@@ -865,7 +913,12 @@ mod library_book_tests {
                 }],
             }],
         };
-        tr.add_paragraph_translation(0, &pt1, TranslationModel::Gemini25Flash, &mut dict.lock().await.dictionary);
+        tr.add_paragraph_translation(
+            0,
+            &pt1,
+            TranslationModel::Gemini25Flash,
+            &mut dict.lock().await.dictionary,
+        );
         book.translations
             .push(Arc::new(Mutex::new(super::LibraryTranslation {
                 dict_cache: library.dictionaries_cache.clone(),
@@ -923,7 +976,12 @@ mod library_book_tests {
             .lock()
             .await
             .translation
-            .add_paragraph_translation(0, &mem_pt, TranslationModel::Gemini25Flash, &mut dict.lock().await.dictionary);
+            .add_paragraph_translation(
+                0,
+                &mem_pt,
+                TranslationModel::Gemini25Flash,
+                &mut dict.lock().await.dictionary,
+            );
 
         // Concurrent on-disk change ts=3
         {
@@ -956,7 +1014,12 @@ mod library_book_tests {
                     }],
                 }],
             };
-            on_disk.add_paragraph_translation(0, &disk_pt, TranslationModel::Gemini25Flash, &mut dict.lock().await.dictionary);
+            on_disk.add_paragraph_translation(
+                0,
+                &disk_pt,
+                TranslationModel::Gemini25Flash,
+                &mut dict.lock().await.dictionary,
+            );
             let mut wf = tr_path.create_file().unwrap();
             on_disk.serialize(&mut wf).unwrap();
         }
@@ -1006,6 +1069,33 @@ mod library_book_tests {
     }
 
     #[tokio::test]
+    async fn folder_path_roundtrip() {
+        let fs = vfs::MemoryFS::new();
+        let root: VfsPath = fs.into();
+        let library_path = root.join("lib").unwrap();
+        let mut library = Library::open(library_path.clone()).unwrap();
+
+        let book = library
+            .create_book("Shelved", &Language::from_639_3("eng").unwrap())
+            .unwrap();
+        let book_id = {
+            let mut book = book.lock().await;
+            book.save().await.unwrap();
+            book.update_folder_path(vec!["Shelf".into(), "Favorites".into()])
+                .unwrap();
+            book.book.id
+        };
+
+        let book = library.get_book(&book_id).unwrap();
+        let mut book = book.lock().await;
+        let folder_path = book.folder_path().unwrap();
+        assert_eq!(
+            folder_path,
+            vec!["Shelf".to_string(), "Favorites".to_string()]
+        );
+    }
+
+    #[tokio::test]
     async fn reading_state_prefers_latest_conflict() {
         let fs = vfs::MemoryFS::new();
         let root: VfsPath = fs.into();
@@ -1029,10 +1119,7 @@ mod library_book_tests {
         {
             let book = library.get_book(&book_id).unwrap();
             let book = book.lock().await;
-            let conflict_path = book
-                .path
-                .join("state (conflict copy).json")
-                .unwrap();
+            let conflict_path = book.path.join("state (conflict copy).json").unwrap();
             std::thread::sleep(std::time::Duration::from_millis(5));
             let serialized = serde_json::to_vec(&BookReadingState {
                 chapter_id: 4,
@@ -1051,6 +1138,29 @@ mod library_book_tests {
         let state = book.reading_state().unwrap();
         assert_eq!(state.as_ref().map(|s| s.chapter_id), Some(4));
         assert_eq!(state.as_ref().map(|s| s.paragraph_id), Some(8));
+    }
+
+    #[test]
+    fn load_user_state_from_legacy_file() {
+        let fs = vfs::MemoryFS::new();
+        let root: VfsPath = fs.into();
+        let book_dir = root.join("legacy").unwrap();
+        book_dir.create_dir().unwrap();
+
+        let state_path = book_dir.join("state.json").unwrap();
+        {
+            let mut file = state_path.create_file().unwrap();
+            file.write_all(br#"{"chapterId":3,"paragraphId":9}"#)
+                .unwrap();
+        }
+
+        let state = super::load_book_user_state(&book_dir).unwrap();
+        assert_eq!(state.folder_path, Vec::<String>::new());
+        assert_eq!(state.reading_state.as_ref().map(|s| s.chapter_id), Some(3));
+        assert_eq!(
+            state.reading_state.as_ref().map(|s| s.paragraph_id),
+            Some(9)
+        );
     }
 
     #[tokio::test]
@@ -1100,7 +1210,12 @@ mod library_book_tests {
                 }],
             }],
         };
-        t_main.add_paragraph_translation(0, &pt2, TranslationModel::Gemini25Flash, &mut dict.lock().await.dictionary);
+        t_main.add_paragraph_translation(
+            0,
+            &pt2,
+            TranslationModel::Gemini25Flash,
+            &mut dict.lock().await.dictionary,
+        );
         {
             let mut f = main_path.create_file().unwrap();
             t_main.serialize(&mut f).unwrap();
@@ -1187,7 +1302,12 @@ mod library_book_tests {
                 }],
             }],
         };
-        t_main.add_paragraph_translation(0, &pt2, TranslationModel::Gemini25Flash, &mut dict.lock().await.dictionary);
+        t_main.add_paragraph_translation(
+            0,
+            &pt2,
+            TranslationModel::Gemini25Flash,
+            &mut dict.lock().await.dictionary,
+        );
         {
             let mut f = main_path.create_file().unwrap();
             t_main.serialize(&mut f).unwrap();
@@ -1220,7 +1340,12 @@ mod library_book_tests {
                 }],
             }],
         };
-        t_c1.add_paragraph_translation(0, &pt1, TranslationModel::Gemini25Flash, &mut dict.lock().await.dictionary);
+        t_c1.add_paragraph_translation(
+            0,
+            &pt1,
+            TranslationModel::Gemini25Flash,
+            &mut dict.lock().await.dictionary,
+        );
         {
             let mut f = conflict1.create_file().unwrap();
             t_c1.serialize(&mut f).unwrap();
@@ -1253,7 +1378,12 @@ mod library_book_tests {
                 }],
             }],
         };
-        t_c2.add_paragraph_translation(0, &pt3, TranslationModel::Gemini25Flash, &mut dict.lock().await.dictionary);
+        t_c2.add_paragraph_translation(
+            0,
+            &pt3,
+            TranslationModel::Gemini25Flash,
+            &mut dict.lock().await.dictionary,
+        );
         {
             let mut f = conflict2.create_file().unwrap();
             t_c2.serialize(&mut f).unwrap();
