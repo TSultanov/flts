@@ -44,6 +44,7 @@
     "@tauri-apps/api": "^2.8.0",
     "@tauri-apps/plugin-dialog": "2.4.0",
     "@tauri-apps/plugin-log": "^2.7.1",
+    "@tauri-apps/plugin-window-state": "~2",
     "@types/jsdom": "^21.1.7",
     "bottleneck": "^2.19.5",
     "dexie": "^4.0.11",
