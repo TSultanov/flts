@@ -1,9 +1,15 @@
-use std::{collections::HashMap, error::Error, fmt::Display, path::{Path, PathBuf}, sync::Arc};
+use std::{
+    collections::HashMap,
+    error::Error,
+    fmt::Display,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use isolang::Language;
 use itertools::Itertools;
 use log::{info, trace};
-use tokio::sync::Mutex;
+use tokio::{io::AsyncReadExt, sync::Mutex};
 use uuid::Uuid;
 
 use crate::{
@@ -58,30 +64,43 @@ pub struct LibraryBookMetadata {
 }
 
 impl LibraryBookMetadata {
-    pub fn load(path: &Path) -> anyhow::Result<Self> {
+    pub async fn load(path: &Path) -> anyhow::Result<Self> {
         let book_dat = path.join("book.dat");
-        let mut book_dat_file = std::fs::File::open(&book_dat)?;
-        let book_metadata = BookMetadata::read_metadata(&mut book_dat_file)?;
+
+        let book_metadata = {
+            let mut file = tokio::fs::File::open(&book_dat).await?;
+            let mut buffer = vec![0u8; 65536];
+            let n = file.read(&mut buffer).await?;
+            buffer.truncate(n);
+            let mut cursor = std::io::Cursor::new(buffer);
+            BookMetadata::read_metadata(&mut cursor)?
+        };
 
         let conflicting_paths = {
-            let conflicting_paths = std::fs::read_dir(path)?
-                .filter_map(|entry| entry.ok())
-                .map(|entry| entry.path())
-                .filter(|p| {
-                    if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
-                        name.starts_with("book")
-                            && name.ends_with(".dat")
-                            && name != "book.dat"
-                    } else {
-                        false
+            let mut conflicting_paths = Vec::new();
+            let mut read_dir = tokio::fs::read_dir(path).await?;
+
+            while let Some(entry) = read_dir.next_entry().await? {
+                let p = entry.path();
+                if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                    if name.starts_with("book") && name.ends_with(".dat") && name != "book.dat" {
+                        conflicting_paths.push(p);
                     }
-                });
+                }
+            }
 
             let mut result = Vec::new();
 
             for path in conflicting_paths {
-                let mut file = std::fs::File::open(&path)?;
-                let metadata = BookMetadata::read_metadata(&mut file);
+                let metadata = {
+                    let mut file = tokio::fs::File::open(&path).await?;
+                    let mut buffer = vec![0u8; 65536];
+                    let n = file.read(&mut buffer).await?;
+                    buffer.truncate(n);
+                    let mut cursor = std::io::Cursor::new(buffer);
+                    BookMetadata::read_metadata(&mut cursor)
+                };
+
                 match metadata {
                     Ok(metadata) => {
                         if metadata.id == book_metadata.id {
@@ -104,16 +123,21 @@ impl LibraryBookMetadata {
 
         let mut all_translations = Vec::new();
 
-        let book_dir_content = std::fs::read_dir(path)?;
+        let mut read_dir = tokio::fs::read_dir(path).await?;
 
-        for entry in book_dir_content {
-            let file = entry?;
-            let path = file.path();
+        while let Some(entry) = read_dir.next_entry().await? {
+            let path = entry.path();
             if path.is_file() {
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                     if name.starts_with("translation_") && name.ends_with(".dat") {
-                        let mut data = std::fs::File::open(&path)?;
-                        let metadata = TranslationMetadata::read_metadata(&mut data)?;
+                        let metadata = {
+                            let mut file = tokio::fs::File::open(&path).await?;
+                            let mut buffer = vec![0u8; 65536];
+                            let n = file.read(&mut buffer).await?;
+                            buffer.truncate(n);
+                            let mut cursor = std::io::Cursor::new(buffer);
+                            TranslationMetadata::read_metadata(&mut cursor)?
+                        };
                         all_translations.push((path, metadata));
                     }
                 }
@@ -144,7 +168,7 @@ impl LibraryBookMetadata {
             })
         }
 
-        let folder_path = match load_book_user_state(path) {
+        let folder_path = match load_book_user_state(path).await {
             Ok(state) => state.folder_path,
             Err(err) => {
                 println!(
@@ -176,11 +200,9 @@ pub struct Library {
 }
 
 impl Library {
-    pub fn open(
-        library_root: PathBuf,
-    ) -> anyhow::Result<Self> {
-        if !library_root.exists() {
-            std::fs::create_dir_all(&library_root)?;
+    pub async fn open(library_root: PathBuf) -> anyhow::Result<Self> {
+        if !tokio::fs::try_exists(&library_root).await? {
+            tokio::fs::create_dir_all(&library_root).await?;
         }
 
         let dictionaries_cache = Arc::new(Mutex::new(DictionaryCache::new(&library_root)));
@@ -192,19 +214,18 @@ impl Library {
         })
     }
 
-    pub fn list_books(&self) -> anyhow::Result<Vec<LibraryBookMetadata>> {
-        let library_root_content = std::fs::read_dir(&self.library_root)?;
+    pub async fn list_books(&self) -> anyhow::Result<Vec<LibraryBookMetadata>> {
+        let mut library_root_content = tokio::fs::read_dir(&self.library_root).await?;
 
         let mut books = Vec::new();
 
-        for entry in library_root_content {
-            let entry = entry?;
+        while let Some(entry) = library_root_content.next_entry().await? {
             let path = entry.path();
             if !path.is_dir() {
                 continue;
             }
 
-            let book = LibraryBookMetadata::load(&path);
+            let book = LibraryBookMetadata::load(&path).await;
             match book {
                 Ok(book) => books.push(book),
                 Err(err) => {
@@ -216,17 +237,16 @@ impl Library {
         Ok(books)
     }
 
-    pub fn get_book(&mut self, uuid: &Uuid) -> anyhow::Result<Arc<Mutex<LibraryBook>>> {
+    pub async fn get_book(&mut self, uuid: &Uuid) -> anyhow::Result<Arc<Mutex<LibraryBook>>> {
         if let Some(book) = self.books_cache.get(uuid) {
             return Ok(book.clone());
         }
 
         let path = self.library_root.join(uuid.to_string());
-        let metadata = LibraryBookMetadata::load(&path)?;
-        let book = Arc::new(Mutex::new(LibraryBook::load_from_metadata(
-            self.dictionaries_cache.clone(),
-            metadata,
-        )?));
+        let metadata = LibraryBookMetadata::load(&path).await?;
+        let book = Arc::new(Mutex::new(
+            LibraryBook::load_from_metadata(self.dictionaries_cache.clone(), metadata).await?,
+        ));
 
         self.books_cache.insert(*uuid, book.clone());
         Ok(book)
@@ -238,7 +258,7 @@ impl Library {
         text: &str,
         language: &Language,
     ) -> anyhow::Result<Uuid> {
-        let book = self.create_book(title, language)?;
+        let book = self.create_book(title, language).await?;
         let mut book = book.lock().await;
         let chapter_index = book.book.push_chapter(None);
         let paragraphs = split_paragraphs(text);
@@ -257,7 +277,7 @@ impl Library {
         epub: &EpubBook,
         language: &Language,
     ) -> anyhow::Result<Uuid> {
-        let book = self.create_book(&epub.title, language)?;
+        let book = self.create_book(&epub.title, language).await?;
         let mut book = book.lock().await;
 
         for ch in &epub.chapters {
@@ -322,23 +342,23 @@ mod library_tests {
     use super::*;
     use crate::test_utils::TempDir;
 
-    #[test]
-    fn library_open_newdirectory() {
+    #[tokio::test]
+    async fn library_open_newdirectory() {
         let temp_dir = TempDir::new("flts_test");
         let library_path = temp_dir.path.join("test");
-        _ = Library::open(library_path.clone());
+        _ = Library::open(library_path.clone()).await.unwrap();
 
         assert!(library_path.exists());
         assert!(library_path.is_dir());
     }
 
-    #[test]
-    fn list_books_empty_library() {
+    #[tokio::test]
+    async fn list_books_empty_library() {
         let temp_dir = TempDir::new("flts_test");
         let library_path = temp_dir.path.join("lib");
-        let library = Library::open(library_path).unwrap();
+        let library = Library::open(library_path).await.unwrap();
 
-        let books = library.list_books().unwrap();
+        let books = library.list_books().await.unwrap();
         assert!(books.is_empty(), "Expected no books, got {:?}", books.len());
     }
 
@@ -346,18 +366,20 @@ mod library_tests {
     async fn list_books_multiple_empty_books() {
         let temp_dir = TempDir::new("flts_test");
         let library_path = temp_dir.path.join("lib");
-        let mut library = Library::open(library_path.clone()).unwrap();
+        let mut library = Library::open(library_path.clone()).await.unwrap();
 
         let book1 = library
             .create_book("First Book", &Language::from_639_3("eng").unwrap())
+            .await
             .unwrap();
         book1.lock().await.save().await.unwrap();
         let book2 = library
             .create_book("Second Book", &Language::from_639_3("eng").unwrap())
+            .await
             .unwrap();
         book2.lock().await.save().await.unwrap();
 
-        let mut books = library.list_books().unwrap();
+        let mut books = library.list_books().await.unwrap();
         assert_eq!(books.len(), 2);
         books.sort_by(|a, b| a.title.cmp(&b.title));
         assert_eq!(books[0].title, "First Book");
@@ -372,19 +394,21 @@ mod library_tests {
     async fn list_books_includes_folder_path() {
         let temp_dir = TempDir::new("flts_test");
         let library_path = temp_dir.path.join("lib");
-        let mut library = Library::open(library_path.clone()).unwrap();
+        let mut library = Library::open(library_path.clone()).await.unwrap();
 
         let book = library
             .create_book("Categorized", &Language::from_639_3("eng").unwrap())
+            .await
             .unwrap();
         {
             let mut book = book.lock().await;
             book.save().await.unwrap();
             book.update_folder_path(vec!["Shelf".into(), "Modern".into()])
+                .await
                 .unwrap();
         }
 
-        let books = library.list_books().unwrap();
+        let books = library.list_books().await.unwrap();
         assert_eq!(books.len(), 1);
         assert_eq!(
             books[0].folder_path,

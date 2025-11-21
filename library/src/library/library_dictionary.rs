@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    io::{BufReader, BufWriter},
     path::{Path, PathBuf},
     sync::Arc,
     time::SystemTime,
@@ -27,19 +26,19 @@ pub struct LibraryDictionaryMetadata {
 impl LibraryDictionaryMetadata {
     /// Load dictionary metadata from a specific dictionary file path and detect conflicting files
     /// with the same language pair in the same directory.
-    pub fn load(path: &Path) -> anyhow::Result<Self> {
+    pub async fn load(path: &Path) -> anyhow::Result<Self> {
         // Read metadata from the main file
-        let mut file = BufReader::new(std::fs::File::open(path)?);
-        let metadata = DictionaryMetadata::read_metadata(&mut file)?;
+        let content = tokio::fs::read(path).await?;
+        let mut cursor = std::io::Cursor::new(content);
+        let metadata = DictionaryMetadata::read_metadata(&mut cursor)?;
 
         // Scan sibling files for conflicts (same language pair)
         let mut conflicting_paths = Vec::new();
         let parent = path.parent().unwrap();
-        let parent_entries = std::fs::read_dir(parent)?;
+        let mut parent_entries = tokio::fs::read_dir(parent).await?;
         let main_filename = path.file_name().unwrap();
 
-        for entry in parent_entries {
-            let entry = entry?;
+        while let Some(entry) = parent_entries.next_entry().await? {
             let p = entry.path();
             if !p.is_file() {
                 continue;
@@ -54,10 +53,10 @@ impl LibraryDictionaryMetadata {
             }
 
             // Try to read metadata; skip unreadable or mismatched ones
-            match std::fs::File::open(&p) {
-                Ok(f) => {
-                    let mut f = BufReader::new(f);
-                    match DictionaryMetadata::read_metadata(&mut f) {
+            match tokio::fs::read(&p).await {
+                Ok(content) => {
+                    let mut cursor = std::io::Cursor::new(content);
+                    match DictionaryMetadata::read_metadata(&mut cursor) {
                         Ok(md) => {
                             if md.source_language == metadata.source_language
                                 && md.target_language == metadata.target_language
@@ -72,7 +71,7 @@ impl LibraryDictionaryMetadata {
                             );
                         }
                     }
-                },
+                }
                 Err(err) => {
                     println!(
                         "Failed to open potential conflicting dictionary file {:?}: {}",
@@ -104,10 +103,11 @@ impl LibraryDictionary {
         self.last_modified = self.last_modified.max(other.last_modified);
     }
 
-    pub fn load(path: &Path) -> anyhow::Result<Self> {
-        let last_modified = std::fs::metadata(path)?.modified().ok();
-        let mut file = BufReader::new(std::fs::File::open(path)?);
-        let dictionary = Dictionary::deserialize(&mut file)?;
+    pub async fn load(path: &Path) -> anyhow::Result<Self> {
+        let last_modified = tokio::fs::metadata(path).await?.modified().ok();
+        let content = tokio::fs::read(path).await?;
+        let mut cursor = std::io::Cursor::new(content);
+        let dictionary = Dictionary::deserialize(&mut cursor)?;
 
         Ok(Self {
             path: path.to_path_buf(),
@@ -118,60 +118,68 @@ impl LibraryDictionary {
 
     /// Load from metadata; if there are conflicting files with the same id,
     /// merge their contents into the main file and persist the merged result.
-    pub fn load_from_metadata(metadata: LibraryDictionaryMetadata) -> anyhow::Result<Self> {
+    pub async fn load_from_metadata(metadata: LibraryDictionaryMetadata) -> anyhow::Result<Self> {
         if !metadata.conflicting_paths.is_empty() {
             // Load main first
             let mut base = {
-                let mut f = BufReader::new(std::fs::File::open(&metadata.main_path)?);
-                Dictionary::deserialize(&mut f)?
+                let content = tokio::fs::read(&metadata.main_path).await?;
+                let mut cursor = std::io::Cursor::new(content);
+                Dictionary::deserialize(&mut cursor)?
             };
 
             // Merge each conflict into base
             for p in metadata.conflicting_paths {
                 {
-                    let mut cf = BufReader::new(std::fs::File::open(&p)?);
-                    let conflict = Dictionary::deserialize(&mut cf)?;
+                    let content = tokio::fs::read(&p).await?;
+                    let mut cursor = std::io::Cursor::new(content);
+                    let conflict = Dictionary::deserialize(&mut cursor)?;
                     base.merge(conflict);
                 }
-                std::fs::remove_file(&p)?;
+                tokio::fs::remove_file(&p).await?;
             }
 
             // Persist merged back to main
-            let mut wf = BufWriter::new(std::fs::File::create(&metadata.main_path)?);
-            base.serialize(&mut wf)?;
+            let mut buf = Vec::new();
+            base.serialize(&mut buf)?;
+            tokio::fs::write(&metadata.main_path, buf).await?;
         }
 
         // Finally, load the dictionary from disk (ensures we have last_modified and path)
-        Self::load(&metadata.main_path)
+        Self::load(&metadata.main_path).await
     }
 
     /// Save the dictionary back to its main file, merging with on-disk changes to avoid lost updates.
-    pub fn save(&mut self) -> anyhow::Result<()> {
+    pub async fn save(&mut self) -> anyhow::Result<()> {
         let main_path = self.path.clone();
-        let temp_path = main_path
-            .parent()
-            .unwrap()
-            .join(format!("{}~", main_path.file_name().unwrap().to_str().unwrap()));
+        let temp_path = main_path.parent().unwrap().join(format!(
+            "{}~",
+            main_path.file_name().unwrap().to_str().unwrap()
+        ));
 
-        let get_modified_if_exists =
-            |p: &Path| -> anyhow::Result<Option<SystemTime>> {
+        let get_modified_if_exists = |p: &Path| -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = anyhow::Result<Option<SystemTime>>> + Send>,
+        > {
+            let p = p.to_path_buf();
+            Box::pin(async move {
                 if p.exists() {
-                    Ok(std::fs::metadata(p)?.modified().ok())
+                    Ok(tokio::fs::metadata(&p).await?.modified().ok())
                 } else {
                     Ok(None)
                 }
-            };
+            })
+        };
 
         loop {
-            let modified_pre = get_modified_if_exists(&main_path)?;
+            let modified_pre = get_modified_if_exists(&main_path).await?;
 
             // Reconcile with on-disk changes
             if let Some(last) = self.last_modified {
                 if main_path.exists() {
-                    if let Some(saved_mod) = std::fs::metadata(&main_path)?.modified().ok() {
+                    if let Some(saved_mod) = tokio::fs::metadata(&main_path).await?.modified().ok()
+                    {
                         if saved_mod > last {
                             // On-disk is newer; merge into memory
-                            let on_disk = Self::load(&main_path)?;
+                            let on_disk = Self::load(&main_path).await?;
                             self.merge(on_disk);
                             // do not update last_modified yet; we'll write a new version below
                         }
@@ -179,23 +187,24 @@ impl LibraryDictionary {
                 }
             } else if main_path.exists() {
                 // Unknown last_modified (newly created object) but file already exists -> merge
-                let on_disk = Self::load(&main_path)?;
+                let on_disk = Self::load(&main_path).await?;
                 self.merge(on_disk);
             }
 
             // Write to temp, then swap if file didn't change during write
             {
-                let mut wf = BufWriter::new(std::fs::File::create(&temp_path)?);
-                self.dictionary.serialize(&mut wf)?;
+                let mut buf = Vec::new();
+                self.dictionary.serialize(&mut buf)?;
+                tokio::fs::write(&temp_path, buf).await?;
             }
 
-            let modified_post = get_modified_if_exists(&main_path)?;
+            let modified_post = get_modified_if_exists(&main_path).await?;
             if modified_post == modified_pre || modified_pre.is_none() {
                 if main_path.exists() {
-                    std::fs::remove_file(&main_path)?;
+                    tokio::fs::remove_file(&main_path).await?;
                 }
-                std::fs::rename(&temp_path, &main_path)?;
-                self.last_modified = get_modified_if_exists(&main_path)?;
+                tokio::fs::rename(&temp_path, &main_path).await?;
+                self.last_modified = get_modified_if_exists(&main_path).await?;
                 break;
             }
 
@@ -231,13 +240,12 @@ impl DictionaryCache {
         })
     }
 
-    pub fn list_dictionaries(&self) -> anyhow::Result<Vec<LibraryDictionaryMetadata>> {
-        let library_root_content = std::fs::read_dir(&self.library_root)?;
+    pub async fn list_dictionaries(&self) -> anyhow::Result<Vec<LibraryDictionaryMetadata>> {
+        let mut library_root_content = tokio::fs::read_dir(&self.library_root).await?;
 
         let mut all_dictionaries = Vec::new();
 
-        for entry in library_root_content {
-            let entry = entry?;
+        while let Some(entry) = library_root_content.next_entry().await? {
             let path = entry.path();
             if !path.is_file() {
                 continue;
@@ -245,8 +253,9 @@ impl DictionaryCache {
 
             if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
                 if filename.starts_with("dictionary_") && filename.ends_with(".dat") {
-                    let mut data = BufReader::new(std::fs::File::open(&path)?);
-                    let metadata = DictionaryMetadata::read_metadata(&mut data)?;
+                    let content = tokio::fs::read(&path).await?;
+                    let mut cursor = std::io::Cursor::new(content);
+                    let metadata = DictionaryMetadata::read_metadata(&mut cursor)?;
                     all_dictionaries.push((path, metadata));
                 }
             }
@@ -278,7 +287,7 @@ impl DictionaryCache {
         Ok(dictionaries_metadata)
     }
 
-    pub fn get_dictionary(
+    pub async fn get_dictionary(
         &mut self,
         src: Language,
         tgt: Language,
@@ -287,12 +296,12 @@ impl DictionaryCache {
             return Ok(cached_dict.clone());
         }
 
-        let dictionaries = self.list_dictionaries()?;
+        let dictionaries = self.list_dictionaries().await?;
         let dictionary = if let Some(dictionary_metadata) = dictionaries
             .into_iter()
             .find(|d| d.source_language == src.to_639_3() && d.target_language == tgt.to_639_3())
         {
-            LibraryDictionary::load_from_metadata(dictionary_metadata)?
+            LibraryDictionary::load_from_metadata(dictionary_metadata).await?
         } else {
             self.create_dictionary(src, tgt)?
         };
@@ -314,7 +323,7 @@ impl DictionaryCache {
             let mut cached_dict = cached_dict.lock().await;
 
             if cached_dict.last_modified.map_or(true, |lm| lm < modified) {
-                cached_dict.save()?;
+                cached_dict.save().await?;
                 true
             } else {
                 false
@@ -331,12 +340,11 @@ mod library_dictionary_test {
 
     use crate::{
         book::serialization::Serializable, dictionary::Dictionary,
-        library::library_dictionary::LibraryDictionaryMetadata,
-        test_utils::TempDir,
+        library::library_dictionary::LibraryDictionaryMetadata, test_utils::TempDir,
     };
 
-    #[test]
-    fn dictionary_metadata_load_and_conflicts() {
+    #[tokio::test]
+    async fn dictionary_metadata_load_and_conflicts() {
         let temp_dir = TempDir::new("flts_test_dict");
         let dir = temp_dir.path.join("dicts");
         std::fs::create_dir(&dir).unwrap();
@@ -372,11 +380,14 @@ mod library_dictionary_test {
         }
 
         // Load metadata from the main path
-        let md = LibraryDictionaryMetadata::load(&main_path).unwrap();
+        let md = LibraryDictionaryMetadata::load(&main_path).await.unwrap();
         assert_eq!(md.source_language, "en");
         assert_eq!(md.target_language, "ru");
         assert_eq!(md.main_path, main_path);
         assert_eq!(md.conflicting_paths.len(), 1);
-        assert_eq!(md.conflicting_paths[0].file_name(), conflict_path.file_name());
+        assert_eq!(
+            md.conflicting_paths[0].file_name(),
+            conflict_path.file_name()
+        );
     }
 }

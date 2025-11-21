@@ -1,6 +1,5 @@
 use std::{
     collections::HashSet,
-    io::{BufReader, BufWriter, Read},
     path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
@@ -15,6 +14,7 @@ use ahash::AHashSet;
 use isolang::Language;
 use serde::{Deserialize, Serialize};
 use serde_json;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -77,11 +77,14 @@ impl LibraryTranslation {
         self.changed = true;
     }
 
-    fn load(dict_cache: Arc<Mutex<DictionaryCache>>, path: &Path) -> anyhow::Result<Self> {
-        let metadata = std::fs::metadata(path)?;
+    async fn load(dict_cache: Arc<Mutex<DictionaryCache>>, path: &Path) -> anyhow::Result<Self> {
+        let metadata = tokio::fs::metadata(path).await?;
         let last_modified = metadata.modified().ok();
-        let mut file = BufReader::new(std::fs::File::open(path)?);
-        let translation = Translation::deserialize(&mut file)?;
+        let mut file = tokio::fs::File::open(path).await?;
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer).await?;
+        let mut cursor = std::io::Cursor::new(buffer);
+        let translation = Translation::deserialize(&mut cursor)?;
         let source_language = Language::from_str(&translation.source_language)?;
         let target_language = Language::from_str(&translation.target_language)?;
 
@@ -95,30 +98,33 @@ impl LibraryTranslation {
         })
     }
 
-    fn load_from_metadata(
+    async fn load_from_metadata(
         dict_cache: Arc<Mutex<DictionaryCache>>,
         metadata: LibraryTranslationMetadata,
     ) -> anyhow::Result<Self> {
         if !metadata.conflicting_paths.is_empty() {
             let mut translation = {
-                let mut main_file = BufReader::new(std::fs::File::open(&metadata.main_path)?);
-                Translation::deserialize(&mut main_file)?
+                let content = tokio::fs::read(&metadata.main_path).await?;
+                let mut cursor = std::io::Cursor::new(content);
+                Translation::deserialize(&mut cursor)?
             };
 
             for conflict in metadata.conflicting_paths {
                 {
-                    let mut conflict_file = BufReader::new(std::fs::File::open(&conflict)?);
-                    let conflict_translation = Translation::deserialize(&mut conflict_file)?;
+                    let content = tokio::fs::read(&conflict).await?;
+                    let mut cursor = std::io::Cursor::new(content);
+                    let conflict_translation = Translation::deserialize(&mut cursor)?;
                     translation = translation.merge(&conflict_translation);
                 }
-                std::fs::remove_file(&conflict)?;
+                tokio::fs::remove_file(&conflict).await?;
             }
 
-            let mut main_file = std::fs::File::create(&metadata.main_path)?;
-            translation.serialize(&mut main_file)?;
+            let mut buf = Vec::new();
+            translation.serialize(&mut buf)?;
+            tokio::fs::write(&metadata.main_path, buf).await?;
         }
 
-        Self::load(dict_cache, &metadata.main_path)
+        Self::load(dict_cache, &metadata.main_path).await
     }
 
     pub async fn add_paragraph_translation(
@@ -131,7 +137,8 @@ impl LibraryTranslation {
             .dict_cache
             .lock()
             .await
-            .get_dictionary(self.source_language, self.target_language)?;
+            .get_dictionary(self.source_language, self.target_language)
+            .await?;
         self.translation.add_paragraph_translation(
             paragraph_index,
             translation,
@@ -151,15 +158,16 @@ impl LibraryTranslation {
     }
 }
 
-fn reading_state_files(path: &Path) -> anyhow::Result<Vec<(PathBuf, SystemTime)>> {
+async fn reading_state_files(path: &Path) -> anyhow::Result<Vec<(PathBuf, SystemTime)>> {
     let mut files = Vec::new();
-    for entry in std::fs::read_dir(path)? {
-        let entry = entry?;
+    let mut read_dir = tokio::fs::read_dir(path).await?;
+    while let Some(entry) = read_dir.next_entry().await? {
         let path = entry.path();
         if path.is_file() {
             if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
                 if filename.starts_with("state") && filename.ends_with(".json") {
-                    let modified = entry.metadata()?.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                    let metadata = entry.metadata().await?;
+                    let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
                     files.push((path, modified));
                 }
             }
@@ -168,8 +176,8 @@ fn reading_state_files(path: &Path) -> anyhow::Result<Vec<(PathBuf, SystemTime)>
     Ok(files)
 }
 
-fn resolve_reading_state_file(path: &Path) -> anyhow::Result<Option<(PathBuf, SystemTime)>> {
-    let mut candidates = reading_state_files(path)?;
+async fn resolve_reading_state_file(path: &Path) -> anyhow::Result<Option<(PathBuf, SystemTime)>> {
+    let mut candidates = reading_state_files(path).await?;
     if candidates.is_empty() {
         return Ok(None);
     }
@@ -185,30 +193,32 @@ fn resolve_reading_state_file(path: &Path) -> anyhow::Result<Option<(PathBuf, Sy
     let mut effective_modified = latest_modified;
 
     if latest_path.file_name().unwrap() != canonical_name {
-        if canonical_path.exists() {
-            std::fs::remove_file(&canonical_path)?;
+        if tokio::fs::try_exists(&canonical_path).await? {
+            tokio::fs::remove_file(&canonical_path).await?;
         }
-        std::fs::rename(&latest_path, &canonical_path)?;
-        effective_modified = canonical_path
-            .metadata()?
+        tokio::fs::rename(&latest_path, &canonical_path).await?;
+        effective_modified = tokio::fs::metadata(&canonical_path)
+            .await?
             .modified()
             .unwrap_or(SystemTime::UNIX_EPOCH);
     }
 
     for (candidate_path, _) in candidates {
-        if candidate_path.file_name().unwrap() != canonical_name && candidate_path.exists() {
-            let _ = std::fs::remove_file(candidate_path);
+        if candidate_path.file_name().unwrap() != canonical_name
+            && tokio::fs::try_exists(&candidate_path).await?
+        {
+            let _ = tokio::fs::remove_file(candidate_path).await;
         }
     }
 
     Ok(Some((canonical_path, effective_modified)))
 }
 
-fn load_user_state_from_dir(path: &Path) -> anyhow::Result<BookUserState> {
-    if let Some((state_path, _)) = resolve_reading_state_file(path)? {
-        let mut reader = BufReader::new(std::fs::File::open(&state_path)?);
+async fn load_user_state_from_dir(path: &Path) -> anyhow::Result<BookUserState> {
+    if let Some((state_path, _)) = resolve_reading_state_file(path).await? {
+        let mut file = tokio::fs::File::open(&state_path).await?;
         let mut contents = String::new();
-        reader.read_to_string(&mut contents)?;
+        file.read_to_string(&mut contents).await?;
 
         if contents.trim().is_empty() {
             return Ok(BookUserState::default());
@@ -229,58 +239,59 @@ fn load_user_state_from_dir(path: &Path) -> anyhow::Result<BookUserState> {
     Ok(BookUserState::default())
 }
 
-fn persist_user_state(path: &Path, state: &BookUserState) -> anyhow::Result<()> {
-    if !path.exists() {
-        std::fs::create_dir_all(path)?;
+async fn persist_user_state(path: &Path, state: &BookUserState) -> anyhow::Result<()> {
+    if !tokio::fs::try_exists(path).await? {
+        tokio::fs::create_dir_all(path).await?;
     }
 
     let state_path = path.join("state.json");
     let temp_path = path.join(format!("state.json~{}", create_random_string(8)));
 
     {
-        let mut writer = BufWriter::new(std::fs::File::create(&temp_path)?);
-        serde_json::to_writer_pretty(&mut writer, state)?;
+        let mut file = tokio::fs::File::create(&temp_path).await?;
+        let content = serde_json::to_vec_pretty(state)?;
+        file.write_all(&content).await?;
     }
 
-    if state_path.exists() {
-        std::fs::remove_file(&state_path)?;
+    if tokio::fs::try_exists(&state_path).await? {
+        tokio::fs::remove_file(&state_path).await?;
     }
-    std::fs::rename(&temp_path, &state_path)?;
+    tokio::fs::rename(&temp_path, &state_path).await?;
 
     Ok(())
 }
 
-pub fn load_book_user_state(path: &Path) -> anyhow::Result<BookUserState> {
-    load_user_state_from_dir(path)
+pub async fn load_book_user_state(path: &Path) -> anyhow::Result<BookUserState> {
+    load_user_state_from_dir(path).await
 }
 
 impl LibraryBook {
-    fn reload_user_state(&mut self) -> anyhow::Result<()> {
-        self.user_state = load_user_state_from_dir(&self.path)?;
+    async fn reload_user_state(&mut self) -> anyhow::Result<()> {
+        self.user_state = load_user_state_from_dir(&self.path).await?;
         Ok(())
     }
 
-    pub fn reading_state(&mut self) -> anyhow::Result<Option<BookReadingState>> {
-        self.reload_user_state()?;
+    pub async fn reading_state(&mut self) -> anyhow::Result<Option<BookReadingState>> {
+        self.reload_user_state().await?;
         Ok(self.user_state.reading_state.clone())
     }
 
-    pub fn update_reading_state(&mut self, state: BookReadingState) -> anyhow::Result<()> {
-        self.reload_user_state()?;
+    pub async fn update_reading_state(&mut self, state: BookReadingState) -> anyhow::Result<()> {
+        self.reload_user_state().await?;
         self.user_state.reading_state = Some(state);
-        persist_user_state(&self.path, &self.user_state)?;
+        persist_user_state(&self.path, &self.user_state).await?;
         Ok(())
     }
 
-    pub fn update_folder_path(&mut self, folder_path: Vec<String>) -> anyhow::Result<()> {
-        self.reload_user_state()?;
+    pub async fn update_folder_path(&mut self, folder_path: Vec<String>) -> anyhow::Result<()> {
+        self.reload_user_state().await?;
         self.user_state.folder_path = folder_path;
-        persist_user_state(&self.path, &self.user_state)?;
+        persist_user_state(&self.path, &self.user_state).await?;
         Ok(())
     }
 
-    pub fn folder_path(&mut self) -> anyhow::Result<Vec<String>> {
-        self.reload_user_state()?;
+    pub async fn folder_path(&mut self) -> anyhow::Result<Vec<String>> {
+        self.reload_user_state().await?;
         Ok(self.user_state.folder_path.clone())
     }
 
@@ -313,14 +324,26 @@ impl LibraryBook {
         self.translations[last].clone()
     }
 
-    pub fn load_from_metadata(
+    pub async fn load_from_metadata(
         dict_cache: Arc<Mutex<DictionaryCache>>,
         metadata: LibraryBookMetadata,
     ) -> anyhow::Result<Self> {
         let mut candidates: Vec<(&PathBuf, Option<SystemTime>)> = Vec::new();
-        candidates.push((&metadata.main_path, std::fs::metadata(&metadata.main_path).ok().and_then(|m| m.modified().ok())));
+        candidates.push((
+            &metadata.main_path,
+            tokio::fs::metadata(&metadata.main_path)
+                .await
+                .ok()
+                .and_then(|m| m.modified().ok()),
+        ));
         for p in &metadata.conflicting_paths {
-            candidates.push((p, std::fs::metadata(p).ok().and_then(|m| m.modified().ok())));
+            candidates.push((
+                p,
+                tokio::fs::metadata(p)
+                    .await
+                    .ok()
+                    .and_then(|m| m.modified().ok()),
+            ));
         }
 
         let mut newest_idx = 0usize;
@@ -334,43 +357,42 @@ impl LibraryBook {
 
         if newest_idx != 0 {
             if metadata.main_path.exists() {
-                std::fs::remove_file(&metadata.main_path)?;
+                tokio::fs::remove_file(&metadata.main_path).await?;
             }
             let source = &candidates[newest_idx].0;
             if source.exists() {
-                std::fs::rename(source, &metadata.main_path)?;
+                tokio::fs::rename(source, &metadata.main_path).await?;
             }
         }
 
         for p in metadata.conflicting_paths {
             if p.exists() {
                 // It's possible we've just moved the newest conflict into main, so ignore missing
-                let _ = std::fs::remove_file(p);
+                let _ = tokio::fs::remove_file(p).await;
             }
         }
 
-        let mut book = Self::load(dict_cache.clone(), &metadata.main_path)?;
+        let mut book = Self::load(dict_cache.clone(), &metadata.main_path).await?;
 
         for tm in metadata.translations_metadata {
-            let translation = Arc::new(Mutex::new(LibraryTranslation::load_from_metadata(
-                dict_cache.clone(),
-                tm,
-            )?));
+            let translation = Arc::new(Mutex::new(
+                LibraryTranslation::load_from_metadata(dict_cache.clone(), tm).await?,
+            ));
             book.translations.push(translation);
         }
 
-        book.reload_user_state()?;
+        book.reload_user_state().await?;
 
         Ok(book)
     }
 
-    fn load(
-        dict_cache: Arc<Mutex<DictionaryCache>>,
-        path: &Path,
-    ) -> anyhow::Result<Self> {
-        let last_modified = std::fs::metadata(path)?.modified().ok();
-        let mut file = BufReader::new(std::fs::File::open(path)?);
-        let book = Book::deserialize(&mut file)?;
+    async fn load(dict_cache: Arc<Mutex<DictionaryCache>>, path: &Path) -> anyhow::Result<Self> {
+        let last_modified = tokio::fs::metadata(path).await?.modified().ok();
+        let mut file = tokio::fs::File::open(path).await?;
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer).await?;
+        let mut cursor = std::io::Cursor::new(buffer);
+        let book = Book::deserialize(&mut cursor)?;
 
         Ok(Self {
             dict_cache,
@@ -418,17 +440,9 @@ impl LibraryBook {
     }
 
     pub async fn save(&mut self) -> anyhow::Result<()> {
-        if !self.path.exists() {
-            std::fs::create_dir_all(&self.path)?;
+        if !tokio::fs::try_exists(&self.path).await? {
+            tokio::fs::create_dir_all(&self.path).await?;
         }
-
-        let get_modified_if_exists = |path: &Path| {
-            if path.exists() {
-                Ok::<_, anyhow::Error>(std::fs::metadata(path)?.modified().ok())
-            } else {
-                Ok(None)
-            }
-        };
 
         let book = self;
 
@@ -449,40 +463,65 @@ impl LibraryBook {
             ));
 
             loop {
-                let translation_path_modified_pre_save = get_modified_if_exists(&translation_path)?;
+                let translation_path_modified_pre_save =
+                    if tokio::fs::try_exists(&translation_path).await? {
+                        tokio::fs::metadata(&translation_path)
+                            .await?
+                            .modified()
+                            .ok()
+                    } else {
+                        None
+                    };
 
                 if let Some(last_modified) = translation.last_modified {
-                    if translation_path.exists() {
+                    if tokio::fs::try_exists(&translation_path).await? {
                         let saved_translation_last_modified =
-                            std::fs::metadata(&translation_path)?.modified().unwrap();
+                            tokio::fs::metadata(&translation_path)
+                                .await?
+                                .modified()
+                                .unwrap();
                         if saved_translation_last_modified > last_modified {
                             let saved_translation = LibraryTranslation::load(
                                 book.dict_cache.clone(),
                                 &translation_path,
-                            )?;
+                            )
+                            .await?;
                             translation.merge(saved_translation);
                         }
                     }
-                } else if translation_path.exists() {
+                } else if tokio::fs::try_exists(&translation_path).await? {
                     let saved_translation =
-                        LibraryTranslation::load(book.dict_cache.clone(), &translation_path)?;
+                        LibraryTranslation::load(book.dict_cache.clone(), &translation_path)
+                            .await?;
                     translation.merge(saved_translation);
                 }
 
                 if translation.changed {
-                    let mut translation_file = BufWriter::new(std::fs::File::create(&translation_path_temp)?);
-                    translation.translation.serialize(&mut translation_file)?;
+                    let mut translation_file =
+                        tokio::fs::File::create(&translation_path_temp).await?;
+                    let mut buffer = Vec::new();
+                    translation.translation.serialize(&mut buffer)?;
+                    translation_file.write_all(&buffer).await?;
                     languages_to_save.insert((source_language.clone(), target_language.clone()));
 
-                    if get_modified_if_exists(&translation_path)?
-                        == translation_path_modified_pre_save
+                    if (if tokio::fs::try_exists(&translation_path).await? {
+                        tokio::fs::metadata(&translation_path)
+                            .await?
+                            .modified()
+                            .ok()
+                    } else {
+                        None
+                    }) == translation_path_modified_pre_save
                         || translation_path_modified_pre_save.is_none()
                     {
-                        if translation_path.exists() {
-                            std::fs::remove_file(&translation_path)?;
+                        if tokio::fs::try_exists(&translation_path).await? {
+                            tokio::fs::remove_file(&translation_path).await?;
                         }
-                        std::fs::rename(&translation_path_temp, &translation_path)?;
-                        translation.last_modified = get_modified_if_exists(&translation_path)?;
+                        tokio::fs::rename(&translation_path_temp, &translation_path).await?;
+                        translation.last_modified = tokio::fs::metadata(&translation_path)
+                            .await?
+                            .modified()
+                            .ok();
                         merged_translations.push(translation_arc.clone());
                         break;
                     }
@@ -496,8 +535,13 @@ impl LibraryBook {
         for (src, tgt) in languages_to_save {
             let src = Language::from_str(&src)?;
             let tgt = Language::from_str(&tgt)?;
-            let dict = book.dict_cache.lock().await.get_dictionary(src, tgt)?;
-            dict.lock().await.save()?;
+            let dict = book
+                .dict_cache
+                .lock()
+                .await
+                .get_dictionary(src, tgt)
+                .await?;
+            dict.lock().await.save().await?;
         }
 
         let book_path = book.path.join("book.dat");
@@ -505,41 +549,52 @@ impl LibraryBook {
             .path
             .join(format!("book.dat~{}", create_random_string(8)));
         loop {
-            let book_path_modified_pre_save = get_modified_if_exists(&book_path)?;
+            let book_path_modified_pre_save = if tokio::fs::try_exists(&book_path).await? {
+                tokio::fs::metadata(&book_path).await?.modified().ok()
+            } else {
+                None
+            };
 
             if let Some(last_modified) = book.last_modified {
-                if book_path.exists() {
-                    let saved_book_last_modified = std::fs::metadata(&book_path)?.modified().unwrap();
+                if tokio::fs::try_exists(&book_path).await? {
+                    let saved_book_last_modified =
+                        tokio::fs::metadata(&book_path).await?.modified().unwrap();
                     if saved_book_last_modified > last_modified {
-                        let saved_book = Self::load(book.dict_cache.clone(), &book_path)?;
+                        let saved_book = Self::load(book.dict_cache.clone(), &book_path).await?;
                         book.book = saved_book.book;
                         book.last_modified = saved_book.last_modified;
                     }
                 }
-            } else if book_path.exists() {
-                let saved_book = Self::load(book.dict_cache.clone(), &book_path)?;
+            } else if tokio::fs::try_exists(&book_path).await? {
+                let saved_book = Self::load(book.dict_cache.clone(), &book_path).await?;
                 book.book = saved_book.book;
                 book.last_modified = saved_book.last_modified;
             }
 
-            let mut file = BufWriter::new(std::fs::File::create(&book_path_temp)?);
-            book.book.serialize(&mut file)?;
+            let mut file = tokio::fs::File::create(&book_path_temp).await?;
+            let mut buffer = Vec::new();
+            book.book.serialize(&mut buffer)?;
+            file.write_all(&buffer).await?;
 
-            if get_modified_if_exists(&book_path)? == book_path_modified_pre_save
+            if (if tokio::fs::try_exists(&book_path).await? {
+                tokio::fs::metadata(&book_path).await?.modified().ok()
+            } else {
+                None
+            }) == book_path_modified_pre_save
                 || book_path_modified_pre_save.is_none()
             {
-                if book_path.exists() {
-                    std::fs::remove_file(&book_path)?;
+                if tokio::fs::try_exists(&book_path).await? {
+                    tokio::fs::remove_file(&book_path).await?;
                 }
-                std::fs::rename(&book_path_temp, &book_path)?;
+                tokio::fs::rename(&book_path_temp, &book_path).await?;
 
-                book.last_modified = get_modified_if_exists(&book_path)?;
+                book.last_modified = tokio::fs::metadata(&book_path).await?.modified().ok();
                 break;
             }
             // Attempt to merge and save again otherwise
         }
 
-        let all_book_translations = LibraryBookMetadata::load(&book.path)?;
+        let all_book_translations = LibraryBookMetadata::load(&book.path).await?;
         let mut loaded_translations = HashSet::new();
         for t in &merged_translations {
             loaded_translations.insert(t.lock().await.translation.id);
@@ -551,7 +606,8 @@ impl LibraryBook {
                     LibraryTranslation::load_from_metadata(
                         book.dict_cache.clone(),
                         translation_metadata,
-                    )?,
+                    )
+                    .await?,
                 )));
             }
         }
@@ -562,17 +618,17 @@ impl LibraryBook {
     }
 }
 
-fn remove_dir_recursive(path: &Path) -> anyhow::Result<()> {
-    if !path.exists() {
+async fn remove_dir_recursive(path: &Path) -> anyhow::Result<()> {
+    if !tokio::fs::try_exists(path).await? {
         return Ok(());
     }
 
-    if path.is_file() {
-        std::fs::remove_file(path)?;
+    if tokio::fs::metadata(path).await?.is_file() {
+        tokio::fs::remove_file(path).await?;
         return Ok(());
     }
 
-    std::fs::remove_dir_all(path)?;
+    tokio::fs::remove_dir_all(path).await?;
     Ok(())
 }
 
@@ -597,12 +653,12 @@ fn try_move_to_trash(_path: &std::path::Path) -> anyhow::Result<bool> {
 }
 
 impl Library {
-    pub fn create_book(
+    pub async fn create_book(
         &mut self,
         title: &str,
         language: &Language,
     ) -> anyhow::Result<Arc<Mutex<LibraryBook>>> {
-        let books = self.list_books()?;
+        let books = self.list_books().await?;
         if books.iter().any(|b| b.title == title) {
             Err(LibraryError::DuplicateTitle(title.to_owned()))?
         }
@@ -624,11 +680,11 @@ impl Library {
         Ok(book)
     }
 
-    pub fn delete_book(&mut self, uuid: &Uuid) -> anyhow::Result<()> {
+    pub async fn delete_book(&mut self, uuid: &Uuid) -> anyhow::Result<()> {
         self.books_cache.remove(uuid);
         let book_path = self.library_root.join(uuid.to_string());
 
-        if !book_path.exists() {
+        if !tokio::fs::try_exists(&book_path).await? {
             return Ok(());
         }
 
@@ -641,7 +697,7 @@ impl Library {
             }
         }
 
-        remove_dir_recursive(&book_path)?;
+        remove_dir_recursive(&book_path).await?;
         info!("Book at {:?} removed completely", book_path);
         Ok(())
     }
@@ -670,28 +726,28 @@ mod library_book_tests {
     async fn list_books_conflicting_versions() {
         let temp_dir = TempDir::new("flts_test_book");
         let library_path = temp_dir.path.join("lib");
-        let mut library = Library::open(library_path.clone()).unwrap();
+        let mut library = Library::open(library_path.clone()).await.unwrap();
 
         let book1 = library
             .create_book("First Book", &Language::from_639_3("eng").unwrap())
+            .await
             .unwrap();
         book1.lock().await.save().await.unwrap();
 
         let book_file = book1.lock().await.path.join("book.dat");
 
-        let conflict_path = book1
-            .lock()
-            .await
-            .path
-            .join(
-                book_file
-                    .file_name().unwrap().to_str().unwrap()
-                    .replace(".dat", ".syncconflict-foobar.dat"),
-            );
+        let conflict_path = book1.lock().await.path.join(
+            book_file
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .replace(".dat", ".syncconflict-foobar.dat"),
+        );
 
         std::fs::copy(&book_file, &conflict_path).unwrap();
 
-        let library_books = library.list_books().unwrap();
+        let library_books = library.list_books().await.unwrap();
 
         assert_eq!(library_books.len(), 1);
 
@@ -706,10 +762,11 @@ mod library_book_tests {
     async fn list_books_conflicting_translation_versions() {
         let temp_dir = TempDir::new("flts_test_book");
         let library_path = temp_dir.path.join("lib");
-        let mut library = Library::open(library_path.clone()).unwrap();
+        let mut library = Library::open(library_path.clone()).await.unwrap();
 
         let book1 = library
             .create_book("First Book", &Language::from_639_3("spa").unwrap())
+            .await
             .unwrap();
         let _translation = book1
             .lock()
@@ -718,29 +775,24 @@ mod library_book_tests {
             .await;
         book1.lock().await.save().await.unwrap();
 
-        let translation_file = book1
-            .lock()
-            .await
-            .path
-            .join(format!(
-                "translation_{}_{}.dat",
-                Language::from_str("es").unwrap().to_639_3(),
-                Language::from_str("en").unwrap().to_639_3()
-            ));
+        let translation_file = book1.lock().await.path.join(format!(
+            "translation_{}_{}.dat",
+            Language::from_str("es").unwrap().to_639_3(),
+            Language::from_str("en").unwrap().to_639_3()
+        ));
 
-        let conflict_path = book1
-            .lock()
-            .await
-            .path
-            .join(
-                translation_file
-                    .file_name().unwrap().to_str().unwrap()
-                    .replace(".dat", ".syncconflict-foobar.dat"),
-            );
+        let conflict_path = book1.lock().await.path.join(
+            translation_file
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .replace(".dat", ".syncconflict-foobar.dat"),
+        );
 
         std::fs::copy(&translation_file, &conflict_path).unwrap();
 
-        let library_books = library.list_books().unwrap();
+        let library_books = library.list_books().await.unwrap();
 
         assert_eq!(library_books[0].translations_metadata.len(), 1);
         assert_eq!(
@@ -765,11 +817,12 @@ mod library_book_tests {
     async fn save_after_load_trivial_book_change() {
         let temp_dir = TempDir::new("flts_test_book");
         let library_path = temp_dir.path.join("lib");
-        let mut library = Library::open(library_path.clone()).unwrap();
+        let mut library = Library::open(library_path.clone()).await.unwrap();
 
         // Create and save
         let book = library
             .create_book("First Title", &Language::from_639_3("eng").unwrap())
+            .await
             .unwrap();
         book.lock().await.save().await.unwrap();
 
@@ -792,7 +845,7 @@ mod library_book_tests {
     async fn save_after_load_book_and_translation_changed() {
         let temp_dir = TempDir::new("flts_test_book");
         let library_path = temp_dir.path.join("lib");
-        let mut library = Library::open(library_path.clone()).unwrap();
+        let mut library = Library::open(library_path.clone()).await.unwrap();
 
         let source_language = Language::from_str("es").unwrap();
         let target_language = Language::from_str("en").unwrap();
@@ -802,11 +855,15 @@ mod library_book_tests {
             .lock()
             .await
             .get_dictionary(source_language, target_language)
+            .await
             .unwrap();
 
         // Create a book and attach a translation with an initial version
         let book_id = {
-            let book = library.create_book("First Book", &source_language).unwrap();
+            let book = library
+                .create_book("First Book", &source_language)
+                .await
+                .unwrap();
             let mut book = book.lock().await;
             let mut tr =
                 Translation::create(source_language.to_639_3(), target_language.to_639_3());
@@ -856,7 +913,7 @@ mod library_book_tests {
 
         // Reload book
         let path = {
-            let book = library.get_book(&book_id).unwrap();
+            let book = library.get_book(&book_id).await.unwrap();
             let mut book = book.lock().await;
 
             // Modify both book and translation
@@ -902,12 +959,11 @@ mod library_book_tests {
         };
 
         let book_file = path.join("book.dat");
-        let tr_file = path
-            .join(format!(
-                "translation_{}_{}.dat",
-                source_language.to_639_3(),
-                target_language.to_639_3()
-            ));
+        let tr_file = path.join(format!(
+            "translation_{}_{}.dat",
+            source_language.to_639_3(),
+            target_language.to_639_3()
+        ));
 
         // Verify book updated
         let bf = std::fs::File::open(&book_file).unwrap();
@@ -928,7 +984,7 @@ mod library_book_tests {
     async fn save_merges_translation_with_concurrent_on_disk_change() {
         let temp_dir = TempDir::new("flts_test_book");
         let library_path = temp_dir.path.join("lib");
-        let mut library = Library::open(library_path.clone()).unwrap();
+        let mut library = Library::open(library_path.clone()).await.unwrap();
 
         let source_language = Language::from_str("en").unwrap();
         let target_language = Language::from_str("ru").unwrap();
@@ -938,11 +994,13 @@ mod library_book_tests {
             .lock()
             .await
             .get_dictionary(source_language, target_language)
+            .await
             .unwrap();
 
         // Create a book with a translation ts=1
         let book = library
             .create_book("Merge Book", &Language::from_639_3("eng").unwrap())
+            .await
             .unwrap();
         let mut book = book.lock().await;
         let mut tr = Translation::create(source_language.to_639_3(), target_language.to_639_3());
@@ -990,17 +1048,17 @@ mod library_book_tests {
 
         // Treat as loaded instance with last_modified
         let book_file = book.path.join("book.dat");
-        let tr_path = book
-            .path
-            .join(format!(
-                "translation_{}_{}.dat",
-                source_language.to_639_3(),
-                target_language.to_639_3()
-            ));
+        let tr_path = book.path.join(format!(
+            "translation_{}_{}.dat",
+            source_language.to_639_3(),
+            target_language.to_639_3()
+        ));
         book.last_modified = std::fs::metadata(&book_file).unwrap().modified().ok();
         book.translations.clear();
         let loaded_tr =
-            super::LibraryTranslation::load(library.dictionaries_cache.clone(), &tr_path).unwrap();
+            super::LibraryTranslation::load(library.dictionaries_cache.clone(), &tr_path)
+                .await
+                .unwrap();
         book.translations.push(Arc::new(Mutex::new(loaded_tr)));
 
         // In-memory change ts=2
@@ -1104,10 +1162,11 @@ mod library_book_tests {
     async fn reading_state_roundtrip() {
         let temp_dir = TempDir::new("flts_test_book");
         let library_path = temp_dir.path.join("lib");
-        let mut library = Library::open(library_path.clone()).unwrap();
+        let mut library = Library::open(library_path.clone()).await.unwrap();
 
         let book = library
             .create_book("Stateful", &Language::from_639_3("eng").unwrap())
+            .await
             .unwrap();
         let book_id = {
             let mut book = book.lock().await;
@@ -1116,13 +1175,14 @@ mod library_book_tests {
                 chapter_id: 2,
                 paragraph_id: 15,
             })
+            .await
             .unwrap();
             book.book.id
         };
 
-        let book = library.get_book(&book_id).unwrap();
+        let book = library.get_book(&book_id).await.unwrap();
         let mut book = book.lock().await;
-        let state = book.reading_state().unwrap();
+        let state = book.reading_state().await.unwrap();
         assert_eq!(state.as_ref().map(|s| s.chapter_id), Some(2));
         assert_eq!(state.as_ref().map(|s| s.paragraph_id), Some(15));
     }
@@ -1131,22 +1191,24 @@ mod library_book_tests {
     async fn folder_path_roundtrip() {
         let temp_dir = TempDir::new("flts_test_book");
         let library_path = temp_dir.path.join("lib");
-        let mut library = Library::open(library_path.clone()).unwrap();
+        let mut library = Library::open(library_path.clone()).await.unwrap();
 
         let book = library
             .create_book("Shelved", &Language::from_639_3("eng").unwrap())
+            .await
             .unwrap();
         let book_id = {
             let mut book = book.lock().await;
             book.save().await.unwrap();
             book.update_folder_path(vec!["Shelf".into(), "Favorites".into()])
+                .await
                 .unwrap();
             book.book.id
         };
 
-        let book = library.get_book(&book_id).unwrap();
+        let book = library.get_book(&book_id).await.unwrap();
         let mut book = book.lock().await;
-        let folder_path = book.folder_path().unwrap();
+        let folder_path = book.folder_path().await.unwrap();
         assert_eq!(
             folder_path,
             vec!["Shelf".to_string(), "Favorites".to_string()]
@@ -1157,10 +1219,11 @@ mod library_book_tests {
     async fn reading_state_prefers_latest_conflict() {
         let temp_dir = TempDir::new("flts_test_book");
         let library_root = temp_dir.path.join("lib");
-        let mut library = Library::open(library_root.clone()).unwrap();
+        let mut library = Library::open(library_root.clone()).await.unwrap();
 
         let book = library
             .create_book("Conflicted", &Language::from_639_3("eng").unwrap())
+            .await
             .unwrap();
         let book_id = {
             let mut book = book.lock().await;
@@ -1169,12 +1232,13 @@ mod library_book_tests {
                 chapter_id: 1,
                 paragraph_id: 1,
             })
+            .await
             .unwrap();
             book.book.id
         };
 
         {
-            let book = library.get_book(&book_id).unwrap();
+            let book = library.get_book(&book_id).await.unwrap();
             let book = book.lock().await;
             let conflict_path = book.path.join("state (conflict copy).json");
             std::thread::sleep(std::time::Duration::from_millis(5));
@@ -1189,16 +1253,16 @@ mod library_book_tests {
 
         drop(library);
 
-        let mut library = Library::open(library_root).unwrap();
-        let book = library.get_book(&book_id).unwrap();
+        let mut library = Library::open(library_root).await.unwrap();
+        let book = library.get_book(&book_id).await.unwrap();
         let mut book = book.lock().await;
-        let state = book.reading_state().unwrap();
+        let state = book.reading_state().await.unwrap();
         assert_eq!(state.as_ref().map(|s| s.chapter_id), Some(4));
         assert_eq!(state.as_ref().map(|s| s.paragraph_id), Some(8));
     }
 
-    #[test]
-    fn load_user_state_from_legacy_file() {
+    #[tokio::test]
+    async fn load_user_state_from_legacy_file() {
         let temp_dir = TempDir::new("flts_test_book");
         let book_dir = temp_dir.path.join("legacy");
         std::fs::create_dir_all(&book_dir).unwrap();
@@ -1210,7 +1274,7 @@ mod library_book_tests {
                 .unwrap();
         }
 
-        let state = super::load_book_user_state(&book_dir).unwrap();
+        let state = super::load_book_user_state(&book_dir).await.unwrap();
         assert_eq!(state.folder_path, Vec::<String>::new());
         assert_eq!(state.reading_state.as_ref().map(|s| s.chapter_id), Some(3));
         assert_eq!(
@@ -1235,6 +1299,7 @@ mod library_book_tests {
             .lock()
             .await
             .get_dictionary(source_language, target_language)
+            .await
             .unwrap();
 
         let main_path = dir.join("translation_en_ru.dat");
@@ -1287,7 +1352,9 @@ mod library_book_tests {
         };
 
         // Act
-        let loaded = super::LibraryTranslation::load_from_metadata(dict_cache, meta).unwrap();
+        let loaded = super::LibraryTranslation::load_from_metadata(dict_cache, meta)
+            .await
+            .unwrap();
 
         // Assert: translation loaded and unchanged, latest ts=2
         let latest = loaded.translation.paragraph_view(0).unwrap();
@@ -1311,20 +1378,19 @@ mod library_book_tests {
             .lock()
             .await
             .get_dictionary(source_language, target_language)
+            .await
             .unwrap();
 
-        let main_path = dir
-            .join(format!(
-                "translation_{}_{}.dat",
-                source_language.to_639_3(),
-                target_language.to_639_3()
-            ));
-        let conflict1 = dir
-            .join(format!(
-                "translation_{}_{}.conflict1.dat",
-                source_language.to_639_3(),
-                target_language.to_639_3()
-            ));
+        let main_path = dir.join(format!(
+            "translation_{}_{}.dat",
+            source_language.to_639_3(),
+            target_language.to_639_3()
+        ));
+        let conflict1 = dir.join(format!(
+            "translation_{}_{}.conflict1.dat",
+            source_language.to_639_3(),
+            target_language.to_639_3()
+        ));
         let conflict2 = dir.join("translation_en_ru.conflict2.dat");
 
         // main: ts=2
@@ -1455,7 +1521,9 @@ mod library_book_tests {
         };
 
         // Act
-        let loaded = super::LibraryTranslation::load_from_metadata(dict_cache, meta).unwrap();
+        let loaded = super::LibraryTranslation::load_from_metadata(dict_cache, meta)
+            .await
+            .unwrap();
 
         // Assert: merged order latest=3, then 2, then 1
         let latest = loaded.translation.paragraph_view(0).unwrap();
@@ -1483,23 +1551,25 @@ mod library_book_tests {
         // Arrange
         let temp_dir = TempDir::new("flts_test_book");
         let library_path = temp_dir.path.join("lib");
-        let mut library = Library::open(library_path.clone()).unwrap();
+        let mut library = Library::open(library_path.clone()).await.unwrap();
 
         let book = library
             .create_book("Original Title", &Language::from_639_3("eng").unwrap())
+            .await
             .unwrap();
         let mut book = book.lock().await;
         book.save().await.unwrap();
 
         // Acquire metadata for the only book
-        let mut books = library.list_books().unwrap();
+        let mut books = library.list_books().await.unwrap();
         assert_eq!(books.len(), 1);
         let meta = books.remove(0);
         assert!(meta.conflicting_paths.is_empty());
 
         // Act
-        let loaded =
-            super::LibraryBook::load_from_metadata(library.dictionaries_cache, meta).unwrap();
+        let loaded = super::LibraryBook::load_from_metadata(library.dictionaries_cache, meta)
+            .await
+            .unwrap();
 
         // Assert
         assert_eq!(loaded.book.title, "Original Title");
@@ -1512,22 +1582,24 @@ mod library_book_tests {
         // Arrange
         let temp_dir = TempDir::new("flts_test_book");
         let library_path = temp_dir.path.join("lib");
-        let mut library = Library::open(library_path.clone()).unwrap();
+        let mut library = Library::open(library_path.clone()).await.unwrap();
 
         let book = library
             .create_book("Main V1", &Language::from_639_3("eng").unwrap())
+            .await
             .unwrap();
         let mut book = book.lock().await;
         book.save().await.unwrap();
 
         let book_file = book.path.join("book.dat");
-        let conflict_path = book
-            .path
-            .join(
-                book_file
-                    .file_name().unwrap().to_str().unwrap()
-                    .replace(".dat", ".syncconflict-newer.dat"),
-            );
+        let conflict_path = book.path.join(
+            book_file
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .replace(".dat", ".syncconflict-newer.dat"),
+        );
 
         // Create conflict as a copy first (same id)
         std::fs::copy(&book_file, &conflict_path).unwrap();
@@ -1543,14 +1615,15 @@ mod library_book_tests {
         conflict_book.serialize(&mut writer).unwrap();
 
         // Acquire metadata (should include the conflict)
-        let mut books = library.list_books().unwrap();
+        let mut books = library.list_books().await.unwrap();
         assert_eq!(books.len(), 1);
         assert_eq!(books[0].conflicting_paths.len(), 1);
         let meta = books.remove(0);
 
         // Act: load should select the newest (conflict), move it to main, and delete conflicts
-        let loaded =
-            super::LibraryBook::load_from_metadata(library.dictionaries_cache, meta).unwrap();
+        let loaded = super::LibraryBook::load_from_metadata(library.dictionaries_cache, meta)
+            .await
+            .unwrap();
 
         // Assert: loaded content is from conflict (newest)
         assert_eq!(loaded.book.title, "From Conflict");
@@ -1569,22 +1642,24 @@ mod library_book_tests {
         // Arrange
         let temp_dir = TempDir::new("flts_test_book");
         let library_path = temp_dir.path.join("lib");
-        let mut library = Library::open(library_path.clone()).unwrap();
+        let mut library = Library::open(library_path.clone()).await.unwrap();
 
         let book = library
             .create_book("V1", &Language::from_639_3("eng").unwrap())
+            .await
             .unwrap();
         let mut book = book.lock().await;
         book.save().await.unwrap();
 
         let book_file = book.path.join("book.dat");
-        let conflict_path = book
-            .path
-            .join(
-                book_file
-                    .file_name().unwrap().to_str().unwrap()
-                    .replace(".dat", ".syncconflict-older.dat"),
-            );
+        let conflict_path = book.path.join(
+            book_file
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .replace(".dat", ".syncconflict-older.dat"),
+        );
 
         // Create conflict as a copy (same id)
         std::fs::copy(&book_file, &conflict_path).unwrap();
@@ -1600,14 +1675,15 @@ mod library_book_tests {
         main_book.serialize(&mut writer).unwrap();
 
         // Acquire metadata (should include conflict)
-        let mut books = library.list_books().unwrap();
+        let mut books = library.list_books().await.unwrap();
         assert_eq!(books.len(), 1);
         assert_eq!(books[0].conflicting_paths.len(), 1);
         let meta = books.remove(0);
 
         // Act
-        let loaded =
-            super::LibraryBook::load_from_metadata(library.dictionaries_cache, meta).unwrap();
+        let loaded = super::LibraryBook::load_from_metadata(library.dictionaries_cache, meta)
+            .await
+            .unwrap();
 
         // Assert: main is kept, conflict removed
         assert_eq!(loaded.book.title, "V2");
@@ -1622,10 +1698,11 @@ mod library_book_tests {
     async fn delete_book_removes_directory() {
         let temp_dir = TempDir::new("flts_test_book");
         let library_path = temp_dir.path.join("lib");
-        let mut library = Library::open(library_path.clone()).unwrap();
+        let mut library = Library::open(library_path.clone()).await.unwrap();
 
         let book = library
             .create_book("Disposable", &Language::from_639_3("eng").unwrap())
+            .await
             .unwrap();
         let book_id = {
             let mut book = book.lock().await;
@@ -1636,9 +1713,9 @@ mod library_book_tests {
         let book_dir = library_path.join(book_id.to_string());
         assert!(book_dir.exists());
 
-        library.delete_book(&book_id).unwrap();
+        library.delete_book(&book_id).await.unwrap();
 
         assert!(!book_dir.exists());
-        assert!(library.list_books().unwrap().is_empty());
+        assert!(library.list_books().await.unwrap().is_empty());
     }
 }

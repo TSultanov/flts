@@ -179,7 +179,7 @@ async fn handle_request(
     request: &TranslationRequest,
 ) -> anyhow::Result<()> {
     let (translation, paragraph_text, source_language) = {
-        let book = library.lock().await.get_book(&request.book_id)?;
+        let book = library.lock().await.get_book(&request.book_id).await?;
         let mut book = book.lock().await;
         let translation = book.get_or_create_translation(&target_language).await;
         let paragraph = book.book.paragraph_view(request.paragraph_id);
@@ -266,7 +266,7 @@ async fn run_saver(
 async fn save_book(library: Arc<Mutex<Library>>, book_id: Uuid) -> anyhow::Result<()> {
     let book_handle = {
         let mut library = library.lock().await;
-        library.get_book(&book_id)?
+        library.get_book(&book_id).await?
     };
     let mut book = book_handle.lock().await;
     book.save().await

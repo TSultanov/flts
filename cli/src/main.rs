@@ -108,7 +108,7 @@ async fn add_book(
             .await
             .create_book_plain(title, &text, &Language::from_str(lang)?)
             .await?;
-        let book = library.lock().await.get_book(&book_id)?;
+        let book = library.lock().await.get_book(&book_id).await?;
         let book = book.lock().await;
         println!("Created book {} (id: {})", book.book.title, book.book.id);
     } else {
@@ -126,7 +126,7 @@ async fn add_epub(library: &Arc<Mutex<Library>>, path: &Path, lang: &str) -> any
         .await
         .create_book_epub(&epub, &Language::from_str(lang)?)
         .await?;
-    let book = library.lock().await.get_book(&book_id)?;
+    let book = library.lock().await.get_book(&book_id).await?;
     let book = book.lock().await;
     println!("Created book {} (id: {})", book.book.title, book.book.id);
 
@@ -134,7 +134,7 @@ async fn add_epub(library: &Arc<Mutex<Library>>, path: &Path, lang: &str) -> any
 }
 
 async fn list_books(library: &Arc<Mutex<Library>>) -> anyhow::Result<()> {
-    let books = library.lock().await.list_books()?;
+    let books = library.lock().await.list_books().await?;
     println!("id                                \ttitle\tchapters\tparagraphs");
     for book in books {
         println!(
@@ -165,7 +165,7 @@ async fn translate_paragraph(
     worker_id: usize,
 ) -> anyhow::Result<()> {
     let (translation, paragraph_text) = {
-        let book = library.lock().await.get_book(&book_id)?;
+        let book = library.lock().await.get_book(&book_id).await?;
         let mut book = book.lock().await;
         let translation = book.get_or_create_translation(tgt_lang).await;
         let paragraph = book.book.paragraph_view(paragraph_id);
@@ -189,7 +189,7 @@ async fn translate_paragraph(
 }
 
 async fn save_book(library: &Arc<Mutex<Library>>, book_id: Uuid) -> anyhow::Result<()> {
-    let book = library.lock().await.get_book(&book_id)?;
+    let book = library.lock().await.get_book(&book_id).await?;
     let mut book = book.lock().await;
     book.save().await?;
     Ok(())
@@ -231,7 +231,7 @@ async fn translate_book(
     let queue = Arc::new(Mutex::new(VecDeque::new()));
 
     let source_lang = {
-        let book = library.lock().await.get_book(&book_id)?;
+        let book = library.lock().await.get_book(&book_id).await?;
         let mut book = book.lock().await;
         let source_lang = Language::from_639_3(&book.book.language).unwrap();
 
@@ -386,7 +386,7 @@ async fn do_main() -> anyhow::Result<()> {
         create_dir(library_path.clone())?;
     }
 
-    let library = Arc::new(Mutex::new(Library::open(library_path)?));
+    let library = Arc::new(Mutex::new(Library::open(library_path).await?));
 
     match &cli.command {
         Some(cmd) => match cmd {
