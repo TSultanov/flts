@@ -25,7 +25,6 @@ use library::{
 use tokio::time::{Duration, sleep};
 use tokio::{sync::Mutex, task::JoinSet};
 use uuid::Uuid;
-use vfs::PhysicalFS;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -387,8 +386,7 @@ async fn do_main() -> anyhow::Result<()> {
         create_dir(library_path.clone())?;
     }
 
-    let fs = PhysicalFS::new(library_path.clone());
-    let library = Arc::new(Mutex::new(Library::open(fs.into(), Some(library_path))?));
+    let library = Arc::new(Mutex::new(Library::open(library_path)?));
 
     match &cli.command {
         Some(cmd) => match cmd {

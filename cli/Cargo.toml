@@ -15,4 +15,3 @@ library = { path = "../library" }
 log = "0.4"
 tokio = { version = "1.47.1", features = ["full"] }
 uuid = { version = "1.18.1", features = ["v4"] }
-vfs = "0.12.2"

@@ -176,7 +176,6 @@ dependencies = [
  "tauri-plugin-window-state",
  "tokio",
  "uuid",
- "vfs",
 ]
 
 [[package]]
@@ -760,7 +759,6 @@ dependencies = [
  "log",
  "tokio",
  "uuid",
- "vfs",
 ]
 
 [[package]]
@@ -1525,18 +1523,6 @@ version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e1fc6a637b6dc58414714eddd9170ff187ecb0933d4c7024d1abbd23a3cc26e9"
 dependencies = [
- "windows-sys 0.60.2",
-]
-
-[[package]]
-name = "filetime"
-version = "0.2.26"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc0505cd1b6fa6580283f6bdf70a73fcf4aba1184038c90902b92b3dd0df63ed"
-dependencies = [
- "cfg-if",
- "libc",
- "libredox",
  "windows-sys 0.60.2",
 ]
 
@@ -2966,7 +2952,6 @@ dependencies = [
  "tokio",
  "trash",
  "uuid",
- "vfs",
  "zstd",
 ]
 
@@ -2978,7 +2963,6 @@ checksum = "416f7e718bdb06000964960ffa43b4335ad4012ae8b99060261aa4a8088d5ccb"
 dependencies = [
  "bitflags 2.10.0",
  "libc",
- "redox_syscall",
 ]
 
 [[package]]
@@ -6563,15 +6547,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "vfs"
-version = "0.12.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e723b9e1c02a3cf9f9d0de6a4ddb8cdc1df859078902fe0ae0589d615711ae6"
-dependencies = [
- "filetime",
-]
 
 [[package]]
 name = "vswhom"

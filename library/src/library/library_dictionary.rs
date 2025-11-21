@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     io::{BufReader, BufWriter},
+    path::{Path, PathBuf},
     sync::Arc,
     time::SystemTime,
 };
@@ -9,7 +10,6 @@ use isolang::Language;
 use itertools::Itertools;
 use tokio::sync::Mutex;
 use uuid::Uuid;
-use vfs::VfsPath;
 
 use crate::{
     book::serialization::Serializable,
@@ -20,30 +20,33 @@ pub struct LibraryDictionaryMetadata {
     pub id: Uuid,
     pub source_language: String,
     pub target_language: String,
-    pub main_path: VfsPath,
-    pub conflicting_paths: Vec<VfsPath>,
+    pub main_path: PathBuf,
+    pub conflicting_paths: Vec<PathBuf>,
 }
 
 impl LibraryDictionaryMetadata {
     /// Load dictionary metadata from a specific dictionary file path and detect conflicting files
     /// with the same language pair in the same directory.
-    pub fn load(path: &VfsPath) -> anyhow::Result<Self> {
+    pub fn load(path: &Path) -> anyhow::Result<Self> {
         // Read metadata from the main file
-        let mut file = path.open_file()?;
+        let mut file = BufReader::new(std::fs::File::open(path)?);
         let metadata = DictionaryMetadata::read_metadata(&mut file)?;
 
         // Scan sibling files for conflicts (same language pair)
         let mut conflicting_paths = Vec::new();
-        let parent = path.parent();
-        let parent_entries = parent.read_dir()?;
-        let main_filename = path.filename();
+        let parent = path.parent().unwrap();
+        let parent_entries = std::fs::read_dir(parent)?;
+        let main_filename = path.file_name().unwrap();
 
-        for p in parent_entries {
-            if !p.is_file()? {
+        for entry in parent_entries {
+            let entry = entry?;
+            let p = entry.path();
+            if !p.is_file() {
                 continue;
             }
-            let fname = p.filename();
-            if !(fname.starts_with("dictionary_") && fname.ends_with(".dat")) {
+            let fname = p.file_name().unwrap();
+            let fname_str = fname.to_str().unwrap();
+            if !(fname_str.starts_with("dictionary_") && fname_str.ends_with(".dat")) {
                 continue;
             }
             if fname == main_filename {
@@ -51,20 +54,23 @@ impl LibraryDictionaryMetadata {
             }
 
             // Try to read metadata; skip unreadable or mismatched ones
-            match p.open_file() {
-                Ok(mut f) => match DictionaryMetadata::read_metadata(&mut f) {
-                    Ok(md) => {
-                        if md.source_language == metadata.source_language
-                            && md.target_language == metadata.target_language
-                        {
-                            conflicting_paths.push(p);
+            match std::fs::File::open(&p) {
+                Ok(f) => {
+                    let mut f = BufReader::new(f);
+                    match DictionaryMetadata::read_metadata(&mut f) {
+                        Ok(md) => {
+                            if md.source_language == metadata.source_language
+                                && md.target_language == metadata.target_language
+                            {
+                                conflicting_paths.push(p);
+                            }
                         }
-                    }
-                    Err(err) => {
-                        println!(
-                            "Failed to read dictionary metadata from {:?}, skipping: {}",
-                            p, err
-                        );
+                        Err(err) => {
+                            println!(
+                                "Failed to read dictionary metadata from {:?}, skipping: {}",
+                                p, err
+                            );
+                        }
                     }
                 },
                 Err(err) => {
@@ -80,14 +86,14 @@ impl LibraryDictionaryMetadata {
             id: metadata.id,
             source_language: metadata.source_language,
             target_language: metadata.target_language,
-            main_path: path.clone(),
+            main_path: path.to_path_buf(),
             conflicting_paths,
         })
     }
 }
 
 pub struct LibraryDictionary {
-    path: VfsPath,
+    path: PathBuf,
     last_modified: Option<SystemTime>,
     pub dictionary: Dictionary,
 }
@@ -98,13 +104,13 @@ impl LibraryDictionary {
         self.last_modified = self.last_modified.max(other.last_modified);
     }
 
-    pub fn load(path: &VfsPath) -> anyhow::Result<Self> {
-        let last_modified = path.metadata()?.modified;
-        let mut file = BufReader::new(path.open_file()?);
+    pub fn load(path: &Path) -> anyhow::Result<Self> {
+        let last_modified = std::fs::metadata(path)?.modified().ok();
+        let mut file = BufReader::new(std::fs::File::open(path)?);
         let dictionary = Dictionary::deserialize(&mut file)?;
 
         Ok(Self {
-            path: path.clone(),
+            path: path.to_path_buf(),
             dictionary,
             last_modified,
         })
@@ -116,22 +122,22 @@ impl LibraryDictionary {
         if !metadata.conflicting_paths.is_empty() {
             // Load main first
             let mut base = {
-                let mut f = BufReader::new(metadata.main_path.open_file()?);
+                let mut f = BufReader::new(std::fs::File::open(&metadata.main_path)?);
                 Dictionary::deserialize(&mut f)?
             };
 
             // Merge each conflict into base
             for p in metadata.conflicting_paths {
                 {
-                    let mut cf = BufReader::new(p.open_file()?);
+                    let mut cf = BufReader::new(std::fs::File::open(&p)?);
                     let conflict = Dictionary::deserialize(&mut cf)?;
                     base.merge(conflict);
                 }
-                p.remove_file()?;
+                std::fs::remove_file(&p)?;
             }
 
             // Persist merged back to main
-            let mut wf = BufWriter::new(metadata.main_path.create_file()?);
+            let mut wf = BufWriter::new(std::fs::File::create(&metadata.main_path)?);
             base.serialize(&mut wf)?;
         }
 
@@ -144,12 +150,13 @@ impl LibraryDictionary {
         let main_path = self.path.clone();
         let temp_path = main_path
             .parent()
-            .join(format!("{}~", main_path.filename()))?;
+            .unwrap()
+            .join(format!("{}~", main_path.file_name().unwrap().to_str().unwrap()));
 
         let get_modified_if_exists =
-            |p: &VfsPath| -> Result<Option<SystemTime>, vfs::error::VfsError> {
-                if p.exists()? {
-                    Ok(p.metadata()?.modified)
+            |p: &Path| -> anyhow::Result<Option<SystemTime>> {
+                if p.exists() {
+                    Ok(std::fs::metadata(p)?.modified().ok())
                 } else {
                     Ok(None)
                 }
@@ -160,16 +167,17 @@ impl LibraryDictionary {
 
             // Reconcile with on-disk changes
             if let Some(last) = self.last_modified {
-                if main_path.exists()?
-                    && let Some(saved_mod) = main_path.metadata()?.modified
-                    && saved_mod > last
-                {
-                    // On-disk is newer; merge into memory
-                    let on_disk = Self::load(&main_path)?;
-                    self.merge(on_disk);
-                    // do not update last_modified yet; we'll write a new version below
+                if main_path.exists() {
+                    if let Some(saved_mod) = std::fs::metadata(&main_path)?.modified().ok() {
+                        if saved_mod > last {
+                            // On-disk is newer; merge into memory
+                            let on_disk = Self::load(&main_path)?;
+                            self.merge(on_disk);
+                            // do not update last_modified yet; we'll write a new version below
+                        }
+                    }
                 }
-            } else if main_path.exists()? {
+            } else if main_path.exists() {
                 // Unknown last_modified (newly created object) but file already exists -> merge
                 let on_disk = Self::load(&main_path)?;
                 self.merge(on_disk);
@@ -177,16 +185,16 @@ impl LibraryDictionary {
 
             // Write to temp, then swap if file didn't change during write
             {
-                let mut wf = BufWriter::new(temp_path.create_file()?);
+                let mut wf = BufWriter::new(std::fs::File::create(&temp_path)?);
                 self.dictionary.serialize(&mut wf)?;
             }
 
             let modified_post = get_modified_if_exists(&main_path)?;
             if modified_post == modified_pre || modified_pre.is_none() {
-                if main_path.exists()? {
-                    main_path.remove_file()?;
+                if main_path.exists() {
+                    std::fs::remove_file(&main_path)?;
                 }
-                temp_path.move_file(&main_path)?;
+                std::fs::rename(&temp_path, &main_path)?;
                 self.last_modified = get_modified_if_exists(&main_path)?;
                 break;
             }
@@ -199,14 +207,14 @@ impl LibraryDictionary {
 }
 
 pub struct DictionaryCache {
-    library_root: VfsPath,
+    library_root: PathBuf,
     cache: HashMap<(Language, Language), Arc<Mutex<LibraryDictionary>>>,
 }
 
 impl DictionaryCache {
-    pub fn new(library_root: &VfsPath) -> Self {
+    pub fn new(library_root: &Path) -> Self {
         Self {
-            library_root: library_root.clone(),
+            library_root: library_root.to_path_buf(),
             cache: HashMap::new(),
         }
     }
@@ -214,7 +222,7 @@ impl DictionaryCache {
     fn create_dictionary(&self, src: Language, tgt: Language) -> anyhow::Result<LibraryDictionary> {
         let filename = format!("dictionary_{}_{}.dat", src.to_639_3(), tgt.to_639_3());
 
-        let file = self.library_root.join(filename)?;
+        let file = self.library_root.join(filename);
 
         Ok(LibraryDictionary {
             path: file,
@@ -224,19 +232,23 @@ impl DictionaryCache {
     }
 
     pub fn list_dictionaries(&self) -> anyhow::Result<Vec<LibraryDictionaryMetadata>> {
-        let library_root_content = self.library_root.read_dir()?;
+        let library_root_content = std::fs::read_dir(&self.library_root)?;
 
         let mut all_dictionaries = Vec::new();
 
-        for path in library_root_content {
-            if !path.is_file()? {
+        for entry in library_root_content {
+            let entry = entry?;
+            let path = entry.path();
+            if !path.is_file() {
                 continue;
             }
 
-            if path.filename().starts_with("dictionary_") && path.filename().ends_with(".dat") {
-                let mut data = path.open_file()?;
-                let metadata = DictionaryMetadata::read_metadata(&mut data)?;
-                all_dictionaries.push((path, metadata));
+            if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
+                if filename.starts_with("dictionary_") && filename.ends_with(".dat") {
+                    let mut data = BufReader::new(std::fs::File::open(&path)?);
+                    let metadata = DictionaryMetadata::read_metadata(&mut data)?;
+                    all_dictionaries.push((path, metadata));
+                }
             }
         }
 
@@ -245,7 +257,7 @@ impl DictionaryCache {
             .chunk_by(|(_, dict)| (dict.source_language.clone(), dict.target_language.clone()));
         let grouped_dictionaries = grouped_dictionaries
             .into_iter()
-            .map(|(id, chunk)| (id, chunk.sorted_by_key(|(p, _)| p.filename().len())));
+            .map(|(id, chunk)| (id, chunk.sorted_by_key(|(p, _)| p.as_os_str().len())));
 
         let mut dictionaries_metadata = Vec::new();
 
@@ -315,19 +327,19 @@ impl DictionaryCache {
 
 #[cfg(test)]
 mod library_dictionary_test {
-    use vfs::VfsPath;
+    use std::io::Write;
 
     use crate::{
         book::serialization::Serializable, dictionary::Dictionary,
         library::library_dictionary::LibraryDictionaryMetadata,
+        test_utils::TempDir,
     };
 
     #[test]
     fn dictionary_metadata_load_and_conflicts() {
-        let fs = vfs::MemoryFS::new();
-        let root: VfsPath = fs.into();
-        let dir = root.join("dicts").unwrap();
-        dir.create_dir().unwrap();
+        let temp_dir = TempDir::new("flts_test_dict");
+        let dir = temp_dir.path.join("dicts");
+        std::fs::create_dir(&dir).unwrap();
 
         // Create a dictionary and serialize it twice under different names (same id)
         let mut d = Dictionary::create("en".into(), "ru".into());
@@ -335,14 +347,14 @@ mod library_dictionary_test {
         let mut buf: Vec<u8> = vec![];
         d.serialize(&mut buf).unwrap();
 
-        let main_path = dir.join("dictionary_eng_rus.dat").unwrap();
-        let mut f1 = main_path.create_file().unwrap();
+        let main_path = dir.join("dictionary_eng_rus.dat");
+        let mut f1 = std::fs::File::create(&main_path).unwrap();
         f1.write_all(&buf).unwrap();
         f1.flush().unwrap();
         drop(f1);
 
-        let conflict_path = dir.join("dictionary_eng_rus.conflict.dat").unwrap();
-        let mut f2 = conflict_path.create_file().unwrap();
+        let conflict_path = dir.join("dictionary_eng_rus.conflict.dat");
+        let mut f2 = std::fs::File::create(&conflict_path).unwrap();
         f2.write_all(&buf).unwrap();
         f2.flush().unwrap();
         drop(f2);
@@ -353,8 +365,8 @@ mod library_dictionary_test {
         let mut buf2: Vec<u8> = vec![];
         d2.serialize(&mut buf2).unwrap();
         {
-            let other_path = dir.join("dictionary_eng_deu.dat").unwrap();
-            let mut other = other_path.create_file().unwrap();
+            let other_path = dir.join("dictionary_eng_deu.dat");
+            let mut other = std::fs::File::create(&other_path).unwrap();
             other.write_all(&buf2).unwrap();
             other.flush().unwrap();
         }
@@ -365,6 +377,6 @@ mod library_dictionary_test {
         assert_eq!(md.target_language, "ru");
         assert_eq!(md.main_path, main_path);
         assert_eq!(md.conflicting_paths.len(), 1);
-        assert_eq!(md.conflicting_paths[0].filename(), conflict_path.filename());
+        assert_eq!(md.conflicting_paths[0].file_name(), conflict_path.file_name());
     }
 }

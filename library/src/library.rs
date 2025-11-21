@@ -1,11 +1,10 @@
-use std::{collections::HashMap, error::Error, fmt::Display, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, error::Error, fmt::Display, path::{Path, PathBuf}, sync::Arc};
 
 use isolang::Language;
 use itertools::Itertools;
 use log::{info, trace};
 use tokio::sync::Mutex;
 use uuid::Uuid;
-use vfs::{VfsError, VfsPath};
 
 use crate::{
     book::{book_metadata::BookMetadata, translation_metadata::TranslationMetadata},
@@ -43,15 +42,15 @@ pub struct LibraryTranslationMetadata {
     pub source_langugage: String,
     pub target_language: String,
     pub translated_paragraphs_count: usize,
-    pub main_path: VfsPath,
-    pub conflicting_paths: Vec<VfsPath>,
+    pub main_path: PathBuf,
+    pub conflicting_paths: Vec<PathBuf>,
 }
 
 pub struct LibraryBookMetadata {
     pub id: Uuid,
     pub title: String,
-    pub main_path: VfsPath,
-    pub conflicting_paths: Vec<VfsPath>,
+    pub main_path: PathBuf,
+    pub conflicting_paths: Vec<PathBuf>,
     pub chapters_count: usize,
     pub paragraphs_count: usize,
     pub translations_metadata: Vec<LibraryTranslationMetadata>,
@@ -59,22 +58,29 @@ pub struct LibraryBookMetadata {
 }
 
 impl LibraryBookMetadata {
-    pub fn load(path: &VfsPath) -> Result<Self, VfsError> {
-        let book_dat = path.join("book.dat")?;
-        let mut book_dat_file = book_dat.open_file()?;
+    pub fn load(path: &Path) -> anyhow::Result<Self> {
+        let book_dat = path.join("book.dat");
+        let mut book_dat_file = std::fs::File::open(&book_dat)?;
         let book_metadata = BookMetadata::read_metadata(&mut book_dat_file)?;
 
         let conflicting_paths = {
-            let conflicting_paths = path.read_dir()?.filter(|d| {
-                d.filename().starts_with("book")
-                    && d.filename().ends_with(".dat")
-                    && d.filename() != "book.dat"
-            });
+            let conflicting_paths = std::fs::read_dir(path)?
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.path())
+                .filter(|p| {
+                    if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                        name.starts_with("book")
+                            && name.ends_with(".dat")
+                            && name != "book.dat"
+                    } else {
+                        false
+                    }
+                });
 
             let mut result = Vec::new();
 
             for path in conflicting_paths {
-                let mut file = path.open_file()?;
+                let mut file = std::fs::File::open(&path)?;
                 let metadata = BookMetadata::read_metadata(&mut file);
                 match metadata {
                     Ok(metadata) => {
@@ -98,16 +104,19 @@ impl LibraryBookMetadata {
 
         let mut all_translations = Vec::new();
 
-        let book_dir_content = path.read_dir()?;
+        let book_dir_content = std::fs::read_dir(path)?;
 
-        for file in book_dir_content {
-            if file.is_file()?
-                && file.filename().starts_with("translation_")
-                && file.filename().ends_with(".dat")
-            {
-                let mut data = file.open_file()?;
-                let metadata = TranslationMetadata::read_metadata(&mut data)?;
-                all_translations.push((file, metadata));
+        for entry in book_dir_content {
+            let file = entry?;
+            let path = file.path();
+            if path.is_file() {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if name.starts_with("translation_") && name.ends_with(".dat") {
+                        let mut data = std::fs::File::open(&path)?;
+                        let metadata = TranslationMetadata::read_metadata(&mut data)?;
+                        all_translations.push((path, metadata));
+                    }
+                }
             }
         }
 
@@ -116,7 +125,7 @@ impl LibraryBookMetadata {
             .chunk_by(|(_, translation)| translation.id);
         let grouped_translations = grouped_translations
             .into_iter()
-            .map(|(id, chunk)| (id, chunk.sorted_by_key(|(p, _)| p.filename().len())));
+            .map(|(id, chunk)| (id, chunk.sorted_by_key(|(p, _)| p.as_os_str().len())));
 
         let mut translations_metadata = Vec::new();
 
@@ -161,38 +170,37 @@ impl LibraryBookMetadata {
 }
 
 pub struct Library {
-    library_root: VfsPath,
-    physical_root: Option<PathBuf>,
+    library_root: PathBuf,
     books_cache: HashMap<Uuid, Arc<Mutex<LibraryBook>>>, // TODO: eviction
     dictionaries_cache: Arc<Mutex<DictionaryCache>>,
 }
 
 impl Library {
     pub fn open(
-        library_root: VfsPath,
-        physical_root: Option<PathBuf>,
-    ) -> Result<Self, vfs::error::VfsError> {
-        if !library_root.exists()? {
-            library_root.create_dir()?
+        library_root: PathBuf,
+    ) -> anyhow::Result<Self> {
+        if !library_root.exists() {
+            std::fs::create_dir_all(&library_root)?;
         }
 
         let dictionaries_cache = Arc::new(Mutex::new(DictionaryCache::new(&library_root)));
 
         Ok(Library {
             library_root,
-            physical_root,
             books_cache: HashMap::new(),
             dictionaries_cache,
         })
     }
 
-    pub fn list_books(&self) -> Result<Vec<LibraryBookMetadata>, vfs::error::VfsError> {
-        let library_root_content = self.library_root.read_dir()?;
+    pub fn list_books(&self) -> anyhow::Result<Vec<LibraryBookMetadata>> {
+        let library_root_content = std::fs::read_dir(&self.library_root)?;
 
         let mut books = Vec::new();
 
-        for path in library_root_content {
-            if !path.is_dir()? {
+        for entry in library_root_content {
+            let entry = entry?;
+            let path = entry.path();
+            if !path.is_dir() {
                 continue;
             }
 
@@ -213,8 +221,8 @@ impl Library {
             return Ok(book.clone());
         }
 
-        let path = &self.library_root.join(uuid.to_string())?;
-        let metadata = LibraryBookMetadata::load(path)?;
+        let path = self.library_root.join(uuid.to_string());
+        let metadata = LibraryBookMetadata::load(&path)?;
         let book = Arc::new(Mutex::new(LibraryBook::load_from_metadata(
             self.dictionaries_cache.clone(),
             metadata,
@@ -312,24 +320,23 @@ fn split_paragraphs(text: &str) -> impl Iterator<Item = &str> {
 #[cfg(test)]
 mod library_tests {
     use super::*;
+    use crate::test_utils::TempDir;
 
     #[test]
     fn library_open_newdirectory() {
-        let fs = vfs::MemoryFS::new();
-        let root: VfsPath = fs.into();
-        let library_path = root.join("test").unwrap();
-        _ = Library::open(library_path, None);
+        let temp_dir = TempDir::new("flts_test");
+        let library_path = temp_dir.path.join("test");
+        _ = Library::open(library_path.clone());
 
-        let root_directories = root.read_dir().unwrap().collect::<Vec<_>>();
-        assert_eq!(root_directories, vec![root.join("test").unwrap()]);
+        assert!(library_path.exists());
+        assert!(library_path.is_dir());
     }
 
     #[test]
     fn list_books_empty_library() {
-        let fs = vfs::MemoryFS::new();
-        let root: VfsPath = fs.into();
-        let library_path = root.join("lib").unwrap();
-        let library = Library::open(library_path, None).unwrap();
+        let temp_dir = TempDir::new("flts_test");
+        let library_path = temp_dir.path.join("lib");
+        let library = Library::open(library_path).unwrap();
 
         let books = library.list_books().unwrap();
         assert!(books.is_empty(), "Expected no books, got {:?}", books.len());
@@ -337,10 +344,9 @@ mod library_tests {
 
     #[tokio::test]
     async fn list_books_multiple_empty_books() {
-        let fs = vfs::MemoryFS::new();
-        let root: VfsPath = fs.into();
-        let library_path = root.join("lib").unwrap();
-        let mut library = Library::open(library_path.clone(), None).unwrap();
+        let temp_dir = TempDir::new("flts_test");
+        let library_path = temp_dir.path.join("lib");
+        let mut library = Library::open(library_path.clone()).unwrap();
 
         let book1 = library
             .create_book("First Book", &Language::from_639_3("eng").unwrap())
@@ -364,10 +370,9 @@ mod library_tests {
 
     #[tokio::test]
     async fn list_books_includes_folder_path() {
-        let fs = vfs::MemoryFS::new();
-        let root: VfsPath = fs.into();
-        let library_path = root.join("lib").unwrap();
-        let mut library = Library::open(library_path.clone(), None).unwrap();
+        let temp_dir = TempDir::new("flts_test");
+        let library_path = temp_dir.path.join("lib");
+        let mut library = Library::open(library_path.clone()).unwrap();
 
         let book = library
             .create_book("Categorized", &Language::from_639_3("eng").unwrap())

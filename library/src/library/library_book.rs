@@ -1,13 +1,11 @@
 use std::{
     collections::HashSet,
     io::{BufReader, BufWriter, Read},
+    path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
     time::SystemTime,
 };
-
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-use std::path::Path;
 
 use log::info;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -19,7 +17,6 @@ use serde::{Deserialize, Serialize};
 use serde_json;
 use tokio::sync::Mutex;
 use uuid::Uuid;
-use vfs::VfsPath;
 
 use crate::{
     book::{
@@ -53,7 +50,7 @@ pub struct BookUserState {
 
 pub struct LibraryBook {
     dict_cache: Arc<Mutex<DictionaryCache>>,
-    path: VfsPath,
+    path: PathBuf,
     last_modified: Option<SystemTime>,
     pub book: Book,
     translations: Vec<Arc<Mutex<LibraryTranslation>>>,
@@ -80,9 +77,10 @@ impl LibraryTranslation {
         self.changed = true;
     }
 
-    fn load(dict_cache: Arc<Mutex<DictionaryCache>>, path: &VfsPath) -> anyhow::Result<Self> {
-        let last_modified = path.metadata()?.modified;
-        let mut file = BufReader::new(path.open_file()?);
+    fn load(dict_cache: Arc<Mutex<DictionaryCache>>, path: &Path) -> anyhow::Result<Self> {
+        let metadata = std::fs::metadata(path)?;
+        let last_modified = metadata.modified().ok();
+        let mut file = BufReader::new(std::fs::File::open(path)?);
         let translation = Translation::deserialize(&mut file)?;
         let source_language = Language::from_str(&translation.source_language)?;
         let target_language = Language::from_str(&translation.target_language)?;
@@ -103,20 +101,20 @@ impl LibraryTranslation {
     ) -> anyhow::Result<Self> {
         if !metadata.conflicting_paths.is_empty() {
             let mut translation = {
-                let mut main_file = BufReader::new(metadata.main_path.open_file()?);
+                let mut main_file = BufReader::new(std::fs::File::open(&metadata.main_path)?);
                 Translation::deserialize(&mut main_file)?
             };
 
             for conflict in metadata.conflicting_paths {
                 {
-                    let mut conflict_file = BufReader::new(conflict.open_file()?);
+                    let mut conflict_file = BufReader::new(std::fs::File::open(&conflict)?);
                     let conflict_translation = Translation::deserialize(&mut conflict_file)?;
                     translation = translation.merge(&conflict_translation);
                 }
-                conflict.remove_file()?;
+                std::fs::remove_file(&conflict)?;
             }
 
-            let mut main_file = metadata.main_path.create_file()?;
+            let mut main_file = std::fs::File::create(&metadata.main_path)?;
             translation.serialize(&mut main_file)?;
         }
 
@@ -153,21 +151,24 @@ impl LibraryTranslation {
     }
 }
 
-fn reading_state_files(path: &VfsPath) -> Result<Vec<(VfsPath, SystemTime)>, vfs::error::VfsError> {
+fn reading_state_files(path: &Path) -> anyhow::Result<Vec<(PathBuf, SystemTime)>> {
     let mut files = Vec::new();
-    for entry in path.read_dir()? {
-        if entry.is_file()? {
-            let filename = entry.filename();
-            if filename.starts_with("state") && filename.ends_with(".json") {
-                let modified = entry.metadata()?.modified.unwrap_or(SystemTime::UNIX_EPOCH);
-                files.push((entry, modified));
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_file() {
+            if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
+                if filename.starts_with("state") && filename.ends_with(".json") {
+                    let modified = entry.metadata()?.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                    files.push((path, modified));
+                }
             }
         }
     }
     Ok(files)
 }
 
-fn resolve_reading_state_file(path: &VfsPath) -> anyhow::Result<Option<(VfsPath, SystemTime)>> {
+fn resolve_reading_state_file(path: &Path) -> anyhow::Result<Option<(PathBuf, SystemTime)>> {
     let mut candidates = reading_state_files(path)?;
     if candidates.is_empty() {
         return Ok(None);
@@ -179,33 +180,33 @@ fn resolve_reading_state_file(path: &VfsPath) -> anyhow::Result<Option<(VfsPath,
         .cloned()
         .unwrap_or_else(|| unreachable!("candidates is not empty"));
 
-    let canonical_path = path.join("state.json")?;
-    let canonical_name = canonical_path.filename();
+    let canonical_path = path.join("state.json");
+    let canonical_name = canonical_path.file_name().unwrap();
     let mut effective_modified = latest_modified;
 
-    if latest_path.filename() != canonical_name {
-        if canonical_path.exists()? {
-            canonical_path.remove_file()?;
+    if latest_path.file_name().unwrap() != canonical_name {
+        if canonical_path.exists() {
+            std::fs::remove_file(&canonical_path)?;
         }
-        latest_path.move_file(&canonical_path)?;
+        std::fs::rename(&latest_path, &canonical_path)?;
         effective_modified = canonical_path
             .metadata()?
-            .modified
+            .modified()
             .unwrap_or(SystemTime::UNIX_EPOCH);
     }
 
     for (candidate_path, _) in candidates {
-        if candidate_path.filename() != canonical_name && candidate_path.exists()? {
-            let _ = candidate_path.remove_file();
+        if candidate_path.file_name().unwrap() != canonical_name && candidate_path.exists() {
+            let _ = std::fs::remove_file(candidate_path);
         }
     }
 
     Ok(Some((canonical_path, effective_modified)))
 }
 
-fn load_user_state_from_dir(path: &VfsPath) -> anyhow::Result<BookUserState> {
+fn load_user_state_from_dir(path: &Path) -> anyhow::Result<BookUserState> {
     if let Some((state_path, _)) = resolve_reading_state_file(path)? {
-        let mut reader = BufReader::new(state_path.open_file()?);
+        let mut reader = BufReader::new(std::fs::File::open(&state_path)?);
         let mut contents = String::new();
         reader.read_to_string(&mut contents)?;
 
@@ -228,28 +229,28 @@ fn load_user_state_from_dir(path: &VfsPath) -> anyhow::Result<BookUserState> {
     Ok(BookUserState::default())
 }
 
-fn persist_user_state(path: &VfsPath, state: &BookUserState) -> anyhow::Result<()> {
-    if !path.exists()? {
-        path.create_dir()?;
+fn persist_user_state(path: &Path, state: &BookUserState) -> anyhow::Result<()> {
+    if !path.exists() {
+        std::fs::create_dir_all(path)?;
     }
 
-    let state_path = path.join("state.json")?;
-    let temp_path = path.join(format!("state.json~{}", create_random_string(8)))?;
+    let state_path = path.join("state.json");
+    let temp_path = path.join(format!("state.json~{}", create_random_string(8)));
 
     {
-        let mut writer = BufWriter::new(temp_path.create_file()?);
+        let mut writer = BufWriter::new(std::fs::File::create(&temp_path)?);
         serde_json::to_writer_pretty(&mut writer, state)?;
     }
 
-    if state_path.exists()? {
-        state_path.remove_file()?;
+    if state_path.exists() {
+        std::fs::remove_file(&state_path)?;
     }
-    temp_path.move_file(&state_path)?;
+    std::fs::rename(&temp_path, &state_path)?;
 
     Ok(())
 }
 
-pub fn load_book_user_state(path: &VfsPath) -> anyhow::Result<BookUserState> {
+pub fn load_book_user_state(path: &Path) -> anyhow::Result<BookUserState> {
     load_user_state_from_dir(path)
 }
 
@@ -316,10 +317,10 @@ impl LibraryBook {
         dict_cache: Arc<Mutex<DictionaryCache>>,
         metadata: LibraryBookMetadata,
     ) -> anyhow::Result<Self> {
-        let mut candidates: Vec<(&VfsPath, Option<SystemTime>)> = Vec::new();
-        candidates.push((&metadata.main_path, metadata.main_path.metadata()?.modified));
+        let mut candidates: Vec<(&PathBuf, Option<SystemTime>)> = Vec::new();
+        candidates.push((&metadata.main_path, std::fs::metadata(&metadata.main_path).ok().and_then(|m| m.modified().ok())));
         for p in &metadata.conflicting_paths {
-            candidates.push((p, p.metadata()?.modified));
+            candidates.push((p, std::fs::metadata(p).ok().and_then(|m| m.modified().ok())));
         }
 
         let mut newest_idx = 0usize;
@@ -332,19 +333,19 @@ impl LibraryBook {
         }
 
         if newest_idx != 0 {
-            if metadata.main_path.exists()? {
-                metadata.main_path.remove_file()?;
+            if metadata.main_path.exists() {
+                std::fs::remove_file(&metadata.main_path)?;
             }
             let source = &candidates[newest_idx].0;
-            if source.exists()? {
-                source.move_file(&metadata.main_path)?;
+            if source.exists() {
+                std::fs::rename(source, &metadata.main_path)?;
             }
         }
 
         for p in metadata.conflicting_paths {
-            if p.exists()? {
+            if p.exists() {
                 // It's possible we've just moved the newest conflict into main, so ignore missing
-                let _ = p.remove_file();
+                let _ = std::fs::remove_file(p);
             }
         }
 
@@ -365,15 +366,15 @@ impl LibraryBook {
 
     fn load(
         dict_cache: Arc<Mutex<DictionaryCache>>,
-        path: &VfsPath,
-    ) -> Result<Self, vfs::error::VfsError> {
-        let last_modified = path.metadata()?.modified;
-        let mut file = BufReader::new(path.open_file()?);
+        path: &Path,
+    ) -> anyhow::Result<Self> {
+        let last_modified = std::fs::metadata(path)?.modified().ok();
+        let mut file = BufReader::new(std::fs::File::open(path)?);
         let book = Book::deserialize(&mut file)?;
 
         Ok(Self {
             dict_cache,
-            path: path.parent(),
+            path: path.parent().unwrap().to_path_buf(),
             last_modified,
             book,
             translations: vec![],
@@ -417,13 +418,13 @@ impl LibraryBook {
     }
 
     pub async fn save(&mut self) -> anyhow::Result<()> {
-        if !self.path.exists()? {
-            self.path.create_dir()?
+        if !self.path.exists() {
+            std::fs::create_dir_all(&self.path)?;
         }
 
-        let get_modified_if_exists = |path: &VfsPath| {
-            if path.exists()? {
-                Ok::<_, vfs::error::VfsError>(path.metadata()?.modified)
+        let get_modified_if_exists = |path: &Path| {
+            if path.exists() {
+                Ok::<_, anyhow::Error>(std::fs::metadata(path)?.modified().ok())
             } else {
                 Ok(None)
             }
@@ -441,19 +442,19 @@ impl LibraryBook {
             let target_language = translation.translation.target_language.clone();
             let translation_file_name =
                 format!("translation_{}_{}.dat", source_language, target_language);
-            let translation_path = book.path.join(&translation_file_name)?;
+            let translation_path = book.path.join(&translation_file_name);
             let translation_path_temp = book.path.join(format!(
                 "{translation_file_name}~{}",
                 create_random_string(8)
-            ))?;
+            ));
 
             loop {
                 let translation_path_modified_pre_save = get_modified_if_exists(&translation_path)?;
 
                 if let Some(last_modified) = translation.last_modified {
-                    if translation_path.exists()? {
+                    if translation_path.exists() {
                         let saved_translation_last_modified =
-                            translation_path.metadata()?.modified.unwrap();
+                            std::fs::metadata(&translation_path)?.modified().unwrap();
                         if saved_translation_last_modified > last_modified {
                             let saved_translation = LibraryTranslation::load(
                                 book.dict_cache.clone(),
@@ -462,14 +463,14 @@ impl LibraryBook {
                             translation.merge(saved_translation);
                         }
                     }
-                } else if translation_path.exists()? {
+                } else if translation_path.exists() {
                     let saved_translation =
                         LibraryTranslation::load(book.dict_cache.clone(), &translation_path)?;
                     translation.merge(saved_translation);
                 }
 
                 if translation.changed {
-                    let mut translation_file = BufWriter::new(translation_path_temp.create_file()?);
+                    let mut translation_file = BufWriter::new(std::fs::File::create(&translation_path_temp)?);
                     translation.translation.serialize(&mut translation_file)?;
                     languages_to_save.insert((source_language.clone(), target_language.clone()));
 
@@ -477,10 +478,10 @@ impl LibraryBook {
                         == translation_path_modified_pre_save
                         || translation_path_modified_pre_save.is_none()
                     {
-                        if translation_path.exists()? {
-                            translation_path.remove_file()?;
+                        if translation_path.exists() {
+                            std::fs::remove_file(&translation_path)?;
                         }
-                        translation_path_temp.move_file(&translation_path)?;
+                        std::fs::rename(&translation_path_temp, &translation_path)?;
                         translation.last_modified = get_modified_if_exists(&translation_path)?;
                         merged_translations.push(translation_arc.clone());
                         break;
@@ -499,38 +500,38 @@ impl LibraryBook {
             dict.lock().await.save()?;
         }
 
-        let book_path = book.path.join("book.dat")?;
+        let book_path = book.path.join("book.dat");
         let book_path_temp = book
             .path
-            .join(format!("book.dat~{}", create_random_string(8)))?;
+            .join(format!("book.dat~{}", create_random_string(8)));
         loop {
             let book_path_modified_pre_save = get_modified_if_exists(&book_path)?;
 
             if let Some(last_modified) = book.last_modified {
-                if book_path.exists()? {
-                    let saved_book_last_modified = book_path.metadata()?.modified.unwrap();
+                if book_path.exists() {
+                    let saved_book_last_modified = std::fs::metadata(&book_path)?.modified().unwrap();
                     if saved_book_last_modified > last_modified {
                         let saved_book = Self::load(book.dict_cache.clone(), &book_path)?;
                         book.book = saved_book.book;
                         book.last_modified = saved_book.last_modified;
                     }
                 }
-            } else if book_path.exists()? {
+            } else if book_path.exists() {
                 let saved_book = Self::load(book.dict_cache.clone(), &book_path)?;
                 book.book = saved_book.book;
                 book.last_modified = saved_book.last_modified;
             }
 
-            let mut file = BufWriter::new(book_path_temp.create_file()?);
+            let mut file = BufWriter::new(std::fs::File::create(&book_path_temp)?);
             book.book.serialize(&mut file)?;
 
             if get_modified_if_exists(&book_path)? == book_path_modified_pre_save
                 || book_path_modified_pre_save.is_none()
             {
-                if book_path.exists()? {
-                    book_path.remove_file()?;
+                if book_path.exists() {
+                    std::fs::remove_file(&book_path)?;
                 }
-                book_path_temp.move_file(&book_path)?;
+                std::fs::rename(&book_path_temp, &book_path)?;
 
                 book.last_modified = get_modified_if_exists(&book_path)?;
                 break;
@@ -561,25 +562,17 @@ impl LibraryBook {
     }
 }
 
-fn remove_dir_recursive(path: &VfsPath) -> Result<(), vfs::error::VfsError> {
-    if !path.exists()? {
+fn remove_dir_recursive(path: &Path) -> anyhow::Result<()> {
+    if !path.exists() {
         return Ok(());
     }
 
-    if path.is_file()? {
-        path.remove_file()?;
+    if path.is_file() {
+        std::fs::remove_file(path)?;
         return Ok(());
     }
 
-    for entry in path.read_dir()? {
-        if entry.is_dir()? {
-            remove_dir_recursive(&entry)?;
-        } else {
-            entry.remove_file()?;
-        }
-    }
-
-    path.remove_dir()?;
+    std::fs::remove_dir_all(path)?;
     Ok(())
 }
 
@@ -615,7 +608,7 @@ impl Library {
         }
 
         let guid = Uuid::new_v4();
-        let book_root = self.library_root.join(guid.to_string())?;
+        let book_root = self.library_root.join(guid.to_string());
 
         let book = Arc::new(Mutex::new(LibraryBook {
             dict_cache: self.dictionaries_cache.clone(),
@@ -633,30 +626,18 @@ impl Library {
 
     pub fn delete_book(&mut self, uuid: &Uuid) -> anyhow::Result<()> {
         self.books_cache.remove(uuid);
-        let book_path = self.library_root.join(uuid.to_string())?;
+        let book_path = self.library_root.join(uuid.to_string());
 
-        if !book_path.exists()? {
+        if !book_path.exists() {
             return Ok(());
         }
 
-        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-        let _ = &self.physical_root;
-
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         {
-            if let Some(root) = &self.physical_root {
-                let physical_path = root.join(uuid.to_string());
-                info!(
-                    "Attempting to move {:?} (physical {:?}) to trash",
-                    book_path, physical_path
-                );
-                if try_move_to_trash(&physical_path)? {
-                    info!(
-                        "Book at {:?} moved to system recycle bin {:?}",
-                        book_path, physical_path
-                    );
-                    return Ok(());
-                }
+            info!("Attempting to move {:?} to trash", book_path);
+            if try_move_to_trash(&book_path)? {
+                info!("Book at {:?} moved to system recycle bin", book_path);
+                return Ok(());
             }
         }
 
@@ -672,7 +653,6 @@ mod library_book_tests {
 
     use isolang::Language;
     use tokio::sync::Mutex;
-    use vfs::VfsPath;
 
     use crate::{
         book::{
@@ -682,22 +662,22 @@ mod library_book_tests {
             Library, LibraryTranslationMetadata, library_book::BookReadingState,
             library_dictionary::DictionaryCache,
         },
+        test_utils::TempDir,
         translator::TranslationModel,
     };
 
     #[tokio::test]
     async fn list_books_conflicting_versions() {
-        let fs = vfs::MemoryFS::new();
-        let root: VfsPath = fs.into();
-        let library_path = root.join("lib").unwrap();
-        let mut library = Library::open(library_path.clone(), None).unwrap();
+        let temp_dir = TempDir::new("flts_test_book");
+        let library_path = temp_dir.path.join("lib");
+        let mut library = Library::open(library_path.clone()).unwrap();
 
         let book1 = library
             .create_book("First Book", &Language::from_639_3("eng").unwrap())
             .unwrap();
         book1.lock().await.save().await.unwrap();
 
-        let book_file = book1.lock().await.path.join("book.dat").unwrap();
+        let book_file = book1.lock().await.path.join("book.dat");
 
         let conflict_path = book1
             .lock()
@@ -705,12 +685,11 @@ mod library_book_tests {
             .path
             .join(
                 book_file
-                    .filename()
+                    .file_name().unwrap().to_str().unwrap()
                     .replace(".dat", ".syncconflict-foobar.dat"),
-            )
-            .unwrap();
+            );
 
-        book_file.copy_file(&conflict_path).unwrap();
+        std::fs::copy(&book_file, &conflict_path).unwrap();
 
         let library_books = library.list_books().unwrap();
 
@@ -718,17 +697,16 @@ mod library_book_tests {
 
         assert_eq!(library_books[0].conflicting_paths.len(), 1);
         assert_eq!(
-            library_books[0].conflicting_paths[0].filename(),
-            conflict_path.filename()
+            library_books[0].conflicting_paths[0].file_name(),
+            conflict_path.file_name()
         );
     }
 
     #[tokio::test]
     async fn list_books_conflicting_translation_versions() {
-        let fs = vfs::MemoryFS::new();
-        let root: VfsPath = fs.into();
-        let library_path = root.join("lib").unwrap();
-        let mut library = Library::open(library_path.clone(), None).unwrap();
+        let temp_dir = TempDir::new("flts_test_book");
+        let library_path = temp_dir.path.join("lib");
+        let mut library = Library::open(library_path.clone()).unwrap();
 
         let book1 = library
             .create_book("First Book", &Language::from_639_3("spa").unwrap())
@@ -748,8 +726,7 @@ mod library_book_tests {
                 "translation_{}_{}.dat",
                 Language::from_str("es").unwrap().to_639_3(),
                 Language::from_str("en").unwrap().to_639_3()
-            ))
-            .unwrap();
+            ));
 
         let conflict_path = book1
             .lock()
@@ -757,12 +734,11 @@ mod library_book_tests {
             .path
             .join(
                 translation_file
-                    .filename()
+                    .file_name().unwrap().to_str().unwrap()
                     .replace(".dat", ".syncconflict-foobar.dat"),
-            )
-            .unwrap();
+            );
 
-        translation_file.copy_file(&conflict_path).unwrap();
+        std::fs::copy(&translation_file, &conflict_path).unwrap();
 
         let library_books = library.list_books().unwrap();
 
@@ -770,8 +746,8 @@ mod library_book_tests {
         assert_eq!(
             library_books[0].translations_metadata[0]
                 .main_path
-                .filename(),
-            translation_file.filename()
+                .file_name(),
+            translation_file.file_name()
         );
         assert_eq!(
             library_books[0].translations_metadata[0]
@@ -780,17 +756,16 @@ mod library_book_tests {
             1
         );
         assert_eq!(
-            library_books[0].translations_metadata[0].conflicting_paths[0].filename(),
-            conflict_path.filename()
+            library_books[0].translations_metadata[0].conflicting_paths[0].file_name(),
+            conflict_path.file_name()
         );
     }
 
     #[tokio::test]
     async fn save_after_load_trivial_book_change() {
-        let fs = vfs::MemoryFS::new();
-        let root: VfsPath = fs.into();
-        let library_path = root.join("lib").unwrap();
-        let mut library = Library::open(library_path.clone(), None).unwrap();
+        let temp_dir = TempDir::new("flts_test_book");
+        let library_path = temp_dir.path.join("lib");
+        let mut library = Library::open(library_path.clone()).unwrap();
 
         // Create and save
         let book = library
@@ -799,25 +774,25 @@ mod library_book_tests {
         book.lock().await.save().await.unwrap();
 
         // Simulate "loaded": set last_modified from disk
-        let book_file = book.lock().await.path.join("book.dat").unwrap();
-        book.lock().await.last_modified = book_file.metadata().unwrap().modified;
+        let book_file = book.lock().await.path.join("book.dat");
+        book.lock().await.last_modified = std::fs::metadata(&book_file).unwrap().modified().ok();
 
         // Change and save again
         book.lock().await.book.title = "Updated Title".into();
         book.lock().await.save().await.unwrap();
 
         // Verify on-disk
-        let mut f = book_file.open_file().unwrap();
-        let loaded_book = Book::deserialize(&mut f).unwrap();
+        let f = std::fs::File::open(&book_file).unwrap();
+        let mut reader = std::io::BufReader::new(f);
+        let loaded_book = Book::deserialize(&mut reader).unwrap();
         assert_eq!(loaded_book.title, "Updated Title");
     }
 
     #[tokio::test]
     async fn save_after_load_book_and_translation_changed() {
-        let fs = vfs::MemoryFS::new();
-        let root: VfsPath = fs.into();
-        let library_path = root.join("lib").unwrap();
-        let mut library = Library::open(library_path.clone(), None).unwrap();
+        let temp_dir = TempDir::new("flts_test_book");
+        let library_path = temp_dir.path.join("lib");
+        let mut library = Library::open(library_path.clone()).unwrap();
 
         let source_language = Language::from_str("es").unwrap();
         let target_language = Language::from_str("en").unwrap();
@@ -926,23 +901,24 @@ mod library_book_tests {
             book.path.clone()
         };
 
-        let book_file = path.join("book.dat").unwrap();
+        let book_file = path.join("book.dat");
         let tr_file = path
             .join(format!(
                 "translation_{}_{}.dat",
                 source_language.to_639_3(),
                 target_language.to_639_3()
-            ))
-            .unwrap();
+            ));
 
         // Verify book updated
-        let mut bf = book_file.open_file().unwrap();
-        let loaded_book = Book::deserialize(&mut bf).unwrap();
+        let bf = std::fs::File::open(&book_file).unwrap();
+        let mut reader = std::io::BufReader::new(bf);
+        let loaded_book = Book::deserialize(&mut reader).unwrap();
         assert_eq!(loaded_book.title, "Second Edition");
 
         // Verify translation latest version
-        let mut tf = tr_file.open_file().unwrap();
-        let tr2 = Translation::deserialize(&mut tf).unwrap();
+        let tf = std::fs::File::open(&tr_file).unwrap();
+        let mut reader = std::io::BufReader::new(tf);
+        let tr2 = Translation::deserialize(&mut reader).unwrap();
         let latest = tr2.paragraph_view(0).unwrap();
         assert_eq!(latest.timestamp, 2);
         assert_eq!(latest.sentence_view(0).full_translation, "Hola mundo");
@@ -950,10 +926,9 @@ mod library_book_tests {
 
     #[tokio::test]
     async fn save_merges_translation_with_concurrent_on_disk_change() {
-        let fs = vfs::MemoryFS::new();
-        let root: VfsPath = fs.into();
-        let library_path = root.join("lib").unwrap();
-        let mut library = Library::open(library_path.clone(), None).unwrap();
+        let temp_dir = TempDir::new("flts_test_book");
+        let library_path = temp_dir.path.join("lib");
+        let mut library = Library::open(library_path.clone()).unwrap();
 
         let source_language = Language::from_str("en").unwrap();
         let target_language = Language::from_str("ru").unwrap();
@@ -1014,16 +989,15 @@ mod library_book_tests {
         book.save().await.unwrap();
 
         // Treat as loaded instance with last_modified
-        let book_file = book.path.join("book.dat").unwrap();
+        let book_file = book.path.join("book.dat");
         let tr_path = book
             .path
             .join(format!(
                 "translation_{}_{}.dat",
                 source_language.to_639_3(),
                 target_language.to_639_3()
-            ))
-            .unwrap();
-        book.last_modified = book_file.metadata().unwrap().modified;
+            ));
+        book.last_modified = std::fs::metadata(&book_file).unwrap().modified().ok();
         book.translations.clear();
         let loaded_tr =
             super::LibraryTranslation::load(library.dictionaries_cache.clone(), &tr_path).unwrap();
@@ -1069,8 +1043,9 @@ mod library_book_tests {
         // Concurrent on-disk change ts=3
         {
             let mut on_disk = {
-                let mut f = tr_path.open_file().unwrap();
-                Translation::deserialize(&mut f).unwrap()
+                let f = std::fs::File::open(&tr_path).unwrap();
+                let mut reader = std::io::BufReader::new(f);
+                Translation::deserialize(&mut reader).unwrap()
             };
             let disk_pt = translation_import::ParagraphTranslation {
                 total_tokens: None,
@@ -1103,14 +1078,16 @@ mod library_book_tests {
                 TranslationModel::Gemini25Flash,
                 &mut dict.lock().await.dictionary,
             );
-            let mut wf = tr_path.create_file().unwrap();
-            on_disk.serialize(&mut wf).unwrap();
+            let wf = std::fs::File::create(&tr_path).unwrap();
+            let mut writer = std::io::BufWriter::new(wf);
+            on_disk.serialize(&mut writer).unwrap();
         }
 
         // Save should merge: latest ts=3 -> ts=2 -> ts=1
         let _merged = book.save().await.unwrap();
-        let mut tf = tr_path.open_file().unwrap();
-        let merged_tr = Translation::deserialize(&mut tf).unwrap();
+        let tf = std::fs::File::open(&tr_path).unwrap();
+        let mut reader = std::io::BufReader::new(tf);
+        let merged_tr = Translation::deserialize(&mut reader).unwrap();
         let latest = merged_tr.paragraph_view(0).unwrap();
         assert_eq!(latest.timestamp, 3);
         assert_eq!(latest.sentence_view(0).full_translation, "disk");
@@ -1125,10 +1102,9 @@ mod library_book_tests {
 
     #[tokio::test]
     async fn reading_state_roundtrip() {
-        let fs = vfs::MemoryFS::new();
-        let root: VfsPath = fs.into();
-        let library_path = root.join("lib").unwrap();
-        let mut library = Library::open(library_path.clone(), None).unwrap();
+        let temp_dir = TempDir::new("flts_test_book");
+        let library_path = temp_dir.path.join("lib");
+        let mut library = Library::open(library_path.clone()).unwrap();
 
         let book = library
             .create_book("Stateful", &Language::from_639_3("eng").unwrap())
@@ -1153,10 +1129,9 @@ mod library_book_tests {
 
     #[tokio::test]
     async fn folder_path_roundtrip() {
-        let fs = vfs::MemoryFS::new();
-        let root: VfsPath = fs.into();
-        let library_path = root.join("lib").unwrap();
-        let mut library = Library::open(library_path.clone(), None).unwrap();
+        let temp_dir = TempDir::new("flts_test_book");
+        let library_path = temp_dir.path.join("lib");
+        let mut library = Library::open(library_path.clone()).unwrap();
 
         let book = library
             .create_book("Shelved", &Language::from_639_3("eng").unwrap())
@@ -1180,10 +1155,9 @@ mod library_book_tests {
 
     #[tokio::test]
     async fn reading_state_prefers_latest_conflict() {
-        let fs = vfs::MemoryFS::new();
-        let root: VfsPath = fs.into();
-        let library_root = root.join("lib").unwrap();
-        let mut library = Library::open(library_root.clone(), None).unwrap();
+        let temp_dir = TempDir::new("flts_test_book");
+        let library_root = temp_dir.path.join("lib");
+        let mut library = Library::open(library_root.clone()).unwrap();
 
         let book = library
             .create_book("Conflicted", &Language::from_639_3("eng").unwrap())
@@ -1202,20 +1176,20 @@ mod library_book_tests {
         {
             let book = library.get_book(&book_id).unwrap();
             let book = book.lock().await;
-            let conflict_path = book.path.join("state (conflict copy).json").unwrap();
+            let conflict_path = book.path.join("state (conflict copy).json");
             std::thread::sleep(std::time::Duration::from_millis(5));
             let serialized = serde_json::to_vec(&BookReadingState {
                 chapter_id: 4,
                 paragraph_id: 8,
             })
             .unwrap();
-            let mut file = conflict_path.create_file().unwrap();
+            let mut file = std::fs::File::create(&conflict_path).unwrap();
             file.write_all(&serialized).unwrap();
         }
 
         drop(library);
 
-        let mut library = Library::open(library_root, None).unwrap();
+        let mut library = Library::open(library_root).unwrap();
         let book = library.get_book(&book_id).unwrap();
         let mut book = book.lock().await;
         let state = book.reading_state().unwrap();
@@ -1225,14 +1199,13 @@ mod library_book_tests {
 
     #[test]
     fn load_user_state_from_legacy_file() {
-        let fs = vfs::MemoryFS::new();
-        let root: VfsPath = fs.into();
-        let book_dir = root.join("legacy").unwrap();
-        book_dir.create_dir().unwrap();
+        let temp_dir = TempDir::new("flts_test_book");
+        let book_dir = temp_dir.path.join("legacy");
+        std::fs::create_dir_all(&book_dir).unwrap();
 
-        let state_path = book_dir.join("state.json").unwrap();
+        let state_path = book_dir.join("state.json");
         {
-            let mut file = state_path.create_file().unwrap();
+            let mut file = std::fs::File::create(&state_path).unwrap();
             file.write_all(br#"{"chapterId":3,"paragraphId":9}"#)
                 .unwrap();
         }
@@ -1249,12 +1222,11 @@ mod library_book_tests {
     #[tokio::test]
     async fn load_from_metadata_no_conflicts() {
         // Arrange: create a single main translation file with a simple history
-        let fs = vfs::MemoryFS::new();
-        let root: VfsPath = fs.into();
-        let dir = root.join("book").unwrap();
-        dir.create_dir().unwrap();
+        let temp_dir = TempDir::new("flts_test_book");
+        let dir = temp_dir.path.join("book");
+        std::fs::create_dir_all(&dir).unwrap();
 
-        let dict_cache = Arc::new(Mutex::new(DictionaryCache::new(&root)));
+        let dict_cache = Arc::new(Mutex::new(DictionaryCache::new(&temp_dir.path)));
 
         let source_language = Language::from_str("en").unwrap();
         let target_language = Language::from_str("ru").unwrap();
@@ -1265,7 +1237,7 @@ mod library_book_tests {
             .get_dictionary(source_language, target_language)
             .unwrap();
 
-        let main_path = dir.join("translation_en_ru.dat").unwrap();
+        let main_path = dir.join("translation_en_ru.dat");
         let mut t_main =
             Translation::create(source_language.to_639_3(), target_language.to_639_3());
         let pt2 = translation_import::ParagraphTranslation {
@@ -1300,8 +1272,9 @@ mod library_book_tests {
             &mut dict.lock().await.dictionary,
         );
         {
-            let mut f = main_path.create_file().unwrap();
-            t_main.serialize(&mut f).unwrap();
+            let f = std::fs::File::create(&main_path).unwrap();
+            let mut writer = std::io::BufWriter::new(f);
+            t_main.serialize(&mut writer).unwrap();
         }
 
         let meta = LibraryTranslationMetadata {
@@ -1325,12 +1298,11 @@ mod library_book_tests {
     #[tokio::test]
     async fn load_from_metadata_merges_conflicts_and_persists() {
         // Arrange: create main + two conflict files with different timestamps
-        let fs = vfs::MemoryFS::new();
-        let root: VfsPath = fs.into();
-        let dir = root.join("book2").unwrap();
-        dir.create_dir().unwrap();
+        let temp_dir = TempDir::new("flts_test_book");
+        let dir = temp_dir.path.join("book2");
+        std::fs::create_dir_all(&dir).unwrap();
 
-        let dict_cache = Arc::new(Mutex::new(DictionaryCache::new(&root)));
+        let dict_cache = Arc::new(Mutex::new(DictionaryCache::new(&temp_dir.path)));
 
         let source_language = Language::from_str("en").unwrap();
         let target_language = Language::from_str("ru").unwrap();
@@ -1346,16 +1318,14 @@ mod library_book_tests {
                 "translation_{}_{}.dat",
                 source_language.to_639_3(),
                 target_language.to_639_3()
-            ))
-            .unwrap();
+            ));
         let conflict1 = dir
             .join(format!(
                 "translation_{}_{}.conflict1.dat",
                 source_language.to_639_3(),
                 target_language.to_639_3()
-            ))
-            .unwrap();
-        let conflict2 = dir.join("translation_en_ru.conflict2.dat").unwrap();
+            ));
+        let conflict2 = dir.join("translation_en_ru.conflict2.dat");
 
         // main: ts=2
         let mut t_main =
@@ -1392,8 +1362,9 @@ mod library_book_tests {
             &mut dict.lock().await.dictionary,
         );
         {
-            let mut f = main_path.create_file().unwrap();
-            t_main.serialize(&mut f).unwrap();
+            let f = std::fs::File::create(&main_path).unwrap();
+            let mut writer = std::io::BufWriter::new(f);
+            t_main.serialize(&mut writer).unwrap();
         }
 
         // conflict1: ts=1
@@ -1430,8 +1401,9 @@ mod library_book_tests {
             &mut dict.lock().await.dictionary,
         );
         {
-            let mut f = conflict1.create_file().unwrap();
-            t_c1.serialize(&mut f).unwrap();
+            let f = std::fs::File::create(&conflict1).unwrap();
+            let mut writer = std::io::BufWriter::new(f);
+            t_c1.serialize(&mut writer).unwrap();
         }
 
         // conflict2: ts=3
@@ -1468,8 +1440,9 @@ mod library_book_tests {
             &mut dict.lock().await.dictionary,
         );
         {
-            let mut f = conflict2.create_file().unwrap();
-            t_c2.serialize(&mut f).unwrap();
+            let f = std::fs::File::create(&conflict2).unwrap();
+            let mut writer = std::io::BufWriter::new(f);
+            t_c2.serialize(&mut writer).unwrap();
         }
 
         let meta = LibraryTranslationMetadata {
@@ -1497,8 +1470,9 @@ mod library_book_tests {
         assert!(prev2.get_previous_version().is_none());
 
         // Also verify that the main file now contains the merged result (latest ts=3)
-        let mut f = main_path.open_file().unwrap();
-        let on_disk = Translation::deserialize(&mut f).unwrap();
+        let f = std::fs::File::open(&main_path).unwrap();
+        let mut reader = std::io::BufReader::new(f);
+        let on_disk = Translation::deserialize(&mut reader).unwrap();
         let on_disk_latest = on_disk.paragraph_view(0).unwrap();
         assert_eq!(on_disk_latest.timestamp, 3);
         assert_eq!(on_disk_latest.sentence_view(0).full_translation, "c3");
@@ -1507,10 +1481,9 @@ mod library_book_tests {
     #[tokio::test]
     async fn library_book_load_from_metadata_no_conflicts() {
         // Arrange
-        let fs = vfs::MemoryFS::new();
-        let root: VfsPath = fs.into();
-        let library_path = root.join("lib").unwrap();
-        let mut library = Library::open(library_path.clone(), None).unwrap();
+        let temp_dir = TempDir::new("flts_test_book");
+        let library_path = temp_dir.path.join("lib");
+        let mut library = Library::open(library_path.clone()).unwrap();
 
         let book = library
             .create_book("Original Title", &Language::from_639_3("eng").unwrap())
@@ -1537,10 +1510,9 @@ mod library_book_tests {
         use std::{thread::sleep, time::Duration};
 
         // Arrange
-        let fs = vfs::MemoryFS::new();
-        let root: VfsPath = fs.into();
-        let library_path = root.join("lib").unwrap();
-        let mut library = Library::open(library_path.clone(), None).unwrap();
+        let temp_dir = TempDir::new("flts_test_book");
+        let library_path = temp_dir.path.join("lib");
+        let mut library = Library::open(library_path.clone()).unwrap();
 
         let book = library
             .create_book("Main V1", &Language::from_639_3("eng").unwrap())
@@ -1548,26 +1520,27 @@ mod library_book_tests {
         let mut book = book.lock().await;
         book.save().await.unwrap();
 
-        let book_file = book.path.join("book.dat").unwrap();
+        let book_file = book.path.join("book.dat");
         let conflict_path = book
             .path
             .join(
                 book_file
-                    .filename()
+                    .file_name().unwrap().to_str().unwrap()
                     .replace(".dat", ".syncconflict-newer.dat"),
-            )
-            .unwrap();
+            );
 
         // Create conflict as a copy first (same id)
-        book_file.copy_file(&conflict_path).unwrap();
+        std::fs::copy(&book_file, &conflict_path).unwrap();
 
         // Ensure timestamp difference and update conflict content to be "newer"
         sleep(Duration::from_millis(5));
-        let mut rf = conflict_path.open_file().unwrap();
-        let mut conflict_book = Book::deserialize(&mut rf).unwrap();
+        let rf = std::fs::File::open(&conflict_path).unwrap();
+        let mut reader = std::io::BufReader::new(rf);
+        let mut conflict_book = Book::deserialize(&mut reader).unwrap();
         conflict_book.title = "From Conflict".into();
-        let mut wf = conflict_path.create_file().unwrap();
-        conflict_book.serialize(&mut wf).unwrap();
+        let wf = std::fs::File::create(&conflict_path).unwrap();
+        let mut writer = std::io::BufWriter::new(wf);
+        conflict_book.serialize(&mut writer).unwrap();
 
         // Acquire metadata (should include the conflict)
         let mut books = library.list_books().unwrap();
@@ -1582,10 +1555,11 @@ mod library_book_tests {
         // Assert: loaded content is from conflict (newest)
         assert_eq!(loaded.book.title, "From Conflict");
         // On-disk main should now contain the conflict content and conflict file should be gone
-        let mut f = book_file.open_file().unwrap();
-        let on_disk = Book::deserialize(&mut f).unwrap();
+        let f = std::fs::File::open(&book_file).unwrap();
+        let mut reader = std::io::BufReader::new(f);
+        let on_disk = Book::deserialize(&mut reader).unwrap();
         assert_eq!(on_disk.title, "From Conflict");
-        assert!(!conflict_path.exists().unwrap());
+        assert!(!conflict_path.exists());
     }
 
     #[tokio::test]
@@ -1593,10 +1567,9 @@ mod library_book_tests {
         use std::{thread::sleep, time::Duration};
 
         // Arrange
-        let fs = vfs::MemoryFS::new();
-        let root: VfsPath = fs.into();
-        let library_path = root.join("lib").unwrap();
-        let mut library = Library::open(library_path.clone(), None).unwrap();
+        let temp_dir = TempDir::new("flts_test_book");
+        let library_path = temp_dir.path.join("lib");
+        let mut library = Library::open(library_path.clone()).unwrap();
 
         let book = library
             .create_book("V1", &Language::from_639_3("eng").unwrap())
@@ -1604,26 +1577,27 @@ mod library_book_tests {
         let mut book = book.lock().await;
         book.save().await.unwrap();
 
-        let book_file = book.path.join("book.dat").unwrap();
+        let book_file = book.path.join("book.dat");
         let conflict_path = book
             .path
             .join(
                 book_file
-                    .filename()
+                    .file_name().unwrap().to_str().unwrap()
                     .replace(".dat", ".syncconflict-older.dat"),
-            )
-            .unwrap();
+            );
 
         // Create conflict as a copy (same id)
-        book_file.copy_file(&conflict_path).unwrap();
+        std::fs::copy(&book_file, &conflict_path).unwrap();
 
         // Now update the MAIN file to be newer with a different title
         sleep(Duration::from_millis(5));
-        let mut rf = book_file.open_file().unwrap();
-        let mut main_book = Book::deserialize(&mut rf).unwrap();
+        let rf = std::fs::File::open(&book_file).unwrap();
+        let mut reader = std::io::BufReader::new(rf);
+        let mut main_book = Book::deserialize(&mut reader).unwrap();
         main_book.title = "V2".into();
-        let mut wf = book_file.create_file().unwrap();
-        main_book.serialize(&mut wf).unwrap();
+        let wf = std::fs::File::create(&book_file).unwrap();
+        let mut writer = std::io::BufWriter::new(wf);
+        main_book.serialize(&mut writer).unwrap();
 
         // Acquire metadata (should include conflict)
         let mut books = library.list_books().unwrap();
@@ -1637,18 +1611,18 @@ mod library_book_tests {
 
         // Assert: main is kept, conflict removed
         assert_eq!(loaded.book.title, "V2");
-        let mut f = book_file.open_file().unwrap();
-        let on_disk = Book::deserialize(&mut f).unwrap();
+        let f = std::fs::File::open(&book_file).unwrap();
+        let mut reader = std::io::BufReader::new(f);
+        let on_disk = Book::deserialize(&mut reader).unwrap();
         assert_eq!(on_disk.title, "V2");
-        assert!(!conflict_path.exists().unwrap());
+        assert!(!conflict_path.exists());
     }
 
     #[tokio::test]
     async fn delete_book_removes_directory() {
-        let fs = vfs::MemoryFS::new();
-        let root: VfsPath = fs.into();
-        let library_path = root.join("lib").unwrap();
-        let mut library = Library::open(library_path.clone(), None).unwrap();
+        let temp_dir = TempDir::new("flts_test_book");
+        let library_path = temp_dir.path.join("lib");
+        let mut library = Library::open(library_path.clone()).unwrap();
 
         let book = library
             .create_book("Disposable", &Language::from_639_3("eng").unwrap())
@@ -1659,12 +1633,12 @@ mod library_book_tests {
             book.book.id
         };
 
-        let book_dir = library_path.join(book_id.to_string()).unwrap();
-        assert!(book_dir.exists().unwrap());
+        let book_dir = library_path.join(book_id.to_string());
+        assert!(book_dir.exists());
 
         library.delete_book(&book_id).unwrap();
 
-        assert!(!book_dir.exists().unwrap());
+        assert!(!book_dir.exists());
         assert!(library.list_books().unwrap().is_empty());
     }
 }

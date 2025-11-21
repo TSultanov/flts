@@ -19,7 +19,6 @@ use library::{
 use log::{info, warn};
 use tauri::{Emitter, async_runtime::Mutex};
 use uuid::Uuid;
-use vfs::PhysicalFS;
 
 use crate::app::{config::Config, library_view::LibraryView, translation_queue::TranslationQueue};
 
@@ -143,11 +142,8 @@ impl App {
         info!("library_path = {library_path:?}");
 
         if let Some(library_path) = library_path {
-            let fs = PhysicalFS::new(library_path);
-
             let library = Arc::new(Mutex::new(Library::open(
-                fs.into(),
-                Some(PathBuf::from(library_path)),
+                PathBuf::from(library_path),
             )?));
             self.library = Some(library.clone());
             if let Some(watcher) = &self.watcher {
