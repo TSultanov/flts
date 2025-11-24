@@ -152,14 +152,7 @@
     }
 
     onMount(() => {
-        const resizeListener = () => {
-            void adjustVisiblePopups();
-        };
-        window.addEventListener("resize", resizeListener);
         void adjustVisiblePopups();
-        return () => {
-            window.removeEventListener("resize", resizeListener);
-        };
     });
 </script>
 
@@ -202,6 +195,7 @@
     }
 
     :global(.word-span .word-translation) {
+        display: none;
         position: absolute;
         left: 0;
         right: 0;
@@ -214,6 +208,8 @@
         box-sizing: border-box;
         white-space: nowrap;
         opacity: 0;
+        -webkit-user-select: none;
+        user-select: none;
         pointer-events: none;
         transition: opacity 150ms ease;
         z-index: 2;
@@ -221,6 +217,7 @@
     }
 
     :global(.word-span.show-translation .word-translation) {
+        display: block;
         opacity: 0.9;
     }
 
