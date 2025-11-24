@@ -127,7 +127,6 @@
 <style>
     .container {
         display: grid;
-        /* flex-direction: row; */
         grid-template-columns: 150px auto 300px;
         height: 100%;
     }

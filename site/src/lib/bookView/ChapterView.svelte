@@ -232,7 +232,6 @@
     .paragraphs-container {
         width: 100%;
         height: 100%;
-        /* padding: 2px; */
         overflow-x: auto;
         scroll-snap-type: x mandatory;
         column-gap: 0;
