@@ -51,8 +51,13 @@
     let saveTimeout: ReturnType<typeof setTimeout> | null = null;
     let lastSavedParagraph: number | null = null;
     let initialScrollApplied = false;
+    let isResizing = false;
+    let resizeTimeout: ReturnType<typeof setTimeout> | null = null;
 
     function handleScroll() {
+        if (isResizing) {
+            return;
+        }
         updateVisibleParagraph();
     }
 
@@ -168,9 +173,36 @@
     });
 
     onMount(() => {
-        const listener = () => updateVisibleParagraph();
+        const listener = () => {
+            isResizing = true;
+            if (resizeTimeout) {
+                clearTimeout(resizeTimeout);
+            }
+
+            if (visibleParagraphId != null && paragraphsContainer) {
+                const target = paragraphsContainer.querySelector<HTMLElement>(
+                    `[data-paragraph-id="${visibleParagraphId}"]`,
+                );
+                if (target) {
+                    target.scrollIntoView({
+                        behavior: "auto",
+                        block: "center",
+                        inline: "center",
+                    });
+                }
+            }
+
+            resizeTimeout = setTimeout(() => {
+                isResizing = false;
+            }, 200);
+        };
         window.addEventListener("resize", listener);
-        return () => window.removeEventListener("resize", listener);
+        return () => {
+            window.removeEventListener("resize", listener);
+            if (resizeTimeout) {
+                clearTimeout(resizeTimeout);
+            }
+        };
     });
 
     onDestroy(() => {
