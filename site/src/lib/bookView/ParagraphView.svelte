@@ -234,6 +234,7 @@
         margin-bottom: 0.5em;
         display: grid;
         grid-template-columns: 1.5cm auto 1.5cm;
+        break-inside: avoid;
     }
 
     button.translate {
