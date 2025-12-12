@@ -24,21 +24,6 @@ pub struct ProviderMeta {
     pub api_key_field: &'static str,
 }
 
-fn model_provider(model: TranslationModel) -> Option<TranslationProvider> {
-    match model {
-        TranslationModel::Gemini25Flash
-        | TranslationModel::Gemini25Pro
-        | TranslationModel::Gemini25FlashLight => Some(TranslationProvider::Google),
-
-        TranslationModel::OpenAIGpt52
-        | TranslationModel::OpenAIGpt52Pro
-        | TranslationModel::OpenAIGpt5Mini
-        | TranslationModel::OpenAIGpt5Nano => Some(TranslationProvider::Openai),
-
-        TranslationModel::Unknown => None,
-    }
-}
-
 fn model_pretty_name(model: TranslationModel) -> &'static str {
     match model {
         TranslationModel::Gemini25FlashLight => "Gemini 2.5 Flash Light",
@@ -57,7 +42,7 @@ impl From<TranslationModel> for Model {
         Self {
             id: value as i32,
             name: model_pretty_name(value),
-            provider: model_provider(value),
+            provider: value.provider(),
         }
     }
 }

@@ -61,11 +61,8 @@ impl TranslationQueue {
         config: &Config,
         app: tauri::AppHandle,
     ) -> Option<Self> {
-        let provider = config.translation_provider;
-        let api_key = match provider {
-            TranslationProvider::Google => config.gemini_api_key.clone()?,
-            TranslationProvider::Openai => config.openai_api_key.clone()?,
-        };
+        let gemini_api_key = config.gemini_api_key.clone();
+        let openai_api_key = config.openai_api_key.clone();
         let target_language = Language::from_639_3(&config.target_language_id)?;
 
         let (tx_save, rx_save) = flume::unbounded::<SaveNotify>();
@@ -85,8 +82,8 @@ impl TranslationQueue {
                 while let Ok(request) = rx_translate.recv_async().await {
                     let library = library.clone();
                     let cache = cache.clone();
-                    let api_key = api_key.clone();
-                    let provider = provider;
+                    let gemini_api_key = gemini_api_key.clone();
+                    let openai_api_key = openai_api_key.clone();
 
                     request_state
                         .lock()
@@ -97,8 +94,8 @@ impl TranslationQueue {
                         library,
                         cache,
                         target_language,
-                        provider,
-                        api_key,
+                        gemini_api_key,
+                        openai_api_key,
                         app.clone(),
                         &tx_save,
                         &request,
@@ -189,8 +186,8 @@ async fn handle_request(
     library: Arc<Mutex<Library>>,
     cache: Arc<Mutex<TranslationsCache>>,
     target_language: Language,
-    provider: TranslationProvider,
-    api_key: String,
+    gemini_api_key: Option<String>,
+    openai_api_key: Option<String>,
     app: tauri::AppHandle,
     save_notify: &flume::Sender<SaveNotify>,
     request: &TranslationRequest,
@@ -214,11 +211,25 @@ async fn handle_request(
         String::from_iter(paragraph_text.chars().take(40))
     );
 
+    let provider = request
+        .model
+        .provider()
+        .ok_or(anyhow::anyhow!("Unknown model provider"))?;
+
+    let api_key = match provider {
+        TranslationProvider::Google => {
+            gemini_api_key.ok_or(anyhow::anyhow!("No Gemini API key"))?
+        }
+        TranslationProvider::Openai => {
+            openai_api_key.ok_or(anyhow::anyhow!("No OpenAI API key"))?
+        }
+    };
+
     let translator = get_translator(
         cache,
         provider,
         request.model,
-        api_key.clone(),
+        api_key,
         source_language,
         target_language,
     )?;

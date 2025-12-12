@@ -41,6 +41,23 @@ pub enum TranslationModel {
     OpenAIGpt5Nano = 7,
 }
 
+impl TranslationModel {
+    pub fn provider(&self) -> Option<TranslationProvider> {
+        match self {
+            TranslationModel::Gemini25Flash
+            | TranslationModel::Gemini25Pro
+            | TranslationModel::Gemini25FlashLight => Some(TranslationProvider::Google),
+
+            TranslationModel::OpenAIGpt52
+            | TranslationModel::OpenAIGpt52Pro
+            | TranslationModel::OpenAIGpt5Mini
+            | TranslationModel::OpenAIGpt5Nano => Some(TranslationProvider::Openai),
+
+            TranslationModel::Unknown => None,
+        }
+    }
+}
+
 impl From<usize> for TranslationModel {
     fn from(value: usize) -> Self {
         match value {
