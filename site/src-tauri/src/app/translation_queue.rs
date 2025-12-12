@@ -223,6 +223,13 @@ async fn handle_request(
         target_language,
     )?;
 
+    let expected_size = paragraph_text.len() * 50;
+    info!(
+        "Estimated translation size: {} (source len: {})",
+        expected_size,
+        paragraph_text.len()
+    );
+
     let callback = {
         let app = app.clone();
         let request_id = request.request_id;
@@ -231,11 +238,12 @@ async fn handle_request(
             let mut last = last_emit.lock().unwrap();
             if last.elapsed() >= Duration::from_millis(100) {
                 info!(
-                    "Translation progress for request {}: {} chars",
+                    "Translation progress for request {}: {}/{} chars",
                     request_id,
-                    chunk.len()
+                    chunk.len(),
+                    expected_size
                 );
-                let _ = app.emit("translation_progress", (request_id, chunk));
+                let _ = app.emit("translation_progress", (request_id, chunk, expected_size));
                 *last = Instant::now();
             }
         })
