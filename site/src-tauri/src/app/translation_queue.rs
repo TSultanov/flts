@@ -11,6 +11,7 @@ use isolang::Language;
 use library::{
     cache::TranslationsCache,
     library::Library,
+    translation_stats::TranslationSizeCache,
     translator::{TranslationModel, TranslationProvider, get_translator},
 };
 use log::{info, warn};
@@ -58,6 +59,7 @@ impl TranslationQueue {
     pub fn init(
         library: Arc<Mutex<Library>>,
         cache: Arc<Mutex<TranslationsCache>>,
+        stats_cache: Arc<Mutex<TranslationSizeCache>>,
         config: &Config,
         app: tauri::AppHandle,
     ) -> Option<Self> {
@@ -93,6 +95,7 @@ impl TranslationQueue {
                     handle_request(
                         library,
                         cache,
+                        stats_cache.clone(),
                         target_language,
                         gemini_api_key,
                         openai_api_key,
@@ -185,6 +188,7 @@ impl TranslationQueue {
 async fn handle_request(
     library: Arc<Mutex<Library>>,
     cache: Arc<Mutex<TranslationsCache>>,
+    stats_cache: Arc<Mutex<TranslationSizeCache>>,
     target_language: Language,
     gemini_api_key: Option<String>,
     openai_api_key: Option<String>,
@@ -234,11 +238,16 @@ async fn handle_request(
         target_language,
     )?;
 
-    let expected_size = paragraph_text.len() * 50;
+    let source_len = paragraph_text.len();
+    let stats = stats_cache
+        .lock()
+        .await
+        .get(&source_language, &target_language)
+        .await;
+    let expected_size = stats.estimate(source_len);
     info!(
-        "Estimated translation size: {} (source len: {})",
-        expected_size,
-        paragraph_text.len()
+        "Estimated translation size: {} (source len: {}, ratio: {:.1}, observations: {})",
+        expected_size, source_len, stats.ratio, stats.n
     );
 
     let callback = {
@@ -264,6 +273,22 @@ async fn handle_request(
         .get_translation(&paragraph_text, request.use_cache, Some(callback))
         .await?;
     info!("Translated paragraph {}", request.paragraph_id);
+
+    // Measure actual translation JSON size and update stats
+    let actual_size = serde_json::to_string(&p_translation)
+        .map(|s| s.len())
+        .unwrap_or(0);
+    stats_cache
+        .lock()
+        .await
+        .record_observation(&source_language, &target_language, source_len, actual_size)
+        .await;
+    info!(
+        "Recorded translation stats: source_len={}, actual_size={}, ratio={:.1}",
+        source_len,
+        actual_size,
+        actual_size as f64 / source_len as f64
+    );
 
     translation
         .lock()

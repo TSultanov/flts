@@ -14,6 +14,7 @@ use library::{
         Library,
         file_watcher::{LibraryFileChange, LibraryWatcher},
     },
+    translation_stats::TranslationSizeCache,
     translator::TranslationModel,
 };
 use log::{info, warn};
@@ -177,6 +178,12 @@ impl App {
         TranslationsCache::create(cache_dir).await
     }
 
+    async fn get_stats_cache() -> anyhow::Result<TranslationSizeCache> {
+        let dirs = ProjectDirs::from("", "TS", "FLTS").unwrap();
+        let cache_dir = dirs.cache_dir();
+        TranslationSizeCache::create(cache_dir).await
+    }
+
     pub async fn handle_file_change_event(
         &mut self,
         event: &LibraryFileChange,
@@ -245,8 +252,14 @@ impl App {
             && self.translation_queue.is_none()
         {
             let cache = Arc::new(Mutex::new(Self::get_cache().await?));
-            self.translation_queue =
-                TranslationQueue::init(library.clone(), cache, &self.config, self.app.clone());
+            let stats_cache = Arc::new(Mutex::new(Self::get_stats_cache().await?));
+            self.translation_queue = TranslationQueue::init(
+                library.clone(),
+                cache,
+                stats_cache,
+                &self.config,
+                self.app.clone(),
+            );
         }
 
         if let Some(q) = &self.translation_queue {
@@ -265,8 +278,14 @@ impl App {
             && self.translation_queue.is_none()
         {
             let cache = Arc::new(Mutex::new(Self::get_cache().await?));
-            self.translation_queue =
-                TranslationQueue::init(library.clone(), cache, &self.config, self.app.clone());
+            let stats_cache = Arc::new(Mutex::new(Self::get_stats_cache().await?));
+            self.translation_queue = TranslationQueue::init(
+                library.clone(),
+                cache,
+                stats_cache,
+                &self.config,
+                self.app.clone(),
+            );
         }
 
         if let Some(q) = &self.translation_queue {
