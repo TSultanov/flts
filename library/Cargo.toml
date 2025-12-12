@@ -6,6 +6,8 @@ edition = "2024"
 [dependencies]
 ahash = "0.8.12"
 anyhow = "1.0.100"
+async-openai = { version = "0.31.1", features = ["_api", "chat-completion", "chat-completion-types"] }
+async-trait = "0.1.89"
 epub = "=2.1.4"
 flume = "0.11.1"
 fnv = "1.0.7"

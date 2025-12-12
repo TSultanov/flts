@@ -1,10 +1,20 @@
 import { invoke } from '@tauri-apps/api/core';
 import { eventToReadable, getterToReadableWithEvents } from './data/tauri';
 
+export type TranslationProvider = 'google' | 'openai';
+
 export type Model = {
     id: number,
     name: string,
+    provider?: TranslationProvider,
 }
+
+export type ProviderMeta = {
+    id: TranslationProvider,
+    name: string,
+    defaultModelId: number,
+    apiKeyField: 'geminiApiKey' | 'openaiApiKey',
+};
 
 export type Language = {
     id: string,
@@ -14,7 +24,9 @@ export type Language = {
 
 export type Config = {
     targetLanguageId?: string,
+    translationProvider: TranslationProvider,
     geminiApiKey?: string,
+    openaiApiKey?: string,
     model: number,
     libraryPath?: string,
 }
@@ -22,6 +34,11 @@ export type Config = {
 export async function getModels(): Promise<Model[]> {
     let models = await invoke<Model[]>("get_models");
     return models;
+}
+
+export async function getTranslationProviders(): Promise<ProviderMeta[]> {
+    let providers = await invoke<ProviderMeta[]>("get_translation_providers");
+    return providers;
 }
 
 export async function getLanguages() {

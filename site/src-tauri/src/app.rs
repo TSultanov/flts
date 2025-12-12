@@ -105,6 +105,10 @@ impl App {
     pub async fn update_config(&mut self, config: Config) -> anyhow::Result<()> {
         self.config = config;
 
+        // Translator settings (provider/key/model) are captured when the translation queue is created.
+        // Reset it so the next translation uses the latest config.
+        self.translation_queue = None;
+
         #[cfg(mobile)]
         {
             let library_path = {

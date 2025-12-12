@@ -12,14 +12,26 @@ type Language = {
   localName?: string;
 };
 
+type TranslationProvider = 'google' | 'openai';
+
+type ProviderMeta = {
+  id: TranslationProvider;
+  name: string;
+  defaultModelId: number;
+  apiKeyField: 'geminiApiKey' | 'openaiApiKey';
+};
+
 type Model = {
   id: number;
   name: string;
+  provider?: TranslationProvider;
 };
 
 type Config = {
   targetLanguageId?: string;
+  translationProvider: TranslationProvider;
   geminiApiKey?: string;
+  openaiApiKey?: string;
   model: number;
   libraryPath?: string;
 };
@@ -63,7 +75,9 @@ type BookReadingState = {
 let mockLibrary: Map<UUID, MockBook> = new Map();
 let mockConfig: Config = {
   model: 0,
+  translationProvider: 'google',
   geminiApiKey: 'mock-api-key-for-testing',
+  openaiApiKey: 'mock-openai-key-for-testing',
   libraryPath: '/mock/library/path',
   targetLanguageId: 'spa',
 };
@@ -86,7 +100,9 @@ export function resetMockState() {
   mockLibrary.clear();
   mockConfig = {
     model: 0,
+    translationProvider: 'google',
     geminiApiKey: 'mock-api-key-for-testing',
+    openaiApiKey: 'mock-openai-key-for-testing',
     libraryPath: '/mock/library/path',
     targetLanguageId: 'spa',
   };
@@ -117,8 +133,19 @@ const mockLanguages: Language[] = [
 
 // Mock models
 const mockModels: Model[] = [
-  { id: 0, name: 'gemini-1.5-flash' },
-  { id: 1, name: 'gemini-1.5-pro' },
+  { id: 0, name: 'Not set' },
+  { id: 1, name: 'Gemini 2.5 Flash', provider: 'google' },
+  { id: 2, name: 'Gemini 2.5 Pro', provider: 'google' },
+  { id: 3, name: 'Gemini 2.5 Flash Light', provider: 'google' },
+  { id: 4, name: 'OpenAI GPT-5 mini', provider: 'openai' },
+  { id: 5, name: 'OpenAI GPT-5.2', provider: 'openai' },
+  { id: 6, name: 'OpenAI GPT-5.2 Pro', provider: 'openai' },
+  { id: 7, name: 'OpenAI GPT-5 nano', provider: 'openai' },
+];
+
+const mockProviders: ProviderMeta[] = [
+  { id: 'google', name: 'Google', defaultModelId: 1, apiKeyField: 'geminiApiKey' },
+  { id: 'openai', name: 'OpenAI', defaultModelId: 4, apiKeyField: 'openaiApiKey' },
 ];
 
 // InvokeArgs type for compatibility
@@ -138,6 +165,9 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
 
     case 'get_models':
       return Promise.resolve(mockModels as T);
+
+    case 'get_translation_providers':
+      return Promise.resolve(mockProviders as T);
 
     case 'get_config':
       return Promise.resolve(mockConfig as T);

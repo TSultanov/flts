@@ -1,14 +1,18 @@
 mod gemini;
+mod openai;
 
 use std::{fmt::Display, sync::Arc};
 
+use async_trait::async_trait;
 use isolang::Language;
+use serde::{Deserialize, Serialize};
 use strum::EnumIter;
 use tokio::sync::Mutex;
 
 use crate::{
     book::translation_import::ParagraphTranslation, cache::TranslationsCache,
     translator::gemini::GeminiTranslator,
+    translator::openai::OpenAITranslator,
 };
 
 #[derive(Debug)]
@@ -30,6 +34,12 @@ pub enum TranslationModel {
     Gemini25Flash = 1,
     Gemini25Pro = 2,
     Gemini25FlashLight = 3,
+
+    // IMPORTANT: do not reorder or renumber existing variants.
+    OpenAIGpt5Mini = 4,
+    OpenAIGpt52 = 5,
+    OpenAIGpt52Pro = 6,
+    OpenAIGpt5Nano = 7,
 }
 
 impl From<usize> for TranslationModel {
@@ -38,21 +48,46 @@ impl From<usize> for TranslationModel {
             1 => TranslationModel::Gemini25Flash,
             2 => TranslationModel::Gemini25Pro,
             3 => TranslationModel::Gemini25FlashLight,
+            4 => TranslationModel::OpenAIGpt5Mini,
+            5 => TranslationModel::OpenAIGpt52,
+            6 => TranslationModel::OpenAIGpt52Pro,
+            7 => TranslationModel::OpenAIGpt5Nano,
             _ => TranslationModel::Unknown,
         }
     }
 }
 
-pub trait Translator {
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TranslationProvider {
+    #[default]
+    Google,
+    Openai,
+}
+
+impl TranslationProvider {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            TranslationProvider::Google => "Google",
+            TranslationProvider::Openai => "OpenAI",
+        }
+    }
+}
+
+#[async_trait]
+pub trait Translator: Send + Sync {
     fn get_model(&self) -> TranslationModel;
 
-    fn get_translation(
+    async fn get_translation(
         &self,
         paragraph: &str,
         use_cache: bool,
-    ) -> impl std::future::Future<Output = anyhow::Result<ParagraphTranslation>> + Send;
+    ) -> anyhow::Result<ParagraphTranslation>;
 
-    fn get_prompt(from: &str, to: &str) -> String {
+    fn get_prompt(from: &str, to: &str) -> String
+    where
+        Self: Sized,
+    {
         format!(
         "You are given a paragraph in a foreign language. The goal is to construct a translation which can be used by somebody who speaks the {to} language to learn the original language.
         For each sentence provide a good, but close to the original, translation from {from} into the {to} language.
@@ -95,10 +130,26 @@ pub trait Translator {
 
 pub fn get_translator(
     cache: Arc<Mutex<TranslationsCache>>,
+    provider: TranslationProvider,
     translation_model: TranslationModel,
     api_key: String,
     from: Language,
     to: Language,
-) -> anyhow::Result<impl Translator> {
-    GeminiTranslator::create(cache, translation_model, api_key, &from, &to)
+) -> anyhow::Result<Box<dyn Translator>> {
+    match provider {
+        TranslationProvider::Google => Ok(Box::new(GeminiTranslator::create(
+            cache,
+            translation_model,
+            api_key,
+            &from,
+            &to,
+        )?)),
+        TranslationProvider::Openai => Ok(Box::new(OpenAITranslator::create(
+            cache,
+            translation_model,
+            api_key,
+            &from,
+            &to,
+        )?)),
+    }
 }

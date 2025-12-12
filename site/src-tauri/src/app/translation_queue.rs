@@ -11,7 +11,7 @@ use isolang::Language;
 use library::{
     cache::TranslationsCache,
     library::Library,
-    translator::{TranslationModel, Translator, get_translator},
+    translator::{TranslationModel, TranslationProvider, get_translator},
 };
 use log::{info, warn};
 use tokio::{sync::Mutex, task::JoinHandle};
@@ -61,7 +61,11 @@ impl TranslationQueue {
         config: &Config,
         app: tauri::AppHandle,
     ) -> Option<Self> {
-        let api_key = config.gemini_api_key.clone()?;
+        let provider = config.translation_provider;
+        let api_key = match provider {
+            TranslationProvider::Google => config.gemini_api_key.clone()?,
+            TranslationProvider::Openai => config.openai_api_key.clone()?,
+        };
         let target_language = Language::from_639_3(&config.target_language_id)?;
 
         let (tx_save, rx_save) = flume::unbounded::<SaveNotify>();
@@ -81,13 +85,22 @@ impl TranslationQueue {
                     let library = library.clone();
                     let cache = cache.clone();
                     let api_key = api_key.clone();
+                    let provider = provider;
 
                     request_state
                         .lock()
                         .await
                         .insert(request.request_id, TranslationRequestState::Translating);
 
-                    handle_request(library, cache, target_language, api_key, &tx_save, &request)
+                    handle_request(
+                        library,
+                        cache,
+                        target_language,
+                        provider,
+                        api_key,
+                        &tx_save,
+                        &request,
+                    )
                         .await
                         .unwrap_or_else(|err| {
                             warn!(
@@ -174,6 +187,7 @@ async fn handle_request(
     library: Arc<Mutex<Library>>,
     cache: Arc<Mutex<TranslationsCache>>,
     target_language: Language,
+    provider: TranslationProvider,
     api_key: String,
     save_notify: &flume::Sender<SaveNotify>,
     request: &TranslationRequest,
@@ -199,15 +213,14 @@ async fn handle_request(
 
     let translator = get_translator(
         cache,
+        provider,
         request.model,
         api_key.clone(),
         source_language,
         target_language,
     )?;
 
-    let p_translation = translator
-        .get_translation(&paragraph_text, request.use_cache)
-        .await?;
+    let p_translation = translator.get_translation(&paragraph_text, request.use_cache).await?;
     info!("Translated paragraph {}", request.paragraph_id);
 
     translation

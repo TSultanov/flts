@@ -4,6 +4,7 @@ use std::{
 };
 
 use gemini_rust::{Gemini, Model, ThinkingConfig};
+use async_trait::async_trait;
 use isolang::Language;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
@@ -162,6 +163,7 @@ impl GeminiTranslator {
     }
 }
 
+#[async_trait]
 impl Translator for GeminiTranslator {
     fn get_model(&self) -> super::TranslationModel {
         self.translation_model

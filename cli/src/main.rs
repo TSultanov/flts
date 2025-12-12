@@ -20,7 +20,7 @@ use library::{
     cache::TranslationsCache,
     epub_importer::EpubBook,
     library::Library,
-    translator::{TranslationModel, Translator, get_translator},
+    translator::{TranslationModel, TranslationProvider, Translator, get_translator},
 };
 use tokio::time::{Duration, sleep};
 use tokio::{sync::Mutex, task::JoinSet};
@@ -158,7 +158,7 @@ async fn list_books(library: &Arc<Mutex<Library>>) -> anyhow::Result<()> {
 
 async fn translate_paragraph(
     library: Arc<Mutex<Library>>,
-    translator: &impl Translator,
+    translator: &dyn Translator,
     book_id: Uuid,
     tgt_lang: &Language,
     paragraph_id: usize,
@@ -285,6 +285,7 @@ async fn translate_book(
         let tx_save_w = tx_save.clone();
         let translator = get_translator(
             cache.clone(),
+            TranslationProvider::Google,
             TranslationModel::Gemini25Flash,
             api_key.to_owned(),
             source_lang,
@@ -300,7 +301,7 @@ async fn translate_book(
                 loop {
                     let result = translate_paragraph(
                         library1.clone(),
-                        &translator,
+                        translator.as_ref(),
                         book_id,
                         &target_lang1,
                         p_id,

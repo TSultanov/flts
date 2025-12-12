@@ -30,7 +30,11 @@
     ];
 
     const links = $derived.by(() => {
-        if (!$configStore?.geminiApiKey || !$configStore?.libraryPath || !$configStore?.targetLanguageId) {
+        const apiKeyOk = $configStore?.translationProvider === 'openai'
+            ? !!$configStore?.openaiApiKey
+            : !!$configStore?.geminiApiKey;
+
+        if (!apiKeyOk || !$configStore?.libraryPath || !$configStore?.targetLanguageId) {
             return configOnlyLinks;
         } else {
             return fullLinks;
@@ -47,7 +51,10 @@
         const currentPath = window.location.pathname;
 
         // Only redirect from root or if config is incomplete
-        const configComplete = $configStore?.geminiApiKey && $configStore?.libraryPath && $configStore?.targetLanguageId;
+        const apiKeyOk = $configStore?.translationProvider === 'openai'
+            ? !!$configStore?.openaiApiKey
+            : !!$configStore?.geminiApiKey;
+        const configComplete = apiKeyOk && $configStore?.libraryPath && $configStore?.targetLanguageId;
 
         if (!configComplete) {
             // Must go to config if not configured
