@@ -9,6 +9,7 @@
     } from "@fortawesome/free-solid-svg-icons";
     import { listen, type UnlistenFn } from "@tauri-apps/api/event";
     import Fa from "svelte-fa";
+    import CircularProgress from "../widgets/CircularProgress.svelte";
 
     const {
         bookId,
@@ -32,10 +33,18 @@
     let translationRequestId: number | null = $state(null);
 
     let unsub: UnlistenFn | null = null;
+    let unsubProgress: UnlistenFn | null = null;
+
+    // Progress tracking
+    let progressChars = $state(0);
+    let expectedChars = $state(100);
 
     onDestroy(() => {
         if (unsub) {
             unsub();
+        }
+        if (unsubProgress) {
+            unsubProgress();
         }
     });
 
@@ -44,11 +53,31 @@
             console.log(
                 `Listening for translation request ${translationRequestId}`,
             );
+
+            // Reset progress
+            progressChars = 0;
+
             unsub = await listen<number>(
                 "translation_request_complete",
                 (cb) => {
                     if (translationRequestId === cb.payload) {
                         translationRequestId = null;
+                        if (unsubProgress) {
+                            unsubProgress();
+                            unsubProgress = null;
+                        }
+                    }
+                },
+            );
+
+            unsubProgress = await listen<[number, string, number]>(
+                "translation_progress",
+                (cb) => {
+                    const [reqId, chunk, total] = cb.payload;
+                    if (reqId === translationRequestId) {
+                        // chunk is the accumulated translation so far, not a delta
+                        progressChars = chunk.length;
+                        expectedChars = total;
                     }
                 },
             );
@@ -171,27 +200,32 @@
                 <p>{$word.fullSentenceTranslation}</p>
             </details>
         {/if}
-        <div class="translate">
+        <div class="translate-section">
             <span>Translate paragraph again</span>
-            <select id="model" bind:value={model}>
-                {#each $models as model}
-                    <option value={model.id}>{model.name}</option>
-                {/each}
-            </select>
-            <button
-                class="translate"
-                aria-label="Translate paragraph again"
-                onclick={translateParagraph}
-                disabled={translationRequestId !== null}
-            >
-                {#if translationRequestId !== null}
-                    <div class="spin">
-                        <Fa icon={faArrowsRotate} />
-                    </div>
-                {:else}
-                    <Fa icon={faLanguage} />
-                {/if}
-            </button>
+            <div class="controls">
+                <select id="model" bind:value={model}>
+                    {#each $models as model}
+                        <option value={model.id}>{model.name}</option>
+                    {/each}
+                </select>
+                <button
+                    class="translate"
+                    aria-label="Translate paragraph again"
+                    onclick={translateParagraph}
+                    disabled={translationRequestId !== null}
+                >
+                    {#if translationRequestId !== null}
+                        <CircularProgress
+                            value={progressChars}
+                            max={expectedChars}
+                            size="1.2em"
+                            strokeWidth={4}
+                        />
+                    {:else}
+                        <Fa icon={faLanguage} />
+                    {/if}
+                </button>
+            </div>
         </div>
     </div>
 {/if}
@@ -203,27 +237,32 @@
         height: 100%;
     }
 
-    .translate {
-        align-content: flex-end;
+    .translate-section {
+        margin-top: auto;
+        padding-top: 1em;
+        display: flex;
+        flex-direction: column;
+        gap: 0.5em;
+    }
+
+    .controls {
+        display: flex;
+        gap: 0.5em;
+        align-items: center;
+    }
+
+    select {
         flex-grow: 1;
-    }
-
-    @keyframes spin {
-        from {
-            transform: rotate(0deg);
-        }
-        to {
-            transform: rotate(360deg);
-        }
-    }
-
-    .spin {
-        animation: spin 2s linear infinite;
+        width: 100%;
     }
 
     button.translate {
+        flex-shrink: 0;
         width: calc(2 * var(--font-size));
         height: calc(2 * var(--font-size));
         padding: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
     }
 </style>

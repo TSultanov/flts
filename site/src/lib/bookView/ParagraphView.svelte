@@ -9,6 +9,7 @@
     import type { Library } from "../data/library";
     import type { UUID } from "../data/v2/db";
     import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+    import CircularProgress from "../widgets/CircularProgress.svelte";
 
     let {
         bookId,
@@ -27,10 +28,18 @@
 
     let translationRequestId: number | null = $state(null);
     let unsub: UnlistenFn | null = null;
+    let unsubProgress: UnlistenFn | null = null;
+
+    // Progress tracking
+    let progressChars = $state(0);
+    let expectedChars = $state(100); // Default to something non-zero
 
     onDestroy(() => {
         if (unsub) {
             unsub();
+        }
+        if (unsubProgress) {
+            unsubProgress();
         }
     });
 
@@ -39,11 +48,31 @@
             console.log(
                 `Listening for translation request ${translationRequestId}`,
             );
+
+            // Reset progress
+            progressChars = 0;
+
             unsub = await listen<number>(
                 "translation_request_complete",
                 (cb) => {
                     if (translationRequestId === cb.payload) {
                         translationRequestId = null;
+                        if (unsubProgress) {
+                            unsubProgress();
+                            unsubProgress = null;
+                        }
+                    }
+                },
+            );
+
+            unsubProgress = await listen<[number, string, number]>(
+                "translation_progress",
+                (cb) => {
+                    const [reqId, chunk, total] = cb.payload;
+                    if (reqId === translationRequestId) {
+                        // chunk is the accumulated translation so far, not a delta
+                        progressChars = chunk.length;
+                        expectedChars = total;
                     }
                 },
             );
@@ -91,16 +120,15 @@
             bookId,
             paragraph.id,
             undefined,
-            useCache
+            useCache,
         );
 
         await listenToTranslationRequestChanges();
     }
 
     function shrinkTranslationToFit(span: HTMLElement) {
-        const translationEl = span.querySelector<HTMLElement>(
-            ".word-translation",
-        );
+        const translationEl =
+            span.querySelector<HTMLElement>(".word-translation");
         if (!translationEl) {
             return;
         }
@@ -166,9 +194,12 @@
             disabled={translationRequestId !== null}
         >
             {#if translationRequestId !== null}
-                <div class="spin">
-                    <Fa icon={faArrowsRotate} />
-                </div>
+                <CircularProgress
+                    value={progressChars}
+                    max={expectedChars}
+                    size="1.2em"
+                    strokeWidth={4}
+                />
             {:else}
                 <Fa icon={faLanguage} />
             {/if}
@@ -243,18 +274,8 @@
         height: calc(2 * var(--font-size));
         padding: 0;
         justify-self: center;
-    }
-
-    @keyframes spin {
-        from {
-            transform: rotate(0deg);
-        }
-        to {
-            transform: rotate(360deg);
-        }
-    }
-
-    .spin {
-        animation: spin 2s linear infinite;
+        display: flex;
+        align-items: center;
+        justify-content: center;
     }
 </style>
