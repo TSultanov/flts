@@ -103,6 +103,13 @@ export function createTestEpub(options: {
 
   // Create chapter files
   chapters.forEach((chapter, i) => {
+    // Clean up content: remove leading whitespace from each line and join with single space
+    const cleanedContent = chapter.content
+      .split('\n')
+      .map(line => line.trim())
+      .filter(line => line.length > 0)
+      .join('\n    ');
+
     const chapterXhtml = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
 <html xmlns="http://www.w3.org/1999/xhtml">
@@ -111,7 +118,7 @@ export function createTestEpub(options: {
 </head>
 <body>
   <h1>${escapeXml(chapter.title)}</h1>
-  ${chapter.content}
+    ${cleanedContent}
 </body>
 </html>`;
     zip.file(`OEBPS/chapter${i + 1}.xhtml`, chapterXhtml);
@@ -171,8 +178,8 @@ export function createComplexTestEpub(): Promise<Buffer> {
           <p>This chapter explores more advanced features of EPUB formatting.</p>
           <p>We have nested formatting: <b>bold with <em>italic inside</em> bold</b>.</p>
           <p>Line breaks within paragraphs:<br/>Like this one.<br/>And another.</p>
-          <p>Quotation marks: "Hello," she said. 'Indeed,' he replied.</p>
-          <p>Numbers and symbols: 123, $45.67, 89%, @#$%^&*().</p>
+          <p>Quotation marks: &quot;Hello,&quot; she said. &apos;Indeed,&apos; he replied.</p>
+          <p>Numbers and symbols: 123, $45.67, 89&#37;, @#$&#37;^&amp;*().</p>
         `
       }
     ]

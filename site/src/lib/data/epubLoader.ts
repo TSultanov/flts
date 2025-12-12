@@ -125,8 +125,6 @@ function textBetween(start: Element, end: Element | null): Paragraph[] {
         if (current.nodeType === Node.ELEMENT_NODE) {
             const element = current as Element;
             if ((!element.hasChildNodes() || allChildrenAreInline(element)) && element.textContent && element.textContent.trim() !== "") {
-                const sanitizedHtml = getSanitizedHtml(element);
-
                 texts.push({
                     text: element.textContent.trim(),
                     html: getSanitizedHtml(element, false).trim()

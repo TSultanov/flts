@@ -3,7 +3,7 @@
     import { parseEpub } from "../data/epubLoader";
     import type { Library } from "../data/library";
     import type { Language } from "../config";
-    import { getterToReadable } from "../data/tauri";
+    import { getterToReadableWithEvents } from "../data/tauri";
     import { navigate } from "../../router";
 
     let files: FileList | null | undefined = $state();
@@ -18,7 +18,7 @@
     });
 
     const selectedChapters = $state(new Set<number>());
-    const languages = getterToReadable<Language[]>("get_languages", {}, []);
+    const languages = getterToReadableWithEvents<Language[]>("get_languages", {}, [], []);
     let sourceLanguageId = $state("eng");
 
     $effect(() => {

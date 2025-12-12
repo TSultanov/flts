@@ -37,12 +37,28 @@
         }
     })
 
+    // Only redirect if on root path, otherwise respect the current URL
+    let initialRedirectDone = false;
     $effect(() => {
-        if (!$configStore?.geminiApiKey || !$configStore?.libraryPath || !$configStore?.targetLanguageId) {
-            navigate("/config");
-        } else {
+        if (initialRedirectDone) return;
+        if ($configStore === undefined) return; // Wait for config to load
+
+        initialRedirectDone = true;
+        const currentPath = window.location.pathname;
+
+        // Only redirect from root or if config is incomplete
+        const configComplete = $configStore?.geminiApiKey && $configStore?.libraryPath && $configStore?.targetLanguageId;
+
+        if (!configComplete) {
+            // Must go to config if not configured
+            if (currentPath !== '/config') {
+                navigate("/config");
+            }
+        } else if (currentPath === '/' || currentPath === '') {
+            // Only redirect from root to library
             navigate("/library");
         }
+        // Otherwise, stay on the current page
     });
 
     let nav: HTMLElement | undefined = $state();

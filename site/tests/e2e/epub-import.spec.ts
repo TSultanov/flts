@@ -96,14 +96,11 @@ test.describe('EPUB Import with Mocked Translation', () => {
       });
     });
 
-    // Set up configuration for each test
-    await page.goto('/config');
-    await page.fill('#targetlanguage', 'Spanish');
-    await page.fill('#apikey', 'test-api-key');
-    await page.click('button:has-text("Save")');
-    
-    // Wait for config to be properly saved
-    await page.waitForTimeout(500);
+    // Config is pre-populated by Tauri mock with valid values
+    // (geminiApiKey, targetLanguageId, libraryPath)
+    // Just wait for the app to initialize
+    await page.goto('/');
+    await page.waitForURL('/library');
   });
 
   test('should show EPUB import tab and handle file selection', async ({ page }) => {
@@ -293,8 +290,8 @@ test.describe('EPUB Import with Mocked Translation', () => {
       buffer: epubBuffer
     });
 
-    // Wait for EPUB processing to complete (no reliable loading indicator)
-    await page.waitForTimeout(3000);
+    // Wait for EPUB parsing to complete by waiting for title to render
+    await page.waitForSelector('h1', { timeout: 10000 });
 
     // Should show the book title and content
     await expect(page.locator('h1:has-text("Test Book")')).toBeVisible();
@@ -343,11 +340,14 @@ test.describe('EPUB Import with Mocked Translation', () => {
       buffer: epubBuffer
     });
 
-    // Wait for processing
-    await page.waitForTimeout(3000);
+    // Wait for complex EPUB parsing (3 chapters with rich formatting)
+    await page.waitForSelector('h1', { timeout: 15000 });
 
     // Should show the complex book title
     await expect(page.locator('h1:has-text("Complex Test Book: A Study in EPUB Structure")')).toBeVisible();
+
+    // Wait for chapters to render (Firefox needs extra time for complex content)
+    await page.waitForSelector('summary', { timeout: 10000 });
 
     // Should show all chapters
     await expect(page.locator('summary:has-text("Introduction")')).toBeVisible();
@@ -399,7 +399,8 @@ test.describe('EPUB Import with Mocked Translation', () => {
       buffer: epubBuffer
     });
 
-    await page.waitForTimeout(3000);
+    // Wait for EPUB parsing to complete by waiting for title to render
+    await page.waitForSelector('h1', { timeout: 10000 });
 
     await expect(page.locator('h1:has-text("Empty Chapters Test")')).toBeVisible();
 
@@ -435,7 +436,8 @@ test.describe('EPUB Import with Mocked Translation', () => {
       buffer: epubBuffer
     });
 
-    await page.waitForTimeout(3000);
+    // Wait for EPUB parsing to complete by waiting for title to render
+    await page.waitForSelector('h1', { timeout: 10000 });
 
     await expect(page.locator('h1:has-text("Multilingual Test Book")')).toBeVisible();
 
@@ -479,8 +481,9 @@ test.describe('EPUB Import with Mocked Translation', () => {
       buffer: epubBuffer
     });
 
-    await page.waitForTimeout(3000);
-    
+    // Wait for EPUB parsing to complete by waiting for title to render
+    await page.waitForSelector('h1', { timeout: 10000 });
+
     // Wait for the import button to be enabled and visible
     const importButton = page.locator('.container').nth(1).locator('button.primary:has-text("Import")');
     await expect(importButton).toBeVisible();
@@ -521,7 +524,11 @@ test.describe('EPUB Import with Mocked Translation', () => {
       buffer: epubBuffer
     });
 
-    await page.waitForTimeout(3000);
+    // Wait for complex EPUB parsing (3 chapters with rich formatting)
+    await page.waitForSelector('h1', { timeout: 15000 });
+
+    // Wait for chapters to render (Firefox needs extra time for complex content)
+    await page.waitForSelector('summary', { timeout: 10000 });
 
     // Uncheck the first chapter (Table of Contents)
     const introCheckbox = page.locator('input[type="checkbox"]').first();
@@ -565,6 +572,7 @@ test.describe('EPUB Import with Mocked Translation', () => {
       buffer: Buffer.from('This is not a valid EPUB file')
     });
 
+    // Wait a moment for error handling (invalid EPUB will fail to parse)
     await page.waitForTimeout(3000);
 
     // Should not show loading forever or crash the application
@@ -590,7 +598,8 @@ test.describe('EPUB Import with Mocked Translation', () => {
       buffer: epubBuffer
     });
 
-    await page.waitForTimeout(3000);
+    // Wait for EPUB parsing to complete by waiting for title to render
+    await page.waitForSelector('h1', { timeout: 10000 });
 
     // Should show the loaded EPUB
     await expect(page.locator('h1:has-text("Test Book")')).toBeVisible();

@@ -2,12 +2,12 @@
     import { getContext } from "svelte";
     import { Library } from "../data/library";
     import type { Language } from "../config";
-    import { getterToReadable } from "../data/tauri";
+    import { getterToReadableWithEvents } from "../data/tauri";
     import { navigate } from "../../router";
 
     let title = $state("");
     let text = $state("");
-    const languages = getterToReadable<Language[]>("get_languages", {}, []);
+    const languages = getterToReadableWithEvents<Language[]>("get_languages", {}, [], []);
     let sourceLanguageId = $state("eng");
 
     const canImport = $derived(title.length > 0 && text.length > 0);
