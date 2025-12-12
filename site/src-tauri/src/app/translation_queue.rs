@@ -4,7 +4,7 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use isolang::Language;
@@ -80,6 +80,7 @@ impl TranslationQueue {
         let translator = {
             let request_state = request_state.clone();
             let paragraph_request_id_map = paragraph_request_id_map.clone();
+            let app = app.clone();
             tokio::spawn(async move {
                 while let Ok(request) = rx_translate.recv_async().await {
                     let library = library.clone();
@@ -98,27 +99,28 @@ impl TranslationQueue {
                         target_language,
                         provider,
                         api_key,
+                        app.clone(),
                         &tx_save,
                         &request,
                     )
-                        .await
-                        .unwrap_or_else(|err| {
-                            warn!(
-                                "Failed to translate {}/{}: {}",
-                                request.book_id, request.paragraph_id, err
-                            );
-                            info!(
-                                "Emitting \"translation_request_complete\" for request {}",
-                                request.request_id
-                            );
-                            app.emit("translation_request_complete", request.request_id)
-                                .unwrap_or_else(|err| {
-                                    warn!(
-                                        "Failed to notify frontend about failed translation: {}",
-                                        err
-                                    )
-                                });
-                        });
+                    .await
+                    .unwrap_or_else(|err| {
+                        warn!(
+                            "Failed to translate {}/{}: {}",
+                            request.book_id, request.paragraph_id, err
+                        );
+                        info!(
+                            "Emitting \"translation_request_complete\" for request {}",
+                            request.request_id
+                        );
+                        app.emit("translation_request_complete", request.request_id)
+                            .unwrap_or_else(|err| {
+                                warn!(
+                                    "Failed to notify frontend about failed translation: {}",
+                                    err
+                                )
+                            });
+                    });
 
                     request_state.lock().await.remove(&request.request_id);
                     paragraph_request_id_map
@@ -189,6 +191,7 @@ async fn handle_request(
     target_language: Language,
     provider: TranslationProvider,
     api_key: String,
+    app: tauri::AppHandle,
     save_notify: &flume::Sender<SaveNotify>,
     request: &TranslationRequest,
 ) -> anyhow::Result<()> {
@@ -220,7 +223,27 @@ async fn handle_request(
         target_language,
     )?;
 
-    let p_translation = translator.get_translation(&paragraph_text, request.use_cache).await?;
+    let callback = {
+        let app = app.clone();
+        let request_id = request.request_id;
+        let last_emit = Arc::new(std::sync::Mutex::new(Instant::now()));
+        Box::new(move |chunk: String| {
+            let mut last = last_emit.lock().unwrap();
+            if last.elapsed() >= Duration::from_millis(100) {
+                info!(
+                    "Translation progress for request {}: {} chars",
+                    request_id,
+                    chunk.len()
+                );
+                let _ = app.emit("translation_progress", (request_id, chunk));
+                *last = Instant::now();
+            }
+        })
+    };
+
+    let p_translation = translator
+        .get_translation(&paragraph_text, request.use_cache, Some(callback))
+        .await?;
     info!("Translated paragraph {}", request.paragraph_id);
 
     translation

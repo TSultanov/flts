@@ -176,7 +176,9 @@ async fn translate_paragraph(
         paragraph_id,
         String::from_iter(paragraph_text.chars().take(40))
     );
-    let p_translation = translator.get_translation(&paragraph_text, true).await?;
+    let p_translation = translator
+        .get_translation(&paragraph_text, true, None)
+        .await?;
     println!("Worker {worker_id}: Translated paragraph {}", paragraph_id);
 
     translation

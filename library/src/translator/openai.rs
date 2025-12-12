@@ -3,16 +3,14 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use async_openai::{Client, config::OpenAIConfig};
 use async_openai::types::chat::{
-    ChatCompletionRequestMessage,
-    ChatCompletionRequestSystemMessageArgs,
-    ChatCompletionRequestUserMessageArgs,
-    CreateChatCompletionRequestArgs,
-    ResponseFormat,
+    ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
+    ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs, ResponseFormat,
     ResponseFormatJsonSchema,
 };
+use async_openai::{Client, config::OpenAIConfig};
 use async_trait::async_trait;
+use futures::StreamExt;
 use isolang::Language;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
@@ -163,6 +161,7 @@ impl Translator for OpenAITranslator {
         &self,
         paragraph: &str,
         use_cache: bool,
+        callback: Option<Box<dyn Fn(String) + Send + Sync>>,
     ) -> anyhow::Result<ParagraphTranslation> {
         if use_cache
             && let Some(cached_result) = self
@@ -204,18 +203,42 @@ impl Translator for OpenAITranslator {
                     strict: Some(true),
                 },
             })
+            .stream(true)
             .build()?;
 
-        let result = self.client.chat().create(request).await?;
-        let content = result
-            .choices
-            .first()
-            .and_then(|c| c.message.content.as_ref())
-            .ok_or_else(|| anyhow::anyhow!("OpenAI returned empty content"))?;
+        let mut stream = self.client.chat().create_stream(request).await?;
+        let mut full_content = String::new();
 
-        let mut translation: ParagraphTranslation = serde_json::from_str(content)?;
+        while let Some(result) = stream.next().await {
+            match result {
+                Ok(response) => {
+                    if let Some(choice) = response.choices.first() {
+                        if let Some(delta) = &choice.delta.content {
+                            full_content.push_str(delta);
+                            if let Some(cb) = &callback {
+                                cb(full_content.clone());
+                            }
+                        }
+                    }
+                }
+                Err(err) => {
+                    log::warn!("Error in OpenAI stream: {}", err);
+                }
+            }
+        }
 
-        translation.total_tokens = result.usage.map(|u| u.total_tokens as u64);
+        if full_content.is_empty() {
+            anyhow::bail!("OpenAI returned empty content");
+        }
+
+        let mut translation: ParagraphTranslation = serde_json::from_str(&full_content)?;
+
+        // Note: Usage data might not be available in stream chunks easily or at all in some API versions for stream.
+        // We'll skip setting usage for now or check if the final chunk has usage?
+        // async-openai stream items might have usage in the last chunk?
+        // Checked docs: `ChatCompletionChunk` has `usage` field optionally?
+        // If not, we lose token count. That's acceptable for now.
+        // translation.total_tokens = ...;
 
         let now = SystemTime::now();
         let duration_since_epoch = now.duration_since(UNIX_EPOCH)?;

@@ -11,8 +11,7 @@ use tokio::sync::Mutex;
 
 use crate::{
     book::translation_import::ParagraphTranslation, cache::TranslationsCache,
-    translator::gemini::GeminiTranslator,
-    translator::openai::OpenAITranslator,
+    translator::gemini::GeminiTranslator, translator::openai::OpenAITranslator,
 };
 
 #[derive(Debug)]
@@ -82,6 +81,7 @@ pub trait Translator: Send + Sync {
         &self,
         paragraph: &str,
         use_cache: bool,
+        callback: Option<Box<dyn Fn(String) + Send + Sync>>,
     ) -> anyhow::Result<ParagraphTranslation>;
 
     fn get_prompt(from: &str, to: &str) -> String

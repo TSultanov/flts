@@ -3191,6 +3191,7 @@ dependencies = [
  "flume",
  "fnv",
  "foyer",
+ "futures",
  "gemini-rust",
  "isolang",
  "itertools 0.14.0",

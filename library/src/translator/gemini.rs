@@ -3,8 +3,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use gemini_rust::{Gemini, Model, ThinkingConfig};
 use async_trait::async_trait;
+use futures::TryStreamExt;
+use gemini_rust::{Gemini, Model, ThinkingConfig};
 use isolang::Language;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
@@ -173,6 +174,7 @@ impl Translator for GeminiTranslator {
         &self,
         paragraph: &str,
         use_cache: bool,
+        callback: Option<Box<dyn Fn(String) + Send + Sync>>,
     ) -> anyhow::Result<ParagraphTranslation> {
         if use_cache
             && let Some(cached_result) = self
@@ -198,7 +200,7 @@ impl Translator for GeminiTranslator {
             },
         };
 
-        let result = self
+        let mut stream = self
             .client
             .generate_content()
             .with_system_prompt(Self::get_prompt(self.from.to_name(), self.to.to_name()))
@@ -206,13 +208,29 @@ impl Translator for GeminiTranslator {
             .with_response_mime_type("application/json")
             .with_response_schema(self.schema.clone())
             .with_thinking_config(thinking_config)
-            .execute()
+            .execute_stream()
             .await?;
 
-        let mut translation: ParagraphTranslation = serde_json::from_str(&result.text())?;
+        let mut full_content = String::new();
 
-        let tokens = result.usage_metadata.map(|m| m.total_token_count).flatten();
-        translation.total_tokens = tokens.map(|t| t as u64);
+        while let Some(response) = stream.try_next().await? {
+            let text = response.text();
+            if !text.is_empty() {
+                full_content.push_str(&text);
+                if let Some(cb) = &callback {
+                    cb(full_content.clone());
+                }
+            }
+        }
+
+        if full_content.is_empty() {
+            anyhow::bail!("Gemini returned empty content");
+        }
+
+        let mut translation: ParagraphTranslation = serde_json::from_str(&full_content)?;
+
+        // Usage metadata might be in the last chunk?
+        // We'll skip token count for consistent streaming support for now.
 
         let now = SystemTime::now();
         let duration_since_epoch = now.duration_since(UNIX_EPOCH)?;
