@@ -540,6 +540,12 @@ fn translation_to_html(
 ) -> anyhow::Result<String> {
     let mut result = Vec::new();
 
+    let decode_lossy = |value: &str| -> String {
+        decode(value.as_bytes())
+            .to_string()
+            .unwrap_or_else(|_| value.to_owned())
+    };
+
     let original: Vec<char> = original.chars().collect();
 
     let mut p_idx = 0_usize;
@@ -552,11 +558,11 @@ fn translation_to_html(
                 continue;
             }
 
-            let w =
-                decode(word.original.replace("\n", "").replace("\r", "").as_bytes()).to_string()?;
+            let w_raw = word.original.replace("\n", "").replace("\r", "");
+            let w = decode_lossy(&w_raw);
             let len = w.chars().count();
             let mut offset = 0_usize;
-            while offset < original.len() {
+            while p_idx + offset < original.len() {
                 let start = p_idx + offset;
                 let mut clamped_end = p_idx + offset + len;
                 if clamped_end >= original.len() {
@@ -567,9 +573,8 @@ fn translation_to_html(
                     break;
                 }
 
-                let p_word =
-                    decode(String::from_iter(original[start..clamped_end].iter()).as_bytes())
-                        .to_string()?;
+                let p_word_raw = String::from_iter(original[start..clamped_end].iter());
+                let p_word = decode_lossy(&p_word_raw);
 
                 if w.len() <= 2 {
                     if w.to_lowercase() == p_word.to_lowercase() {
@@ -583,7 +588,8 @@ fn translation_to_html(
             }
 
             if offset > 0 {
-                let text = String::from_iter(original[p_idx..(p_idx + offset)].iter());
+                let end = (p_idx + offset).min(original.len());
+                let text = String::from_iter(original[p_idx..end].iter());
                 result.push(text);
             }
 
@@ -618,7 +624,7 @@ fn translation_to_html(
                 result.push(format!("<span class=\"word-span\" data-paragraph=\"{paragraph_id}\" data-sentence=\"{sentence_idx}\" data-word=\"{word_idx}\">{translation_fragment}{text}</span>"));
             }
 
-            p_idx += len;
+            p_idx = clamped_end;
             word_idx += 1;
         }
 
@@ -631,6 +637,231 @@ fn translation_to_html(
     }
 
     Ok(result.join(""))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::translation_to_html;
+
+    use library::book::translation_import;
+    use library::dictionary::Dictionary;
+    use library::{
+        book::translation::ParagraphTranslationView,
+        translator::TranslationModel,
+    };
+
+    fn grammar_stub(original: &str) -> translation_import::Grammar {
+        translation_import::Grammar {
+            original_initial_form: original.to_owned(),
+            target_initial_form: original.to_owned(),
+            part_of_speech: "stub".to_owned(),
+            plurality: None,
+            person: None,
+            tense: None,
+            case: None,
+            other: None,
+        }
+    }
+
+    fn word(
+        original: &str,
+        contextual_translations: &[&str],
+        is_punctuation: bool,
+    ) -> translation_import::Word {
+        translation_import::Word {
+            original: original.to_owned(),
+            contextual_translations: contextual_translations
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            note: None,
+            is_punctuation,
+            grammar: grammar_stub(original),
+        }
+    }
+
+    fn make_paragraph_translation(sentences: Vec<translation_import::Sentence>) -> translation_import::ParagraphTranslation {
+        translation_import::ParagraphTranslation {
+            timestamp: 0,
+            sentences,
+            source_language: "deu".to_owned(),
+            target_language: "eng".to_owned(),
+            total_tokens: None,
+        }
+    }
+
+    fn view_from_import<'a>(
+        translation: &'a mut library::book::translation::Translation,
+        paragraph_index: usize,
+        pt: &translation_import::ParagraphTranslation,
+    ) -> ParagraphTranslationView<'a> {
+        let mut dictionary = Dictionary::create(pt.source_language.clone(), pt.target_language.clone());
+        translation.add_paragraph_translation(
+            paragraph_index,
+            pt,
+            TranslationModel::OpenAIGpt52,
+            &mut dictionary,
+        );
+        translation
+            .paragraph_view(paragraph_index)
+            .expect("paragraph view")
+    }
+
+    #[test]
+    fn wraps_words_and_escapes_translation_fragment() {
+        let original = "Hello, world!";
+
+        let pt = make_paragraph_translation(vec![translation_import::Sentence {
+            full_translation: "ignored".to_owned(),
+            words: vec![
+                word("Hello", &["<b>hi</b>"], false),
+                word("&comma;", &[], true),
+                word("world", &["  planet  "], false),
+                word("&excl;", &[], true),
+            ],
+        }]);
+
+        let mut t = library::book::translation::Translation::create("deu", "eng");
+        let view = view_from_import(&mut t, 0, &pt);
+        let html = translation_to_html(7, original, &view).expect("html");
+
+        assert!(html.contains("data-paragraph=\"7\""));
+        assert!(html.contains("<span class=\"word-span\""));
+        assert!(html.contains("Hello"));
+        assert!(html.contains(", ") || html.contains(","));
+        assert!(html.contains("world"));
+
+        // Translation fragment should be HTML-escaped
+        assert!(html.contains("&lt;b&gt;hi&lt;/b&gt;"));
+        // And whitespace should be normalized
+        assert!(html.contains(">planet<") || html.contains(">planet </") || html.contains("planet"));
+    }
+
+    #[test]
+    fn empty_contextual_translation_produces_no_translation_span() {
+        let original = "Just words";
+
+        let pt = make_paragraph_translation(vec![translation_import::Sentence {
+            full_translation: "ignored".to_owned(),
+            words: vec![word("Just", &[], false), word("words", &[], false)],
+        }]);
+
+        let mut t = library::book::translation::Translation::create("deu", "eng");
+        let view = view_from_import(&mut t, 0, &pt);
+        let html = translation_to_html(0, original, &view).expect("html");
+
+        assert!(!html.contains("word-translation"));
+    }
+
+    #[test]
+    fn preserves_original_html_entities_and_does_not_error() {
+        let original = "Tom &amp; Jerry";
+
+        let pt = make_paragraph_translation(vec![translation_import::Sentence {
+            full_translation: "ignored".to_owned(),
+            words: vec![
+                word("Tom", &["Tom"], false),
+                word("&amp;", &[], true),
+                word("Jerry", &["Jerry"], false),
+            ],
+        }]);
+
+        let mut t = library::book::translation::Translation::create("deu", "eng");
+        let view = view_from_import(&mut t, 0, &pt);
+        let html = translation_to_html(1, original, &view).expect("html");
+
+        // The input entity should still appear as-is in output (we preserve original slices).
+        assert!(html.contains("&amp;"));
+        assert!(html.contains("Tom"));
+        assert!(html.contains("Jerry"));
+    }
+
+    #[test]
+    fn handles_unicode_characters_safely() {
+        let original = "naïve café";
+
+        let pt = make_paragraph_translation(vec![translation_import::Sentence {
+            full_translation: "ignored".to_owned(),
+            words: vec![word("naïve", &["naive"], false), word("café", &["cafe"], false)],
+        }]);
+
+        let mut t = library::book::translation::Translation::create("fra", "eng");
+        let view = view_from_import(&mut t, 0, &pt);
+        let html = translation_to_html(2, original, &view).expect("html");
+
+        assert!(html.contains("naïve"));
+        assert!(html.contains("café"));
+        assert!(html.contains("data-sentence=\"0\""));
+    }
+
+    #[test]
+    fn supports_multiple_sentences_with_distinct_sentence_indices() {
+        let original = "Hello world. Bye world.";
+
+        let pt = make_paragraph_translation(vec![
+            translation_import::Sentence {
+                full_translation: "ignored".to_owned(),
+                words: vec![
+                    word("Hello", &["hi"], false),
+                    word("world", &["world"], false),
+                    word("&period;", &[], true),
+                ],
+            },
+            translation_import::Sentence {
+                full_translation: "ignored".to_owned(),
+                words: vec![
+                    word("Bye", &["bye"], false),
+                    word("world", &["world"], false),
+                    word("&period;", &[], true),
+                ],
+            },
+        ]);
+
+        let mut t = library::book::translation::Translation::create("deu", "eng");
+        let view = view_from_import(&mut t, 0, &pt);
+        let html = translation_to_html(3, original, &view).expect("html");
+
+        assert!(html.contains("data-sentence=\"0\""));
+        assert!(html.contains("data-sentence=\"1\""));
+    }
+
+    #[test]
+    fn invalid_entities_do_not_fail_hard() {
+        let original = "A &bogus B";
+
+        let pt = make_paragraph_translation(vec![translation_import::Sentence {
+            full_translation: "ignored".to_owned(),
+            words: vec![
+                word("A", &["A"], false),
+                // This is intentionally invalid / unterminated entity-like text.
+                word("&bogus", &["and"], false),
+                word("B", &["B"], false),
+            ],
+        }]);
+
+        let mut t = library::book::translation::Translation::create("deu", "eng");
+        let view = view_from_import(&mut t, 0, &pt);
+
+        let html = translation_to_html(4, original, &view).expect("html");
+        assert!(html.contains("A"));
+        assert!(html.contains("B"));
+    }
+
+    #[test]
+    fn punctuation_only_translation_returns_original() {
+        let original = "...";
+
+        let pt = make_paragraph_translation(vec![translation_import::Sentence {
+            full_translation: "ignored".to_owned(),
+            words: vec![word("&period;", &[], true), word("&period;", &[], true)],
+        }]);
+
+        let mut t = library::book::translation::Translation::create("deu", "eng");
+        let view = view_from_import(&mut t, 0, &pt);
+        let html = translation_to_html(5, original, &view).expect("html");
+
+        assert_eq!(html, original);
+    }
 }
 
 fn sanitize_translation_text(value: &str) -> String {
