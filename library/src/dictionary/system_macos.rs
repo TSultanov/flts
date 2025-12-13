@@ -35,7 +35,45 @@ pub fn get_definition(
         length: cf_word.char_len() as isize,
     };
 
-    let definition_ref =
+    // Dynamically load DCSCopyDefinitionMarkup to avoid linker errors with private API
+    let definition_ref = unsafe {
+        let symbol = std::ffi::CString::new("DCSCopyDefinitionMarkup").unwrap();
+        // RTLD_DEFAULT is -2 on macOS
+        let rtld_default = -2isize as *mut std::ffi::c_void;
+
+        unsafe extern "C" {
+            fn dlsym(handle: *mut std::ffi::c_void, symbol: *const i8) -> *mut std::ffi::c_void;
+            // RTLD_LAZY = 1
+            fn dlopen(filename: *const i8, flag: i32) -> *mut std::ffi::c_void;
+        }
+
+        let mut func_ptr = dlsym(rtld_default, symbol.as_ptr());
+
+        if func_ptr.is_null() {
+            // Try loading the framework explicitly
+            let fw_path = std::ffi::CString::new("/System/Library/Frameworks/CoreServices.framework/Frameworks/DictionaryServices.framework/DictionaryServices").unwrap();
+            let handle = dlopen(fw_path.as_ptr(), 1); // RTLD_LAZY
+            if !handle.is_null() {
+                func_ptr = dlsym(handle, symbol.as_ptr());
+            }
+        }
+
+        if !func_ptr.is_null() {
+            let func: unsafe extern "C" fn(
+                dictionary: *const std::ffi::c_void,
+                textString: CFStringRef,
+                range: CFRange,
+            ) -> CFStringRef = std::mem::transmute(func_ptr);
+
+            func(dictionary_ptr, cf_word.as_concrete_TypeRef(), range)
+        } else {
+            // Fallback to text if private API is missing
+            DCSCopyTextDefinition(dictionary_ptr, cf_word.as_concrete_TypeRef(), range)
+        }
+    };
+
+    // We also need text definition for transcription extraction
+    let text_definition_ref =
         unsafe { DCSCopyTextDefinition(dictionary_ptr, cf_word.as_concrete_TypeRef(), range) };
 
     if definition_ref.is_null() {
@@ -44,7 +82,13 @@ pub fn get_definition(
 
     let definition_cf: CFString = unsafe { TCFType::wrap_under_create_rule(definition_ref) };
     let definition_text = definition_cf.to_string();
-    let transcription = extract_transcription(&definition_text);
+
+    let transcription = if !text_definition_ref.is_null() {
+        let text_def_cf: CFString = unsafe { TCFType::wrap_under_create_rule(text_definition_ref) };
+        extract_transcription(&text_def_cf.to_string())
+    } else {
+        None
+    };
 
     Some(SystemDefinition {
         definition: definition_text,
@@ -561,6 +605,20 @@ mod tests {
             }
         } else {
             println!("No dictionary found!");
+        }
+    }
+    #[test]
+    fn test_get_definition_mich() {
+        println!("\n=== Testing get_definition for German word 'mich' ===");
+        let result = get_definition("mich", "de", "en");
+        match result {
+            Some(def) => {
+                println!("Definition found!");
+                println!("Content: {:?}", def.definition);
+            }
+            None => {
+                println!("No definition found!");
+            }
         }
     }
 }

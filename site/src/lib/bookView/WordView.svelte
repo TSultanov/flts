@@ -202,12 +202,9 @@
         {#if systemDefinition && $systemDefinition}
             <details open>
                 <summary>System Dictionary</summary>
-                {#if $systemDefinition.transcription}
-                    <p class="transcription">
-                        [{$systemDefinition.transcription}]
-                    </p>
-                {/if}
-                <p class="definition">{$systemDefinition.definition}</p>
+                <div class="definition">
+                    {@html $systemDefinition.definition}
+                </div>
             </details>
         {/if}
         {#if isIos}
@@ -281,16 +278,20 @@
         justify-content: center;
     }
 
-    .transcription {
-        font-family: monospace;
-        font-size: 1.1em;
+    .definition {
         margin: 0.5em 0;
-        color: var(--text-color-secondary);
     }
 
-    .definition {
-        white-space: pre-wrap;
+    :global(.definition .exg),
+    :global(.definition .semb),
+    :global(.definition .hwg),
+    :global(.definition .gramb) {
+        display: block;
         margin: 0.5em 0;
+    }
+
+    :global(.definition .exg) {
+        margin: 0.5em 0.5em;
     }
 
     .ios-dictionary-btn {
