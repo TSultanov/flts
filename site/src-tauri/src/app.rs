@@ -347,3 +347,16 @@ pub async fn get_paragraph_translation_request_id(
         .await
         .map_err(|err| err.to_string())
 }
+
+#[tauri::command]
+pub async fn get_translation_status(
+    state: tauri::State<'_, Arc<Mutex<App>>>,
+    request_id: usize,
+) -> Result<Option<translation_queue::TranslationStatus>, String> {
+    let app = state.lock().await;
+    if let Some(q) = &app.translation_queue {
+        Ok(q.get_translation_status(request_id).await)
+    } else {
+        Ok(None)
+    }
+}

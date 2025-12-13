@@ -13,7 +13,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
-            app.handle().plugin(tauri_plugin_window_state::Builder::new().build())?;
+            app.handle()
+                .plugin(tauri_plugin_window_state::Builder::new().build())?;
 
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -78,10 +79,11 @@ pub fn run() {
             app::update_config,
             app::translate_paragraph,
             app::get_paragraph_translation_request_id,
+            app::get_translation_status,
             app::library_view::list_books,
             app::library_view::list_book_chapters,
             app::library_view::get_book_chapter_paragraphs,
-               app::config::get_translation_providers,
+            app::config::get_translation_providers,
             app::library_view::get_word_info,
             app::library_view::import_plain_text,
             app::library_view::import_epub,

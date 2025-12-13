@@ -44,12 +44,21 @@ pub enum TranslationRequestState {
     Translating = 2,
 }
 
+#[derive(Clone, serde::Serialize)]
+pub struct TranslationStatus {
+    pub request_id: usize,
+    pub progress_chars: usize,
+    pub expected_chars: usize,
+    pub is_complete: bool,
+}
+
 pub struct TranslationQueue {
     next_request_index: AtomicUsize,
     translate_tx: flume::Sender<TranslationRequest>,
 
     paragraph_request_id_map: Arc<Mutex<HashMap<(Uuid, usize), usize>>>,
     request_state: Arc<Mutex<HashMap<usize, TranslationRequestState>>>,
+    translation_status: Arc<Mutex<HashMap<usize, TranslationStatus>>>,
 
     _saver: JoinHandle<()>,
     _translator: JoinHandle<()>,
@@ -75,10 +84,13 @@ impl TranslationQueue {
 
         let paragraph_request_id_map = Arc::new(Mutex::new(HashMap::new()));
         let request_state = Arc::new(Mutex::new(HashMap::new()));
+        let translation_status: Arc<Mutex<HashMap<usize, TranslationStatus>>> =
+            Arc::new(Mutex::new(HashMap::new()));
 
         let translator = {
             let request_state = request_state.clone();
             let paragraph_request_id_map = paragraph_request_id_map.clone();
+            let translation_status = translation_status.clone();
             let app = app.clone();
             tokio::spawn(async move {
                 while let Ok(request) = rx_translate.recv_async().await {
@@ -109,11 +121,17 @@ impl TranslationQueue {
                             "Failed to translate {}/{}: {}",
                             request.book_id, request.paragraph_id, err
                         );
+                        let status = TranslationStatus {
+                            request_id: request.request_id,
+                            progress_chars: 0,
+                            expected_chars: 0,
+                            is_complete: true,
+                        };
                         info!(
-                            "Emitting \"translation_request_complete\" for request {}",
+                            "Emitting \"translation_status\" (complete, failed) for request {}",
                             request.request_id
                         );
-                        app.emit("translation_request_complete", request.request_id)
+                        app.emit("translation_status", status)
                             .unwrap_or_else(|err| {
                                 warn!(
                                     "Failed to notify frontend about failed translation: {}",
@@ -123,6 +141,7 @@ impl TranslationQueue {
                     });
 
                     request_state.lock().await.remove(&request.request_id);
+                    translation_status.lock().await.remove(&request.request_id);
                     paragraph_request_id_map
                         .lock()
                         .await
@@ -138,6 +157,7 @@ impl TranslationQueue {
             _translator: translator,
             paragraph_request_id_map,
             request_state,
+            translation_status,
         })
     }
 
@@ -182,6 +202,21 @@ impl TranslationQueue {
             .await
             .get(&(book_id, paragraph_id))
             .map(|i| *i)
+    }
+
+    pub async fn get_translation_status(&self, request_id: usize) -> Option<TranslationStatus> {
+        self.translation_status
+            .lock()
+            .await
+            .get(&request_id)
+            .cloned()
+    }
+
+    pub async fn update_translation_status(&self, status: TranslationStatus) {
+        self.translation_status
+            .lock()
+            .await
+            .insert(status.request_id, status);
     }
 }
 
@@ -263,7 +298,13 @@ async fn handle_request(
                     chunk.len(),
                     expected_size
                 );
-                let _ = app.emit("translation_progress", (request_id, chunk, expected_size));
+                let status = TranslationStatus {
+                    request_id,
+                    progress_chars: chunk.len(),
+                    expected_chars: expected_size,
+                    is_complete: false,
+                };
+                let _ = app.emit("translation_status", status);
                 *last = Instant::now();
             }
         })
@@ -367,11 +408,17 @@ async fn emit_updates(
     app: tauri::AppHandle,
     msg: SaveNotify,
 ) -> anyhow::Result<()> {
+    let status = TranslationStatus {
+        request_id: msg.request_id,
+        progress_chars: 0,
+        expected_chars: 0,
+        is_complete: true,
+    };
     info!(
-        "Emitting \"translation_request_complete\" for request {}",
+        "Emitting \"translation_status\" (complete) for request {}",
         msg.request_id
     );
-    app.emit("translation_request_complete", msg.request_id)?;
+    app.emit("translation_status", status)?;
 
     info!("Emitting \"book_updated\" for {}", msg.book_id);
     app.emit("book_updated", msg.book_id)?;

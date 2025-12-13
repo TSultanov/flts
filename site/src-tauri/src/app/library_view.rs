@@ -645,10 +645,7 @@ mod tests {
 
     use library::book::translation_import;
     use library::dictionary::Dictionary;
-    use library::{
-        book::translation::ParagraphTranslationView,
-        translator::TranslationModel,
-    };
+    use library::{book::translation::ParagraphTranslationView, translator::TranslationModel};
 
     fn grammar_stub(original: &str) -> translation_import::Grammar {
         translation_import::Grammar {
@@ -680,7 +677,9 @@ mod tests {
         }
     }
 
-    fn make_paragraph_translation(sentences: Vec<translation_import::Sentence>) -> translation_import::ParagraphTranslation {
+    fn make_paragraph_translation(
+        sentences: Vec<translation_import::Sentence>,
+    ) -> translation_import::ParagraphTranslation {
         translation_import::ParagraphTranslation {
             timestamp: 0,
             sentences,
@@ -695,7 +694,8 @@ mod tests {
         paragraph_index: usize,
         pt: &translation_import::ParagraphTranslation,
     ) -> ParagraphTranslationView<'a> {
-        let mut dictionary = Dictionary::create(pt.source_language.clone(), pt.target_language.clone());
+        let mut dictionary =
+            Dictionary::create(pt.source_language.clone(), pt.target_language.clone());
         translation.add_paragraph_translation(
             paragraph_index,
             pt,
@@ -734,7 +734,9 @@ mod tests {
         // Translation fragment should be HTML-escaped
         assert!(html.contains("&lt;b&gt;hi&lt;/b&gt;"));
         // And whitespace should be normalized
-        assert!(html.contains(">planet<") || html.contains(">planet </") || html.contains("planet"));
+        assert!(
+            html.contains(">planet<") || html.contains(">planet </") || html.contains("planet")
+        );
     }
 
     #[test]
@@ -782,7 +784,10 @@ mod tests {
 
         let pt = make_paragraph_translation(vec![translation_import::Sentence {
             full_translation: "ignored".to_owned(),
-            words: vec![word("naïve", &["naive"], false), word("café", &["cafe"], false)],
+            words: vec![
+                word("naïve", &["naive"], false),
+                word("café", &["cafe"], false),
+            ],
         }]);
 
         let mut t = library::book::translation::Translation::create("fra", "eng");

@@ -26,6 +26,13 @@ export type LibraryFolder = {
     books: IBookMeta[],
 }
 
+export type TranslationStatus = {
+    request_id: number;
+    progress_chars: number;
+    expected_chars: number;
+    is_complete: boolean;
+};
+
 export class Library {
     getLibraryBooks(): Readable<LibraryFolder> {
         const booksStore = eventToReadable<LibraryBookMetadataView[]>("library_updated", "list_books", [])
@@ -107,6 +114,18 @@ export class Library {
 
     async getParagraphTranslationRequestId(bookId: UUID, paragraphId: number) {
         return await invoke<number>("get_paragraph_translation_request_id", { bookId, paragraphId });
+    }
+
+    getTranslationStatus(requestId: number | null): Readable<TranslationStatus | undefined> {
+        if (requestId === null) {
+            return readable(undefined);
+        }
+        return getterToReadable<TranslationStatus | undefined, TranslationStatus>(
+            "get_translation_status",
+            { requestId },
+            "translation_status",
+            (ev) => ev.request_id === requestId,
+        );
     }
 
     async getBookReadingState(bookId: UUID): Promise<BookReadingState | null> {

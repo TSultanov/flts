@@ -1,12 +1,9 @@
 <script lang="ts">
     import { getContext, onDestroy } from "svelte";
-    import type { Library } from "../data/library";
+    import type { Library, TranslationStatus } from "../data/library";
     import type { UUID } from "../data/v2/db";
     import { models, configStore } from "../config";
-    import {
-        faLanguage,
-        faArrowsRotate,
-    } from "@fortawesome/free-solid-svg-icons";
+    import { faLanguage } from "@fortawesome/free-solid-svg-icons";
     import { listen, type UnlistenFn } from "@tauri-apps/api/event";
     import Fa from "svelte-fa";
     import CircularProgress from "../widgets/CircularProgress.svelte";
@@ -32,77 +29,54 @@
     let model = $derived($word?.translationModel);
     let translationRequestId: number | null = $state(null);
 
-    let unsub: UnlistenFn | null = null;
-    let unsubProgress: UnlistenFn | null = null;
-
-    // Progress tracking
     let progressChars = $state(0);
     let expectedChars = $state(100);
+
+    let unsub: UnlistenFn | null = null;
+
+    listen<TranslationStatus>("translation_status", (event) => {
+        const status = event.payload;
+        if (status.request_id === translationRequestId) {
+            if (status.is_complete) {
+                translationRequestId = null;
+                progressChars = 0;
+            } else {
+                progressChars = status.progress_chars;
+                expectedChars = status.expected_chars;
+            }
+        }
+    }).then((u) => {
+        unsub = u;
+    });
 
     onDestroy(() => {
         if (unsub) {
             unsub();
         }
-        if (unsubProgress) {
-            unsubProgress();
-        }
     });
 
-    async function listenToTranslationRequestChanges() {
-        if (translationRequestId !== null) {
-            console.log(
-                `Listening for translation request ${translationRequestId}`,
-            );
-
-            // Reset progress
-            progressChars = 0;
-
-            unsub = await listen<number>(
-                "translation_request_complete",
-                (cb) => {
-                    if (translationRequestId === cb.payload) {
-                        translationRequestId = null;
-                        if (unsubProgress) {
-                            unsubProgress();
-                            unsubProgress = null;
-                        }
-                    }
-                },
-            );
-
-            unsubProgress = await listen<[number, string, number]>(
-                "translation_progress",
-                (cb) => {
-                    const [reqId, chunk, total] = cb.payload;
-                    if (reqId === translationRequestId) {
-                        // chunk is the accumulated translation so far, not a delta
-                        progressChars = chunk.length;
-                        expectedChars = total;
-                    }
-                },
-            );
-        }
-    }
+    const isTranslating = $derived(translationRequestId !== null);
 
     $effect(() => {
         library
             .getParagraphTranslationRequestId(bookId, paragraphId)
             .then((id) => {
                 translationRequestId = id;
-                listenToTranslationRequestChanges();
+                if (id !== null) {
+                    progressChars = 0;
+                }
             });
     });
 
     async function translateParagraph() {
         if (model !== 0) {
+            progressChars = 0;
             translationRequestId = await library.translateParagraph(
                 bookId,
                 paragraphId,
                 model,
                 false,
             );
-
-            await listenToTranslationRequestChanges();
         }
     }
 </script>
@@ -212,9 +186,9 @@
                     class="translate"
                     aria-label="Translate paragraph again"
                     onclick={translateParagraph}
-                    disabled={translationRequestId !== null}
+                    disabled={isTranslating}
                 >
-                    {#if translationRequestId !== null}
+                    {#if isTranslating}
                         <CircularProgress
                             value={progressChars}
                             max={expectedChars}
