@@ -54,6 +54,8 @@ pub struct WordView {
     full_sentence_translation: String,
     #[serde(rename = "translationModel")]
     translation_model: usize,
+    #[serde(rename = "sourceLanguage")]
+    source_language: String,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -184,10 +186,13 @@ impl LibraryView {
         word_id: usize,
         target_language: &Language,
     ) -> anyhow::Result<Option<WordView>> {
-        let book_translation = {
+        let (book_translation, source_language_code) = {
             let book = self.library.lock().await.get_book(&book_id).await?;
             let mut book = book.lock().await;
-            book.get_or_create_translation(target_language).await
+            (
+                book.get_or_create_translation(target_language).await,
+                book.book.language.clone(),
+            )
         };
 
         Ok(
@@ -214,6 +219,7 @@ impl LibraryView {
                     },
                     full_sentence_translation: sentence.full_translation.to_string(),
                     translation_model: paragraph.model as usize,
+                    source_language: source_language_code,
                 })
             } else {
                 None

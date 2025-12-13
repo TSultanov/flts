@@ -7,6 +7,7 @@
     import { listen, type UnlistenFn } from "@tauri-apps/api/event";
     import Fa from "svelte-fa";
     import CircularProgress from "../widgets/CircularProgress.svelte";
+    import { invoke } from "@tauri-apps/api/core";
 
     const {
         bookId,
@@ -48,6 +49,30 @@
     }).then((u) => {
         unsub = u;
     });
+
+    // System Dictionary (macOS) - using library method which returns a Readable store
+    const systemDefinition = $derived(
+        $word?.original
+            ? library.getSystemDefinition(
+                  $word.original,
+                  $word.sourceLanguage || "en",
+                  $configStore?.targetLanguageId || "en",
+              )
+            : null,
+    );
+
+    // Simple user agent check for iOS (constant, doesn't need reactivity)
+    const isIos =
+        typeof navigator !== "undefined" &&
+        /iPad|iPhone|iPod/.test(navigator.userAgent);
+
+    function showSystemDictionary() {
+        if ($word?.original) {
+            invoke("show_system_dictionary", { word: $word.original }).catch(
+                console.error,
+            );
+        }
+    }
 
     onDestroy(() => {
         if (unsub) {
@@ -174,6 +199,22 @@
                 <p>{$word.fullSentenceTranslation}</p>
             </details>
         {/if}
+        {#if systemDefinition && $systemDefinition}
+            <details open>
+                <summary>System Dictionary</summary>
+                {#if $systemDefinition.transcription}
+                    <p class="transcription">
+                        [{$systemDefinition.transcription}]
+                    </p>
+                {/if}
+                <p class="definition">{$systemDefinition.definition}</p>
+            </details>
+        {/if}
+        {#if isIos}
+            <button class="ios-dictionary-btn" onclick={showSystemDictionary}>
+                Show System Dictionary
+            </button>
+        {/if}
         <div class="translate-section">
             <span>Translate paragraph again</span>
             <div class="controls">
@@ -238,5 +279,28 @@
         display: flex;
         align-items: center;
         justify-content: center;
+    }
+
+    .transcription {
+        font-family: monospace;
+        font-size: 1.1em;
+        margin: 0.5em 0;
+        color: var(--text-color-secondary);
+    }
+
+    .definition {
+        white-space: pre-wrap;
+        margin: 0.5em 0;
+    }
+
+    .ios-dictionary-btn {
+        width: 100%;
+        padding: 0.8em;
+        margin-top: 1em;
+        background-color: var(--primary-color);
+        color: white;
+        border: none;
+        border-radius: 8px;
+        font-weight: bold;
     }
 </style>

@@ -33,6 +33,11 @@ export type TranslationStatus = {
     is_complete: boolean;
 };
 
+export type SystemDefinition = {
+    definition: string,
+    transcription: string | null,
+}
+
 export class Library {
     getLibraryBooks(): Readable<LibraryFolder> {
         const booksStore = eventToReadable<LibraryBookMetadataView[]>("library_updated", "list_books", [])
@@ -96,6 +101,16 @@ export class Library {
             "get_word_info",
             { bookId, paragraphId, sentenceId, wordId },
             "book_updated", (updatedId: UUID) => updatedId === bookId,
+        );
+    }
+
+    // Get system dictionary definition for a word (macOS Dictionary Services)
+    getSystemDefinition(word: string, sourceLang: string, targetLang: string): Readable<SystemDefinition | null> {
+        return getterToReadableWithEvents<SystemDefinition | null>(
+            "get_system_definition",
+            { word, sourceLang, targetLang },
+            [], // No update events - this is a one-time fetch
+            null,
         );
     }
 

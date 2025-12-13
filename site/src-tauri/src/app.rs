@@ -360,3 +360,53 @@ pub async fn get_translation_status(
         Ok(None)
     }
 }
+
+#[tauri::command]
+pub async fn get_system_definition(
+    app: tauri::AppHandle,
+    word: String,
+    source_lang: String,
+    target_lang: String,
+) -> Result<Option<library::dictionary::SystemDefinition>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::sync::mpsc::channel;
+        let (tx, rx) = channel();
+
+        let word = word.clone();
+        let source_lang = source_lang.clone();
+        let target_lang = target_lang.clone();
+
+        app.run_on_main_thread(move || {
+            let result = library::dictionary::system_macos::get_definition(
+                &word,
+                &source_lang,
+                &target_lang,
+            );
+            let _ = tx.send(result);
+        })
+        .map_err(|e| e.to_string())?;
+
+        rx.recv().map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(None)
+    }
+}
+
+#[tauri::command]
+pub async fn show_system_dictionary(app: tauri::AppHandle, word: String) -> Result<(), String> {
+    #[cfg(target_os = "ios")]
+    {
+        app.run_on_main_thread(move || {
+            library::dictionary::system_ios::show_dictionary(&word);
+        })
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        Ok(())
+    }
+}

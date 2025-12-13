@@ -11,7 +11,7 @@ type BookData = {
 
 export type BookEntity = BookData
 
-type BookChapter ={
+type BookChapter = {
     readonly title?: string,
 }
 
@@ -55,6 +55,7 @@ export type SentenceWordTranslation = {
     readonly grammar: Grammar,
     readonly fullSentenceTranslation: string,
     readonly translationModel: number,
+    readonly sourceLanguage: string,
 }
 
 type Grammar = {
