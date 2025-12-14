@@ -24,7 +24,7 @@ use uuid::Uuid;
 use crate::app::{config::Config, library_view::LibraryView, translation_queue::TranslationQueue};
 
 #[cfg(mobile)]
-use dirs_next::{config_dir, document_dir};
+use dirs_next::document_dir;
 
 pub mod config;
 pub mod library_view;
@@ -363,10 +363,10 @@ pub async fn get_translation_status(
 
 #[tauri::command]
 pub async fn get_system_definition(
-    app: tauri::AppHandle,
-    word: String,
-    source_lang: String,
-    target_lang: String,
+    #[allow(unused_variables)] app: tauri::AppHandle,
+    #[allow(unused_variables)] word: String,
+    #[allow(unused_variables)] source_lang: String,
+    #[allow(unused_variables)] target_lang: String,
 ) -> Result<Option<library::dictionary::SystemDefinition>, String> {
     #[cfg(target_os = "macos")]
     {
@@ -396,7 +396,10 @@ pub async fn get_system_definition(
 }
 
 #[tauri::command]
-pub async fn show_system_dictionary(app: tauri::AppHandle, word: String) -> Result<(), String> {
+pub async fn show_system_dictionary(
+    #[allow(unused_variables)] app: tauri::AppHandle,
+    #[allow(unused_variables)] word: String,
+) -> Result<(), String> {
     #[cfg(target_os = "ios")]
     {
         app.run_on_main_thread(move || {

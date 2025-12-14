@@ -648,6 +648,7 @@ fn try_move_to_trash(physical_path: &Path) -> anyhow::Result<bool> {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+#[allow(dead_code)]
 fn try_move_to_trash(_path: &std::path::Path) -> anyhow::Result<bool> {
     Ok(false)
 }

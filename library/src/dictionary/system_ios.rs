@@ -25,7 +25,6 @@ pub fn show_dictionary(word: &str) {
         // Safety: we're reconstructing the Box we created above
         let word = unsafe { Box::from_raw(context as *mut String) };
 
-        use objc2::DowncastTarget;
         use objc2::MainThreadOnly;
         use objc2_foundation::{MainThreadMarker, NSString};
         use objc2_ui_kit::{

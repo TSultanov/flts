@@ -61,6 +61,7 @@ pub fn get_definition(
         }
 
         if !func_ptr.is_null() {
+            #[allow(non_snake_case)]
             let func: unsafe extern "C" fn(
                 dictionary: *const std::ffi::c_void,
                 textString: CFStringRef,
@@ -164,7 +165,7 @@ fn find_best_dictionary(source_lang_code: &str, target_lang_code: &str) -> *cons
         let mut english_match: *const std::ffi::c_void = ptr::null();
         let mut source_match: *const std::ffi::c_void = ptr::null();
 
-        for (i, &dict_ptr) in values.iter().enumerate() {
+        for (_i, &dict_ptr) in values.iter().enumerate() {
             if dict_ptr.is_null() {
                 continue;
             }
