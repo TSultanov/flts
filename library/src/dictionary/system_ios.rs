@@ -1,8 +1,5 @@
 #[cfg(target_os = "ios")]
 pub fn show_dictionary(word: &str) {
-    use objc2::MainThreadOnly;
-    use objc2_foundation::{MainThreadMarker, NSString};
-    use objc2_ui_kit::{UIApplication, UIReferenceLibraryViewController};
     use std::ffi::c_void;
 
     // We need to defer the dictionary presentation to the next run loop iteration
@@ -28,9 +25,12 @@ pub fn show_dictionary(word: &str) {
         // Safety: we're reconstructing the Box we created above
         let word = unsafe { Box::from_raw(context as *mut String) };
 
+        use objc2::DowncastTarget;
         use objc2::MainThreadOnly;
         use objc2_foundation::{MainThreadMarker, NSString};
-        use objc2_ui_kit::{UIApplication, UIReferenceLibraryViewController};
+        use objc2_ui_kit::{
+            UIApplication, UIReferenceLibraryViewController, UIScene, UIWindowScene,
+        };
 
         let Some(mtm) = MainThreadMarker::new() else {
             log::error!("show_dictionary_impl: Not on main thread!");
@@ -39,24 +39,40 @@ pub fn show_dictionary(word: &str) {
 
         let term = NSString::from_str(&word);
 
-        let ref_vc = unsafe {
-            UIReferenceLibraryViewController::initWithTerm(
-                UIReferenceLibraryViewController::alloc(mtm),
-                &term,
-            )
-        };
+        let ref_vc = UIReferenceLibraryViewController::initWithTerm(
+            UIReferenceLibraryViewController::alloc(mtm),
+            &term,
+        );
 
-        let app = unsafe { UIApplication::sharedApplication(mtm) };
+        let app = UIApplication::sharedApplication(mtm);
 
-        #[allow(deprecated)]
-        let windows = app.windows();
-
+        // Use the modern UIWindowScene API instead of deprecated UIApplication.windows
+        let connected_scenes = app.connectedScenes();
         let mut root_vc = None;
 
-        for i in 0..windows.count() {
-            let window = unsafe { windows.objectAtIndex(i) };
-            if window.isKeyWindow() {
-                root_vc = window.rootViewController();
+        for scene in connected_scenes.iter() {
+            // Try to downcast UIScene to UIWindowScene
+            let scene_ref: &UIScene = &scene;
+            if let Some(window_scene) = scene_ref.downcast_ref::<UIWindowScene>() {
+                // First try keyWindow, then fall back to iterating windows
+                if let Some(key_window) = window_scene.keyWindow() {
+                    root_vc = key_window.rootViewController();
+                    if root_vc.is_some() {
+                        break;
+                    }
+                }
+
+                // Fall back to iterating windows if keyWindow didn't work
+                let windows = window_scene.windows();
+                for i in 0..windows.len() {
+                    let window = windows.objectAtIndex(i);
+                    if window.isKeyWindow() {
+                        root_vc = window.rootViewController();
+                        if root_vc.is_some() {
+                            break;
+                        }
+                    }
+                }
                 if root_vc.is_some() {
                     break;
                 }
@@ -69,9 +85,7 @@ pub fn show_dictionary(word: &str) {
                 top_vc = presented;
             }
 
-            unsafe {
-                top_vc.presentViewController_animated_completion(&ref_vc, true, None);
-            }
+            top_vc.presentViewController_animated_completion(&ref_vc, true, None);
         } else {
             log::error!("No root view controller found!");
         }
