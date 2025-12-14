@@ -39,6 +39,8 @@ pub struct ParagraphView {
     id: usize,
     original: String,
     translation: Option<String>,
+    #[serde(rename = "visibleWords")]
+    visible_words: Vec<usize>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -164,14 +166,19 @@ impl LibraryView {
 
             let bt = book_translation.lock().await;
             let t_view = bt.paragraph_view(p.id);
-            let translation = t_view.map(|t| {
-                translation_to_html(p.id, &original, &t).unwrap_or_else(|err| err.to_string())
+            let translation = t_view.as_ref().map(|t| {
+                translation_to_html(p.id, &original, t).unwrap_or_else(|err| err.to_string())
             });
+            let visible_words = t_view
+                .as_ref()
+                .map(|t| t.visible_words().to_vec())
+                .unwrap_or_default();
 
             views.push(ParagraphView {
                 id: p.id,
                 original: original.to_string(),
                 translation,
+                visible_words,
             });
         }
 
@@ -318,6 +325,46 @@ impl LibraryView {
         let books = self.list_books(target_language).await?;
         self.app.emit("library_updated", books)?;
         Ok(())
+    }
+
+    pub async fn mark_word_visible(
+        &self,
+        book_id: Uuid,
+        paragraph_id: usize,
+        sentence_id: usize,
+        word_id: usize,
+        target_language: &Language,
+    ) -> anyhow::Result<bool> {
+        let book = self.library.lock().await.get_book(&book_id).await?;
+        let mut book = book.lock().await;
+        let book_translation = book.get_or_create_translation(target_language).await;
+
+        let result = {
+            let mut bt = book_translation.lock().await;
+
+            // Compute flat word index from sentence_id and word_id
+            let view = bt.paragraph_view(paragraph_id);
+            let flat_index = if let Some(view) = view {
+                let mut idx = 0usize;
+                for s in 0..sentence_id {
+                    if s < view.sentence_count() {
+                        idx += view.sentence_view(s).word_count();
+                    }
+                }
+                idx + word_id
+            } else {
+                return Ok(false);
+            };
+
+            bt.mark_word_visible(paragraph_id, flat_index)
+        };
+
+        // Persist to disk
+        if result {
+            book.save().await?;
+        }
+
+        Ok(result)
     }
 
     pub async fn handle_file_change_event(
@@ -532,6 +579,35 @@ pub async fn delete_book(
     if let Some(library) = &app.library_view {
         library
             .delete_book(book_id, target_language.as_ref())
+            .await
+            .map_err(|err| err.to_string())
+    } else {
+        Err("Library is not configured".into())
+    }
+}
+
+#[tauri::command]
+pub async fn mark_word_visible(
+    state: tauri::State<'_, Arc<Mutex<App>>>,
+    book_id: Uuid,
+    paragraph_id: usize,
+    sentence_id: usize,
+    word_id: usize,
+) -> Result<bool, String> {
+    let app = state.lock().await;
+    let target_language = Language::from_639_3(&app.config.target_language_id);
+
+    if let Some(library) = &app.library_view
+        && let Some(target_language) = target_language
+    {
+        library
+            .mark_word_visible(
+                book_id,
+                paragraph_id,
+                sentence_id,
+                word_id,
+                &target_language,
+            )
             .await
             .map_err(|err| err.to_string())
     } else {

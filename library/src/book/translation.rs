@@ -63,6 +63,7 @@ impl Display for FieldTagError {
 enum FieldTag {
     TranslationModel = 1,
     TotalTokens = 2,
+    VisibleWords = 3,
 }
 
 impl TryFrom<u64> for FieldTag {
@@ -72,6 +73,7 @@ impl TryFrom<u64> for FieldTag {
         match value {
             1 => Ok(FieldTag::TranslationModel),
             2 => Ok(FieldTag::TotalTokens),
+            3 => Ok(FieldTag::VisibleWords),
             _ => Err(FieldTagError::InvalidValue(value)),
         }
     }
@@ -83,6 +85,7 @@ struct ParagraphTranslation {
     sentences: VecSlice<Sentence>,
     model: TranslationModel,
     total_tokens: Option<u64>,
+    visible_words: Vec<usize>,
 }
 
 pub struct ParagraphTranslationView<'a> {
@@ -92,6 +95,7 @@ pub struct ParagraphTranslationView<'a> {
     sentences: &'a [Sentence],
     pub model: TranslationModel,
     pub total_tokens: Option<u64>,
+    visible_words: &'a [usize],
 }
 
 #[derive(Clone)]
@@ -185,6 +189,7 @@ impl Translation {
             sentences: p.sentences.slice(&self.sentences),
             model: p.model,
             total_tokens: p.total_tokens,
+            visible_words: &p.visible_words,
         })
     }
 
@@ -224,6 +229,7 @@ impl Translation {
             sentences: VecSlice::empty(),
             model,
             total_tokens: translation.total_tokens,
+            visible_words: Vec::new(),
         };
         let new_index = self.paragraph_translations.len();
         self.paragraph_translations.push(new_paragraph);
@@ -308,6 +314,7 @@ impl Translation {
             sentences: VecSlice::empty(),
             model: translation.model,
             total_tokens: translation.total_tokens,
+            visible_words: translation.visible_words().to_vec(),
         };
 
         let new_index = self.paragraph_translations.len();
@@ -371,6 +378,24 @@ impl Translation {
         self.paragraph_translations[new_index].sentences = sentences;
     }
 
+    /// Marks a word index as visible (annotation shown) for the given paragraph.
+    /// Returns true if the word was newly marked visible, false if already visible or paragraph doesn't exist.
+    pub fn mark_word_visible(&mut self, paragraph: usize, word_index: usize) -> bool {
+        if paragraph >= self.paragraphs.len() {
+            return false;
+        }
+        let paragraph_translation_idx = match self.paragraphs[paragraph] {
+            Some(idx) => idx,
+            None => return false,
+        };
+        let pt = &mut self.paragraph_translations[paragraph_translation_idx];
+        if pt.visible_words.contains(&word_index) {
+            return false;
+        }
+        pt.visible_words.push(word_index);
+        true
+    }
+
     pub fn merge(&self, other: &Self) -> Self {
         let mut merged_translation = Self::create(&self.source_language, &self.target_language);
         merged_translation.id = self.id;
@@ -394,11 +419,19 @@ impl Translation {
                     .map(|(timestamp, _)| *timestamp)
                     .collect::<HashSet<_>>();
 
+                // Collect visible_words from other source for matching timestamps
+                let mut other_visible_words: AHashMap<u64, Vec<usize>> = AHashMap::new();
                 curr_paragraph = other_paragraph;
 
                 loop {
                     let prev_paragraph = curr_paragraph.get_previous_version();
-                    if !existing_versions.contains(&curr_paragraph.timestamp) {
+                    if existing_versions.contains(&curr_paragraph.timestamp) {
+                        // Timestamp exists in both sources - collect visible_words for later merge
+                        other_visible_words.insert(
+                            curr_paragraph.timestamp,
+                            curr_paragraph.visible_words().to_vec(),
+                        );
+                    } else {
                         versions.push((curr_paragraph.timestamp, curr_paragraph));
                     }
                     match prev_paragraph {
@@ -409,9 +442,15 @@ impl Translation {
 
                 versions.sort_by_key(|(timestamp, _)| *timestamp);
 
-                for (_, translation) in versions {
+                for (ts, translation) in versions {
                     merged_translation
                         .add_paragraph_translation_from_view(paragraph_idx, &translation);
+                    // Union visible_words from other source if timestamps matched
+                    if let Some(other_words) = other_visible_words.get(&ts) {
+                        for word_idx in other_words {
+                            merged_translation.mark_word_visible(paragraph_idx, *word_idx);
+                        }
+                    }
                 }
             } else if let Some(paragarph) = self.paragraph_view(paragraph_idx)
                 && other.paragraph_view(paragraph_idx).is_none()
@@ -667,6 +706,13 @@ impl Translation {
         //   u64 timestamp
         //   u8 has_previous (if 1 then u64 previous_index)
         //   u64 sentences.start,len
+        //   Tagged fields:
+        //     v64 number_of_fields
+        //     for each field: v64 field_data_length
+        //     for each field: v64 tag, data
+        //       Tag 1 (TranslationModel): v64 model enum variant
+        //       Tag 2 (TotalTokens): v64 has_value, if 1 then v64 token_count
+        //       Tag 3 (VisibleWords): v64 count, then v64[] word_indexes
         // u64 paragraphs_count, then each: u8 has_translation (if 1 then u64 paragraph_translation_index)
         // u64 fnv1 hash of the entire file except the hash itself
 
@@ -797,11 +843,27 @@ impl Translation {
                 write_opt_var_u64(&mut cursor, pt.total_tokens)?;
                 cursor.into_inner()
             };
-            write_var_u64(&mut hashing_stream, 2)?;
+
+            let visible_words_field = {
+                let buf = Vec::new();
+                let mut cursor = Cursor::new(buf);
+
+                // Visible words
+                write_var_u64(&mut cursor, FieldTag::VisibleWords as u64)?;
+                write_var_u64(&mut cursor, pt.visible_words.len() as u64)?;
+                for word_idx in &pt.visible_words {
+                    write_var_u64(&mut cursor, *word_idx as u64)?;
+                }
+                cursor.into_inner()
+            };
+
+            write_var_u64(&mut hashing_stream, 3)?;
             write_var_u64(&mut hashing_stream, translation_model_field.len() as u64)?;
             write_var_u64(&mut hashing_stream, tokens_count_field.len() as u64)?;
+            write_var_u64(&mut hashing_stream, visible_words_field.len() as u64)?;
             hashing_stream.write_all(&translation_model_field)?;
             hashing_stream.write_all(&tokens_count_field)?;
+            hashing_stream.write_all(&visible_words_field)?;
         }
         let d_pt = t_pt.elapsed();
 
@@ -1014,6 +1076,7 @@ impl Translation {
                 sentences: sentences_slice,
                 model: TranslationModel::Unknown,
                 total_tokens: None,
+                visible_words: Vec::new(),
             };
             paragraph_translations.push(translation);
         }
@@ -1205,6 +1268,7 @@ impl Translation {
                 sentences: sentences_slice,
                 model: TranslationModel::Unknown,
                 total_tokens: None,
+                visible_words: Vec::new(),
             };
 
             // Tagged fields
@@ -1231,6 +1295,14 @@ impl Translation {
                     FieldTag::TotalTokens => {
                         let tokens = read_opt_var_u64(&mut cursor)?;
                         translation.total_tokens = tokens;
+                    }
+                    FieldTag::VisibleWords => {
+                        let count = read_var_u64(&mut cursor)? as usize;
+                        let mut words = Vec::with_capacity(count);
+                        for _ in 0..count {
+                            words.push(read_var_u64(&mut cursor)? as usize);
+                        }
+                        translation.visible_words = words;
                     }
                 }
             }
@@ -1322,7 +1394,12 @@ impl<'a> ParagraphTranslationView<'a> {
             sentences: p.sentences.slice(&self.translation.sentences),
             model: p.model,
             total_tokens: p.total_tokens,
+            visible_words: &p.visible_words,
         })
+    }
+
+    pub fn visible_words(&self) -> &[usize] {
+        self.visible_words
     }
 
     pub fn sentence_count(&self) -> usize {
@@ -2107,5 +2184,73 @@ mod tests {
         let v1 = merged.paragraph_view(1).unwrap();
         assert_eq!(v1.timestamp, 3);
         assert!(v1.get_previous_version().is_none());
+    }
+
+    #[test]
+    fn visible_words_serialize_deserialize_roundtrip() {
+        let mut dict = Dictionary::create("en".to_owned(), "ru".to_owned());
+        let mut translation = Translation::create("en", "ru");
+        translation.add_paragraph_translation(
+            0,
+            &make_paragraph(1, "test"),
+            TranslationModel::Gemini25Flash,
+            &mut dict,
+        );
+
+        // Mark some words as visible
+        assert!(translation.mark_word_visible(0, 2));
+        assert!(translation.mark_word_visible(0, 5));
+        assert!(translation.mark_word_visible(0, 3));
+        // Marking same word again should return false
+        assert!(!translation.mark_word_visible(0, 2));
+
+        // Verify visible_words before serialization
+        let view = translation.paragraph_view(0).unwrap();
+        assert_eq!(view.visible_words(), &[2, 5, 3]);
+
+        // Serialize and deserialize
+        let mut buf: Vec<u8> = vec![];
+        translation.serialize(&mut buf).unwrap();
+        let mut cursor = Cursor::new(buf);
+        let deserialized = Translation::deserialize(&mut cursor).unwrap();
+
+        // Verify visible_words after deserialization
+        let view2 = deserialized.paragraph_view(0).unwrap();
+        assert_eq!(view2.visible_words(), &[2, 5, 3]);
+    }
+
+    #[test]
+    fn merge_visible_words_union() {
+        let mut dict = Dictionary::create("en".to_owned(), "ru".to_owned());
+
+        // Create two translations with same timestamp but different visible_words
+        let mut a = Translation::create("en", "ru");
+        a.add_paragraph_translation(
+            0,
+            &make_paragraph(1, "shared"),
+            TranslationModel::Gemini25Flash,
+            &mut dict,
+        );
+        a.mark_word_visible(0, 1);
+        a.mark_word_visible(0, 3);
+
+        let mut b = Translation::create("en", "ru");
+        b.add_paragraph_translation(
+            0,
+            &make_paragraph(1, "shared"),
+            TranslationModel::Gemini25Flash,
+            &mut dict,
+        );
+        b.mark_word_visible(0, 2);
+        b.mark_word_visible(0, 3); // Overlaps with a
+
+        // Merge
+        let merged = a.merge(&b);
+
+        // Verify visible_words is the union of both sources
+        let view = merged.paragraph_view(0).unwrap();
+        let mut visible: Vec<usize> = view.visible_words().to_vec();
+        visible.sort();
+        assert_eq!(visible, vec![1, 2, 3]); // Union of [1, 3] and [2, 3]
     }
 }

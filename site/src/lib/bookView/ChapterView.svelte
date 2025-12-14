@@ -40,6 +40,15 @@
                 paragraph != null && sentence != null && word != null
                     ? [paragraph, sentence, word]
                     : null;
+
+            // Persist word visibility
+            if (paragraph != null && sentence != null && word != null) {
+                library
+                    .markWordVisible(bookId, paragraph, sentence, word)
+                    .catch((err) =>
+                        console.error("Failed to mark word visible", err),
+                    );
+            }
         } else {
             sentenceWordIdToDisplay = null;
         }
@@ -94,7 +103,9 @@
         }
         const containerRect = paragraphsContainer.getBoundingClientRect();
         const elements =
-            paragraphsContainer.querySelectorAll<HTMLElement>(".paragraph-wrapper");
+            paragraphsContainer.querySelectorAll<HTMLElement>(
+                ".paragraph-wrapper",
+            );
 
         let bestId: number | null = null;
         let bestDistance = Number.POSITIVE_INFINITY;
