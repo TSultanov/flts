@@ -1,5 +1,7 @@
 use super::SystemDefinition;
+#[cfg(target_os = "macos")]
 use isolang::Language;
+#[cfg(target_os = "macos")]
 use log::debug;
 
 #[cfg(target_os = "macos")]

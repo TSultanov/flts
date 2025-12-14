@@ -11,6 +11,7 @@ pub fn run() {
     #[cfg(debug_assertions)]
     Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_os::init())
         .setup(|app| {
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             app.handle()

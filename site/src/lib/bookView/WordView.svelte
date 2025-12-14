@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { getContext, onDestroy } from "svelte";
+    import { getContext, onDestroy, onMount } from "svelte";
     import type { Library, TranslationStatus } from "../data/library";
     import type { UUID } from "../data/v2/db";
     import { models, configStore } from "../config";
@@ -61,10 +61,36 @@
             : null,
     );
 
-    // Simple user agent check for iOS (constant, doesn't need reactivity)
-    const isIos =
-        typeof navigator !== "undefined" &&
-        /iPad|iPhone|iPod/.test(navigator.userAgent);
+    // Detect iOS platform - initialized in onMount
+    let isIos = $state(false);
+
+    onMount(() => {
+        // Lazy import to avoid module-level issues
+        import("@tauri-apps/plugin-os")
+            .then(({ platform }) => {
+                try {
+                    const p = platform();
+                    // Handle both sync result and potential promise
+                    if (p && typeof (p as any).then === "function") {
+                        (p as unknown as Promise<string>)
+                            .then((val) => {
+                                isIos = val === "ios";
+                            })
+                            .catch(() => {
+                                isIos = false;
+                            });
+                    } else {
+                        isIos = p === "ios";
+                    }
+                } catch {
+                    isIos = false;
+                }
+            })
+            .catch(() => {
+                // Module not available
+                isIos = false;
+            });
+    });
 
     function showSystemDictionary() {
         if ($word?.original) {
@@ -292,16 +318,5 @@
 
     :global(.definition .exg) {
         margin: 0.5em 0.5em;
-    }
-
-    .ios-dictionary-btn {
-        width: 100%;
-        padding: 0.8em;
-        margin-top: 1em;
-        background-color: var(--primary-color);
-        color: white;
-        border: none;
-        border-radius: 8px;
-        font-weight: bold;
     }
 </style>

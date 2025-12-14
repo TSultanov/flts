@@ -1,27 +1,58 @@
 #[cfg(target_os = "ios")]
 pub fn show_dictionary(word: &str) {
+    use objc2::MainThreadOnly;
     use objc2_foundation::{MainThreadMarker, NSString};
-    use objc2_ui_kit::{
-        UIApplication, UIReferenceLibraryViewController, UIViewController, UIWindow,
-    };
+    use objc2_ui_kit::{UIApplication, UIReferenceLibraryViewController};
+    use std::ffi::c_void;
 
-    // Ensure we are on the main thread
-    if let Some(mtm) = MainThreadMarker::new() {
-        let term = NSString::from_str(word);
+    // We need to defer the dictionary presentation to the next run loop iteration
+    // because UIReferenceLibraryViewController uses WebKit internally, which runs
+    // a nested run loop that interferes with Tao's event loop.
+
+    // Define dispatch types
+    type DispatchQueueT = *const c_void;
+    type DispatchBlock = extern "C" fn(*mut c_void);
+
+    // Link to libdispatch (part of libSystem on iOS)
+    unsafe extern "C" {
+        // On iOS, dispatch_get_main_queue is a macro that returns &_dispatch_main_q
+        static _dispatch_main_q: c_void;
+        fn dispatch_async_f(queue: DispatchQueueT, context: *mut c_void, work: DispatchBlock);
+    }
+
+    // Box the word string to pass it through the C callback
+    let word_box = Box::new(word.to_string());
+    let word_ptr = Box::into_raw(word_box) as *mut c_void;
+
+    extern "C" fn show_dictionary_impl(context: *mut c_void) {
+        // Safety: we're reconstructing the Box we created above
+        let word = unsafe { Box::from_raw(context as *mut String) };
+
+        use objc2::MainThreadOnly;
+        use objc2_foundation::{MainThreadMarker, NSString};
+        use objc2_ui_kit::{UIApplication, UIReferenceLibraryViewController};
+
+        let Some(mtm) = MainThreadMarker::new() else {
+            log::error!("show_dictionary_impl: Not on main thread!");
+            return;
+        };
+
+        let term = NSString::from_str(&word);
+
         let ref_vc = unsafe {
             UIReferenceLibraryViewController::initWithTerm(
-                UIReferenceLibraryViewController::alloc(),
+                UIReferenceLibraryViewController::alloc(mtm),
                 &term,
             )
         };
 
         let app = unsafe { UIApplication::sharedApplication(mtm) };
-        // windows returns Retained<NSArray<UIWindow>>
+
+        #[allow(deprecated)]
         let windows = app.windows();
 
         let mut root_vc = None;
 
-        // Iterate manually or use fast enumeration if available
         for i in 0..windows.count() {
             let window = unsafe { windows.objectAtIndex(i) };
             if window.isKeyWindow() {
@@ -41,9 +72,15 @@ pub fn show_dictionary(word: &str) {
             unsafe {
                 top_vc.presentViewController_animated_completion(&ref_vc, true, None);
             }
+        } else {
+            log::error!("No root view controller found!");
         }
-    } else {
-        log::error!("show_dictionary must be called on the main thread (iOS).");
+    }
+
+    // Dispatch to the main queue asynchronously to break out of the current run loop iteration
+    unsafe {
+        let main_queue = &_dispatch_main_q as *const c_void;
+        dispatch_async_f(main_queue, word_ptr, show_dictionary_impl);
     }
 }
 
