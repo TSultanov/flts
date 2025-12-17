@@ -85,7 +85,7 @@ struct ParagraphTranslation {
     sentences: VecSlice<Sentence>,
     model: TranslationModel,
     total_tokens: Option<u64>,
-    visible_words: Vec<usize>,
+    visible_words: AHashSet<usize>,
 }
 
 pub struct ParagraphTranslationView<'a> {
@@ -95,7 +95,7 @@ pub struct ParagraphTranslationView<'a> {
     sentences: &'a [Sentence],
     pub model: TranslationModel,
     pub total_tokens: Option<u64>,
-    visible_words: &'a [usize],
+    visible_words: &'a AHashSet<usize>,
 }
 
 #[derive(Clone)]
@@ -229,7 +229,7 @@ impl Translation {
             sentences: VecSlice::empty(),
             model,
             total_tokens: translation.total_tokens,
-            visible_words: Vec::new(),
+            visible_words: AHashSet::new(),
         };
         let new_index = self.paragraph_translations.len();
         self.paragraph_translations.push(new_paragraph);
@@ -314,7 +314,7 @@ impl Translation {
             sentences: VecSlice::empty(),
             model: translation.model,
             total_tokens: translation.total_tokens,
-            visible_words: translation.visible_words().to_vec(),
+            visible_words: translation.visible_words().clone(),
         };
 
         let new_index = self.paragraph_translations.len();
@@ -392,7 +392,7 @@ impl Translation {
         if pt.visible_words.contains(&word_index) {
             return false;
         }
-        pt.visible_words.push(word_index);
+        pt.visible_words.insert(word_index);
         true
     }
 
@@ -420,7 +420,7 @@ impl Translation {
                     .collect::<HashSet<_>>();
 
                 // Collect visible_words from other source for matching timestamps
-                let mut other_visible_words: AHashMap<u64, Vec<usize>> = AHashMap::new();
+                let mut other_visible_words: AHashMap<u64, AHashSet<usize>> = AHashMap::new();
                 curr_paragraph = other_paragraph;
 
                 loop {
@@ -429,7 +429,7 @@ impl Translation {
                         // Timestamp exists in both sources - collect visible_words for later merge
                         other_visible_words.insert(
                             curr_paragraph.timestamp,
-                            curr_paragraph.visible_words().to_vec(),
+                            curr_paragraph.visible_words().clone(),
                         );
                     } else {
                         versions.push((curr_paragraph.timestamp, curr_paragraph));
@@ -851,8 +851,11 @@ impl Translation {
                 // Visible words
                 write_var_u64(&mut cursor, FieldTag::VisibleWords as u64)?;
                 write_var_u64(&mut cursor, pt.visible_words.len() as u64)?;
-                for word_idx in &pt.visible_words {
-                    write_var_u64(&mut cursor, *word_idx as u64)?;
+                // Sort for deterministic serialization
+                let mut sorted_words: Vec<_> = pt.visible_words.iter().map(|&x| x as u64).collect();
+                sorted_words.sort_unstable();
+                for word_idx in sorted_words {
+                    write_var_u64(&mut cursor, word_idx)?;
                 }
                 cursor.into_inner()
             };
@@ -1076,7 +1079,7 @@ impl Translation {
                 sentences: sentences_slice,
                 model: TranslationModel::Unknown,
                 total_tokens: None,
-                visible_words: Vec::new(),
+                visible_words: AHashSet::new(),
             };
             paragraph_translations.push(translation);
         }
@@ -1268,7 +1271,7 @@ impl Translation {
                 sentences: sentences_slice,
                 model: TranslationModel::Unknown,
                 total_tokens: None,
-                visible_words: Vec::new(),
+                visible_words: AHashSet::new(),
             };
 
             // Tagged fields
@@ -1298,9 +1301,9 @@ impl Translation {
                     }
                     FieldTag::VisibleWords => {
                         let count = read_var_u64(&mut cursor)? as usize;
-                        let mut words = Vec::with_capacity(count);
+                        let mut words = AHashSet::with_capacity(count);
                         for _ in 0..count {
-                            words.push(read_var_u64(&mut cursor)? as usize);
+                            words.insert(read_var_u64(&mut cursor)? as usize);
                         }
                         translation.visible_words = words;
                     }
@@ -1398,7 +1401,7 @@ impl<'a> ParagraphTranslationView<'a> {
         })
     }
 
-    pub fn visible_words(&self) -> &[usize] {
+    pub fn visible_words(&self) -> &AHashSet<usize> {
         self.visible_words
     }
 
@@ -2206,7 +2209,9 @@ mod tests {
 
         // Verify visible_words before serialization
         let view = translation.paragraph_view(0).unwrap();
-        assert_eq!(view.visible_words(), &[2, 5, 3]);
+        let mut words: Vec<_> = view.visible_words().iter().copied().collect();
+        words.sort();
+        assert_eq!(words, vec![2, 3, 5]);
 
         // Serialize and deserialize
         let mut buf: Vec<u8> = vec![];
@@ -2216,7 +2221,9 @@ mod tests {
 
         // Verify visible_words after deserialization
         let view2 = deserialized.paragraph_view(0).unwrap();
-        assert_eq!(view2.visible_words(), &[2, 5, 3]);
+        let mut words2: Vec<_> = view2.visible_words().iter().copied().collect();
+        words2.sort();
+        assert_eq!(words2, vec![2, 3, 5]);
     }
 
     #[test]
@@ -2249,7 +2256,7 @@ mod tests {
 
         // Verify visible_words is the union of both sources
         let view = merged.paragraph_view(0).unwrap();
-        let mut visible: Vec<usize> = view.visible_words().to_vec();
+        let mut visible: Vec<usize> = view.visible_words().iter().copied().collect();
         visible.sort();
         assert_eq!(visible, vec![1, 2, 3]); // Union of [1, 3] and [2, 3]
     }

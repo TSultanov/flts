@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use ahash::AHashSet;
 use htmlentity::entity::{CharacterSet, EncodeType, ICodedDataTrait, decode, encode};
 use isolang::Language;
 use library::epub_importer::EpubBook;
@@ -40,7 +41,7 @@ pub struct ParagraphView {
     original: String,
     translation: Option<String>,
     #[serde(rename = "visibleWords")]
-    visible_words: Vec<usize>,
+    visible_words: AHashSet<usize>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -171,7 +172,7 @@ impl LibraryView {
             });
             let visible_words = t_view
                 .as_ref()
-                .map(|t| t.visible_words().to_vec())
+                .map(|t| t.visible_words().clone())
                 .unwrap_or_default();
 
             views.push(ParagraphView {
