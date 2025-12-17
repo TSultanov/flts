@@ -332,8 +332,7 @@ impl LibraryView {
         &self,
         book_id: Uuid,
         paragraph_id: usize,
-        sentence_id: usize,
-        word_id: usize,
+        flat_index: usize,
         target_language: &Language,
     ) -> anyhow::Result<bool> {
         let book = self.library.lock().await.get_book(&book_id).await?;
@@ -342,21 +341,6 @@ impl LibraryView {
 
         let result = {
             let mut bt = book_translation.lock().await;
-
-            // Compute flat word index from sentence_id and word_id
-            let view = bt.paragraph_view(paragraph_id);
-            let flat_index = if let Some(view) = view {
-                let mut idx = 0usize;
-                for s in 0..sentence_id {
-                    if s < view.sentence_count() {
-                        idx += view.sentence_view(s).word_count();
-                    }
-                }
-                idx + word_id
-            } else {
-                return Ok(false);
-            };
-
             bt.mark_word_visible(paragraph_id, flat_index)
         };
 
@@ -592,8 +576,7 @@ pub async fn mark_word_visible(
     state: tauri::State<'_, Arc<Mutex<App>>>,
     book_id: Uuid,
     paragraph_id: usize,
-    sentence_id: usize,
-    word_id: usize,
+    flat_index: usize,
 ) -> Result<bool, String> {
     let app = state.lock().await;
     let target_language = Language::from_639_3(&app.config.target_language_id);
@@ -602,13 +585,7 @@ pub async fn mark_word_visible(
         && let Some(target_language) = target_language
     {
         library
-            .mark_word_visible(
-                book_id,
-                paragraph_id,
-                sentence_id,
-                word_id,
-                &target_language,
-            )
+            .mark_word_visible(book_id, paragraph_id, flat_index, &target_language)
             .await
             .map_err(|err| err.to_string())
     } else {
@@ -633,6 +610,8 @@ fn translation_to_html(
 
     let mut p_idx = 0_usize;
     let mut sentence_idx = 0_usize;
+    let mut flat_index = 0_usize;
+
     for sentence in translation.sentences() {
         let mut word_idx = 0;
         for word in sentence.words() {
@@ -640,6 +619,9 @@ fn translation_to_html(
                 word_idx += 1;
                 continue;
             }
+
+            let current_flat_index = flat_index;
+            flat_index += 1;
 
             let w_raw = word.original.replace("\n", "").replace("\r", "");
             let w = decode_lossy(&w_raw);
@@ -704,7 +686,7 @@ fn translation_to_html(
                     })
                     .unwrap_or_default();
 
-                result.push(format!("<span class=\"word-span\" data-paragraph=\"{paragraph_id}\" data-sentence=\"{sentence_idx}\" data-word=\"{word_idx}\">{translation_fragment}{text}</span>"));
+                result.push(format!("<span class=\"word-span\" data-paragraph=\"{paragraph_id}\" data-sentence=\"{sentence_idx}\" data-word=\"{word_idx}\" data-flat-index=\"{current_flat_index}\">{translation_fragment}{text}</span>"));
             }
 
             p_idx = clamped_end;
@@ -814,6 +796,14 @@ mod tests {
         assert!(html.contains(", ") || html.contains(","));
         assert!(html.contains("world"));
 
+        // Check flat indices
+        assert!(html.contains("data-flat-index=\"0\"")); // Hello
+        assert!(html.contains("data-flat-index=\"1\"")); // world - punctuation skipped in flat index? No, punctuation words are skipped entirely in the loop if `word.is_punctuation` is true. Ah, wait, the loop says `if word.is_punctuation { word_idx += 1; continue; }`. So punctuation words are NOT counted in flat_index.
+        // Let's verify standard behavior.
+        // Hello (0) -> visible.
+        // &comma; (punct) -> skipped.
+        // world (1) -> visible.
+
         // Translation fragment should be HTML-escaped
         assert!(html.contains("&lt;b&gt;hi&lt;/b&gt;"));
         // And whitespace should be normalized
@@ -836,6 +826,8 @@ mod tests {
         let html = translation_to_html(0, original, &view).expect("html");
 
         assert!(!html.contains("word-translation"));
+        assert!(html.contains("data-flat-index=\"0\""));
+        assert!(html.contains("data-flat-index=\"1\""));
     }
 
     #[test]
@@ -859,6 +851,9 @@ mod tests {
         assert!(html.contains("&amp;"));
         assert!(html.contains("Tom"));
         assert!(html.contains("Jerry"));
+        assert!(html.contains("data-flat-index=\"0\"")); // Tom
+        // &amp; is punctuation => skipped
+        assert!(html.contains("data-flat-index=\"1\"")); // Jerry
     }
 
     #[test]
@@ -880,6 +875,8 @@ mod tests {
         assert!(html.contains("naïve"));
         assert!(html.contains("café"));
         assert!(html.contains("data-sentence=\"0\""));
+        assert!(html.contains("data-flat-index=\"0\""));
+        assert!(html.contains("data-flat-index=\"1\""));
     }
 
     #[test]
@@ -911,6 +908,12 @@ mod tests {
 
         assert!(html.contains("data-sentence=\"0\""));
         assert!(html.contains("data-sentence=\"1\""));
+        // Sentence 0
+        assert!(html.contains("data-flat-index=\"0\"")); // Hello
+        assert!(html.contains("data-flat-index=\"1\"")); // world
+        // Sentence 1
+        assert!(html.contains("data-flat-index=\"2\"")); // Bye
+        assert!(html.contains("data-flat-index=\"3\"")); // world
     }
 
     #[test]

@@ -163,8 +163,8 @@ export class Library {
         await invoke("move_book", { bookId: bookUid, path: newPath });
     }
 
-    async markWordVisible(bookId: UUID, paragraphId: number, sentenceId: number, wordId: number): Promise<boolean> {
-        return await invoke<boolean>("mark_word_visible", { bookId, paragraphId, sentenceId, wordId });
+    async markWordVisible(bookId: UUID, paragraphId: number, flatIndex: number): Promise<boolean> {
+        return await invoke<boolean>("mark_word_visible", { bookId, paragraphId, flatIndex });
     }
 
     async deleteBooksInBatch(bookUids: UUID[]) {

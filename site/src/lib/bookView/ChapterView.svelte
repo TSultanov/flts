@@ -36,15 +36,19 @@
             const word = target.dataset["word"]
                 ? parseInt(target.dataset["word"])
                 : null;
+            const flatIndex = target.dataset["flatIndex"]
+                ? parseInt(target.dataset["flatIndex"])
+                : null;
+
             sentenceWordIdToDisplay =
                 paragraph != null && sentence != null && word != null
                     ? [paragraph, sentence, word]
                     : null;
 
             // Persist word visibility
-            if (paragraph != null && sentence != null && word != null) {
+            if (paragraph != null && flatIndex != null) {
                 library
-                    .markWordVisible(bookId, paragraph, sentence, word)
+                    .markWordVisible(bookId, paragraph, flatIndex)
                     .catch((err) =>
                         console.error("Failed to mark word visible", err),
                     );

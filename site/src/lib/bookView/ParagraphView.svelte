@@ -169,59 +169,12 @@
             return;
         }
 
-        // Build a flat index -> DOM element mapping
-        // Iterate through all word-spans in order and compute flat indexes
-        const wordSpans = wrapper.querySelectorAll<HTMLElement>(".word-span");
         const visibleSet = new Set(paragraph.visibleWords);
-
-        let currentSentence = -1;
-        let flatIndex = 0;
-        let sentenceWordCounts: Map<number, number> = new Map();
-
-        // First pass: count words per sentence to compute flat indexes
-        wordSpans.forEach((span) => {
-            const sentenceId = parseInt(span.dataset["sentence"] ?? "-1");
-            const wordId = parseInt(span.dataset["word"] ?? "-1");
-
-            if (sentenceId > currentSentence) {
-                // Moving to a new sentence - update flat index
-                for (let s = currentSentence + 1; s < sentenceId; s++) {
-                    flatIndex += sentenceWordCounts.get(s) ?? 0;
-                }
-                currentSentence = sentenceId;
-                sentenceWordCounts.set(
-                    sentenceId,
-                    Math.max(
-                        sentenceWordCounts.get(sentenceId) ?? 0,
-                        wordId + 1,
-                    ),
-                );
-            } else if (sentenceId === currentSentence) {
-                sentenceWordCounts.set(
-                    sentenceId,
-                    Math.max(
-                        sentenceWordCounts.get(sentenceId) ?? 0,
-                        wordId + 1,
-                    ),
-                );
-            }
-        });
-
-        // Second pass: apply show-translation to visible words using correct flat index computation
-        let sentenceOffsets: Map<number, number> = new Map();
-        let offset = 0;
-        for (let s = 0; s <= currentSentence; s++) {
-            sentenceOffsets.set(s, offset);
-            offset += sentenceWordCounts.get(s) ?? 0;
-        }
+        const wordSpans = wrapper.querySelectorAll<HTMLElement>(".word-span");
 
         wordSpans.forEach((span) => {
-            const sentenceId = parseInt(span.dataset["sentence"] ?? "-1");
-            const wordId = parseInt(span.dataset["word"] ?? "-1");
-            const computedFlatIndex =
-                (sentenceOffsets.get(sentenceId) ?? 0) + wordId;
-
-            if (visibleSet.has(computedFlatIndex)) {
+            const flatIndex = parseInt(span.dataset["flatIndex"] ?? "-1");
+            if (visibleSet.has(flatIndex)) {
                 span.classList.add("show-translation");
                 shrinkTranslationToFit(span);
             }
