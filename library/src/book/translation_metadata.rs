@@ -266,7 +266,7 @@ mod translation_metadata_test {
         let mut buf: Vec<u8> = vec![];
         translation.serialize(&mut buf).unwrap();
 
-        buf[15] = 0xae;
+        buf[15] ^= 0xFF;
 
         let mut cursor = Cursor::new(buf);
         let metadata = TranslationMetadata::read_metadata(&mut cursor);

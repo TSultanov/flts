@@ -419,18 +419,13 @@ impl Translation {
                     .map(|(timestamp, _)| *timestamp)
                     .collect::<HashSet<_>>();
 
-                // Collect visible_words from other source for matching timestamps
-                let mut other_visible_words: AHashMap<u64, AHashSet<usize>> = AHashMap::new();
+                let mut other_visible_words: AHashSet<usize> = AHashSet::new();
                 curr_paragraph = other_paragraph;
 
                 loop {
                     let prev_paragraph = curr_paragraph.get_previous_version();
                     if existing_versions.contains(&curr_paragraph.timestamp) {
-                        // Timestamp exists in both sources - collect visible_words for later merge
-                        other_visible_words.insert(
-                            curr_paragraph.timestamp,
-                            curr_paragraph.visible_words().clone(),
-                        );
+                        other_visible_words.extend(curr_paragraph.visible_words().iter().copied());
                     } else {
                         versions.push((curr_paragraph.timestamp, curr_paragraph));
                     }
@@ -442,14 +437,11 @@ impl Translation {
 
                 versions.sort_by_key(|(timestamp, _)| *timestamp);
 
-                for (ts, translation) in versions {
+                for (_ts, translation) in versions {
                     merged_translation
                         .add_paragraph_translation_from_view(paragraph_idx, &translation);
-                    // Union visible_words from other source if timestamps matched
-                    if let Some(other_words) = other_visible_words.get(&ts) {
-                        for word_idx in other_words {
-                            merged_translation.mark_word_visible(paragraph_idx, *word_idx);
-                        }
+                    for word_idx in &other_visible_words {
+                        merged_translation.mark_word_visible(paragraph_idx, *word_idx);
                     }
                 }
             } else if let Some(paragarph) = self.paragraph_view(paragraph_idx)
