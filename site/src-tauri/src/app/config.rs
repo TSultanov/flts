@@ -33,6 +33,8 @@ fn model_pretty_name(model: TranslationModel) -> &'static str {
         TranslationModel::OpenAIGpt52Pro => "OpenAI GPT-5.2 Pro",
         TranslationModel::OpenAIGpt5Mini => "OpenAI GPT-5 mini",
         TranslationModel::OpenAIGpt5Nano => "OpenAI GPT-5 nano",
+        TranslationModel::Gemini3Pro => "Gemini 3 Pro (Preview)",
+        TranslationModel::Gemini3Flash => "Gemini 3 Flash (Preview)",
         TranslationModel::Unknown => "Not set",
     }
 }
