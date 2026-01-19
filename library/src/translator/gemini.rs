@@ -180,7 +180,7 @@ impl Translator for GeminiTranslator {
         &self,
         paragraph: &str,
         use_cache: bool,
-        callback: Option<Box<dyn Fn(String) + Send + Sync>>,
+        callback: Option<Box<dyn Fn(usize) + Send + Sync>>,
     ) -> anyhow::Result<ParagraphTranslation> {
         if use_cache
             && let Some(cached_result) = self
@@ -224,7 +224,7 @@ impl Translator for GeminiTranslator {
             if !text.is_empty() {
                 full_content.push_str(&text);
                 if let Some(cb) = &callback {
-                    cb(full_content.clone());
+                    cb(full_content.len());
                 }
             }
         }

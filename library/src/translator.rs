@@ -105,7 +105,7 @@ pub trait Translator: Send + Sync {
         &self,
         paragraph: &str,
         use_cache: bool,
-        callback: Option<Box<dyn Fn(String) + Send + Sync>>,
+        callback: Option<Box<dyn Fn(usize) + Send + Sync>>,
     ) -> anyhow::Result<ParagraphTranslation>;
 
     fn get_prompt(from: &str, to: &str) -> String

@@ -161,7 +161,7 @@ impl Translator for OpenAITranslator {
         &self,
         paragraph: &str,
         use_cache: bool,
-        callback: Option<Box<dyn Fn(String) + Send + Sync>>,
+        callback: Option<Box<dyn Fn(usize) + Send + Sync>>,
     ) -> anyhow::Result<ParagraphTranslation> {
         if use_cache
             && let Some(cached_result) = self
@@ -216,7 +216,7 @@ impl Translator for OpenAITranslator {
                         if let Some(delta) = &choice.delta.content {
                             full_content.push_str(delta);
                             if let Some(cb) = &callback {
-                                cb(full_content.clone());
+                                cb(full_content.len());
                             }
                         }
                     }

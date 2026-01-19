@@ -289,18 +289,18 @@ async fn handle_request(
         let app = app.clone();
         let request_id = request.request_id;
         let last_emit = Arc::new(std::sync::Mutex::new(Instant::now()));
-        Box::new(move |chunk: String| {
+        Box::new(move |progress_len: usize| {
             let mut last = last_emit.lock().unwrap();
             if last.elapsed() >= Duration::from_millis(100) {
                 info!(
                     "Translation progress for request {}: {}/{} chars",
                     request_id,
-                    chunk.len(),
+                    progress_len,
                     expected_size
                 );
                 let status = TranslationStatus {
                     request_id,
-                    progress_chars: chunk.len(),
+                    progress_chars: progress_len,
                     expected_chars: expected_size,
                     is_complete: false,
                 };
