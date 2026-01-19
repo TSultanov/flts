@@ -109,6 +109,38 @@
     const isTranslating = $derived(translationRequestId !== null);
 
     $effect(() => {
+        if (translationRequestId === null) {
+            return;
+        }
+
+        let cancelled = false;
+        const interval = setInterval(async () => {
+            if (cancelled) {
+                return;
+            }
+            try {
+                const id = await library.getParagraphTranslationRequestId(
+                    bookId,
+                    paragraphId,
+                );
+                if (cancelled) {
+                    return;
+                }
+                if (id === null) {
+                    translationRequestId = null;
+                    progressChars = 0;
+                }
+            } catch {
+            }
+        }, 1000);
+
+        return () => {
+            cancelled = true;
+            clearInterval(interval);
+        };
+    });
+
+    $effect(() => {
         library
             .getParagraphTranslationRequestId(bookId, paragraphId)
             .then((id) => {

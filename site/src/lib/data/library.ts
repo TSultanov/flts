@@ -127,8 +127,8 @@ export class Library {
         return await invoke<number>("translate_paragraph", { bookId, paragraphId, model: model ?? config.model, useCache });
     }
 
-    async getParagraphTranslationRequestId(bookId: UUID, paragraphId: number) {
-        return await invoke<number>("get_paragraph_translation_request_id", { bookId, paragraphId });
+    async getParagraphTranslationRequestId(bookId: UUID, paragraphId: number): Promise<number | null> {
+        return await invoke<number | null>("get_paragraph_translation_request_id", { bookId, paragraphId });
     }
 
     getTranslationStatus(requestId: number | null): Readable<TranslationStatus | undefined> {
