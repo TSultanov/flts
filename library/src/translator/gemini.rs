@@ -9,12 +9,15 @@ use gemini_rust::{Gemini, Model, ThinkingConfig};
 use isolang::Language;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
+use tokio::time::timeout;
 
 use crate::{
     book::translation_import::ParagraphTranslation,
     cache::TranslationsCache,
     translator::{TranslationErrors, TranslationModel, Translator},
 };
+
+use super::{TRANSLATION_REQUEST_TIMEOUT, TRANSLATION_STREAM_IDLE_TIMEOUT};
 
 pub struct GeminiTranslator {
     cache: Arc<Mutex<TranslationsCache>>,
@@ -206,20 +209,27 @@ impl Translator for GeminiTranslator {
             },
         };
 
-        let mut stream = self
-            .client
-            .generate_content()
-            .with_system_prompt(Self::get_prompt(self.from.to_name(), self.to.to_name()))
-            .with_user_message(paragraph)
-            .with_response_mime_type("application/json")
-            .with_response_schema(self.schema.clone())
-            .with_thinking_config(thinking_config)
-            .execute_stream()
-            .await?;
+        let mut stream = timeout(
+            TRANSLATION_REQUEST_TIMEOUT,
+            self.client
+                .generate_content()
+                .with_system_prompt(Self::get_prompt(self.from.to_name(), self.to.to_name()))
+                .with_user_message(paragraph)
+                .with_response_mime_type("application/json")
+                .with_response_schema(self.schema.clone())
+                .with_thinking_config(thinking_config)
+                .execute_stream(),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("Gemini request timed out"))??;
 
         let mut full_content = String::new();
 
-        while let Some(response) = stream.try_next().await? {
+        loop {
+            let next = timeout(TRANSLATION_STREAM_IDLE_TIMEOUT, stream.try_next())
+                .await
+                .map_err(|_| anyhow::anyhow!("Gemini stream timed out"))??;
+            let Some(response) = next else { break };
             let text = response.text();
             if !text.is_empty() {
                 full_content.push_str(&text);

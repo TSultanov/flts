@@ -1,7 +1,7 @@
 mod gemini;
 mod openai;
 
-use std::{fmt::Display, sync::Arc};
+use std::{fmt::Display, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use isolang::Language;
@@ -13,6 +13,9 @@ use crate::{
     book::translation_import::ParagraphTranslation, cache::TranslationsCache,
     translator::gemini::GeminiTranslator, translator::openai::OpenAITranslator,
 };
+
+const TRANSLATION_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+const TRANSLATION_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug)]
 pub enum TranslationErrors {

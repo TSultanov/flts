@@ -14,12 +14,15 @@ use futures::StreamExt;
 use isolang::Language;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
+use tokio::time::timeout;
 
 use crate::{
     book::translation_import::ParagraphTranslation,
     cache::TranslationsCache,
     translator::{TranslationErrors, TranslationModel, Translator},
 };
+
+use super::{TRANSLATION_REQUEST_TIMEOUT, TRANSLATION_STREAM_IDLE_TIMEOUT};
 
 pub struct OpenAITranslator {
     cache: Arc<Mutex<TranslationsCache>>,
@@ -206,10 +209,19 @@ impl Translator for OpenAITranslator {
             .stream(true)
             .build()?;
 
-        let mut stream = self.client.chat().create_stream(request).await?;
+        let mut stream = timeout(
+            TRANSLATION_REQUEST_TIMEOUT,
+            self.client.chat().create_stream(request),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("OpenAI request timed out"))??;
         let mut full_content = String::new();
 
-        while let Some(result) = stream.next().await {
+        loop {
+            let next = timeout(TRANSLATION_STREAM_IDLE_TIMEOUT, stream.next())
+                .await
+                .map_err(|_| anyhow::anyhow!("OpenAI stream timed out"))?;
+            let Some(result) = next else { break };
             match result {
                 Ok(response) => {
                     if let Some(choice) = response.choices.first() {
