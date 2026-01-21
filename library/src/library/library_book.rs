@@ -49,7 +49,7 @@ pub struct BookUserState {
 }
 
 pub struct LibraryBook {
-    dict_cache: Arc<Mutex<DictionaryCache>>,
+    dict_cache: Arc<DictionaryCache>,
     path: PathBuf,
     last_modified: Option<SystemTime>,
     pub book: Book,
@@ -58,7 +58,7 @@ pub struct LibraryBook {
 }
 
 pub struct LibraryTranslation {
-    dict_cache: Arc<Mutex<DictionaryCache>>,
+    dict_cache: Arc<DictionaryCache>,
     translation: Translation,
     source_language: Language,
     target_language: Language,
@@ -77,7 +77,7 @@ impl LibraryTranslation {
         self.changed = true;
     }
 
-    async fn load(dict_cache: Arc<Mutex<DictionaryCache>>, path: &Path) -> anyhow::Result<Self> {
+    async fn load(dict_cache: Arc<DictionaryCache>, path: &Path) -> anyhow::Result<Self> {
         let metadata = tokio::fs::metadata(path).await?;
         let last_modified = metadata.modified().ok();
         let mut file = tokio::fs::File::open(path).await?;
@@ -99,7 +99,7 @@ impl LibraryTranslation {
     }
 
     async fn load_from_metadata(
-        dict_cache: Arc<Mutex<DictionaryCache>>,
+        dict_cache: Arc<DictionaryCache>,
         metadata: LibraryTranslationMetadata,
     ) -> anyhow::Result<Self> {
         if !metadata.conflicting_paths.is_empty() {
@@ -135,8 +135,6 @@ impl LibraryTranslation {
     ) -> anyhow::Result<()> {
         let dictionary = self
             .dict_cache
-            .lock()
-            .await
             .get_dictionary(self.source_language, self.target_language)
             .await?;
         self.translation.add_paragraph_translation(
@@ -335,7 +333,7 @@ impl LibraryBook {
     }
 
     pub async fn load_from_metadata(
-        dict_cache: Arc<Mutex<DictionaryCache>>,
+        dict_cache: Arc<DictionaryCache>,
         metadata: LibraryBookMetadata,
     ) -> anyhow::Result<Self> {
         let mut candidates: Vec<(&PathBuf, Option<SystemTime>)> = Vec::new();
@@ -396,7 +394,7 @@ impl LibraryBook {
         Ok(book)
     }
 
-    async fn load(dict_cache: Arc<Mutex<DictionaryCache>>, path: &Path) -> anyhow::Result<Self> {
+    async fn load(dict_cache: Arc<DictionaryCache>, path: &Path) -> anyhow::Result<Self> {
         let last_modified = tokio::fs::metadata(path).await?.modified().ok();
         let mut file = tokio::fs::File::open(path).await?;
         let mut buffer = Vec::new();
@@ -545,12 +543,7 @@ impl LibraryBook {
         for (src, tgt) in languages_to_save {
             let src = Language::from_str(&src)?;
             let tgt = Language::from_str(&tgt)?;
-            let dict = book
-                .dict_cache
-                .lock()
-                .await
-                .get_dictionary(src, tgt)
-                .await?;
+            let dict = book.dict_cache.get_dictionary(src, tgt).await?;
             dict.lock().await.save().await?;
         }
 

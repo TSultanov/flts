@@ -196,7 +196,7 @@ impl LibraryBookMetadata {
 pub struct Library {
     library_root: PathBuf,
     books_cache: HashMap<Uuid, Arc<Mutex<LibraryBook>>>, // TODO: eviction
-    dictionaries_cache: Arc<Mutex<DictionaryCache>>,
+    dictionaries_cache: Arc<DictionaryCache>,
 }
 
 impl Library {
@@ -205,7 +205,7 @@ impl Library {
             tokio::fs::create_dir_all(&library_root).await?;
         }
 
-        let dictionaries_cache = Arc::new(Mutex::new(DictionaryCache::new(&library_root)));
+        let dictionaries_cache = Arc::new(DictionaryCache::new(&library_root));
 
         Ok(Library {
             library_root,
@@ -322,8 +322,6 @@ impl Library {
             }
             LibraryFileChange::DictionaryChanged { modified, from, to } => {
                 self.dictionaries_cache
-                    .lock()
-                    .await
                     .reload_dictionary(*modified, *from, *to)
                     .await?
             }

@@ -7,7 +7,7 @@ use std::{
 
 use isolang::Language;
 use itertools::Itertools;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 use crate::{
@@ -217,14 +217,14 @@ impl LibraryDictionary {
 
 pub struct DictionaryCache {
     library_root: PathBuf,
-    cache: HashMap<(Language, Language), Arc<Mutex<LibraryDictionary>>>,
+    cache: RwLock<HashMap<(Language, Language), Arc<Mutex<LibraryDictionary>>>>,
 }
 
 impl DictionaryCache {
     pub fn new(library_root: &Path) -> Self {
         Self {
             library_root: library_root.to_path_buf(),
-            cache: HashMap::new(),
+            cache: RwLock::new(HashMap::new()),
         }
     }
 
@@ -288,12 +288,12 @@ impl DictionaryCache {
     }
 
     pub async fn get_dictionary(
-        &mut self,
+        &self,
         src: Language,
         tgt: Language,
     ) -> anyhow::Result<Arc<Mutex<LibraryDictionary>>> {
-        if let Some(cached_dict) = self.cache.get(&(src, tgt)) {
-            return Ok(cached_dict.clone());
+        if let Some(cached_dict) = self.cache.read().await.get(&(src, tgt)).cloned() {
+            return Ok(cached_dict);
         }
 
         let dictionaries = self.list_dictionaries().await?;
@@ -308,18 +308,23 @@ impl DictionaryCache {
 
         let dictionary = Arc::new(Mutex::new(dictionary));
 
-        self.cache.insert((src, tgt), dictionary.clone());
+        let mut cache = self.cache.write().await;
+        if let Some(existing) = cache.get(&(src, tgt)) {
+            return Ok(existing.clone());
+        }
+        cache.insert((src, tgt), dictionary.clone());
 
         Ok(dictionary)
     }
 
     pub async fn reload_dictionary(
-        &mut self,
+        &self,
         modified: SystemTime,
         src: Language,
         tgt: Language,
     ) -> anyhow::Result<bool> {
-        Ok(if let Some(cached_dict) = self.cache.get(&(src, tgt)) {
+        let cached_dict = { self.cache.read().await.get(&(src, tgt)).cloned() };
+        Ok(if let Some(cached_dict) = cached_dict {
             let mut cached_dict = cached_dict.lock().await;
 
             if cached_dict.last_modified.map_or(true, |lm| lm < modified) {
