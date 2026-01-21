@@ -18,7 +18,8 @@ use library::{
     translator::TranslationModel,
 };
 use log::{info, warn};
-use tauri::{Emitter, async_runtime::Mutex};
+use tauri::Emitter;
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 use crate::app::{config::Config, library_view::LibraryView, translation_queue::TranslationQueue};
@@ -35,6 +36,7 @@ pub enum AppError {
     StatePoisonError,
     ProjectDirsError,
     NoTranslationQueueError,
+    NoLibraryError,
     TestError,
 }
 
@@ -49,26 +51,25 @@ impl Display for AppError {
                 f,
                 "Failed to translate paragraph: no translation queue initialized"
             ),
+            AppError::NoLibraryError => {
+                write!(f, "Failed to translate paragraph: no library configured")
+            }
             AppError::TestError => write!(f, "Test error"),
         }
     }
 }
 
-pub struct App {
+pub struct AppState {
     app: tauri::AppHandle,
     config_path: PathBuf,
-    config: Config,
-    library: Option<Arc<Library>>,
-    library_view: Option<LibraryView>,
-    translation_queue: Option<TranslationQueue>,
-    watcher: Option<Arc<Mutex<LibraryWatcher>>>,
+    config: RwLock<Config>,
+    library: RwLock<Option<Arc<Library>>>,
+    translation_queue: Mutex<Option<TranslationQueue>>,
+    watcher: Arc<Mutex<LibraryWatcher>>,
 }
 
-impl App {
-    pub fn new(
-        app: tauri::AppHandle,
-        watcher: Option<Arc<Mutex<LibraryWatcher>>>,
-    ) -> anyhow::Result<Self> {
+impl AppState {
+    pub fn new(app: tauri::AppHandle, watcher: Arc<Mutex<LibraryWatcher>>) -> anyhow::Result<Self> {
         info!("Startup!");
 
         let dirs = ProjectDirs::from("com", "TS", "FLTS").ok_or(AppError::ProjectDirsError)?;
@@ -90,25 +91,25 @@ impl App {
             Config::default()
         };
 
-        let app = Self {
+        Ok(Self {
             app,
             config_path,
-            config,
-            library: None,
-            library_view: None,
-            translation_queue: None,
+            config: RwLock::new(config),
+            library: RwLock::new(None),
+            translation_queue: Mutex::new(None),
             watcher,
-        };
-
-        Ok(app)
+        })
     }
 
-    pub async fn update_config(&mut self, config: Config) -> anyhow::Result<()> {
-        self.config = config;
+    pub async fn update_config(&self, config: Config) -> anyhow::Result<()> {
+        #[cfg(mobile)]
+        let mut config = config;
+        #[cfg(not(mobile))]
+        let config = config;
 
         // Translator settings (provider/key/model) are captured when the translation queue is created.
         // Reset it so the next translation uses the latest config.
-        self.translation_queue = None;
+        *self.translation_queue.lock().await = None;
 
         #[cfg(mobile)]
         {
@@ -128,43 +129,44 @@ impl App {
                 library_directory.map(|d| d.to_string_lossy().to_string())
             };
 
-            self.config.library_path = library_path;
+            config.library_path = library_path;
         }
-        info!("config = {:?}", self.config);
+        info!("config = {:?}", config);
 
-        self.config.save(&self.config_path)?;
+        config.save(&self.config_path)?;
+        *self.config.write().await = config.clone();
         info!("Emitting \"config_updated\"");
-        self.app.emit("config_updated", self.config.clone())?;
+        self.app.emit("config_updated", config)?;
         self.eval_config().await?;
         Ok(())
     }
 
-    pub async fn eval_config(&mut self) -> anyhow::Result<()> {
-        let target_language = Language::from_639_3(&self.config.target_language_id);
-
-        let library_path = &self.config.library_path;
+    pub async fn eval_config(&self) -> anyhow::Result<()> {
+        let config = self.config.read().await.clone();
+        let target_language = Language::from_639_3(&config.target_language_id);
+        let library_path = config.library_path.clone();
 
         info!("library_path = {library_path:?}");
 
         if let Some(library_path) = library_path {
-            let library = Arc::new(Library::open(PathBuf::from(library_path)).await?);
-            self.library = Some(library.clone());
-            if let Some(watcher) = &self.watcher {
-                watcher
-                    .lock()
-                    .await
-                    .set_path(&Path::new(library_path).to_path_buf())
-                    .unwrap_or_else(|err| {
-                        warn!("Failed to set watcher path to {}: {}", library_path, err)
-                    });
-            }
+            let library = Arc::new(Library::open(PathBuf::from(&library_path)).await?);
+            *self.library.write().await = Some(library.clone());
 
-            self.library_view = Some(LibraryView::create(self.app.clone(), library.clone()));
-            if let Some(library) = &self.library_view {
-                let books = library.list_books(target_language.as_ref()).await?;
-                info!("Emitting \"library_updated\"");
-                self.app.emit("library_updated", books)?;
-            }
+            self.watcher
+                .lock()
+                .await
+                .set_path(&Path::new(&library_path).to_path_buf())
+                .unwrap_or_else(|err| {
+                    warn!("Failed to set watcher path to {}: {}", library_path, err)
+                });
+
+            let library_view = LibraryView::create(self.app.clone(), library.clone());
+            let books = library_view.list_books(target_language.as_ref()).await?;
+            info!("Emitting \"library_updated\"");
+            self.app.emit("library_updated", books)?;
+        } else {
+            *self.library.write().await = None;
+            *self.translation_queue.lock().await = None;
         }
 
         Ok(())
@@ -182,85 +184,96 @@ impl App {
         TranslationSizeCache::create(cache_dir).await
     }
 
-    pub async fn handle_file_change_event(
-        &mut self,
-        event: &LibraryFileChange,
-    ) -> anyhow::Result<()> {
-        if let Some(library) = &mut self.library_view {
-            let had_effect = library.handle_file_change_event(event).await?;
-            if had_effect {
-                match event {
-                    LibraryFileChange::BookChanged { modified: _, uuid } => {
-                        info!("Emitting \"book_updated\" for {uuid}");
-                        self.app.emit("book_updated", uuid)?;
-                        if let Some(library) = &self.library_view {
-                            let target_language =
-                                Language::from_639_3(&self.config.target_language_id);
+    pub async fn handle_file_change_event(&self, event: &LibraryFileChange) -> anyhow::Result<()> {
+        let library = { self.library.read().await.clone() };
+        let Some(library) = library else {
+            return Ok(());
+        };
 
-                            info!("Emitting \"library_updated\"");
-                            self.app.emit(
-                                "library_updated",
-                                library.list_books(target_language.as_ref()).await?,
-                            )?;
-                        }
-                    }
-                    LibraryFileChange::TranslationChanged {
-                        modified: _,
-                        from: _,
-                        to,
-                        uuid,
-                    } => {
-                        let target_language = Language::from_639_3(&self.config.target_language_id);
+        let had_effect = library.handle_file_change_event(event).await?;
+        if !had_effect {
+            return Ok(());
+        }
 
-                        if target_language.map_or(false, |tl| tl == *to) {
-                            info!("Emitting \"book_updated\" for {uuid}");
-                            self.app.emit("book_updated", uuid)?;
-                            if let Some(library) = &self.library_view {
-                                info!("Emitting \"library_updated\"");
-                                self.app.emit(
-                                    "library_updated",
-                                    library.list_books(target_language.as_ref()).await?,
-                                )?;
-                            }
-                        }
-                    }
-                    LibraryFileChange::DictionaryChanged {
-                        modified: _,
-                        from,
-                        to,
-                    } => {
-                        let payload = (from.to_639_3(), to.to_639_3());
-                        info!("Emitting \"dictionary_updated\" for {payload:?}",);
-                        self.app.emit("dictionary_updated", payload)?;
-                    }
+        match event {
+            LibraryFileChange::BookChanged { modified: _, uuid } => {
+                info!("Emitting \"book_updated\" for {uuid}");
+                self.app.emit("book_updated", uuid)?;
+
+                let target_language_id = { self.config.read().await.target_language_id.clone() };
+                let target_language = Language::from_639_3(&target_language_id);
+                let library_view = LibraryView::create(self.app.clone(), library.clone());
+
+                info!("Emitting \"library_updated\"");
+                self.app.emit(
+                    "library_updated",
+                    library_view.list_books(target_language.as_ref()).await?,
+                )?;
+            }
+            LibraryFileChange::TranslationChanged {
+                modified: _,
+                from: _,
+                to,
+                uuid,
+            } => {
+                let target_language_id = { self.config.read().await.target_language_id.clone() };
+                let target_language = Language::from_639_3(&target_language_id);
+
+                if target_language.map_or(false, |tl| tl == *to) {
+                    info!("Emitting \"book_updated\" for {uuid}");
+                    self.app.emit("book_updated", uuid)?;
+
+                    let library_view = LibraryView::create(self.app.clone(), library.clone());
+                    info!("Emitting \"library_updated\"");
+                    self.app.emit(
+                        "library_updated",
+                        library_view.list_books(target_language.as_ref()).await?,
+                    )?;
                 }
             }
+            LibraryFileChange::DictionaryChanged {
+                modified: _,
+                from,
+                to,
+            } => {
+                let payload = (from.to_639_3(), to.to_639_3());
+                info!("Emitting \"dictionary_updated\" for {payload:?}",);
+                self.app.emit("dictionary_updated", payload)?;
+            }
         }
+
         Ok(())
     }
 
     pub async fn translate_paragraph(
-        &mut self,
+        &self,
         book_id: Uuid,
         paragraph_id: usize,
         model: TranslationModel,
         use_cache: bool,
     ) -> anyhow::Result<usize> {
-        if let Some(library) = &self.library
-            && self.translation_queue.is_none()
-        {
+        let library = { self.library.read().await.clone() }.ok_or(AppError::NoLibraryError)?;
+
+        if self.translation_queue.lock().await.is_none() {
+            let config = self.config.read().await.clone();
             let cache = Arc::new(Self::get_cache().await?);
             let stats_cache = Arc::new(Self::get_stats_cache().await?);
-            self.translation_queue = TranslationQueue::init(
+            let queue = TranslationQueue::init(
                 library.clone(),
                 cache,
                 stats_cache,
-                &self.config,
+                &config,
                 self.app.clone(),
             );
+
+            let mut guard = self.translation_queue.lock().await;
+            if guard.is_none() {
+                *guard = queue;
+            }
         }
 
-        if let Some(q) = &self.translation_queue {
+        let guard = self.translation_queue.lock().await;
+        if let Some(q) = guard.as_ref() {
             Ok(q.translate(book_id, paragraph_id, model, use_cache).await?)
         } else {
             Err(AppError::NoTranslationQueueError.into())
@@ -268,25 +281,32 @@ impl App {
     }
 
     pub async fn get_paragraph_translation_request_id(
-        &mut self,
+        &self,
         book_id: Uuid,
         paragraph_id: usize,
     ) -> anyhow::Result<Option<usize>> {
-        if let Some(library) = &self.library
-            && self.translation_queue.is_none()
-        {
+        let library = { self.library.read().await.clone() }.ok_or(AppError::NoLibraryError)?;
+
+        if self.translation_queue.lock().await.is_none() {
+            let config = self.config.read().await.clone();
             let cache = Arc::new(Self::get_cache().await?);
             let stats_cache = Arc::new(Self::get_stats_cache().await?);
-            self.translation_queue = TranslationQueue::init(
+            let queue = TranslationQueue::init(
                 library.clone(),
                 cache,
                 stats_cache,
-                &self.config,
+                &config,
                 self.app.clone(),
             );
+
+            let mut guard = self.translation_queue.lock().await;
+            if guard.is_none() {
+                *guard = queue;
+            }
         }
 
-        if let Some(q) = &self.translation_queue {
+        let guard = self.translation_queue.lock().await;
+        if let Some(q) = guard.as_ref() {
             Ok(q.get_request_id(book_id, paragraph_id).await)
         } else {
             Err(AppError::NoTranslationQueueError.into())
@@ -296,13 +316,12 @@ impl App {
 
 #[tauri::command]
 pub async fn update_config(
-    state: tauri::State<'_, Arc<Mutex<App>>>,
+    state: tauri::State<'_, Arc<AppState>>,
     config: Config,
 ) -> Result<(), String> {
     info!("Update config request");
-    let mut app = state.lock().await;
-    info!("App lock acquired");
-    app.update_config(config)
+    state
+        .update_config(config)
         .await
         .map_err(|err| err.to_string())?;
     info!("Config processed");
@@ -310,53 +329,51 @@ pub async fn update_config(
 }
 
 #[tauri::command]
-pub async fn get_config(state: tauri::State<'_, Arc<Mutex<App>>>) -> Result<Config, String> {
-    let app = state.lock().await;
-    Ok(app.config.clone())
+pub async fn get_config(state: tauri::State<'_, Arc<AppState>>) -> Result<Config, String> {
+    Ok(state.config.read().await.clone())
 }
 
 #[tauri::command]
 pub async fn translate_paragraph(
-    state: tauri::State<'_, Arc<Mutex<App>>>,
+    state: tauri::State<'_, Arc<AppState>>,
     book_id: Uuid,
     paragraph_id: usize,
     model: usize,
     use_cache: bool,
 ) -> Result<usize, String> {
-    let mut app = state.lock().await;
-    app.translate_paragraph(
-        book_id,
-        paragraph_id,
-        TranslationModel::from(model),
-        use_cache,
-    )
-    .await
-    .map_err(|err| err.to_string())
+    state
+        .translate_paragraph(
+            book_id,
+            paragraph_id,
+            TranslationModel::from(model),
+            use_cache,
+        )
+        .await
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
 pub async fn get_paragraph_translation_request_id(
-    state: tauri::State<'_, Arc<Mutex<App>>>,
+    state: tauri::State<'_, Arc<AppState>>,
     book_id: Uuid,
     paragraph_id: usize,
 ) -> Result<Option<usize>, String> {
-    let mut app = state.lock().await;
-    app.get_paragraph_translation_request_id(book_id, paragraph_id)
+    state
+        .get_paragraph_translation_request_id(book_id, paragraph_id)
         .await
         .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
 pub async fn get_translation_status(
-    state: tauri::State<'_, Arc<Mutex<App>>>,
+    state: tauri::State<'_, Arc<AppState>>,
     request_id: usize,
 ) -> Result<Option<translation_queue::TranslationStatus>, String> {
-    let app = state.lock().await;
-    if let Some(q) = &app.translation_queue {
-        Ok(q.get_translation_status(request_id).await)
-    } else {
-        Ok(None)
-    }
+    let guard = state.translation_queue.lock().await;
+    Ok(match guard.as_ref() {
+        Some(q) => q.get_translation_status(request_id).await,
+        None => None,
+    })
 }
 
 #[tauri::command]

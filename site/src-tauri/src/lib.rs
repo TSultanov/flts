@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use library::library::file_watcher::LibraryWatcher;
 use log::{info, warn};
-use tauri::{Builder, Manager, async_runtime::Mutex};
+use tauri::{Builder, Manager};
+use tokio::sync::Mutex;
 
 pub mod app;
 
@@ -36,16 +37,16 @@ pub fn run() {
             info!("Watcher created");
             app.manage(watcher.clone());
             info!("Creating app");
-            let app_state = Arc::new(Mutex::new(crate::app::App::new(
+            let app_state = Arc::new(crate::app::AppState::new(
                 app.handle().clone(),
-                None,
-            )?));
+                watcher.clone(),
+            )?);
             info!("App created");
             app.manage(app_state.clone());
 
             info!("Spawning async init");
             tauri::async_runtime::spawn(async move {
-                if let Err(err) = app_state.lock().await.eval_config().await {
+                if let Err(err) = app_state.eval_config().await {
                     warn!("Failed to evaluate config at startup: {err}");
                 }
                 let recv = {
@@ -58,8 +59,6 @@ pub fn run() {
                     match event {
                         Ok(event) => {
                             app_state
-                                .lock()
-                                .await
                                 .handle_file_change_event(&event)
                                 .await
                                 .unwrap_or_else(|err| {

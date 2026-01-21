@@ -10,10 +10,9 @@ use library::{
     library::{Library, library_book::BookReadingState},
 };
 use tauri::Emitter;
-use tauri::async_runtime::Mutex;
 use uuid::Uuid;
 
-use crate::app::App;
+use crate::app::AppState;
 
 #[derive(Clone, serde::Serialize)]
 pub struct LibraryBookMetadataView {
@@ -387,252 +386,241 @@ impl LibraryView {
 
 #[tauri::command]
 pub async fn list_books(
-    state: tauri::State<'_, Arc<Mutex<App>>>,
+    state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<Vec<LibraryBookMetadataView>, String> {
-    let app = state.lock().await;
+    let target_language_id = { state.config.read().await.target_language_id.clone() };
+    let target_language = Language::from_639_3(&target_language_id);
+    let library = { state.library.read().await.clone() };
 
-    let target_language = Language::from_639_3(&app.config.target_language_id);
+    let Some(library) = library else {
+        return Ok(vec![]);
+    };
 
-    if let Some(library) = &app.library_view {
-        library
-            .list_books(target_language.as_ref())
-            .await
-            .map_err(|err| err.to_string())
-    } else {
-        Ok(vec![])
-    }
+    LibraryView::create(state.app.clone(), library)
+        .list_books(target_language.as_ref())
+        .await
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
 pub async fn list_book_chapters(
-    state: tauri::State<'_, Arc<Mutex<App>>>,
+    state: tauri::State<'_, Arc<AppState>>,
     book_id: Uuid,
 ) -> Result<Vec<ChapterView>, String> {
-    let mut app = state.lock().await;
-    if let Some(library) = &mut app.library_view {
-        library
-            .list_book_chapters(book_id)
-            .await
-            .map_err(|err| err.to_string())
-    } else {
-        Ok(vec![])
-    }
+    let library = { state.library.read().await.clone() };
+    let Some(library) = library else {
+        return Ok(vec![]);
+    };
+
+    let mut library_view = LibraryView::create(state.app.clone(), library);
+    library_view
+        .list_book_chapters(book_id)
+        .await
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
 pub async fn get_book_chapter_paragraphs(
-    state: tauri::State<'_, Arc<Mutex<App>>>,
+    state: tauri::State<'_, Arc<AppState>>,
     book_id: Uuid,
     chapter_id: usize,
 ) -> Result<Vec<ParagraphView>, String> {
-    let mut app = state.lock().await;
+    let library = { state.library.read().await.clone() };
+    let Some(library) = library else {
+        return Ok(vec![]);
+    };
 
-    let target_language = Language::from_639_3(&app.config.target_language_id);
+    let target_language_id = { state.config.read().await.target_language_id.clone() };
+    let Some(target_language) = Language::from_639_3(&target_language_id) else {
+        return Ok(vec![]);
+    };
 
-    if let Some(library) = &mut app.library_view
-        && let Some(target_language) = target_language
-    {
-        library
-            .list_book_chapter_paragraphs(book_id, chapter_id, &target_language)
-            .await
-            .map_err(|err| err.to_string())
-    } else {
-        Ok(vec![])
-    }
+    let mut library_view = LibraryView::create(state.app.clone(), library);
+    library_view
+        .list_book_chapter_paragraphs(book_id, chapter_id, &target_language)
+        .await
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
 pub async fn get_word_info(
-    state: tauri::State<'_, Arc<Mutex<App>>>,
+    state: tauri::State<'_, Arc<AppState>>,
     book_id: Uuid,
     paragraph_id: usize,
     sentence_id: usize,
     word_id: usize,
 ) -> Result<Option<WordView>, String> {
-    let mut app = state.lock().await;
+    let library = { state.library.read().await.clone() };
+    let Some(library) = library else {
+        return Ok(None);
+    };
 
-    let target_language = Language::from_639_3(&app.config.target_language_id);
+    let target_language_id = { state.config.read().await.target_language_id.clone() };
+    let Some(target_language) = Language::from_639_3(&target_language_id) else {
+        return Ok(None);
+    };
 
-    if let Some(library) = &mut app.library_view
-        && let Some(target_language) = target_language
-    {
-        library
-            .get_word_info(
-                book_id,
-                paragraph_id,
-                sentence_id,
-                word_id,
-                &target_language,
-            )
-            .await
-            .map_err(|err| err.to_string())
-    } else {
-        Ok(None)
-    }
+    let mut library_view = LibraryView::create(state.app.clone(), library);
+    library_view
+        .get_word_info(
+            book_id,
+            paragraph_id,
+            sentence_id,
+            word_id,
+            &target_language,
+        )
+        .await
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
 pub async fn get_paragraph_view(
-    state: tauri::State<'_, Arc<Mutex<App>>>,
+    state: tauri::State<'_, Arc<AppState>>,
     book_id: Uuid,
     paragraph_id: usize,
 ) -> Result<ParagraphView, String> {
-    let mut app = state.lock().await;
-    let target_language = Language::from_639_3(&app.config.target_language_id);
+    let library = { state.library.read().await.clone() };
+    let Some(library) = library else {
+        return Err("Library is not configured".into());
+    };
 
-    if let Some(library) = &mut app.library_view
-        && let Some(target_language) = target_language
-    {
-        library
-            .get_paragraph_view(book_id, paragraph_id, &target_language)
-            .await
-            .map_err(|err| err.to_string())
-    } else {
-        Err("Library is not configured".into())
-    }
+    let target_language_id = { state.config.read().await.target_language_id.clone() };
+    let Some(target_language) = Language::from_639_3(&target_language_id) else {
+        return Err("Library is not configured".into());
+    };
+
+    let library_view = LibraryView::create(state.app.clone(), library);
+    library_view
+        .get_paragraph_view(book_id, paragraph_id, &target_language)
+        .await
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
 pub async fn import_plain_text(
-    state: tauri::State<'_, Arc<Mutex<App>>>,
+    state: tauri::State<'_, Arc<AppState>>,
     title: String,
     text: String,
     source_language_id: String,
 ) -> Result<Uuid, String> {
-    let mut app = state.lock().await;
+    let library = { state.library.read().await.clone() }.ok_or("Library is not configured")?;
 
-    let target_language = Language::from_639_3(&app.config.target_language_id);
+    let target_language_id = { state.config.read().await.target_language_id.clone() };
+    let target_language = Language::from_639_3(&target_language_id);
 
-    if let Some(library) = &mut app.library_view {
-        let source_language = Language::from_639_3(&source_language_id)
-            .ok_or_else(|| format!("Failed to resolve source language: {}", source_language_id))?;
-        let id = library
-            .import_plain_text(&title, &text, &source_language, target_language.as_ref())
-            .await
-            .map_err(|err| err.to_string())?;
+    let source_language = Language::from_639_3(&source_language_id)
+        .ok_or_else(|| format!("Failed to resolve source language: {}", source_language_id))?;
 
-        Ok(id)
-    } else {
-        Err("Library is not configured".into())
-    }
+    let mut library_view = LibraryView::create(state.app.clone(), library);
+    library_view
+        .import_plain_text(&title, &text, &source_language, target_language.as_ref())
+        .await
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
 pub async fn import_epub(
-    state: tauri::State<'_, Arc<Mutex<App>>>,
+    state: tauri::State<'_, Arc<AppState>>,
     book: EpubBook,
     source_language_id: String,
 ) -> Result<Uuid, String> {
-    let mut app = state.lock().await;
+    let library = { state.library.read().await.clone() }.ok_or("Library is not configured")?;
 
-    // Pre-compute target language for later emit while avoiding borrow conflicts
-    let target_language = Language::from_639_3(&app.config.target_language_id);
+    let target_language_id = { state.config.read().await.target_language_id.clone() };
+    let target_language = Language::from_639_3(&target_language_id);
 
-    if let Some(library) = &mut app.library_view {
-        let source_language = Language::from_639_3(&source_language_id)
-            .ok_or_else(|| format!("Failed to resolve source language: {}", source_language_id))?;
-        let id = library
-            .import_epub(&book, &source_language, target_language.as_ref())
-            .await
-            .map_err(|err| err.to_string())?;
+    let source_language = Language::from_639_3(&source_language_id)
+        .ok_or_else(|| format!("Failed to resolve source language: {}", source_language_id))?;
 
-        Ok(id)
-    } else {
-        Err("Library is not configured".into())
-    }
+    let mut library_view = LibraryView::create(state.app.clone(), library);
+    library_view
+        .import_epub(&book, &source_language, target_language.as_ref())
+        .await
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
 pub async fn get_book_reading_state(
-    state: tauri::State<'_, Arc<Mutex<App>>>,
+    state: tauri::State<'_, Arc<AppState>>,
     book_id: Uuid,
 ) -> Result<Option<BookReadingStateView>, String> {
-    let app = state.lock().await;
-    if let Some(library) = &app.library_view {
-        library
-            .get_book_reading_state(book_id)
-            .await
-            .map_err(|err| err.to_string())
-    } else {
-        Ok(None)
-    }
+    let library = { state.library.read().await.clone() };
+    let Some(library) = library else {
+        return Ok(None);
+    };
+
+    LibraryView::create(state.app.clone(), library)
+        .get_book_reading_state(book_id)
+        .await
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
 pub async fn save_book_reading_state(
-    state: tauri::State<'_, Arc<Mutex<App>>>,
+    state: tauri::State<'_, Arc<AppState>>,
     book_id: Uuid,
     chapter_id: usize,
     paragraph_id: usize,
 ) -> Result<(), String> {
-    let app = state.lock().await;
-    if let Some(library) = &app.library_view {
-        library
-            .save_book_reading_state(book_id, chapter_id, paragraph_id)
-            .await
-            .map_err(|err| err.to_string())
-    } else {
-        Err("Library is not configured".into())
-    }
+    let library = { state.library.read().await.clone() }.ok_or("Library is not configured")?;
+
+    LibraryView::create(state.app.clone(), library)
+        .save_book_reading_state(book_id, chapter_id, paragraph_id)
+        .await
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
 pub async fn move_book(
-    state: tauri::State<'_, Arc<Mutex<App>>>,
+    state: tauri::State<'_, Arc<AppState>>,
     book_id: Uuid,
     path: Vec<String>,
 ) -> Result<(), String> {
-    let app = state.lock().await;
-    let target_language = Language::from_639_3(&app.config.target_language_id);
+    let library = { state.library.read().await.clone() }.ok_or("Library is not configured")?;
 
-    if let Some(library) = &app.library_view {
-        library
-            .move_book(book_id, path, target_language.as_ref())
-            .await
-            .map_err(|err| err.to_string())
-    } else {
-        Err("Library is not configured".into())
-    }
+    let target_language_id = { state.config.read().await.target_language_id.clone() };
+    let target_language = Language::from_639_3(&target_language_id);
+
+    LibraryView::create(state.app.clone(), library)
+        .move_book(book_id, path, target_language.as_ref())
+        .await
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
 pub async fn delete_book(
-    state: tauri::State<'_, Arc<Mutex<App>>>,
+    state: tauri::State<'_, Arc<AppState>>,
     book_id: Uuid,
 ) -> Result<(), String> {
-    let app = state.lock().await;
-    let target_language = Language::from_639_3(&app.config.target_language_id);
+    let library = { state.library.read().await.clone() }.ok_or("Library is not configured")?;
 
-    if let Some(library) = &app.library_view {
-        library
-            .delete_book(book_id, target_language.as_ref())
-            .await
-            .map_err(|err| err.to_string())
-    } else {
-        Err("Library is not configured".into())
-    }
+    let target_language_id = { state.config.read().await.target_language_id.clone() };
+    let target_language = Language::from_639_3(&target_language_id);
+
+    LibraryView::create(state.app.clone(), library)
+        .delete_book(book_id, target_language.as_ref())
+        .await
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
 pub async fn mark_word_visible(
-    state: tauri::State<'_, Arc<Mutex<App>>>,
+    state: tauri::State<'_, Arc<AppState>>,
     book_id: Uuid,
     paragraph_id: usize,
     flat_index: usize,
 ) -> Result<bool, String> {
-    let app = state.lock().await;
-    let target_language = Language::from_639_3(&app.config.target_language_id);
+    let library = { state.library.read().await.clone() }.ok_or("Library is not configured")?;
 
-    if let Some(library) = &app.library_view
-        && let Some(target_language) = target_language
-    {
-        library
-            .mark_word_visible(book_id, paragraph_id, flat_index, &target_language)
-            .await
-            .map_err(|err| err.to_string())
-    } else {
-        Err("Library is not configured".into())
-    }
+    let target_language_id = { state.config.read().await.target_language_id.clone() };
+    let Some(target_language) = Language::from_639_3(&target_language_id) else {
+        return Err("Library is not configured".into());
+    };
+
+    LibraryView::create(state.app.clone(), library)
+        .mark_word_visible(book_id, paragraph_id, flat_index, &target_language)
+        .await
+        .map_err(|err| err.to_string())
 }
 
 fn translation_to_html(
