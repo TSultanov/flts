@@ -1,6 +1,4 @@
 <script lang="ts">
-    import { Spring } from "svelte/motion";
-
     let {
         value,
         max,
@@ -18,19 +16,10 @@
     const radius = 10;
     const circumference = 2 * Math.PI * radius;
 
-    const progress = new Spring(0, {
-        stiffness: 0.1,
-        damping: 0.4,
-    });
-
-    $effect(() => {
-        let percent = max > 0 ? value / max : 0;
-        // Clamp between 0 and 1
-        percent = Math.max(0, Math.min(1, percent));
-        progress.set(percent);
-    });
-
-    const dashOffset = $derived(circumference * (1 - progress.current));
+    const percent = $derived(
+        Math.max(0, Math.min(1, max > 0 ? value / max : 0)),
+    );
+    const dashOffset = $derived(circumference * (1 - percent));
 </script>
 
 <div class="circular-progress" style:width={size} style:height={size}>

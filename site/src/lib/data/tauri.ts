@@ -55,6 +55,12 @@ export type UpdateEvent<TEvent = any> = {
     filter: (ev: TEvent) => boolean,
 };
 
+export type PatchEvent<T, TEvent = any> = {
+    name: string,
+    filter: (ev: TEvent) => boolean,
+    patch: (current: T, ev: TEvent) => T,
+};
+
 export function getterToReadableWithEvents<T>(
     getterName: string,
 ): Readable<T | undefined>;
@@ -106,6 +112,90 @@ export function getterToReadableWithEvents<T>(
         return () => {
             for (const u of unsubs) {
                 try { u(); } catch { }
+            }
+        };
+    });
+}
+
+export function getterToReadableWithEventsAndPatches<T>(
+    getterName: string,
+): Readable<T | undefined>;
+export function getterToReadableWithEventsAndPatches<T>(
+    getterName: string,
+    args: InvokeArgs,
+    refreshEvents: UpdateEvent[],
+    patchEvents: PatchEvent<T>[],
+): Readable<T | undefined>;
+export function getterToReadableWithEventsAndPatches<T>(
+    getterName: string,
+    args: InvokeArgs,
+    refreshEvents: UpdateEvent[],
+    patchEvents: PatchEvent<T>[],
+    defaultValue: T,
+): Readable<T>;
+export function getterToReadableWithEventsAndPatches<T>(
+    getterName: string,
+    args: InvokeArgs = {},
+    refreshEvents: UpdateEvent[] = [],
+    patchEvents: PatchEvent<T>[] = [],
+    defaultValue: T | undefined = undefined,
+): Readable<T | undefined> {
+    let setter: ((value: T) => void) | null = null;
+    let current = defaultValue;
+    const unsubPromises: Promise<UnlistenFn>[] = [];
+
+    const setValue = (value: T) => {
+        current = value;
+        if (setter) {
+            setter(value);
+        }
+    };
+
+    const getter = () => {
+        invoke<T>(getterName, args).then((v) => {
+            setValue(v);
+        });
+    };
+
+    for (const ev of refreshEvents) {
+        unsubPromises.push(
+            listen(ev.name, (event) => {
+                if (ev.filter((event as any).payload)) {
+                    getter();
+                }
+            }),
+        );
+    }
+
+    for (const ev of patchEvents) {
+        unsubPromises.push(
+            listen(ev.name, (event) => {
+                const payload = (event as any).payload;
+                if (!ev.filter(payload)) {
+                    return;
+                }
+                if (current === undefined) {
+                    return;
+                }
+                const next = ev.patch(current, payload);
+                if (next === current) {
+                    return;
+                }
+                setValue(next);
+            }),
+        );
+    }
+
+    getter();
+
+    return readable<T>(defaultValue as any, (set) => {
+        setter = set;
+        if (current !== undefined) {
+            set(current as any);
+        }
+        return () => {
+            for (const p of unsubPromises) {
+                p.then((u) => u()).catch(() => { });
             }
         };
     });

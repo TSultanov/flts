@@ -103,6 +103,38 @@ impl LibraryView {
         Self { app, library }
     }
 
+    pub async fn get_paragraph_view(
+        &self,
+        book_id: Uuid,
+        paragraph_id: usize,
+        target_language: &Language,
+    ) -> anyhow::Result<ParagraphView> {
+        let book = self.library.lock().await.get_book(&book_id).await?;
+        let mut book = book.lock().await;
+
+        let book_translation = book.get_or_create_translation(target_language).await;
+
+        let paragraph = book.book.paragraph_view(paragraph_id);
+        let original = paragraph.original_html.unwrap_or(paragraph.original_text);
+
+        let bt = book_translation.lock().await;
+        let t_view = bt.paragraph_view(paragraph_id);
+        let translation = t_view.as_ref().map(|t| {
+            translation_to_html(paragraph_id, &original, t).unwrap_or_else(|err| err.to_string())
+        });
+        let visible_words = t_view
+            .as_ref()
+            .map(|t| t.visible_words().clone())
+            .unwrap_or_default();
+
+        Ok(ParagraphView {
+            id: paragraph_id,
+            original: original.to_string(),
+            translation,
+            visible_words,
+        })
+    }
+
     pub async fn list_books(
         &self,
         target_language: Option<&Language>,

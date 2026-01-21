@@ -2,20 +2,17 @@
     import Fa from "svelte-fa";
     import { faLanguage } from "@fortawesome/free-solid-svg-icons";
     import type { ParagraphView } from "../data/sql/book";
-    import { getContext, onDestroy, onMount, tick } from "svelte";
+    import { getContext, onMount, tick } from "svelte";
     import type { Library, TranslationStatus } from "../data/library";
     import type { UUID } from "../data/v2/db";
-    import { listen, type UnlistenFn } from "@tauri-apps/api/event";
     import CircularProgress from "../widgets/CircularProgress.svelte";
 
     let {
         bookId,
         paragraph,
-        sentenceWordIdToDisplay,
     }: {
         bookId: UUID;
         paragraph: ParagraphView;
-        sentenceWordIdToDisplay: [number, number, number] | null;
     } = $props();
 
     const originalText = $derived(paragraph.original);
@@ -28,30 +25,58 @@
     let progressChars = $state(0);
     let expectedChars = $state(100);
 
-    let unsub: UnlistenFn | null = null;
+    const translationStatus = $derived(
+        library.getTranslationStatus(translationRequestId),
+    );
 
-    listen<TranslationStatus>("translation_status", (event) => {
-        const status = event.payload;
-        if (status.request_id === translationRequestId) {
-            if (status.is_complete) {
-                translationRequestId = null;
-                progressChars = 0;
-            } else {
-                progressChars = status.progress_chars;
-                expectedChars = status.expected_chars;
-            }
+    $effect(() => {
+        const status: TranslationStatus | undefined = $translationStatus;
+        if (!status) {
+            return;
         }
-    }).then((u) => {
-        unsub = u;
-    });
+        if (status.is_complete) {
+            translationRequestId = null;
+            progressChars = 0;
+            return;
+        }
 
-    onDestroy(() => {
-        if (unsub) {
-            unsub();
-        }
+        progressChars = status.progress_chars;
+        expectedChars = status.expected_chars;
     });
 
     const isTranslating = $derived(translationRequestId !== null);
+
+    let translationRequestSyncSeq = 0;
+
+    $effect(() => {
+        const currentId = translationRequestId;
+        const seq = ++translationRequestSyncSeq;
+
+        if (translationHtml) {
+            if (currentId !== null) {
+                translationRequestId = null;
+            }
+            progressChars = 0;
+            return;
+        }
+
+        if (currentId !== null) {
+            return;
+        }
+
+        library
+            .getParagraphTranslationRequestId(bookId, paragraph.id)
+            .then((id) => {
+                if (seq !== translationRequestSyncSeq) {
+                    return;
+                }
+                translationRequestId = id;
+                if (id !== null) {
+                    progressChars = 0;
+                }
+            })
+            .catch(() => {});
+    });
 
     $effect(() => {
         if (translationRequestId === null) {
@@ -83,36 +108,6 @@
             cancelled = true;
             clearInterval(interval);
         };
-    });
-
-    $effect(() => {
-        const selectedElements = document.querySelectorAll(
-            ".word-span.selected",
-        );
-        selectedElements.forEach((el) => {
-            el.classList.remove("selected");
-        });
-        if (sentenceWordIdToDisplay) {
-            let element = document.querySelector<HTMLElement>(
-                `.word-span[data-paragraph="${sentenceWordIdToDisplay[0]}"][data-sentence="${sentenceWordIdToDisplay[1]}"][data-word="${sentenceWordIdToDisplay[2]}"]`,
-            );
-            if (element) {
-                element.classList.add("selected");
-                element.classList.add("show-translation");
-                void tick().then(() => shrinkTranslationToFit(element));
-            }
-        }
-
-        library
-            .getParagraphTranslationRequestId(bookId, paragraph.id)
-            .then((id) => {
-                translationRequestId = id;
-                if (id !== null) {
-                    progressChars = 0;
-                }
-            });
-
-        void adjustVisiblePopups();
     });
 
     $effect(() => {

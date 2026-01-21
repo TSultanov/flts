@@ -21,6 +21,87 @@
         library.getBookChapterParagraphs(bookId, chapterId),
     );
 
+    let selectedWordElement: HTMLElement | null = null;
+    let selectionEffectSeq = 0;
+
+    $effect(() => {
+        const seq = ++selectionEffectSeq;
+        if (selectedWordElement) {
+            selectedWordElement.classList.remove("selected");
+        }
+
+        if (!sentenceWordIdToDisplay) {
+            selectedWordElement = null;
+            return;
+        }
+
+        if (!$paragraphs || $paragraphs.length === 0) {
+            selectedWordElement = null;
+            return;
+        }
+
+        const [paragraphId, sentenceId, wordId] = sentenceWordIdToDisplay;
+
+        void tick().then(() => {
+            if (seq !== selectionEffectSeq) {
+                return;
+            }
+
+            const selector = `.word-span[data-paragraph="${paragraphId}"][data-sentence="${sentenceId}"][data-word="${wordId}"]`;
+            const root: ParentNode = paragraphsContainer ?? document;
+            const element = root.querySelector<HTMLElement>(selector);
+            if (!element) {
+                selectedWordElement = null;
+                return;
+            }
+
+            element.classList.add("selected");
+            element.classList.add("show-translation");
+            selectedWordElement = element;
+            shrinkTranslationToFit(element);
+        });
+    });
+
+    function shrinkTranslationToFit(span: HTMLElement) {
+        const translationEl =
+            span.querySelector<HTMLElement>(".word-translation");
+        if (!translationEl) {
+            return;
+        }
+
+        translationEl.style.fontSize = "";
+        const parentWidth = span.getBoundingClientRect().width;
+        if (!parentWidth) {
+            return;
+        }
+
+        const styles = getComputedStyle(translationEl);
+        const paddingLeft = parseFloat(styles.paddingLeft) || 0;
+        const paddingRight = parseFloat(styles.paddingRight) || 0;
+        const borderLeft = parseFloat(styles.borderLeftWidth) || 0;
+        const borderRight = parseFloat(styles.borderRightWidth) || 0;
+        const horizontalChrome =
+            paddingLeft + paddingRight + borderLeft + borderRight;
+        const availableWidth = parentWidth - horizontalChrome;
+        if (availableWidth <= 0) {
+            return;
+        }
+
+        const rawContentWidth =
+            translationEl.scrollWidth - (paddingLeft + paddingRight);
+        if (rawContentWidth <= availableWidth) {
+            return;
+        }
+
+        const baseFontSize = parseFloat(styles.fontSize);
+        if (!baseFontSize || Number.isNaN(baseFontSize)) {
+            return;
+        }
+
+        const scaledSize = baseFontSize * (availableWidth / rawContentWidth);
+        translationEl.style.fontSize = `${scaledSize}px`;
+    }
+
     function chapterClick(e: MouseEvent) {
         const target = document.elementFromPoint(
             e.clientX,
@@ -66,12 +147,19 @@
     let initialScrollApplied = false;
     let isResizing = false;
     let resizeTimeout: ReturnType<typeof setTimeout> | null = null;
+    let scrollRaf: number | null = null;
 
     function handleScroll() {
         if (isResizing) {
             return;
         }
-        updateVisibleParagraph();
+        if (scrollRaf !== null) {
+            return;
+        }
+        scrollRaf = requestAnimationFrame(() => {
+            scrollRaf = null;
+            updateVisibleParagraph();
+        });
     }
 
     function scheduleSave(paragraphId: number) {
@@ -106,52 +194,16 @@
             return null;
         }
         const containerRect = paragraphsContainer.getBoundingClientRect();
-        const elements =
-            paragraphsContainer.querySelectorAll<HTMLElement>(
-                ".paragraph-wrapper",
-            );
-
-        let bestId: number | null = null;
-        let bestDistance = Number.POSITIVE_INFINITY;
-
-        elements.forEach((el) => {
-            const rect = el.getBoundingClientRect();
-            const horizontallyVisible =
-                rect.right > containerRect.left + 5 &&
-                rect.left < containerRect.right - 5;
-            const verticallyVisible =
-                rect.bottom > containerRect.top + 5 &&
-                rect.top < containerRect.bottom - 5;
-            if (!horizontallyVisible || !verticallyVisible) {
-                return;
-            }
-
-            const idAttr = el.dataset["paragraphId"];
-            if (!idAttr) {
-                return;
-            }
-            const id = parseInt(idAttr, 10);
-            if (Number.isNaN(id)) {
-                return;
-            }
-
-            const distance = Math.abs(rect.left - containerRect.left);
-            if (distance < bestDistance) {
-                bestDistance = distance;
-                bestId = id;
-            }
-        });
-
-        if (bestId !== null) {
-            return bestId;
-        }
-
-        const fallback = elements[elements.length - 1];
-        if (!fallback) {
+        const x = containerRect.left + 16;
+        const y = containerRect.top + containerRect.height / 2;
+        const hit = document.elementFromPoint(x, y) as HTMLElement | null;
+        const wrapper = hit?.closest<HTMLElement>(".paragraph-wrapper") ?? null;
+        const idAttr = wrapper?.dataset["paragraphId"];
+        if (!idAttr) {
             return null;
         }
-        const fallbackId = parseInt(fallback.dataset["paragraphId"] ?? "", 10);
-        return Number.isNaN(fallbackId) ? null : fallbackId;
+        const id = parseInt(idAttr, 10);
+        return Number.isNaN(id) ? null : id;
     }
 
     async function syncInitialParagraph() {
@@ -221,6 +273,10 @@
     });
 
     onDestroy(() => {
+        if (scrollRaf !== null) {
+            cancelAnimationFrame(scrollRaf);
+            scrollRaf = null;
+        }
         if (saveTimeout) {
             clearTimeout(saveTimeout);
         }
@@ -248,8 +304,8 @@
             bind:this={paragraphsContainer}
             onscroll={handleScroll}
         >
-            {#each $paragraphs as paragraph}
-                <ParagraphView {bookId} {paragraph} {sentenceWordIdToDisplay} />
+            {#each $paragraphs as paragraph (paragraph.id)}
+                <ParagraphView {bookId} {paragraph} />
             {/each}
         </div>
     </section>

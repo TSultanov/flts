@@ -19,8 +19,11 @@ use tokio::{sync::Mutex, task::JoinHandle};
 use uuid::Uuid;
 
 use crate::app::config::Config;
-use crate::app::library_view::LibraryView;
+use crate::app::library_view::{LibraryView, ParagraphView};
 use tauri::Emitter;
+
+const TRANSLATION_PROGRESS_UPDATE_INTERVAL: Duration = Duration::from_millis(500);
+const TRANSLATION_STATUS_TTL: Duration = Duration::from_secs(30);
 
 struct TranslationRequest {
     request_id: usize,
@@ -34,7 +37,7 @@ struct TranslationRequest {
 struct SaveNotify {
     request_id: usize,
     book_id: Uuid,
-    source_language: Language,
+    paragraph_id: usize,
     target_language: Language,
 }
 
@@ -61,7 +64,14 @@ pub struct TranslationQueue {
     translation_status: Arc<Mutex<HashMap<usize, TranslationStatus>>>,
 
     _saver: JoinHandle<()>,
+    _status_updater: JoinHandle<()>,
     _translator: JoinHandle<()>,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct ParagraphUpdatedPayload {
+    book_id: Uuid,
+    paragraph: ParagraphView,
 }
 
 impl TranslationQueue {
@@ -78,20 +88,27 @@ impl TranslationQueue {
 
         let (tx_save, rx_save) = flume::unbounded::<SaveNotify>();
 
-        let saver = tokio::spawn(run_saver(library.clone(), app.clone(), rx_save));
+        let translation_status: Arc<Mutex<HashMap<usize, TranslationStatus>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let (tx_status, rx_status) = flume::unbounded::<TranslationStatus>();
+        let status_updater = tokio::spawn(run_status_updater(translation_status.clone(), rx_status));
+
+        let saver = tokio::spawn(run_saver(
+            library.clone(),
+            app.clone(),
+            tx_status.clone(),
+            rx_save,
+        ));
 
         let (tx_translate, rx_translate) = flume::unbounded::<TranslationRequest>();
 
         let paragraph_request_id_map = Arc::new(Mutex::new(HashMap::new()));
         let request_state = Arc::new(Mutex::new(HashMap::new()));
-        let translation_status: Arc<Mutex<HashMap<usize, TranslationStatus>>> =
-            Arc::new(Mutex::new(HashMap::new()));
 
         let translator = {
             let request_state = request_state.clone();
             let paragraph_request_id_map = paragraph_request_id_map.clone();
-            let translation_status = translation_status.clone();
-            let app = app.clone();
+            let tx_status = tx_status.clone();
             tokio::spawn(async move {
                 while let Ok(request) = rx_translate.recv_async().await {
                     let library = library.clone();
@@ -111,7 +128,7 @@ impl TranslationQueue {
                         target_language,
                         gemini_api_key,
                         openai_api_key,
-                        app.clone(),
+                        tx_status.clone(),
                         &tx_save,
                         &request,
                     )
@@ -127,21 +144,10 @@ impl TranslationQueue {
                             expected_chars: 0,
                             is_complete: true,
                         };
-                        info!(
-                            "Emitting \"translation_status\" (complete, failed) for request {}",
-                            request.request_id
-                        );
-                        app.emit("translation_status", status)
-                            .unwrap_or_else(|err| {
-                                warn!(
-                                    "Failed to notify frontend about failed translation: {}",
-                                    err
-                                )
-                            });
+                        let _ = tx_status.send(status);
                     });
 
                     request_state.lock().await.remove(&request.request_id);
-                    translation_status.lock().await.remove(&request.request_id);
                     paragraph_request_id_map
                         .lock()
                         .await
@@ -154,6 +160,7 @@ impl TranslationQueue {
             next_request_index: 0.into(),
             translate_tx: tx_translate,
             _saver: saver,
+            _status_updater: status_updater,
             _translator: translator,
             paragraph_request_id_map,
             request_state,
@@ -227,7 +234,7 @@ async fn handle_request(
     target_language: Language,
     gemini_api_key: Option<String>,
     openai_api_key: Option<String>,
-    app: tauri::AppHandle,
+    status_tx: flume::Sender<TranslationStatus>,
     save_notify: &flume::Sender<SaveNotify>,
     request: &TranslationRequest,
 ) -> anyhow::Result<()> {
@@ -286,27 +293,36 @@ async fn handle_request(
     );
 
     let callback = {
-        let app = app.clone();
+        let status_tx = status_tx.clone();
         let request_id = request.request_id;
-        let last_emit = Arc::new(std::sync::Mutex::new(Instant::now()));
+        struct EmitState {
+            last_emit: Instant,
+            last_progress: usize,
+        }
+        let emit_state = Arc::new(std::sync::Mutex::new(EmitState {
+            last_emit: Instant::now(),
+            last_progress: 0,
+        }));
         Box::new(move |progress_len: usize| {
-            let mut last = last_emit.lock().unwrap();
-            if last.elapsed() >= Duration::from_millis(100) {
-                info!(
-                    "Translation progress for request {}: {}/{} chars",
-                    request_id,
-                    progress_len,
-                    expected_size
-                );
-                let status = TranslationStatus {
-                    request_id,
-                    progress_chars: progress_len,
-                    expected_chars: expected_size,
-                    is_complete: false,
-                };
-                let _ = app.emit("translation_status", status);
-                *last = Instant::now();
+            let mut state = emit_state.lock().unwrap();
+            if state.last_progress == progress_len {
+                return;
             }
+            if state.last_emit.elapsed() < TRANSLATION_PROGRESS_UPDATE_INTERVAL {
+                return;
+            }
+
+            state.last_emit = Instant::now();
+            state.last_progress = progress_len;
+            drop(state);
+
+            let status = TranslationStatus {
+                request_id,
+                progress_chars: progress_len,
+                expected_chars: expected_size,
+                is_complete: false,
+            };
+            let _ = status_tx.send(status);
         })
     };
 
@@ -341,7 +357,7 @@ async fn handle_request(
         .send_async(SaveNotify {
             request_id: request.request_id,
             book_id: request.book_id,
-            source_language,
+            paragraph_id: request.paragraph_id,
             target_language,
         })
         .await?;
@@ -352,6 +368,7 @@ async fn handle_request(
 async fn run_saver(
     library: Arc<Mutex<Library>>,
     app: tauri::AppHandle,
+    status_tx: flume::Sender<TranslationStatus>,
     rx: flume::Receiver<SaveNotify>,
 ) {
     let savers = Arc::new(Mutex::new(HashMap::new()));
@@ -362,6 +379,12 @@ async fn run_saver(
             save_and_emit(library.clone(), app.clone(), msg)
                 .await
                 .unwrap_or_else(|err| warn!("Failed to autosave book {book_id}: {err}"));
+            let _ = status_tx.send(TranslationStatus {
+                request_id: msg.request_id,
+                progress_chars: 0,
+                expected_chars: 0,
+                is_complete: true,
+            });
             continue;
         }
 
@@ -369,6 +392,7 @@ async fn run_saver(
             let library = library.clone();
             let app = app.clone();
             let savers = savers.clone();
+            let status_tx = status_tx.clone();
             let msg = msg;
             async move {
                 tokio::time::sleep(Duration::from_secs(1)).await;
@@ -376,11 +400,36 @@ async fn run_saver(
                     .await
                     .unwrap_or_else(|err| warn!("Failed to autosave book {book_id}: {err}"));
                 savers.lock().await.remove(&book_id);
+                let _ = status_tx.send(TranslationStatus {
+                    request_id: msg.request_id,
+                    progress_chars: 0,
+                    expected_chars: 0,
+                    is_complete: true,
+                });
             }
         };
 
         let task = tokio::spawn(saver);
         savers.lock().await.insert(book_id, task);
+    }
+}
+
+async fn run_status_updater(
+    translation_status: Arc<Mutex<HashMap<usize, TranslationStatus>>>,
+    rx: flume::Receiver<TranslationStatus>,
+) {
+    while let Ok(status) = rx.recv_async().await {
+        let request_id = status.request_id;
+        let is_complete = status.is_complete;
+        translation_status.lock().await.insert(request_id, status);
+
+        if is_complete {
+            let translation_status = translation_status.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(TRANSLATION_STATUS_TTL).await;
+                translation_status.lock().await.remove(&request_id);
+            });
+        }
     }
 }
 
@@ -408,31 +457,25 @@ async fn emit_updates(
     app: tauri::AppHandle,
     msg: SaveNotify,
 ) -> anyhow::Result<()> {
-    let status = TranslationStatus {
-        request_id: msg.request_id,
-        progress_chars: 0,
-        expected_chars: 0,
-        is_complete: true,
-    };
-    info!(
-        "Emitting \"translation_status\" (complete) for request {}",
-        msg.request_id
-    );
-    app.emit("translation_status", status)?;
-
-    info!("Emitting \"book_updated\" for {}", msg.book_id);
-    app.emit("book_updated", msg.book_id)?;
-
     let lv = LibraryView::create(app.clone(), library.clone());
+    let paragraph = lv
+        .get_paragraph_view(msg.book_id, msg.paragraph_id, &msg.target_language)
+        .await?;
+    info!(
+        "Emitting \"paragraph_updated\" for {}/{}",
+        msg.book_id, msg.paragraph_id
+    );
+    app.emit(
+        "paragraph_updated",
+        ParagraphUpdatedPayload {
+            book_id: msg.book_id,
+            paragraph,
+        },
+    )?;
+
     let books = lv.list_books(Some(&msg.target_language)).await?;
     info!("Emitting \"library_updated\"");
     app.emit("library_updated", books)?;
 
-    let payload = (
-        msg.source_language.to_639_3(),
-        msg.target_language.to_639_3(),
-    );
-    info!("Emitting \"dictionary_updated\" for {payload:?}",);
-    app.emit("dictionary_updated", payload)?;
     Ok(())
 }

@@ -1,10 +1,9 @@
 <script lang="ts">
-    import { getContext, onDestroy, onMount } from "svelte";
+    import { getContext, onMount } from "svelte";
     import type { Library, TranslationStatus } from "../data/library";
     import type { UUID } from "../data/v2/db";
     import { models, configStore } from "../config";
     import { faLanguage } from "@fortawesome/free-solid-svg-icons";
-    import { listen, type UnlistenFn } from "@tauri-apps/api/event";
     import Fa from "svelte-fa";
     import CircularProgress from "../widgets/CircularProgress.svelte";
     import { invoke } from "@tauri-apps/api/core";
@@ -32,22 +31,23 @@
 
     let progressChars = $state(0);
     let expectedChars = $state(100);
+    const translationStatus = $derived(
+        library.getTranslationStatus(translationRequestId),
+    );
 
-    let unsub: UnlistenFn | null = null;
-
-    listen<TranslationStatus>("translation_status", (event) => {
-        const status = event.payload;
-        if (status.request_id === translationRequestId) {
-            if (status.is_complete) {
-                translationRequestId = null;
-                progressChars = 0;
-            } else {
-                progressChars = status.progress_chars;
-                expectedChars = status.expected_chars;
-            }
+    $effect(() => {
+        const status: TranslationStatus | undefined = $translationStatus;
+        if (!status) {
+            return;
         }
-    }).then((u) => {
-        unsub = u;
+        if (status.is_complete) {
+            translationRequestId = null;
+            progressChars = 0;
+            return;
+        }
+
+        progressChars = status.progress_chars;
+        expectedChars = status.expected_chars;
     });
 
     // System Dictionary (macOS) - using library method which returns a Readable store
@@ -99,12 +99,6 @@
             );
         }
     }
-
-    onDestroy(() => {
-        if (unsub) {
-            unsub();
-        }
-    });
 
     const isTranslating = $derived(translationRequestId !== null);
 
