@@ -730,7 +730,7 @@ mod library_book_tests {
     async fn list_books_conflicting_versions() {
         let temp_dir = TempDir::new("flts_test_book");
         let library_path = temp_dir.path.join("lib");
-        let mut library = Library::open(library_path.clone()).await.unwrap();
+        let library = Library::open(library_path.clone()).await.unwrap();
 
         let book1 = library
             .create_book("First Book", &Language::from_639_3("eng").unwrap())
@@ -766,7 +766,7 @@ mod library_book_tests {
     async fn list_books_conflicting_translation_versions() {
         let temp_dir = TempDir::new("flts_test_book");
         let library_path = temp_dir.path.join("lib");
-        let mut library = Library::open(library_path.clone()).await.unwrap();
+        let library = Library::open(library_path.clone()).await.unwrap();
 
         let book1 = library
             .create_book("First Book", &Language::from_639_3("spa").unwrap())
@@ -821,7 +821,7 @@ mod library_book_tests {
     async fn save_after_load_trivial_book_change() {
         let temp_dir = TempDir::new("flts_test_book");
         let library_path = temp_dir.path.join("lib");
-        let mut library = Library::open(library_path.clone()).await.unwrap();
+        let library = Library::open(library_path.clone()).await.unwrap();
 
         // Create and save
         let book = library
@@ -849,15 +849,13 @@ mod library_book_tests {
     async fn save_after_load_book_and_translation_changed() {
         let temp_dir = TempDir::new("flts_test_book");
         let library_path = temp_dir.path.join("lib");
-        let mut library = Library::open(library_path.clone()).await.unwrap();
+        let library = Library::open(library_path.clone()).await.unwrap();
 
         let source_language = Language::from_str("es").unwrap();
         let target_language = Language::from_str("en").unwrap();
 
         let dict = library
             .dictionaries_cache
-            .lock()
-            .await
             .get_dictionary(source_language, target_language)
             .await
             .unwrap();
@@ -988,15 +986,13 @@ mod library_book_tests {
     async fn save_merges_translation_with_concurrent_on_disk_change() {
         let temp_dir = TempDir::new("flts_test_book");
         let library_path = temp_dir.path.join("lib");
-        let mut library = Library::open(library_path.clone()).await.unwrap();
+        let library = Library::open(library_path.clone()).await.unwrap();
 
         let source_language = Language::from_str("en").unwrap();
         let target_language = Language::from_str("ru").unwrap();
 
         let dict = library
             .dictionaries_cache
-            .lock()
-            .await
             .get_dictionary(source_language, target_language)
             .await
             .unwrap();
@@ -1166,7 +1162,7 @@ mod library_book_tests {
     async fn reading_state_roundtrip() {
         let temp_dir = TempDir::new("flts_test_book");
         let library_path = temp_dir.path.join("lib");
-        let mut library = Library::open(library_path.clone()).await.unwrap();
+        let library = Library::open(library_path.clone()).await.unwrap();
 
         let book = library
             .create_book("Stateful", &Language::from_639_3("eng").unwrap())
@@ -1195,7 +1191,7 @@ mod library_book_tests {
     async fn folder_path_roundtrip() {
         let temp_dir = TempDir::new("flts_test_book");
         let library_path = temp_dir.path.join("lib");
-        let mut library = Library::open(library_path.clone()).await.unwrap();
+        let library = Library::open(library_path.clone()).await.unwrap();
 
         let book = library
             .create_book("Shelved", &Language::from_639_3("eng").unwrap())
@@ -1223,7 +1219,7 @@ mod library_book_tests {
     async fn reading_state_prefers_latest_conflict() {
         let temp_dir = TempDir::new("flts_test_book");
         let library_root = temp_dir.path.join("lib");
-        let mut library = Library::open(library_root.clone()).await.unwrap();
+        let library = Library::open(library_root.clone()).await.unwrap();
 
         let book = library
             .create_book("Conflicted", &Language::from_639_3("eng").unwrap())
@@ -1257,7 +1253,7 @@ mod library_book_tests {
 
         drop(library);
 
-        let mut library = Library::open(library_root).await.unwrap();
+        let library = Library::open(library_root).await.unwrap();
         let book = library.get_book(&book_id).await.unwrap();
         let mut book = book.lock().await;
         let state = book.reading_state().await.unwrap();
@@ -1294,14 +1290,12 @@ mod library_book_tests {
         let dir = temp_dir.path.join("book");
         std::fs::create_dir_all(&dir).unwrap();
 
-        let dict_cache = Arc::new(Mutex::new(DictionaryCache::new(&temp_dir.path)));
+        let dict_cache = Arc::new(DictionaryCache::new(&temp_dir.path));
 
         let source_language = Language::from_str("en").unwrap();
         let target_language = Language::from_str("ru").unwrap();
 
         let dict = dict_cache
-            .lock()
-            .await
             .get_dictionary(source_language, target_language)
             .await
             .unwrap();
@@ -1373,14 +1367,12 @@ mod library_book_tests {
         let dir = temp_dir.path.join("book2");
         std::fs::create_dir_all(&dir).unwrap();
 
-        let dict_cache = Arc::new(Mutex::new(DictionaryCache::new(&temp_dir.path)));
+        let dict_cache = Arc::new(DictionaryCache::new(&temp_dir.path));
 
         let source_language = Language::from_str("en").unwrap();
         let target_language = Language::from_str("ru").unwrap();
 
         let dict = dict_cache
-            .lock()
-            .await
             .get_dictionary(source_language, target_language)
             .await
             .unwrap();
@@ -1555,7 +1547,7 @@ mod library_book_tests {
         // Arrange
         let temp_dir = TempDir::new("flts_test_book");
         let library_path = temp_dir.path.join("lib");
-        let mut library = Library::open(library_path.clone()).await.unwrap();
+        let library = Library::open(library_path.clone()).await.unwrap();
 
         let book = library
             .create_book("Original Title", &Language::from_639_3("eng").unwrap())
@@ -1586,7 +1578,7 @@ mod library_book_tests {
         // Arrange
         let temp_dir = TempDir::new("flts_test_book");
         let library_path = temp_dir.path.join("lib");
-        let mut library = Library::open(library_path.clone()).await.unwrap();
+        let library = Library::open(library_path.clone()).await.unwrap();
 
         let book = library
             .create_book("Main V1", &Language::from_639_3("eng").unwrap())
@@ -1646,7 +1638,7 @@ mod library_book_tests {
         // Arrange
         let temp_dir = TempDir::new("flts_test_book");
         let library_path = temp_dir.path.join("lib");
-        let mut library = Library::open(library_path.clone()).await.unwrap();
+        let library = Library::open(library_path.clone()).await.unwrap();
 
         let book = library
             .create_book("V1", &Language::from_639_3("eng").unwrap())
@@ -1702,7 +1694,7 @@ mod library_book_tests {
     async fn delete_book_removes_directory() {
         let temp_dir = TempDir::new("flts_test_book");
         let library_path = temp_dir.path.join("lib");
-        let mut library = Library::open(library_path.clone()).await.unwrap();
+        let library = Library::open(library_path.clone()).await.unwrap();
 
         let book = library
             .create_book("Disposable", &Language::from_639_3("eng").unwrap())

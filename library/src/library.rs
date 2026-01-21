@@ -373,7 +373,7 @@ mod library_tests {
     async fn list_books_multiple_empty_books() {
         let temp_dir = TempDir::new("flts_test");
         let library_path = temp_dir.path.join("lib");
-        let mut library = Library::open(library_path.clone()).await.unwrap();
+        let library = Library::open(library_path.clone()).await.unwrap();
 
         let book1 = library
             .create_book("First Book", &Language::from_639_3("eng").unwrap())
@@ -401,7 +401,7 @@ mod library_tests {
     async fn list_books_includes_folder_path() {
         let temp_dir = TempDir::new("flts_test");
         let library_path = temp_dir.path.join("lib");
-        let mut library = Library::open(library_path.clone()).await.unwrap();
+        let library = Library::open(library_path.clone()).await.unwrap();
 
         let book = library
             .create_book("Categorized", &Language::from_639_3("eng").unwrap())
