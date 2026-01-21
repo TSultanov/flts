@@ -222,7 +222,7 @@ async fn run_saver(library: Arc<Mutex<Library>>, book_id: Uuid, rx: flume::Recei
 
 async fn translate_book(
     library: Arc<Mutex<Library>>,
-    cache: Arc<Mutex<TranslationsCache>>,
+    cache: Arc<TranslationsCache>,
     api_key: &str,
     book_id: Uuid,
     tgt_lang: &str,
@@ -412,7 +412,7 @@ async fn do_main() -> anyhow::Result<()> {
                 translation_language,
                 n_parallel,
             } => {
-                let cache = Arc::new(Mutex::new(get_cache().await?));
+                let cache = Arc::new(get_cache().await?);
                 translate_book(
                     library,
                     cache,

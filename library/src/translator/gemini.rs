@@ -8,7 +8,6 @@ use futures::TryStreamExt;
 use gemini_rust::{Gemini, Model, ThinkingConfig};
 use isolang::Language;
 use serde_json::{Value, json};
-use tokio::sync::Mutex;
 use tokio::time::timeout;
 
 use crate::{
@@ -20,7 +19,7 @@ use crate::{
 use super::{TRANSLATION_REQUEST_TIMEOUT, TRANSLATION_STREAM_IDLE_TIMEOUT};
 
 pub struct GeminiTranslator {
-    cache: Arc<Mutex<TranslationsCache>>,
+    cache: Arc<TranslationsCache>,
     client: Gemini,
     schema: Value,
     model: Model,
@@ -31,7 +30,7 @@ pub struct GeminiTranslator {
 
 impl GeminiTranslator {
     pub fn create(
-        cache: Arc<Mutex<TranslationsCache>>,
+        cache: Arc<TranslationsCache>,
         translation_model: TranslationModel,
         api_key: String,
         from: &Language,
@@ -188,8 +187,6 @@ impl Translator for GeminiTranslator {
         if use_cache
             && let Some(cached_result) = self
                 .cache
-                .lock()
-                .await
                 .get(&self.from, &self.to, paragraph)
                 .await
                 .ok()
@@ -253,8 +250,6 @@ impl Translator for GeminiTranslator {
         translation.timestamp = duration_since_epoch.as_secs();
 
         self.cache
-            .lock()
-            .await
             .set(&self.from, &self.to, paragraph, &translation);
 
         Ok(translation)

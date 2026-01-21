@@ -7,7 +7,6 @@ use async_trait::async_trait;
 use isolang::Language;
 use serde::{Deserialize, Serialize};
 use strum::EnumIter;
-use tokio::sync::Mutex;
 
 use crate::{
     book::translation_import::ParagraphTranslation, cache::TranslationsCache,
@@ -156,7 +155,7 @@ pub trait Translator: Send + Sync {
 }
 
 pub fn get_translator(
-    cache: Arc<Mutex<TranslationsCache>>,
+    cache: Arc<TranslationsCache>,
     provider: TranslationProvider,
     translation_model: TranslationModel,
     api_key: String,

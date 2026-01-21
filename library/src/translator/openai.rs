@@ -13,7 +13,6 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use isolang::Language;
 use serde_json::{Value, json};
-use tokio::sync::Mutex;
 use tokio::time::timeout;
 
 use crate::{
@@ -25,7 +24,7 @@ use crate::{
 use super::{TRANSLATION_REQUEST_TIMEOUT, TRANSLATION_STREAM_IDLE_TIMEOUT};
 
 pub struct OpenAITranslator {
-    cache: Arc<Mutex<TranslationsCache>>,
+    cache: Arc<TranslationsCache>,
     client: Client<OpenAIConfig>,
     schema: Value,
     model: String,
@@ -36,7 +35,7 @@ pub struct OpenAITranslator {
 
 impl OpenAITranslator {
     pub fn create(
-        cache: Arc<Mutex<TranslationsCache>>,
+        cache: Arc<TranslationsCache>,
         translation_model: TranslationModel,
         api_key: String,
         from: &Language,
@@ -169,8 +168,6 @@ impl Translator for OpenAITranslator {
         if use_cache
             && let Some(cached_result) = self
                 .cache
-                .lock()
-                .await
                 .get(&self.from, &self.to, paragraph)
                 .await
                 .ok()
@@ -257,8 +254,6 @@ impl Translator for OpenAITranslator {
         translation.timestamp = duration_since_epoch.as_secs();
 
         self.cache
-            .lock()
-            .await
             .set(&self.from, &self.to, paragraph, &translation);
 
         Ok(translation)

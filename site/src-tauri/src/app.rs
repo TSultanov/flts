@@ -251,8 +251,8 @@ impl App {
         if let Some(library) = &self.library
             && self.translation_queue.is_none()
         {
-            let cache = Arc::new(Mutex::new(Self::get_cache().await?));
-            let stats_cache = Arc::new(Mutex::new(Self::get_stats_cache().await?));
+            let cache = Arc::new(Self::get_cache().await?);
+            let stats_cache = Arc::new(Self::get_stats_cache().await?);
             self.translation_queue = TranslationQueue::init(
                 library.clone(),
                 cache,
@@ -277,8 +277,8 @@ impl App {
         if let Some(library) = &self.library
             && self.translation_queue.is_none()
         {
-            let cache = Arc::new(Mutex::new(Self::get_cache().await?));
-            let stats_cache = Arc::new(Mutex::new(Self::get_stats_cache().await?));
+            let cache = Arc::new(Self::get_cache().await?);
+            let stats_cache = Arc::new(Self::get_stats_cache().await?);
             self.translation_queue = TranslationQueue::init(
                 library.clone(),
                 cache,

@@ -80,8 +80,8 @@ struct ParagraphUpdatedPayload {
 impl TranslationQueue {
     pub fn init(
         library: Arc<Mutex<Library>>,
-        cache: Arc<Mutex<TranslationsCache>>,
-        stats_cache: Arc<Mutex<TranslationSizeCache>>,
+        cache: Arc<TranslationsCache>,
+        stats_cache: Arc<TranslationSizeCache>,
         config: &Config,
         app: tauri::AppHandle,
     ) -> Option<Self> {
@@ -94,7 +94,8 @@ impl TranslationQueue {
         let translation_status: Arc<Mutex<HashMap<usize, TranslationStatus>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let (tx_status, rx_status) = flume::unbounded::<TranslationStatus>();
-        let status_updater = tokio::spawn(run_status_updater(translation_status.clone(), rx_status));
+        let status_updater =
+            tokio::spawn(run_status_updater(translation_status.clone(), rx_status));
 
         let saver = tokio::spawn(run_saver(
             library.clone(),
@@ -232,8 +233,8 @@ impl TranslationQueue {
 
 async fn handle_request(
     library: Arc<Mutex<Library>>,
-    cache: Arc<Mutex<TranslationsCache>>,
-    stats_cache: Arc<Mutex<TranslationSizeCache>>,
+    cache: Arc<TranslationsCache>,
+    stats_cache: Arc<TranslationSizeCache>,
     target_language: Language,
     gemini_api_key: Option<String>,
     openai_api_key: Option<String>,
@@ -284,11 +285,7 @@ async fn handle_request(
     )?;
 
     let source_len = paragraph_text.len();
-    let stats = stats_cache
-        .lock()
-        .await
-        .get(&source_language, &target_language)
-        .await;
+    let stats = stats_cache.get(&source_language, &target_language).await;
     let expected_size = stats.estimate(source_len);
     info!(
         "Estimated translation size: {} (source len: {}, ratio: {:.1}, observations: {})",
@@ -339,8 +336,6 @@ async fn handle_request(
         .map(|s| s.len())
         .unwrap_or(0);
     stats_cache
-        .lock()
-        .await
         .record_observation(&source_language, &target_language, source_len, actual_size)
         .await;
     info!(

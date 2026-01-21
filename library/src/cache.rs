@@ -39,11 +39,7 @@ impl TranslationsCache {
         Ok(Self { cache })
     }
 
-    fn make_key(
-        source_language: &Language,
-        target_language: &Language,
-        paragraph: &str,
-    ) -> String {
+    fn make_key(source_language: &Language, target_language: &Language, paragraph: &str) -> String {
         format!(
             "{}\n{}\n{}",
             source_language.to_639_3(),
