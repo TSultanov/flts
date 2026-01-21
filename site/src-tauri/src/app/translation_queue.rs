@@ -15,7 +15,7 @@ use library::{
     translator::{TranslationModel, TranslationProvider, get_translator},
 };
 use log::{info, warn};
-use tokio::{sync::Mutex, task::JoinHandle};
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::app::config::Config;
@@ -43,12 +43,6 @@ struct SaveNotify {
     target_language: Language,
 }
 
-pub enum TranslationRequestState {
-    DoesNotExist = 0,
-    Scheduled = 1,
-    Translating = 2,
-}
-
 #[derive(Clone, serde::Serialize)]
 pub struct TranslationStatus {
     pub request_id: usize,
@@ -57,17 +51,16 @@ pub struct TranslationStatus {
     pub is_complete: bool,
 }
 
+struct TranslationQueueState {
+    paragraph_request_id_map: HashMap<(Uuid, usize), usize>,
+    translation_status: HashMap<usize, TranslationStatus>,
+}
+
 pub struct TranslationQueue {
     next_request_index: AtomicUsize,
     translate_tx: flume::Sender<TranslationRequest>,
 
-    paragraph_request_id_map: Arc<Mutex<HashMap<(Uuid, usize), usize>>>,
-    request_state: Arc<Mutex<HashMap<usize, TranslationRequestState>>>,
-    translation_status: Arc<Mutex<HashMap<usize, TranslationStatus>>>,
-
-    _saver: JoinHandle<()>,
-    _status_updater: JoinHandle<()>,
-    _translator: JoinHandle<()>,
+    state: Arc<Mutex<TranslationQueueState>>,
 }
 
 #[cfg(not(mobile))]
@@ -84,20 +77,21 @@ impl TranslationQueue {
         stats_cache: Arc<TranslationSizeCache>,
         config: &Config,
         app: tauri::AppHandle,
-    ) -> Option<Self> {
+    ) -> Option<Arc<Self>> {
         let gemini_api_key = config.gemini_api_key.clone();
         let openai_api_key = config.openai_api_key.clone();
         let target_language = Language::from_639_3(&config.target_language_id)?;
 
         let (tx_save, rx_save) = flume::unbounded::<SaveNotify>();
 
-        let translation_status: Arc<Mutex<HashMap<usize, TranslationStatus>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let state = Arc::new(Mutex::new(TranslationQueueState {
+            paragraph_request_id_map: HashMap::new(),
+            translation_status: HashMap::new(),
+        }));
         let (tx_status, rx_status) = flume::unbounded::<TranslationStatus>();
-        let status_updater =
-            tokio::spawn(run_status_updater(translation_status.clone(), rx_status));
+        tokio::spawn(run_status_updater(state.clone(), rx_status));
 
-        let saver = tokio::spawn(run_saver(
+        tokio::spawn(run_saver(
             library.clone(),
             app.clone(),
             tx_status.clone(),
@@ -106,12 +100,8 @@ impl TranslationQueue {
 
         let (tx_translate, rx_translate) = flume::unbounded::<TranslationRequest>();
 
-        let paragraph_request_id_map = Arc::new(Mutex::new(HashMap::new()));
-        let request_state = Arc::new(Mutex::new(HashMap::new()));
-
-        let translator = {
-            let request_state = request_state.clone();
-            let paragraph_request_id_map = paragraph_request_id_map.clone();
+        {
+            let state = state.clone();
             let tx_status = tx_status.clone();
             tokio::spawn(async move {
                 while let Ok(request) = rx_translate.recv_async().await {
@@ -119,11 +109,6 @@ impl TranslationQueue {
                     let cache = cache.clone();
                     let gemini_api_key = gemini_api_key.clone();
                     let openai_api_key = openai_api_key.clone();
-
-                    request_state
-                        .lock()
-                        .await
-                        .insert(request.request_id, TranslationRequestState::Translating);
 
                     handle_request(
                         library,
@@ -151,25 +136,20 @@ impl TranslationQueue {
                         let _ = tx_status.send(status);
                     });
 
-                    request_state.lock().await.remove(&request.request_id);
-                    paragraph_request_id_map
+                    state
                         .lock()
                         .await
+                        .paragraph_request_id_map
                         .remove(&(request.book_id, request.paragraph_id));
                 }
-            })
-        };
+            });
+        }
 
-        Some(Self {
+        Some(Arc::new(Self {
             next_request_index: 0.into(),
             translate_tx: tx_translate,
-            _saver: saver,
-            _status_updater: status_updater,
-            _translator: translator,
-            paragraph_request_id_map,
-            request_state,
-            translation_status,
-        })
+            state,
+        }))
     }
 
     pub async fn translate(
@@ -195,39 +175,31 @@ impl TranslationQueue {
             })
             .await?;
 
-        self.paragraph_request_id_map
+        self.state
             .lock()
             .await
+            .paragraph_request_id_map
             .insert((book_id, paragraph_id), request_id);
-        self.request_state
-            .lock()
-            .await
-            .insert(request_id, TranslationRequestState::Scheduled);
 
         Ok(request_id)
     }
 
     pub async fn get_request_id(&self, book_id: Uuid, paragraph_id: usize) -> Option<usize> {
-        self.paragraph_request_id_map
+        self.state
             .lock()
             .await
+            .paragraph_request_id_map
             .get(&(book_id, paragraph_id))
-            .map(|i| *i)
+            .copied()
     }
 
     pub async fn get_translation_status(&self, request_id: usize) -> Option<TranslationStatus> {
-        self.translation_status
+        self.state
             .lock()
             .await
+            .translation_status
             .get(&request_id)
             .cloned()
-    }
-
-    pub async fn update_translation_status(&self, status: TranslationStatus) {
-        self.translation_status
-            .lock()
-            .await
-            .insert(status.request_id, status);
     }
 }
 
@@ -413,19 +385,23 @@ async fn run_saver(
 }
 
 async fn run_status_updater(
-    translation_status: Arc<Mutex<HashMap<usize, TranslationStatus>>>,
+    state: Arc<Mutex<TranslationQueueState>>,
     rx: flume::Receiver<TranslationStatus>,
 ) {
     while let Ok(status) = rx.recv_async().await {
         let request_id = status.request_id;
         let is_complete = status.is_complete;
-        translation_status.lock().await.insert(request_id, status);
+        state
+            .lock()
+            .await
+            .translation_status
+            .insert(request_id, status);
 
         if is_complete {
-            let translation_status = translation_status.clone();
+            let state = state.clone();
             tauri::async_runtime::spawn(async move {
                 tokio::time::sleep(TRANSLATION_STATUS_TTL).await;
-                translation_status.lock().await.remove(&request_id);
+                state.lock().await.translation_status.remove(&request_id);
             });
         }
     }

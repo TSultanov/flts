@@ -64,7 +64,7 @@ pub struct AppState {
     config_path: PathBuf,
     config: RwLock<Config>,
     library: RwLock<Option<Arc<Library>>>,
-    translation_queue: Mutex<Option<TranslationQueue>>,
+    translation_queue: RwLock<Option<Arc<TranslationQueue>>>,
     watcher: Arc<Mutex<LibraryWatcher>>,
 }
 
@@ -96,7 +96,7 @@ impl AppState {
             config_path,
             config: RwLock::new(config),
             library: RwLock::new(None),
-            translation_queue: Mutex::new(None),
+            translation_queue: RwLock::new(None),
             watcher,
         })
     }
@@ -109,7 +109,7 @@ impl AppState {
 
         // Translator settings (provider/key/model) are captured when the translation queue is created.
         // Reset it so the next translation uses the latest config.
-        *self.translation_queue.lock().await = None;
+        *self.translation_queue.write().await = None;
 
         #[cfg(mobile)]
         {
@@ -166,7 +166,7 @@ impl AppState {
             self.app.emit("library_updated", books)?;
         } else {
             *self.library.write().await = None;
-            *self.translation_queue.lock().await = None;
+            *self.translation_queue.write().await = None;
         }
 
         Ok(())
@@ -245,6 +245,28 @@ impl AppState {
         Ok(())
     }
 
+    async fn get_or_init_translation_queue(
+        &self,
+        library: Arc<Library>,
+    ) -> anyhow::Result<Arc<TranslationQueue>> {
+        if let Some(queue) = self.translation_queue.read().await.clone() {
+            return Ok(queue);
+        }
+
+        let config = self.config.read().await.clone();
+        let cache = Arc::new(Self::get_cache().await?);
+        let stats_cache = Arc::new(Self::get_stats_cache().await?);
+        let queue = TranslationQueue::init(library, cache, stats_cache, &config, self.app.clone())
+            .ok_or(AppError::NoTranslationQueueError)?;
+
+        let mut guard = self.translation_queue.write().await;
+        if let Some(existing) = guard.as_ref() {
+            return Ok(existing.clone());
+        }
+        *guard = Some(queue.clone());
+        Ok(queue)
+    }
+
     pub async fn translate_paragraph(
         &self,
         book_id: Uuid,
@@ -253,31 +275,10 @@ impl AppState {
         use_cache: bool,
     ) -> anyhow::Result<usize> {
         let library = { self.library.read().await.clone() }.ok_or(AppError::NoLibraryError)?;
-
-        if self.translation_queue.lock().await.is_none() {
-            let config = self.config.read().await.clone();
-            let cache = Arc::new(Self::get_cache().await?);
-            let stats_cache = Arc::new(Self::get_stats_cache().await?);
-            let queue = TranslationQueue::init(
-                library.clone(),
-                cache,
-                stats_cache,
-                &config,
-                self.app.clone(),
-            );
-
-            let mut guard = self.translation_queue.lock().await;
-            if guard.is_none() {
-                *guard = queue;
-            }
-        }
-
-        let guard = self.translation_queue.lock().await;
-        if let Some(q) = guard.as_ref() {
-            Ok(q.translate(book_id, paragraph_id, model, use_cache).await?)
-        } else {
-            Err(AppError::NoTranslationQueueError.into())
-        }
+        let queue = self.get_or_init_translation_queue(library).await?;
+        Ok(queue
+            .translate(book_id, paragraph_id, model, use_cache)
+            .await?)
     }
 
     pub async fn get_paragraph_translation_request_id(
@@ -286,31 +287,8 @@ impl AppState {
         paragraph_id: usize,
     ) -> anyhow::Result<Option<usize>> {
         let library = { self.library.read().await.clone() }.ok_or(AppError::NoLibraryError)?;
-
-        if self.translation_queue.lock().await.is_none() {
-            let config = self.config.read().await.clone();
-            let cache = Arc::new(Self::get_cache().await?);
-            let stats_cache = Arc::new(Self::get_stats_cache().await?);
-            let queue = TranslationQueue::init(
-                library.clone(),
-                cache,
-                stats_cache,
-                &config,
-                self.app.clone(),
-            );
-
-            let mut guard = self.translation_queue.lock().await;
-            if guard.is_none() {
-                *guard = queue;
-            }
-        }
-
-        let guard = self.translation_queue.lock().await;
-        if let Some(q) = guard.as_ref() {
-            Ok(q.get_request_id(book_id, paragraph_id).await)
-        } else {
-            Err(AppError::NoTranslationQueueError.into())
-        }
+        let queue = self.get_or_init_translation_queue(library).await?;
+        Ok(queue.get_request_id(book_id, paragraph_id).await)
     }
 }
 
@@ -369,8 +347,8 @@ pub async fn get_translation_status(
     state: tauri::State<'_, Arc<AppState>>,
     request_id: usize,
 ) -> Result<Option<translation_queue::TranslationStatus>, String> {
-    let guard = state.translation_queue.lock().await;
-    Ok(match guard.as_ref() {
+    let queue = { state.translation_queue.read().await.clone() };
+    Ok(match queue {
         Some(q) => q.get_translation_status(request_id).await,
         None => None,
     })
