@@ -338,6 +338,8 @@
         overflow-x: auto;
         scroll-snap-type: x mandatory;
         column-gap: 0;
+        column-fill: auto;
+        -webkit-column-fill: auto;
     }
 
     :global(.paragraphs-container > *) {
