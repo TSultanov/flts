@@ -15,8 +15,16 @@
         paragraph: ParagraphView;
     } = $props();
 
-    const originalText = $derived(paragraph.original);
-    const translationHtml = $derived(paragraph.translation);
+    let paragraphOverride = $state<ParagraphView | null>(null);
+    const effectiveParagraph = $derived(
+        paragraphOverride && paragraphOverride.id === paragraph.id
+            ? paragraphOverride
+            : paragraph,
+    );
+
+    const originalText = $derived(effectiveParagraph.original);
+    const translationHtml = $derived(effectiveParagraph.translation);
+    const visibleWords = $derived(effectiveParagraph.visibleWords);
 
     const library: Library = getContext("library");
 
@@ -35,6 +43,7 @@
             return;
         }
         if (status.is_complete) {
+            void refreshParagraphView();
             translationRequestId = null;
             progressChars = 0;
             return;
@@ -47,6 +56,19 @@
     const isTranslating = $derived(translationRequestId !== null);
 
     let translationRequestSyncSeq = 0;
+    let paragraphRefreshSeq = 0;
+
+    async function refreshParagraphView() {
+        const seq = ++paragraphRefreshSeq;
+        try {
+            const updated = await library.getParagraphView(bookId, paragraph.id);
+            if (seq !== paragraphRefreshSeq) {
+                return;
+            }
+            paragraphOverride = updated;
+        } catch {
+        }
+    }
 
     $effect(() => {
         const currentId = translationRequestId;
@@ -97,6 +119,7 @@
                     return;
                 }
                 if (id === null) {
+                    void refreshParagraphView();
                     translationRequestId = null;
                     progressChars = 0;
                 }
@@ -190,13 +213,13 @@
         );
         if (
             !wrapper ||
-            !paragraph.visibleWords ||
-            paragraph.visibleWords.length === 0
+            !visibleWords ||
+            visibleWords.length === 0
         ) {
             return;
         }
 
-        const visibleSet = new Set(paragraph.visibleWords);
+        const visibleSet = new Set(visibleWords);
         const wordSpans = wrapper.querySelectorAll<HTMLElement>(".word-span");
 
         wordSpans.forEach((span) => {

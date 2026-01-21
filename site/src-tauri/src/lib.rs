@@ -84,6 +84,7 @@ pub fn run() {
             app::library_view::list_books,
             app::library_view::list_book_chapters,
             app::library_view::get_book_chapter_paragraphs,
+            app::library_view::get_paragraph_view,
             app::config::get_translation_providers,
             app::library_view::get_word_info,
             app::library_view::import_plain_text,

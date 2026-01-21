@@ -19,7 +19,9 @@ use tokio::{sync::Mutex, task::JoinHandle};
 use uuid::Uuid;
 
 use crate::app::config::Config;
+#[cfg(not(mobile))]
 use crate::app::library_view::{LibraryView, ParagraphView};
+#[cfg(not(mobile))]
 use tauri::Emitter;
 
 const TRANSLATION_PROGRESS_UPDATE_INTERVAL: Duration = Duration::from_millis(500);
@@ -68,6 +70,7 @@ pub struct TranslationQueue {
     _translator: JoinHandle<()>,
 }
 
+#[cfg(not(mobile))]
 #[derive(Clone, serde::Serialize)]
 struct ParagraphUpdatedPayload {
     book_id: Uuid,
@@ -448,10 +451,12 @@ async fn save_and_emit(
     msg: SaveNotify,
 ) -> anyhow::Result<()> {
     save_book(library.clone(), msg.book_id).await?;
+    #[cfg(not(mobile))]
     emit_updates(library, app, msg).await?;
     Ok(())
 }
 
+#[cfg(not(mobile))]
 async fn emit_updates(
     library: Arc<Mutex<Library>>,
     app: tauri::AppHandle,

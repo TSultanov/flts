@@ -258,6 +258,10 @@ export class Library {
         return await invoke<number | null>("get_paragraph_translation_request_id", { bookId, paragraphId });
     }
 
+    async getParagraphView(bookId: UUID, paragraphId: number): Promise<ParagraphView> {
+        return await invoke<ParagraphView>("get_paragraph_view", { bookId, paragraphId });
+    }
+
     getTranslationStatus(requestId: number | null): Readable<TranslationStatus | undefined> {
         if (requestId === null) {
             return readable(undefined);

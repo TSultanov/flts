@@ -483,6 +483,27 @@ pub async fn get_word_info(
 }
 
 #[tauri::command]
+pub async fn get_paragraph_view(
+    state: tauri::State<'_, Arc<Mutex<App>>>,
+    book_id: Uuid,
+    paragraph_id: usize,
+) -> Result<ParagraphView, String> {
+    let mut app = state.lock().await;
+    let target_language = Language::from_639_3(&app.config.target_language_id);
+
+    if let Some(library) = &mut app.library_view
+        && let Some(target_language) = target_language
+    {
+        library
+            .get_paragraph_view(book_id, paragraph_id, &target_language)
+            .await
+            .map_err(|err| err.to_string())
+    } else {
+        Err("Library is not configured".into())
+    }
+}
+
+#[tauri::command]
 pub async fn import_plain_text(
     state: tauri::State<'_, Arc<Mutex<App>>>,
     title: String,
