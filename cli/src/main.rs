@@ -91,7 +91,7 @@ impl Display for CliError {
 }
 
 async fn add_book(
-    library: &Arc<Mutex<Library>>,
+    library: &Arc<Library>,
     title: &str,
     path: &PathBuf,
     lang: &str,
@@ -104,11 +104,9 @@ async fn add_book(
         data.read_to_string(&mut text)?;
 
         let book_id = library
-            .lock()
-            .await
             .create_book_plain(title, &text, &Language::from_str(lang)?)
             .await?;
-        let book = library.lock().await.get_book(&book_id).await?;
+        let book = library.get_book(&book_id).await?;
         let book = book.lock().await;
         println!("Created book {} (id: {})", book.book.title, book.book.id);
     } else {
@@ -118,23 +116,21 @@ async fn add_book(
     Ok(())
 }
 
-async fn add_epub(library: &Arc<Mutex<Library>>, path: &Path, lang: &str) -> anyhow::Result<()> {
+async fn add_epub(library: &Arc<Library>, path: &Path, lang: &str) -> anyhow::Result<()> {
     let epub = EpubBook::load(path)?;
 
     let book_id = library
-        .lock()
-        .await
         .create_book_epub(&epub, &Language::from_str(lang)?)
         .await?;
-    let book = library.lock().await.get_book(&book_id).await?;
+    let book = library.get_book(&book_id).await?;
     let book = book.lock().await;
     println!("Created book {} (id: {})", book.book.title, book.book.id);
 
     Ok(())
 }
 
-async fn list_books(library: &Arc<Mutex<Library>>) -> anyhow::Result<()> {
-    let books = library.lock().await.list_books().await?;
+async fn list_books(library: &Arc<Library>) -> anyhow::Result<()> {
+    let books = library.list_books().await?;
     println!("id                                \ttitle\tchapters\tparagraphs");
     for book in books {
         println!(
@@ -157,7 +153,7 @@ async fn list_books(library: &Arc<Mutex<Library>>) -> anyhow::Result<()> {
 }
 
 async fn translate_paragraph(
-    library: Arc<Mutex<Library>>,
+    library: Arc<Library>,
     translator: &dyn Translator,
     book_id: Uuid,
     tgt_lang: &Language,
@@ -165,7 +161,7 @@ async fn translate_paragraph(
     worker_id: usize,
 ) -> anyhow::Result<()> {
     let (translation, paragraph_text) = {
-        let book = library.lock().await.get_book(&book_id).await?;
+        let book = library.get_book(&book_id).await?;
         let mut book = book.lock().await;
         let translation = book.get_or_create_translation(tgt_lang).await;
         let paragraph = book.book.paragraph_view(paragraph_id);
@@ -190,14 +186,14 @@ async fn translate_paragraph(
     Ok(())
 }
 
-async fn save_book(library: &Arc<Mutex<Library>>, book_id: Uuid) -> anyhow::Result<()> {
-    let book = library.lock().await.get_book(&book_id).await?;
+async fn save_book(library: &Arc<Library>, book_id: Uuid) -> anyhow::Result<()> {
+    let book = library.get_book(&book_id).await?;
     let mut book = book.lock().await;
     book.save().await?;
     Ok(())
 }
 
-async fn run_saver(library: Arc<Mutex<Library>>, book_id: Uuid, rx: flume::Receiver<()>) {
+async fn run_saver(library: Arc<Library>, book_id: Uuid, rx: flume::Receiver<()>) {
     let mut last_save = Instant::now() - Duration::from_secs(1);
     let mut pending = false;
 
@@ -221,7 +217,7 @@ async fn run_saver(library: Arc<Mutex<Library>>, book_id: Uuid, rx: flume::Recei
 }
 
 async fn translate_book(
-    library: Arc<Mutex<Library>>,
+    library: Arc<Library>,
     cache: Arc<TranslationsCache>,
     api_key: &str,
     book_id: Uuid,
@@ -233,7 +229,7 @@ async fn translate_book(
     let queue = Arc::new(Mutex::new(VecDeque::new()));
 
     let source_lang = {
-        let book = library.lock().await.get_book(&book_id).await?;
+        let book = library.get_book(&book_id).await?;
         let mut book = book.lock().await;
         let source_lang = Language::from_639_3(&book.book.language).unwrap();
 
@@ -389,7 +385,7 @@ async fn do_main() -> anyhow::Result<()> {
         create_dir(library_path.clone())?;
     }
 
-    let library = Arc::new(Mutex::new(Library::open(library_path).await?));
+    let library = Arc::new(Library::open(library_path).await?);
 
     match &cli.command {
         Some(cmd) => match cmd {

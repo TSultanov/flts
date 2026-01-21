@@ -79,7 +79,7 @@ struct ParagraphUpdatedPayload {
 
 impl TranslationQueue {
     pub fn init(
-        library: Arc<Mutex<Library>>,
+        library: Arc<Library>,
         cache: Arc<TranslationsCache>,
         stats_cache: Arc<TranslationSizeCache>,
         config: &Config,
@@ -232,7 +232,7 @@ impl TranslationQueue {
 }
 
 async fn handle_request(
-    library: Arc<Mutex<Library>>,
+    library: Arc<Library>,
     cache: Arc<TranslationsCache>,
     stats_cache: Arc<TranslationSizeCache>,
     target_language: Language,
@@ -243,7 +243,7 @@ async fn handle_request(
     request: &TranslationRequest,
 ) -> anyhow::Result<()> {
     let (translation, paragraph_text, source_language) = {
-        let book = library.lock().await.get_book(&request.book_id).await?;
+        let book = library.get_book(&request.book_id).await?;
         let mut book = book.lock().await;
         let translation = book.get_or_create_translation(&target_language).await;
         let paragraph = book.book.paragraph_view(request.paragraph_id);
@@ -364,7 +364,7 @@ async fn handle_request(
 }
 
 async fn run_saver(
-    library: Arc<Mutex<Library>>,
+    library: Arc<Library>,
     app: tauri::AppHandle,
     status_tx: flume::Sender<TranslationStatus>,
     rx: flume::Receiver<SaveNotify>,
@@ -431,17 +431,14 @@ async fn run_status_updater(
     }
 }
 
-async fn save_book(library: Arc<Mutex<Library>>, book_id: Uuid) -> anyhow::Result<()> {
-    let book_handle = {
-        let mut library = library.lock().await;
-        library.get_book(&book_id).await?
-    };
+async fn save_book(library: Arc<Library>, book_id: Uuid) -> anyhow::Result<()> {
+    let book_handle = library.get_book(&book_id).await?;
     let mut book = book_handle.lock().await;
     book.save().await
 }
 
 async fn save_and_emit(
-    library: Arc<Mutex<Library>>,
+    library: Arc<Library>,
     app: tauri::AppHandle,
     msg: SaveNotify,
 ) -> anyhow::Result<()> {
@@ -453,7 +450,7 @@ async fn save_and_emit(
 
 #[cfg(not(mobile))]
 async fn emit_updates(
-    library: Arc<Mutex<Library>>,
+    library: Arc<Library>,
     app: tauri::AppHandle,
     msg: SaveNotify,
 ) -> anyhow::Result<()> {

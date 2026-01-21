@@ -58,7 +58,7 @@ pub struct App {
     app: tauri::AppHandle,
     config_path: PathBuf,
     config: Config,
-    library: Option<Arc<Mutex<Library>>>,
+    library: Option<Arc<Library>>,
     library_view: Option<LibraryView>,
     translation_queue: Option<TranslationQueue>,
     watcher: Option<Arc<Mutex<LibraryWatcher>>>,
@@ -147,9 +147,7 @@ impl App {
         info!("library_path = {library_path:?}");
 
         if let Some(library_path) = library_path {
-            let library = Arc::new(Mutex::new(
-                Library::open(PathBuf::from(library_path)).await?,
-            ));
+            let library = Arc::new(Library::open(PathBuf::from(library_path)).await?);
             self.library = Some(library.clone());
             if let Some(watcher) = &self.watcher {
                 watcher

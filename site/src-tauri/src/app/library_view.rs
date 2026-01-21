@@ -95,11 +95,11 @@ pub struct GrammarView {
 
 pub struct LibraryView {
     app: tauri::AppHandle,
-    library: Arc<Mutex<Library>>,
+    library: Arc<Library>,
 }
 
 impl LibraryView {
-    pub fn create(app: tauri::AppHandle, library: Arc<Mutex<Library>>) -> Self {
+    pub fn create(app: tauri::AppHandle, library: Arc<Library>) -> Self {
         Self { app, library }
     }
 
@@ -109,7 +109,7 @@ impl LibraryView {
         paragraph_id: usize,
         target_language: &Language,
     ) -> anyhow::Result<ParagraphView> {
-        let book = self.library.lock().await.get_book(&book_id).await?;
+        let book = self.library.get_book(&book_id).await?;
         let mut book = book.lock().await;
 
         let book_translation = book.get_or_create_translation(target_language).await;
@@ -139,7 +139,7 @@ impl LibraryView {
         &self,
         target_language: Option<&Language>,
     ) -> anyhow::Result<Vec<LibraryBookMetadataView>> {
-        let books = self.library.lock().await.list_books().await?;
+        let books = self.library.list_books().await?;
         Ok(books
             .into_iter()
             .map(|b| {
@@ -166,7 +166,7 @@ impl LibraryView {
     }
 
     pub async fn list_book_chapters(&mut self, book_id: Uuid) -> anyhow::Result<Vec<ChapterView>> {
-        let book = self.library.lock().await.get_book(&book_id).await?;
+        let book = self.library.get_book(&book_id).await?;
         let book = book.lock().await;
         let book = &book.book;
         let chapters = book
@@ -188,7 +188,7 @@ impl LibraryView {
         chapter_id: usize,
         target_language: &Language,
     ) -> anyhow::Result<Vec<ParagraphView>> {
-        let book = self.library.lock().await.get_book(&book_id).await?;
+        let book = self.library.get_book(&book_id).await?;
         let mut book = book.lock().await;
 
         let book_translation = book.get_or_create_translation(target_language).await;
@@ -227,7 +227,7 @@ impl LibraryView {
         target_language: &Language,
     ) -> anyhow::Result<Option<WordView>> {
         let (book_translation, source_language_code) = {
-            let book = self.library.lock().await.get_book(&book_id).await?;
+            let book = self.library.get_book(&book_id).await?;
             let mut book = book.lock().await;
             (
                 book.get_or_create_translation(target_language).await,
@@ -276,8 +276,6 @@ impl LibraryView {
     ) -> anyhow::Result<Uuid> {
         let id = self
             .library
-            .lock()
-            .await
             .create_book_plain(title, text, source_language)
             .await?;
 
@@ -294,12 +292,7 @@ impl LibraryView {
         source_language: &Language,
         target_language: Option<&Language>,
     ) -> anyhow::Result<Uuid> {
-        let id = self
-            .library
-            .lock()
-            .await
-            .create_book_epub(book, source_language)
-            .await?;
+        let id = self.library.create_book_epub(book, source_language).await?;
 
         // Emit updated library view after successful import
         let books = self.list_books(target_language).await?;
@@ -312,7 +305,7 @@ impl LibraryView {
         &self,
         book_id: Uuid,
     ) -> anyhow::Result<Option<BookReadingStateView>> {
-        let book = self.library.lock().await.get_book(&book_id).await?;
+        let book = self.library.get_book(&book_id).await?;
         let mut book = book.lock().await;
         Ok(book.reading_state().await?.map(BookReadingStateView::from))
     }
@@ -323,7 +316,7 @@ impl LibraryView {
         chapter_id: usize,
         paragraph_id: usize,
     ) -> anyhow::Result<()> {
-        let book = self.library.lock().await.get_book(&book_id).await?;
+        let book = self.library.get_book(&book_id).await?;
         let mut book = book.lock().await;
         book.update_reading_state(BookReadingState {
             chapter_id,
@@ -338,7 +331,7 @@ impl LibraryView {
         new_path: Vec<String>,
         target_language: Option<&Language>,
     ) -> anyhow::Result<()> {
-        let book = self.library.lock().await.get_book(&book_id).await?;
+        let book = self.library.get_book(&book_id).await?;
         {
             let mut book = book.lock().await;
             book.update_folder_path(new_path).await?;
@@ -354,7 +347,7 @@ impl LibraryView {
         book_id: Uuid,
         target_language: Option<&Language>,
     ) -> anyhow::Result<()> {
-        self.library.lock().await.delete_book(&book_id).await?;
+        self.library.delete_book(&book_id).await?;
         let books = self.list_books(target_language).await?;
         self.app.emit("library_updated", books)?;
         Ok(())
@@ -367,7 +360,7 @@ impl LibraryView {
         flat_index: usize,
         target_language: &Language,
     ) -> anyhow::Result<bool> {
-        let book = self.library.lock().await.get_book(&book_id).await?;
+        let book = self.library.get_book(&book_id).await?;
         let mut book = book.lock().await;
         let book_translation = book.get_or_create_translation(target_language).await;
 
@@ -388,11 +381,7 @@ impl LibraryView {
         &mut self,
         event: &LibraryFileChange,
     ) -> anyhow::Result<bool> {
-        self.library
-            .lock()
-            .await
-            .handle_file_change_event(event)
-            .await
+        self.library.handle_file_change_event(event).await
     }
 }
 

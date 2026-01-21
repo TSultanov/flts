@@ -658,7 +658,7 @@ fn try_move_to_trash(_path: &std::path::Path) -> anyhow::Result<bool> {
 
 impl Library {
     pub async fn create_book(
-        &mut self,
+        &self,
         title: &str,
         language: &Language,
     ) -> anyhow::Result<Arc<Mutex<LibraryBook>>> {
@@ -679,13 +679,13 @@ impl Library {
             user_state: BookUserState::default(),
         }));
 
-        self.books_cache.insert(guid, book.clone());
+        self.books_cache.write().await.insert(guid, book.clone());
 
         Ok(book)
     }
 
-    pub async fn delete_book(&mut self, uuid: &Uuid) -> anyhow::Result<()> {
-        self.books_cache.remove(uuid);
+    pub async fn delete_book(&self, uuid: &Uuid) -> anyhow::Result<()> {
+        self.books_cache.write().await.remove(uuid);
         let book_path = self.library_root.join(uuid.to_string());
 
         if !tokio::fs::try_exists(&book_path).await? {

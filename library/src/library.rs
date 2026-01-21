@@ -9,7 +9,10 @@ use std::{
 use isolang::Language;
 use itertools::Itertools;
 use log::{info, trace};
-use tokio::{io::AsyncReadExt, sync::Mutex};
+use tokio::{
+    io::AsyncReadExt,
+    sync::{Mutex, RwLock},
+};
 use uuid::Uuid;
 
 use crate::{
@@ -195,7 +198,7 @@ impl LibraryBookMetadata {
 
 pub struct Library {
     library_root: PathBuf,
-    books_cache: HashMap<Uuid, Arc<Mutex<LibraryBook>>>, // TODO: eviction
+    books_cache: RwLock<HashMap<Uuid, Arc<Mutex<LibraryBook>>>>, // TODO: eviction
     dictionaries_cache: Arc<DictionaryCache>,
 }
 
@@ -209,7 +212,7 @@ impl Library {
 
         Ok(Library {
             library_root,
-            books_cache: HashMap::new(),
+            books_cache: RwLock::new(HashMap::new()),
             dictionaries_cache,
         })
     }
@@ -237,9 +240,9 @@ impl Library {
         Ok(books)
     }
 
-    pub async fn get_book(&mut self, uuid: &Uuid) -> anyhow::Result<Arc<Mutex<LibraryBook>>> {
-        if let Some(book) = self.books_cache.get(uuid) {
-            return Ok(book.clone());
+    pub async fn get_book(&self, uuid: &Uuid) -> anyhow::Result<Arc<Mutex<LibraryBook>>> {
+        if let Some(book) = self.books_cache.read().await.get(uuid).cloned() {
+            return Ok(book);
         }
 
         let path = self.library_root.join(uuid.to_string());
@@ -248,12 +251,16 @@ impl Library {
             LibraryBook::load_from_metadata(self.dictionaries_cache.clone(), metadata).await?,
         ));
 
-        self.books_cache.insert(*uuid, book.clone());
+        let mut cache = self.books_cache.write().await;
+        if let Some(existing) = cache.get(uuid) {
+            return Ok(existing.clone());
+        }
+        cache.insert(*uuid, book.clone());
         Ok(book)
     }
 
     pub async fn create_book_plain(
-        &mut self,
+        &self,
         title: &str,
         text: &str,
         language: &Language,
@@ -273,7 +280,7 @@ impl Library {
     }
 
     pub async fn create_book_epub(
-        &mut self,
+        &self,
         epub: &EpubBook,
         language: &Language,
     ) -> anyhow::Result<Uuid> {
@@ -293,13 +300,14 @@ impl Library {
     }
 
     pub async fn handle_file_change_event(
-        &mut self,
+        &self,
         event: &LibraryFileChange,
     ) -> anyhow::Result<bool> {
         trace!("Starting file change event handling: {:?}...", event);
         let result = Ok(match event {
             LibraryFileChange::BookChanged { modified, uuid } => {
-                if let Some(book) = self.books_cache.get(uuid) {
+                let book = { self.books_cache.read().await.get(uuid).cloned() };
+                if let Some(book) = book {
                     book.lock().await.reload_book(*modified).await?
                 } else {
                     false
@@ -311,7 +319,8 @@ impl Library {
                 to,
                 uuid,
             } => {
-                if let Some(book) = self.books_cache.get(uuid) {
+                let book = { self.books_cache.read().await.get(uuid).cloned() };
+                if let Some(book) = book {
                     book.lock()
                         .await
                         .reload_translations(*modified, *from, *to)
