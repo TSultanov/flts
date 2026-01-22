@@ -40,8 +40,6 @@
     let progressChars = $state(0);
     let expectedChars = $state(100);
     let wrapper: HTMLDivElement | null = $state(null);
-    let selectedWordElement: HTMLElement | null = $state(null);
-    let selectionEffectSeq = 0;
     let shouldRestoreVisibleWords = $state(false);
     let visibleWordsRestored = $state(false);
 
@@ -67,7 +65,6 @@
 
     const isTranslating = $derived(translationRequestId !== null);
 
-    let translationRequestSyncSeq = 0;
     let paragraphRefreshSeq = 0;
 
     async function refreshParagraphView() {
@@ -83,25 +80,23 @@
     }
 
     $effect(() => {
-        const currentId = translationRequestId;
-        const seq = ++translationRequestSyncSeq;
-
         if (translationHtml) {
-            if (currentId !== null) {
+            if (translationRequestId !== null) {
                 translationRequestId = null;
             }
             progressChars = 0;
             return;
         }
 
-        if (currentId !== null) {
+        if (translationRequestId !== null) {
             return;
         }
 
+        let cancelled = false;
         library
             .getParagraphTranslationRequestId(bookId, paragraph.id)
             .then((id) => {
-                if (seq !== translationRequestSyncSeq) {
+                if (cancelled) {
                     return;
                 }
                 translationRequestId = id;
@@ -110,6 +105,10 @@
                 }
             })
             .catch(() => {});
+
+        return () => {
+            cancelled = true;
+        };
     });
 
     $effect(() => {
@@ -155,8 +154,6 @@
     });
 
     $effect(() => {
-        wrapper;
-
         if (!wrapper) {
             shouldRestoreVisibleWords = false;
             return;
@@ -181,18 +178,11 @@
     });
 
     $effect(() => {
-        translationHtml;
-        visibleWords;
-        wrapper;
-        shouldRestoreVisibleWords;
-        visibleWordsRestored;
-
         if (
             visibleWordsRestored ||
             !shouldRestoreVisibleWords ||
             !wrapper ||
             !translationHtml ||
-            !visibleWords ||
             visibleWords.length === 0
         ) {
             return;
@@ -209,33 +199,22 @@
     });
 
     $effect(() => {
-        const seq = ++selectionEffectSeq;
-
-        if (selectedWordElement) {
-            selectedWordElement.classList.remove("selected");
-        }
-
-        wrapper;
-        translationHtml;
-        sentenceWordIdToDisplay;
-
         if (!wrapper || !translationHtml || !sentenceWordIdToDisplay) {
-            selectedWordElement = null;
             return;
         }
 
         const [paragraphId, sentenceId, wordId] = sentenceWordIdToDisplay;
         if (paragraphId !== paragraph.id) {
-            selectedWordElement = null;
             return;
         }
 
+        let cancelled = false;
+        let selected: HTMLElement | null = null;
         void tick().then(() => {
-            if (seq !== selectionEffectSeq) {
+            if (cancelled) {
                 return;
             }
             if (!wrapper) {
-                selectedWordElement = null;
                 return;
             }
 
@@ -243,14 +222,18 @@
                 `.word-span[data-sentence="${sentenceId}"][data-word="${wordId}"]`,
             );
             if (!element) {
-                selectedWordElement = null;
                 return;
             }
 
             element.classList.add("selected");
             showTranslation(element);
-            selectedWordElement = element;
+            selected = element;
         });
+
+        return () => {
+            cancelled = true;
+            selected?.classList.remove("selected");
+        };
     });
 
     async function translateParagraph(event: MouseEvent) {
@@ -274,7 +257,6 @@
 
         if (
             !wrapper ||
-            !visibleWords ||
             visibleWords.length === 0
         ) {
             return;

@@ -11,6 +11,12 @@ type WordMetrics = {
     letterSpacingPx: number;
 };
 
+type TranslationSizingContext = {
+    metrics: OverlayMetrics | null;
+    wordMetrics: WordMetrics | null;
+    useDomWidth: boolean;
+};
+
 let metricsCache: OverlayMetrics | null = null;
 let metricsCacheKey: string | null = null;
 let wordMetricsCache: WordMetrics | null = null;
@@ -28,55 +34,60 @@ const context = (() => {
     return canvas.getContext("2d");
 })();
 
+function withTranslationFontSizeCleared<T>(
+    span: HTMLElement,
+    fn: () => T,
+): T {
+    const prev = span.style.getPropertyValue(TRANSLATION_FONT_SIZE_VAR);
+    if (prev) {
+        span.style.removeProperty(TRANSLATION_FONT_SIZE_VAR);
+    }
+    try {
+        return fn();
+    } finally {
+        if (prev) {
+            span.style.setProperty(TRANSLATION_FONT_SIZE_VAR, prev);
+        }
+    }
+}
+
 function getMetrics(sampleSpan: HTMLElement): OverlayMetrics | null {
-    const prevFontSize = sampleSpan.style.getPropertyValue(
-        TRANSLATION_FONT_SIZE_VAR,
-    );
-    if (prevFontSize) {
-        sampleSpan.style.removeProperty(TRANSLATION_FONT_SIZE_VAR);
-    }
-    const styles = getComputedStyle(sampleSpan, "::before");
-    const key = `${styles.font}|${styles.paddingLeft}|${styles.paddingRight}|${styles.borderLeftWidth}|${styles.borderRightWidth}|${styles.letterSpacing}|${styles.fontSize}`;
-    if (metricsCache && metricsCacheKey === key) {
-        if (prevFontSize) {
-            sampleSpan.style.setProperty(TRANSLATION_FONT_SIZE_VAR, prevFontSize);
+    return withTranslationFontSizeCleared(sampleSpan, () => {
+        const styles = getComputedStyle(sampleSpan, "::before");
+        const key = `${styles.font}|${styles.paddingLeft}|${styles.paddingRight}|${styles.borderLeftWidth}|${styles.borderRightWidth}|${styles.letterSpacing}|${styles.fontSize}`;
+        if (metricsCache && metricsCacheKey === key) {
+            return metricsCache;
         }
+
+        const paddingLeft = parseFloat(styles.paddingLeft) || 0;
+        const paddingRight = parseFloat(styles.paddingRight) || 0;
+        const borderLeft = parseFloat(styles.borderLeftWidth) || 0;
+        const borderRight = parseFloat(styles.borderRightWidth) || 0;
+
+        const baseFontSizePx = parseFloat(styles.fontSize);
+        if (!baseFontSizePx || Number.isNaN(baseFontSizePx)) {
+            return null;
+        }
+
+        const font =
+            styles.font ||
+            `${styles.fontStyle} ${styles.fontVariant} ${styles.fontWeight} ${styles.fontSize}/${styles.lineHeight} ${styles.fontFamily}`;
+
+        const letterSpacingPx =
+            styles.letterSpacing === "normal"
+                ? 0
+                : parseFloat(styles.letterSpacing) || 0;
+
+        metricsCache = {
+            font,
+            baseFontSizePx,
+            horizontalChromePx:
+                paddingLeft + paddingRight + borderLeft + borderRight,
+            letterSpacingPx,
+        };
+        metricsCacheKey = key;
         return metricsCache;
-    }
-
-    const paddingLeft = parseFloat(styles.paddingLeft) || 0;
-    const paddingRight = parseFloat(styles.paddingRight) || 0;
-    const borderLeft = parseFloat(styles.borderLeftWidth) || 0;
-    const borderRight = parseFloat(styles.borderRightWidth) || 0;
-
-    const baseFontSizePx = parseFloat(styles.fontSize);
-    if (!baseFontSizePx || Number.isNaN(baseFontSizePx)) {
-        if (prevFontSize) {
-            sampleSpan.style.setProperty(TRANSLATION_FONT_SIZE_VAR, prevFontSize);
-        }
-        return null;
-    }
-
-    const font =
-        styles.font ||
-        `${styles.fontStyle} ${styles.fontVariant} ${styles.fontWeight} ${styles.fontSize}/${styles.lineHeight} ${styles.fontFamily}`;
-
-    const letterSpacingPx =
-        styles.letterSpacing === "normal"
-            ? 0
-            : parseFloat(styles.letterSpacing) || 0;
-
-    metricsCache = {
-        font,
-        baseFontSizePx,
-        horizontalChromePx: paddingLeft + paddingRight + borderLeft + borderRight,
-        letterSpacingPx,
-    };
-    metricsCacheKey = key;
-    if (prevFontSize) {
-        sampleSpan.style.setProperty(TRANSLATION_FONT_SIZE_VAR, prevFontSize);
-    }
-    return metricsCache;
+    });
 }
 
 function getWordMetrics(sampleSpan: HTMLElement): WordMetrics | null {
@@ -149,6 +160,66 @@ function nextFrame(signal?: AbortSignal): Promise<void> {
     });
 }
 
+function clearTranslationFontSize(span: HTMLElement) {
+    if (span.style.getPropertyValue(TRANSLATION_FONT_SIZE_VAR)) {
+        span.style.removeProperty(TRANSLATION_FONT_SIZE_VAR);
+    }
+}
+
+function maybeSetTranslationFontSize(span: HTMLElement, value: string | null) {
+    if (value === null) {
+        clearTranslationFontSize(span);
+        return;
+    }
+
+    if (span.style.getPropertyValue(TRANSLATION_FONT_SIZE_VAR) !== value) {
+        span.style.setProperty(TRANSLATION_FONT_SIZE_VAR, value);
+    }
+}
+
+function sizeTranslation(
+    span: HTMLElement,
+    translation: string,
+    ctx: TranslationSizingContext,
+): string | null {
+    const metrics = ctx.metrics;
+    const wordMetrics = ctx.wordMetrics;
+    if (!metrics || !wordMetrics) {
+        return null;
+    }
+
+    const parentWidth = ctx.useDomWidth
+        ? span.getBoundingClientRect().width
+        : measureTextWidthPx(span.textContent ?? "", wordMetrics);
+    const availableWidth = parentWidth - metrics.horizontalChromePx - 0.5;
+    if (availableWidth <= 0) {
+        return null;
+    }
+
+    const textWidth = measureTextWidthPx(translation, metrics);
+    if (textWidth <= availableWidth) {
+        return null;
+    }
+
+    const scaledSizePx = metrics.baseFontSizePx * (availableWidth / textWidth);
+    return `${scaledSizePx}px`;
+}
+
+function showAndSize(span: HTMLElement, ctx: TranslationSizingContext) {
+    if (!span.classList.contains("show-translation")) {
+        span.classList.add("show-translation");
+    }
+
+    const translation = span.dataset["translation"];
+    if (!translation) {
+        clearTranslationFontSize(span);
+        return;
+    }
+
+    const sized = sizeTranslation(span, translation, ctx);
+    maybeSetTranslationFontSize(span, sized);
+}
+
 export function showTranslation(span: HTMLElement) {
     showTranslations([span]);
 }
@@ -160,71 +231,14 @@ export function showTranslations(spans: Iterable<HTMLElement>) {
     }
 
     const sample = items.find((span) => !!span.dataset["translation"]) ?? null;
-    const metrics = sample ? getMetrics(sample) : null;
-    const wordMetrics = sample ? getWordMetrics(sample) : null;
-
-    const plans: Array<{
-        span: HTMLElement;
-        desiredFontSizePx: number | null;
-    }> = [];
-
-    if (metrics && wordMetrics) {
-        const useDomWidth = items.length <= 10;
-        for (const span of items) {
-            const translation = span.dataset["translation"];
-            if (!translation) {
-                continue;
-            }
-
-            const parentWidth = useDomWidth
-                ? span.getBoundingClientRect().width
-                : measureTextWidthPx(span.textContent ?? "", wordMetrics);
-            const availableWidth =
-                parentWidth - metrics.horizontalChromePx - 0.5;
-            if (availableWidth <= 0) {
-                plans.push({ span, desiredFontSizePx: null });
-                continue;
-            }
-
-            const textWidth = measureTextWidthPx(translation, metrics);
-            if (textWidth <= availableWidth) {
-                plans.push({ span, desiredFontSizePx: null });
-                continue;
-            }
-
-            const scaledSizePx =
-                metrics.baseFontSizePx * (availableWidth / textWidth);
-            plans.push({ span, desiredFontSizePx: scaledSizePx });
-        }
-    }
+    const ctx: TranslationSizingContext = {
+        metrics: sample ? getMetrics(sample) : null,
+        wordMetrics: sample ? getWordMetrics(sample) : null,
+        useDomWidth: items.length <= 10,
+    };
 
     for (const span of items) {
-        if (!span.classList.contains("show-translation")) {
-            span.classList.add("show-translation");
-        }
-    }
-
-    if (!metrics) {
-        for (const span of items) {
-            if (span.style.getPropertyValue(TRANSLATION_FONT_SIZE_VAR)) {
-                span.style.removeProperty(TRANSLATION_FONT_SIZE_VAR);
-            }
-        }
-        return;
-    }
-
-    for (const { span, desiredFontSizePx } of plans) {
-        if (desiredFontSizePx == null) {
-            if (span.style.getPropertyValue(TRANSLATION_FONT_SIZE_VAR)) {
-                span.style.removeProperty(TRANSLATION_FONT_SIZE_VAR);
-            }
-            continue;
-        }
-
-        const value = `${desiredFontSizePx}px`;
-        if (span.style.getPropertyValue(TRANSLATION_FONT_SIZE_VAR) !== value) {
-            span.style.setProperty(TRANSLATION_FONT_SIZE_VAR, value);
-        }
+        showAndSize(span, ctx);
     }
 }
 
@@ -241,9 +255,11 @@ export async function showTranslationsBatched(
     const signal = options.signal;
 
     const sample = items.find((span) => !!span.dataset["translation"]) ?? null;
-    const metrics = sample ? getMetrics(sample) : null;
-    const wordMetrics = sample ? getWordMetrics(sample) : null;
-    const useDomWidth = items.length <= 10;
+    const ctx: TranslationSizingContext = {
+        metrics: sample ? getMetrics(sample) : null,
+        wordMetrics: sample ? getWordMetrics(sample) : null,
+        useDomWidth: items.length <= 10,
+    };
 
     for (let start = 0; start < items.length; start += batchSize) {
         if (signal?.aborted) {
@@ -254,43 +270,7 @@ export async function showTranslationsBatched(
         for (let i = start; i < end; i++) {
             const span = items[i];
 
-            if (!span.classList.contains("show-translation")) {
-                span.classList.add("show-translation");
-            }
-
-            const translation = span.dataset["translation"];
-            if (!translation || !metrics || !wordMetrics) {
-                if (span.style.getPropertyValue(TRANSLATION_FONT_SIZE_VAR)) {
-                    span.style.removeProperty(TRANSLATION_FONT_SIZE_VAR);
-                }
-                continue;
-            }
-
-            const parentWidth = useDomWidth
-                ? span.getBoundingClientRect().width
-                : measureTextWidthPx(span.textContent ?? "", wordMetrics);
-            const availableWidth = parentWidth - metrics.horizontalChromePx - 0.5;
-            if (availableWidth <= 0) {
-                if (span.style.getPropertyValue(TRANSLATION_FONT_SIZE_VAR)) {
-                    span.style.removeProperty(TRANSLATION_FONT_SIZE_VAR);
-                }
-                continue;
-            }
-
-            const textWidth = measureTextWidthPx(translation, metrics);
-            if (textWidth <= availableWidth) {
-                if (span.style.getPropertyValue(TRANSLATION_FONT_SIZE_VAR)) {
-                    span.style.removeProperty(TRANSLATION_FONT_SIZE_VAR);
-                }
-                continue;
-            }
-
-            const scaledSizePx =
-                metrics.baseFontSizePx * (availableWidth / textWidth);
-            const value = `${scaledSizePx}px`;
-            if (span.style.getPropertyValue(TRANSLATION_FONT_SIZE_VAR) !== value) {
-                span.style.setProperty(TRANSLATION_FONT_SIZE_VAR, value);
-            }
+            showAndSize(span, ctx);
         }
 
         await nextFrame(signal);

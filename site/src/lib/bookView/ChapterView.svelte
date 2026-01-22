@@ -3,7 +3,6 @@
     import type { UUID } from "../data/v2/db";
     import ParagraphView from "./ParagraphView.svelte";
     import type { Library } from "../data/library";
-    import type { ParagraphView as ParagraphDataView } from "../data/sql/book";
 
     let {
         sentenceWordIdToDisplay = $bindable(),
@@ -22,24 +21,23 @@
         library.getBookChapterParagraphs(bookId, chapterId),
     );
 
+    function parseDatasetInt(el: HTMLElement, key: string): number | null {
+        const value = el.dataset[key];
+        if (!value) {
+            return null;
+        }
+        const parsed = parseInt(value, 10);
+        return Number.isNaN(parsed) ? null : parsed;
+    }
+
     function chapterClick(e: MouseEvent) {
-        const target = document.elementFromPoint(
-            e.clientX,
-            e.clientY,
-        ) as HTMLElement;
-        if (target && target.classList.contains("word-span")) {
-            const paragraph = target.dataset["paragraph"]
-                ? parseInt(target.dataset["paragraph"])
-                : null;
-            const sentence = target.dataset["sentence"]
-                ? parseInt(target.dataset["sentence"])
-                : null;
-            const word = target.dataset["word"]
-                ? parseInt(target.dataset["word"])
-                : null;
-            const flatIndex = target.dataset["flatIndex"]
-                ? parseInt(target.dataset["flatIndex"])
-                : null;
+        const target = e.target instanceof Element ? e.target : null;
+        const wordSpan = target?.closest<HTMLElement>(".word-span") ?? null;
+        if (wordSpan) {
+            const paragraph = parseDatasetInt(wordSpan, "paragraph");
+            const sentence = parseDatasetInt(wordSpan, "sentence");
+            const word = parseDatasetInt(wordSpan, "word");
+            const flatIndex = parseDatasetInt(wordSpan, "flatIndex");
 
             sentenceWordIdToDisplay =
                 paragraph != null && sentence != null && word != null
@@ -68,7 +66,6 @@
     let resizeTimeout: ReturnType<typeof setTimeout> | null = null;
     let scrollRaf: number | null = null;
     let initialParagraphSyncedFor: number | null | undefined = undefined;
-    let initialParagraphSyncSeq = 0;
 
     function handleScroll() {
         if (isResizing) {
@@ -103,11 +100,9 @@
 
     function updateVisibleParagraph() {
         const nextParagraph = findVisibleParagraph();
-        if (nextParagraph == null || nextParagraph === visibleParagraphId) {
-            return;
+        if (nextParagraph != null) {
+            setVisibleParagraph(nextParagraph);
         }
-        visibleParagraphId = nextParagraph;
-        scheduleSave(nextParagraph);
     }
 
     function findVisibleParagraph(): number | null {
@@ -142,43 +137,32 @@
         return null;
     }
 
-    async function syncInitialParagraph(
-        seq: number,
-        paragraphs: ParagraphDataView[],
-        paragraphIdToScrollTo: number,
-    ) {
-        if (!paragraphsContainer) {
+    function setVisibleParagraph(paragraphId: number) {
+        if (visibleParagraphId === paragraphId) {
             return;
         }
+        visibleParagraphId = paragraphId;
+        scheduleSave(paragraphId);
+    }
 
-        let target = findParagraphWrapper(paragraphIdToScrollTo);
+    function scrollParagraphIntoView(
+        paragraphId: number,
+        options: ScrollIntoViewOptions = {
+            behavior: "auto",
+            block: "nearest",
+            inline: "center",
+        },
+    ): boolean {
+        const target = findParagraphWrapper(paragraphId);
         if (!target) {
-            await tick();
-            if (seq !== initialParagraphSyncSeq) {
-                return;
-            }
-            target = findParagraphWrapper(paragraphIdToScrollTo);
+            return false;
         }
-
-        if (target) {
-            target.scrollIntoView({
-                behavior: "auto",
-                block: "nearest",
-                inline: "center",
-            });
-            visibleParagraphId = paragraphIdToScrollTo;
-            scheduleSave(paragraphIdToScrollTo);
-        } else if (paragraphs.length > 0) {
-            const fallbackId = paragraphs[0].id;
-            visibleParagraphId = fallbackId;
-            scheduleSave(fallbackId);
-        }
+        target.scrollIntoView(options);
+        return true;
     }
 
     $effect(() => {
         const ps = $paragraphs;
-        paragraphsContainer;
-        initialParagraphId;
 
         if (!ps || ps.length === 0) {
             return;
@@ -189,8 +173,7 @@
         }
 
         if (initialParagraphId == null) {
-            visibleParagraphId = ps[0].id;
-            scheduleSave(ps[0].id);
+            setVisibleParagraph(ps[0].id);
             initialParagraphSyncedFor = null;
             return;
         }
@@ -199,12 +182,32 @@
             return;
         }
 
-        const seq = ++initialParagraphSyncSeq;
-        void syncInitialParagraph(seq, ps, initialParagraphId).then(() => {
-            if (seq === initialParagraphSyncSeq) {
-                initialParagraphSyncedFor = initialParagraphId;
+        const paragraphIdToScrollTo = initialParagraphId;
+        initialParagraphSyncedFor = paragraphIdToScrollTo;
+        const controller = new AbortController();
+
+        void (async () => {
+            let scrolled = scrollParagraphIntoView(paragraphIdToScrollTo);
+            if (!scrolled) {
+                await tick();
+                if (controller.signal.aborted) {
+                    return;
+                }
+                scrolled = scrollParagraphIntoView(paragraphIdToScrollTo);
             }
-        });
+
+            if (controller.signal.aborted) {
+                return;
+            }
+
+            if (scrolled) {
+                setVisibleParagraph(paragraphIdToScrollTo);
+            } else if (ps.length > 0) {
+                setVisibleParagraph(ps[0].id);
+            }
+        })();
+
+        return () => controller.abort();
     });
 
     onMount(() => {
@@ -215,14 +218,11 @@
             }
 
             if (visibleParagraphId != null && paragraphsContainer) {
-                const target = findParagraphWrapper(visibleParagraphId);
-                if (target) {
-                    target.scrollIntoView({
-                        behavior: "auto",
-                        block: "center",
-                        inline: "center",
-                    });
-                }
+                scrollParagraphIntoView(visibleParagraphId, {
+                    behavior: "auto",
+                    block: "center",
+                    inline: "center",
+                });
             }
 
             resizeTimeout = setTimeout(() => {
