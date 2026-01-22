@@ -231,6 +231,9 @@ export function showTranslations(spans: Iterable<HTMLElement>) {
     }
 
     const sample = items.find((span) => !!span.dataset["translation"]) ?? null;
+    if (sample && !sample.classList.contains("show-translation")) {
+        sample.classList.add("show-translation");
+    }
     const ctx: TranslationSizingContext = {
         metrics: sample ? getMetrics(sample) : null,
         wordMetrics: sample ? getWordMetrics(sample) : null,
@@ -255,6 +258,9 @@ export async function showTranslationsBatched(
     const signal = options.signal;
 
     const sample = items.find((span) => !!span.dataset["translation"]) ?? null;
+    if (sample && !sample.classList.contains("show-translation")) {
+        sample.classList.add("show-translation");
+    }
     const ctx: TranslationSizingContext = {
         metrics: sample ? getMetrics(sample) : null,
         wordMetrics: sample ? getWordMetrics(sample) : null,
