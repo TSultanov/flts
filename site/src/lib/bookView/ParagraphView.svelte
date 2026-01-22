@@ -2,17 +2,24 @@
     import Fa from "svelte-fa";
     import { faLanguage } from "@fortawesome/free-solid-svg-icons";
     import type { ParagraphView } from "../data/sql/book";
-    import { getContext, onMount, tick } from "svelte";
+    import { getContext, tick } from "svelte";
     import type { Library, TranslationStatus } from "../data/library";
     import type { UUID } from "../data/v2/db";
     import CircularProgress from "../widgets/CircularProgress.svelte";
+    import {
+        showTranslation,
+        showTranslations,
+        showTranslationsBatched,
+    } from "./translationOverlay";
 
     let {
         bookId,
         paragraph,
+        sentenceWordIdToDisplay = null,
     }: {
         bookId: UUID;
         paragraph: ParagraphView;
+        sentenceWordIdToDisplay?: [number, number, number] | null;
     } = $props();
 
     let paragraphOverride = $state<ParagraphView | null>(null);
@@ -32,6 +39,11 @@
 
     let progressChars = $state(0);
     let expectedChars = $state(100);
+    let wrapper: HTMLDivElement | null = $state(null);
+    let selectedWordElement: HTMLElement | null = $state(null);
+    let selectionEffectSeq = 0;
+    let shouldRestoreVisibleWords = $state(false);
+    let visibleWordsRestored = $state(false);
 
     const translationStatus = $derived(
         library.getTranslationStatus(translationRequestId),
@@ -136,8 +148,109 @@
     $effect(() => {
         // Re-run whenever translation HTML changes to keep overlays sized correctly.
         translationHtml;
-        void adjustVisiblePopups();
-        void restoreVisibleWords();
+        visibleWords;
+        wrapper;
+
+        visibleWordsRestored = false;
+    });
+
+    $effect(() => {
+        wrapper;
+
+        if (!wrapper) {
+            shouldRestoreVisibleWords = false;
+            return;
+        }
+
+        const root =
+            wrapper.closest<HTMLElement>(".paragraphs-container") ?? null;
+        if (!root || !("IntersectionObserver" in window)) {
+            shouldRestoreVisibleWords = true;
+            return;
+        }
+
+        const observer = new IntersectionObserver(
+            ([entry]) => {
+                shouldRestoreVisibleWords = !!entry?.isIntersecting;
+            },
+            { root, threshold: 0.01 },
+        );
+
+        observer.observe(wrapper);
+        return () => observer.disconnect();
+    });
+
+    $effect(() => {
+        translationHtml;
+        visibleWords;
+        wrapper;
+        shouldRestoreVisibleWords;
+        visibleWordsRestored;
+
+        if (
+            visibleWordsRestored ||
+            !shouldRestoreVisibleWords ||
+            !wrapper ||
+            !translationHtml ||
+            !visibleWords ||
+            visibleWords.length === 0
+        ) {
+            return;
+        }
+
+        const controller = new AbortController();
+        void restoreVisibleWords(controller.signal).then(() => {
+            if (!controller.signal.aborted) {
+                visibleWordsRestored = true;
+            }
+        });
+
+        return () => controller.abort();
+    });
+
+    $effect(() => {
+        const seq = ++selectionEffectSeq;
+
+        if (selectedWordElement) {
+            selectedWordElement.classList.remove("selected");
+        }
+
+        wrapper;
+        translationHtml;
+        sentenceWordIdToDisplay;
+
+        if (!wrapper || !translationHtml || !sentenceWordIdToDisplay) {
+            selectedWordElement = null;
+            return;
+        }
+
+        const [paragraphId, sentenceId, wordId] = sentenceWordIdToDisplay;
+        if (paragraphId !== paragraph.id) {
+            selectedWordElement = null;
+            return;
+        }
+
+        void tick().then(() => {
+            if (seq !== selectionEffectSeq) {
+                return;
+            }
+            if (!wrapper) {
+                selectedWordElement = null;
+                return;
+            }
+
+            const element = wrapper.querySelector<HTMLElement>(
+                `.word-span[data-sentence="${sentenceId}"][data-word="${wordId}"]`,
+            );
+            if (!element) {
+                selectedWordElement = null;
+                return;
+            }
+
+            element.classList.add("selected");
+            showTranslation(element);
+            selectedWordElement = element;
+        });
     });
 
     async function translateParagraph(event: MouseEvent) {
@@ -152,65 +265,13 @@
         );
     }
 
-    function shrinkTranslationToFit(span: HTMLElement) {
-        const translationEl =
-            span.querySelector<HTMLElement>(".word-translation");
-        if (!translationEl) {
-            return;
-        }
-
-        translationEl.style.fontSize = "";
-        const parentWidth = span.getBoundingClientRect().width;
-        if (!parentWidth) {
-            return;
-        }
-
-        const styles = getComputedStyle(translationEl);
-        const paddingLeft = parseFloat(styles.paddingLeft) || 0;
-        const paddingRight = parseFloat(styles.paddingRight) || 0;
-        const borderLeft = parseFloat(styles.borderLeftWidth) || 0;
-        const borderRight = parseFloat(styles.borderRightWidth) || 0;
-        const horizontalChrome =
-            paddingLeft + paddingRight + borderLeft + borderRight;
-        const availableWidth = parentWidth - horizontalChrome;
-        if (availableWidth <= 0) {
-            return;
-        }
-
-        const rawContentWidth =
-            translationEl.scrollWidth - (paddingLeft + paddingRight);
-        if (rawContentWidth <= availableWidth) {
-            return;
-        }
-
-        const baseFontSize = parseFloat(styles.fontSize);
-        if (!baseFontSize || Number.isNaN(baseFontSize)) {
-            return;
-        }
-
-        const scaledSize = baseFontSize * (availableWidth / rawContentWidth);
-        translationEl.style.fontSize = `${scaledSize}px`;
-    }
-
-    async function adjustVisiblePopups() {
-        await tick();
-        const wrapper = document.querySelector<HTMLElement>(
-            `.paragraph-wrapper[data-paragraph-id="${paragraph.id}"]`,
-        );
-        if (!wrapper) {
-            return;
-        }
-        wrapper
-            .querySelectorAll<HTMLElement>(".word-span.show-translation")
-            .forEach((span) => shrinkTranslationToFit(span));
-    }
-
     /** Restore show-translation class for words that were previously marked visible */
-    async function restoreVisibleWords() {
+    async function restoreVisibleWords(signal?: AbortSignal) {
         await tick();
-        const wrapper = document.querySelector<HTMLElement>(
-            `.paragraph-wrapper[data-paragraph-id="${paragraph.id}"]`,
-        );
+        if (signal?.aborted) {
+            return;
+        }
+
         if (
             !wrapper ||
             !visibleWords ||
@@ -219,25 +280,48 @@
             return;
         }
 
-        const visibleSet = new Set(visibleWords);
-        const wordSpans = wrapper.querySelectorAll<HTMLElement>(".word-span");
-
-        wordSpans.forEach((span) => {
-            const flatIndex = parseInt(span.dataset["flatIndex"] ?? "-1");
-            if (visibleSet.has(flatIndex)) {
-                span.classList.add("show-translation");
-                shrinkTranslationToFit(span);
+        const spans: HTMLElement[] = [];
+        if (visibleWords.length > 50) {
+            const spanByFlatIndex = new Map<number, HTMLElement>();
+            wrapper.querySelectorAll<HTMLElement>(".word-span").forEach((span) => {
+                const flatIndex = parseInt(span.dataset["flatIndex"] ?? "", 10);
+                if (!Number.isNaN(flatIndex)) {
+                    spanByFlatIndex.set(flatIndex, span);
+                }
+            });
+            for (const flatIndex of visibleWords) {
+                const span = spanByFlatIndex.get(flatIndex);
+                if (span) {
+                    spans.push(span);
+                }
             }
-        });
-    }
+        } else {
+            for (const flatIndex of visibleWords) {
+                const span = wrapper.querySelector<HTMLElement>(
+                    `.word-span[data-flat-index="${flatIndex}"]`,
+                );
+                if (span) {
+                    spans.push(span);
+                }
+            }
+        }
+        if (signal?.aborted) {
+            return;
+        }
 
-    onMount(() => {
-        void adjustVisiblePopups();
-        void restoreVisibleWords();
-    });
+        if (spans.length > 200) {
+            await showTranslationsBatched(spans, { signal, batchSize: 200 });
+            return;
+        }
+        showTranslations(spans);
+    }
 </script>
 
-<div class="paragraph-wrapper" data-paragraph-id={paragraph.id}>
+<div
+    class="paragraph-wrapper"
+    data-paragraph-id={paragraph.id}
+    bind:this={wrapper}
+>
     {#if !translationHtml}
         <button
             class="translate"
@@ -278,14 +362,15 @@
         display: inline-block;
     }
 
-    :global(.word-span .word-translation) {
+    :global(.word-span::before) {
+        content: attr(data-translation);
         display: none;
         position: absolute;
         left: 0;
         right: 0;
         top: 0;
         width: 100%;
-        font-size: 0.55em;
+        font-size: var(--word-translation-font-size, 0.55em);
         text-align: center;
         line-height: 1;
         padding: 0.05em 0.1em;
@@ -300,7 +385,7 @@
         overflow: hidden;
     }
 
-    :global(.word-span.show-translation .word-translation) {
+    :global(.word-span.show-translation[data-translation]::before) {
         display: block;
         opacity: 0.9;
     }

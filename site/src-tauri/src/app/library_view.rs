@@ -697,26 +697,20 @@ fn translation_to_html(
 
             if p_idx < clamped_end {
                 let text = String::from_iter(original[p_idx..clamped_end].iter());
-                let translation_fragment = word
+                let translation_attribute = word
                     .contextual_translations()
                     .next()
                     .map(|ct| sanitize_translation_text(ct.translation.as_ref()))
                     .filter(|t| !t.is_empty())
                     .map(|t| {
-                        format!(
-                            "<span class=\"word-translation\" aria-hidden=\"true\">{}</span>",
-                            encode(
-                                t.as_bytes(),
-                                &EncodeType::Named,
-                                &CharacterSet::SpecialChars
-                            )
+                        encode(t.as_bytes(), &EncodeType::Named, &CharacterSet::SpecialChars)
                             .to_string()
                             .unwrap_or("&lt;err&gt;".to_owned())
-                        )
                     })
+                    .map(|encoded| format!(" data-translation=\"{}\"", encoded))
                     .unwrap_or_default();
 
-                result.push(format!("<span class=\"word-span\" data-paragraph=\"{paragraph_id}\" data-sentence=\"{sentence_idx}\" data-word=\"{word_idx}\" data-flat-index=\"{current_flat_index}\">{translation_fragment}{text}</span>"));
+                result.push(format!("<span class=\"word-span\" data-paragraph=\"{paragraph_id}\" data-sentence=\"{sentence_idx}\" data-word=\"{word_idx}\" data-flat-index=\"{current_flat_index}\"{translation_attribute}>{text}</span>"));
             }
 
             p_idx = clamped_end;
@@ -803,7 +797,7 @@ mod tests {
     }
 
     #[test]
-    fn wraps_words_and_escapes_translation_fragment() {
+    fn wraps_words_and_escapes_translation_attribute() {
         let original = "Hello, world!";
 
         let pt = make_paragraph_translation(vec![translation_import::Sentence {
@@ -835,15 +829,14 @@ mod tests {
         // world (1) -> visible.
 
         // Translation fragment should be HTML-escaped
-        assert!(html.contains("&lt;b&gt;hi&lt;/b&gt;"));
+        assert!(html.contains("data-translation=\"&lt;b&gt;hi&lt;/b&gt;\""));
         // And whitespace should be normalized
-        assert!(
-            html.contains(">planet<") || html.contains(">planet </") || html.contains("planet")
-        );
+        assert!(html.contains("data-translation=\"planet\""));
+        assert!(!html.contains("word-translation"));
     }
 
     #[test]
-    fn empty_contextual_translation_produces_no_translation_span() {
+    fn empty_contextual_translation_produces_no_translation_attribute() {
         let original = "Just words";
 
         let pt = make_paragraph_translation(vec![translation_import::Sentence {
@@ -855,7 +848,7 @@ mod tests {
         let view = view_from_import(&mut t, 0, &pt);
         let html = translation_to_html(0, original, &view).expect("html");
 
-        assert!(!html.contains("word-translation"));
+        assert!(!html.contains("data-translation"));
         assert!(html.contains("data-flat-index=\"0\""));
         assert!(html.contains("data-flat-index=\"1\""));
     }

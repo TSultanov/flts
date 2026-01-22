@@ -3,6 +3,7 @@
     import type { UUID } from "../data/v2/db";
     import ParagraphView from "./ParagraphView.svelte";
     import type { Library } from "../data/library";
+    import type { ParagraphView as ParagraphDataView } from "../data/sql/book";
 
     let {
         sentenceWordIdToDisplay = $bindable(),
@@ -20,87 +21,6 @@
     const paragraphs = $derived(
         library.getBookChapterParagraphs(bookId, chapterId),
     );
-
-    let selectedWordElement: HTMLElement | null = null;
-    let selectionEffectSeq = 0;
-
-    $effect(() => {
-        const seq = ++selectionEffectSeq;
-        if (selectedWordElement) {
-            selectedWordElement.classList.remove("selected");
-        }
-
-        if (!sentenceWordIdToDisplay) {
-            selectedWordElement = null;
-            return;
-        }
-
-        if (!$paragraphs || $paragraphs.length === 0) {
-            selectedWordElement = null;
-            return;
-        }
-
-        const [paragraphId, sentenceId, wordId] = sentenceWordIdToDisplay;
-
-        void tick().then(() => {
-            if (seq !== selectionEffectSeq) {
-                return;
-            }
-
-            const selector = `.word-span[data-paragraph="${paragraphId}"][data-sentence="${sentenceId}"][data-word="${wordId}"]`;
-            const root: ParentNode = paragraphsContainer ?? document;
-            const element = root.querySelector<HTMLElement>(selector);
-            if (!element) {
-                selectedWordElement = null;
-                return;
-            }
-
-            element.classList.add("selected");
-            element.classList.add("show-translation");
-            selectedWordElement = element;
-            shrinkTranslationToFit(element);
-        });
-    });
-
-    function shrinkTranslationToFit(span: HTMLElement) {
-        const translationEl =
-            span.querySelector<HTMLElement>(".word-translation");
-        if (!translationEl) {
-            return;
-        }
-
-        translationEl.style.fontSize = "";
-        const parentWidth = span.getBoundingClientRect().width;
-        if (!parentWidth) {
-            return;
-        }
-
-        const styles = getComputedStyle(translationEl);
-        const paddingLeft = parseFloat(styles.paddingLeft) || 0;
-        const paddingRight = parseFloat(styles.paddingRight) || 0;
-        const borderLeft = parseFloat(styles.borderLeftWidth) || 0;
-        const borderRight = parseFloat(styles.borderRightWidth) || 0;
-        const horizontalChrome =
-            paddingLeft + paddingRight + borderLeft + borderRight;
-        const availableWidth = parentWidth - horizontalChrome;
-        if (availableWidth <= 0) {
-            return;
-        }
-
-        const rawContentWidth =
-            translationEl.scrollWidth - (paddingLeft + paddingRight);
-        if (rawContentWidth <= availableWidth) {
-            return;
-        }
-
-        const baseFontSize = parseFloat(styles.fontSize);
-        if (!baseFontSize || Number.isNaN(baseFontSize)) {
-            return;
-        }
-
-        const scaledSize = baseFontSize * (availableWidth / rawContentWidth);
-        translationEl.style.fontSize = `${scaledSize}px`;
-    }
 
     function chapterClick(e: MouseEvent) {
         const target = document.elementFromPoint(
@@ -144,10 +64,11 @@
     let visibleParagraphId: number | null = null;
     let saveTimeout: ReturnType<typeof setTimeout> | null = null;
     let lastSavedParagraph: number | null = null;
-    let initialScrollApplied = false;
     let isResizing = false;
     let resizeTimeout: ReturnType<typeof setTimeout> | null = null;
     let scrollRaf: number | null = null;
+    let initialParagraphSyncedFor: number | null | undefined = undefined;
+    let initialParagraphSyncSeq = 0;
 
     function handleScroll() {
         if (isResizing) {
@@ -206,37 +127,84 @@
         return Number.isNaN(id) ? null : id;
     }
 
-    async function syncInitialParagraph() {
-        await tick();
+    function findParagraphWrapper(paragraphId: number): HTMLElement | null {
+        if (!paragraphsContainer) {
+            return null;
+        }
+        const targetId = String(paragraphId);
+        const children = paragraphsContainer.children;
+        for (let i = 0; i < children.length; i++) {
+            const child = children[i] as HTMLElement;
+            if (child.dataset["paragraphId"] === targetId) {
+                return child;
+            }
+        }
+        return null;
+    }
+
+    async function syncInitialParagraph(
+        seq: number,
+        paragraphs: ParagraphDataView[],
+        paragraphIdToScrollTo: number,
+    ) {
         if (!paragraphsContainer) {
             return;
         }
 
-        if (!initialScrollApplied && initialParagraphId != null) {
-            const target = paragraphsContainer.querySelector<HTMLElement>(
-                `[data-paragraph-id="${initialParagraphId}"]`,
-            );
-            if (target) {
-                target.scrollIntoView({
-                    behavior: "auto",
-                    block: "center",
-                    inline: "center",
-                });
-                visibleParagraphId = initialParagraphId;
-                scheduleSave(initialParagraphId);
-                initialScrollApplied = true;
+        let target = findParagraphWrapper(paragraphIdToScrollTo);
+        if (!target) {
+            await tick();
+            if (seq !== initialParagraphSyncSeq) {
                 return;
             }
+            target = findParagraphWrapper(paragraphIdToScrollTo);
         }
 
-        initialScrollApplied = true;
-        updateVisibleParagraph();
+        if (target) {
+            target.scrollIntoView({
+                behavior: "auto",
+                block: "nearest",
+                inline: "center",
+            });
+            visibleParagraphId = paragraphIdToScrollTo;
+            scheduleSave(paragraphIdToScrollTo);
+        } else if (paragraphs.length > 0) {
+            const fallbackId = paragraphs[0].id;
+            visibleParagraphId = fallbackId;
+            scheduleSave(fallbackId);
+        }
     }
 
     $effect(() => {
-        if ($paragraphs && $paragraphs.length > 0) {
-            void syncInitialParagraph();
+        const ps = $paragraphs;
+        paragraphsContainer;
+        initialParagraphId;
+
+        if (!ps || ps.length === 0) {
+            return;
         }
+
+        if (initialParagraphSyncedFor === initialParagraphId) {
+            return;
+        }
+
+        if (initialParagraphId == null) {
+            visibleParagraphId = ps[0].id;
+            scheduleSave(ps[0].id);
+            initialParagraphSyncedFor = null;
+            return;
+        }
+
+        if (!paragraphsContainer) {
+            return;
+        }
+
+        const seq = ++initialParagraphSyncSeq;
+        void syncInitialParagraph(seq, ps, initialParagraphId).then(() => {
+            if (seq === initialParagraphSyncSeq) {
+                initialParagraphSyncedFor = initialParagraphId;
+            }
+        });
     });
 
     onMount(() => {
@@ -247,9 +215,7 @@
             }
 
             if (visibleParagraphId != null && paragraphsContainer) {
-                const target = paragraphsContainer.querySelector<HTMLElement>(
-                    `[data-paragraph-id="${visibleParagraphId}"]`,
-                );
+                const target = findParagraphWrapper(visibleParagraphId);
                 if (target) {
                     target.scrollIntoView({
                         behavior: "auto",
@@ -305,7 +271,11 @@
             onscroll={handleScroll}
         >
             {#each $paragraphs as paragraph (paragraph.id)}
-                <ParagraphView {bookId} {paragraph} />
+                <ParagraphView
+                    {bookId}
+                    {paragraph}
+                    {sentenceWordIdToDisplay}
+                />
             {/each}
         </div>
     </section>
