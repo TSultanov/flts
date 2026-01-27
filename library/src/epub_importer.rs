@@ -37,6 +37,10 @@ impl EpubBook {
         // Process spine contents
         for spine_item in &spine_items {
             // Get TOC elements that match this spine item
+            // Compute c_href_doc once per spine item, not for every TOC element
+            let (c_href, _) = epub.resources.get(&spine_item.idref).unwrap();
+            let c_href_doc = c_href.to_str().unwrap().replace("OEBPS/", "");
+
             let toc_elements: Vec<_> = toc_items
                 .iter()
                 .filter(|t| {
@@ -47,8 +51,6 @@ impl EpubBook {
                         .next()
                         .unwrap_or("")
                         .replace("OEBPS/", "");
-                    let (c_href, _) = epub.resources.get(&spine_item.idref).unwrap();
-                    let c_href_doc = c_href.to_str().unwrap().replace("OEBPS/", "");
                     t_href_doc == c_href_doc
                 })
                 .collect();
@@ -170,33 +172,34 @@ fn all_children_are_inline(element: ElementRef) -> bool {
 }
 
 fn is_inline_element(tag_name: &str) -> bool {
-    // Common inline elements
+    // Common inline elements - use eq_ignore_ascii_case to avoid allocation
     matches!(
-        tag_name.to_lowercase().as_str(),
-        "a" | "abbr"
-            | "b"
-            | "bdi"
-            | "bdo"
-            | "br"
-            | "cite"
-            | "code"
-            | "data"
-            | "dfn"
-            | "em"
-            | "i"
-            | "kbd"
-            | "mark"
-            | "q"
-            | "s"
-            | "samp"
-            | "small"
-            | "span"
-            | "strong"
-            | "sub"
-            | "sup"
-            | "time"
-            | "u"
-            | "var"
+        tag_name,
+        "a" | "A"
+            | "abbr" | "ABBR"
+            | "b" | "B"
+            | "bdi" | "BDI"
+            | "bdo" | "BDO"
+            | "br" | "BR"
+            | "cite" | "CITE"
+            | "code" | "CODE"
+            | "data" | "DATA"
+            | "dfn" | "DFN"
+            | "em" | "EM"
+            | "i" | "I"
+            | "kbd" | "KBD"
+            | "mark" | "MARK"
+            | "q" | "Q"
+            | "s" | "S"
+            | "samp" | "SAMP"
+            | "small" | "SMALL"
+            | "span" | "SPAN"
+            | "strong" | "STRONG"
+            | "sub" | "SUB"
+            | "sup" | "SUP"
+            | "time" | "TIME"
+            | "u" | "U"
+            | "var" | "VAR"
     )
 }
 

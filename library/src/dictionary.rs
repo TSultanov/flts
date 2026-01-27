@@ -8,8 +8,8 @@ pub struct SystemDefinition {
     pub transcription: Option<String>,
 }
 
-use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, BTreeSet};
+use ahash::{HashMap, HashSet};
+use std::collections::hash_map::Entry;
 
 use log::info;
 use uuid::Uuid;
@@ -26,7 +26,7 @@ pub struct Dictionary {
     pub id: Uuid,
     pub source_language: String,
     pub target_language: String,
-    translations: BTreeMap<String, BTreeSet<String>>,
+    translations: HashMap<String, HashSet<String>>,
 }
 
 impl Dictionary {
@@ -35,20 +35,15 @@ impl Dictionary {
             id: Uuid::new_v4(),
             source_language,
             target_language,
-            translations: BTreeMap::new(),
+            translations: HashMap::default(),
         }
     }
 
     pub fn add_translation(&mut self, original_word: &str, translation: &str) {
         let original_lowercase = original_word.to_lowercase(); // FIXME: this case folding is not language aware and can cause problems
-        if !self.translations.contains_key(&original_lowercase) {
-            self.translations
-                .insert(original_lowercase.clone(), BTreeSet::new());
-        }
-
         self.translations
-            .get_mut(&original_lowercase)
-            .unwrap()
+            .entry(original_lowercase)
+            .or_default()
             .insert(translation.to_lowercase());
     }
 
@@ -238,11 +233,11 @@ impl Serializable for Dictionary {
         // Entries
         let t_entries = Instant::now();
         let originals_len = read_var_u64(input_stream)? as usize;
-        let mut translations: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut translations: HashMap<String, HashSet<String>> = HashMap::default();
         for _ in 0..originals_len {
             let original = read_len_prefixed_string(input_stream)?;
             let count = read_var_u64(input_stream)? as usize;
-            let mut set: BTreeSet<String> = BTreeSet::new();
+            let mut set: HashSet<String> = HashSet::default();
             for _ in 0..count {
                 let tr = read_len_prefixed_string(input_stream)?;
                 set.insert(tr);
@@ -277,7 +272,7 @@ mod tests {
             id: Uuid::new_v4(),
             source_language: "en".into(),
             target_language: "ru".into(),
-            translations: BTreeMap::new(),
+            translations: HashMap::default(),
         };
         d.add_translation("Hello", "Привет");
         d.add_translation("Hello", "Здравствуй");
@@ -305,7 +300,7 @@ mod tests {
             id: Uuid::new_v4(),
             source_language: "en".into(),
             target_language: "ru".into(),
-            translations: BTreeMap::new(),
+            translations: HashMap::default(),
         };
         d.add_translation("Hello", "Привет");
         let mut buf: Vec<u8> = vec![];

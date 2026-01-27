@@ -21,7 +21,7 @@ use super::{TRANSLATION_REQUEST_TIMEOUT, TRANSLATION_STREAM_IDLE_TIMEOUT};
 pub struct GeminiTranslator {
     cache: Arc<TranslationsCache>,
     client: Gemini,
-    schema: Value,
+    schema: Arc<Value>,
     model: Model,
     translation_model: TranslationModel,
     from: Language,
@@ -162,7 +162,7 @@ impl GeminiTranslator {
 
         Ok(Self {
             cache,
-            schema,
+            schema: Arc::new(schema),
             client,
             model,
             translation_model,
@@ -213,7 +213,7 @@ impl Translator for GeminiTranslator {
                 .with_system_prompt(Self::get_prompt(self.from.to_name(), self.to.to_name()))
                 .with_user_message(paragraph)
                 .with_response_mime_type("application/json")
-                .with_response_schema(self.schema.clone())
+                .with_response_schema((*self.schema).clone())
                 .with_thinking_config(thinking_config)
                 .execute_stream(),
         )

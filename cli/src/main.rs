@@ -249,16 +249,23 @@ async fn translate_book(
             paragraph_count
         );
 
-        for chapter in book.book.chapter_views() {
-            for paragraph in chapter.paragraphs() {
-                if translation
-                    .lock()
-                    .await
-                    .paragraph_view(paragraph.id)
-                    .is_none()
-                {
-                    queue.lock().await.push_back(paragraph.id);
+        // Collect untranslated paragraph IDs with minimal lock contention
+        let untranslated_ids: Vec<usize> = {
+            let t = translation.lock().await;
+            let mut ids = Vec::new();
+            for chapter in book.book.chapter_views() {
+                for paragraph in chapter.paragraphs() {
+                    if t.paragraph_view(paragraph.id).is_none() {
+                        ids.push(paragraph.id);
+                    }
                 }
+            }
+            ids
+        };
+        {
+            let mut q = queue.lock().await;
+            for id in untranslated_ids {
+                q.push_back(id);
             }
         }
 

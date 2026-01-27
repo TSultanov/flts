@@ -980,12 +980,12 @@ impl Translation {
         let mut seen_slices = AHashSet::default();
 
         let mut cache_vec_slice = |slice: VecSlice<u8>| {
-            if seen_slices.contains(&slice) {
+            // insert returns true if newly inserted, false if already present
+            if !seen_slices.insert(slice) {
                 return slice;
             }
-            let string = String::from_utf8_lossy(slice.slice(&strings)).to_string();
+            let string = String::from_utf8_lossy(slice.slice(&strings)).into_owned();
             strings_cache.insert(string, slice);
-            seen_slices.insert(slice);
             slice
         };
 
@@ -1172,12 +1172,12 @@ impl Translation {
         let mut seen_slices = AHashSet::default();
 
         let mut cache_vec_slice = |slice: VecSlice<u8>| {
-            if seen_slices.contains(&slice) {
+            // insert returns true if newly inserted, false if already present
+            if !seen_slices.insert(slice) {
                 return slice;
             }
-            let string = String::from_utf8_lossy(slice.slice(&strings)).to_string();
+            let string = String::from_utf8_lossy(slice.slice(&strings)).into_owned();
             strings_cache.insert(string, slice);
-            seen_slices.insert(slice);
             slice
         };
 

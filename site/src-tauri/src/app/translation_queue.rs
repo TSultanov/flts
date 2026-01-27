@@ -345,31 +345,16 @@ async fn run_saver(
 
     while let Ok(msg) = rx.recv_async().await {
         let book_id = msg.book_id;
-        if !savers.lock().await.contains_key(&book_id) {
-            save_and_emit(library.clone(), app.clone(), msg)
-                .await
-                .unwrap_or_else(|err| warn!("Failed to autosave book {book_id}: {err}"));
-            let _ = status_tx.send(TranslationStatus {
-                request_id: msg.request_id,
-                progress_chars: 0,
-                expected_chars: 0,
-                is_complete: true,
-            });
-            continue;
-        }
 
-        let saver = {
-            let library = library.clone();
-            let app = app.clone();
-            let savers = savers.clone();
-            let status_tx = status_tx.clone();
-            let msg = msg;
-            async move {
-                tokio::time::sleep(Duration::from_secs(1)).await;
+        // Use entry API to avoid double lock
+        let mut savers_guard = savers.lock().await;
+        match savers_guard.entry(book_id) {
+            std::collections::hash_map::Entry::Vacant(_) => {
+                // No existing saver, save immediately
+                drop(savers_guard); // Drop lock before await
                 save_and_emit(library.clone(), app.clone(), msg)
                     .await
                     .unwrap_or_else(|err| warn!("Failed to autosave book {book_id}: {err}"));
-                savers.lock().await.remove(&book_id);
                 let _ = status_tx.send(TranslationStatus {
                     request_id: msg.request_id,
                     progress_chars: 0,
@@ -377,10 +362,33 @@ async fn run_saver(
                     is_complete: true,
                 });
             }
-        };
+            std::collections::hash_map::Entry::Occupied(_) => {
+                // Existing saver, spawn delayed save
+                let saver = {
+                    let library = library.clone();
+                    let app = app.clone();
+                    let savers = savers.clone();
+                    let status_tx = status_tx.clone();
+                    let msg = msg;
+                    async move {
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        save_and_emit(library.clone(), app.clone(), msg)
+                            .await
+                            .unwrap_or_else(|err| warn!("Failed to autosave book {book_id}: {err}"));
+                        savers.lock().await.remove(&book_id);
+                        let _ = status_tx.send(TranslationStatus {
+                            request_id: msg.request_id,
+                            progress_chars: 0,
+                            expected_chars: 0,
+                            is_complete: true,
+                        });
+                    }
+                };
 
-        let task = tokio::spawn(saver);
-        savers.lock().await.insert(book_id, task);
+                let task = tokio::spawn(saver);
+                savers_guard.insert(book_id, task);
+            }
+        }
     }
 }
 

@@ -26,8 +26,8 @@ use super::{TRANSLATION_REQUEST_TIMEOUT, TRANSLATION_STREAM_IDLE_TIMEOUT};
 pub struct OpenAITranslator {
     cache: Arc<TranslationsCache>,
     client: Client<OpenAIConfig>,
-    schema: Value,
-    model: String,
+    schema: Arc<Value>,
+    model: Arc<str>,
     translation_model: TranslationModel,
     from: Language,
     to: Language,
@@ -144,8 +144,8 @@ impl OpenAITranslator {
         Ok(Self {
             cache,
             client,
-            schema,
-            model: model.to_string(),
+            schema: Arc::new(schema),
+            model: Arc::from(model),
             translation_model,
             from: *from,
             to: *to,
@@ -182,7 +182,7 @@ impl Translator for OpenAITranslator {
         );
 
         let request = CreateChatCompletionRequestArgs::default()
-            .model(self.model.clone())
+            .model(self.model.as_ref())
             .messages([
                 ChatCompletionRequestMessage::System(
                     ChatCompletionRequestSystemMessageArgs::default()
@@ -199,7 +199,7 @@ impl Translator for OpenAITranslator {
                 json_schema: ResponseFormatJsonSchema {
                     description: Some("Paragraph translation".to_string()),
                     name: "paragraph_translation".to_string(),
-                    schema: Some(self.schema.clone()),
+                    schema: Some((*self.schema).clone()),
                     strict: Some(true),
                 },
             })

@@ -37,7 +37,7 @@ struct Paragraph {
 pub struct ChapterView<'a> {
     pub idx: usize,
     book: &'a Book,
-    paragraphs: Vec<&'a Paragraph>,
+    paragraph_indices: &'a [usize],
     pub title: Option<Cow<'a, str>>,
 }
 
@@ -66,17 +66,14 @@ impl Book {
 
     pub fn chapter_view(&self, chapter_index: usize) -> ChapterView<'_> {
         let chapter = &self.chapters[chapter_index];
-        let paragraph_indexes = chapter.paragraphs.slice(&self.paragraph_map);
+        let paragraph_indices = chapter.paragraphs.slice(&self.paragraph_map);
         ChapterView {
             idx: chapter_index,
             book: self,
             title: chapter
                 .title
                 .map(|t| String::from_utf8_lossy(t.slice(&self.strings))),
-            paragraphs: paragraph_indexes
-                .iter()
-                .map(|p| &self.paragraphs[*p])
-                .collect(),
+            paragraph_indices,
         }
     }
 
@@ -132,17 +129,18 @@ impl Book {
     }
 
     pub fn paragraphs_count(&self) -> usize {
-        self.chapter_views().map(|v| v.paragraph_count()).sum()
+        self.paragraphs.len()
     }
 }
 
 impl<'a> ChapterView<'a> {
     pub fn paragraph_count(&self) -> usize {
-        self.paragraphs.len()
+        self.paragraph_indices.len()
     }
 
-    pub fn paragraph_view(&'a self, paragraph: usize) -> ParagraphView<'a> {
-        let paragraph = self.paragraphs[paragraph];
+    pub fn paragraph_view(&self, paragraph_index: usize) -> ParagraphView<'a> {
+        let paragraph_id = self.paragraph_indices[paragraph_index];
+        let paragraph = &self.book.paragraphs[paragraph_id];
         ParagraphView {
             id: paragraph.id,
             original_html: paragraph
@@ -154,7 +152,7 @@ impl<'a> ChapterView<'a> {
         }
     }
 
-    pub fn paragraphs(&'a self) -> impl Iterator<Item = ParagraphView<'a>> {
+    pub fn paragraphs(&self) -> impl Iterator<Item = ParagraphView<'a>> + '_ {
         (0..self.paragraph_count()).map(|p| self.paragraph_view(p))
     }
 }
@@ -210,9 +208,7 @@ impl Serializable for Book {
         let chapters_count = self.chapter_count();
         write_var_u64(&mut metadata_buf_hasher, chapters_count as u64)?;
         // paragraphs count
-        let paragraphs_count = (0..self.chapter_count())
-            .fold(0, |acc, ch| acc + self.chapter_view(ch).paragraph_count());
-        write_var_u64(&mut metadata_buf_hasher, paragraphs_count as u64)?;
+        write_var_u64(&mut metadata_buf_hasher, self.paragraphs.len() as u64)?;
         let metadata_hash = metadata_buf_hasher.current_hash();
         let d_meta_build = t_meta_build.elapsed();
 
