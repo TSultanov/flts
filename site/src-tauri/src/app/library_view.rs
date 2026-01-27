@@ -675,7 +675,7 @@ fn translation_to_html(
                     if w.to_lowercase() == p_word.to_lowercase() {
                         break;
                     }
-                } else if levenshtein_distance(&w.to_lowercase(), &p_word.to_lowercase()) < 2 {
+                } else if levenshtein_distance_lt_2(&w.to_lowercase(), &p_word.to_lowercase()) {
                     break;
                 }
 
@@ -986,38 +986,70 @@ fn sanitize_translation_text(value: &str) -> String {
         .join(" ")
 }
 
-fn levenshtein_distance(str1: &str, str2: &str) -> usize {
+/// Optimized check for levenshtein_distance(s1, s2) < 2.
+/// This is faster than computing the full distance for this specific threshold.
+fn levenshtein_distance_lt_2(str1: &str, str2: &str) -> bool {
     if str1 == str2 {
-        return 0;
+        return true;
+    }
+
+    let n = str1.chars().count();
+    let m = str2.chars().count();
+
+    // If length difference >= 2, distance must be >= 2
+    if n.abs_diff(m) >= 2 {
+        return false;
+    }
+
+    // For distance < 2, we only need to check for 0 or 1 edits
+    // Distance 0: already handled by equality check above
+    // Distance 1: strings differ by exactly one insertion, deletion, or substitution
+
+    if n == 0 {
+        return m == 1;
+    }
+    if m == 0 {
+        return n == 1;
     }
 
     let a: Vec<char> = str1.chars().collect();
     let b: Vec<char> = str2.chars().collect();
 
-    let n = a.len();
-    let m = b.len();
+    // Count mismatches - for distance < 2, we can have at most 1 edit
+    let mut i = 0;
+    let mut j = 0;
+    let mut edits = 0;
 
-    if n == 0 {
-        return m;
-    }
-    if m == 0 {
-        return n;
-    }
+    while i < n && j < m {
+        if a[i] != b[j] {
+            if edits == 1 {
+                return false; // Already had one edit, this is the second
+            }
+            edits += 1;
 
-    let mut previous: Vec<usize> = (0..=m).collect();
-    let mut current: Vec<usize> = vec![0; m + 1];
-
-    for i in 1..=n {
-        current[0] = i;
-        for j in 1..=m {
-            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
-            let deletion = previous[j] + 1; // delete from a
-            let insertion = current[j - 1] + 1; // insert into a
-            let substitution = previous[j - 1] + cost;
-            current[j] = deletion.min(insertion).min(substitution);
+            // Determine if this is insertion, deletion, or substitution
+            if n > m && i + 1 < n && a[i + 1] == b[j] {
+                // Deletion from a (skip a[i])
+                i += 1;
+            } else if m > n && j + 1 < m && a[i] == b[j + 1] {
+                // Insertion into a (skip b[j])
+                j += 1;
+            } else {
+                // Substitution (advance both)
+                i += 1;
+                j += 1;
+            }
+        } else {
+            i += 1;
+            j += 1;
         }
-        std::mem::swap(&mut previous, &mut current);
     }
 
-    previous[m]
+    // If we've consumed all chars from both, check edit count
+    // If one string has remaining chars, that's another edit
+    if i < n || j < m {
+        edits += 1;
+    }
+
+    edits < 2
 }
