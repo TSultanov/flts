@@ -197,6 +197,10 @@ impl Translation {
         self.paragraphs.iter().filter(|p| p.is_some()).count()
     }
 
+    pub fn version_count(&self) -> usize {
+        self.paragraph_translations.len()
+    }
+
     fn push_string(&mut self, string: &str) -> VecSlice<u8> {
         if let Some(cached) = self.strings_cache.get(string) {
             return *cached;

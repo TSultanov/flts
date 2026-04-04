@@ -73,6 +73,10 @@ impl Dictionary {
 
         Ok(())
     }
+
+    pub fn translation_pairs_count(&self) -> usize {
+        self.translations.values().map(|set| set.len()).sum()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -13,6 +13,7 @@ use uuid::Uuid;
 use crate::{
     book::serialization::Serializable,
     dictionary::{Dictionary, dictionary_metadata::DictionaryMetadata},
+    tla_trace,
 };
 
 pub struct LibraryDictionaryMetadata {
@@ -145,7 +146,20 @@ impl LibraryDictionary {
         }
 
         // Finally, load the dictionary from disk (ensures we have last_modified and path)
-        Self::load(&metadata.main_path).await
+        let loaded = Self::load(&metadata.main_path).await?;
+        let library_root = metadata
+            .main_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| metadata.main_path.clone());
+        tla_trace::emit_dictionary_event(
+            &library_root,
+            &metadata.main_path,
+            "LoadDictionaryFromMetadata",
+            None,
+        )
+        .await?;
+        Ok(loaded)
     }
 
     /// Save the dictionary back to its main file, merging with on-disk changes to avoid lost updates.
