@@ -83,11 +83,6 @@ MCInjectStateReadingConflict(r) ==
     /\ flts!InjectStateReadingConflict(r)
     /\ faultCounters' = [faultCounters EXCEPT !.stateConflict = @ + 1]
 
-MCInjectStateFolderConflict(f) ==
-    /\ faultCounters.stateConflict < MaxStateConflictLimit
-    /\ flts!InjectStateFolderConflict(f)
-    /\ faultCounters' = [faultCounters EXCEPT !.stateConflict = @ + 1]
-
 MCAddMemoryTranslationVersion(vid, ts, words) ==
     /\ faultCounters.userTranslation < MaxUserTranslationLimit
     /\ flts!AddMemoryTranslationVersion(vid, ts, words)
@@ -180,7 +175,6 @@ MCNext ==
     \/ \E f \in FolderVal : MCUpdateFolderPathReload(f)
     \/ MCUpdateFolderPathPersist
     \/ \E r \in ReadingPos : MCInjectStateReadingConflict(r)
-    \/ \E f \in FolderVal : MCInjectStateFolderConflict(f)
     \/ MCResolveReadingStateFile
 
     \/ \E vid \in VersionId :

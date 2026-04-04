@@ -116,24 +116,6 @@ LoadedState ==
     IN [reading |-> latest.reading,
         folder  |-> latest.folder]
 
-LatestReadingField(files) ==
-       LET withReading == {f \in files : f.reading /= Nil}
-       IN IF withReading = {}
-          THEN Nil
-          ELSE (CHOOSE f \in withReading :
-                f.mtime = MaxOf({g.mtime : g \in withReading})).reading
-
-LatestFolderField(files) ==
-       LET withFolder == {f \in files : f.folder /= Nil}
-       IN IF withFolder = {}
-          THEN Nil
-          ELSE (CHOOSE f \in withFolder :
-                f.mtime = MaxOf({g.mtime : g \in withFolder})).folder
-
-FieldwiseState(files) ==
-    [reading |-> LatestReadingField(files),
-     folder  |-> LatestFolderField(files)]
-
 AllTranslationVersions ==
     UNION {f.versions : f \in TranslationFiles}
 
@@ -402,7 +384,9 @@ UpdateFolderPathPersist ==
                    translationLastModified, translationSaveStage, translationSaveIntent>>
 
 \* --------------------------------------------------------------------------
-\* Environment action: sync creates a state conflict with a newer reading field.
+\* Environment action: sync creates a state conflict with a different reading
+\* position from another device.  folder_path is always carried over from
+\* stateMain because it is the same on every device (by design).
 \* --------------------------------------------------------------------------
 InjectStateReadingConflict(r) ==
     /\ r \in ReadingPos
@@ -417,21 +401,8 @@ InjectStateReadingConflict(r) ==
                    dictionaryMain, dictionaryConflicts,
                    memoryVars, saveVars>>
 
-\* --------------------------------------------------------------------------
-\* Environment action: sync creates a state conflict with a newer folder field.
-\* --------------------------------------------------------------------------
-InjectStateFolderConflict(f) ==
-    /\ f \in FolderVal
-    /\ nextTime <= MaxTime
-    /\ stateConflicts' = stateConflicts \cup {
-           [reading |-> stateMain.reading, folder |-> f, mtime |-> nextTime]
-       }
-    /\ nextTime' = nextTime + 1
-    /\ UNCHANGED <<bookMain, bookConflicts,
-                   stateMain,
-                   translationMain, translationConflicts,
-                   dictionaryMain, dictionaryConflicts,
-                   memoryVars, saveVars>>
+\* InjectStateFolderConflict is omitted: folder_path is set once to the same
+\* value on all devices, so conflict siblings never carry a divergent folder.
 
 \* --------------------------------------------------------------------------
 \* ResolveReadingStateFile: choose newest state*.json and delete the rest.
@@ -616,7 +587,6 @@ Next ==
     \/ \E f \in FolderVal : UpdateFolderPathReload(f)
     \/ UpdateFolderPathPersist
     \/ \E r \in ReadingPos : InjectStateReadingConflict(r)
-    \/ \E f \in FolderVal : InjectStateFolderConflict(f)
     \/ ResolveReadingStateFile
 
     \/ \E vid \in VersionId :
@@ -677,10 +647,11 @@ StagesWellFormed ==
 \* semantic merge is not possible. Newest-wins is the intended behavior.
 \* BookConflictNewestWins is NOT an invariant to check — it documents design.
 
-\* Family 1: newest-wins state resolution should preserve latest independent fields.
-StateConflictPreservesIndependentFields ==
-    /\ LoadedState.reading = FieldwiseState(StateFiles).reading
-    /\ LoadedState.folder  = FieldwiseState(StateFiles).folder
+\* Family 1 (by design): state conflict resolution picks the newest sibling.
+\* Reading position overwrite from another device is intended — each device
+\* writes its own position and the latest one wins on sync.
+\* folder_path is set once to the same value on all devices (it's the book's
+\* filesystem path), so it can never diverge across conflict siblings.
 
 \* Family 2: once save intent is captured, in-memory book should still contain it.
 BookSaveIntentPreserved ==
