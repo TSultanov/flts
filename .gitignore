@@ -4,3 +4,4 @@ target/
 traces/
 .specula-output/
 states/
+MC_TTrace_*
