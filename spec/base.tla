@@ -272,11 +272,11 @@ SaveBookBegin ==
     /\ bookSaveStage = "idle"
     /\ \* Record the semantic intent of the save: preserve both memory and disk edits.
        bookSaveIntent' = memBook.edits \cup bookMain.edits
-    /\ \* If disk is newer than our cached mtime, implementation replaces memory
-       \* with disk rather than merging.
-       \* library_book.rs:561-575
+    /\ \* If disk is newer than our cached mtime, update bookLastModified
+       \* but keep the in-memory content so unsaved edits are preserved.
+       \* library_book.rs:654-667
        IF bookMain.mtime > bookLastModified
-       THEN /\ memBook' = [edits |-> bookMain.edits]
+       THEN /\ UNCHANGED memBook
             /\ bookLastModified' = bookMain.mtime
        ELSE /\ UNCHANGED memBook
             /\ UNCHANGED bookLastModified
