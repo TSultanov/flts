@@ -102,8 +102,11 @@ StateFiles == stateConflicts \cup {stateMain}
 TranslationFiles == translationConflicts \cup {translationMain}
 DictionaryFiles == dictionaryConflicts \cup {dictionaryMain}
 
+MaxOf(ns) ==
+    CHOOSE n \in ns : \A m \in ns : n >= m
+
 LatestByMTime(files) ==
-    CHOOSE f \in files : f.mtime = Max({g.mtime : g \in files})
+    CHOOSE f \in files : f.mtime = MaxOf({g.mtime : g \in files})
 
 LoadedBookEdits ==
     LatestByMTime(BookFiles).edits
@@ -114,18 +117,18 @@ LoadedState ==
         folder  |-> latest.folder]
 
 LatestReadingField(files) ==
-    LET withReading == {f \in files : f.reading /= Nil}
-    IN IF withReading = {}
-       THEN Nil
-       ELSE (CHOOSE f \in withReading :
-                f.mtime = Max({g.mtime : g \in withReading})).reading
+       LET withReading == {f \in files : f.reading /= Nil}
+       IN IF withReading = {}
+          THEN Nil
+          ELSE (CHOOSE f \in withReading :
+                f.mtime = MaxOf({g.mtime : g \in withReading})).reading
 
 LatestFolderField(files) ==
-    LET withFolder == {f \in files : f.folder /= Nil}
-    IN IF withFolder = {}
-       THEN Nil
-       ELSE (CHOOSE f \in withFolder :
-                f.mtime = Max({g.mtime : g \in withFolder})).folder
+       LET withFolder == {f \in files : f.folder /= Nil}
+       IN IF withFolder = {}
+          THEN Nil
+          ELSE (CHOOSE f \in withFolder :
+                f.mtime = MaxOf({g.mtime : g \in withFolder})).folder
 
 FieldwiseState(files) ==
     [reading |-> LatestReadingField(files),
@@ -205,7 +208,8 @@ InjectBookConflict(e) ==
            [edits |-> {e}, mtime |-> nextTime]
        }
     /\ nextTime' = nextTime + 1
-    /\ UNCHANGED <<stateMain, stateConflicts,
+    /\ UNCHANGED <<bookMain,
+                   stateMain, stateConflicts,
                    translationMain, translationConflicts,
                    dictionaryMain, dictionaryConflicts,
                    memBook, memState, memTranslation,
@@ -216,11 +220,10 @@ InjectBookConflict(e) ==
 \* Reference: library/src/library/library_book.rs:335-381
 \* --------------------------------------------------------------------------
 LoadBookFromMetadata ==
-    /\ bookConflicts /= {}
     /\ LET newest == LatestByMTime(BookFiles) IN
        /\ \* Select newest candidate and make it canonical.
-          \* library_book.rs:357-374
-          bookMain' = newest
+           \* library_book.rs:357-374
+           bookMain' = newest
        /\ \* Delete all conflict siblings after selection.
           \* library_book.rs:376-381
           bookConflicts' = {}
@@ -294,10 +297,11 @@ SaveBookBegin ==
 SaveBookFinish ==
     /\ bookSaveStage = "ready"
     /\ nextTime <= MaxTime
-    /\ \* Serialize memory state to a temp file and rename to book.dat.
-       \* library_book.rs:577-594
-       bookMain' = [edits |-> memBook.edits, mtime |-> nextTime]
-    /\ bookLastModified' = nextTime
+    /\ \E persistedMTime \in {bookMain.mtime, nextTime} :
+       /\ \* Serialize memory state to a temp file and rename to book.dat.
+          \* library_book.rs:577-594
+          bookMain' = [edits |-> memBook.edits, mtime |-> persistedMTime]
+       /\ bookLastModified' = persistedMTime
     /\ bookSaveStage' = "idle"
     /\ bookSaveIntent' = {}
     /\ nextTime' = nextTime + 1
@@ -492,16 +496,20 @@ InjectTranslationConflict(vid, ts, words) ==
 \* Reference: library/src/library/library_book.rs:101-128
 \* --------------------------------------------------------------------------
 LoadTranslationFromMetadata ==
-    /\ translationConflicts /= {}
-    /\ nextTime <= MaxTime
-    /\ LET merged == LoadedTranslationVersions IN
-       /\ \* Merge conflict histories by timestamp and rewrite canonical file.
-          \* library_book.rs:105-125 and translation.rs:399-479
-          translationMain' = [versions |-> merged, mtime |-> nextTime]
-       /\ translationConflicts' = {}
-       /\ memTranslation' = [versions |-> merged]
-       /\ translationLastModified' = nextTime
-    /\ nextTime' = nextTime + 1
+    /\ IF translationConflicts /= {}
+       THEN /\ nextTime <= MaxTime
+            /\ LET merged == LoadedTranslationVersions IN
+               /\ \* Merge conflict histories by timestamp and rewrite canonical file.
+                  \* library_book.rs:105-125 and translation.rs:399-479
+                  translationMain' = [versions |-> merged, mtime |-> nextTime]
+               /\ translationConflicts' = {}
+               /\ memTranslation' = [versions |-> merged]
+               /\ translationLastModified' = nextTime
+            /\ nextTime' = nextTime + 1
+       ELSE /\ UNCHANGED <<translationMain, translationConflicts>>
+            /\ memTranslation' = [versions |-> translationMain.versions]
+            /\ translationLastModified' = translationMain.mtime
+            /\ UNCHANGED nextTime
     /\ UNCHANGED <<bookMain, bookConflicts,
                    stateMain, stateConflicts,
                    dictionaryMain, dictionaryConflicts,
@@ -543,8 +551,9 @@ SaveTranslationBegin ==
 SaveTranslationFinish ==
     /\ translationSaveStage = "ready"
     /\ nextTime <= MaxTime
-    /\ translationMain' = [versions |-> memTranslation.versions, mtime |-> nextTime]
-    /\ translationLastModified' = nextTime
+    /\ \E persistedMTime \in {translationMain.mtime, nextTime} :
+       /\ translationMain' = [versions |-> memTranslation.versions, mtime |-> persistedMTime]
+       /\ translationLastModified' = persistedMTime
     /\ translationSaveStage' = "idle"
     /\ translationSaveIntent' = {}
     /\ nextTime' = nextTime + 1
@@ -577,13 +586,14 @@ InjectDictionaryConflict(d) ==
 \* Reference: library/src/library/library_dictionary.rs:121-149
 \* --------------------------------------------------------------------------
 LoadDictionaryFromMetadata ==
-    /\ dictionaryConflicts /= {}
-    /\ nextTime <= MaxTime
-    /\ \* Merge each conflict dictionary into the base dictionary.
-       \* library_dictionary.rs:121-149
-       dictionaryMain' = [entries |-> LoadedDictionaryEntries, mtime |-> nextTime]
-    /\ dictionaryConflicts' = {}
-    /\ nextTime' = nextTime + 1
+    /\ IF dictionaryConflicts /= {}
+       THEN /\ nextTime <= MaxTime
+            /\ \* Merge each conflict dictionary into the base dictionary.
+               \* library_dictionary.rs:121-149
+               dictionaryMain' = [entries |-> LoadedDictionaryEntries, mtime |-> nextTime]
+            /\ dictionaryConflicts' = {}
+            /\ nextTime' = nextTime + 1
+       ELSE /\ UNCHANGED <<dictionaryMain, dictionaryConflicts, nextTime>>
     /\ UNCHANGED <<bookMain, bookConflicts,
                    stateMain, stateConflicts,
                    translationMain, translationConflicts,

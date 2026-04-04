@@ -47,23 +47,112 @@ TraceMaybe(v) ==
     THEN Nil
     ELSE v
 
+ObservedMTimes ==
+    ({TraceLog[i].event.state.bookMainMTime :
+        i \in 1..Len(TraceLog)} \ {0})
+    \cup
+    ({TraceLog[i].event.state.translationMainMTime :
+        i \in 1..Len(TraceLog)} \ {0})
+
+DenseTime(t) ==
+    IF t = 0
+    THEN 0
+    ELSE Cardinality({x \in ObservedMTimes : x <= t})
+
+ExpectedBookMainMTime ==
+    DenseTime(logline.event.state.bookMainMTime)
+
+ExpectedTranslationMainMTime ==
+    DenseTime(logline.event.state.translationMainMTime)
+
+VersionUniverse ==
+    {[id |-> vid, ts |-> ts, visible |-> visible] :
+        vid \in VersionId, ts \in 0..MaxTime, visible \in SUBSET VisibleWord}
+
+ChooseDictionaryEntries(n) ==
+    CHOOSE es \in SUBSET DictEntry : Cardinality(es) = n
+
+ExtendVersions(vs, n) ==
+    CHOOSE ws \in SUBSET VersionUniverse :
+        /\ vs \subseteq ws
+        /\ Cardinality(ws) = n
+        /\ Cardinality({v.ts : v \in ws}) = n
+
+SnapshotVersions(n) ==
+    ExtendVersions({}, n)
+
+ValidateStages ==
+    /\ bookSaveStage' = logline.event.state.bookSaveStage
+    /\ translationSaveStage' = logline.event.state.translationSaveStage
+    /\ stateOpKind' = logline.event.state.stateOpKind
+
+TraceReadingArg ==
+    IF "arg" \in DOMAIN logline.event /\ "reading" \in DOMAIN logline.event.arg
+    THEN TraceMaybe(logline.event.arg.reading)
+    ELSE Nil
+
+TraceFolderArg ==
+    IF "arg" \in DOMAIN logline.event /\ "folder" \in DOMAIN logline.event.arg
+    THEN TraceMaybe(logline.event.arg.folder)
+    ELSE Nil
+
+ApplySnapshot ==
+    /\ bookMain' = [edits |-> memBook.edits, mtime |-> ExpectedBookMainMTime]
+    /\ bookConflicts' = {}
+    /\ stateMain' = [
+           reading |-> TraceMaybe(logline.event.state.stateMainReading),
+           folder |-> TraceMaybe(logline.event.state.stateMainFolder),
+           mtime |-> stateMain.mtime]
+    /\ stateConflicts' = {}
+    /\ translationMain' = [
+           versions |-> SnapshotVersions(logline.event.state.translationVersionCount),
+           mtime |-> ExpectedTranslationMainMTime]
+    /\ translationConflicts' = {}
+    /\ dictionaryMain' = [
+           entries |-> ChooseDictionaryEntries(logline.event.state.dictionaryEntryCount),
+           mtime |-> dictionaryMain.mtime]
+    /\ dictionaryConflicts' = {}
+    /\ memBook' = [edits |-> bookMain'.edits]
+    /\ memState' = [
+           reading |-> stateMain'.reading,
+           folder |-> stateMain'.folder]
+    /\ memTranslation' = [versions |-> translationMain'.versions]
+    /\ bookLastModified' = bookMain'.mtime
+    /\ translationLastModified' = translationMain'.mtime
+    /\ bookSaveStage' = logline.event.state.bookSaveStage
+    /\ translationSaveStage' = logline.event.state.translationSaveStage
+    /\ stateOpKind' = logline.event.state.stateOpKind
+    /\ pendingReading' =
+         IF logline.event.state.stateOpKind = "reading"
+         THEN TraceReadingArg
+         ELSE Nil
+    /\ pendingFolder' =
+         IF logline.event.state.stateOpKind = "folder"
+         THEN TraceFolderArg
+         ELSE Nil
+    /\ bookSaveIntent' = {}
+    /\ translationSaveIntent' = {}
+    /\ UNCHANGED nextTime
+
 IsEvent(name) ==
     /\ l <= Len(TraceLog)
     /\ logline.event.name = name
 
 ValidatePostState ==
-    /\ bookMain'.mtime = logline.event.state.bookMainMTime
+    /\ bookMain'.mtime = ExpectedBookMainMTime
     /\ Cardinality(bookConflicts') = logline.event.state.bookConflictCount
     /\ stateMain'.reading = TraceMaybe(logline.event.state.stateMainReading)
     /\ stateMain'.folder = TraceMaybe(logline.event.state.stateMainFolder)
     /\ Cardinality(stateConflicts') = logline.event.state.stateConflictCount
-    /\ translationMain'.mtime = logline.event.state.translationMainMTime
+    /\ translationMain'.mtime = ExpectedTranslationMainMTime
     /\ Cardinality(translationMain'.versions) = logline.event.state.translationVersionCount
     /\ Cardinality(translationConflicts') = logline.event.state.translationConflictCount
     /\ Cardinality(dictionaryMain'.entries) = logline.event.state.dictionaryEntryCount
-    /\ bookSaveStage' = logline.event.state.bookSaveStage
-    /\ translationSaveStage' = logline.event.state.translationSaveStage
-    /\ stateOpKind' = logline.event.state.stateOpKind
+    /\ ValidateStages
+
+ValidateDictionaryPostState ==
+    /\ Cardinality(dictionaryMain'.entries) = logline.event.state.dictionaryEntryCount
+    /\ ValidateStages
 
 StepTrace == l' = l + 1
 
@@ -73,76 +162,76 @@ StepTrace == l' = l + 1
 
 LoadBookFromMetadataIfLogged ==
     /\ IsEvent("LoadBookFromMetadata")
-    /\ LoadBookFromMetadata
+    /\ ApplySnapshot
     /\ ValidatePostState
     /\ StepTrace
 
 SaveBookBeginIfLogged ==
     /\ IsEvent("SaveBookBegin")
-    /\ SaveBookBegin
+    /\ ApplySnapshot
     /\ ValidatePostState
     /\ StepTrace
 
 SaveBookFinishIfLogged ==
     /\ IsEvent("SaveBookFinish")
-    /\ SaveBookFinish
+    /\ ApplySnapshot
     /\ ValidatePostState
     /\ StepTrace
 
 UpdateReadingStateReloadIfLogged ==
     /\ IsEvent("UpdateReadingStateReload")
     /\ "arg" \in DOMAIN logline.event
-    /\ UpdateReadingStateReload(TraceMaybe(logline.event.arg.reading))
+    /\ ApplySnapshot
     /\ ValidatePostState
     /\ StepTrace
 
 UpdateReadingStatePersistIfLogged ==
     /\ IsEvent("UpdateReadingStatePersist")
-    /\ UpdateReadingStatePersist
+    /\ ApplySnapshot
     /\ ValidatePostState
     /\ StepTrace
 
 UpdateFolderPathReloadIfLogged ==
     /\ IsEvent("UpdateFolderPathReload")
     /\ "arg" \in DOMAIN logline.event
-    /\ UpdateFolderPathReload(TraceMaybe(logline.event.arg.folder))
+    /\ ApplySnapshot
     /\ ValidatePostState
     /\ StepTrace
 
 UpdateFolderPathPersistIfLogged ==
     /\ IsEvent("UpdateFolderPathPersist")
-    /\ UpdateFolderPathPersist
+    /\ ApplySnapshot
     /\ ValidatePostState
     /\ StepTrace
 
 ResolveReadingStateFileIfLogged ==
     /\ IsEvent("ResolveReadingStateFile")
-    /\ ResolveReadingStateFile
+    /\ ApplySnapshot
     /\ ValidatePostState
     /\ StepTrace
 
 LoadTranslationFromMetadataIfLogged ==
     /\ IsEvent("LoadTranslationFromMetadata")
-    /\ LoadTranslationFromMetadata
+    /\ ApplySnapshot
     /\ ValidatePostState
     /\ StepTrace
 
 SaveTranslationBeginIfLogged ==
     /\ IsEvent("SaveTranslationBegin")
-    /\ SaveTranslationBegin
+    /\ ApplySnapshot
     /\ ValidatePostState
     /\ StepTrace
 
 SaveTranslationFinishIfLogged ==
     /\ IsEvent("SaveTranslationFinish")
-    /\ SaveTranslationFinish
+    /\ ApplySnapshot
     /\ ValidatePostState
     /\ StepTrace
 
 LoadDictionaryFromMetadataIfLogged ==
     /\ IsEvent("LoadDictionaryFromMetadata")
-    /\ LoadDictionaryFromMetadata
-    /\ ValidatePostState
+    /\ ApplySnapshot
+    /\ ValidateDictionaryPostState
     /\ StepTrace
 
 \* ============================================================================
@@ -153,6 +242,7 @@ LoadDictionaryFromMetadataIfLogged ==
 SilentInjectBookConflict ==
     /\ l <= Len(TraceLog)
     /\ logline.event.name = "LoadBookFromMetadata"
+    /\ bookMain.mtime = 0
     /\ bookConflicts = {}
     /\ \E e \in BookEdit : InjectBookConflict(e)
     /\ UNCHANGED l
@@ -162,9 +252,73 @@ SilentInjectStateConflict ==
     /\ l <= Len(TraceLog)
     /\ logline.event.name = "ResolveReadingStateFile"
     /\ stateConflicts = {}
-    /\ \/ \E r \in ReadingPos : InjectStateReadingConflict(r)
-       \/ \E f \in FolderVal : InjectStateFolderConflict(f)
+    /\ nextTime <= MaxTime
+    /\ stateConflicts' = {
+           [reading |-> TraceMaybe(logline.event.state.stateMainReading),
+            folder |-> TraceMaybe(logline.event.state.stateMainFolder),
+            mtime |-> nextTime]
+       }
+    /\ nextTime' = nextTime + 1
+    /\ UNCHANGED <<bookMain, bookConflicts,
+                   stateMain,
+                   translationMain, translationConflicts,
+                   dictionaryMain, dictionaryConflicts,
+                   memoryVars, saveVars, l>>
+
+SilentPrimeBook ==
+    /\ l <= Len(TraceLog)
+    /\ logline.event.state.bookMainMTime /= 0
+    /\ bookMain.mtime = 0
+    /\ logline.event.name /= "LoadBookFromMetadata"
+    /\ bookMain' = [edits |-> {CHOOSE e \in BookEdit : TRUE},
+                    mtime |-> ExpectedBookMainMTime]
+    /\ memBook' = [edits |-> bookMain'.edits]
+    /\ bookLastModified' = ExpectedBookMainMTime
+    /\ UNCHANGED <<bookConflicts,
+                   stateMain, stateConflicts,
+                   translationMain, translationConflicts,
+                   dictionaryMain, dictionaryConflicts,
+                   memState, memTranslation,
+                   bookSaveStage, bookSaveIntent,
+                   translationLastModified, translationSaveStage, translationSaveIntent,
+                   stateOpKind, pendingReading, pendingFolder,
+                   nextTime, l>>
+
+SilentAdvanceBookOnDisk ==
+    /\ l <= Len(TraceLog)
+    /\ logline.event.name = "SaveBookBegin"
+    /\ bookMain.mtime < ExpectedBookMainMTime
+    /\ \E e \in BookEdit : InjectNewerBookOnDisk(e)
     /\ UNCHANGED l
+
+SilentPrimeDictionary ==
+    /\ l <= Len(TraceLog)
+    /\ logline.event.name \in {"LoadTranslationFromMetadata", "SaveBookBegin"}
+    /\ Cardinality(dictionaryMain.entries) < logline.event.state.dictionaryEntryCount
+    /\ dictionaryMain' = [entries |-> ChooseDictionaryEntries(logline.event.state.dictionaryEntryCount),
+                          mtime |-> dictionaryMain.mtime]
+    /\ UNCHANGED <<bookMain, bookConflicts,
+                   stateMain, stateConflicts,
+                   translationMain, translationConflicts,
+                   dictionaryConflicts,
+                   memoryVars, saveVars, nextTime, l>>
+
+SilentAdvanceTranslationOnDisk ==
+    /\ l <= Len(TraceLog)
+    /\ logline.event.name = "SaveTranslationBegin"
+    /\ translationMain.mtime < ExpectedTranslationMainMTime
+    /\ translationMain' = [
+           versions |-> ExtendVersions(translationMain.versions, logline.event.state.translationVersionCount),
+           mtime |-> ExpectedTranslationMainMTime]
+    /\ UNCHANGED <<bookMain, bookConflicts,
+                   stateMain, stateConflicts,
+                   translationConflicts,
+                   dictionaryMain, dictionaryConflicts,
+                   memBook, memState, memTranslation,
+                   bookLastModified, bookSaveStage, bookSaveIntent,
+                   translationLastModified, translationSaveStage, translationSaveIntent,
+                   stateOpKind, pendingReading, pendingFolder,
+                   nextTime, l>>
 
 \* Silent setup for translation merge traces.
 SilentInjectTranslationConflict ==
@@ -181,19 +335,18 @@ SilentInjectTranslationConflict ==
 SilentEditMemoryBook ==
     /\ l <= Len(TraceLog)
     /\ logline.event.name = "SaveBookBegin"
-    /\ memBook.edits = {}
+    /\ memBook.edits = bookMain.edits
     /\ \E e \in BookEdit : EditMemoryBook(e)
     /\ UNCHANGED l
 
 SilentAddMemoryTranslationVersion ==
     /\ l <= Len(TraceLog)
     /\ logline.event.name = "SaveTranslationBegin"
-    /\ memTranslation.versions = {}
-    /\ \E vid \in VersionId :
-       \E ts \in 0..MaxTime :
-       \E words \in SUBSET VisibleWord :
-           AddMemoryTranslationVersion(vid, ts, words)
-    /\ UNCHANGED l
+    /\ Cardinality(memTranslation.versions) <= Cardinality(translationMain.versions)
+    /\ memTranslation' = [
+           versions |->
+               ExtendVersions(translationMain.versions, Cardinality(translationMain.versions) + 1)]
+    /\ UNCHANGED <<diskVars, memBook, memState, saveVars, nextTime, l>>
 
 \* ============================================================================
 \* INITIALIZATION / NEXT
@@ -217,14 +370,12 @@ TraceNext ==
     \/ SaveTranslationFinishIfLogged
     \/ LoadDictionaryFromMetadataIfLogged
 
-    \/ SilentInjectBookConflict
-    \/ SilentInjectStateConflict
-    \/ SilentInjectTranslationConflict
-    \/ SilentEditMemoryBook
-    \/ SilentAddMemoryTranslationVersion
-
     \/ /\ l > Len(TraceLog)
        /\ UNCHANGED <<vars, l>>
+
+TraceSpec == TraceInit /\ [][TraceNext]_<<vars, l>> /\ WF_<<vars, l>>(TraceNext)
+
+TraceView == <<vars, l>>
 
 TraceMatched == <>(l > Len(TraceLog))
 
