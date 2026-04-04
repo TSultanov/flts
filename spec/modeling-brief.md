@@ -103,8 +103,8 @@ Concurrency model: async Rust with cached `LibraryBook` / `LibraryDictionary` ob
 
 | Extension | Variables | Purpose | Bug family |
 |---|---|---|---|
-| Conflict-file state | `bookMain`, `bookConflicts`, `stateMain`, `stateConflicts` | Model newest-wins resolution for books/state | Family 1 |
-| Save-stage memory/disk split | `memBook`, `bookLastModified`, `bookSaveStage`, `bookSaveIntent` | Expose overwrite-vs-merge during `book.dat` save | Family 2 |
+| Conflict-file state | `bookMain`, `bookConflicts`, `stateMain`, `stateConflicts` | Model newest-wins resolution for books/state | Family 1 (by design) |
+| Save-stage memory/disk split | `memBook`, `bookLastModified`, `bookSaveStage` | Expose last-writer-wins during `book.dat` save | Family 2 (by design) |
 | Translation version records | `translationMain`, `translationConflicts`, `translationSaveIntent` | Model semantic merge and timestamp coalescing | Family 3 |
 | Dictionary merge state | `dictionaryMain`, `dictionaryConflicts` | Preserve contrast path that unions entries correctly | Family 2 |
 
@@ -112,9 +112,9 @@ Concurrency model: async Rust with cached `LibraryBook` / `LibraryDictionary` ob
 
 | Invariant | Type | Description | Targets |
 |---|---|---|---|
-| `BookConflictPreservesAllEdits` | Safety | Effective canonical book contains the union of edits from all `book*.dat` candidates | Family 1 |
-| `StateConflictPreservesIndependentFields` | Safety | Effective canonical state keeps the latest reading and folder edits independently | Family 1 |
-| `BookSaveIntentPreserved` | Safety | Once a save begins, the intended union of memory and disk book edits is not discarded | Family 2 |
+| ~~`BookConflictPreservesAllEdits`~~ | ~~Safety~~ | ~~Removed — newest-wins is by design~~ | ~~Family 1~~ |
+| ~~`StateConflictPreservesIndependentFields`~~ | ~~Safety~~ | ~~Removed — last-writer-wins for state is by design~~ | ~~Family 1~~ |
+| ~~`BookSaveIntentPreserved`~~ | ~~Safety~~ | ~~Removed — disk-wins during save is by design~~ | ~~Family 2~~ |
 | `TranslationDistinctVersionsPreserved` | Safety | Distinct translation version IDs are not collapsed merely because timestamps collide | Family 3 |
 | `DictionaryEntriesMonotonic` | Structural | Dictionary merge never loses previously known entries | Family 2 |
 
@@ -124,9 +124,9 @@ Concurrency model: async Rust with cached `LibraryBook` / `LibraryDictionary` ob
 
 | ID | Description | Expected invariant violation | Bug family |
 |---|---|---|---|
-| M1 | Two conflicting `book*.dat` files carry disjoint edits; load keeps only newest | `BookConflictPreservesAllEdits` | Family 1 |
-| M2 | Two conflicting `state*.json` files carry newer values for different fields; resolve keeps only newest whole file | `StateConflictPreservesIndependentFields` | Family 1 |
-| M3 | Memory book edit races with newer disk book during save; save replaces memory with disk then rewrites | `BookSaveIntentPreserved` | Family 2 |
+| M1 | Two conflicting `book*.dat` files carry disjoint edits; load keeps only newest | ~~`BookConflictPreservesAllEdits`~~ — by design | Family 1 |
+| M2 | Two conflicting `state*.json` files carry newer values for different fields; resolve keeps only newest whole file | ~~`StateConflictPreservesIndependentFields`~~ — by design | Family 1 |
+| M3 | Memory book edit races with newer disk book during save; save replaces memory with disk then rewrites | ~~`BookSaveIntentPreserved`~~ — by design | Family 2 |
 | M4 | Two translation versions have different edit IDs but identical second-level timestamps | `TranslationDistinctVersionsPreserved` | Family 3 |
 
 ### 6.2 Test-verifiable

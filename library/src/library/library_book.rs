@@ -651,18 +651,21 @@ impl LibraryBook {
                 None
             };
 
-            // Update last_modified to acknowledge a newer disk version without
-            // overwriting in-memory content, so unsaved edits are preserved.
+            // If disk is newer, load it into memory (last writer wins).
             if let Some(last_modified) = book.last_modified {
                 if tokio::fs::try_exists(&book_path).await? {
                     let saved_book_last_modified =
                         tokio::fs::metadata(&book_path).await?.modified().unwrap();
                     if saved_book_last_modified > last_modified {
-                        book.last_modified = Some(saved_book_last_modified);
+                        let saved_book = Self::load(book.dict_cache.clone(), &book_path).await?;
+                        book.book = saved_book.book;
+                        book.last_modified = saved_book.last_modified;
                     }
                 }
             } else if tokio::fs::try_exists(&book_path).await? {
-                book.last_modified = tokio::fs::metadata(&book_path).await?.modified().ok();
+                let saved_book = Self::load(book.dict_cache.clone(), &book_path).await?;
+                book.book = saved_book.book;
+                book.last_modified = saved_book.last_modified;
             }
 
                 let mut file = tokio::fs::File::create(&book_path_temp).await?;

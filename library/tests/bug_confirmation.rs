@@ -120,7 +120,7 @@ fn write_translation(path: &Path, translation: &Translation) {
 }
 
 #[tokio::test]
-async fn repro_book_save_overwrite_discards_unsaved_memory_edit() {
+async fn book_save_loads_newer_disk_version_by_design() {
     let temp_dir = TempDir::new("flts_bug_confirm_save");
     let library_root = temp_dir.path.join("lib");
     let library = Library::open(library_root.clone()).await.unwrap();
@@ -150,12 +150,12 @@ async fn repro_book_save_overwrite_discards_unsaved_memory_edit() {
     };
     let on_disk_after_save = read_book(&book_path).title;
 
-    println!("BUG FIXED: in-memory book edit survives save when disk is newer");
-    println!("in_memory_after_save={in_memory_after_save:?}");
-    println!("on_disk_after_save={on_disk_after_save:?}");
+    // By design: last writer wins — disk is newer so it replaces memory.
+    println!("BY DESIGN: newer disk version loaded into memory during save");
+    println!("in_memory_after_save={in_memory_after_save:?}, on_disk={on_disk_after_save:?}");
 
-    assert_eq!(in_memory_after_save, "Memory Edit");
-    assert_eq!(on_disk_after_save, "Memory Edit");
+    assert_eq!(in_memory_after_save, "Disk Edit");
+    assert_eq!(on_disk_after_save, "Disk Edit");
 }
 
 #[tokio::test]

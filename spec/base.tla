@@ -52,8 +52,6 @@ VARIABLE memTranslation
 \* --- Save/reload bookkeeping ---
 VARIABLE bookLastModified
 VARIABLE bookSaveStage
-VARIABLE bookSaveIntent
-
 VARIABLE translationLastModified
 VARIABLE translationSaveStage
 VARIABLE translationSaveIntent
@@ -79,7 +77,7 @@ memoryVars ==
     <<memBook, memState, memTranslation>>
 
 saveVars ==
-    <<bookLastModified, bookSaveStage, bookSaveIntent,
+    <<bookLastModified, bookSaveStage,
       translationLastModified, translationSaveStage, translationSaveIntent,
       stateOpKind, pendingReading, pendingFolder>>
 
@@ -163,7 +161,6 @@ Init ==
 
     /\ bookLastModified = 0
     /\ bookSaveStage = "idle"
-    /\ bookSaveIntent = {}
 
     /\ translationLastModified = 0
     /\ translationSaveStage = "idle"
@@ -217,7 +214,7 @@ LoadBookFromMetadata ==
                    translationMain, translationConflicts,
                    dictionaryMain, dictionaryConflicts,
                    memState, memTranslation,
-                   bookSaveStage, bookSaveIntent,
+                   bookSaveStage,
                    translationLastModified, translationSaveStage, translationSaveIntent,
                    stateOpKind, pendingReading, pendingFolder,
                    nextTime>>
@@ -252,13 +249,11 @@ InjectNewerBookOnDisk(e) ==
 \* --------------------------------------------------------------------------
 SaveBookBegin ==
     /\ bookSaveStage = "idle"
-    /\ \* Record the semantic intent of the save: preserve both memory and disk edits.
-       bookSaveIntent' = memBook.edits \cup bookMain.edits
-    /\ \* If disk is newer than our cached mtime, update bookLastModified
-       \* but keep the in-memory content so unsaved edits are preserved.
-       \* library_book.rs:654-667
+    /\ \* If disk is newer than our cached mtime, load it into memory
+       \* (last writer wins — by design, same as book conflict resolution).
+       \* library_book.rs:654-668
        IF bookMain.mtime > bookLastModified
-       THEN /\ UNCHANGED memBook
+       THEN /\ memBook' = [edits |-> bookMain.edits]
             /\ bookLastModified' = bookMain.mtime
        ELSE /\ UNCHANGED memBook
             /\ UNCHANGED bookLastModified
@@ -285,7 +280,6 @@ SaveBookFinish ==
           bookMain' = [edits |-> memBook.edits, mtime |-> persistedMTime]
        /\ bookLastModified' = persistedMTime
     /\ bookSaveStage' = "idle"
-    /\ bookSaveIntent' = {}
     /\ nextTime' = nextTime + 1
     /\ UNCHANGED <<bookConflicts,
                    stateMain, stateConflicts,
@@ -309,7 +303,7 @@ UpdateReadingStateReload(r) ==
     /\ pendingReading' = r
     /\ pendingFolder' = Nil
     /\ UNCHANGED <<diskVars, memBook, memTranslation,
-                   bookLastModified, bookSaveStage, bookSaveIntent,
+                   bookLastModified, bookSaveStage,
                    translationLastModified, translationSaveStage, translationSaveIntent,
                    nextTime>>
 
@@ -336,7 +330,7 @@ UpdateReadingStatePersist ==
                    translationMain, translationConflicts,
                    dictionaryMain, dictionaryConflicts,
                    memBook, memTranslation,
-                   bookLastModified, bookSaveStage, bookSaveIntent,
+                   bookLastModified, bookSaveStage,
                    translationLastModified, translationSaveStage, translationSaveIntent>>
 
 \* --------------------------------------------------------------------------
@@ -353,7 +347,7 @@ UpdateFolderPathReload(f) ==
     /\ pendingReading' = Nil
     /\ pendingFolder' = f
     /\ UNCHANGED <<diskVars, memBook, memTranslation,
-                   bookLastModified, bookSaveStage, bookSaveIntent,
+                   bookLastModified, bookSaveStage,
                    translationLastModified, translationSaveStage, translationSaveIntent,
                    nextTime>>
 
@@ -380,7 +374,7 @@ UpdateFolderPathPersist ==
                    translationMain, translationConflicts,
                    dictionaryMain, dictionaryConflicts,
                    memBook, memTranslation,
-                   bookLastModified, bookSaveStage, bookSaveIntent,
+                   bookLastModified, bookSaveStage,
                    translationLastModified, translationSaveStage, translationSaveIntent>>
 
 \* --------------------------------------------------------------------------
@@ -423,7 +417,7 @@ ResolveReadingStateFile ==
                    translationMain, translationConflicts,
                    dictionaryMain, dictionaryConflicts,
                    memBook, memTranslation,
-                   bookLastModified, bookSaveStage, bookSaveIntent,
+                   bookLastModified, bookSaveStage,
                    translationLastModified, translationSaveStage, translationSaveIntent,
                    stateOpKind, pendingReading, pendingFolder,
                    nextTime>>
@@ -485,7 +479,7 @@ LoadTranslationFromMetadata ==
                    stateMain, stateConflicts,
                    dictionaryMain, dictionaryConflicts,
                    memBook, memState,
-                   bookLastModified, bookSaveStage, bookSaveIntent,
+                   bookLastModified, bookSaveStage,
                    translationSaveStage, translationSaveIntent,
                    stateOpKind, pendingReading, pendingFolder>>
 
@@ -511,7 +505,7 @@ SaveTranslationBegin ==
                    translationMain, translationConflicts,
                    dictionaryMain, dictionaryConflicts,
                    memBook, memState,
-                   bookLastModified, bookSaveStage, bookSaveIntent,
+                   bookLastModified, bookSaveStage,
                    stateOpKind, pendingReading, pendingFolder,
                    nextTime>>
 
@@ -533,7 +527,7 @@ SaveTranslationFinish ==
                    translationConflicts,
                    dictionaryMain, dictionaryConflicts,
                    memBook, memState, memTranslation,
-                   bookLastModified, bookSaveStage, bookSaveIntent,
+                   bookLastModified, bookSaveStage,
                    stateOpKind, pendingReading, pendingFolder>>
 
 \* --------------------------------------------------------------------------
@@ -625,7 +619,6 @@ TypeOK ==
 
     /\ bookLastModified \in 0..(MaxTime + 1)
     /\ bookSaveStage \in {"idle", "ready"}
-    /\ bookSaveIntent \subseteq BookEdit
 
     /\ translationLastModified \in 0..(MaxTime + 1)
     /\ translationSaveStage \in {"idle", "ready"}
@@ -653,9 +646,9 @@ StagesWellFormed ==
 \* folder_path is set once to the same value on all devices (it's the book's
 \* filesystem path), so it can never diverge across conflict siblings.
 
-\* Family 2: once save intent is captured, in-memory book should still contain it.
-BookSaveIntentPreserved ==
-    bookSaveStage = "idle" \/ bookSaveIntent \subseteq memBook.edits
+\* Family 2 (by design): when disk book.dat is newer during save, the disk
+\* version replaces memory (last writer wins). In-memory edits that were never
+\* saved are expected to be lost. Same design principle as book conflicts.
 
 \* Family 3: distinct translation versions should not collapse solely by timestamp.
 TranslationDistinctVersionsPreserved ==

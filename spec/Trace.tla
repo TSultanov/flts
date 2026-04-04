@@ -130,7 +130,6 @@ ApplySnapshot ==
          IF logline.event.state.stateOpKind = "folder"
          THEN TraceFolderArg
          ELSE Nil
-    /\ bookSaveIntent' = {}
     /\ translationSaveIntent' = {}
     /\ UNCHANGED nextTime
 
@@ -279,7 +278,7 @@ SilentPrimeBook ==
                    translationMain, translationConflicts,
                    dictionaryMain, dictionaryConflicts,
                    memState, memTranslation,
-                   bookSaveStage, bookSaveIntent,
+                   bookSaveStage,
                    translationLastModified, translationSaveStage, translationSaveIntent,
                    stateOpKind, pendingReading, pendingFolder,
                    nextTime, l>>
@@ -315,7 +314,7 @@ SilentAdvanceTranslationOnDisk ==
                    translationConflicts,
                    dictionaryMain, dictionaryConflicts,
                    memBook, memState, memTranslation,
-                   bookLastModified, bookSaveStage, bookSaveIntent,
+                   bookLastModified, bookSaveStage,
                    translationLastModified, translationSaveStage, translationSaveIntent,
                    stateOpKind, pendingReading, pendingFolder,
                    nextTime, l>>
