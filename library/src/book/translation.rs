@@ -22,10 +22,7 @@ use std::{
     iter,
     time::Instant,
 };
-use std::{
-    collections::HashSet,
-    io::{self, Write},
-};
+use std::io::{self, Write};
 
 use super::soa_helpers::*;
 
@@ -302,6 +299,7 @@ impl Translation {
         &mut self,
         paragraph_index: usize,
         translation: &ParagraphTranslationView,
+        timestamp: u64,
     ) {
         if paragraph_index >= self.paragraphs.len() {
             self.paragraphs.extend(iter::repeat_n(
@@ -313,7 +311,7 @@ impl Translation {
         let new_prev_version = self.paragraphs[paragraph_index];
 
         let new_paragraph = ParagraphTranslation {
-            timestamp: translation.timestamp,
+            timestamp,
             previous_version: new_prev_version,
             sentences: VecSlice::empty(),
             model: translation.model,
@@ -400,6 +398,18 @@ impl Translation {
         true
     }
 
+    fn paragraph_content_matches(a: &ParagraphTranslationView, b: &ParagraphTranslationView) -> bool {
+        if a.sentence_count() != b.sentence_count() {
+            return false;
+        }
+        for i in 0..a.sentence_count() {
+            if a.sentence_view(i).full_translation != b.sentence_view(i).full_translation {
+                return false;
+            }
+        }
+        true
+    }
+
     pub fn merge(&self, other: &Self) -> Self {
         let mut merged_translation = Self::create(&self.source_language, &self.target_language);
         merged_translation.id = self.id;
@@ -418,17 +428,23 @@ impl Translation {
                     }
                 }
 
-                let existing_versions = versions
-                    .iter()
-                    .map(|(timestamp, _)| *timestamp)
-                    .collect::<HashSet<_>>();
-
                 let mut other_visible_words: AHashSet<usize> = AHashSet::new();
                 curr_paragraph = other_paragraph;
 
                 loop {
                     let prev_paragraph = curr_paragraph.get_previous_version();
-                    if existing_versions.contains(&curr_paragraph.timestamp) {
+                    // Check if a self version shares this timestamp AND has identical content.
+                    // Same timestamp + same content = true duplicate (merge visible_words only).
+                    // Same timestamp + different content = collision (keep both, bump later).
+                    let is_true_dup = versions
+                        .iter()
+                        .find(|(ts, _)| *ts == curr_paragraph.timestamp)
+                        .map(|(_, self_view)| {
+                            Self::paragraph_content_matches(self_view, &curr_paragraph)
+                        })
+                        .unwrap_or(false);
+
+                    if is_true_dup {
                         other_visible_words.extend(curr_paragraph.visible_words().iter().copied());
                     } else {
                         versions.push((curr_paragraph.timestamp, curr_paragraph));
@@ -441,9 +457,16 @@ impl Translation {
 
                 versions.sort_by_key(|(timestamp, _)| *timestamp);
 
-                for (_ts, translation) in versions {
+                // Resolve timestamp collisions: bump later entries by +1, cascading.
+                for i in 1..versions.len() {
+                    if versions[i].0 <= versions[i - 1].0 {
+                        versions[i].0 = versions[i - 1].0 + 1;
+                    }
+                }
+
+                for (ts, translation) in versions {
                     merged_translation
-                        .add_paragraph_translation_from_view(paragraph_idx, &translation);
+                        .add_paragraph_translation_from_view(paragraph_idx, &translation, ts);
                     for word_idx in &other_visible_words {
                         merged_translation.mark_word_visible(paragraph_idx, *word_idx);
                     }
@@ -461,7 +484,7 @@ impl Translation {
                 }
                 versions.sort_by_key(|(ts, _)| *ts);
                 for (_, v) in versions {
-                    merged_translation.add_paragraph_translation_from_view(paragraph_idx, &v);
+                    merged_translation.add_paragraph_translation_from_view(paragraph_idx, &v, v.timestamp);
                 }
             } else if self.paragraph_view(paragraph_idx).is_none()
                 && let Some(other_paragraph) = other.paragraph_view(paragraph_idx)
@@ -476,7 +499,7 @@ impl Translation {
                 }
                 versions.sort_by_key(|(ts, _)| *ts);
                 for (_, v) in versions {
-                    merged_translation.add_paragraph_translation_from_view(paragraph_idx, &v);
+                    merged_translation.add_paragraph_translation_from_view(paragraph_idx, &v, v.timestamp);
                 }
             }
         }

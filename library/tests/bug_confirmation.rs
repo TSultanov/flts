@@ -285,15 +285,19 @@ async fn repro_translation_same_timestamp_conflict_collapses_distinct_version() 
     let latest_text = latest.sentence_view(0).full_translation.to_string();
     let previous = latest.get_previous_version();
 
+    println!("BUG FIXED: both translation versions survive despite same timestamp");
     println!(
-        "BUG REPRODUCED: same-timestamp conflict collapsed a distinct translation variant"
-    );
-    println!(
-        "expected both 'main version' and 'conflict version' to remain, \
-observed latest={latest_text:?}, has_previous_version={}",
+        "latest={latest_text:?}, has_previous_version={}",
         previous.is_some()
     );
 
-    assert_eq!(latest_text, "main version");
-    assert!(previous.is_none());
+    // Both versions must survive: one as latest, one as previous.
+    assert!(previous.is_some());
+    let prev = previous.unwrap();
+    let prev_text = prev.sentence_view(0).full_translation.to_string();
+    let texts: Vec<&str> = vec![&latest_text, &prev_text];
+    assert!(texts.contains(&"main version"));
+    assert!(texts.contains(&"conflict version"));
+    // The collision must have been resolved by bumping one timestamp.
+    assert_ne!(latest.timestamp, prev.timestamp);
 }

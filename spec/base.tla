@@ -137,23 +137,23 @@ FieldwiseState(files) ==
 AllTranslationVersions ==
     UNION {f.versions : f \in TranslationFiles}
 
-VersionsAtTS(vs, ts) ==
-    {v \in vs : v.ts = ts}
-
-MergedVersionAtTS(vs, ts) ==
-    LET same   == VersionsAtTS(vs, ts)
+MergedVersionById(vs, vid) ==
+    LET same   == {v \in vs : v.id = vid}
         chosen == CHOOSE v \in same : TRUE
-    IN [id      |-> chosen.id,
-        ts      |-> ts,
+    IN [id      |-> vid,
+        ts      |-> chosen.ts,
         visible |-> UNION {v.visible : v \in same}]
 
-CollapseByTimestamp(vs) ==
+\* Deduplicate by version ID (content), not timestamp.
+\* Same-ID versions merge visible words; different-ID versions survive
+\* even if their timestamps originally collided.
+CollapseByContent(vs) ==
     IF vs = {}
     THEN {}
-    ELSE {MergedVersionAtTS(vs, ts) : ts \in {v.ts : v \in vs}}
+    ELSE {MergedVersionById(vs, vid) : vid \in {v.id : v \in vs}}
 
 LoadedTranslationVersions ==
-    CollapseByTimestamp(AllTranslationVersions)
+    CollapseByContent(AllTranslationVersions)
 
 AllVersionIds(vs) ==
     {v.id : v \in vs}
@@ -530,7 +530,7 @@ SaveTranslationBegin ==
        \* library_book.rs:484-505
        IF translationMain.mtime > translationLastModified
        THEN /\ memTranslation' = [versions |->
-                    CollapseByTimestamp(memTranslation.versions \cup translationMain.versions)]
+                    CollapseByContent(memTranslation.versions \cup translationMain.versions)]
             /\ translationLastModified' = translationMain.mtime
        ELSE /\ UNCHANGED memTranslation
             /\ UNCHANGED translationLastModified
