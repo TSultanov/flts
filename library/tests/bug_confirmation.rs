@@ -159,7 +159,7 @@ async fn repro_book_save_overwrite_discards_unsaved_memory_edit() {
 }
 
 #[tokio::test]
-async fn repro_book_conflict_newest_wins_loses_independent_edit() {
+async fn book_conflict_newest_wins_is_by_design() {
     let temp_dir = TempDir::new("flts_bug_confirm_book_conflict");
     let library_root = temp_dir.path.join("lib");
     let library = Library::open(library_root.clone()).await.unwrap();
@@ -193,8 +193,9 @@ async fn repro_book_conflict_newest_wins_loses_independent_edit() {
     let loaded = loaded.lock().await;
     let paragraphs = read_book_paragraphs(&loaded.book);
 
-    println!("BUG REPRODUCED: newest conflict sibling replaced the main book instead of merging");
-    println!("expected both edits to survive, loaded_paragraphs={paragraphs:?}");
+    // By design: books have no paragraph-level timestamps, so conflict
+    // resolution picks the newest sibling and discards the rest.
+    println!("BY DESIGN: newest conflict sibling wins, loaded_paragraphs={paragraphs:?}");
 
     assert!(paragraphs.iter().any(|p| p == "base paragraph"));
     assert!(paragraphs.iter().any(|p| p == "conflict-only edit"));

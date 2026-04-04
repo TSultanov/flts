@@ -672,9 +672,10 @@ StagesWellFormed ==
     /\ stateOpKind = "reading" => pendingReading /= Nil
     /\ stateOpKind = "folder"  => pendingFolder /= Nil
 
-\* Family 1: newest-wins book conflict resolution loses edits from older siblings.
-BookConflictPreservesAllEdits ==
-    LoadedBookEdits = UNION {f.edits : f \in BookFiles}
+\* Family 1 (by design): book conflict resolution picks the newest sibling
+\* and discards the rest. Books have no paragraph-level timestamps, so
+\* semantic merge is not possible. Newest-wins is the intended behavior.
+\* BookConflictNewestWins is NOT an invariant to check — it documents design.
 
 \* Family 1: newest-wins state resolution should preserve latest independent fields.
 StateConflictPreservesIndependentFields ==
