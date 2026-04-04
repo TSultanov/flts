@@ -2,3 +2,4 @@ target/
 .vscode/
 .idea/
 traces/
+.specula-output/
