@@ -80,6 +80,10 @@ impl TracedLock for LibraryTranslation {
 }
 
 impl LibraryTranslation {
+    pub fn is_changed(&self) -> bool {
+        self.changed
+    }
+
     fn merge(&mut self, other: LibraryTranslation) {
         let other_t = other.translation;
 
@@ -307,6 +311,15 @@ pub async fn load_book_user_state(path: &Path) -> anyhow::Result<BookUserState> 
 }
 
 impl LibraryBook {
+    pub async fn has_unsaved_changes(&self) -> bool {
+        for t_arc in &self.translations {
+            if t_arc.lock().await.is_changed() {
+                return true;
+            }
+        }
+        false
+    }
+
     async fn reload_user_state(&mut self) -> anyhow::Result<()> {
         self.user_state = load_user_state_from_dir(&self.path).await?;
         Ok(())

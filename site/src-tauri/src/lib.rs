@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use library::library::file_watcher::LibraryWatcher;
 use log::{info, warn};
-use tauri::{Builder, Manager};
+use tauri::{Builder, Manager, RunEvent};
 use tokio::sync::Mutex;
 
 pub mod app;
@@ -96,6 +96,15 @@ pub fn run() {
             app::get_system_definition,
             app::show_system_dictionary,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            if let RunEvent::Exit = event {
+                let app_state = app_handle.state::<Arc<crate::app::AppState>>();
+                let app_state = app_state.inner().clone();
+                tauri::async_runtime::block_on(async move {
+                    app_state.save_all().await;
+                });
+            }
+        });
 }

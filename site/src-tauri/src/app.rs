@@ -173,6 +173,13 @@ impl AppState {
         Ok(())
     }
 
+    pub async fn save_all(&self) {
+        if let Some(library) = self.library.read().await.as_ref() {
+            info!("Saving all dirty books before shutdown");
+            library.save_all().await;
+        }
+    }
+
     async fn get_cache() -> anyhow::Result<TranslationsCache> {
         let dirs = ProjectDirs::from("", "TS", "FLTS").unwrap();
         let cache_dir = dirs.cache_dir();

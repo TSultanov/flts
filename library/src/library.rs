@@ -300,6 +300,18 @@ impl Library {
         Ok(book.book.id)
     }
 
+    pub async fn save_all(&self) {
+        let books: Vec<_> = self.books_cache.read().await.values().cloned().collect();
+        for book_arc in books {
+            let mut book = book_arc.lock().await;
+            if book.has_unsaved_changes().await {
+                if let Err(err) = book.save().await {
+                    log::warn!("Failed to save book on shutdown: {err}");
+                }
+            }
+        }
+    }
+
     pub async fn handle_file_change_event(
         &self,
         event: &LibraryFileChange,
