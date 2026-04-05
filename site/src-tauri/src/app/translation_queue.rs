@@ -159,13 +159,21 @@ impl TranslationQueue {
         model: TranslationModel,
         use_cache: bool,
     ) -> anyhow::Result<usize> {
-        if let Some(id) = self.get_request_id(book_id, paragraph_id).await {
+        // Hold lock across check + insert to prevent TOCTOU race where two
+        // concurrent calls both pass the dedup check and send duplicate requests.
+        let mut state = self.state.lock().await;
+        if let Some(&id) = state.paragraph_request_id_map.get(&(book_id, paragraph_id)) {
             return Ok(id);
         }
 
         let request_id = self.next_request_index.fetch_add(1, Ordering::SeqCst);
+        state
+            .paragraph_request_id_map
+            .insert((book_id, paragraph_id), request_id);
+        drop(state);
 
-        self.translate_tx
+        if let Err(err) = self
+            .translate_tx
             .send_async(TranslationRequest {
                 request_id,
                 book_id,
@@ -173,13 +181,15 @@ impl TranslationQueue {
                 model,
                 use_cache,
             })
-            .await?;
-
-        self.state
-            .lock()
             .await
-            .paragraph_request_id_map
-            .insert((book_id, paragraph_id), request_id);
+        {
+            self.state
+                .lock()
+                .await
+                .paragraph_request_id_map
+                .remove(&(book_id, paragraph_id));
+            return Err(err.into());
+        }
 
         Ok(request_id)
     }
