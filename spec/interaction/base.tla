@@ -13,10 +13,16 @@
 (*   tauri.ts            — eventToReadable (direct payload to store)        *)
 (*                                                                         *)
 (* Bug Families:                                                           *)
-(*   F1 — Stale library reference after config reconfiguration             *)
-(*   F2 — Event ordering / stale snapshot overwrites                       *)
-(*   F3 — Unsaved in-memory modifications / no shutdown persistence        *)
+(*   F1 — Stale library reference after config reconfiguration  [FIXED]    *)
+(*   F2 — Event ordering / stale snapshot overwrites            [PARTIAL]  *)
+(*   F3 — Unsaved in-memory modifications / no shutdown persist [FIXED]    *)
 (*   F4 — Translation lifecycle cross-component atomicity                  *)
+(*                                                                         *)
+(* F1 fix: TranslationQueue::Drop aborts spawned tasks via JoinHandle.     *)
+(* F2 fix: emit_versioned + version check in tauri.ts. Prevents invoke     *)
+(*   races and getterToReadableWithEvents staleness, but does NOT prevent  *)
+(*   eventToReadable regression in FIFO delivery (modeled here).           *)
+(* F3 fix: RunEvent::Exit handler calls save_all() to flush dirty books.   *)
 (***************************************************************************)
 
 EXTENDS Integers, Sequences, FiniteSets, TLC
@@ -94,10 +100,11 @@ VARIABLES
 
 versionVars == <<bookVersion, taskReadVersion>>
 
-\* --- Persistence (F3: No Shutdown Persistence) ---
+\* --- Persistence (F3: Shutdown Persistence) ---
 \* Models in-memory vs on-disk state for dirty tracking.
-\* In the implementation, get_or_create_translation creates in-memory
-\* state without saving; no shutdown handler persists dirty state.
+\* FIX: RunEvent::Exit handler calls save_all() to flush dirty books.
+\* lib.rs:102-108 — block_on(app_state.save_all())
+\* library.rs:303-314 — Library::save_all()
 VARIABLES
     memVersion,     \* [Book -> Nat] — in-memory modification counter
                     \* Incremented by get_or_create_translation, mark_word_visible
@@ -140,28 +147,41 @@ Init ==
 \* ConfigChange (F1: app.rs:104-173)
 \* ========================================================================
 \* Models update_config → eval_config flow:
-\*   1. Sets translation_queue to None (app.rs:112)
+\*   1. Sets translation_queue to None (app.rs:113)
 \*      *self.translation_queue.write().await = None
-\*   2. Creates new Library instance (app.rs:152)
+\*   2. Creates new Library instance (app.rs:153)
 \*      Arc::new(Library::open(PathBuf::from(&library_path)).await?)
-\*   3. Emits library_updated with new library (app.rs:163-166)
-\*      LibraryView::create(self.app.clone(), library.clone())
-\*      ... self.app.emit("library_updated", books)?
+\*   3. Emits library_updated with new library (app.rs:166-167)
 \*
-\* Key: spawned background tasks keep their old Arc<Library> references.
-\* No cancellation mechanism exists (no abort/cancel/JoinHandle found).
+\* F1 FIX: TranslationQueue stores JoinHandles for all spawned tasks.
+\* When dropped (step 1), Drop impl aborts all tasks immediately.
+\* translation_queue.rs:71-77 — impl Drop for TranslationQueue
+\* This prevents workers from continuing with a stale Arc<Library>.
+\* Tauri commands and watcher are NOT affected (they read current lib).
 
 ConfigChange ==
     /\ appAlive
-    \* app.rs:152 — creates new Library, replaces old in AppState
+    \* app.rs:153 — creates new Library, replaces old in AppState
     /\ currentLib' = currentLib + 1
-    \* app.rs:163-166 — eval_config emits with the NEW library
+    \* app.rs:166-167 — eval_config emits with the NEW library
     /\ truthVersion' = truthVersion + 1
     /\ pendingEvents' = Append(pendingEvents, truthVersion + 1)
-    \* Existing tasks keep their stale taskLib — this is the F1 bug
-    /\ UNCHANGED <<taskLib, taskVars, taskSnapshot,
-                   uiVersion, maxDeliveredVersion,
-                   versionVars, persistVars>>
+    \* F1 FIX: abort all worker tasks — they captured the old library
+    \* translation_queue.rs:71-77 — Drop calls abort() on all JoinHandles
+    /\ pc' = [t \in Task |->
+        IF taskType[t] = "worker" THEN "idle" ELSE pc[t]]
+    /\ taskType' = [t \in Task |->
+        IF taskType[t] = "worker" THEN "idle" ELSE taskType[t]]
+    /\ taskBook' = [t \in Task |->
+        IF taskType[t] = "worker" THEN "none" ELSE taskBook[t]]
+    /\ taskLib' = [t \in Task |->
+        IF taskType[t] = "worker" THEN 0 ELSE taskLib[t]]
+    /\ taskSnapshot' = [t \in Task |->
+        IF taskType[t] = "worker" THEN 0 ELSE taskSnapshot[t]]
+    /\ taskReadVersion' = [t \in Task |->
+        IF taskType[t] = "worker" THEN 0 ELSE taskReadVersion[t]]
+    /\ UNCHANGED <<uiVersion, maxDeliveredVersion, bookVersion,
+                   persistVars>>
 
 \* ========================================================================
 \* Worker Actions (F1, F3, F4)
@@ -440,18 +460,25 @@ WatcherEmit(t) ==
 \* ========================================================================
 \* Frontend Event Delivery (F2)
 \* ========================================================================
-\* Models tauri.ts:7-42 — eventToReadable:
-\*   listen<T>(eventName, (event) => {
-\*       if (setter) { setter(event.payload); }      — line 12
-\*   })
-\* Events are delivered in FIFO order (Tauri IPC is ordered within
-\* the same process). The payload IS the store value (no re-query).
+\* Models tauri.ts eventToReadable pattern where event payload IS the
+\* store value, delivered in FIFO order.
+\*
+\* F2 FIX (partial): versioned_emit.rs wraps payloads with a monotonic
+\* emit counter. Frontend checks payload.version > lastVersion before
+\* applying. However, in FIFO delivery the emit counter always increases,
+\* so the check is a no-op for this pattern — a later emit with stale
+\* data still has a higher emit version and passes the check.
+\* The fix IS effective for:
+\*   - Initial invoke racing with events (lastVersion gate)
+\*   - getterToReadableWithEvents (fetchGeneration counter)
+\*   - getterToReadableWithEventsAndPatches (combined checks)
+\* These patterns are NOT modeled in this spec.
 
 DeliverEvent ==
     /\ pendingEvents /= <<>>
     /\ LET v == Head(pendingEvents) IN
-       \* tauri.ts:12 — setter(event.payload)
-       \* The frontend blindly applies the payload, no version check
+       \* tauri.ts — setter(event.payload.data)
+       \* In FIFO delivery, every event is applied (version always increases)
        /\ uiVersion' = v
        /\ maxDeliveredVersion' = Max(maxDeliveredVersion, v)
        /\ pendingEvents' = Tail(pendingEvents)
@@ -477,17 +504,19 @@ MarkWordVisible(b) ==
     /\ UNCHANGED <<libVars, taskVars, eventVars, versionVars, appAlive>>
 
 \* ========================================================================
-\* App Close (F3: lib.rs — no shutdown handler)
+\* App Close (F3: lib.rs:101-109 — shutdown handler)
 \* ========================================================================
-\* Models app termination — no shutdown handler exists.
-\* lib.rs:1-100 — NO on_exit(), close_requested, or shutdown callback.
-\* Any unsaved in-memory state (memVersion > diskVersion) is LOST.
+\* F3 FIX: RunEvent::Exit handler calls save_all() before exit.
+\* lib.rs:102-108 — block_on(app_state.save_all())
+\* library.rs:303-314 — Library::save_all() iterates books, saves dirty ones
+\* All in-memory state (memVersion) is flushed to disk (diskVersion).
 
 AppClose ==
     /\ appAlive
+    \* F3 FIX: save_all() persists all dirty books before exit
+    /\ diskVersion' = [b \in Book |-> memVersion[b]]
     /\ appAlive' = FALSE
-    /\ UNCHANGED <<libVars, taskVars, eventVars, versionVars,
-                   memVersion, diskVersion>>
+    /\ UNCHANGED <<libVars, taskVars, eventVars, versionVars, memVersion>>
 
 \* ========================================================================
 \* Next
@@ -525,43 +554,41 @@ Spec == Init /\ [][Next]_allVars
 \* Invariants
 \* ========================================================================
 
-\* --- F1: Stale Library Safety ---
+\* --- F1: Stale Library Safety --- [FIXED: should pass]
 \* No background worker task operates with a stale library reference.
-\* Violation means a task captured an old Arc<Library> before ConfigChange
-\* and is now saving/emitting using the stale reference.
-\* In the implementation: translation_queue.rs:95 captures library at init,
-\* but ConfigChange (app.rs:112,152) creates a new library without
-\* cancelling existing tasks.
+\* FIX: ConfigChange now aborts all worker tasks (TranslationQueue::Drop
+\* calls JoinHandle::abort on all spawned tasks). Workers are reset to
+\* idle before any can continue with a stale library reference.
 StaleLibrarySafety ==
     \A t \in Task :
         (taskType[t] = "worker" /\ pc[t] /= "idle") =>
             taskLib[t] = currentLib
 
-\* --- F1: No Data Loss ---
+\* --- F1: No Data Loss --- [FIXED: should pass]
 \* Translation data is never saved to a library whose path differs from
-\* the current configured path. Specifically, WorkerSave must use the
-\* current library.
-\* Violation: save_book (translation_queue.rs:439) uses captured library
-\* reference that points to the old library's disk directory.
+\* the current configured path. Workers are aborted before reaching
+\* the save step with a stale library reference.
 NoDataLoss ==
     \A t \in Task :
         pc[t] = "w_save" => taskLib[t] = currentLib
 
-\* --- F2: Event Monotonicity ---
+\* --- F2: Event Monotonicity --- [UNFIXED for this pattern]
 \* The frontend UI version never regresses. A stale event should not
-\* overwrite a fresher one. Violation means eventToReadable (tauri.ts:12)
-\* applied an older snapshot after a newer one.
-\* This fails when two tasks emit in an order where the later emit
-\* carries an older snapshot (computed before a concurrent modification).
+\* overwrite a fresher one.
+\* NOTE: The emit_versioned fix (versioned_emit.rs) adds monotonic version
+\* numbers, but in FIFO delivery the check is a no-op — every event's
+\* emit version exceeds the last. This invariant can still be violated
+\* when two tasks emit in an order where the later emit carries stale data.
+\* The fix IS effective for invoke races and getterToReadableWithEvents,
+\* which are not modeled in this spec.
 EventMonotonicity ==
     uiVersion >= maxDeliveredVersion
 
-\* --- F2: UI Consistency ---
+\* --- F2: UI Consistency --- [UNFIXED for this pattern]
 \* When all pending events have been delivered and no task is in the
 \* middle of a compute-snapshot→emit flow, the UI should reflect the
-\* latest backend state. Violation means stale events corrupted the UI.
-\* Guard: only applies after the UI has received at least one event
-\* (maxDeliveredVersion > 0), since the UI starts empty.
+\* latest backend state.
+\* Same caveat as EventMonotonicity — the version fix doesn't help here.
 UIConsistency ==
     (/\ pendingEvents = <<>>
      /\ \A t \in Task : pc[t] \notin {"w_read", "w_api", "w_store",
@@ -571,14 +598,15 @@ UIConsistency ==
      /\ maxDeliveredVersion > 0)
     => uiVersion = truthVersion
 
-\* --- F3: No Persistence Loss ---
+\* --- F3: No Persistence Loss --- [FIXED: should pass]
 \* When the app terminates, all in-memory modifications must have been
-\* persisted to disk. Violation means data loss on app close.
-\* In the implementation: no shutdown handler exists (lib.rs has no on_exit).
+\* persisted to disk.
+\* FIX: RunEvent::Exit handler calls save_all() which iterates all books
+\* and saves any with unsaved changes (lib.rs:102-108, library.rs:303-314).
 NoPersistenceLoss ==
     ~appAlive => \A b \in Book : memVersion[b] <= diskVersion[b]
 
-\* --- F4: No Stale Translation ---
+\* --- F4: No Stale Translation --- [UNFIXED]
 \* A translation is not stored against a book version different from the
 \* one its source paragraph was read from. Violation means the book was
 \* reloaded (e.g., by file watcher) between paragraph read and translation

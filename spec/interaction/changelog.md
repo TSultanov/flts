@@ -20,3 +20,18 @@
 
 ## Result
 Converged in 1 round. Bug hunting: 4 bugs found (all 4 families confirmed).
+
+## Spec Update — Post-Fix
+Updated base.tla to reflect implemented fixes:
+
+- **F1 FIXED**: ConfigChange now resets all worker tasks to idle (models JoinHandle::abort
+  in TranslationQueue::Drop). StaleLibrarySafety and NoDataLoss should now pass.
+- **F2 PARTIAL**: Added comments explaining emit_versioned fix. The fix targets invoke
+  races and getterToReadableWithEvents (not modeled here). For the FIFO eventToReadable
+  pattern modeled in this spec, the version check is a no-op — EventMonotonicity and
+  UIConsistency can still be violated.
+- **F3 FIXED**: AppClose now sets diskVersion = memVersion for all books (models
+  save_all() in RunEvent::Exit handler). NoPersistenceLoss should now pass.
+- **F4 UNFIXED**: No changes. NoStaleTranslation can still be violated.
+
+MC.cfg updated: F1 invariants enabled. Hunt configs annotated with fix status.
