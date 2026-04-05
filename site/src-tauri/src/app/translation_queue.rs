@@ -61,6 +61,20 @@ pub struct TranslationQueue {
     translate_tx: flume::Sender<TranslationRequest>,
 
     state: Arc<Mutex<TranslationQueueState>>,
+
+    // Task handles — aborted on Drop to prevent stale library usage after config change (F1 fix)
+    translate_task: tokio::task::JoinHandle<()>,
+    saver_task: tokio::task::JoinHandle<()>,
+    status_task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for TranslationQueue {
+    fn drop(&mut self) {
+        info!("TranslationQueue dropped — aborting background tasks");
+        self.translate_task.abort();
+        self.saver_task.abort();
+        self.status_task.abort();
+    }
 }
 
 #[cfg(not(mobile))]
@@ -89,9 +103,9 @@ impl TranslationQueue {
             translation_status: HashMap::new(),
         }));
         let (tx_status, rx_status) = flume::unbounded::<TranslationStatus>();
-        tokio::spawn(run_status_updater(state.clone(), rx_status));
+        let status_task = tokio::spawn(run_status_updater(state.clone(), rx_status));
 
-        tokio::spawn(run_saver(
+        let saver_task = tokio::spawn(run_saver(
             library.clone(),
             app.clone(),
             tx_status.clone(),
@@ -100,7 +114,7 @@ impl TranslationQueue {
 
         let (tx_translate, rx_translate) = flume::unbounded::<TranslationRequest>();
 
-        {
+        let translate_task = {
             let state = state.clone();
             let tx_status = tx_status.clone();
             tokio::spawn(async move {
@@ -142,13 +156,16 @@ impl TranslationQueue {
                         .paragraph_request_id_map
                         .remove(&(request.book_id, request.paragraph_id));
                 }
-            });
-        }
+            })
+        };
 
         Some(Arc::new(Self {
             next_request_index: 0.into(),
             translate_tx: tx_translate,
             state,
+            translate_task,
+            saver_task,
+            status_task,
         }))
     }
 

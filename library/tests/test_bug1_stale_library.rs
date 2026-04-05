@@ -6,10 +6,15 @@
 //!
 //! TLA+ counterexample (4 states): BeginWorker → BeginTauri → ConfigChange
 //! → tasks still hold old library reference (taskLib=1 ≠ currentLib=2)
+//!
+//! Fix: TranslationQueue now stores JoinHandles for all spawned tasks and
+//! aborts them in its Drop implementation. When update_config sets the queue
+//! to None, tasks are immediately cancelled, preventing stale library usage.
 
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use isolang::Language;
 use library::library::Library;
@@ -37,17 +42,35 @@ struct MockAppState {
 }
 
 /// Mimics TranslationQueue: captures library Arc at init, uses it for all work.
+/// Now also stores task handles and aborts them on Drop (F1 fix).
 struct MockTranslationQueue {
     captured_library: Arc<Library>,
     captured_root: PathBuf,
+    task_handle: tokio::task::JoinHandle<()>,
 }
 
 impl MockTranslationQueue {
-    fn init(library: Arc<Library>, root: PathBuf) -> Self {
+    fn init(library: Arc<Library>, root: PathBuf, work_flag: Arc<AtomicBool>) -> Self {
+        let task_lib = library.clone();
+        let task_handle = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                // Simulate background work using the captured library
+                work_flag.store(true, Ordering::SeqCst);
+                let _ = task_lib.list_books().await;
+            }
+        });
         Self {
             captured_library: library,
             captured_root: root,
+            task_handle,
         }
+    }
+}
+
+impl Drop for MockTranslationQueue {
+    fn drop(&mut self) {
+        self.task_handle.abort();
     }
 }
 
@@ -64,7 +87,8 @@ async fn test_bug1_stale_library_ref() {
     };
 
     // 3. Create translation queue (captures library A) — mirrors translation_queue.rs:108
-    let queue = MockTranslationQueue::init(library_a.clone(), lib_a_root.clone());
+    let work_flag = Arc::new(AtomicBool::new(false));
+    let queue = MockTranslationQueue::init(library_a.clone(), lib_a_root.clone(), work_flag.clone());
     assert_eq!(queue.captured_root, lib_a_root);
 
     // 4. Simulate update_config → create library B and replace in AppState
@@ -106,4 +130,37 @@ async fn test_bug1_stale_library_ref() {
     println!("  Queue library root: {:?} (stale — library A)", queue.captured_root);
     println!("  AppState library root: {:?} (current — library B)", current_root);
     println!("  Stale Arc strong count: {}", stale_strong_count);
+}
+
+/// Verify that the fix works: dropping the queue aborts background tasks,
+/// preventing further work against the stale library.
+#[tokio::test]
+async fn test_bug1_fix_drop_aborts_tasks() {
+    let dir = TempDir::new("flts_f1_fix");
+    let lib_root = dir.path.join("lib");
+    let library = Arc::new(Library::open(lib_root.clone()).await.unwrap());
+
+    let work_flag = Arc::new(AtomicBool::new(false));
+    let queue = MockTranslationQueue::init(library.clone(), lib_root.clone(), work_flag.clone());
+
+    // Let the task run at least one iteration
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(work_flag.load(Ordering::SeqCst), "Task should have run at least once");
+
+    // Reset flag, then drop the queue (simulates update_config setting queue = None)
+    work_flag.store(false, Ordering::SeqCst);
+    let task_handle = &queue.task_handle;
+    let is_running_before = !task_handle.is_finished();
+    assert!(is_running_before, "Task should be running before drop");
+
+    drop(queue);
+
+    // Give the runtime a moment to process the abort
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // The flag should NOT have been set again — the task was aborted
+    assert!(!work_flag.load(Ordering::SeqCst),
+        "Task should not have run after queue was dropped (abort should have cancelled it)");
+
+    println!("FIX F1 VERIFIED: Dropping queue aborts background tasks");
 }
