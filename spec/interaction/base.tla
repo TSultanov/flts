@@ -16,13 +16,15 @@
 (*   F1 — Stale library reference after config reconfiguration  [FIXED]    *)
 (*   F2 — Event ordering / stale snapshot overwrites            [PARTIAL]  *)
 (*   F3 — Unsaved in-memory modifications / no shutdown persist [FIXED]    *)
-(*   F4 — Translation lifecycle cross-component atomicity                  *)
+(*   F4 — Translation lifecycle cross-component atomicity       [FIXED]    *)
 (*                                                                         *)
 (* F1 fix: TranslationQueue::Drop aborts spawned tasks via JoinHandle.     *)
 (* F2 fix: emit_versioned + version check in tauri.ts. Prevents invoke     *)
 (*   races and getterToReadableWithEvents staleness, but does NOT prevent  *)
 (*   eventToReadable regression in FIFO delivery (modeled here).           *)
 (* F3 fix: RunEvent::Exit handler calls save_all() to flush dirty books.   *)
+(* F4 fix: handle_request() re-reads paragraph after API call and discards *)
+(*   translation if content changed (version guard before store).          *)
 (***************************************************************************)
 
 EXTENDS Integers, Sequences, FiniteSets, TLC
@@ -247,19 +249,31 @@ WorkerCallAPI(t) ==
                    versionVars, persistVars>>
 
 \* --- Store translation result ---
-\* Models translation_queue.rs:330-334:
-\*   translation.lock().await
-\*       .add_paragraph_translation(request.paragraph_id, &p_translation, ...)
-\* This is a backend state modification — increments truthVersion.
+\* Models translation_queue.rs:347-372 (post-F4 fix):
+\*   Re-reads paragraph and compares with original snapshot.
+\*   If bookVersion changed since WorkerReadParagraph, the paragraph content
+\*   may have changed — discard the translation (return Err).
+\*   Otherwise, store via add_paragraph_translation.
+\* FIX (F4): The version guard prevents stale translations from being stored.
 WorkerStoreResult(t) ==
     /\ appAlive
     /\ pc[t] = "w_store"
-    \* Backend state changes: new translation stored
-    /\ truthVersion' = truthVersion + 1
-    /\ pc' = [pc EXCEPT ![t] = "w_save"]
-    /\ UNCHANGED <<libVars, taskType, taskBook,
-                   pendingEvents, taskSnapshot, uiVersion, maxDeliveredVersion,
-                   versionVars, persistVars>>
+    /\ LET b == taskBook[t] IN
+       IF taskReadVersion[t] = bookVersion[b]
+       THEN \* Book unchanged since read — safe to store
+            /\ truthVersion' = truthVersion + 1
+            /\ pc' = [pc EXCEPT ![t] = "w_save"]
+            /\ UNCHANGED <<libVars, taskType, taskBook,
+                           pendingEvents, taskSnapshot, uiVersion, maxDeliveredVersion,
+                           versionVars, persistVars>>
+       ELSE \* Book changed — discard translation, return to idle
+            /\ pc' = [pc EXCEPT ![t] = "idle"]
+            /\ taskType' = [taskType EXCEPT ![t] = "idle"]
+            /\ taskBook' = [taskBook EXCEPT ![t] = "none"]
+            /\ taskReadVersion' = [taskReadVersion EXCEPT ![t] = 0]
+            /\ UNCHANGED <<libVars, pendingEvents, taskSnapshot,
+                           truthVersion, uiVersion, maxDeliveredVersion,
+                           bookVersion, persistVars>>
 
 \* --- Save book to disk using captured library ---
 \* Models save_book (translation_queue.rs:428-432):
@@ -606,17 +620,22 @@ UIConsistency ==
 NoPersistenceLoss ==
     ~appAlive => \A b \in Book : memVersion[b] <= diskVersion[b]
 
-\* --- F4: No Stale Translation --- [UNFIXED]
-\* A translation is not stored against a book version different from the
-\* one its source paragraph was read from. Violation means the book was
-\* reloaded (e.g., by file watcher) between paragraph read and translation
-\* store, so the translation may reference the wrong paragraph content.
-\* In the implementation: translation_queue.rs:227-237 reads paragraph,
-\* then later lines 330-334 store the result — with no version check.
+\* --- F4: No Stale Translation --- [FIXED]
+\* A translation must not be stored against a book version different from the
+\* one its source paragraph was read from.
+\* FIX: handle_request() re-reads the paragraph after the API call and
+\* compares text — if changed, the translation is discarded (translation_queue.rs:346-365).
+\* In the spec, WorkerStoreResult checks taskReadVersion[t] = bookVersion[b].
+\*
+\* This is an ACTION property (not a state invariant): the state w_store with
+\* mismatched versions is reachable, but the w_store→w_save transition is
+\* guarded — the worker discards and returns to idle instead.
+\* We express this as [][A => P]_vars: for every step, if a task transitions
+\* from w_store to w_save, the versions must have matched.
 NoStaleTranslation ==
-    \A t \in Task :
-        pc[t] = "w_store" =>
-            taskReadVersion[t] = bookVersion[taskBook[t]]
+    [][\A t \in Task :
+        (pc[t] = "w_store" /\ pc'[t] = "w_save") =>
+            taskReadVersion[t] = bookVersion[taskBook[t]]]_allVars
 
 \* --- Structural: PC Consistency ---
 \* Non-idle tasks must have a valid type assigned.

@@ -344,6 +344,28 @@ async fn handle_request(
         actual_size as f64 / source_len as f64
     );
 
+    // F4 fix: Re-read paragraph text and verify it hasn't changed since we started translating.
+    // Between our initial read and now, the book could have been reloaded (e.g., file watcher
+    // picked up a sync update), which would make this translation stale.
+    {
+        let book_handle = library.get_book(&request.book_id).await?;
+        let book = book_handle.lock().await;
+        if request.paragraph_id >= book.book.paragraphs_count() {
+            return Err(anyhow::anyhow!(
+                "Paragraph {} no longer exists (book now has {} paragraphs) — discarding stale translation",
+                request.paragraph_id,
+                book.book.paragraphs_count()
+            ));
+        }
+        let current_text = book.book.paragraph_view(request.paragraph_id).original_text.to_string();
+        if current_text != paragraph_text {
+            return Err(anyhow::anyhow!(
+                "Paragraph {} content changed during translation — discarding stale translation",
+                request.paragraph_id
+            ));
+        }
+    }
+
     translation
         .lock()
         .await

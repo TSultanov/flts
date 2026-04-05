@@ -140,6 +140,14 @@ MCNoDataLoss == NoDataLoss
 MCEventMonotonicity == EventMonotonicity
 MCUIConsistency == UIConsistency
 MCNoPersistenceLoss == NoPersistenceLoss
-MCNoStaleTranslation == NoStaleTranslation
+
+\* F4: Action property — must use PROPERTY not INVARIANT in config.
+\* NoStaleTranslation is already a temporal formula ([][...]_allVars).
+\* We re-express it over allVars + mcVars so stuttering steps from MC
+\* counter changes are also covered.
+MCNoStaleTranslation ==
+    [][\A t \in Task :
+        (pc[t] = "w_store" /\ pc'[t] = "w_save") =>
+            taskReadVersion[t] = bookVersion[taskBook[t]]]_<<allVars, mcVars>>
 
 ====

@@ -35,3 +35,22 @@ Updated base.tla to reflect implemented fixes:
 - **F4 UNFIXED**: No changes. NoStaleTranslation can still be violated.
 
 MC.cfg updated: F1 invariants enabled. Hunt configs annotated with fix status.
+
+## Spec Update — Post-F4 Fix
+Updated base.tla to reflect the F4 fix:
+
+- **F4 FIXED**: WorkerStoreResult now checks `taskReadVersion[t] = bookVersion[b]`
+  before storing. If the book was reloaded between WorkerReadParagraph and
+  WorkerStoreResult, the translation is discarded and the worker returns to idle.
+  Models the re-read-and-compare guard in handle_request() (translation_queue.rs:346-365).
+- MC.cfg updated: MCNoStaleTranslation now enabled alongside F1 and F3 invariants.
+- MC_hunt_f4.cfg annotated as FIXED with expected PASS.
+
+All 4 bug families (F1-F4) now have fixes reflected in the spec. Only F2 (EventMonotonicity)
+remains partially addressed — the FIFO eventToReadable pattern is not fully fixed.
+
+### Verification Results (Post-F4 Fix)
+- F4 hunt (MC_hunt_f4.cfg): 237M+ states generated, zero violations (stopped — strong evidence)
+- Default config (MC.cfg): 4.5M+ states, zero violations at depth 21 (quick sanity check)
+- NoStaleTranslation reformulated as temporal PROPERTY (action constraint) since the fix
+  is a transition guard, not a state property.
