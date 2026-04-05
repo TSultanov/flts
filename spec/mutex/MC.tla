@@ -74,8 +74,6 @@ MCBeginTranslator(t, b, p) == BeginTranslator(t, b, p) /\ UNCHANGED mcVars
 MCTranslatorCheckDedup(t) == TranslatorCheckDedup(t) /\ UNCHANGED mcVars
 MCTranslatorCheckDedupRead(t) == TranslatorCheckDedupRead(t) /\ UNCHANGED mcVars
 MCTranslatorSendRequest(t) == TranslatorSendRequest(t) /\ UNCHANGED mcVars
-MCTranslatorInsertMap(t) == TranslatorInsertMap(t) /\ UNCHANGED mcVars
-MCTranslatorRelQueue(t) == TranslatorRelQueue(t) /\ UNCHANGED mcVars
 MCTranslatorAcqBook(t) == TranslatorAcqBook(t) /\ UNCHANGED mcVars
 MCTranslatorWaitBook(t) == TranslatorWaitBook(t) /\ UNCHANGED mcVars
 MCTranslatorGetTrans(t, tr) == TranslatorGetTrans(t, tr) /\ UNCHANGED mcVars
@@ -138,8 +136,6 @@ MCNext ==
         \/ MCTranslatorCheckDedup(t)
         \/ MCTranslatorCheckDedupRead(t)
         \/ MCTranslatorSendRequest(t)
-        \/ MCTranslatorInsertMap(t)
-        \/ MCTranslatorRelQueue(t)
         \/ MCTranslatorAcqBook(t)
         \/ MCTranslatorWaitBook(t)
         \/ \E tr \in Translation : MCTranslatorGetTrans(t, tr)

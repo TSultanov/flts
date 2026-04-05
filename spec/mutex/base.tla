@@ -74,16 +74,16 @@ VARIABLES
 
 contentionVars == <<waitingForBook>>
 
-\* --- Family 2: Translation request dedup (TOCTOU) ---
-\* Models translation_queue.rs:155-184 — translate() check-send-insert race
+\* --- Family 2: Translation request dedup ---
+\* Models translation_queue.rs:155-184 — translate() atomic check+insert under lock
 VARIABLES
     requestMap,     \* [Book × Paragraph -> Nat ∪ {0}]
                     \* 0 means no active request; >0 is request_id
                     \* translation_queue.rs:55 — paragraph_request_id_map
     nextRequestId,  \* Nat — monotonically increasing request counter
                     \* translation_queue.rs:60 — AtomicUsize
-    requestSent     \* [Task -> BOOLEAN] — task has sent request but not yet
-                    \* inserted into map (the TOCTOU window)
+    requestSent     \* [Task -> BOOLEAN] — task has been assigned a request
+                    \* (map entry exists, request sent or about to send)
 
 dedupVars == <<requestMap, nextRequestId, requestSent>>
 
@@ -404,8 +404,8 @@ TauriListDone(t) ==
 \* ========================================================================
 \* Translator: translate() + handle_request (translation_queue.rs:155-336)
 \* ========================================================================
-\* Family 2 (TOCTOU): check → send → insert with separate lock acquisitions
-\* Lock sequence: queueLock (check) → bookLock → transLock (get_or_create)
+\* Fixed: check + insert are atomic under one lock acquisition.
+\* Lock sequence: queueLock (check+insert) → bookLock → transLock (get_or_create)
 \*   → release book → network → transLock (add result)
 
 \* --- Begin translator: choose book + paragraph ---
@@ -432,8 +432,8 @@ TranslatorCheckDedup(t) ==
                    taskBook, taskTrans, taskDict, taskParagraph,
                    contentionVars, dedupVars, doubleLockVars>>
 
-\* --- Read requestMap and release queueLock ---
-\* Models translation_queue.rs:162-164 — if let Some(id) return Ok(id)
+\* --- Read requestMap; if miss, insert + allocate ID + release queueLock ---
+\* Models translation_queue.rs:162-172 — atomic check+insert under one lock
 TranslatorCheckDedupRead(t) ==
     /\ pc[t] = "tr_check_dedup_read"
     /\ queueLock = t
@@ -441,58 +441,35 @@ TranslatorCheckDedupRead(t) ==
            p == taskParagraph[t]
            existing == requestMap[<<b, p>>]
        IN
-       /\ queueLock' = "none"
-       /\ IF existing /= 0 THEN
+       IF existing /= 0 THEN
             \* Found existing request, abort (return existing ID)
+            /\ queueLock' = "none"
             /\ pc' = [pc EXCEPT ![t] = "idle"]
             /\ role' = [role EXCEPT ![t] = "idle"]
             /\ taskBook' = [taskBook EXCEPT ![t] = "none"]
             /\ taskParagraph' = [taskParagraph EXCEPT ![t] = "none"]
-          ELSE
-            \* No existing request, proceed to send
+            /\ UNCHANGED <<bookLock, transLock, dictLock,
+                           taskTrans, taskDict,
+                           contentionVars, dedupVars, doubleLockVars>>
+       ELSE
+            \* No existing request: allocate ID, insert into map, release lock
+            /\ queueLock' = "none"
+            /\ nextRequestId' = nextRequestId + 1
+            /\ requestMap' = [requestMap EXCEPT ![<<b, p>>] = nextRequestId]
+            /\ requestSent' = [requestSent EXCEPT ![t] = TRUE]
             /\ pc' = [pc EXCEPT ![t] = "tr_send_request"]
-            /\ UNCHANGED <<role, taskBook, taskParagraph>>
-    /\ UNCHANGED <<bookLock, transLock, dictLock,
-                   taskTrans, taskDict,
-                   contentionVars, dedupVars, doubleLockVars>>
+            /\ UNCHANGED <<bookLock, transLock, dictLock, role,
+                           taskBook, taskTrans, taskDict, taskParagraph,
+                           contentionVars, doubleLockVars>>
 
-\* --- Send request: fetch_add + channel send (no lock held!) ---
-\* Models translation_queue.rs:166-176
-\* Family 2: THIS IS THE TOCTOU WINDOW — queueLock released, request
-\* not yet in map. Another task can pass CheckDedup for same paragraph.
+\* --- Send request via channel (no lock held, map already updated) ---
+\* Models translation_queue.rs:174-183 — send_async after lock released
 TranslatorSendRequest(t) ==
     /\ pc[t] = "tr_send_request"
-    /\ nextRequestId' = nextRequestId + 1
-    /\ requestSent' = [requestSent EXCEPT ![t] = TRUE]
-    /\ pc' = [pc EXCEPT ![t] = "tr_insert_map"]
-    /\ UNCHANGED <<lockVars, role, taskBook, taskTrans, taskDict,
-                   taskParagraph, contentionVars, requestMap,
-                   doubleLockVars>>
-
-\* --- Insert into requestMap: acquire queueLock, insert ---
-\* Models translation_queue.rs:178-183 — state.lock().await, insert
-TranslatorInsertMap(t) ==
-    /\ pc[t] = "tr_insert_map"
-    /\ MutexAvailable(queueLock)
-    /\ queueLock' = t
-    /\ LET b == taskBook[t]
-           p == taskParagraph[t]
-       IN
-       requestMap' = [requestMap EXCEPT ![<<b, p>>] = nextRequestId - 1]
-    /\ pc' = [pc EXCEPT ![t] = "tr_rel_queue"]
-    /\ UNCHANGED <<bookLock, transLock, dictLock, role,
-                   taskBook, taskTrans, taskDict, taskParagraph,
-                   contentionVars, nextRequestId, requestSent,
-                   doubleLockVars>>
-
-\* --- Release queueLock after insert ---
-TranslatorRelQueue(t) ==
-    /\ pc[t] = "tr_rel_queue"
-    /\ queueLock' = "none"
     /\ pc' = [pc EXCEPT ![t] = "tr_acq_book"]
-    /\ UNCHANGED <<bookLock, transLock, dictLock, role,
-                   taskBook, taskTrans, taskDict, taskParagraph,
-                   contentionVars, dedupVars, doubleLockVars>>
+    /\ UNCHANGED <<lockVars, role, taskBook, taskTrans, taskDict,
+                   taskParagraph, contentionVars, dedupVars,
+                   doubleLockVars>>
 
 \* --- Worker: acquire book lock to get translation ---
 \* Models translation_queue.rs:218-219 — library.get_book().lock()
@@ -860,8 +837,6 @@ Next ==
         \/ TranslatorCheckDedup(t)
         \/ TranslatorCheckDedupRead(t)
         \/ TranslatorSendRequest(t)
-        \/ TranslatorInsertMap(t)
-        \/ TranslatorRelQueue(t)
         \/ TranslatorAcqBook(t)
         \/ TranslatorWaitBook(t)
         \/ \E tr \in Translation : TranslatorGetTrans(t, tr)
@@ -910,7 +885,7 @@ IsBlocked(t) ==
        /\ taskDict[t] /= "none"
        /\ dictLock[taskDict[t]] /= "none"
        /\ dictLock[taskDict[t]] /= t
-    \/ /\ pc[t] \in {"tr_check_dedup", "tr_insert_map", "tr_notify_saver"}
+    \/ /\ pc[t] \in {"tr_check_dedup", "tr_notify_saver"}
        /\ queueLock /= "none"
        /\ queueLock /= t
 
@@ -928,7 +903,7 @@ WaitsFor(t1, t2) ==
     \/ /\ pc[t1] \in {"w_pre_dict", "s_pre_dict"}
        /\ taskDict[t1] /= "none"
        /\ dictLock[taskDict[t1]] = t2
-    \/ /\ pc[t1] \in {"tr_check_dedup", "tr_insert_map", "tr_notify_saver"}
+    \/ /\ pc[t1] \in {"tr_check_dedup", "tr_notify_saver"}
        /\ queueLock = t2
 
 \* NoDeadlock: No cycle in the wait-for graph among non-idle tasks.
@@ -968,8 +943,9 @@ NoSelfDeadlock ==
             => transLock[taskTrans[t]] /= t)
 
 \* --- Safety: No Duplicate Active Request (Family 2) ---
-\* At most one task should be in the "sent but not mapped" window for
-\* the same (book, paragraph) pair at any time.
+\* At most one task should be actively translating the same (book, paragraph)
+\* pair at any time. With the fix, the map insert is atomic under the lock,
+\* so a second task will see the existing entry and abort.
 NoDuplicateActiveRequest ==
     \A b \in Book : \A p \in Paragraph :
         Cardinality({t \in Task :
@@ -977,7 +953,7 @@ NoDuplicateActiveRequest ==
             /\ taskBook[t] = b
             /\ taskParagraph[t] = p
             /\ requestSent[t] = TRUE
-            /\ pc[t] \in {"tr_insert_map", "tr_rel_queue", "tr_acq_book",
+            /\ pc[t] \in {"tr_send_request", "tr_acq_book",
                           "tr_get_trans", "tr_rel_trans_1", "tr_rel_book",
                           "tr_translate", "tr_acq_trans_2", "tr_store_result",
                           "tr_notify_saver", "tr_cleanup_done"}
