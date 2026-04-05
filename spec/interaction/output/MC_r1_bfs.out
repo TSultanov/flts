@@ -1,0 +1,46 @@
+TLC2 Version 2026.03.31.154134 (rev: becec35)
+Running breadth-first search Model-Checking with fp 94 and seed -3770920002173267554 with 14 workers on 16 cores with 18204MB heap and 64MB offheap memory [pid: 52759] (Mac OS X 26.3.1 aarch64, Homebrew 25.0.2 64bit, MSBDiskFPSet, DiskStateQueue).
+Parsing file /Volumes/sources/flts/spec/interaction/MC.tla
+Parsing file /Volumes/sources/flts/spec/interaction/base.tla
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-15383109825102714284/_TLCTrace.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/_TLCTrace.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-15383109825102714284/Integers.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/Integers.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-15383109825102714284/Sequences.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/Sequences.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-15383109825102714284/FiniteSets.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/FiniteSets.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-15383109825102714284/TLC.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/TLC.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-15383109825102714284/Naturals.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/Naturals.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-15383109825102714284/TLCExt.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/TLCExt.tla)
+Semantic processing of module Naturals
+Semantic processing of module Integers
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module base
+Semantic processing of module TLCExt
+Semantic processing of module _TLCTrace
+Semantic processing of module MC
+Linting of module base
+Linting of module TLCExt
+Linting of module _TLCTrace
+Linting of module MC
+Starting... (2026-04-05 20:40:08)
+Computing initial states...
+Error: Invariant MCUIConsistency is violated by the initial state:
+/\ diskVersion = (b1 :> 0)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> "none" @@ t2 :> "none")
+/\ appCloseCount = 0
+/\ truthVersion = 1
+/\ pc = (t1 :> "idle" @@ t2 :> "idle")
+/\ taskLib = (t1 :> 0 @@ t2 :> 0)
+/\ memVersion = (b1 :> 0)
+/\ taskType = (t1 :> "idle" @@ t2 :> "idle")
+/\ taskReadVersion = (t1 :> 0 @@ t2 :> 0)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 1)
+
+Finished in 00s at (2026-04-05 20:40:08)

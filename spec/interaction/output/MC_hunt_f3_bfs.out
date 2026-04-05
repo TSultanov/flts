@@ -1,0 +1,109 @@
+TLC2 Version 2026.03.31.154134 (rev: becec35)
+Running breadth-first search Model-Checking with fp 18 and seed 8938539871304599925 with 14 workers on 16 cores with 18204MB heap and 64MB offheap memory [pid: 59633] (Mac OS X 26.3.1 aarch64, Homebrew 25.0.2 64bit, MSBDiskFPSet, DiskStateQueue).
+Parsing file /Volumes/sources/flts/spec/interaction/MC.tla
+Parsing file /Volumes/sources/flts/spec/interaction/base.tla
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-1510820257675954466/_TLCTrace.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/_TLCTrace.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-1510820257675954466/Integers.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/Integers.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-1510820257675954466/Sequences.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/Sequences.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-1510820257675954466/FiniteSets.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/FiniteSets.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-1510820257675954466/TLC.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/TLC.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-1510820257675954466/Naturals.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/Naturals.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-1510820257675954466/TLCExt.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/TLCExt.tla)
+Semantic processing of module Naturals
+Semantic processing of module Integers
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module base
+Semantic processing of module TLCExt
+Semantic processing of module _TLCTrace
+Semantic processing of module MC
+Linting of module base
+Linting of module TLCExt
+Linting of module _TLCTrace
+Linting of module MC
+Starting... (2026-04-05 20:59:43)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-04-05 20:59:43.
+Error: Invariant MCNoPersistenceLoss is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ diskVersion = (b1 :> 0)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> "none")
+/\ appCloseCount = 0
+/\ truthVersion = 1
+/\ pc = (t1 :> "idle")
+/\ taskLib = (t1 :> 0)
+/\ memVersion = (b1 :> 0)
+/\ taskType = (t1 :> "idle")
+/\ taskReadVersion = (t1 :> 0)
+/\ taskSnapshot = (t1 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 1)
+
+State 2: <MCBeginWorker(t1,b1) line 49, col 24 to line 49, col 60 of module MC>
+/\ diskVersion = (b1 :> 0)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 1
+/\ pc = (t1 :> "w_read")
+/\ taskLib = (t1 :> 1)
+/\ memVersion = (b1 :> 0)
+/\ taskType = (t1 :> "worker")
+/\ taskReadVersion = (t1 :> 0)
+/\ taskSnapshot = (t1 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 1)
+
+State 3: <MCWorkerReadParagraph(t1) line 50, col 29 to line 50, col 70 of module MC>
+/\ diskVersion = (b1 :> 0)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 1
+/\ pc = (t1 :> "w_api")
+/\ taskLib = (t1 :> 1)
+/\ memVersion = (b1 :> 1)
+/\ taskType = (t1 :> "worker")
+/\ taskReadVersion = (t1 :> 1)
+/\ taskSnapshot = (t1 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 1)
+
+State 4: <MCAppClose line 39, col 5 to line 42, col 34 of module MC>
+/\ diskVersion = (b1 :> 0)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1)
+/\ appCloseCount = 1
+/\ truthVersion = 1
+/\ pc = (t1 :> "w_api")
+/\ taskLib = (t1 :> 1)
+/\ memVersion = (b1 :> 1)
+/\ taskType = (t1 :> "worker")
+/\ taskReadVersion = (t1 :> 1)
+/\ taskSnapshot = (t1 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = FALSE
+/\ pendingEvents = <<>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 1)
+
+388 states generated, 267 distinct states found, 81 states left on queue.
+The depth of the complete state graph search is 10.
+Finished in 00s at (2026-04-05 20:59:43)
+Trace exploration spec path: ./MC_TTrace_1775408382.tla

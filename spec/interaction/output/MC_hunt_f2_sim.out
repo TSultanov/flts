@@ -1,0 +1,699 @@
+TLC2 Version 2026.03.31.154134 (rev: becec35)
+Running Random Simulation with seed 876107987701974188 with 14 workers on 16 cores with 18204MB heap and 64MB offheap memory [pid: 60270] (Mac OS X 26.3.1 aarch64, Homebrew 25.0.2 64bit).
+Parsing file /Volumes/sources/flts/spec/interaction/MC.tla
+Parsing file /Volumes/sources/flts/spec/interaction/base.tla
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-16280439386143156561/_TLCTrace.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/_TLCTrace.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-16280439386143156561/Integers.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/Integers.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-16280439386143156561/Sequences.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/Sequences.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-16280439386143156561/FiniteSets.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/FiniteSets.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-16280439386143156561/TLC.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/TLC.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-16280439386143156561/Naturals.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/Naturals.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-16280439386143156561/TLCExt.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/TLCExt.tla)
+Semantic processing of module Naturals
+Semantic processing of module Integers
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module base
+Semantic processing of module TLCExt
+Semantic processing of module _TLCTrace
+Semantic processing of module MC
+Linting of module base
+Linting of module TLCExt
+Linting of module _TLCTrace
+Linting of module MC
+Starting... (2026-04-05 21:00:32)
+Computed 1 initial states...
+Finished computing initial states: 1 distinct state generated at 2026-04-05 21:00:32.
+Error: Invariant MCEventMonotonicity is violated.
+Error: The behavior up to this point is:
+State 1: <MCInit line 80, col 5 to line 82, col 24 of module MC>
+/\ diskVersion = (b1 :> 0)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> "none" @@ t2 :> "none" @@ t3 :> "none")
+/\ appCloseCount = 0
+/\ truthVersion = 1
+/\ pc = (t1 :> "idle" @@ t2 :> "idle" @@ t3 :> "idle")
+/\ taskLib = (t1 :> 0 @@ t2 :> 0 @@ t3 :> 0)
+/\ memVersion = (b1 :> 0)
+/\ taskType = (t1 :> "idle" @@ t2 :> "idle" @@ t3 :> "idle")
+/\ taskReadVersion = (t1 :> 0 @@ t2 :> 0 @@ t3 :> 0)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0 @@ t3 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 1)
+
+State 2: <MCBeginWorker(t1,b1) line 49, col 24 to line 49, col 60 of module MC>
+/\ diskVersion = (b1 :> 0)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1 @@ t2 :> "none" @@ t3 :> "none")
+/\ appCloseCount = 0
+/\ truthVersion = 1
+/\ pc = (t1 :> "w_read" @@ t2 :> "idle" @@ t3 :> "idle")
+/\ taskLib = (t1 :> 1 @@ t2 :> 0 @@ t3 :> 0)
+/\ memVersion = (b1 :> 0)
+/\ taskType = (t1 :> "worker" @@ t2 :> "idle" @@ t3 :> "idle")
+/\ taskReadVersion = (t1 :> 0 @@ t2 :> 0 @@ t3 :> 0)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0 @@ t3 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 1)
+
+State 3: <MCBeginTauri(t2,b1) line 58, col 23 to line 58, col 58 of module MC>
+/\ diskVersion = (b1 :> 0)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1 @@ t2 :> b1 @@ t3 :> "none")
+/\ appCloseCount = 0
+/\ truthVersion = 1
+/\ pc = (t1 :> "w_read" @@ t2 :> "tc_modify" @@ t3 :> "idle")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1 @@ t3 :> 0)
+/\ memVersion = (b1 :> 0)
+/\ taskType = (t1 :> "worker" @@ t2 :> "tauri" @@ t3 :> "idle")
+/\ taskReadVersion = (t1 :> 0 @@ t2 :> 0 @@ t3 :> 0)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0 @@ t3 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 1)
+
+State 4: <MCTauriModify(t2) line 59, col 21 to line 59, col 54 of module MC>
+/\ diskVersion = (b1 :> 1)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1 @@ t2 :> b1 @@ t3 :> "none")
+/\ appCloseCount = 0
+/\ truthVersion = 2
+/\ pc = (t1 :> "w_read" @@ t2 :> "tc_snapshot" @@ t3 :> "idle")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1 @@ t3 :> 0)
+/\ memVersion = (b1 :> 1)
+/\ taskType = (t1 :> "worker" @@ t2 :> "tauri" @@ t3 :> "idle")
+/\ taskReadVersion = (t1 :> 0 @@ t2 :> 0 @@ t3 :> 0)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0 @@ t3 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 1)
+
+State 5: <MCBeginWatcher(t3,b1) line 64, col 25 to line 64, col 62 of module MC>
+/\ diskVersion = (b1 :> 1)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1 @@ t2 :> b1 @@ t3 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 2
+/\ pc = (t1 :> "w_read" @@ t2 :> "tc_snapshot" @@ t3 :> "fw_reload")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1 @@ t3 :> 1)
+/\ memVersion = (b1 :> 1)
+/\ taskType = (t1 :> "worker" @@ t2 :> "tauri" @@ t3 :> "watcher")
+/\ taskReadVersion = (t1 :> 0 @@ t2 :> 0 @@ t3 :> 0)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0 @@ t3 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 1)
+
+State 6: <MCMarkWordVisible(b1) line 73, col 25 to line 73, col 62 of module MC>
+/\ diskVersion = (b1 :> 2)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1 @@ t2 :> b1 @@ t3 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 2
+/\ pc = (t1 :> "w_read" @@ t2 :> "tc_snapshot" @@ t3 :> "fw_reload")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1 @@ t3 :> 1)
+/\ memVersion = (b1 :> 2)
+/\ taskType = (t1 :> "worker" @@ t2 :> "tauri" @@ t3 :> "watcher")
+/\ taskReadVersion = (t1 :> 0 @@ t2 :> 0 @@ t3 :> 0)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0 @@ t3 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 1)
+
+State 7: <MCWorkerReadParagraph(t1) line 50, col 29 to line 50, col 70 of module MC>
+/\ diskVersion = (b1 :> 2)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1 @@ t2 :> b1 @@ t3 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 2
+/\ pc = (t1 :> "w_api" @@ t2 :> "tc_snapshot" @@ t3 :> "fw_reload")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1 @@ t3 :> 1)
+/\ memVersion = (b1 :> 3)
+/\ taskType = (t1 :> "worker" @@ t2 :> "tauri" @@ t3 :> "watcher")
+/\ taskReadVersion = (t1 :> 1 @@ t2 :> 0 @@ t3 :> 0)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0 @@ t3 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 1)
+
+State 8: <MCTauriComputeSnapshot(t2) line 60, col 30 to line 60, col 72 of module MC>
+/\ diskVersion = (b1 :> 2)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1 @@ t2 :> b1 @@ t3 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 2
+/\ pc = (t1 :> "w_api" @@ t2 :> "tc_emit" @@ t3 :> "fw_reload")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1 @@ t3 :> 1)
+/\ memVersion = (b1 :> 3)
+/\ taskType = (t1 :> "worker" @@ t2 :> "tauri" @@ t3 :> "watcher")
+/\ taskReadVersion = (t1 :> 1 @@ t2 :> 0 @@ t3 :> 0)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 2 @@ t3 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 1)
+
+State 9: <MCTauriEmit(t2) line 61, col 19 to line 61, col 50 of module MC>
+/\ diskVersion = (b1 :> 2)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1 @@ t2 :> "none" @@ t3 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 2
+/\ pc = (t1 :> "w_api" @@ t2 :> "idle" @@ t3 :> "fw_reload")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1 @@ t3 :> 1)
+/\ memVersion = (b1 :> 3)
+/\ taskType = (t1 :> "worker" @@ t2 :> "idle" @@ t3 :> "watcher")
+/\ taskReadVersion = (t1 :> 1 @@ t2 :> 0 @@ t3 :> 0)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0 @@ t3 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<2>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 1)
+
+State 10: <MCBeginWorker(t2,b1) line 49, col 24 to line 49, col 60 of module MC>
+/\ diskVersion = (b1 :> 2)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1 @@ t2 :> b1 @@ t3 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 2
+/\ pc = (t1 :> "w_api" @@ t2 :> "w_read" @@ t3 :> "fw_reload")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1 @@ t3 :> 1)
+/\ memVersion = (b1 :> 3)
+/\ taskType = (t1 :> "worker" @@ t2 :> "worker" @@ t3 :> "watcher")
+/\ taskReadVersion = (t1 :> 1 @@ t2 :> 0 @@ t3 :> 0)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0 @@ t3 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<2>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 1)
+
+State 11: <MCMarkWordVisible(b1) line 73, col 25 to line 73, col 62 of module MC>
+/\ diskVersion = (b1 :> 4)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1 @@ t2 :> b1 @@ t3 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 2
+/\ pc = (t1 :> "w_api" @@ t2 :> "w_read" @@ t3 :> "fw_reload")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1 @@ t3 :> 1)
+/\ memVersion = (b1 :> 4)
+/\ taskType = (t1 :> "worker" @@ t2 :> "worker" @@ t3 :> "watcher")
+/\ taskReadVersion = (t1 :> 1 @@ t2 :> 0 @@ t3 :> 0)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0 @@ t3 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<2>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 1)
+
+State 12: <MCWorkerCallAPI(t1) line 51, col 23 to line 51, col 58 of module MC>
+/\ diskVersion = (b1 :> 4)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1 @@ t2 :> b1 @@ t3 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 2
+/\ pc = (t1 :> "w_store" @@ t2 :> "w_read" @@ t3 :> "fw_reload")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1 @@ t3 :> 1)
+/\ memVersion = (b1 :> 4)
+/\ taskType = (t1 :> "worker" @@ t2 :> "worker" @@ t3 :> "watcher")
+/\ taskReadVersion = (t1 :> 1 @@ t2 :> 0 @@ t3 :> 0)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0 @@ t3 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<2>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 1)
+
+State 13: <MCWorkerStoreResult(t1) line 52, col 27 to line 52, col 66 of module MC>
+/\ diskVersion = (b1 :> 4)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1 @@ t2 :> b1 @@ t3 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 3
+/\ pc = (t1 :> "w_save" @@ t2 :> "w_read" @@ t3 :> "fw_reload")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1 @@ t3 :> 1)
+/\ memVersion = (b1 :> 4)
+/\ taskType = (t1 :> "worker" @@ t2 :> "worker" @@ t3 :> "watcher")
+/\ taskReadVersion = (t1 :> 1 @@ t2 :> 0 @@ t3 :> 0)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0 @@ t3 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<2>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 1)
+
+State 14: <MCMarkWordVisible(b1) line 73, col 25 to line 73, col 62 of module MC>
+/\ diskVersion = (b1 :> 5)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1 @@ t2 :> b1 @@ t3 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 3
+/\ pc = (t1 :> "w_save" @@ t2 :> "w_read" @@ t3 :> "fw_reload")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1 @@ t3 :> 1)
+/\ memVersion = (b1 :> 5)
+/\ taskType = (t1 :> "worker" @@ t2 :> "worker" @@ t3 :> "watcher")
+/\ taskReadVersion = (t1 :> 1 @@ t2 :> 0 @@ t3 :> 0)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0 @@ t3 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<2>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 1)
+
+State 15: <MCMarkWordVisible(b1) line 73, col 25 to line 73, col 62 of module MC>
+/\ diskVersion = (b1 :> 6)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1 @@ t2 :> b1 @@ t3 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 3
+/\ pc = (t1 :> "w_save" @@ t2 :> "w_read" @@ t3 :> "fw_reload")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1 @@ t3 :> 1)
+/\ memVersion = (b1 :> 6)
+/\ taskType = (t1 :> "worker" @@ t2 :> "worker" @@ t3 :> "watcher")
+/\ taskReadVersion = (t1 :> 1 @@ t2 :> 0 @@ t3 :> 0)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0 @@ t3 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<2>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 1)
+
+State 16: <MCWorkerSave(t1) line 53, col 20 to line 53, col 52 of module MC>
+/\ diskVersion = (b1 :> 6)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1 @@ t2 :> b1 @@ t3 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 3
+/\ pc = (t1 :> "w_snapshot" @@ t2 :> "w_read" @@ t3 :> "fw_reload")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1 @@ t3 :> 1)
+/\ memVersion = (b1 :> 6)
+/\ taskType = (t1 :> "worker" @@ t2 :> "worker" @@ t3 :> "watcher")
+/\ taskReadVersion = (t1 :> 1 @@ t2 :> 0 @@ t3 :> 0)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0 @@ t3 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<2>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 1)
+
+State 17: <MCWorkerComputeSnapshot(t1) line 54, col 31 to line 54, col 74 of module MC>
+/\ diskVersion = (b1 :> 6)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1 @@ t2 :> b1 @@ t3 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 3
+/\ pc = (t1 :> "w_emit" @@ t2 :> "w_read" @@ t3 :> "fw_reload")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1 @@ t3 :> 1)
+/\ memVersion = (b1 :> 6)
+/\ taskType = (t1 :> "worker" @@ t2 :> "worker" @@ t3 :> "watcher")
+/\ taskReadVersion = (t1 :> 1 @@ t2 :> 0 @@ t3 :> 0)
+/\ taskSnapshot = (t1 :> 3 @@ t2 :> 0 @@ t3 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<2>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 1)
+
+State 18: <MCMarkWordVisible(b1) line 73, col 25 to line 73, col 62 of module MC>
+/\ diskVersion = (b1 :> 7)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1 @@ t2 :> b1 @@ t3 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 3
+/\ pc = (t1 :> "w_emit" @@ t2 :> "w_read" @@ t3 :> "fw_reload")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1 @@ t3 :> 1)
+/\ memVersion = (b1 :> 7)
+/\ taskType = (t1 :> "worker" @@ t2 :> "worker" @@ t3 :> "watcher")
+/\ taskReadVersion = (t1 :> 1 @@ t2 :> 0 @@ t3 :> 0)
+/\ taskSnapshot = (t1 :> 3 @@ t2 :> 0 @@ t3 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<2>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 1)
+
+State 19: <MCWatcherReload(t3) line 65, col 23 to line 65, col 58 of module MC>
+/\ diskVersion = (b1 :> 7)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1 @@ t2 :> b1 @@ t3 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 4
+/\ pc = (t1 :> "w_emit" @@ t2 :> "w_read" @@ t3 :> "fw_snapshot")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1 @@ t3 :> 1)
+/\ memVersion = (b1 :> 7)
+/\ taskType = (t1 :> "worker" @@ t2 :> "worker" @@ t3 :> "watcher")
+/\ taskReadVersion = (t1 :> 1 @@ t2 :> 0 @@ t3 :> 0)
+/\ taskSnapshot = (t1 :> 3 @@ t2 :> 0 @@ t3 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<2>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 2)
+
+State 20: <MCWatcherComputeSnapshot(t3) line 66, col 32 to line 66, col 76 of module MC>
+/\ diskVersion = (b1 :> 7)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1 @@ t2 :> b1 @@ t3 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 4
+/\ pc = (t1 :> "w_emit" @@ t2 :> "w_read" @@ t3 :> "fw_emit")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1 @@ t3 :> 1)
+/\ memVersion = (b1 :> 7)
+/\ taskType = (t1 :> "worker" @@ t2 :> "worker" @@ t3 :> "watcher")
+/\ taskReadVersion = (t1 :> 1 @@ t2 :> 0 @@ t3 :> 0)
+/\ taskSnapshot = (t1 :> 3 @@ t2 :> 0 @@ t3 :> 4)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<2>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 2)
+
+State 21: <MCWatcherEmit(t3) line 67, col 21 to line 67, col 54 of module MC>
+/\ diskVersion = (b1 :> 7)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1 @@ t2 :> b1 @@ t3 :> "none")
+/\ appCloseCount = 0
+/\ truthVersion = 4
+/\ pc = (t1 :> "w_emit" @@ t2 :> "w_read" @@ t3 :> "idle")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1 @@ t3 :> 1)
+/\ memVersion = (b1 :> 7)
+/\ taskType = (t1 :> "worker" @@ t2 :> "worker" @@ t3 :> "idle")
+/\ taskReadVersion = (t1 :> 1 @@ t2 :> 0 @@ t3 :> 0)
+/\ taskSnapshot = (t1 :> 3 @@ t2 :> 0 @@ t3 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<2, 4>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 2)
+
+State 22: <MCBeginWorker(t3,b1) line 49, col 24 to line 49, col 60 of module MC>
+/\ diskVersion = (b1 :> 7)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1 @@ t2 :> b1 @@ t3 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 4
+/\ pc = (t1 :> "w_emit" @@ t2 :> "w_read" @@ t3 :> "w_read")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1 @@ t3 :> 1)
+/\ memVersion = (b1 :> 7)
+/\ taskType = (t1 :> "worker" @@ t2 :> "worker" @@ t3 :> "worker")
+/\ taskReadVersion = (t1 :> 1 @@ t2 :> 0 @@ t3 :> 0)
+/\ taskSnapshot = (t1 :> 3 @@ t2 :> 0 @@ t3 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<2, 4>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 2)
+
+State 23: <MCWorkerReadParagraph(t3) line 50, col 29 to line 50, col 70 of module MC>
+/\ diskVersion = (b1 :> 7)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1 @@ t2 :> b1 @@ t3 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 4
+/\ pc = (t1 :> "w_emit" @@ t2 :> "w_read" @@ t3 :> "w_api")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1 @@ t3 :> 1)
+/\ memVersion = (b1 :> 8)
+/\ taskType = (t1 :> "worker" @@ t2 :> "worker" @@ t3 :> "worker")
+/\ taskReadVersion = (t1 :> 1 @@ t2 :> 0 @@ t3 :> 2)
+/\ taskSnapshot = (t1 :> 3 @@ t2 :> 0 @@ t3 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<2, 4>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 2)
+
+State 24: <MCWorkerCallAPI(t3) line 51, col 23 to line 51, col 58 of module MC>
+/\ diskVersion = (b1 :> 7)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1 @@ t2 :> b1 @@ t3 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 4
+/\ pc = (t1 :> "w_emit" @@ t2 :> "w_read" @@ t3 :> "w_store")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1 @@ t3 :> 1)
+/\ memVersion = (b1 :> 8)
+/\ taskType = (t1 :> "worker" @@ t2 :> "worker" @@ t3 :> "worker")
+/\ taskReadVersion = (t1 :> 1 @@ t2 :> 0 @@ t3 :> 2)
+/\ taskSnapshot = (t1 :> 3 @@ t2 :> 0 @@ t3 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<2, 4>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 2)
+
+State 25: <MCWorkerEmit(t1) line 55, col 20 to line 55, col 52 of module MC>
+/\ diskVersion = (b1 :> 7)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> "none" @@ t2 :> b1 @@ t3 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 4
+/\ pc = (t1 :> "idle" @@ t2 :> "w_read" @@ t3 :> "w_store")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1 @@ t3 :> 1)
+/\ memVersion = (b1 :> 8)
+/\ taskType = (t1 :> "idle" @@ t2 :> "worker" @@ t3 :> "worker")
+/\ taskReadVersion = (t1 :> 1 @@ t2 :> 0 @@ t3 :> 2)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0 @@ t3 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<2, 4, 3>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 2)
+
+State 26: <MCBeginWatcher(t1,b1) line 64, col 25 to line 64, col 62 of module MC>
+/\ diskVersion = (b1 :> 7)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1 @@ t2 :> b1 @@ t3 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 4
+/\ pc = (t1 :> "fw_reload" @@ t2 :> "w_read" @@ t3 :> "w_store")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1 @@ t3 :> 1)
+/\ memVersion = (b1 :> 8)
+/\ taskType = (t1 :> "watcher" @@ t2 :> "worker" @@ t3 :> "worker")
+/\ taskReadVersion = (t1 :> 1 @@ t2 :> 0 @@ t3 :> 2)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0 @@ t3 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<2, 4, 3>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 2)
+
+State 27: <MCWorkerStoreResult(t3) line 52, col 27 to line 52, col 66 of module MC>
+/\ diskVersion = (b1 :> 7)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1 @@ t2 :> b1 @@ t3 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 5
+/\ pc = (t1 :> "fw_reload" @@ t2 :> "w_read" @@ t3 :> "w_save")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1 @@ t3 :> 1)
+/\ memVersion = (b1 :> 8)
+/\ taskType = (t1 :> "watcher" @@ t2 :> "worker" @@ t3 :> "worker")
+/\ taskReadVersion = (t1 :> 1 @@ t2 :> 0 @@ t3 :> 2)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0 @@ t3 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<2, 4, 3>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 2)
+
+State 28: <MCWorkerReadParagraph(t2) line 50, col 29 to line 50, col 70 of module MC>
+/\ diskVersion = (b1 :> 7)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1 @@ t2 :> b1 @@ t3 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 5
+/\ pc = (t1 :> "fw_reload" @@ t2 :> "w_api" @@ t3 :> "w_save")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1 @@ t3 :> 1)
+/\ memVersion = (b1 :> 9)
+/\ taskType = (t1 :> "watcher" @@ t2 :> "worker" @@ t3 :> "worker")
+/\ taskReadVersion = (t1 :> 1 @@ t2 :> 2 @@ t3 :> 2)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0 @@ t3 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<2, 4, 3>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 2)
+
+State 29: <MCMarkWordVisible(b1) line 73, col 25 to line 73, col 62 of module MC>
+/\ diskVersion = (b1 :> 10)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1 @@ t2 :> b1 @@ t3 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 5
+/\ pc = (t1 :> "fw_reload" @@ t2 :> "w_api" @@ t3 :> "w_save")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1 @@ t3 :> 1)
+/\ memVersion = (b1 :> 10)
+/\ taskType = (t1 :> "watcher" @@ t2 :> "worker" @@ t3 :> "worker")
+/\ taskReadVersion = (t1 :> 1 @@ t2 :> 2 @@ t3 :> 2)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0 @@ t3 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<2, 4, 3>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 2)
+
+State 30: <MCWorkerCallAPI(t2) line 51, col 23 to line 51, col 58 of module MC>
+/\ diskVersion = (b1 :> 10)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1 @@ t2 :> b1 @@ t3 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 5
+/\ pc = (t1 :> "fw_reload" @@ t2 :> "w_store" @@ t3 :> "w_save")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1 @@ t3 :> 1)
+/\ memVersion = (b1 :> 10)
+/\ taskType = (t1 :> "watcher" @@ t2 :> "worker" @@ t3 :> "worker")
+/\ taskReadVersion = (t1 :> 1 @@ t2 :> 2 @@ t3 :> 2)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0 @@ t3 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<2, 4, 3>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 2)
+
+State 31: <MCDeliverEvent line 70, col 19 to line 70, col 50 of module MC>
+/\ diskVersion = (b1 :> 10)
+/\ uiVersion = 2
+/\ taskBook = (t1 :> b1 @@ t2 :> b1 @@ t3 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 5
+/\ pc = (t1 :> "fw_reload" @@ t2 :> "w_store" @@ t3 :> "w_save")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1 @@ t3 :> 1)
+/\ memVersion = (b1 :> 10)
+/\ taskType = (t1 :> "watcher" @@ t2 :> "worker" @@ t3 :> "worker")
+/\ taskReadVersion = (t1 :> 1 @@ t2 :> 2 @@ t3 :> 2)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0 @@ t3 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<4, 3>>
+/\ maxDeliveredVersion = 2
+/\ bookVersion = (b1 :> 2)
+
+State 32: <MCDeliverEvent line 70, col 19 to line 70, col 50 of module MC>
+/\ diskVersion = (b1 :> 10)
+/\ uiVersion = 4
+/\ taskBook = (t1 :> b1 @@ t2 :> b1 @@ t3 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 5
+/\ pc = (t1 :> "fw_reload" @@ t2 :> "w_store" @@ t3 :> "w_save")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1 @@ t3 :> 1)
+/\ memVersion = (b1 :> 10)
+/\ taskType = (t1 :> "watcher" @@ t2 :> "worker" @@ t3 :> "worker")
+/\ taskReadVersion = (t1 :> 1 @@ t2 :> 2 @@ t3 :> 2)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0 @@ t3 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<3>>
+/\ maxDeliveredVersion = 4
+/\ bookVersion = (b1 :> 2)
+
+State 33: <MCWatcherReload(t1) line 65, col 23 to line 65, col 58 of module MC>
+/\ diskVersion = (b1 :> 10)
+/\ uiVersion = 4
+/\ taskBook = (t1 :> b1 @@ t2 :> b1 @@ t3 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 6
+/\ pc = (t1 :> "fw_snapshot" @@ t2 :> "w_store" @@ t3 :> "w_save")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1 @@ t3 :> 1)
+/\ memVersion = (b1 :> 10)
+/\ taskType = (t1 :> "watcher" @@ t2 :> "worker" @@ t3 :> "worker")
+/\ taskReadVersion = (t1 :> 1 @@ t2 :> 2 @@ t3 :> 2)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0 @@ t3 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<3>>
+/\ maxDeliveredVersion = 4
+/\ bookVersion = (b1 :> 3)
+
+State 34: <MCWorkerSave(t3) line 53, col 20 to line 53, col 52 of module MC>
+/\ diskVersion = (b1 :> 10)
+/\ uiVersion = 4
+/\ taskBook = (t1 :> b1 @@ t2 :> b1 @@ t3 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 6
+/\ pc = (t1 :> "fw_snapshot" @@ t2 :> "w_store" @@ t3 :> "w_snapshot")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1 @@ t3 :> 1)
+/\ memVersion = (b1 :> 10)
+/\ taskType = (t1 :> "watcher" @@ t2 :> "worker" @@ t3 :> "worker")
+/\ taskReadVersion = (t1 :> 1 @@ t2 :> 2 @@ t3 :> 2)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0 @@ t3 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<3>>
+/\ maxDeliveredVersion = 4
+/\ bookVersion = (b1 :> 3)
+
+State 35: <MCDeliverEvent line 70, col 19 to line 70, col 50 of module MC>
+/\ diskVersion = (b1 :> 10)
+/\ uiVersion = 3
+/\ taskBook = (t1 :> b1 @@ t2 :> b1 @@ t3 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 6
+/\ pc = (t1 :> "fw_snapshot" @@ t2 :> "w_store" @@ t3 :> "w_snapshot")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1 @@ t3 :> 1)
+/\ memVersion = (b1 :> 10)
+/\ taskType = (t1 :> "watcher" @@ t2 :> "worker" @@ t3 :> "worker")
+/\ taskReadVersion = (t1 :> 1 @@ t2 :> 2 @@ t3 :> 2)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0 @@ t3 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<>>
+/\ maxDeliveredVersion = 4
+/\ bookVersion = (b1 :> 3)
+
+The number of states generated: 2140
+Simulation using seed 876107987701974188 and aril 0
+Progress: 2156 states checked, 23 traces generated (trace length: mean=16, var(x)=1390, sd=37)
+Finished in 00s at (2026-04-05 21:00:32)
+Trace exploration spec path: ./MC_TTrace_1775408432.tla

@@ -98,8 +98,10 @@ async fn trace_interaction_baseline() {
     let lib_root = temp.path.join("lib");
 
     // === ConfigChange: simulate reconfiguration by opening a new library ===
+    // After this, currentLib = 2. All subsequent tasks capture lib 2.
     let span = TraceSpan::begin("t1", "ConfigChange")
-        .field("task", "t1");
+        .field("task", "t1")
+        .field("newLib", 2);
     let _library2 = Library::open(lib_root.clone()).await.unwrap();
     span.end();
 
@@ -120,7 +122,7 @@ async fn trace_interaction_baseline() {
     let span = TraceSpan::begin("t1", "BeginWorker")
         .field("task", "t1")
         .field("book", "b1")
-        .field("lib", 1);
+        .field("lib", 2);
     let book_handle = library.get_book(&book_id).await.unwrap();
     span.end();
 
@@ -159,7 +161,7 @@ async fn trace_interaction_baseline() {
     // WorkerSave: book.save()
     let span = TraceSpan::begin("t1", "WorkerSave")
         .field("task", "t1")
-        .field("lib", 1);
+        .field("lib", 2);
     {
         let mut b = book_handle.lock().await;
         b.save().await.unwrap();
@@ -183,7 +185,7 @@ async fn trace_interaction_baseline() {
     let span = TraceSpan::begin("t2", "BeginTauri")
         .field("task", "t2")
         .field("book", "b1")
-        .field("lib", 1);
+        .field("lib", 2);
     // (just routing — real work in TauriModify)
     span.end();
 
@@ -213,7 +215,7 @@ async fn trace_interaction_baseline() {
     let span = TraceSpan::begin("t1", "BeginWatcher")
         .field("task", "t1")
         .field("book", "b1")
-        .field("lib", 1);
+        .field("lib", 2);
     let _book_handle = library.get_book(&book_id).await.unwrap();
     span.end();
 
@@ -244,7 +246,7 @@ async fn trace_interaction_baseline() {
         .field("task", "t1")
         .end();
 
-    // === DeliverEvent (ui actor, 3 events from worker/tauri/watcher emits) ===
+    // === DeliverEvent (ui actor, 4 events: ConfigChange + worker + tauri + watcher) ===
     TraceSpan::begin("ui", "DeliverEvent")
         .field("version", 1)
         .end();
@@ -253,6 +255,9 @@ async fn trace_interaction_baseline() {
         .end();
     TraceSpan::begin("ui", "DeliverEvent")
         .field("version", 3)
+        .end();
+    TraceSpan::begin("ui", "DeliverEvent")
+        .field("version", 4)
         .end();
 
     // === MarkWordVisible ===

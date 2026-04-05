@@ -1,0 +1,110 @@
+TLC2 Version 2026.03.31.154134 (rev: becec35)
+Running Random Simulation with seed -1734561859959914995 with 14 workers on 16 cores with 18204MB heap and 64MB offheap memory [pid: 59931] (Mac OS X 26.3.1 aarch64, Homebrew 25.0.2 64bit).
+Parsing file /Volumes/sources/flts/spec/interaction/MC.tla
+Parsing file /Volumes/sources/flts/spec/interaction/base.tla
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-13388449238584758321/_TLCTrace.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/_TLCTrace.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-13388449238584758321/Integers.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/Integers.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-13388449238584758321/Sequences.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/Sequences.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-13388449238584758321/FiniteSets.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/FiniteSets.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-13388449238584758321/TLC.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/TLC.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-13388449238584758321/Naturals.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/Naturals.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-13388449238584758321/TLCExt.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/TLCExt.tla)
+Semantic processing of module Naturals
+Semantic processing of module Integers
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module base
+Semantic processing of module TLCExt
+Semantic processing of module _TLCTrace
+Semantic processing of module MC
+Linting of module base
+Linting of module TLCExt
+Linting of module _TLCTrace
+Linting of module MC
+Starting... (2026-04-05 21:00:05)
+Computed 1 initial states...
+Finished computing initial states: 1 distinct state generated at 2026-04-05 21:00:05.
+Error: Invariant MCStaleLibrarySafety is violated.
+Error: The behavior up to this point is:
+State 1: <MCInit line 80, col 5 to line 82, col 24 of module MC>
+/\ diskVersion = (b1 :> 0)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> "none" @@ t2 :> "none")
+/\ appCloseCount = 0
+/\ truthVersion = 1
+/\ pc = (t1 :> "idle" @@ t2 :> "idle")
+/\ taskLib = (t1 :> 0 @@ t2 :> 0)
+/\ memVersion = (b1 :> 0)
+/\ taskType = (t1 :> "idle" @@ t2 :> "idle")
+/\ taskReadVersion = (t1 :> 0 @@ t2 :> 0)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 1)
+
+State 2: <MCBeginWorker(t2,b1) line 49, col 24 to line 49, col 60 of module MC>
+/\ diskVersion = (b1 :> 0)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> "none" @@ t2 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 1
+/\ pc = (t1 :> "idle" @@ t2 :> "w_read")
+/\ taskLib = (t1 :> 0 @@ t2 :> 1)
+/\ memVersion = (b1 :> 0)
+/\ taskType = (t1 :> "idle" @@ t2 :> "worker")
+/\ taskReadVersion = (t1 :> 0 @@ t2 :> 0)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 1)
+
+State 3: <MCBeginTauri(t1,b1) line 58, col 23 to line 58, col 58 of module MC>
+/\ diskVersion = (b1 :> 0)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1 @@ t2 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 1
+/\ pc = (t1 :> "tc_modify" @@ t2 :> "w_read")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1)
+/\ memVersion = (b1 :> 0)
+/\ taskType = (t1 :> "tauri" @@ t2 :> "worker")
+/\ taskReadVersion = (t1 :> 0 @@ t2 :> 0)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 1)
+
+State 4: <MCConfigChange line 32, col 5 to line 35, col 30 of module MC>
+/\ diskVersion = (b1 :> 0)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1 @@ t2 :> b1)
+/\ appCloseCount = 0
+/\ truthVersion = 2
+/\ pc = (t1 :> "tc_modify" @@ t2 :> "w_read")
+/\ taskLib = (t1 :> 1 @@ t2 :> 1)
+/\ memVersion = (b1 :> 0)
+/\ taskType = (t1 :> "tauri" @@ t2 :> "worker")
+/\ taskReadVersion = (t1 :> 0 @@ t2 :> 0)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0)
+/\ currentLib = 2
+/\ configChangeCount = 1
+/\ appAlive = TRUE
+/\ pendingEvents = <<2>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 1)
+
+The number of states generated: 295
+Simulation using seed -1734561859959914995 and aril 0
+Progress: 302 states checked, 22 traces generated (trace length: mean=0, var(x)=0, sd=0)
+Finished in 00s at (2026-04-05 21:00:05)
+Trace exploration spec path: ./MC_TTrace_1775408404.tla

@@ -560,12 +560,15 @@ EventMonotonicity ==
 \* When all pending events have been delivered and no task is in the
 \* middle of a compute-snapshot→emit flow, the UI should reflect the
 \* latest backend state. Violation means stale events corrupted the UI.
+\* Guard: only applies after the UI has received at least one event
+\* (maxDeliveredVersion > 0), since the UI starts empty.
 UIConsistency ==
     (/\ pendingEvents = <<>>
      /\ \A t \in Task : pc[t] \notin {"w_read", "w_api", "w_store",
                                        "w_save", "w_snapshot", "w_emit",
                                        "tc_modify", "tc_snapshot", "tc_emit",
-                                       "fw_reload", "fw_snapshot", "fw_emit"})
+                                       "fw_reload", "fw_snapshot", "fw_emit"}
+     /\ maxDeliveredVersion > 0)
     => uiVersion = truthVersion
 
 \* --- F3: No Persistence Loss ---

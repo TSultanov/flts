@@ -1,0 +1,185 @@
+TLC2 Version 2026.03.31.154134 (rev: becec35)
+Running breadth-first search Model-Checking with fp 53 and seed -3934937974350460626 with 14 workers on 16 cores with 18204MB heap and 64MB offheap memory [pid: 53015] (Mac OS X 26.3.1 aarch64, Homebrew 25.0.2 64bit, MSBDiskFPSet, DiskStateQueue).
+Parsing file /Volumes/sources/flts/spec/interaction/MC.tla
+Parsing file /Volumes/sources/flts/spec/interaction/base.tla
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-1878703262359626464/_TLCTrace.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/_TLCTrace.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-1878703262359626464/Integers.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/Integers.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-1878703262359626464/Sequences.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/Sequences.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-1878703262359626464/FiniteSets.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/FiniteSets.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-1878703262359626464/TLC.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/TLC.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-1878703262359626464/Naturals.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/Naturals.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-1878703262359626464/TLCExt.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/TLCExt.tla)
+Semantic processing of module Naturals
+Semantic processing of module Integers
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module base
+Semantic processing of module TLCExt
+Semantic processing of module _TLCTrace
+Semantic processing of module MC
+Linting of module base
+Linting of module TLCExt
+Linting of module _TLCTrace
+Linting of module MC
+Starting... (2026-04-05 20:40:36)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-04-05 20:40:36.
+Error: Invariant MCEventMonotonicity is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ diskVersion = (b1 :> 0)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> "none" @@ t2 :> "none")
+/\ appCloseCount = 0
+/\ truthVersion = 1
+/\ pc = (t1 :> "idle" @@ t2 :> "idle")
+/\ taskLib = (t1 :> 0 @@ t2 :> 0)
+/\ memVersion = (b1 :> 0)
+/\ taskType = (t1 :> "idle" @@ t2 :> "idle")
+/\ taskReadVersion = (t1 :> 0 @@ t2 :> 0)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 1)
+
+State 2: <MCBeginTauri(t1,b1) line 58, col 23 to line 58, col 58 of module MC>
+/\ diskVersion = (b1 :> 0)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1 @@ t2 :> "none")
+/\ appCloseCount = 0
+/\ truthVersion = 1
+/\ pc = (t1 :> "tc_modify" @@ t2 :> "idle")
+/\ taskLib = (t1 :> 1 @@ t2 :> 0)
+/\ memVersion = (b1 :> 0)
+/\ taskType = (t1 :> "tauri" @@ t2 :> "idle")
+/\ taskReadVersion = (t1 :> 0 @@ t2 :> 0)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 1)
+
+State 3: <MCTauriModify(t1) line 59, col 21 to line 59, col 54 of module MC>
+/\ diskVersion = (b1 :> 1)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1 @@ t2 :> "none")
+/\ appCloseCount = 0
+/\ truthVersion = 2
+/\ pc = (t1 :> "tc_snapshot" @@ t2 :> "idle")
+/\ taskLib = (t1 :> 1 @@ t2 :> 0)
+/\ memVersion = (b1 :> 1)
+/\ taskType = (t1 :> "tauri" @@ t2 :> "idle")
+/\ taskReadVersion = (t1 :> 0 @@ t2 :> 0)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 1)
+
+State 4: <MCTauriComputeSnapshot(t1) line 60, col 30 to line 60, col 72 of module MC>
+/\ diskVersion = (b1 :> 1)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1 @@ t2 :> "none")
+/\ appCloseCount = 0
+/\ truthVersion = 2
+/\ pc = (t1 :> "tc_emit" @@ t2 :> "idle")
+/\ taskLib = (t1 :> 1 @@ t2 :> 0)
+/\ memVersion = (b1 :> 1)
+/\ taskType = (t1 :> "tauri" @@ t2 :> "idle")
+/\ taskReadVersion = (t1 :> 0 @@ t2 :> 0)
+/\ taskSnapshot = (t1 :> 2 @@ t2 :> 0)
+/\ currentLib = 1
+/\ configChangeCount = 0
+/\ appAlive = TRUE
+/\ pendingEvents = <<>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 1)
+
+State 5: <MCConfigChange line 32, col 5 to line 35, col 30 of module MC>
+/\ diskVersion = (b1 :> 1)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> b1 @@ t2 :> "none")
+/\ appCloseCount = 0
+/\ truthVersion = 3
+/\ pc = (t1 :> "tc_emit" @@ t2 :> "idle")
+/\ taskLib = (t1 :> 1 @@ t2 :> 0)
+/\ memVersion = (b1 :> 1)
+/\ taskType = (t1 :> "tauri" @@ t2 :> "idle")
+/\ taskReadVersion = (t1 :> 0 @@ t2 :> 0)
+/\ taskSnapshot = (t1 :> 2 @@ t2 :> 0)
+/\ currentLib = 2
+/\ configChangeCount = 1
+/\ appAlive = TRUE
+/\ pendingEvents = <<3>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 1)
+
+State 6: <MCTauriEmit(t1) line 61, col 19 to line 61, col 50 of module MC>
+/\ diskVersion = (b1 :> 1)
+/\ uiVersion = 0
+/\ taskBook = (t1 :> "none" @@ t2 :> "none")
+/\ appCloseCount = 0
+/\ truthVersion = 3
+/\ pc = (t1 :> "idle" @@ t2 :> "idle")
+/\ taskLib = (t1 :> 1 @@ t2 :> 0)
+/\ memVersion = (b1 :> 1)
+/\ taskType = (t1 :> "idle" @@ t2 :> "idle")
+/\ taskReadVersion = (t1 :> 0 @@ t2 :> 0)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0)
+/\ currentLib = 2
+/\ configChangeCount = 1
+/\ appAlive = TRUE
+/\ pendingEvents = <<3, 2>>
+/\ maxDeliveredVersion = 0
+/\ bookVersion = (b1 :> 1)
+
+State 7: <MCDeliverEvent line 70, col 19 to line 70, col 50 of module MC>
+/\ diskVersion = (b1 :> 1)
+/\ uiVersion = 3
+/\ taskBook = (t1 :> "none" @@ t2 :> "none")
+/\ appCloseCount = 0
+/\ truthVersion = 3
+/\ pc = (t1 :> "idle" @@ t2 :> "idle")
+/\ taskLib = (t1 :> 1 @@ t2 :> 0)
+/\ memVersion = (b1 :> 1)
+/\ taskType = (t1 :> "idle" @@ t2 :> "idle")
+/\ taskReadVersion = (t1 :> 0 @@ t2 :> 0)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0)
+/\ currentLib = 2
+/\ configChangeCount = 1
+/\ appAlive = TRUE
+/\ pendingEvents = <<2>>
+/\ maxDeliveredVersion = 3
+/\ bookVersion = (b1 :> 1)
+
+State 8: <MCDeliverEvent line 70, col 19 to line 70, col 50 of module MC>
+/\ diskVersion = (b1 :> 1)
+/\ uiVersion = 2
+/\ taskBook = (t1 :> "none" @@ t2 :> "none")
+/\ appCloseCount = 0
+/\ truthVersion = 3
+/\ pc = (t1 :> "idle" @@ t2 :> "idle")
+/\ taskLib = (t1 :> 1 @@ t2 :> 0)
+/\ memVersion = (b1 :> 1)
+/\ taskType = (t1 :> "idle" @@ t2 :> "idle")
+/\ taskReadVersion = (t1 :> 0 @@ t2 :> 0)
+/\ taskSnapshot = (t1 :> 0 @@ t2 :> 0)
+/\ currentLib = 2
+/\ configChangeCount = 1
+/\ appAlive = TRUE
+/\ pendingEvents = <<>>
+/\ maxDeliveredVersion = 3
+/\ bookVersion = (b1 :> 1)
+
+12771 states generated, 6016 distinct states found, 2987 states left on queue.
+The depth of the complete state graph search is 11.
+Finished in 00s at (2026-04-05 20:40:36)
+Trace exploration spec path: ./MC_TTrace_1775407236.tla
