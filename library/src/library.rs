@@ -11,7 +11,7 @@ use itertools::Itertools;
 use log::{info, trace};
 use tokio::{
     io::AsyncReadExt,
-    sync::{Mutex, RwLock},
+    sync::RwLock,
 };
 use uuid::Uuid;
 
@@ -23,6 +23,7 @@ use crate::{
         library_book::{LibraryBook, load_book_user_state},
         library_dictionary::DictionaryCache,
     },
+    tla_trace_mutex::TracedMutex,
 };
 
 pub mod file_watcher;
@@ -198,7 +199,7 @@ impl LibraryBookMetadata {
 
 pub struct Library {
     library_root: PathBuf,
-    books_cache: RwLock<HashMap<Uuid, Arc<Mutex<LibraryBook>>>>, // TODO: eviction
+    books_cache: RwLock<HashMap<Uuid, Arc<TracedMutex<LibraryBook>>>>, // TODO: eviction
     dictionaries_cache: Arc<DictionaryCache>,
 }
 
@@ -240,14 +241,14 @@ impl Library {
         Ok(books)
     }
 
-    pub async fn get_book(&self, uuid: &Uuid) -> anyhow::Result<Arc<Mutex<LibraryBook>>> {
+    pub async fn get_book(&self, uuid: &Uuid) -> anyhow::Result<Arc<TracedMutex<LibraryBook>>> {
         if let Some(book) = self.books_cache.read().await.get(uuid).cloned() {
             return Ok(book);
         }
 
         let path = self.library_root.join(uuid.to_string());
         let metadata = LibraryBookMetadata::load(&path).await?;
-        let book = Arc::new(Mutex::new(
+        let book = Arc::new(TracedMutex::new(
             LibraryBook::load_from_metadata(self.dictionaries_cache.clone(), metadata).await?,
         ));
 

@@ -15,7 +15,7 @@ use isolang::Language;
 use serde::{Deserialize, Serialize};
 use serde_json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::Mutex;
+use crate::tla_trace_mutex::{TracedLock, TracedMutex};
 use uuid::Uuid;
 
 use crate::{
@@ -54,7 +54,7 @@ pub struct LibraryBook {
     path: PathBuf,
     last_modified: Option<SystemTime>,
     pub book: Book,
-    translations: Vec<Arc<Mutex<LibraryTranslation>>>,
+    translations: Vec<Arc<TracedMutex<LibraryTranslation>>>,
     user_state: BookUserState,
 }
 
@@ -65,6 +65,18 @@ pub struct LibraryTranslation {
     target_language: Language,
     last_modified: Option<SystemTime>,
     changed: bool,
+}
+
+impl TracedLock for LibraryBook {
+    fn lock_name(&self) -> String {
+        format!("book:{}", self.book.id)
+    }
+}
+
+impl TracedLock for LibraryTranslation {
+    fn lock_name(&self) -> String {
+        format!("trans:{}_{}", self.source_language.to_639_3(), self.target_language.to_639_3())
+    }
 }
 
 impl LibraryTranslation {
@@ -369,20 +381,33 @@ impl LibraryBook {
     pub async fn get_or_create_translation(
         &mut self,
         target_language: &Language,
-    ) -> Arc<Mutex<LibraryTranslation>> {
+    ) -> Arc<TracedMutex<LibraryTranslation>> {
         let source_language = &self.book.language;
 
         for (t_idx, t) in self.translations.iter().enumerate() {
-            if &t.lock().await.translation.source_language == source_language
-                && t.lock().await.translation.target_language == target_language.to_639_3()
-            {
-                return self.translations[t_idx].clone();
+            // Double-lock pattern: check source then target language.
+            // Each lock is acquired and released independently; TracedMutex
+            // emits AcqTrans/RelTrans automatically for each.
+            let src_match = {
+                let guard = t.lock().await;
+                &guard.translation.source_language == source_language
+            };
+
+            if src_match {
+                let tgt_match = {
+                    let guard = t.lock().await;
+                    guard.translation.target_language == target_language.to_639_3()
+                };
+
+                if tgt_match {
+                    return self.translations[t_idx].clone();
+                }
             }
         }
 
         // Not found: create and push
         self.translations
-            .push(Arc::new(Mutex::new(LibraryTranslation {
+            .push(Arc::new(TracedMutex::new(LibraryTranslation {
                 dict_cache: self.dict_cache.clone(),
                 translation: Translation::create(source_language, target_language.to_639_3()),
                 source_language: Language::from_639_3(source_language).unwrap(),
@@ -446,7 +471,7 @@ impl LibraryBook {
         let mut book = Self::load(dict_cache.clone(), &metadata.main_path).await?;
 
         for tm in metadata.translations_metadata {
-            let translation = Arc::new(Mutex::new(
+            let translation = Arc::new(TracedMutex::new(
                 LibraryTranslation::load_from_metadata(dict_cache.clone(), tm).await?,
             ));
             book.translations.push(translation);
@@ -718,7 +743,7 @@ impl LibraryBook {
 
         for translation_metadata in all_book_translations.translations_metadata {
             if !loaded_translations.contains(&translation_metadata.id) {
-                merged_translations.push(Arc::new(Mutex::new(
+                merged_translations.push(Arc::new(TracedMutex::new(
                     LibraryTranslation::load_from_metadata(
                         book.dict_cache.clone(),
                         translation_metadata,
@@ -774,7 +799,7 @@ impl Library {
         &self,
         title: &str,
         language: &Language,
-    ) -> anyhow::Result<Arc<Mutex<LibraryBook>>> {
+    ) -> anyhow::Result<Arc<TracedMutex<LibraryBook>>> {
         let books = self.list_books().await?;
         if books.iter().any(|b| b.title == title) {
             Err(LibraryError::DuplicateTitle(title.to_owned()))?
@@ -783,7 +808,7 @@ impl Library {
         let guid = Uuid::new_v4();
         let book_root = self.library_root.join(guid.to_string());
 
-        let book = Arc::new(Mutex::new(LibraryBook {
+        let book = Arc::new(TracedMutex::new(LibraryBook {
             dict_cache: self.dictionaries_cache.clone(),
             path: book_root,
             last_modified: None,
@@ -825,7 +850,7 @@ mod library_book_tests {
     use std::{io::Write, str::FromStr, sync::Arc};
 
     use isolang::Language;
-    use tokio::sync::Mutex;
+    use crate::tla_trace_mutex::TracedMutex;
 
     use crate::{
         book::{
@@ -1014,7 +1039,7 @@ mod library_book_tests {
                 &mut dict.lock().await.dictionary,
             );
             book.translations
-                .push(Arc::new(Mutex::new(super::LibraryTranslation {
+                .push(Arc::new(TracedMutex::new(super::LibraryTranslation {
                     dict_cache: library.dictionaries_cache.clone(),
                     translation: tr,
                     source_language,
@@ -1149,7 +1174,7 @@ mod library_book_tests {
             &mut dict.lock().await.dictionary,
         );
         book.translations
-            .push(Arc::new(Mutex::new(super::LibraryTranslation {
+            .push(Arc::new(TracedMutex::new(super::LibraryTranslation {
                 dict_cache: library.dictionaries_cache.clone(),
                 translation: tr,
                 source_language,
@@ -1172,7 +1197,7 @@ mod library_book_tests {
             super::LibraryTranslation::load(library.dictionaries_cache.clone(), &tr_path)
                 .await
                 .unwrap();
-        book.translations.push(Arc::new(Mutex::new(loaded_tr)));
+        book.translations.push(Arc::new(TracedMutex::new(loaded_tr)));
 
         // In-memory change ts=2
         let mem_pt = translation_import::ParagraphTranslation {

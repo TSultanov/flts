@@ -7,13 +7,14 @@ use std::{
 
 use isolang::Language;
 use itertools::Itertools;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::{
     book::serialization::Serializable,
     dictionary::{Dictionary, dictionary_metadata::DictionaryMetadata},
     tla_trace,
+    tla_trace_mutex::{TracedLock, TracedMutex},
 };
 
 pub struct LibraryDictionaryMetadata {
@@ -96,6 +97,16 @@ pub struct LibraryDictionary {
     path: PathBuf,
     last_modified: Option<SystemTime>,
     pub dictionary: Dictionary,
+}
+
+impl TracedLock for LibraryDictionary {
+    fn lock_name(&self) -> String {
+        format!(
+            "dict:{}_{}", 
+            self.dictionary.source_language,
+            self.dictionary.target_language
+        )
+    }
 }
 
 impl LibraryDictionary {
@@ -231,7 +242,7 @@ impl LibraryDictionary {
 
 pub struct DictionaryCache {
     library_root: PathBuf,
-    cache: RwLock<HashMap<(Language, Language), Arc<Mutex<LibraryDictionary>>>>,
+    cache: RwLock<HashMap<(Language, Language), Arc<TracedMutex<LibraryDictionary>>>>,
 }
 
 impl DictionaryCache {
@@ -305,7 +316,7 @@ impl DictionaryCache {
         &self,
         src: Language,
         tgt: Language,
-    ) -> anyhow::Result<Arc<Mutex<LibraryDictionary>>> {
+    ) -> anyhow::Result<Arc<TracedMutex<LibraryDictionary>>> {
         if let Some(cached_dict) = self.cache.read().await.get(&(src, tgt)).cloned() {
             return Ok(cached_dict);
         }
@@ -320,7 +331,7 @@ impl DictionaryCache {
             self.create_dictionary(src, tgt)?
         };
 
-        let dictionary = Arc::new(Mutex::new(dictionary));
+        let dictionary = Arc::new(TracedMutex::new(dictionary));
 
         let mut cache = self.cache.write().await;
         if let Some(existing) = cache.get(&(src, tgt)) {

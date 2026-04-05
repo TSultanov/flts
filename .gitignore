@@ -5,3 +5,4 @@ traces/
 .specula-output/
 states/
 MC_TTrace_*
+*.bin
