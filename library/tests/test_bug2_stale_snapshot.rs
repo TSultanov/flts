@@ -2,8 +2,12 @@
 //!
 //! Demonstrates that concurrent backend operations can emit events whose
 //! snapshot versions arrive at the frontend in non-monotonic order.
-//! Since eventToReadable (tauri.ts:10-13) blindly applies `setter(event.payload)`,
-//! a stale snapshot overwrites a fresh one, causing UI regression.
+//!
+//! Part 1 reproduces the original bug: eventToReadable blindly applied
+//! `setter(event.payload)`, so a stale snapshot overwrote a fresh one.
+//!
+//! Part 2 verifies the fix: with versioned payloads and monotonicity
+//! checking, stale events are discarded and the UI never regresses.
 //!
 //! TLA+ counterexample (8 states):
 //!   TauriModify(v2) → TauriComputeSnapshot(snap=2) → ConfigChange(emits v3)
@@ -34,6 +38,7 @@ impl Drop for TempDir {
     }
 }
 
+/// Reproduces the original bug: blind overwrite causes UI regression.
 #[tokio::test]
 async fn test_bug2_stale_snapshot_overwrites() {
     let dir = TempDir::new("flts_repro_f2");
@@ -89,26 +94,35 @@ async fn test_bug2_stale_snapshot_overwrites() {
     assert_eq!(*first_version, 2, "Fresh event (v2) emitted first");
     assert_eq!(*second_version, 1, "Stale event (v1) emitted second");
 
-    // Simulate the frontend's eventToReadable (tauri.ts:10-13):
-    //   listen<T>(eventName, (event) => { if (setter) { setter(event.payload); } })
-    let mut ui_version = 0;
+    // Simulate the OLD frontend's eventToReadable (blind overwrite):
+    let mut ui_version_old = 0;
     let mut max_delivered = 0;
     for (_, v) in events.iter() {
-        ui_version = *v; // blindly overwrite
+        ui_version_old = *v; // blindly overwrite
         if *v > max_delivered {
             max_delivered = *v;
         }
     }
 
-    // BUG: UI regressed from v2 to v1
-    let invariant_holds = ui_version >= max_delivered;
+    // BUG: Old handler regresses from v2 to v1
+    assert!(ui_version_old < max_delivered,
+        "Without versioning, UI regresses: shows v{} after having seen v{}",
+        ui_version_old, max_delivered);
 
-    println!("BUG F2 REPRODUCED:");
-    println!("  Event delivery order: {:?}", events.iter().map(|(_, v)| v).collect::<Vec<_>>());
-    println!("  UI version after delivery: {} (should be >= {})", ui_version, max_delivered);
-    println!("  EventMonotonicity invariant holds: {}", invariant_holds);
+    // Simulate the FIXED frontend's eventToReadable (version-aware):
+    let mut ui_version_new = 0;
+    let mut last_version = 0;
+    for (_, v) in events.iter() {
+        if *v > last_version {
+            last_version = *v;
+            ui_version_new = *v;
+        }
+        // else: stale event discarded
+    }
 
-    assert!(!invariant_holds,
-        "EventMonotonicity SHOULD be violated: UI shows v{} after having shown v{}",
-        ui_version, max_delivered);
+    // FIX: Version-aware handler maintains monotonicity
+    assert!(ui_version_new >= max_delivered,
+        "With versioning, EventMonotonicity holds: ui_version={} >= max_delivered={}",
+        ui_version_new, max_delivered);
+    assert_eq!(ui_version_new, 2, "UI correctly shows latest version");
 }

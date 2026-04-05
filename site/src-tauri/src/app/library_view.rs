@@ -9,10 +9,10 @@ use library::{
     book::translation::ParagraphTranslationView,
     library::{Library, library_book::BookReadingState},
 };
-use tauri::Emitter;
 use uuid::Uuid;
 
 use crate::app::AppState;
+use crate::app::versioned_emit::emit_versioned;
 
 #[derive(Clone, serde::Serialize)]
 pub struct LibraryBookMetadataView {
@@ -280,7 +280,7 @@ impl LibraryView {
 
         // Emit updated library view after successful import
         let books = self.list_books(target_language).await?;
-        self.app.emit("library_updated", books)?;
+        emit_versioned(&self.app, "library_updated", books)?;
 
         Ok(id)
     }
@@ -295,7 +295,7 @@ impl LibraryView {
 
         // Emit updated library view after successful import
         let books = self.list_books(target_language).await?;
-        self.app.emit("library_updated", books)?;
+        emit_versioned(&self.app, "library_updated", books)?;
 
         Ok(id)
     }
@@ -337,7 +337,7 @@ impl LibraryView {
         }
 
         let books = self.list_books(target_language).await?;
-        self.app.emit("library_updated", books)?;
+        emit_versioned(&self.app, "library_updated", books)?;
         Ok(())
     }
 
@@ -348,7 +348,7 @@ impl LibraryView {
     ) -> anyhow::Result<()> {
         self.library.delete_book(&book_id).await?;
         let books = self.list_books(target_language).await?;
-        self.app.emit("library_updated", books)?;
+        emit_versioned(&self.app, "library_updated", books)?;
         Ok(())
     }
 

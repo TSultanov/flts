@@ -22,7 +22,7 @@ use crate::app::config::Config;
 #[cfg(not(mobile))]
 use crate::app::library_view::{LibraryView, ParagraphView};
 #[cfg(not(mobile))]
-use tauri::Emitter;
+use crate::app::versioned_emit::emit_versioned;
 
 const TRANSLATION_PROGRESS_UPDATE_INTERVAL: Duration = Duration::from_millis(500);
 const TRANSLATION_STATUS_TTL: Duration = Duration::from_secs(30);
@@ -456,7 +456,8 @@ async fn emit_updates(
         "Emitting \"paragraph_updated\" for {}/{}",
         msg.book_id, msg.paragraph_id
     );
-    app.emit(
+    emit_versioned(
+        &app,
         "paragraph_updated",
         ParagraphUpdatedPayload {
             book_id: msg.book_id,
@@ -466,7 +467,7 @@ async fn emit_updates(
 
     let books = lv.list_books(Some(&msg.target_language)).await?;
     info!("Emitting \"library_updated\"");
-    app.emit("library_updated", books)?;
+    emit_versioned(&app, "library_updated", books)?;
 
     Ok(())
 }
