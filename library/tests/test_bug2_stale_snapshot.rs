@@ -3,11 +3,11 @@
 //! Demonstrates that concurrent backend operations can emit events whose
 //! snapshot versions arrive at the frontend in non-monotonic order.
 //!
-//! Part 1 reproduces the original bug: eventToReadable blindly applied
-//! `setter(event.payload)`, so a stale snapshot overwrote a fresh one.
+//! The bug: eventToReadable blindly applies `setter(event.payload)`,
+//! so a stale snapshot can overwrite a fresh one.
 //!
-//! Part 2 verifies the fix: with versioned payloads and monotonicity
-//! checking, stale events are discarded and the UI never regresses.
+//! Part 2 shows what a correct fix would look like: with version-aware
+//! monotonicity checking, stale events are discarded.
 //!
 //! TLA+ counterexample (8 states):
 //!   TauriModify(v2) → TauriComputeSnapshot(snap=2) → ConfigChange(emits v3)

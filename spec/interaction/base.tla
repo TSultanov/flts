@@ -14,14 +14,12 @@
 (*                                                                         *)
 (* Bug Families:                                                           *)
 (*   F1 — Stale library reference after config reconfiguration  [FIXED]    *)
-(*   F2 — Event ordering / stale snapshot overwrites            [PARTIAL]  *)
+(*   F2 — Event ordering / stale snapshot overwrites            [UNFIXED]  *)
 (*   F3 — Unsaved in-memory modifications / no shutdown persist [FIXED]    *)
 (*   F4 — Translation lifecycle cross-component atomicity       [FIXED]    *)
 (*                                                                         *)
 (* F1 fix: TranslationQueue::Drop aborts spawned tasks via JoinHandle.     *)
-(* F2 fix: emit_versioned + version check in tauri.ts. Prevents invoke     *)
-(*   races and getterToReadableWithEvents staleness, but does NOT prevent  *)
-(*   eventToReadable regression in FIFO delivery (modeled here).           *)
+(* F2: UNFIXED — eventToReadable blindly overwrites with stale payloads.  *)
 (* F3 fix: RunEvent::Exit handler calls save_all() to flush dirty books.   *)
 (* F4 fix: handle_request() re-reads paragraph after API call and discards *)
 (*   translation if content changed (version guard before store).          *)
@@ -586,23 +584,18 @@ NoDataLoss ==
     \A t \in Task :
         pc[t] = "w_save" => taskLib[t] = currentLib
 
-\* --- F2: Event Monotonicity --- [UNFIXED for this pattern]
+\* --- F2: Event Monotonicity --- [UNFIXED]
 \* The frontend UI version never regresses. A stale event should not
 \* overwrite a fresher one.
-\* NOTE: The emit_versioned fix (versioned_emit.rs) adds monotonic version
-\* numbers, but in FIFO delivery the check is a no-op — every event's
-\* emit version exceeds the last. This invariant can still be violated
-\* when two tasks emit in an order where the later emit carries stale data.
-\* The fix IS effective for invoke races and getterToReadableWithEvents,
-\* which are not modeled in this spec.
+\* eventToReadable blindly applies event payloads, so two tasks emitting
+\* in an order where the later emit carries stale data causes regression.
 EventMonotonicity ==
     uiVersion >= maxDeliveredVersion
 
-\* --- F2: UI Consistency --- [UNFIXED for this pattern]
+\* --- F2: UI Consistency --- [UNFIXED]
 \* When all pending events have been delivered and no task is in the
 \* middle of a compute-snapshot→emit flow, the UI should reflect the
 \* latest backend state.
-\* Same caveat as EventMonotonicity — the version fix doesn't help here.
 UIConsistency ==
     (/\ pendingEvents = <<>>
      /\ \A t \in Task : pc[t] \notin {"w_read", "w_api", "w_store",

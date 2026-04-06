@@ -30,6 +30,9 @@ Updated base.tla to reflect implemented fixes:
   races and getterToReadableWithEvents (not modeled here). For the FIFO eventToReadable
   pattern modeled in this spec, the version check is a no-op — EventMonotonicity and
   UIConsistency can still be violated.
+- **F2 REVERTED**: The partial emit_versioned fix was removed. The fix only addressed
+  invoke races (not modeled here) while adding complexity. The eventToReadable FIFO
+  pattern remains unfixed — EventMonotonicity and UIConsistency can still be violated.
 - **F3 FIXED**: AppClose now sets diskVersion = memVersion for all books (models
   save_all() in RunEvent::Exit handler). NoPersistenceLoss should now pass.
 - **F4 UNFIXED**: No changes. NoStaleTranslation can still be violated.
@@ -46,8 +49,8 @@ Updated base.tla to reflect the F4 fix:
 - MC.cfg updated: MCNoStaleTranslation now enabled alongside F1 and F3 invariants.
 - MC_hunt_f4.cfg annotated as FIXED with expected PASS.
 
-All 4 bug families (F1-F4) now have fixes reflected in the spec. Only F2 (EventMonotonicity)
-remains partially addressed — the FIFO eventToReadable pattern is not fully fixed.
+F1, F3, F4 have fixes reflected in the spec. F2 (EventMonotonicity) remains unfixed —
+the partial emit_versioned fix was reverted as it didn't address the core FIFO ordering issue.
 
 ### Verification Results (Post-F4 Fix)
 - F4 hunt (MC_hunt_f4.cfg): 237M+ states generated, zero violations (stopped — strong evidence)

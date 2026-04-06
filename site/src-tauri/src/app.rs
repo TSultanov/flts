@@ -21,8 +21,9 @@ use log::{info, warn};
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
+use tauri::Emitter;
+
 use crate::app::{config::Config, library_view::LibraryView, translation_queue::TranslationQueue};
-use crate::app::versioned_emit::emit_versioned;
 
 #[cfg(mobile)]
 use dirs_next::document_dir;
@@ -30,8 +31,6 @@ use dirs_next::document_dir;
 pub mod config;
 pub mod library_view;
 pub mod translation_queue;
-pub mod versioned_emit;
-
 #[derive(Debug)]
 pub enum AppError {
     StatePoisonError,
@@ -137,7 +136,7 @@ impl AppState {
         config.save(&self.config_path)?;
         *self.config.write().await = config.clone();
         info!("Emitting \"config_updated\"");
-        emit_versioned(&self.app, "config_updated", config)?;
+        self.app.emit("config_updated", config)?;
         self.eval_config().await?;
         Ok(())
     }
@@ -164,7 +163,7 @@ impl AppState {
             let library_view = LibraryView::create(self.app.clone(), library.clone());
             let books = library_view.list_books(target_language.as_ref()).await?;
             info!("Emitting \"library_updated\"");
-            emit_versioned(&self.app, "library_updated", books)?;
+            self.app.emit("library_updated", books)?;
         } else {
             *self.library.write().await = None;
             *self.translation_queue.write().await = None;
@@ -206,15 +205,14 @@ impl AppState {
         match event {
             LibraryFileChange::BookChanged { modified: _, uuid } => {
                 info!("Emitting \"book_updated\" for {uuid}");
-                emit_versioned(&self.app, "book_updated", uuid)?;
+                self.app.emit("book_updated", uuid)?;
 
                 let target_language_id = { self.config.read().await.target_language_id.clone() };
                 let target_language = Language::from_639_3(&target_language_id);
                 let library_view = LibraryView::create(self.app.clone(), library.clone());
 
                 info!("Emitting \"library_updated\"");
-                emit_versioned(
-                    &self.app,
+                self.app.emit(
                     "library_updated",
                     library_view.list_books(target_language.as_ref()).await?,
                 )?;
@@ -230,12 +228,11 @@ impl AppState {
 
                 if target_language.map_or(false, |tl| tl == *to) {
                     info!("Emitting \"book_updated\" for {uuid}");
-                    emit_versioned(&self.app, "book_updated", uuid)?;
+                    self.app.emit("book_updated", uuid)?;
 
                     let library_view = LibraryView::create(self.app.clone(), library.clone());
                     info!("Emitting \"library_updated\"");
-                    emit_versioned(
-                        &self.app,
+                    self.app.emit(
                         "library_updated",
                         library_view.list_books(target_language.as_ref()).await?,
                     )?;
@@ -248,7 +245,7 @@ impl AppState {
             } => {
                 let payload = (from.to_639_3(), to.to_639_3());
                 info!("Emitting \"dictionary_updated\" for {payload:?}",);
-                emit_versioned(&self.app, "dictionary_updated", payload)?;
+                self.app.emit("dictionary_updated", payload)?;
             }
         }
 

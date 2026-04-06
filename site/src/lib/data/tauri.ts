@@ -2,35 +2,14 @@ import { invoke, type InvokeArgs } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { readable, type Readable } from "svelte/store";
 
-// All backend events are wrapped in VersionedPayload { version, data }.
-// Helpers below unwrap transparently so callers never see the wrapper.
-type VersionedPayload<T> = { version: number; data: T };
-
-function unwrapVersioned<T>(payload: unknown): { version: number; data: T } | null {
-    if (
-        payload !== null &&
-        typeof payload === "object" &&
-        "version" in payload &&
-        "data" in payload
-    ) {
-        return payload as VersionedPayload<T>;
-    }
-    return null;
-}
-
 export function eventToReadable<T>(eventName: string, getterName: string): Readable<T | undefined>;
 export function eventToReadable<T>(eventName: string, getterName: string, defaultValue: T): Readable<T>;
 export function eventToReadable<T>(eventName: string, getterName: string, defaultValue: T | undefined = undefined): Readable<T | undefined> {
     let setter: ((value: T) => void) | null = null;
     let unsub: UnlistenFn | null = null;
-    let lastVersion = 0;
-    listen<VersionedPayload<T>>(eventName, (event) => {
+    listen<T>(eventName, (event) => {
         if (setter) {
-            const v = unwrapVersioned<T>(event.payload);
-            if (v && v.version > lastVersion) {
-                lastVersion = v.version;
-                setter(v.data);
-            }
+            setter(event.payload);
         }
     }).then((u) => {
         unsub = u;
@@ -39,10 +18,7 @@ export function eventToReadable<T>(eventName: string, getterName: string, defaul
     invoke<T>(getterName).then((v) => {
         let setInitial = () => {
             if (setter) {
-                // Only apply invoke result if no versioned event has arrived yet
-                if (lastVersion === 0) {
-                    setter(v);
-                }
+                setter(v);
             } else {
                 setTimeout(setInitial, 10);
             };
@@ -107,15 +83,11 @@ export function getterToReadableWithEvents<T>(
 ): Readable<T | undefined> {
     let setter: ((value: T) => void) | null = null;
     const unsubs: UnlistenFn[] = [];
-    let fetchGeneration = 0;
 
     const getter = () => {
-        const gen = ++fetchGeneration;
         invoke<T>(getterName, args).then((v) => {
-            if (gen !== fetchGeneration) return; // stale response
             const setInitial = () => {
                 if (setter) {
-                    if (gen !== fetchGeneration) return; // re-check after delay
                     setter(v);
                 } else {
                     setTimeout(setInitial, 10);
@@ -127,9 +99,7 @@ export function getterToReadableWithEvents<T>(
 
     for (const ev of events) {
         listen(ev.name, (event) => {
-            const vp = unwrapVersioned((event as any).payload);
-            const data = vp ? vp.data : (event as any).payload;
-            if (ev.filter(data)) {
+            if (ev.filter((event as any).payload)) {
                 getter();
             }
         }).then((u) => unsubs.push(u));
@@ -173,8 +143,6 @@ export function getterToReadableWithEventsAndPatches<T>(
     let setter: ((value: T) => void) | null = null;
     let current = defaultValue;
     const unsubPromises: Promise<UnlistenFn>[] = [];
-    let fetchGeneration = 0;
-    let lastPatchVersion = 0;
 
     const setValue = (value: T) => {
         current = value;
@@ -183,12 +151,8 @@ export function getterToReadableWithEventsAndPatches<T>(
         }
     };
 
-    const getter = (triggerVersion: number) => {
-        const gen = ++fetchGeneration;
+    const getter = () => {
         invoke<T>(getterName, args).then((v) => {
-            if (gen !== fetchGeneration) return; // stale response
-            // The invoke result is at least as fresh as the trigger event
-            lastPatchVersion = Math.max(lastPatchVersion, triggerVersion);
             setValue(v);
         });
     };
@@ -196,11 +160,8 @@ export function getterToReadableWithEventsAndPatches<T>(
     for (const ev of refreshEvents) {
         unsubPromises.push(
             listen(ev.name, (event) => {
-                const vp = unwrapVersioned((event as any).payload);
-                const data = vp ? vp.data : (event as any).payload;
-                const version = vp ? vp.version : 0;
-                if (ev.filter(data)) {
-                    getter(version);
+                if (ev.filter((event as any).payload)) {
+                    getter();
                 }
             }),
         );
@@ -209,22 +170,14 @@ export function getterToReadableWithEventsAndPatches<T>(
     for (const ev of patchEvents) {
         unsubPromises.push(
             listen(ev.name, (event) => {
-                const vp = unwrapVersioned((event as any).payload);
-                const data = vp ? vp.data : (event as any).payload;
-                const version = vp ? vp.version : 0;
-                if (version > 0 && version <= lastPatchVersion) {
-                    return; // stale patch
-                }
-                if (!ev.filter(data)) {
+                const payload = (event as any).payload;
+                if (!ev.filter(payload)) {
                     return;
                 }
                 if (current === undefined) {
                     return;
                 }
-                if (version > lastPatchVersion) {
-                    lastPatchVersion = version;
-                }
-                const next = ev.patch(current, data);
+                const next = ev.patch(current, payload);
                 if (next === current) {
                     return;
                 }
@@ -233,7 +186,7 @@ export function getterToReadableWithEventsAndPatches<T>(
         );
     }
 
-    getter(0);
+    getter();
 
     return readable<T>(defaultValue as any, (set) => {
         setter = set;
