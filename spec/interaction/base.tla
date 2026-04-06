@@ -19,7 +19,11 @@
 (*   F4 — Translation lifecycle cross-component atomicity       [FIXED]    *)
 (*                                                                         *)
 (* F1 fix: TranslationQueue::Drop aborts spawned tasks via JoinHandle.     *)
-(* F2: UNFIXED — eventToReadable blindly overwrites with stale payloads.  *)
+(* F2: UNFIXED — eventToReadable blindly overwrites with stale payloads.   *)
+(*     paragraph_updated event was removed entirely; paragraphs now update *)
+(*     via book_updated trigger + re-fetch (getterToReadableWithEvents).   *)
+(*     This eliminates the patch-event race surface but the core F2 issue  *)
+(*     (stale library_updated snapshots) remains for eventToReadable.      *)
 (* F3 fix: RunEvent::Exit handler calls save_all() to flush dirty books.   *)
 (* F4 fix: handle_request() re-reads paragraph after API call and discards *)
 (*   translation if content changed (version guard before store).          *)
@@ -295,10 +299,14 @@ WorkerSave(t) ==
                    versionVars, memVersion, appAlive>>
 
 \* --- Compute snapshot (list_books) ---
-\* Models emit_updates (translation_queue.rs:446-469):
-\*   let lv = LibraryView::create(app.clone(), library.clone());  — line 451
-\*   let books = lv.list_books(Some(&msg.target_language)).await?; — line 467
-\* The snapshot reflects truthVersion at THIS moment.
+\* Models emit_updates (translation_queue.rs:~475-500):
+\*   let lv = LibraryView::create(app.clone(), library.clone());
+\*   app.emit("book_updated", msg.book_id)?;                       — trigger event
+\*   let books = lv.list_books(Some(&msg.target_language)).await?;  — snapshot
+\*   app.emit("library_updated", books)?;                           — snapshot event
+\* book_updated is a trigger-only event (UUID payload → re-fetch) and is
+\* NOT modeled in pendingEvents. Only the library_updated snapshot matters
+\* for the F2 eventToReadable race.
 \* Uses captured library (taskLib) for the query.
 \* If taskLib /= currentLib, the snapshot is from the wrong library (F1).
 WorkerComputeSnapshot(t) ==
@@ -313,14 +321,16 @@ WorkerComputeSnapshot(t) ==
                    versionVars, persistVars>>
 
 \* --- Emit library_updated event ---
-\* Models translation_queue.rs:468-469:
+\* Models translation_queue.rs:~495:
 \*   app.emit("library_updated", books)?
 \* Adds snapshot to pending events FIFO.
 \* app.emit() is synchronous — no interleaving within a single emit call.
+\* Note: book_updated (trigger-only, UUID payload) is also emitted but is
+\* not modeled here since it carries no snapshot data.
 WorkerEmit(t) ==
     /\ appAlive
     /\ pc[t] = "w_emit"
-    \* translation_queue.rs:469 — app.emit("library_updated", books)
+    \* translation_queue.rs:~495 — app.emit("library_updated", books)
     /\ pendingEvents' = Append(pendingEvents, taskSnapshot[t])
     /\ pc' = [pc EXCEPT ![t] = "idle"]
     /\ taskType' = [taskType EXCEPT ![t] = "idle"]
@@ -475,16 +485,14 @@ WatcherEmit(t) ==
 \* Models tauri.ts eventToReadable pattern where event payload IS the
 \* store value, delivered in FIFO order.
 \*
-\* F2 FIX (partial): versioned_emit.rs wraps payloads with a monotonic
-\* emit counter. Frontend checks payload.version > lastVersion before
-\* applying. However, in FIFO delivery the emit counter always increases,
-\* so the check is a no-op for this pattern — a later emit with stale
-\* data still has a higher emit version and passes the check.
-\* The fix IS effective for:
-\*   - Initial invoke racing with events (lastVersion gate)
-\*   - getterToReadableWithEvents (fetchGeneration counter)
-\*   - getterToReadableWithEventsAndPatches (combined checks)
-\* These patterns are NOT modeled in this spec.
+\* The paragraph_updated patch event was removed entirely (it was desktop-
+\* only and the root of the stale-patch F2 sub-case). Paragraph views now
+\* update via book_updated trigger → re-fetch (getterToReadableWithEvents),
+\* which is NOT susceptible to the eventToReadable FIFO race.
+\*
+\* The remaining F2 surface is library_updated via eventToReadable: two
+\* concurrent emitters can produce snapshots where the later emit carries
+\* stale data, and the frontend blindly applies it.
 
 DeliverEvent ==
     /\ pendingEvents /= <<>>

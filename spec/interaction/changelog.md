@@ -57,3 +57,18 @@ the partial emit_versioned fix was reverted as it didn't address the core FIFO o
 - Default config (MC.cfg): 4.5M+ states, zero violations at depth 21 (quick sanity check)
 - NoStaleTranslation reformulated as temporal PROPERTY (action constraint) since the fix
   is a transition guard, not a state property.
+
+## Spec Update — Remove paragraph_updated
+Removed the `paragraph_updated` event entirely from the codebase. Updated spec comments to reflect:
+
+- **paragraph_updated removed**: The desktop-only (`#[cfg(not(mobile))]`) optimistic patch event
+  was replaced by a `book_updated` trigger (UUID payload → re-fetch). This eliminates the
+  `PatchEvent` / `getterToReadableWithEventsAndPatches` frontend infrastructure.
+- **F2 surface reduced**: The stale-patch race via `paragraph_updated` is gone. The remaining F2
+  issue is the `library_updated` eventToReadable FIFO race (stale snapshot overwrites).
+- **No model logic changes**: The TLA+ model only tracked `library_updated` snapshots in
+  `pendingEvents`. `paragraph_updated` was consumed by a different frontend pattern
+  (`getterToReadableWithEventsAndPatches`, now removed). The `book_updated` trigger event is
+  not modeled because trigger-only events don't carry snapshot data.
+- Worker emit comments updated to reflect new `emit_updates` structure:
+  `book_updated` (trigger) + `library_updated` (snapshot).
