@@ -19,9 +19,7 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::app::config::Config;
-#[cfg(not(mobile))]
-use crate::app::library_view::{LibraryView, ParagraphView};
-#[cfg(not(mobile))]
+use crate::app::library_view::LibraryView;
 use tauri::Emitter;
 
 const TRANSLATION_PROGRESS_UPDATE_INTERVAL: Duration = Duration::from_millis(500);
@@ -39,7 +37,6 @@ struct TranslationRequest {
 struct SaveNotify {
     request_id: usize,
     book_id: Uuid,
-    paragraph_id: usize,
     target_language: Language,
 }
 
@@ -75,13 +72,6 @@ impl Drop for TranslationQueue {
         self.saver_task.abort();
         self.status_task.abort();
     }
-}
-
-#[cfg(not(mobile))]
-#[derive(Clone, serde::Serialize)]
-struct ParagraphUpdatedPayload {
-    book_id: Uuid,
-    paragraph: ParagraphView,
 }
 
 impl TranslationQueue {
@@ -376,7 +366,6 @@ async fn handle_request(
         .send_async(SaveNotify {
             request_id: request.request_id,
             book_id: request.book_id,
-            paragraph_id: request.paragraph_id,
             target_language,
         })
         .await?;
@@ -476,33 +465,19 @@ async fn save_and_emit(
     msg: SaveNotify,
 ) -> anyhow::Result<()> {
     save_book(library.clone(), msg.book_id).await?;
-    #[cfg(not(mobile))]
     emit_updates(library, app, msg).await?;
     Ok(())
 }
 
-#[cfg(not(mobile))]
 async fn emit_updates(
     library: Arc<Library>,
     app: tauri::AppHandle,
     msg: SaveNotify,
 ) -> anyhow::Result<()> {
-    let lv = LibraryView::create(app.clone(), library.clone());
-    let paragraph = lv
-        .get_paragraph_view(msg.book_id, msg.paragraph_id, &msg.target_language)
-        .await?;
-    info!(
-        "Emitting \"paragraph_updated\" for {}/{}",
-        msg.book_id, msg.paragraph_id
-    );
-    app.emit(
-        "paragraph_updated",
-        ParagraphUpdatedPayload {
-            book_id: msg.book_id,
-            paragraph,
-        },
-    )?;
+    info!("Emitting \"book_updated\" for {}", msg.book_id);
+    app.emit("book_updated", msg.book_id)?;
 
+    let lv = LibraryView::create(app.clone(), library.clone());
     let books = lv.list_books(Some(&msg.target_language)).await?;
     info!("Emitting \"library_updated\"");
     app.emit("library_updated", books)?;

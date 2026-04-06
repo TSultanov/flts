@@ -74,7 +74,7 @@ This is fundamental to the FIFO event delivery model: events are delivered in **
 ### Affected Code
 
 - `site/src/lib/data/tauri.ts:10-13`: `listen<T>(eventName, (event) => { setter(event.payload) })` — no version check
-- `site/src-tauri/src/app/translation_queue.rs:459-469`: Emits `paragraph_updated` and `library_updated` without version metadata
+- `site/src-tauri/src/app/translation_queue.rs`: Emits `book_updated` and `library_updated` without version metadata (previously emitted `paragraph_updated` which was removed)
 - `site/src-tauri/src/app/library_view.rs`: All emit sites lack version info in payload
 
 ### Recommendation

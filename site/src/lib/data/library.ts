@@ -2,7 +2,7 @@ import { derived, readable, type Readable } from 'svelte/store';
 import type { EpubBook } from "./epubLoader";
 import type { UUID } from "./v2/db";
 import { type ChapterMetaView, type IBookMeta, type ParagraphView, type SentenceWordTranslation } from "./sql/book";
-import { eventToReadable, getterToReadable, getterToReadableWithEvents, getterToReadableWithEventsAndPatches } from './tauri';
+import { eventToReadable, getterToReadable, getterToReadableWithEvents } from './tauri';
 import { invoke } from "@tauri-apps/api/core";
 import { getConfig } from "../config";
 
@@ -37,11 +37,6 @@ export type SystemDefinition = {
     definition: string,
     transcription: string | null,
 }
-
-type ParagraphUpdatedPayload = {
-    book_id: UUID,
-    paragraph: ParagraphView,
-};
 
 const translationStatusSubscribers = new Map<
     number,
@@ -185,28 +180,13 @@ export class Library {
     }
 
     getBookChapterParagraphs(bookId: UUID, chapterId: number): Readable<ParagraphView[]> {
-        return getterToReadableWithEventsAndPatches<ParagraphView[]>(
+        return getterToReadableWithEvents<ParagraphView[]>(
             "get_book_chapter_paragraphs",
             { bookId, chapterId },
             [
                 {
                     name: "book_updated",
                     filter: (updatedId: UUID) => updatedId === bookId,
-                },
-            ],
-            [
-                {
-                    name: "paragraph_updated",
-                    filter: (ev: ParagraphUpdatedPayload) => ev.book_id === bookId,
-                    patch: (current: ParagraphView[], ev: ParagraphUpdatedPayload) => {
-                        const idx = current.findIndex((p) => p.id === ev.paragraph.id);
-                        if (idx === -1) {
-                            return current;
-                        }
-                        const next = current.slice();
-                        next[idx] = ev.paragraph;
-                        return next;
-                    },
                 },
             ],
             [],
@@ -221,11 +201,6 @@ export class Library {
                 {
                     name: "book_updated",
                     filter: (updatedId: UUID) => updatedId === bookId,
-                },
-                {
-                    name: "paragraph_updated",
-                    filter: (ev: ParagraphUpdatedPayload) =>
-                        ev.book_id === bookId && ev.paragraph.id === paragraphId,
                 },
             ],
         );

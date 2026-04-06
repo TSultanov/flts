@@ -52,8 +52,8 @@
 
 **Evidence**:
 - Code analysis: `tauri.ts:10-12` — `setter(event.payload)` directly sets store value from event payload
-- Code analysis: 7+ emit sites for `library_updated`: `app.rs:166,208,228`, `library_view.rs:283,298,340,351`, `translation_queue.rs:469`
-- Code analysis: `tauri.ts:170-186` — `paragraph_updated` patches applied in arrival order, not logical order; no version check
+- Code analysis: 7+ emit sites for `library_updated`: `app.rs:166,208,228`, `library_view.rs:283,298,340,351`, `translation_queue.rs`
+- Code analysis: `paragraph_updated` event removed — paragraphs now update via `book_updated` re-fetch
 - Code analysis: No `sequence`, `version`, `counter`, or `seqNo` fields found in event payloads or stores
 - Code analysis: `library_view.rs:137-165` — `list_books()` reads from disk (not cache), so snapshot reflects disk state at query time
 
