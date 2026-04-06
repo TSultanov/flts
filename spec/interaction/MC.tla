@@ -51,19 +51,16 @@ MCWorkerReadParagraph(t) == WorkerReadParagraph(t) /\ UNCHANGED mcVars
 MCWorkerCallAPI(t) == WorkerCallAPI(t) /\ UNCHANGED mcVars
 MCWorkerStoreResult(t) == WorkerStoreResult(t) /\ UNCHANGED mcVars
 MCWorkerSave(t) == WorkerSave(t) /\ UNCHANGED mcVars
-MCWorkerComputeSnapshot(t) == WorkerComputeSnapshot(t) /\ UNCHANGED mcVars
 MCWorkerEmit(t) == WorkerEmit(t) /\ UNCHANGED mcVars
 
 \* --- Tauri command lifecycle ---
 MCBeginTauri(t, b) == BeginTauri(t, b) /\ UNCHANGED mcVars
 MCTauriModify(t) == TauriModify(t) /\ UNCHANGED mcVars
-MCTauriComputeSnapshot(t) == TauriComputeSnapshot(t) /\ UNCHANGED mcVars
 MCTauriEmit(t) == TauriEmit(t) /\ UNCHANGED mcVars
 
 \* --- File watcher lifecycle ---
 MCBeginWatcher(t, b) == BeginWatcher(t, b) /\ UNCHANGED mcVars
 MCWatcherReload(t) == WatcherReload(t) /\ UNCHANGED mcVars
-MCWatcherComputeSnapshot(t) == WatcherComputeSnapshot(t) /\ UNCHANGED mcVars
 MCWatcherEmit(t) == WatcherEmit(t) /\ UNCHANGED mcVars
 
 \* --- Event delivery ---
@@ -93,21 +90,18 @@ MCNext ==
         \/ MCWorkerCallAPI(t)
         \/ MCWorkerStoreResult(t)
         \/ MCWorkerSave(t)
-        \/ MCWorkerComputeSnapshot(t)
         \/ MCWorkerEmit(t)
     \* --- Tauri command lifecycle ---
     \/ \E t \in Task, b \in Book :
         MCBeginTauri(t, b)
     \/ \E t \in Task :
         \/ MCTauriModify(t)
-        \/ MCTauriComputeSnapshot(t)
         \/ MCTauriEmit(t)
     \* --- File watcher lifecycle ---
     \/ \E t \in Task, b \in Book :
         MCBeginWatcher(t, b)
     \/ \E t \in Task :
         \/ MCWatcherReload(t)
-        \/ MCWatcherComputeSnapshot(t)
         \/ MCWatcherEmit(t)
     \* --- Event delivery ---
     \/ MCDeliverEvent
@@ -122,7 +116,8 @@ MCSpec == MCInit /\ [][MCNext]_<<allVars, mcVars>>
 
 StateConstraint ==
     /\ truthVersion <= MaxTruthVersion
-    /\ Len(pendingEvents) <= MaxTruthVersion
+    /\ pendingEvents <= MaxTruthVersion
+    /\ \A b \in Book : memVersion[b] <= MaxTruthVersion
 
 \* ========================================================================
 \* Structural Invariants (always checked)

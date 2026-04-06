@@ -14,16 +14,15 @@
 (*                                                                         *)
 (* Bug Families:                                                           *)
 (*   F1 — Stale library reference after config reconfiguration  [FIXED]    *)
-(*   F2 — Event ordering / stale snapshot overwrites            [UNFIXED]  *)
+(*   F2 — Event ordering / stale snapshot overwrites            [FIXED]    *)
 (*   F3 — Unsaved in-memory modifications / no shutdown persist [FIXED]    *)
 (*   F4 — Translation lifecycle cross-component atomicity       [FIXED]    *)
 (*                                                                         *)
 (* F1 fix: TranslationQueue::Drop aborts spawned tasks via JoinHandle.     *)
-(* F2: UNFIXED — eventToReadable blindly overwrites with stale payloads.   *)
-(*     paragraph_updated event was removed entirely; paragraphs now update *)
-(*     via book_updated trigger + re-fetch (getterToReadableWithEvents).   *)
-(*     This eliminates the patch-event race surface but the core F2 issue  *)
-(*     (stale library_updated snapshots) remains for eventToReadable.      *)
+(* F2 fix: library_updated and config_updated switched from eventToReadable *)
+(*     (payload IS store value) to getterToReadableWithEvents (signal-only  *)
+(*     event → frontend re-fetches via invoke). Backend no longer snapshots *)
+(*     at emit time; UI always reads current backend state at delivery time.*)
 (* F3 fix: RunEvent::Exit handler calls save_all() to flush dirty books.   *)
 (* F4 fix: handle_request() re-reads paragraph after API call and discards *)
 (*   translation if content changed (version guard before store).          *)
@@ -72,25 +71,23 @@ VARIABLES
 
 taskVars == <<pc, taskType, taskBook>>
 
-\* --- Event delivery (F2: Stale Snapshot Overwrites) ---
-\* Models the eventToReadable pattern (tauri.ts:7-42) where event
-\* payload IS the store value, delivered in FIFO emit order.
-\* Multiple concurrent emitters produce snapshots at different times;
-\* the last-delivered event wins regardless of freshness.
+\* --- Event delivery (F2: Signal-Based Re-Fetch) ---
+\* Models the getterToReadableWithEvents pattern (tauri.ts) where event
+\* is a signal-only trigger (no payload); the frontend re-fetches via
+\* invoke() on each signal, always reading the current backend state.
+\* F2 FIX: stale snapshots eliminated because backend no longer computes
+\* snapshots at emit time — the UI reads truthVersion at delivery time.
 VARIABLES
-    pendingEvents,      \* Seq of Nat — FIFO queue of snapshot versions
-                        \* Each element is the truthVersion at snapshot time
-    taskSnapshot,       \* [Task -> Nat] — version captured at ComputeSnapshot
-                        \* 0 = no snapshot computed
+    pendingEvents,      \* Nat — count of undelivered signal events
+                        \* Each emit increments; each delivery decrements
     truthVersion,       \* Nat — logical clock of backend state
                         \* Incremented on each modification (import/delete/translate)
     uiVersion,          \* Nat — version currently shown in frontend UI
-                        \* tauri.ts:12 — setter(event.payload)
+                        \* Set to truthVersion on each re-fetch (invoke)
     maxDeliveredVersion \* Nat — highest version ever delivered to UI
                         \* (tracking variable for EventMonotonicity invariant)
 
-eventVars == <<pendingEvents, taskSnapshot, truthVersion,
-               uiVersion, maxDeliveredVersion>>
+eventVars == <<pendingEvents, truthVersion, uiVersion, maxDeliveredVersion>>
 
 \* --- Book versioning (F4: Translation Lifecycle Atomicity) ---
 \* Models book content version changing between paragraph read and store.
@@ -136,8 +133,7 @@ Init ==
     /\ pc = [t \in Task |-> "idle"]
     /\ taskType = [t \in Task |-> "idle"]
     /\ taskBook = [t \in Task |-> "none"]
-    /\ pendingEvents = <<>>
-    /\ taskSnapshot = [t \in Task |-> 0]
+    /\ pendingEvents = 0
     /\ truthVersion = 1
     /\ uiVersion = 0
     /\ maxDeliveredVersion = 0
@@ -169,7 +165,7 @@ ConfigChange ==
     /\ currentLib' = currentLib + 1
     \* app.rs:166-167 — eval_config emits with the NEW library
     /\ truthVersion' = truthVersion + 1
-    /\ pendingEvents' = Append(pendingEvents, truthVersion + 1)
+    /\ pendingEvents' = pendingEvents + 1
     \* F1 FIX: abort all worker tasks — they captured the old library
     \* translation_queue.rs:71-77 — Drop calls abort() on all JoinHandles
     /\ pc' = [t \in Task |->
@@ -180,8 +176,6 @@ ConfigChange ==
         IF taskType[t] = "worker" THEN "none" ELSE taskBook[t]]
     /\ taskLib' = [t \in Task |->
         IF taskType[t] = "worker" THEN 0 ELSE taskLib[t]]
-    /\ taskSnapshot' = [t \in Task |->
-        IF taskType[t] = "worker" THEN 0 ELSE taskSnapshot[t]]
     /\ taskReadVersion' = [t \in Task |->
         IF taskType[t] = "worker" THEN 0 ELSE taskReadVersion[t]]
     /\ UNCHANGED <<uiVersion, maxDeliveredVersion, bookVersion,
@@ -198,8 +192,7 @@ ConfigChange ==
 \* We combine them because the key issue (F1) is that ALL of them
 \* capture Arc<Library> at init time (translation_queue.rs:75,95,108).
 \*
-\* PC states: idle → w_read → w_api → w_store → w_save →
-\*            w_snapshot → w_emit → idle
+\* PC states: idle → w_read → w_api → w_store → w_save → w_emit → idle
 
 \* --- Start worker: assign book, capture current library ---
 \* Models TranslationQueue::init (translation_queue.rs:74-153).
@@ -266,14 +259,14 @@ WorkerStoreResult(t) ==
             /\ truthVersion' = truthVersion + 1
             /\ pc' = [pc EXCEPT ![t] = "w_save"]
             /\ UNCHANGED <<libVars, taskType, taskBook,
-                           pendingEvents, taskSnapshot, uiVersion, maxDeliveredVersion,
+                           pendingEvents, uiVersion, maxDeliveredVersion,
                            versionVars, persistVars>>
        ELSE \* Book changed — discard translation, return to idle
             /\ pc' = [pc EXCEPT ![t] = "idle"]
             /\ taskType' = [taskType EXCEPT ![t] = "idle"]
             /\ taskBook' = [taskBook EXCEPT ![t] = "none"]
             /\ taskReadVersion' = [taskReadVersion EXCEPT ![t] = 0]
-            /\ UNCHANGED <<libVars, pendingEvents, taskSnapshot,
+            /\ UNCHANGED <<libVars, pendingEvents,
                            truthVersion, uiVersion, maxDeliveredVersion,
                            bookVersion, persistVars>>
 
@@ -294,48 +287,22 @@ WorkerSave(t) ==
        IF taskLib[t] = currentLib
        THEN diskVersion' = [diskVersion EXCEPT ![b] = memVersion[b]]
        ELSE UNCHANGED diskVersion  \* Data written to wrong path — lost!
-    /\ pc' = [pc EXCEPT ![t] = "w_snapshot"]
+    /\ pc' = [pc EXCEPT ![t] = "w_emit"]
     /\ UNCHANGED <<libVars, taskType, taskBook, eventVars,
                    versionVars, memVersion, appAlive>>
 
-\* --- Compute snapshot (list_books) ---
-\* Models emit_updates (translation_queue.rs:~475-500):
-\*   let lv = LibraryView::create(app.clone(), library.clone());
-\*   app.emit("book_updated", msg.book_id)?;                       — trigger event
-\*   let books = lv.list_books(Some(&msg.target_language)).await?;  — snapshot
-\*   app.emit("library_updated", books)?;                           — snapshot event
-\* book_updated is a trigger-only event (UUID payload → re-fetch) and is
-\* NOT modeled in pendingEvents. Only the library_updated snapshot matters
-\* for the F2 eventToReadable race.
-\* Uses captured library (taskLib) for the query.
-\* If taskLib /= currentLib, the snapshot is from the wrong library (F1).
-WorkerComputeSnapshot(t) ==
-    /\ appAlive
-    /\ pc[t] = "w_snapshot"
-    \* translation_queue.rs:467 — lv.list_books(...)
-    \* Captures current truthVersion as the snapshot version
-    /\ taskSnapshot' = [taskSnapshot EXCEPT ![t] = truthVersion]
-    /\ pc' = [pc EXCEPT ![t] = "w_emit"]
-    /\ UNCHANGED <<libVars, taskType, taskBook,
-                   pendingEvents, truthVersion, uiVersion, maxDeliveredVersion,
-                   versionVars, persistVars>>
-
-\* --- Emit library_updated event ---
-\* Models translation_queue.rs:~495:
-\*   app.emit("library_updated", books)?
-\* Adds snapshot to pending events FIFO.
-\* app.emit() is synchronous — no interleaving within a single emit call.
-\* Note: book_updated (trigger-only, UUID payload) is also emitted but is
-\* not modeled here since it carries no snapshot data.
+\* --- Emit library_updated signal ---
+\* Models translation_queue.rs emit_updates:
+\*   app.emit("library_updated", ())?
+\* F2 FIX: emits signal only (no snapshot payload).
+\* Frontend re-fetches via invoke on delivery.
 WorkerEmit(t) ==
     /\ appAlive
     /\ pc[t] = "w_emit"
-    \* translation_queue.rs:~495 — app.emit("library_updated", books)
-    /\ pendingEvents' = Append(pendingEvents, taskSnapshot[t])
+    /\ pendingEvents' = pendingEvents + 1
     /\ pc' = [pc EXCEPT ![t] = "idle"]
     /\ taskType' = [taskType EXCEPT ![t] = "idle"]
     /\ taskBook' = [taskBook EXCEPT ![t] = "none"]
-    /\ taskSnapshot' = [taskSnapshot EXCEPT ![t] = 0]
     /\ UNCHANGED <<libVars, truthVersion, uiVersion, maxDeliveredVersion,
                    versionVars, persistVars>>
 
@@ -350,7 +317,7 @@ WorkerEmit(t) ==
 \*   delete_book       (library_view.rs:344-353)
 \*   move_book         (library_view.rs:327-342)
 \*
-\* PC states: idle → tc_modify → tc_snapshot → tc_emit → idle
+\* PC states: idle → tc_modify → tc_emit → idle
 
 \* --- Start Tauri command ---
 BeginTauri(t, b) ==
@@ -378,34 +345,22 @@ TauriModify(t) ==
        \* Import/delete are immediately persisted to disk
        /\ memVersion' = [memVersion EXCEPT ![b] = memVersion[b] + 1]
        /\ diskVersion' = [diskVersion EXCEPT ![b] = memVersion[b] + 1]
-    /\ pc' = [pc EXCEPT ![t] = "tc_snapshot"]
-    /\ UNCHANGED <<libVars, taskType, taskBook,
-                   pendingEvents, taskSnapshot, uiVersion, maxDeliveredVersion,
-                   versionVars, appAlive>>
-
-\* --- Compute snapshot for Tauri command ---
-\* Models library_view.rs:282,297,339,350:
-\*   let books = self.list_books(target_language).await?;
-TauriComputeSnapshot(t) ==
-    /\ appAlive
-    /\ pc[t] = "tc_snapshot"
-    /\ taskSnapshot' = [taskSnapshot EXCEPT ![t] = truthVersion]
     /\ pc' = [pc EXCEPT ![t] = "tc_emit"]
     /\ UNCHANGED <<libVars, taskType, taskBook,
-                   pendingEvents, truthVersion, uiVersion, maxDeliveredVersion,
-                   versionVars, persistVars>>
+                   pendingEvents, uiVersion, maxDeliveredVersion,
+                   versionVars, appAlive>>
 
-\* --- Emit library_updated from Tauri command ---
-\* Models library_view.rs:283,298,340,351:
-\*   self.app.emit("library_updated", books)?;
+\* --- Emit library_updated signal from Tauri command ---
+\* Models library_view.rs import/delete/move:
+\*   self.app.emit("library_updated", ())?;
+\* F2 FIX: signal only, no snapshot.
 TauriEmit(t) ==
     /\ appAlive
     /\ pc[t] = "tc_emit"
-    /\ pendingEvents' = Append(pendingEvents, taskSnapshot[t])
+    /\ pendingEvents' = pendingEvents + 1
     /\ pc' = [pc EXCEPT ![t] = "idle"]
     /\ taskType' = [taskType EXCEPT ![t] = "idle"]
     /\ taskBook' = [taskBook EXCEPT ![t] = "none"]
-    /\ taskSnapshot' = [taskSnapshot EXCEPT ![t] = 0]
     /\ UNCHANGED <<libVars, truthVersion, uiVersion, maxDeliveredVersion,
                    versionVars, persistVars>>
 
@@ -417,7 +372,7 @@ TauriEmit(t) ==
 \*   app.rs:188 — let library = { self.library.read().await.clone() };
 \* But reloads book content (F4) and emits events (F2).
 \*
-\* PC states: idle → fw_reload → fw_snapshot → fw_emit → idle
+\* PC states: idle → fw_reload → fw_emit → idle
 
 \* --- Start file watcher handling ---
 BeginWatcher(t, b) ==
@@ -445,64 +400,43 @@ WatcherReload(t) ==
        \* Reload triggers save of dirty state (merge path)
        \* library_book.rs:521-540 — reload_translations → save() if newer
        /\ diskVersion' = [diskVersion EXCEPT ![b] = memVersion[b]]
-    /\ pc' = [pc EXCEPT ![t] = "fw_snapshot"]
-    /\ UNCHANGED <<libVars, taskType, taskBook,
-                   pendingEvents, taskSnapshot, uiVersion, maxDeliveredVersion,
-                   taskReadVersion, memVersion, appAlive>>
-
-\* --- Compute snapshot for watcher ---
-\* Models app.rs:205-210:
-\*   let library_view = LibraryView::create(self.app.clone(), library.clone());
-\*   self.app.emit("library_updated",
-\*       library_view.list_books(target_language.as_ref()).await?)?;
-WatcherComputeSnapshot(t) ==
-    /\ appAlive
-    /\ pc[t] = "fw_snapshot"
-    /\ taskSnapshot' = [taskSnapshot EXCEPT ![t] = truthVersion]
     /\ pc' = [pc EXCEPT ![t] = "fw_emit"]
     /\ UNCHANGED <<libVars, taskType, taskBook,
-                   pendingEvents, truthVersion, uiVersion, maxDeliveredVersion,
-                   versionVars, persistVars>>
+                   pendingEvents, uiVersion, maxDeliveredVersion,
+                   taskReadVersion, memVersion, appAlive>>
 
-\* --- Emit library_updated from watcher ---
-\* Models app.rs:208-211:
-\*   self.app.emit("library_updated",
-\*       library_view.list_books(target_language.as_ref()).await?)?;
+\* --- Emit library_updated signal from watcher ---
+\* Models app.rs handle_file_change_event:
+\*   self.app.emit("library_updated", ())?;
+\* F2 FIX: signal only, no snapshot.
 WatcherEmit(t) ==
     /\ appAlive
     /\ pc[t] = "fw_emit"
-    /\ pendingEvents' = Append(pendingEvents, taskSnapshot[t])
+    /\ pendingEvents' = pendingEvents + 1
     /\ pc' = [pc EXCEPT ![t] = "idle"]
     /\ taskType' = [taskType EXCEPT ![t] = "idle"]
     /\ taskBook' = [taskBook EXCEPT ![t] = "none"]
-    /\ taskSnapshot' = [taskSnapshot EXCEPT ![t] = 0]
     /\ UNCHANGED <<libVars, truthVersion, uiVersion, maxDeliveredVersion,
                    versionVars, persistVars>>
 
 \* ========================================================================
-\* Frontend Event Delivery (F2)
+\* Frontend Event Delivery (F2: FIXED)
 \* ========================================================================
-\* Models tauri.ts eventToReadable pattern where event payload IS the
-\* store value, delivered in FIFO order.
+\* Models the getterToReadableWithEvents pattern (tauri.ts):
+\* Signal arrives → frontend calls invoke("list_books") → reads current
+\* backend state (truthVersion).
 \*
-\* The paragraph_updated patch event was removed entirely (it was desktop-
-\* only and the root of the stale-patch F2 sub-case). Paragraph views now
-\* update via book_updated trigger → re-fetch (getterToReadableWithEvents),
-\* which is NOT susceptible to the eventToReadable FIFO race.
-\*
-\* The remaining F2 surface is library_updated via eventToReadable: two
-\* concurrent emitters can produce snapshots where the later emit carries
-\* stale data, and the frontend blindly applies it.
+\* F2 FIX: The frontend no longer uses event payload as store value.
+\* Instead, each signal triggers a re-fetch that always reads the latest
+\* backend state. This eliminates stale snapshot overwrites.
 
 DeliverEvent ==
-    /\ pendingEvents /= <<>>
-    /\ LET v == Head(pendingEvents) IN
-       \* tauri.ts — setter(event.payload.data)
-       \* In FIFO delivery, every event is applied (version always increases)
-       /\ uiVersion' = v
-       /\ maxDeliveredVersion' = Max(maxDeliveredVersion, v)
-       /\ pendingEvents' = Tail(pendingEvents)
-    /\ UNCHANGED <<libVars, taskVars, taskSnapshot, truthVersion,
+    /\ pendingEvents > 0
+    \* Frontend re-fetches via invoke — reads current truthVersion
+    /\ uiVersion' = truthVersion
+    /\ maxDeliveredVersion' = Max(maxDeliveredVersion, truthVersion)
+    /\ pendingEvents' = pendingEvents - 1
+    /\ UNCHANGED <<libVars, taskVars, truthVersion,
                    versionVars, persistVars>>
 
 \* ========================================================================
@@ -554,15 +488,12 @@ Next ==
         \/ WorkerCallAPI(t)
         \/ WorkerStoreResult(t)
         \/ WorkerSave(t)
-        \/ WorkerComputeSnapshot(t)
         \/ WorkerEmit(t)
-        \* Tauri command lifecycle (F2)
+        \* Tauri command lifecycle (F2: fixed)
         \/ TauriModify(t)
-        \/ TauriComputeSnapshot(t)
         \/ TauriEmit(t)
-        \* Watcher lifecycle (F2, F4)
+        \* Watcher lifecycle (F2: fixed, F4)
         \/ WatcherReload(t)
-        \/ WatcherComputeSnapshot(t)
         \/ WatcherEmit(t)
     \/ DeliverEvent
     \/ \E b \in Book : MarkWordVisible(b)
@@ -592,24 +523,25 @@ NoDataLoss ==
     \A t \in Task :
         pc[t] = "w_save" => taskLib[t] = currentLib
 
-\* --- F2: Event Monotonicity --- [UNFIXED]
-\* The frontend UI version never regresses. A stale event should not
-\* overwrite a fresher one.
-\* eventToReadable blindly applies event payloads, so two tasks emitting
-\* in an order where the later emit carries stale data causes regression.
+\* --- F2: Event Monotonicity --- [FIXED: should pass]
+\* The frontend UI version never regresses.
+\* FIX: getterToReadableWithEvents re-fetches via invoke on each signal,
+\* always reading current truthVersion. Since truthVersion is monotonically
+\* non-decreasing, uiVersion can only increase.
 EventMonotonicity ==
     uiVersion >= maxDeliveredVersion
 
-\* --- F2: UI Consistency --- [UNFIXED]
-\* When all pending events have been delivered and no task is in the
-\* middle of a compute-snapshot→emit flow, the UI should reflect the
-\* latest backend state.
+\* --- F2: UI Consistency --- [FIXED: should pass]
+\* When all pending signals have been delivered and no task is in the
+\* middle of an operation, the UI should reflect the latest backend state.
+\* FIX: last DeliverEvent sets uiVersion = truthVersion; with no tasks
+\* active and no pending signals, no further changes have occurred.
 UIConsistency ==
-    (/\ pendingEvents = <<>>
+    (/\ pendingEvents = 0
      /\ \A t \in Task : pc[t] \notin {"w_read", "w_api", "w_store",
-                                       "w_save", "w_snapshot", "w_emit",
-                                       "tc_modify", "tc_snapshot", "tc_emit",
-                                       "fw_reload", "fw_snapshot", "fw_emit"}
+                                       "w_save", "w_emit",
+                                       "tc_modify", "tc_emit",
+                                       "fw_reload", "fw_emit"}
      /\ maxDeliveredVersion > 0)
     => uiVersion = truthVersion
 
