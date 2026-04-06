@@ -2,7 +2,7 @@ import { derived, readable, type Readable } from 'svelte/store';
 import type { EpubBook } from "./epubLoader";
 import type { UUID } from "./v2/db";
 import { type ChapterMetaView, type IBookMeta, type ParagraphView, type SentenceWordTranslation } from "./sql/book";
-import { eventToReadable, getterToReadable, getterToReadableWithEvents } from './tauri';
+import { getterToReadable, getterToReadableWithEvents } from './tauri';
 import { invoke } from "@tauri-apps/api/core";
 import { getConfig } from "../config";
 
@@ -127,7 +127,7 @@ function maybeStopTranslationStatusPoller(requestId: number) {
 
 export class Library {
     getLibraryBooks(): Readable<LibraryFolder> {
-        const booksStore = eventToReadable<LibraryBookMetadataView[]>("library_updated", "list_books", [])
+        const booksStore = getterToReadableWithEvents<LibraryBookMetadataView[]>("list_books", {}, [{ name: "library_updated", filter: () => true }], [])
         return derived([booksStore], (allBooks) => {
             const root: LibraryFolder = {
                 folders: [],

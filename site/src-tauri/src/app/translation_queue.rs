@@ -19,7 +19,6 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::app::config::Config;
-use crate::app::library_view::LibraryView;
 use tauri::Emitter;
 
 const TRANSLATION_PROGRESS_UPDATE_INTERVAL: Duration = Duration::from_millis(500);
@@ -37,7 +36,6 @@ struct TranslationRequest {
 struct SaveNotify {
     request_id: usize,
     book_id: Uuid,
-    target_language: Language,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -366,7 +364,6 @@ async fn handle_request(
         .send_async(SaveNotify {
             request_id: request.request_id,
             book_id: request.book_id,
-            target_language,
         })
         .await?;
 
@@ -464,23 +461,20 @@ async fn save_and_emit(
     app: tauri::AppHandle,
     msg: SaveNotify,
 ) -> anyhow::Result<()> {
-    save_book(library.clone(), msg.book_id).await?;
-    emit_updates(library, app, msg).await?;
+    save_book(library, msg.book_id).await?;
+    emit_updates(app, msg)?;
     Ok(())
 }
 
-async fn emit_updates(
-    library: Arc<Library>,
+fn emit_updates(
     app: tauri::AppHandle,
     msg: SaveNotify,
 ) -> anyhow::Result<()> {
     info!("Emitting \"book_updated\" for {}", msg.book_id);
     app.emit("book_updated", msg.book_id)?;
 
-    let lv = LibraryView::create(app.clone(), library.clone());
-    let books = lv.list_books(Some(&msg.target_language)).await?;
     info!("Emitting \"library_updated\"");
-    app.emit("library_updated", books)?;
+    app.emit("library_updated", ())?;
 
     Ok(())
 }

@@ -271,16 +271,13 @@ impl LibraryView {
         title: &str,
         text: &str,
         source_language: &Language,
-        target_language: Option<&Language>,
     ) -> anyhow::Result<Uuid> {
         let id = self
             .library
             .create_book_plain(title, text, source_language)
             .await?;
 
-        // Emit updated library view after successful import
-        let books = self.list_books(target_language).await?;
-        self.app.emit("library_updated", books)?;
+        self.app.emit("library_updated", ())?;
 
         Ok(id)
     }
@@ -289,13 +286,10 @@ impl LibraryView {
         &mut self,
         book: &EpubBook,
         source_language: &Language,
-        target_language: Option<&Language>,
     ) -> anyhow::Result<Uuid> {
         let id = self.library.create_book_epub(book, source_language).await?;
 
-        // Emit updated library view after successful import
-        let books = self.list_books(target_language).await?;
-        self.app.emit("library_updated", books)?;
+        self.app.emit("library_updated", ())?;
 
         Ok(id)
     }
@@ -328,7 +322,6 @@ impl LibraryView {
         &self,
         book_id: Uuid,
         new_path: Vec<String>,
-        target_language: Option<&Language>,
     ) -> anyhow::Result<()> {
         let book = self.library.get_book(&book_id).await?;
         {
@@ -336,19 +329,16 @@ impl LibraryView {
             book.update_folder_path(new_path).await?;
         }
 
-        let books = self.list_books(target_language).await?;
-        self.app.emit("library_updated", books)?;
+        self.app.emit("library_updated", ())?;
         Ok(())
     }
 
     pub async fn delete_book(
         &self,
         book_id: Uuid,
-        target_language: Option<&Language>,
     ) -> anyhow::Result<()> {
         self.library.delete_book(&book_id).await?;
-        let books = self.list_books(target_language).await?;
-        self.app.emit("library_updated", books)?;
+        self.app.emit("library_updated", ())?;
         Ok(())
     }
 
@@ -505,15 +495,12 @@ pub async fn import_plain_text(
 ) -> Result<Uuid, String> {
     let library = { state.library.read().await.clone() }.ok_or("Library is not configured")?;
 
-    let target_language_id = { state.config.read().await.target_language_id.clone() };
-    let target_language = Language::from_639_3(&target_language_id);
-
     let source_language = Language::from_639_3(&source_language_id)
         .ok_or_else(|| format!("Failed to resolve source language: {}", source_language_id))?;
 
     let mut library_view = LibraryView::create(state.app.clone(), library);
     library_view
-        .import_plain_text(&title, &text, &source_language, target_language.as_ref())
+        .import_plain_text(&title, &text, &source_language)
         .await
         .map_err(|err| err.to_string())
 }
@@ -526,15 +513,12 @@ pub async fn import_epub(
 ) -> Result<Uuid, String> {
     let library = { state.library.read().await.clone() }.ok_or("Library is not configured")?;
 
-    let target_language_id = { state.config.read().await.target_language_id.clone() };
-    let target_language = Language::from_639_3(&target_language_id);
-
     let source_language = Language::from_639_3(&source_language_id)
         .ok_or_else(|| format!("Failed to resolve source language: {}", source_language_id))?;
 
     let mut library_view = LibraryView::create(state.app.clone(), library);
     library_view
-        .import_epub(&book, &source_language, target_language.as_ref())
+        .import_epub(&book, &source_language)
         .await
         .map_err(|err| err.to_string())
 }
@@ -578,11 +562,8 @@ pub async fn move_book(
 ) -> Result<(), String> {
     let library = { state.library.read().await.clone() }.ok_or("Library is not configured")?;
 
-    let target_language_id = { state.config.read().await.target_language_id.clone() };
-    let target_language = Language::from_639_3(&target_language_id);
-
     LibraryView::create(state.app.clone(), library)
-        .move_book(book_id, path, target_language.as_ref())
+        .move_book(book_id, path)
         .await
         .map_err(|err| err.to_string())
 }
@@ -594,11 +575,8 @@ pub async fn delete_book(
 ) -> Result<(), String> {
     let library = { state.library.read().await.clone() }.ok_or("Library is not configured")?;
 
-    let target_language_id = { state.config.read().await.target_language_id.clone() };
-    let target_language = Language::from_639_3(&target_language_id);
-
     LibraryView::create(state.app.clone(), library)
-        .delete_book(book_id, target_language.as_ref())
+        .delete_book(book_id)
         .await
         .map_err(|err| err.to_string())
 }

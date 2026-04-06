@@ -23,7 +23,7 @@ use uuid::Uuid;
 
 use tauri::Emitter;
 
-use crate::app::{config::Config, library_view::LibraryView, translation_queue::TranslationQueue};
+use crate::app::{config::Config, translation_queue::TranslationQueue};
 
 #[cfg(mobile)]
 use dirs_next::document_dir;
@@ -134,16 +134,15 @@ impl AppState {
         info!("config = {:?}", config);
 
         config.save(&self.config_path)?;
-        *self.config.write().await = config.clone();
+        *self.config.write().await = config;
         info!("Emitting \"config_updated\"");
-        self.app.emit("config_updated", config)?;
+        self.app.emit("config_updated", ())?;
         self.eval_config().await?;
         Ok(())
     }
 
     pub async fn eval_config(&self) -> anyhow::Result<()> {
         let config = self.config.read().await.clone();
-        let target_language = Language::from_639_3(&config.target_language_id);
         let library_path = config.library_path.clone();
 
         info!("library_path = {library_path:?}");
@@ -160,10 +159,8 @@ impl AppState {
                     warn!("Failed to set watcher path to {}: {}", library_path, err)
                 });
 
-            let library_view = LibraryView::create(self.app.clone(), library.clone());
-            let books = library_view.list_books(target_language.as_ref()).await?;
             info!("Emitting \"library_updated\"");
-            self.app.emit("library_updated", books)?;
+            self.app.emit("library_updated", ())?;
         } else {
             *self.library.write().await = None;
             *self.translation_queue.write().await = None;
@@ -207,15 +204,8 @@ impl AppState {
                 info!("Emitting \"book_updated\" for {uuid}");
                 self.app.emit("book_updated", uuid)?;
 
-                let target_language_id = { self.config.read().await.target_language_id.clone() };
-                let target_language = Language::from_639_3(&target_language_id);
-                let library_view = LibraryView::create(self.app.clone(), library.clone());
-
                 info!("Emitting \"library_updated\"");
-                self.app.emit(
-                    "library_updated",
-                    library_view.list_books(target_language.as_ref()).await?,
-                )?;
+                self.app.emit("library_updated", ())?;
             }
             LibraryFileChange::TranslationChanged {
                 modified: _,
@@ -230,12 +220,8 @@ impl AppState {
                     info!("Emitting \"book_updated\" for {uuid}");
                     self.app.emit("book_updated", uuid)?;
 
-                    let library_view = LibraryView::create(self.app.clone(), library.clone());
                     info!("Emitting \"library_updated\"");
-                    self.app.emit(
-                        "library_updated",
-                        library_view.list_books(target_language.as_ref()).await?,
-                    )?;
+                    self.app.emit("library_updated", ())?;
                 }
             }
             LibraryFileChange::DictionaryChanged {

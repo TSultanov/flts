@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { eventToReadable, getterToReadableWithEvents } from './data/tauri';
+import { getterToReadableWithEvents } from './data/tauri';
 
 export type TranslationProvider = 'google' | 'openai';
 
@@ -54,5 +54,5 @@ export async function getConfig() {
     return await invoke<Config>("get_config");
 }
 
-export const configStore = eventToReadable<Config>("config_updated", "get_config");
+export const configStore = getterToReadableWithEvents<Config>("get_config", {}, [{ name: "config_updated", filter: () => true }]);
 export const models = getterToReadableWithEvents<Model[]>("get_models", {}, [], []);
