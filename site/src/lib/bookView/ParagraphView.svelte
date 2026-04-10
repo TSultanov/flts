@@ -54,7 +54,7 @@
         }
         if (status.is_complete) {
             if (status.error) {
-                console.warn(`Translation failed for paragraph ${paragraphId}:`, status.error);
+                console.warn(`Translation failed for paragraph ${paragraph.id}:`, status.error);
             }
             void refreshParagraphView();
             translationRequestId = null;

@@ -1,6 +1,6 @@
 <script lang="ts">
     import { Router } from 'sv-router';
-	import './router.ts';
+	import './router';
     import Nav from "./lib/Nav.svelte";
     import { onMount, setContext } from "svelte";
     import { Library } from "./lib/data/library";

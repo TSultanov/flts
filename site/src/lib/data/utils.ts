@@ -5,7 +5,8 @@ export async function hashBuffer(data: ArrayBuffer | Uint8Array): Promise<string
 
     if (typeof crypto !== 'undefined' && crypto.subtle) {
         try {
-            const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+            const digestInput = data instanceof Uint8Array ? Uint8Array.from(data) : data;
+            const hashBuffer = await crypto.subtle.digest('SHA-256', digestInput);
             const hashArray = Array.from(new Uint8Array(hashBuffer));
             result = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
         } catch (error) {

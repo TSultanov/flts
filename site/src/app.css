@@ -119,15 +119,15 @@ input::file-selector-button {
     transition: all 0.15s ease;
 }
 
-input::file-selector-button:active {
+input:active::file-selector-button {
     transform: translate(0, 1px);
 }
 
-input::file-selector-button:hover {
+input:hover::file-selector-button {
     background-color: var(--hover-color);
 }
 
-input::file-selector-button:disabled {
+input:disabled::file-selector-button {
     color: var(--text-inactive);
     cursor: not-allowed;
     opacity: 0.6;

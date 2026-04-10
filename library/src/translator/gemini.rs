@@ -202,10 +202,12 @@ impl Translator for GeminiTranslator {
             Model::Gemini25Flash => ThinkingConfig {
                 thinking_budget: Some(0),
                 include_thoughts: Some(false),
+                thinking_level: None,
             },
             _ => ThinkingConfig {
                 thinking_budget: None,
                 include_thoughts: Some(false),
+                thinking_level: None,
             },
         };
 

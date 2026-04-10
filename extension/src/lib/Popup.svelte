@@ -1,6 +1,7 @@
 <script lang="ts">
     import { onMount } from "svelte";
-    import { Dictionary, DictionaryRequest, Translation } from "./dictionary";
+    import { Dictionary } from "./dictionary";
+    import type { DictionaryRequest, Translation } from "./dictionary";
     import { getConfig } from "./config";
     import { GoogleGenAI } from "@google/genai";
 

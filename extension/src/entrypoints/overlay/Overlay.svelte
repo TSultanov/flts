@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { DictionaryRequest } from "@/lib/dictionary";
+    import type { DictionaryRequest } from "@/lib/dictionary";
     import Popup from "@/lib/Popup.svelte";
     import { on } from "svelte/events";
 
