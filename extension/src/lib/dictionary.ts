@@ -105,7 +105,7 @@ export class Dictionary {
         const requestString = JSON.stringify(p);
         const p_hash = await this.hashRequest(requestString);
         const response = await this.ai.models.generateContent({
-            model: "gemini-2.5-flash-preview-04-17",
+            model: "gemini-2.5-flash",
             //model: "gemini-2.0-flash-lite",
             contents: requestString,
             config: {

@@ -152,11 +152,13 @@ impl GeminiTranslator {
             TranslationModel::Gemini25Flash => Model::Gemini25Flash,
             TranslationModel::Gemini25Pro => Model::Gemini25Pro,
             TranslationModel::Gemini25FlashLight => Model::Gemini25FlashLite,
-            TranslationModel::Gemini3Pro => {
-                Model::Custom("models/gemini-3-pro-preview".to_string())
+            TranslationModel::Gemini3Pro => Model::Gemini3Pro,
+            TranslationModel::Gemini3Flash => Model::Gemini3Flash,
+            TranslationModel::Gemini31Pro => {
+                Model::Custom("models/gemini-3.1-pro-preview".to_string())
             }
-            TranslationModel::Gemini3Flash => {
-                Model::Custom("models/gemini-3-flash-preview".to_string())
+            TranslationModel::Gemini31FlashLite => {
+                Model::Custom("models/gemini-3.1-flash-lite-preview".to_string())
             }
             _ => Err(TranslationErrors::UnknownModel)?,
         };

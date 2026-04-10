@@ -138,6 +138,8 @@ impl OpenAITranslator {
             TranslationModel::OpenAIGpt52Pro => "gpt-5.2-pro",
             TranslationModel::OpenAIGpt5Mini => "gpt-5-mini",
             TranslationModel::OpenAIGpt5Nano => "gpt-5-nano",
+            TranslationModel::OpenAIGpt54 => "gpt-5.4",
+            TranslationModel::OpenAIGpt54Mini => "gpt-5.4-mini",
             _ => Err(TranslationErrors::UnknownModel)?,
         };
 
