@@ -18,10 +18,10 @@ use tokio::time::timeout;
 use crate::{
     book::translation_import::ParagraphTranslation,
     cache::TranslationsCache,
-    translator::{TranslationErrors, TranslationModel, Translator},
+    translator::{ProgressCallback, TranslationErrors, TranslationModel, Translator},
 };
 
-use super::{TRANSLATION_REQUEST_TIMEOUT, TRANSLATION_STREAM_IDLE_TIMEOUT};
+use super::{StreamChunkAccumulator, TRANSLATION_REQUEST_TIMEOUT, TRANSLATION_STREAM_IDLE_TIMEOUT};
 
 pub struct OpenAITranslator {
     cache: Arc<TranslationsCache>,
@@ -163,7 +163,7 @@ impl Translator for OpenAITranslator {
         &self,
         paragraph: &str,
         use_cache: bool,
-        callback: Option<Box<dyn Fn(usize) + Send + Sync>>,
+        callback: Option<Box<ProgressCallback>>,
     ) -> anyhow::Result<ParagraphTranslation> {
         if use_cache
             && let Some(cached_result) = self
@@ -212,33 +212,32 @@ impl Translator for OpenAITranslator {
         )
         .await
         .map_err(|_| anyhow::anyhow!("OpenAI request timed out"))??;
-        let mut full_content = String::new();
+        let mut accumulator = StreamChunkAccumulator::new("OpenAI");
 
         loop {
             let next = timeout(TRANSLATION_STREAM_IDLE_TIMEOUT, stream.next())
                 .await
                 .map_err(|_| anyhow::anyhow!("OpenAI stream timed out"))?;
-            let Some(result) = next else { break };
-            match result {
-                Ok(response) => {
-                    if let Some(choice) = response.choices.first() {
-                        if let Some(delta) = &choice.delta.content {
-                            full_content.push_str(delta);
-                            if let Some(cb) = &callback {
-                                cb(full_content.len());
-                            }
-                        }
-                    }
-                }
-                Err(err) => {
-                    log::warn!("Error in OpenAI stream: {}", err);
-                }
+            let should_continue = accumulator.handle_result(
+                match next {
+                    Some(Ok(response)) => Ok(Some(
+                        response
+                            .choices
+                            .first()
+                            .and_then(|choice| choice.delta.content.clone())
+                            .unwrap_or_default(),
+                    )),
+                    Some(Err(err)) => Err(err.into()),
+                    None => Ok(None),
+                },
+                callback.as_deref(),
+            )?;
+            if !should_continue {
+                break;
             }
         }
 
-        if full_content.is_empty() {
-            anyhow::bail!("OpenAI returned empty content");
-        }
+        let full_content = accumulator.finish()?;
 
         let mut translation: ParagraphTranslation = serde_json::from_str(&full_content)?;
 

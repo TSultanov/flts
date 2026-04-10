@@ -16,6 +16,58 @@ use crate::{
 const TRANSLATION_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const TRANSLATION_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
+type ProgressCallback = dyn Fn(usize) + Send + Sync;
+
+#[derive(Debug)]
+struct StreamChunkAccumulator {
+    provider: &'static str,
+    full_content: String,
+    saw_chunk_error: bool,
+}
+
+impl StreamChunkAccumulator {
+    fn new(provider: &'static str) -> Self {
+        Self {
+            provider,
+            full_content: String::new(),
+            saw_chunk_error: false,
+        }
+    }
+
+    fn handle_result(
+        &mut self,
+        result: anyhow::Result<Option<String>>,
+        callback: Option<&ProgressCallback>,
+    ) -> anyhow::Result<bool> {
+        match result {
+            Ok(Some(text)) => {
+                if !text.is_empty() {
+                    self.full_content.push_str(&text);
+                    if let Some(cb) = callback {
+                        cb(self.full_content.len());
+                    }
+                }
+                Ok(true)
+            }
+            Ok(None) => Ok(false),
+            Err(err) if !self.saw_chunk_error => {
+                self.saw_chunk_error = true;
+                log::warn!("Error in {} stream chunk, retrying once: {err}", self.provider);
+                Ok(true)
+            }
+            Err(err) => anyhow::bail!("{} stream failed after retry: {err}", self.provider),
+        }
+    }
+
+    fn finish(self) -> anyhow::Result<String> {
+        if self.full_content.is_empty() {
+            anyhow::bail!("{} returned empty content", self.provider);
+        }
+
+        Ok(self.full_content)
+    }
+}
+
 #[derive(Debug)]
 pub enum TranslationErrors {
     UnknownModel,
@@ -107,7 +159,7 @@ pub trait Translator: Send + Sync {
         &self,
         paragraph: &str,
         use_cache: bool,
-        callback: Option<Box<dyn Fn(usize) + Send + Sync>>,
+        callback: Option<Box<ProgressCallback>>,
     ) -> anyhow::Result<ParagraphTranslation>;
 
     fn get_prompt(from: &str, to: &str) -> String
@@ -177,5 +229,89 @@ pub fn get_translator(
             &from,
             &to,
         )?)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::StreamChunkAccumulator;
+
+    #[test]
+    fn first_chunk_error_is_retried() {
+        let mut accumulator = StreamChunkAccumulator::new("OpenAI");
+
+        assert!(
+            accumulator
+                .handle_result(Err(anyhow::anyhow!("boom")), None)
+                .unwrap()
+        );
+        assert!(
+            accumulator
+                .handle_result(Ok(Some("abc".into())), None)
+                .unwrap()
+        );
+        assert!(!accumulator.handle_result(Ok(None), None).unwrap());
+        assert_eq!(accumulator.finish().unwrap(), "abc");
+    }
+
+    #[test]
+    fn second_chunk_error_fails() {
+        let mut accumulator = StreamChunkAccumulator::new("Gemini");
+
+        assert!(
+            accumulator
+                .handle_result(Err(anyhow::anyhow!("boom-1")), None)
+                .unwrap()
+        );
+        let err = accumulator
+            .handle_result(Err(anyhow::anyhow!("boom-2")), None)
+            .unwrap_err();
+
+        assert!(err.to_string().contains("Gemini stream failed after retry"));
+    }
+
+    #[test]
+    fn callback_tracks_cumulative_progress_for_non_empty_chunks() {
+        let mut accumulator = StreamChunkAccumulator::new("OpenAI");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_cb = Arc::clone(&seen);
+        let callback = move |len| seen_for_cb.lock().unwrap().push(len);
+
+        assert!(
+            accumulator
+                .handle_result(Ok(Some("a".into())), Some(&callback))
+                .unwrap()
+        );
+        assert!(
+            accumulator
+                .handle_result(Ok(Some(String::new())), Some(&callback))
+                .unwrap()
+        );
+        assert!(
+            accumulator
+                .handle_result(Ok(Some("bc".into())), Some(&callback))
+                .unwrap()
+        );
+        assert!(
+            !accumulator
+                .handle_result(Ok(None), Some(&callback))
+                .unwrap()
+        );
+
+        assert_eq!(accumulator.finish().unwrap(), "abc");
+        assert_eq!(*seen.lock().unwrap(), vec![1, 3]);
+    }
+
+    #[test]
+    fn empty_stream_still_fails() {
+        let mut accumulator = StreamChunkAccumulator::new("Gemini");
+
+        assert!(!accumulator.handle_result(Ok(None), None).unwrap());
+        assert_eq!(
+            accumulator.finish().unwrap_err().to_string(),
+            "Gemini returned empty content"
+        );
     }
 }

@@ -13,10 +13,10 @@ use tokio::time::timeout;
 use crate::{
     book::translation_import::ParagraphTranslation,
     cache::TranslationsCache,
-    translator::{TranslationErrors, TranslationModel, Translator},
+    translator::{ProgressCallback, TranslationErrors, TranslationModel, Translator},
 };
 
-use super::{TRANSLATION_REQUEST_TIMEOUT, TRANSLATION_STREAM_IDLE_TIMEOUT};
+use super::{StreamChunkAccumulator, TRANSLATION_REQUEST_TIMEOUT, TRANSLATION_STREAM_IDLE_TIMEOUT};
 
 pub struct GeminiTranslator {
     cache: Arc<TranslationsCache>,
@@ -182,7 +182,7 @@ impl Translator for GeminiTranslator {
         &self,
         paragraph: &str,
         use_cache: bool,
-        callback: Option<Box<dyn Fn(usize) + Send + Sync>>,
+        callback: Option<Box<ProgressCallback>>,
     ) -> anyhow::Result<ParagraphTranslation> {
         if use_cache
             && let Some(cached_result) = self
@@ -220,25 +220,26 @@ impl Translator for GeminiTranslator {
         .await
         .map_err(|_| anyhow::anyhow!("Gemini request timed out"))??;
 
-        let mut full_content = String::new();
+        let mut accumulator = StreamChunkAccumulator::new("Gemini");
 
         loop {
             let next = timeout(TRANSLATION_STREAM_IDLE_TIMEOUT, stream.try_next())
                 .await
-                .map_err(|_| anyhow::anyhow!("Gemini stream timed out"))??;
-            let Some(response) = next else { break };
-            let text = response.text();
-            if !text.is_empty() {
-                full_content.push_str(&text);
-                if let Some(cb) = &callback {
-                    cb(full_content.len());
-                }
+                .map_err(|_| anyhow::anyhow!("Gemini stream timed out"))?;
+            let should_continue = accumulator.handle_result(
+                match next {
+                    Ok(Some(response)) => Ok(Some(response.text())),
+                    Ok(None) => Ok(None),
+                    Err(err) => Err(err.into()),
+                },
+                callback.as_deref(),
+            )?;
+            if !should_continue {
+                break;
             }
         }
 
-        if full_content.is_empty() {
-            anyhow::bail!("Gemini returned empty content");
-        }
+        let full_content = accumulator.finish()?;
 
         let mut translation: ParagraphTranslation = serde_json::from_str(&full_content)?;
 
