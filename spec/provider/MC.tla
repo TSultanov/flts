@@ -16,6 +16,7 @@ CONSTANTS
     ChunkLimit,
     KeepAliveLimit,
     TimeoutLimit,
+    TotalTimeoutLimit,
     StreamErrorLimit
 
 VARIABLE constraintCounters
@@ -50,6 +51,11 @@ MCGetTranslationIdleTimeout ==
     /\ constraintCounters.timeout < TimeoutLimit
     /\ B!GetTranslationIdleTimeout
     /\ constraintCounters' = [constraintCounters EXCEPT !.timeout = @ + 1]
+
+MCGetTranslationTotalStreamTimeout ==
+    /\ constraintCounters.totalTimeout < TotalTimeoutLimit
+    /\ B!GetTranslationTotalStreamTimeout
+    /\ constraintCounters' = [constraintCounters EXCEPT !.totalTimeout = @ + 1]
 
 MCStreamChunkErrorRetry ==
     /\ constraintCounters.streamError < StreamErrorLimit
@@ -100,11 +106,12 @@ MCRunSaverComplete ==
 MCInit ==
     /\ Init
     /\ constraintCounters = [
-        request     |-> 0,
-        chunk       |-> 0,
-        keepAlive   |-> 0,
-        timeout     |-> 0,
-        streamError |-> 0]
+        request      |-> 0,
+        chunk        |-> 0,
+        keepAlive    |-> 0,
+        timeout      |-> 0,
+        totalTimeout |-> 0,
+        streamError  |-> 0]
 
 MCNext ==
     \/ \E r \in Request, p \in {OpenAI, Gemini} : MCQueueRequest(r, p)
@@ -117,6 +124,7 @@ MCNext ==
     \/ MCStreamChunkErrorRetry
     \/ MCStreamChunkErrorFail
     \/ MCGetTranslationIdleTimeout
+    \/ MCGetTranslationTotalStreamTimeout
     \/ MCGetTranslationEmptyResponse
     \/ MCGetTranslationParseFailure
     \/ MCGetTranslationParseSuccess
@@ -131,6 +139,8 @@ MCSpec ==
     /\ WF_<<vars, faultVars>>(MCGetTranslationParseSuccess)
     /\ WF_<<vars, faultVars>>(MCGetTranslationParseFailure)
     /\ WF_<<vars, faultVars>>(MCRunSaverComplete)
+    /\ WF_<<vars, faultVars>>(MCGetTranslationIdleTimeout)
+    /\ WF_<<vars, faultVars>>(MCGetTranslationTotalStreamTimeout)
 
 \* ========================================================================
 \* State constraint

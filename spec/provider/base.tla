@@ -30,7 +30,7 @@ ASSUME OpenAI /= Gemini
 ASSUME TrackedQueuedReq \in Request
 
 ProviderSet == {OpenAI, Gemini}
-FailureOutcome == {"request_timeout", "idle_timeout",
+FailureOutcome == {"request_timeout", "idle_timeout", "total_timeout",
                    "transport_error", "parse_error", "empty_response"}
 TerminalOutcome == FailureOutcome \union {"success"}
 
@@ -206,8 +206,9 @@ GetTranslationStreamChunk(kind) ==
                 THEN "valid"
                 ELSE IF bufferKind[r] = "valid" THEN "valid" ELSE "partial"]
        /\ progressChars' = [progressChars EXCEPT ![r] = @ + 1]
+       /\ keepAliveCount' = [keepAliveCount EXCEPT ![r] = 0]
     /\ UNCHANGED <<queue, activeReq, workerPc, reqState, reqProvider,
-                   keepAliveCount, sawChunkError, reqOutcome, statusComplete>>
+                   sawChunkError, reqOutcome, statusComplete>>
 
 \* ------------------------------------------------------------------------
 \* ProviderKeepAlive
@@ -255,7 +256,9 @@ StreamChunkErrorFail ==
 
 \* ------------------------------------------------------------------------
 \* GetTranslationIdleTimeout
-\* Models the per-chunk idle timeout firing while the request is streaming.
+\* Models the inter-chunk timeout firing when the stream has received
+\* keepalive/empty chunks without making progress.  Empty chunks do NOT
+\* reset the timer; only non-empty chunks (GetTranslationStreamChunk) do.
 \* References:
 \*   - library/src/translator.rs:16-17
 \*   - library/src/translator/openai.rs:218-220
@@ -264,7 +267,23 @@ StreamChunkErrorFail ==
 GetTranslationIdleTimeout ==
     /\ activeReq /= Nil
     /\ workerPc = "provider_stream"
+    /\ keepAliveCount[activeReq] > 0
     /\ FailRequest(activeReq, "idle_timeout")
+
+\* ------------------------------------------------------------------------
+\* GetTranslationTotalStreamTimeout
+\* Models the total stream wall-clock deadline, linearly scaled by input
+\* length.  Fires unconditionally while the request is streaming,
+\* regardless of progress or keepalive state.
+\* References:
+\*   - library/src/translator.rs (total_stream_timeout)
+\*   - library/src/translator/openai.rs (outer timeout wrap)
+\*   - library/src/translator/gemini.rs (outer timeout wrap)
+\* ------------------------------------------------------------------------
+GetTranslationTotalStreamTimeout ==
+    /\ activeReq /= Nil
+    /\ workerPc = "provider_stream"
+    /\ FailRequest(activeReq, "total_timeout")
 
 \* ------------------------------------------------------------------------
 \* GetTranslationEmptyResponse
@@ -340,6 +359,7 @@ Next ==
     \/ StreamChunkErrorRetry
     \/ StreamChunkErrorFail
     \/ GetTranslationIdleTimeout
+    \/ GetTranslationTotalStreamTimeout
     \/ GetTranslationEmptyResponse
     \/ GetTranslationParseFailure
     \/ GetTranslationParseSuccess
@@ -403,5 +423,7 @@ Spec ==
     /\ WF_vars(GetTranslationParseSuccess)
     /\ WF_vars(GetTranslationParseFailure)
     /\ WF_vars(RunSaverComplete)
+    /\ WF_vars(GetTranslationIdleTimeout)
+    /\ WF_vars(GetTranslationTotalStreamTimeout)
 
 =============================================================================

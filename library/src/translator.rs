@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use isolang::Language;
 use serde::{Deserialize, Serialize};
 use strum::EnumIter;
+use tokio::time::Instant;
 
 use crate::{
     book::translation_import::ParagraphTranslation, cache::TranslationsCache,
@@ -15,14 +16,22 @@ use crate::{
 
 const TRANSLATION_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const TRANSLATION_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+const TRANSLATION_INTER_CHUNK_TIMEOUT: Duration = Duration::from_secs(30);
+const TRANSLATION_TOTAL_TIMEOUT_BASE: Duration = Duration::from_secs(30);
+const TRANSLATION_TOTAL_TIMEOUT_PER_CHAR: Duration = Duration::from_millis(100);
 
 type ProgressCallback = dyn Fn(usize) + Send + Sync;
+
+fn total_stream_timeout(input_len: usize) -> Duration {
+    TRANSLATION_TOTAL_TIMEOUT_BASE + TRANSLATION_TOTAL_TIMEOUT_PER_CHAR * (input_len as u32)
+}
 
 #[derive(Debug)]
 struct StreamChunkAccumulator {
     provider: &'static str,
     full_content: String,
     saw_chunk_error: bool,
+    last_progress_at: Instant,
 }
 
 impl StreamChunkAccumulator {
@@ -31,6 +40,7 @@ impl StreamChunkAccumulator {
             provider,
             full_content: String::new(),
             saw_chunk_error: false,
+            last_progress_at: Instant::now(),
         }
     }
 
@@ -43,9 +53,16 @@ impl StreamChunkAccumulator {
             Ok(Some(text)) => {
                 if !text.is_empty() {
                     self.full_content.push_str(&text);
+                    self.last_progress_at = Instant::now();
                     if let Some(cb) = callback {
                         cb(self.full_content.len());
                     }
+                } else if self.last_progress_at.elapsed() > TRANSLATION_INTER_CHUNK_TIMEOUT {
+                    anyhow::bail!(
+                        "{} stream inter-chunk timeout (no progress for {:?})",
+                        self.provider,
+                        TRANSLATION_INTER_CHUNK_TIMEOUT
+                    );
                 }
                 Ok(true)
             }
@@ -312,6 +329,67 @@ mod tests {
         assert_eq!(
             accumulator.finish().unwrap_err().to_string(),
             "Gemini returned empty content"
+        );
+    }
+
+    #[test]
+    fn inter_chunk_timeout_fires_on_empty_chunk_flood() {
+        use tokio::time::Instant;
+
+        let mut accumulator = StreamChunkAccumulator::new("OpenAI");
+        // Send one real chunk so we're past the "empty stream" case
+        assert!(
+            accumulator
+                .handle_result(Ok(Some("a".into())), None)
+                .unwrap()
+        );
+
+        // Force last_progress_at into the past
+        accumulator.last_progress_at =
+            Instant::now() - super::TRANSLATION_INTER_CHUNK_TIMEOUT - std::time::Duration::from_secs(1);
+
+        let err = accumulator
+            .handle_result(Ok(Some(String::new())), None)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("inter-chunk timeout"),
+            "unexpected: {err}"
+        );
+    }
+
+    #[test]
+    fn inter_chunk_timeout_resets_on_non_empty_chunk() {
+        use tokio::time::Instant;
+
+        let mut accumulator = StreamChunkAccumulator::new("Gemini");
+        assert!(
+            accumulator
+                .handle_result(Ok(Some("a".into())), None)
+                .unwrap()
+        );
+
+        // Push last_progress_at into the past
+        accumulator.last_progress_at =
+            Instant::now() - super::TRANSLATION_INTER_CHUNK_TIMEOUT - std::time::Duration::from_secs(1);
+
+        // A non-empty chunk should reset the timer, not fail
+        assert!(
+            accumulator
+                .handle_result(Ok(Some("b".into())), None)
+                .unwrap()
+        );
+        assert_eq!(accumulator.full_content, "ab");
+    }
+
+    #[test]
+    fn total_stream_timeout_scales_with_input() {
+        let short = super::total_stream_timeout(100);
+        let long = super::total_stream_timeout(1000);
+        assert!(long > short, "longer input should have longer timeout");
+        assert_eq!(
+            short,
+            super::TRANSLATION_TOTAL_TIMEOUT_BASE
+                + super::TRANSLATION_TOTAL_TIMEOUT_PER_CHAR * 100
         );
     }
 }

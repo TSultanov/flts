@@ -16,7 +16,10 @@ use crate::{
     translator::{ProgressCallback, TranslationErrors, TranslationModel, Translator},
 };
 
-use super::{StreamChunkAccumulator, TRANSLATION_REQUEST_TIMEOUT, TRANSLATION_STREAM_IDLE_TIMEOUT};
+use super::{
+    StreamChunkAccumulator, TRANSLATION_REQUEST_TIMEOUT, TRANSLATION_STREAM_IDLE_TIMEOUT,
+    total_stream_timeout,
+};
 
 pub struct GeminiTranslator {
     cache: Arc<TranslationsCache>,
@@ -222,24 +225,27 @@ impl Translator for GeminiTranslator {
 
         let mut accumulator = StreamChunkAccumulator::new("Gemini");
 
-        loop {
-            let next = timeout(TRANSLATION_STREAM_IDLE_TIMEOUT, stream.try_next())
-                .await
-                .map_err(|_| anyhow::anyhow!("Gemini stream timed out"))?;
-            let should_continue = accumulator.handle_result(
-                match next {
-                    Ok(Some(response)) => Ok(Some(response.text())),
-                    Ok(None) => Ok(None),
-                    Err(err) => Err(err.into()),
-                },
-                callback.as_deref(),
-            )?;
-            if !should_continue {
-                break;
+        let full_content = timeout(total_stream_timeout(paragraph.len()), async {
+            loop {
+                let next = timeout(TRANSLATION_STREAM_IDLE_TIMEOUT, stream.try_next())
+                    .await
+                    .map_err(|_| anyhow::anyhow!("Gemini stream timed out"))?;
+                let should_continue = accumulator.handle_result(
+                    match next {
+                        Ok(Some(response)) => Ok(Some(response.text())),
+                        Ok(None) => Ok(None),
+                        Err(err) => Err(err.into()),
+                    },
+                    callback.as_deref(),
+                )?;
+                if !should_continue {
+                    break;
+                }
             }
-        }
-
-        let full_content = accumulator.finish()?;
+            accumulator.finish()
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("Gemini total stream timeout"))??;
 
         let mut translation: ParagraphTranslation = serde_json::from_str(&full_content)?;
 
