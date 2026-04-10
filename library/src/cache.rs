@@ -61,6 +61,10 @@ impl TranslationsCache {
         );
     }
 
+    pub async fn close(&self) {
+        let _ = self.cache.close().await;
+    }
+
     pub async fn get(
         &self,
         source_language: &Language,

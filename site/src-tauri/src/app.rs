@@ -66,6 +66,8 @@ pub struct AppState {
     library: RwLock<Option<Arc<Library>>>,
     translation_queue: RwLock<Option<Arc<TranslationQueue>>>,
     watcher: Arc<Mutex<LibraryWatcher>>,
+    translations_cache: tokio::sync::OnceCell<Arc<TranslationsCache>>,
+    stats_cache: tokio::sync::OnceCell<Arc<TranslationSizeCache>>,
 }
 
 impl AppState {
@@ -98,6 +100,8 @@ impl AppState {
             library: RwLock::new(None),
             translation_queue: RwLock::new(None),
             watcher,
+            translations_cache: tokio::sync::OnceCell::new(),
+            stats_cache: tokio::sync::OnceCell::new(),
         })
     }
 
@@ -176,16 +180,37 @@ impl AppState {
         }
     }
 
-    async fn get_cache() -> anyhow::Result<TranslationsCache> {
-        let dirs = ProjectDirs::from("", "TS", "FLTS").unwrap();
-        let cache_dir = dirs.cache_dir();
-        TranslationsCache::create(cache_dir).await
+    async fn get_translations_cache(&self) -> anyhow::Result<Arc<TranslationsCache>> {
+        self.translations_cache
+            .get_or_try_init(|| async {
+                let dirs =
+                    ProjectDirs::from("", "TS", "FLTS").ok_or(AppError::ProjectDirsError)?;
+                let cache_dir = dirs.cache_dir();
+                Ok(Arc::new(TranslationsCache::create(cache_dir).await?))
+            })
+            .await
+            .cloned()
     }
 
-    async fn get_stats_cache() -> anyhow::Result<TranslationSizeCache> {
-        let dirs = ProjectDirs::from("", "TS", "FLTS").unwrap();
-        let cache_dir = dirs.cache_dir();
-        TranslationSizeCache::create(cache_dir).await
+    async fn get_stats_cache(&self) -> anyhow::Result<Arc<TranslationSizeCache>> {
+        self.stats_cache
+            .get_or_try_init(|| async {
+                let dirs =
+                    ProjectDirs::from("", "TS", "FLTS").ok_or(AppError::ProjectDirsError)?;
+                let cache_dir = dirs.cache_dir();
+                Ok(Arc::new(TranslationSizeCache::create(cache_dir).await?))
+            })
+            .await
+            .cloned()
+    }
+
+    pub async fn close_caches(&self) {
+        if let Some(cache) = self.translations_cache.get() {
+            cache.close().await;
+        }
+        if let Some(cache) = self.stats_cache.get() {
+            cache.close().await;
+        }
     }
 
     pub async fn handle_file_change_event(&self, event: &LibraryFileChange) -> anyhow::Result<()> {
@@ -247,8 +272,8 @@ impl AppState {
         }
 
         let config = self.config.read().await.clone();
-        let cache = Arc::new(Self::get_cache().await?);
-        let stats_cache = Arc::new(Self::get_stats_cache().await?);
+        let cache = self.get_translations_cache().await?;
+        let stats_cache = self.get_stats_cache().await?;
         let queue = TranslationQueue::init(library, cache, stats_cache, &config, self.app.clone())
             .ok_or(AppError::NoTranslationQueueError)?;
 

@@ -103,6 +103,7 @@ pub fn run() {
                 let app_state = app_state.inner().clone();
                 tauri::async_runtime::block_on(async move {
                     app_state.save_all().await;
+                    app_state.close_caches().await;
                 });
             }
         });

@@ -93,6 +93,10 @@ impl TranslationSizeCache {
         Ok(Self { cache })
     }
 
+    pub async fn close(&self) {
+        let _ = self.cache.close().await;
+    }
+
     fn make_key(source_language: &Language, target_language: &Language) -> String {
         format!(
             "{}\n{}",
