@@ -3,13 +3,13 @@
 ## Summary
 
 - Bug families tested: 3
-- Bugs found: 2 (`F1`, `F2`)
+- Bugs found: 2 (`F1`, `F2`) — both **FIXED**
 - No violation found: `F3` under the current retry-once abstraction
 - Configs run: `MC_hunt_f1.cfg`, `MC_hunt_f2.cfg`, `MC_hunt_f3.cfg`
 
 ---
 
-## Bug 1: Single-Worker Queue Stall (`F1`)
+## Bug 1: Single-Worker Queue Stall (`F1`) — **FIXED** (`36dee0f`)
 
 - **Bug family**: F1 — non-terminating provider stream stalls later queued work
 - **Severity**: High
@@ -43,7 +43,7 @@ Add an overall stream deadline or a bounded keepalive budget in the provider req
 
 ---
 
-## Bug 2: Failure Status Collapse (`F2`)
+## Bug 2: Failure Status Collapse (`F2`) — **FIXED** (`d1ad541`)
 
 - **Bug family**: F2 — provider failures are surfaced as generic completion
 - **Severity**: High
@@ -63,17 +63,12 @@ The failure path in the translation worker sends the same terminal `TranslationS
 
 From the frontend's perspective, terminal success and terminal provider failure are indistinguishable.
 
-### Affected code
+### Fix
 
-- `site/src-tauri/src/app/translation_queue.rs:127-139` — worker error handler sends terminal `TranslationStatus { is_complete: true, progress_chars: 0, expected_chars: 0 }`
-- `site/src-tauri/src/app/translation_queue.rs:393-398` — immediate save success sends the same terminal shape
-- `site/src-tauri/src/app/translation_queue.rs:414-419` — delayed save success sends the same terminal shape
-- `site/src/lib/data/library.ts:29-34` — `TranslationStatus` contains no failure/error field
-- `site/src/lib/data/library.ts:84-103` — polling only observes request id, progress, expected chars, and `is_complete`
-
-### Recommendation
-
-Add an explicit terminal outcome to `TranslationStatus` (for example `success | error` plus an error kind/message) and preserve that distinction through the frontend polling/store layer.
+- TLA+ spec: replaced `statusComplete: BOOLEAN` with `statusOutcome: {"none", "success", "error"}`; failures publish `"error"`, success publishes `"success"`
+- Rust: added `error: Option<String>` to `TranslationStatus`; worker error path populates it
+- Frontend: added `error?: string` to TS type; `console.warn()` on failure in ParagraphView + WordView
+- F2 hunt config now passes (invariant holds)
 
 ---
 
