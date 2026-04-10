@@ -1,0 +1,103 @@
+TLC2 Version 2026.03.31.154134 (rev: becec35)
+Running breadth-first search Model-Checking with fp 91 and seed -1230730120260505748 with 16 workers on 16 cores with 10923MB heap and 64MB offheap memory [pid: 13932] (Mac OS X 26.4 aarch64, Homebrew 25.0.2 64bit, MSBDiskFPSet, DiskStateQueue).
+Parsing file /Volumes/sources/flts/spec/provider/MC.tla
+Parsing file /Volumes/sources/flts/spec/provider/base.tla
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-13059390323655074488/_TLCTrace.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/_TLCTrace.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-13059390323655074488/Naturals.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/Naturals.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-13059390323655074488/Sequences.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/Sequences.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-13059390323655074488/FiniteSets.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/FiniteSets.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-13059390323655074488/TLC.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/TLC.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-13059390323655074488/TLCExt.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/TLCExt.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-13059390323655074488/Integers.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/Integers.tla)
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module base
+Semantic processing of module Integers
+Semantic processing of module TLCExt
+Semantic processing of module _TLCTrace
+Semantic processing of module MC
+Linting of module base
+Linting of module TLCExt
+Linting of module _TLCTrace
+Linting of module MC
+Starting... (2026-04-10 15:35:18)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-04-10 15:35:18.
+Error: Invariant MCFailureStatusNotComplete is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ reqProvider = (r1 :> nil)
+/\ reqState = (r1 :> "new")
+/\ bufferKind = (r1 :> "none")
+/\ statusComplete = (r1 :> FALSE)
+/\ reqOutcome = (r1 :> "none")
+/\ constraintCounters = [request |-> 0, chunk |-> 0, keepAlive |-> 0, timeout |-> 0, streamError |-> 0]
+/\ workerPc = "idle"
+/\ keepAliveCount = (r1 :> 0)
+/\ sawChunkError = (r1 :> FALSE)
+/\ progressChars = (r1 :> 0)
+/\ queue = <<>>
+/\ activeReq = nil
+
+State 2: <MCQueueRequest(r1,openai) line 30, col 5 to line 32, col 74 of module MC>
+/\ reqProvider = (r1 :> openai)
+/\ reqState = (r1 :> "queued")
+/\ bufferKind = (r1 :> "none")
+/\ statusComplete = (r1 :> FALSE)
+/\ reqOutcome = (r1 :> "none")
+/\ constraintCounters = [request |-> 1, chunk |-> 0, keepAlive |-> 0, timeout |-> 0, streamError |-> 0]
+/\ workerPc = "idle"
+/\ keepAliveCount = (r1 :> 0)
+/\ sawChunkError = (r1 :> FALSE)
+/\ progressChars = (r1 :> 0)
+/\ queue = <<r1>>
+/\ activeReq = nil
+
+State 3: <MCStartHandleRequest line 69, col 5 to line 70, col 26 of module MC>
+/\ reqProvider = (r1 :> openai)
+/\ reqState = (r1 :> "active")
+/\ bufferKind = (r1 :> "none")
+/\ statusComplete = (r1 :> FALSE)
+/\ reqOutcome = (r1 :> "none")
+/\ constraintCounters = [request |-> 1, chunk |-> 0, keepAlive |-> 0, timeout |-> 0, streamError |-> 0]
+/\ workerPc = "read"
+/\ keepAliveCount = (r1 :> 0)
+/\ sawChunkError = (r1 :> FALSE)
+/\ progressChars = (r1 :> 0)
+/\ queue = <<>>
+/\ activeReq = r1
+
+State 4: <MCHandleRequestReadParagraph line 73, col 5 to line 74, col 26 of module MC>
+/\ reqProvider = (r1 :> openai)
+/\ reqState = (r1 :> "active")
+/\ bufferKind = (r1 :> "none")
+/\ statusComplete = (r1 :> FALSE)
+/\ reqOutcome = (r1 :> "none")
+/\ constraintCounters = [request |-> 1, chunk |-> 0, keepAlive |-> 0, timeout |-> 0, streamError |-> 0]
+/\ workerPc = "provider_init"
+/\ keepAliveCount = (r1 :> 0)
+/\ sawChunkError = (r1 :> FALSE)
+/\ progressChars = (r1 :> 0)
+/\ queue = <<>>
+/\ activeReq = r1
+
+State 5: <MCGetTranslationRequestTimeout line 45, col 5 to line 47, col 74 of module MC>
+/\ reqProvider = (r1 :> openai)
+/\ reqState = (r1 :> "failed")
+/\ bufferKind = (r1 :> "none")
+/\ statusComplete = (r1 :> TRUE)
+/\ reqOutcome = (r1 :> "request_timeout")
+/\ constraintCounters = [request |-> 1, chunk |-> 0, keepAlive |-> 0, timeout |-> 1, streamError |-> 0]
+/\ workerPc = "idle"
+/\ keepAliveCount = (r1 :> 0)
+/\ sawChunkError = (r1 :> FALSE)
+/\ progressChars = (r1 :> 0)
+/\ queue = <<>>
+/\ activeReq = nil
+
+13 states generated, 13 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 6.
+Finished in 00s at (2026-04-10 15:35:18)
+Trace exploration spec path: ./MC_TTrace_1775820918.tla

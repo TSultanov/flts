@@ -1,0 +1,152 @@
+TLC2 Version 2026.03.31.154134 (rev: becec35)
+Running breadth-first search Model-Checking with fp 70 and seed 1674408474714505965 with 16 workers on 16 cores with 10923MB heap and 64MB offheap memory [pid: 13928] (Mac OS X 26.4 aarch64, Homebrew 25.0.2 64bit, MSBDiskFPSet, DiskStateQueue).
+Parsing file /Volumes/sources/flts/spec/provider/MC.tla
+Parsing file /Volumes/sources/flts/spec/provider/base.tla
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-16622017377148482291/_TLCTrace.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/_TLCTrace.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-16622017377148482291/Naturals.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/Naturals.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-16622017377148482291/Sequences.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/Sequences.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-16622017377148482291/FiniteSets.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/FiniteSets.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-16622017377148482291/TLC.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/TLC.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-16622017377148482291/TLCExt.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/TLCExt.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-16622017377148482291/Integers.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/Integers.tla)
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module base
+Semantic processing of module Integers
+Semantic processing of module TLCExt
+Semantic processing of module _TLCTrace
+Semantic processing of module MC
+Linting of module base
+Linting of module TLCExt
+Linting of module _TLCTrace
+Linting of module MC
+Starting... (2026-04-10 15:35:18)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-04-10 15:35:18.
+Progress(15) at 2026-04-10 15:35:18: 1,325 states generated, 841 distinct states found, 0 states left on queue.
+Checking temporal properties for the complete state space with 841 total distinct states at (2026-04-10 15:35:18)
+Error: Temporal property MCTrackedQueuedRequestEventuallyLeavesQueue was violated.
+
+Error: The following behavior constitutes a counter-example:
+
+State 1: <Initial predicate>
+/\ reqProvider = (r1 :> nil @@ r2 :> nil)
+/\ reqState = (r1 :> "new" @@ r2 :> "new")
+/\ bufferKind = (r1 :> "none" @@ r2 :> "none")
+/\ statusComplete = (r1 :> FALSE @@ r2 :> FALSE)
+/\ reqOutcome = (r1 :> "none" @@ r2 :> "none")
+/\ constraintCounters = [request |-> 0, chunk |-> 0, keepAlive |-> 0, timeout |-> 0, streamError |-> 0]
+/\ workerPc = "idle"
+/\ keepAliveCount = (r1 :> 0 @@ r2 :> 0)
+/\ sawChunkError = (r1 :> FALSE @@ r2 :> FALSE)
+/\ progressChars = (r1 :> 0 @@ r2 :> 0)
+/\ queue = <<>>
+/\ activeReq = nil
+
+State 2: <MCQueueRequest(r1,openai) line 30, col 5 to line 32, col 74 of module MC>
+/\ reqProvider = (r1 :> openai @@ r2 :> nil)
+/\ reqState = (r1 :> "queued" @@ r2 :> "new")
+/\ bufferKind = (r1 :> "none" @@ r2 :> "none")
+/\ statusComplete = (r1 :> FALSE @@ r2 :> FALSE)
+/\ reqOutcome = (r1 :> "none" @@ r2 :> "none")
+/\ constraintCounters = [request |-> 1, chunk |-> 0, keepAlive |-> 0, timeout |-> 0, streamError |-> 0]
+/\ workerPc = "idle"
+/\ keepAliveCount = (r1 :> 0 @@ r2 :> 0)
+/\ sawChunkError = (r1 :> FALSE @@ r2 :> FALSE)
+/\ progressChars = (r1 :> 0 @@ r2 :> 0)
+/\ queue = <<r1>>
+/\ activeReq = nil
+
+State 3: <MCStartHandleRequest line 69, col 5 to line 70, col 26 of module MC>
+/\ reqProvider = (r1 :> openai @@ r2 :> nil)
+/\ reqState = (r1 :> "active" @@ r2 :> "new")
+/\ bufferKind = (r1 :> "none" @@ r2 :> "none")
+/\ statusComplete = (r1 :> FALSE @@ r2 :> FALSE)
+/\ reqOutcome = (r1 :> "none" @@ r2 :> "none")
+/\ constraintCounters = [request |-> 1, chunk |-> 0, keepAlive |-> 0, timeout |-> 0, streamError |-> 0]
+/\ workerPc = "read"
+/\ keepAliveCount = (r1 :> 0 @@ r2 :> 0)
+/\ sawChunkError = (r1 :> FALSE @@ r2 :> FALSE)
+/\ progressChars = (r1 :> 0 @@ r2 :> 0)
+/\ queue = <<>>
+/\ activeReq = r1
+
+State 4: <MCQueueRequest(r2,gemini) line 30, col 5 to line 32, col 74 of module MC>
+/\ reqProvider = (r1 :> openai @@ r2 :> gemini)
+/\ reqState = (r1 :> "active" @@ r2 :> "queued")
+/\ bufferKind = (r1 :> "none" @@ r2 :> "none")
+/\ statusComplete = (r1 :> FALSE @@ r2 :> FALSE)
+/\ reqOutcome = (r1 :> "none" @@ r2 :> "none")
+/\ constraintCounters = [request |-> 2, chunk |-> 0, keepAlive |-> 0, timeout |-> 0, streamError |-> 0]
+/\ workerPc = "read"
+/\ keepAliveCount = (r1 :> 0 @@ r2 :> 0)
+/\ sawChunkError = (r1 :> FALSE @@ r2 :> FALSE)
+/\ progressChars = (r1 :> 0 @@ r2 :> 0)
+/\ queue = <<r2>>
+/\ activeReq = r1
+
+State 5: <MCHandleRequestReadParagraph line 73, col 5 to line 74, col 26 of module MC>
+/\ reqProvider = (r1 :> openai @@ r2 :> gemini)
+/\ reqState = (r1 :> "active" @@ r2 :> "queued")
+/\ bufferKind = (r1 :> "none" @@ r2 :> "none")
+/\ statusComplete = (r1 :> FALSE @@ r2 :> FALSE)
+/\ reqOutcome = (r1 :> "none" @@ r2 :> "none")
+/\ constraintCounters = [request |-> 2, chunk |-> 0, keepAlive |-> 0, timeout |-> 0, streamError |-> 0]
+/\ workerPc = "provider_init"
+/\ keepAliveCount = (r1 :> 0 @@ r2 :> 0)
+/\ sawChunkError = (r1 :> FALSE @@ r2 :> FALSE)
+/\ progressChars = (r1 :> 0 @@ r2 :> 0)
+/\ queue = <<r2>>
+/\ activeReq = r1
+
+State 6: <MCGetTranslationRequestOpen line 77, col 5 to line 78, col 26 of module MC>
+/\ reqProvider = (r1 :> openai @@ r2 :> gemini)
+/\ reqState = (r1 :> "active" @@ r2 :> "queued")
+/\ bufferKind = (r1 :> "none" @@ r2 :> "none")
+/\ statusComplete = (r1 :> FALSE @@ r2 :> FALSE)
+/\ reqOutcome = (r1 :> "none" @@ r2 :> "none")
+/\ constraintCounters = [request |-> 2, chunk |-> 0, keepAlive |-> 0, timeout |-> 0, streamError |-> 0]
+/\ workerPc = "provider_stream"
+/\ keepAliveCount = (r1 :> 0 @@ r2 :> 0)
+/\ sawChunkError = (r1 :> FALSE @@ r2 :> FALSE)
+/\ progressChars = (r1 :> 0 @@ r2 :> 0)
+/\ queue = <<r2>>
+/\ activeReq = r1
+
+State 7: <MCProviderKeepAlive line 40, col 5 to line 42, col 76 of module MC>
+/\ reqProvider = (r1 :> openai @@ r2 :> gemini)
+/\ reqState = (r1 :> "active" @@ r2 :> "queued")
+/\ bufferKind = (r1 :> "none" @@ r2 :> "none")
+/\ statusComplete = (r1 :> FALSE @@ r2 :> FALSE)
+/\ reqOutcome = (r1 :> "none" @@ r2 :> "none")
+/\ constraintCounters = [request |-> 2, chunk |-> 0, keepAlive |-> 1, timeout |-> 0, streamError |-> 0]
+/\ workerPc = "provider_stream"
+/\ keepAliveCount = (r1 :> 1 @@ r2 :> 0)
+/\ sawChunkError = (r1 :> FALSE @@ r2 :> FALSE)
+/\ progressChars = (r1 :> 0 @@ r2 :> 0)
+/\ queue = <<r2>>
+/\ activeReq = r1
+
+State 8: <MCProviderKeepAlive line 40, col 5 to line 42, col 76 of module MC>
+/\ reqProvider = (r1 :> openai @@ r2 :> gemini)
+/\ reqState = (r1 :> "active" @@ r2 :> "queued")
+/\ bufferKind = (r1 :> "none" @@ r2 :> "none")
+/\ statusComplete = (r1 :> FALSE @@ r2 :> FALSE)
+/\ reqOutcome = (r1 :> "none" @@ r2 :> "none")
+/\ constraintCounters = [request |-> 2, chunk |-> 0, keepAlive |-> 2, timeout |-> 0, streamError |-> 0]
+/\ workerPc = "provider_stream"
+/\ keepAliveCount = (r1 :> 2 @@ r2 :> 0)
+/\ sawChunkError = (r1 :> FALSE @@ r2 :> FALSE)
+/\ progressChars = (r1 :> 0 @@ r2 :> 0)
+/\ queue = <<r2>>
+/\ activeReq = r1
+
+State 9: Stuttering
+Finished checking temporal properties in 00s at 2026-04-10 15:35:18
+1325 states generated, 841 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 15.
+Finished in 00s at (2026-04-10 15:35:18)
+Trace exploration spec path: ./MC_TTrace_1775820918.tla

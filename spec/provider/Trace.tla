@@ -135,8 +135,7 @@ TraceStreamChunkErrorFail ==
     /\ StreamChunkErrorFail
     /\ LET r == RequestOf(logline.req) IN
         /\ ValidateRequestState(r)
-        /\ sawChunkError'[r]
-       /\ StepTrace
+        /\ StepTrace
 
 TraceGetTranslationIdleTimeout ==
     /\ IsEvent("GetTranslationIdleTimeout")
@@ -195,6 +194,7 @@ TraceNext ==
 TraceSpec ==
     /\ TraceInit
     /\ [][TraceNext]_<<vars, l>>
+    /\ WF_<<vars, l>>(TraceNext)
 
 TraceMatched == <>(l > Len(TraceLog))
 

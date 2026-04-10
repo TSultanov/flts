@@ -251,14 +251,7 @@ StreamChunkErrorFail ==
     /\ activeReq /= Nil
     /\ workerPc = "provider_stream"
     /\ sawChunkError[activeReq]
-    /\ LET r == activeReq IN
-        /\ reqState' = [reqState EXCEPT ![r] = "failed"]
-        /\ reqOutcome' = [reqOutcome EXCEPT ![r] = "transport_error"]
-        /\ statusComplete' = [statusComplete EXCEPT ![r] = TRUE]
-        /\ activeReq' = Nil
-        /\ workerPc' = "idle"
-    /\ UNCHANGED <<queue, reqProvider, bufferKind,
-                    progressChars, keepAliveCount, sawChunkError>>
+    /\ FailRequest(activeReq, "transport_error")
 
 \* ------------------------------------------------------------------------
 \* GetTranslationIdleTimeout

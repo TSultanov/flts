@@ -1,0 +1,32 @@
+TLC2 Version 2026.03.31.154134 (rev: becec35)
+Running Random Simulation with seed -6307506903561078988 with 16 workers on 16 cores with 10923MB heap and 64MB offheap memory [pid: 15448] (Mac OS X 26.4 aarch64, Homebrew 25.0.2 64bit).
+Parsing file /Volumes/sources/flts/spec/provider/MC.tla
+Parsing file /Volumes/sources/flts/spec/provider/base.tla
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-8909148294840809830/_TLCTrace.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/_TLCTrace.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-8909148294840809830/Naturals.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/Naturals.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-8909148294840809830/Sequences.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/Sequences.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-8909148294840809830/FiniteSets.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/FiniteSets.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-8909148294840809830/TLC.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/TLC.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-8909148294840809830/TLCExt.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/TLCExt.tla)
+Parsing file /private/var/folders/5t/8jh3l9wd4tx8q8d48vd8923r0000gn/T/tlc-8909148294840809830/Integers.tla (jar:file:/Volumes/sources/Specula/lib/tla2tools.jar!/tla2sany/StandardModules/Integers.tla)
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module base
+Semantic processing of module Integers
+Semantic processing of module TLCExt
+Semantic processing of module _TLCTrace
+Semantic processing of module MC
+Linting of module base
+Linting of module TLCExt
+Linting of module _TLCTrace
+Linting of module MC
+Starting... (2026-04-10 15:55:56)
+Computed 1 initial states...
+Finished computing initial states: 1 distinct state generated at 2026-04-10 15:55:56.
+Progress: 145011825 states checked, 23183893 traces generated (trace length: mean=0, var(x)=54, sd=7)
+Progress: 289434157 states checked, 46273656 traces generated (trace length: mean=0, var(x)=54, sd=7)
+Progress: 427983962 states checked, 68425521 traces generated (trace length: mean=0, var(x)=54, sd=7)
+Progress: 562670261 states checked, 89958908 traces generated (trace length: mean=0, var(x)=6, sd=2)
+Progress: 700407585 states checked, 111978864 traces generated (trace length: mean=0, var(x)=15, sd=4)
