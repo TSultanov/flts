@@ -44,6 +44,7 @@ pub struct TranslationStatus {
     pub progress_chars: usize,
     pub expected_chars: usize,
     pub is_complete: bool,
+    pub error: Option<String>,
 }
 
 struct TranslationQueueState {
@@ -134,6 +135,7 @@ impl TranslationQueue {
                             progress_chars: 0,
                             expected_chars: 0,
                             is_complete: true,
+                            error: Some(err.to_string()),
                         };
                         let _ = tx_status.send(status);
                     });
@@ -308,6 +310,7 @@ async fn handle_request(
                 progress_chars: progress_len,
                 expected_chars: expected_size,
                 is_complete: false,
+                error: None,
             };
             let _ = status_tx.send(status);
         })
@@ -395,6 +398,7 @@ async fn run_saver(
                     progress_chars: 0,
                     expected_chars: 0,
                     is_complete: true,
+                    error: None,
                 });
             }
             std::collections::hash_map::Entry::Occupied(_) => {
@@ -416,6 +420,7 @@ async fn run_saver(
                             progress_chars: 0,
                             expected_chars: 0,
                             is_complete: true,
+                            error: None,
                         });
                     }
                 };

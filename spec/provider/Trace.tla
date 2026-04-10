@@ -48,7 +48,7 @@ ValidateRequestState(r) ==
     /\ workerPc' = logline.state.workerPc
     /\ reqState'[r] = logline.state.reqState
     /\ reqOutcome'[r] = logline.state.reqOutcome
-    /\ statusComplete'[r] = logline.state.statusComplete
+    /\ statusOutcome'[r] = logline.state.statusOutcome
     /\ progressChars'[r] = logline.state.progressChars
     /\ bufferKind'[r] = logline.state.bufferKind
 

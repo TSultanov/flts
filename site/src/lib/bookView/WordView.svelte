@@ -41,6 +41,9 @@
             return;
         }
         if (status.is_complete) {
+            if (status.error) {
+                console.warn(`Translation failed for paragraph ${paragraphId}:`, status.error);
+            }
             translationRequestId = null;
             progressChars = 0;
             return;

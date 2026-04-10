@@ -31,6 +31,7 @@ export type TranslationStatus = {
     progress_chars: number;
     expected_chars: number;
     is_complete: boolean;
+    error?: string;
 };
 
 export type SystemDefinition = {
@@ -92,7 +93,8 @@ function ensureTranslationStatusPoller(requestId: number) {
                 poller.last.request_id === next.request_id &&
                 poller.last.progress_chars === next.progress_chars &&
                 poller.last.expected_chars === next.expected_chars &&
-                poller.last.is_complete === next.is_complete
+                poller.last.is_complete === next.is_complete &&
+                poller.last.error === next.error
             ) {
                 return;
             }

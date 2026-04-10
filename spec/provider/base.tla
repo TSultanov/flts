@@ -50,12 +50,12 @@ VARIABLE keepAliveCount     \* [Request -> Nat]
 VARIABLE sawChunkError      \* [Request -> BOOLEAN]
 
 VARIABLE reqOutcome         \* [Request -> TerminalOutcome \cup {"none"}]
-VARIABLE statusComplete     \* [Request -> BOOLEAN]
+VARIABLE statusOutcome      \* [Request -> {"none", "success", "error"}]
 
 queueVars == <<queue, activeReq, workerPc>>
 requestVars == <<reqState, reqProvider, bufferKind,
                  progressChars, keepAliveCount, sawChunkError,
-                 reqOutcome, statusComplete>>
+                 reqOutcome, statusOutcome>>
 vars == <<queueVars, requestVars>>
 
 \* ========================================================================
@@ -67,7 +67,7 @@ Elems(s) == {s[i] : i \in 1..Len(s)}
 FailRequest(r, outcomeVal) ==
     /\ reqState' = [reqState EXCEPT ![r] = "failed"]
     /\ reqOutcome' = [reqOutcome EXCEPT ![r] = outcomeVal]
-    /\ statusComplete' = [statusComplete EXCEPT ![r] = TRUE]
+    /\ statusOutcome' = [statusOutcome EXCEPT ![r] = "error"]
     /\ activeReq' = Nil
     /\ workerPc' = "idle"
     /\ UNCHANGED <<queue, reqProvider, bufferKind,
@@ -76,7 +76,7 @@ FailRequest(r, outcomeVal) ==
 SucceedRequest(r) ==
     /\ reqState' = [reqState EXCEPT ![r] = "succeeded"]
     /\ reqOutcome' = [reqOutcome EXCEPT ![r] = "success"]
-    /\ statusComplete' = [statusComplete EXCEPT ![r] = TRUE]
+    /\ statusOutcome' = [statusOutcome EXCEPT ![r] = "success"]
     /\ activeReq' = Nil
     /\ workerPc' = "idle"
     /\ UNCHANGED <<queue, reqProvider, bufferKind,
@@ -97,7 +97,7 @@ Init ==
     /\ keepAliveCount = [r \in Request |-> 0]
     /\ sawChunkError = [r \in Request |-> FALSE]
     /\ reqOutcome = [r \in Request |-> "none"]
-    /\ statusComplete = [r \in Request |-> FALSE]
+    /\ statusOutcome = [r \in Request |-> "none"]
 
 \* ========================================================================
 \* Actions
@@ -121,7 +121,7 @@ QueueRequest(r, p) ==
     /\ reqProvider' = [reqProvider EXCEPT ![r] = p]
     /\ UNCHANGED <<activeReq, workerPc, bufferKind,
                    progressChars, keepAliveCount, sawChunkError,
-                   reqOutcome, statusComplete>>
+                   reqOutcome, statusOutcome>>
 
 \* ------------------------------------------------------------------------
 \* StartHandleRequest
@@ -139,7 +139,7 @@ StartHandleRequest ==
        /\ workerPc' = "read"
        /\ reqState' = [reqState EXCEPT ![r] = "active"]
     /\ UNCHANGED <<reqProvider, bufferKind, progressChars,
-                   keepAliveCount, sawChunkError, reqOutcome, statusComplete>>
+                   keepAliveCount, sawChunkError, reqOutcome, statusOutcome>>
 
 \* ------------------------------------------------------------------------
 \* HandleRequestReadParagraph
@@ -158,7 +158,7 @@ HandleRequestReadParagraph ==
        /\ keepAliveCount' = [keepAliveCount EXCEPT ![r] = 0]
        /\ sawChunkError' = [sawChunkError EXCEPT ![r] = FALSE]
     /\ UNCHANGED <<queue, activeReq, reqState, reqProvider,
-                   reqOutcome, statusComplete>>
+                   reqOutcome, statusOutcome>>
 
 \* ------------------------------------------------------------------------
 \* GetTranslationRequestOpen
@@ -173,7 +173,7 @@ GetTranslationRequestOpen ==
     /\ workerPc' = "provider_stream"
     /\ UNCHANGED <<queue, activeReq, reqState, reqProvider, bufferKind,
                    progressChars, keepAliveCount, sawChunkError,
-                   reqOutcome, statusComplete>>
+                   reqOutcome, statusOutcome>>
 
 \* ------------------------------------------------------------------------
 \* GetTranslationRequestTimeout
@@ -208,7 +208,7 @@ GetTranslationStreamChunk(kind) ==
        /\ progressChars' = [progressChars EXCEPT ![r] = @ + 1]
        /\ keepAliveCount' = [keepAliveCount EXCEPT ![r] = 0]
     /\ UNCHANGED <<queue, activeReq, workerPc, reqState, reqProvider,
-                   sawChunkError, reqOutcome, statusComplete>>
+                   sawChunkError, reqOutcome, statusOutcome>>
 
 \* ------------------------------------------------------------------------
 \* ProviderKeepAlive
@@ -224,7 +224,7 @@ ProviderKeepAlive ==
     /\ keepAliveCount' = [keepAliveCount EXCEPT ![activeReq] = @ + 1]
     /\ UNCHANGED <<queue, activeReq, workerPc, reqState, reqProvider,
                    bufferKind, progressChars, sawChunkError,
-                   reqOutcome, statusComplete>>
+                   reqOutcome, statusOutcome>>
 
 \* ------------------------------------------------------------------------
 \* StreamChunkErrorRetry
@@ -241,7 +241,7 @@ StreamChunkErrorRetry ==
     /\ sawChunkError' = [sawChunkError EXCEPT ![activeReq] = TRUE]
     /\ UNCHANGED <<queue, activeReq, workerPc, reqState, reqProvider,
                     bufferKind, progressChars, keepAliveCount,
-                    reqOutcome, statusComplete>>
+                    reqOutcome, statusOutcome>>
 
 \* ------------------------------------------------------------------------
 \* StreamChunkErrorFail
@@ -313,7 +313,7 @@ GetTranslationParseFailure ==
        /\ bufferKind' = [bufferKind EXCEPT ![r] = "malformed"]
        /\ reqState' = [reqState EXCEPT ![r] = "failed"]
        /\ reqOutcome' = [reqOutcome EXCEPT ![r] = "parse_error"]
-       /\ statusComplete' = [statusComplete EXCEPT ![r] = TRUE]
+       /\ statusOutcome' = [statusOutcome EXCEPT ![r] = "error"]
        /\ activeReq' = Nil
        /\ workerPc' = "idle"
     /\ UNCHANGED <<queue, reqProvider, progressChars,
@@ -334,7 +334,7 @@ GetTranslationParseSuccess ==
     /\ workerPc' = "save"
     /\ UNCHANGED <<queue, activeReq, reqState, reqProvider, bufferKind,
                    progressChars, keepAliveCount, sawChunkError,
-                   reqOutcome, statusComplete>>
+                   reqOutcome, statusOutcome>>
 
 \* ------------------------------------------------------------------------
 \* RunSaverComplete
@@ -380,7 +380,7 @@ TypeOK ==
     /\ keepAliveCount \in [Request -> Nat]
     /\ sawChunkError \in [Request -> BOOLEAN]
     /\ reqOutcome \in [Request -> (TerminalOutcome \union {"none"})]
-    /\ statusComplete \in [Request -> BOOLEAN]
+    /\ statusOutcome \in [Request -> {"none", "success", "error"}]
 
 WorkerDiscipline ==
     /\ (activeReq = Nil) = (workerPc = "idle")
@@ -401,7 +401,7 @@ SuccessRequiresValidBuffer ==
 
 FailureStatusNotComplete ==
     \A r \in Request :
-        reqOutcome[r] \in FailureOutcome => ~statusComplete[r]
+        reqOutcome[r] \in FailureOutcome => statusOutcome[r] /= "success"
 
 FirstChunkErrorIsRetried ==
     \A r \in Request :
