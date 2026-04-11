@@ -52,24 +52,43 @@ struct TranslationQueueState {
     translation_status: HashMap<usize, TranslationStatus>,
 }
 
+struct TranslationQueueTasks {
+    translate_task: tokio::task::JoinHandle<()>,
+    saver_task: tokio::task::JoinHandle<()>,
+    status_task: tokio::task::JoinHandle<()>,
+}
+
+impl TranslationQueueTasks {
+    fn abort(&self) {
+        self.translate_task.abort();
+        self.saver_task.abort();
+        self.status_task.abort();
+    }
+
+    async fn wait_for_shutdown(self) {
+        wait_for_shutdown_task("translate", self.translate_task).await;
+        wait_for_shutdown_task("saver", self.saver_task).await;
+        wait_for_shutdown_task("status", self.status_task).await;
+    }
+}
+
 pub struct TranslationQueue {
     next_request_index: AtomicUsize,
     translate_tx: flume::Sender<TranslationRequest>,
 
     state: Arc<Mutex<TranslationQueueState>>,
 
-    // Task handles — aborted on Drop to prevent stale library usage after config change (F1 fix)
-    translate_task: tokio::task::JoinHandle<()>,
-    saver_task: tokio::task::JoinHandle<()>,
-    status_task: tokio::task::JoinHandle<()>,
+    tasks: Mutex<Option<TranslationQueueTasks>>,
 }
 
 impl Drop for TranslationQueue {
     fn drop(&mut self) {
-        info!("TranslationQueue dropped — aborting background tasks");
-        self.translate_task.abort();
-        self.saver_task.abort();
-        self.status_task.abort();
+        if let Ok(mut tasks) = self.tasks.try_lock() {
+            if let Some(tasks) = tasks.take() {
+                info!("TranslationQueue dropped — aborting background tasks");
+                tasks.abort();
+            }
+        }
     }
 }
 
@@ -153,10 +172,21 @@ impl TranslationQueue {
             next_request_index: 0.into(),
             translate_tx: tx_translate,
             state,
-            translate_task,
-            saver_task,
-            status_task,
+            tasks: Mutex::new(Some(TranslationQueueTasks {
+                translate_task,
+                saver_task,
+                status_task,
+            })),
         }))
+    }
+
+    pub async fn shutdown(&self) {
+        let tasks = self.tasks.lock().await.take();
+        if let Some(tasks) = tasks {
+            info!("TranslationQueue shutdown — aborting background tasks");
+            tasks.abort();
+            tasks.wait_for_shutdown().await;
+        }
     }
 
     pub async fn translate(
@@ -482,4 +512,12 @@ fn emit_updates(
     app.emit("library_updated", ())?;
 
     Ok(())
+}
+
+async fn wait_for_shutdown_task(task_name: &str, task: tokio::task::JoinHandle<()>) {
+    match task.await {
+        Ok(()) => {}
+        Err(err) if err.is_cancelled() => {}
+        Err(err) => warn!("Translation queue {task_name} task failed during shutdown: {err}"),
+    }
 }

@@ -1,9 +1,11 @@
 use std::{
     error::Error,
     fmt::Display,
+    future::Future,
     fs,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 use directories::ProjectDirs;
@@ -27,6 +29,10 @@ use crate::app::{config::Config, translation_queue::TranslationQueue};
 
 #[cfg(mobile)]
 use dirs_next::document_dir;
+
+const EXIT_STOP_QUEUE_TIMEOUT: Duration = Duration::from_secs(2);
+const EXIT_SAVE_ALL_TIMEOUT: Duration = Duration::from_secs(10);
+const EXIT_CACHE_CLOSE_TIMEOUT: Duration = Duration::from_millis(250);
 
 pub mod config;
 pub mod library_view;
@@ -113,7 +119,7 @@ impl AppState {
 
         // Translator settings (provider/key/model) are captured when the translation queue is created.
         // Reset it so the next translation uses the latest config.
-        *self.translation_queue.write().await = None;
+        self.stop_translation_queue().await;
 
         #[cfg(mobile)]
         {
@@ -167,10 +173,19 @@ impl AppState {
             self.app.emit("library_updated", ())?;
         } else {
             *self.library.write().await = None;
-            *self.translation_queue.write().await = None;
+            self.stop_translation_queue().await;
         }
 
         Ok(())
+    }
+
+    pub async fn stop_translation_queue(&self) {
+        let queue = self.translation_queue.write().await.take();
+        if let Some(queue) = queue {
+            info!("Stopping translation queue");
+            queue.shutdown().await;
+            info!("Translation queue stopped");
+        }
     }
 
     pub async fn save_all(&self) {
@@ -204,13 +219,16 @@ impl AppState {
             .cloned()
     }
 
-    pub async fn close_caches(&self) {
-        if let Some(cache) = self.translations_cache.get() {
-            cache.close().await;
-        }
-        if let Some(cache) = self.stats_cache.get() {
-            cache.close().await;
-        }
+    pub async fn shutdown(&self) {
+        // Best effort only: do not let app exit hang forever on any shutdown step.
+        run_exit_step(
+            "translation queue shutdown",
+            EXIT_STOP_QUEUE_TIMEOUT,
+            self.stop_translation_queue(),
+        )
+        .await;
+        run_exit_step("save all", EXIT_SAVE_ALL_TIMEOUT, self.save_all()).await;
+        self.close_caches_for_exit().await;
     }
 
     pub async fn handle_file_change_event(&self, event: &LibraryFileChange) -> anyhow::Result<()> {
@@ -307,6 +325,80 @@ impl AppState {
         let library = { self.library.read().await.clone() }.ok_or(AppError::NoLibraryError)?;
         let queue = self.get_or_init_translation_queue(library).await?;
         Ok(queue.get_request_id(book_id, paragraph_id).await)
+    }
+}
+
+async fn run_exit_step<F>(step_name: &str, timeout: Duration, future: F) -> bool
+where
+    F: Future<Output = ()>,
+{
+    match tokio::time::timeout(timeout, future).await {
+        Ok(()) => true,
+        Err(_) => {
+            warn!("Timed out during {step_name} after {:?}", timeout);
+            false
+        }
+    }
+}
+
+impl AppState {
+    async fn close_caches_for_exit(&self) {
+        if let Some(cache) = self.translations_cache.get() {
+            info!("Closing translations cache");
+            if run_exit_step(
+                "translations cache close",
+                EXIT_CACHE_CLOSE_TIMEOUT,
+                cache.close(),
+            )
+            .await
+            {
+                info!("Translations cache closed");
+            }
+        }
+        if let Some(cache) = self.stats_cache.get() {
+            info!("Closing translation stats cache");
+            if run_exit_step(
+                "translation stats cache close",
+                EXIT_CACHE_CLOSE_TIMEOUT,
+                cache.close(),
+            )
+            .await
+            {
+                info!("Translation stats cache closed");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{future::pending, sync::atomic::AtomicBool, time::Instant};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn exit_step_completes_when_future_finishes() {
+        let completed = Arc::new(AtomicBool::new(false));
+        let completed_flag = completed.clone();
+
+        let success = run_exit_step("quick step", Duration::from_secs(1), async move {
+            completed_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        })
+        .await;
+
+        assert!(success);
+        assert!(completed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn exit_step_times_out_instead_of_hanging() {
+        let start = Instant::now();
+
+        let success =
+            run_exit_step("hung step", Duration::from_millis(50), pending::<()>()).await;
+
+        assert!(!success);
+        assert!(start.elapsed() < Duration::from_secs(1));
     }
 }
 

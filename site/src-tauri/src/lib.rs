@@ -102,9 +102,11 @@ pub fn run() {
                 let app_state = app_handle.state::<Arc<crate::app::AppState>>();
                 let app_state = app_state.inner().clone();
                 tauri::async_runtime::block_on(async move {
-                    app_state.save_all().await;
-                    app_state.close_caches().await;
+                    app_state.shutdown().await;
                 });
+                info!("Forcing process exit");
+                app_handle.cleanup_before_exit();
+                std::process::exit(0);
             }
         });
 }
