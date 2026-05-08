@@ -1,0 +1,2 @@
+process handle SIGPIPE --notify false --pass true --stop false
+process handle SIGURG  --notify false --pass true --stop false
