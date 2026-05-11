@@ -3,7 +3,6 @@
     import { platform } from '@tauri-apps/plugin-os';
     import { configStore } from '../config';
     import {
-        getCachedLyricsTranslation,
         getLyrics,
         listenLyricsTranslation,
         spotifyStateStore,
@@ -140,21 +139,6 @@
             translationStatus = 'error';
             return;
         }
-
-        // Check disk cache before invoking the LLM.
-        try {
-            const cached = await getCachedLyricsTranslation({
-                trackId: np.trackId,
-                targetLang: cfg.targetLanguageId,
-                model: cfg.model,
-            });
-            if (lastDispatchKey !== dispatchKey) return;
-            if (cached) {
-                translation = cached;
-                translationStatus = 'idle';
-                return;
-            }
-        } catch {}
 
         translationStatus = 'translating';
         try {

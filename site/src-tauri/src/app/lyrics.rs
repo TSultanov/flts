@@ -325,18 +325,6 @@ pub async fn translate_lyrics(
     }
 }
 
-#[tauri::command]
-pub async fn get_lyrics_translation(
-    state: tauri::State<'_, Arc<AppState>>,
-    track_id: String,
-    target_lang: String,
-    model: usize,
-) -> Result<Option<LyricsTranslation>, String> {
-    let tgt = Language::from_639_3(&target_lang)
-        .ok_or_else(|| format!("unknown target lang: {target_lang}"))?;
-    let cache = state.lyrics_state.lyrics_cache().await.map_err(|e| e.to_string())?;
-    Ok(cache.get(&track_id, &tgt, model).await)
-}
 
 async fn run_translation(
     key: &TranslationKey,

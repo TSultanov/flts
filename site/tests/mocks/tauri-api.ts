@@ -457,6 +457,12 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
           emit('lyrics_translation_error', { requestId, error: errMsg });
           return;
         }
+        // Cache hit mirrors the real backend: emit done from the cached entry.
+        const cached = mockTranslationCache.get(key);
+        if (cached) {
+          emit('lyrics_translation_done', { requestId, translation: cached });
+          return;
+        }
         const response = mockTranslationResponses.get(key);
         if (response) {
           emit('lyrics_translation_done', { requestId, translation: response });
@@ -466,15 +472,6 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
       }, 30);
 
       return Promise.resolve(requestId as T);
-    }
-
-    case 'get_lyrics_translation': {
-      const trackId = args?.trackId as string;
-      const target = args?.targetLang as string;
-      const model = args?.model as number;
-      const key = translationKey(trackId, target, model);
-      const cached = mockTranslationCache.get(key) ?? null;
-      return Promise.resolve(cached as T);
     }
 
     default:

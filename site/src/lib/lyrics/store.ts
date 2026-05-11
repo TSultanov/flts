@@ -4,7 +4,6 @@ import { writable, type Readable } from 'svelte/store';
 
 import type {
     Lyrics,
-    LyricsTranslation,
     LyricsTranslationDone,
     LyricsTranslationError,
     LyricsTranslationProgress,
@@ -51,20 +50,6 @@ export async function translateLyrics(args: {
         targetLang: args.targetLang,
         model: args.model,
     });
-}
-
-export async function getCachedLyricsTranslation(args: {
-    trackId: string;
-    targetLang: string;
-    model: number;
-}): Promise<LyricsTranslation | null> {
-    return (
-        (await invoke<LyricsTranslation | null>('get_lyrics_translation', {
-            trackId: args.trackId,
-            targetLang: args.targetLang,
-            model: args.model,
-        })) ?? null
-    );
 }
 
 /// Subscribes to all three lyrics translation events and routes them to the

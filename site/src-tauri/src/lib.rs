@@ -99,7 +99,6 @@ pub fn run() {
             app::lyrics::get_now_playing,
             app::lyrics::get_lyrics,
             app::lyrics::translate_lyrics,
-            app::lyrics::get_lyrics_translation,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
