@@ -69,7 +69,10 @@ impl StreamChunkAccumulator {
             Ok(None) => Ok(false),
             Err(err) if !self.saw_chunk_error => {
                 self.saw_chunk_error = true;
-                log::warn!("Error in {} stream chunk, retrying once: {err}", self.provider);
+                log::warn!(
+                    "Error in {} stream chunk, retrying once: {err}",
+                    self.provider
+                );
                 Ok(true)
             }
             Err(err) => anyhow::bail!("{} stream failed after retry: {err}", self.provider),
@@ -358,8 +361,9 @@ mod tests {
         );
 
         // Force last_progress_at into the past
-        accumulator.last_progress_at =
-            Instant::now() - super::TRANSLATION_INTER_CHUNK_TIMEOUT - std::time::Duration::from_secs(1);
+        accumulator.last_progress_at = Instant::now()
+            - super::TRANSLATION_INTER_CHUNK_TIMEOUT
+            - std::time::Duration::from_secs(1);
 
         let err = accumulator
             .handle_result(Ok(Some(String::new())), None)
@@ -382,8 +386,9 @@ mod tests {
         );
 
         // Push last_progress_at into the past
-        accumulator.last_progress_at =
-            Instant::now() - super::TRANSLATION_INTER_CHUNK_TIMEOUT - std::time::Duration::from_secs(1);
+        accumulator.last_progress_at = Instant::now()
+            - super::TRANSLATION_INTER_CHUNK_TIMEOUT
+            - std::time::Duration::from_secs(1);
 
         // A non-empty chunk should reset the timer, not fail
         assert!(
@@ -401,8 +406,7 @@ mod tests {
         assert!(long > short, "longer input should have longer timeout");
         assert_eq!(
             short,
-            super::TRANSLATION_TOTAL_TIMEOUT_BASE
-                + super::TRANSLATION_TOTAL_TIMEOUT_PER_CHAR * 100
+            super::TRANSLATION_TOTAL_TIMEOUT_BASE + super::TRANSLATION_TOTAL_TIMEOUT_PER_CHAR * 100
         );
     }
 }

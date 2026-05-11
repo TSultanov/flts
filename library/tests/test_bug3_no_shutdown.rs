@@ -7,7 +7,7 @@
 //!   BeginWorker → WorkerReadParagraph (memVersion=1) → AppClose
 //!   → diskVersion still 0, data lost
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -62,11 +62,11 @@ fn make_translation(text: &str) -> translation_import::ParagraphTranslation {
 
 /// Helper: create a library with a book containing an unsaved in-memory translation.
 /// Returns (library, book_id).
-async fn setup_dirty_library(lib_path: &PathBuf) -> (Arc<Library>, uuid::Uuid) {
+async fn setup_dirty_library(lib_path: &Path) -> (Arc<Library>, uuid::Uuid) {
     let en = Language::from_str("en").unwrap();
     let ru = Language::from_str("ru").unwrap();
 
-    let library = Arc::new(Library::open(lib_path.clone()).await.unwrap());
+    let library = Arc::new(Library::open(lib_path.to_path_buf()).await.unwrap());
 
     let book_id = library
         .create_book_plain("F3 Test Book", "This is a test paragraph.", &en)

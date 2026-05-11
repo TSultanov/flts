@@ -79,12 +79,7 @@ pub fn close() -> anyhow::Result<()> {
 
 /// Returns elapsed nanoseconds since trace init (monotonic).
 fn now_ns() -> u64 {
-    sink()
-        .lock()
-        .unwrap()
-        .epoch
-        .elapsed()
-        .as_nanos() as u64
+    sink().lock().unwrap().epoch.elapsed().as_nanos() as u64
 }
 
 /// Write one NDJSON line to the trace file.
@@ -166,10 +161,8 @@ impl InteractionTraceGuard {
         let root = std::env::var_os("FLTS_INTERACTION_TRACE_DIR")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| {
-                std::env::temp_dir().join(format!(
-                    "flts_interaction_trace_{}",
-                    uuid::Uuid::new_v4()
-                ))
+                std::env::temp_dir()
+                    .join(format!("flts_interaction_trace_{}", uuid::Uuid::new_v4()))
             });
         std::fs::create_dir_all(&root).unwrap();
         init(&root.join(filename)).unwrap();

@@ -9,10 +9,7 @@ use std::{
 use isolang::Language;
 use itertools::Itertools;
 use log::{info, trace};
-use tokio::{
-    io::AsyncReadExt,
-    sync::RwLock,
-};
+use tokio::{io::AsyncReadExt, sync::RwLock};
 use uuid::Uuid;
 
 use crate::{
@@ -86,10 +83,12 @@ impl LibraryBookMetadata {
 
             while let Some(entry) = read_dir.next_entry().await? {
                 let p = entry.path();
-                if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
-                    if name.starts_with("book") && name.ends_with(".dat") && name != "book.dat" {
-                        conflicting_paths.push(p);
-                    }
+                if let Some(name) = p.file_name().and_then(|n| n.to_str())
+                    && name.starts_with("book")
+                    && name.ends_with(".dat")
+                    && name != "book.dat"
+                {
+                    conflicting_paths.push(p);
                 }
             }
 
@@ -131,20 +130,20 @@ impl LibraryBookMetadata {
 
         while let Some(entry) = read_dir.next_entry().await? {
             let path = entry.path();
-            if path.is_file() {
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    if name.starts_with("translation_") && name.ends_with(".dat") {
-                        let metadata = {
-                            let mut file = tokio::fs::File::open(&path).await?;
-                            let mut buffer = vec![0u8; 65536];
-                            let n = file.read(&mut buffer).await?;
-                            buffer.truncate(n);
-                            let mut cursor = std::io::Cursor::new(buffer);
-                            TranslationMetadata::read_metadata(&mut cursor)?
-                        };
-                        all_translations.push((path, metadata));
-                    }
-                }
+            if path.is_file()
+                && let Some(name) = path.file_name().and_then(|n| n.to_str())
+                && name.starts_with("translation_")
+                && name.ends_with(".dat")
+            {
+                let metadata = {
+                    let mut file = tokio::fs::File::open(&path).await?;
+                    let mut buffer = vec![0u8; 65536];
+                    let n = file.read(&mut buffer).await?;
+                    buffer.truncate(n);
+                    let mut cursor = std::io::Cursor::new(buffer);
+                    TranslationMetadata::read_metadata(&mut cursor)?
+                };
+                all_translations.push((path, metadata));
             }
         }
 
@@ -304,10 +303,10 @@ impl Library {
         let books: Vec<_> = self.books_cache.read().await.values().cloned().collect();
         for book_arc in books {
             let mut book = book_arc.lock().await;
-            if book.has_unsaved_changes().await {
-                if let Err(err) = book.save().await {
-                    log::warn!("Failed to save book on shutdown: {err}");
-                }
+            if book.has_unsaved_changes().await
+                && let Err(err) = book.save().await
+            {
+                log::warn!("Failed to save book on shutdown: {err}");
             }
         }
     }

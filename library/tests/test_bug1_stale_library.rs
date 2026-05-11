@@ -88,7 +88,8 @@ async fn test_bug1_stale_library_ref() {
 
     // 3. Create translation queue (captures library A) — mirrors translation_queue.rs:108
     let work_flag = Arc::new(AtomicBool::new(false));
-    let queue = MockTranslationQueue::init(library_a.clone(), lib_a_root.clone(), work_flag.clone());
+    let queue =
+        MockTranslationQueue::init(library_a.clone(), lib_a_root.clone(), work_flag.clone());
     assert_eq!(queue.captured_root, lib_a_root);
 
     // 4. Simulate update_config → create library B and replace in AppState
@@ -102,19 +103,25 @@ async fn test_bug1_stale_library_ref() {
     assert_eq!(current_root, lib_b_root);
 
     // 6. BUG: Queue still uses library A
-    assert_eq!(queue.captured_root, lib_a_root,
-        "Queue should still point to library A (the stale reference)");
-    assert_ne!(queue.captured_root, lib_b_root,
-        "Queue does NOT point to library B (the current library)");
+    assert_eq!(
+        queue.captured_root, lib_a_root,
+        "Queue should still point to library A (the stale reference)"
+    );
+    assert_ne!(
+        queue.captured_root, lib_b_root,
+        "Queue does NOT point to library B (the current library)"
+    );
 
     // 7. Demonstrate the real consequence: create a book in each library
     let en = Language::from_str("en").unwrap();
     let book_a_id = library_a
         .create_book_plain("Book via stale ref", "Test paragraph", &en)
-        .await.unwrap();
+        .await
+        .unwrap();
     let book_b_id = library_b
         .create_book_plain("Book via current ref", "Test paragraph", &en)
-        .await.unwrap();
+        .await
+        .unwrap();
 
     let stale_books = library_a.list_books().await.unwrap();
     let current_books = library_b.list_books().await.unwrap();
@@ -123,12 +130,21 @@ async fn test_bug1_stale_library_ref() {
 
     // Stale library is kept alive by the queue's Arc
     let stale_strong_count = Arc::strong_count(&queue.captured_library);
-    assert!(stale_strong_count >= 2,
-        "Stale library has {} strong references (queue + local var)", stale_strong_count);
+    assert!(
+        stale_strong_count >= 2,
+        "Stale library has {} strong references (queue + local var)",
+        stale_strong_count
+    );
 
     println!("BUG F1 REPRODUCED:");
-    println!("  Queue library root: {:?} (stale — library A)", queue.captured_root);
-    println!("  AppState library root: {:?} (current — library B)", current_root);
+    println!(
+        "  Queue library root: {:?} (stale — library A)",
+        queue.captured_root
+    );
+    println!(
+        "  AppState library root: {:?} (current — library B)",
+        current_root
+    );
     println!("  Stale Arc strong count: {}", stale_strong_count);
 }
 
@@ -145,7 +161,10 @@ async fn test_bug1_fix_drop_aborts_tasks() {
 
     // Let the task run at least one iteration
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    assert!(work_flag.load(Ordering::SeqCst), "Task should have run at least once");
+    assert!(
+        work_flag.load(Ordering::SeqCst),
+        "Task should have run at least once"
+    );
 
     // Reset flag, then drop the queue (simulates update_config setting queue = None)
     work_flag.store(false, Ordering::SeqCst);
@@ -159,8 +178,10 @@ async fn test_bug1_fix_drop_aborts_tasks() {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     // The flag should NOT have been set again — the task was aborted
-    assert!(!work_flag.load(Ordering::SeqCst),
-        "Task should not have run after queue was dropped (abort should have cancelled it)");
+    assert!(
+        !work_flag.load(Ordering::SeqCst),
+        "Task should not have run after queue was dropped (abort should have cancelled it)"
+    );
 
     println!("FIX F1 VERIFIED: Dropping queue aborts background tasks");
 }

@@ -12,7 +12,7 @@ use std::sync::Arc;
 use isolang::Language;
 use library::{
     library::Library,
-    tla_trace_mutex::{self, TaskCtx, TASK_CTX},
+    tla_trace_mutex::{self, TASK_CTX, TaskCtx},
 };
 
 // ---------------------------------------------------------------------------

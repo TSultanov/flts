@@ -84,10 +84,7 @@ impl<T> TracedMutex<T> {
         emit_lock_event("Acq", &name, start, end);
         set_holder(&name);
 
-        TracedMutexGuard {
-            inner: guard,
-            name,
-        }
+        TracedMutexGuard { inner: guard, name }
     }
 }
 
@@ -193,9 +190,7 @@ pub fn write_per_task_traces(dir: &Path) -> std::io::Result<()> {
         let path = dir.join(format!("trace-task-{}.ndjson", task_id));
         let mut file = std::fs::File::create(&path)?;
         for event in task_events {
-            serde_json::to_writer(&mut file, event).map_err(|e| {
-                std::io::Error::new(std::io::ErrorKind::Other, e)
-            })?;
+            serde_json::to_writer(&mut file, event).map_err(std::io::Error::other)?;
             file.write_all(b"\n")?;
         }
         file.flush()?;

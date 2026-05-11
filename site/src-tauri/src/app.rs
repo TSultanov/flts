@@ -1,8 +1,8 @@
 use std::{
     error::Error,
     fmt::Display,
-    future::Future,
     fs,
+    future::Future,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -119,8 +119,6 @@ impl AppState {
     pub async fn update_config(&self, config: Config) -> anyhow::Result<()> {
         #[cfg(mobile)]
         let mut config = config;
-        #[cfg(not(mobile))]
-        let config = config;
 
         // Translator settings (provider/key/model) are captured when the translation queue is created.
         // Reset it so the next translation uses the latest config.
@@ -203,8 +201,7 @@ impl AppState {
     async fn get_translations_cache(&self) -> anyhow::Result<Arc<TranslationsCache>> {
         self.translations_cache
             .get_or_try_init(|| async {
-                let dirs =
-                    ProjectDirs::from("", "TS", "FLTS").ok_or(AppError::ProjectDirsError)?;
+                let dirs = ProjectDirs::from("", "TS", "FLTS").ok_or(AppError::ProjectDirsError)?;
                 let cache_dir = dirs.cache_dir();
                 Ok(Arc::new(TranslationsCache::create(cache_dir).await?))
             })
@@ -215,8 +212,7 @@ impl AppState {
     async fn get_stats_cache(&self) -> anyhow::Result<Arc<TranslationSizeCache>> {
         self.stats_cache
             .get_or_try_init(|| async {
-                let dirs =
-                    ProjectDirs::from("", "TS", "FLTS").ok_or(AppError::ProjectDirsError)?;
+                let dirs = ProjectDirs::from("", "TS", "FLTS").ok_or(AppError::ProjectDirsError)?;
                 let cache_dir = dirs.cache_dir();
                 Ok(Arc::new(TranslationSizeCache::create(cache_dir).await?))
             })
@@ -264,7 +260,7 @@ impl AppState {
                 let target_language_id = { self.config.read().await.target_language_id.clone() };
                 let target_language = Language::from_639_3(&target_language_id);
 
-                if target_language.map_or(false, |tl| tl == *to) {
+                if target_language == Some(*to) {
                     info!("Emitting \"book_updated\" for {uuid}");
                     self.app.emit("book_updated", uuid)?;
 
@@ -317,9 +313,9 @@ impl AppState {
     ) -> anyhow::Result<usize> {
         let library = { self.library.read().await.clone() }.ok_or(AppError::NoLibraryError)?;
         let queue = self.get_or_init_translation_queue(library).await?;
-        Ok(queue
+        queue
             .translate(book_id, paragraph_id, model, use_cache)
-            .await?)
+            .await
     }
 
     pub async fn get_paragraph_translation_request_id(
@@ -399,8 +395,7 @@ mod tests {
     async fn exit_step_times_out_instead_of_hanging() {
         let start = Instant::now();
 
-        let success =
-            run_exit_step("hung step", Duration::from_millis(50), pending::<()>()).await;
+        let success = run_exit_step("hung step", Duration::from_millis(50), pending::<()>()).await;
 
         assert!(!success);
         assert!(start.elapsed() < Duration::from_secs(1));

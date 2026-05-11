@@ -45,10 +45,7 @@ impl TraceGuard {
         let cleanup_dir = if std::env::var_os("FLTS_TRACE_DIR").is_some() {
             None
         } else {
-            Some(std::env::temp_dir().join(format!(
-                "flts_trace_harness_{}",
-                uuid::Uuid::new_v4()
-            )))
+            Some(std::env::temp_dir().join(format!("flts_trace_harness_{}", uuid::Uuid::new_v4())))
         };
         let root = std::env::var_os("FLTS_TRACE_DIR")
             .map(PathBuf::from)
@@ -73,7 +70,12 @@ fn sleep_for_mtime_tick() {
     std::thread::sleep(Duration::from_millis(5));
 }
 
-fn make_paragraph(ts: u64, text: &str, source_language: &str, target_language: &str) -> translation_import::ParagraphTranslation {
+fn make_paragraph(
+    ts: u64,
+    text: &str,
+    source_language: &str,
+    target_language: &str,
+) -> translation_import::ParagraphTranslation {
     translation_import::ParagraphTranslation {
         total_tokens: None,
         timestamp: ts,
@@ -292,5 +294,7 @@ async fn trace_dictionary_load() {
 
     let _trace = TraceGuard::start("dictionary-load.ndjson");
     let metadata = LibraryDictionaryMetadata::load(&main_path).await.unwrap();
-    let _loaded = LibraryDictionary::load_from_metadata(metadata).await.unwrap();
+    let _loaded = LibraryDictionary::load_from_metadata(metadata)
+        .await
+        .unwrap();
 }

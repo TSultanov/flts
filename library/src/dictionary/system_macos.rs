@@ -34,7 +34,7 @@ pub fn get_definition(
     let cf_word = CFString::new(word);
     let range = CFRange {
         location: 0,
-        length: cf_word.char_len() as isize,
+        length: cf_word.char_len(),
     };
 
     // Dynamically load DCSCopyDefinitionMarkup to avoid linker errors with private API
@@ -165,7 +165,7 @@ fn find_best_dictionary(source_lang_code: &str, target_lang_code: &str) -> *cons
         let mut english_match: *const std::ffi::c_void = ptr::null();
         let mut source_match: *const std::ffi::c_void = ptr::null();
 
-        for (_i, &dict_ptr) in values.iter().enumerate() {
+        for &dict_ptr in values.iter() {
             if dict_ptr.is_null() {
                 continue;
             }
@@ -230,30 +230,30 @@ fn find_best_dictionary(source_lang_code: &str, target_lang_code: &str) -> *cons
             return source_match;
         }
 
-        return ptr::null();
+        ptr::null()
     }
 }
 
 #[cfg(target_os = "macos")]
 fn extract_transcription(text: &str) -> Option<String> {
     // Check for |...| style
-    if let Some(start) = text.find('|') {
-        if let Some(end) = text[start + 1..].find('|') {
-            let content = &text[start + 1..start + 1 + end];
-            // Filter out excessive whitespace or newlines just in case
-            if !content.contains('\n') && content.len() < 50 {
-                return Some(content.trim().to_string());
-            }
+    if let Some(start) = text.find('|')
+        && let Some(end) = text[start + 1..].find('|')
+    {
+        let content = &text[start + 1..start + 1 + end];
+        // Filter out excessive whitespace or newlines just in case
+        if !content.contains('\n') && content.len() < 50 {
+            return Some(content.trim().to_string());
         }
     }
     // Check for /.../ style (common in some dictionaries)
-    if let Some(start) = text.find('/') {
-        if let Some(end) = text[start + 1..].find('/') {
-            let content = &text[start + 1..start + 1 + end];
-            // heuristic to avoid matching random slashes in text: length and content
-            if !content.contains('\n') && content.len() < 50 {
-                return Some(content.trim().to_string());
-            }
+    if let Some(start) = text.find('/')
+        && let Some(end) = text[start + 1..].find('/')
+    {
+        let content = &text[start + 1..start + 1 + end];
+        // heuristic to avoid matching random slashes in text: length and content
+        if !content.contains('\n') && content.len() < 50 {
+            return Some(content.trim().to_string());
         }
     }
     None
@@ -314,7 +314,7 @@ mod tests {
                 let name_ref = DCSDictionaryGetName(dict_ptr);
                 if !name_ref.is_null() {
                     let name_cf: CFString = TCFType::wrap_under_get_rule(name_ref);
-                    println!("  {}: {}", i, name_cf.to_string());
+                    println!("  {i}: {name_cf}");
                 } else {
                     println!("  {} -> (no name)", i);
                 }
@@ -337,7 +337,7 @@ mod tests {
                 let name_ref = DCSDictionaryGetName(dict_ptr);
                 if !name_ref.is_null() {
                     let name_cf: CFString = TCFType::wrap_under_get_rule(name_ref);
-                    println!("Selected dictionary: {}", name_cf.to_string());
+                    println!("Selected dictionary: {name_cf}");
                 }
             }
         } else {
@@ -357,7 +357,7 @@ mod tests {
                 let name_ref = DCSDictionaryGetName(dict_ptr);
                 if !name_ref.is_null() {
                     let name_cf: CFString = TCFType::wrap_under_get_rule(name_ref);
-                    println!("Selected dictionary: {}", name_cf.to_string());
+                    println!("Selected dictionary: {name_cf}");
                 }
             }
         } else {
@@ -377,7 +377,7 @@ mod tests {
                 let name_ref = DCSDictionaryGetName(dict_ptr);
                 if !name_ref.is_null() {
                     let name_cf: CFString = TCFType::wrap_under_get_rule(name_ref);
-                    println!("Selected dictionary: {}", name_cf.to_string());
+                    println!("Selected dictionary: {name_cf}");
                 }
             }
         } else {
@@ -397,7 +397,7 @@ mod tests {
                 let name_ref = DCSDictionaryGetName(dict_ptr);
                 if !name_ref.is_null() {
                     let name_cf: CFString = TCFType::wrap_under_get_rule(name_ref);
-                    println!("Selected dictionary: {}", name_cf.to_string());
+                    println!("Selected dictionary: {name_cf}");
                 }
             }
         } else {
@@ -601,7 +601,7 @@ mod tests {
                 let name_ref = DCSDictionaryGetName(dict_ptr);
                 if !name_ref.is_null() {
                     let name_cf: CFString = TCFType::wrap_under_get_rule(name_ref);
-                    println!("Selected dictionary: {}", name_cf.to_string());
+                    println!("Selected dictionary: {name_cf}");
                 } else {
                     println!("Dictionary has no name");
                 }

@@ -11,8 +11,7 @@ use directories::ProjectDirs;
 use isolang::Language;
 use library::{
     lyrics::{
-        Lyrics, LyricsTranslation, cache::LyricsCache, lrclib,
-        translator::get_lyrics_translator,
+        Lyrics, LyricsTranslation, cache::LyricsCache, lrclib, translator::get_lyrics_translator,
     },
     translator::TranslationModel,
 };
@@ -44,6 +43,12 @@ struct TranslationKey {
     track_id: String,
     tgt: Language,
     model: TranslationModel,
+}
+
+impl Default for LyricsState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl LyricsState {
@@ -158,7 +163,11 @@ pub async fn get_lyrics(
     }
 
     // Disk cache: skip the LRClib round-trip on songs we've fetched before.
-    let cache = state.lyrics_state.lyrics_cache().await.map_err(|e| e.to_string())?;
+    let cache = state
+        .lyrics_state
+        .lyrics_cache()
+        .await
+        .map_err(|e| e.to_string())?;
     if let Some(cached) = cache.get_raw(&track_id).await {
         state
             .lyrics_state
@@ -210,7 +219,11 @@ pub async fn translate_lyrics(
     };
 
     // Cache hit → emit done immediately and return new request id.
-    let cache = state.lyrics_state.lyrics_cache().await.map_err(|e| e.to_string())?;
+    let cache = state
+        .lyrics_state
+        .lyrics_cache()
+        .await
+        .map_err(|e| e.to_string())?;
     if let Some(cached) = cache.get(&track_id, &tgt, model).await {
         let request_id = state
             .lyrics_state
@@ -324,7 +337,6 @@ pub async fn translate_lyrics(
         Ok(request_id)
     }
 }
-
 
 async fn run_translation(
     key: &TranslationKey,

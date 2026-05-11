@@ -318,11 +318,7 @@ impl LibraryView {
         .await
     }
 
-    pub async fn move_book(
-        &self,
-        book_id: Uuid,
-        new_path: Vec<String>,
-    ) -> anyhow::Result<()> {
+    pub async fn move_book(&self, book_id: Uuid, new_path: Vec<String>) -> anyhow::Result<()> {
         let book = self.library.get_book(&book_id).await?;
         {
             let mut book = book.lock().await;
@@ -333,10 +329,7 @@ impl LibraryView {
         Ok(())
     }
 
-    pub async fn delete_book(
-        &self,
-        book_id: Uuid,
-    ) -> anyhow::Result<()> {
+    pub async fn delete_book(&self, book_id: Uuid) -> anyhow::Result<()> {
         self.library.delete_book(&book_id).await?;
         self.app.emit("library_updated", ())?;
         Ok(())
@@ -681,9 +674,13 @@ fn translation_to_html(
                     .map(|ct| sanitize_translation_text(ct.translation.as_ref()))
                     .filter(|t| !t.is_empty())
                     .map(|t| {
-                        encode(t.as_bytes(), &EncodeType::Named, &CharacterSet::SpecialChars)
-                            .to_string()
-                            .unwrap_or("&lt;err&gt;".to_owned())
+                        encode(
+                            t.as_bytes(),
+                            &EncodeType::Named,
+                            &CharacterSet::SpecialChars,
+                        )
+                        .to_string()
+                        .unwrap_or("&lt;err&gt;".to_owned())
                     })
                     .map(|encoded| format!(" data-translation=\"{}\"", encoded))
                     .unwrap_or_default();
@@ -704,6 +701,82 @@ fn translation_to_html(
     }
 
     Ok(result.join(""))
+}
+
+fn sanitize_translation_text(value: &str) -> String {
+    value
+        .split_whitespace()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Optimized check for levenshtein_distance(s1, s2) < 2.
+/// This is faster than computing the full distance for this specific threshold.
+fn levenshtein_distance_lt_2(str1: &str, str2: &str) -> bool {
+    if str1 == str2 {
+        return true;
+    }
+
+    let n = str1.chars().count();
+    let m = str2.chars().count();
+
+    // If length difference >= 2, distance must be >= 2
+    if n.abs_diff(m) >= 2 {
+        return false;
+    }
+
+    // For distance < 2, we only need to check for 0 or 1 edits
+    // Distance 0: already handled by equality check above
+    // Distance 1: strings differ by exactly one insertion, deletion, or substitution
+
+    if n == 0 {
+        return m == 1;
+    }
+    if m == 0 {
+        return n == 1;
+    }
+
+    let a: Vec<char> = str1.chars().collect();
+    let b: Vec<char> = str2.chars().collect();
+
+    // Count mismatches - for distance < 2, we can have at most 1 edit
+    let mut i = 0;
+    let mut j = 0;
+    let mut edits = 0;
+
+    while i < n && j < m {
+        if a[i] != b[j] {
+            if edits == 1 {
+                return false; // Already had one edit, this is the second
+            }
+            edits += 1;
+
+            // Determine if this is insertion, deletion, or substitution
+            if n > m && i + 1 < n && a[i + 1] == b[j] {
+                // Deletion from a (skip a[i])
+                i += 1;
+            } else if m > n && j + 1 < m && a[i] == b[j + 1] {
+                // Insertion into a (skip b[j])
+                j += 1;
+            } else {
+                // Substitution (advance both)
+                i += 1;
+                j += 1;
+            }
+        } else {
+            i += 1;
+            j += 1;
+        }
+    }
+
+    // If we've consumed all chars from both, check edit count
+    // If one string has remaining chars, that's another edit
+    if i < n || j < m {
+        edits += 1;
+    }
+
+    edits < 2
 }
 
 #[cfg(test)]
@@ -954,80 +1027,4 @@ mod tests {
 
         assert_eq!(html, original);
     }
-}
-
-fn sanitize_translation_text(value: &str) -> String {
-    value
-        .split_whitespace()
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// Optimized check for levenshtein_distance(s1, s2) < 2.
-/// This is faster than computing the full distance for this specific threshold.
-fn levenshtein_distance_lt_2(str1: &str, str2: &str) -> bool {
-    if str1 == str2 {
-        return true;
-    }
-
-    let n = str1.chars().count();
-    let m = str2.chars().count();
-
-    // If length difference >= 2, distance must be >= 2
-    if n.abs_diff(m) >= 2 {
-        return false;
-    }
-
-    // For distance < 2, we only need to check for 0 or 1 edits
-    // Distance 0: already handled by equality check above
-    // Distance 1: strings differ by exactly one insertion, deletion, or substitution
-
-    if n == 0 {
-        return m == 1;
-    }
-    if m == 0 {
-        return n == 1;
-    }
-
-    let a: Vec<char> = str1.chars().collect();
-    let b: Vec<char> = str2.chars().collect();
-
-    // Count mismatches - for distance < 2, we can have at most 1 edit
-    let mut i = 0;
-    let mut j = 0;
-    let mut edits = 0;
-
-    while i < n && j < m {
-        if a[i] != b[j] {
-            if edits == 1 {
-                return false; // Already had one edit, this is the second
-            }
-            edits += 1;
-
-            // Determine if this is insertion, deletion, or substitution
-            if n > m && i + 1 < n && a[i + 1] == b[j] {
-                // Deletion from a (skip a[i])
-                i += 1;
-            } else if m > n && j + 1 < m && a[i] == b[j + 1] {
-                // Insertion into a (skip b[j])
-                j += 1;
-            } else {
-                // Substitution (advance both)
-                i += 1;
-                j += 1;
-            }
-        } else {
-            i += 1;
-            j += 1;
-        }
-    }
-
-    // If we've consumed all chars from both, check edit count
-    // If one string has remaining chars, that's another edit
-    if i < n || j < m {
-        edits += 1;
-    }
-
-    edits < 2
 }

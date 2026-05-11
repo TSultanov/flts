@@ -46,8 +46,7 @@ impl LibraryWatcher {
                 Ok(events) => {
                     let deduplicated_changes = events
                         .into_iter()
-                        .map(|ev| Self::classify_event(&ev))
-                        .filter_map(|ev| ev)
+                        .filter_map(|ev| Self::classify_event(&ev))
                         .unique();
 
                     for change in deduplicated_changes {

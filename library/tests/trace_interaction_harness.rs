@@ -8,12 +8,7 @@
 //!
 //! Run: `cargo test -p library trace_interaction_ -- --test-threads=1`
 
-use std::{
-    path::PathBuf,
-    str::FromStr,
-    sync::Arc,
-    time::Duration,
-};
+use std::{path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 
 use isolang::Language;
 use library::{
@@ -111,7 +106,8 @@ async fn trace_interaction_baseline() {
     let book_id = {
         let mut b = book.lock().await;
         b.book.push_chapter(Some("Intro"));
-        b.book.push_paragraph(0, "Hello world, this is a test.", None);
+        b.book
+            .push_paragraph(0, "Hello world, this is a test.", None);
         b.save().await.unwrap();
         b.book.id
     };
@@ -127,8 +123,7 @@ async fn trace_interaction_baseline() {
     span.end();
 
     // WorkerReadParagraph: get_or_create_translation + paragraph_view
-    let span = TraceSpan::begin("t1", "WorkerReadParagraph")
-        .field("task", "t1");
+    let span = TraceSpan::begin("t1", "WorkerReadParagraph").field("task", "t1");
     let translation = {
         let mut b = book_handle.lock().await;
         let tr = b.get_or_create_translation(&ru()).await;
@@ -138,14 +133,12 @@ async fn trace_interaction_baseline() {
     span.end();
 
     // WorkerCallAPI: simulated external call
-    let span = TraceSpan::begin("t1", "WorkerCallAPI")
-        .field("task", "t1");
+    let span = TraceSpan::begin("t1", "WorkerCallAPI").field("task", "t1");
     tokio::time::sleep(Duration::from_millis(2)).await;
     span.end();
 
     // WorkerStoreResult: add_paragraph_translation
-    let span = TraceSpan::begin("t1", "WorkerStoreResult")
-        .field("task", "t1");
+    let span = TraceSpan::begin("t1", "WorkerStoreResult").field("task", "t1");
     translation
         .lock()
         .await
@@ -169,8 +162,7 @@ async fn trace_interaction_baseline() {
     span.end();
 
     // WorkerComputeSnapshot: list_books
-    let span = TraceSpan::begin("t1", "WorkerComputeSnapshot")
-        .field("task", "t1");
+    let span = TraceSpan::begin("t1", "WorkerComputeSnapshot").field("task", "t1");
     let _books = library.list_books().await.unwrap();
     span.end();
 
@@ -190,8 +182,7 @@ async fn trace_interaction_baseline() {
     span.end();
 
     // TauriModify: create_book
-    let span = TraceSpan::begin("t2", "TauriModify")
-        .field("task", "t2");
+    let span = TraceSpan::begin("t2", "TauriModify").field("task", "t2");
     let _new_book_id = library
         .create_book_plain("Second Book", "Some text content.", &en())
         .await
@@ -199,8 +190,7 @@ async fn trace_interaction_baseline() {
     span.end();
 
     // TauriComputeSnapshot: list_books
-    let span = TraceSpan::begin("t2", "TauriComputeSnapshot")
-        .field("task", "t2");
+    let span = TraceSpan::begin("t2", "TauriComputeSnapshot").field("task", "t2");
     let _books = library.list_books().await.unwrap();
     span.end();
 
@@ -220,8 +210,7 @@ async fn trace_interaction_baseline() {
     span.end();
 
     // WatcherReload: simulate external file modification + reload
-    let span = TraceSpan::begin("t1", "WatcherReload")
-        .field("task", "t1");
+    let span = TraceSpan::begin("t1", "WatcherReload").field("task", "t1");
     {
         // Modify book file on disk to simulate sync conflict
         let book_dir = lib_root.join(book_id.to_string());
@@ -236,8 +225,7 @@ async fn trace_interaction_baseline() {
     span.end();
 
     // WatcherComputeSnapshot
-    let span = TraceSpan::begin("t1", "WatcherComputeSnapshot")
-        .field("task", "t1");
+    let span = TraceSpan::begin("t1", "WatcherComputeSnapshot").field("task", "t1");
     let _books = library.list_books().await.unwrap();
     span.end();
 
@@ -273,9 +261,7 @@ async fn trace_interaction_baseline() {
     span.end();
 
     // === AppClose ===
-    TraceSpan::begin("t1", "AppClose")
-        .field("task", "t1")
-        .end();
+    TraceSpan::begin("t1", "AppClose").field("task", "t1").end();
 }
 
 // ---------------------------------------------------------------------------
@@ -318,8 +304,7 @@ async fn trace_interaction_concurrent() {
         span.end();
 
         // WorkerReadParagraph
-        let span = TraceSpan::begin("t1", "WorkerReadParagraph")
-            .field("task", "t1");
+        let span = TraceSpan::begin("t1", "WorkerReadParagraph").field("task", "t1");
         let tr = {
             let mut b = bh.lock().await;
             let tr = b.get_or_create_translation(&ru()).await;
@@ -329,14 +314,12 @@ async fn trace_interaction_concurrent() {
         span.end();
 
         // WorkerCallAPI — long async call, other tasks interleave here
-        let span = TraceSpan::begin("t1", "WorkerCallAPI")
-            .field("task", "t1");
+        let span = TraceSpan::begin("t1", "WorkerCallAPI").field("task", "t1");
         tokio::time::sleep(Duration::from_millis(20)).await;
         span.end();
 
         // WorkerStoreResult
-        let span = TraceSpan::begin("t1", "WorkerStoreResult")
-            .field("task", "t1");
+        let span = TraceSpan::begin("t1", "WorkerStoreResult").field("task", "t1");
         tr.lock()
             .await
             .add_paragraph_translation(
@@ -356,8 +339,7 @@ async fn trace_interaction_concurrent() {
         span.end();
 
         // WorkerComputeSnapshot
-        let span = TraceSpan::begin("t1", "WorkerComputeSnapshot")
-            .field("task", "t1");
+        let span = TraceSpan::begin("t1", "WorkerComputeSnapshot").field("task", "t1");
         let _books = lib1.list_books().await.unwrap();
         span.end();
 
@@ -384,8 +366,7 @@ async fn trace_interaction_concurrent() {
         span.end();
 
         // TauriModify (import a book)
-        let span = TraceSpan::begin("t2", "TauriModify")
-            .field("task", "t2");
+        let span = TraceSpan::begin("t2", "TauriModify").field("task", "t2");
         let _new = lib2
             .create_book_plain("Imported Book", "Fresh content.", &en())
             .await
@@ -393,8 +374,7 @@ async fn trace_interaction_concurrent() {
         span.end();
 
         // TauriComputeSnapshot
-        let span = TraceSpan::begin("t2", "TauriComputeSnapshot")
-            .field("task", "t2");
+        let span = TraceSpan::begin("t2", "TauriComputeSnapshot").field("task", "t2");
         let _books = lib2.list_books().await.unwrap();
         span.end();
 
@@ -424,8 +404,7 @@ async fn trace_interaction_concurrent() {
         span.end();
 
         // WatcherReload (simulate file modification)
-        let span = TraceSpan::begin("t3", "WatcherReload")
-            .field("task", "t3");
+        let span = TraceSpan::begin("t3", "WatcherReload").field("task", "t3");
         // Touch the book file to simulate external sync
         let book_dir = lib_root3.join(bid3.to_string());
         let book_file = book_dir.join("book.dat");
@@ -437,8 +416,7 @@ async fn trace_interaction_concurrent() {
         span.end();
 
         // WatcherComputeSnapshot
-        let span = TraceSpan::begin("t3", "WatcherComputeSnapshot")
-            .field("task", "t3");
+        let span = TraceSpan::begin("t3", "WatcherComputeSnapshot").field("task", "t3");
         let _books = lib3.list_books().await.unwrap();
         span.end();
 

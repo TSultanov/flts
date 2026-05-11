@@ -47,7 +47,8 @@ async fn test_bug2_stale_snapshot_overwrites() {
 
     let _book_id = library
         .create_book_plain("F2 Test", "Original paragraph content", &en)
-        .await.unwrap();
+        .await
+        .unwrap();
 
     // Shared FIFO event queue mimicking Tauri's event dispatch
     let event_queue: Arc<tokio::sync::Mutex<Vec<(String, usize)>>> =
@@ -105,9 +106,12 @@ async fn test_bug2_stale_snapshot_overwrites() {
     }
 
     // BUG: Old handler regresses from v2 to v1
-    assert!(ui_version_old < max_delivered,
+    assert!(
+        ui_version_old < max_delivered,
         "Without versioning, UI regresses: shows v{} after having seen v{}",
-        ui_version_old, max_delivered);
+        ui_version_old,
+        max_delivered
+    );
 
     // Simulate the FIXED frontend's eventToReadable (version-aware):
     let mut ui_version_new = 0;
@@ -121,8 +125,11 @@ async fn test_bug2_stale_snapshot_overwrites() {
     }
 
     // FIX: Version-aware handler maintains monotonicity
-    assert!(ui_version_new >= max_delivered,
+    assert!(
+        ui_version_new >= max_delivered,
         "With versioning, EventMonotonicity holds: ui_version={} >= max_delivered={}",
-        ui_version_new, max_delivered);
+        ui_version_new,
+        max_delivered
+    );
     assert_eq!(ui_version_new, 2, "UI correctly shows latest version");
 }

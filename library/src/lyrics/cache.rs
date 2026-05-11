@@ -62,17 +62,17 @@ impl LyricsCache {
         f.flush().await?;
         drop(f);
         fs::rename(&tmp, &path).await?;
-        info!("LyricsCache: wrote {} ({} bytes)", path.display(), bytes.len());
+        info!(
+            "LyricsCache: wrote {} ({} bytes)",
+            path.display(),
+            bytes.len()
+        );
         Ok(())
     }
 
     fn path_for(&self, track_id: &str, target: &Language, model: usize) -> PathBuf {
         let safe_track = sanitize(track_id);
-        let filename = format!(
-            "{safe_track}__{}_{}.json",
-            target.to_639_3(),
-            model
-        );
+        let filename = format!("{safe_track}__{}_{}.json", target.to_639_3(), model);
         self.root.join(filename)
     }
 
@@ -93,10 +93,7 @@ impl LyricsCache {
             },
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
             Err(err) => {
-                warn!(
-                    "LyricsCache: raw read error at {}: {err}",
-                    path.display()
-                );
+                warn!("LyricsCache: raw read error at {}: {err}", path.display());
                 None
             }
         }
@@ -241,10 +238,7 @@ mod tests {
             .get("spotify:track:abc", &t.target_lang, t.model)
             .await
             .expect("translation hit");
-        let got_r = cache
-            .get_raw("spotify:track:abc")
-            .await
-            .expect("raw hit");
+        let got_r = cache.get_raw("spotify:track:abc").await.expect("raw hit");
         assert_eq!(got_t.lines[0].translation, "hello");
         assert_eq!(got_r.lines[0].text, "Hallo Welt");
     }

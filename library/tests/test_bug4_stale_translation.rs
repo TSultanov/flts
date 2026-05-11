@@ -77,7 +77,8 @@ async fn test_bug4_stale_translation_stored() {
 
     let book_id = library
         .create_book_plain("F4 Test Book", "The cat sat on the mat.", &en)
-        .await.unwrap();
+        .await
+        .unwrap();
 
     // Step 1: Worker reads paragraph (translation_queue.rs L244-254)
     // Lock acquired, paragraph read, lock released — this is the critical window.
@@ -97,9 +98,13 @@ async fn test_bug4_stale_translation_stored() {
     {
         let book_handle = library.get_book(&book_id).await.unwrap();
         let mut book = book_handle.lock().await;
-        book.book.push_paragraph(0, "A new paragraph appeared after sync.", None);
+        book.book
+            .push_paragraph(0, "A new paragraph appeared after sync.", None);
         book.save().await.unwrap();
-        println!("Step 2 - Book modified (new paragraph added, {} total)", book.book.paragraphs_count());
+        println!(
+            "Step 2 - Book modified (new paragraph added, {} total)",
+            book.book.paragraphs_count()
+        );
     }
 
     // Step 3: Worker stores translation based on STALE read.
@@ -109,18 +114,26 @@ async fn test_bug4_stale_translation_stored() {
         let book_handle = library.get_book(&book_id).await.unwrap();
         let mut book = book_handle.lock().await;
 
-        assert_eq!(book.book.paragraphs_count(), 2, "Book should have 2 paragraphs after reload");
+        assert_eq!(
+            book.book.paragraphs_count(),
+            2,
+            "Book should have 2 paragraphs after reload"
+        );
 
         let translation = book.get_or_create_translation(&ru).await;
         let mut t = translation.lock().await;
 
         let stale_translation = make_translation("Кот сидел на коврике.");
         t.add_paragraph_translation(0, &stale_translation, TranslationModel::Gemini25Flash)
-            .await.unwrap();
+            .await
+            .unwrap();
 
         let pv = t.paragraph_view(0).unwrap();
         let sentence = pv.sentences().next().unwrap();
-        println!("Step 3 - Translation stored: \"{}\"", sentence.full_translation);
+        println!(
+            "Step 3 - Translation stored: \"{}\"",
+            sentence.full_translation
+        );
     }
 
     // Verify: translation was accepted despite book modification
@@ -131,8 +144,10 @@ async fn test_bug4_stale_translation_stored() {
         let t = translation.lock().await;
         let pv = t.paragraph_view(0);
 
-        assert!(pv.is_some(),
-            "Translation was stored despite book modification — no version check");
+        assert!(
+            pv.is_some(),
+            "Translation was stored despite book modification — no version check"
+        );
 
         println!("\nBUG F4 REPRODUCED:");
         println!("  Worker read paragraph at Step 1: \"{}\"", original_text);
@@ -155,7 +170,8 @@ async fn test_bug4_fix_detects_changed_paragraph() {
 
     let book_id = library
         .create_book_plain("F4 Fix Test", "Original paragraph text.", &en)
-        .await.unwrap();
+        .await
+        .unwrap();
 
     // Simulate the worker's initial read (before translation API call)
     let snapshot_text = {
@@ -171,7 +187,8 @@ async fn test_bug4_fix_detects_changed_paragraph() {
         let book_handle = library.get_book(&book_id).await.unwrap();
         let mut book = book_handle.lock().await;
         // Replace book content by adding a paragraph that shifts meaning
-        book.book.push_paragraph(0, "Inserted paragraph changes context.", None);
+        book.book
+            .push_paragraph(0, "Inserted paragraph changes context.", None);
         book.save().await.unwrap();
         println!("Book modified during translation");
     }
@@ -188,13 +205,17 @@ async fn test_bug4_fix_detects_changed_paragraph() {
     // In this case paragraph 0 text is unchanged (push_paragraph appends),
     // but the book structure changed. Let's test the real detection case:
     // modify paragraph 0's content directly by creating a whole new book.
-    assert!(!paragraph_changed, "push_paragraph appends, so index 0 is unchanged");
+    assert!(
+        !paragraph_changed,
+        "push_paragraph appends, so index 0 is unchanged"
+    );
 
     // Now test with a book where paragraph content at the same index truly changes.
     // This simulates the scenario where sync replaces book.dat with different content.
     let book_id2 = library
         .create_book_plain("F4 Fix Test 2", "Version one text.", &en)
-        .await.unwrap();
+        .await
+        .unwrap();
 
     let snapshot_text2 = {
         let book_handle = library.get_book(&book_id2).await.unwrap();
@@ -209,8 +230,13 @@ async fn test_bug4_fix_detects_changed_paragraph() {
     // Here we use create_book_plain with the same structure but different text
     // to show the detection mechanism works.
     let book_id3 = library
-        .create_book_plain("F4 Fix Test 3", "Version two text — completely different.", &en)
-        .await.unwrap();
+        .create_book_plain(
+            "F4 Fix Test 3",
+            "Version two text — completely different.",
+            &en,
+        )
+        .await
+        .unwrap();
 
     // Simulate: worker took snapshot from book3's paragraph 0 as "Version two text..."
     // but let's pretend the snapshot was "Version one text." (the old content)
@@ -221,19 +247,30 @@ async fn test_bug4_fix_detects_changed_paragraph() {
         book.book.paragraph_view(0).original_text.to_string()
     };
 
-    assert_ne!(stale_snapshot, current_text,
-        "Fix correctly detects that paragraph content changed");
-    println!("\nFIX VERIFIED: stale snapshot \"{}\" != current \"{}\"", stale_snapshot, current_text);
+    assert_ne!(
+        stale_snapshot, current_text,
+        "Fix correctly detects that paragraph content changed"
+    );
+    println!(
+        "\nFIX VERIFIED: stale snapshot \"{}\" != current \"{}\"",
+        stale_snapshot, current_text
+    );
     println!("  The F4 fix in handle_request() would discard this translation.");
 
     // Also verify out-of-bounds detection
     let empty_book_id = library
         .create_book_plain("F4 Fix Test Empty", "", &en)
-        .await.unwrap();
+        .await
+        .unwrap();
     let book_handle = library.get_book(&empty_book_id).await.unwrap();
     let book = book_handle.lock().await;
     let para_count = book.book.paragraphs_count();
-    assert!(5 >= para_count,
-        "Paragraph index 5 is out of bounds ({para_count} paragraphs) — fix would reject");
-    println!("Out-of-bounds check: paragraph 5 >= count {} — fix would reject", para_count);
+    assert!(
+        5 >= para_count,
+        "Paragraph index 5 is out of bounds ({para_count} paragraphs) — fix would reject"
+    );
+    println!(
+        "Out-of-bounds check: paragraph 5 >= count {} — fix would reject",
+        para_count
+    );
 }

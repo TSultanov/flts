@@ -92,6 +92,7 @@ mod tests {
         }
     }
 
+    #[allow(clippy::type_complexity)]
     fn recording_sleeper() -> (
         Arc<Mutex<Vec<Duration>>>,
         impl Fn(Duration) -> Pin<Box<dyn Future<Output = ()> + Send>>,

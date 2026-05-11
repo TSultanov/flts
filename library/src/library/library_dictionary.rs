@@ -102,9 +102,8 @@ pub struct LibraryDictionary {
 impl TracedLock for LibraryDictionary {
     fn lock_name(&self) -> String {
         format!(
-            "dict:{}_{}", 
-            self.dictionary.source_language,
-            self.dictionary.target_language
+            "dict:{}_{}",
+            self.dictionary.source_language, self.dictionary.target_language
         )
     }
 }
@@ -199,16 +198,14 @@ impl LibraryDictionary {
 
             // Reconcile with on-disk changes
             if let Some(last) = self.last_modified {
-                if main_path.exists() {
-                    if let Some(saved_mod) = tokio::fs::metadata(&main_path).await?.modified().ok()
-                    {
-                        if saved_mod > last {
-                            // On-disk is newer; merge into memory
-                            let on_disk = Self::load(&main_path).await?;
-                            self.merge(on_disk);
-                            // do not update last_modified yet; we'll write a new version below
-                        }
-                    }
+                if main_path.exists()
+                    && let Ok(saved_mod) = tokio::fs::metadata(&main_path).await?.modified()
+                    && saved_mod > last
+                {
+                    // On-disk is newer; merge into memory
+                    let on_disk = Self::load(&main_path).await?;
+                    self.merge(on_disk);
+                    // do not update last_modified yet; we'll write a new version below
                 }
             } else if main_path.exists() {
                 // Unknown last_modified (newly created object) but file already exists -> merge
@@ -242,6 +239,7 @@ impl LibraryDictionary {
 
 pub struct DictionaryCache {
     library_root: PathBuf,
+    #[allow(clippy::type_complexity)]
     cache: RwLock<HashMap<(Language, Language), Arc<TracedMutex<LibraryDictionary>>>>,
 }
 
@@ -276,13 +274,14 @@ impl DictionaryCache {
                 continue;
             }
 
-            if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
-                if filename.starts_with("dictionary_") && filename.ends_with(".dat") {
-                    let content = tokio::fs::read(&path).await?;
-                    let mut cursor = std::io::Cursor::new(content);
-                    let metadata = DictionaryMetadata::read_metadata(&mut cursor)?;
-                    all_dictionaries.push((path, metadata));
-                }
+            if let Some(filename) = path.file_name().and_then(|n| n.to_str())
+                && filename.starts_with("dictionary_")
+                && filename.ends_with(".dat")
+            {
+                let content = tokio::fs::read(&path).await?;
+                let mut cursor = std::io::Cursor::new(content);
+                let metadata = DictionaryMetadata::read_metadata(&mut cursor)?;
+                all_dictionaries.push((path, metadata));
             }
         }
 
@@ -352,7 +351,7 @@ impl DictionaryCache {
         Ok(if let Some(cached_dict) = cached_dict {
             let mut cached_dict = cached_dict.lock().await;
 
-            if cached_dict.last_modified.map_or(true, |lm| lm < modified) {
+            if cached_dict.last_modified.is_none_or(|lm| lm < modified) {
                 cached_dict.save().await?;
                 true
             } else {

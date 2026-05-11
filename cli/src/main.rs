@@ -197,7 +197,7 @@ async fn run_saver(library: Arc<Library>, book_id: Uuid, rx: flume::Receiver<()>
     let mut last_save = Instant::now() - Duration::from_secs(1);
     let mut pending = false;
 
-    while let Ok(_) = rx.recv_async().await {
+    while rx.recv_async().await.is_ok() {
         pending = true;
         let now = Instant::now();
         if now.duration_since(last_save) >= Duration::from_secs(1) {
@@ -209,10 +209,8 @@ async fn run_saver(library: Arc<Library>, book_id: Uuid, rx: flume::Receiver<()>
         }
     }
 
-    if pending {
-        if let Err(err) = save_book(&library, book_id).await {
-            eprintln!("Final save error: {err}");
-        }
+    if pending && let Err(err) = save_book(&library, book_id).await {
+        eprintln!("Final save error: {err}");
     }
 }
 

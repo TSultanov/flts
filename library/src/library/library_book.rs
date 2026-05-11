@@ -10,12 +10,12 @@ use log::info;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 use log::warn;
 
+use crate::tla_trace_mutex::{TracedLock, TracedMutex};
 use ahash::AHashSet;
 use isolang::Language;
 use serde::{Deserialize, Serialize};
 use serde_json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use crate::tla_trace_mutex::{TracedLock, TracedMutex};
 use uuid::Uuid;
 
 use crate::{
@@ -75,7 +75,11 @@ impl TracedLock for LibraryBook {
 
 impl TracedLock for LibraryTranslation {
     fn lock_name(&self) -> String {
-        format!("trans:{}_{}", self.source_language.to_639_3(), self.target_language.to_639_3())
+        format!(
+            "trans:{}_{}",
+            self.source_language.to_639_3(),
+            self.target_language.to_639_3()
+        )
     }
 }
 
@@ -202,14 +206,14 @@ async fn reading_state_files(path: &Path) -> anyhow::Result<Vec<(PathBuf, System
     let mut read_dir = tokio::fs::read_dir(path).await?;
     while let Some(entry) = read_dir.next_entry().await? {
         let path = entry.path();
-        if path.is_file() {
-            if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
-                if filename.starts_with("state") && filename.ends_with(".json") {
-                    let metadata = entry.metadata().await?;
-                    let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-                    files.push((path, modified));
-                }
-            }
+        if path.is_file()
+            && let Some(filename) = path.file_name().and_then(|n| n.to_str())
+            && filename.starts_with("state")
+            && filename.ends_with(".json")
+        {
+            let metadata = entry.metadata().await?;
+            let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            files.push((path, modified));
         }
     }
     Ok(files)
@@ -252,8 +256,15 @@ async fn resolve_reading_state_file(path: &Path) -> anyhow::Result<Option<(PathB
     }
 
     if latest_path.file_name().unwrap() != canonical_name || had_multiple_candidates {
-        tla_trace::emit_book_event(path, "ResolveReadingStateFile", None, "idle", "idle", "idle")
-            .await?;
+        tla_trace::emit_book_event(
+            path,
+            "ResolveReadingStateFile",
+            None,
+            "idle",
+            "idle",
+            "idle",
+        )
+        .await?;
     }
 
     Ok(Some((canonical_path, effective_modified)))
@@ -523,7 +534,7 @@ impl LibraryBook {
     }
 
     pub async fn reload_book(&mut self, modified: SystemTime) -> anyhow::Result<bool> {
-        Ok(if self.last_modified.map_or(true, |lm| lm < modified) {
+        Ok(if self.last_modified.is_none_or(|lm| lm < modified) {
             self.save().await?;
             true
         } else {
@@ -543,7 +554,7 @@ impl LibraryBook {
             let t = translation.lock().await;
             if t.source_language == from
                 && t.target_language == to
-                && t.last_modified.map_or(true, |lm| lm < modified)
+                && t.last_modified.is_none_or(|lm| lm < modified)
             {
                 needs_save = true;
             }
@@ -706,46 +717,39 @@ impl LibraryBook {
                 book.last_modified = saved_book.last_modified;
             }
 
-                let mut file = tokio::fs::File::create(&book_path_temp).await?;
-                let mut buffer = Vec::new();
-                book.book.serialize(&mut buffer)?;
-                file.write_all(&buffer).await?;
+            let mut file = tokio::fs::File::create(&book_path_temp).await?;
+            let mut buffer = Vec::new();
+            book.book.serialize(&mut buffer)?;
+            file.write_all(&buffer).await?;
 
-                tla_trace::emit_book_event(
-                    &book.path,
-                    "SaveBookBegin",
-                    None,
-                    "ready",
-                    "idle",
-                    "idle",
-                )
+            tla_trace::emit_book_event(&book.path, "SaveBookBegin", None, "ready", "idle", "idle")
                 .await?;
 
-                if (if tokio::fs::try_exists(&book_path).await? {
-                    tokio::fs::metadata(&book_path).await?.modified().ok()
+            if (if tokio::fs::try_exists(&book_path).await? {
+                tokio::fs::metadata(&book_path).await?.modified().ok()
             } else {
                 None
             }) == book_path_modified_pre_save
                 || book_path_modified_pre_save.is_none()
-                {
-                    if tokio::fs::try_exists(&book_path).await? {
-                        tokio::fs::remove_file(&book_path).await?;
-                    }
-                    tokio::fs::rename(&book_path_temp, &book_path).await?;
-
-                    book.last_modified = tokio::fs::metadata(&book_path).await?.modified().ok();
-                    tla_trace::emit_book_event(
-                        &book.path,
-                        "SaveBookFinish",
-                        None,
-                        "idle",
-                        "idle",
-                        "idle",
-                    )
-                    .await?;
-                    break;
+            {
+                if tokio::fs::try_exists(&book_path).await? {
+                    tokio::fs::remove_file(&book_path).await?;
                 }
-                // Attempt to merge and save again otherwise
+                tokio::fs::rename(&book_path_temp, &book_path).await?;
+
+                book.last_modified = tokio::fs::metadata(&book_path).await?.modified().ok();
+                tla_trace::emit_book_event(
+                    &book.path,
+                    "SaveBookFinish",
+                    None,
+                    "idle",
+                    "idle",
+                    "idle",
+                )
+                .await?;
+                break;
+            }
+            // Attempt to merge and save again otherwise
         }
 
         let all_book_translations = LibraryBookMetadata::load(&book.path).await?;
@@ -862,8 +866,8 @@ impl Library {
 mod library_book_tests {
     use std::{io::Write, str::FromStr, sync::Arc};
 
-    use isolang::Language;
     use crate::tla_trace_mutex::TracedMutex;
+    use isolang::Language;
 
     use crate::{
         book::{
@@ -1210,7 +1214,8 @@ mod library_book_tests {
             super::LibraryTranslation::load(library.dictionaries_cache.clone(), &tr_path)
                 .await
                 .unwrap();
-        book.translations.push(Arc::new(TracedMutex::new(loaded_tr)));
+        book.translations
+            .push(Arc::new(TracedMutex::new(loaded_tr)));
 
         // In-memory change ts=2
         let mem_pt = translation_import::ParagraphTranslation {
@@ -1293,7 +1298,7 @@ mod library_book_tests {
         }
 
         // Save should merge: latest ts=3 -> ts=2 -> ts=1
-        let _merged = book.save().await.unwrap();
+        book.save().await.unwrap();
         let tf = std::fs::File::open(&tr_path).unwrap();
         let mut reader = std::io::BufReader::new(tf);
         let merged_tr = Translation::deserialize(&mut reader).unwrap();

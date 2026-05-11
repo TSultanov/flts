@@ -213,28 +213,33 @@ async fn capture_state(
     translation_save_stage: &'static str,
     state_op_kind: &'static str,
 ) -> anyhow::Result<TraceState> {
-    let (book_main_m_time, book_conflict_count, state_main_reading, state_main_folder, state_conflict_count) =
-        if let Some(book_dir) = book_dir {
-            let book_main_m_time = file_mtime_millis(&book_dir.join("book.dat")).await?;
-            let book_conflict_count = count_matching_files(book_dir, |name| {
-                name.starts_with("book") && name.ends_with(".dat") && name != "book.dat"
-            })
-            .await?;
-            let (state_main_reading, state_main_folder) = read_canonical_state(book_dir).await?;
-            let state_conflict_count = count_matching_files(book_dir, |name| {
-                name.starts_with("state") && name.ends_with(".json") && name != "state.json"
-            })
-            .await?;
-            (
-                book_main_m_time,
-                book_conflict_count,
-                state_main_reading,
-                state_main_folder,
-                state_conflict_count,
-            )
-        } else {
-            (0, 0, "nil".to_string(), "nil".to_string(), 0)
-        };
+    let (
+        book_main_m_time,
+        book_conflict_count,
+        state_main_reading,
+        state_main_folder,
+        state_conflict_count,
+    ) = if let Some(book_dir) = book_dir {
+        let book_main_m_time = file_mtime_millis(&book_dir.join("book.dat")).await?;
+        let book_conflict_count = count_matching_files(book_dir, |name| {
+            name.starts_with("book") && name.ends_with(".dat") && name != "book.dat"
+        })
+        .await?;
+        let (state_main_reading, state_main_folder) = read_canonical_state(book_dir).await?;
+        let state_conflict_count = count_matching_files(book_dir, |name| {
+            name.starts_with("state") && name.ends_with(".json") && name != "state.json"
+        })
+        .await?;
+        (
+            book_main_m_time,
+            book_conflict_count,
+            state_main_reading,
+            state_main_folder,
+            state_conflict_count,
+        )
+    } else {
+        (0, 0, "nil".to_string(), "nil".to_string(), 0)
+    };
 
     let (translation_main_m_time, translation_version_count, translation_conflict_count) =
         if let Some(book_dir) = book_dir {
@@ -246,7 +251,9 @@ async fn capture_state(
             if let Some(translation_path) = translation_path {
                 let translation_main_m_time = file_mtime_millis(&translation_path).await?;
                 let translation_conflict_count = count_matching_files(book_dir, |name| {
-                    name.starts_with("translation_") && name.ends_with(".dat") && !is_canonical_translation_filename(name)
+                    name.starts_with("translation_")
+                        && name.ends_with(".dat")
+                        && !is_canonical_translation_filename(name)
                 })
                 .await?;
                 let translation_version_count = if tokio::fs::try_exists(&translation_path).await? {
@@ -266,12 +273,13 @@ async fn capture_state(
             (0, 0, 0)
         };
 
-    let dictionary_entry_count = if let Some(dictionary_path) = canonical_dictionary_path(library_root).await? {
-        let dictionary = load_dictionary(&dictionary_path).await?;
-        dictionary.translation_pairs_count()
-    } else {
-        0
-    };
+    let dictionary_entry_count =
+        if let Some(dictionary_path) = canonical_dictionary_path(library_root).await? {
+            let dictionary = load_dictionary(&dictionary_path).await?;
+            dictionary.translation_pairs_count()
+        } else {
+            0
+        };
 
     Ok(TraceState {
         book_main_m_time,
@@ -317,10 +325,10 @@ where
         if !path.is_file() {
             continue;
         }
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if predicate(name) {
-                count += 1;
-            }
+        if let Some(name) = path.file_name().and_then(|n| n.to_str())
+            && predicate(name)
+        {
+            count += 1;
         }
     }
     Ok(count)
@@ -339,10 +347,10 @@ async fn first_canonical_translation_path(book_dir: &Path) -> anyhow::Result<Opt
         if !path.is_file() {
             continue;
         }
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if is_canonical_translation_filename(name) {
-                candidates.push(path);
-            }
+        if let Some(name) = path.file_name().and_then(|n| n.to_str())
+            && is_canonical_translation_filename(name)
+        {
+            candidates.push(path);
         }
     }
     candidates.sort();
@@ -362,10 +370,10 @@ async fn canonical_dictionary_path(library_root: &Path) -> anyhow::Result<Option
         if !path.is_file() {
             continue;
         }
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if is_canonical_dictionary_filename(name) {
-                candidates.push(path);
-            }
+        if let Some(name) = path.file_name().and_then(|n| n.to_str())
+            && is_canonical_dictionary_filename(name)
+        {
+            candidates.push(path);
         }
     }
     candidates.sort();

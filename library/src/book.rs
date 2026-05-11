@@ -1,3 +1,5 @@
+#![allow(clippy::module_inception)]
+
 pub mod book;
 pub mod book_metadata;
 pub mod serialization;

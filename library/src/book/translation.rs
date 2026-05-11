@@ -15,6 +15,7 @@ use crate::{
     dictionary::Dictionary,
     translator::TranslationModel,
 };
+use std::io::{self, Write};
 use std::{
     borrow::Cow,
     fmt::Display,
@@ -22,7 +23,6 @@ use std::{
     iter,
     time::Instant,
 };
-use std::io::{self, Write};
 
 use super::soa_helpers::*;
 
@@ -398,7 +398,10 @@ impl Translation {
         true
     }
 
-    fn paragraph_content_matches(a: &ParagraphTranslationView, b: &ParagraphTranslationView) -> bool {
+    fn paragraph_content_matches(
+        a: &ParagraphTranslationView,
+        b: &ParagraphTranslationView,
+    ) -> bool {
         if a.sentence_count() != b.sentence_count() {
             return false;
         }
@@ -465,8 +468,11 @@ impl Translation {
                 }
 
                 for (ts, translation) in versions {
-                    merged_translation
-                        .add_paragraph_translation_from_view(paragraph_idx, &translation, ts);
+                    merged_translation.add_paragraph_translation_from_view(
+                        paragraph_idx,
+                        &translation,
+                        ts,
+                    );
                     for word_idx in &other_visible_words {
                         merged_translation.mark_word_visible(paragraph_idx, *word_idx);
                     }
@@ -484,7 +490,11 @@ impl Translation {
                 }
                 versions.sort_by_key(|(ts, _)| *ts);
                 for (_, v) in versions {
-                    merged_translation.add_paragraph_translation_from_view(paragraph_idx, &v, v.timestamp);
+                    merged_translation.add_paragraph_translation_from_view(
+                        paragraph_idx,
+                        &v,
+                        v.timestamp,
+                    );
                 }
             } else if self.paragraph_view(paragraph_idx).is_none()
                 && let Some(other_paragraph) = other.paragraph_view(paragraph_idx)
@@ -499,7 +509,11 @@ impl Translation {
                 }
                 versions.sort_by_key(|(ts, _)| *ts);
                 for (_, v) in versions {
-                    merged_translation.add_paragraph_translation_from_view(paragraph_idx, &v, v.timestamp);
+                    merged_translation.add_paragraph_translation_from_view(
+                        paragraph_idx,
+                        &v,
+                        v.timestamp,
+                    );
                 }
             }
         }
@@ -1659,7 +1673,7 @@ mod tests {
         let word_view_0 = sentence_view.word_view(0);
         assert_eq!(word_view_0.original, "Hello");
         assert_eq!(word_view_0.note, "A common greeting");
-        assert_eq!(word_view_0.is_punctuation, false);
+        assert!(!word_view_0.is_punctuation);
         assert_eq!(word_view_0.grammar.original_initial_form, "hello");
         assert_eq!(word_view_0.grammar.target_initial_form, "привет");
         assert_eq!(word_view_0.grammar.part_of_speech, "interjection");

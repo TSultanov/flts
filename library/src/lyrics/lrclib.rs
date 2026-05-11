@@ -83,10 +83,10 @@ async fn fetch_once(
         ("artist_name", artist.to_string()),
         ("track_name", title.to_string()),
     ];
-    if let Some(album) = album {
-        if !album.is_empty() {
-            query.push(("album_name", album.to_string()));
-        }
+    if let Some(album) = album
+        && !album.is_empty()
+    {
+        query.push(("album_name", album.to_string()));
     }
     if let Some(duration_s) = duration_s {
         query.push(("duration", duration_s.to_string()));
@@ -156,18 +156,14 @@ fn parse_lrc(raw: &str) -> Vec<LyricsLine> {
 
             let mm: u32 = cap[1].parse().unwrap_or(0);
             let ss: u32 = cap[2].parse().unwrap_or(0);
-            let frac = cap
-                .get(3)
-                .map(|f| f.as_str())
-                .unwrap_or("0");
+            let frac = cap.get(3).map(|f| f.as_str()).unwrap_or("0");
             // Normalize fractional seconds: ".5" → 500 ms, ".05" → 50 ms, ".005" → 5 ms.
             let frac_ms: u32 = match frac.len() {
                 1 => frac.parse::<u32>().unwrap_or(0) * 100,
                 2 => frac.parse::<u32>().unwrap_or(0) * 10,
                 _ => {
                     let digits: String = frac.chars().take(3).collect();
-                    digits.parse::<u32>().unwrap_or(0)
-                        * 10u32.pow((3 - digits.len() as u32).max(0))
+                    digits.parse::<u32>().unwrap_or(0) * 10u32.pow(3 - digits.len() as u32)
                 }
             };
             times.push(mm * 60_000 + ss * 1_000 + frac_ms);
@@ -176,7 +172,10 @@ fn parse_lrc(raw: &str) -> Vec<LyricsLine> {
         let text = raw_line[end_of_tags..].trim().to_string();
 
         if times.is_empty() {
-            out.push(LyricsLine { time_ms: None, text });
+            out.push(LyricsLine {
+                time_ms: None,
+                text,
+            });
         } else {
             for t in times {
                 out.push(LyricsLine {
@@ -238,8 +237,16 @@ mod tests {
     fn parse_lrc_metadata_keeps_line_without_time() {
         let lines = parse_lrc("[ar:Artist]\n[00:01.00]Hello");
         assert_eq!(lines.len(), 2);
-        assert!(lines.iter().any(|l| l.text == "[ar:Artist]" && l.time_ms.is_none()));
-        assert!(lines.iter().any(|l| l.text == "Hello" && l.time_ms == Some(1_000)));
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.text == "[ar:Artist]" && l.time_ms.is_none())
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.text == "Hello" && l.time_ms == Some(1_000))
+        );
     }
 
     #[test]

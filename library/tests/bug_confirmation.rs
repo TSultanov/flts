@@ -254,10 +254,8 @@ async fn repro_translation_same_timestamp_conflict_collapses_distinct_version() 
         target_language.to_639_3()
     ));
 
-    let mut conflict_translation = Translation::create(
-        source_language.to_639_3(),
-        target_language.to_639_3(),
-    );
+    let mut conflict_translation =
+        Translation::create(source_language.to_639_3(), target_language.to_639_3());
     conflict_translation.id = main_translation.id;
     conflict_translation.add_paragraph_translation(
         0,

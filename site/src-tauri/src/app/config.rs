@@ -92,7 +92,14 @@ pub fn get_languages() -> Vec<Language> {
             name: l.to_name(),
             local_name: l.to_autonym(),
         })
-        .filter(|l| l.id == "rus" || l.id == "eng" || l.id == "kat" || l.id == "deu" || l.id == "zho" || l.id == "spa")
+        .filter(|l| {
+            l.id == "rus"
+                || l.id == "eng"
+                || l.id == "kat"
+                || l.id == "deu"
+                || l.id == "zho"
+                || l.id == "spa"
+        })
         .collect();
     languages.sort_by_key(|l| l.name);
     languages

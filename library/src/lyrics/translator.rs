@@ -54,7 +54,11 @@ fn is_transient_translation(err: &anyhow::Error) -> bool {
     }
 
     let msg_lower = format!("{err:#}").to_lowercase();
-    for sig in ["alignment error", "unknown model", "stream failed after retry"] {
+    for sig in [
+        "alignment error",
+        "unknown model",
+        "stream failed after retry",
+    ] {
         if msg_lower.contains(sig) {
             return false;
         }
@@ -238,9 +242,7 @@ fn user_message(lines: &[LyricsLine]) -> String {
 
 fn validate_alignment(expected: usize, got: usize) -> anyhow::Result<()> {
     if expected != got {
-        anyhow::bail!(
-            "Lyrics translation alignment error: expected {expected} lines, got {got}"
-        );
+        anyhow::bail!("Lyrics translation alignment error: expected {expected} lines, got {got}");
     }
     Ok(())
 }
@@ -486,28 +488,25 @@ impl LyricsTranslator for LyricsGeminiTranslator {
                 .map_err(|_| anyhow::anyhow!("Gemini lyrics request timed out"))??;
 
                 let mut accumulator = StreamChunkAccumulator::new("Gemini");
-                let full = timeout(
-                    total_stream_timeout(stream_budget_chars(lines)),
-                    async {
-                        loop {
-                            let next = timeout(TRANSLATION_STREAM_IDLE_TIMEOUT, stream.try_next())
-                                .await
-                                .map_err(|_| anyhow::anyhow!("Gemini lyrics stream idle timeout"))?;
-                            let should_continue = accumulator.handle_result(
-                                match next {
-                                    Ok(Some(response)) => Ok(Some(response.text())),
-                                    Ok(None) => Ok(None),
-                                    Err(err) => Err(err.into()),
-                                },
-                                progress,
-                            )?;
-                            if !should_continue {
-                                break;
-                            }
+                let full = timeout(total_stream_timeout(stream_budget_chars(lines)), async {
+                    loop {
+                        let next = timeout(TRANSLATION_STREAM_IDLE_TIMEOUT, stream.try_next())
+                            .await
+                            .map_err(|_| anyhow::anyhow!("Gemini lyrics stream idle timeout"))?;
+                        let should_continue = accumulator.handle_result(
+                            match next {
+                                Ok(Some(response)) => Ok(Some(response.text())),
+                                Ok(None) => Ok(None),
+                                Err(err) => Err(err.into()),
+                            },
+                            progress,
+                        )?;
+                        if !should_continue {
+                            break;
                         }
-                        accumulator.finish()
-                    },
-                )
+                    }
+                    accumulator.finish()
+                })
                 .await
                 .map_err(|_| anyhow::anyhow!("Gemini lyrics total stream timeout"))??;
 
@@ -527,7 +526,11 @@ mod tests {
     fn count_additional_properties(v: &Value) -> usize {
         match v {
             Value::Object(map) => {
-                let here = if map.contains_key("additionalProperties") { 1 } else { 0 };
+                let here = if map.contains_key("additionalProperties") {
+                    1
+                } else {
+                    0
+                };
                 here + map.values().map(count_additional_properties).sum::<usize>()
             }
             Value::Array(items) => items.iter().map(count_additional_properties).sum(),
@@ -596,4 +599,3 @@ mod tests {
         assert!(!is_transient_translation(&wrapped));
     }
 }
-

@@ -83,11 +83,11 @@ pub struct TranslationQueue {
 
 impl Drop for TranslationQueue {
     fn drop(&mut self) {
-        if let Ok(mut tasks) = self.tasks.try_lock() {
-            if let Some(tasks) = tasks.take() {
-                info!("TranslationQueue dropped — aborting background tasks");
-                tasks.abort();
-            }
+        if let Ok(mut tasks) = self.tasks.try_lock()
+            && let Some(tasks) = tasks.take()
+        {
+            info!("TranslationQueue dropped — aborting background tasks");
+            tasks.abort();
         }
     }
 }
@@ -250,6 +250,7 @@ impl TranslationQueue {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_request(
     library: Arc<Library>,
     cache: Arc<TranslationsCache>,
@@ -378,7 +379,11 @@ async fn handle_request(
                 book.book.paragraphs_count()
             ));
         }
-        let current_text = book.book.paragraph_view(request.paragraph_id).original_text.to_string();
+        let current_text = book
+            .book
+            .paragraph_view(request.paragraph_id)
+            .original_text
+            .to_string();
         if current_text != paragraph_text {
             return Err(anyhow::anyhow!(
                 "Paragraph {} content changed during translation — discarding stale translation",
@@ -438,12 +443,13 @@ async fn run_saver(
                     let app = app.clone();
                     let savers = savers.clone();
                     let status_tx = status_tx.clone();
-                    let msg = msg;
                     async move {
                         tokio::time::sleep(Duration::from_secs(1)).await;
                         save_and_emit(library.clone(), app.clone(), msg)
                             .await
-                            .unwrap_or_else(|err| warn!("Failed to autosave book {book_id}: {err}"));
+                            .unwrap_or_else(|err| {
+                                warn!("Failed to autosave book {book_id}: {err}")
+                            });
                         savers.lock().await.remove(&book_id);
                         let _ = status_tx.send(TranslationStatus {
                             request_id: msg.request_id,
@@ -501,10 +507,7 @@ async fn save_and_emit(
     Ok(())
 }
 
-fn emit_updates(
-    app: tauri::AppHandle,
-    msg: SaveNotify,
-) -> anyhow::Result<()> {
+fn emit_updates(app: tauri::AppHandle, msg: SaveNotify) -> anyhow::Result<()> {
     info!("Emitting \"book_updated\" for {}", msg.book_id);
     app.emit("book_updated", msg.book_id)?;
 

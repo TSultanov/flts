@@ -86,7 +86,10 @@ impl NowPlaying {
 pub async fn query_once() -> anyhow::Result<NowPlaying> {
     let output = time::timeout(
         OSASCRIPT_TIMEOUT,
-        Command::new("osascript").arg("-e").arg(SPOTIFY_QUERY).output(),
+        Command::new("osascript")
+            .arg("-e")
+            .arg(SPOTIFY_QUERY)
+            .output(),
     )
     .await
     .map_err(|_| anyhow::anyhow!("osascript timed out"))??;
@@ -162,6 +165,12 @@ pub struct SpotifyWatcher {
     tx: Arc<watch::Sender<Option<NowPlaying>>>,
 }
 
+impl Default for SpotifyWatcher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SpotifyWatcher {
     pub fn new() -> Self {
         let (tx, _rx) = watch::channel(None);
@@ -205,12 +214,11 @@ impl SpotifyWatcher {
                     sig
                 });
 
-                if significant {
-                    if let Some(payload) = tx.borrow().as_ref() {
-                        if let Err(err) = app.emit("spotify_state", payload) {
-                            warn!("Failed to emit spotify_state: {err}");
-                        }
-                    }
+                if significant
+                    && let Some(payload) = tx.borrow().as_ref()
+                    && let Err(err) = app.emit("spotify_state", payload)
+                {
+                    warn!("Failed to emit spotify_state: {err}");
                 }
             }
         });
@@ -246,9 +254,8 @@ mod tests {
 
     #[test]
     fn parse_playing() {
-        let np = parse_line(
-            "playing|spotify:track:abc|Song Name|Artist Name|Album Name|12345|234567",
-        );
+        let np =
+            parse_line("playing|spotify:track:abc|Song Name|Artist Name|Album Name|12345|234567");
         assert_eq!(np.state, PlayerState::Playing);
         assert_eq!(np.track_id.as_deref(), Some("spotify:track:abc"));
         assert_eq!(np.name.as_deref(), Some("Song Name"));
@@ -281,9 +288,7 @@ mod tests {
     fn parse_handles_pipe_in_title() {
         // splitn(_, 7) collapses the rest into duration. Verifies we don't accidentally
         // mis-parse when a Spotify track has '|' in its name (rare, but possible).
-        let np = parse_line(
-            "playing|id|some|weird|title|with|pipes",
-        );
+        let np = parse_line("playing|id|some|weird|title|with|pipes");
         // 7 fields produced, last is "pipes" which won't parse as u32 → duration None.
         assert_eq!(np.state, PlayerState::Playing);
         assert_eq!(np.duration_ms, None);
@@ -297,7 +302,10 @@ mod tests {
         a.position_ms = Some(1000);
         let mut c = a.clone();
         c.position_ms = Some(1400);
-        assert!(!is_significant_change(&a, &c), "natural advance not significant");
+        assert!(
+            !is_significant_change(&a, &c),
+            "natural advance not significant"
+        );
         c.position_ms = Some(20_000);
         assert!(is_significant_change(&a, &c), "big jump is significant");
     }
