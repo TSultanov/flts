@@ -267,18 +267,58 @@ pub async fn translate_lyrics(
         }
         .ok_or_else(|| "no API key configured for selected provider".to_string())?;
 
-        let app_clone = app.clone();
+        let app_for_progress = app.clone();
+        let app_for_result = app.clone();
         let state_arc: Arc<AppState> = state.inner().clone();
+        let progress: Box<dyn Fn(usize) + Send + Sync> = {
+            let throttle = Arc::new(std::sync::Mutex::new((Instant::now(), 0usize)));
+            Box::new(move |bytes: usize| {
+                let mut s = throttle.lock().unwrap();
+                if s.1 == bytes || s.0.elapsed() < PROGRESS_THROTTLE {
+                    return;
+                }
+                *s = (Instant::now(), bytes);
+                drop(s);
+                let _ = app_for_progress.emit(
+                    "lyrics_translation_progress",
+                    LyricsTranslationProgress { request_id, bytes },
+                );
+            })
+        };
+
         tokio::spawn(async move {
-            run_translation(
-                state_arc,
-                app_clone,
-                request_id,
-                key,
-                lyrics,
-                api_key,
-            )
-            .await;
+            let result = run_translation(&key, lyrics, api_key, cache, progress).await;
+            state_arc.lyrics_state.inflight.lock().await.remove(&key);
+            match result {
+                Ok(translation) => {
+                    info!(
+                        "Lyrics translation done: track={} lines={} req={}",
+                        key.track_id,
+                        translation.lines.len(),
+                        request_id
+                    );
+                    let _ = app_for_result.emit(
+                        "lyrics_translation_done",
+                        LyricsTranslationDone {
+                            request_id,
+                            translation,
+                        },
+                    );
+                }
+                Err(err) => {
+                    warn!(
+                        "Lyrics translation failed for track={}: {err}",
+                        key.track_id
+                    );
+                    let _ = app_for_result.emit(
+                        "lyrics_translation_error",
+                        LyricsTranslationError {
+                            request_id,
+                            error: err.to_string(),
+                        },
+                    );
+                }
+            }
         });
 
         Ok(request_id)
@@ -299,84 +339,30 @@ pub async fn get_lyrics_translation(
 }
 
 async fn run_translation(
-    state: Arc<AppState>,
-    app: AppHandle,
-    request_id: usize,
-    key: TranslationKey,
+    key: &TranslationKey,
     lyrics: Arc<Lyrics>,
     api_key: String,
-) {
-    let result = async {
-        let provider = key
-            .model
-            .provider()
-            .expect("provider validated by translate_lyrics");
-        let translator = get_lyrics_translator(provider, key.model, api_key, key.tgt)?;
+    cache: Arc<LyricsCache>,
+    progress: Box<dyn Fn(usize) + Send + Sync>,
+) -> anyhow::Result<LyricsTranslation> {
+    let provider = key
+        .model
+        .provider()
+        .expect("provider validated by translate_lyrics");
+    let translator = get_lyrics_translator(provider, key.model, api_key, key.tgt)?;
 
-        let progress_app = app.clone();
-        let progress_state = Arc::new(std::sync::Mutex::new((Instant::now(), 0usize)));
-        let callback: Box<dyn Fn(usize) + Send + Sync> = Box::new(move |bytes| {
-            let mut s = progress_state.lock().unwrap();
-            if s.1 == bytes {
-                return;
-            }
-            if s.0.elapsed() < PROGRESS_THROTTLE {
-                return;
-            }
-            *s = (Instant::now(), bytes);
-            drop(s);
-            let _ = progress_app.emit(
-                "lyrics_translation_progress",
-                LyricsTranslationProgress { request_id, bytes },
-            );
-        });
+    let lines = translator
+        .translate_song(&lyrics.lines, Some(progress))
+        .await?;
 
-        let lines = translator
-            .translate_song(&lyrics.lines, Some(callback))
-            .await?;
+    let translation = LyricsTranslation {
+        track_id: key.track_id.clone(),
+        target_lang: key.tgt,
+        model: key.model as usize,
+        lines,
+    };
 
-        let translation = LyricsTranslation {
-            track_id: key.track_id.clone(),
-            target_lang: key.tgt,
-            model: key.model as usize,
-            lines,
-        };
+    cache.put(&translation).await?;
 
-        // Persist to disk cache.
-        let cache = state.lyrics_state.lyrics_cache().await?;
-        cache.put(&translation).await?;
-
-        Ok::<_, anyhow::Error>(translation)
-    }
-    .await;
-
-    state.lyrics_state.inflight.lock().await.remove(&key);
-
-    match result {
-        Ok(translation) => {
-            info!(
-                "Lyrics translation done: track={} lines={} req={}",
-                key.track_id,
-                translation.lines.len(),
-                request_id
-            );
-            let _ = app.emit(
-                "lyrics_translation_done",
-                LyricsTranslationDone {
-                    request_id,
-                    translation,
-                },
-            );
-        }
-        Err(err) => {
-            warn!("Lyrics translation failed for track={}: {err}", key.track_id);
-            let _ = app.emit(
-                "lyrics_translation_error",
-                LyricsTranslationError {
-                    request_id,
-                    error: err.to_string(),
-                },
-            );
-        }
-    }
+    Ok(translation)
 }
