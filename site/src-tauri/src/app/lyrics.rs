@@ -152,21 +152,38 @@ pub async fn get_lyrics(
     album: Option<String>,
     duration_s: Option<u32>,
 ) -> Result<Option<Lyrics>, String> {
+    // In-memory cache: hottest path, session-local.
     if let Some(existing) = state.lyrics_state.lyrics.read().await.get(&track_id) {
         return Ok(Some((**existing).clone()));
+    }
+
+    // Disk cache: skip the LRClib round-trip on songs we've fetched before.
+    let cache = state.lyrics_state.lyrics_cache().await.map_err(|e| e.to_string())?;
+    if let Some(cached) = cache.get_raw(&track_id).await {
+        state
+            .lyrics_state
+            .lyrics
+            .write()
+            .await
+            .insert(track_id.clone(), Arc::new(cached.clone()));
+        return Ok(Some(cached));
     }
 
     let fetched = lrclib::fetch(&track_id, &artist, &title, album.as_deref(), duration_s)
         .await
         .map_err(|e| e.to_string())?;
 
-    if let Some(l) = fetched.clone() {
+    if let Some(l) = &fetched {
         state
             .lyrics_state
             .lyrics
             .write()
             .await
-            .insert(track_id.clone(), Arc::new(l));
+            .insert(track_id.clone(), Arc::new(l.clone()));
+        // Cache-write failure must not fail the user's request — log and continue.
+        if let Err(err) = cache.put_raw(l).await {
+            warn!("LyricsCache: failed to persist raw lyrics for {track_id}: {err}");
+        }
     }
     Ok(fetched)
 }

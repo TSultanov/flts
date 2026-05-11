@@ -4,9 +4,10 @@ use isolang::Language;
 use log::{info, warn};
 use tokio::{fs, io::AsyncWriteExt};
 
-use crate::lyrics::LyricsTranslation;
+use crate::lyrics::{Lyrics, LyricsTranslation};
 
 const CACHE_SUBDIR: &str = "lyrics";
+const RAW_SUBDIR: &str = "raw";
 
 /// Disk cache for translated lyrics, keyed by (track_id, source_lang, target_lang, model).
 ///
@@ -74,6 +75,59 @@ impl LyricsCache {
         );
         self.root.join(filename)
     }
+
+    /// Look up the raw (untranslated) lyrics for a track. Cache miss / corruption / I/O
+    /// errors all return `None` — the caller should fall back to a fresh fetch.
+    pub async fn get_raw(&self, track_id: &str) -> Option<Lyrics> {
+        let path = self.raw_path_for(track_id);
+        match fs::read(&path).await {
+            Ok(bytes) => match serde_json::from_slice::<Lyrics>(&bytes) {
+                Ok(v) => Some(v),
+                Err(err) => {
+                    warn!(
+                        "LyricsCache: corrupt raw entry at {} ({err}); ignoring",
+                        path.display()
+                    );
+                    None
+                }
+            },
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) => {
+                warn!(
+                    "LyricsCache: raw read error at {}: {err}",
+                    path.display()
+                );
+                None
+            }
+        }
+    }
+
+    /// Persist the raw lyrics for a track. Stored under `<root>/raw/<track>.json` so
+    /// it can't collide with translation entries that live directly under `<root>/`.
+    pub async fn put_raw(&self, lyrics: &Lyrics) -> anyhow::Result<()> {
+        let dir = self.root.join(RAW_SUBDIR);
+        fs::create_dir_all(&dir).await?;
+        let path = self.raw_path_for(&lyrics.track_id);
+        let bytes = serde_json::to_vec(lyrics)?;
+
+        let tmp = path.with_extension("json.tmp");
+        let mut f = fs::File::create(&tmp).await?;
+        f.write_all(&bytes).await?;
+        f.flush().await?;
+        drop(f);
+        fs::rename(&tmp, &path).await?;
+        info!(
+            "LyricsCache: wrote raw {} ({} bytes)",
+            path.display(),
+            bytes.len()
+        );
+        Ok(())
+    }
+
+    fn raw_path_for(&self, track_id: &str) -> PathBuf {
+        let safe = sanitize(track_id);
+        self.root.join(RAW_SUBDIR).join(format!("{safe}.json"))
+    }
 }
 
 fn sanitize(s: &str) -> String {
@@ -85,7 +139,7 @@ fn sanitize(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lyrics::{Gloss, LyricsLineTranslation};
+    use crate::lyrics::{Gloss, LyricsLine, LyricsLineTranslation};
     use crate::test_utils::TempDir;
 
     fn sample(track_id: &str) -> LyricsTranslation {
@@ -130,5 +184,68 @@ mod tests {
             )
             .await;
         assert!(got.is_none());
+    }
+
+    fn sample_raw(track_id: &str) -> Lyrics {
+        Lyrics {
+            track_id: track_id.to_string(),
+            synced: true,
+            lines: vec![
+                LyricsLine {
+                    time_ms: Some(1_000),
+                    text: "Hallo Welt".into(),
+                },
+                LyricsLine {
+                    time_ms: Some(2_500),
+                    text: "Wie geht's?".into(),
+                },
+            ],
+        }
+    }
+
+    #[tokio::test]
+    async fn raw_roundtrip() {
+        let dir = TempDir::new("flts_lyrics_cache_raw");
+        let cache = LyricsCache::new(&dir.path);
+        let raw = sample_raw("spotify:track:abc123");
+        cache.put_raw(&raw).await.unwrap();
+        let got = cache
+            .get_raw("spotify:track:abc123")
+            .await
+            .expect("raw cache hit");
+        assert!(got.synced);
+        assert_eq!(got.lines.len(), 2);
+        assert_eq!(got.lines[0].text, "Hallo Welt");
+        assert_eq!(got.lines[1].time_ms, Some(2_500));
+    }
+
+    #[tokio::test]
+    async fn raw_miss_returns_none() {
+        let dir = TempDir::new("flts_lyrics_cache_raw_miss");
+        let cache = LyricsCache::new(&dir.path);
+        assert!(cache.get_raw("spotify:track:nope").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn raw_and_translation_do_not_collide() {
+        // Translation files live at <root>/<track>__<lang>_<model>.json,
+        // raw files at <root>/raw/<track>.json — same track id must not overwrite either.
+        let dir = TempDir::new("flts_lyrics_cache_both");
+        let cache = LyricsCache::new(&dir.path);
+        let t = sample("spotify:track:abc");
+        let r = sample_raw("spotify:track:abc");
+        cache.put(&t).await.unwrap();
+        cache.put_raw(&r).await.unwrap();
+
+        let got_t = cache
+            .get("spotify:track:abc", &t.target_lang, t.model)
+            .await
+            .expect("translation hit");
+        let got_r = cache
+            .get_raw("spotify:track:abc")
+            .await
+            .expect("raw hit");
+        assert_eq!(got_t.lines[0].translation, "hello");
+        assert_eq!(got_r.lines[0].text, "Hallo Welt");
     }
 }
