@@ -10,8 +10,14 @@ export type Event<T> = {
 
 export type UnlistenFn = () => void;
 
-// Shared event handlers map (same as in tauri-api.ts)
-const eventHandlers = new Map<string, Set<EventCallback<unknown>>>();
+// Shared event handlers map. Hoisted onto `globalThis` because Vite's
+// optimizeDeps pre-bundles some Tauri plugins (e.g. `tauri-plugin-log`)
+// with their own resolved copy of `@tauri-apps/api/event`, bypassing
+// the alias for nested imports. Without sharing through globalThis,
+// each consumer would see a separate handlers Map, and emits from one
+// instance would never reach listeners registered in the other.
+const eventHandlers: Map<string, Set<EventCallback<unknown>>> =
+  ((globalThis as any).__tauriMockEventHandlers ??= new Map());
 
 /**
  * Listen to an event from the backend.

@@ -71,6 +71,31 @@ type BookReadingState = {
   paragraphId: number;
 };
 
+// ----- Lyrics mode types --------------------------------------------------
+
+type PlayerState = 'playing' | 'paused' | 'stopped' | 'notrunning';
+
+type NowPlaying = {
+  state: PlayerState;
+  trackId?: string;
+  name?: string;
+  artist?: string;
+  album?: string;
+  positionMs?: number;
+  durationMs?: number;
+};
+
+type LyricsLine = { time_ms: number | null; text: string };
+type Lyrics = { track_id: string; lines: LyricsLine[]; synced: boolean };
+type Gloss = { fragment: string; gloss: string; note: string };
+type LyricsLineTranslation = { translation: string; glosses: Gloss[] };
+type LyricsTranslation = {
+  track_id: string;
+  target_lang: string;
+  model: number;
+  lines: LyricsLineTranslation[];
+};
+
 // Mock state
 let mockLibrary: Map<UUID, MockBook> = new Map();
 let mockConfig: Config = {
@@ -85,14 +110,28 @@ let mockReadingStates: Map<UUID, BookReadingState> = new Map();
 let bookIdCounter = 0;
 let requestIdCounter = 0;
 
-// Event system for Tauri events
-const eventHandlers = new Map<string, Set<(event: { payload: unknown }) => void>>();
+// ----- Lyrics mode state --------------------------------------------------
 
+let mockNowPlaying: NowPlaying | null = null;
+let mockLyricsByTrack: Map<string, Lyrics | null> = new Map();
+let mockTranslationCache: Map<string, LyricsTranslation> = new Map();
+let mockTranslationResponses: Map<string, LyricsTranslation> = new Map();
+let mockTranslationErrors: Map<string, string> = new Map();
+let lyricsRequestIdCounter = 0;
+
+function translationKey(trackId: string, target: string, model: number): string {
+  return `${trackId}|${target}|${model}`;
+}
+
+// Dispatch a mock event through the shared `tauri-event.ts` bus so that the
+// app's `listen(...)` subscribers actually receive it. Without this, emits
+// from mock command handlers would land in a private map that the app never
+// touches — the test infra was previously two disconnected event buses.
 function emit(event: string, payload: unknown) {
-  const handlers = eventHandlers.get(event);
-  if (handlers) {
-    handlers.forEach(handler => handler({ payload }));
-  }
+  const dispatch = (window as any).__tauriEmit as
+    | ((e: string, p?: unknown) => void)
+    | undefined;
+  dispatch?.(event, payload);
 }
 
 // Reset state between tests
@@ -109,12 +148,47 @@ export function resetMockState() {
   mockReadingStates.clear();
   bookIdCounter = 0;
   requestIdCounter = 0;
-  eventHandlers.clear();
+  mockNowPlaying = null;
+  mockLyricsByTrack.clear();
+  mockTranslationCache.clear();
+  mockTranslationResponses.clear();
+  mockTranslationErrors.clear();
+  lyricsRequestIdCounter = 0;
 }
 
 // Expose reset function globally for tests
 if (typeof window !== 'undefined') {
   (window as any).__resetTauriMock = resetMockState;
+
+  // ----- Lyrics mode test helpers --------------------------------------
+  // Tests call these from `page.evaluate(...)` to set up backend state.
+  (window as any).__mockSpotifyState = (np: NowPlaying | null) => {
+    mockNowPlaying = np;
+    const dispatch = (window as any).__tauriEmit as
+      | ((e: string, p?: unknown) => void)
+      | undefined;
+    dispatch?.('spotify_state', np);
+  };
+  (window as any).__mockLyrics = (trackId: string, lyrics: Lyrics | null) => {
+    mockLyricsByTrack.set(trackId, lyrics);
+  };
+  (window as any).__mockTranslationCache = (t: LyricsTranslation) => {
+    mockTranslationCache.set(translationKey(t.track_id, t.target_lang, t.model), t);
+  };
+  (window as any).__mockTranslationResponse = (t: LyricsTranslation) => {
+    mockTranslationResponses.set(
+      translationKey(t.track_id, t.target_lang, t.model),
+      t,
+    );
+  };
+  (window as any).__mockTranslationError = (
+    trackId: string,
+    target: string,
+    model: number,
+    msg: string,
+  ) => {
+    mockTranslationErrors.set(translationKey(trackId, target, model), msg);
+  };
 }
 
 // Mock languages (subset for testing)
@@ -346,6 +420,61 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
       }
 
       return Promise.resolve(undefined as T);
+    }
+
+    // ----- Lyrics mode commands ----------------------------------------
+
+    case 'start_spotify_watcher':
+    case 'stop_spotify_watcher':
+      return Promise.resolve(undefined as T);
+
+    case 'get_now_playing':
+      return Promise.resolve((mockNowPlaying ?? null) as T);
+
+    case 'get_lyrics': {
+      const trackId = args?.trackId as string;
+      // `has` distinguishes "explicitly mocked as null/not-found" from
+      // "test forgot to register lyrics for this track".
+      const value = mockLyricsByTrack.has(trackId)
+        ? mockLyricsByTrack.get(trackId)!
+        : null;
+      return Promise.resolve(value as T);
+    }
+
+    case 'translate_lyrics': {
+      const trackId = args?.trackId as string;
+      const target = args?.targetLang as string;
+      const model = args?.model as number;
+      const key = translationKey(trackId, target, model);
+      const requestId = ++lyricsRequestIdCounter;
+
+      // Schedule the resolution AFTER the command's promise resolves so the
+      // frontend's `currentRequestId = await translateLyrics(...)` assignment
+      // races deterministically (event arrives second).
+      setTimeout(() => {
+        const errMsg = mockTranslationErrors.get(key);
+        if (errMsg) {
+          emit('lyrics_translation_error', { requestId, error: errMsg });
+          return;
+        }
+        const response = mockTranslationResponses.get(key);
+        if (response) {
+          emit('lyrics_translation_done', { requestId, translation: response });
+        }
+        // Otherwise stay in-flight indefinitely — useful for asserting the
+        // intermediate "Translating…" state.
+      }, 30);
+
+      return Promise.resolve(requestId as T);
+    }
+
+    case 'get_lyrics_translation': {
+      const trackId = args?.trackId as string;
+      const target = args?.targetLang as string;
+      const model = args?.model as number;
+      const key = translationKey(trackId, target, model);
+      const cached = mockTranslationCache.get(key) ?? null;
+      return Promise.resolve(cached as T);
     }
 
     default:
