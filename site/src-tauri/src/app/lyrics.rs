@@ -273,7 +273,7 @@ pub async fn translate_lyrics(
         let provider = model_enum
             .provider()
             .ok_or_else(|| "unknown model provider".to_string())?;
-        let cfg: Config = state.config.read().await.clone();
+        let cfg: Config = state.config.borrow().clone();
         let api_key = match provider {
             library::translator::TranslationProvider::Google => cfg.gemini_api_key,
             library::translator::TranslationProvider::Openai => cfg.openai_api_key,

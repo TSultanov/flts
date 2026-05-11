@@ -371,7 +371,7 @@ impl LibraryView {
 pub async fn list_books(
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<Vec<LibraryBookMetadataView>, String> {
-    let target_language_id = { state.config.read().await.target_language_id.clone() };
+    let target_language_id = { state.config.borrow().target_language_id.clone() };
     let target_language = Language::from_639_3(&target_language_id);
     let library = { state.library.read().await.clone() };
 
@@ -413,7 +413,7 @@ pub async fn get_book_chapter_paragraphs(
         return Ok(vec![]);
     };
 
-    let target_language_id = { state.config.read().await.target_language_id.clone() };
+    let target_language_id = { state.config.borrow().target_language_id.clone() };
     let Some(target_language) = Language::from_639_3(&target_language_id) else {
         return Ok(vec![]);
     };
@@ -438,7 +438,7 @@ pub async fn get_word_info(
         return Ok(None);
     };
 
-    let target_language_id = { state.config.read().await.target_language_id.clone() };
+    let target_language_id = { state.config.borrow().target_language_id.clone() };
     let Some(target_language) = Language::from_639_3(&target_language_id) else {
         return Ok(None);
     };
@@ -467,7 +467,7 @@ pub async fn get_paragraph_view(
         return Err("Library is not configured".into());
     };
 
-    let target_language_id = { state.config.read().await.target_language_id.clone() };
+    let target_language_id = { state.config.borrow().target_language_id.clone() };
     let Some(target_language) = Language::from_639_3(&target_language_id) else {
         return Err("Library is not configured".into());
     };
@@ -583,7 +583,7 @@ pub async fn mark_word_visible(
 ) -> Result<bool, String> {
     let library = { state.library.read().await.clone() }.ok_or("Library is not configured")?;
 
-    let target_language_id = { state.config.read().await.target_language_id.clone() };
+    let target_language_id = { state.config.borrow().target_language_id.clone() };
     let Some(target_language) = Language::from_639_3(&target_language_id) else {
         return Err("Library is not configured".into());
     };

@@ -20,7 +20,7 @@ use library::{
     translator::TranslationModel,
 };
 use log::{info, warn};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, watch};
 use uuid::Uuid;
 
 use tauri::Emitter;
@@ -71,7 +71,7 @@ impl Display for AppError {
 pub struct AppState {
     app: tauri::AppHandle,
     config_path: PathBuf,
-    config: RwLock<Config>,
+    config: watch::Sender<Config>,
     library: RwLock<Option<Arc<Library>>>,
     translation_queue: RwLock<Option<Arc<TranslationQueue>>>,
     watcher: Arc<Mutex<LibraryWatcher>>,
@@ -106,7 +106,7 @@ impl AppState {
         Ok(Self {
             app,
             config_path,
-            config: RwLock::new(config),
+            config: watch::channel(config).0,
             library: RwLock::new(None),
             translation_queue: RwLock::new(None),
             watcher,
@@ -147,7 +147,7 @@ impl AppState {
         info!("config = {:?}", config);
 
         config.save(&self.config_path)?;
-        *self.config.write().await = config;
+        self.config.send_replace(config);
         info!("Emitting \"config_updated\"");
         self.app.emit("config_updated", ())?;
         self.eval_config().await?;
@@ -155,7 +155,7 @@ impl AppState {
     }
 
     pub async fn eval_config(&self) -> anyhow::Result<()> {
-        let config = self.config.read().await.clone();
+        let config = self.config.borrow().clone();
         let library_path = config.library_path.clone();
 
         info!("library_path = {library_path:?}");
@@ -257,7 +257,7 @@ impl AppState {
                 to,
                 uuid,
             } => {
-                let target_language_id = { self.config.read().await.target_language_id.clone() };
+                let target_language_id = { self.config.borrow().target_language_id.clone() };
                 let target_language = Language::from_639_3(&target_language_id);
 
                 if target_language == Some(*to) {
@@ -290,7 +290,7 @@ impl AppState {
             return Ok(queue);
         }
 
-        let config = self.config.read().await.clone();
+        let config = self.config.borrow().clone();
         let cache = self.get_translations_cache().await?;
         let stats_cache = self.get_stats_cache().await?;
         let queue = TranslationQueue::init(library, cache, stats_cache, &config, self.app.clone())
@@ -418,7 +418,7 @@ pub async fn update_config(
 
 #[tauri::command]
 pub async fn get_config(state: tauri::State<'_, Arc<AppState>>) -> Result<Config, String> {
-    Ok(state.config.read().await.clone())
+    Ok(state.config.borrow().clone())
 }
 
 #[tauri::command]
