@@ -1,5 +1,6 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
+use async_openai::error::OpenAIError;
 use async_openai::types::chat::{
     ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
     ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs, ResponseFormat,
@@ -17,6 +18,7 @@ use tokio::time::timeout;
 
 use crate::{
     lyrics::{LyricsLine, LyricsLineTranslation},
+    retry::{RetryConfig, retry},
     translator::{
         ProgressCallback, StreamChunkAccumulator, TRANSLATION_REQUEST_TIMEOUT,
         TRANSLATION_STREAM_IDLE_TIMEOUT, TranslationErrors, TranslationModel, TranslationProvider,
@@ -28,6 +30,86 @@ use crate::{
 /// Used to compute `total_stream_timeout` budget when `input_len` is small (the LRC
 /// itself is short, but the response can be 3–5× larger thanks to translations + glosses).
 const RESPONSE_LENGTH_FACTOR: usize = 6;
+
+const TRANSLATION_RETRY: RetryConfig = RetryConfig {
+    max_attempts: 2,
+    base_delay: Duration::from_secs(2),
+    max_delay: Duration::from_secs(10),
+    jitter_frac: 0.3,
+};
+
+fn is_reqwest_transient(re: &reqwest::Error) -> bool {
+    re.is_timeout() || re.is_connect() || re.is_request()
+}
+
+/// Classifier for `retry()` around `translate_song`. Each attempt rebuilds the
+/// request and stream from scratch, so we need to know which errors are worth that.
+///
+/// Hybrid: structured downcasts where the provider crates expose typed errors,
+/// substring match for messages that originate from our own `map_err` calls
+/// (e.g. "OpenAI lyrics request timed out") or that arrive without preserved sources.
+fn is_transient_translation(err: &anyhow::Error) -> bool {
+    if err.downcast_ref::<serde_json::Error>().is_some() {
+        return false;
+    }
+
+    let msg_lower = format!("{err:#}").to_lowercase();
+    for sig in ["alignment error", "unknown model", "stream failed after retry"] {
+        if msg_lower.contains(sig) {
+            return false;
+        }
+    }
+
+    if let Some(oe) = err.downcast_ref::<OpenAIError>() {
+        return match oe {
+            OpenAIError::Reqwest(re) => is_reqwest_transient(re),
+            OpenAIError::StreamError(_) => true,
+            OpenAIError::ApiError(api) => {
+                let t = api.r#type.as_deref().unwrap_or("").to_lowercase();
+                t.contains("server_error")
+                    || t.contains("rate_limit")
+                    || t.contains("overloaded")
+                    || t.contains("timeout")
+            }
+            _ => false,
+        };
+    }
+
+    if let Some(ge) = err.downcast_ref::<gemini_rust::ClientError>() {
+        return match ge {
+            gemini_rust::ClientError::PerformRequest { source, .. } => is_reqwest_transient(source),
+            gemini_rust::ClientError::PerformRequestNew { source } => is_reqwest_transient(source),
+            gemini_rust::ClientError::DecodeResponse { source } => is_reqwest_transient(source),
+            gemini_rust::ClientError::BadPart { .. } => true,
+            gemini_rust::ClientError::BadResponse { code, .. } => {
+                *code == 408 || *code == 429 || (500..=599).contains(code)
+            }
+            gemini_rust::ClientError::OperationTimeout { .. } => true,
+            _ => false,
+        };
+    }
+
+    if let Some(re) = err.downcast_ref::<reqwest::Error>() {
+        return is_reqwest_transient(re);
+    }
+
+    const TRANSIENT_SIGS: &[&str] = &[
+        "timeout",
+        "timed out",
+        "connection",
+        "reset by peer",
+        "rate limit",
+        " 429",
+        " 500",
+        " 502",
+        " 503",
+        " 504",
+        " 529",
+        "stream idle timeout",
+        "total stream timeout",
+    ];
+    TRANSIENT_SIGS.iter().any(|s| msg_lower.contains(s))
+}
 
 #[derive(Debug, Deserialize)]
 struct LyricsResponse {
@@ -217,86 +299,97 @@ impl LyricsTranslator for LyricsOpenAITranslator {
         lines: &[LyricsLine],
         progress: Option<Box<ProgressCallback>>,
     ) -> anyhow::Result<Vec<LyricsLineTranslation>> {
-        let system = format!(
-            "{}\n\nReturn ONLY a single JSON object that matches the requested schema. Do not wrap it in markdown.",
-            system_prompt(self.to.to_name())
-        );
-        let user = user_message(lines);
+        // Re-borrow per attempt so the retry closure can be `FnMut` without consuming progress.
+        let progress = progress.as_deref();
 
-        let request = CreateChatCompletionRequestArgs::default()
-            .model(self.model_name.as_ref())
-            .messages([
-                ChatCompletionRequestMessage::System(
-                    ChatCompletionRequestSystemMessageArgs::default()
-                        .content(system)
-                        .build()?,
-                ),
-                ChatCompletionRequestMessage::User(
-                    ChatCompletionRequestUserMessageArgs::default()
-                        .content(user)
-                        .build()?,
-                ),
-            ])
-            .response_format(ResponseFormat::JsonSchema {
-                json_schema: ResponseFormatJsonSchema {
-                    description: Some("Per-line song lyrics translation".to_string()),
-                    name: "lyrics_translation".to_string(),
-                    schema: Some((*self.schema).clone()),
-                    strict: Some(true),
-                },
-            })
-            .stream(true)
-            .build()?;
+        retry(
+            TRANSLATION_RETRY,
+            is_transient_translation,
+            "OpenAI lyrics",
+            || async move {
+                let system = format!(
+                    "{}\n\nReturn ONLY a single JSON object that matches the requested schema. Do not wrap it in markdown.",
+                    system_prompt(self.to.to_name())
+                );
+                let user = user_message(lines);
 
-        info!(
-            "OpenAI lyrics: model={} to={} lines={}",
-            self.model_name,
-            self.to.to_639_3(),
-            lines.len()
-        );
-
-        let mut stream = timeout(
-            TRANSLATION_REQUEST_TIMEOUT,
-            self.client.chat().create_stream(request),
-        )
-        .await
-        .map_err(|_| anyhow::anyhow!("OpenAI lyrics request timed out"))??;
-
-        let mut accumulator = StreamChunkAccumulator::new("OpenAI");
-        let full = timeout(
-            total_stream_timeout(stream_budget_chars(lines)),
-            async {
-                loop {
-                    let next = timeout(TRANSLATION_STREAM_IDLE_TIMEOUT, stream.next())
-                        .await
-                        .map_err(|_| anyhow::anyhow!("OpenAI lyrics stream idle timeout"))?;
-                    let should_continue = accumulator.handle_result(
-                        match next {
-                            Some(Ok(response)) => Ok(Some(
-                                response
-                                    .choices
-                                    .first()
-                                    .and_then(|choice| choice.delta.content.clone())
-                                    .unwrap_or_default(),
-                            )),
-                            Some(Err(err)) => Err(err.into()),
-                            None => Ok(None),
+                let request = CreateChatCompletionRequestArgs::default()
+                    .model(self.model_name.as_ref())
+                    .messages([
+                        ChatCompletionRequestMessage::System(
+                            ChatCompletionRequestSystemMessageArgs::default()
+                                .content(system)
+                                .build()?,
+                        ),
+                        ChatCompletionRequestMessage::User(
+                            ChatCompletionRequestUserMessageArgs::default()
+                                .content(user)
+                                .build()?,
+                        ),
+                    ])
+                    .response_format(ResponseFormat::JsonSchema {
+                        json_schema: ResponseFormatJsonSchema {
+                            description: Some("Per-line song lyrics translation".to_string()),
+                            name: "lyrics_translation".to_string(),
+                            schema: Some((*self.schema).clone()),
+                            strict: Some(true),
                         },
-                        progress.as_deref(),
-                    )?;
-                    if !should_continue {
-                        break;
-                    }
-                }
-                accumulator.finish()
+                    })
+                    .stream(true)
+                    .build()?;
+
+                info!(
+                    "OpenAI lyrics: model={} to={} lines={}",
+                    self.model_name,
+                    self.to.to_639_3(),
+                    lines.len()
+                );
+
+                let mut stream = timeout(
+                    TRANSLATION_REQUEST_TIMEOUT,
+                    self.client.chat().create_stream(request),
+                )
+                .await
+                .map_err(|_| anyhow::anyhow!("OpenAI lyrics request timed out"))??;
+
+                let mut accumulator = StreamChunkAccumulator::new("OpenAI");
+                let full = timeout(
+                    total_stream_timeout(stream_budget_chars(lines)),
+                    async {
+                        loop {
+                            let next = timeout(TRANSLATION_STREAM_IDLE_TIMEOUT, stream.next())
+                                .await
+                                .map_err(|_| anyhow::anyhow!("OpenAI lyrics stream idle timeout"))?;
+                            let should_continue = accumulator.handle_result(
+                                match next {
+                                    Some(Ok(response)) => Ok(Some(
+                                        response
+                                            .choices
+                                            .first()
+                                            .and_then(|choice| choice.delta.content.clone())
+                                            .unwrap_or_default(),
+                                    )),
+                                    Some(Err(err)) => Err(err.into()),
+                                    None => Ok(None),
+                                },
+                                progress,
+                            )?;
+                            if !should_continue {
+                                break;
+                            }
+                        }
+                        accumulator.finish()
+                    },
+                )
+                .await
+                .map_err(|_| anyhow::anyhow!("OpenAI lyrics total stream timeout"))??;
+
+                let parsed: LyricsResponse = serde_json::from_str(&full)?;
+                validate_alignment(lines.len(), parsed.lines.len())?;
+                Ok(parsed.lines)
             },
         )
         .await
-        .map_err(|_| anyhow::anyhow!("OpenAI lyrics total stream timeout"))??;
-
-        let parsed: LyricsResponse = serde_json::from_str(&full)?;
-        validate_alignment(lines.len(), parsed.lines.len())?;
-        Ok(parsed.lines)
     }
 }
 
@@ -348,72 +441,82 @@ impl LyricsTranslator for LyricsGeminiTranslator {
         lines: &[LyricsLine],
         progress: Option<Box<ProgressCallback>>,
     ) -> anyhow::Result<Vec<LyricsLineTranslation>> {
-        let system = system_prompt(self.to.to_name());
-        let user = user_message(lines);
+        let progress = progress.as_deref();
 
-        info!(
-            "Gemini lyrics: model={:?} to={} lines={}",
-            self.model,
-            self.to.to_639_3(),
-            lines.len()
-        );
+        retry(
+            TRANSLATION_RETRY,
+            is_transient_translation,
+            "Gemini lyrics",
+            || async move {
+                let system = system_prompt(self.to.to_name());
+                let user = user_message(lines);
 
-        let thinking_config = match &self.model {
-            Model::Gemini25Flash => ThinkingConfig {
-                thinking_budget: Some(0),
-                include_thoughts: Some(false),
-                thinking_level: None,
+                info!(
+                    "Gemini lyrics: model={:?} to={} lines={}",
+                    self.model,
+                    self.to.to_639_3(),
+                    lines.len()
+                );
+
+                let thinking_config = match &self.model {
+                    Model::Gemini25Flash => ThinkingConfig {
+                        thinking_budget: Some(0),
+                        include_thoughts: Some(false),
+                        thinking_level: None,
+                    },
+                    _ => ThinkingConfig {
+                        thinking_budget: None,
+                        include_thoughts: Some(false),
+                        thinking_level: None,
+                    },
+                };
+
+                let mut stream = timeout(
+                    TRANSLATION_REQUEST_TIMEOUT,
+                    self.client
+                        .generate_content()
+                        .with_system_prompt(system)
+                        .with_user_message(user)
+                        .with_response_mime_type("application/json")
+                        .with_response_schema((*self.schema).clone())
+                        .with_thinking_config(thinking_config)
+                        .execute_stream(),
+                )
+                .await
+                .map_err(|_| anyhow::anyhow!("Gemini lyrics request timed out"))??;
+
+                let mut accumulator = StreamChunkAccumulator::new("Gemini");
+                let full = timeout(
+                    total_stream_timeout(stream_budget_chars(lines)),
+                    async {
+                        loop {
+                            let next = timeout(TRANSLATION_STREAM_IDLE_TIMEOUT, stream.try_next())
+                                .await
+                                .map_err(|_| anyhow::anyhow!("Gemini lyrics stream idle timeout"))?;
+                            let should_continue = accumulator.handle_result(
+                                match next {
+                                    Ok(Some(response)) => Ok(Some(response.text())),
+                                    Ok(None) => Ok(None),
+                                    Err(err) => Err(err.into()),
+                                },
+                                progress,
+                            )?;
+                            if !should_continue {
+                                break;
+                            }
+                        }
+                        accumulator.finish()
+                    },
+                )
+                .await
+                .map_err(|_| anyhow::anyhow!("Gemini lyrics total stream timeout"))??;
+
+                let parsed: LyricsResponse = serde_json::from_str(&full)?;
+                validate_alignment(lines.len(), parsed.lines.len())?;
+                Ok(parsed.lines)
             },
-            _ => ThinkingConfig {
-                thinking_budget: None,
-                include_thoughts: Some(false),
-                thinking_level: None,
-            },
-        };
-
-        let mut stream = timeout(
-            TRANSLATION_REQUEST_TIMEOUT,
-            self.client
-                .generate_content()
-                .with_system_prompt(system)
-                .with_user_message(user)
-                .with_response_mime_type("application/json")
-                .with_response_schema((*self.schema).clone())
-                .with_thinking_config(thinking_config)
-                .execute_stream(),
         )
         .await
-        .map_err(|_| anyhow::anyhow!("Gemini lyrics request timed out"))??;
-
-        let mut accumulator = StreamChunkAccumulator::new("Gemini");
-        let full = timeout(
-            total_stream_timeout(stream_budget_chars(lines)),
-            async {
-                loop {
-                    let next = timeout(TRANSLATION_STREAM_IDLE_TIMEOUT, stream.try_next())
-                        .await
-                        .map_err(|_| anyhow::anyhow!("Gemini lyrics stream idle timeout"))?;
-                    let should_continue = accumulator.handle_result(
-                        match next {
-                            Ok(Some(response)) => Ok(Some(response.text())),
-                            Ok(None) => Ok(None),
-                            Err(err) => Err(err.into()),
-                        },
-                        progress.as_deref(),
-                    )?;
-                    if !should_continue {
-                        break;
-                    }
-                }
-                accumulator.finish()
-            },
-        )
-        .await
-        .map_err(|_| anyhow::anyhow!("Gemini lyrics total stream timeout"))??;
-
-        let parsed: LyricsResponse = serde_json::from_str(&full)?;
-        validate_alignment(lines.len(), parsed.lines.len())?;
-        Ok(parsed.lines)
     }
 }
 
@@ -444,6 +547,53 @@ mod tests {
         // it sees must have none — recursively.
         let s = gemini_lyrics_schema();
         assert_eq!(count_additional_properties(&s), 0);
+    }
+
+    #[test]
+    fn classifier_treats_self_emitted_timeouts_as_transient() {
+        assert!(is_transient_translation(&anyhow::anyhow!(
+            "OpenAI lyrics request timed out"
+        )));
+        assert!(is_transient_translation(&anyhow::anyhow!(
+            "Gemini lyrics stream idle timeout"
+        )));
+        assert!(is_transient_translation(&anyhow::anyhow!(
+            "OpenAI lyrics total stream timeout"
+        )));
+    }
+
+    #[test]
+    fn classifier_rejects_permanent_errors() {
+        assert!(!is_transient_translation(&anyhow::anyhow!(
+            "Lyrics translation alignment error: expected 5 lines, got 4"
+        )));
+        assert!(!is_transient_translation(&anyhow::anyhow!("Unknown model")));
+        assert!(!is_transient_translation(&anyhow::anyhow!(
+            "OpenAI stream failed after retry: bad bytes"
+        )));
+    }
+
+    #[test]
+    fn classifier_handles_gemini_bad_response_codes() {
+        let transient = anyhow::Error::from(gemini_rust::ClientError::BadResponse {
+            code: 503,
+            description: Some("upstream".into()),
+        });
+        assert!(is_transient_translation(&transient));
+
+        let permanent = anyhow::Error::from(gemini_rust::ClientError::BadResponse {
+            code: 400,
+            description: Some("bad request".into()),
+        });
+        assert!(!is_transient_translation(&permanent));
+    }
+
+    #[test]
+    fn classifier_rejects_serde_parse_errors() {
+        let parse_err: serde_json::Error =
+            serde_json::from_str::<serde_json::Value>("not json").unwrap_err();
+        let wrapped: anyhow::Error = parse_err.into();
+        assert!(!is_transient_translation(&wrapped));
     }
 }
 
