@@ -40,7 +40,6 @@
 <style>
     .lyric-line {
         padding: 12px 16px;
-        border-left: 3px solid transparent;
         transition: background-color 0.2s ease, border-color 0.2s ease;
     }
     .lyric-line.active {
