@@ -44,6 +44,24 @@
     let currentRequestId: number | null = $state(null);
     let lastDispatchKey: string | null = null;
 
+    type StatusMessage = { text: string; level: 'info' | 'warn' | 'err' };
+    const statusMessage = $derived.by<StatusMessage | null>(() => {
+        if (translationStatus === 'fetching')
+            return { text: 'Fetching lyrics…', level: 'info' };
+        if (translationStatus === 'translating')
+            return { text: `Translating (${translationBytes} bytes)…`, level: 'info' };
+        if (translationStatus === 'unsupported-track')
+            return { text: 'No lyrics found for this track on LRClib.', level: 'warn' };
+        if (translationStatus === 'error')
+            return { text: `Error: ${errorMessage}`, level: 'err' };
+        if (lyrics && !lyrics.synced)
+            return {
+                text: 'Plain lyrics only — karaoke sync unavailable for this track.',
+                level: 'warn',
+            };
+        return null;
+    });
+
     // Spotify's AppleScript position is sampled every ~500ms and the Rust
     // watcher suppresses sub-second deltas to avoid emit storms, so the raw
     // `nowPlaying.positionMs` would stay frozen between events. We extrapolate
@@ -225,19 +243,11 @@
 {:else}
     <div class="root" style="height: {mainHeight?.value ?? 700}px;">
         <NowPlayingCard {nowPlaying} {livePositionMs} />
-        <div class="status-bar">
-            {#if translationStatus === 'fetching'}
-                <span>Fetching lyrics…</span>
-            {:else if translationStatus === 'translating'}
-                <span>Translating ({translationBytes} bytes)…</span>
-            {:else if translationStatus === 'unsupported-track'}
-                <span class="warn">No lyrics found for this track on LRClib.</span>
-            {:else if translationStatus === 'error'}
-                <span class="err">Error: {errorMessage}</span>
-            {:else if lyrics && !lyrics.synced}
-                <span class="warn">Plain lyrics only — karaoke sync unavailable for this track.</span>
-            {/if}
-        </div>
+        {#if statusMessage}
+            <div class="status-bar {statusMessage.level}">
+                {statusMessage.text}
+            </div>
+        {/if}
         <div class="lyrics-area">
             <LyricsList {lyrics} {translation} {nowPlaying} {livePositionMs} />
         </div>
@@ -251,16 +261,15 @@
         height: 100%;
     }
     .status-bar {
-        padding: 6px 16px;
+        padding: 8px 16px;
         font-size: 0.85em;
-        opacity: 0.85;
-        min-height: 1.5em;
-        border-bottom: 1px solid var(--background-color);
+        opacity: 0.9;
+        line-height: 1.4;
     }
-    .warn {
+    .status-bar.warn {
         color: #c08000;
     }
-    .err {
+    .status-bar.err {
         color: var(--error-color, #b00020);
     }
     .lyrics-area {
