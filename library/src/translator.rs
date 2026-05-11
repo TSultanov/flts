@@ -98,7 +98,7 @@ impl Display for TranslationErrors {
     }
 }
 
-#[derive(Debug, Clone, Copy, EnumIter, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, EnumIter, PartialEq, Eq, Hash)]
 pub enum TranslationModel {
     Unknown = 0,
     Gemini25Flash = 1,

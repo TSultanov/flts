@@ -42,8 +42,8 @@ pub struct LyricsState {
 #[derive(Clone, Hash, PartialEq, Eq)]
 struct TranslationKey {
     track_id: String,
-    tgt: String,
-    model: usize,
+    tgt: Language,
+    model: TranslationModel,
 }
 
 impl LyricsState {
@@ -205,8 +205,8 @@ pub async fn translate_lyrics(
 
     let key = TranslationKey {
         track_id: track_id.clone(),
-        tgt: tgt.to_639_3().to_string(),
-        model,
+        tgt,
+        model: model_enum,
     };
 
     // Cache hit → emit done immediately and return new request id.
@@ -275,12 +275,7 @@ pub async fn translate_lyrics(
                 app_clone,
                 request_id,
                 key,
-                track_id,
                 lyrics,
-                tgt,
-                model,
-                model_enum,
-                provider,
                 api_key,
             )
             .await;
@@ -303,22 +298,20 @@ pub async fn get_lyrics_translation(
     Ok(cache.get(&track_id, &tgt, model).await)
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn run_translation(
     state: Arc<AppState>,
     app: AppHandle,
     request_id: usize,
     key: TranslationKey,
-    track_id: String,
     lyrics: Arc<Lyrics>,
-    tgt: Language,
-    model: usize,
-    model_enum: TranslationModel,
-    provider: library::translator::TranslationProvider,
     api_key: String,
 ) {
     let result = async {
-        let translator = get_lyrics_translator(provider, model_enum, api_key, tgt)?;
+        let provider = key
+            .model
+            .provider()
+            .expect("provider validated by translate_lyrics");
+        let translator = get_lyrics_translator(provider, key.model, api_key, key.tgt)?;
 
         let progress_app = app.clone();
         let progress_state = Arc::new(std::sync::Mutex::new((Instant::now(), 0usize)));
@@ -343,9 +336,9 @@ async fn run_translation(
             .await?;
 
         let translation = LyricsTranslation {
-            track_id: track_id.clone(),
-            target_lang: tgt,
-            model,
+            track_id: key.track_id.clone(),
+            target_lang: key.tgt,
+            model: key.model as usize,
             lines,
         };
 
@@ -363,7 +356,7 @@ async fn run_translation(
         Ok(translation) => {
             info!(
                 "Lyrics translation done: track={} lines={} req={}",
-                track_id,
+                key.track_id,
                 translation.lines.len(),
                 request_id
             );
@@ -376,7 +369,7 @@ async fn run_translation(
             );
         }
         Err(err) => {
-            warn!("Lyrics translation failed for track={track_id}: {err}");
+            warn!("Lyrics translation failed for track={}: {err}", key.track_id);
             let _ = app.emit(
                 "lyrics_translation_error",
                 LyricsTranslationError {
