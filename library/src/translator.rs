@@ -14,20 +14,20 @@ use crate::{
     translator::gemini::GeminiTranslator, translator::openai::OpenAITranslator,
 };
 
-const TRANSLATION_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
-const TRANSLATION_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+pub const TRANSLATION_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+pub const TRANSLATION_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 const TRANSLATION_INTER_CHUNK_TIMEOUT: Duration = Duration::from_secs(30);
 const TRANSLATION_TOTAL_TIMEOUT_BASE: Duration = Duration::from_secs(30);
 const TRANSLATION_TOTAL_TIMEOUT_PER_CHAR: Duration = Duration::from_millis(100);
 
-type ProgressCallback = dyn Fn(usize) + Send + Sync;
+pub type ProgressCallback = dyn Fn(usize) + Send + Sync;
 
-fn total_stream_timeout(input_len: usize) -> Duration {
+pub fn total_stream_timeout(input_len: usize) -> Duration {
     TRANSLATION_TOTAL_TIMEOUT_BASE + TRANSLATION_TOTAL_TIMEOUT_PER_CHAR * (input_len as u32)
 }
 
 #[derive(Debug)]
-struct StreamChunkAccumulator {
+pub struct StreamChunkAccumulator {
     provider: &'static str,
     full_content: String,
     saw_chunk_error: bool,
@@ -35,7 +35,7 @@ struct StreamChunkAccumulator {
 }
 
 impl StreamChunkAccumulator {
-    fn new(provider: &'static str) -> Self {
+    pub fn new(provider: &'static str) -> Self {
         Self {
             provider,
             full_content: String::new(),
@@ -44,7 +44,7 @@ impl StreamChunkAccumulator {
         }
     }
 
-    fn handle_result(
+    pub fn handle_result(
         &mut self,
         result: anyhow::Result<Option<String>>,
         callback: Option<&ProgressCallback>,
@@ -76,7 +76,7 @@ impl StreamChunkAccumulator {
         }
     }
 
-    fn finish(self) -> anyhow::Result<String> {
+    pub fn finish(self) -> anyhow::Result<String> {
         if self.full_content.is_empty() {
             anyhow::bail!("{} returned empty content", self.provider);
         }

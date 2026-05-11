@@ -20,6 +20,7 @@ notify = "8.2.0"
 notify-debouncer-full = "0.6.0"
 rand = "0.9.2"
 regex = "1.12.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 ringbuffer = "0.16.0"
 scraper = "0.22.0"
 serde = "1.0.228"

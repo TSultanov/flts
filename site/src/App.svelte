@@ -6,6 +6,14 @@
     import { Library } from "./lib/data/library";
     import { configStore } from "./lib/config";
     import { navigate } from './router';
+    import { platform } from '@tauri-apps/plugin-os';
+
+    let isMac = false;
+    try {
+        isMac = platform() === 'macos';
+    } catch {
+        isMac = false;
+    }
 
     const fullLinks = [
         {
@@ -16,6 +24,7 @@
             href: "/import",
             label: "Import",
         },
+        ...(isMac ? [{ href: "/lyrics", label: "Lyrics" }] : []),
         {
             href: "/config",
             label: "Config",

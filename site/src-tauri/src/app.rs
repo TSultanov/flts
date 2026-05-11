@@ -36,6 +36,9 @@ const EXIT_CACHE_CLOSE_TIMEOUT: Duration = Duration::from_millis(250);
 
 pub mod config;
 pub mod library_view;
+pub mod lyrics;
+#[cfg(target_os = "macos")]
+pub mod spotify;
 pub mod translation_queue;
 #[derive(Debug)]
 pub enum AppError {
@@ -74,6 +77,7 @@ pub struct AppState {
     watcher: Arc<Mutex<LibraryWatcher>>,
     translations_cache: tokio::sync::OnceCell<Arc<TranslationsCache>>,
     stats_cache: tokio::sync::OnceCell<Arc<TranslationSizeCache>>,
+    pub lyrics_state: crate::app::lyrics::LyricsState,
 }
 
 impl AppState {
@@ -108,6 +112,7 @@ impl AppState {
             watcher,
             translations_cache: tokio::sync::OnceCell::new(),
             stats_cache: tokio::sync::OnceCell::new(),
+            lyrics_state: crate::app::lyrics::LyricsState::new(),
         })
     }
 

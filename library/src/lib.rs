@@ -3,6 +3,7 @@ pub mod cache;
 pub mod dictionary;
 pub mod epub_importer;
 pub mod library;
+pub mod lyrics;
 pub mod tla_trace;
 pub mod tla_trace_interaction;
 pub mod tla_trace_mutex;

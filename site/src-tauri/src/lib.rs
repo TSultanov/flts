@@ -94,6 +94,12 @@ pub fn run() {
             app::library_view::mark_word_visible,
             app::get_system_definition,
             app::show_system_dictionary,
+            app::lyrics::start_spotify_watcher,
+            app::lyrics::stop_spotify_watcher,
+            app::lyrics::get_now_playing,
+            app::lyrics::get_lyrics,
+            app::lyrics::translate_lyrics,
+            app::lyrics::get_lyrics_translation,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
