@@ -373,7 +373,7 @@ pub async fn list_books(
 ) -> Result<Vec<LibraryBookMetadataView>, String> {
     let target_language_id = { state.config.borrow().target_language_id.clone() };
     let target_language = Language::from_639_3(&target_language_id);
-    let library = { state.library.read().await.clone() };
+    let library = state.library.borrow().clone();
 
     let Some(library) = library else {
         return Ok(vec![]);
@@ -390,7 +390,7 @@ pub async fn list_book_chapters(
     state: tauri::State<'_, Arc<AppState>>,
     book_id: Uuid,
 ) -> Result<Vec<ChapterView>, String> {
-    let library = { state.library.read().await.clone() };
+    let library = state.library.borrow().clone();
     let Some(library) = library else {
         return Ok(vec![]);
     };
@@ -408,7 +408,7 @@ pub async fn get_book_chapter_paragraphs(
     book_id: Uuid,
     chapter_id: usize,
 ) -> Result<Vec<ParagraphView>, String> {
-    let library = { state.library.read().await.clone() };
+    let library = state.library.borrow().clone();
     let Some(library) = library else {
         return Ok(vec![]);
     };
@@ -433,7 +433,7 @@ pub async fn get_word_info(
     sentence_id: usize,
     word_id: usize,
 ) -> Result<Option<WordView>, String> {
-    let library = { state.library.read().await.clone() };
+    let library = state.library.borrow().clone();
     let Some(library) = library else {
         return Ok(None);
     };
@@ -462,7 +462,7 @@ pub async fn get_paragraph_view(
     book_id: Uuid,
     paragraph_id: usize,
 ) -> Result<ParagraphView, String> {
-    let library = { state.library.read().await.clone() };
+    let library = state.library.borrow().clone();
     let Some(library) = library else {
         return Err("Library is not configured".into());
     };
@@ -486,7 +486,7 @@ pub async fn import_plain_text(
     text: String,
     source_language_id: String,
 ) -> Result<Uuid, String> {
-    let library = { state.library.read().await.clone() }.ok_or("Library is not configured")?;
+    let library = state.library.borrow().clone().ok_or("Library is not configured")?;
 
     let source_language = Language::from_639_3(&source_language_id)
         .ok_or_else(|| format!("Failed to resolve source language: {}", source_language_id))?;
@@ -504,7 +504,7 @@ pub async fn import_epub(
     book: EpubBook,
     source_language_id: String,
 ) -> Result<Uuid, String> {
-    let library = { state.library.read().await.clone() }.ok_or("Library is not configured")?;
+    let library = state.library.borrow().clone().ok_or("Library is not configured")?;
 
     let source_language = Language::from_639_3(&source_language_id)
         .ok_or_else(|| format!("Failed to resolve source language: {}", source_language_id))?;
@@ -521,7 +521,7 @@ pub async fn get_book_reading_state(
     state: tauri::State<'_, Arc<AppState>>,
     book_id: Uuid,
 ) -> Result<Option<BookReadingStateView>, String> {
-    let library = { state.library.read().await.clone() };
+    let library = state.library.borrow().clone();
     let Some(library) = library else {
         return Ok(None);
     };
@@ -539,7 +539,7 @@ pub async fn save_book_reading_state(
     chapter_id: usize,
     paragraph_id: usize,
 ) -> Result<(), String> {
-    let library = { state.library.read().await.clone() }.ok_or("Library is not configured")?;
+    let library = state.library.borrow().clone().ok_or("Library is not configured")?;
 
     LibraryView::create(state.app.clone(), library)
         .save_book_reading_state(book_id, chapter_id, paragraph_id)
@@ -553,7 +553,7 @@ pub async fn move_book(
     book_id: Uuid,
     path: Vec<String>,
 ) -> Result<(), String> {
-    let library = { state.library.read().await.clone() }.ok_or("Library is not configured")?;
+    let library = state.library.borrow().clone().ok_or("Library is not configured")?;
 
     LibraryView::create(state.app.clone(), library)
         .move_book(book_id, path)
@@ -566,7 +566,7 @@ pub async fn delete_book(
     state: tauri::State<'_, Arc<AppState>>,
     book_id: Uuid,
 ) -> Result<(), String> {
-    let library = { state.library.read().await.clone() }.ok_or("Library is not configured")?;
+    let library = state.library.borrow().clone().ok_or("Library is not configured")?;
 
     LibraryView::create(state.app.clone(), library)
         .delete_book(book_id)
@@ -581,7 +581,7 @@ pub async fn mark_word_visible(
     paragraph_id: usize,
     flat_index: usize,
 ) -> Result<bool, String> {
-    let library = { state.library.read().await.clone() }.ok_or("Library is not configured")?;
+    let library = state.library.borrow().clone().ok_or("Library is not configured")?;
 
     let target_language_id = { state.config.borrow().target_language_id.clone() };
     let Some(target_language) = Language::from_639_3(&target_language_id) else {

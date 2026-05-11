@@ -72,7 +72,7 @@ pub struct AppState {
     app: tauri::AppHandle,
     config_path: PathBuf,
     config: watch::Sender<Config>,
-    library: RwLock<Option<Arc<Library>>>,
+    library: watch::Sender<Option<Arc<Library>>>,
     translation_queue: RwLock<Option<Arc<TranslationQueue>>>,
     watcher: Arc<Mutex<LibraryWatcher>>,
     translations_cache: tokio::sync::OnceCell<Arc<TranslationsCache>>,
@@ -107,7 +107,7 @@ impl AppState {
             app,
             config_path,
             config: watch::channel(config).0,
-            library: RwLock::new(None),
+            library: watch::channel(None).0,
             translation_queue: RwLock::new(None),
             watcher,
             translations_cache: tokio::sync::OnceCell::new(),
@@ -162,7 +162,7 @@ impl AppState {
 
         if let Some(library_path) = library_path {
             let library = Arc::new(Library::open(PathBuf::from(&library_path)).await?);
-            *self.library.write().await = Some(library.clone());
+            self.library.send_replace(Some(library.clone()));
 
             self.watcher
                 .lock()
@@ -175,7 +175,7 @@ impl AppState {
             info!("Emitting \"library_updated\"");
             self.app.emit("library_updated", ())?;
         } else {
-            *self.library.write().await = None;
+            self.library.send_replace(None);
             self.stop_translation_queue().await;
         }
 
@@ -192,7 +192,7 @@ impl AppState {
     }
 
     pub async fn save_all(&self) {
-        if let Some(library) = self.library.read().await.as_ref() {
+        if let Some(library) = self.library.borrow().clone() {
             info!("Saving all dirty books before shutdown");
             library.save_all().await;
         }
@@ -233,7 +233,7 @@ impl AppState {
     }
 
     pub async fn handle_file_change_event(&self, event: &LibraryFileChange) -> anyhow::Result<()> {
-        let library = { self.library.read().await.clone() };
+        let library = self.library.borrow().clone();
         let Some(library) = library else {
             return Ok(());
         };
@@ -311,7 +311,7 @@ impl AppState {
         model: TranslationModel,
         use_cache: bool,
     ) -> anyhow::Result<usize> {
-        let library = { self.library.read().await.clone() }.ok_or(AppError::NoLibraryError)?;
+        let library = self.library.borrow().clone().ok_or(AppError::NoLibraryError)?;
         let queue = self.get_or_init_translation_queue(library).await?;
         queue
             .translate(book_id, paragraph_id, model, use_cache)
@@ -323,7 +323,7 @@ impl AppState {
         book_id: Uuid,
         paragraph_id: usize,
     ) -> anyhow::Result<Option<usize>> {
-        let library = { self.library.read().await.clone() }.ok_or(AppError::NoLibraryError)?;
+        let library = self.library.borrow().clone().ok_or(AppError::NoLibraryError)?;
         let queue = self.get_or_init_translation_queue(library).await?;
         Ok(queue.get_request_id(book_id, paragraph_id).await)
     }
