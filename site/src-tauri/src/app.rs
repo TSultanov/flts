@@ -20,7 +20,7 @@ use library::{
     translator::TranslationModel,
 };
 use log::{info, warn};
-use tokio::sync::{Mutex, RwLock, watch};
+use tokio::sync::{Mutex, watch};
 use uuid::Uuid;
 
 use tauri::Emitter;
@@ -73,7 +73,7 @@ pub struct AppState {
     config_path: PathBuf,
     config: watch::Sender<Config>,
     library: watch::Sender<Option<Arc<Library>>>,
-    translation_queue: RwLock<Option<Arc<TranslationQueue>>>,
+    translation_queue: watch::Sender<Option<Arc<TranslationQueue>>>,
     watcher: Arc<Mutex<LibraryWatcher>>,
     translations_cache: tokio::sync::OnceCell<Arc<TranslationsCache>>,
     stats_cache: tokio::sync::OnceCell<Arc<TranslationSizeCache>>,
@@ -108,7 +108,7 @@ impl AppState {
             config_path,
             config: watch::channel(config).0,
             library: watch::channel(None).0,
-            translation_queue: RwLock::new(None),
+            translation_queue: watch::channel(None).0,
             watcher,
             translations_cache: tokio::sync::OnceCell::new(),
             stats_cache: tokio::sync::OnceCell::new(),
@@ -183,8 +183,7 @@ impl AppState {
     }
 
     pub async fn stop_translation_queue(&self) {
-        let queue = self.translation_queue.write().await.take();
-        if let Some(queue) = queue {
+        if let Some(queue) = self.translation_queue.send_replace(None) {
             info!("Stopping translation queue");
             queue.shutdown().await;
             info!("Translation queue stopped");
@@ -286,7 +285,7 @@ impl AppState {
         &self,
         library: Arc<Library>,
     ) -> anyhow::Result<Arc<TranslationQueue>> {
-        if let Some(queue) = self.translation_queue.read().await.clone() {
+        if let Some(queue) = self.translation_queue.borrow().clone() {
             return Ok(queue);
         }
 
@@ -296,12 +295,20 @@ impl AppState {
         let queue = TranslationQueue::init(library, cache, stats_cache, &config, self.app.clone())
             .ok_or(AppError::NoTranslationQueueError)?;
 
-        let mut guard = self.translation_queue.write().await;
-        if let Some(existing) = guard.as_ref() {
-            return Ok(existing.clone());
-        }
-        *guard = Some(queue.clone());
-        Ok(queue)
+        // Atomic install: if someone won the race while we were building, return
+        // theirs and let ours drop (its tasks are aborted via TranslationQueue::drop).
+        let mut winner = queue.clone();
+        self.translation_queue.send_if_modified(|cur| match cur {
+            Some(existing) => {
+                winner = existing.clone();
+                false
+            }
+            None => {
+                *cur = Some(queue);
+                true
+            }
+        });
+        Ok(winner)
     }
 
     pub async fn translate_paragraph(
@@ -457,7 +464,7 @@ pub async fn get_translation_status(
     state: tauri::State<'_, Arc<AppState>>,
     request_id: usize,
 ) -> Result<Option<translation_queue::TranslationStatus>, String> {
-    let queue = { state.translation_queue.read().await.clone() };
+    let queue = state.translation_queue.borrow().clone();
     Ok(match queue {
         Some(q) => q.get_translation_status(request_id).await,
         None => None,
