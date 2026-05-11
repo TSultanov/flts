@@ -11,7 +11,7 @@ use log::{debug, info, warn};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use tokio::process::Command;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 use tokio::task::JoinHandle;
 use tokio::time;
 
@@ -159,19 +159,20 @@ fn is_significant_change(prev: &NowPlaying, next: &NowPlaying) -> bool {
 
 pub struct SpotifyWatcher {
     handle: Mutex<Option<JoinHandle<()>>>,
-    last: Arc<Mutex<Option<NowPlaying>>>,
+    tx: Arc<watch::Sender<Option<NowPlaying>>>,
 }
 
 impl SpotifyWatcher {
     pub fn new() -> Self {
+        let (tx, _rx) = watch::channel(None);
         Self {
             handle: Mutex::new(None),
-            last: Arc::new(Mutex::new(None)),
+            tx: Arc::new(tx),
         }
     }
 
-    pub async fn current(&self) -> Option<NowPlaying> {
-        self.last.lock().await.clone()
+    pub fn current(&self) -> Option<NowPlaying> {
+        self.tx.borrow().clone()
     }
 
     pub async fn start(&self, app: AppHandle) {
@@ -181,7 +182,7 @@ impl SpotifyWatcher {
             return;
         }
 
-        let last = self.last.clone();
+        let tx = self.tx.clone();
         let task = tokio::spawn(async move {
             let mut ticker = time::interval(POLL_INTERVAL);
             ticker.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
@@ -195,17 +196,20 @@ impl SpotifyWatcher {
                     }
                 };
 
-                let mut prev_slot = last.lock().await;
-                let changed = prev_slot
-                    .as_ref()
-                    .map(|prev| is_significant_change(prev, &next))
-                    .unwrap_or(true);
-                *prev_slot = Some(next.clone());
-                drop(prev_slot);
+                let significant = tx.send_if_modified(|cur| {
+                    let sig = cur
+                        .as_ref()
+                        .map(|prev| is_significant_change(prev, &next))
+                        .unwrap_or(true);
+                    *cur = Some(next);
+                    sig
+                });
 
-                if changed {
-                    if let Err(err) = app.emit("spotify_state", &next) {
-                        warn!("Failed to emit spotify_state: {err}");
+                if significant {
+                    if let Some(payload) = tx.borrow().as_ref() {
+                        if let Err(err) = app.emit("spotify_state", payload) {
+                            warn!("Failed to emit spotify_state: {err}");
+                        }
                     }
                 }
             }

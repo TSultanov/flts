@@ -126,7 +126,7 @@ pub async fn get_now_playing(
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<Option<NowPlaying>, String> {
     // If watcher has cached state, return it; otherwise do a one-shot query.
-    if let Some(np) = state.lyrics_state.watcher.current().await {
+    if let Some(np) = state.lyrics_state.watcher.current() {
         return Ok(Some(np));
     }
     match crate::app::spotify::query_once().await {
