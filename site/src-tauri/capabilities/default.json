@@ -6,9 +6,14 @@
     "main"
   ],
   "permissions": [
-    "core:default",
-    "dialog:default",
+    "core:app:default",
+    "core:event:default",
+    "core:path:default",
+    "core:resources:default",
+    "core:webview:default",
+    "core:window:default",
+    "dialog:allow-open",
     "log:default",
-    "os:default"
+    "os:allow-platform"
   ]
 }

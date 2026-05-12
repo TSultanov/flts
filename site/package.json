@@ -39,24 +39,17 @@
   },
   "dependencies": {
     "@fortawesome/free-solid-svg-icons": "^7.2.0",
-    "@google/genai": "^2.1.0",
     "@tauri-apps/api": "^2.11.0",
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "@tauri-apps/plugin-log": "^2.8.0",
     "@tauri-apps/plugin-os": "^2.3.2",
     "@tauri-apps/plugin-window-state": "~2.4.1",
     "@types/jsdom": "^28.0.2",
-    "bottleneck": "^2.19.5",
     "dexie": "^4.4.2",
     "epubts": "^0.2.0",
-    "html-entities": "^2.6.0",
     "js-sha256": "^0.11.1",
-    "jszip": "^3.10.1",
-    "localforage": "^1.10.0",
-    "openai": "^6.37.0",
     "sv-router": "^0.16.1",
     "svelte-fa": "^4.0.4",
-    "uuid": "^14.0.0",
-    "zod": "^4.4.3"
+    "uuid": "^14.0.0"
   }
 }
