@@ -8,7 +8,7 @@ use async_openai::types::chat::{
 };
 use async_openai::{Client, config::OpenAIConfig};
 use async_trait::async_trait;
-use futures::StreamExt;
+use futures_util::StreamExt;
 use isolang::Language;
 use log::info;
 use serde::Deserialize;
