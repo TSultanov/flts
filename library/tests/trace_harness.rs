@@ -1,3 +1,5 @@
+#![cfg(feature = "tla_trace")]
+
 use std::{
     io::{BufReader, BufWriter, Write},
     path::{Path, PathBuf},

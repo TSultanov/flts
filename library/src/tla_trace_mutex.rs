@@ -1,3 +1,5 @@
+#![cfg(feature = "tla_trace")]
+
 use std::{
     collections::HashMap,
     io::Write,

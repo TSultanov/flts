@@ -3,6 +3,10 @@ name = "library"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+tla_trace = []
+
 [dependencies]
 ahash = "0.8.12"
 anyhow = "1.0.102"

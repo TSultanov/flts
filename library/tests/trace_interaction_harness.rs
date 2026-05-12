@@ -1,3 +1,4 @@
+#![cfg(feature = "tla_trace")]
 //! Trace harness for the **interaction** spec (`spec/interaction/`).
 //!
 //! Exercises real Library/LibraryBook operations while emitting NDJSON events

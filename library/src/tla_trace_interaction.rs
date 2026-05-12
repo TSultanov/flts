@@ -1,3 +1,4 @@
+#![cfg(feature = "tla_trace")]
 //! TLA+ trace emission for the **interaction** spec (`spec/interaction/`).
 //!
 //! Records NDJSON events with `[start, end]` timestamps around each operation

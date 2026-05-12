@@ -1,3 +1,5 @@
+#![cfg(feature = "tla_trace")]
+
 use std::{
     fs::File,
     io::{BufWriter, Write},

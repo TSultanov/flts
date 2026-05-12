@@ -1,3 +1,4 @@
+#![cfg(feature = "tla_trace")]
 /// Trace harness for TLA+ mutex / lock safety spec.
 ///
 /// These tests exercise the real lock patterns in the library crate. The

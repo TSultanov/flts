@@ -28,7 +28,9 @@ use tauri::Emitter;
 use crate::app::{config::Config, translation_queue::TranslationQueue};
 
 #[cfg(mobile)]
-use dirs_next::document_dir;
+fn document_dir() -> Option<std::path::PathBuf> {
+    directories::UserDirs::new().and_then(|u| u.document_dir().map(std::path::Path::to_owned))
+}
 
 const EXIT_STOP_QUEUE_TIMEOUT: Duration = Duration::from_secs(2);
 const EXIT_SAVE_ALL_TIMEOUT: Duration = Duration::from_secs(10);
@@ -332,7 +334,11 @@ impl AppState {
         model: TranslationModel,
         use_cache: bool,
     ) -> anyhow::Result<usize> {
-        let library = self.library.borrow().clone().ok_or(AppError::NoLibraryError)?;
+        let library = self
+            .library
+            .borrow()
+            .clone()
+            .ok_or(AppError::NoLibraryError)?;
         let queue = self.get_or_init_translation_queue(library).await?;
         queue
             .translate(book_id, paragraph_id, model, use_cache)
@@ -344,7 +350,11 @@ impl AppState {
         book_id: Uuid,
         paragraph_id: usize,
     ) -> anyhow::Result<Option<usize>> {
-        let library = self.library.borrow().clone().ok_or(AppError::NoLibraryError)?;
+        let library = self
+            .library
+            .borrow()
+            .clone()
+            .ok_or(AppError::NoLibraryError)?;
         let queue = self.get_or_init_translation_queue(library).await?;
         Ok(queue.get_request_id(book_id, paragraph_id).await)
     }
