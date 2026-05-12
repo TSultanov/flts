@@ -10,13 +10,12 @@ tla_trace = []
 [dependencies]
 ahash = "0.8.12"
 anyhow = "1.0.102"
-async-openai = { version = "0.34.0", features = ["_api", "chat-completion", "chat-completion-types"] }
+async-openai = { version = "0.34.0", default-features = false, features = ["_api", "chat-completion", "chat-completion-types", "native-tls"] }
 async-trait = "0.1.89"
 epub = "=2.1.5"
 flume = "0.12.0"
 fnv = "1.0.7"
 futures = "0.3.32"
-gemini-rust = "1.7.1"
 isolang = "2.4.0"
 itertools = "0.14.0"
 log = "0.4.29"
@@ -24,7 +23,7 @@ notify = "8.2.0"
 notify-debouncer-full = "0.7.0"
 rand = "0.10.1"
 regex = "1.12.3"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
 ringbuffer = "0.16.0"
 scraper = "0.26.0"
 serde = "1.0.228"

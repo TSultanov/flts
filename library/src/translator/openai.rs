@@ -12,13 +12,16 @@ use async_openai::{Client, config::OpenAIConfig};
 use async_trait::async_trait;
 use futures::StreamExt;
 use isolang::Language;
-use serde_json::{Value, json};
+use serde_json::Value;
 use tokio::time::timeout;
 
 use crate::{
     book::translation_import::ParagraphTranslation,
     cache::TranslationsCache,
-    translator::{ProgressCallback, TranslationErrors, TranslationModel, Translator},
+    translator::{
+        ProgressCallback, TranslationErrors, TranslationModel, Translator,
+        paragraph_translation_schema,
+    },
 };
 
 use super::{
@@ -44,94 +47,7 @@ impl OpenAITranslator {
         from: &Language,
         to: &Language,
     ) -> anyhow::Result<Self> {
-        let schema = json!(
-            {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                    "sentences": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "additionalProperties": false,
-                            "properties": {
-                                "words": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object",
-                                        "additionalProperties": false,
-                                        "properties": {
-                                            "original": {
-                                                "type": "string",
-                                                "description": "Original word"
-                                            },
-                                            "contextualTranslations": {
-                                                "type": "array",
-                                                "items": { "type": "string" },
-                                                "description": "Translation variants which are suitable for the current context"
-                                            },
-                                            "note": {
-                                                "type": "string",
-                                                "description": "Note about the translation, if necessary for understanding"
-                                            },
-                                            "isPunctuation": {
-                                                "type": "boolean"
-                                            },
-                                            "grammar": {
-                                                "type": "object",
-                                                "additionalProperties": false,
-                                                "properties": {
-                                                    "originalInitialForm": { "type": "string" },
-                                                    "targetInitialForm": { "type": "string" },
-                                                    "partOfSpeech": { "type": "string" },
-                                                    "plurality": { "type": "string" },
-                                                    "person": { "type": "string" },
-                                                    "tense": { "type": "string" },
-                                                    "case": { "type": "string" },
-                                                    "other": { "type": "string" }
-                                                },
-                                                   "required": [
-                                                       "partOfSpeech",
-                                                       "originalInitialForm",
-                                                       "targetInitialForm",
-                                                       "plurality",
-                                                       "person",
-                                                       "tense",
-                                                       "case",
-                                                       "other"
-                                                   ]
-                                            }
-                                        },
-                                        "required": [
-                                            "original",
-                                            "contextualTranslations",
-                                            "note",
-                                            "grammar",
-                                            "isPunctuation"
-                                        ]
-                                    }
-                                },
-                                "fullTranslation": {
-                                    "type": "string",
-                                    "description": "Full translation of the sentence"
-                                }
-                            },
-                            "required": [
-                                "words",
-                                "fullTranslation"
-                            ]
-                        }
-                    },
-                    "sourceLanguage": { "type": "string" },
-                    "targetLanguage": { "type": "string" }
-                },
-                "required": [
-                    "sentences",
-                    "sourceLanguage",
-                    "targetLanguage"
-                ]
-            }
-        );
+        let schema = paragraph_translation_schema();
 
         let model = match translation_model {
             TranslationModel::OpenAIGpt52 => "gpt-5.2",

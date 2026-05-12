@@ -3,17 +3,25 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use async_openai::types::chat::{
+    ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
+    ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs, ResponseFormat,
+    ResponseFormatJsonSchema,
+};
+use async_openai::{Client, config::OpenAIConfig};
 use async_trait::async_trait;
-use futures::TryStreamExt;
-use gemini_rust::{Gemini, Model, ThinkingConfig};
+use futures::StreamExt;
 use isolang::Language;
-use serde_json::{Value, json};
+use serde_json::Value;
 use tokio::time::timeout;
 
 use crate::{
     book::translation_import::ParagraphTranslation,
     cache::TranslationsCache,
-    translator::{ProgressCallback, TranslationErrors, TranslationModel, Translator},
+    translator::{
+        ProgressCallback, TranslationErrors, TranslationModel, Translator,
+        paragraph_translation_schema,
+    },
 };
 
 use super::{
@@ -21,14 +29,36 @@ use super::{
     total_stream_timeout,
 };
 
+const GEMINI_OPENAI_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
+
 pub struct GeminiTranslator {
     cache: Arc<TranslationsCache>,
-    client: Gemini,
+    client: Client<OpenAIConfig>,
     schema: Arc<Value>,
-    model: Model,
+    model: Arc<str>,
     translation_model: TranslationModel,
     from: Language,
     to: Language,
+}
+
+pub(crate) fn gemini_model_name(m: TranslationModel) -> anyhow::Result<&'static str> {
+    Ok(match m {
+        TranslationModel::Gemini25Flash => "gemini-2.5-flash",
+        TranslationModel::Gemini25Pro => "gemini-2.5-pro",
+        TranslationModel::Gemini25FlashLight => "gemini-2.5-flash-lite",
+        TranslationModel::Gemini3Pro => "gemini-3-pro-preview",
+        TranslationModel::Gemini3Flash => "gemini-3-flash-preview",
+        TranslationModel::Gemini31Pro => "gemini-3.1-pro-preview",
+        TranslationModel::Gemini31FlashLite => "gemini-3.1-flash-lite-preview",
+        _ => Err(TranslationErrors::UnknownModel)?,
+    })
+}
+
+pub(crate) fn gemini_client(api_key: String) -> Client<OpenAIConfig> {
+    let config = OpenAIConfig::new()
+        .with_api_base(GEMINI_OPENAI_BASE)
+        .with_api_key(api_key);
+    Client::with_config(config)
 }
 
 impl GeminiTranslator {
@@ -39,137 +69,14 @@ impl GeminiTranslator {
         from: &Language,
         to: &Language,
     ) -> anyhow::Result<GeminiTranslator> {
-        let schema = json!(
-            {
-                "type": "object",
-                "properties": {
-                    "sentences": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "words": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object",
-                                        "properties": {
-                                            "original": {
-                                                "type": "string",
-                                                "description": "Original word",
-                                            },
-                                            "contextualTranslations": {
-                                                "type": "array",
-                                                "items": {
-                                                    "type": "string"
-                                                },
-                                                "description": "Translation variants which are suitable for the current context",
-                                            },
-                                            "note": {
-                                                "type": "string",
-                                                "description": "Note about the translation, if necessary for understanding",
-                                            },
-                                            "isPunctuation": {
-                                                "type": "boolean"
-                                            },
-                                            "grammar": {
-                                                "type": "object",
-                                                "properties": {
-                                                    "originalInitialForm": {
-                                                        "type": "string",
-                                                        "description": "Original word in its initial (dictionary) form",
-                                                    },
-                                                    "targetInitialForm": {
-                                                        "type": "string",
-                                                        "description": "Translated word in its initial (dictionary) form",
-                                                    },
-                                                    "partOfSpeech": {
-                                                        "type": "string",
-                                                        "description": "Which part of speech the original word is",
-                                                    },
-                                                    "plurality": {
-                                                        "type": "string",
-                                                        "description": "Plurality of the original word, if applicable",
-                                                    },
-                                                    "person": {
-                                                        "type": "string",
-                                                        "description": "Person of the original word, if applicable",
-                                                    },
-                                                    "tense": {
-                                                        "type": "string",
-                                                        "description": "Tense of the original word, if applicable",
-                                                    },
-                                                    "case": {
-                                                        "type": "string",
-                                                        "description": "What case the original word is in, if applicable",
-                                                    },
-                                                    "other": {
-                                                        "type": "string",
-                                                        "description": "Other grammatical information about the original word, if not described by other fields",
-                                                    }
-                                                },
-                                                "required": [
-                                                    "partOfSpeech",
-                                                    "originalInitialForm",
-                                                    "targetInitialForm"
-                                                ]
-                                            }
-                                        },
-                                        "required": [
-                                            "original",
-                                            "contextualTranslations",
-                                            "grammar",
-                                            "isPunctuation"
-                                        ]
-                                    }
-                                },
-                                "fullTranslation": {
-                                    "type": "string",
-                                    "description": "Full translation of the sentence",
-                                }
-                            },
-                            "required": [
-                                "words",
-                                "fullTranslation"
-                            ]
-                        }
-                    },
-                    "sourceLanguage": {
-                        "type": "string"
-                    },
-                    "targetLanguage": {
-                        "type": "string"
-                    }
-                },
-                "required": [
-                    "sentences",
-                    "sourceLanguage",
-                    "targetLanguage"
-                ]
-            }
-        );
-
-        let model = match translation_model {
-            TranslationModel::Gemini25Flash => Model::Gemini25Flash,
-            TranslationModel::Gemini25Pro => Model::Gemini25Pro,
-            TranslationModel::Gemini25FlashLight => Model::Gemini25FlashLite,
-            TranslationModel::Gemini3Pro => Model::Gemini3Pro,
-            TranslationModel::Gemini3Flash => Model::Gemini3Flash,
-            TranslationModel::Gemini31Pro => {
-                Model::Custom("models/gemini-3.1-pro-preview".to_string())
-            }
-            TranslationModel::Gemini31FlashLite => {
-                Model::Custom("models/gemini-3.1-flash-lite-preview".to_string())
-            }
-            _ => Err(TranslationErrors::UnknownModel)?,
-        };
-
-        let client = Gemini::with_model(api_key, model.clone())?;
+        let model = gemini_model_name(translation_model)?;
+        let client = gemini_client(api_key);
 
         Ok(Self {
             cache,
-            schema: Arc::new(schema),
             client,
-            model,
+            schema: Arc::new(paragraph_translation_schema()),
+            model: Arc::from(model),
             translation_model,
             from: *from,
             to: *to,
@@ -200,29 +107,34 @@ impl Translator for GeminiTranslator {
             return Ok(cached_result);
         }
 
-        let thinking_config = match &self.model {
-            Model::Gemini25Flash => ThinkingConfig {
-                thinking_budget: Some(0),
-                include_thoughts: Some(false),
-                thinking_level: None,
-            },
-            _ => ThinkingConfig {
-                thinking_budget: None,
-                include_thoughts: Some(false),
-                thinking_level: None,
-            },
-        };
+        let request = CreateChatCompletionRequestArgs::default()
+            .model(self.model.as_ref())
+            .messages([
+                ChatCompletionRequestMessage::System(
+                    ChatCompletionRequestSystemMessageArgs::default()
+                        .content(Self::get_prompt(self.from.to_name(), self.to.to_name()))
+                        .build()?,
+                ),
+                ChatCompletionRequestMessage::User(
+                    ChatCompletionRequestUserMessageArgs::default()
+                        .content(paragraph)
+                        .build()?,
+                ),
+            ])
+            .response_format(ResponseFormat::JsonSchema {
+                json_schema: ResponseFormatJsonSchema {
+                    description: Some("Paragraph translation".to_string()),
+                    name: "paragraph_translation".to_string(),
+                    schema: Some((*self.schema).clone()),
+                    strict: Some(true),
+                },
+            })
+            .stream(true)
+            .build()?;
 
         let mut stream = timeout(
             TRANSLATION_REQUEST_TIMEOUT,
-            self.client
-                .generate_content()
-                .with_system_prompt(Self::get_prompt(self.from.to_name(), self.to.to_name()))
-                .with_user_message(paragraph)
-                .with_response_mime_type("application/json")
-                .with_response_schema((*self.schema).clone())
-                .with_thinking_config(thinking_config)
-                .execute_stream(),
+            self.client.chat().create_stream(request),
         )
         .await
         .map_err(|_| anyhow::anyhow!("Gemini request timed out"))??;
@@ -231,14 +143,20 @@ impl Translator for GeminiTranslator {
 
         let full_content = timeout(total_stream_timeout(paragraph.len()), async {
             loop {
-                let next = timeout(TRANSLATION_STREAM_IDLE_TIMEOUT, stream.try_next())
+                let next = timeout(TRANSLATION_STREAM_IDLE_TIMEOUT, stream.next())
                     .await
                     .map_err(|_| anyhow::anyhow!("Gemini stream timed out"))?;
                 let should_continue = accumulator.handle_result(
                     match next {
-                        Ok(Some(response)) => Ok(Some(response.text())),
-                        Ok(None) => Ok(None),
-                        Err(err) => Err(err.into()),
+                        Some(Ok(response)) => Ok(Some(
+                            response
+                                .choices
+                                .first()
+                                .and_then(|choice| choice.delta.content.clone())
+                                .unwrap_or_default(),
+                        )),
+                        Some(Err(err)) => Err(err.into()),
+                        None => Ok(None),
                     },
                     callback.as_deref(),
                 )?;
@@ -253,9 +171,6 @@ impl Translator for GeminiTranslator {
 
         let mut translation: ParagraphTranslation = serde_json::from_str(&full_content)?;
 
-        // Usage metadata might be in the last chunk?
-        // We'll skip token count for consistent streaming support for now.
-
         let now = SystemTime::now();
         let duration_since_epoch = now.duration_since(UNIX_EPOCH)?;
         translation.timestamp = duration_since_epoch.as_secs();
@@ -266,3 +181,4 @@ impl Translator for GeminiTranslator {
         Ok(translation)
     }
 }
+

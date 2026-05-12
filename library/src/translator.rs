@@ -1,4 +1,4 @@
-mod gemini;
+pub(crate) mod gemini;
 mod openai;
 
 use std::{fmt::Display, sync::Arc, time::Duration};
@@ -237,6 +237,72 @@ pub trait Translator: Send + Sync {
             5. Consistency: Are repeated words analyzed the same way?
             6. ISO codes: Are sourceLanguage and targetLanguage correct 3-letter ISO 639-3 codes?")
     }
+}
+
+/// Single source of truth for the paragraph-translation response schema.
+///
+/// Written in OpenAI Structured Outputs strict form (every object is closed and
+/// every property is required) so OpenAI can use it with `strict: true`. Gemini
+/// reads the same shape via JSON Schema embedded in the system prompt and
+/// produces extra empty-string fields for the optional grammar slots; those
+/// deserialize cleanly into `Option<String>`.
+pub(crate) fn paragraph_translation_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "sentences": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "words": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                    "original": { "type": "string", "description": "Original word" },
+                                    "contextualTranslations": {
+                                        "type": "array",
+                                        "items": { "type": "string" },
+                                        "description": "Translation variants which are suitable for the current context"
+                                    },
+                                    "note": { "type": "string", "description": "Note about the translation, if necessary for understanding" },
+                                    "isPunctuation": { "type": "boolean" },
+                                    "grammar": {
+                                        "type": "object",
+                                        "additionalProperties": false,
+                                        "properties": {
+                                            "originalInitialForm": { "type": "string", "description": "Original word in its initial (dictionary) form" },
+                                            "targetInitialForm": { "type": "string", "description": "Translated word in its initial (dictionary) form" },
+                                            "partOfSpeech": { "type": "string", "description": "Which part of speech the original word is" },
+                                            "plurality": { "type": "string", "description": "Plurality of the original word, if applicable" },
+                                            "person": { "type": "string", "description": "Person of the original word, if applicable" },
+                                            "tense": { "type": "string", "description": "Tense of the original word, if applicable" },
+                                            "case": { "type": "string", "description": "What case the original word is in, if applicable" },
+                                            "other": { "type": "string", "description": "Other grammatical information about the original word, if not described by other fields" }
+                                        },
+                                        "required": [
+                                            "partOfSpeech", "originalInitialForm", "targetInitialForm",
+                                            "plurality", "person", "tense", "case", "other"
+                                        ]
+                                    }
+                                },
+                                "required": ["original", "contextualTranslations", "note", "grammar", "isPunctuation"]
+                            }
+                        },
+                        "fullTranslation": { "type": "string", "description": "Full translation of the sentence" }
+                    },
+                    "required": ["words", "fullTranslation"]
+                }
+            },
+            "sourceLanguage": { "type": "string" },
+            "targetLanguage": { "type": "string" }
+        },
+        "required": ["sentences", "sourceLanguage", "targetLanguage"]
+    })
 }
 
 pub fn get_translator(
