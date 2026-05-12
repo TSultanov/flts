@@ -5,13 +5,13 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.102"
-clap = { version = "4.6.0", features = ["derive"] }
+clap = { version = "4.6.1", features = ["derive"] }
 directories = "6.0.0"
 display-error-chain = "0.2.2"
-file-format = { version = "0.28.0", features = ["reader"] }
-flume = "0.11.1"
+file-format = { version = "0.29.0", features = ["reader"] }
+flume = "0.12.0"
 isolang = "2.4.0"
 library = { path = "../library" }
 log = "0.4.29"
-tokio = { version = "1.51.1", features = ["full"] }
+tokio = { version = "1.52.3", features = ["full"] }
 uuid = { version = "1.23.0", features = ["v4"] }

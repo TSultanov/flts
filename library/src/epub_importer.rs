@@ -38,8 +38,8 @@ impl EpubBook {
         for spine_item in &spine_items {
             // Get TOC elements that match this spine item
             // Compute c_href_doc once per spine item, not for every TOC element
-            let (c_href, _) = epub.resources.get(&spine_item.idref).unwrap();
-            let c_href_doc = c_href.to_str().unwrap().replace("OEBPS/", "");
+            let resource = epub.resources.get(&spine_item.idref).unwrap();
+            let c_href_doc = resource.path.to_str().unwrap().replace("OEBPS/", "");
 
             let toc_elements: Vec<_> = toc_items
                 .iter()
@@ -63,15 +63,15 @@ impl EpubBook {
 
         // Build title
         let mut title_parts = Vec::new();
-        if let Some(creator) = epub.metadata.get("creator")
-            && !creator.is_empty()
+        if let Some(creator) = epub.mdata("creator")
+            && !creator.value.is_empty()
         {
-            title_parts.push(creator[0].clone());
+            title_parts.push(creator.value.clone());
         }
-        if let Some(title) = epub.metadata.get("title")
-            && !title.is_empty()
+        if let Some(title) = epub.mdata("title")
+            && !title.value.is_empty()
         {
-            title_parts.push(title[0].clone());
+            title_parts.push(title.value.clone());
         }
 
         Ok(EpubBook {

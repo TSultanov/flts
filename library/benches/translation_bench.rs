@@ -6,7 +6,7 @@ use library::dictionary::Dictionary;
 use library::translator::TranslationModel;
 use rand::distr::Alphanumeric;
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use std::io::Cursor;
 
 fn random_string(rng: &mut StdRng, len: usize) -> String {

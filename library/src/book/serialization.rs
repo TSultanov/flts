@@ -1,4 +1,4 @@
-use rand::{Rng, distr::Alphanumeric};
+use rand::{RngExt, distr::Alphanumeric};
 
 use super::soa_helpers::VecSlice;
 use std::{

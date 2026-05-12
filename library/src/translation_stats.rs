@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use foyer::{
-    BlockEngineBuilder, DeviceBuilder, FsDeviceBuilder, HybridCache, HybridCacheBuilder,
+    BlockEngineConfig, DeviceBuilder, FsDeviceBuilder, HybridCache, HybridCacheBuilder,
     HybridCachePolicy,
 };
 use isolang::Language;
@@ -87,7 +87,7 @@ impl TranslationSizeCache {
             .with_policy(HybridCachePolicy::WriteOnInsertion)
             .memory(1024 * 1024) // 1MB memory cache
             .storage()
-            .with_engine_config(BlockEngineBuilder::new(device))
+            .with_engine_config(BlockEngineConfig::new(device))
             .build()
             .await?;
         Ok(Self { cache })

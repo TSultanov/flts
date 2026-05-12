@@ -1,6 +1,6 @@
 use std::{future::Future, pin::Pin, time::Duration};
 
-use rand::Rng;
+use rand::RngExt;
 
 #[derive(Debug, Clone, Copy)]
 pub struct RetryConfig {
