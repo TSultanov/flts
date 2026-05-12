@@ -74,25 +74,22 @@ pub fn run() {
                 if let Err(err) = app_state.eval_config().await {
                     warn!("Failed to evaluate config at startup: {err}");
                 }
-                let recv = {
+                let mut recv = {
                     let mut watcher = watcher.lock().await;
-                    watcher.get_recv()
+                    watcher
+                        .take_recv()
+                        .expect("LibraryWatcher receiver already taken")
                 };
 
-                loop {
-                    let event = recv.recv_async().await;
-                    match event {
-                        Ok(event) => {
-                            app_state
-                                .handle_file_change_event(&event)
-                                .await
-                                .unwrap_or_else(|err| {
-                                    warn!("Failed to process event {event:?}: {err}")
-                                });
-                        }
-                        Err(err) => warn!("Failed to recieve event from watcher: {}", err),
-                    }
+                while let Some(event) = recv.recv().await {
+                    app_state
+                        .handle_file_change_event(&event)
+                        .await
+                        .unwrap_or_else(|err| {
+                            warn!("Failed to process event {event:?}: {err}")
+                        });
                 }
+                warn!("LibraryWatcher sender disconnected; file change loop exiting");
             });
 
             Ok(())

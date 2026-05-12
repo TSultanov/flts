@@ -7,6 +7,7 @@ use std::time::SystemTime;
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::task::JoinHandle;
 
 const ZSTD_LEVEL: i32 = 3;
@@ -14,7 +15,7 @@ const ZSTD_LEVEL: i32 = 3;
 pub struct DiskCache<V> {
     dir: PathBuf,
     index: Arc<StdMutex<Index>>,
-    writer_tx: StdMutex<Option<flume::Sender<WriteOp<V>>>>,
+    writer_tx: StdMutex<Option<UnboundedSender<WriteOp<V>>>>,
     writer_handle: tokio::sync::Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -58,7 +59,7 @@ where
         let index = tokio::task::spawn_blocking(move || scan_dir(&dir_owned)).await??;
         let index = Arc::new(StdMutex::new(index));
 
-        let (tx, rx) = flume::unbounded::<WriteOp<V>>();
+        let (tx, rx) = unbounded_channel::<WriteOp<V>>();
         let writer_handle = tokio::spawn(writer_loop(
             dir.to_path_buf(),
             capacity_bytes,
@@ -185,9 +186,9 @@ async fn writer_loop<V: Serialize + Send + 'static>(
     dir: PathBuf,
     capacity_bytes: u64,
     index: Arc<StdMutex<Index>>,
-    rx: flume::Receiver<WriteOp<V>>,
+    mut rx: UnboundedReceiver<WriteOp<V>>,
 ) {
-    while let Ok(op) = rx.recv_async().await {
+    while let Some(op) = rx.recv().await {
         let dir = dir.clone();
         let index = index.clone();
         let result = tokio::task::spawn_blocking(move || {

@@ -13,7 +13,6 @@ anyhow = "1.0.102"
 async-openai = { version = "0.34.0", default-features = false, features = ["_api", "chat-completion", "chat-completion-types", "native-tls"] }
 async-trait = "0.1.89"
 epub = "=2.1.5"
-flume = { version = "0.12.0", default-features = false, features = ["async"] }
 fnv = "1.0.7"
 futures-util = { version = "0.3.32", default-features = false, features = ["std"] }
 isolang = "2.4.0"

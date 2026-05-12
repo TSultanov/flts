@@ -7,6 +7,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::{Duration, SystemTime};
+use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -31,12 +32,12 @@ pub enum LibraryFileChange {
 pub struct LibraryWatcher {
     path: Option<PathBuf>,
     debouncer: Debouncer<notify::RecommendedWatcher, FileIdMap>,
-    change_rx: flume::Receiver<LibraryFileChange>,
+    change_rx: Option<UnboundedReceiver<LibraryFileChange>>,
 }
 
 impl LibraryWatcher {
     pub fn new() -> anyhow::Result<Self> {
-        let (change_tx, change_rx) = flume::unbounded();
+        let (change_tx, change_rx) = unbounded_channel();
 
         let tx = change_tx.clone();
         let debouncer = new_debouncer(
@@ -87,7 +88,7 @@ impl LibraryWatcher {
         Ok(Self {
             path: None,
             debouncer,
-            change_rx,
+            change_rx: Some(change_rx),
         })
     }
 
@@ -104,8 +105,8 @@ impl LibraryWatcher {
         Ok(())
     }
 
-    pub fn get_recv(&mut self) -> flume::Receiver<LibraryFileChange> {
-        self.change_rx.clone()
+    pub fn take_recv(&mut self) -> Option<UnboundedReceiver<LibraryFileChange>> {
+        self.change_rx.take()
     }
 
     fn classify_event(event: &Event) -> Option<LibraryFileChange> {

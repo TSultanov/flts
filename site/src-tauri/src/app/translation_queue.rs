@@ -15,6 +15,7 @@ use library::{
     translator::{TranslationModel, TranslationProvider, get_translator},
 };
 use log::{info, warn};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::{Mutex, watch};
 use uuid::Uuid;
 
@@ -74,7 +75,7 @@ impl TranslationQueueTasks {
 
 pub struct TranslationQueue {
     next_request_index: AtomicUsize,
-    translate_tx: flume::Sender<TranslationRequest>,
+    translate_tx: UnboundedSender<TranslationRequest>,
 
     state: Arc<Mutex<TranslationQueueState>>,
 
@@ -105,13 +106,13 @@ impl TranslationQueue {
         let openai_api_key = config.openai_api_key.clone();
         let target_language = Language::from_639_3(&config.target_language_id)?;
 
-        let (tx_save, rx_save) = flume::unbounded::<SaveNotify>();
+        let (tx_save, rx_save) = unbounded_channel::<SaveNotify>();
 
         let state = Arc::new(Mutex::new(TranslationQueueState {
             paragraph_request_id_map: HashMap::new(),
             translation_status: HashMap::new(),
         }));
-        let (tx_status, rx_status) = flume::unbounded::<TranslationStatus>();
+        let (tx_status, rx_status) = unbounded_channel::<TranslationStatus>();
         let status_task = tokio::spawn(run_status_updater(state.clone(), rx_status));
 
         let saver_task = tokio::spawn(run_saver(
@@ -122,13 +123,13 @@ impl TranslationQueue {
             rx_save,
         ));
 
-        let (tx_translate, rx_translate) = flume::unbounded::<TranslationRequest>();
+        let (tx_translate, mut rx_translate) = unbounded_channel::<TranslationRequest>();
 
         let translate_task = {
             let state = state.clone();
             let tx_status = tx_status.clone();
             tokio::spawn(async move {
-                while let Ok(request) = rx_translate.recv_async().await {
+                while let Some(request) = rx_translate.recv().await {
                     let library = library.clone();
                     let cache = cache.clone();
                     let gemini_api_key = gemini_api_key.clone();
@@ -211,17 +212,13 @@ impl TranslationQueue {
             .insert((book_id, paragraph_id), request_id);
         drop(state);
 
-        if let Err(err) = self
-            .translate_tx
-            .send_async(TranslationRequest {
-                request_id,
-                book_id,
-                paragraph_id,
-                model,
-                use_cache,
-            })
-            .await
-        {
+        if let Err(err) = self.translate_tx.send(TranslationRequest {
+            request_id,
+            book_id,
+            paragraph_id,
+            model,
+            use_cache,
+        }) {
             self.state
                 .lock()
                 .await
@@ -260,8 +257,8 @@ async fn handle_request(
     target_language: Language,
     gemini_api_key: Option<String>,
     openai_api_key: Option<String>,
-    status_tx: flume::Sender<TranslationStatus>,
-    save_notify: &flume::Sender<SaveNotify>,
+    status_tx: UnboundedSender<TranslationStatus>,
+    save_notify: &UnboundedSender<SaveNotify>,
     request: &TranslationRequest,
 ) -> anyhow::Result<()> {
     let (translation, paragraph_text, source_language) = {
@@ -400,12 +397,10 @@ async fn handle_request(
         .add_paragraph_translation(request.paragraph_id, &p_translation, request.model)
         .await?;
 
-    save_notify
-        .send_async(SaveNotify {
-            request_id: request.request_id,
-            book_id: request.book_id,
-        })
-        .await?;
+    save_notify.send(SaveNotify {
+        request_id: request.request_id,
+        book_id: request.book_id,
+    })?;
 
     Ok(())
 }
@@ -414,12 +409,12 @@ async fn run_saver(
     library: Arc<Library>,
     app: tauri::AppHandle,
     library_tx: Arc<watch::Sender<Option<Arc<Library>>>>,
-    status_tx: flume::Sender<TranslationStatus>,
-    rx: flume::Receiver<SaveNotify>,
+    status_tx: UnboundedSender<TranslationStatus>,
+    mut rx: UnboundedReceiver<SaveNotify>,
 ) {
     let savers = Arc::new(Mutex::new(HashMap::new()));
 
-    while let Ok(msg) = rx.recv_async().await {
+    while let Some(msg) = rx.recv().await {
         let book_id = msg.book_id;
 
         // Use entry API to avoid double lock
@@ -474,9 +469,9 @@ async fn run_saver(
 
 async fn run_status_updater(
     state: Arc<Mutex<TranslationQueueState>>,
-    rx: flume::Receiver<TranslationStatus>,
+    mut rx: UnboundedReceiver<TranslationStatus>,
 ) {
-    while let Ok(status) = rx.recv_async().await {
+    while let Some(status) = rx.recv().await {
         let request_id = status.request_id;
         let is_complete = status.is_complete;
         state
