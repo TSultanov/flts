@@ -3,7 +3,7 @@ resolver = "3"
 members = ["cli", "library", "site/src-tauri"]
 
 [profile.release]
-opt-level = 3
+opt-level = "s"
 lto = "thin"
 panic = "abort"
 strip = "symbols"
