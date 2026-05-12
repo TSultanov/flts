@@ -7,6 +7,7 @@
     import Fa from "svelte-fa";
     import CircularProgress from "../widgets/CircularProgress.svelte";
     import { invoke } from "@tauri-apps/api/core";
+    import { platform } from "@tauri-apps/plugin-os";
 
     const {
         bookId,
@@ -64,35 +65,14 @@
             : null,
     );
 
-    // Detect iOS platform - initialized in onMount
     let isIos = $state(false);
 
     onMount(() => {
-        // Lazy import to avoid module-level issues
-        import("@tauri-apps/plugin-os")
-            .then(({ platform }) => {
-                try {
-                    const p = platform();
-                    // Handle both sync result and potential promise
-                    if (p && typeof (p as any).then === "function") {
-                        (p as unknown as Promise<string>)
-                            .then((val) => {
-                                isIos = val === "ios";
-                            })
-                            .catch(() => {
-                                isIos = false;
-                            });
-                    } else {
-                        isIos = p === "ios";
-                    }
-                } catch {
-                    isIos = false;
-                }
-            })
-            .catch(() => {
-                // Module not available
-                isIos = false;
-            });
+        try {
+            isIos = platform() === "ios";
+        } catch {
+            isIos = false;
+        }
     });
 
     function showSystemDictionary() {
