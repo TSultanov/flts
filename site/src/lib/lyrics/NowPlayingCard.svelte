@@ -1,12 +1,14 @@
 <script lang="ts">
     import type { NowPlaying } from './types';
+    import type { TrackMeta } from '../spotify/queueStore';
 
     type Props = {
         nowPlaying: NowPlaying | null;
         livePositionMs: number;
+        nextTrack?: TrackMeta | null;
     };
 
-    let { nowPlaying, livePositionMs }: Props = $props();
+    let { nowPlaying, livePositionMs, nextTrack = null }: Props = $props();
 
     function fmtMs(ms?: number): string {
         if (ms === undefined || ms === null) return '–:––';
@@ -41,6 +43,13 @@
                 </span>
             </div>
         </div>
+        {#if nextTrack}
+            <div class="next-track">
+                <div class="next-label">Up next</div>
+                <div class="next-title">{nextTrack.name}</div>
+                <div class="next-artist">{nextTrack.artist}</div>
+            </div>
+        {/if}
     {/if}
 </div>
 
@@ -50,10 +59,19 @@
         background-color: var(--background-color);
         color: var(--text-inverted);
         border-bottom: 1px solid var(--background-color);
+        display: grid;
+        grid-template-columns: 1fr auto;
+        align-items: center;
+        column-gap: 24px;
     }
     .status {
         font-style: italic;
         opacity: 0.85;
+        grid-column: 1 / -1;
+    }
+    .track {
+        grid-column: 1 / 2;
+        min-width: 0;
     }
     .title {
         font-size: 1.2em;
@@ -78,5 +96,32 @@
     }
     .state-indicator {
         font-size: 1em;
+    }
+    .next-track {
+        grid-column: 2 / 3;
+        text-align: right;
+        opacity: 0.65;
+        font-size: 0.85em;
+        max-width: 240px;
+        min-width: 0;
+    }
+    .next-label {
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        font-size: 0.75em;
+        opacity: 0.7;
+        margin-bottom: 2px;
+    }
+    .next-title {
+        font-weight: 500;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .next-artist {
+        opacity: 0.75;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
 </style>

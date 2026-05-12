@@ -10,6 +10,11 @@
         stopSpotifyWatcher,
         translateLyrics,
     } from './store';
+    import {
+        spotifyQueueStore,
+        type QueueStoreValue,
+        type TrackMeta,
+    } from '../spotify/queueStore';
     import type {
         Lyrics,
         LyricsTranslation,
@@ -34,6 +39,22 @@
     let stateCleanup: (() => void) | null = null;
     let stateUnsub: (() => void) | null = null;
     let translationCleanup: (() => void) | null = null;
+    let queueValue: QueueStoreValue = $state({ snapshot: null, receivedAt: 0 });
+    let queueCleanup: (() => void) | null = null;
+    let queueUnsub: (() => void) | null = null;
+
+    // Hide "Up next" if the snapshot is older than 30s — the AppleScript
+    // watcher might still report Playing while polling has fallen behind, and
+    // an outdated next track is worse than no next track.
+    const QUEUE_STALE_MS = 30_000;
+    let nowTickMs: number = $state(Date.now());
+    const nextTrack = $derived.by<TrackMeta | null>(() => {
+        const cfg = $configStore;
+        if (cfg && cfg.spotifyShowNextTrack === false) return null;
+        if (!queueValue.snapshot) return null;
+        if (nowTickMs - queueValue.receivedAt > QUEUE_STALE_MS) return null;
+        return queueValue.snapshot.upcoming[0] ?? null;
+    });
 
     let lyrics: Lyrics | null = $state(null);
     let translation: LyricsTranslation | null = $state(null);
@@ -165,6 +186,7 @@
         if (!isMac) return;
 
         positionTicker = setInterval(() => {
+            nowTickMs = Date.now();
             if (nowPlaying?.state !== 'playing') {
                 // Keep livePositionMs in sync with the anchor when paused so
                 // pausing freezes the display cleanly.
@@ -181,6 +203,12 @@
         stateCleanup = cleanup;
         stateUnsub = store.subscribe((np) => {
             nowPlaying = np;
+        });
+
+        const queueState = spotifyQueueStore();
+        queueCleanup = queueState.cleanup;
+        queueUnsub = queueState.store.subscribe((v) => {
+            queueValue = v;
         });
 
         translationCleanup = await listenLyricsTranslation({
@@ -208,6 +236,8 @@
         if (positionTicker) clearInterval(positionTicker);
         if (stateUnsub) stateUnsub();
         if (stateCleanup) stateCleanup();
+        if (queueUnsub) queueUnsub();
+        if (queueCleanup) queueCleanup();
         if (translationCleanup) translationCleanup();
         try {
             await stopSpotifyWatcher();
@@ -226,7 +256,7 @@
     </div>
 {:else}
     <div class="root" style="height: {mainHeight?.value ?? 700}px;">
-        <NowPlayingCard {nowPlaying} {livePositionMs} />
+        <NowPlayingCard {nowPlaying} {livePositionMs} {nextTrack} />
         {#if statusMessage}
             <div class="status-bar {statusMessage.level}">
                 {statusMessage.text}

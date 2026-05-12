@@ -35,7 +35,7 @@ pub struct LyricsState {
     next_request: AtomicUsize,
 
     #[cfg(target_os = "macos")]
-    watcher: SpotifyWatcher,
+    pub watcher: Arc<SpotifyWatcher>,
 }
 
 #[derive(Clone, Hash, PartialEq, Eq)]
@@ -60,7 +60,7 @@ impl LyricsState {
             next_request: AtomicUsize::new(0),
 
             #[cfg(target_os = "macos")]
-            watcher: SpotifyWatcher::new(),
+            watcher: Arc::new(SpotifyWatcher::new()),
         }
     }
 
@@ -148,39 +148,32 @@ pub async fn get_now_playing(
     Ok(None)
 }
 
-#[tauri::command]
-pub async fn get_lyrics(
-    state: tauri::State<'_, Arc<AppState>>,
-    track_id: String,
-    artist: String,
-    title: String,
-    album: Option<String>,
+pub(crate) async fn fetch_lyrics_inner(
+    state: &Arc<AppState>,
+    track_id: &str,
+    artist: &str,
+    title: &str,
+    album: Option<&str>,
     duration_s: Option<u32>,
-) -> Result<Option<Lyrics>, String> {
+) -> anyhow::Result<Option<Lyrics>> {
     // In-memory cache: hottest path, session-local.
-    if let Some(existing) = state.lyrics_state.lyrics.read().await.get(&track_id) {
+    if let Some(existing) = state.lyrics_state.lyrics.read().await.get(track_id) {
         return Ok(Some((**existing).clone()));
     }
 
     // Disk cache: skip the LRClib round-trip on songs we've fetched before.
-    let cache = state
-        .lyrics_state
-        .lyrics_cache()
-        .await
-        .map_err(|e| e.to_string())?;
-    if let Some(cached) = cache.get_raw(&track_id).await {
+    let cache = state.lyrics_state.lyrics_cache().await?;
+    if let Some(cached) = cache.get_raw(track_id).await {
         state
             .lyrics_state
             .lyrics
             .write()
             .await
-            .insert(track_id.clone(), Arc::new(cached.clone()));
+            .insert(track_id.to_string(), Arc::new(cached.clone()));
         return Ok(Some(cached));
     }
 
-    let fetched = lrclib::fetch(&track_id, &artist, &title, album.as_deref(), duration_s)
-        .await
-        .map_err(|e| e.to_string())?;
+    let fetched = lrclib::fetch(track_id, artist, title, album, duration_s).await?;
 
     if let Some(l) = &fetched {
         state
@@ -188,7 +181,7 @@ pub async fn get_lyrics(
             .lyrics
             .write()
             .await
-            .insert(track_id.clone(), Arc::new(l.clone()));
+            .insert(track_id.to_string(), Arc::new(l.clone()));
         // Cache-write failure must not fail the user's request — log and continue.
         if let Err(err) = cache.put_raw(l).await {
             warn!("LyricsCache: failed to persist raw lyrics for {track_id}: {err}");
@@ -198,14 +191,34 @@ pub async fn get_lyrics(
 }
 
 #[tauri::command]
-pub async fn translate_lyrics(
+pub async fn get_lyrics(
     state: tauri::State<'_, Arc<AppState>>,
-    app: AppHandle,
     track_id: String,
-    target_lang: String,
+    artist: String,
+    title: String,
+    album: Option<String>,
+    duration_s: Option<u32>,
+) -> Result<Option<Lyrics>, String> {
+    fetch_lyrics_inner(
+        state.inner(),
+        &track_id,
+        &artist,
+        &title,
+        album.as_deref(),
+        duration_s,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+pub(crate) async fn dispatch_translation_inner(
+    state: &Arc<AppState>,
+    app: &AppHandle,
+    track_id: &str,
+    target_lang: &str,
     model: usize,
 ) -> Result<usize, String> {
-    let tgt = Language::from_639_3(&target_lang)
+    let tgt = Language::from_639_3(target_lang)
         .ok_or_else(|| format!("unknown target lang: {target_lang}"))?;
     let model_enum = TranslationModel::from(model);
     if matches!(model_enum, TranslationModel::Unknown) {
@@ -213,7 +226,7 @@ pub async fn translate_lyrics(
     }
 
     let key = TranslationKey {
-        track_id: track_id.clone(),
+        track_id: track_id.to_string(),
         tgt,
         model: model_enum,
     };
@@ -224,7 +237,7 @@ pub async fn translate_lyrics(
         .lyrics_cache()
         .await
         .map_err(|e| e.to_string())?;
-    if let Some(cached) = cache.get(&track_id, &tgt, model).await {
+    if let Some(cached) = cache.get(track_id, &tgt, model).await {
         let request_id = state
             .lyrics_state
             .next_request
@@ -240,102 +253,143 @@ pub async fn translate_lyrics(
     }
 
     // Dedup in-flight request for the same key.
-    {
-        let mut inflight = state.lyrics_state.inflight.lock().await;
-        if let Some(&existing) = inflight.get(&key) {
-            return Ok(existing);
-        }
-        let request_id = state
-            .lyrics_state
-            .next_request
-            .fetch_add(1, Ordering::SeqCst);
-        inflight.insert(key.clone(), request_id);
-        drop(inflight);
-
-        // Get the lyrics for this track from in-memory cache; bail if not fetched yet.
-        let lyrics = state
-            .lyrics_state
-            .lyrics
-            .read()
-            .await
-            .get(&track_id)
-            .cloned();
-        let lyrics = match lyrics {
-            Some(l) => l,
-            None => {
-                state.lyrics_state.inflight.lock().await.remove(&key);
-                return Err(format!(
-                    "lyrics not loaded for track_id={track_id} — call get_lyrics first"
-                ));
-            }
-        };
-
-        let provider = model_enum
-            .provider()
-            .ok_or_else(|| "unknown model provider".to_string())?;
-        let cfg: Config = state.config.borrow().clone();
-        let api_key = match provider {
-            library::translator::TranslationProvider::Google => cfg.gemini_api_key,
-            library::translator::TranslationProvider::Openai => cfg.openai_api_key,
-        }
-        .ok_or_else(|| "no API key configured for selected provider".to_string())?;
-
-        let app_for_progress = app.clone();
-        let app_for_result = app.clone();
-        let state_arc: Arc<AppState> = state.inner().clone();
-        let progress: Box<dyn Fn(usize) + Send + Sync> = {
-            let throttle = Arc::new(std::sync::Mutex::new((Instant::now(), 0usize)));
-            Box::new(move |bytes: usize| {
-                let mut s = throttle.lock().unwrap();
-                if s.1 == bytes || s.0.elapsed() < PROGRESS_THROTTLE {
-                    return;
-                }
-                *s = (Instant::now(), bytes);
-                drop(s);
-                let _ = app_for_progress.emit(
-                    "lyrics_translation_progress",
-                    LyricsTranslationProgress { request_id, bytes },
-                );
-            })
-        };
-
-        tokio::spawn(async move {
-            let result = run_translation(&key, lyrics, api_key, cache, progress).await;
-            state_arc.lyrics_state.inflight.lock().await.remove(&key);
-            match result {
-                Ok(translation) => {
-                    info!(
-                        "Lyrics translation done: track={} lines={} req={}",
-                        key.track_id,
-                        translation.lines.len(),
-                        request_id
-                    );
-                    let _ = app_for_result.emit(
-                        "lyrics_translation_done",
-                        LyricsTranslationDone {
-                            request_id,
-                            translation,
-                        },
-                    );
-                }
-                Err(err) => {
-                    warn!(
-                        "Lyrics translation failed for track={}: {err}",
-                        key.track_id
-                    );
-                    let _ = app_for_result.emit(
-                        "lyrics_translation_error",
-                        LyricsTranslationError {
-                            request_id,
-                            error: err.to_string(),
-                        },
-                    );
-                }
-            }
-        });
-
-        Ok(request_id)
+    let mut inflight = state.lyrics_state.inflight.lock().await;
+    if let Some(&existing) = inflight.get(&key) {
+        return Ok(existing);
     }
+    let request_id = state
+        .lyrics_state
+        .next_request
+        .fetch_add(1, Ordering::SeqCst);
+    inflight.insert(key.clone(), request_id);
+    drop(inflight);
+
+    // Get the lyrics for this track from in-memory cache; bail if not fetched yet.
+    let lyrics = state
+        .lyrics_state
+        .lyrics
+        .read()
+        .await
+        .get(track_id)
+        .cloned();
+    let lyrics = match lyrics {
+        Some(l) => l,
+        None => {
+            state.lyrics_state.inflight.lock().await.remove(&key);
+            return Err(format!(
+                "lyrics not loaded for track_id={track_id} — call get_lyrics first"
+            ));
+        }
+    };
+
+    let provider = model_enum
+        .provider()
+        .ok_or_else(|| "unknown model provider".to_string())?;
+    let cfg: Config = state.config.borrow().clone();
+    let api_key = match provider {
+        library::translator::TranslationProvider::Google => cfg.gemini_api_key,
+        library::translator::TranslationProvider::Openai => cfg.openai_api_key,
+    }
+    .ok_or_else(|| "no API key configured for selected provider".to_string())?;
+
+    let app_for_progress = app.clone();
+    let app_for_result = app.clone();
+    let state_arc: Arc<AppState> = state.clone();
+    let progress: Box<dyn Fn(usize) + Send + Sync> = {
+        let throttle = Arc::new(std::sync::Mutex::new((Instant::now(), 0usize)));
+        Box::new(move |bytes: usize| {
+            let mut s = throttle.lock().unwrap();
+            if s.1 == bytes || s.0.elapsed() < PROGRESS_THROTTLE {
+                return;
+            }
+            *s = (Instant::now(), bytes);
+            drop(s);
+            let _ = app_for_progress.emit(
+                "lyrics_translation_progress",
+                LyricsTranslationProgress { request_id, bytes },
+            );
+        })
+    };
+
+    tokio::spawn(async move {
+        let result = run_translation(&key, lyrics, api_key, cache, progress).await;
+        state_arc.lyrics_state.inflight.lock().await.remove(&key);
+        match result {
+            Ok(translation) => {
+                info!(
+                    "Lyrics translation done: track={} lines={} req={}",
+                    key.track_id,
+                    translation.lines.len(),
+                    request_id
+                );
+                let _ = app_for_result.emit(
+                    "lyrics_translation_done",
+                    LyricsTranslationDone {
+                        request_id,
+                        translation,
+                    },
+                );
+            }
+            Err(err) => {
+                warn!(
+                    "Lyrics translation failed for track={}: {err}",
+                    key.track_id
+                );
+                let _ = app_for_result.emit(
+                    "lyrics_translation_error",
+                    LyricsTranslationError {
+                        request_id,
+                        error: err.to_string(),
+                    },
+                );
+            }
+        }
+    });
+
+    Ok(request_id)
+}
+
+#[tauri::command]
+pub async fn translate_lyrics(
+    state: tauri::State<'_, Arc<AppState>>,
+    app: AppHandle,
+    track_id: String,
+    target_lang: String,
+    model: usize,
+) -> Result<usize, String> {
+    dispatch_translation_inner(state.inner(), &app, &track_id, &target_lang, model).await
+}
+
+/// Internal helper: fetch lyrics + dispatch translation for one upcoming
+/// track. Silent — emits the standard `lyrics_translation_*` events but the
+/// frontend filters them by `currentRequestId` so they don't affect the UI
+/// of the currently-playing track. The point is to warm both on-disk caches
+/// so that when the upcoming track becomes active, rendering is instant.
+pub(crate) async fn preload_single(
+    state: &Arc<AppState>,
+    app: &AppHandle,
+    track_id: &str,
+    artist: &str,
+    title: &str,
+    album: Option<&str>,
+    duration_ms: Option<u32>,
+    target_lang: &str,
+    model: usize,
+) -> anyhow::Result<()> {
+    let duration_s = duration_ms.map(|ms| (ms + 500) / 1000);
+    let lyrics = fetch_lyrics_inner(state, track_id, artist, title, album, duration_s).await?;
+    if lyrics.is_none() {
+        // No lyrics on LRClib — nothing to translate. Future track-change for
+        // this id will fall through to the same `Ok(None)` path and render
+        // the "unsupported-track" status.
+        return Ok(());
+    }
+    if let Err(err) =
+        dispatch_translation_inner(state, app, track_id, target_lang, model).await
+    {
+        anyhow::bail!("translation dispatch failed: {err}");
+    }
+    Ok(())
 }
 
 async fn run_translation(

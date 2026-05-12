@@ -41,6 +41,7 @@ pub mod library_view;
 pub mod lyrics;
 #[cfg(target_os = "macos")]
 pub mod spotify;
+pub mod spotify_web;
 pub mod translation_queue;
 #[derive(Debug)]
 pub enum AppError {
@@ -80,6 +81,7 @@ pub struct AppState {
     translations_cache: tokio::sync::OnceCell<Arc<TranslationsCache>>,
     stats_cache: tokio::sync::OnceCell<Arc<TranslationSizeCache>>,
     pub lyrics_state: crate::app::lyrics::LyricsState,
+    pub spotify_web: Arc<crate::app::spotify_web::SpotifyWebState>,
 }
 
 impl AppState {
@@ -115,11 +117,20 @@ impl AppState {
             translations_cache: tokio::sync::OnceCell::new(),
             stats_cache: tokio::sync::OnceCell::new(),
             lyrics_state: crate::app::lyrics::LyricsState::new(),
+            spotify_web: Arc::new(crate::app::spotify_web::SpotifyWebState::new()),
         })
     }
 
     pub fn subscribe_config(&self) -> watch::Receiver<Config> {
         self.config.subscribe()
+    }
+
+    pub fn config_borrow_client_id(&self) -> Option<String> {
+        self.config
+            .borrow()
+            .spotify_client_id
+            .clone()
+            .filter(|s| !s.trim().is_empty())
     }
 
     pub fn subscribe_library(&self) -> watch::Receiver<Option<Arc<Library>>> {

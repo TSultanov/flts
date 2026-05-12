@@ -119,6 +119,25 @@ pub struct Config {
     pub model: usize,
     #[serde(rename = "libraryPath")]
     pub library_path: Option<String>,
+    /// Spotify Developer Dashboard client_id. Required for the Web API to work;
+    /// users register their own dev app (PKCE flow, no client secret needed)
+    /// and paste the id here. Empty/missing = Web API integration disabled.
+    #[serde(rename = "spotifyClientId", default)]
+    pub spotify_client_id: Option<String>,
+    /// How many upcoming tracks to preload lyrics+translation for. 0 disables.
+    #[serde(rename = "spotifyPreloadCount", default = "default_preload_count")]
+    pub spotify_preload_count: u32,
+    /// Show "Up next" in the now-playing card. Doesn't affect preloading.
+    #[serde(rename = "spotifyShowNextTrack", default = "default_show_next_track")]
+    pub spotify_show_next_track: bool,
+}
+
+fn default_preload_count() -> u32 {
+    1
+}
+
+fn default_show_next_track() -> bool {
+    true
 }
 
 impl Default for Config {
@@ -130,6 +149,9 @@ impl Default for Config {
             openai_api_key: None,
             model: TranslationModel::Gemini25Flash as usize,
             library_path: None,
+            spotify_client_id: None,
+            spotify_preload_count: default_preload_count(),
+            spotify_show_next_track: default_show_next_track(),
         }
     }
 }
