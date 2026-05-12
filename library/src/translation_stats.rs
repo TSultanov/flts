@@ -1,11 +1,9 @@
 use std::path::Path;
 
-use foyer::{
-    BlockEngineConfig, DeviceBuilder, FsDeviceBuilder, HybridCache, HybridCacheBuilder,
-    HybridCachePolicy,
-};
 use isolang::Language;
 use serde::{Deserialize, Serialize};
+
+use crate::disk_cache::DiskCache;
 
 /// Kalman filter state for estimating translation size ratio.
 ///
@@ -71,30 +69,19 @@ impl TranslationSizeStats {
 
 /// Cache for storing translation size statistics per language pair.
 pub struct TranslationSizeCache {
-    cache: HybridCache<String, TranslationSizeStats>,
+    cache: DiskCache<TranslationSizeStats>,
 }
 
 impl TranslationSizeCache {
     /// Create a new translation size cache in the given directory.
     pub async fn create(cache_dir: &Path) -> anyhow::Result<Self> {
         let stats_dir = cache_dir.join("translation_stats");
-        std::fs::create_dir_all(&stats_dir)?;
-
-        let device = FsDeviceBuilder::new(&stats_dir)
-            .with_capacity(16 * 1024 * 1024) // 16MB should be plenty for stats
-            .build()?;
-        let cache = HybridCacheBuilder::new()
-            .with_policy(HybridCachePolicy::WriteOnInsertion)
-            .memory(1024 * 1024) // 1MB memory cache
-            .storage()
-            .with_engine_config(BlockEngineConfig::new(device))
-            .build()
-            .await?;
+        let cache = DiskCache::open(&stats_dir, 16 * 1024 * 1024).await?;
         Ok(Self { cache })
     }
 
     pub async fn close(&self) {
-        let _ = self.cache.close().await;
+        self.cache.close().await;
     }
 
     fn make_key(source_language: &Language, target_language: &Language) -> String {
@@ -117,7 +104,6 @@ impl TranslationSizeCache {
             .await
             .ok()
             .flatten()
-            .map(|r| r.value().clone())
             .unwrap_or_default()
     }
 
@@ -130,14 +116,8 @@ impl TranslationSizeCache {
         output_len: usize,
     ) {
         let key = Self::make_key(source_language, target_language);
-
-        // Get existing stats or default
         let mut stats = self.get(source_language, target_language).await;
-
-        // Update with new observation
         stats.update(source_len, output_len);
-
-        // Store back
         self.cache.insert(key, stats);
     }
 }
