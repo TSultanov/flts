@@ -221,86 +221,90 @@
             >
 
             {#if isMac}
-                <h3 class="section">Spotify (optional)</h3>
-                <p class="hint">
-                    Enables "Up next" and silent preload of lyrics + translation
-                    for upcoming tracks while playing a playlist or album.
-                    Create a Spotify Developer app at
-                    <a
-                        href={SPOTIFY_DASHBOARD_URL}
-                        onclick={openDashboard}
-                        class="external"
-                        >{SPOTIFY_DASHBOARD_URL}</a
-                    >, add
-                    <span class="copyable">
-                        <code>{SPOTIFY_REDIRECT_URI}</code><button
-                            type="button"
-                            class="copy-btn"
-                            onclick={copyRedirectUri}
-                            title="Copy to clipboard"
-                            aria-label="Copy redirect URI">{redirectCopied
-                                ? '✓'
-                                : '⧉'}</button
-                        >
-                    </span>
-                    as a redirect URI, and paste the client ID below. Premium
-                    is required for queue access.
-                </p>
+                <details class="spotify-section">
+                    <summary>Spotify (optional)</summary>
+                    <div class="spotify-grid">
+                        <p class="hint">
+                            Enables "Up next" and silent preload of lyrics +
+                            translation for upcoming tracks while playing a
+                            playlist or album. Create a Spotify Developer app at
+                            <a
+                                href={SPOTIFY_DASHBOARD_URL}
+                                onclick={openDashboard}
+                                class="external"
+                                >{SPOTIFY_DASHBOARD_URL}</a
+                            >, add
+                            <span class="copyable">
+                                <code>{SPOTIFY_REDIRECT_URI}</code><button
+                                    type="button"
+                                    class="copy-btn"
+                                    onclick={copyRedirectUri}
+                                    title="Copy to clipboard"
+                                    aria-label="Copy redirect URI">{redirectCopied
+                                        ? '✓'
+                                        : '⧉'}</button
+                                >
+                            </span>
+                            as a redirect URI, and paste the client ID below.
+                            Premium is required for queue access.
+                        </p>
 
-                <label for="spotifyClientId">Spotify client_id</label>
-                <input
-                    id="spotifyClientId"
-                    type="text"
-                    bind:value={spotifyClientId}
-                />
-                {#if spotifyStatus.connected}
-                    <button
-                        id="spotifyAction"
-                        onclick={disconnectSpotify}
-                        disabled={spotifyBusy}
-                    >
-                        {spotifyBusy ? '...' : 'Disconnect'}
-                    </button>
-                {:else}
-                    <button
-                        id="spotifyAction"
-                        onclick={connectSpotify}
-                        disabled={spotifyBusy || !spotifyClientId.trim()}
-                    >
-                        {spotifyBusy ? 'Connecting...' : 'Connect'}
-                    </button>
-                {/if}
+                        <label for="spotifyClientId">Spotify client_id</label>
+                        <input
+                            id="spotifyClientId"
+                            type="text"
+                            bind:value={spotifyClientId}
+                        />
+                        {#if spotifyStatus.connected}
+                            <button
+                                id="spotifyAction"
+                                onclick={disconnectSpotify}
+                                disabled={spotifyBusy}
+                            >
+                                {spotifyBusy ? '...' : 'Disconnect'}
+                            </button>
+                        {:else}
+                            <button
+                                id="spotifyAction"
+                                onclick={connectSpotify}
+                                disabled={spotifyBusy || !spotifyClientId.trim()}
+                            >
+                                {spotifyBusy ? 'Connecting...' : 'Connect'}
+                            </button>
+                        {/if}
 
-                <label for="spotifyPreload">Preload tracks ahead</label>
-                <input
-                    id="spotifyPreload"
-                    type="number"
-                    min="0"
-                    max="3"
-                    bind:value={spotifyPreloadCount}
-                />
+                        <label for="spotifyPreload">Preload tracks ahead</label>
+                        <input
+                            id="spotifyPreload"
+                            type="number"
+                            min="0"
+                            max="3"
+                            bind:value={spotifyPreloadCount}
+                        />
 
-                <label for="spotifyShowNext">Show next track</label>
-                <input
-                    id="spotifyShowNext"
-                    type="checkbox"
-                    bind:checked={spotifyShowNextTrack}
-                />
+                        <label for="spotifyShowNext">Show next track</label>
+                        <input
+                            id="spotifyShowNext"
+                            type="checkbox"
+                            bind:checked={spotifyShowNextTrack}
+                        />
 
-                {#if spotifyStatus.premiumRequired}
-                    <div class="spotify-notice warn">
-                        Spotify Premium is required to access the queue
-                        endpoint. Free accounts can connect but "Up next" and
-                        preload won't work.
+                        {#if spotifyStatus.premiumRequired}
+                            <div class="spotify-notice warn">
+                                Spotify Premium is required to access the queue
+                                endpoint. Free accounts can connect but "Up
+                                next" and preload won't work.
+                            </div>
+                        {/if}
+                        {#if spotifyError}
+                            <div class="spotify-notice err">{spotifyError}</div>
+                        {:else if spotifyStatus.lastError}
+                            <div class="spotify-notice err">
+                                Last error: {spotifyStatus.lastError}
+                            </div>
+                        {/if}
                     </div>
-                {/if}
-                {#if spotifyError}
-                    <div class="spotify-notice err">{spotifyError}</div>
-                {:else if spotifyStatus.lastError}
-                    <div class="spotify-notice err">
-                        Last error: {spotifyStatus.lastError}
-                    </div>
-                {/if}
+                </details>
             {/if}
 
             <button id="save" onclick={save} class="primary">Save</button>
@@ -346,12 +350,25 @@
         grid-column: 1/4;
     }
 
-    h3.section {
+    details.spotify-section {
         grid-column: 1/4;
-        margin: 18px 0 4px 0;
-        font-size: 1em;
+        margin-top: 8px;
         border-top: 1px solid color-mix(in srgb, currentColor 15%, transparent);
         padding-top: 12px;
+    }
+    details.spotify-section > summary {
+        cursor: pointer;
+        font-weight: 600;
+        padding: 2px 0;
+        user-select: none;
+    }
+    .spotify-grid {
+        display: grid;
+        gap: 10px;
+        grid-template-columns: auto 1fr auto;
+        align-items: stretch;
+        justify-items: stretch;
+        margin-top: 10px;
     }
     p.hint {
         grid-column: 1/4;
