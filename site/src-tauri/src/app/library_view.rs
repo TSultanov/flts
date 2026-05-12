@@ -9,7 +9,6 @@ use library::{
     book::translation::ParagraphTranslationView,
     library::{Library, library_book::BookReadingState},
 };
-use tauri::Emitter;
 use uuid::Uuid;
 
 use crate::app::AppState;
@@ -93,13 +92,13 @@ pub struct GrammarView {
 }
 
 pub struct LibraryView {
-    app: tauri::AppHandle,
+    state: Arc<AppState>,
     library: Arc<Library>,
 }
 
 impl LibraryView {
-    pub fn create(app: tauri::AppHandle, library: Arc<Library>) -> Self {
-        Self { app, library }
+    pub fn create(state: Arc<AppState>, library: Arc<Library>) -> Self {
+        Self { state, library }
     }
 
     pub async fn get_paragraph_view(
@@ -277,7 +276,7 @@ impl LibraryView {
             .create_book_plain(title, text, source_language)
             .await?;
 
-        self.app.emit("library_updated", ())?;
+        self.state.notify_library_changed();
 
         Ok(id)
     }
@@ -289,7 +288,7 @@ impl LibraryView {
     ) -> anyhow::Result<Uuid> {
         let id = self.library.create_book_epub(book, source_language).await?;
 
-        self.app.emit("library_updated", ())?;
+        self.state.notify_library_changed();
 
         Ok(id)
     }
@@ -325,13 +324,13 @@ impl LibraryView {
             book.update_folder_path(new_path).await?;
         }
 
-        self.app.emit("library_updated", ())?;
+        self.state.notify_library_changed();
         Ok(())
     }
 
     pub async fn delete_book(&self, book_id: Uuid) -> anyhow::Result<()> {
         self.library.delete_book(&book_id).await?;
-        self.app.emit("library_updated", ())?;
+        self.state.notify_library_changed();
         Ok(())
     }
 
@@ -379,7 +378,7 @@ pub async fn list_books(
         return Ok(vec![]);
     };
 
-    LibraryView::create(state.app.clone(), library)
+    LibraryView::create(state.inner().clone(), library)
         .list_books(target_language.as_ref())
         .await
         .map_err(|err| err.to_string())
@@ -395,7 +394,7 @@ pub async fn list_book_chapters(
         return Ok(vec![]);
     };
 
-    let mut library_view = LibraryView::create(state.app.clone(), library);
+    let mut library_view = LibraryView::create(state.inner().clone(), library);
     library_view
         .list_book_chapters(book_id)
         .await
@@ -418,7 +417,7 @@ pub async fn get_book_chapter_paragraphs(
         return Ok(vec![]);
     };
 
-    let mut library_view = LibraryView::create(state.app.clone(), library);
+    let mut library_view = LibraryView::create(state.inner().clone(), library);
     library_view
         .list_book_chapter_paragraphs(book_id, chapter_id, &target_language)
         .await
@@ -443,7 +442,7 @@ pub async fn get_word_info(
         return Ok(None);
     };
 
-    let mut library_view = LibraryView::create(state.app.clone(), library);
+    let mut library_view = LibraryView::create(state.inner().clone(), library);
     library_view
         .get_word_info(
             book_id,
@@ -472,7 +471,7 @@ pub async fn get_paragraph_view(
         return Err("Library is not configured".into());
     };
 
-    let library_view = LibraryView::create(state.app.clone(), library);
+    let library_view = LibraryView::create(state.inner().clone(), library);
     library_view
         .get_paragraph_view(book_id, paragraph_id, &target_language)
         .await
@@ -491,7 +490,7 @@ pub async fn import_plain_text(
     let source_language = Language::from_639_3(&source_language_id)
         .ok_or_else(|| format!("Failed to resolve source language: {}", source_language_id))?;
 
-    let mut library_view = LibraryView::create(state.app.clone(), library);
+    let mut library_view = LibraryView::create(state.inner().clone(), library);
     library_view
         .import_plain_text(&title, &text, &source_language)
         .await
@@ -509,7 +508,7 @@ pub async fn import_epub(
     let source_language = Language::from_639_3(&source_language_id)
         .ok_or_else(|| format!("Failed to resolve source language: {}", source_language_id))?;
 
-    let mut library_view = LibraryView::create(state.app.clone(), library);
+    let mut library_view = LibraryView::create(state.inner().clone(), library);
     library_view
         .import_epub(&book, &source_language)
         .await
@@ -526,7 +525,7 @@ pub async fn get_book_reading_state(
         return Ok(None);
     };
 
-    LibraryView::create(state.app.clone(), library)
+    LibraryView::create(state.inner().clone(), library)
         .get_book_reading_state(book_id)
         .await
         .map_err(|err| err.to_string())
@@ -541,7 +540,7 @@ pub async fn save_book_reading_state(
 ) -> Result<(), String> {
     let library = state.library.borrow().clone().ok_or("Library is not configured")?;
 
-    LibraryView::create(state.app.clone(), library)
+    LibraryView::create(state.inner().clone(), library)
         .save_book_reading_state(book_id, chapter_id, paragraph_id)
         .await
         .map_err(|err| err.to_string())
@@ -555,7 +554,7 @@ pub async fn move_book(
 ) -> Result<(), String> {
     let library = state.library.borrow().clone().ok_or("Library is not configured")?;
 
-    LibraryView::create(state.app.clone(), library)
+    LibraryView::create(state.inner().clone(), library)
         .move_book(book_id, path)
         .await
         .map_err(|err| err.to_string())
@@ -568,7 +567,7 @@ pub async fn delete_book(
 ) -> Result<(), String> {
     let library = state.library.borrow().clone().ok_or("Library is not configured")?;
 
-    LibraryView::create(state.app.clone(), library)
+    LibraryView::create(state.inner().clone(), library)
         .delete_book(book_id)
         .await
         .map_err(|err| err.to_string())
@@ -588,7 +587,7 @@ pub async fn mark_word_visible(
         return Err("Library is not configured".into());
     };
 
-    LibraryView::create(state.app.clone(), library)
+    LibraryView::create(state.inner().clone(), library)
         .mark_word_visible(book_id, paragraph_id, flat_index, &target_language)
         .await
         .map_err(|err| err.to_string())

@@ -72,7 +72,7 @@ pub struct AppState {
     app: tauri::AppHandle,
     config_path: PathBuf,
     config: watch::Sender<Config>,
-    library: watch::Sender<Option<Arc<Library>>>,
+    library: Arc<watch::Sender<Option<Arc<Library>>>>,
     translation_queue: watch::Sender<Option<Arc<TranslationQueue>>>,
     watcher: Arc<Mutex<LibraryWatcher>>,
     translations_cache: tokio::sync::OnceCell<Arc<TranslationsCache>>,
@@ -107,13 +107,29 @@ impl AppState {
             app,
             config_path,
             config: watch::channel(config).0,
-            library: watch::channel(None).0,
+            library: Arc::new(watch::channel::<Option<Arc<Library>>>(None).0),
             translation_queue: watch::channel(None).0,
             watcher,
             translations_cache: tokio::sync::OnceCell::new(),
             stats_cache: tokio::sync::OnceCell::new(),
             lyrics_state: crate::app::lyrics::LyricsState::new(),
         })
+    }
+
+    pub fn subscribe_config(&self) -> watch::Receiver<Config> {
+        self.config.subscribe()
+    }
+
+    pub fn subscribe_library(&self) -> watch::Receiver<Option<Arc<Library>>> {
+        self.library.subscribe()
+    }
+
+    pub fn notify_library_changed(&self) {
+        self.library.send_modify(|_| {});
+    }
+
+    pub fn library_sender(&self) -> Arc<watch::Sender<Option<Arc<Library>>>> {
+        Arc::clone(&self.library)
     }
 
     pub async fn update_config(&self, config: Config) -> anyhow::Result<()> {
@@ -148,8 +164,6 @@ impl AppState {
 
         config.save(&self.config_path)?;
         self.config.send_replace(config);
-        info!("Emitting \"config_updated\"");
-        self.app.emit("config_updated", ())?;
         self.eval_config().await?;
         Ok(())
     }
@@ -171,9 +185,6 @@ impl AppState {
                 .unwrap_or_else(|err| {
                     warn!("Failed to set watcher path to {}: {}", library_path, err)
                 });
-
-            info!("Emitting \"library_updated\"");
-            self.app.emit("library_updated", ())?;
         } else {
             self.library.send_replace(None);
             self.stop_translation_queue().await;
@@ -246,9 +257,7 @@ impl AppState {
             LibraryFileChange::BookChanged { modified: _, uuid } => {
                 info!("Emitting \"book_updated\" for {uuid}");
                 self.app.emit("book_updated", uuid)?;
-
-                info!("Emitting \"library_updated\"");
-                self.app.emit("library_updated", ())?;
+                self.notify_library_changed();
             }
             LibraryFileChange::TranslationChanged {
                 modified: _,
@@ -262,9 +271,7 @@ impl AppState {
                 if target_language == Some(*to) {
                     info!("Emitting \"book_updated\" for {uuid}");
                     self.app.emit("book_updated", uuid)?;
-
-                    info!("Emitting \"library_updated\"");
-                    self.app.emit("library_updated", ())?;
+                    self.notify_library_changed();
                 }
             }
             LibraryFileChange::DictionaryChanged {
@@ -292,8 +299,15 @@ impl AppState {
         let config = self.config.borrow().clone();
         let cache = self.get_translations_cache().await?;
         let stats_cache = self.get_stats_cache().await?;
-        let queue = TranslationQueue::init(library, cache, stats_cache, &config, self.app.clone())
-            .ok_or(AppError::NoTranslationQueueError)?;
+        let queue = TranslationQueue::init(
+            library,
+            cache,
+            stats_cache,
+            &config,
+            self.app.clone(),
+            self.library_sender(),
+        )
+        .ok_or(AppError::NoTranslationQueueError)?;
 
         // Atomic install: if someone won the race while we were building, return
         // theirs and let ours drop (its tasks are aborted via TranslationQueue::drop).

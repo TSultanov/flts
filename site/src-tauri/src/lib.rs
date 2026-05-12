@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use library::library::file_watcher::LibraryWatcher;
 use log::{info, warn};
-use tauri::{Builder, Manager, RunEvent};
+use tauri::{Builder, Emitter, Manager, RunEvent};
 use tokio::sync::Mutex;
 
 pub mod app;
@@ -42,6 +42,32 @@ pub fn run() {
             )?);
             info!("App created");
             app.manage(app_state.clone());
+
+            info!("Spawning watch->emit bridges");
+            {
+                let mut rx = app_state.subscribe_config();
+                let app = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    while rx.changed().await.is_ok() {
+                        info!("Emitting \"config_updated\"");
+                        if let Err(err) = app.emit("config_updated", ()) {
+                            warn!("Failed to emit config_updated: {err}");
+                        }
+                    }
+                });
+            }
+            {
+                let mut rx = app_state.subscribe_library();
+                let app = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    while rx.changed().await.is_ok() {
+                        info!("Emitting \"library_updated\"");
+                        if let Err(err) = app.emit("library_updated", ()) {
+                            warn!("Failed to emit library_updated: {err}");
+                        }
+                    }
+                });
+            }
 
             info!("Spawning async init");
             tauri::async_runtime::spawn(async move {

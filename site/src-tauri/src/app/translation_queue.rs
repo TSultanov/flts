@@ -15,7 +15,7 @@ use library::{
     translator::{TranslationModel, TranslationProvider, get_translator},
 };
 use log::{info, warn};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 use uuid::Uuid;
 
 use crate::app::config::Config;
@@ -99,6 +99,7 @@ impl TranslationQueue {
         stats_cache: Arc<TranslationSizeCache>,
         config: &Config,
         app: tauri::AppHandle,
+        library_tx: Arc<watch::Sender<Option<Arc<Library>>>>,
     ) -> Option<Arc<Self>> {
         let gemini_api_key = config.gemini_api_key.clone();
         let openai_api_key = config.openai_api_key.clone();
@@ -116,6 +117,7 @@ impl TranslationQueue {
         let saver_task = tokio::spawn(run_saver(
             library.clone(),
             app.clone(),
+            library_tx,
             tx_status.clone(),
             rx_save,
         ));
@@ -411,6 +413,7 @@ async fn handle_request(
 async fn run_saver(
     library: Arc<Library>,
     app: tauri::AppHandle,
+    library_tx: Arc<watch::Sender<Option<Arc<Library>>>>,
     status_tx: flume::Sender<TranslationStatus>,
     rx: flume::Receiver<SaveNotify>,
 ) {
@@ -425,7 +428,7 @@ async fn run_saver(
             std::collections::hash_map::Entry::Vacant(_) => {
                 // No existing saver, save immediately
                 drop(savers_guard); // Drop lock before await
-                save_and_emit(library.clone(), app.clone(), msg)
+                save_and_emit(library.clone(), app.clone(), &library_tx, msg)
                     .await
                     .unwrap_or_else(|err| warn!("Failed to autosave book {book_id}: {err}"));
                 let _ = status_tx.send(TranslationStatus {
@@ -441,11 +444,12 @@ async fn run_saver(
                 let saver = {
                     let library = library.clone();
                     let app = app.clone();
+                    let library_tx = library_tx.clone();
                     let savers = savers.clone();
                     let status_tx = status_tx.clone();
                     async move {
                         tokio::time::sleep(Duration::from_secs(1)).await;
-                        save_and_emit(library.clone(), app.clone(), msg)
+                        save_and_emit(library.clone(), app.clone(), &library_tx, msg)
                             .await
                             .unwrap_or_else(|err| {
                                 warn!("Failed to autosave book {book_id}: {err}")
@@ -500,20 +504,13 @@ async fn save_book(library: Arc<Library>, book_id: Uuid) -> anyhow::Result<()> {
 async fn save_and_emit(
     library: Arc<Library>,
     app: tauri::AppHandle,
+    library_tx: &watch::Sender<Option<Arc<Library>>>,
     msg: SaveNotify,
 ) -> anyhow::Result<()> {
     save_book(library, msg.book_id).await?;
-    emit_updates(app, msg)?;
-    Ok(())
-}
-
-fn emit_updates(app: tauri::AppHandle, msg: SaveNotify) -> anyhow::Result<()> {
     info!("Emitting \"book_updated\" for {}", msg.book_id);
     app.emit("book_updated", msg.book_id)?;
-
-    info!("Emitting \"library_updated\"");
-    app.emit("library_updated", ())?;
-
+    library_tx.send_modify(|_| {});
     Ok(())
 }
 
