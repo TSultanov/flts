@@ -30,7 +30,7 @@ serde = "1.0.228"
 serde_json = "1.0.149"
 strum = { version = "0.28.0", features = ["derive"] }
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "fs", "time", "io-util", "process"] }
-zstd = "0.13.3"
+zstd = { version = "0.13.3", default-features = false, features = ["arrays"] }
 
 [dependencies.uuid]
 version = "1.23.0"
