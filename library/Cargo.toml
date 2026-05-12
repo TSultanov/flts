@@ -22,7 +22,7 @@ log = "0.4.29"
 notify = "8.2.0"
 notify-debouncer-full = "0.7.0"
 rand = "0.10.1"
-regex = "1.12.3"
+regex-lite = "0.1.7"
 reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
 ringbuffer = "0.16.0"
 scraper = "0.26.0"

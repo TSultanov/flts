@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use log::{info, warn};
-use regex::Regex;
+use regex_lite::Regex;
 use serde::Deserialize;
 
 use crate::{
