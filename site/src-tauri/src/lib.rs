@@ -9,14 +9,18 @@ pub mod app;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    Builder::default()
+    #[allow(unused_mut)]
+    let mut builder = Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_os::init())
-        .setup(|app| {
-            #[cfg(not(any(target_os = "android", target_os = "ios")))]
-            app.handle()
-                .plugin(tauri_plugin_window_state::Builder::new().build())?;
+        .plugin(tauri_plugin_os::init());
 
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        builder = builder.plugin(tauri_plugin_window_state::Builder::new().build());
+    }
+
+    builder
+        .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
