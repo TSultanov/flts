@@ -41,6 +41,12 @@ const REDIRECT_BIND: &str = "127.0.0.1:53682";
 const SCOPES: &str = "user-read-playback-state";
 
 const QUEUE_POLL_INTERVAL: Duration = Duration::from_secs(10);
+/// Spotify's queue API can lag a couple of seconds behind the AppleScript
+/// track-change signal because the desktop client tells the API "advancing"
+/// before the API state actually flips. Wait briefly before the immediate
+/// fetch so we don't snapshot the previous track's queue.
+#[cfg(target_os = "macos")]
+const QUEUE_REFRESH_DELAY: Duration = Duration::from_millis(800);
 const AUTH_TIMEOUT: Duration = Duration::from_secs(300);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 const TOKEN_SLACK: Duration = Duration::from_secs(30);
@@ -73,6 +79,40 @@ pub struct QueueSnapshot {
     pub upcoming: Vec<TrackMeta>,
 }
 
+/// Single source of truth for "what tracks should have lyrics+translation
+/// resolved soon". Combines the AppleScript watcher's authoritative
+/// current-track signal with Spotify Web's queue (next tracks + context).
+/// Whenever the set of track IDs in this list changes, the resolver runs.
+#[derive(Debug, Clone, Default)]
+struct PlaybackList {
+    current: Option<TrackMeta>,
+    next: Vec<TrackMeta>,
+    context_type: Option<String>,
+}
+
+impl PlaybackList {
+    /// Order-preserving sequence of track ids; used as the dedup key for
+    /// "has the list changed?" comparisons.
+    fn track_ids(&self) -> Vec<String> {
+        let mut ids = Vec::with_capacity(self.next.len() + 1);
+        if let Some(c) = &self.current {
+            ids.push(c.id.clone());
+        }
+        ids.extend(self.next.iter().map(|t| t.id.clone()));
+        ids
+    }
+
+    /// Emit-friendly view for the frontend's "Up next" UI and the
+    /// `spotify_web_get_queue` Tauri command.
+    fn as_snapshot(&self) -> QueueSnapshot {
+        QueueSnapshot {
+            context_type: self.context_type.clone(),
+            currently_playing_id: self.current.as_ref().map(|c| c.id.clone()),
+            upcoming: self.next.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SpotifyWebStatus {
     pub connected: bool,
@@ -83,7 +123,24 @@ pub struct SpotifyWebStatus {
     pub last_error: Option<String>,
 }
 
-// ----- Internal types ----------------------------------------------------
+
+/// Distinguishes "refresh token is permanently dead" from "transient error
+/// (network, 5xx, parse failure)". Only the permanent variant clears the
+/// keychain entry.
+#[derive(Debug)]
+enum RefreshError {
+    InvalidGrant(String),
+    Transient(String),
+}
+
+impl std::fmt::Display for RefreshError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RefreshError::InvalidGrant(body) => write!(f, "invalid_grant: {body}"),
+            RefreshError::Transient(msg) => write!(f, "{msg}"),
+        }
+    }
+}
 
 #[derive(Debug)]
 struct TokenInfo {
@@ -145,14 +202,9 @@ impl SpotifyWebState {
 
     /// Restore session from keyring on app start. Best-effort: a failure here
     /// just means the user will see "Not connected" and can reconnect manually.
-    /// On success, auto-starts polling if a watcher is provided.
-    pub async fn try_resume(
-        self: &Arc<Self>,
-        client_id: Option<String>,
-        #[cfg(target_os = "macos")] app: Option<AppHandle>,
-        #[cfg(target_os = "macos")] watcher: Option<Arc<SpotifyWatcher>>,
-        #[cfg(target_os = "macos")] state: Option<Arc<crate::app::AppState>>,
-    ) {
+    /// Polling is owned by the watcher lifecycle (start_spotify_watcher), not
+    /// by connection state — so this method only restores credentials.
+    pub async fn try_resume(self: &Arc<Self>, client_id: Option<String>) {
         let Some(client_id) = client_id else {
             return;
         };
@@ -167,30 +219,31 @@ impl SpotifyWebState {
             Ok(token) => {
                 let mut inner = self.inner.write().await;
                 inner.token = Some(token);
-                drop(inner);
                 info!("Spotify Web: resumed from stored refresh token");
-
-                #[cfg(target_os = "macos")]
-                if let (Some(app), Some(watcher), Some(state)) = (app, watcher, state) {
-                    self.start_polling(app, watcher, state).await;
-                }
             }
-            Err(err) => {
-                warn!("Spotify Web: refresh on resume failed: {err}");
+            Err(RefreshError::InvalidGrant(_)) => {
+                warn!(
+                    "Spotify Web: stored refresh token is no longer valid \
+                     (revoked or expired); clearing keychain entry"
+                );
+                if let Err(err) = delete_refresh_token() {
+                    debug!("Keyring delete after invalid_grant: {err}");
+                }
+                let mut inner = self.inner.write().await;
+                inner.last_error =
+                    Some("Spotify access was revoked — please reconnect.".to_string());
+            }
+            Err(RefreshError::Transient(err)) => {
+                warn!("Spotify Web: refresh on resume failed (transient): {err}");
             }
         }
     }
 
     /// Run the PKCE auth flow. Blocks until the browser callback arrives (or
-    /// timeout). Stores the refresh token in the keyring on success and
-    /// auto-starts the queue poller.
-    pub async fn connect(
-        self: &Arc<Self>,
-        client_id: String,
-        #[cfg(target_os = "macos")] app: AppHandle,
-        #[cfg(target_os = "macos")] watcher: Arc<SpotifyWatcher>,
-        #[cfg(target_os = "macos")] state: Arc<crate::app::AppState>,
-    ) -> Result<(), String> {
+    /// timeout) and stores the refresh token in the keyring on success.
+    /// Polling itself is tied to the watcher lifecycle and runs independently;
+    /// connecting just gives that loop a valid token to use.
+    pub async fn connect(self: &Arc<Self>, client_id: String) -> Result<(), String> {
         let _guard = self.auth_lock.lock().await;
 
         // Persist client_id immediately so polling can use it after a restart.
@@ -246,10 +299,6 @@ impl SpotifyWebState {
             inner.last_error = None;
         }
         info!("Spotify Web: connected");
-
-        #[cfg(target_os = "macos")]
-        self.start_polling(app, watcher, state).await;
-
         Ok(())
     }
 
@@ -259,9 +308,9 @@ impl SpotifyWebState {
             inner.token = None;
             inner.premium_required = false;
             inner.last_error = None;
-            if let Some(h) = inner.poll_handle.take() {
-                h.abort();
-            }
+            // Poll loop stays alive — its job is to keep resolving the
+            // current track from AppleScript signals. Without a token its
+            // queue fetches become no-ops, which is exactly what we want.
         }
         if let Err(err) = delete_refresh_token() {
             debug!("Keyring delete: {err}");
@@ -269,6 +318,14 @@ impl SpotifyWebState {
         // Clear queue snapshot so the UI hides Up Next.
         let _ = self.tx.send(None);
         info!("Spotify Web: disconnected");
+    }
+
+    pub async fn stop_polling(&self) {
+        let mut inner = self.inner.write().await;
+        if let Some(h) = inner.poll_handle.take() {
+            h.abort();
+        }
+        let _ = self.tx.send(None);
     }
 
     /// Spawns the queue poller. Idempotent; subsequent calls are no-ops while
@@ -285,8 +342,14 @@ impl SpotifyWebState {
     ) {
         let mut inner = self.inner.write().await;
         if inner.poll_handle.is_some() {
+            info!("Spotify Web: start_polling called but loop already running");
             return;
         }
+        let connected = inner.token.is_some();
+        info!(
+            "Spotify Web: starting poll loop (connected={connected}, has_client_id={})",
+            inner.client_id.is_some()
+        );
         let me = self.clone();
         let tx = self.tx.clone();
         let handle = tokio::spawn(async move {
@@ -325,7 +388,7 @@ impl SpotifyWebState {
         Ok(parsed.into_token_info())
     }
 
-    async fn refresh_with(&self, client_id: &str, refresh: &str) -> anyhow::Result<TokenInfo> {
+    async fn refresh_with(&self, client_id: &str, refresh: &str) -> Result<TokenInfo, RefreshError> {
         let resp = self
             .client
             .post(SPOTIFY_TOKEN_URL)
@@ -335,13 +398,30 @@ impl SpotifyWebState {
                 ("client_id", client_id),
             ])
             .send()
-            .await?;
+            .await
+            .map_err(|e| RefreshError::Transient(e.to_string()))?;
         let status = resp.status();
-        let body = resp.text().await?;
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| RefreshError::Transient(e.to_string()))?;
         if !status.is_success() {
-            anyhow::bail!("Spotify refresh {status}: {body}");
+            // Spotify returns 400 + `"error":"invalid_grant"` when the refresh
+            // token has been revoked, expired, or was issued for a different
+            // client_id. That state is permanent for this token — keeping it
+            // in the keychain just makes every future startup log the same
+            // warning. Distinguish from transient (5xx, network) errors so
+            // only the dead-token case clears the keychain.
+            let is_invalid_grant = status == reqwest::StatusCode::BAD_REQUEST
+                && body.contains("\"error\":\"invalid_grant\"");
+            return Err(if is_invalid_grant {
+                RefreshError::InvalidGrant(body)
+            } else {
+                RefreshError::Transient(format!("Spotify refresh {status}: {body}"))
+            });
         }
-        let mut parsed: SpotifyTokenResponse = serde_json::from_str(&body)?;
+        let mut parsed: SpotifyTokenResponse = serde_json::from_str(&body)
+            .map_err(|e| RefreshError::Transient(e.to_string()))?;
         // Spotify sometimes omits refresh_token on refresh — keep the old one.
         if parsed.refresh_token.is_none() {
             parsed.refresh_token = Some(refresh.to_string());
@@ -375,10 +455,24 @@ impl SpotifyWebState {
                 inner.token = Some(token);
                 Some(access)
             }
-            Err(err) => {
-                warn!("Spotify Web: refresh failed: {err}");
+            Err(RefreshError::InvalidGrant(_)) => {
+                // Token was revoked or expired mid-session. Drop it so future
+                // fetch_queue calls silently no-op (the poll loop keeps
+                // running for current-track resolution either way).
+                warn!("Spotify Web: refresh token revoked mid-session; clearing");
+                if let Err(err) = delete_refresh_token() {
+                    debug!("Keyring delete after invalid_grant: {err}");
+                }
                 let mut inner = self.inner.write().await;
-                inner.last_error = Some(err.to_string());
+                inner.token = None;
+                inner.last_error =
+                    Some("Spotify access was revoked — please reconnect.".to_string());
+                None
+            }
+            Err(RefreshError::Transient(err)) => {
+                warn!("Spotify Web: refresh failed (transient): {err}");
+                let mut inner = self.inner.write().await;
+                inner.last_error = Some(err);
                 None
             }
         }
@@ -386,8 +480,10 @@ impl SpotifyWebState {
 
     async fn fetch_queue(&self) -> anyhow::Result<Option<QueueSnapshot>> {
         let Some(token) = self.access_token().await else {
+            debug!("fetch_queue: no access token (not connected) — returning None");
             return Ok(None);
         };
+        debug!("fetch_queue: calling /me/player");
 
         // /me/player tells us the playback context (playlist/album/...). We
         // only want to preload when context is playlist or album.
@@ -543,86 +639,241 @@ async fn poll_loop(
     tx: Arc<watch::Sender<Option<QueueSnapshot>>>,
     app_state: Arc<crate::app::AppState>,
 ) {
+    info!("poll_loop: entered");
     let mut ticker = time::interval(QUEUE_POLL_INTERVAL);
     ticker.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
-    let mut preloaded: std::collections::HashSet<String> = std::collections::HashSet::new();
-    loop {
-        ticker.tick().await;
 
-        // Only call the API while the user is actively playing — paused users
-        // don't need queue refreshes and we want to be quiet on the API.
-        let is_playing = matches!(
-            watcher.current().map(|np| np.state),
-            Some(PlayerState::Playing)
+    // Single source of truth for "tracks to keep resolved". Updated by both
+    // the AppleScript watcher (current) and Spotify Web (next + context).
+    let mut list = PlaybackList::default();
+    let mut last_ids: Vec<String> = Vec::new();
+    let mut resolved: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    let mut state_rx = watcher.subscribe();
+    // None means we haven't seen the watcher emit yet. The first emit is
+    // treated as "initial" (not a track change) so we don't pay the Spotify-
+    // API-settle delay before our first queue fetch.
+    let mut last_track_id: Option<String> = None;
+
+    loop {
+        // Wake on either a scheduled tick or a track-change from the watcher.
+        // play/pause and position jumps also wake us up but we filter them
+        // here — only a real track_id transition is structurally interesting.
+        let was_initial = last_track_id.is_none();
+        let wake_reason: &'static str;
+        tokio::select! {
+            _ = ticker.tick() => { wake_reason = "tick"; }
+            res = state_rx.changed() => {
+                if res.is_err() {
+                    info!("poll_loop: watcher channel closed, exiting");
+                    return;
+                }
+                let new_id = state_rx
+                    .borrow_and_update()
+                    .as_ref()
+                    .and_then(|np| np.track_id.clone());
+                if new_id == last_track_id {
+                    // Same track — must be play/pause or position seek. Not
+                    // structurally interesting; wait for the next signal.
+                    continue;
+                }
+                info!(
+                    "poll_loop: track_id changed {:?} -> {:?} (initial={})",
+                    last_track_id, new_id, was_initial
+                );
+                last_track_id = new_id;
+                if !was_initial {
+                    time::sleep(QUEUE_REFRESH_DELAY).await;
+                }
+                wake_reason = if was_initial { "initial" } else { "track_change" };
+            }
+        }
+        info!("poll_loop: iteration begin (reason={wake_reason})");
+
+        // Pull current track from the watcher. Both Playing and Paused are
+        // valid "has-a-current-track" states — Spotify keeps the queue
+        // context across pauses, and so should we. Only Stopped / NotRunning
+        // mean there's nothing playing-or-pending to look at.
+        let np = watcher.current();
+        let has_current_track = matches!(
+            np.as_ref().map(|n| &n.state),
+            Some(PlayerState::Playing) | Some(PlayerState::Paused)
         );
-        if !is_playing {
-            continue;
+        list.current = if has_current_track {
+            np.and_then(np_to_track_meta)
+        } else {
+            None
+        };
+
+        // Refresh next + context from the Spotify Web API. On error we keep
+        // the previous next so a transient hiccup doesn't blank "Up next".
+        if has_current_track {
+            let has_token = web.inner.read().await.token.is_some();
+            info!(
+                "poll_loop: current={:?}, fetching queue (web_connected={has_token})",
+                list.current.as_ref().map(|c| &c.name)
+            );
+            match web.fetch_queue().await {
+                Ok(Some(snap)) => {
+                    let raw_upcoming = snap.upcoming.len();
+                    info!(
+                        "poll_loop: queue ok: context={:?}, currently_playing={:?}, raw_upcoming={raw_upcoming}",
+                        snap.context_type, snap.currently_playing_id
+                    );
+                    // Defensive: drop the current track from `next` in case
+                    // the API hasn't propagated the advance yet and still
+                    // lists it as upcoming.
+                    let current_id = list.current.as_ref().map(|c| c.id.clone());
+                    list.next = snap
+                        .upcoming
+                        .into_iter()
+                        .filter(|t| Some(&t.id) != current_id.as_ref())
+                        .collect();
+                    list.context_type = snap.context_type;
+                }
+                Ok(None) => {
+                    info!(
+                        "poll_loop: fetch_queue returned None (not connected, no playback context, or Premium required) — clearing next/context"
+                    );
+                    list.next.clear();
+                    list.context_type = None;
+                }
+                Err(err) => {
+                    warn!("poll_loop: queue fetch error: {err}");
+                    let mut inner = web.inner.write().await;
+                    inner.last_error = Some(err.to_string());
+                    // Leave `next` and `context_type` as-is.
+                }
+            }
+        } else {
+            // Stopped / NotRunning — no track, no queue, nothing to show.
+            info!("poll_loop: watcher reports no current track — clearing list");
+            list.next.clear();
+            list.context_type = None;
         }
 
-        match web.fetch_queue().await {
-            Ok(Some(snapshot)) => {
-                let _ = tx.send(Some(snapshot.clone()));
-                if let Err(err) = app.emit("spotify_queue", &snapshot) {
-                    warn!("Failed to emit spotify_queue: {err}");
-                }
-                maybe_preload(&app_state, &app, &snapshot, &mut preloaded).await;
-            }
-            Ok(None) => {
-                // No playback context or Premium required — clear the snapshot.
-                let _ = tx.send(None);
-                let _ = app.emit("spotify_queue", &Option::<QueueSnapshot>::None);
-                preloaded.clear();
-            }
-            Err(err) => {
-                debug!("Spotify queue poll error: {err}");
-                let mut inner = web.inner.write().await;
-                inner.last_error = Some(err.to_string());
-            }
+        // Has the set of tracks-to-resolve actually changed? This gates the
+        // resolver — we don't want to re-spawn work for an unchanged list.
+        // We always emit the snapshot below, even when unchanged, so the
+        // frontend's `receivedAt` keeps advancing; the timestamp is part of
+        // the data ("yes, this is still current as of now"), and without
+        // that heartbeat a paused user would see "Up next" disappear once
+        // their snapshot crossed the frontend's staleness threshold.
+        let new_ids = list.track_ids();
+        let list_changed = new_ids != last_ids;
+        if list_changed {
+            info!(
+                "poll_loop: playback list changed: {} -> {} tracks (current={:?}, next_count={})",
+                last_ids.len(),
+                new_ids.len(),
+                list.current.as_ref().map(|c| &c.name),
+                list.next.len()
+            );
+            last_ids = new_ids;
+        }
+
+        let snapshot = list.as_snapshot();
+        let _ = tx.send(Some(snapshot.clone()));
+        if let Err(err) = app.emit("spotify_queue", &snapshot) {
+            warn!("Failed to emit spotify_queue: {err}");
+        }
+
+        if list_changed {
+            // Resolve lyrics+translation for everything in the list. Dedup'd
+            // across the whole session — once a track has been kicked off,
+            // it's done whether it appears as current or as a future "next".
+            resolve_playback_list(&app_state, &app, &list, &mut resolved).await;
         }
     }
 }
 
-/// Kicks off silent fetch + translation for the first N upcoming tracks. Gated
-/// on playlist/album context (skip radio/autoplay where the "next track" is a
-/// guess that may not actually play). De-duplicates against `preloaded` so we
-/// don't re-fire on every 10s poll.
 #[cfg(target_os = "macos")]
-async fn maybe_preload(
+fn np_to_track_meta(np: crate::app::spotify::NowPlaying) -> Option<TrackMeta> {
+    Some(TrackMeta {
+        id: np.track_id?,
+        name: np.name?,
+        artist: np.artist?,
+        album: np.album,
+        duration_ms: np.duration_ms?,
+    })
+}
+
+/// Single resolver covering [current, ...next]. The dedup set spans the whole
+/// session so a track that was preloaded as "next" doesn't get re-resolved
+/// when it later becomes "current". Current is always considered (so an app
+/// open that goes straight to a cached track still warms its caches and any
+/// follow-up bookkeeping happens). Next is gated on a real playlist/album
+/// context — for radio/autoplay the "next track" is a guess.
+#[cfg(target_os = "macos")]
+async fn resolve_playback_list(
     state: &Arc<crate::app::AppState>,
     app: &AppHandle,
-    snapshot: &QueueSnapshot,
-    preloaded: &mut std::collections::HashSet<String>,
+    list: &PlaybackList,
+    resolved: &mut std::collections::HashSet<String>,
 ) {
     let cfg = state.config.borrow().clone();
-    let preload_count = cfg.spotify_preload_count.min(3) as usize;
-    if preload_count == 0 {
-        return;
-    }
-
-    let Some(ctx) = snapshot.context_type.as_deref() else {
-        return;
-    };
-    if ctx != "playlist" && ctx != "album" {
-        return;
-    }
-
     let target_lang = cfg.target_language_id.clone();
     if target_lang.is_empty() {
+        info!("resolve_playback_list: skipped — targetLanguageId is empty");
         return;
     }
     let model = cfg.model;
+    let preload_count = cfg.spotify_preload_count.min(3) as usize;
 
-    for track in snapshot.upcoming.iter().take(preload_count) {
+    let mut to_resolve: Vec<&TrackMeta> = Vec::new();
+    if let Some(c) = &list.current {
+        to_resolve.push(c);
+    }
+    let next_eligible = matches!(
+        list.context_type.as_deref(),
+        Some("playlist") | Some("album")
+    );
+    if next_eligible {
+        to_resolve.extend(list.next.iter().take(preload_count));
+    }
+
+    if to_resolve.is_empty() {
+        info!(
+            "resolve_playback_list: nothing to resolve (current={}, context={:?}, next_eligible={next_eligible}, next_count={}, preload_count={preload_count})",
+            list.current.is_some(),
+            list.context_type,
+            list.next.len()
+        );
+        return;
+    }
+
+    info!(
+        "resolve_playback_list: {} candidate(s) (next_eligible={next_eligible}, preload_count={preload_count})",
+        to_resolve.len()
+    );
+
+    for (idx, track) in to_resolve.iter().enumerate() {
         let dedup_key = format!("{}|{}|{}", track.id, target_lang, model);
-        if !preloaded.insert(dedup_key) {
+        if !resolved.insert(dedup_key) {
+            debug!(
+                "Resolve skip (already done): #{} {} — {}",
+                idx,
+                track.name,
+                track.artist
+            );
             continue;
         }
+        let role = if idx == 0 { "current" } else { "next" };
+        info!(
+            "Resolve initiate ({role} #{}): {} — {} (track_id={}, lang={}, model={})",
+            idx,
+            track.name,
+            track.artist,
+            track.id,
+            target_lang,
+            model
+        );
         let state = state.clone();
         let app = app.clone();
-        let track = track.clone();
+        let track = (*track).clone();
         let target_lang = target_lang.clone();
         tokio::spawn(async move {
-            if let Err(err) = crate::app::lyrics::preload_single(
+            if let Err(err) = crate::app::lyrics::resolve_track(
                 &state,
                 &app,
                 &track.id,
@@ -635,7 +886,10 @@ async fn maybe_preload(
             )
             .await
             {
-                debug!("Preload failed for track={}: {err}", track.id);
+                warn!(
+                    "Resolve failed for track={} ({}): {err}",
+                    track.id, track.name
+                );
             }
         });
     }
@@ -781,23 +1035,10 @@ fn delete_refresh_token() -> anyhow::Result<()> {
 
 #[tauri::command]
 pub async fn spotify_web_connect(
-    #[allow(unused_variables)] app: AppHandle,
     state: tauri::State<'_, Arc<crate::app::AppState>>,
     client_id: String,
 ) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        let watcher = state.lyrics_state.watcher.clone();
-        let app_state = state.inner().clone();
-        state
-            .spotify_web
-            .connect(client_id, app, watcher, app_state)
-            .await
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        state.spotify_web.connect(client_id).await
-    }
+    state.spotify_web.connect(client_id).await
 }
 
 #[tauri::command]

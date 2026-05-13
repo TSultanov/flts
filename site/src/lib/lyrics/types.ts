@@ -40,16 +40,27 @@ export type LyricsTranslation = {
 };
 
 export type LyricsTranslationProgress = {
-    requestId: number;
+    trackId: string;
     bytes: number;
 };
 
 export type LyricsTranslationDone = {
-    requestId: number;
+    trackId: string;
     translation: LyricsTranslation;
 };
 
 export type LyricsTranslationError = {
-    requestId: number;
+    trackId: string;
     error: string;
+};
+
+export type LyricsResolved = {
+    trackId: string;
+    /// null means the backend confirmed LRClib has no lyrics for this track.
+    lyrics: Lyrics | null;
+};
+
+export type TrackLyricsState = {
+    lyrics: Lyrics | null;
+    translation: LyricsTranslation | null;
 };

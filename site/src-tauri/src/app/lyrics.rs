@@ -75,25 +75,49 @@ impl LyricsState {
     }
 }
 
+/// Translation events carry `trackId` so the frontend can match them against
+/// whatever it's currently displaying. We don't expose request_ids: the
+/// frontend doesn't need to know whether a given resolution came from cache,
+/// from a fresh in-flight task, or from work the backend started on its own.
 #[derive(Clone, Serialize)]
 pub struct LyricsTranslationProgress {
-    #[serde(rename = "requestId")]
-    pub request_id: usize,
+    #[serde(rename = "trackId")]
+    pub track_id: String,
     pub bytes: usize,
 }
 
 #[derive(Clone, Serialize)]
 pub struct LyricsTranslationDone {
-    #[serde(rename = "requestId")]
-    pub request_id: usize,
+    #[serde(rename = "trackId")]
+    pub track_id: String,
     pub translation: LyricsTranslation,
 }
 
 #[derive(Clone, Serialize)]
 pub struct LyricsTranslationError {
-    #[serde(rename = "requestId")]
-    pub request_id: usize,
+    #[serde(rename = "trackId")]
+    pub track_id: String,
     pub error: String,
+}
+
+/// Fired by the backend resolver after deciding what the track's lyrics
+/// situation is — either fetched lyrics or "LRClib has no lyrics for this
+/// track". Frontend filters by track_id and updates its view.
+#[derive(Clone, Serialize)]
+pub struct LyricsResolved {
+    #[serde(rename = "trackId")]
+    pub track_id: String,
+    pub lyrics: Option<Lyrics>,
+}
+
+/// Read-only snapshot of what the backend currently has cached for a track.
+/// Used by the frontend at mount / track-change time to bootstrap; the same
+/// shape is otherwise delivered asynchronously through `lyrics_resolved` and
+/// `lyrics_translation_done` events.
+#[derive(Clone, Serialize)]
+pub struct TrackLyricsState {
+    pub lyrics: Option<Lyrics>,
+    pub translation: Option<LyricsTranslation>,
 }
 
 // ----- Tauri commands ----------------------------------------------------
@@ -105,7 +129,18 @@ pub async fn start_spotify_watcher(
 ) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        state.lyrics_state.watcher.start(app).await;
+        state.lyrics_state.watcher.start(app.clone()).await;
+        // The resolver runs as long as the watcher does — it owns "resolve
+        // current track and any known next tracks" regardless of whether
+        // Spotify Web is connected. When Spotify Web isn't connected, the
+        // loop still services the current track from the AppleScript signal;
+        // the queue fetch just becomes a no-op until auth comes online.
+        let watcher = state.lyrics_state.watcher.clone();
+        let app_state = state.inner().clone();
+        state
+            .spotify_web
+            .start_polling(app, watcher, app_state)
+            .await;
         Ok(())
     }
     #[cfg(not(target_os = "macos"))]
@@ -121,6 +156,7 @@ pub async fn stop_spotify_watcher(
     #[cfg(target_os = "macos")]
     {
         state.lyrics_state.watcher.stop().await;
+        state.spotify_web.stop_polling().await;
     }
     Ok(())
 }
@@ -190,25 +226,37 @@ pub(crate) async fn fetch_lyrics_inner(
     Ok(fetched)
 }
 
+/// Read-only snapshot of what the backend has cached for `track_id`. Pure
+/// data fetch — never triggers an LRClib request or a translation. The
+/// frontend uses this at mount / track-change time to render whatever the
+/// resolver has already produced; further updates arrive via the
+/// `lyrics_resolved` and `lyrics_translation_done` events.
 #[tauri::command]
-pub async fn get_lyrics(
+pub async fn get_track_lyrics_state(
     state: tauri::State<'_, Arc<AppState>>,
     track_id: String,
-    artist: String,
-    title: String,
-    album: Option<String>,
-    duration_s: Option<u32>,
-) -> Result<Option<Lyrics>, String> {
-    fetch_lyrics_inner(
-        state.inner(),
-        &track_id,
-        &artist,
-        &title,
-        album.as_deref(),
-        duration_s,
-    )
-    .await
-    .map_err(|e| e.to_string())
+    target_lang: String,
+    model: usize,
+) -> Result<TrackLyricsState, String> {
+    let tgt = Language::from_639_3(&target_lang)
+        .ok_or_else(|| format!("unknown target lang: {target_lang}"))?;
+    let cache = state
+        .lyrics_state
+        .lyrics_cache()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let lyrics = if let Some(arc) = state.lyrics_state.lyrics.read().await.get(&track_id) {
+        Some((**arc).clone())
+    } else {
+        cache.get_raw(&track_id).await
+    };
+    let translation = cache.get(&track_id, &tgt, model).await;
+
+    Ok(TrackLyricsState {
+        lyrics,
+        translation,
+    })
 }
 
 pub(crate) async fn dispatch_translation_inner(
@@ -217,7 +265,7 @@ pub(crate) async fn dispatch_translation_inner(
     track_id: &str,
     target_lang: &str,
     model: usize,
-) -> Result<usize, String> {
+) -> Result<(), String> {
     let tgt = Language::from_639_3(target_lang)
         .ok_or_else(|| format!("unknown target lang: {target_lang}"))?;
     let model_enum = TranslationModel::from(model);
@@ -231,31 +279,33 @@ pub(crate) async fn dispatch_translation_inner(
         model: model_enum,
     };
 
-    // Cache hit → emit done immediately and return new request id.
+    // Cache hit → emit the same `lyrics_translation_done` event a fresh
+    // translation would emit, so the frontend has a single code path that
+    // reacts to events keyed on track_id. The previous "return cached inline"
+    // shape leaked the cache distinction into the API; the frontend doesn't
+    // need to know whether the data came from disk or the network.
     let cache = state
         .lyrics_state
         .lyrics_cache()
         .await
         .map_err(|e| e.to_string())?;
     if let Some(cached) = cache.get(track_id, &tgt, model).await {
-        let request_id = state
-            .lyrics_state
-            .next_request
-            .fetch_add(1, Ordering::SeqCst);
         let _ = app.emit(
             "lyrics_translation_done",
             LyricsTranslationDone {
-                request_id,
+                track_id: track_id.to_string(),
                 translation: cached,
             },
         );
-        return Ok(request_id);
+        return Ok(());
     }
 
-    // Dedup in-flight request for the same key.
+    // Dedup in-flight request for the same key. If we're already translating
+    // this exact track/lang/model, the existing task will emit its event when
+    // done; the frontend listener picks it up via track_id match.
     let mut inflight = state.lyrics_state.inflight.lock().await;
-    if let Some(&existing) = inflight.get(&key) {
-        return Ok(existing);
+    if inflight.contains_key(&key) {
+        return Ok(());
     }
     let request_id = state
         .lyrics_state
@@ -295,6 +345,7 @@ pub(crate) async fn dispatch_translation_inner(
     let app_for_progress = app.clone();
     let app_for_result = app.clone();
     let state_arc: Arc<AppState> = state.clone();
+    let track_id_progress = track_id.to_string();
     let progress: Box<dyn Fn(usize) + Send + Sync> = {
         let throttle = Arc::new(std::sync::Mutex::new((Instant::now(), 0usize)));
         Box::new(move |bytes: usize| {
@@ -306,26 +357,29 @@ pub(crate) async fn dispatch_translation_inner(
             drop(s);
             let _ = app_for_progress.emit(
                 "lyrics_translation_progress",
-                LyricsTranslationProgress { request_id, bytes },
+                LyricsTranslationProgress {
+                    track_id: track_id_progress.clone(),
+                    bytes,
+                },
             );
         })
     };
 
+    let track_id_for_task = track_id.to_string();
     tokio::spawn(async move {
         let result = run_translation(&key, lyrics, api_key, cache, progress).await;
         state_arc.lyrics_state.inflight.lock().await.remove(&key);
         match result {
             Ok(translation) => {
                 info!(
-                    "Lyrics translation done: track={} lines={} req={}",
+                    "Lyrics translation done: track={} lines={}",
                     key.track_id,
                     translation.lines.len(),
-                    request_id
                 );
                 let _ = app_for_result.emit(
                     "lyrics_translation_done",
                     LyricsTranslationDone {
-                        request_id,
+                        track_id: track_id_for_task,
                         translation,
                     },
                 );
@@ -338,7 +392,7 @@ pub(crate) async fn dispatch_translation_inner(
                 let _ = app_for_result.emit(
                     "lyrics_translation_error",
                     LyricsTranslationError {
-                        request_id,
+                        track_id: track_id_for_task,
                         error: err.to_string(),
                     },
                 );
@@ -346,26 +400,15 @@ pub(crate) async fn dispatch_translation_inner(
         }
     });
 
-    Ok(request_id)
+    Ok(())
 }
 
-#[tauri::command]
-pub async fn translate_lyrics(
-    state: tauri::State<'_, Arc<AppState>>,
-    app: AppHandle,
-    track_id: String,
-    target_lang: String,
-    model: usize,
-) -> Result<usize, String> {
-    dispatch_translation_inner(state.inner(), &app, &track_id, &target_lang, model).await
-}
-
-/// Internal helper: fetch lyrics + dispatch translation for one upcoming
-/// track. Silent — emits the standard `lyrics_translation_*` events but the
-/// frontend filters them by `currentRequestId` so they don't affect the UI
-/// of the currently-playing track. The point is to warm both on-disk caches
-/// so that when the upcoming track becomes active, rendering is instant.
-pub(crate) async fn preload_single(
+/// Resolve one track from end to end: fetch lyrics, then translation if any.
+/// Emits `lyrics_resolved` with the final lyrics value (Some or None) and,
+/// when lyrics exist, `lyrics_translation_done` once translation completes.
+/// The frontend never calls this — it's the single entry point the backend
+/// resolver uses for every track in the playback list.
+pub(crate) async fn resolve_track(
     state: &Arc<AppState>,
     app: &AppHandle,
     track_id: &str,
@@ -378,12 +421,22 @@ pub(crate) async fn preload_single(
 ) -> anyhow::Result<()> {
     let duration_s = duration_ms.map(|ms| (ms + 500) / 1000);
     let lyrics = fetch_lyrics_inner(state, track_id, artist, title, album, duration_s).await?;
+
+    // Tell the frontend our determination either way: lyrics found, or
+    // confirmed absent on LRClib. Either is information the UI uses.
+    let _ = app.emit(
+        "lyrics_resolved",
+        LyricsResolved {
+            track_id: track_id.to_string(),
+            lyrics: lyrics.clone(),
+        },
+    );
+
     if lyrics.is_none() {
-        // No lyrics on LRClib — nothing to translate. Future track-change for
-        // this id will fall through to the same `Ok(None)` path and render
-        // the "unsupported-track" status.
+        info!("Resolve: no lyrics on LRClib for {title} — {artist} (track_id={track_id})");
         return Ok(());
     }
+    info!("Resolve: lyrics fetched, dispatching translation for {title} — {artist}");
     if let Err(err) =
         dispatch_translation_inner(state, app, track_id, target_lang, model).await
     {
@@ -391,6 +444,7 @@ pub(crate) async fn preload_single(
     }
     Ok(())
 }
+
 
 async fn run_translation(
     key: &TranslationKey,

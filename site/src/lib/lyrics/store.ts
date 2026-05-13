@@ -3,11 +3,12 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { writable, type Readable } from 'svelte/store';
 
 import type {
-    Lyrics,
+    LyricsResolved,
     LyricsTranslationDone,
     LyricsTranslationError,
     LyricsTranslationProgress,
     NowPlaying,
+    TrackLyricsState,
 } from './types';
 
 export async function startSpotifyWatcher(): Promise<void> {
@@ -22,44 +23,38 @@ export async function getNowPlaying(): Promise<NowPlaying | null> {
     return (await invoke<NowPlaying | null>('get_now_playing')) ?? null;
 }
 
-export async function getLyrics(args: {
-    trackId: string;
-    artist: string;
-    title: string;
-    album?: string;
-    durationS?: number;
-}): Promise<Lyrics | null> {
-    return (
-        (await invoke<Lyrics | null>('get_lyrics', {
-            trackId: args.trackId,
-            artist: args.artist,
-            title: args.title,
-            album: args.album,
-            durationS: args.durationS,
-        })) ?? null
-    );
-}
-
-export async function translateLyrics(args: {
+/// Read-only snapshot of the backend's cached state for `trackId`. Returns
+/// `{ lyrics, translation }` with whatever's currently resolved (both can be
+/// null). Pure data fetch — never causes the backend to do work; the resolver
+/// runs on its own schedule and pushes updates through events.
+export async function getTrackLyricsState(args: {
     trackId: string;
     targetLang: string;
     model: number;
-}): Promise<number> {
-    return await invoke<number>('translate_lyrics', {
+}): Promise<TrackLyricsState> {
+    return await invoke<TrackLyricsState>('get_track_lyrics_state', {
         trackId: args.trackId,
         targetLang: args.targetLang,
         model: args.model,
     });
 }
 
-/// Subscribes to all three lyrics translation events and routes them to the
-/// caller. Returns a teardown function that detaches the listeners.
-export async function listenLyricsTranslation(handlers: {
+/// Subscribes to all backend events that describe a track's lyrics+translation
+/// lifecycle. Consumers filter by `trackId` against whatever they're showing.
+export async function listenLyricsState(handlers: {
+    onLyricsResolved?: (e: LyricsResolved) => void;
     onProgress?: (e: LyricsTranslationProgress) => void;
     onDone?: (e: LyricsTranslationDone) => void;
     onError?: (e: LyricsTranslationError) => void;
 }): Promise<UnlistenFn> {
     const unlistens: UnlistenFn[] = [];
+    if (handlers.onLyricsResolved) {
+        unlistens.push(
+            await listen<LyricsResolved>('lyrics_resolved', (e) =>
+                handlers.onLyricsResolved!(e.payload),
+            ),
+        );
+    }
     if (handlers.onProgress) {
         unlistens.push(
             await listen<LyricsTranslationProgress>(

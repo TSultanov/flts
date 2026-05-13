@@ -3,12 +3,11 @@
     import { platform } from '@tauri-apps/plugin-os';
     import { configStore } from '../config';
     import {
-        getLyrics,
-        listenLyricsTranslation,
+        getTrackLyricsState,
+        listenLyricsState,
         spotifyStateStore,
         startSpotifyWatcher,
         stopSpotifyWatcher,
-        translateLyrics,
     } from './store';
     import {
         spotifyQueueStore,
@@ -61,7 +60,6 @@
     let translationStatus: 'idle' | 'fetching' | 'translating' | 'error' | 'unsupported-track' = $state('idle');
     let translationBytes: number = $state(0);
     let errorMessage: string | null = $state(null);
-    let currentRequestId: number | null = $state(null);
     let lastDispatchKey: string | null = null;
 
     type StatusMessage = { text: string; level: 'info' | 'warn' | 'err' };
@@ -134,7 +132,11 @@
         if (dispatchKey === lastDispatchKey) return;
         lastDispatchKey = dispatchKey;
 
-        // Reset state for new track.
+        // Reset view state for the new track and ask the backend for whatever
+        // it currently has resolved. This is read-only — the backend's
+        // resolver runs continuously based on what's playing and what's in
+        // the queue; we never tell it to fetch. Anything not in the bootstrap
+        // arrives via lyrics_resolved / lyrics_translation_done events.
         lyrics = null;
         translation = null;
         errorMessage = null;
@@ -142,33 +144,25 @@
         translationBytes = 0;
 
         try {
-            const fetched = await getLyrics({
-                trackId: np.trackId,
-                artist: np.artist,
-                title: np.name,
-                album: np.album,
-                durationS: np.durationMs ? Math.round(np.durationMs / 1000) : undefined,
-            });
-            if (lastDispatchKey !== dispatchKey) return; // stale
-            lyrics = fetched;
-            if (!fetched) {
-                translationStatus = 'unsupported-track';
-                return;
-            }
-        } catch (e) {
-            errorMessage = String(e);
-            translationStatus = 'error';
-            return;
-        }
-
-        translationStatus = 'translating';
-        try {
-            const reqId = await translateLyrics({
+            const state = await getTrackLyricsState({
                 trackId: np.trackId,
                 targetLang: cfg.targetLanguageId,
                 model: cfg.model,
             });
-            currentRequestId = reqId;
+            if (lastDispatchKey !== dispatchKey) return; // stale
+            if (state.lyrics) {
+                lyrics = state.lyrics;
+                if (state.translation) {
+                    translation = state.translation;
+                    translationStatus = 'idle';
+                } else {
+                    translationStatus = 'translating';
+                }
+            }
+            // If state.lyrics is null we stay in 'fetching' — the backend
+            // may still be resolving the track; the lyrics_resolved event
+            // will land soon with either Some lyrics or an explicit null
+            // (which we map to 'unsupported-track').
         } catch (e) {
             errorMessage = String(e);
             translationStatus = 'error';
@@ -211,20 +205,34 @@
             queueValue = v;
         });
 
-        translationCleanup = await listenLyricsTranslation({
+        translationCleanup = await listenLyricsState({
+            // Match events to the currently-displayed track by id. Events
+            // for any other track (background resolution of the queue) are
+            // naturally filtered out here.
+            onLyricsResolved: (e) => {
+                if (e.trackId !== nowPlaying?.trackId) return;
+                if (e.lyrics) {
+                    lyrics = e.lyrics;
+                    if (translationStatus === 'fetching') {
+                        translationStatus = 'translating';
+                    }
+                } else {
+                    translationStatus = 'unsupported-track';
+                }
+            },
             onProgress: (e) => {
-                if (currentRequestId === null || e.requestId === currentRequestId) {
+                if (e.trackId === nowPlaying?.trackId) {
                     translationBytes = e.bytes;
                 }
             },
             onDone: (e) => {
-                if (currentRequestId === null || e.requestId === currentRequestId) {
+                if (e.trackId === nowPlaying?.trackId) {
                     translation = e.translation;
                     translationStatus = 'idle';
                 }
             },
             onError: (e) => {
-                if (currentRequestId === null || e.requestId === currentRequestId) {
+                if (e.trackId === nowPlaying?.trackId) {
                     errorMessage = e.error;
                     translationStatus = 'error';
                 }

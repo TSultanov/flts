@@ -70,36 +70,18 @@ pub fn run() {
             }
 
             info!("Spawning async init");
-            let resume_app = app.handle().clone();
             let resume_state = app_state.clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(err) = resume_state.eval_config().await {
                     warn!("Failed to evaluate config at startup: {err}");
                 }
 
-                // Try to silently resume a Spotify Web session if a client_id is
-                // configured and a refresh token sits in the OS keychain. Best
-                // effort — failures just leave the user in "not connected".
+                // Try to silently restore Spotify Web credentials from the
+                // OS keychain. Polling itself starts when the user opens the
+                // lyrics view (start_spotify_watcher); this just ensures we
+                // have a valid token in hand by then.
                 let client_id = resume_state.config_borrow_client_id();
-                #[cfg(target_os = "macos")]
-                {
-                    let watcher = resume_state.lyrics_state.watcher.clone();
-                    let state_for_resume = resume_state.clone();
-                    resume_state
-                        .spotify_web
-                        .try_resume(
-                            client_id,
-                            Some(resume_app),
-                            Some(watcher),
-                            Some(state_for_resume),
-                        )
-                        .await;
-                }
-                #[cfg(not(target_os = "macos"))]
-                {
-                    let _ = resume_app;
-                    resume_state.spotify_web.try_resume(client_id).await;
-                }
+                resume_state.spotify_web.try_resume(client_id).await;
 
                 let mut recv = {
                     let mut watcher = watcher.lock().await;
@@ -147,8 +129,7 @@ pub fn run() {
             app::lyrics::start_spotify_watcher,
             app::lyrics::stop_spotify_watcher,
             app::lyrics::get_now_playing,
-            app::lyrics::get_lyrics,
-            app::lyrics::translate_lyrics,
+            app::lyrics::get_track_lyrics_state,
             app::spotify_web::spotify_web_connect,
             app::spotify_web::spotify_web_disconnect,
             app::spotify_web::spotify_web_status,

@@ -184,6 +184,13 @@ impl SpotifyWatcher {
         self.tx.borrow().clone()
     }
 
+    /// Subscribe to "significant change" notifications (track change, play/pause,
+    /// large position jump). Used by the Spotify Web poller to refresh the queue
+    /// immediately on track change instead of waiting for the next scheduled poll.
+    pub fn subscribe(&self) -> watch::Receiver<Option<NowPlaying>> {
+        self.tx.subscribe()
+    }
+
     pub async fn start(&self, app: AppHandle) {
         let mut handle_guard = self.handle.lock().await;
         if handle_guard.is_some() {
