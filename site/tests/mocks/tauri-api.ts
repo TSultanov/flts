@@ -58,6 +58,8 @@ type MockChapter = {
 
 type MockParagraph = {
   html: string;
+  translation?: string;
+  visibleWords?: number[];
 };
 
 type ChapterMetaView = {
@@ -69,11 +71,57 @@ type ParagraphView = {
   id: number;
   original: string;
   translation?: string;
+  visibleWords: number[];
 };
 
 type BookReadingState = {
   chapterId: number;
   paragraphId: number;
+};
+
+// ----- Translation simulation types --------------------------------------
+
+type StatusSnapshot = {
+  progress_chars: number;
+  expected_chars: number;
+  is_complete: boolean;
+  error?: string;
+};
+
+type ProgressStep = {
+  progress: number;
+  total: number;
+  delayMs: number;
+};
+
+export type TranslateConfig =
+  | { kind: 'immediate'; translation?: string; visibleWords?: number[] }
+  | {
+      kind: 'progress';
+      steps: ProgressStep[];
+      translation: string;
+      visibleWords?: number[];
+    }
+  | { kind: 'error'; errorMessage: string; delayMs: number };
+
+type WordInfo = {
+  original: string;
+  note: string;
+  isPunctuation: boolean;
+  contextualTranslations: string[];
+  fullSentenceTranslation: string;
+  translationModel: number;
+  sourceLanguage: string;
+  grammar: {
+    originalInitialForm: string;
+    targetInitialForm: string;
+    partOfSpeech: string;
+    plurality?: string;
+    person?: string;
+    tense?: string;
+    case?: string;
+    other?: string;
+  };
 };
 
 // ----- Lyrics mode types --------------------------------------------------
@@ -115,6 +163,150 @@ let mockReadingStates: Map<UUID, BookReadingState> = new Map();
 let bookIdCounter = 0;
 let requestIdCounter = 0;
 
+// ----- Translation simulation state --------------------------------------
+
+const DEFAULT_TRANSLATE_CONFIG: TranslateConfig = { kind: 'immediate' };
+
+// Keyed by `${bookId}:${paragraphId}`
+const translateConfigs = new Map<string, TranslateConfig>();
+const inFlightRequests = new Map<string, number>();
+const wordInfos = new Map<string, WordInfo>();
+
+// Keyed by request id; ordered status snapshots that get_translation_status pops through
+const statusSnapshots = new Map<number, StatusSnapshot[]>();
+// Per-request paragraph mapping so the completion writer knows where to land
+const requestMeta = new Map<number, { bookId: UUID; paragraphId: number }>();
+
+const translateCalls: Array<{
+  bookId: UUID;
+  paragraphId: number;
+  useCache: boolean;
+  model: unknown;
+}> = [];
+const markWordVisibleCalls: Array<{
+  bookId: UUID;
+  paragraphId: number;
+  flatIndex: number;
+}> = [];
+
+function paragraphKey(bookId: UUID, paragraphId: number): string {
+  return `${bookId}:${paragraphId}`;
+}
+
+function wordKey(
+  bookId: UUID,
+  paragraphId: number,
+  sentenceId: number,
+  wordId: number,
+): string {
+  return `${bookId}:${paragraphId}:${sentenceId}:${wordId}`;
+}
+
+function applyTranslationCompletion(
+  bookId: UUID,
+  paragraphId: number,
+  translation: string,
+  visibleWords?: number[],
+): void {
+  const book = mockLibrary.get(bookId);
+  if (!book) return;
+  const p = book.paragraphsById.get(paragraphId);
+  if (!p) return;
+  p.translation = translation;
+  if (visibleWords) p.visibleWords = visibleWords;
+  emit('paragraph_updated', { bookId, paragraphId });
+}
+
+function runTranslateRequest(
+  requestId: number,
+  bookId: UUID,
+  paragraphId: number,
+  cfg: TranslateConfig,
+): void {
+  requestMeta.set(requestId, { bookId, paragraphId });
+
+  if (cfg.kind === 'immediate') {
+    statusSnapshots.set(requestId, [
+      { progress_chars: 0, expected_chars: 0, is_complete: true },
+    ]);
+    setTimeout(() => {
+      if (cfg.translation !== undefined) {
+        applyTranslationCompletion(
+          bookId,
+          paragraphId,
+          cfg.translation,
+          cfg.visibleWords,
+        );
+      } else {
+        emit('paragraph_updated', { bookId, paragraphId });
+      }
+    }, 100);
+    return;
+  }
+
+  if (cfg.kind === 'error') {
+    // Hold "in progress" until the delay completes, then flip to the error
+    // state. Without the pending snapshot the very first poll would already
+    // see is_complete:true and the spinner wouldn't be observable.
+    statusSnapshots.set(requestId, [
+      { progress_chars: 0, expected_chars: 100, is_complete: false },
+      {
+        progress_chars: 0,
+        expected_chars: 0,
+        is_complete: true,
+        error: cfg.errorMessage,
+      },
+    ]);
+    setTimeout(() => {
+      statusIndex.set(requestId, 1);
+      emit('paragraph_updated', { bookId, paragraphId });
+    }, cfg.delayMs);
+    return;
+  }
+
+  // progress
+  const snapshots: StatusSnapshot[] = [];
+  let elapsedMs = 0;
+  for (let i = 0; i < cfg.steps.length; i++) {
+    const step = cfg.steps[i];
+    elapsedMs += step.delayMs;
+    const isLast = i === cfg.steps.length - 1;
+    snapshots.push({
+      progress_chars: step.progress,
+      expected_chars: step.total,
+      is_complete: isLast,
+    });
+    if (isLast) {
+      // schedule completion + paragraph_updated at the same elapsed time as the
+      // is_complete snapshot becomes visible
+      const finalElapsed = elapsedMs;
+      setTimeout(() => {
+        applyTranslationCompletion(
+          bookId,
+          paragraphId,
+          cfg.translation,
+          cfg.visibleWords,
+        );
+      }, finalElapsed);
+    }
+  }
+  statusSnapshots.set(requestId, snapshots);
+
+  // Schedule snapshot transitions so polls at different times see the right
+  // one. statusIndex starts at 0 by default; after step i's delay elapses,
+  // advance to i+1 (Math.min in get_translation_status clamps past the end).
+  let cumulative = 0;
+  for (let i = 0; i < cfg.steps.length; i++) {
+    cumulative += cfg.steps[i].delayMs;
+    const targetIdx = i + 1;
+    setTimeout(() => {
+      statusIndex.set(requestId, targetIdx);
+    }, cumulative);
+  }
+}
+
+const statusIndex = new Map<number, number>();
+
 // ----- Lyrics mode state --------------------------------------------------
 
 let mockNowPlaying: NowPlaying | null = null;
@@ -133,7 +325,14 @@ function translationKey(trackId: string, target: string, model: number): string 
 function buildBookFromChapters(
   id: UUID,
   title: string,
-  chapters: Array<{ title: string; paragraphs: Array<{ html: string }> }>,
+  chapters: Array<{
+    title: string;
+    paragraphs: Array<{
+      html: string;
+      translation?: string;
+      visibleWords?: number[];
+    }>;
+  }>,
 ): MockBook {
   const paragraphsById = new Map<number, MockParagraph>();
   let nextParagraphId = 0;
@@ -141,7 +340,11 @@ function buildBookFromChapters(
     const paragraphIds: number[] = [];
     for (const p of c.paragraphs) {
       const pid = nextParagraphId++;
-      paragraphsById.set(pid, { html: p.html });
+      paragraphsById.set(pid, {
+        html: p.html,
+        translation: p.translation,
+        visibleWords: p.visibleWords,
+      });
       paragraphIds.push(pid);
     }
     return { title: c.title, paragraphIds };
@@ -183,14 +386,159 @@ export function resetMockState() {
   mockReadingStates.clear();
   bookIdCounter = 0;
   requestIdCounter = 0;
+  translateConfigs.clear();
+  inFlightRequests.clear();
+  wordInfos.clear();
+  statusSnapshots.clear();
+  statusIndex.clear();
+  requestMeta.clear();
+  translateCalls.length = 0;
+  markWordVisibleCalls.length = 0;
   mockNowPlaying = null;
   mockLyricsByTrack.clear();
   mockTranslationCache.clear();
 }
 
+type PendingSeed = {
+  bookId: string;
+  title?: string;
+  chapters: Array<{
+    title?: string;
+    paragraphs: Array<{
+      html: string;
+      translation?: string;
+      visibleWords?: number[];
+    }>;
+  }>;
+  translateConfigs?: Array<{ paragraphId: number; cfg: TranslateConfig }>;
+  inFlight?: Array<{ paragraphId: number; requestId: number; cfg: TranslateConfig }>;
+  wordInfos?: Array<{
+    paragraphId: number;
+    sentenceId: number;
+    wordId: number;
+    info: WordInfo;
+  }>;
+};
+
+function applyPendingSeed(seed: PendingSeed): void {
+  resetMockState();
+  const book = buildBookFromChapters(
+    seed.bookId,
+    seed.title ?? 'Test Book',
+    seed.chapters.map((c, idx) => ({
+      title: c.title ?? `Chapter ${idx + 1}`,
+      paragraphs: c.paragraphs,
+    })),
+  );
+  mockLibrary.set(seed.bookId, book);
+  for (const tc of seed.translateConfigs ?? []) {
+    translateConfigs.set(paragraphKey(seed.bookId, tc.paragraphId), tc.cfg);
+  }
+  for (const inf of seed.inFlight ?? []) {
+    inFlightRequests.set(paragraphKey(seed.bookId, inf.paragraphId), inf.requestId);
+    runTranslateRequest(inf.requestId, seed.bookId, inf.paragraphId, inf.cfg);
+  }
+  for (const w of seed.wordInfos ?? []) {
+    wordInfos.set(
+      wordKey(seed.bookId, w.paragraphId, w.sentenceId, w.wordId),
+      w.info,
+    );
+  }
+}
+
 // Expose reset function globally for tests
 if (typeof window !== 'undefined') {
   (window as any).__resetTauriMock = resetMockState;
+
+  // Apply any seed that Playwright stashed via addInitScript before the app
+  // booted. This runs synchronously during mock module init, before any
+  // invoke() call resolves, so Library.* Resources see populated data on
+  // their very first fetch.
+  const pending = (window as any).__pendingSeed as PendingSeed | undefined;
+  if (pending) {
+    applyPendingSeed(pending);
+    (window as any).__pendingSeed = undefined;
+  }
+
+  // ----- ParagraphView test control surface ----------------------------
+  // Mounted as `window.__test` for use from Playwright via page.evaluate.
+  (window as any).__test = {
+    seedBook(opts: {
+      id?: UUID;
+      title?: string;
+      chapters: Array<{
+        title?: string;
+        paragraphs: Array<{
+          html: string;
+          translation?: string;
+          visibleWords?: number[];
+        }>;
+      }>;
+    }): UUID {
+      const id = opts.id ?? `mock-book-${++bookIdCounter}`;
+      const newBook = buildBookFromChapters(
+        id,
+        opts.title ?? 'Test Book',
+        opts.chapters.map((c, idx) => ({
+          title: c.title ?? `Chapter ${idx + 1}`,
+          paragraphs: c.paragraphs,
+        })),
+      );
+      mockLibrary.set(id, newBook);
+      emit('library_updated', Array.from(mockLibrary.values()));
+      return id;
+    },
+    setTranslateConfig(bookId: UUID, paragraphId: number, cfg: TranslateConfig) {
+      translateConfigs.set(paragraphKey(bookId, paragraphId), cfg);
+    },
+    setInFlightRequest(bookId: UUID, paragraphId: number, requestId: number | null) {
+      const key = paragraphKey(bookId, paragraphId);
+      if (requestId === null) {
+        inFlightRequests.delete(key);
+      } else {
+        inFlightRequests.set(key, requestId);
+      }
+    },
+    setWordInfo(
+      bookId: UUID,
+      paragraphId: number,
+      sentenceId: number,
+      wordId: number,
+      info: WordInfo,
+    ) {
+      wordInfos.set(wordKey(bookId, paragraphId, sentenceId, wordId), info);
+    },
+    seedRequest(requestId: number, bookId: UUID, paragraphId: number, cfg: TranslateConfig) {
+      requestIdCounter = Math.max(requestIdCounter, requestId);
+      runTranslateRequest(requestId, bookId, paragraphId, cfg);
+    },
+    emitParagraphUpdated(bookId: UUID, paragraphId: number) {
+      emit('paragraph_updated', { bookId, paragraphId });
+    },
+    setParagraphTranslation(
+      bookId: UUID,
+      paragraphId: number,
+      translation: string | undefined,
+      visibleWords?: number[],
+    ) {
+      const book = mockLibrary.get(bookId);
+      if (!book) return;
+      const p = book.paragraphsById.get(paragraphId);
+      if (!p) return;
+      p.translation = translation;
+      if (visibleWords !== undefined) p.visibleWords = visibleWords;
+      emit('paragraph_updated', { bookId, paragraphId });
+    },
+    getTranslateCalls() {
+      return translateCalls.slice();
+    },
+    getMarkWordVisibleCalls() {
+      return markWordVisibleCalls.slice();
+    },
+    reset() {
+      resetMockState();
+    },
+  };
 
   // ----- Lyrics mode test helpers --------------------------------------
   // Tests call these from `page.evaluate(...)` to set up backend state.
@@ -369,49 +717,76 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
       const view: ParagraphView = {
         id: paragraphId,
         original: p.html,
-        translation: undefined,
+        translation: p.translation,
+        visibleWords: p.visibleWords ?? [],
       };
       return Promise.resolve(view as T);
     }
 
     case 'get_word_info': {
-      // Return undefined - word info not available in mock
-      return Promise.resolve(undefined as T);
+      const bookId = args?.bookId as UUID;
+      const paragraphId = args?.paragraphId as number;
+      const sentenceId = args?.sentenceId as number;
+      const wordId = args?.wordId as number;
+      const info = wordInfos.get(wordKey(bookId, paragraphId, sentenceId, wordId));
+      return Promise.resolve((info ?? undefined) as T);
     }
 
     case 'translate_paragraph': {
       const bookId = args?.bookId as UUID;
       const paragraphId = args?.paragraphId as number;
+      const useCache = args?.useCache as boolean;
+      const model = args?.model;
 
-      // Simulate translation by returning a request ID
+      translateCalls.push({ bookId, paragraphId, useCache, model });
+
       const requestId = ++requestIdCounter;
-
-      // Simulate async translation completion. Mirror real backend ordering:
-      // paragraph_updated fires from save_and_emit before book_updated
-      // (the latter only fires via the file watcher for whole-book changes).
-      setTimeout(() => {
-        emit('paragraph_updated', { bookId, paragraphId });
-      }, 100);
+      const cfg =
+        translateConfigs.get(paragraphKey(bookId, paragraphId)) ??
+        DEFAULT_TRANSLATE_CONFIG;
+      runTranslateRequest(requestId, bookId, paragraphId, cfg);
 
       return Promise.resolve(requestId as T);
     }
 
     case 'get_paragraph_translation_request_id': {
-      // No translation in flight in the mock world — returning null keeps
-      // ParagraphViewModel out of the get_translation_status polling loop.
-      return Promise.resolve(null as T);
+      const bookId = args?.bookId as UUID;
+      const paragraphId = args?.paragraphId as number;
+      const requestId =
+        inFlightRequests.get(paragraphKey(bookId, paragraphId)) ?? null;
+      return Promise.resolve(requestId as T);
     }
 
     case 'get_translation_status': {
-      // Defensive: if anything kicks off a poll, mark it complete immediately
-      // so the polling effect tears itself down.
       const requestId = (args?.requestId as number) ?? 0;
+      const snapshots = statusSnapshots.get(requestId);
+      if (!snapshots || snapshots.length === 0) {
+        // Unknown request — return an immediate-complete status to let
+        // the polling effect tear itself down.
+        return Promise.resolve({
+          request_id: requestId,
+          progress_chars: 0,
+          expected_chars: 0,
+          is_complete: true,
+        } as T);
+      }
+      const idx = Math.min(statusIndex.get(requestId) ?? 0, snapshots.length - 1);
+      const snap = snapshots[idx];
       return Promise.resolve({
         request_id: requestId,
-        progress_chars: 0,
-        expected_chars: 0,
-        is_complete: true,
+        progress_chars: snap.progress_chars,
+        expected_chars: snap.expected_chars,
+        is_complete: snap.is_complete,
+        error: snap.error,
       } as T);
+    }
+
+    case 'mark_word_visible': {
+      const bookId = args?.bookId as UUID;
+      const paragraphId = args?.paragraphId as number;
+      const flatIndex = args?.flatIndex as number;
+      markWordVisibleCalls.push({ bookId, paragraphId, flatIndex });
+      return Promise.resolve(true as T);
     }
 
     case 'get_book_reading_state': {

@@ -18,7 +18,7 @@ export default defineConfig({
   /* Shared settings for all the projects below. See https://playwright.dev/docs/api/class-testoptions. */
   use: {
     /* Base URL to use in actions like `await page.goto('/')`. */
-    baseURL: 'http://localhost:5173',
+    baseURL: 'http://localhost:5180',
 
     /* Collect trace when retrying the failed test. See https://playwright.dev/docs/trace-viewer */
     trace: 'on-first-retry',
@@ -62,10 +62,15 @@ export default defineConfig({
     // },
   ],
 
-  /* Run your local dev server before starting the tests */
+  /* Run your local dev server before starting the tests.
+   *
+   * Uses port 5180 so Playwright never collides with the developer's
+   * usual `pnpm dev` server on 5173. Playwright spawns its own server
+   * the first time and reuses it across local runs.
+   */
   webServer: {
-    command: 'PLAYWRIGHT=true pnpm dev',
-    url: 'http://localhost:5173',
+    command: 'PLAYWRIGHT=true pnpm dev --port 5180',
+    url: 'http://localhost:5180',
     reuseExistingServer: !process.env.CI,
   },
 });

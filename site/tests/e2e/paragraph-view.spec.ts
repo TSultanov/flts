@@ -1,0 +1,509 @@
+import { expect, test } from '@playwright/test';
+import {
+  expectTranslated,
+  getMarkWordVisibleCalls,
+  getTranslateCalls,
+  paragraphLocator,
+  seedAndOpen,
+  setTranslateConfig,
+  setWordInfo,
+  translateButton,
+  wordSpan,
+  wordSpanHtml,
+} from './helpers/paragraph';
+
+// All paragraph-view tests stay on chromium. The behaviors we're testing
+// (Svelte reactivity, DOM events, CSS class toggles via JS) don't vary by
+// browser engine; running them on three engines triples CI time for the
+// same signal. Existing import specs continue to cross-browser.
+test.describe.configure({ mode: 'parallel' });
+
+test.describe('ParagraphView (chromium only)', () => {
+  test.skip(({ browserName }) => browserName !== 'chromium', 'chromium-only');
+
+  // ----- Group A: render ---------------------------------------------------
+
+  test('A1: untranslated paragraph renders original text with enabled translate button', async ({
+    page,
+  }) => {
+    await seedAndOpen(page, {
+      chapters: [{ paragraphs: [{ html: 'Hello world!' }] }],
+    });
+
+    const p = paragraphLocator(page, 0);
+    await expect(p).toBeVisible();
+    await expect(p.locator('.original')).toHaveText('Hello world!');
+    await expect(translateButton(p)).toBeEnabled();
+    // No spinner yet
+    await expect(p.locator('.circular-progress')).toHaveCount(0);
+  });
+
+  test('A2: pre-translated paragraph renders translated HTML and no translate button', async ({
+    page,
+  }) => {
+    const translation = wordSpanHtml({
+      flatIndex: 0,
+      paragraph: 0,
+      sentence: 0,
+      word: 0,
+      text: 'hola',
+      translation: 'hello',
+    });
+    await seedAndOpen(page, {
+      chapters: [{ paragraphs: [{ html: 'hello', translation }] }],
+    });
+
+    const p = paragraphLocator(page, 0);
+    await expect(p).toBeVisible();
+    await expect(translateButton(p)).toHaveCount(0);
+    await expect(p.locator('.word-span')).toHaveCount(1);
+    await expect(p.locator('.word-span')).toHaveText('hola');
+  });
+
+  // ----- Group B: translation flow ----------------------------------------
+
+  test('B1: click translate disables button and shows spinner; original still visible during the in-flight window', async ({
+    page,
+  }) => {
+    const { bookId } = await seedAndOpen(page, {
+      chapters: [{ paragraphs: [{ html: 'Hello world!' }] }],
+    });
+    await setTranslateConfig(page, bookId, 0, {
+      kind: 'progress',
+      steps: [
+        { progress: 10, total: 100, delayMs: 80 },
+        { progress: 50, total: 100, delayMs: 80 },
+        { progress: 100, total: 100, delayMs: 80 },
+      ],
+      translation: '<span>translated</span>',
+    });
+
+    const p = paragraphLocator(page, 0);
+    const btn = translateButton(p);
+    await btn.click();
+
+    await expect(btn).toBeDisabled();
+    await expect(p.locator('.circular-progress')).toBeVisible();
+    // Original text is still rendered during the translating window
+    await expect(p.locator('.original')).toHaveText('Hello world!');
+  });
+
+  test('B2: progress drives the spinner — non-zero progress observed during translation', async ({
+    page,
+  }) => {
+    // Polling interval is 500ms; per-step delays must be long enough that
+    // polls can land between transitions. Three steps of 600ms each ≈ 1.8s.
+    const { bookId } = await seedAndOpen(page, {
+      chapters: [{ paragraphs: [{ html: 'Hello!' }] }],
+    });
+    await setTranslateConfig(page, bookId, 0, {
+      kind: 'progress',
+      steps: [
+        { progress: 25, total: 100, delayMs: 600 },
+        { progress: 75, total: 100, delayMs: 600 },
+        { progress: 100, total: 100, delayMs: 600 },
+      ],
+      translation: '<span>done</span>',
+    });
+
+    const p = paragraphLocator(page, 0);
+    await translateButton(p).click();
+
+    const circle = p.locator('.circular-progress svg circle').nth(1);
+    await expect(circle).toBeVisible();
+
+    // Wait until stroke-dashoffset reflects a non-zero progress (poll @500ms
+    // will pick up the 25/100 snapshot once the in-progress index is in place).
+    // Circumference = 2π·10 ≈ 62.83. At progress=25, dashoffset ≈ 47.12;
+    // at progress=0, dashoffset == 62.83. We just want "less than max".
+    await expect
+      .poll(async () => {
+        const v = await circle.getAttribute('stroke-dashoffset');
+        return v ? parseFloat(v) : Number.POSITIVE_INFINITY;
+      }, { timeout: 3000, intervals: [100, 100, 100] })
+      .toBeLessThan(60);
+  });
+
+  test('B3: translation completes, original is replaced, button removed', async ({
+    page,
+  }) => {
+    const translation = wordSpanHtml({
+      flatIndex: 0,
+      paragraph: 0,
+      sentence: 0,
+      word: 0,
+      text: 'hola',
+      translation: 'hello',
+    });
+    const { bookId } = await seedAndOpen(page, {
+      chapters: [{ paragraphs: [{ html: 'hello' }] }],
+    });
+    await setTranslateConfig(page, bookId, 0, {
+      kind: 'progress',
+      steps: [
+        { progress: 50, total: 100, delayMs: 60 },
+        { progress: 100, total: 100, delayMs: 60 },
+      ],
+      translation,
+    });
+
+    const p = paragraphLocator(page, 0);
+    await translateButton(p).click();
+    await expectTranslated(p);
+    await expect(p.locator('.word-span')).toHaveText('hola');
+    // Translation-side <p> rendered; left column is the empty placeholder <div>.
+    await expect(p.locator('.circular-progress')).toHaveCount(0);
+  });
+
+  test('B4: error path clears spinner, re-enables button, logs console warning', async ({
+    page,
+  }) => {
+    const warnings: string[] = [];
+    page.on('console', (msg) => {
+      if (msg.type() === 'warning' || msg.type() === 'warn') warnings.push(msg.text());
+    });
+
+    const { bookId } = await seedAndOpen(page, {
+      chapters: [{ paragraphs: [{ html: 'fails' }] }],
+    });
+    await setTranslateConfig(page, bookId, 0, {
+      kind: 'error',
+      errorMessage: 'rate limited',
+      delayMs: 800,
+    });
+
+    const p = paragraphLocator(page, 0);
+    const btn = translateButton(p);
+    await btn.click();
+    await expect(btn).toBeDisabled();
+
+    // After error completes, spinner clears and button is enabled again.
+    await expect(p.locator('.circular-progress')).toHaveCount(0);
+    await expect(btn).toBeEnabled();
+    // Original text still rendered (no translation HTML).
+    await expect(p.locator('.original')).toHaveText('fails');
+
+    await expect.poll(() => warnings.some((w) => w.includes('rate limited'))).toBe(true);
+  });
+
+  // ----- Group C: cache bypass --------------------------------------------
+
+  test('C1: plain click sends useCache=true', async ({ page }) => {
+    const { bookId } = await seedAndOpen(page, {
+      chapters: [{ paragraphs: [{ html: 'h' }] }],
+    });
+    await setTranslateConfig(page, bookId, 0, {
+      kind: 'immediate',
+      translation: '<span>x</span>',
+    });
+
+    const p = paragraphLocator(page, 0);
+    await translateButton(p).click();
+
+    await expect
+      .poll(async () => (await getTranslateCalls(page)).length)
+      .toBe(1);
+    const calls = await getTranslateCalls(page);
+    expect(calls[0].useCache).toBe(true);
+  });
+
+  test('C2: cmd-click sends useCache=false', async ({ page }) => {
+    const { bookId } = await seedAndOpen(page, {
+      chapters: [{ paragraphs: [{ html: 'h' }] }],
+    });
+    await setTranslateConfig(page, bookId, 0, {
+      kind: 'immediate',
+      translation: '<span>x</span>',
+    });
+
+    const p = paragraphLocator(page, 0);
+    await translateButton(p).click({ modifiers: ['Meta'] });
+    await expect
+      .poll(async () => (await getTranslateCalls(page)).length)
+      .toBe(1);
+    const calls = await getTranslateCalls(page);
+    expect(calls[0].useCache).toBe(false);
+  });
+
+  // Note: ctrl+click on macOS chromium is intercepted as a contextmenu event
+  // by the browser layer (Playwright's `modifiers: ['Control']` doesn't bypass
+  // this), so we don't separately test ctrl+click. The handler is
+  // `!(e.metaKey || e.ctrlKey)` — C2 covers metaKey; the ctrlKey branch is the
+  // same expression.
+
+  // ----- Group D: in-flight reconciliation --------------------------------
+
+  test('D1: pre-existing in-flight request shows spinner on mount without click', async ({
+    page,
+  }) => {
+    await seedAndOpen(page, {
+      chapters: [{ paragraphs: [{ html: 'queued' }] }],
+      inFlight: [
+        {
+          paragraphId: 0,
+          requestId: 42,
+          cfg: {
+            kind: 'progress',
+            steps: [
+              { progress: 30, total: 100, delayMs: 200 },
+              { progress: 100, total: 100, delayMs: 200 },
+            ],
+            translation: '<span>finally done</span>',
+          },
+        },
+      ],
+    });
+
+    const p = paragraphLocator(page, 0);
+    // Spinner appears without any user click — VM picked up the in-flight id.
+    await expect(p.locator('.circular-progress')).toBeVisible();
+    // After translation finishes, the translated HTML lands.
+    await expectTranslated(p);
+    await expect(p.getByText('finally done')).toBeVisible();
+  });
+
+  // ----- Group E: word translations ---------------------------------------
+
+  test('E1: translated paragraph word-spans render without show-translation by default', async ({
+    page,
+  }) => {
+    const translation = [0, 1, 2]
+      .map((i) =>
+        wordSpanHtml({
+          flatIndex: i,
+          paragraph: 0,
+          sentence: 0,
+          word: i,
+          text: `w${i}`,
+          translation: `t${i}`,
+        }),
+      )
+      .join(' ');
+    await seedAndOpen(page, {
+      chapters: [{ paragraphs: [{ html: 'orig', translation }] }],
+    });
+
+    const p = paragraphLocator(page, 0);
+    for (const i of [0, 1, 2]) {
+      await expect(wordSpan(p, i)).toBeVisible();
+      await expect(wordSpan(p, i)).not.toHaveClass(/\bshow-translation\b/);
+    }
+  });
+
+  test('E2: clicking a word opens WordView with seeded info', async ({ page }) => {
+    const translation = wordSpanHtml({
+      flatIndex: 0,
+      paragraph: 0,
+      sentence: 0,
+      word: 0,
+      text: 'hola',
+      translation: 'hello',
+    });
+    const { bookId } = await seedAndOpen(page, {
+      chapters: [{ paragraphs: [{ html: 'hello', translation }] }],
+    });
+    await setWordInfo(page, bookId, 0, 0, 0, {
+      original: 'hello',
+      contextualTranslations: ['hola'],
+      fullSentenceTranslation: 'hola',
+    });
+
+    const p = paragraphLocator(page, 0);
+    await wordSpan(p, 0).click();
+    await expect(wordSpan(p, 0)).toHaveClass(/\bselected\b/);
+    // WordView panel renders the original word and the contextual translation
+    // list item. `.word-original` is unique to WordView; `.word-view ul li`
+    // targets the contextual-translations list specifically.
+    await expect(page.locator('.word-original')).toHaveText('hello');
+    await expect(page.locator('.word-view ul li')).toHaveText('hola');
+  });
+
+  test('E3: clicking a word records a mark_word_visible call with the correct flatIndex', async ({
+    page,
+  }) => {
+    const translation = wordSpanHtml({
+      flatIndex: 7,
+      paragraph: 0,
+      sentence: 0,
+      word: 0,
+      text: 'w',
+      translation: 't',
+    });
+    const { bookId } = await seedAndOpen(page, {
+      chapters: [{ paragraphs: [{ html: 'orig', translation }] }],
+    });
+
+    const p = paragraphLocator(page, 0);
+    await wordSpan(p, 7).click();
+    await expect
+      .poll(async () => (await getMarkWordVisibleCalls(page)).length)
+      .toBe(1);
+    const calls = await getMarkWordVisibleCalls(page);
+    expect(calls[0]).toMatchObject({ bookId, paragraphId: 0, flatIndex: 7 });
+  });
+
+  // ----- Group F: visible-words annotation restore ------------------------
+
+  test('F1: visible-words array adds show-translation to those spans only', async ({
+    page,
+  }) => {
+    const translation = [0, 1, 2]
+      .map((i) =>
+        wordSpanHtml({
+          flatIndex: i,
+          paragraph: 0,
+          sentence: 0,
+          word: i,
+          text: `w${i}`,
+          translation: `t${i}`,
+        }),
+      )
+      .join(' ');
+    await seedAndOpen(page, {
+      chapters: [
+        {
+          paragraphs: [{ html: 'orig', translation, visibleWords: [0, 2] }],
+        },
+      ],
+    });
+
+    const p = paragraphLocator(page, 0);
+    await expect(wordSpan(p, 0)).toHaveClass(/\bshow-translation\b/);
+    await expect(wordSpan(p, 2)).toHaveClass(/\bshow-translation\b/);
+    // The one we didn't seed stays plain.
+    await expect(wordSpan(p, 1)).not.toHaveClass(/\bshow-translation\b/);
+  });
+
+  // ----- Group G: no-flicker regressions ----------------------------------
+
+  test('G1: word click on one paragraph does not blank peers (regression of 901e6a7)', async ({
+    page,
+  }) => {
+    const t1 = wordSpanHtml({
+      flatIndex: 0,
+      paragraph: 0,
+      sentence: 0,
+      word: 0,
+      text: 'a1',
+      translation: 'A1',
+    });
+    const t2 = wordSpanHtml({
+      flatIndex: 0,
+      paragraph: 1,
+      sentence: 0,
+      word: 0,
+      text: 'a2',
+      translation: 'A2',
+    });
+    const t3 = wordSpanHtml({
+      flatIndex: 0,
+      paragraph: 2,
+      sentence: 0,
+      word: 0,
+      text: 'a3',
+      translation: 'A3',
+    });
+    const { bookId } = await seedAndOpen(page, {
+      chapters: [
+        {
+          paragraphs: [
+            { html: 'h1', translation: t1 },
+            { html: 'h2', translation: t2 },
+            { html: 'h3', translation: t3 },
+          ],
+        },
+      ],
+    });
+    await setWordInfo(page, bookId, 0, 0, 0, { original: 'a1' });
+
+    // Install a MutationObserver on peer paragraphs that flags any moment
+    // where the rendered translation text becomes empty.
+    await page.evaluate(() => {
+      (window as any).__peerFlickered = false;
+      const peers = [1, 2];
+      for (const id of peers) {
+        const wrapper = document.querySelector(
+          `.paragraph-wrapper[data-paragraph-id="${id}"]`,
+        );
+        if (!wrapper) continue;
+        const obs = new MutationObserver(() => {
+          const span = wrapper.querySelector('.word-span');
+          if (!span || !(span.textContent ?? '').trim()) {
+            (window as any).__peerFlickered = true;
+          }
+        });
+        obs.observe(wrapper, { childList: true, subtree: true, characterData: true });
+      }
+    });
+
+    const p0 = paragraphLocator(page, 0);
+    await wordSpan(p0, 0).click();
+    await page.waitForTimeout(250);
+    const flickered = await page.evaluate(() => (window as any).__peerFlickered);
+    expect(flickered).toBe(false);
+  });
+
+  test('G2: translation completing on one paragraph does not blank peers (regression of 78d9b74)', async ({
+    page,
+  }) => {
+    const t2 = wordSpanHtml({
+      flatIndex: 0,
+      paragraph: 1,
+      sentence: 0,
+      word: 0,
+      text: 'b',
+      translation: 'B',
+    });
+    const t3 = wordSpanHtml({
+      flatIndex: 0,
+      paragraph: 2,
+      sentence: 0,
+      word: 0,
+      text: 'c',
+      translation: 'C',
+    });
+    const { bookId } = await seedAndOpen(page, {
+      chapters: [
+        {
+          paragraphs: [
+            { html: 'h1' },
+            { html: 'h2', translation: t2 },
+            { html: 'h3', translation: t3 },
+          ],
+        },
+      ],
+    });
+    await setTranslateConfig(page, bookId, 0, {
+      kind: 'progress',
+      steps: [
+        { progress: 50, total: 100, delayMs: 80 },
+        { progress: 100, total: 100, delayMs: 80 },
+      ],
+      translation: '<span>done</span>',
+    });
+
+    await page.evaluate(() => {
+      (window as any).__peerFlickered = false;
+      const peers = [1, 2];
+      for (const id of peers) {
+        const wrapper = document.querySelector(
+          `.paragraph-wrapper[data-paragraph-id="${id}"]`,
+        );
+        if (!wrapper) continue;
+        const obs = new MutationObserver(() => {
+          const span = wrapper.querySelector('.word-span');
+          if (!span || !(span.textContent ?? '').trim()) {
+            (window as any).__peerFlickered = true;
+          }
+        });
+        obs.observe(wrapper, { childList: true, subtree: true, characterData: true });
+      }
+    });
+
+    const p0 = paragraphLocator(page, 0);
+    await translateButton(p0).click();
+    await expectTranslated(p0);
+    const flickered = await page.evaluate(() => (window as any).__peerFlickered);
+    expect(flickered).toBe(false);
+  });
+});
