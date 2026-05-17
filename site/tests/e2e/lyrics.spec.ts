@@ -62,36 +62,38 @@ async function setCachedTranslation(page: Page, t: LyricsTranslationFixture) {
     }, t);
 }
 
-/** Manually fire `lyrics_translation_done` for an in-flight request id. */
+/// Manually fire `lyrics_translation_done` for a given trackId. The backend
+/// now keys translation events by trackId (not requestId) so the frontend
+/// filters by content match against whatever's currently playing.
 async function fireTranslationDone(
     page: Page,
-    requestId: number,
+    trackId: string,
     translation: LyricsTranslationFixture,
 ) {
     await page.evaluate(
-        ({ requestId, translation }) => {
+        ({ trackId, translation }) => {
             (window as any).__tauriEmit('lyrics_translation_done', {
-                requestId,
+                trackId,
                 translation,
             });
         },
-        { requestId, translation },
+        { trackId, translation },
     );
 }
 
 async function fireTranslationError(
     page: Page,
-    requestId: number,
+    trackId: string,
     error: string,
 ) {
     await page.evaluate(
-        ({ requestId, error }) => {
+        ({ trackId, error }) => {
             (window as any).__tauriEmit('lyrics_translation_error', {
-                requestId,
+                trackId,
                 error,
             });
         },
-        { requestId, error },
+        { trackId, error },
     );
 }
 
@@ -343,7 +345,7 @@ test.describe('Spotify lyrics translation mode', () => {
 
             await expect(page.getByText(/Translating \(\d+ bytes\)/)).toBeVisible();
 
-            await fireTranslationDone(page, 1, {
+            await fireTranslationDone(page, trackId, {
                 track_id: trackId,
                 target_lang: TARGET,
                 model: MODEL,
@@ -367,7 +369,7 @@ test.describe('Spotify lyrics translation mode', () => {
             await emitSpotifyState(page, playingState(trackId, 0));
             await expect(page.getByText(/Translating/)).toBeVisible();
 
-            await fireTranslationError(page, 1, 'rate limit hit');
+            await fireTranslationError(page, trackId, 'rate limit hit');
 
             const statusBar = page.locator('.status-bar');
             await expect(statusBar).toContainText('Error: rate limit hit');

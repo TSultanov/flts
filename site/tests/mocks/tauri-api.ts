@@ -44,11 +44,16 @@ type MockBook = {
   translationRatio: number;
   path: string[];
   chapters: MockChapter[];
+  // Global paragraph storage keyed by global paragraph id. Matches the real
+  // backend, where paragraph ids are unique across the whole book — not
+  // per-chapter — so multi-chapter EPUB tests resolve to the right content.
+  paragraphsById: Map<number, MockParagraph>;
 };
 
 type MockChapter = {
   title: string;
-  paragraphs: MockParagraph[];
+  // Global paragraph ids of the paragraphs in this chapter, in order.
+  paragraphIds: number[];
 };
 
 type MockParagraph = {
@@ -115,12 +120,42 @@ let requestIdCounter = 0;
 let mockNowPlaying: NowPlaying | null = null;
 let mockLyricsByTrack: Map<string, Lyrics | null> = new Map();
 let mockTranslationCache: Map<string, LyricsTranslation> = new Map();
-let mockTranslationResponses: Map<string, LyricsTranslation> = new Map();
-let mockTranslationErrors: Map<string, string> = new Map();
-let lyricsRequestIdCounter = 0;
 
 function translationKey(trackId: string, target: string, model: number): string {
   return `${trackId}|${target}|${model}`;
+}
+
+/**
+ * Build a MockBook whose paragraphs are stored under globally unique ids, so
+ * `get_paragraph_view(paragraph_id)` and `get_book_chapter_paragraph_ids` use
+ * the same id space as the real backend.
+ */
+function buildBookFromChapters(
+  id: UUID,
+  title: string,
+  chapters: Array<{ title: string; paragraphs: Array<{ html: string }> }>,
+): MockBook {
+  const paragraphsById = new Map<number, MockParagraph>();
+  let nextParagraphId = 0;
+  const mockChapters: MockChapter[] = chapters.map((c) => {
+    const paragraphIds: number[] = [];
+    for (const p of c.paragraphs) {
+      const pid = nextParagraphId++;
+      paragraphsById.set(pid, { html: p.html });
+      paragraphIds.push(pid);
+    }
+    return { title: c.title, paragraphIds };
+  });
+  return {
+    id,
+    title,
+    chaptersCount: mockChapters.length,
+    paragraphsCount: paragraphsById.size,
+    translationRatio: 0,
+    path: [],
+    chapters: mockChapters,
+    paragraphsById,
+  };
 }
 
 // Dispatch a mock event through the shared `tauri-event.ts` bus so that the
@@ -151,9 +186,6 @@ export function resetMockState() {
   mockNowPlaying = null;
   mockLyricsByTrack.clear();
   mockTranslationCache.clear();
-  mockTranslationResponses.clear();
-  mockTranslationErrors.clear();
-  lyricsRequestIdCounter = 0;
 }
 
 // Expose reset function globally for tests
@@ -174,20 +206,6 @@ if (typeof window !== 'undefined') {
   };
   (window as any).__mockTranslationCache = (t: LyricsTranslation) => {
     mockTranslationCache.set(translationKey(t.track_id, t.target_lang, t.model), t);
-  };
-  (window as any).__mockTranslationResponse = (t: LyricsTranslation) => {
-    mockTranslationResponses.set(
-      translationKey(t.track_id, t.target_lang, t.model),
-      t,
-    );
-  };
-  (window as any).__mockTranslationError = (
-    trackId: string,
-    target: string,
-    model: number,
-    msg: string,
-  ) => {
-    mockTranslationErrors.set(translationKey(trackId, target, model), msg);
   };
 }
 
@@ -270,26 +288,22 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
 
     case 'import_epub': {
       const id = `mock-book-${++bookIdCounter}`;
-      const bookData = args?.book as { title: string; chapters: MockChapter[] };
+      // Frontend ships `{ title, chapters: [{ title, paragraphs: [{ html }] }] }`.
+      // We re-key paragraphs into a global-id map to match the real backend.
+      const bookData = args?.book as {
+        title: string;
+        chapters: Array<{ title: string; paragraphs: Array<{ html: string }> }>;
+      };
 
       if (!bookData) {
         return Promise.reject(new Error('No book data provided'));
       }
 
-      const paragraphsCount = bookData.chapters.reduce(
-        (sum, c) => sum + c.paragraphs.length,
-        0
-      );
-
-      const newBook: MockBook = {
+      const newBook = buildBookFromChapters(
         id,
-        title: bookData.title,
-        chaptersCount: bookData.chapters.length,
-        paragraphsCount,
-        translationRatio: 0,
-        path: [],
-        chapters: bookData.chapters,
-      };
+        bookData.title,
+        bookData.chapters,
+      );
 
       mockLibrary.set(id, newBook);
       emit('library_updated', Array.from(mockLibrary.values()));
@@ -308,18 +322,9 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
       // Split text into paragraphs
       const paragraphs = text.split(/\n\n+/).filter(p => p.trim());
 
-      const newBook: MockBook = {
-        id,
-        title,
-        chaptersCount: 1,
-        paragraphsCount: paragraphs.length,
-        translationRatio: 0,
-        path: [],
-        chapters: [{
-          title: title,
-          paragraphs: paragraphs.map(p => ({ html: p })),
-        }],
-      };
+      const newBook = buildBookFromChapters(id, title, [
+        { title, paragraphs: paragraphs.map((p) => ({ html: p })) },
+      ]);
 
       mockLibrary.set(id, newBook);
       emit('library_updated', Array.from(mockLibrary.values()));
@@ -351,8 +356,7 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
         return Promise.resolve([] as T);
       }
 
-      const ids: number[] = book.chapters[chapterId].paragraphs.map((_, idx) => idx);
-      return Promise.resolve(ids as T);
+      return Promise.resolve(book.chapters[chapterId].paragraphIds.slice() as T);
     }
 
     case 'get_paragraph_view': {
@@ -360,18 +364,14 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
       const paragraphId = args?.paragraphId as number;
       const book = mockLibrary.get(bookId);
       if (!book) return Promise.reject(new Error('book not found'));
-      for (const chapter of book.chapters) {
-        const p = chapter.paragraphs[paragraphId];
-        if (p) {
-          const view: ParagraphView = {
-            id: paragraphId,
-            original: p.html,
-            translation: undefined,
-          };
-          return Promise.resolve(view as T);
-        }
-      }
-      return Promise.reject(new Error('paragraph not found'));
+      const p = book.paragraphsById.get(paragraphId);
+      if (!p) return Promise.reject(new Error('paragraph not found'));
+      const view: ParagraphView = {
+        id: paragraphId,
+        original: p.html,
+        translation: undefined,
+      };
+      return Promise.resolve(view as T);
     }
 
     case 'get_word_info': {
@@ -397,7 +397,21 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
     }
 
     case 'get_paragraph_translation_request_id': {
-      return Promise.resolve(0 as T);
+      // No translation in flight in the mock world — returning null keeps
+      // ParagraphViewModel out of the get_translation_status polling loop.
+      return Promise.resolve(null as T);
+    }
+
+    case 'get_translation_status': {
+      // Defensive: if anything kicks off a poll, mark it complete immediately
+      // so the polling effect tears itself down.
+      const requestId = (args?.requestId as number) ?? 0;
+      return Promise.resolve({
+        request_id: requestId,
+        progress_chars: 0,
+        expected_chars: 0,
+        is_complete: true,
+      } as T);
     }
 
     case 'get_book_reading_state': {
@@ -445,48 +459,50 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
     case 'get_now_playing':
       return Promise.resolve((mockNowPlaying ?? null) as T);
 
-    case 'get_lyrics': {
-      const trackId = args?.trackId as string;
-      // `has` distinguishes "explicitly mocked as null/not-found" from
-      // "test forgot to register lyrics for this track".
-      const value = mockLyricsByTrack.has(trackId)
-        ? mockLyricsByTrack.get(trackId)!
-        : null;
-      return Promise.resolve(value as T);
-    }
-
-    case 'translate_lyrics': {
+    case 'get_track_lyrics_state': {
+      // Read-only bootstrap snapshot — mirrors the real backend, which moved
+      // all orchestration server-side. Tests prime state via __mockLyrics
+      // (sets the per-track lyrics) and __mockTranslationCache (sets the
+      // cached translation for a target lang/model).
       const trackId = args?.trackId as string;
       const target = args?.targetLang as string;
       const model = args?.model as number;
-      const key = translationKey(trackId, target, model);
-      const requestId = ++lyricsRequestIdCounter;
-
-      // Schedule the resolution AFTER the command's promise resolves so the
-      // frontend's `currentRequestId = await translateLyrics(...)` assignment
-      // races deterministically (event arrives second).
-      setTimeout(() => {
-        const errMsg = mockTranslationErrors.get(key);
-        if (errMsg) {
-          emit('lyrics_translation_error', { requestId, error: errMsg });
-          return;
-        }
-        // Cache hit mirrors the real backend: emit done from the cached entry.
-        const cached = mockTranslationCache.get(key);
-        if (cached) {
-          emit('lyrics_translation_done', { requestId, translation: cached });
-          return;
-        }
-        const response = mockTranslationResponses.get(key);
-        if (response) {
-          emit('lyrics_translation_done', { requestId, translation: response });
-        }
-        // Otherwise stay in-flight indefinitely — useful for asserting the
-        // intermediate "Translating…" state.
-      }, 30);
-
-      return Promise.resolve(requestId as T);
+      const lyrics = mockLyricsByTrack.has(trackId)
+        ? mockLyricsByTrack.get(trackId)!
+        : null;
+      const translation =
+        mockTranslationCache.get(translationKey(trackId, target, model)) ?? null;
+      // If the track has been explicitly mocked as "no lyrics", fire a
+      // lyrics_resolved event after the bootstrap promise resolves so the
+      // frontend transitions from `fetching` to `unsupported-track`. We
+      // schedule it on the microtask queue + setTimeout(0) so the resolved
+      // promise lands first.
+      if (mockLyricsByTrack.has(trackId) && lyrics === null) {
+        setTimeout(() => {
+          emit('lyrics_resolved', { trackId, lyrics: null });
+        }, 0);
+      }
+      return Promise.resolve({ lyrics, translation } as T);
     }
+
+    // ----- Spotify Web (queue/preload) commands ------------------------
+    // The lyrics view's queue store hits these on mount; without handlers the
+    // mock logs `Unhandled command` warnings and the store sits in its
+    // disconnected default forever (which is fine, just noisy).
+
+    case 'spotify_web_status':
+      return Promise.resolve({
+        connected: false,
+        premiumRequired: false,
+        lastError: null,
+      } as T);
+
+    case 'spotify_web_get_queue':
+      return Promise.resolve(null as T);
+
+    case 'spotify_web_connect':
+    case 'spotify_web_disconnect':
+      return Promise.resolve(undefined as T);
 
     default:
       console.warn(`[Tauri Mock] Unhandled command: ${cmd}`);
