@@ -20,13 +20,13 @@ export class ParagraphViewModel {
     expectedChars = $state(100);
 
     #library!: Library;
-    #getProps!: () => ParagraphVMProps;
+    #props!: ParagraphVMProps;
     #translationRequestId = $state<number | null>(null);
 
     #paragraph = $derived.by(() =>
         this.#library.getParagraphView(
-            this.#getProps().bookId,
-            this.#getProps().paragraphId,
+            this.#props.bookId,
+            this.#props.paragraphId,
         ),
     );
     #status = $derived.by(() =>
@@ -41,9 +41,9 @@ export class ParagraphViewModel {
     translationHtml = $derived(this.#paragraph.current?.translation);
     isTranslating = $derived(this.#translationRequestId !== null);
 
-    constructor(library: Library, getProps: () => ParagraphVMProps) {
+    constructor(library: Library, props: ParagraphVMProps) {
         this.#library = library;
-        this.#getProps = getProps;
+        this.#props = props;
 
         $effect(() => {
             const status = this.#status?.current;
@@ -51,7 +51,7 @@ export class ParagraphViewModel {
             if (status.is_complete) {
                 if (status.error) {
                     console.warn(
-                        `Translation failed for paragraph ${this.#getProps().paragraphId}:`,
+                        `Translation failed for paragraph ${this.#props.paragraphId}:`,
                         status.error,
                     );
                 }
@@ -78,7 +78,7 @@ export class ParagraphViewModel {
                 return;
             }
 
-            const { bookId, paragraphId } = this.#getProps();
+            const { bookId, paragraphId } = this.#props;
             let cancelled = false;
             this.#library
                 .getParagraphTranslationRequestId(bookId, paragraphId)
@@ -132,12 +132,12 @@ export class ParagraphViewModel {
         });
 
         $effect(() => {
-            const target = this.#getProps().sentenceWordIdToDisplay;
+            const target = this.#props.sentenceWordIdToDisplay;
             const wrapper = this.wrapper;
             const hasTranslation = !!this.translationHtml;
             if (!wrapper || !hasTranslation || !target) return;
             const [pid, sid, wid] = target;
-            if (pid !== this.#getProps().paragraphId) return;
+            if (pid !== this.#props.paragraphId) return;
 
             let cancelled = false;
             let selected: HTMLElement | null = null;
@@ -159,7 +159,7 @@ export class ParagraphViewModel {
     }
 
     async translate(useCache: boolean): Promise<void> {
-        const { bookId, paragraphId } = this.#getProps();
+        const { bookId, paragraphId } = this.#props;
         this.progressChars = 0;
         this.#translationRequestId = await this.#library.translateParagraph(
             bookId,

@@ -18,11 +18,11 @@
     } = $props();
 
     const library: Library = getContext("library");
-    const vm = new ParagraphViewModel(library, () => ({
-        bookId,
-        paragraphId,
-        sentenceWordIdToDisplay,
-    }));
+    const vm = new ParagraphViewModel(library, {
+        get bookId() { return bookId; },
+        get paragraphId() { return paragraphId; },
+        get sentenceWordIdToDisplay() { return sentenceWordIdToDisplay; },
+    });
 </script>
 
 <div
