@@ -2,12 +2,12 @@
     import { getContext } from "svelte";
     import { Library } from "../data/library";
     import type { Language } from "../config";
-    import { getterToReadableWithEvents } from "../data/tauri";
+    import { Resource } from "../data/tauri.svelte";
     import { navigate } from "../../router";
 
     let title = $state("");
     let text = $state("");
-    const languages = getterToReadableWithEvents<Language[]>("get_languages", {}, [], []);
+    const languages = new Resource<Language[]>("get_languages", {}, [], []);
     let sourceLanguageId = $state("eng");
 
     const canImport = $derived(title.length > 0 && text.length > 0);
@@ -28,7 +28,7 @@
     <textarea id="text" bind:value={text}></textarea>
     <label for="src-lang">Source language:</label>
     <select id="src-lang" bind:value={sourceLanguageId}>
-        {#each $languages as l}
+        {#each languages.current ?? [] as l}
             <option value={l.id}>{l.name}{l.localName ? ` (${l.localName})` : ""}</option>
         {/each}
     </select>

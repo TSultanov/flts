@@ -24,26 +24,26 @@
     const SPOTIFY_REDIRECT_URI = 'http://127.0.0.1:53682/callback';
 
     let translationProvider: TranslationProvider = $derived(
-        $configStore?.translationProvider ?? 'google',
+        configStore.current?.translationProvider ?? 'google',
     );
-    let geminiApiKey: string | undefined = $derived($configStore?.geminiApiKey);
-    let openaiApiKey: string | undefined = $derived($configStore?.openaiApiKey);
+    let geminiApiKey: string | undefined = $derived(configStore.current?.geminiApiKey);
+    let openaiApiKey: string | undefined = $derived(configStore.current?.openaiApiKey);
     let targetLanguage: string | undefined = $derived(
-        $configStore?.targetLanguageId,
+        configStore.current?.targetLanguageId,
     );
-    let libraryPath: string | undefined = $derived($configStore?.libraryPath);
-    let model: number = $derived($configStore?.model ?? 0);
+    let libraryPath: string | undefined = $derived(configStore.current?.libraryPath);
+    let model: number = $derived(configStore.current?.model ?? 0);
     let models: Model[] = $state([]);
     let providers: ProviderMeta[] = $state([]);
 
     let spotifyClientId: string = $derived(
-        $configStore?.spotifyClientId ?? '',
+        configStore.current?.spotifyClientId ?? '',
     );
     let spotifyPreloadCount: number = $derived(
-        $configStore?.spotifyPreloadCount ?? 1,
+        configStore.current?.spotifyPreloadCount ?? 1,
     );
     let spotifyShowNextTrack: boolean = $derived(
-        $configStore?.spotifyShowNextTrack ?? true,
+        configStore.current?.spotifyShowNextTrack ?? true,
     );
     let spotifyStatus: SpotifyWebStatus = $state({
         connected: false,

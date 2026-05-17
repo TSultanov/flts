@@ -162,9 +162,9 @@
     }
 
     $effect(() => {
-        const ids = $paragraphIds;
+        const ids = paragraphIds.current ?? [];
 
-        if (!ids || ids.length === 0) {
+        if (ids.length === 0) {
             return;
         }
 
@@ -270,7 +270,7 @@
             bind:this={paragraphsContainer}
             onscroll={handleScroll}
         >
-            {#each $paragraphIds as paragraphId (paragraphId)}
+            {#each paragraphIds.current ?? [] as paragraphId (paragraphId)}
                 <ParagraphView
                     {bookId}
                     {paragraphId}

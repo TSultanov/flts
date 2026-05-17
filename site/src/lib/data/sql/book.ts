@@ -1,4 +1,3 @@
-import { readable, type Readable } from "svelte/store";
 import { generateUID, type UUID } from "../v2/db";
 
 type BookData = {

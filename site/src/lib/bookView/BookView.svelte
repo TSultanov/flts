@@ -40,7 +40,8 @@
     });
 
     $effect(() => {
-        if (!$chapters || initialNavigationDone) {
+        const list = chapters.current;
+        if (!list || initialNavigationDone) {
             return;
         }
 
@@ -51,7 +52,7 @@
 
         const state = readingState;
         const chapterFromState = state
-            ? $chapters.find((ch) => ch.id === state.chapterId)
+            ? list.find((ch) => ch.id === state.chapterId)
             : null;
 
         if (chapterFromState) {
@@ -66,12 +67,12 @@
             return;
         }
 
-        if ($chapters.length === 1) {
+        if (list.length === 1) {
             initialNavigationDone = true;
             navigate("/book/:bookId/:chapterId", {
                 params: {
                     bookId: bookId,
-                    chapterId: $chapters[0].id.toString(),
+                    chapterId: list[0].id.toString(),
                 },
                 search: {},
             });
@@ -81,11 +82,11 @@
     let sentenceWordIdToDisplay: [number, number, number] | null = $state(null);
 </script>
 
-{#if $chapters}
-    <div class="container {$chapters.length <= 1 ? "container-twocolumn" : ""}">
-        {#if $chapters.length > 1}
+{#if chapters.current}
+    <div class="container {chapters.current.length <= 1 ? "container-twocolumn" : ""}">
+        {#if chapters.current.length > 1}
             <div class="chapters">
-                {#each $chapters as chapter}
+                {#each chapters.current as chapter}
                     <p class="{chapter.id === chapterId ? "current" : ""}">
                         <a href="/book/{bookId}/{chapter.id}"
                             >{chapter.title ? chapter.title : "<no title>"}</a

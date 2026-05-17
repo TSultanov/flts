@@ -26,18 +26,19 @@
         ),
     );
 
-    let defaultModel = $configStore?.model;
-    let model = $derived($word?.translationModel);
+    let model = $derived(word.current?.translationModel);
     let translationRequestId: number | null = $state(null);
 
     let progressChars = $state(0);
     let expectedChars = $state(100);
     const translationStatus = $derived(
-        library.getTranslationStatus(translationRequestId),
+        translationRequestId !== null
+            ? library.getTranslationStatus(translationRequestId)
+            : null,
     );
 
     $effect(() => {
-        const status: TranslationStatus | undefined = $translationStatus;
+        const status: TranslationStatus | undefined = translationStatus?.current;
         if (!status) {
             return;
         }
@@ -54,13 +55,12 @@
         expectedChars = status.expected_chars;
     });
 
-    // System Dictionary (macOS) - using library method which returns a Readable store
     const systemDefinition = $derived(
-        $word?.original
+        word.current?.original
             ? library.getSystemDefinition(
-                  $word.original,
-                  $word.sourceLanguage || "en",
-                  $configStore?.targetLanguageId || "en",
+                  word.current.original,
+                  word.current.sourceLanguage || "en",
+                  configStore.current?.targetLanguageId || "en",
               )
             : null,
     );
@@ -76,8 +76,8 @@
     });
 
     function showSystemDictionary() {
-        if ($word?.original) {
-            invoke("show_system_dictionary", { word: $word.original }).catch(
+        if (word.current?.original) {
+            invoke("show_system_dictionary", { word: word.current.original }).catch(
                 console.error,
             );
         }
@@ -141,89 +141,69 @@
     }
 </script>
 
-{#if $word}
+{#if word.current}
+    {@const w = word.current}
     <div class="container">
-        <p class="word-original">{@html $word.original}</p>
-        {#if $word.contextualTranslations && $word.contextualTranslations.length > 0}
+        <p class="word-original">{@html w.original}</p>
+        {#if w.contextualTranslations && w.contextualTranslations.length > 0}
             <details open>
                 <summary>Meaning</summary>
                 <ul>
-                    {#each $word.contextualTranslations as translation}
+                    {#each w.contextualTranslations as translation}
                         <li>{translation}</li>
                     {/each}
                 </ul>
             </details>
         {/if}
-        {#if $word.note}
+        {#if w.note}
             <details open>
                 <summary>Note</summary>
-                <p>{$word.note}</p>
+                <p>{w.note}</p>
             </details>
         {/if}
-        <!-- TODO -->
-        <!-- {#if $word.wordTranslation}
-        <details>
-            <summary>Dictionary</summary>
-            <table>
-                <tbody>
-                    <tr>
-                        <th scope="row">Language</th>
-                        <td
-                            >{$word.wordTranslation.originalWord
-                                .originalLanguage.name}</td
-                        >
-                    </tr>
-                    <tr>
-                        <th scope="row">Translation</th>
-                        <td>{$word.wordTranslation.translation}</td>
-                    </tr>
-                </tbody>
-            </table>
-        </details>
-    {/if} -->
-        {#if $word.grammar}
+        {#if w.grammar}
             <details>
                 <summary>Grammar</summary>
                 <table>
                     <tbody>
                         <tr>
                             <th scope="row">Part of speech</th>
-                            <td>{$word.grammar.partOfSpeech}</td>
+                            <td>{w.grammar.partOfSpeech}</td>
                         </tr>
-                        {#if $word.grammar.originalInitialForm}
+                        {#if w.grammar.originalInitialForm}
                             <tr>
                                 <th scope="row">Initial form</th>
-                                <td>{$word.grammar.originalInitialForm}</td>
+                                <td>{w.grammar.originalInitialForm}</td>
                             </tr>
                         {/if}
-                        {#if $word.grammar.plurality}
+                        {#if w.grammar.plurality}
                             <tr>
                                 <th scope="row">Plurality</th>
-                                <td>{$word.grammar.plurality}</td>
+                                <td>{w.grammar.plurality}</td>
                             </tr>
                         {/if}
-                        {#if $word.grammar.person}
+                        {#if w.grammar.person}
                             <tr>
                                 <th scope="row">Person</th>
-                                <td>{$word.grammar.person}</td>
+                                <td>{w.grammar.person}</td>
                             </tr>
                         {/if}
-                        {#if $word.grammar.tense}
+                        {#if w.grammar.tense}
                             <tr>
                                 <th scope="row">Tense</th>
-                                <td>{$word.grammar.tense}</td>
+                                <td>{w.grammar.tense}</td>
                             </tr>
                         {/if}
-                        {#if $word.grammar.case}
+                        {#if w.grammar.case}
                             <tr>
                                 <th scope="row">Case</th>
-                                <td>{$word.grammar.case}</td>
+                                <td>{w.grammar.case}</td>
                             </tr>
                         {/if}
-                        {#if $word.grammar.other}
+                        {#if w.grammar.other}
                             <tr>
                                 <th scope="row">Other</th>
-                                <td>{$word.grammar.other}</td>
+                                <td>{w.grammar.other}</td>
                             </tr>
                         {/if}
                     </tbody>
@@ -231,14 +211,14 @@
             </details>
             <details>
                 <summary>Full sentence</summary>
-                <p>{$word.fullSentenceTranslation}</p>
+                <p>{w.fullSentenceTranslation}</p>
             </details>
         {/if}
-        {#if systemDefinition && $systemDefinition}
+        {#if systemDefinition?.current}
             <details open>
                 <summary>System Dictionary</summary>
                 <div class="definition">
-                    {@html $systemDefinition.definition}
+                    {@html systemDefinition.current.definition}
                 </div>
             </details>
         {/if}
@@ -251,7 +231,7 @@
             <span>Translate paragraph again</span>
             <div class="controls">
                 <select id="model" bind:value={model}>
-                    {#each $models as model}
+                    {#each models.current ?? [] as model}
                         <option value={model.id}>{model.name}</option>
                     {/each}
                 </select>

@@ -1,6 +1,5 @@
 import { tick } from "svelte";
 import type { Library } from "../data/library";
-import type { ParagraphView } from "../data/sql/book";
 import type { UUID } from "../data/v2/db";
 import {
     showTranslation,
@@ -20,15 +19,26 @@ export class ParagraphViewModel {
     progressChars = $state(0);
     expectedChars = $state(100);
 
-    #library: Library;
-    #getProps: () => ParagraphVMProps;
-    #paragraph = $state<ParagraphView | undefined>(undefined);
+    #library!: Library;
+    #getProps!: () => ParagraphVMProps;
     #translationRequestId = $state<number | null>(null);
 
-    #visibleWords = $derived(this.#paragraph?.visibleWords ?? []);
+    #paragraph = $derived.by(() =>
+        this.#library.getParagraphView(
+            this.#getProps().bookId,
+            this.#getProps().paragraphId,
+        ),
+    );
+    #status = $derived.by(() =>
+        this.#translationRequestId !== null
+            ? this.#library.getTranslationStatus(this.#translationRequestId)
+            : null,
+    );
 
-    originalText = $derived(this.#paragraph?.original ?? "");
-    translationHtml = $derived(this.#paragraph?.translation);
+    #visibleWords = $derived(this.#paragraph.current?.visibleWords ?? []);
+
+    originalText = $derived(this.#paragraph.current?.original ?? "");
+    translationHtml = $derived(this.#paragraph.current?.translation);
     isTranslating = $derived(this.#translationRequestId !== null);
 
     constructor(library: Library, getProps: () => ParagraphVMProps) {
@@ -36,36 +46,21 @@ export class ParagraphViewModel {
         this.#getProps = getProps;
 
         $effect(() => {
-            const { bookId, paragraphId } = this.#getProps();
-            const store = this.#library.getParagraphView(bookId, paragraphId);
-            this.#paragraph = undefined;
-            return store.subscribe((p) => {
-                this.#paragraph = p;
-            });
-        });
-
-        $effect(() => {
-            const id = this.#translationRequestId;
-            if (id === null) {
+            const status = this.#status?.current;
+            if (!status) return;
+            if (status.is_complete) {
+                if (status.error) {
+                    console.warn(
+                        `Translation failed for paragraph ${this.#getProps().paragraphId}:`,
+                        status.error,
+                    );
+                }
+                this.#translationRequestId = null;
+                this.progressChars = 0;
                 return;
             }
-            const store = this.#library.getTranslationStatus(id);
-            return store.subscribe((status) => {
-                if (!status) return;
-                if (status.is_complete) {
-                    if (status.error) {
-                        console.warn(
-                            `Translation failed for paragraph ${this.#getProps().paragraphId}:`,
-                            status.error,
-                        );
-                    }
-                    this.#translationRequestId = null;
-                    this.progressChars = 0;
-                    return;
-                }
-                this.progressChars = status.progress_chars;
-                this.expectedChars = status.expected_chars;
-            });
+            this.progressChars = status.progress_chars;
+            this.expectedChars = status.expected_chars;
         });
 
         $effect(() => {
@@ -79,7 +74,7 @@ export class ParagraphViewModel {
             if (this.#translationRequestId !== null) {
                 return;
             }
-            if (this.#paragraph === undefined) {
+            if (this.#paragraph.current === undefined) {
                 return;
             }
 

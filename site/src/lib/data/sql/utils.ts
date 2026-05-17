@@ -1,5 +1,3 @@
-import type { Readable, Unsubscriber } from "svelte/store";
-
 export const DB_UPDATES_CHANNEL_NAME = "db_updates_channel";
 
 // Centralized SQLite OPFS DB naming
@@ -33,24 +31,4 @@ export function debounce(callbackFn: () => void | Promise<void>, timeout: number
             timeoutId = null;
         }, timeout);
     }
-}
-
-export function readableToPromise<T>(store: Readable<T>): Promise<T | undefined> {
-    return new Promise<T | undefined>(resolve => {
-        let unsubscriber: Unsubscriber;
-        let count = 0;
-
-        const resolver = (data: T | undefined) => {
-            if (count == 0) {
-                count++;
-                return; // Discard first bogus result
-            }
-            setTimeout(() => {
-                unsubscriber();
-            })
-            resolve(data);
-        }
-
-        unsubscriber = store.subscribe(data => resolver(data));
-    });
 }

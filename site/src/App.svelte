@@ -39,11 +39,11 @@
     ];
 
     const links = $derived.by(() => {
-        const apiKeyOk = $configStore?.translationProvider === 'openai'
-            ? !!$configStore?.openaiApiKey
-            : !!$configStore?.geminiApiKey;
+        const apiKeyOk = configStore.current?.translationProvider === 'openai'
+            ? !!configStore.current?.openaiApiKey
+            : !!configStore.current?.geminiApiKey;
 
-        if (!apiKeyOk || !$configStore?.libraryPath || !$configStore?.targetLanguageId) {
+        if (!apiKeyOk || !configStore.current?.libraryPath || !configStore.current?.targetLanguageId) {
             return configOnlyLinks;
         } else {
             return fullLinks;
@@ -54,16 +54,16 @@
     let initialRedirectDone = false;
     $effect(() => {
         if (initialRedirectDone) return;
-        if ($configStore === undefined) return; // Wait for config to load
+        if (configStore.current === undefined) return; // Wait for config to load
 
         initialRedirectDone = true;
         const currentPath = window.location.pathname;
 
         // Only redirect from root or if config is incomplete
-        const apiKeyOk = $configStore?.translationProvider === 'openai'
-            ? !!$configStore?.openaiApiKey
-            : !!$configStore?.geminiApiKey;
-        const configComplete = apiKeyOk && $configStore?.libraryPath && $configStore?.targetLanguageId;
+        const apiKeyOk = configStore.current?.translationProvider === 'openai'
+            ? !!configStore.current?.openaiApiKey
+            : !!configStore.current?.geminiApiKey;
+        const configComplete = apiKeyOk && configStore.current?.libraryPath && configStore.current?.targetLanguageId;
 
         if (!configComplete) {
             // Must go to config if not configured

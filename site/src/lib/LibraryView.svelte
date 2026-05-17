@@ -1,13 +1,14 @@
 <script lang="ts">
     import { getContext } from "svelte";
-    import { Library, type LibraryFolder } from "./data/library";
+    import { buildLibraryFolder, Library, type LibraryFolder } from "./data/library";
     import ConfirmDialog from "./ConfirmDialog.svelte";
     import MoveFolderDialog from "./MoveFolderDialog.svelte";
     import type { UUID } from "./data/v2/db";
     import type { IBookMeta } from "./data/sql/book";
 
     const library: Library = getContext("library");
-    const rootFolder = library.getLibraryBooks();
+    const books = library.getLibraryBooksMetadata();
+    const rootFolder = $derived(buildLibraryFolder(books.current ?? []));
 
     // Batch selection state
     let selectedBookUids = $state(new Set<UUID>());
@@ -27,8 +28,8 @@
     }
 
     function selectAllBooks() {
-        if (!$rootFolder) return;
-        const allBookUids = getAllBookUids($rootFolder);
+        if (!rootFolder) return;
+        const allBookUids = getAllBookUids(rootFolder);
         selectedBookUids = new Set(allBookUids);
     }
 
@@ -52,14 +53,14 @@
     }
 
     function requestBatchDelete() {
-        if (!$rootFolder) return;
-        booksToDelete = getSelectedBooks($rootFolder);
+        if (!rootFolder) return;
+        booksToDelete = getSelectedBooks(rootFolder);
         showBatchDeleteDialog = true;
     }
 
     function requestBatchMove() {
-        if (!$rootFolder) return;
-        booksToMove = getSelectedBooks($rootFolder);
+        if (!rootFolder) return;
+        booksToMove = getSelectedBooks(rootFolder);
         showBatchMoveDialog = true;
     }
 
@@ -114,7 +115,7 @@
     const hasSelection = $derived(selectedCount > 0);
 </script>
 
-{#if $rootFolder}
+{#if rootFolder}
     <div class="books">
         <div class="header">
             <h1>Books</h1>
@@ -141,14 +142,14 @@
             {/if}
         </div>
         <div class="folders-container">
-            {@render FolderComponent($rootFolder)}
+            {@render FolderComponent(rootFolder)}
         </div>
     </div>
 {/if}
 
 <MoveFolderDialog
     bind:isOpen={showBatchMoveDialog}
-    rootFolder={$rootFolder || { name: undefined, folders: [], books: [] }}
+    rootFolder={rootFolder || { name: undefined, folders: [], books: [] }}
     onConfirm={confirmBatchMove}
     onCancel={cancelBatchMove}
 />

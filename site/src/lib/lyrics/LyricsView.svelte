@@ -48,7 +48,7 @@
     const QUEUE_STALE_MS = 30_000;
     let nowTickMs: number = $state(Date.now());
     const nextTrack = $derived.by<TrackMeta | null>(() => {
-        const cfg = $configStore;
+        const cfg = configStore.current;
         if (cfg && cfg.spotifyShowNextTrack === false) return null;
         if (!queueValue.snapshot) return null;
         if (nowTickMs - queueValue.receivedAt > QUEUE_STALE_MS) return null;
@@ -122,7 +122,7 @@
             return;
         }
 
-        const cfg = $configStore;
+        const cfg = configStore.current;
         if (!cfg || !cfg.targetLanguageId) {
             translationStatus = 'idle';
             return;

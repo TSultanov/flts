@@ -3,7 +3,7 @@
     import { parseEpub } from "../data/epubLoader";
     import type { Library } from "../data/library";
     import type { Language } from "../config";
-    import { getterToReadableWithEvents } from "../data/tauri";
+    import { Resource } from "../data/tauri.svelte";
     import { navigate } from "../../router";
 
     let files: FileList | null | undefined = $state();
@@ -18,7 +18,7 @@
     });
 
     const selectedChapters = $state(new Set<number>());
-    const languages = getterToReadableWithEvents<Language[]>("get_languages", {}, [], []);
+    const languages = new Resource<Language[]>("get_languages", {}, [], []);
     let sourceLanguageId = $state("eng");
 
     $effect(() => {
@@ -70,7 +70,7 @@
         {#if book}
             <label for="src-lang">Source language:</label>
             <select id="src-lang" bind:value={sourceLanguageId}>
-                {#each $languages as l}
+                {#each languages.current ?? [] as l}
                     <option value={l.id}>{l.name}{l.localName ? ` (${l.localName})` : ""}</option>
                 {/each}
             </select>
