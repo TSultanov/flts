@@ -1,16 +1,12 @@
 <script lang="ts">
     import Fa from "svelte-fa";
     import { faLanguage } from "@fortawesome/free-solid-svg-icons";
-    import type { ParagraphView } from "../data/sql/book";
-    import { getContext, tick } from "svelte";
-    import type { Library, TranslationStatus } from "../data/library";
-    import type { UUID } from "../data/v2/db";
+    import { getContext } from "svelte";
     import CircularProgress from "../widgets/CircularProgress.svelte";
-    import {
-        showTranslation,
-        showTranslations,
-        showTranslationsBatched,
-    } from "./translationOverlay";
+    import type { Library } from "../data/library";
+    import type { ParagraphView } from "../data/sql/book";
+    import type { UUID } from "../data/v2/db";
+    import { ParagraphViewModel } from "./ParagraphViewModel.svelte";
 
     let {
         bookId,
@@ -22,303 +18,31 @@
         sentenceWordIdToDisplay?: [number, number, number] | null;
     } = $props();
 
-    let paragraphOverride = $state<ParagraphView | null>(null);
-    const effectiveParagraph = $derived(
-        paragraphOverride && paragraphOverride.id === paragraph.id
-            ? paragraphOverride
-            : paragraph,
-    );
-
-    const originalText = $derived(effectiveParagraph.original);
-    const translationHtml = $derived(effectiveParagraph.translation);
-    const visibleWords = $derived(effectiveParagraph.visibleWords);
-
     const library: Library = getContext("library");
-
-    let translationRequestId: number | null = $state(null);
-
-    let progressChars = $state(0);
-    let expectedChars = $state(100);
-    let wrapper: HTMLDivElement | null = $state(null);
-    let shouldRestoreVisibleWords = $state(false);
-    let visibleWordsRestored = $state(false);
-
-    const translationStatus = $derived(
-        library.getTranslationStatus(translationRequestId),
-    );
-
-    $effect(() => {
-        const status: TranslationStatus | undefined = $translationStatus;
-        if (!status) {
-            return;
-        }
-        if (status.is_complete) {
-            if (status.error) {
-                console.warn(`Translation failed for paragraph ${paragraph.id}:`, status.error);
-            }
-            void refreshParagraphView();
-            translationRequestId = null;
-            progressChars = 0;
-            return;
-        }
-
-        progressChars = status.progress_chars;
-        expectedChars = status.expected_chars;
-    });
-
-    const isTranslating = $derived(translationRequestId !== null);
-
-    let paragraphRefreshSeq = 0;
-
-    async function refreshParagraphView() {
-        const seq = ++paragraphRefreshSeq;
-        try {
-            const updated = await library.getParagraphView(bookId, paragraph.id);
-            if (seq !== paragraphRefreshSeq) {
-                return;
-            }
-            paragraphOverride = updated;
-        } catch {
-        }
-    }
-
-    $effect(() => {
-        if (translationHtml) {
-            if (translationRequestId !== null) {
-                translationRequestId = null;
-            }
-            progressChars = 0;
-            return;
-        }
-
-        if (translationRequestId !== null) {
-            return;
-        }
-
-        let cancelled = false;
-        library
-            .getParagraphTranslationRequestId(bookId, paragraph.id)
-            .then((id) => {
-                if (cancelled) {
-                    return;
-                }
-                translationRequestId = id;
-                if (id !== null) {
-                    progressChars = 0;
-                }
-            })
-            .catch(() => {});
-
-        return () => {
-            cancelled = true;
-        };
-    });
-
-    $effect(() => {
-        if (translationRequestId === null) {
-            return;
-        }
-
-        let cancelled = false;
-        const interval = setInterval(async () => {
-            if (cancelled) {
-                return;
-            }
-            try {
-                const id = await library.getParagraphTranslationRequestId(
-                    bookId,
-                    paragraph.id,
-                );
-                if (cancelled) {
-                    return;
-                }
-                if (id === null) {
-                    void refreshParagraphView();
-                    translationRequestId = null;
-                    progressChars = 0;
-                }
-            } catch {
-            }
-        }, 1000);
-
-        return () => {
-            cancelled = true;
-            clearInterval(interval);
-        };
-    });
-
-    $effect(() => {
-        // Re-run whenever translation HTML changes to keep overlays sized correctly.
-        translationHtml;
-        visibleWords;
-        wrapper;
-
-        visibleWordsRestored = false;
-    });
-
-    $effect(() => {
-        if (!wrapper) {
-            shouldRestoreVisibleWords = false;
-            return;
-        }
-
-        const root =
-            wrapper.closest<HTMLElement>(".paragraphs-container") ?? null;
-        if (!root || !("IntersectionObserver" in window)) {
-            shouldRestoreVisibleWords = true;
-            return;
-        }
-
-        const observer = new IntersectionObserver(
-            ([entry]) => {
-                shouldRestoreVisibleWords = !!entry?.isIntersecting;
-            },
-            { root, threshold: 0.01 },
-        );
-
-        observer.observe(wrapper);
-        return () => observer.disconnect();
-    });
-
-    $effect(() => {
-        if (
-            visibleWordsRestored ||
-            !shouldRestoreVisibleWords ||
-            !wrapper ||
-            !translationHtml ||
-            visibleWords.length === 0
-        ) {
-            return;
-        }
-
-        const controller = new AbortController();
-        void restoreVisibleWords(controller.signal).then(() => {
-            if (!controller.signal.aborted) {
-                visibleWordsRestored = true;
-            }
-        });
-
-        return () => controller.abort();
-    });
-
-    $effect(() => {
-        if (!wrapper || !translationHtml || !sentenceWordIdToDisplay) {
-            return;
-        }
-
-        const [paragraphId, sentenceId, wordId] = sentenceWordIdToDisplay;
-        if (paragraphId !== paragraph.id) {
-            return;
-        }
-
-        let cancelled = false;
-        let selected: HTMLElement | null = null;
-        void tick().then(() => {
-            if (cancelled) {
-                return;
-            }
-            if (!wrapper) {
-                return;
-            }
-
-            const element = wrapper.querySelector<HTMLElement>(
-                `.word-span[data-sentence="${sentenceId}"][data-word="${wordId}"]`,
-            );
-            if (!element) {
-                return;
-            }
-
-            element.classList.add("selected");
-            showTranslation(element);
-            selected = element;
-        });
-
-        return () => {
-            cancelled = true;
-            selected?.classList.remove("selected");
-        };
-    });
-
-    async function translateParagraph(event: MouseEvent) {
-        const useCache = !(event.metaKey || event.ctrlKey);
-
-        progressChars = 0;
-        translationRequestId = await library.translateParagraph(
-            bookId,
-            paragraph.id,
-            undefined,
-            useCache,
-        );
-    }
-
-    /** Restore show-translation class for words that were previously marked visible */
-    async function restoreVisibleWords(signal?: AbortSignal) {
-        await tick();
-        if (signal?.aborted) {
-            return;
-        }
-
-        if (
-            !wrapper ||
-            visibleWords.length === 0
-        ) {
-            return;
-        }
-
-        const spans: HTMLElement[] = [];
-        if (visibleWords.length > 50) {
-            const spanByFlatIndex = new Map<number, HTMLElement>();
-            wrapper.querySelectorAll<HTMLElement>(".word-span").forEach((span) => {
-                const flatIndex = parseInt(span.dataset["flatIndex"] ?? "", 10);
-                if (!Number.isNaN(flatIndex)) {
-                    spanByFlatIndex.set(flatIndex, span);
-                }
-            });
-            for (const flatIndex of visibleWords) {
-                const span = spanByFlatIndex.get(flatIndex);
-                if (span) {
-                    spans.push(span);
-                }
-            }
-        } else {
-            for (const flatIndex of visibleWords) {
-                const span = wrapper.querySelector<HTMLElement>(
-                    `.word-span[data-flat-index="${flatIndex}"]`,
-                );
-                if (span) {
-                    spans.push(span);
-                }
-            }
-        }
-        if (signal?.aborted) {
-            return;
-        }
-
-        if (spans.length > 200) {
-            await showTranslationsBatched(spans, { signal, batchSize: 200 });
-            return;
-        }
-        showTranslations(spans);
-    }
+    const vm = new ParagraphViewModel(library, () => ({
+        bookId,
+        paragraph,
+        sentenceWordIdToDisplay,
+    }));
 </script>
 
 <div
     class="paragraph-wrapper"
     data-paragraph-id={paragraph.id}
-    bind:this={wrapper}
+    bind:this={vm.wrapper}
 >
-    {#if !translationHtml}
+    {#if !vm.translationHtml}
         <button
             class="translate"
             aria-label="Translate paragraph"
             title="Translate paragraph"
-            onclick={translateParagraph}
-            disabled={isTranslating}
+            onclick={(e) => vm.translate(!(e.metaKey || e.ctrlKey))}
+            disabled={vm.isTranslating}
         >
-            {#if isTranslating}
+            {#if vm.isTranslating}
                 <CircularProgress
-                    value={progressChars}
-                    max={expectedChars}
+                    value={vm.progressChars}
+                    max={vm.expectedChars}
                     size="1.2em"
                     strokeWidth={4}
                 />
@@ -327,12 +51,12 @@
             {/if}
         </button>
         <p class="original">
-            {@html originalText}
+            {@html vm.originalText}
         </p>
     {:else}
         <div></div>
         <p>
-            {@html translationHtml}
+            {@html vm.translationHtml}
         </p>
     {/if}
 </div>
