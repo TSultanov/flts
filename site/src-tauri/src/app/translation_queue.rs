@@ -37,6 +37,15 @@ struct TranslationRequest {
 struct SaveNotify {
     request_id: usize,
     book_id: Uuid,
+    paragraph_id: usize,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct ParagraphUpdatedEvent {
+    #[serde(rename = "bookId")]
+    book_id: Uuid,
+    #[serde(rename = "paragraphId")]
+    paragraph_id: usize,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -400,6 +409,7 @@ async fn handle_request(
     save_notify.send(SaveNotify {
         request_id: request.request_id,
         book_id: request.book_id,
+        paragraph_id: request.paragraph_id,
     })?;
 
     Ok(())
@@ -503,8 +513,17 @@ async fn save_and_emit(
     msg: SaveNotify,
 ) -> anyhow::Result<()> {
     save_book(library, msg.book_id).await?;
-    info!("Emitting \"book_updated\" for {}", msg.book_id);
-    app.emit("book_updated", msg.book_id)?;
+    info!(
+        "Emitting \"paragraph_updated\" for {}/{}",
+        msg.book_id, msg.paragraph_id
+    );
+    app.emit(
+        "paragraph_updated",
+        ParagraphUpdatedEvent {
+            book_id: msg.book_id,
+            paragraph_id: msg.paragraph_id,
+        },
+    )?;
     library_tx.send_modify(|_| {});
     Ok(())
 }

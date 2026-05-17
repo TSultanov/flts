@@ -10,7 +10,7 @@ import {
 
 export type ParagraphVMProps = {
     bookId: UUID;
-    paragraph: ParagraphView;
+    paragraphId: number;
     sentenceWordIdToDisplay: [number, number, number] | null;
 };
 
@@ -22,25 +22,27 @@ export class ParagraphViewModel {
 
     #library: Library;
     #getProps: () => ParagraphVMProps;
-    #paragraphOverride = $state<ParagraphView | null>(null);
+    #paragraph = $state<ParagraphView | undefined>(undefined);
     #translationRequestId = $state<number | null>(null);
-    #refreshSeq = 0;
 
-    #effectiveParagraph = $derived.by(() => {
-        const override = this.#paragraphOverride;
-        const current = this.#getProps().paragraph;
-        return override && override.id === current.id ? override : current;
-    });
+    #visibleWords = $derived(this.#paragraph?.visibleWords ?? []);
 
-    #visibleWords = $derived(this.#effectiveParagraph.visibleWords);
-
-    originalText = $derived(this.#effectiveParagraph.original);
-    translationHtml = $derived(this.#effectiveParagraph.translation);
+    originalText = $derived(this.#paragraph?.original ?? "");
+    translationHtml = $derived(this.#paragraph?.translation);
     isTranslating = $derived(this.#translationRequestId !== null);
 
     constructor(library: Library, getProps: () => ParagraphVMProps) {
         this.#library = library;
         this.#getProps = getProps;
+
+        $effect(() => {
+            const { bookId, paragraphId } = this.#getProps();
+            const store = this.#library.getParagraphView(bookId, paragraphId);
+            this.#paragraph = undefined;
+            return store.subscribe((p) => {
+                this.#paragraph = p;
+            });
+        });
 
         $effect(() => {
             const id = this.#translationRequestId;
@@ -53,11 +55,10 @@ export class ParagraphViewModel {
                 if (status.is_complete) {
                     if (status.error) {
                         console.warn(
-                            `Translation failed for paragraph ${this.#getProps().paragraph.id}:`,
+                            `Translation failed for paragraph ${this.#getProps().paragraphId}:`,
                             status.error,
                         );
                     }
-                    void this.#refreshParagraphView();
                     this.#translationRequestId = null;
                     this.progressChars = 0;
                     return;
@@ -78,11 +79,14 @@ export class ParagraphViewModel {
             if (this.#translationRequestId !== null) {
                 return;
             }
+            if (this.#paragraph === undefined) {
+                return;
+            }
 
-            const { bookId, paragraph } = this.#getProps();
+            const { bookId, paragraphId } = this.#getProps();
             let cancelled = false;
             this.#library
-                .getParagraphTranslationRequestId(bookId, paragraph.id)
+                .getParagraphTranslationRequestId(bookId, paragraphId)
                 .then((id) => {
                     if (cancelled) return;
                     this.#translationRequestId = id;
@@ -138,7 +142,7 @@ export class ParagraphViewModel {
             const hasTranslation = !!this.translationHtml;
             if (!wrapper || !hasTranslation || !target) return;
             const [pid, sid, wid] = target;
-            if (pid !== this.#getProps().paragraph.id) return;
+            if (pid !== this.#getProps().paragraphId) return;
 
             let cancelled = false;
             let selected: HTMLElement | null = null;
@@ -160,29 +164,14 @@ export class ParagraphViewModel {
     }
 
     async translate(useCache: boolean): Promise<void> {
-        const { bookId, paragraph } = this.#getProps();
+        const { bookId, paragraphId } = this.#getProps();
         this.progressChars = 0;
         this.#translationRequestId = await this.#library.translateParagraph(
             bookId,
-            paragraph.id,
+            paragraphId,
             undefined,
             useCache,
         );
-    }
-
-    async #refreshParagraphView(): Promise<void> {
-        const seq = ++this.#refreshSeq;
-        const { bookId, paragraph } = this.#getProps();
-        try {
-            const updated = await this.#library.getParagraphView(
-                bookId,
-                paragraph.id,
-            );
-            if (seq !== this.#refreshSeq) return;
-            this.#paragraphOverride = updated;
-        } catch {
-            // ignore — stale request id or transient backend error
-        }
     }
 
     async #restoreVisibleWords(signal?: AbortSignal): Promise<void> {

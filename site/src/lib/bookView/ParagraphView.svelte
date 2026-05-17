@@ -4,31 +4,30 @@
     import { getContext } from "svelte";
     import CircularProgress from "../widgets/CircularProgress.svelte";
     import type { Library } from "../data/library";
-    import type { ParagraphView } from "../data/sql/book";
     import type { UUID } from "../data/v2/db";
     import { ParagraphViewModel } from "./ParagraphViewModel.svelte";
 
     let {
         bookId,
-        paragraph,
+        paragraphId,
         sentenceWordIdToDisplay = null,
     }: {
         bookId: UUID;
-        paragraph: ParagraphView;
+        paragraphId: number;
         sentenceWordIdToDisplay?: [number, number, number] | null;
     } = $props();
 
     const library: Library = getContext("library");
     const vm = new ParagraphViewModel(library, () => ({
         bookId,
-        paragraph,
+        paragraphId,
         sentenceWordIdToDisplay,
     }));
 </script>
 
 <div
     class="paragraph-wrapper"
-    data-paragraph-id={paragraph.id}
+    data-paragraph-id={paragraphId}
     bind:this={vm.wrapper}
 >
     {#if !vm.translationHtml}
@@ -37,7 +36,7 @@
             aria-label="Translate paragraph"
             title="Translate paragraph"
             onclick={(e) => vm.translate(!(e.metaKey || e.ctrlKey))}
-            disabled={vm.isTranslating}
+            disabled={vm.isTranslating || !vm.originalText}
         >
             {#if vm.isTranslating}
                 <CircularProgress
@@ -51,7 +50,7 @@
             {/if}
         </button>
         <p class="original">
-            {@html vm.originalText}
+            {#if vm.originalText}{@html vm.originalText}{:else}&nbsp;{/if}
         </p>
     {:else}
         <div></div>

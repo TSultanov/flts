@@ -180,40 +180,19 @@ impl LibraryView {
         Ok(chapters)
     }
 
-    pub async fn list_book_chapter_paragraphs(
-        &mut self,
+    pub async fn list_book_chapter_paragraph_ids(
+        &self,
         book_id: Uuid,
         chapter_id: usize,
-        target_language: &Language,
-    ) -> anyhow::Result<Vec<ParagraphView>> {
+    ) -> anyhow::Result<Vec<usize>> {
         let book = self.library.get_book(&book_id).await?;
-        let mut book = book.lock().await;
-
-        let book_translation = book.get_or_create_translation(target_language).await;
-
-        let mut views = Vec::new();
-        for p in book.book.chapter_view(chapter_id).paragraphs() {
-            let original = p.original_html.unwrap_or(p.original_text);
-
-            let bt = book_translation.lock().await;
-            let t_view = bt.paragraph_view(p.id);
-            let translation = t_view.as_ref().map(|t| {
-                translation_to_html(p.id, &original, t).unwrap_or_else(|err| err.to_string())
-            });
-            let visible_words = t_view
-                .as_ref()
-                .map(|t| t.visible_words().clone())
-                .unwrap_or_default();
-
-            views.push(ParagraphView {
-                id: p.id,
-                original: original.to_string(),
-                translation,
-                visible_words,
-            });
-        }
-
-        Ok(views)
+        let book = book.lock().await;
+        Ok(book
+            .book
+            .chapter_view(chapter_id)
+            .paragraphs()
+            .map(|p| p.id)
+            .collect())
     }
 
     pub async fn get_word_info(
@@ -402,24 +381,18 @@ pub async fn list_book_chapters(
 }
 
 #[tauri::command]
-pub async fn get_book_chapter_paragraphs(
+pub async fn get_book_chapter_paragraph_ids(
     state: tauri::State<'_, Arc<AppState>>,
     book_id: Uuid,
     chapter_id: usize,
-) -> Result<Vec<ParagraphView>, String> {
+) -> Result<Vec<usize>, String> {
     let library = state.library.borrow().clone();
     let Some(library) = library else {
         return Ok(vec![]);
     };
 
-    let target_language_id = { state.config.borrow().target_language_id.clone() };
-    let Some(target_language) = Language::from_639_3(&target_language_id) else {
-        return Ok(vec![]);
-    };
-
-    let mut library_view = LibraryView::create(state.inner().clone(), library);
-    library_view
-        .list_book_chapter_paragraphs(book_id, chapter_id, &target_language)
+    LibraryView::create(state.inner().clone(), library)
+        .list_book_chapter_paragraph_ids(book_id, chapter_id)
         .await
         .map_err(|err| err.to_string())
 }

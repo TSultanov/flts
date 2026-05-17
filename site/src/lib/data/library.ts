@@ -181,9 +181,9 @@ export class Library {
         return getterToReadable("list_book_chapters", { "bookId": bookId }, "book_updated", (updatedId: UUID) => updatedId === bookId, []);
     }
 
-    getBookChapterParagraphs(bookId: UUID, chapterId: number): Readable<ParagraphView[]> {
-        return getterToReadableWithEvents<ParagraphView[]>(
-            "get_book_chapter_paragraphs",
+    getBookChapterParagraphIds(bookId: UUID, chapterId: number): Readable<number[]> {
+        return getterToReadableWithEvents<number[]>(
+            "get_book_chapter_paragraph_ids",
             { bookId, chapterId },
             [
                 {
@@ -235,8 +235,22 @@ export class Library {
         return await invoke<number | null>("get_paragraph_translation_request_id", { bookId, paragraphId });
     }
 
-    async getParagraphView(bookId: UUID, paragraphId: number): Promise<ParagraphView> {
-        return await invoke<ParagraphView>("get_paragraph_view", { bookId, paragraphId });
+    getParagraphView(bookId: UUID, paragraphId: number): Readable<ParagraphView | undefined> {
+        return getterToReadableWithEvents<ParagraphView | undefined>(
+            "get_paragraph_view",
+            { bookId, paragraphId },
+            [
+                {
+                    name: "paragraph_updated",
+                    filter: (ev: { bookId: UUID; paragraphId: number }) =>
+                        ev.bookId === bookId && ev.paragraphId === paragraphId,
+                },
+                {
+                    name: "book_updated",
+                    filter: (updatedId: UUID) => updatedId === bookId,
+                },
+            ],
+        );
     }
 
     getTranslationStatus(requestId: number | null): Readable<TranslationStatus | undefined> {

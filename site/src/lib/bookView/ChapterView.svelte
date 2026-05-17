@@ -17,8 +17,8 @@
     } = $props();
 
     const library: Library = getContext("library");
-    const paragraphs = $derived(
-        library.getBookChapterParagraphs(bookId, chapterId),
+    const paragraphIds = $derived(
+        library.getBookChapterParagraphIds(bookId, chapterId),
     );
 
     function parseDatasetInt(el: HTMLElement, key: string): number | null {
@@ -162,9 +162,9 @@
     }
 
     $effect(() => {
-        const ps = $paragraphs;
+        const ids = $paragraphIds;
 
-        if (!ps || ps.length === 0) {
+        if (!ids || ids.length === 0) {
             return;
         }
 
@@ -173,7 +173,7 @@
         }
 
         if (initialParagraphId == null) {
-            setVisibleParagraph(ps[0].id);
+            setVisibleParagraph(ids[0]);
             initialParagraphSyncedFor = null;
             return;
         }
@@ -202,8 +202,8 @@
 
             if (scrolled) {
                 setVisibleParagraph(paragraphIdToScrollTo);
-            } else if (ps.length > 0) {
-                setVisibleParagraph(ps[0].id);
+            } else if (ids.length > 0) {
+                setVisibleParagraph(ids[0]);
             }
         })();
 
@@ -270,10 +270,10 @@
             bind:this={paragraphsContainer}
             onscroll={handleScroll}
         >
-            {#each $paragraphs as paragraph (paragraph.id)}
+            {#each $paragraphIds as paragraphId (paragraphId)}
                 <ParagraphView
                     {bookId}
-                    {paragraph}
+                    {paragraphId}
                     {sentenceWordIdToDisplay}
                 />
             {/each}

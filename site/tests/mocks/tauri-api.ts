@@ -342,7 +342,7 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
       return Promise.resolve(chapters as T);
     }
 
-    case 'get_book_chapter_paragraphs': {
+    case 'get_book_chapter_paragraph_ids': {
       const bookId = args?.bookId as UUID;
       const chapterId = args?.chapterId as number;
       const book = mockLibrary.get(bookId);
@@ -351,15 +351,27 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
         return Promise.resolve([] as T);
       }
 
-      const paragraphs: ParagraphView[] = book.chapters[chapterId].paragraphs.map(
-        (p, idx) => ({
-          id: idx,
-          original: p.html,
-          translation: undefined,
-        })
-      );
+      const ids: number[] = book.chapters[chapterId].paragraphs.map((_, idx) => idx);
+      return Promise.resolve(ids as T);
+    }
 
-      return Promise.resolve(paragraphs as T);
+    case 'get_paragraph_view': {
+      const bookId = args?.bookId as UUID;
+      const paragraphId = args?.paragraphId as number;
+      const book = mockLibrary.get(bookId);
+      if (!book) return Promise.reject(new Error('book not found'));
+      for (const chapter of book.chapters) {
+        const p = chapter.paragraphs[paragraphId];
+        if (p) {
+          const view: ParagraphView = {
+            id: paragraphId,
+            original: p.html,
+            translation: undefined,
+          };
+          return Promise.resolve(view as T);
+        }
+      }
+      return Promise.reject(new Error('paragraph not found'));
     }
 
     case 'get_word_info': {
@@ -374,9 +386,11 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
       // Simulate translation by returning a request ID
       const requestId = ++requestIdCounter;
 
-      // Simulate async translation completion
+      // Simulate async translation completion. Mirror real backend ordering:
+      // paragraph_updated fires from save_and_emit before book_updated
+      // (the latter only fires via the file watcher for whole-book changes).
       setTimeout(() => {
-        emit('book_updated', bookId);
+        emit('paragraph_updated', { bookId, paragraphId });
       }, 100);
 
       return Promise.resolve(requestId as T);
