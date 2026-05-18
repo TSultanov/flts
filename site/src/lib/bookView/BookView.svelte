@@ -2,6 +2,7 @@
     import WordView from "./WordView.svelte";
     import type { UUID } from "../data/v2/db";
     import { getContext, type Snippet } from "svelte";
+    import { SvelteMap } from "svelte/reactivity";
     import type { BookReadingState, Library } from "../data/library";
     import { route, navigate } from "../../router";
     import ChapterView from "./ChapterView.svelte";
@@ -19,6 +20,13 @@
     const chapters = $derived(library.getBookChapters(bookId as UUID));
 
     let readingState: BookReadingState | null = $state(null);
+    // Per-chapter session positions. Seeded from the backend reading-state
+    // on book open, then kept in sync via the ChapterView onPositionChange
+    // callback. Survives intra-session chapter navigation; the backend
+    // store still gets every save for cross-session persistence.
+    let positionByChapter = $state(
+        new SvelteMap<number, { paragraphId: number; pageOffset: number }>(),
+    );
     let readingStateRequestId = 0;
     let initialNavigationDone = $state(false);
     let previousBookId: UUID | null = null;
@@ -28,17 +36,37 @@
             previousBookId = bookId;
             initialNavigationDone = false;
             readingState = null;
+            positionByChapter.clear();
             const currentRequest = ++readingStateRequestId;
             library
                 .getBookReadingState(bookId as UUID)
                 .then((state) => {
                     if (currentRequest === readingStateRequestId) {
                         readingState = state;
+                        if (state) {
+                            positionByChapter.set(state.chapterId, {
+                                paragraphId: state.paragraphId,
+                                pageOffset: state.pageOffset,
+                            });
+                        }
                     }
                 })
                 .catch((err) => console.error("Failed to load reading state", err));
         }
     });
+
+    function handlePositionChange(paragraphId: number, pageOffset: number) {
+        if (chapterId == null) return;
+        positionByChapter.set(chapterId, { paragraphId, pageOffset });
+        library
+            .saveBookReadingState(
+                bookId as UUID,
+                chapterId,
+                paragraphId,
+                pageOffset,
+            )
+            .catch((err) => console.error("Failed to save reading state", err));
+    }
 
     $effect(() => {
         const list = chapters.current;
@@ -102,12 +130,9 @@
                     <ChapterView
                         {bookId}
                         {chapterId}
-                        initialParagraphId={readingState && readingState.chapterId === chapterId
-                            ? readingState.paragraphId
-                            : null}
-                        initialPageOffset={readingState && readingState.chapterId === chapterId
-                            ? (readingState.pageOffset ?? 0)
-                            : 0}
+                        initialParagraphId={positionByChapter.get(chapterId)?.paragraphId ?? null}
+                        initialPageOffset={positionByChapter.get(chapterId)?.pageOffset ?? 0}
+                        onPositionChange={handlePositionChange}
                         bind:selection
                     />
                 {/key}

@@ -9,6 +9,7 @@ export type ChapterVMProps = {
     initialParagraphId: number | null;
     initialPageOffset: number;
     container: HTMLDivElement | null;
+    onPositionChange?: (paragraphId: number, pageOffset: number) => void;
 };
 
 export type WordClickInfo = {
@@ -453,16 +454,10 @@ export class ChapterViewModel {
             (this.#lastSavedParagraph !== this.#visibleParagraphId ||
                 this.#lastSavedPageOffset !== this.#visiblePageOffset)
         ) {
-            this.#library
-                .saveBookReadingState(
-                    this.#props.bookId,
-                    this.#props.chapterId,
-                    this.#visibleParagraphId,
-                    this.#visiblePageOffset,
-                )
-                .catch((err) =>
-                    console.error("Failed to save reading state", err),
-                );
+            this.#props.onPositionChange?.(
+                this.#visibleParagraphId,
+                this.#visiblePageOffset,
+            );
         }
     }
 
@@ -586,16 +581,7 @@ export class ChapterViewModel {
             }
             this.#lastSavedParagraph = paragraphId;
             this.#lastSavedPageOffset = pageOffset;
-            this.#library
-                .saveBookReadingState(
-                    this.#props.bookId,
-                    this.#props.chapterId,
-                    paragraphId,
-                    pageOffset,
-                )
-                .catch((err) =>
-                    console.error("Failed to save reading state", err),
-                );
+            this.#props.onPositionChange?.(paragraphId, pageOffset);
         }, 400);
     }
 

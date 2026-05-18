@@ -13,12 +13,14 @@
         chapterId,
         initialParagraphId = null,
         initialPageOffset = 0,
+        onPositionChange,
     }: {
         selection: WordSelection | null;
         bookId: UUID;
         chapterId: number;
         initialParagraphId?: number | null;
         initialPageOffset?: number;
+        onPositionChange?: (paragraphId: number, pageOffset: number) => void;
     } = $props();
 
     const library: Library = getContext("library");
@@ -32,6 +34,7 @@
         get initialParagraphId() { return initialParagraphId; },
         get initialPageOffset() { return initialPageOffset; },
         get container() { return paragraphsContainer; },
+        get onPositionChange() { return onPositionChange; },
     });
 
     setContext(CHAPTER_STORE_KEY, vm.store);
