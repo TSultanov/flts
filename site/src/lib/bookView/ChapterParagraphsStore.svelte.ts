@@ -11,8 +11,8 @@ export type ParagraphTranslationSliceCache = {
 
 export const CHAPTER_STORE_KEY = Symbol("ChapterParagraphsStore");
 
-const BATCH_SIZE = 10;
-const MAX_INFLIGHT_PER_KIND = 1;
+const BATCH_SIZE = 50;
+const MAX_INFLIGHT_PER_KIND = 5;
 
 export class ChapterParagraphsStore {
     #bookId: UUID;
