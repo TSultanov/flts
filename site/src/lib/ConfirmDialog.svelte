@@ -42,13 +42,25 @@
     }
 </script>
 
-<dialog bind:this={dialog} onclose={handleDialogClose}>
+<dialog
+    bind:this={dialog}
+    onclose={handleDialogClose}
+    data-testid="confirm-dialog"
+>
     <div class="dialog-content">
         <h3>{title}</h3>
-        <p>{message}</p>
+        <p data-testid="confirm-dialog-message">{message}</p>
         <div class="dialog-buttons">
-            <button onclick={handleCancel} class="secondary">Cancel</button>
-            <button onclick={handleConfirm} class="danger">Confirm</button>
+            <button
+                onclick={handleCancel}
+                class="secondary"
+                data-testid="confirm-dialog-cancel">Cancel</button
+            >
+            <button
+                onclick={handleConfirm}
+                class="danger"
+                data-testid="confirm-dialog-confirm">Confirm</button
+            >
         </div>
     </div>
 </dialog>

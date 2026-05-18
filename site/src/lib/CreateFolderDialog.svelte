@@ -65,16 +65,21 @@
     const isValidName = $derived(folderName.trim().length > 0);
 </script>
 
-<dialog bind:this={dialog} onclose={handleDialogClose}>
+<dialog
+    bind:this={dialog}
+    onclose={handleDialogClose}
+    data-testid="create-folder-dialog"
+>
     <div class="dialog-content">
         <h3>Create New Folder</h3>
-        
+
         <form onsubmit={handleFormSubmit}>
             <div class="input-group">
                 <label for="folder-name">Folder Name:</label>
                 <input
                     id="folder-name"
                     type="text"
+                    data-testid="create-folder-input"
                     bind:this={inputElement}
                     bind:value={folderName}
                     onkeydown={handleKeydown}
@@ -82,10 +87,19 @@
                     autocomplete="off"
                 />
             </div>
-            
+
             <div class="dialog-buttons">
-                <button type="button" onclick={handleCancel} class="secondary">Cancel</button>
-                <button type="submit" disabled={!isValidName}>Create</button>
+                <button
+                    type="button"
+                    onclick={handleCancel}
+                    class="secondary"
+                    data-testid="create-folder-cancel">Cancel</button
+                >
+                <button
+                    type="submit"
+                    disabled={!isValidName}
+                    data-testid="create-folder-submit">Create</button
+                >
             </div>
         </form>
     </div>

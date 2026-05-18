@@ -119,22 +119,36 @@
     }
 </script>
 
-<dialog bind:this={dialog} onclose={handleDialogClose}>
+<dialog
+    bind:this={dialog}
+    onclose={handleDialogClose}
+    data-testid="move-folder-dialog"
+>
     <div class="dialog-content">
         <h3>Move to Folder</h3>
-        <div class="folder-tree">
+        <div class="folder-tree" data-testid="folder-tree">
             {#if localRootFolder}
                 {@render FolderTreeComponent(localRootFolder, [])}
             {/if}
         </div>
 
         <div>
-            <p><strong>Move to:</strong> /{selectedPath?.join("/")}</p>
+            <p data-testid="move-to-preview">
+                <strong>Move to:</strong> /{selectedPath?.join("/")}
+            </p>
         </div>
-        
+
         <div class="dialog-buttons">
-            <button onclick={handleCancel} class="secondary">Cancel</button>
-            <button onclick={handleConfirm} disabled={!selectedPath}>Confirm</button>
+            <button
+                onclick={handleCancel}
+                class="secondary"
+                data-testid="move-folder-cancel">Cancel</button
+            >
+            <button
+                onclick={handleConfirm}
+                disabled={!selectedPath}
+                data-testid="move-folder-confirm">Confirm</button
+            >
         </div>
     </div>
 </dialog>
@@ -147,7 +161,12 @@
 <!-- Recursive folder tree component snippet -->
 {#snippet FolderTreeComponent(folder: LibraryFolder, currentPath: string[])}
     <div class="folder-option" class:selected={isSelected(currentPath)}>
-        <button class="folder-button" onclick={() => selectFolder(currentPath)}>
+        <button
+            class="folder-button"
+            data-testid="folder-button"
+            data-folder-path={currentPath.join("/")}
+            onclick={() => selectFolder(currentPath)}
+        >
             {folder.name ?? "/"}
         </button>
     </div>
@@ -161,7 +180,12 @@
         {/if}
 
         <div class="folder-option">
-            <button class="secondary" onclick={() => createNewFolder(currentPath)}>Create new folder</button>
+            <button
+                class="secondary"
+                data-testid="create-new-folder-button"
+                onclick={() => createNewFolder(currentPath)}
+                >Create new folder</button
+            >
         </div>
     </div>
 {/snippet}

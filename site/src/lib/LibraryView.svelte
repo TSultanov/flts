@@ -121,12 +121,18 @@
             <h1>Books</h1>
             {#if hasSelection}
                 <div class="batch-actions">
-                    <span class="selection-count">{selectedCount} selected</span
+                    <span class="selection-count" data-testid="selection-count"
+                        >{selectedCount} selected</span
                     >
-                    <button onclick={requestBatchMove} class="compact"
-                        >Move Selected</button
+                    <button
+                        onclick={requestBatchMove}
+                        class="compact"
+                        data-testid="move-selected-button">Move Selected</button
                     >
-                    <button onclick={requestBatchDelete} class="danger compact"
+                    <button
+                        onclick={requestBatchDelete}
+                        class="danger compact"
+                        data-testid="delete-selected-button"
                         >Delete Selected</button
                     >
                     <button onclick={clearSelection} class="secondary compact"
@@ -135,8 +141,10 @@
                 </div>
             {:else}
                 <div class="select-actions">
-                    <button onclick={selectAllBooks} class="secondary compact"
-                        >Select All</button
+                    <button
+                        onclick={selectAllBooks}
+                        class="secondary compact"
+                        data-testid="select-all-button">Select All</button
                     >
                 </div>
             {/if}
@@ -196,6 +204,7 @@
                             <label class="book-checkbox">
                                 <input
                                     type="checkbox"
+                                    data-testid="book-checkbox"
                                     checked={selectedBookUids.has(book.uid)}
                                     onchange={() =>
                                         toggleBookSelection(book.uid)}
