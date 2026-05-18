@@ -30,9 +30,10 @@ test.describe('ParagraphView (multipage, chromium only)', () => {
 
     // All wrappers present and in order.
     const ids = await page.evaluate(() => {
-      const container = document.querySelector('.paragraphs-container');
-      if (!container) return [];
-      return Array.from(container.children).map((c) =>
+      const wrappers = document.querySelectorAll(
+        '.paragraphs-container .paragraph-wrapper',
+      );
+      return Array.from(wrappers).map((c) =>
         (c as HTMLElement).dataset['paragraphId'],
       );
     });

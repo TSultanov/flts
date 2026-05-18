@@ -194,46 +194,15 @@ test.describe('Chapter reading-state restore (multipage)', () => {
 
   // ----- Multi-page paragraph restore -----------------------------------
   //
-  // On touch devices `.paragraph-wrapper` uses break-inside: auto, so one
-  // paragraph can flow across several columns / pages. The saved state
-  // carries a `pageOffset` so restore lands on the same page within the
-  // paragraph the user was reading. To exercise this independently of the
-  // pointer-type media query, the test injects a <style> override at mount
-  // that forces break-inside: auto on every wrapper. One giant paragraph
-  // (300 sentences) is wedged in the middle of the chapter so it spans
-  // multiple columns regardless of viewport.
+  // The saved state carries a `pageOffset` so restore lands on the same
+  // column within the paragraph the user was reading. `multipageSpec`
+  // wedges a 300-sentence paragraph at index HUGE so it spans multiple
+  // columns regardless of viewport size.
   test('R3: restore lands on the saved page within a multi-page paragraph', async ({
     page,
   }) => {
     const HUGE = 40;
     const PAGE_OFFSET = 2;
-
-    // Simulate the touch-device pairing: break-inside: auto (so the
-    // wrapper can span columns) AND scroll-snap-type: none (so per-
-    // wrapper snap points don't yank a multi-column restore back to
-    // wrapper-center). On real touch devices these come together via
-    // @media (pointer: coarse) in ChapterView.svelte.
-    await page.addInitScript(() => {
-      const style = document.createElement('style');
-      style.textContent = `
-        .paragraph-wrapper {
-          break-inside: auto !important;
-          -webkit-column-break-inside: auto !important;
-        }
-        .paragraphs-container {
-          scroll-snap-type: none !important;
-        }
-        .paragraphs-container > * {
-          scroll-snap-align: none !important;
-          scroll-snap-stop: normal !important;
-        }
-      `;
-      const install = () => {
-        if (document.head) document.head.appendChild(style);
-        else document.addEventListener('DOMContentLoaded', install, { once: true });
-      };
-      install();
-    });
 
     const { bookId } = await seedAndOpen(
       page,

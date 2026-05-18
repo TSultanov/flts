@@ -26,7 +26,14 @@
     const library: Library = getContext("library");
 
     let paragraphsContainer = $state<HTMLDivElement | null>(null);
-    let sectionContentWidth = $state(200);
+    // Bound to clientHeight and fed into the `column-width` CSS property
+    // as a minimum-width hint. Any value ≥ clientWidth forces the browser
+    // to render exactly one visible column; using clientHeight guarantees
+    // that for any normal aspect ratio.
+    let columnWidthHint = $state(200);
+    // Snap targets must sit at multiples of the *visible* column width
+    // (`clientWidth`), which is what one "page" actually is.
+    let containerVisibleWidth = $state(800);
 
     const vm = new ChapterViewModel(library, {
         get bookId() { return bookId; },
@@ -67,11 +74,19 @@
         <div
             class="paragraphs-container"
             class:is-ready={vm.isInitiallyReady}
-            style="column-width: {sectionContentWidth}px"
-            bind:clientHeight={sectionContentWidth}
+            style="column-width: {columnWidthHint}px"
+            bind:clientHeight={columnWidthHint}
+            bind:clientWidth={containerVisibleWidth}
             bind:this={paragraphsContainer}
             onscroll={() => vm.handleScroll()}
         >
+            {#each Array(vm.columnCount) as _, i (i)}
+                <i
+                    class="snap-target"
+                    style="left: {i * containerVisibleWidth}px"
+                    aria-hidden="true"
+                ></i>
+            {/each}
             {#each vm.paragraphIds as paragraphId (paragraphId)}
                 <ParagraphView
                     {bookId}
@@ -108,6 +123,7 @@
     }
 
     .paragraphs-container {
+        position: relative;
         width: 100%;
         height: 100%;
         overflow-x: auto;
@@ -122,8 +138,16 @@
         opacity: 1;
     }
 
-    :global(.paragraphs-container > *) {
-        scroll-snap-align: center;
-        scroll-snap-stop: always;
+    /* One snap target per column. Absolutely positioned so they sit at
+       exact column boundaries regardless of paragraph layout, and so
+       they don't participate in the multi-column flow. */
+    .snap-target {
+        position: absolute;
+        top: 0;
+        width: 1px;
+        height: 1px;
+        opacity: 0;
+        pointer-events: none;
+        scroll-snap-align: start;
     }
 </style>

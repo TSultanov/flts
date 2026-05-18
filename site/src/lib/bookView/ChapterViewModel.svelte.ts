@@ -84,6 +84,8 @@ export class ChapterViewModel {
     #anchorRaf: number | null = null;
     #restoreResizeObserver: ResizeObserver | null = null;
     #savedSnapType: string | null = null;
+    #columnCount = $state(1);
+    #columnCountRaf: number | null = null;
     #isInitiallyReady = $state(false);
     #initialRevealFallbackTimeout: ReturnType<typeof setTimeout> | null = null;
     #initialRevealRaf: number | null = null;
@@ -104,6 +106,10 @@ export class ChapterViewModel {
 
     get isInitiallyReady(): boolean {
         return this.#isInitiallyReady;
+    }
+
+    get columnCount(): number {
+        return this.#columnCount;
     }
 
     get store(): ChapterParagraphsStore {
@@ -130,7 +136,29 @@ export class ChapterViewModel {
         this.#scrollRaf = requestAnimationFrame(() => {
             this.#scrollRaf = null;
             this.#updateVisibleParagraph();
+            this.#recomputeColumnCount();
         });
+    }
+
+    #scheduleColumnCountRecompute(): void {
+        if (this.#columnCountRaf !== null) return;
+        this.#columnCountRaf = requestAnimationFrame(() => {
+            this.#columnCountRaf = null;
+            this.#recomputeColumnCount();
+        });
+    }
+
+    #recomputeColumnCount(): void {
+        const container = this.#props.container;
+        if (!container) return;
+        const pageWidth = container.clientWidth;
+        if (pageWidth <= 0) return;
+        // Math.ceil so partial columns still get a snap target at their
+        // start. Math.max with 1 covers the empty-content edge case.
+        const next = Math.max(1, Math.ceil(container.scrollWidth / pageWidth));
+        if (next !== this.#columnCount) {
+            this.#columnCount = next;
+        }
     }
 
     handleResize(): void {
@@ -150,6 +178,7 @@ export class ChapterViewModel {
         this.#resizeTimeout = setTimeout(() => {
             this.#isResizing = false;
             this.#recomputeMountWindow();
+            this.#recomputeColumnCount();
         }, 200);
     }
 
@@ -276,9 +305,11 @@ export class ChapterViewModel {
         this.#restoreTarget = paragraphIdToScrollTo;
         this.#restorePageOffset = pageOffsetToRestore;
 
-        // Suspend scroll-snap for the volatile period: snap-corrected
-        // scrollTo can land on the wrong column when the layout is mid-
-        // flight. #finishRestore re-enables it after the final anchor.
+        // Suspend native scroll-snap for the volatile period: as
+        // paragraphs land and column count grows, snap targets get
+        // re-rendered, and the browser could yank scrollLeft to a
+        // stale target between #anchorToParagraph calls. #finishRestore
+        // re-enables it once the layout has settled.
         const container = this.#props.container;
         if (container) {
             this.#savedSnapType = container.style.scrollSnapType;
@@ -293,9 +324,13 @@ export class ChapterViewModel {
         // Catch-all for layout shifts that aren't tied to a paragraph
         // fetch (late font load, image dimensions, column-flow reflow
         // after a wrapper finishes). Each child wrapper's resize feeds
-        // the same coalesced re-anchor as the ready signal.
+        // the same coalesced re-anchor as the ready signal, and also
+        // refreshes the column-count so the snap targets keep pace.
         if (container && typeof ResizeObserver !== "undefined") {
-            const observer = new ResizeObserver(() => this.#scheduleAnchorRaf());
+            const observer = new ResizeObserver(() => {
+                this.#scheduleAnchorRaf();
+                this.#scheduleColumnCountRecompute();
+            });
             for (let i = 0; i < container.children.length; i++) {
                 observer.observe(container.children[i] as HTMLElement);
             }
@@ -331,6 +366,10 @@ export class ChapterViewModel {
 
     registerParagraphReady(paragraphId: number): void {
         this.#readyParagraphIds.add(paragraphId);
+        // Each paragraph's data lands → its height grows → scrollWidth
+        // grows → snap targets need to cover the new columns. Coalesced
+        // via rAF so a batch of readies in one frame is a single recompute.
+        this.#scheduleColumnCountRecompute();
         if (this.#restoreTarget == null) {
             // No-restore path is waiting on the first paragraph's data
             // to lift the opacity gate.
@@ -390,11 +429,10 @@ export class ChapterViewModel {
         const containerRect = container.getBoundingClientRect();
         const targetRect = target.getBoundingClientRect();
         // Left-align the wrapper's pageOffset-th column with the
-        // viewport. For single-column wrappers (the desktop case) this
-        // equals "center the wrapper". For multi-column wrappers (touch
-        // / break-inside: auto), pageOffset picks which of the spans is
-        // shown. Snap points are at column starts, so the result snaps
-        // cleanly when scroll-snap is re-enabled.
+        // viewport. For multi-column wrappers, pageOffset picks which
+        // column of the wrapper is shown. The computed scrollLeft is
+        // exactly column-aligned, and handleScrollEnd is gated by
+        // #isRestoring, so nothing perturbs the position.
         const desiredScrollLeft =
             container.scrollLeft +
             (targetRect.left - containerRect.left) +
@@ -419,10 +457,10 @@ export class ChapterViewModel {
         this.#restoreTarget = null;
         this.#isRestoring = false;
 
-        // Re-enable snap without forcing a correction at the current
-        // scrollLeft. A multi-column wrapper has only one snap point
-        // per wrapper, so a forced re-snap can yank us off the saved
-        // pageOffset. The next user scroll will pick up snap naturally.
+        // Re-enable scroll-snap. Our anchor already left scrollLeft at
+        // a column boundary that matches a snap target, so the browser
+        // does not need to move anything; subsequent user scrolls will
+        // pick up native snap behavior naturally.
         const container = this.#props.container;
         if (container && this.#savedSnapType !== null) {
             container.style.scrollSnapType = this.#savedSnapType;
@@ -431,6 +469,7 @@ export class ChapterViewModel {
 
         if (wasRestoring) {
             this.#recomputeMountWindow();
+            this.#recomputeColumnCount();
         }
 
         // Snap is re-engaged and the final anchor has landed: it's safe
@@ -457,6 +496,10 @@ export class ChapterViewModel {
         if (this.#scrollRaf !== null) {
             cancelAnimationFrame(this.#scrollRaf);
             this.#scrollRaf = null;
+        }
+        if (this.#columnCountRaf !== null) {
+            cancelAnimationFrame(this.#columnCountRaf);
+            this.#columnCountRaf = null;
         }
         if (this.#initialRevealFallbackTimeout !== null) {
             clearTimeout(this.#initialRevealFallbackTimeout);
