@@ -186,6 +186,50 @@ export function wordSpan(paragraph: Locator, flatIndex: number): Locator {
 }
 
 /**
+ * Scroll the chapter's horizontal page-flip container to the given paragraph.
+ * Mirrors ChapterView.scrollParagraphIntoView (inline 'center', behavior 'auto')
+ * so the snap settles synchronously in chromium. The trailing wait lets the
+ * IntersectionObserver callback fire on the new viewport.
+ */
+export async function scrollToParagraph(page: Page, paragraphId: number): Promise<void> {
+  await page.evaluate((id) => {
+    const el = document.querySelector(
+      `.paragraph-wrapper[data-paragraph-id="${id}"]`,
+    );
+    el?.scrollIntoView({ behavior: 'auto', block: 'nearest', inline: 'center' });
+  }, paragraphId);
+  await page.waitForTimeout(50);
+}
+
+/**
+ * Deterministic ~15-sentence filler so each paragraph contributes meaningful
+ * height and the columnar layout produces real horizontal scroll distance.
+ * At 80 paragraphs this puts the chapter's scrollWidth / clientWidth well
+ * over 50, matching a realistic long chapter.
+ */
+export function fillerHtml(idx: number): string {
+  const sentence =
+    `Paragraph ${idx} sentence about subject ${idx} doing thing ${idx} in place ${idx}.`;
+  return Array.from({ length: 15 }, () => sentence).join(' ');
+}
+
+/**
+ * Build a SeedSpec with N filler paragraphs. Per-paragraph overrides
+ * (translation, visibleWords) merge in via `overrides`.
+ */
+export function multipageSpec(
+  count: number,
+  overrides: Partial<Record<number, Partial<SeedParagraph>>> = {},
+  extras: Omit<SeedSpec, 'chapters'> = {},
+): SeedSpec {
+  const paragraphs: SeedParagraph[] = Array.from({ length: count }, (_, i) => ({
+    html: fillerHtml(i),
+    ...overrides[i],
+  }));
+  return { chapters: [{ paragraphs }], ...extras };
+}
+
+/**
  * Wait until the paragraph shows translated content (the {:else} branch is
  * rendered — translate button has been removed and replaced by an empty div).
  */
