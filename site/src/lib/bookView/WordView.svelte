@@ -1,6 +1,6 @@
 <script lang="ts">
     import { getContext, onMount } from "svelte";
-    import type { Library, TranslationStatus } from "../data/library";
+    import type { Library } from "../data/library";
     import type { UUID } from "../data/v2/db";
     import { models, configStore } from "../config";
     import { faLanguage } from "@fortawesome/free-solid-svg-icons";
@@ -27,33 +27,13 @@
     );
 
     let model = $derived(word.current?.translationModel);
-    let translationRequestId: number | null = $state(null);
 
-    let progressChars = $state(0);
-    let expectedChars = $state(100);
-    const translationStatus = $derived(
-        translationRequestId !== null
-            ? library.getTranslationStatus(translationRequestId)
-            : null,
+    const activity = $derived(
+        library.getParagraphTranslationActivity(bookId, paragraphId),
     );
-
-    $effect(() => {
-        const status: TranslationStatus | undefined = translationStatus?.current;
-        if (!status) {
-            return;
-        }
-        if (status.is_complete) {
-            if (status.error) {
-                console.warn(`Translation failed for paragraph ${paragraphId}:`, status.error);
-            }
-            translationRequestId = null;
-            progressChars = 0;
-            return;
-        }
-
-        progressChars = status.progress_chars;
-        expectedChars = status.expected_chars;
-    });
+    const isTranslating = $derived(activity.current !== null);
+    const progressChars = $derived(activity.current?.progressChars ?? 0);
+    const expectedChars = $derived(activity.current?.expectedChars ?? 100);
 
     const systemDefinition = $derived(
         word.current?.original
@@ -83,60 +63,9 @@
         }
     }
 
-    const isTranslating = $derived(translationRequestId !== null);
-
-    $effect(() => {
-        if (translationRequestId === null) {
-            return;
-        }
-
-        let cancelled = false;
-        const interval = setInterval(async () => {
-            if (cancelled) {
-                return;
-            }
-            try {
-                const id = await library.getParagraphTranslationRequestId(
-                    bookId,
-                    paragraphId,
-                );
-                if (cancelled) {
-                    return;
-                }
-                if (id === null) {
-                    translationRequestId = null;
-                    progressChars = 0;
-                }
-            } catch {
-            }
-        }, 1000);
-
-        return () => {
-            cancelled = true;
-            clearInterval(interval);
-        };
-    });
-
-    $effect(() => {
-        library
-            .getParagraphTranslationRequestId(bookId, paragraphId)
-            .then((id) => {
-                translationRequestId = id;
-                if (id !== null) {
-                    progressChars = 0;
-                }
-            });
-    });
-
     async function translateParagraph() {
         if (model !== 0) {
-            progressChars = 0;
-            translationRequestId = await library.translateParagraph(
-                bookId,
-                paragraphId,
-                model,
-                false,
-            );
+            await library.translateParagraph(bookId, paragraphId, model, false);
         }
     }
 </script>

@@ -81,11 +81,10 @@ type BookReadingState = {
 
 // ----- Translation simulation types --------------------------------------
 
-type StatusSnapshot = {
-  progress_chars: number;
-  expected_chars: number;
-  is_complete: boolean;
-  error?: string;
+type ParagraphTranslationActivity = {
+  requestId: number;
+  progressChars: number;
+  expectedChars: number;
 };
 
 type ProgressStep = {
@@ -169,13 +168,8 @@ const DEFAULT_TRANSLATE_CONFIG: TranslateConfig = { kind: 'immediate' };
 
 // Keyed by `${bookId}:${paragraphId}`
 const translateConfigs = new Map<string, TranslateConfig>();
-const inFlightRequests = new Map<string, number>();
+const activeActivities = new Map<string, ParagraphTranslationActivity>();
 const wordInfos = new Map<string, WordInfo>();
-
-// Keyed by request id; ordered status snapshots that get_translation_status pops through
-const statusSnapshots = new Map<number, StatusSnapshot[]>();
-// Per-request paragraph mapping so the completion writer knows where to land
-const requestMeta = new Map<number, { bookId: UUID; paragraphId: number }>();
 
 const translateCalls: Array<{
   bookId: UUID;
@@ -217,18 +211,65 @@ function applyTranslationCompletion(
   emit('paragraph_updated', { bookId, paragraphId });
 }
 
+function emitStarted(
+  bookId: UUID,
+  paragraphId: number,
+  requestId: number,
+  expectedChars: number,
+): void {
+  emit('paragraph_translation_started', {
+    bookId,
+    paragraphId,
+    requestId,
+    expectedChars,
+  });
+}
+
+function emitProgress(
+  bookId: UUID,
+  paragraphId: number,
+  requestId: number,
+  progressChars: number,
+  expectedChars: number,
+): void {
+  emit('paragraph_translation_progress', {
+    bookId,
+    paragraphId,
+    requestId,
+    progressChars,
+    expectedChars,
+  });
+}
+
+function emitFinished(
+  bookId: UUID,
+  paragraphId: number,
+  requestId: number,
+  error: string | null,
+): void {
+  emit('paragraph_translation_finished', {
+    bookId,
+    paragraphId,
+    requestId,
+    error,
+  });
+}
+
 function runTranslateRequest(
   requestId: number,
   bookId: UUID,
   paragraphId: number,
   cfg: TranslateConfig,
 ): void {
-  requestMeta.set(requestId, { bookId, paragraphId });
+  const key = paragraphKey(bookId, paragraphId);
 
   if (cfg.kind === 'immediate') {
-    statusSnapshots.set(requestId, [
-      { progress_chars: 0, expected_chars: 0, is_complete: true },
-    ]);
+    activeActivities.set(key, {
+      requestId,
+      progressChars: 0,
+      expectedChars: 0,
+    });
+    emitStarted(bookId, paragraphId, requestId, 0);
     setTimeout(() => {
       if (cfg.translation !== undefined) {
         applyTranslationCompletion(
@@ -240,72 +281,74 @@ function runTranslateRequest(
       } else {
         emit('paragraph_updated', { bookId, paragraphId });
       }
+      activeActivities.delete(key);
+      emitFinished(bookId, paragraphId, requestId, null);
     }, 100);
     return;
   }
 
   if (cfg.kind === 'error') {
-    // Hold "in progress" until the delay completes, then flip to the error
-    // state. Without the pending snapshot the very first poll would already
-    // see is_complete:true and the spinner wouldn't be observable.
-    statusSnapshots.set(requestId, [
-      { progress_chars: 0, expected_chars: 100, is_complete: false },
-      {
-        progress_chars: 0,
-        expected_chars: 0,
-        is_complete: true,
-        error: cfg.errorMessage,
-      },
-    ]);
+    activeActivities.set(key, {
+      requestId,
+      progressChars: 0,
+      expectedChars: 100,
+    });
+    emitStarted(bookId, paragraphId, requestId, 100);
     setTimeout(() => {
-      statusIndex.set(requestId, 1);
-      emit('paragraph_updated', { bookId, paragraphId });
+      activeActivities.delete(key);
+      emitFinished(bookId, paragraphId, requestId, cfg.errorMessage);
     }, cfg.delayMs);
     return;
   }
 
-  // progress
-  const snapshots: StatusSnapshot[] = [];
-  let elapsedMs = 0;
-  for (let i = 0; i < cfg.steps.length; i++) {
-    const step = cfg.steps[i];
-    elapsedMs += step.delayMs;
-    const isLast = i === cfg.steps.length - 1;
-    snapshots.push({
-      progress_chars: step.progress,
-      expected_chars: step.total,
-      is_complete: isLast,
-    });
-    if (isLast) {
-      // schedule completion + paragraph_updated at the same elapsed time as the
-      // is_complete snapshot becomes visible
-      const finalElapsed = elapsedMs;
-      setTimeout(() => {
-        applyTranslationCompletion(
-          bookId,
-          paragraphId,
-          cfg.translation,
-          cfg.visibleWords,
-        );
-      }, finalElapsed);
-    }
+  // progress: emit the first step's values immediately, then schedule each
+  // subsequent step at the prior step's delay. The final step's delay
+  // elapses, then the translation lands + finished fires.
+  const first = cfg.steps[0];
+  const initial: ParagraphTranslationActivity = {
+    requestId,
+    progressChars: first?.progress ?? 0,
+    expectedChars: first?.total ?? 0,
+  };
+  activeActivities.set(key, initial);
+  emitStarted(bookId, paragraphId, requestId, initial.expectedChars);
+  if (first) {
+    emitProgress(
+      bookId,
+      paragraphId,
+      requestId,
+      first.progress,
+      first.total,
+    );
   }
-  statusSnapshots.set(requestId, snapshots);
 
-  // Schedule snapshot transitions so polls at different times see the right
-  // one. statusIndex starts at 0 by default; after step i's delay elapses,
-  // advance to i+1 (Math.min in get_translation_status clamps past the end).
   let cumulative = 0;
-  for (let i = 0; i < cfg.steps.length; i++) {
-    cumulative += cfg.steps[i].delayMs;
-    const targetIdx = i + 1;
+  for (let i = 1; i < cfg.steps.length; i++) {
+    cumulative += cfg.steps[i - 1].delayMs;
+    const step = cfg.steps[i];
     setTimeout(() => {
-      statusIndex.set(requestId, targetIdx);
+      activeActivities.set(key, {
+        requestId,
+        progressChars: step.progress,
+        expectedChars: step.total,
+      });
+      emitProgress(bookId, paragraphId, requestId, step.progress, step.total);
     }, cumulative);
   }
-}
 
-const statusIndex = new Map<number, number>();
+  // Final tick: completion + finished
+  cumulative += cfg.steps[cfg.steps.length - 1]?.delayMs ?? 0;
+  setTimeout(() => {
+    applyTranslationCompletion(
+      bookId,
+      paragraphId,
+      cfg.translation,
+      cfg.visibleWords,
+    );
+    activeActivities.delete(key);
+    emitFinished(bookId, paragraphId, requestId, null);
+  }, cumulative);
+}
 
 // ----- Lyrics mode state --------------------------------------------------
 
@@ -387,11 +430,8 @@ export function resetMockState() {
   bookIdCounter = 0;
   requestIdCounter = 0;
   translateConfigs.clear();
-  inFlightRequests.clear();
+  activeActivities.clear();
   wordInfos.clear();
-  statusSnapshots.clear();
-  statusIndex.clear();
-  requestMeta.clear();
   translateCalls.length = 0;
   markWordVisibleCalls.length = 0;
   mockNowPlaying = null;
@@ -435,7 +475,6 @@ function applyPendingSeed(seed: PendingSeed): void {
     translateConfigs.set(paragraphKey(seed.bookId, tc.paragraphId), tc.cfg);
   }
   for (const inf of seed.inFlight ?? []) {
-    inFlightRequests.set(paragraphKey(seed.bookId, inf.paragraphId), inf.requestId);
     runTranslateRequest(inf.requestId, seed.bookId, inf.paragraphId, inf.cfg);
   }
   for (const w of seed.wordInfos ?? []) {
@@ -490,14 +529,6 @@ if (typeof window !== 'undefined') {
     },
     setTranslateConfig(bookId: UUID, paragraphId: number, cfg: TranslateConfig) {
       translateConfigs.set(paragraphKey(bookId, paragraphId), cfg);
-    },
-    setInFlightRequest(bookId: UUID, paragraphId: number, requestId: number | null) {
-      const key = paragraphKey(bookId, paragraphId);
-      if (requestId === null) {
-        inFlightRequests.delete(key);
-      } else {
-        inFlightRequests.set(key, requestId);
-      }
     },
     setWordInfo(
       bookId: UUID,
@@ -749,36 +780,12 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
       return Promise.resolve(requestId as T);
     }
 
-    case 'get_paragraph_translation_request_id': {
+    case 'get_paragraph_translation_activity': {
       const bookId = args?.bookId as UUID;
       const paragraphId = args?.paragraphId as number;
-      const requestId =
-        inFlightRequests.get(paragraphKey(bookId, paragraphId)) ?? null;
-      return Promise.resolve(requestId as T);
-    }
-
-    case 'get_translation_status': {
-      const requestId = (args?.requestId as number) ?? 0;
-      const snapshots = statusSnapshots.get(requestId);
-      if (!snapshots || snapshots.length === 0) {
-        // Unknown request — return an immediate-complete status to let
-        // the polling effect tear itself down.
-        return Promise.resolve({
-          request_id: requestId,
-          progress_chars: 0,
-          expected_chars: 0,
-          is_complete: true,
-        } as T);
-      }
-      const idx = Math.min(statusIndex.get(requestId) ?? 0, snapshots.length - 1);
-      const snap = snapshots[idx];
-      return Promise.resolve({
-        request_id: requestId,
-        progress_chars: snap.progress_chars,
-        expected_chars: snap.expected_chars,
-        is_complete: snap.is_complete,
-        error: snap.error,
-      } as T);
+      const activity =
+        activeActivities.get(paragraphKey(bookId, paragraphId)) ?? null;
+      return Promise.resolve(activity as T);
     }
 
     case 'mark_word_visible': {

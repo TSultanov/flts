@@ -16,12 +16,8 @@ export type ParagraphVMProps = {
 export class ParagraphViewModel {
     wrapper: HTMLDivElement | null = $state(null);
 
-    progressChars = $state(0);
-    expectedChars = $state(100);
-
     #library!: Library;
     #props!: ParagraphVMProps;
-    #translationRequestId = $state<number | null>(null);
 
     #paragraph = $derived.by(() =>
         this.#library.getParagraphView(
@@ -29,71 +25,24 @@ export class ParagraphViewModel {
             this.#props.paragraphId,
         ),
     );
-    #status = $derived.by(() =>
-        this.#translationRequestId !== null
-            ? this.#library.getTranslationStatus(this.#translationRequestId)
-            : null,
+    #activity = $derived.by(() =>
+        this.#library.getParagraphTranslationActivity(
+            this.#props.bookId,
+            this.#props.paragraphId,
+        ),
     );
 
     #visibleWords = $derived(this.#paragraph.current?.visibleWords ?? []);
 
     originalText = $derived(this.#paragraph.current?.original ?? "");
     translationHtml = $derived(this.#paragraph.current?.translation);
-    isTranslating = $derived(this.#translationRequestId !== null);
+    isTranslating = $derived(this.#activity.current !== null);
+    progressChars = $derived(this.#activity.current?.progressChars ?? 0);
+    expectedChars = $derived(this.#activity.current?.expectedChars ?? 100);
 
     constructor(library: Library, props: ParagraphVMProps) {
         this.#library = library;
         this.#props = props;
-
-        $effect(() => {
-            const status = this.#status?.current;
-            if (!status) return;
-            if (status.is_complete) {
-                if (status.error) {
-                    console.warn(
-                        `Translation failed for paragraph ${this.#props.paragraphId}:`,
-                        status.error,
-                    );
-                }
-                this.#translationRequestId = null;
-                this.progressChars = 0;
-                return;
-            }
-            this.progressChars = status.progress_chars;
-            this.expectedChars = status.expected_chars;
-        });
-
-        $effect(() => {
-            if (this.translationHtml) {
-                if (this.#translationRequestId !== null) {
-                    this.#translationRequestId = null;
-                }
-                this.progressChars = 0;
-                return;
-            }
-            if (this.#translationRequestId !== null) {
-                return;
-            }
-            if (this.#paragraph.current === undefined) {
-                return;
-            }
-
-            const { bookId, paragraphId } = this.#props;
-            let cancelled = false;
-            this.#library
-                .getParagraphTranslationRequestId(bookId, paragraphId)
-                .then((id) => {
-                    if (cancelled) return;
-                    this.#translationRequestId = id;
-                    if (id !== null) {
-                        this.progressChars = 0;
-                    }
-                })
-                .catch(() => {});
-            return () => {
-                cancelled = true;
-            };
-        });
 
         $effect(() => {
             const wrapper = this.wrapper;
@@ -160,8 +109,7 @@ export class ParagraphViewModel {
 
     async translate(useCache: boolean): Promise<void> {
         const { bookId, paragraphId } = this.#props;
-        this.progressChars = 0;
-        this.#translationRequestId = await this.#library.translateParagraph(
+        await this.#library.translateParagraph(
             bookId,
             paragraphId,
             undefined,

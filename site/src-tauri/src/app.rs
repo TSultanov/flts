@@ -356,18 +356,18 @@ impl AppState {
             .await
     }
 
-    pub async fn get_paragraph_translation_request_id(
+    pub async fn get_paragraph_translation_activity(
         &self,
         book_id: Uuid,
         paragraph_id: usize,
-    ) -> anyhow::Result<Option<usize>> {
+    ) -> anyhow::Result<Option<translation_queue::ParagraphTranslationActivity>> {
         let library = self
             .library
             .borrow()
             .clone()
             .ok_or(AppError::NoLibraryError)?;
         let queue = self.get_or_init_translation_queue(library).await?;
-        Ok(queue.get_request_id(book_id, paragraph_id).await)
+        Ok(queue.get_active_translation(book_id, paragraph_id).await)
     }
 }
 
@@ -483,27 +483,15 @@ pub async fn translate_paragraph(
 }
 
 #[tauri::command]
-pub async fn get_paragraph_translation_request_id(
+pub async fn get_paragraph_translation_activity(
     state: tauri::State<'_, Arc<AppState>>,
     book_id: Uuid,
     paragraph_id: usize,
-) -> Result<Option<usize>, String> {
+) -> Result<Option<translation_queue::ParagraphTranslationActivity>, String> {
     state
-        .get_paragraph_translation_request_id(book_id, paragraph_id)
+        .get_paragraph_translation_activity(book_id, paragraph_id)
         .await
         .map_err(|err| err.to_string())
-}
-
-#[tauri::command]
-pub async fn get_translation_status(
-    state: tauri::State<'_, Arc<AppState>>,
-    request_id: usize,
-) -> Result<Option<translation_queue::TranslationStatus>, String> {
-    let queue = state.translation_queue.borrow().clone();
-    Ok(match queue {
-        Some(q) => q.get_translation_status(request_id).await,
-        None => None,
-    })
 }
 
 #[tauri::command]

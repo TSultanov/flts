@@ -1,7 +1,7 @@
 import type { EpubBook } from "./epubLoader";
 import type { UUID } from "./v2/db";
 import { type ChapterMetaView, type IBookMeta, type ParagraphView, type SentenceWordTranslation } from "./sql/book";
-import { PollingResource, Resource } from "./tauri.svelte";
+import { ParagraphTranslationActivityResource, Resource } from "./tauri.svelte";
 import { invoke } from "@tauri-apps/api/core";
 import { getConfig } from "../config";
 
@@ -25,20 +25,10 @@ export type LibraryFolder = {
     books: IBookMeta[],
 }
 
-export type TranslationStatus = {
-    request_id: number;
-    progress_chars: number;
-    expected_chars: number;
-    is_complete: boolean;
-    error?: string;
-};
-
 export type SystemDefinition = {
     definition: string,
     transcription: string | null,
 }
-
-const TRANSLATION_STATUS_POLL_INTERVAL_MS = 500;
 
 export function buildLibraryFolder(books: LibraryBookMetadataView[]): LibraryFolder {
     const root: LibraryFolder = { folders: [], books: [] };
@@ -131,8 +121,8 @@ export class Library {
         return await invoke<number>("translate_paragraph", { bookId, paragraphId, model: model ?? config.model, useCache });
     }
 
-    async getParagraphTranslationRequestId(bookId: UUID, paragraphId: number): Promise<number | null> {
-        return await invoke<number | null>("get_paragraph_translation_request_id", { bookId, paragraphId });
+    getParagraphTranslationActivity(bookId: UUID, paragraphId: number): ParagraphTranslationActivityResource {
+        return new ParagraphTranslationActivityResource(bookId, paragraphId);
     }
 
     getParagraphView(bookId: UUID, paragraphId: number): Resource<ParagraphView> {
@@ -150,14 +140,6 @@ export class Library {
                     filter: (updatedId: UUID) => updatedId === bookId,
                 },
             ],
-        );
-    }
-
-    getTranslationStatus(requestId: number): PollingResource<TranslationStatus> {
-        return new PollingResource<TranslationStatus>(
-            "get_translation_status",
-            { requestId },
-            TRANSLATION_STATUS_POLL_INTERVAL_MS,
         );
     }
 
