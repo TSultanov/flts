@@ -216,15 +216,24 @@ export async function scrollToParagraph(page: Page, paragraphId: number): Promis
 }
 
 /**
+ * Per-idx-stable sentence shape so wrapped widths stay deterministic across
+ * runs. Used directly by `fillerHtml` and exposed for tests that need
+ * heterogeneous paragraph sizes (mix short and long paragraphs).
+ */
+export function htmlOfSize(idx: number, sentences: number): string {
+  const sentence =
+    `Paragraph ${idx} sentence about subject ${idx} doing thing ${idx} in place ${idx}.`;
+  return Array.from({ length: sentences }, () => sentence).join(' ');
+}
+
+/**
  * Deterministic ~15-sentence filler so each paragraph contributes meaningful
  * height and the columnar layout produces real horizontal scroll distance.
  * At 80 paragraphs this puts the chapter's scrollWidth / clientWidth well
  * over 50, matching a realistic long chapter.
  */
 export function fillerHtml(idx: number): string {
-  const sentence =
-    `Paragraph ${idx} sentence about subject ${idx} doing thing ${idx} in place ${idx}.`;
-  return Array.from({ length: 15 }, () => sentence).join(' ');
+  return htmlOfSize(idx, 15);
 }
 
 /**

@@ -1,5 +1,11 @@
-import { expect, test } from '@playwright/test';
-import { multipageSpec, paragraphLocator, seedAndOpen } from './helpers/paragraph';
+import { expect, test, type Page } from '@playwright/test';
+import {
+  htmlOfSize,
+  multipageSpec,
+  paragraphLocator,
+  seedAndOpen,
+  type SeedParagraph,
+} from './helpers/paragraph';
 
 // Regression suite for chapter reading-position restore.
 //
@@ -98,5 +104,81 @@ test.describe('Chapter reading-state restore (multipage)', () => {
     });
     expect(scrollLeft).toBeGreaterThanOrEqual(0);
     expect(scrollLeft).toBeLessThan(50);
+  });
+
+  // ----- Diverse-paragraph-size round-trip -------------------------------
+  //
+  // Uniform fillers (every paragraph 15 sentences) hide layout asymmetry.
+  // Real books mix short dialog with long prose, and with column-fill: auto
+  // a short paragraph can land anywhere in its column. The restore path
+  // centers the wrapper horizontally; the save path hit-tests the top-left.
+  // If the restore lands the wrong column, the very next scroll save will
+  // overwrite the user's actual position with whatever paragraph happened
+  // to sit at (left+16, top+16). The round-trip check below is the
+  // strongest version of "restore correctly": after restore settles, the
+  // top-left hit-test must return the seeded target id.
+  test.describe('round-trip with diverse paragraph sizes', () => {
+    type Profile = 'bimodal' | 'short-with-spikes' | 'long-with-gaps';
+    const PROFILES: Profile[] = ['bimodal', 'short-with-spikes', 'long-with-gaps'];
+    const TARGETS = [5, 20, 40, 60, 78];
+
+    function buildOverrides(
+      profile: Profile,
+      count: number,
+    ): Partial<Record<number, Partial<SeedParagraph>>> {
+      const out: Record<number, Partial<SeedParagraph>> = {};
+      for (let i = 0; i < count; i++) {
+        let sentences: number;
+        switch (profile) {
+          case 'bimodal':
+            sentences = i % 2 === 0 ? 1 : 30;
+            break;
+          case 'short-with-spikes':
+            sentences = i % 10 === 0 ? 25 : 1;
+            break;
+          case 'long-with-gaps':
+            sentences = i % 5 === 0 ? 1 : 15;
+            break;
+        }
+        out[i] = { html: htmlOfSize(i, sentences) };
+      }
+      return out;
+    }
+
+    async function topLeftParagraphId(page: Page): Promise<string | null> {
+      return page.evaluate(() => {
+        const c = document.querySelector(
+          '.paragraphs-container',
+        ) as HTMLElement | null;
+        if (!c) return null;
+        const cr = c.getBoundingClientRect();
+        const hit = document.elementFromPoint(
+          cr.left + 16,
+          cr.top + 16,
+        ) as HTMLElement | null;
+        const wrapper = hit?.closest('.paragraph-wrapper') as HTMLElement | null;
+        return wrapper?.dataset['paragraphId'] ?? null;
+      });
+    }
+
+    for (const profile of PROFILES) {
+      for (const target of TARGETS) {
+        test(`round-trip: ${profile} @ p${target}`, async ({ page }) => {
+          const { bookId } = await seedAndOpen(
+            page,
+            multipageSpec(COUNT, buildOverrides(profile, COUNT), {
+              readingState: { chapterId: 0, paragraphId: target },
+            }),
+            { path: '/library' },
+          );
+          await openBookFromLibrary(page, bookId);
+          await expect(paragraphLocator(page, target)).toBeAttached();
+
+          await expect
+            .poll(() => topLeftParagraphId(page), POLL)
+            .toBe(String(target));
+        });
+      }
+    }
   });
 });
