@@ -64,10 +64,11 @@ test.describe('Chapter initial translation batch (chromium only)', () => {
 
     const calls = await getTranslationsBatchCalls(page);
     const totalQueued = new Set(calls.flatMap((c) => c.paragraphIds)).size;
-    // A healthy mount window around firstId covers ~5 sibling paragraphs
-    // plus whatever fits the geometric window — typically <15. 30 is
-    // comfortably above the healthy case and well below the broken
-    // case (which queues the whole chapter — ~N).
-    expect(totalQueued).toBeLessThanOrEqual(30);
+    // Healthy: the eager visible-window enqueue (sized to the container's
+    // clientHeight at open time, target ± ~paragraphsPerPage) plus the
+    // mount-window recompute. At default Playwright viewport that lands
+    // in the 15-25 range. 40 is comfortably above the healthy case and
+    // well below the broken case (whole-chapter enqueue ~N=80).
+    expect(totalQueued).toBeLessThanOrEqual(40);
   });
 });

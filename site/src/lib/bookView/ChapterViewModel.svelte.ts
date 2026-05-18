@@ -37,6 +37,11 @@ const INITIAL_REVEAL_FALLBACK_MS = 1500;
 // from snap correction still has paragraphs laid out. Roughly a few
 // pages of small paragraphs.
 const RESTORE_PREFIX_BUFFER = 10;
+// Used to size the eager initial-translations window from the
+// container's clientHeight. Mid-range: dialog paragraphs are ~32 px
+// (1 line @ line-height 2, font 16 px), prose 128-160 px (4-5 lines),
+// mixed-content average lands near 100 px.
+const ESTIMATED_PARAGRAPH_HEIGHT_PX = 100;
 
 export class ChapterViewModel {
     #library!: Library;
@@ -180,14 +185,36 @@ export class ChapterViewModel {
             const targetIdx = initialParagraphId != null
                 ? ids.indexOf(initialParagraphId)
                 : 0;
+            const safeTargetIdx = Math.max(targetIdx, 0);
             const headEnd = Math.min(
-                Math.max(targetIdx, 0) + RESTORE_PREFIX_BUFFER,
+                safeTargetIdx + RESTORE_PREFIX_BUFFER,
                 ids.length,
             );
             this.#store.enqueueOriginals(ids.slice(0, headEnd));
             if (headEnd < ids.length) {
                 this.#store.enqueueOriginals(ids.slice(headEnd));
             }
+            // Eager translations for an estimated page-worth on each
+            // side of the target. Sized from the container's
+            // clientHeight rather than a fixed number, so taller
+            // viewports get proportionally more. The IPC overlaps the
+            // originals fetch instead of trailing it. After the page is
+            // visible, #recomputeMountWindow (in tryReveal /
+            // #finishRestore) enqueues any further visible paragraphs;
+            // the store dedups.
+            const pageHeight = this.#props.container?.clientHeight ?? 600;
+            const paragraphsPerPage = Math.max(
+                5,
+                Math.ceil(pageHeight / ESTIMATED_PARAGRAPH_HEIGHT_PX),
+            );
+            const eagerStart = Math.max(safeTargetIdx - paragraphsPerPage, 0);
+            const eagerEnd = Math.min(
+                safeTargetIdx + paragraphsPerPage + 1,
+                ids.length,
+            );
+            this.#store.enqueueTranslations(
+                ids.slice(eagerStart, eagerEnd),
+            );
         }
 
         if (this.#initialParagraphSyncedFor === initialParagraphId) {
