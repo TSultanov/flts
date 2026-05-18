@@ -241,9 +241,10 @@ export class ChapterViewModel {
             this.#restoreResizeObserver = observer;
         }
 
-        if (this.#readyParagraphIds.size >= ids.length) {
-            // Everything was already ready (cached). Still go through the
-            // scheduled-anchor path so the deferred final anchor runs.
+        if (this.#readyThroughRestoreTarget()) {
+            // The visible region is already settled (cached or pre-fetched).
+            // Still go through the scheduled-anchor path so the deferred
+            // final anchor runs.
             this.#scheduleAnchorRaf();
         } else {
             this.#restoreFallbackTimeout = setTimeout(() => {
@@ -271,6 +272,20 @@ export class ChapterViewModel {
         this.#scheduleAnchorRaf();
     }
 
+    #readyThroughRestoreTarget(): boolean {
+        const target = this.#restoreTarget;
+        if (target == null) return false;
+        // Paragraphs after the target sit in columns to the right of the
+        // visible page and can't shift it, so we only need everything up
+        // through the target to be settled before lifting the gate.
+        const ids = this.#paragraphIdsResource.current ?? [];
+        for (const id of ids) {
+            if (!this.#readyParagraphIds.has(id)) return false;
+            if (id === target) return true;
+        }
+        return false;
+    }
+
     #scheduleAnchorRaf(): void {
         if (this.#restoreTarget == null) return;
         // Coalesce — many ready events and ResizeObserver fires can
@@ -282,8 +297,7 @@ export class ChapterViewModel {
             this.#anchorRaf = null;
             if (this.#restoreTarget == null) return;
             this.#anchorToParagraph(this.#restoreTarget);
-            const total = this.#paragraphIdsResource.current?.length ?? 0;
-            if (total > 0 && this.#readyParagraphIds.size >= total) {
+            if (this.#readyThroughRestoreTarget()) {
                 // Defer one more rAF: a paragraph's onReady fires from a
                 // Svelte $effect, which runs before the browser's next
                 // layout phase reflows the column flow. One extra frame
