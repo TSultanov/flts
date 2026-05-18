@@ -126,21 +126,4 @@
         scroll-snap-align: center;
         scroll-snap-stop: always;
     }
-
-    /* Touch devices use break-inside: auto, so a single paragraph can
-       flow across multiple columns. Scroll-snap puts one snap point per
-       wrapper — incompatible with a wrapper that spans pages, since
-       restoring to "page N of paragraph X" gets snapped back to the
-       wrapper's center. Disable snap on coarse-pointer devices; the
-       column-fill: auto layout still yields page-shaped reading without
-       it. */
-    @media (pointer: coarse) {
-        .paragraphs-container {
-            scroll-snap-type: none;
-        }
-        :global(.paragraphs-container > *) {
-            scroll-snap-align: none;
-            scroll-snap-stop: normal;
-        }
-    }
 </style>

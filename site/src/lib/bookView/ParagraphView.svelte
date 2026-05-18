@@ -118,14 +118,6 @@
         -webkit-column-break-inside: avoid;
     }
 
-    /* iOS/WebKit can struggle when forced to keep long blocks unbroken inside columns. */
-    @media (pointer: coarse) {
-        .paragraph-wrapper {
-            break-inside: auto;
-            -webkit-column-break-inside: auto;
-        }
-    }
-
     button.translate {
         width: calc(2 * var(--font-size));
         height: calc(2 * var(--font-size));
