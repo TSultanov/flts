@@ -495,6 +495,7 @@ type PendingSeed = {
     wordId: number;
     info: WordInfo;
   }>;
+  readingState?: BookReadingState;
 };
 
 function applyPendingSeed(seed: PendingSeed): void {
@@ -519,6 +520,9 @@ function applyPendingSeed(seed: PendingSeed): void {
       wordKey(seed.bookId, w.paragraphId, w.sentenceId, w.wordId),
       w.info,
     );
+  }
+  if (seed.readingState) {
+    mockReadingStates.set(seed.bookId, seed.readingState);
   }
 }
 

@@ -64,6 +64,7 @@ export type SeedSpec = {
     wordId: number;
     info: WordInfoSeed;
   }>;
+  readingState?: { chapterId: number; paragraphId: number };
 };
 
 let bookIdSeq = 0;
@@ -82,6 +83,7 @@ function makeBookId(): string {
 export async function seedAndOpen(
   page: Page,
   spec: SeedSpec,
+  opts: { path?: string } = {},
 ): Promise<{ bookId: string }> {
   page.on('pageerror', (err) => console.log('PAGE ERROR:', err.message));
   const bookId = spec.bookId ?? makeBookId();
@@ -117,10 +119,11 @@ export async function seedAndOpen(
         wordId: w.wordId,
         info: wordInfoDefaults(w.info),
       })),
+      readingState: s.readingState,
     };
   }, fullSpec);
 
-  await page.goto(`/book/${bookId}/0`);
+  await page.goto(opts.path ?? `/book/${bookId}/0`);
   return { bookId };
 }
 
