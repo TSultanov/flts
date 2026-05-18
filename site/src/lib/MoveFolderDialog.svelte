@@ -1,20 +1,20 @@
 <script lang="ts">
     import type { LibraryFolder } from "./data/library";
+    import BaseDialog from "./BaseDialog.svelte";
     import CreateFolderDialog from "./CreateFolderDialog.svelte";
 
-    let { 
+    let {
         isOpen = $bindable(false),
         rootFolder,
         onConfirm,
-        onCancel
+        onCancel,
     }: {
-        isOpen: boolean,
-        rootFolder: LibraryFolder,
-        onConfirm: (newPath: string[]) => void,
-        onCancel?: () => void
+        isOpen: boolean;
+        rootFolder: LibraryFolder;
+        onConfirm: (newPath: string[]) => void;
+        onCancel?: () => void;
     } = $props();
 
-    let dialog: HTMLDialogElement;
     let localRootFolder = $state<LibraryFolder>();
 
     let selectedPath: string[] = $state([]);
@@ -29,29 +29,13 @@
         }
     });
 
-    $effect(() => {
-        if (dialog) {
-            if (isOpen) {
-                dialog.showModal();
-            } else {
-                dialog.close();
-            }
-        }
-    });
-
     function handleConfirm() {
         onConfirm($state.snapshot(selectedPath));
         isOpen = false;
     }
 
     function handleCancel() {
-        if (onCancel) {
-            onCancel();
-        }
-        isOpen = false;
-    }
-
-    function handleDialogClose() {
+        onCancel?.();
         isOpen = false;
     }
 
@@ -85,7 +69,7 @@
         if (localRootFolder) {
             const trimmedName = folderName.trim();
             const newFolderPath = [...pendingParentPath, trimmedName];
-            
+
             // Find or create the folder in the local structure
             const findOrCreateFolder = (folder: LibraryFolder, pathSegments: string[]): LibraryFolder => {
                 if (pathSegments.length === 0) {
@@ -109,51 +93,50 @@
 
             // Add the new folder to the local structure if it doesn't exist
             findOrCreateFolder(localRootFolder, newFolderPath);
-            
+
             // Select the newly created folder
             selectedPath = newFolderPath;
-            
+
             // Trigger reactivity
             localRootFolder = localRootFolder;
         }
     }
 </script>
 
-<dialog
-    bind:this={dialog}
-    onclose={handleDialogClose}
-    data-testid="move-folder-dialog"
+<BaseDialog
+    bind:isOpen
+    title="Move to Folder"
+    maxWidth="500px"
+    {onCancel}
+    testId="move-folder-dialog"
 >
-    <div class="dialog-content">
-        <h3>Move to Folder</h3>
-        <div class="folder-tree" data-testid="folder-tree">
-            {#if localRootFolder}
-                {@render FolderTreeComponent(localRootFolder, [])}
-            {/if}
-        </div>
-
-        <div>
-            <p data-testid="move-to-preview">
-                <strong>Move to:</strong> /{selectedPath?.join("/")}
-            </p>
-        </div>
-
-        <div class="dialog-buttons">
-            <button
-                onclick={handleCancel}
-                class="secondary"
-                data-testid="move-folder-cancel">Cancel</button
-            >
-            <button
-                onclick={handleConfirm}
-                disabled={!selectedPath}
-                data-testid="move-folder-confirm">Confirm</button
-            >
-        </div>
+    <div class="folder-tree" data-testid="folder-tree">
+        {#if localRootFolder}
+            {@render FolderTreeComponent(localRootFolder, [])}
+        {/if}
     </div>
-</dialog>
 
-<CreateFolderDialog 
+    <div>
+        <p data-testid="move-to-preview">
+            <strong>Move to:</strong> /{selectedPath?.join("/")}
+        </p>
+    </div>
+
+    <div class="dialog-buttons">
+        <button
+            onclick={handleCancel}
+            class="secondary"
+            data-testid="move-folder-cancel">Cancel</button
+        >
+        <button
+            onclick={handleConfirm}
+            disabled={!selectedPath}
+            data-testid="move-folder-confirm">Confirm</button
+        >
+    </div>
+</BaseDialog>
+
+<CreateFolderDialog
     bind:isOpen={createFolderDialogOpen}
     onConfirm={handleCreateFolder}
 />
@@ -191,29 +174,6 @@
 {/snippet}
 
 <style>
-    dialog {
-        border: 1px solid var(--dialog-border);
-        border-radius: 8px;
-        padding: 0;
-        max-width: 500px;
-        width: 90%;
-        background: var(--dialog-background);
-    }
-
-    dialog::backdrop {
-        background-color: var(--dialog-backdrop);
-    }
-
-    .dialog-content {
-        padding: 24px;
-    }
-
-    .dialog-content h3 {
-        margin: 0 0 16px 0;
-        font-size: 1.2em;
-        color: var(--dialog-text);
-    }
-
     .folder-tree {
         max-height: 300px;
         overflow-y: auto;
@@ -252,12 +212,6 @@
     .folder-option.selected .folder-button {
         color: var(--background-color);
         background: var(--button-cancel-hover);
-    }
-
-    .dialog-buttons {
-        display: flex;
-        gap: 12px;
-        justify-content: flex-end;
     }
 
     .nested-folder {

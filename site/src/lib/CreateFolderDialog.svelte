@@ -1,30 +1,25 @@
 <script lang="ts">
-    let { 
+    import BaseDialog from "./BaseDialog.svelte";
+
+    let {
         isOpen = $bindable(false),
         onConfirm,
-        onCancel
+        onCancel,
     }: {
-        isOpen: boolean,
-        onConfirm: (folderName: string) => void,
-        onCancel?: () => void
+        isOpen: boolean;
+        onConfirm: (folderName: string) => void;
+        onCancel?: () => void;
     } = $props();
 
-    let dialog: HTMLDialogElement;
     let folderName = $state("");
-    let inputElement: HTMLInputElement;
+    let inputElement: HTMLInputElement | undefined = $state();
 
     $effect(() => {
-        if (dialog) {
-            if (isOpen) {
-                dialog.showModal();
-                folderName = "";
-                // Focus the input after dialog opens
-                setTimeout(() => {
-                    inputElement?.focus();
-                }, 0);
-            } else {
-                dialog.close();
-            }
+        if (isOpen) {
+            folderName = "";
+            setTimeout(() => {
+                inputElement?.focus();
+            }, 0);
         }
     });
 
@@ -42,13 +37,7 @@
     }
 
     function handleCancel() {
-        if (onCancel) {
-            onCancel();
-        }
-        isOpen = false;
-    }
-
-    function handleDialogClose() {
+        onCancel?.();
         isOpen = false;
     }
 
@@ -56,79 +45,50 @@
         if (event.key === "Enter") {
             event.preventDefault();
             handleConfirm();
-        } else if (event.key === "Escape") {
-            event.preventDefault();
-            handleCancel();
         }
     }
 
     const isValidName = $derived(folderName.trim().length > 0);
 </script>
 
-<dialog
-    bind:this={dialog}
-    onclose={handleDialogClose}
-    data-testid="create-folder-dialog"
+<BaseDialog
+    bind:isOpen
+    title="Create New Folder"
+    {onCancel}
+    testId="create-folder-dialog"
 >
-    <div class="dialog-content">
-        <h3>Create New Folder</h3>
+    <form onsubmit={handleFormSubmit}>
+        <div class="input-group">
+            <label for="folder-name">Folder Name:</label>
+            <input
+                id="folder-name"
+                type="text"
+                data-testid="create-folder-input"
+                bind:this={inputElement}
+                bind:value={folderName}
+                onkeydown={handleKeydown}
+                placeholder="Enter folder name"
+                autocomplete="off"
+            />
+        </div>
 
-        <form onsubmit={handleFormSubmit}>
-            <div class="input-group">
-                <label for="folder-name">Folder Name:</label>
-                <input
-                    id="folder-name"
-                    type="text"
-                    data-testid="create-folder-input"
-                    bind:this={inputElement}
-                    bind:value={folderName}
-                    onkeydown={handleKeydown}
-                    placeholder="Enter folder name"
-                    autocomplete="off"
-                />
-            </div>
-
-            <div class="dialog-buttons">
-                <button
-                    type="button"
-                    onclick={handleCancel}
-                    class="secondary"
-                    data-testid="create-folder-cancel">Cancel</button
-                >
-                <button
-                    type="submit"
-                    disabled={!isValidName}
-                    data-testid="create-folder-submit">Create</button
-                >
-            </div>
-        </form>
-    </div>
-</dialog>
+        <div class="dialog-buttons">
+            <button
+                type="button"
+                onclick={handleCancel}
+                class="secondary"
+                data-testid="create-folder-cancel">Cancel</button
+            >
+            <button
+                type="submit"
+                disabled={!isValidName}
+                data-testid="create-folder-submit">Create</button
+            >
+        </div>
+    </form>
+</BaseDialog>
 
 <style>
-    dialog {
-        border: 1px solid var(--dialog-border);
-        border-radius: 8px;
-        padding: 0;
-        max-width: 400px;
-        width: 90%;
-        background: var(--dialog-background);
-    }
-
-    dialog::backdrop {
-        background-color: var(--dialog-backdrop);
-    }
-
-    .dialog-content {
-        padding: 24px;
-    }
-
-    .dialog-content h3 {
-        margin: 0 0 16px 0;
-        font-size: 1.2em;
-        color: var(--dialog-text);
-    }
-
     .input-group {
         margin-bottom: 24px;
     }
@@ -159,12 +119,6 @@
 
     .input-group input::placeholder {
         color: var(--text-color-muted);
-    }
-
-    .dialog-buttons {
-        display: flex;
-        gap: 12px;
-        justify-content: flex-end;
     }
 
     form {
