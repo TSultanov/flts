@@ -1,6 +1,4 @@
 <script lang="ts">
-    import { p } from '../router';
-
     export type RouteLinkProps = {
         href: string;
         label: string;

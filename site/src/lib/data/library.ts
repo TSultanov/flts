@@ -170,11 +170,7 @@ export class Library {
         });
     }
 
-    private async cleanupTranslationRequests(_bookUid: UUID): Promise<void> {
-    }
-
     async deleteBook(bookUid: UUID) {
-        await this.cleanupTranslationRequests(bookUid);
         await invoke('delete_book', { bookId: bookUid });
     }
 
