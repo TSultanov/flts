@@ -27,6 +27,11 @@ const GEOM_UNMOUNT_THRESHOLD = 2.5;
 // network drop), so the user isn't held forever at a partially-correct
 // scroll position.
 const RESTORE_FALLBACK_MS = 3000;
+// Hard cap on how long the initial-load opacity gate stays closed. If
+// both the restore-path and no-restore-path reveals somehow fail to
+// fire (e.g. a paragraph fetch never resolves), the user still gets a
+// visible chapter rather than a permanently blank panel.
+const INITIAL_REVEAL_FALLBACK_MS = 1500;
 
 export class ChapterViewModel {
     #library!: Library;
@@ -66,10 +71,25 @@ export class ChapterViewModel {
     #anchorRaf: number | null = null;
     #restoreResizeObserver: ResizeObserver | null = null;
     #savedSnapType: string | null = null;
+    #isInitiallyReady = $state(false);
+    #initialRevealFallbackTimeout: ReturnType<typeof setTimeout> | null = null;
+    #initialRevealRaf: number | null = null;
+    #noRestoreRevealHook: (() => void) | null = null;
 
     constructor(library: Library, props: ChapterVMProps) {
         this.#library = library;
         this.#props = props;
+        // Belt-and-braces: if neither the restore nor the no-restore
+        // reveal path fires (paragraph fetch stuck, etc.), this timer
+        // lifts the opacity gate so the user never sees a blank panel.
+        this.#initialRevealFallbackTimeout = setTimeout(() => {
+            this.#initialRevealFallbackTimeout = null;
+            this.#markInitiallyReady();
+        }, INITIAL_REVEAL_FALLBACK_MS);
+    }
+
+    get isInitiallyReady(): boolean {
+        return this.#isInitiallyReady;
     }
 
     isMounted(paragraphId: number): boolean {
@@ -142,14 +162,35 @@ export class ChapterViewModel {
         }
 
         if (initialParagraphId == null) {
-            this.#setVisibleParagraph(ids[0], 0);
+            const firstId = ids[0];
+            this.#setVisibleParagraph(firstId, 0);
             this.#initialParagraphSyncedFor = null;
             const controller = new AbortController();
             void (async () => {
                 await tick();
-                if (!controller.signal.aborted) {
-                    this.#recomputeMountWindow();
-                }
+                if (controller.signal.aborted) return;
+                this.#recomputeMountWindow();
+                // Lift the opacity gate once the first paragraph's data
+                // is ready, plus one rAF so paint catches up before we
+                // reveal. The hook is re-checked on each
+                // registerParagraphReady call until it succeeds.
+                const tryReveal = () => {
+                    if (
+                        controller.signal.aborted ||
+                        this.#isInitiallyReady ||
+                        this.#initialRevealRaf !== null
+                    ) {
+                        return;
+                    }
+                    if (!this.#readyParagraphIds.has(firstId)) return;
+                    this.#initialRevealRaf = requestAnimationFrame(() => {
+                        this.#initialRevealRaf = null;
+                        if (controller.signal.aborted) return;
+                        this.#markInitiallyReady();
+                    });
+                };
+                this.#noRestoreRevealHook = tryReveal;
+                tryReveal();
             })();
             return () => controller.abort();
         }
@@ -222,6 +263,9 @@ export class ChapterViewModel {
     registerParagraphReady(paragraphId: number): void {
         this.#readyParagraphIds.add(paragraphId);
         if (this.#restoreTarget == null) {
+            // No-restore path is waiting on the first paragraph's data
+            // to lift the opacity gate.
+            this.#noRestoreRevealHook?.();
             return;
         }
         this.#scheduleAnchorRaf();
@@ -306,6 +350,25 @@ export class ChapterViewModel {
         if (wasRestoring) {
             this.#recomputeMountWindow();
         }
+
+        // Snap is re-engaged and the final anchor has landed: it's safe
+        // to lift the opacity gate. Reveal-path call sites are idempotent
+        // via #markInitiallyReady's early-return.
+        this.#markInitiallyReady();
+    }
+
+    #markInitiallyReady(): void {
+        if (this.#isInitiallyReady) return;
+        this.#isInitiallyReady = true;
+        if (this.#initialRevealFallbackTimeout !== null) {
+            clearTimeout(this.#initialRevealFallbackTimeout);
+            this.#initialRevealFallbackTimeout = null;
+        }
+        if (this.#initialRevealRaf !== null) {
+            cancelAnimationFrame(this.#initialRevealRaf);
+            this.#initialRevealRaf = null;
+        }
+        this.#noRestoreRevealHook = null;
     }
 
     dispose(): void {
@@ -313,6 +376,15 @@ export class ChapterViewModel {
             cancelAnimationFrame(this.#scrollRaf);
             this.#scrollRaf = null;
         }
+        if (this.#initialRevealFallbackTimeout !== null) {
+            clearTimeout(this.#initialRevealFallbackTimeout);
+            this.#initialRevealFallbackTimeout = null;
+        }
+        if (this.#initialRevealRaf !== null) {
+            cancelAnimationFrame(this.#initialRevealRaf);
+            this.#initialRevealRaf = null;
+        }
+        this.#noRestoreRevealHook = null;
         this.#finishRestore();
         if (this.#saveTimeout) {
             clearTimeout(this.#saveTimeout);

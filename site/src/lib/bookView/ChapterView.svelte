@@ -60,6 +60,7 @@
     <section class="chapter" onclick={handleBackgroundClick}>
         <div
             class="paragraphs-container"
+            class:is-ready={vm.isInitiallyReady}
             style="column-width: {sectionContentWidth}px"
             bind:clientHeight={sectionContentWidth}
             bind:this={paragraphsContainer}
@@ -108,6 +109,11 @@
         column-gap: 0;
         column-fill: auto;
         -webkit-column-fill: auto;
+        opacity: 0;
+    }
+
+    .paragraphs-container.is-ready {
+        opacity: 1;
     }
 
     :global(.paragraphs-container > *) {
