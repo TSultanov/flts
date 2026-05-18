@@ -39,6 +39,14 @@ pub struct BookReadingState {
     pub chapter_id: usize,
     #[serde(alias = "paragraphId")]
     pub paragraph_id: usize,
+    // Which column of the saved paragraph the reader was on. Zero for
+    // single-column paragraphs (the desktop common case). On touch
+    // devices, where break-inside: auto lets a paragraph flow across
+    // multiple columns, this tells restore which page to land on.
+    // Serde default keeps state.json files written before this field
+    // existed loadable.
+    #[serde(default, alias = "pageOffset")]
+    pub page_offset: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -1330,6 +1338,7 @@ mod library_book_tests {
             book.update_reading_state(BookReadingState {
                 chapter_id: 2,
                 paragraph_id: 15,
+                page_offset: 0,
             })
             .await
             .unwrap();
@@ -1387,6 +1396,7 @@ mod library_book_tests {
             book.update_reading_state(BookReadingState {
                 chapter_id: 1,
                 paragraph_id: 1,
+                page_offset: 0,
             })
             .await
             .unwrap();
@@ -1401,6 +1411,7 @@ mod library_book_tests {
             let serialized = serde_json::to_vec(&BookReadingState {
                 chapter_id: 4,
                 paragraph_id: 8,
+                page_offset: 0,
             })
             .unwrap();
             let mut file = std::fs::File::create(&conflict_path).unwrap();

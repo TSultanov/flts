@@ -88,6 +88,7 @@ type ParagraphView = {
 type BookReadingState = {
   chapterId: number;
   paragraphId: number;
+  pageOffset: number;
 };
 
 // ----- Translation simulation types --------------------------------------
@@ -495,7 +496,7 @@ type PendingSeed = {
     wordId: number;
     info: WordInfo;
   }>;
-  readingState?: BookReadingState;
+  readingState?: { chapterId: number; paragraphId: number; pageOffset?: number };
 };
 
 function applyPendingSeed(seed: PendingSeed): void {
@@ -522,7 +523,11 @@ function applyPendingSeed(seed: PendingSeed): void {
     );
   }
   if (seed.readingState) {
-    mockReadingStates.set(seed.bookId, seed.readingState);
+    mockReadingStates.set(seed.bookId, {
+      chapterId: seed.readingState.chapterId,
+      paragraphId: seed.readingState.paragraphId,
+      pageOffset: seed.readingState.pageOffset ?? 0,
+    });
   }
 }
 
@@ -859,8 +864,9 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
       const bookId = args?.bookId as UUID;
       const chapterId = args?.chapterId as number;
       const paragraphId = args?.paragraphId as number;
+      const pageOffset = (args?.pageOffset as number) ?? 0;
 
-      mockReadingStates.set(bookId, { chapterId, paragraphId });
+      mockReadingStates.set(bookId, { chapterId, paragraphId, pageOffset });
       return Promise.resolve(undefined as T);
     }
 

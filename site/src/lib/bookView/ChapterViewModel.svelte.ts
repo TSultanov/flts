@@ -7,6 +7,7 @@ export type ChapterVMProps = {
     bookId: UUID;
     chapterId: number;
     initialParagraphId: number | null;
+    initialPageOffset: number;
     container: HTMLDivElement | null;
 };
 
@@ -49,8 +50,10 @@ export class ChapterViewModel {
     #mountedParagraphIds: Set<number> = $state(new Set());
 
     #visibleParagraphId: number | null = null;
+    #visiblePageOffset = 0;
     #saveTimeout: ReturnType<typeof setTimeout> | null = null;
     #lastSavedParagraph: number | null = null;
+    #lastSavedPageOffset = 0;
     #isResizing = false;
     #resizeTimeout: ReturnType<typeof setTimeout> | null = null;
     #scrollRaf: number | null = null;
@@ -58,8 +61,11 @@ export class ChapterViewModel {
     #isRestoring = false;
     #readyParagraphIds = new Set<number>();
     #restoreTarget: number | null = null;
+    #restorePageOffset = 0;
     #restoreFallbackTimeout: ReturnType<typeof setTimeout> | null = null;
     #anchorRaf: number | null = null;
+    #restoreResizeObserver: ResizeObserver | null = null;
+    #savedSnapType: string | null = null;
 
     constructor(library: Library, props: ChapterVMProps) {
         this.#library = library;
@@ -136,7 +142,7 @@ export class ChapterViewModel {
         }
 
         if (initialParagraphId == null) {
-            this.#setVisibleParagraph(ids[0]);
+            this.#setVisibleParagraph(ids[0], 0);
             this.#initialParagraphSyncedFor = null;
             const controller = new AbortController();
             void (async () => {
@@ -153,6 +159,7 @@ export class ChapterViewModel {
         }
 
         const paragraphIdToScrollTo = initialParagraphId;
+        const pageOffsetToRestore = Math.max(0, this.#props.initialPageOffset | 0);
         this.#initialParagraphSyncedFor = paragraphIdToScrollTo;
         const controller = new AbortController();
 
@@ -160,22 +167,43 @@ export class ChapterViewModel {
         // past #isRestoring can't overwrite the persisted state with an
         // intermediate position.
         this.#visibleParagraphId = paragraphIdToScrollTo;
+        this.#visiblePageOffset = pageOffsetToRestore;
         this.#lastSavedParagraph = paragraphIdToScrollTo;
+        this.#lastSavedPageOffset = pageOffsetToRestore;
         this.#isRestoring = true;
         this.#restoreTarget = paragraphIdToScrollTo;
+        this.#restorePageOffset = pageOffsetToRestore;
+
+        // Suspend scroll-snap for the volatile period: snap-corrected
+        // scrollTo can land on the wrong column when the layout is mid-
+        // flight. #finishRestore re-enables it after the final anchor.
+        const container = this.#props.container;
+        if (container) {
+            this.#savedSnapType = container.style.scrollSnapType;
+            container.style.scrollSnapType = "none";
+        }
 
         // First anchor — likely off because per-paragraph fetches haven't
-        // populated yet. registerParagraphReady re-anchors as data lands.
+        // populated yet. registerParagraphReady and the ResizeObserver
+        // re-anchor as data and layout land.
         this.#anchorToParagraph(paragraphIdToScrollTo);
 
+        // Catch-all for layout shifts that aren't tied to a paragraph
+        // fetch (late font load, image dimensions, column-flow reflow
+        // after a wrapper finishes). Each child wrapper's resize feeds
+        // the same coalesced re-anchor as the ready signal.
+        if (container && typeof ResizeObserver !== "undefined") {
+            const observer = new ResizeObserver(() => this.#scheduleAnchorRaf());
+            for (let i = 0; i < container.children.length; i++) {
+                observer.observe(container.children[i] as HTMLElement);
+            }
+            this.#restoreResizeObserver = observer;
+        }
+
         if (this.#readyParagraphIds.size >= ids.length) {
-            // Everything was already ready (cached). Finalize on next frame
-            // so DOM has flushed any pending heights.
-            this.#anchorRaf = requestAnimationFrame(() => {
-                this.#anchorRaf = null;
-                this.#anchorToParagraph(paragraphIdToScrollTo);
-                this.#finishRestore();
-            });
+            // Everything was already ready (cached). Still go through the
+            // scheduled-anchor path so the deferred final anchor runs.
+            this.#scheduleAnchorRaf();
         } else {
             this.#restoreFallbackTimeout = setTimeout(() => {
                 this.#restoreFallbackTimeout = null;
@@ -196,8 +224,13 @@ export class ChapterViewModel {
         if (this.#restoreTarget == null) {
             return;
         }
+        this.#scheduleAnchorRaf();
+    }
 
-        // Coalesce — many paragraphs can flip ready in the same frame.
+    #scheduleAnchorRaf(): void {
+        if (this.#restoreTarget == null) return;
+        // Coalesce — many ready events and ResizeObserver fires can
+        // arrive in the same frame; one rAF handles them all.
         if (this.#anchorRaf !== null) {
             return;
         }
@@ -207,7 +240,17 @@ export class ChapterViewModel {
             this.#anchorToParagraph(this.#restoreTarget);
             const total = this.#paragraphIdsResource.current?.length ?? 0;
             if (total > 0 && this.#readyParagraphIds.size >= total) {
-                this.#finishRestore();
+                // Defer one more rAF: a paragraph's onReady fires from a
+                // Svelte $effect, which runs before the browser's next
+                // layout phase reflows the column flow. One extra frame
+                // ensures the final anchor reads the fully-settled rect.
+                const target = this.#restoreTarget;
+                this.#anchorRaf = requestAnimationFrame(() => {
+                    this.#anchorRaf = null;
+                    if (this.#restoreTarget == null) return;
+                    this.#anchorToParagraph(target);
+                    this.#finishRestore();
+                });
             }
         });
     }
@@ -220,10 +263,16 @@ export class ChapterViewModel {
         }
         const containerRect = container.getBoundingClientRect();
         const targetRect = target.getBoundingClientRect();
+        // Left-align the wrapper's pageOffset-th column with the
+        // viewport. For single-column wrappers (the desktop case) this
+        // equals "center the wrapper". For multi-column wrappers (touch
+        // / break-inside: auto), pageOffset picks which of the spans is
+        // shown. Snap points are at column starts, so the result snaps
+        // cleanly when scroll-snap is re-enabled.
         const desiredScrollLeft =
             container.scrollLeft +
             (targetRect.left - containerRect.left) +
-            (targetRect.width - containerRect.width) / 2;
+            this.#restorePageOffset * containerRect.width;
         container.scrollTo({ left: desiredScrollLeft, behavior: "auto" });
     }
 
@@ -236,9 +285,24 @@ export class ChapterViewModel {
             clearTimeout(this.#restoreFallbackTimeout);
             this.#restoreFallbackTimeout = null;
         }
+        if (this.#restoreResizeObserver !== null) {
+            this.#restoreResizeObserver.disconnect();
+            this.#restoreResizeObserver = null;
+        }
         const wasRestoring = this.#restoreTarget != null;
         this.#restoreTarget = null;
         this.#isRestoring = false;
+
+        // Re-enable snap without forcing a correction at the current
+        // scrollLeft. A multi-column wrapper has only one snap point
+        // per wrapper, so a forced re-snap can yank us off the saved
+        // pageOffset. The next user scroll will pick up snap naturally.
+        const container = this.#props.container;
+        if (container && this.#savedSnapType !== null) {
+            container.style.scrollSnapType = this.#savedSnapType;
+            this.#savedSnapType = null;
+        }
+
         if (wasRestoring) {
             this.#recomputeMountWindow();
         }
@@ -260,13 +324,15 @@ export class ChapterViewModel {
         }
         if (
             this.#visibleParagraphId != null &&
-            this.#lastSavedParagraph !== this.#visibleParagraphId
+            (this.#lastSavedParagraph !== this.#visibleParagraphId ||
+                this.#lastSavedPageOffset !== this.#visiblePageOffset)
         ) {
             this.#library
                 .saveBookReadingState(
                     this.#props.bookId,
                     this.#props.chapterId,
                     this.#visibleParagraphId,
+                    this.#visiblePageOffset,
                 )
                 .catch((err) =>
                     console.error("Failed to save reading state", err),
@@ -275,9 +341,9 @@ export class ChapterViewModel {
     }
 
     #updateVisibleParagraph(): void {
-        const nextParagraph = this.#findVisibleParagraph();
-        if (nextParagraph != null) {
-            this.#setVisibleParagraph(nextParagraph);
+        const next = this.#findVisibleParagraph();
+        if (next != null) {
+            this.#setVisibleParagraph(next.id, next.pageOffset);
         }
         this.#recomputeMountWindow();
     }
@@ -363,29 +429,38 @@ export class ChapterViewModel {
         }
     }
 
-    #setVisibleParagraph(paragraphId: number): void {
-        if (this.#visibleParagraphId === paragraphId) {
+    #setVisibleParagraph(paragraphId: number, pageOffset: number): void {
+        if (
+            this.#visibleParagraphId === paragraphId &&
+            this.#visiblePageOffset === pageOffset
+        ) {
             return;
         }
         this.#visibleParagraphId = paragraphId;
-        this.#scheduleSave(paragraphId);
+        this.#visiblePageOffset = pageOffset;
+        this.#scheduleSave(paragraphId, pageOffset);
     }
 
-    #scheduleSave(paragraphId: number): void {
+    #scheduleSave(paragraphId: number, pageOffset: number): void {
         if (this.#saveTimeout) {
             clearTimeout(this.#saveTimeout);
         }
 
         this.#saveTimeout = setTimeout(() => {
-            if (this.#lastSavedParagraph === paragraphId) {
+            if (
+                this.#lastSavedParagraph === paragraphId &&
+                this.#lastSavedPageOffset === pageOffset
+            ) {
                 return;
             }
             this.#lastSavedParagraph = paragraphId;
+            this.#lastSavedPageOffset = pageOffset;
             this.#library
                 .saveBookReadingState(
                     this.#props.bookId,
                     this.#props.chapterId,
                     paragraphId,
+                    pageOffset,
                 )
                 .catch((err) =>
                     console.error("Failed to save reading state", err),
@@ -393,26 +468,39 @@ export class ChapterViewModel {
         }, 400);
     }
 
-    #findVisibleParagraph(): number | null {
+    #findVisibleParagraph(): { id: number; pageOffset: number } | null {
         const container = this.#props.container;
         if (!container) {
             return null;
         }
         const containerRect = container.getBoundingClientRect();
-        // Hit-test the top-left of the visible column — wrappers have
-        // break-inside: avoid, so this lands on the topmost paragraph in
-        // the current page and is what gets persisted as the reader's
-        // position.
+        // Hit-test the top-left of the visible column. On touch where
+        // break-inside is auto, the same wrapper can span multiple
+        // columns; pageOffset records which of those columns the user
+        // is on so restore can land on the same one.
         const x = containerRect.left + 16;
         const y = containerRect.top + 16;
         const hit = document.elementFromPoint(x, y) as HTMLElement | null;
         const wrapper = hit?.closest<HTMLElement>(".paragraph-wrapper") ?? null;
         const idAttr = wrapper?.dataset["paragraphId"];
-        if (!idAttr) {
+        if (!wrapper || !idAttr) {
             return null;
         }
         const id = parseInt(idAttr, 10);
-        return Number.isNaN(id) ? null : id;
+        if (Number.isNaN(id)) {
+            return null;
+        }
+        const wrapperRect = wrapper.getBoundingClientRect();
+        const columnWidth = containerRect.width;
+        const pageOffset = columnWidth > 0
+            ? Math.max(
+                  0,
+                  Math.round(
+                      (containerRect.left - wrapperRect.left) / columnWidth,
+                  ),
+              )
+            : 0;
+        return { id, pageOffset };
     }
 
     #findParagraphWrapper(paragraphId: number): HTMLElement | null {

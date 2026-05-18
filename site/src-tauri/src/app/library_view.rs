@@ -82,6 +82,8 @@ pub struct BookReadingStateView {
     chapter_id: usize,
     #[serde(rename = "paragraphId")]
     paragraph_id: usize,
+    #[serde(rename = "pageOffset")]
+    page_offset: usize,
 }
 
 impl From<BookReadingState> for BookReadingStateView {
@@ -89,6 +91,7 @@ impl From<BookReadingState> for BookReadingStateView {
         Self {
             chapter_id: value.chapter_id,
             paragraph_id: value.paragraph_id,
+            page_offset: value.page_offset,
         }
     }
 }
@@ -303,12 +306,14 @@ impl LibraryView {
         book_id: Uuid,
         chapter_id: usize,
         paragraph_id: usize,
+        page_offset: usize,
     ) -> anyhow::Result<()> {
         let book = self.library.get_book(&book_id).await?;
         let mut book = book.lock().await;
         book.update_reading_state(BookReadingState {
             chapter_id,
             paragraph_id,
+            page_offset,
         })
         .await
     }
@@ -535,6 +540,7 @@ pub async fn save_book_reading_state(
     book_id: Uuid,
     chapter_id: usize,
     paragraph_id: usize,
+    page_offset: usize,
 ) -> Result<(), String> {
     let library = state
         .library
@@ -543,7 +549,7 @@ pub async fn save_book_reading_state(
         .ok_or("Library is not configured")?;
 
     LibraryView::create(state.inner().clone(), library)
-        .save_book_reading_state(book_id, chapter_id, paragraph_id)
+        .save_book_reading_state(book_id, chapter_id, paragraph_id, page_offset)
         .await
         .map_err(|err| err.to_string())
 }

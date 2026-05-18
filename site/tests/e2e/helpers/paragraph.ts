@@ -64,7 +64,7 @@ export type SeedSpec = {
     wordId: number;
     info: WordInfoSeed;
   }>;
-  readingState?: { chapterId: number; paragraphId: number };
+  readingState?: { chapterId: number; paragraphId: number; pageOffset?: number };
 };
 
 let bookIdSeq = 0;

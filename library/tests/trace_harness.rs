@@ -176,6 +176,7 @@ async fn trace_state_updates() {
     book.update_reading_state(BookReadingState {
         chapter_id: 1,
         paragraph_id: 1,
+        page_offset: 0,
     })
     .await
     .unwrap();

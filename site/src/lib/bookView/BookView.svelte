@@ -105,6 +105,9 @@
                         initialParagraphId={readingState && readingState.chapterId === chapterId
                             ? readingState.paragraphId
                             : null}
+                        initialPageOffset={readingState && readingState.chapterId === chapterId
+                            ? (readingState.pageOffset ?? 0)
+                            : 0}
                         bind:selection
                     />
                 {/key}

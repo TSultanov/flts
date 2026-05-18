@@ -145,20 +145,32 @@ test.describe('Chapter reading-state restore (multipage)', () => {
       return out;
     }
 
-    async function topLeftParagraphId(page: Page): Promise<string | null> {
-      return page.evaluate(() => {
-        const c = document.querySelector(
-          '.paragraphs-container',
-        ) as HTMLElement | null;
-        if (!c) return null;
-        const cr = c.getBoundingClientRect();
-        const hit = document.elementFromPoint(
-          cr.left + 16,
-          cr.top + 16,
-        ) as HTMLElement | null;
-        const wrapper = hit?.closest('.paragraph-wrapper') as HTMLElement | null;
-        return wrapper?.dataset['paragraphId'] ?? null;
-      });
+    // The restore puts the column containing the saved paragraph into
+    // view. Whether the saved paragraph appears at the column's top is
+    // determined by CSS multi-column content flow, not by scrollLeft —
+    // a mid-column target can't be moved to the top without putting a
+    // different column in view. So the invariant is "target's column is
+    // in view", checked by overlapping rect, identical in semantics to
+    // R1's check.
+    async function expectTargetColumnInView(page: Page, targetId: number) {
+      await expect
+        .poll(
+          async () =>
+            page.evaluate((id) => {
+              const c = document.querySelector(
+                '.paragraphs-container',
+              ) as HTMLElement | null;
+              const el = document.querySelector(
+                `.paragraph-wrapper[data-paragraph-id="${id}"]`,
+              ) as HTMLElement | null;
+              if (!c || !el) return false;
+              const cr = c.getBoundingClientRect();
+              const er = el.getBoundingClientRect();
+              return er.right > cr.left && er.left < cr.right;
+            }, targetId),
+          POLL,
+        )
+        .toBe(true);
     }
 
     for (const profile of PROFILES) {
@@ -174,11 +186,100 @@ test.describe('Chapter reading-state restore (multipage)', () => {
           await openBookFromLibrary(page, bookId);
           await expect(paragraphLocator(page, target)).toBeAttached();
 
-          await expect
-            .poll(() => topLeftParagraphId(page), POLL)
-            .toBe(String(target));
+          await expectTargetColumnInView(page, target);
         });
       }
     }
+  });
+
+  // ----- Multi-page paragraph restore -----------------------------------
+  //
+  // On touch devices `.paragraph-wrapper` uses break-inside: auto, so one
+  // paragraph can flow across several columns / pages. The saved state
+  // carries a `pageOffset` so restore lands on the same page within the
+  // paragraph the user was reading. To exercise this independently of the
+  // pointer-type media query, the test injects a <style> override at mount
+  // that forces break-inside: auto on every wrapper. One giant paragraph
+  // (300 sentences) is wedged in the middle of the chapter so it spans
+  // multiple columns regardless of viewport.
+  test('R3: restore lands on the saved page within a multi-page paragraph', async ({
+    page,
+  }) => {
+    const HUGE = 40;
+    const PAGE_OFFSET = 2;
+
+    // Simulate the touch-device pairing: break-inside: auto (so the
+    // wrapper can span columns) AND scroll-snap-type: none (so per-
+    // wrapper snap points don't yank a multi-column restore back to
+    // wrapper-center). On real touch devices these come together via
+    // @media (pointer: coarse) in ChapterView.svelte.
+    await page.addInitScript(() => {
+      const style = document.createElement('style');
+      style.textContent = `
+        .paragraph-wrapper {
+          break-inside: auto !important;
+          -webkit-column-break-inside: auto !important;
+        }
+        .paragraphs-container {
+          scroll-snap-type: none !important;
+        }
+        .paragraphs-container > * {
+          scroll-snap-align: none !important;
+          scroll-snap-stop: normal !important;
+        }
+      `;
+      const install = () => {
+        if (document.head) document.head.appendChild(style);
+        else document.addEventListener('DOMContentLoaded', install, { once: true });
+      };
+      install();
+    });
+
+    const { bookId } = await seedAndOpen(
+      page,
+      multipageSpec(
+        COUNT,
+        { [HUGE]: { html: htmlOfSize(HUGE, 300) } },
+        {
+          readingState: {
+            chapterId: 0,
+            paragraphId: HUGE,
+            pageOffset: PAGE_OFFSET,
+          },
+        },
+      ),
+      { path: '/library' },
+    );
+    await openBookFromLibrary(page, bookId);
+    await expect(paragraphLocator(page, HUGE)).toBeAttached();
+
+    // Wait until the wrapper has finished growing (spans more than one
+    // column) AND scrollLeft sits within half a column-width of
+    // wrapperContentLeft + PAGE_OFFSET * columnWidth.
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(
+            ({ id, offset }) => {
+              const c = document.querySelector(
+                '.paragraphs-container',
+              ) as HTMLElement | null;
+              const el = document.querySelector(
+                `.paragraph-wrapper[data-paragraph-id="${id}"]`,
+              ) as HTMLElement | null;
+              if (!c || !el) return 'not-ready';
+              const cr = c.getBoundingClientRect();
+              const er = el.getBoundingClientRect();
+              if (er.width <= cr.width * 1.5) return 'not-multi-column';
+              const wrapperContentLeft = c.scrollLeft + (er.left - cr.left);
+              const expected = wrapperContentLeft + offset * cr.width;
+              const delta = Math.abs(c.scrollLeft - expected);
+              return delta < cr.width / 2 ? 'ok' : `off-by-${Math.round(delta / cr.width)}`;
+            },
+            { id: HUGE, offset: PAGE_OFFSET },
+          ),
+        POLL,
+      )
+      .toBe('ok');
   });
 });
