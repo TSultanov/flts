@@ -77,6 +77,7 @@ pub struct AppState {
     config: watch::Sender<Config>,
     library: Arc<watch::Sender<Option<Arc<Library>>>>,
     translation_queue: watch::Sender<Option<Arc<TranslationQueue>>>,
+    translation_queue_init_lock: Mutex<()>,
     watcher: Arc<Mutex<LibraryWatcher>>,
     translations_cache: tokio::sync::OnceCell<Arc<TranslationsCache>>,
     stats_cache: tokio::sync::OnceCell<Arc<TranslationSizeCache>>,
@@ -113,6 +114,7 @@ impl AppState {
             config: watch::channel(config).0,
             library: Arc::new(watch::channel::<Option<Arc<Library>>>(None).0),
             translation_queue: watch::channel(None).0,
+            translation_queue_init_lock: Mutex::new(()),
             watcher,
             translations_cache: tokio::sync::OnceCell::new(),
             stats_cache: tokio::sync::OnceCell::new(),
@@ -309,6 +311,13 @@ impl AppState {
             return Ok(queue);
         }
 
+        let _guard = self.translation_queue_init_lock.lock().await;
+
+        // Another caller may have populated the queue while we were waiting.
+        if let Some(queue) = self.translation_queue.borrow().clone() {
+            return Ok(queue);
+        }
+
         let config = self.config.borrow().clone();
         let cache = self.get_translations_cache().await?;
         let stats_cache = self.get_stats_cache().await?;
@@ -322,20 +331,8 @@ impl AppState {
         )
         .ok_or(AppError::NoTranslationQueueError)?;
 
-        // Atomic install: if someone won the race while we were building, return
-        // theirs and let ours drop (its tasks are aborted via TranslationQueue::drop).
-        let mut winner = queue.clone();
-        self.translation_queue.send_if_modified(|cur| match cur {
-            Some(existing) => {
-                winner = existing.clone();
-                false
-            }
-            None => {
-                *cur = Some(queue);
-                true
-            }
-        });
-        Ok(winner)
+        self.translation_queue.send_replace(Some(queue.clone()));
+        Ok(queue)
     }
 
     pub async fn translate_paragraph(
