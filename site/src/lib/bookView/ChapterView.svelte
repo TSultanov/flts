@@ -3,14 +3,15 @@
     import type { UUID } from "../data/v2/db";
     import ParagraphView from "./ParagraphView.svelte";
     import type { Library } from "../data/library";
+    import type { WordSelection } from "./ParagraphViewModel.svelte";
 
     let {
-        sentenceWordIdToDisplay = $bindable(),
+        selection = $bindable(),
         bookId,
         chapterId,
         initialParagraphId = null,
     }: {
-        sentenceWordIdToDisplay: [number, number, number] | null;
+        selection: WordSelection | null;
         bookId: UUID;
         chapterId: number;
         initialParagraphId?: number | null;
@@ -21,40 +22,28 @@
         library.getBookChapterParagraphIds(bookId, chapterId),
     );
 
-    function parseDatasetInt(el: HTMLElement, key: string): number | null {
-        const value = el.dataset[key];
-        if (!value) {
-            return null;
-        }
-        const parsed = parseInt(value, 10);
-        return Number.isNaN(parsed) ? null : parsed;
+    function handleWordClick(info: {
+        paragraphId: number;
+        sentence: number;
+        word: number;
+        flatIndex: number;
+    }) {
+        selection = {
+            paragraphId: info.paragraphId,
+            sentence: info.sentence,
+            word: info.word,
+        };
+        library
+            .markWordVisible(bookId, info.paragraphId, info.flatIndex)
+            .catch((err) =>
+                console.error("Failed to mark word visible", err),
+            );
     }
 
-    function chapterClick(e: MouseEvent) {
+    function handleBackgroundClick(e: MouseEvent) {
         const target = e.target instanceof Element ? e.target : null;
-        const wordSpan = target?.closest<HTMLElement>(".word-span") ?? null;
-        if (wordSpan) {
-            const paragraph = parseDatasetInt(wordSpan, "paragraph");
-            const sentence = parseDatasetInt(wordSpan, "sentence");
-            const word = parseDatasetInt(wordSpan, "word");
-            const flatIndex = parseDatasetInt(wordSpan, "flatIndex");
-
-            sentenceWordIdToDisplay =
-                paragraph != null && sentence != null && word != null
-                    ? [paragraph, sentence, word]
-                    : null;
-
-            // Persist word visibility
-            if (paragraph != null && flatIndex != null) {
-                library
-                    .markWordVisible(bookId, paragraph, flatIndex)
-                    .catch((err) =>
-                        console.error("Failed to mark word visible", err),
-                    );
-            }
-        } else {
-            sentenceWordIdToDisplay = null;
-        }
+        if (target?.closest(".word-span")) return;
+        selection = null;
     }
 
     let sectionContentWidth = $state(200);
@@ -262,7 +251,7 @@
 <div class="chapter-container">
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <section class="chapter" onclick={chapterClick}>
+    <section class="chapter" onclick={handleBackgroundClick}>
         <div
             class="paragraphs-container"
             style="column-width: {sectionContentWidth}px"
@@ -274,7 +263,8 @@
                 <ParagraphView
                     {bookId}
                     {paragraphId}
-                    {sentenceWordIdToDisplay}
+                    {selection}
+                    onWordClick={handleWordClick}
                 />
             {/each}
         </div>

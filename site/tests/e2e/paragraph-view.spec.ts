@@ -8,8 +8,8 @@ import {
   setTranslateConfig,
   setWordInfo,
   translateButton,
+  wordSegment,
   wordSpan,
-  wordSpanHtml,
 } from './helpers/paragraph';
 
 // All paragraph-view tests stay on chromium. The behaviors we're testing
@@ -41,16 +41,17 @@ test.describe('ParagraphView (chromium only)', () => {
   test('A2: pre-translated paragraph renders translated HTML and no translate button', async ({
     page,
   }) => {
-    const translation = wordSpanHtml({
-      flatIndex: 0,
-      paragraph: 0,
-      sentence: 0,
-      word: 0,
-      text: 'hola',
-      translation: 'hello',
-    });
+    const segments = [
+      wordSegment({
+        flatIndex: 0,
+        sentence: 0,
+        word: 0,
+        text: 'hola',
+        translation: 'hello',
+      }),
+    ];
     await seedAndOpen(page, {
-      chapters: [{ paragraphs: [{ html: 'hello', translation }] }],
+      chapters: [{ paragraphs: [{ html: 'hello', segments }] }],
     });
 
     const p = paragraphLocator(page, 0);
@@ -75,7 +76,15 @@ test.describe('ParagraphView (chromium only)', () => {
         { progress: 50, total: 100, delayMs: 80 },
         { progress: 100, total: 100, delayMs: 80 },
       ],
-      translation: '<span>translated</span>',
+      segments: [
+        wordSegment({
+          flatIndex: 0,
+          sentence: 0,
+          word: 0,
+          text: 'translated',
+          translation: null,
+        }),
+      ],
     });
 
     const p = paragraphLocator(page, 0);
@@ -103,7 +112,15 @@ test.describe('ParagraphView (chromium only)', () => {
         { progress: 75, total: 100, delayMs: 600 },
         { progress: 100, total: 100, delayMs: 600 },
       ],
-      translation: '<span>done</span>',
+      segments: [
+        wordSegment({
+          flatIndex: 0,
+          sentence: 0,
+          word: 0,
+          text: 'done',
+          translation: null,
+        }),
+      ],
     });
 
     const p = paragraphLocator(page, 0);
@@ -127,14 +144,15 @@ test.describe('ParagraphView (chromium only)', () => {
   test('B3: translation completes, original is replaced, button removed', async ({
     page,
   }) => {
-    const translation = wordSpanHtml({
-      flatIndex: 0,
-      paragraph: 0,
-      sentence: 0,
-      word: 0,
-      text: 'hola',
-      translation: 'hello',
-    });
+    const segments = [
+      wordSegment({
+        flatIndex: 0,
+        sentence: 0,
+        word: 0,
+        text: 'hola',
+        translation: 'hello',
+      }),
+    ];
     const { bookId } = await seedAndOpen(page, {
       chapters: [{ paragraphs: [{ html: 'hello' }] }],
     });
@@ -144,7 +162,7 @@ test.describe('ParagraphView (chromium only)', () => {
         { progress: 50, total: 100, delayMs: 60 },
         { progress: 100, total: 100, delayMs: 60 },
       ],
-      translation,
+      segments,
     });
 
     const p = paragraphLocator(page, 0);
@@ -194,7 +212,9 @@ test.describe('ParagraphView (chromium only)', () => {
     });
     await setTranslateConfig(page, bookId, 0, {
       kind: 'immediate',
-      translation: '<span>x</span>',
+      segments: [
+        wordSegment({ flatIndex: 0, sentence: 0, word: 0, text: 'x', translation: null }),
+      ],
     });
 
     const p = paragraphLocator(page, 0);
@@ -213,7 +233,9 @@ test.describe('ParagraphView (chromium only)', () => {
     });
     await setTranslateConfig(page, bookId, 0, {
       kind: 'immediate',
-      translation: '<span>x</span>',
+      segments: [
+        wordSegment({ flatIndex: 0, sentence: 0, word: 0, text: 'x', translation: null }),
+      ],
     });
 
     const p = paragraphLocator(page, 0);
@@ -248,7 +270,15 @@ test.describe('ParagraphView (chromium only)', () => {
               { progress: 30, total: 100, delayMs: 200 },
               { progress: 100, total: 100, delayMs: 200 },
             ],
-            translation: '<span>finally done</span>',
+            segments: [
+              wordSegment({
+                flatIndex: 0,
+                sentence: 0,
+                word: 0,
+                text: 'finally done',
+                translation: null,
+              }),
+            ],
           },
         },
       ],
@@ -264,43 +294,42 @@ test.describe('ParagraphView (chromium only)', () => {
 
   // ----- Group E: word translations ---------------------------------------
 
-  test('E1: translated paragraph word-spans render without show-translation by default', async ({
+  test('E1: translated paragraph word-spans render without a translation overlay by default', async ({
     page,
   }) => {
-    const translation = [0, 1, 2]
-      .map((i) =>
-        wordSpanHtml({
-          flatIndex: i,
-          paragraph: 0,
-          sentence: 0,
-          word: i,
-          text: `w${i}`,
-          translation: `t${i}`,
-        }),
-      )
-      .join(' ');
+    const segments = [0, 1, 2].flatMap((i) => [
+      ...(i > 0 ? [{ kind: 'gap' as const, html: ' ' }] : []),
+      wordSegment({
+        flatIndex: i,
+        sentence: 0,
+        word: i,
+        text: `w${i}`,
+        translation: `t${i}`,
+      }),
+    ]);
     await seedAndOpen(page, {
-      chapters: [{ paragraphs: [{ html: 'orig', translation }] }],
+      chapters: [{ paragraphs: [{ html: 'orig', segments }] }],
     });
 
     const p = paragraphLocator(page, 0);
     for (const i of [0, 1, 2]) {
       await expect(wordSpan(p, i)).toBeVisible();
-      await expect(wordSpan(p, i)).not.toHaveClass(/\bshow-translation\b/);
+      await expect(wordSpan(p, i).locator('.translation-overlay')).toHaveCount(0);
     }
   });
 
   test('E2: clicking a word opens WordView with seeded info', async ({ page }) => {
-    const translation = wordSpanHtml({
-      flatIndex: 0,
-      paragraph: 0,
-      sentence: 0,
-      word: 0,
-      text: 'hola',
-      translation: 'hello',
-    });
+    const segments = [
+      wordSegment({
+        flatIndex: 0,
+        sentence: 0,
+        word: 0,
+        text: 'hola',
+        translation: 'hello',
+      }),
+    ];
     const { bookId } = await seedAndOpen(page, {
-      chapters: [{ paragraphs: [{ html: 'hello', translation }] }],
+      chapters: [{ paragraphs: [{ html: 'hello', segments }] }],
     });
     await setWordInfo(page, bookId, 0, 0, 0, {
       original: 'hello',
@@ -321,16 +350,17 @@ test.describe('ParagraphView (chromium only)', () => {
   test('E3: clicking a word records a mark_word_visible call with the correct flatIndex', async ({
     page,
   }) => {
-    const translation = wordSpanHtml({
-      flatIndex: 7,
-      paragraph: 0,
-      sentence: 0,
-      word: 0,
-      text: 'w',
-      translation: 't',
-    });
+    const segments = [
+      wordSegment({
+        flatIndex: 7,
+        sentence: 0,
+        word: 0,
+        text: 'w',
+        translation: 't',
+      }),
+    ];
     const { bookId } = await seedAndOpen(page, {
-      chapters: [{ paragraphs: [{ html: 'orig', translation }] }],
+      chapters: [{ paragraphs: [{ html: 'orig', segments }] }],
     });
 
     const p = paragraphLocator(page, 0);
@@ -344,34 +374,147 @@ test.describe('ParagraphView (chromium only)', () => {
 
   // ----- Group F: visible-words annotation restore ------------------------
 
-  test('F1: visible-words array adds show-translation to those spans only', async ({
+  test('F1: visible-words array mounts a translation overlay on those spans only', async ({
     page,
   }) => {
-    const translation = [0, 1, 2]
-      .map((i) =>
-        wordSpanHtml({
-          flatIndex: i,
-          paragraph: 0,
-          sentence: 0,
-          word: i,
-          text: `w${i}`,
-          translation: `t${i}`,
-        }),
-      )
-      .join(' ');
+    const segments = [0, 1, 2].flatMap((i) => [
+      ...(i > 0 ? [{ kind: 'gap' as const, html: ' ' }] : []),
+      wordSegment({
+        flatIndex: i,
+        sentence: 0,
+        word: i,
+        text: `w${i}`,
+        translation: `t${i}`,
+      }),
+    ]);
     await seedAndOpen(page, {
       chapters: [
         {
-          paragraphs: [{ html: 'orig', translation, visibleWords: [0, 2] }],
+          paragraphs: [{ html: 'orig', segments, visibleWords: [0, 2] }],
         },
       ],
     });
 
     const p = paragraphLocator(page, 0);
-    await expect(wordSpan(p, 0)).toHaveClass(/\bshow-translation\b/);
-    await expect(wordSpan(p, 2)).toHaveClass(/\bshow-translation\b/);
-    // The one we didn't seed stays plain.
-    await expect(wordSpan(p, 1)).not.toHaveClass(/\bshow-translation\b/);
+    await expect(wordSpan(p, 0).locator('.translation-overlay')).toHaveCount(1);
+    await expect(wordSpan(p, 2).locator('.translation-overlay')).toHaveCount(1);
+    // The one we didn't seed has no overlay.
+    await expect(wordSpan(p, 1).locator('.translation-overlay')).toHaveCount(0);
+  });
+
+  test('F3: clicking a word paints its overlay and the overlay persists after deselect', async ({
+    page,
+  }) => {
+    // No visibleWords seeded — the only path to the overlay is the click.
+    const segments = [0, 1, 2].flatMap((i) => [
+      ...(i > 0 ? [{ kind: 'gap' as const, html: ' ' }] : []),
+      wordSegment({
+        flatIndex: i,
+        sentence: 0,
+        word: i,
+        text: `w${i}`,
+        translation: `t${i}`,
+      }),
+    ]);
+    await seedAndOpen(page, {
+      chapters: [{ paragraphs: [{ html: 'orig', segments }] }],
+    });
+
+    const p = paragraphLocator(page, 0);
+    // Sanity: no overlay anywhere before the click.
+    await expect(p.locator('.translation-overlay')).toHaveCount(0);
+
+    const isOverlayPainted = async (flatIndex: number) => {
+      return page.evaluate((idx) => {
+        const span = document.querySelector(
+          `.word-span[data-flat-index="${idx}"]`,
+        );
+        if (!span) return false;
+        const beforeStyle = getComputedStyle(span as Element, '::before');
+        const beforeVisible =
+          beforeStyle.content !== 'none' &&
+          beforeStyle.display !== 'none' &&
+          (parseFloat(beforeStyle.opacity) || 0) > 0;
+        const overlay = span.querySelector('.translation-overlay');
+        const overlayStyle = overlay ? getComputedStyle(overlay) : null;
+        const overlayVisible =
+          !!overlayStyle &&
+          overlayStyle.display !== 'none' &&
+          (parseFloat(overlayStyle.opacity) || 0) > 0;
+        return beforeVisible || overlayVisible;
+      }, flatIndex);
+    };
+
+    // Click word 1: overlay paints, peers stay hidden.
+    await wordSpan(p, 1).click();
+    await expect.poll(() => isOverlayPainted(1)).toBe(true);
+    await expect.poll(() => isOverlayPainted(0)).toBe(false);
+    await expect.poll(() => isOverlayPainted(2)).toBe(false);
+
+    // Click outside any word to clear the selection. Word 1's overlay must
+    // STILL be painted — the click marked it visible for the session.
+    await p.click({ position: { x: 1, y: 1 } });
+    await expect(wordSpan(p, 1)).not.toHaveClass(/\bselected\b/);
+    await expect.poll(() => isOverlayPainted(1)).toBe(true);
+    // And peers still don't paint.
+    await expect.poll(() => isOverlayPainted(0)).toBe(false);
+    await expect.poll(() => isOverlayPainted(2)).toBe(false);
+  });
+
+  test('F2: visible-word translation overlays are actually painted (opacity > 0)', async ({
+    page,
+  }) => {
+    const segments = [0, 1, 2].flatMap((i) => [
+      ...(i > 0 ? [{ kind: 'gap' as const, html: ' ' }] : []),
+      wordSegment({
+        flatIndex: i,
+        sentence: 0,
+        word: i,
+        text: `w${i}`,
+        translation: `t${i}`,
+      }),
+    ]);
+    await seedAndOpen(page, {
+      chapters: [
+        {
+          paragraphs: [{ html: 'orig', segments, visibleWords: [0, 2] }],
+        },
+      ],
+    });
+
+    // Implementation-agnostic visibility probe. The "translation overlay" can
+    // be either a ::before pseudo-element (HTML-blob implementation) or a real
+    // .translation-overlay child (structured-segments implementation). In
+    // both cases we require the painted result: display != none, opacity > 0,
+    // and (for ::before) content actually set.
+    const visibility = await page.evaluate(() => {
+      const probe = (flatIndex: number) => {
+        const span = document.querySelector(
+          `.word-span[data-flat-index="${flatIndex}"]`,
+        );
+        if (!span) return { flatIndex, visible: false, missing: true };
+
+        const beforeStyle = getComputedStyle(span as Element, '::before');
+        const beforeVisible =
+          beforeStyle.content !== 'none' &&
+          beforeStyle.display !== 'none' &&
+          (parseFloat(beforeStyle.opacity) || 0) > 0;
+
+        const overlay = span.querySelector('.translation-overlay');
+        const overlayStyle = overlay ? getComputedStyle(overlay) : null;
+        const overlayVisible =
+          !!overlayStyle &&
+          overlayStyle.display !== 'none' &&
+          (parseFloat(overlayStyle.opacity) || 0) > 0;
+
+        return { flatIndex, visible: beforeVisible || overlayVisible, missing: false };
+      };
+      return [0, 1, 2].map(probe);
+    });
+
+    expect(visibility[0].visible).toBe(true);
+    expect(visibility[2].visible).toBe(true);
+    expect(visibility[1].visible).toBe(false);
   });
 
   // ----- Group G: no-flicker regressions ----------------------------------
@@ -379,37 +522,22 @@ test.describe('ParagraphView (chromium only)', () => {
   test('G1: word click on one paragraph does not blank peers (regression of 901e6a7)', async ({
     page,
   }) => {
-    const t1 = wordSpanHtml({
-      flatIndex: 0,
-      paragraph: 0,
-      sentence: 0,
-      word: 0,
-      text: 'a1',
-      translation: 'A1',
-    });
-    const t2 = wordSpanHtml({
-      flatIndex: 0,
-      paragraph: 1,
-      sentence: 0,
-      word: 0,
-      text: 'a2',
-      translation: 'A2',
-    });
-    const t3 = wordSpanHtml({
-      flatIndex: 0,
-      paragraph: 2,
-      sentence: 0,
-      word: 0,
-      text: 'a3',
-      translation: 'A3',
-    });
+    const s1 = [
+      wordSegment({ flatIndex: 0, sentence: 0, word: 0, text: 'a1', translation: 'A1' }),
+    ];
+    const s2 = [
+      wordSegment({ flatIndex: 0, sentence: 0, word: 0, text: 'a2', translation: 'A2' }),
+    ];
+    const s3 = [
+      wordSegment({ flatIndex: 0, sentence: 0, word: 0, text: 'a3', translation: 'A3' }),
+    ];
     const { bookId } = await seedAndOpen(page, {
       chapters: [
         {
           paragraphs: [
-            { html: 'h1', translation: t1 },
-            { html: 'h2', translation: t2 },
-            { html: 'h3', translation: t3 },
+            { html: 'h1', segments: s1 },
+            { html: 'h2', segments: s2 },
+            { html: 'h3', segments: s3 },
           ],
         },
       ],
@@ -446,29 +574,19 @@ test.describe('ParagraphView (chromium only)', () => {
   test('G2: translation completing on one paragraph does not blank peers (regression of 78d9b74)', async ({
     page,
   }) => {
-    const t2 = wordSpanHtml({
-      flatIndex: 0,
-      paragraph: 1,
-      sentence: 0,
-      word: 0,
-      text: 'b',
-      translation: 'B',
-    });
-    const t3 = wordSpanHtml({
-      flatIndex: 0,
-      paragraph: 2,
-      sentence: 0,
-      word: 0,
-      text: 'c',
-      translation: 'C',
-    });
+    const s2 = [
+      wordSegment({ flatIndex: 0, sentence: 0, word: 0, text: 'b', translation: 'B' }),
+    ];
+    const s3 = [
+      wordSegment({ flatIndex: 0, sentence: 0, word: 0, text: 'c', translation: 'C' }),
+    ];
     const { bookId } = await seedAndOpen(page, {
       chapters: [
         {
           paragraphs: [
             { html: 'h1' },
-            { html: 'h2', translation: t2 },
-            { html: 'h3', translation: t3 },
+            { html: 'h2', segments: s2 },
+            { html: 'h3', segments: s3 },
           ],
         },
       ],
@@ -479,7 +597,15 @@ test.describe('ParagraphView (chromium only)', () => {
         { progress: 50, total: 100, delayMs: 80 },
         { progress: 100, total: 100, delayMs: 80 },
       ],
-      translation: '<span>done</span>',
+      segments: [
+        wordSegment({
+          flatIndex: 0,
+          sentence: 0,
+          word: 0,
+          text: 'done',
+          translation: null,
+        }),
+      ],
     });
 
     await page.evaluate(() => {

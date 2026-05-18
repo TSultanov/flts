@@ -1,17 +1,28 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 
+export type ParagraphSegment =
+  | { kind: 'gap'; html: string }
+  | {
+      kind: 'word';
+      text: string;
+      sentence: number;
+      word: number;
+      flatIndex: number;
+      translation: string | null;
+    };
+
 export type SeedParagraph = {
   html: string;
-  translation?: string;
+  segments?: ParagraphSegment[];
   visibleWords?: number[];
 };
 
 export type TranslateConfig =
-  | { kind: 'immediate'; translation?: string; visibleWords?: number[] }
+  | { kind: 'immediate'; segments?: ParagraphSegment[]; visibleWords?: number[] }
   | {
       kind: 'progress';
       steps: Array<{ progress: number; total: number; delayMs: number }>;
-      translation: string;
+      segments: ParagraphSegment[];
       visibleWords?: number[];
     }
   | { kind: 'error'; errorMessage: string; delayMs: number };
@@ -238,16 +249,22 @@ export async function expectTranslated(paragraph: Locator): Promise<void> {
 }
 
 /**
- * Build a word-span fragment matching what the real Rust translation_to_html
- * helper emits, with the attributes the frontend's word-click handler reads.
+ * Build a single word segment matching what the real Rust paragraph_to_segments
+ * helper emits, for use inside a SeedParagraph.segments array.
  */
-export function wordSpanHtml(opts: {
+export function wordSegment(opts: {
   flatIndex: number;
-  paragraph: number;
   sentence: number;
   word: number;
   text: string;
-  translation: string;
-}): string {
-  return `<span class="word-span" data-flat-index="${opts.flatIndex}" data-paragraph="${opts.paragraph}" data-sentence="${opts.sentence}" data-word="${opts.word}" data-translation="${opts.translation}">${opts.text}</span>`;
+  translation: string | null;
+}): ParagraphSegment {
+  return {
+    kind: 'word',
+    text: opts.text,
+    sentence: opts.sentence,
+    word: opts.word,
+    flatIndex: opts.flatIndex,
+    translation: opts.translation,
+  };
 }

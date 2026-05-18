@@ -5,32 +5,39 @@
     import CircularProgress from "../widgets/CircularProgress.svelte";
     import type { Library } from "../data/library";
     import type { UUID } from "../data/v2/db";
-    import { ParagraphViewModel } from "./ParagraphViewModel.svelte";
+    import { ParagraphViewModel, type WordSelection } from "./ParagraphViewModel.svelte";
+    import WordSpan from "./WordSpan.svelte";
 
     let {
         bookId,
         paragraphId,
-        sentenceWordIdToDisplay = null,
+        selection = null,
+        onWordClick,
     }: {
         bookId: UUID;
         paragraphId: number;
-        sentenceWordIdToDisplay?: [number, number, number] | null;
+        selection?: WordSelection | null;
+        onWordClick: (info: {
+            paragraphId: number;
+            sentence: number;
+            word: number;
+            flatIndex: number;
+        }) => void;
     } = $props();
 
     const library: Library = getContext("library");
     const vm = new ParagraphViewModel(library, {
         get bookId() { return bookId; },
         get paragraphId() { return paragraphId; },
-        get sentenceWordIdToDisplay() { return sentenceWordIdToDisplay; },
+        get selection() { return selection; },
     });
 </script>
 
 <div
     class="paragraph-wrapper"
     data-paragraph-id={paragraphId}
-    bind:this={vm.wrapper}
 >
-    {#if !vm.translationHtml}
+    {#if !vm.segments}
         <button
             class="translate"
             aria-label="Translate paragraph"
@@ -55,49 +62,24 @@
     {:else}
         <div></div>
         <p>
-            {@html vm.translationHtml}
+            {#each vm.segments as seg, i (i)}
+                {#if seg.kind === "gap"}{@html seg.html}{:else}<WordSpan
+                        text={seg.text}
+                        sentence={seg.sentence}
+                        word={seg.word}
+                        flatIndex={seg.flatIndex}
+                        translation={seg.translation}
+                        visible={vm.visibleWordsSet.has(seg.flatIndex)}
+                        selected={vm.isSelected(seg.sentence, seg.word)}
+                        onClick={(w) =>
+                            onWordClick({ paragraphId, ...w })}
+                    />{/if}
+            {/each}
         </p>
     {/if}
 </div>
 
 <style>
-    :global(.word-span.selected) {
-        outline: 1px dotted var(--selected-color);
-    }
-
-    :global(.word-span) {
-        position: relative;
-        display: inline-block;
-    }
-
-    :global(.word-span::before) {
-        content: attr(data-translation);
-        display: none;
-        position: absolute;
-        left: 0;
-        right: 0;
-        top: 0;
-        width: 100%;
-        font-size: var(--word-translation-font-size, 0.55em);
-        text-align: center;
-        line-height: 1;
-        padding: 0.05em 0.1em;
-        box-sizing: border-box;
-        white-space: nowrap;
-        opacity: 0;
-        -webkit-user-select: none;
-        user-select: none;
-        pointer-events: none;
-        transition: opacity 150ms ease;
-        z-index: 2;
-        overflow: hidden;
-    }
-
-    :global(.word-span.show-translation[data-translation]::before) {
-        display: block;
-        opacity: 0.9;
-    }
-
     .original {
         color: var(--text-untranslated);
     }
@@ -124,7 +106,6 @@
     }
 
     button.translate {
-        /* margin-top: 0.5em; */
         width: calc(2 * var(--font-size));
         height: calc(2 * var(--font-size));
         padding: 0;

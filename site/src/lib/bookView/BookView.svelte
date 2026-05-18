@@ -6,6 +6,7 @@
     import { route, navigate } from "../../router";
     import ChapterView from "./ChapterView.svelte";
     import ChapterPlaceholderView from "./ChapterPlaceholderView.svelte";
+    import type { WordSelection } from "./ParagraphViewModel.svelte";
 
     const params = $derived(route.params);
 
@@ -79,7 +80,7 @@
         }
     });
 
-    let sentenceWordIdToDisplay: [number, number, number] | null = $state(null);
+    let selection: WordSelection | null = $state(null);
 </script>
 
 {#if chapters.current}
@@ -104,13 +105,13 @@
                         initialParagraphId={readingState && readingState.chapterId === chapterId
                             ? readingState.paragraphId
                             : null}
-                        bind:sentenceWordIdToDisplay
+                        bind:selection
                     />
                 {/key}
             </div>
             <div class="word-view">
-                {#if sentenceWordIdToDisplay}
-                    <WordView {bookId} {sentenceWordIdToDisplay} />
+                {#if selection}
+                    <WordView {bookId} {selection} />
                 {:else}
                     Select word to show translation
                 {/if}

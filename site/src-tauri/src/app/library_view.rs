@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
 use ahash::AHashSet;
-use htmlentity::entity::{CharacterSet, EncodeType, ICodedDataTrait, decode, encode};
+use htmlentity::entity::{ICodedDataTrait, decode};
 use isolang::Language;
+use tauri::Emitter;
 use library::epub_importer::EpubBook;
 use library::library::file_watcher::LibraryFileChange;
 use library::{
@@ -37,9 +38,25 @@ pub struct ChapterView {
 pub struct ParagraphView {
     id: usize,
     original: String,
-    translation: Option<String>,
+    segments: Option<Vec<ParagraphSegment>>,
     #[serde(rename = "visibleWords")]
     visible_words: AHashSet<usize>,
+}
+
+#[derive(Clone, serde::Serialize, Debug, PartialEq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ParagraphSegment {
+    Gap {
+        html: String,
+    },
+    Word {
+        text: String,
+        sentence: usize,
+        word: usize,
+        #[serde(rename = "flatIndex")]
+        flat_index: usize,
+        translation: Option<String>,
+    },
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -117,9 +134,9 @@ impl LibraryView {
 
         let bt = book_translation.lock().await;
         let t_view = bt.paragraph_view(paragraph_id);
-        let translation = t_view.as_ref().map(|t| {
-            translation_to_html(paragraph_id, &original, t).unwrap_or_else(|err| err.to_string())
-        });
+        let segments = t_view
+            .as_ref()
+            .map(|t| paragraph_to_segments(&original, t));
         let visible_words = t_view
             .as_ref()
             .map(|t| t.visible_words().clone())
@@ -128,7 +145,7 @@ impl LibraryView {
         Ok(ParagraphView {
             id: paragraph_id,
             original: original.to_string(),
-            translation,
+            segments,
             visible_words,
         })
     }
@@ -568,6 +585,7 @@ pub async fn delete_book(
 
 #[tauri::command]
 pub async fn mark_word_visible(
+    app: tauri::AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
     book_id: Uuid,
     paragraph_id: usize,
@@ -584,18 +602,42 @@ pub async fn mark_word_visible(
         return Err("Library is not configured".into());
     };
 
-    LibraryView::create(state.inner().clone(), library)
+    let changed = LibraryView::create(state.inner().clone(), library)
         .mark_word_visible(book_id, paragraph_id, flat_index, &target_language)
         .await
-        .map_err(|err| err.to_string())
+        .map_err(|err| err.to_string())?;
+
+    if changed {
+        // Notify the frontend so the paragraph-view Resource re-fetches and
+        // the just-marked overlay sticks once the user deselects.
+        let _ = app.emit(
+            "paragraph_updated",
+            serde_json::json!({
+                "bookId": book_id,
+                "paragraphId": paragraph_id,
+            }),
+        );
+    }
+
+    Ok(changed)
 }
 
-fn translation_to_html(
-    paragraph_id: usize,
+fn paragraph_to_segments(
     original: &str,
     translation: &ParagraphTranslationView,
-) -> anyhow::Result<String> {
-    let mut result = Vec::new();
+) -> Vec<ParagraphSegment> {
+    let mut segments: Vec<ParagraphSegment> = Vec::new();
+
+    let push_gap = |segments: &mut Vec<ParagraphSegment>, html: String| {
+        if html.is_empty() {
+            return;
+        }
+        if let Some(ParagraphSegment::Gap { html: existing }) = segments.last_mut() {
+            existing.push_str(&html);
+        } else {
+            segments.push(ParagraphSegment::Gap { html });
+        }
+    };
 
     let decode_lossy = |value: &str| -> String {
         decode(value.as_bytes())
@@ -651,8 +693,8 @@ fn translation_to_html(
 
             if offset > 0 {
                 let end = (p_idx + offset).min(original.len());
-                let text = String::from_iter(original[p_idx..end].iter());
-                result.push(text);
+                let gap = String::from_iter(original[p_idx..end].iter());
+                push_gap(&mut segments, gap);
             }
 
             p_idx += offset;
@@ -664,24 +706,19 @@ fn translation_to_html(
 
             if p_idx < clamped_end {
                 let text = String::from_iter(original[p_idx..clamped_end].iter());
-                let translation_attribute = word
+                let translation_text = word
                     .contextual_translations()
                     .next()
                     .map(|ct| sanitize_translation_text(ct.translation.as_ref()))
-                    .filter(|t| !t.is_empty())
-                    .map(|t| {
-                        encode(
-                            t.as_bytes(),
-                            &EncodeType::Named,
-                            &CharacterSet::SpecialChars,
-                        )
-                        .to_string()
-                        .unwrap_or("&lt;err&gt;".to_owned())
-                    })
-                    .map(|encoded| format!(" data-translation=\"{}\"", encoded))
-                    .unwrap_or_default();
+                    .filter(|t| !t.is_empty());
 
-                result.push(format!("<span class=\"word-span\" data-paragraph=\"{paragraph_id}\" data-sentence=\"{sentence_idx}\" data-word=\"{word_idx}\" data-flat-index=\"{current_flat_index}\"{translation_attribute}>{text}</span>"));
+                segments.push(ParagraphSegment::Word {
+                    text,
+                    sentence: sentence_idx,
+                    word: word_idx,
+                    flat_index: current_flat_index,
+                    translation: translation_text,
+                });
             }
 
             p_idx = clamped_end;
@@ -692,11 +729,11 @@ fn translation_to_html(
     }
 
     if p_idx < original.len() {
-        let text = String::from_iter(original[p_idx..(original.len())].iter());
-        result.push(text);
+        let gap = String::from_iter(original[p_idx..(original.len())].iter());
+        push_gap(&mut segments, gap);
     }
 
-    Ok(result.join(""))
+    segments
 }
 
 fn sanitize_translation_text(value: &str) -> String {
@@ -777,7 +814,7 @@ fn levenshtein_distance_lt_2(str1: &str, str2: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::translation_to_html;
+    use super::{ParagraphSegment, paragraph_to_segments};
 
     use library::book::translation_import;
     use library::dictionary::Dictionary;
@@ -843,8 +880,30 @@ mod tests {
             .expect("paragraph view")
     }
 
+    fn word_seg(
+        text: &str,
+        sentence: usize,
+        word: usize,
+        flat_index: usize,
+        translation: Option<&str>,
+    ) -> ParagraphSegment {
+        ParagraphSegment::Word {
+            text: text.to_owned(),
+            sentence,
+            word,
+            flat_index,
+            translation: translation.map(str::to_owned),
+        }
+    }
+
+    fn gap_seg(html: &str) -> ParagraphSegment {
+        ParagraphSegment::Gap {
+            html: html.to_owned(),
+        }
+    }
+
     #[test]
-    fn wraps_words_and_escapes_translation_attribute() {
+    fn wraps_words_and_preserves_raw_translation() {
         let original = "Hello, world!";
 
         let pt = make_paragraph_translation(vec![translation_import::Sentence {
@@ -859,31 +918,23 @@ mod tests {
 
         let mut t = library::book::translation::Translation::create("deu", "eng");
         let view = view_from_import(&mut t, 0, &pt);
-        let html = translation_to_html(7, original, &view).expect("html");
+        let segments = paragraph_to_segments(original, &view);
 
-        assert!(html.contains("data-paragraph=\"7\""));
-        assert!(html.contains("<span class=\"word-span\""));
-        assert!(html.contains("Hello"));
-        assert!(html.contains(", ") || html.contains(","));
-        assert!(html.contains("world"));
-
-        // Check flat indices
-        assert!(html.contains("data-flat-index=\"0\"")); // Hello
-        assert!(html.contains("data-flat-index=\"1\"")); // world - punctuation skipped in flat index? No, punctuation words are skipped entirely in the loop if `word.is_punctuation` is true. Ah, wait, the loop says `if word.is_punctuation { word_idx += 1; continue; }`. So punctuation words are NOT counted in flat_index.
-        // Let's verify standard behavior.
-        // Hello (0) -> visible.
-        // &comma; (punct) -> skipped.
-        // world (1) -> visible.
-
-        // Translation fragment should be HTML-escaped
-        assert!(html.contains("data-translation=\"&lt;b&gt;hi&lt;/b&gt;\""));
-        // And whitespace should be normalized
-        assert!(html.contains("data-translation=\"planet\""));
-        assert!(!html.contains("word-translation"));
+        // Translation text is preserved raw (no HTML escaping on the backend);
+        // whitespace is still normalized via sanitize_translation_text.
+        assert_eq!(
+            segments,
+            vec![
+                word_seg("Hello", 0, 0, 0, Some("<b>hi</b>")),
+                gap_seg(", "),
+                word_seg("world", 0, 2, 1, Some("planet")),
+                gap_seg("!"),
+            ]
+        );
     }
 
     #[test]
-    fn empty_contextual_translation_produces_no_translation_attribute() {
+    fn empty_contextual_translation_yields_none() {
         let original = "Just words";
 
         let pt = make_paragraph_translation(vec![translation_import::Sentence {
@@ -893,15 +944,20 @@ mod tests {
 
         let mut t = library::book::translation::Translation::create("deu", "eng");
         let view = view_from_import(&mut t, 0, &pt);
-        let html = translation_to_html(0, original, &view).expect("html");
+        let segments = paragraph_to_segments(original, &view);
 
-        assert!(!html.contains("data-translation"));
-        assert!(html.contains("data-flat-index=\"0\""));
-        assert!(html.contains("data-flat-index=\"1\""));
+        assert_eq!(
+            segments,
+            vec![
+                word_seg("Just", 0, 0, 0, None),
+                gap_seg(" "),
+                word_seg("words", 0, 1, 1, None),
+            ]
+        );
     }
 
     #[test]
-    fn preserves_original_html_entities_and_does_not_error() {
+    fn preserves_original_html_entities_inside_gaps() {
         let original = "Tom &amp; Jerry";
 
         let pt = make_paragraph_translation(vec![translation_import::Sentence {
@@ -915,15 +971,17 @@ mod tests {
 
         let mut t = library::book::translation::Translation::create("deu", "eng");
         let view = view_from_import(&mut t, 0, &pt);
-        let html = translation_to_html(1, original, &view).expect("html");
+        let segments = paragraph_to_segments(original, &view);
 
-        // The input entity should still appear as-is in output (we preserve original slices).
-        assert!(html.contains("&amp;"));
-        assert!(html.contains("Tom"));
-        assert!(html.contains("Jerry"));
-        assert!(html.contains("data-flat-index=\"0\"")); // Tom
-        // &amp; is punctuation => skipped
-        assert!(html.contains("data-flat-index=\"1\"")); // Jerry
+        // The &amp; entity is carried verbatim inside a gap segment between the two words.
+        assert_eq!(
+            segments,
+            vec![
+                word_seg("Tom", 0, 0, 0, Some("Tom")),
+                gap_seg(" &amp; "),
+                word_seg("Jerry", 0, 2, 1, Some("Jerry")),
+            ]
+        );
     }
 
     #[test]
@@ -940,13 +998,16 @@ mod tests {
 
         let mut t = library::book::translation::Translation::create("fra", "eng");
         let view = view_from_import(&mut t, 0, &pt);
-        let html = translation_to_html(2, original, &view).expect("html");
+        let segments = paragraph_to_segments(original, &view);
 
-        assert!(html.contains("naïve"));
-        assert!(html.contains("café"));
-        assert!(html.contains("data-sentence=\"0\""));
-        assert!(html.contains("data-flat-index=\"0\""));
-        assert!(html.contains("data-flat-index=\"1\""));
+        assert_eq!(
+            segments,
+            vec![
+                word_seg("naïve", 0, 0, 0, Some("naive")),
+                gap_seg(" "),
+                word_seg("café", 0, 1, 1, Some("cafe")),
+            ]
+        );
     }
 
     #[test]
@@ -974,16 +1035,21 @@ mod tests {
 
         let mut t = library::book::translation::Translation::create("deu", "eng");
         let view = view_from_import(&mut t, 0, &pt);
-        let html = translation_to_html(3, original, &view).expect("html");
+        let segments = paragraph_to_segments(original, &view);
 
-        assert!(html.contains("data-sentence=\"0\""));
-        assert!(html.contains("data-sentence=\"1\""));
-        // Sentence 0
-        assert!(html.contains("data-flat-index=\"0\"")); // Hello
-        assert!(html.contains("data-flat-index=\"1\"")); // world
-        // Sentence 1
-        assert!(html.contains("data-flat-index=\"2\"")); // Bye
-        assert!(html.contains("data-flat-index=\"3\"")); // world
+        assert_eq!(
+            segments,
+            vec![
+                word_seg("Hello", 0, 0, 0, Some("hi")),
+                gap_seg(" "),
+                word_seg("world", 0, 1, 1, Some("world")),
+                gap_seg(". "),
+                word_seg("Bye", 1, 0, 2, Some("bye")),
+                gap_seg(" "),
+                word_seg("world", 1, 1, 3, Some("world")),
+                gap_seg("."),
+            ]
+        );
     }
 
     #[test]
@@ -1002,14 +1068,21 @@ mod tests {
 
         let mut t = library::book::translation::Translation::create("deu", "eng");
         let view = view_from_import(&mut t, 0, &pt);
+        let segments = paragraph_to_segments(original, &view);
 
-        let html = translation_to_html(4, original, &view).expect("html");
-        assert!(html.contains("A"));
-        assert!(html.contains("B"));
+        let texts: Vec<&str> = segments
+            .iter()
+            .filter_map(|s| match s {
+                ParagraphSegment::Word { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.contains(&"A"));
+        assert!(texts.contains(&"B"));
     }
 
     #[test]
-    fn punctuation_only_translation_returns_original() {
+    fn punctuation_only_translation_returns_original_as_single_gap() {
         let original = "...";
 
         let pt = make_paragraph_translation(vec![translation_import::Sentence {
@@ -1019,8 +1092,8 @@ mod tests {
 
         let mut t = library::book::translation::Translation::create("deu", "eng");
         let view = view_from_import(&mut t, 0, &pt);
-        let html = translation_to_html(5, original, &view).expect("html");
+        let segments = paragraph_to_segments(original, &view);
 
-        assert_eq!(html, original);
+        assert_eq!(segments, vec![gap_seg("...")]);
     }
 }

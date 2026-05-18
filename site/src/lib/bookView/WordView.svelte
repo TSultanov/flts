@@ -8,21 +8,21 @@
     import CircularProgress from "../widgets/CircularProgress.svelte";
     import { invoke } from "@tauri-apps/api/core";
     import { platform } from "@tauri-apps/plugin-os";
+    import type { WordSelection } from "./ParagraphViewModel.svelte";
 
     const {
         bookId,
-        sentenceWordIdToDisplay,
-    }: { bookId: UUID; sentenceWordIdToDisplay: [number, number, number] } =
-        $props();
+        selection,
+    }: { bookId: UUID; selection: WordSelection } = $props();
 
-    const paragraphId = $derived(sentenceWordIdToDisplay[0]);
+    const paragraphId = $derived(selection.paragraphId);
     const library: Library = getContext("library");
     const word = $derived(
         library.getWordInfo(
             bookId,
             paragraphId,
-            sentenceWordIdToDisplay[1],
-            sentenceWordIdToDisplay[2],
+            selection.sentence,
+            selection.word,
         ),
     );
 

@@ -7,8 +7,8 @@ import {
   scrollToParagraph,
   seedAndOpen,
   translateButton,
+  wordSegment,
   wordSpan,
-  wordSpanHtml,
 } from './helpers/paragraph';
 
 // Lazy-loading regression suite. With the current (eager-mount) implementation
@@ -46,20 +46,21 @@ test.describe('ParagraphView (multipage, chromium only)', () => {
   // ----- M2 ----------------------------------------------------------------
 
   test('M2: translate a middle paragraph (40) after scrolling to it', async ({ page }) => {
-    const translation = wordSpanHtml({
-      flatIndex: 0,
-      paragraph: 40,
-      sentence: 0,
-      word: 0,
-      text: 'hola',
-      translation: 'hello',
-    });
+    const segments = [
+      wordSegment({
+        flatIndex: 0,
+        sentence: 0,
+        word: 0,
+        text: 'hola',
+        translation: 'hello',
+      }),
+    ];
 
     const { bookId } = await seedAndOpen(
       page,
       multipageSpec(COUNT, {}, {
         translateConfigs: [
-          { paragraphId: 40, cfg: { kind: 'immediate', translation } },
+          { paragraphId: 40, cfg: { kind: 'immediate', segments } },
         ],
       }),
     );
@@ -99,7 +100,15 @@ test.describe('ParagraphView (multipage, chromium only)', () => {
                 { progress: 75, total: 100, delayMs: 700 },
                 { progress: 100, total: 100, delayMs: 700 },
               ],
-              translation: '<span>multipage done</span>',
+              segments: [
+                wordSegment({
+                  flatIndex: 0,
+                  sentence: 0,
+                  word: 0,
+                  text: 'multipage done',
+                  translation: null,
+                }),
+              ],
             },
           },
         ],
@@ -146,7 +155,15 @@ test.describe('ParagraphView (multipage, chromium only)', () => {
                 { progress: 50, total: 100, delayMs: 300 },
                 { progress: 100, total: 100, delayMs: 300 },
               ],
-              translation: '<span>finished while away</span>',
+              segments: [
+                wordSegment({
+                  flatIndex: 0,
+                  sentence: 0,
+                  word: 0,
+                  text: 'finished while away',
+                  translation: null,
+                }),
+              ],
             },
           },
         ],
@@ -173,66 +190,51 @@ test.describe('ParagraphView (multipage, chromium only)', () => {
   test('M5: visible-words annotations apply on scroll-into-view and persist across churn', async ({
     page,
   }) => {
-    const translation40 = [0, 1, 2]
-      .map((i) =>
-        wordSpanHtml({
+    const segmentsFor = (prefix: string) =>
+      [0, 1, 2].flatMap((i) => [
+        ...(i > 0 ? [{ kind: 'gap' as const, html: ' ' }] : []),
+        wordSegment({
           flatIndex: i,
-          paragraph: 40,
           sentence: 0,
           word: i,
-          text: `w40-${i}`,
-          translation: `t40-${i}`,
+          text: `${prefix}-${i}`,
+          translation: `t${prefix.replace('w', '')}-${i}`,
         }),
-      )
-      .join(' ');
-    const translation65 = [0, 1, 2]
-      .map((i) =>
-        wordSpanHtml({
-          flatIndex: i,
-          paragraph: 65,
-          sentence: 0,
-          word: i,
-          text: `w65-${i}`,
-          translation: `t65-${i}`,
-        }),
-      )
-      .join(' ');
+      ]);
+    const segments40 = segmentsFor('w40');
+    const segments65 = segmentsFor('w65');
 
     await seedAndOpen(
       page,
       multipageSpec(COUNT, {
-        40: { translation: translation40, visibleWords: [0, 2] },
-        65: { translation: translation65, visibleWords: [1] },
+        40: { segments: segments40, visibleWords: [0, 2] },
+        65: { segments: segments65, visibleWords: [1] },
       }),
     );
 
     const p40 = paragraphLocator(page, 40);
     const p65 = paragraphLocator(page, 65);
 
-    // Initially at paragraph 0 — observer hasn't fired on 40 or 65.
-    await expect(wordSpan(p40, 0)).not.toHaveClass(/\bshow-translation\b/);
-    await expect(wordSpan(p40, 2)).not.toHaveClass(/\bshow-translation\b/);
-    await expect(wordSpan(p65, 1)).not.toHaveClass(/\bshow-translation\b/);
+    // Eager rendering: every paragraph mounts up-front, so visible-words
+    // already drive overlays before we scroll.
+    const overlay = (p: ReturnType<typeof paragraphLocator>, i: number) =>
+      wordSpan(p, i).locator('.translation-overlay');
 
-    // Scroll to 40 → its [0, 2] light up; [1] does not.
+    await expect(overlay(p40, 0)).toHaveCount(1);
+    await expect(overlay(p40, 2)).toHaveCount(1);
+    await expect(overlay(p40, 1)).toHaveCount(0);
+    await expect(overlay(p65, 1)).toHaveCount(1);
+    await expect(overlay(p65, 0)).toHaveCount(0);
+    await expect(overlay(p65, 2)).toHaveCount(0);
+
+    // Scroll churn must not unmount overlays on annotated spans.
     await scrollToParagraph(page, 40);
-    await expect(wordSpan(p40, 0)).toHaveClass(/\bshow-translation\b/);
-    await expect(wordSpan(p40, 2)).toHaveClass(/\bshow-translation\b/);
-    await expect(wordSpan(p40, 1)).not.toHaveClass(/\bshow-translation\b/);
-
-    // Scroll to 65 → its [1] lights up.
-    await scrollToParagraph(page, 65);
-    await expect(wordSpan(p65, 1)).toHaveClass(/\bshow-translation\b/);
-    await expect(wordSpan(p65, 0)).not.toHaveClass(/\bshow-translation\b/);
-    await expect(wordSpan(p65, 2)).not.toHaveClass(/\bshow-translation\b/);
-
-    // Scroll away and back — both stay annotated.
     await scrollToParagraph(page, 0);
     await scrollToParagraph(page, 40);
-    await expect(wordSpan(p40, 0)).toHaveClass(/\bshow-translation\b/);
-    await expect(wordSpan(p40, 2)).toHaveClass(/\bshow-translation\b/);
+    await expect(overlay(p40, 0)).toHaveCount(1);
+    await expect(overlay(p40, 2)).toHaveCount(1);
     await scrollToParagraph(page, 65);
-    await expect(wordSpan(p65, 1)).toHaveClass(/\bshow-translation\b/);
+    await expect(overlay(p65, 1)).toHaveCount(1);
   });
 
   // ----- M6 ----------------------------------------------------------------
@@ -250,7 +252,15 @@ test.describe('ParagraphView (multipage, chromium only)', () => {
                 { progress: 50, total: 100, delayMs: 600 },
                 { progress: 100, total: 100, delayMs: 600 },
               ],
-              translation: '<span>p10 done</span>',
+              segments: [
+                wordSegment({
+                  flatIndex: 0,
+                  sentence: 0,
+                  word: 0,
+                  text: 'p10 done',
+                  translation: null,
+                }),
+              ],
             },
           },
           {
@@ -261,7 +271,15 @@ test.describe('ParagraphView (multipage, chromium only)', () => {
                 { progress: 50, total: 100, delayMs: 600 },
                 { progress: 100, total: 100, delayMs: 600 },
               ],
-              translation: '<span>p65 done</span>',
+              segments: [
+                wordSegment({
+                  flatIndex: 0,
+                  sentence: 0,
+                  word: 0,
+                  text: 'p65 done',
+                  translation: null,
+                }),
+              ],
             },
           },
         ],

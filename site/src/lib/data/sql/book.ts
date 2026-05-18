@@ -68,10 +68,21 @@ type Grammar = {
     other?: string | null,
 }
 
+export type ParagraphSegment =
+    | { kind: "gap", html: string }
+    | {
+          kind: "word",
+          text: string,
+          sentence: number,
+          word: number,
+          flatIndex: number,
+          translation: string | null,
+      }
+
 export type ParagraphView = {
     id: number,
     original: string,
-    translation?: string,
+    segments?: ParagraphSegment[],
     visibleWords: number[],
 }
 
