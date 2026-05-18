@@ -1,5 +1,6 @@
 import { invoke, type InvokeArgs } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { SvelteMap } from "svelte/reactivity";
 import type { UUID } from "./v2/db";
 
 export type UpdateEvent<TEvent = any> = {
@@ -136,76 +137,72 @@ type FinishedEvent = {
     error: string | null;
 };
 
-export class ParagraphTranslationActivityResource {
-    #current: ParagraphTranslationActivity | null = $state(null);
+const activityKey = (bookId: UUID, paragraphId: number) =>
+    `${bookId}:${paragraphId}`;
 
-    constructor(bookId: UUID, paragraphId: number) {
-        const unsubscribers: Array<() => void> = [];
-        eventCleanupRegistry?.register(this, unsubscribers);
+// Single source of truth for active paragraph translations. The Rust
+// `TranslationQueue.active_translations` map starts empty at process boot
+// and is purely in-memory, so subscribing once at module load is sufficient
+// to capture every started/progress/finished event — no per-paragraph
+// snapshot fetch is required.
+class ActiveTranslationsStore {
+    #entries = new SvelteMap<string, ParagraphTranslationActivity>();
 
-        const matches = (ev: { bookId: UUID; paragraphId: number }) =>
-            ev.bookId === bookId && ev.paragraphId === paragraphId;
-
-        // Register listeners first, then fetch the initial snapshot. The
-        // backend orders state mutation (active_translations.remove) before
-        // emitting "finished", so a snapshot taken after listeners are live
-        // cannot contradict a finished event we'd subsequently receive.
-        const setup = async () => {
-            unsubscribers.push(
-                await eventHub.subscribeReady<StartedEvent>(
-                    "paragraph_translation_started",
-                    matches,
-                    (p) => {
-                        this.#current = {
-                            requestId: p.requestId,
-                            progressChars: 0,
-                            expectedChars: p.expectedChars,
-                        };
-                    },
-                ),
-            );
-            unsubscribers.push(
-                await eventHub.subscribeReady<ProgressEvent>(
-                    "paragraph_translation_progress",
-                    matches,
-                    (p) => {
-                        this.#current = {
-                            requestId: p.requestId,
-                            progressChars: p.progressChars,
-                            expectedChars: p.expectedChars,
-                        };
-                    },
-                ),
-            );
-            unsubscribers.push(
-                await eventHub.subscribeReady<FinishedEvent>(
-                    "paragraph_translation_finished",
-                    matches,
-                    (p) => {
-                        if (p.error) {
-                            console.warn(
-                                `Translation failed for paragraph ${paragraphId}:`,
-                                p.error,
-                            );
-                        }
-                        this.#current = null;
-                    },
-                ),
-            );
-
-            const v = await invoke<ParagraphTranslationActivity | null>(
-                "get_paragraph_translation_activity",
-                { bookId, paragraphId },
-            );
-            // Don't clobber state populated by events that landed first.
-            if (this.#current === null && v !== null) {
-                this.#current = v;
-            }
-        };
-        setup().catch(() => {});
+    constructor() {
+        eventHub.subscribe<StartedEvent>(
+            "paragraph_translation_started",
+            () => true,
+            (p) => {
+                this.#entries.set(activityKey(p.bookId, p.paragraphId), {
+                    requestId: p.requestId,
+                    progressChars: 0,
+                    expectedChars: p.expectedChars,
+                });
+            },
+        );
+        eventHub.subscribe<ProgressEvent>(
+            "paragraph_translation_progress",
+            () => true,
+            (p) => {
+                this.#entries.set(activityKey(p.bookId, p.paragraphId), {
+                    requestId: p.requestId,
+                    progressChars: p.progressChars,
+                    expectedChars: p.expectedChars,
+                });
+            },
+        );
+        eventHub.subscribe<FinishedEvent>(
+            "paragraph_translation_finished",
+            () => true,
+            (p) => {
+                if (p.error) {
+                    console.warn(
+                        `Translation failed for paragraph ${p.paragraphId}:`,
+                        p.error,
+                    );
+                }
+                this.#entries.delete(activityKey(p.bookId, p.paragraphId));
+            },
+        );
     }
 
-    get current(): ParagraphTranslationActivity | null {
-        return this.#current;
+    get(bookId: UUID, paragraphId: number): ParagraphTranslationActivity | null {
+        return this.#entries.get(activityKey(bookId, paragraphId)) ?? null;
+    }
+}
+
+export const activeTranslations = new ActiveTranslationsStore();
+
+export class ParagraphTranslationActivityResource {
+    #bookId!: UUID;
+    #paragraphId!: number;
+
+    current: ParagraphTranslationActivity | null = $derived.by(() =>
+        activeTranslations.get(this.#bookId, this.#paragraphId),
+    );
+
+    constructor(bookId: UUID, paragraphId: number) {
+        this.#bookId = bookId;
+        this.#paragraphId = paragraphId;
     }
 }
