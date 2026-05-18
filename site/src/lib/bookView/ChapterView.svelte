@@ -69,6 +69,7 @@
                     {selection}
                     mounted={vm.isMounted(paragraphId)}
                     onWordClick={handleWordClick}
+                    onReady={() => vm.registerParagraphReady(paragraphId)}
                 />
             {/each}
         </div>

@@ -31,6 +31,7 @@ export class ParagraphViewModel {
         ),
     );
 
+    isReady = $derived(this.#paragraph.current !== undefined);
     originalText = $derived(this.#paragraph.current?.original ?? "");
     segments = $derived<ParagraphSegment[] | null>(
         this.#paragraph.current?.segments ?? null,

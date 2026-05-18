@@ -14,6 +14,7 @@
         selection = null,
         mounted = true,
         onWordClick,
+        onReady,
     }: {
         bookId: UUID;
         paragraphId: number;
@@ -25,6 +26,7 @@
             word: number;
             flatIndex: number;
         }) => void;
+        onReady?: () => void;
     } = $props();
 
     const library: Library = getContext("library");
@@ -32,6 +34,15 @@
         get bookId() { return bookId; },
         get paragraphId() { return paragraphId; },
         get selection() { return selection; },
+    });
+
+    let firedReady = false;
+    $effect(() => {
+        if (firedReady) return;
+        if (vm.isReady) {
+            firedReady = true;
+            onReady?.();
+        }
     });
 </script>
 

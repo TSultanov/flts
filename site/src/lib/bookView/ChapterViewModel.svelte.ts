@@ -20,6 +20,12 @@ export type WordClickInfo = {
 const SIBLING_RADIUS = 2;
 const GEOM_MOUNT_THRESHOLD = 2.0;
 const GEOM_UNMOUNT_THRESHOLD = 2.5;
+// Safety net for the restore loop. The primary settle condition is "every
+// paragraph in the chapter has reported its data is loaded"; this timeout
+// only fires if some paragraph's fetch never resolves (backend stuck,
+// network drop), so the user isn't held forever at a partially-correct
+// scroll position.
+const RESTORE_FALLBACK_MS = 3000;
 
 export class ChapterViewModel {
     #library!: Library;
@@ -49,6 +55,11 @@ export class ChapterViewModel {
     #resizeTimeout: ReturnType<typeof setTimeout> | null = null;
     #scrollRaf: number | null = null;
     #initialParagraphSyncedFor: number | null | undefined = undefined;
+    #isRestoring = false;
+    #readyParagraphIds = new Set<number>();
+    #restoreTarget: number | null = null;
+    #restoreFallbackTimeout: ReturnType<typeof setTimeout> | null = null;
+    #anchorRaf: number | null = null;
 
     constructor(library: Library, props: ChapterVMProps) {
         this.#library = library;
@@ -63,6 +74,9 @@ export class ChapterViewModel {
     }
 
     handleScroll(): void {
+        if (this.#isRestoring) {
+            return;
+        }
         if (this.#isResizing) {
             return;
         }
@@ -142,32 +156,92 @@ export class ChapterViewModel {
         this.#initialParagraphSyncedFor = paragraphIdToScrollTo;
         const controller = new AbortController();
 
-        void (async () => {
-            let scrolled = this.#scrollParagraphIntoView(paragraphIdToScrollTo);
-            if (!scrolled) {
-                await tick();
-                if (controller.signal.aborted) {
-                    return;
+        // Prime the visible/saved trackers so any onscroll noise leaking
+        // past #isRestoring can't overwrite the persisted state with an
+        // intermediate position.
+        this.#visibleParagraphId = paragraphIdToScrollTo;
+        this.#lastSavedParagraph = paragraphIdToScrollTo;
+        this.#isRestoring = true;
+        this.#restoreTarget = paragraphIdToScrollTo;
+
+        // First anchor — likely off because per-paragraph fetches haven't
+        // populated yet. registerParagraphReady re-anchors as data lands.
+        this.#anchorToParagraph(paragraphIdToScrollTo);
+
+        if (this.#readyParagraphIds.size >= ids.length) {
+            // Everything was already ready (cached). Finalize on next frame
+            // so DOM has flushed any pending heights.
+            this.#anchorRaf = requestAnimationFrame(() => {
+                this.#anchorRaf = null;
+                this.#anchorToParagraph(paragraphIdToScrollTo);
+                this.#finishRestore();
+            });
+        } else {
+            this.#restoreFallbackTimeout = setTimeout(() => {
+                this.#restoreFallbackTimeout = null;
+                if (this.#restoreTarget != null) {
+                    this.#anchorToParagraph(this.#restoreTarget);
                 }
-                scrolled = this.#scrollParagraphIntoView(paragraphIdToScrollTo);
-            }
+                this.#finishRestore();
+            }, RESTORE_FALLBACK_MS);
+        }
 
-            if (controller.signal.aborted) {
-                return;
-            }
-
-            if (scrolled) {
-                this.#setVisibleParagraph(paragraphIdToScrollTo);
-            } else if (ids.length > 0) {
-                this.#setVisibleParagraph(ids[0]);
-            }
-            await tick();
-            if (!controller.signal.aborted) {
-                this.#recomputeMountWindow();
-            }
-        })();
+        controller.signal.addEventListener("abort", () => this.#finishRestore());
 
         return () => controller.abort();
+    }
+
+    registerParagraphReady(paragraphId: number): void {
+        this.#readyParagraphIds.add(paragraphId);
+        if (this.#restoreTarget == null) {
+            return;
+        }
+
+        // Coalesce — many paragraphs can flip ready in the same frame.
+        if (this.#anchorRaf !== null) {
+            return;
+        }
+        this.#anchorRaf = requestAnimationFrame(() => {
+            this.#anchorRaf = null;
+            if (this.#restoreTarget == null) return;
+            this.#anchorToParagraph(this.#restoreTarget);
+            const total = this.#paragraphIdsResource.current?.length ?? 0;
+            if (total > 0 && this.#readyParagraphIds.size >= total) {
+                this.#finishRestore();
+            }
+        });
+    }
+
+    #anchorToParagraph(id: number): void {
+        const container = this.#props.container;
+        const target = this.#findParagraphWrapper(id);
+        if (!container || !target) {
+            return;
+        }
+        const containerRect = container.getBoundingClientRect();
+        const targetRect = target.getBoundingClientRect();
+        const desiredScrollLeft =
+            container.scrollLeft +
+            (targetRect.left - containerRect.left) +
+            (targetRect.width - containerRect.width) / 2;
+        container.scrollTo({ left: desiredScrollLeft, behavior: "auto" });
+    }
+
+    #finishRestore(): void {
+        if (this.#anchorRaf !== null) {
+            cancelAnimationFrame(this.#anchorRaf);
+            this.#anchorRaf = null;
+        }
+        if (this.#restoreFallbackTimeout !== null) {
+            clearTimeout(this.#restoreFallbackTimeout);
+            this.#restoreFallbackTimeout = null;
+        }
+        const wasRestoring = this.#restoreTarget != null;
+        this.#restoreTarget = null;
+        this.#isRestoring = false;
+        if (wasRestoring) {
+            this.#recomputeMountWindow();
+        }
     }
 
     dispose(): void {
@@ -175,6 +249,7 @@ export class ChapterViewModel {
             cancelAnimationFrame(this.#scrollRaf);
             this.#scrollRaf = null;
         }
+        this.#finishRestore();
         if (this.#saveTimeout) {
             clearTimeout(this.#saveTimeout);
             this.#saveTimeout = null;
@@ -324,8 +399,12 @@ export class ChapterViewModel {
             return null;
         }
         const containerRect = container.getBoundingClientRect();
+        // Hit-test the top-left of the visible column — wrappers have
+        // break-inside: avoid, so this lands on the topmost paragraph in
+        // the current page and is what gets persisted as the reader's
+        // position.
         const x = containerRect.left + 16;
-        const y = containerRect.top + containerRect.height / 2;
+        const y = containerRect.top + 16;
         const hit = document.elementFromPoint(x, y) as HTMLElement | null;
         const wrapper = hit?.closest<HTMLElement>(".paragraph-wrapper") ?? null;
         const idAttr = wrapper?.dataset["paragraphId"];
