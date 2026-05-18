@@ -249,6 +249,33 @@ export async function expectTranslated(paragraph: Locator): Promise<void> {
 }
 
 /**
+ * Assert the paragraph currently renders WordSpans (i.e. lazy-mount window
+ * includes it).
+ */
+export async function expectWordSpansMounted(
+  page: Page,
+  paragraphId: number,
+): Promise<void> {
+  await expect(
+    paragraphLocator(page, paragraphId).locator('.word-span').first(),
+  ).toBeAttached();
+}
+
+/**
+ * Assert the paragraph is in the unmounted fallback (no WordSpan descendants).
+ * The wrapper itself is still in DOM — only the segment-based inner render is
+ * gone.
+ */
+export async function expectWordSpansUnmounted(
+  page: Page,
+  paragraphId: number,
+): Promise<void> {
+  await expect(
+    paragraphLocator(page, paragraphId).locator('.word-span'),
+  ).toHaveCount(0);
+}
+
+/**
  * Build a single word segment matching what the real Rust paragraph_to_segments
  * helper emits, for use inside a SeedParagraph.segments array.
  */
@@ -267,4 +294,42 @@ export function wordSegment(opts: {
     flatIndex: opts.flatIndex,
     translation: opts.translation,
   };
+}
+
+/**
+ * Build a segments array that tiles the entire fillerHtml(idx) source text,
+ * one word-segment per whitespace-delimited token. This mirrors production,
+ * where the backend's paragraph_to_segments emits a segment for every word
+ * in the original, so the rendered widths of the translated and untranslated
+ * branches stay roughly the same — a precondition for lazy-mount tests that
+ * exercise scroll stability across mount/unmount transitions.
+ */
+export function fillerSegments(idx: number): ParagraphSegment[] {
+  const html = fillerHtml(idx);
+  const segments: ParagraphSegment[] = [];
+  let flatIdx = 0;
+  let sentenceIdx = 0;
+  let wordIdx = 0;
+  const tokens = html.split(/(\s+)/);
+  for (const token of tokens) {
+    if (token === '') continue;
+    if (/^\s+$/.test(token)) {
+      segments.push({ kind: 'gap', html: token });
+    } else {
+      segments.push(
+        wordSegment({
+          flatIndex: flatIdx++,
+          sentence: sentenceIdx,
+          word: wordIdx++,
+          text: token,
+          translation: null,
+        }),
+      );
+      if (/[.!?]$/.test(token)) {
+        sentenceIdx++;
+        wordIdx = 0;
+      }
+    }
+  }
+  return segments;
 }

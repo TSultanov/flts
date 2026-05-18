@@ -12,11 +12,13 @@
         bookId,
         paragraphId,
         selection = null,
+        mounted = true,
         onWordClick,
     }: {
         bookId: UUID;
         paragraphId: number;
         selection?: WordSelection | null;
+        mounted?: boolean;
         onWordClick: (info: {
             paragraphId: number;
             sentence: number;
@@ -37,7 +39,7 @@
     class="paragraph-wrapper"
     data-paragraph-id={paragraphId}
 >
-    {#if !vm.segments}
+    {#if mounted && !vm.segments}
         <button
             class="translate"
             aria-label="Translate paragraph"
@@ -56,11 +58,10 @@
                 <Fa icon={faLanguage} />
             {/if}
         </button>
-        <p class="original">
-            {#if vm.originalText}{@html vm.originalText}{:else}&nbsp;{/if}
-        </p>
     {:else}
         <div></div>
+    {/if}
+    {#if mounted && vm.segments}
         <p>
             {#each vm.segments as seg, i (i)}
                 {#if seg.kind === "gap"}{@html seg.html}{:else}<WordSpan
@@ -75,6 +76,10 @@
                             onWordClick({ paragraphId, ...w })}
                     />{/if}
             {/each}
+        </p>
+    {:else}
+        <p class="original">
+            {#if vm.originalText}{@html vm.originalText}{:else}&nbsp;{/if}
         </p>
     {/if}
 </div>

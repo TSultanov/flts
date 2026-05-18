@@ -56,6 +56,20 @@
     let scrollRaf: number | null = null;
     let initialParagraphSyncedFor: number | null | undefined = undefined;
 
+    // Per-paragraph mount gate. WordSpans only render for ids in this set.
+    // An empty set means "not yet computed" — paragraphs render eagerly
+    // until the first window measurement lands so we never flash plain text
+    // on initial load. Once populated it is authoritative.
+    let mountedParagraphIds: Set<number> = $state(new Set());
+    const SIBLING_RADIUS = 2;
+    const GEOM_MOUNT_THRESHOLD = 2.0;
+    const GEOM_UNMOUNT_THRESHOLD = 2.5;
+
+    function isMounted(paragraphId: number): boolean {
+        return mountedParagraphIds.size === 0
+            || mountedParagraphIds.has(paragraphId);
+    }
+
     function handleScroll() {
         if (isResizing) {
             return;
@@ -92,6 +106,95 @@
         if (nextParagraph != null) {
             setVisibleParagraph(nextParagraph);
         }
+        recomputeMountWindow();
+    }
+
+    function recomputeMountWindow() {
+        if (!paragraphsContainer) {
+            return;
+        }
+        const containerRect = paragraphsContainer.getBoundingClientRect();
+        const pageWidth = containerRect.width;
+        if (pageWidth <= 0) {
+            return;
+        }
+        const children = paragraphsContainer.children;
+        if (children.length === 0) {
+            if (mountedParagraphIds.size !== 0) {
+                mountedParagraphIds = new Set();
+            }
+            return;
+        }
+
+        // One pass: read all geometry, locate the visible paragraph index.
+        // We use getBoundingClientRect rather than offsetLeft because in a CSS
+        // multi-column flow offsetLeft is unreliable across engines, while
+        // bounding rect reflects the actual visual layout.
+        const scrollLeft = paragraphsContainer.scrollLeft;
+        const wrappers: Array<{ id: number; center: number }> = [];
+        let visibleIdx = -1;
+        for (let i = 0; i < children.length; i++) {
+            const child = children[i] as HTMLElement;
+            const idAttr = child.dataset["paragraphId"];
+            if (idAttr == null) {
+                continue;
+            }
+            const id = parseInt(idAttr, 10);
+            if (Number.isNaN(id)) {
+                continue;
+            }
+            const rect = child.getBoundingClientRect();
+            // Position in the container's content coordinate system
+            // (independent of current scroll position).
+            const center =
+                rect.left - containerRect.left + scrollLeft + rect.width / 2;
+            wrappers.push({ id, center });
+            if (id === visibleParagraphId) {
+                visibleIdx = wrappers.length - 1;
+            }
+        }
+        if (wrappers.length === 0) {
+            return;
+        }
+        if (visibleIdx < 0) {
+            visibleIdx = 0;
+        }
+        const visibleCenter = wrappers[visibleIdx].center;
+
+        const next = new Set<number>();
+        for (let i = 0; i < wrappers.length; i++) {
+            const { id, center } = wrappers[i];
+            const siblingDist = Math.abs(i - visibleIdx);
+            if (siblingDist <= SIBLING_RADIUS) {
+                next.add(id);
+                continue;
+            }
+            const geomDist = Math.abs(center - visibleCenter) / pageWidth;
+            const wasMounted = mountedParagraphIds.has(id);
+            let mount: boolean;
+            if (geomDist <= GEOM_MOUNT_THRESHOLD) {
+                mount = true;
+            } else if (geomDist > GEOM_UNMOUNT_THRESHOLD) {
+                mount = false;
+            } else {
+                mount = wasMounted; // hysteresis band
+            }
+            if (mount) {
+                next.add(id);
+            }
+        }
+
+        if (!setsEqual(next, mountedParagraphIds)) {
+            mountedParagraphIds = next;
+        }
+    }
+
+    function setsEqual(a: Set<number>, b: Set<number>): boolean {
+        if (a.size !== b.size) return false;
+        for (const v of a) {
+            if (!b.has(v)) return false;
+        }
+        return true;
     }
 
     function findVisibleParagraph(): number | null {
@@ -164,7 +267,14 @@
         if (initialParagraphId == null) {
             setVisibleParagraph(ids[0]);
             initialParagraphSyncedFor = null;
-            return;
+            const controller = new AbortController();
+            void (async () => {
+                await tick();
+                if (!controller.signal.aborted) {
+                    recomputeMountWindow();
+                }
+            })();
+            return () => controller.abort();
         }
 
         if (!paragraphsContainer) {
@@ -194,6 +304,10 @@
             } else if (ids.length > 0) {
                 setVisibleParagraph(ids[0]);
             }
+            await tick();
+            if (!controller.signal.aborted) {
+                recomputeMountWindow();
+            }
         })();
 
         return () => controller.abort();
@@ -216,6 +330,7 @@
 
             resizeTimeout = setTimeout(() => {
                 isResizing = false;
+                recomputeMountWindow();
             }, 200);
         };
         window.addEventListener("resize", listener);
@@ -264,6 +379,7 @@
                     {bookId}
                     {paragraphId}
                     {selection}
+                    mounted={isMounted(paragraphId)}
                     onWordClick={handleWordClick}
                 />
             {/each}
