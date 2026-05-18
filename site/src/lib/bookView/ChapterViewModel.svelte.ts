@@ -1,7 +1,7 @@
-import { tick } from "svelte";
 import type { Library } from "../data/library";
 import type { UUID } from "../data/v2/db";
 import type { WordSelection } from "./ParagraphViewModel.svelte";
+import { ChapterParagraphsStore } from "./ChapterParagraphsStore.svelte";
 
 export type ChapterVMProps = {
     bookId: UUID;
@@ -32,10 +32,17 @@ const RESTORE_FALLBACK_MS = 3000;
 // fire (e.g. a paragraph fetch never resolves), the user still gets a
 // visible chapter rather than a permanently blank panel.
 const INITIAL_REVEAL_FALLBACK_MS = 1500;
+// Originals fetched ahead of the restore target so a small overshoot
+// from snap correction still has paragraphs laid out. Roughly a few
+// pages of small paragraphs.
+const RESTORE_PREFIX_BUFFER = 10;
 
 export class ChapterViewModel {
     #library!: Library;
     #props!: ChapterVMProps;
+
+    #store!: ChapterParagraphsStore;
+    #originalsKickedFor: number | null = null;
 
     #paragraphIdsResource = $derived.by(() =>
         this.#library.getBookChapterParagraphIds(
@@ -79,6 +86,7 @@ export class ChapterViewModel {
     constructor(library: Library, props: ChapterVMProps) {
         this.#library = library;
         this.#props = props;
+        this.#store = new ChapterParagraphsStore(props.bookId, library);
         // Belt-and-braces: if neither the restore nor the no-restore
         // reveal path fires (paragraph fetch stuck, etc.), this timer
         // lifts the opacity gate so the user never sees a blank panel.
@@ -90,6 +98,10 @@ export class ChapterViewModel {
 
     get isInitiallyReady(): boolean {
         return this.#isInitiallyReady;
+    }
+
+    get store(): ChapterParagraphsStore {
+        return this.#store;
     }
 
     isMounted(paragraphId: number): boolean {
@@ -157,6 +169,26 @@ export class ChapterViewModel {
 
         const initialParagraphId = this.#props.initialParagraphId;
 
+        // Kick the originals fetch as soon as paragraph IDs are known.
+        // Front-load the prefix containing the restore target so layout
+        // can settle before background-filling the rest. Idempotent —
+        // tracked by id-list length so a re-fire on the same chapter is
+        // a no-op.
+        if (this.#originalsKickedFor !== ids.length) {
+            this.#originalsKickedFor = ids.length;
+            const targetIdx = initialParagraphId != null
+                ? ids.indexOf(initialParagraphId)
+                : 0;
+            const headEnd = Math.min(
+                Math.max(targetIdx, 0) + RESTORE_PREFIX_BUFFER,
+                ids.length,
+            );
+            this.#store.enqueueOriginals(ids.slice(0, headEnd));
+            if (headEnd < ids.length) {
+                this.#store.enqueueOriginals(ids.slice(headEnd));
+            }
+        }
+
         if (this.#initialParagraphSyncedFor === initialParagraphId) {
             return noop;
         }
@@ -165,34 +197,36 @@ export class ChapterViewModel {
             const firstId = ids[0];
             this.#setVisibleParagraph(firstId, 0);
             this.#initialParagraphSyncedFor = null;
-            const controller = new AbortController();
-            void (async () => {
-                await tick();
-                if (controller.signal.aborted) return;
+            // Hook is installed synchronously — the effect can re-run
+            // (paragraphIds settling, container ref binding) and we
+            // can't await anything here without racing the effect's
+            // cleanup. The hook itself is idempotent: it short-circuits
+            // once the gate has lifted.
+            //
+            // We don't pre-emptively compute the mount window — wrappers
+            // are still empty placeholders, so every paragraph would
+            // pass the geometric threshold and the resulting (whole-
+            // chapter) translations enqueue would back up on the
+            // shared backend book lock and starve the originals fetch.
+            // Defer the first measurement until firstId has real text
+            // height (i.e. its original has landed in the store).
+            const tryReveal = () => {
+                if (
+                    this.#isInitiallyReady ||
+                    this.#initialRevealRaf !== null
+                ) {
+                    return;
+                }
+                if (!this.#readyParagraphIds.has(firstId)) return;
                 this.#recomputeMountWindow();
-                // Lift the opacity gate once the first paragraph's data
-                // is ready, plus one rAF so paint catches up before we
-                // reveal. The hook is re-checked on each
-                // registerParagraphReady call until it succeeds.
-                const tryReveal = () => {
-                    if (
-                        controller.signal.aborted ||
-                        this.#isInitiallyReady ||
-                        this.#initialRevealRaf !== null
-                    ) {
-                        return;
-                    }
-                    if (!this.#readyParagraphIds.has(firstId)) return;
-                    this.#initialRevealRaf = requestAnimationFrame(() => {
-                        this.#initialRevealRaf = null;
-                        if (controller.signal.aborted) return;
-                        this.#markInitiallyReady();
-                    });
-                };
-                this.#noRestoreRevealHook = tryReveal;
-                tryReveal();
-            })();
-            return () => controller.abort();
+                this.#initialRevealRaf = requestAnimationFrame(() => {
+                    this.#initialRevealRaf = null;
+                    this.#markInitiallyReady();
+                });
+            };
+            this.#noRestoreRevealHook = tryReveal;
+            tryReveal();
+            return noop;
         }
 
         if (!this.#props.container) {
@@ -202,7 +236,6 @@ export class ChapterViewModel {
         const paragraphIdToScrollTo = initialParagraphId;
         const pageOffsetToRestore = Math.max(0, this.#props.initialPageOffset | 0);
         this.#initialParagraphSyncedFor = paragraphIdToScrollTo;
-        const controller = new AbortController();
 
         // Prime the visible/saved trackers so any onscroll noise leaking
         // past #isRestoring can't overwrite the persisted state with an
@@ -256,9 +289,16 @@ export class ChapterViewModel {
             }, RESTORE_FALLBACK_MS);
         }
 
-        controller.signal.addEventListener("abort", () => this.#finishRestore());
-
-        return () => controller.abort();
+        // No $effect cleanup here. The $effect can re-run with identical
+        // deps (Svelte fires it on parent re-renders even when our prop
+        // values are unchanged). Aborting the in-flight restore in that
+        // window leaves the chapter scrolled to a partial-layout anchor.
+        // The actual lifecycle teardown (ChapterView unmount) is handled
+        // by vm.dispose() → #finishRestore() in onDestroy. The
+        // #initialParagraphSyncedFor guard above already prevents a
+        // second restore from being kicked off if the effect re-fires
+        // with the same target.
+        return noop;
     }
 
     registerParagraphReady(paragraphId: number): void {
@@ -512,6 +552,11 @@ export class ChapterViewModel {
 
         if (!setsEqual(next, this.#mountedParagraphIds)) {
             this.#mountedParagraphIds = next;
+            // The mount window is the sole driver of translation
+            // fetches. Translations for paragraphs leaving the window
+            // stay cached; new entrants are enqueued (dedup'd against
+            // cached + already-enqueued ids by the store).
+            this.#store.enqueueTranslations([...next]);
         }
     }
 

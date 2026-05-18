@@ -86,6 +86,17 @@ export type ParagraphView = {
     visibleWords: number[],
 }
 
+export type ParagraphOriginal = {
+    id: number,
+    original: string,
+}
+
+export type ParagraphTranslationSlice = {
+    id: number,
+    segments?: ParagraphSegment[],
+    visibleWords: number[],
+}
+
 export type ChapterMetaView = {
     id: number,
     title: string,

@@ -1,6 +1,7 @@
 import type { Library } from "../data/library";
 import type { ParagraphSegment } from "../data/sql/book";
 import type { UUID } from "../data/v2/db";
+import type { ChapterParagraphsStore } from "./ChapterParagraphsStore.svelte";
 
 export type WordSelection = {
     paragraphId: number;
@@ -16,35 +17,40 @@ export type ParagraphVMProps = {
 
 export class ParagraphViewModel {
     #library!: Library;
+    #store!: ChapterParagraphsStore;
     #props!: ParagraphVMProps;
 
-    #paragraph = $derived.by(() =>
-        this.#library.getParagraphView(
-            this.#props.bookId,
-            this.#props.paragraphId,
-        ),
-    );
     #activity = $derived.by(() =>
         this.#library.getParagraphTranslationActivity(
             this.#props.bookId,
             this.#props.paragraphId,
         ),
     );
+    #translation = $derived.by(() =>
+        this.#store.getTranslation(this.#props.paragraphId),
+    );
 
-    isReady = $derived(this.#paragraph.current !== undefined);
-    originalText = $derived(this.#paragraph.current?.original ?? "");
+    isReady = $derived(this.#store.hasOriginal(this.#props.paragraphId));
+    originalText = $derived(
+        this.#store.getOriginal(this.#props.paragraphId) ?? "",
+    );
     segments = $derived<ParagraphSegment[] | null>(
-        this.#paragraph.current?.segments ?? null,
+        this.#translation?.segments ?? null,
     );
     visibleWordsSet = $derived(
-        new Set(this.#paragraph.current?.visibleWords ?? []),
+        new Set(this.#translation?.visibleWords ?? []),
     );
     isTranslating = $derived(this.#activity.current !== null);
     progressChars = $derived(this.#activity.current?.progressChars ?? 0);
     expectedChars = $derived(this.#activity.current?.expectedChars ?? 100);
 
-    constructor(library: Library, props: ParagraphVMProps) {
+    constructor(
+        library: Library,
+        store: ChapterParagraphsStore,
+        props: ParagraphVMProps,
+    ) {
         this.#library = library;
+        this.#store = store;
         this.#props = props;
     }
 

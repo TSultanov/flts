@@ -187,6 +187,12 @@ export async function getMarkWordVisibleCalls(
   return page.evaluate(() => (window as any).__test.getMarkWordVisibleCalls());
 }
 
+export async function getTranslationsBatchCalls(
+  page: Page,
+): Promise<Array<{ bookId: string; paragraphIds: number[]; at: number }>> {
+  return page.evaluate(() => (window as any).__test.getTranslationsBatchCalls());
+}
+
 export function paragraphLocator(page: Page, paragraphId: number): Locator {
   return page.locator(`.paragraph-wrapper[data-paragraph-id="${paragraphId}"]`);
 }

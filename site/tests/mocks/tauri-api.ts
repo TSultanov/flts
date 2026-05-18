@@ -194,6 +194,11 @@ const markWordVisibleCalls: Array<{
   paragraphId: number;
   flatIndex: number;
 }> = [];
+const translationsBatchCalls: Array<{
+  bookId: UUID;
+  paragraphIds: number[];
+  at: number;
+}> = [];
 
 function paragraphKey(bookId: UUID, paragraphId: number): string {
   return `${bookId}:${paragraphId}`;
@@ -470,6 +475,7 @@ export function resetMockState() {
   wordInfos.clear();
   translateCalls.length = 0;
   markWordVisibleCalls.length = 0;
+  translationsBatchCalls.length = 0;
   translationWorkQueue.length = 0;
   translationWorkerBusy = false;
   mockNowPlaying = null;
@@ -611,6 +617,9 @@ if (typeof window !== 'undefined') {
     },
     getMarkWordVisibleCalls() {
       return markWordVisibleCalls.slice();
+    },
+    getTranslationsBatchCalls() {
+      return translationsBatchCalls.slice();
     },
     reset() {
       resetMockState();
@@ -798,6 +807,37 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
         visibleWords: p.visibleWords ?? [],
       };
       return Promise.resolve(view as T);
+    }
+
+    case 'get_paragraph_originals_batch': {
+      const bookId = args?.bookId as UUID;
+      const paragraphIds = (args?.paragraphIds ?? []) as number[];
+      const book = mockLibrary.get(bookId);
+      if (!book) return Promise.reject(new Error('book not found'));
+      const rows = paragraphIds.flatMap((id) => {
+        const p = book.paragraphsById.get(id);
+        return p ? [{ id, original: p.html }] : [];
+      });
+      return Promise.resolve(rows as T);
+    }
+
+    case 'get_paragraph_translations_batch': {
+      const bookId = args?.bookId as UUID;
+      const paragraphIds = (args?.paragraphIds ?? []) as number[];
+      translationsBatchCalls.push({
+        bookId,
+        paragraphIds: paragraphIds.slice(),
+        at: Date.now(),
+      });
+      const book = mockLibrary.get(bookId);
+      if (!book) return Promise.reject(new Error('book not found'));
+      const rows = paragraphIds.flatMap((id) => {
+        const p = book.paragraphsById.get(id);
+        return p
+          ? [{ id, segments: p.segments, visibleWords: p.visibleWords ?? [] }]
+          : [];
+      });
+      return Promise.resolve(rows as T);
     }
 
     case 'get_word_info': {

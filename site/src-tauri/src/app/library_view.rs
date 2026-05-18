@@ -43,6 +43,20 @@ pub struct ParagraphView {
     visible_words: AHashSet<usize>,
 }
 
+#[derive(Clone, serde::Serialize)]
+pub struct ParagraphOriginal {
+    id: usize,
+    original: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct ParagraphTranslationSlice {
+    id: usize,
+    segments: Option<Vec<ParagraphSegment>>,
+    #[serde(rename = "visibleWords")]
+    visible_words: AHashSet<usize>,
+}
+
 #[derive(Clone, serde::Serialize, Debug, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ParagraphSegment {
@@ -151,6 +165,57 @@ impl LibraryView {
             segments,
             visible_words,
         })
+    }
+
+    pub async fn get_paragraph_originals_batch(
+        &self,
+        book_id: Uuid,
+        paragraph_ids: Vec<usize>,
+    ) -> anyhow::Result<Vec<ParagraphOriginal>> {
+        let book = self.library.get_book(&book_id).await?;
+        let book = book.lock().await;
+        Ok(paragraph_ids
+            .into_iter()
+            .map(|id| {
+                let p = book.book.paragraph_view(id);
+                let original = p.original_html.unwrap_or(p.original_text).to_string();
+                ParagraphOriginal { id, original }
+            })
+            .collect())
+    }
+
+    pub async fn get_paragraph_translations_batch(
+        &self,
+        book_id: Uuid,
+        paragraph_ids: Vec<usize>,
+        target_language: &Language,
+    ) -> anyhow::Result<Vec<ParagraphTranslationSlice>> {
+        let book = self.library.get_book(&book_id).await?;
+        let mut book = book.lock().await;
+
+        let book_translation = book.get_or_create_translation(target_language).await;
+        let bt = book_translation.lock().await;
+
+        Ok(paragraph_ids
+            .into_iter()
+            .map(|id| {
+                let p = book.book.paragraph_view(id);
+                let original = p.original_html.unwrap_or(p.original_text);
+                let t_view = bt.paragraph_view(id);
+                let segments = t_view
+                    .as_ref()
+                    .map(|t| paragraph_to_segments(&original, t));
+                let visible_words = t_view
+                    .as_ref()
+                    .map(|t| t.visible_words().clone())
+                    .unwrap_or_default();
+                ParagraphTranslationSlice {
+                    id,
+                    segments,
+                    visible_words,
+                }
+            })
+            .collect())
     }
 
     pub async fn list_books(
@@ -469,6 +534,47 @@ pub async fn get_paragraph_view(
     let library_view = LibraryView::create(state.inner().clone(), library);
     library_view
         .get_paragraph_view(book_id, paragraph_id, &target_language)
+        .await
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub async fn get_paragraph_originals_batch(
+    state: tauri::State<'_, Arc<AppState>>,
+    book_id: Uuid,
+    paragraph_ids: Vec<usize>,
+) -> Result<Vec<ParagraphOriginal>, String> {
+    let library = state.library.borrow().clone();
+    let Some(library) = library else {
+        return Err("Library is not configured".into());
+    };
+
+    let library_view = LibraryView::create(state.inner().clone(), library);
+    library_view
+        .get_paragraph_originals_batch(book_id, paragraph_ids)
+        .await
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub async fn get_paragraph_translations_batch(
+    state: tauri::State<'_, Arc<AppState>>,
+    book_id: Uuid,
+    paragraph_ids: Vec<usize>,
+) -> Result<Vec<ParagraphTranslationSlice>, String> {
+    let library = state.library.borrow().clone();
+    let Some(library) = library else {
+        return Err("Library is not configured".into());
+    };
+
+    let target_language_id = { state.config.borrow().target_language_id.clone() };
+    let Some(target_language) = Language::from_639_3(&target_language_id) else {
+        return Err("Library is not configured".into());
+    };
+
+    let library_view = LibraryView::create(state.inner().clone(), library);
+    library_view
+        .get_paragraph_translations_batch(book_id, paragraph_ids, &target_language)
         .await
         .map_err(|err| err.to_string())
 }

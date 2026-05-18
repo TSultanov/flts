@@ -1,6 +1,12 @@
 import type { EpubBook } from "./epubLoader";
 import type { UUID } from "./v2/db";
-import { type ChapterMetaView, type IBookMeta, type ParagraphView, type SentenceWordTranslation } from "./sql/book";
+import {
+    type ChapterMetaView,
+    type IBookMeta,
+    type ParagraphOriginal,
+    type ParagraphTranslationSlice,
+    type SentenceWordTranslation,
+} from "./sql/book";
 import { ParagraphTranslationActivityResource, Resource } from "./tauri.svelte";
 import { invoke } from "@tauri-apps/api/core";
 import { getConfig } from "../config";
@@ -126,21 +132,23 @@ export class Library {
         return new ParagraphTranslationActivityResource(bookId, paragraphId);
     }
 
-    getParagraphView(bookId: UUID, paragraphId: number): Resource<ParagraphView> {
-        return new Resource<ParagraphView>(
-            "get_paragraph_view",
-            { bookId, paragraphId },
-            [
-                {
-                    name: "paragraph_updated",
-                    filter: (ev: { bookId: UUID; paragraphId: number }) =>
-                        ev.bookId === bookId && ev.paragraphId === paragraphId,
-                },
-                {
-                    name: "book_updated",
-                    filter: (updatedId: UUID) => updatedId === bookId,
-                },
-            ],
+    async getParagraphOriginalsBatch(
+        bookId: UUID,
+        paragraphIds: number[],
+    ): Promise<ParagraphOriginal[]> {
+        return await invoke<ParagraphOriginal[]>(
+            "get_paragraph_originals_batch",
+            { bookId, paragraphIds },
+        );
+    }
+
+    async getParagraphTranslationsBatch(
+        bookId: UUID,
+        paragraphIds: number[],
+    ): Promise<ParagraphTranslationSlice[]> {
+        return await invoke<ParagraphTranslationSlice[]>(
+            "get_paragraph_translations_batch",
+            { bookId, paragraphIds },
         );
     }
 

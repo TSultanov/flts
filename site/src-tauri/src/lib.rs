@@ -118,6 +118,8 @@ pub fn run() {
             app::library_view::list_book_chapters,
             app::library_view::get_book_chapter_paragraph_ids,
             app::library_view::get_paragraph_view,
+            app::library_view::get_paragraph_originals_batch,
+            app::library_view::get_paragraph_translations_batch,
             app::config::get_translation_providers,
             app::library_view::get_word_info,
             app::library_view::import_plain_text,

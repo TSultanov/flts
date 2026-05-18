@@ -7,6 +7,10 @@
     import type { UUID } from "../data/v2/db";
     import { ParagraphViewModel, type WordSelection } from "./ParagraphViewModel.svelte";
     import WordSpan from "./WordSpan.svelte";
+    import {
+        CHAPTER_STORE_KEY,
+        type ChapterParagraphsStore,
+    } from "./ChapterParagraphsStore.svelte";
 
     let {
         bookId,
@@ -30,7 +34,8 @@
     } = $props();
 
     const library: Library = getContext("library");
-    const vm = new ParagraphViewModel(library, {
+    const store: ChapterParagraphsStore = getContext(CHAPTER_STORE_KEY);
+    const vm = new ParagraphViewModel(library, store, {
         get bookId() { return bookId; },
         get paragraphId() { return paragraphId; },
         get selection() { return selection; },

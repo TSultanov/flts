@@ -1,10 +1,11 @@
 <script lang="ts">
-    import { getContext, onDestroy, onMount } from "svelte";
+    import { getContext, onDestroy, onMount, setContext } from "svelte";
     import type { UUID } from "../data/v2/db";
     import ParagraphView from "./ParagraphView.svelte";
     import type { Library } from "../data/library";
     import type { WordSelection } from "./ParagraphViewModel.svelte";
     import { ChapterViewModel, type WordClickInfo } from "./ChapterViewModel.svelte";
+    import { CHAPTER_STORE_KEY } from "./ChapterParagraphsStore.svelte";
 
     let {
         selection = $bindable(),
@@ -32,6 +33,8 @@
         get initialPageOffset() { return initialPageOffset; },
         get container() { return paragraphsContainer; },
     });
+
+    setContext(CHAPTER_STORE_KEY, vm.store);
 
     function handleWordClick(info: WordClickInfo) {
         selection = vm.handleWordClick(info);
