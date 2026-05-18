@@ -1,5 +1,5 @@
 import { invoke, type InvokeArgs } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { listen } from "@tauri-apps/api/event";
 import type { UUID } from "./v2/db";
 
 export type UpdateEvent<TEvent = any> = {
@@ -9,12 +9,73 @@ export type UpdateEvent<TEvent = any> = {
 
 const eventCleanupRegistry =
     typeof FinalizationRegistry !== "undefined"
-        ? new FinalizationRegistry<UnlistenFn[]>((unlisteners) => {
-              for (const u of unlisteners) {
+        ? new FinalizationRegistry<Array<() => void>>((unsubscribers) => {
+              for (const u of unsubscribers) {
                   try { u(); } catch { /* ignore */ }
               }
           })
         : null;
+
+type Subscriber = {
+    filter: (payload: any) => boolean;
+    handler: (payload: any) => void;
+};
+
+// Singleton router: at most one Tauri `listen()` per event name, with
+// in-process fan-out to subscribers. Each per-paragraph Resource subscribing
+// here costs an O(1) Set insert instead of a ~10 ms IPC round-trip to
+// register a native listener.
+class TauriEventHub {
+    #subs = new Map<string, Set<Subscriber>>();
+    #ready = new Map<string, Promise<void>>();
+
+    subscribe<T>(
+        name: string,
+        filter: (payload: T) => boolean,
+        handler: (payload: T) => void,
+    ): () => void {
+        let set = this.#subs.get(name);
+        if (!set) {
+            set = new Set();
+            this.#subs.set(name, set);
+            this.#install(name);
+        }
+        const sub: Subscriber = {
+            filter: filter as (p: any) => boolean,
+            handler: handler as (p: any) => void,
+        };
+        set.add(sub);
+        return () => set!.delete(sub);
+    }
+
+    async subscribeReady<T>(
+        name: string,
+        filter: (payload: T) => boolean,
+        handler: (payload: T) => void,
+    ): Promise<() => void> {
+        const unsub = this.subscribe(name, filter, handler);
+        await this.#ready.get(name);
+        return unsub;
+    }
+
+    #install(name: string) {
+        const p = listen(name, (event) => {
+            const set = this.#subs.get(name);
+            if (!set || set.size === 0) return;
+            const payload = (event as any).payload;
+            for (const sub of set) {
+                try {
+                    if (sub.filter(payload)) sub.handler(payload);
+                } catch {
+                    /* swallow — one bad subscriber must not break others */
+                }
+            }
+        }).then(() => undefined);
+        this.#ready.set(name, p);
+    }
+}
+
+export const eventHub = new TauriEventHub();
 
 export class Resource<T> {
     #current: T | undefined = $state(undefined);
@@ -26,7 +87,7 @@ export class Resource<T> {
         defaultValue?: T,
     ) {
         this.#current = defaultValue;
-        const unlisteners: UnlistenFn[] = [];
+        const unsubscribers: Array<() => void> = [];
 
         const fetch = () => {
             invoke<T>(getterName, args).then((v) => {
@@ -35,13 +96,11 @@ export class Resource<T> {
         };
 
         for (const ev of events) {
-            listen(ev.name, (event) => {
-                if (ev.filter((event as any).payload)) fetch();
-            }).then((u) => unlisteners.push(u));
+            unsubscribers.push(eventHub.subscribe(ev.name, ev.filter, fetch));
         }
         fetch();
 
-        eventCleanupRegistry?.register(this, unlisteners);
+        eventCleanupRegistry?.register(this, unsubscribers);
     }
 
     get current(): T | undefined {
@@ -81,8 +140,8 @@ export class ParagraphTranslationActivityResource {
     #current: ParagraphTranslationActivity | null = $state(null);
 
     constructor(bookId: UUID, paragraphId: number) {
-        const unlisteners: UnlistenFn[] = [];
-        eventCleanupRegistry?.register(this, unlisteners);
+        const unsubscribers: Array<() => void> = [];
+        eventCleanupRegistry?.register(this, unsubscribers);
 
         const matches = (ev: { bookId: UUID; paragraphId: number }) =>
             ev.bookId === bookId && ev.paragraphId === paragraphId;
@@ -92,12 +151,11 @@ export class ParagraphTranslationActivityResource {
         // emitting "finished", so a snapshot taken after listeners are live
         // cannot contradict a finished event we'd subsequently receive.
         const setup = async () => {
-            unlisteners.push(
-                await listen<StartedEvent>(
+            unsubscribers.push(
+                await eventHub.subscribeReady<StartedEvent>(
                     "paragraph_translation_started",
-                    (e) => {
-                        const p = e.payload;
-                        if (!matches(p)) return;
+                    matches,
+                    (p) => {
                         this.#current = {
                             requestId: p.requestId,
                             progressChars: 0,
@@ -106,12 +164,11 @@ export class ParagraphTranslationActivityResource {
                     },
                 ),
             );
-            unlisteners.push(
-                await listen<ProgressEvent>(
+            unsubscribers.push(
+                await eventHub.subscribeReady<ProgressEvent>(
                     "paragraph_translation_progress",
-                    (e) => {
-                        const p = e.payload;
-                        if (!matches(p)) return;
+                    matches,
+                    (p) => {
                         this.#current = {
                             requestId: p.requestId,
                             progressChars: p.progressChars,
@@ -120,12 +177,11 @@ export class ParagraphTranslationActivityResource {
                     },
                 ),
             );
-            unlisteners.push(
-                await listen<FinishedEvent>(
+            unsubscribers.push(
+                await eventHub.subscribeReady<FinishedEvent>(
                     "paragraph_translation_finished",
-                    (e) => {
-                        const p = e.payload;
-                        if (!matches(p)) return;
+                    matches,
+                    (p) => {
                         if (p.error) {
                             console.warn(
                                 `Translation failed for paragraph ${paragraphId}:`,
