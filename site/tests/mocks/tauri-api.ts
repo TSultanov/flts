@@ -266,6 +266,43 @@ function emitFinished(
   });
 }
 
+// Mirror the real backend's single-worker queue. Translation requests get an
+// activity record + a "started" event synchronously at translate-time so the
+// UI can flip the button into spinner state for every clicked paragraph, even
+// the ones that won't actually begin running until the worker drains earlier
+// items. The actual progress/finished events fire serially as the worker
+// pulls each item off this queue.
+const translationWorkQueue: Array<() => Promise<void>> = [];
+let translationWorkerBusy = false;
+
+async function drainTranslationWorkQueue(): Promise<void> {
+  if (translationWorkerBusy) return;
+  translationWorkerBusy = true;
+  try {
+    while (translationWorkQueue.length > 0) {
+      const work = translationWorkQueue.shift();
+      if (work) {
+        try {
+          await work();
+        } catch {
+          // Swallow — mock-side bookkeeping errors shouldn't stall the queue.
+        }
+      }
+    }
+  } finally {
+    translationWorkerBusy = false;
+  }
+}
+
+function enqueueTranslationWork(work: () => Promise<void>): void {
+  translationWorkQueue.push(work);
+  void drainTranslationWorkQueue();
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function runTranslateRequest(
   requestId: number,
   bookId: UUID,
@@ -274,27 +311,42 @@ function runTranslateRequest(
 ): void {
   const key = paragraphKey(bookId, paragraphId);
 
+  // The fix for the multi-click bug: announce activity at enqueue, not when
+  // the worker picks up the request. The first progress event later carries
+  // the real expectedChars.
+  activeActivities.set(key, {
+    requestId,
+    progressChars: 0,
+    expectedChars: 0,
+  });
+  emitStarted(bookId, paragraphId, requestId, 0);
+
+  enqueueTranslationWork(() =>
+    runTranslationWork(requestId, bookId, paragraphId, key, cfg),
+  );
+}
+
+async function runTranslationWork(
+  requestId: number,
+  bookId: UUID,
+  paragraphId: number,
+  key: string,
+  cfg: TranslateConfig,
+): Promise<void> {
   if (cfg.kind === 'immediate') {
-    activeActivities.set(key, {
-      requestId,
-      progressChars: 0,
-      expectedChars: 0,
-    });
-    emitStarted(bookId, paragraphId, requestId, 0);
-    setTimeout(() => {
-      if (cfg.segments !== undefined) {
-        applyTranslationCompletion(
-          bookId,
-          paragraphId,
-          cfg.segments,
-          cfg.visibleWords,
-        );
-      } else {
-        emit('paragraph_updated', { bookId, paragraphId });
-      }
-      activeActivities.delete(key);
-      emitFinished(bookId, paragraphId, requestId, null);
-    }, 100);
+    await sleep(100);
+    if (cfg.segments !== undefined) {
+      applyTranslationCompletion(
+        bookId,
+        paragraphId,
+        cfg.segments,
+        cfg.visibleWords,
+      );
+    } else {
+      emit('paragraph_updated', { bookId, paragraphId });
+    }
+    activeActivities.delete(key);
+    emitFinished(bookId, paragraphId, requestId, null);
     return;
   }
 
@@ -304,61 +356,33 @@ function runTranslateRequest(
       progressChars: 0,
       expectedChars: 100,
     });
-    emitStarted(bookId, paragraphId, requestId, 100);
-    setTimeout(() => {
-      activeActivities.delete(key);
-      emitFinished(bookId, paragraphId, requestId, cfg.errorMessage);
-    }, cfg.delayMs);
+    emitProgress(bookId, paragraphId, requestId, 0, 100);
+    await sleep(cfg.delayMs);
+    activeActivities.delete(key);
+    emitFinished(bookId, paragraphId, requestId, cfg.errorMessage);
     return;
   }
 
-  // progress: emit the first step's values immediately, then schedule each
-  // subsequent step at the prior step's delay. The final step's delay
-  // elapses, then the translation lands + finished fires.
-  const first = cfg.steps[0];
-  const initial: ParagraphTranslationActivity = {
-    requestId,
-    progressChars: first?.progress ?? 0,
-    expectedChars: first?.total ?? 0,
-  };
-  activeActivities.set(key, initial);
-  emitStarted(bookId, paragraphId, requestId, initial.expectedChars);
-  if (first) {
-    emitProgress(
-      bookId,
-      paragraphId,
+  // progress: emit each step in order, with the step's delay following the
+  // emit. The final step's delay precedes completion + finished.
+  for (const step of cfg.steps) {
+    activeActivities.set(key, {
       requestId,
-      first.progress,
-      first.total,
-    );
+      progressChars: step.progress,
+      expectedChars: step.total,
+    });
+    emitProgress(bookId, paragraphId, requestId, step.progress, step.total);
+    await sleep(step.delayMs);
   }
 
-  let cumulative = 0;
-  for (let i = 1; i < cfg.steps.length; i++) {
-    cumulative += cfg.steps[i - 1].delayMs;
-    const step = cfg.steps[i];
-    setTimeout(() => {
-      activeActivities.set(key, {
-        requestId,
-        progressChars: step.progress,
-        expectedChars: step.total,
-      });
-      emitProgress(bookId, paragraphId, requestId, step.progress, step.total);
-    }, cumulative);
-  }
-
-  // Final tick: completion + finished
-  cumulative += cfg.steps[cfg.steps.length - 1]?.delayMs ?? 0;
-  setTimeout(() => {
-    applyTranslationCompletion(
-      bookId,
-      paragraphId,
-      cfg.segments,
-      cfg.visibleWords,
-    );
-    activeActivities.delete(key);
-    emitFinished(bookId, paragraphId, requestId, null);
-  }, cumulative);
+  applyTranslationCompletion(
+    bookId,
+    paragraphId,
+    cfg.segments,
+    cfg.visibleWords,
+  );
+  activeActivities.delete(key);
+  emitFinished(bookId, paragraphId, requestId, null);
 }
 
 // ----- Lyrics mode state --------------------------------------------------
@@ -445,6 +469,8 @@ export function resetMockState() {
   wordInfos.clear();
   translateCalls.length = 0;
   markWordVisibleCalls.length = 0;
+  translationWorkQueue.length = 0;
+  translationWorkerBusy = false;
   mockNowPlaying = null;
   mockLyricsByTrack.clear();
   mockTranslationCache.clear();

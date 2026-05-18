@@ -571,6 +571,77 @@ test.describe('ParagraphView (chromium only)', () => {
     expect(flickered).toBe(false);
   });
 
+  test('G3: clicking translate on multiple paragraphs in succession flips every clicked button into a spinner immediately (regression of 955b7d3)', async ({
+    page,
+  }) => {
+    // The translation queue runs serially: only one paragraph is in
+    // active progress at a time. The bug: the "started" event was emitted
+    // when the worker picked the request up, so paragraphs sitting in the
+    // queue showed no UI feedback. The fix is to emit "started" at enqueue
+    // time so every clicked button immediately flips into a spinner. This
+    // test enforces that contract end-to-end.
+    const { bookId } = await seedAndOpen(page, {
+      chapters: [
+        {
+          paragraphs: [
+            { html: 'first paragraph' },
+            { html: 'second paragraph' },
+            { html: 'third paragraph' },
+          ],
+        },
+      ],
+    });
+
+    // Each paragraph's worker stage takes ~600ms — long enough that
+    // paragraphs 1 and 2 are still queued (not yet picked up by the
+    // single worker) when we sample the buttons below.
+    const slowCfg = (text: string) => ({
+      kind: 'progress' as const,
+      steps: [
+        { progress: 50, total: 100, delayMs: 300 },
+        { progress: 100, total: 100, delayMs: 300 },
+      ],
+      segments: [
+        wordSegment({
+          flatIndex: 0,
+          sentence: 0,
+          word: 0,
+          text,
+          translation: null,
+        }),
+      ],
+    });
+    for (const pid of [0, 1, 2]) {
+      await setTranslateConfig(page, bookId, pid, slowCfg(`done${pid}`));
+    }
+
+    const p0 = paragraphLocator(page, 0);
+    const p1 = paragraphLocator(page, 1);
+    const p2 = paragraphLocator(page, 2);
+
+    // Click all three in rapid succession.
+    await translateButton(p0).click();
+    await translateButton(p1).click();
+    await translateButton(p2).click();
+
+    // Every clicked button must flip to spinner state straight away, even
+    // though the queue is single-threaded and only one paragraph is
+    // actively translating at a time. Use a tight timeout: if the bug
+    // recurs, the queued buttons won't ever show a spinner until they
+    // become the active item.
+    await expect(translateButton(p0)).toBeDisabled({ timeout: 500 });
+    await expect(translateButton(p1)).toBeDisabled({ timeout: 500 });
+    await expect(translateButton(p2)).toBeDisabled({ timeout: 500 });
+    await expect(p0.locator('.circular-progress')).toBeVisible({ timeout: 500 });
+    await expect(p1.locator('.circular-progress')).toBeVisible({ timeout: 500 });
+    await expect(p2.locator('.circular-progress')).toBeVisible({ timeout: 500 });
+
+    // Sanity: as the queue drains, each paragraph eventually completes.
+    await expectTranslated(p0);
+    await expectTranslated(p1);
+    await expectTranslated(p2);
+  });
+
   test('G2: translation completing on one paragraph does not blank peers (regression of 78d9b74)', async ({
     page,
   }) => {

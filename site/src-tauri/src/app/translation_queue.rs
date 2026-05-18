@@ -120,6 +120,7 @@ pub struct TranslationQueue {
     translate_tx: UnboundedSender<TranslationRequest>,
 
     state: Arc<Mutex<TranslationQueueState>>,
+    app: tauri::AppHandle,
 
     tasks: Mutex<Option<TranslationQueueTasks>>,
 }
@@ -215,6 +216,7 @@ impl TranslationQueue {
             next_request_index: 0.into(),
             translate_tx: tx_translate,
             state,
+            app,
             tasks: Mutex::new(Some(TranslationQueueTasks {
                 translate_task,
                 saver_task,
@@ -255,6 +257,22 @@ impl TranslationQueue {
             },
         );
         drop(state);
+
+        // Announce activity at enqueue, not when the worker picks the request
+        // up. Otherwise queued paragraphs sit silently until earlier ones finish
+        // — the frontend would show a spinner only on the in-flight item, not
+        // on the ones the user clicked while one was still running. expected_chars
+        // is unknown until the worker estimates; it is updated via the progress
+        // event emitted at the start of handle_request.
+        let _ = self.app.emit(
+            "paragraph_translation_started",
+            ParagraphTranslationStartedEvent {
+                book_id,
+                paragraph_id,
+                request_id,
+                expected_chars: 0,
+            },
+        );
 
         if let Err(err) = self.translate_tx.send(TranslationRequest {
             request_id,
@@ -351,7 +369,10 @@ async fn handle_request(
         expected_size, source_len, stats.ratio, stats.n
     );
 
-    // Record expected size in the activity snapshot and announce the start.
+    // Record expected size in the activity snapshot and push it to the UI as
+    // a progress event with progress_chars=0. The started event already fired
+    // at enqueue with expected_chars=0; this is the first refinement once the
+    // worker actually picks up the request.
     {
         let mut s = state.lock().await;
         if let Some(activity) = s
@@ -362,11 +383,12 @@ async fn handle_request(
         }
     }
     let _ = app.emit(
-        "paragraph_translation_started",
-        ParagraphTranslationStartedEvent {
+        "paragraph_translation_progress",
+        ParagraphTranslationProgressEvent {
             book_id: request.book_id,
             paragraph_id: request.paragraph_id,
             request_id: request.request_id,
+            progress_chars: 0,
             expected_chars: expected_size,
         },
     );
