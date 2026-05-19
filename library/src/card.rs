@@ -51,20 +51,42 @@ pub enum AnkiState {
     Deleted,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct CardKey {
     pub source_language: String,
     pub target_language: String,
     pub lemma: String,
     pub slug: String,
     pub part_of_speech: String,
+    pub pos_slug: String,
 }
 
 impl CardKey {
     pub fn id(&self) -> String {
-        card_id(&self.source_language, &self.target_language, &self.slug, &self.part_of_speech)
+        card_id(
+            &self.source_language,
+            &self.target_language,
+            &self.slug,
+            &self.pos_slug,
+        )
     }
 }
+
+// Card identity is the on-disk identity: same language pair, same lemma
+// slug, same PoS slug => same card. The `lemma` and `part_of_speech`
+// display strings are first-write-wins metadata and must not participate
+// in equality, since two variants of the same PoS (e.g. "noun / adj" vs
+// "noun/adj") slug to the same filename and would otherwise collide on
+// disk while extract_card_updates kept them as separate update records.
+impl PartialEq for CardKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.source_language == other.source_language
+            && self.target_language == other.target_language
+            && self.slug == other.slug
+            && self.pos_slug == other.pos_slug
+    }
+}
+impl Eq for CardKey {}
 
 pub fn canonicalize_lemma(raw: &str, _src_lang: Language) -> String {
     // _src_lang is reserved for locale-aware lowercase (Turkish dotted/dotless `i`).
@@ -84,23 +106,89 @@ pub fn canonicalize_lemma(raw: &str, _src_lang: Language) -> String {
         .join(" ")
 }
 
-pub fn lemma_slug(canonical: &str) -> String {
-    canonical
-        .chars()
-        .filter_map(|c| {
-            if c.is_whitespace() {
-                Some('_')
-            } else if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
-                None
-            } else {
-                Some(c)
-            }
-        })
-        .collect()
+pub fn canonicalize_part_of_speech(raw: &str) -> String {
+    let nfc: String = raw.nfc().collect();
+    let lowered = nfc.to_lowercase();
+    lowered
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
-pub fn card_id(source_language: &str, target_language: &str, slug: &str, part_of_speech: &str) -> String {
-    format!("flts_{source_language}_{target_language}_{slug}_{part_of_speech}")
+/// Convert a canonicalized lemma or PoS string into a filesystem-safe
+/// fragment. Lemmas and PoS values both flow into filenames and IDs and
+/// both can carry surprises (multi-word lemmas like "darse cuenta", LLM
+/// PoS noise like "noun (gerund/participle)"), so they share the same
+/// rules: replace every whitespace and every separator-ish or
+/// filesystem-unsafe character with `_`, collapse consecutive `_`, trim
+/// leading/trailing `_`. Replacement (not removal) prevents two distinct
+/// inputs from collapsing into the same slug (`a/b` and `ab` stay
+/// distinct as `a_b` and `ab`).
+fn fs_safe_slug(canonical: &str) -> String {
+    let mapped: String = canonical
+        .chars()
+        .map(|c| {
+            if c.is_whitespace()
+                || matches!(
+                    c,
+                    '/' | '\\'
+                        | ':'
+                        | '*'
+                        | '?'
+                        | '"'
+                        | '<'
+                        | '>'
+                        | '|'
+                        | '('
+                        | ')'
+                        | '['
+                        | ']'
+                        | '{'
+                        | '}'
+                        | ','
+                        | ';'
+                )
+            {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let mut out = String::with_capacity(mapped.len());
+    let mut prev_underscore = true;
+    for c in mapped.chars() {
+        if c == '_' {
+            if !prev_underscore {
+                out.push('_');
+                prev_underscore = true;
+            }
+        } else {
+            out.push(c);
+            prev_underscore = false;
+        }
+    }
+    while out.ends_with('_') {
+        out.pop();
+    }
+    out
+}
+
+pub fn lemma_slug(canonical: &str) -> String {
+    fs_safe_slug(canonical)
+}
+
+pub fn part_of_speech_slug(canonical: &str) -> String {
+    fs_safe_slug(canonical)
+}
+
+pub fn card_id(
+    source_language: &str,
+    target_language: &str,
+    lemma_slug: &str,
+    pos_slug: &str,
+) -> String {
+    format!("flts_{source_language}_{target_language}_{lemma_slug}_{pos_slug}")
 }
 
 pub fn is_eligible(word: &translation_import::Word) -> bool {
@@ -255,12 +343,21 @@ pub fn extract_card_updates(
                 continue;
             }
             let slug = lemma_slug(&lemma);
+            if slug.is_empty() {
+                continue;
+            }
+            let part_of_speech = canonicalize_part_of_speech(&word.grammar.part_of_speech);
+            let pos_slug = part_of_speech_slug(&part_of_speech);
+            if pos_slug.is_empty() {
+                continue;
+            }
             let key = CardKey {
                 source_language: source_language.to_owned(),
                 target_language: target_language.to_owned(),
                 lemma,
                 slug,
-                part_of_speech: word.grammar.part_of_speech.clone(),
+                part_of_speech,
+                pos_slug,
             };
 
             if let Some(existing) = updates.iter_mut().find(|u| u.key == key) {
@@ -351,8 +448,23 @@ mod tests {
     }
 
     #[test]
-    fn slug_drops_unsafe_chars() {
-        assert_eq!(lemma_slug("a/b\\c:d*e?f\"g<h>i|j"), "abcdefghij");
+    fn slug_replaces_unsafe_chars_with_underscore() {
+        // Unsafe chars become `_` (not dropped) so distinct inputs stay
+        // distinct on disk and the resulting filename is readable.
+        assert_eq!(
+            lemma_slug("a/b\\c:d*e?f\"g<h>i|j"),
+            "a_b_c_d_e_f_g_h_i_j"
+        );
+    }
+
+    #[test]
+    fn lemma_slug_handles_noisy_input_like_pos_slug() {
+        // Lemma and PoS share the same fs-safety helper, so the same noisy
+        // inputs slug identically — no surprising filesystem failures on
+        // either field.
+        assert_eq!(lemma_slug("(foo)"), "foo");
+        assert_eq!(lemma_slug("a / b"), "a_b");
+        assert_eq!(lemma_slug("  spaced  out  "), "spaced_out");
     }
 
     #[test]
@@ -367,6 +479,119 @@ mod tests {
             card_id("spa", "rus", "poder", "verb"),
             "flts_spa_rus_poder_verb"
         );
+    }
+
+    #[test]
+    fn canonicalize_pos_lowercases_and_collapses_whitespace() {
+        assert_eq!(canonicalize_part_of_speech("  VERB  "), "verb");
+        assert_eq!(
+            canonicalize_part_of_speech("Noun  /\tAdjective"),
+            "noun / adjective"
+        );
+    }
+
+    #[test]
+    fn canonicalize_pos_nfc_roundtrip() {
+        // "é" composed vs decomposed
+        let composed = "verbe\u{00E9}";
+        let decomposed = "verbe\u{0065}\u{0301}";
+        assert_eq!(
+            canonicalize_part_of_speech(composed),
+            canonicalize_part_of_speech(decomposed)
+        );
+    }
+
+    #[test]
+    fn pos_slug_passthrough_on_clean_input() {
+        assert_eq!(part_of_speech_slug("verb"), "verb");
+        assert_eq!(part_of_speech_slug("noun"), "noun");
+        assert_eq!(part_of_speech_slug("punct"), "punct");
+    }
+
+    #[test]
+    fn pos_slug_replaces_slashes_and_parens() {
+        // The exact noisy values the LLM emitted on the user's library.
+        assert_eq!(
+            part_of_speech_slug("существительное / прилагательное"),
+            "существительное_прилагательное"
+        );
+        assert_eq!(
+            part_of_speech_slug("герундий/причастие настоящего времени"),
+            "герундий_причастие_настоящего_времени"
+        );
+        assert_eq!(
+            part_of_speech_slug("глагол (герундий/причастие настоящего времени)"),
+            "глагол_герундий_причастие_настоящего_времени"
+        );
+        assert_eq!(part_of_speech_slug("наречие/предлог"), "наречие_предлог");
+        assert_eq!(
+            part_of_speech_slug("предлог/частица инфинитива"),
+            "предлог_частица_инфинитива"
+        );
+    }
+
+    #[test]
+    fn pos_slug_trims_leading_and_trailing_separators() {
+        assert_eq!(part_of_speech_slug("/verb/"), "verb");
+        assert_eq!(part_of_speech_slug("  verb  "), "verb");
+        assert_eq!(part_of_speech_slug("___verb___"), "verb");
+    }
+
+    #[test]
+    fn pos_slug_empty_on_pure_separators() {
+        assert_eq!(part_of_speech_slug(""), "");
+        assert_eq!(part_of_speech_slug("   "), "");
+        assert_eq!(part_of_speech_slug("///"), "");
+    }
+
+    #[test]
+    fn extract_card_updates_canonicalizes_noisy_pos() {
+        // Two words with the same lemma but PoS strings that differ only
+        // in noise: one canonicalizes the same as the other. The extract
+        // pass dedups them under the same key.
+        let paragraph = one_sentence_paragraph(
+            "Хорошо.",
+            vec![
+                full_word("good", "good", "хорошо", "Существительное / Прилагательное", &["хорошо"], false),
+                full_word("good", "good", "хорошо", "существительное /прилагательное ", &["добро"], false),
+            ],
+        );
+        let updates = extract_card_updates(
+            &paragraph,
+            spa(),
+            Language::from_639_3("rus").unwrap(),
+            Uuid::new_v4(),
+            0,
+            0,
+        );
+        assert_eq!(updates.len(), 1);
+        let update = &updates[0];
+        assert_eq!(update.key.part_of_speech, "существительное / прилагательное");
+        assert_eq!(update.key.pos_slug, "существительное_прилагательное");
+        assert_eq!(
+            update.key.id(),
+            "flts_spa_rus_good_существительное_прилагательное"
+        );
+        // Both translations were merged under the canonical key.
+        assert!(update.translations.contains(&"хорошо".to_string()));
+        assert!(update.translations.contains(&"добро".to_string()));
+    }
+
+    #[test]
+    fn extract_card_updates_skips_pos_that_slugs_to_empty() {
+        let paragraph = one_sentence_paragraph(
+            "Хорошо.",
+            vec![full_word("good", "good", "хорошо", "///", &["хорошо"], false)],
+        );
+        let updates = extract_card_updates(
+            &paragraph,
+            spa(),
+            Language::from_639_3("rus").unwrap(),
+            Uuid::new_v4(),
+            0,
+            0,
+        );
+        assert!(updates.is_empty(), "expected pure-separator PoS to be skipped");
     }
 
     #[test]
@@ -446,6 +671,7 @@ mod tests {
             lemma: "poder".into(),
             slug: "poder".into(),
             part_of_speech: "verb".into(),
+            pos_slug: "verb".into(),
         }
     }
 

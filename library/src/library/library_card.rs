@@ -8,7 +8,7 @@ use tokio::sync::Mutex;
 
 use crate::{
     book::serialization::create_random_string,
-    card::{Card, card_id, lemma_slug},
+    card::{Card, card_id, lemma_slug, part_of_speech_slug},
 };
 
 pub struct LibraryCardStore {
@@ -32,9 +32,15 @@ impl LibraryCardStore {
         self.root.join(format!("{source_language}-{target_language}"))
     }
 
-    pub fn card_path(&self, source_language: &str, target_language: &str, slug: &str, part_of_speech: &str) -> PathBuf {
+    pub fn card_path(
+        &self,
+        source_language: &str,
+        target_language: &str,
+        lemma_slug: &str,
+        pos_slug: &str,
+    ) -> PathBuf {
         self.deck_dir(source_language, target_language)
-            .join(format!("{slug}_{part_of_speech}.json"))
+            .join(format!("{lemma_slug}_{pos_slug}.json"))
     }
 
     pub async fn lock_for(&self, id: &str) -> Arc<Mutex<()>> {
@@ -53,10 +59,11 @@ impl LibraryCardStore {
         &self,
         source_language: &str,
         target_language: &str,
-        slug: &str,
-        part_of_speech: &str,
+        lemma_slug: &str,
+        pos_slug: &str,
     ) -> anyhow::Result<Option<Card>> {
-        let canonical_path = self.card_path(source_language, target_language, slug, part_of_speech);
+        let canonical_path =
+            self.card_path(source_language, target_language, lemma_slug, pos_slug);
         if !tokio::fs::try_exists(&canonical_path).await? {
             return Ok(None);
         }
@@ -64,9 +71,9 @@ impl LibraryCardStore {
         let mut base: Card = serde_json::from_slice(&canonical_bytes)?;
 
         let deck_dir = self.deck_dir(source_language, target_language);
-        let canonical_file_name = format!("{slug}_{part_of_speech}.json");
-        let file_name_prefix = format!("{slug}_{part_of_speech}.");
-        let expected_id = card_id(source_language, target_language, slug, part_of_speech);
+        let canonical_file_name = format!("{lemma_slug}_{pos_slug}.json");
+        let file_name_prefix = format!("{lemma_slug}_{pos_slug}.");
+        let expected_id = card_id(source_language, target_language, lemma_slug, pos_slug);
 
         let accepted = self
             .scan_conflict_siblings(
@@ -153,7 +160,7 @@ impl LibraryCardStore {
                 source_language,
                 target_language,
                 &lemma_slug(&card.lemma),
-                &card.part_of_speech,
+                &part_of_speech_slug(&card.part_of_speech),
             );
             if sibling_id != expected_id {
                 log::warn!(
@@ -173,8 +180,8 @@ impl LibraryCardStore {
         tokio::fs::create_dir_all(&deck).await?;
 
         let slug = lemma_slug(&card.lemma);
-        let part_of_speech = &card.part_of_speech;
-        let file_name = format!("{slug}_{part_of_speech}.json");
+        let pos_slug = part_of_speech_slug(&card.part_of_speech);
+        let file_name = format!("{slug}_{pos_slug}.json");
         let canonical = deck.join(&file_name);
         let temp = deck.join(format!("{file_name}~{}", create_random_string(8)));
 

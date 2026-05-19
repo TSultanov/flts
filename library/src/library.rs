@@ -285,7 +285,7 @@ impl Library {
                         &update.key.source_language,
                         &update.key.target_language,
                         &update.key.slug,
-                        &update.key.part_of_speech,
+                        &update.key.pos_slug,
                     )
                     .await?;
                 let card = match existing {
@@ -974,6 +974,60 @@ mod library_tests {
         assert!(provenances.contains(&(other_book, 0, 0)));
         assert!(provenances.contains(&(other_book, 1, 5)));
         assert!(provenances.contains(&(book_id, 0, 0)));
+    }
+
+    #[tokio::test]
+    async fn integration_noisy_pos_persists_to_disk() {
+        // Regression for the os-error-2 the user observed when the LLM
+        // returned multi-PoS values like
+        //   "Существительное / Прилагательное"
+        //   "глагол (герундий/причастие настоящего времени)"
+        // The slashes were interpreted as path separators and the card
+        // file never landed. Now: pos_slug strips them and the card
+        // persists at a safe filename.
+        let tmp = TempDir::new("flts_card_noisy_pos");
+        let (library, book_id) =
+            library_with_one_paragraph_book(tmp.path.join("lib"), "good judge").await;
+        let paragraph = paragraph_with(
+            "хорошо судить",
+            vec![
+                full_word(
+                    "good",
+                    "good",
+                    "хорошо",
+                    "Существительное / Прилагательное",
+                    &["хорошо"],
+                    false,
+                ),
+                full_word(
+                    "judge",
+                    "judge",
+                    "судить",
+                    "глагол (герундий/причастие настоящего времени)",
+                    &["судить"],
+                    false,
+                ),
+            ],
+        );
+
+        library
+            .apply_paragraph_to_cards(book_id, 0, &paragraph, Language::from_639_3("rus").unwrap())
+            .await
+            .unwrap();
+
+        let deck = tmp.path.join("lib").join("cards").join("spa-rus");
+        let names: std::collections::HashSet<String> = std::fs::read_dir(&deck)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert!(
+            names.contains("good_существительное_прилагательное.json"),
+            "expected the 'good' card with safe slugged filename, got {names:?}"
+        );
+        assert!(
+            names.contains("judge_глагол_герундий_причастие_настоящего_времени.json"),
+            "expected the 'judge' card with safe slugged filename, got {names:?}"
+        );
     }
 
     #[tokio::test]
