@@ -7,7 +7,8 @@ import {
     type ParagraphTranslationSlice,
     type SentenceWordTranslation,
 } from "./types";
-import { ParagraphTranslationActivityResource, Resource } from "./tauri.svelte";
+import { Resource } from "./tauri.svelte";
+import { ParagraphTranslationActivityResource } from "./translationActivity.svelte";
 import { invoke } from "@tauri-apps/api/core";
 import { getConfig } from "../config/store";
 
