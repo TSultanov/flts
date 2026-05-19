@@ -1,7 +1,7 @@
 <script lang="ts">
     import { Router } from 'sv-router';
 	import './router';
-    import Nav from "./lib/Nav.svelte";
+    import Nav from "./lib/chrome/Nav.svelte";
     import { onMount, setContext } from "svelte";
     import { Library } from "./lib/data/library";
     import { configStore } from "./lib/config";
