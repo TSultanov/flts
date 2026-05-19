@@ -26,6 +26,96 @@ pub fn total_stream_timeout(input_len: usize) -> Duration {
     TRANSLATION_TOTAL_TIMEOUT_BASE + TRANSLATION_TOTAL_TIMEOUT_PER_CHAR * (input_len as u32)
 }
 
+/// Closed set of values the LLM may return in `grammar.partOfSpeech`.
+/// The schema's `enum` keyword is built from this list, and the prompt
+/// renders the same list with the descriptions below. Pair-aligned with
+/// `PART_OF_SPEECH_DESCRIPTIONS`; the `const _:` assertion at the bottom
+/// of this block prevents the two from drifting.
+pub(crate) const PART_OF_SPEECH_TAGS: &[&str] = &[
+    "common_noun",
+    "proper_noun",
+    "pronoun_personal",
+    "pronoun_possessive",
+    "pronoun_demonstrative",
+    "pronoun_reflexive",
+    "pronoun_relative",
+    "pronoun_interrogative",
+    "pronoun_indefinite",
+    "pronoun_other",
+    "verb",
+    "verb_auxiliary",
+    "verb_modal",
+    "verb_copula",
+    "predicative",
+    "participle_present",
+    "participle_past",
+    "gerund",
+    "adjective",
+    "adverb",
+    "determiner_article",
+    "determiner_demonstrative",
+    "determiner_possessive",
+    "determiner_quantifier",
+    "preposition",
+    "postposition",
+    "conjunction_coordinating",
+    "conjunction_subordinating",
+    "particle",
+    "classifier",
+    "interjection",
+    "numeral_cardinal",
+    "numeral_ordinal",
+    "affix",
+    "other",
+];
+
+/// One-line scope per tag, in the same order as `PART_OF_SPEECH_TAGS`.
+/// Rendered into the prompt so the LLM has guidance on which value to pick.
+pub(crate) const PART_OF_SPEECH_DESCRIPTIONS: &[&str] = &[
+    "regular common nouns (book, idea, страна, libro, kitap, წიგნი, 书)",
+    "names of people, places, brands (Harry, Munich, Москва, Madrid, İstanbul, თბილისი, 北京)",
+    "personal pronouns including Spanish clitics (I, you, he, she, me/te/se/lo, я, ты, он, 我, 你)",
+    "possessive pronouns standing alone as the noun phrase (mine, yours, мой as predicate, mío)",
+    "demonstrative pronouns standing alone (this, that, этот as predicate, esto, bu, ეს, 这个 in isolation)",
+    "reflexive pronouns (myself, себя, kendi, თავი, 自己)",
+    "relative pronouns in relative clauses (which, that, who as relativizer; который, que)",
+    "interrogative pronouns in questions (who, what; кто, что; qué; kim, ne; ვინ, რა; 谁, 什么)",
+    "indefinite pronouns (someone, anyone, none; кто-то, никто; alguien; biri; ვინმე; 有人)",
+    "catch-all for pronoun-like words that fit none of the above (everyone/everything, intensive сам/himself, dummy/expletive it/there, impersonal subjects)",
+    "main lexical verb in finite or non-finite use that is NOT a participle, gerund, copula, auxiliary, or modal. Imperatives, subjunctives, infinitives, converbs collapse here. Inflection goes in tense/plurality/person/case/other, not in this tag",
+    "auxiliary verbs when helping another verb (have eaten, is going, был as past-tense aux, Spanish haber, Turkish ol- as auxiliary, Chinese 在/着 as aspect host when verbal)",
+    "modal verbs (can, must, will, should; мочь as modal; deber; -ebil- in Turkish potentialis; 能, 会, 可以)",
+    "linking copula (am tired, was hungry; ser/estar in Spanish; есть as copula; dır in Turkish; არის in Georgian; 是 in Chinese)",
+    "Russian-style state words used alone as predicate (можно, нельзя, пора, надо, жаль; Korean/Hungarian have analogs). Use only when the word does not inflect like a verb and functions as the predicate by itself",
+    "present participle: -ing as adjectival in English; Russian active present идущий / passive present читаемый; Turkish -an; Georgian მ-...-ელ-ი; Spanish gerundio when adjectival",
+    "past participle: -ed as adjectival in English; Russian active past прочитавший / passive past прочитанный; Turkish -mış/-dik; Georgian -ულ-ი; Spanish participio cantado; deverbal adjectives once lexicalized",
+    "verb form used as a noun: English -ing as nominal subject/object; Russian verbal nouns and деепричастия when nominal; Spanish gerundio when nominal; Turkish -mek/-me nominals; Georgian masdar -ი; converbs when functioning adverbial-nominal. For an -ing word in English: noun-position → gerund, modifier-position → participle_present",
+    "attributive and predicative adjectives, Japanese i-adj / na-adj (record the type in grammar.other), Russian short/long forms (form in grammar.other)",
+    "adverbs (modify verbs, adjectives, or other adverbs)",
+    "articles: a, an, the; el/la; der/die/das",
+    "demonstrative determiners: this/that BEFORE a noun (this car); этот/эта before a noun; este libro; bu kitap; ეს წიგნი; 这本书",
+    "possessive determiners: my/your BEFORE a noun (my book); мой before a noun; mi libro",
+    "quantifier determiners (some, many, several, few, all; несколько, mucho, çok, ბევრი, 很多, 一些)",
+    "prepositions: relational markers placed BEFORE their complement (in, on, of, against; под, для, из; en, de)",
+    "postpositions: relational markers placed AFTER their complement. Turkish ile/için/gibi; Georgian -ში/-ზე/-თვის; Japanese case-marking particles に/で/へ when functioning as postpositions",
+    "coordinating conjunctions (and, but, or; и, а, но; y, o, pero; ve, ama, veya; და, მაგრამ; 和, 但是, 或者)",
+    "subordinating conjunctions (because, although, when; если, что as conj., потому что; porque, aunque, cuando; çünkü, eğer; რომ, თუ; 因为, 虽然, 如果)",
+    "particle: broad function-word bucket. Infinitive marker English to; phrasal-verb particle up/down/out; negation не/ни, not, değil, არ, 不/没; Japanese binding/topic/case particles は/が/を when not used as postpositions; question markers Turkish mi/mı, Japanese か, Chinese 吗; aspect markers Chinese 了/着/过, Japanese た/て; sentence-final particles Chinese 吧/呢, Japanese よ/ね. Use this when a function word is neither preposition nor postposition nor conjunction",
+    "classifier / measure word: Chinese 个, 只, 本, 张; Japanese counters 個, 本, 枚, 匹; Korean numerative",
+    "interjection or onomatopoeia (oh, wow, ой, ах, ay; boom, мяу, わんわん, 喵)",
+    "cardinal numerals (one, two; один, два; uno, dos; bir, iki; ერთი, ორი; 一, 二)",
+    "ordinal numerals (first, second; первый, второй; primero, segundo; birinci, ikinci; პირველი, მეორე; 第一, 第二)",
+    "bound morphemes the LLM occasionally returns as separate words (-ed, -ing, English 's; Russian -сь/-ся; Turkish suffix chains when split; Georgian preverb მი-/მო-)",
+    "last-resort escape ONLY for the rare case nothing else fits (acronyms used as words, untranslatable transliterations, gibberish in the source). Do not default to this",
+];
+
+const _: () = {
+    assert!(
+        PART_OF_SPEECH_TAGS.len() == PART_OF_SPEECH_DESCRIPTIONS.len(),
+        "PART_OF_SPEECH_TAGS and PART_OF_SPEECH_DESCRIPTIONS must be aligned"
+    );
+};
+
 #[derive(Debug)]
 pub struct StreamChunkAccumulator {
     provider: &'static str,
@@ -199,6 +289,20 @@ pub trait Translator: Send + Sync {
     where
         Self: Sized,
     {
+        let mut pos_block = String::from(
+            "Part-of-speech vocabulary. The 'partOfSpeech' field is restricted by the JSON schema to one of the following English tags; pick the one whose scope best fits the word. Do NOT translate these tags or invent new ones. Inflection information (tense, plurality, person, case) belongs in the dedicated grammar fields, NOT in partOfSpeech.\n",
+        );
+        for (tag, description) in PART_OF_SPEECH_TAGS
+            .iter()
+            .zip(PART_OF_SPEECH_DESCRIPTIONS.iter())
+        {
+            pos_block.push_str("            - ");
+            pos_block.push_str(tag);
+            pos_block.push_str(": ");
+            pos_block.push_str(description);
+            pos_block.push('\n');
+        }
+
         format!(
         "You are given a paragraph in a foreign language. The goal is to construct a translation which can be used by somebody who speaks the {to} language to learn the original language.
         For each sentence provide a good, but close to the original, translation from {from} into the {to} language.
@@ -212,7 +316,7 @@ pub trait Translator: Send + Sync {
             - Grammatical information should ONLY be about the original word and how it's used in the original language.
             - Do NOT use concepts from the {to} language when decribing the grammar.
             - Use ONLY concepts which make sense and exist in the {from} language grammatical system, but explain them in the {to} language.
-            - All the information given must be in {to} language except for the 'originalInitialForm', 'sourceLanguage' and 'targetLanguage' fields, which should be in the {from} language.
+            - All the information given must be in {to} language except for the 'originalInitialForm', 'sourceLanguage', 'targetLanguage' and 'partOfSpeech' fields. 'originalInitialForm' is in {from}; 'sourceLanguage' and 'targetLanguage' are ISO 639-3 codes; 'partOfSpeech' is one of the canonical English tags listed below.
             - Example: For Japanese, use concepts like 'て-form', 'potential form', '連体形'
             - Example: For German, use concepts like 'dative case', 'strong declension'
             - Example: For Russian, use concepts like 'perfective aspect', 'genitive case'
@@ -220,13 +324,12 @@ pub trait Translator: Send + Sync {
             - In the 'other' field, include any language-specific grammatical features not covered by standard fields
         Initial forms in the grammar section must be contain the form as it appears in the dictionaries in the language of the original and target text.
         'sourceLanguage' and 'targetLanguage' must contain ISO 639 Set 3 code of the corresponding language (e.g. 'eng', 'deu', 'rus', 'jpn', etc.).
+        {pos_block}
         Maintain consistency:
             - Use the same terminology throughout the translation
             - If a word appears multiple times, analyze it consistently
             - Ensure word count matches: every word in original must have a corresponding entry
         Special cases:
-            - Numbers: treat as words with 'numeral' part of speech
-            - Proper nouns: mark in partOfSpeech as 'proper noun', provide transliteration if needed
             - Idioms: provide literal translation in note field, idiomatic translation in contextualTranslations
             - Honorifics: mark as such and explain their usage level in the note field
         Quality checks before submitting:
@@ -235,7 +338,8 @@ pub trait Translator: Send + Sync {
             3. Grammar: Did you avoid using TARGET language grammar concepts for SOURCE language analysis?
             4. Completeness: Does every word have all required fields filled?
             5. Consistency: Are repeated words analyzed the same way?
-            6. ISO codes: Are sourceLanguage and targetLanguage correct 3-letter ISO 639-3 codes?")
+            6. ISO codes: Are sourceLanguage and targetLanguage correct 3-letter ISO 639-3 codes?
+            7. partOfSpeech: Is every word's partOfSpeech one of the canonical English tags listed above?")
     }
 }
 
@@ -247,6 +351,7 @@ pub trait Translator: Send + Sync {
 /// produces extra empty-string fields for the optional grammar slots; those
 /// deserialize cleanly into `Option<String>`.
 pub(crate) fn paragraph_translation_schema() -> serde_json::Value {
+    let pos_enum: Vec<&str> = PART_OF_SPEECH_TAGS.to_vec();
     serde_json::json!({
         "type": "object",
         "additionalProperties": false,
@@ -277,7 +382,11 @@ pub(crate) fn paragraph_translation_schema() -> serde_json::Value {
                                         "properties": {
                                             "originalInitialForm": { "type": "string", "description": "Original word in its initial (dictionary) form" },
                                             "targetInitialForm": { "type": "string", "description": "Translated word in its initial (dictionary) form" },
-                                            "partOfSpeech": { "type": "string", "description": "Which part of speech the original word is" },
+                                            "partOfSpeech": {
+                                                "type": "string",
+                                                "enum": pos_enum,
+                                                "description": "Part of speech of the original word. Must be one of the enumerated tags; see prompt for the scope of each."
+                                            },
                                             "plurality": { "type": "string", "description": "Plurality of the original word, if applicable" },
                                             "person": { "type": "string", "description": "Person of the original word, if applicable" },
                                             "tense": { "type": "string", "description": "Tense of the original word, if applicable" },
