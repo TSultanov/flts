@@ -3,7 +3,9 @@ use std::path::Path;
 use isolang::Language;
 
 use crate::book::translation_import::ParagraphTranslation;
-use crate::disk_cache::DiskCache;
+
+pub mod disk;
+pub use disk::DiskCache;
 
 const MIB: u64 = 1024 * 1024;
 

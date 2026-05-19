@@ -3,7 +3,7 @@ use std::path::Path;
 use isolang::Language;
 use serde::{Deserialize, Serialize};
 
-use crate::disk_cache::DiskCache;
+use crate::cache::DiskCache;
 
 /// Kalman filter state for estimating translation size ratio.
 ///
