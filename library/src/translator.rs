@@ -17,7 +17,7 @@ use crate::{
 pub const TRANSLATION_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 pub const TRANSLATION_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 const TRANSLATION_INTER_CHUNK_TIMEOUT: Duration = Duration::from_secs(30);
-const TRANSLATION_TOTAL_TIMEOUT_BASE: Duration = Duration::from_secs(30);
+const TRANSLATION_TOTAL_TIMEOUT_BASE: Duration = Duration::from_secs(60);
 const TRANSLATION_TOTAL_TIMEOUT_PER_CHAR: Duration = Duration::from_millis(100);
 
 pub type ProgressCallback = dyn Fn(usize) + Send + Sync;
