@@ -1,5 +1,6 @@
 pub mod book;
 pub mod cache;
+pub mod card;
 pub mod epub_importer;
 pub mod library;
 pub mod lyrics;

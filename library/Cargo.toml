@@ -29,6 +29,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 strum = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "fs", "time", "io-util", "process"] }
+unicode-normalization = { workspace = true }
 uuid = { workspace = true }
 zstd = { version = "0.13.3", default-features = false, features = ["arrays"] }
 
