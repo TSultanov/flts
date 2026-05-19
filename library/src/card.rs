@@ -179,6 +179,44 @@ impl Card {
             self.examples.push(example.clone());
         }
     }
+
+    /// Merge `other` into `self` for cross-instance conflict reconciliation.
+    /// Caller has already verified that `self.id == other.id` (i.e. both files
+    /// address the same `(src, tgt, slug, pos)` key). `self.anki_data` is kept;
+    /// `other.anki_data` is discarded — it's a local cache, not authoritative
+    /// across instances.
+    pub fn merge(&mut self, other: Card) {
+        for t in other.translations {
+            if !self.translations.contains(&t) {
+                self.translations.push(t);
+            }
+        }
+
+        let mut combined: Vec<Example> = std::mem::take(&mut self.examples);
+        for e in other.examples {
+            if !combined.iter().any(|existing| {
+                existing.book_id == e.book_id
+                    && existing.chapter == e.chapter
+                    && existing.paragraph == e.paragraph
+                    && existing.source == e.source
+                    && existing.translation == e.translation
+            }) {
+                combined.push(e);
+            }
+        }
+
+        if combined.len() > EXAMPLES_CAP {
+            combined.sort_by(|a, b| {
+                a.book_id
+                    .cmp(&b.book_id)
+                    .then(a.chapter.cmp(&b.chapter))
+                    .then(a.paragraph.cmp(&b.paragraph))
+            });
+            combined.truncate(EXAMPLES_CAP);
+        }
+
+        self.examples = combined;
+    }
 }
 
 pub fn extract_card_updates(
@@ -669,6 +707,140 @@ mod tests {
         assert_eq!(updates[0].translations, vec!["могу", "умею"]);
         // example is from the first sentence the lemma appeared in
         assert_eq!(updates[0].example.as_ref().unwrap().translation, "Я могу.");
+    }
+
+    fn make_card_with(translations: Vec<&str>, examples: Vec<Example>, anki_data: Option<AnkiData>) -> Card {
+        Card {
+            version: 1,
+            id: "flts_spa_rus_poder_verb".into(),
+            lemma: "poder".into(),
+            part_of_speech: "verb".into(),
+            translations: translations.into_iter().map(String::from).collect(),
+            examples,
+            anki_data,
+        }
+    }
+
+    fn example_with(book_id: Uuid, chapter: usize, paragraph: usize, source: &str, translation: &str) -> Example {
+        Example {
+            source: source.into(),
+            translation: translation.into(),
+            book_id,
+            chapter,
+            paragraph,
+        }
+    }
+
+    #[test]
+    fn merge_unions_translations() {
+        let mut base = make_card_with(vec!["мочь"], vec![], None);
+        let other = make_card_with(vec!["уметь"], vec![], None);
+        base.merge(other);
+        assert_eq!(base.translations, vec!["мочь", "уметь"]);
+    }
+
+    #[test]
+    fn merge_dedups_translations() {
+        let mut base = make_card_with(vec!["мочь", "уметь"], vec![], None);
+        let other = make_card_with(vec!["мочь"], vec![], None);
+        base.merge(other);
+        assert_eq!(base.translations, vec!["мочь", "уметь"]);
+    }
+
+    #[test]
+    fn merge_translations_order_base_first() {
+        let mut base = make_card_with(vec!["a", "b"], vec![], None);
+        let other = make_card_with(vec!["b", "c", "a"], vec![], None);
+        base.merge(other);
+        assert_eq!(base.translations, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn merge_unions_examples_by_provenance() {
+        let book = Uuid::new_v4();
+        let base_ex = example_with(book, 1, 1, "s1", "t1");
+        let other_ex = example_with(book, 1, 2, "s2", "t2");
+        let mut base = make_card_with(vec![], vec![base_ex.clone()], None);
+        let other = make_card_with(vec![], vec![other_ex.clone()], None);
+        base.merge(other);
+        assert_eq!(base.examples.len(), 2);
+        assert!(base.examples.contains(&base_ex));
+        assert!(base.examples.contains(&other_ex));
+    }
+
+    #[test]
+    fn merge_dedups_examples_by_provenance_tuple() {
+        let book = Uuid::new_v4();
+        let ex_a = example_with(book, 1, 1, "s", "t");
+        let ex_dup = example_with(book, 1, 1, "s", "t");
+        let mut base = make_card_with(vec![], vec![ex_a], None);
+        let other = make_card_with(vec![], vec![ex_dup], None);
+        base.merge(other);
+        assert_eq!(base.examples.len(), 1);
+    }
+
+    #[test]
+    fn merge_preserves_examples_cap_at_10_via_sort_by_provenance() {
+        let book = Uuid::new_v4();
+        let base_examples: Vec<Example> = (10..16)
+            .map(|p| example_with(book, 0, p, &format!("s{p}"), &format!("t{p}")))
+            .collect();
+        let other_examples: Vec<Example> = (0..10)
+            .map(|p| example_with(book, 0, p, &format!("s{p}"), &format!("t{p}")))
+            .collect();
+        let mut base = make_card_with(vec![], base_examples, None);
+        let other = make_card_with(vec![], other_examples, None);
+        base.merge(other);
+        assert_eq!(base.examples.len(), EXAMPLES_CAP);
+        let paragraphs: Vec<usize> = base.examples.iter().map(|e| e.paragraph).collect();
+        assert_eq!(paragraphs, vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    }
+
+    #[test]
+    fn merge_commutative_on_translations_and_examples() {
+        let book = Uuid::new_v4();
+        let a_examples: Vec<Example> = (10..16)
+            .map(|p| example_with(book, 0, p, &format!("s{p}"), &format!("t{p}")))
+            .collect();
+        let b_examples: Vec<Example> = (0..10)
+            .map(|p| example_with(book, 0, p, &format!("s{p}"), &format!("t{p}")))
+            .collect();
+
+        let mut ab = make_card_with(vec!["x", "y"], a_examples.clone(), None);
+        ab.merge(make_card_with(vec!["y", "z"], b_examples.clone(), None));
+
+        let mut ba = make_card_with(vec!["y", "z"], b_examples, None);
+        ba.merge(make_card_with(vec!["x", "y"], a_examples, None));
+
+        // Translations differ in order (base-first), so compare as sets.
+        let ab_t: std::collections::HashSet<_> = ab.translations.iter().collect();
+        let ba_t: std::collections::HashSet<_> = ba.translations.iter().collect();
+        assert_eq!(ab_t, ba_t);
+
+        // Examples are sort-and-truncated when over cap, so order is deterministic.
+        assert_eq!(ab.examples, ba.examples);
+    }
+
+    #[test]
+    fn merge_keeps_base_anki_data_discards_other() {
+        let base_anki = AnkiData {
+            state: AnkiState::Active,
+            interval_days: Some(30.0),
+            ease_factor: Some(2.5),
+            fsrs_difficulty: None,
+            fsrs_stability: None,
+        };
+        let other_anki = AnkiData {
+            state: AnkiState::Suspended,
+            interval_days: None,
+            ease_factor: None,
+            fsrs_difficulty: None,
+            fsrs_stability: None,
+        };
+        let mut base = make_card_with(vec![], vec![], Some(base_anki.clone()));
+        let other = make_card_with(vec![], vec![], Some(other_anki));
+        base.merge(other);
+        assert_eq!(base.anki_data, Some(base_anki));
     }
 
     #[test]
