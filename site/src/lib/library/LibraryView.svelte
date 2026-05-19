@@ -4,7 +4,7 @@
     import ConfirmDialog from "../dialogs/ConfirmDialog.svelte";
     import MoveFolderDialog from "../dialogs/MoveFolderDialog.svelte";
     import type { UUID } from "../data/uuid";
-    import type { BookMeta } from "../data/types";
+    import type { BookMeta } from "../data/library";
 
     const library: Library = getContext("library");
     const books = library.getLibraryBooksMetadata();

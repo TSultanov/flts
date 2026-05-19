@@ -1,5 +1,4 @@
-import type { Library } from "../data/library";
-import type { ParagraphSegment } from "../data/types";
+import type { Library, ParagraphSegment } from "../data/library";
 import type { UUID } from "../data/uuid";
 import type { ChapterParagraphsStore } from "./ChapterParagraphsStore.svelte";
 
