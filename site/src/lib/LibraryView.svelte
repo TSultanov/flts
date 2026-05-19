@@ -4,7 +4,7 @@
     import ConfirmDialog from "./ConfirmDialog.svelte";
     import MoveFolderDialog from "./MoveFolderDialog.svelte";
     import type { UUID } from "./data/uuid";
-    import type { IBookMeta } from "./data/sql/book";
+    import type { BookMeta } from "./data/types";
 
     const library: Library = getContext("library");
     const books = library.getLibraryBooksMetadata();
@@ -14,8 +14,8 @@
     let selectedBookUids = $state(new Set<UUID>());
     let showBatchDeleteDialog = $state(false);
     let showBatchMoveDialog = $state(false);
-    let booksToDelete: IBookMeta[] = $state([]);
-    let booksToMove: IBookMeta[] = $state([]);
+    let booksToDelete: BookMeta[] = $state([]);
+    let booksToMove: BookMeta[] = $state([]);
 
     // Batch selection functions
     function toggleBookSelection(bookUid: UUID) {
@@ -64,8 +64,8 @@
         showBatchMoveDialog = true;
     }
 
-    function getSelectedBooks(folder: LibraryFolder): IBookMeta[] {
-        const books: IBookMeta[] = [];
+    function getSelectedBooks(folder: LibraryFolder): BookMeta[] {
+        const books: BookMeta[] = [];
 
         // Add selected books from current folder
         books.push(

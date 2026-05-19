@@ -1,12 +1,12 @@
 import type { EpubBook } from "./epubLoader";
 import type { UUID } from "./uuid";
 import {
+    type BookMeta,
     type ChapterMetaView,
-    type IBookMeta,
     type ParagraphOriginal,
     type ParagraphTranslationSlice,
     type SentenceWordTranslation,
-} from "./sql/book";
+} from "./types";
 import { ParagraphTranslationActivityResource, Resource } from "./tauri.svelte";
 import { invoke } from "@tauri-apps/api/core";
 import { getConfig } from "../config";
@@ -29,7 +29,7 @@ export type BookReadingState = {
 export type LibraryFolder = {
     name?: string,
     folders: LibraryFolder[],
-    books: IBookMeta[],
+    books: BookMeta[],
 }
 
 export type SystemDefinition = {
