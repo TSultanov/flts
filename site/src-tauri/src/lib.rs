@@ -135,11 +135,11 @@ pub fn run() {
             app::lyrics::stop_spotify_watcher,
             app::lyrics::get_now_playing,
             app::lyrics::get_track_lyrics_state,
-            app::spotify_web::spotify_web_connect,
-            app::spotify_web::spotify_web_disconnect,
-            app::spotify_web::spotify_web_status,
-            app::spotify_web::spotify_web_get_queue,
-            app::spotify_web::open_external_url,
+            app::spotify::web::spotify_web_connect,
+            app::spotify::web::spotify_web_disconnect,
+            app::spotify::web::spotify_web_status,
+            app::spotify::web::spotify_web_get_queue,
+            app::spotify::web::open_external_url,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

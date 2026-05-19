@@ -27,7 +27,7 @@ use tokio::task::JoinHandle;
 use tokio::time;
 
 #[cfg(target_os = "macos")]
-use crate::app::spotify::{PlayerState, SpotifyWatcher};
+use crate::app::spotify::applescript::{PlayerState, SpotifyWatcher};
 
 const SPOTIFY_AUTH_URL: &str = "https://accounts.spotify.com/authorize";
 const SPOTIFY_TOKEN_URL: &str = "https://accounts.spotify.com/api/token";
@@ -788,7 +788,7 @@ async fn poll_loop(
 }
 
 #[cfg(target_os = "macos")]
-fn np_to_track_meta(np: crate::app::spotify::NowPlaying) -> Option<TrackMeta> {
+fn np_to_track_meta(np: crate::app::spotify::applescript::NowPlaying) -> Option<TrackMeta> {
     Some(TrackMeta {
         id: np.track_id?,
         name: np.name?,

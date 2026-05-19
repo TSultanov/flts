@@ -23,7 +23,7 @@ use tokio::sync::{Mutex, RwLock};
 use crate::app::{AppError, AppState, config::Config};
 
 #[cfg(target_os = "macos")]
-use crate::app::spotify::{NowPlaying, SpotifyWatcher};
+use crate::app::spotify::applescript::{NowPlaying, SpotifyWatcher};
 
 const PROGRESS_THROTTLE: Duration = Duration::from_millis(400);
 
@@ -170,7 +170,7 @@ pub async fn get_now_playing(
     if let Some(np) = state.lyrics_state.watcher.current() {
         return Ok(Some(np));
     }
-    match crate::app::spotify::query_once().await {
+    match crate::app::spotify::applescript::query_once().await {
         Ok(np) => Ok(Some(np)),
         Err(err) => Err(err.to_string()),
     }
