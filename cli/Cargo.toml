@@ -4,14 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow = "1.0.102"
+anyhow = { workspace = true }
 clap = { version = "4.6.1", features = ["derive"] }
-directories = "6.0.0"
+directories = { workspace = true }
 display-error-chain = "0.2.2"
 file-format = { version = "0.29.0", features = ["reader"] }
 flume = "0.12.0"
-isolang = "2.4.0"
+isolang = { workspace = true }
 library = { path = "../library" }
-log = "0.4.29"
-tokio = { version = "1.52.3", features = ["full"] }
-uuid = { version = "1.23.0", features = ["v4"] }
+log = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+uuid = { workspace = true }
