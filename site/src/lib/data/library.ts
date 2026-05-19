@@ -1,4 +1,4 @@
-import type { EpubBook } from "./epubLoader";
+import type { EpubBook } from "../import/epubLoader";
 import type { UUID } from "./uuid";
 import {
     type BookMeta,

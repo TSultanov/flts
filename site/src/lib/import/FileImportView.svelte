@@ -1,6 +1,6 @@
 <script lang="ts">
     import { getContext } from "svelte";
-    import { parseEpub } from "../data/epubLoader";
+    import { parseEpub } from "./epubLoader";
     import type { Library } from "../data/library";
     import type { Language } from "../config/store";
     import { Resource } from "../data/tauri.svelte";
