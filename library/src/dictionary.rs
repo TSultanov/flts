@@ -1,12 +1,4 @@
 pub mod dictionary_metadata;
-pub mod system_ios;
-pub mod system_macos;
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct SystemDefinition {
-    pub definition: String,
-    pub transcription: Option<String>,
-}
 
 use ahash::{HashMap, HashSet};
 use std::collections::hash_map::Entry;

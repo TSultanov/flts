@@ -495,7 +495,7 @@ pub async fn get_system_definition(
     #[allow(unused_variables)] word: String,
     #[allow(unused_variables)] source_lang: String,
     #[allow(unused_variables)] target_lang: String,
-) -> Result<Option<library::dictionary::SystemDefinition>, String> {
+) -> Result<Option<library::system_dictionary::SystemDefinition>, String> {
     #[cfg(target_os = "macos")]
     {
         use std::sync::mpsc::channel;
@@ -506,7 +506,7 @@ pub async fn get_system_definition(
         let target_lang = target_lang.clone();
 
         app.run_on_main_thread(move || {
-            let result = library::dictionary::system_macos::get_definition(
+            let result = library::system_dictionary::system_macos::get_definition(
                 &word,
                 &source_lang,
                 &target_lang,
@@ -531,7 +531,7 @@ pub async fn show_system_dictionary(
     #[cfg(target_os = "ios")]
     {
         app.run_on_main_thread(move || {
-            library::dictionary::system_ios::show_dictionary(&word);
+            library::system_dictionary::system_ios::show_dictionary(&word);
         })
         .map_err(|e| e.to_string())?;
         Ok(())
