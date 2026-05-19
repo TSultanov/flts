@@ -20,7 +20,7 @@ use crate::{
         library_book::{LibraryBook, load_book_user_state},
         library_dictionary::DictionaryCache,
     },
-    tla_trace_mutex::TracedMutex,
+    tla_trace::mutex::TracedMutex,
 };
 
 pub mod file_watcher;

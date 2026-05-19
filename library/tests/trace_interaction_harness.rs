@@ -15,7 +15,7 @@ use isolang::Language;
 use library::{
     book::translation_import,
     library::Library,
-    tla_trace_interaction::{InteractionTraceGuard, TraceSpan},
+    tla_trace::interaction::{InteractionTraceGuard, TraceSpan},
     translator::TranslationModel,
 };
 use tokio::sync::Barrier;

@@ -13,8 +13,7 @@ use uuid::Uuid;
 use crate::{
     book::serialization::Serializable,
     dictionary::{Dictionary, dictionary_metadata::DictionaryMetadata},
-    tla_trace,
-    tla_trace_mutex::{TracedLock, TracedMutex},
+    tla_trace::{self, mutex::{TracedLock, TracedMutex}},
 };
 
 pub struct LibraryDictionaryMetadata {

@@ -10,7 +10,7 @@ use log::info;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 use log::warn;
 
-use crate::tla_trace_mutex::{TracedLock, TracedMutex};
+use crate::tla_trace::mutex::{TracedLock, TracedMutex};
 use ahash::AHashSet;
 use isolang::Language;
 use serde::{Deserialize, Serialize};
@@ -874,7 +874,7 @@ impl Library {
 mod library_book_tests {
     use std::{io::Write, str::FromStr, sync::Arc};
 
-    use crate::tla_trace_mutex::TracedMutex;
+    use crate::tla_trace::mutex::TracedMutex;
     use isolang::Language;
 
     use crate::{
