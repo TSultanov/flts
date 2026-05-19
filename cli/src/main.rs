@@ -183,6 +183,10 @@ async fn translate_paragraph(
         translator.get_model(),
     );
 
+    library
+        .apply_paragraph_to_cards(book_id, paragraph_id, &p_translation, *tgt_lang)
+        .await?;
+
     Ok(())
 }
 

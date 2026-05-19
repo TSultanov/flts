@@ -12,12 +12,16 @@ use tokio::io::AsyncReadExt;
 use uuid::Uuid;
 
 use crate::{
-    book::{book_metadata::BookMetadata, translation_metadata::TranslationMetadata},
+    book::{
+        book_metadata::BookMetadata, translation_import, translation_metadata::TranslationMetadata,
+    },
     cache::WeakLruCache,
+    card::{Card, extract_card_updates},
     epub_importer::EpubBook,
     library::{
         file_watcher::LibraryFileChange,
         library_book::{LibraryBook, load_book_user_state},
+        library_card::LibraryCardStore,
     },
     tla_trace::mutex::TracedMutex,
 };
@@ -203,6 +207,7 @@ impl LibraryBookMetadata {
 pub struct Library {
     library_root: PathBuf,
     pub(crate) books_cache: WeakLruCache<Uuid, TracedMutex<LibraryBook>>,
+    card_store: Arc<LibraryCardStore>,
 }
 
 impl Library {
@@ -218,10 +223,90 @@ impl Library {
             tokio::fs::create_dir_all(&library_root).await?;
         }
 
+        let card_store = Arc::new(LibraryCardStore::new(&library_root));
+
         Ok(Library {
             library_root,
             books_cache: WeakLruCache::new(cache_capacity),
+            card_store,
         })
+    }
+
+    pub fn card_store(&self) -> &Arc<LibraryCardStore> {
+        &self.card_store
+    }
+
+    pub async fn apply_paragraph_to_cards(
+        &self,
+        book_id: Uuid,
+        paragraph_id: usize,
+        paragraph: &translation_import::ParagraphTranslation,
+        target_language: Language,
+    ) -> anyhow::Result<()> {
+        let book_arc = self.get_book(&book_id).await?;
+        let (source_language, chapter_index) = {
+            let book = book_arc.lock().await;
+            let source_language = Language::from_639_3(&book.book.language).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "unknown source language code on book {book_id}: {}",
+                    book.book.language
+                )
+            })?;
+            let chapter_index = book
+                .book
+                .chapter_views()
+                .find(|ch| (0..ch.paragraph_count()).any(|i| ch.paragraph_view(i).id == paragraph_id))
+                .map(|ch| ch.idx)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("paragraph {paragraph_id} is not attached to any chapter")
+                })?;
+            (source_language, chapter_index)
+        };
+
+        let updates = extract_card_updates(
+            paragraph,
+            source_language,
+            target_language,
+            book_id,
+            chapter_index,
+            paragraph_id,
+        );
+
+        for update in updates {
+            let id = update.key.id();
+            let lock = self.card_store.lock_for(&id).await;
+            let _guard = lock.lock().await;
+
+            let result = async {
+                let existing = self
+                    .card_store
+                    .load(
+                        &update.key.source_language,
+                        &update.key.target_language,
+                        &update.key.slug,
+                        &update.key.part_of_speech,
+                    )
+                    .await?;
+                let card = match existing {
+                    Some(mut card) => {
+                        card.apply_update(&update);
+                        card
+                    }
+                    None => Card::new_from_update(&update),
+                };
+                self.card_store
+                    .save(&card, &update.key.source_language, &update.key.target_language)
+                    .await?;
+                anyhow::Ok(())
+            }
+            .await;
+
+            if let Err(err) = result {
+                log::warn!("Failed to persist card {id}: {err}");
+            }
+        }
+
+        Ok(())
     }
 
     pub async fn list_books(&self) -> anyhow::Result<Vec<LibraryBookMetadata>> {
@@ -356,7 +441,69 @@ fn split_paragraphs(text: &str) -> impl Iterator<Item = &str> {
 #[cfg(test)]
 mod library_tests {
     use super::*;
+    use crate::book::translation_import;
     use crate::test_utils::TempDir;
+
+    fn full_word(
+        original: &str,
+        lemma_src: &str,
+        lemma_tgt: &str,
+        part_of_speech: &str,
+        translations: &[&str],
+        is_punctuation: bool,
+    ) -> translation_import::Word {
+        translation_import::Word {
+            original: original.into(),
+            contextual_translations: translations.iter().map(|s| (*s).into()).collect(),
+            note: None,
+            is_punctuation,
+            grammar: translation_import::Grammar {
+                original_initial_form: lemma_src.into(),
+                target_initial_form: lemma_tgt.into(),
+                part_of_speech: part_of_speech.into(),
+                plurality: None,
+                person: None,
+                tense: None,
+                case: None,
+                other: None,
+            },
+        }
+    }
+
+    fn paragraph_with(
+        full_translation: &str,
+        words: Vec<translation_import::Word>,
+    ) -> translation_import::ParagraphTranslation {
+        translation_import::ParagraphTranslation {
+            timestamp: 0,
+            total_tokens: None,
+            source_language: "spa".into(),
+            target_language: "rus".into(),
+            sentences: vec![translation_import::Sentence {
+                full_translation: full_translation.into(),
+                words,
+            }],
+        }
+    }
+
+    async fn library_with_one_paragraph_book(
+        library_path: PathBuf,
+        paragraph_text: &str,
+    ) -> (Library, Uuid) {
+        let library = Library::open(library_path).await.unwrap();
+        let book = library
+            .create_book("Test Book", &Language::from_639_3("spa").unwrap())
+            .await
+            .unwrap();
+        let book_id = {
+            let mut b = book.lock().await;
+            b.book.push_chapter(Some("Intro"));
+            b.book.push_paragraph(0, paragraph_text, None);
+            b.save().await.unwrap();
+            b.book.id
+        };
+        (library, book_id)
+    }
 
     #[tokio::test]
     async fn library_open_newdirectory() {
@@ -530,6 +677,151 @@ mod library_tests {
             2,
             "expected exactly two strong refs: caller + LRU pin",
         );
+    }
+
+    #[tokio::test]
+    async fn integration_translate_paragraph_writes_cards() {
+        let tmp = TempDir::new("flts_card_int");
+        let (library, book_id) =
+            library_with_one_paragraph_book(tmp.path.join("lib"), "No puedo más.").await;
+
+        let paragraph = paragraph_with(
+            "Я больше не могу.",
+            vec![
+                full_word("No", "no", "не", "adv", &["не"], false),
+                full_word("puedo", "poder", "мочь", "verb", &["могу"], false),
+                full_word("más", "más", "больше", "adv", &["больше"], false),
+                full_word(".", ".", ".", "punct", &[], true),
+            ],
+        );
+
+        library
+            .apply_paragraph_to_cards(book_id, 0, &paragraph, Language::from_639_3("rus").unwrap())
+            .await
+            .unwrap();
+
+        let deck = tmp.path.join("lib").join("cards").join("spa-rus");
+        let mut names: Vec<String> = std::fs::read_dir(&deck)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                "más_adv.json".to_string(),
+                "no_adv.json".to_string(),
+                "poder_verb.json".to_string(),
+            ]
+        );
+
+        let poder = std::fs::read_to_string(deck.join("poder_verb.json")).unwrap();
+        let card: Card = serde_json::from_str(&poder).unwrap();
+        assert_eq!(card.lemma, "poder");
+        assert_eq!(card.translations, vec!["могу"]);
+        assert_eq!(card.examples.len(), 1);
+        assert_eq!(card.examples[0].book_id, book_id);
+        assert_eq!(card.examples[0].chapter, 0);
+        assert_eq!(card.examples[0].paragraph, 0);
+    }
+
+    #[tokio::test]
+    async fn integration_idempotent_on_repeat() {
+        let tmp = TempDir::new("flts_card_idemp");
+        let (library, book_id) =
+            library_with_one_paragraph_book(tmp.path.join("lib"), "No puedo más.").await;
+
+        let paragraph = paragraph_with(
+            "Я больше не могу.",
+            vec![full_word("puedo", "poder", "мочь", "verb", &["могу"], false)],
+        );
+        let tgt = Language::from_639_3("rus").unwrap();
+
+        library
+            .apply_paragraph_to_cards(book_id, 0, &paragraph, tgt)
+            .await
+            .unwrap();
+        library
+            .apply_paragraph_to_cards(book_id, 0, &paragraph, tgt)
+            .await
+            .unwrap();
+
+        let card_path = tmp
+            .path
+            .join("lib")
+            .join("cards")
+            .join("spa-rus")
+            .join("poder_verb.json");
+        let body = std::fs::read_to_string(&card_path).unwrap();
+        let card: Card = serde_json::from_str(&body).unwrap();
+        assert_eq!(card.translations, vec!["могу"]);
+        assert_eq!(card.examples.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn integration_new_paragraph_appends_example() {
+        let tmp = TempDir::new("flts_card_append");
+        let library = Library::open(tmp.path.join("lib")).await.unwrap();
+        let book = library
+            .create_book("Two-Paragraph Book", &Language::from_639_3("spa").unwrap())
+            .await
+            .unwrap();
+        let book_id = {
+            let mut b = book.lock().await;
+            b.book.push_chapter(Some("Intro"));
+            b.book.push_paragraph(0, "No puedo más.", None);
+            b.book.push_paragraph(0, "Pueden venir mañana.", None);
+            b.save().await.unwrap();
+            b.book.id
+        };
+
+        let tgt = Language::from_639_3("rus").unwrap();
+        let p_a = paragraph_with(
+            "Я больше не могу.",
+            vec![full_word("puedo", "poder", "мочь", "verb", &["могу"], false)],
+        );
+        let p_b = paragraph_with(
+            "Они могут прийти завтра.",
+            vec![full_word("pueden", "poder", "мочь", "verb", &["могут"], false)],
+        );
+
+        library
+            .apply_paragraph_to_cards(book_id, 0, &p_a, tgt)
+            .await
+            .unwrap();
+        library
+            .apply_paragraph_to_cards(book_id, 1, &p_b, tgt)
+            .await
+            .unwrap();
+
+        let card_path = tmp
+            .path
+            .join("lib")
+            .join("cards")
+            .join("spa-rus")
+            .join("poder_verb.json");
+        let card: Card = serde_json::from_str(&std::fs::read_to_string(&card_path).unwrap()).unwrap();
+        assert_eq!(card.translations, vec!["могу", "могут"]);
+        assert_eq!(card.examples.len(), 2);
+        assert_eq!(card.examples[0].paragraph, 0);
+        assert_eq!(card.examples[1].paragraph, 1);
+    }
+
+    #[tokio::test]
+    async fn integration_uses_dash_separator_for_directory() {
+        let tmp = TempDir::new("flts_card_dash");
+        let (library, book_id) =
+            library_with_one_paragraph_book(tmp.path.join("lib"), "hola").await;
+        let paragraph = paragraph_with(
+            "привет",
+            vec![full_word("hola", "hola", "привет", "interj", &["привет"], false)],
+        );
+        library
+            .apply_paragraph_to_cards(book_id, 0, &paragraph, Language::from_639_3("rus").unwrap())
+            .await
+            .unwrap();
+        assert!(tmp.path.join("lib").join("cards").join("spa-rus").exists());
+        assert!(!tmp.path.join("lib").join("cards").join("spa_rus").exists());
     }
 
     #[tokio::test]
