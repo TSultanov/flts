@@ -1,6 +1,6 @@
 pub mod cache;
 pub mod lrclib;
-pub mod translator;
+pub mod translation;
 
 use isolang::Language;
 use serde::{Deserialize, Serialize};

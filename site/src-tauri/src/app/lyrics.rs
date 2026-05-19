@@ -11,7 +11,7 @@ use directories::ProjectDirs;
 use isolang::Language;
 use library::{
     lyrics::{
-        Lyrics, LyricsTranslation, cache::LyricsCache, lrclib, translator::get_lyrics_translator,
+        Lyrics, LyricsTranslation, cache::LyricsCache, lrclib, translation::get_lyrics_translator,
     },
     translator::TranslationModel,
 };
