@@ -1,7 +1,7 @@
 <script lang="ts">
     import { getContext } from "svelte";
     import { Library } from "../data/library";
-    import type { Language } from "../config";
+    import type { Language } from "../config/store";
     import { Resource } from "../data/tauri.svelte";
     import { navigate } from "../../router";
 

@@ -9,7 +9,7 @@
         type Model,
         type ProviderMeta,
         type TranslationProvider,
-    } from "./config";
+    } from "./store";
     import { open } from "@tauri-apps/plugin-dialog";
     import { platform } from "@tauri-apps/plugin-os";
     import { invoke } from "@tauri-apps/api/core";
@@ -18,7 +18,7 @@
         spotifyWebDisconnect,
         spotifyWebStatus,
         type SpotifyWebStatus,
-    } from "./spotify/queueStore";
+    } from "../spotify/queueStore";
 
     const SPOTIFY_DASHBOARD_URL = 'https://developer.spotify.com/dashboard';
     const SPOTIFY_REDIRECT_URI = 'http://127.0.0.1:53682/callback';

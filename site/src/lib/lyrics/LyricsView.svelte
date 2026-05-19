@@ -1,7 +1,7 @@
 <script lang="ts">
     import { onMount, onDestroy, getContext } from 'svelte';
     import { platform } from '@tauri-apps/plugin-os';
-    import { configStore } from '../config';
+    import { configStore } from '../config/store';
     import {
         getTrackLyricsState,
         listenLyricsState,

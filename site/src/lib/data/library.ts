@@ -9,7 +9,7 @@ import {
 } from "./types";
 import { ParagraphTranslationActivityResource, Resource } from "./tauri.svelte";
 import { invoke } from "@tauri-apps/api/core";
-import { getConfig } from "../config";
+import { getConfig } from "../config/store";
 
 export type LibraryBookMetadataView = {
     id: UUID,

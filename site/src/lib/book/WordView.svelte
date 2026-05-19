@@ -2,7 +2,7 @@
     import { getContext, onMount } from "svelte";
     import type { Library } from "../data/library";
     import type { UUID } from "../data/uuid";
-    import { models, configStore } from "../config";
+    import { models, configStore } from "../config/store";
     import { faLanguage } from "@fortawesome/free-solid-svg-icons";
     import Fa from "svelte-fa";
     import CircularProgress from "../widgets/CircularProgress.svelte";

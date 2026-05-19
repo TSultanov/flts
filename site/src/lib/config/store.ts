@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { Resource } from './data/tauri.svelte';
+import { Resource } from '../data/tauri.svelte';
 
 export type TranslationProvider = 'google' | 'openai';
 

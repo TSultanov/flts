@@ -4,7 +4,7 @@
     import Nav from "./lib/chrome/Nav.svelte";
     import { onMount, setContext } from "svelte";
     import { Library } from "./lib/data/library";
-    import { configStore } from "./lib/config";
+    import { configStore } from "./lib/config/store";
     import { navigate } from './router';
     import { platform } from '@tauri-apps/plugin-os';
 
