@@ -712,3 +712,199 @@ fn merge_visible_words_union() {
     visible.sort();
     assert_eq!(visible, vec![1, 2, 3]); // Union of [1, 3] and [2, 3]
 }
+
+#[test]
+fn to_import_empty_paragraph() {
+    let mut translation = Translation::create("eng", "rus");
+    let input = translation_import::ParagraphTranslation {
+        timestamp: 42,
+        total_tokens: Some(17),
+        source_language: "eng".into(),
+        target_language: "rus".into(),
+        sentences: vec![],
+    };
+    translation.add_paragraph_translation(0, &input, TranslationModel::Gemini25Flash);
+
+    let view = translation.paragraph_view(0).unwrap();
+    let out = view.to_import("eng", "rus");
+
+    assert_eq!(out.timestamp, 42);
+    assert_eq!(out.total_tokens, Some(17));
+    assert_eq!(out.source_language, "eng");
+    assert_eq!(out.target_language, "rus");
+    assert!(out.sentences.is_empty());
+}
+
+#[test]
+fn to_import_word_grammar_and_punctuation() {
+    let mut translation = Translation::create("spa", "rus");
+    let input = translation_import::ParagraphTranslation {
+        timestamp: 100,
+        total_tokens: None,
+        source_language: "spa".into(),
+        target_language: "rus".into(),
+        sentences: vec![translation_import::Sentence {
+            full_translation: "Я могу.".into(),
+            words: vec![
+                translation_import::Word {
+                    original: "puedo".into(),
+                    contextual_translations: vec!["могу".into(), "умею".into()],
+                    note: Some("first-person singular".into()),
+                    is_punctuation: false,
+                    grammar: translation_import::Grammar {
+                        original_initial_form: "poder".into(),
+                        target_initial_form: "мочь".into(),
+                        part_of_speech: "verb".into(),
+                        plurality: Some("singular".into()),
+                        person: Some("1".into()),
+                        tense: Some("present".into()),
+                        case: None,
+                        other: None,
+                    },
+                },
+                translation_import::Word {
+                    original: ".".into(),
+                    contextual_translations: vec![".".into()],
+                    note: None,
+                    is_punctuation: true,
+                    grammar: translation_import::Grammar {
+                        original_initial_form: ".".into(),
+                        target_initial_form: ".".into(),
+                        part_of_speech: "punctuation".into(),
+                        plurality: None,
+                        person: None,
+                        tense: None,
+                        case: None,
+                        other: None,
+                    },
+                },
+            ],
+        }],
+    };
+    translation.add_paragraph_translation(0, &input, TranslationModel::Gemini25Flash);
+
+    let view = translation.paragraph_view(0).unwrap();
+    let out = view.to_import("spa", "rus");
+
+    assert_eq!(out.sentences.len(), 1);
+    let sentence = &out.sentences[0];
+    assert_eq!(sentence.full_translation, "Я могу.");
+    assert_eq!(sentence.words.len(), 2);
+
+    let verb = &sentence.words[0];
+    assert_eq!(verb.original, "puedo");
+    assert!(!verb.is_punctuation);
+    assert_eq!(verb.contextual_translations, vec!["могу", "умею"]);
+    assert_eq!(verb.note.as_deref(), Some("first-person singular"));
+    assert_eq!(verb.grammar.original_initial_form, "poder");
+    assert_eq!(verb.grammar.target_initial_form, "мочь");
+    assert_eq!(verb.grammar.part_of_speech, "verb");
+    assert_eq!(verb.grammar.plurality.as_deref(), Some("singular"));
+    assert_eq!(verb.grammar.person.as_deref(), Some("1"));
+    assert_eq!(verb.grammar.tense.as_deref(), Some("present"));
+    assert_eq!(verb.grammar.case, None);
+    assert_eq!(verb.grammar.other, None);
+
+    let punct = &sentence.words[1];
+    assert_eq!(punct.original, ".");
+    assert!(punct.is_punctuation);
+    assert_eq!(punct.note, None);
+    assert_eq!(punct.grammar.part_of_speech, "punctuation");
+}
+
+#[test]
+fn to_import_round_trip_via_add_paragraph_translation() {
+    // Construct a paragraph that uses only the conventions that survive a
+    // round trip through Translation's interned string store: notes are
+    // either `None` or non-empty `Some(_)`. An input `Some("")` is stored
+    // as `""` and decoded back as `None`, so it would fail an exact equality
+    // assertion; the fixture below avoids that case on purpose.
+    let input = translation_import::ParagraphTranslation {
+        timestamp: 1234567890,
+        total_tokens: Some(256),
+        source_language: "spa".into(),
+        target_language: "rus".into(),
+        sentences: vec![
+            translation_import::Sentence {
+                full_translation: "Я могу есть.".into(),
+                words: vec![
+                    translation_import::Word {
+                        original: "puedo".into(),
+                        contextual_translations: vec!["могу".into()],
+                        note: Some("modal".into()),
+                        is_punctuation: false,
+                        grammar: translation_import::Grammar {
+                            original_initial_form: "poder".into(),
+                            target_initial_form: "мочь".into(),
+                            part_of_speech: "verb".into(),
+                            plurality: Some("singular".into()),
+                            person: Some("1".into()),
+                            tense: Some("present".into()),
+                            case: None,
+                            other: Some("aux".into()),
+                        },
+                    },
+                    translation_import::Word {
+                        original: "comer".into(),
+                        contextual_translations: vec!["есть".into(), "кушать".into()],
+                        note: None,
+                        is_punctuation: false,
+                        grammar: translation_import::Grammar {
+                            original_initial_form: "comer".into(),
+                            target_initial_form: "есть".into(),
+                            part_of_speech: "verb".into(),
+                            plurality: None,
+                            person: None,
+                            tense: Some("infinitive".into()),
+                            case: None,
+                            other: None,
+                        },
+                    },
+                    translation_import::Word {
+                        original: ".".into(),
+                        contextual_translations: vec![".".into()],
+                        note: None,
+                        is_punctuation: true,
+                        grammar: translation_import::Grammar {
+                            original_initial_form: ".".into(),
+                            target_initial_form: ".".into(),
+                            part_of_speech: "punctuation".into(),
+                            plurality: None,
+                            person: None,
+                            tense: None,
+                            case: None,
+                            other: None,
+                        },
+                    },
+                ],
+            },
+            translation_import::Sentence {
+                full_translation: "Хорошо.".into(),
+                words: vec![translation_import::Word {
+                    original: "bueno".into(),
+                    contextual_translations: vec!["хорошо".into()],
+                    note: None,
+                    is_punctuation: false,
+                    grammar: translation_import::Grammar {
+                        original_initial_form: "bueno".into(),
+                        target_initial_form: "хорошо".into(),
+                        part_of_speech: "adjective".into(),
+                        plurality: None,
+                        person: None,
+                        tense: None,
+                        case: Some("nominative".into()),
+                        other: None,
+                    },
+                }],
+            },
+        ],
+    };
+
+    let mut translation = Translation::create("spa", "rus");
+    translation.add_paragraph_translation(0, &input, TranslationModel::Gemini25Flash);
+
+    let view = translation.paragraph_view(0).unwrap();
+    let out = view.to_import("spa", "rus");
+
+    assert_eq!(out, input);
+}

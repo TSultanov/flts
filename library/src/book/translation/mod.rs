@@ -1449,6 +1449,57 @@ impl<'a> ParagraphTranslationView<'a> {
     pub fn sentences(&'_ self) -> impl Iterator<Item = SentenceView<'_>> {
         (0..self.sentence_count()).map(|s| self.sentence_view(s))
     }
+
+    pub fn to_import(
+        &self,
+        source_language: &str,
+        target_language: &str,
+    ) -> translation_import::ParagraphTranslation {
+        translation_import::ParagraphTranslation {
+            timestamp: self.timestamp,
+            total_tokens: self.total_tokens,
+            source_language: source_language.to_owned(),
+            target_language: target_language.to_owned(),
+            sentences: self
+                .sentences()
+                .map(|s| translation_import::Sentence {
+                    full_translation: s.full_translation.to_string(),
+                    words: s
+                        .words()
+                        .map(|w| translation_import::Word {
+                            original: w.original.to_string(),
+                            contextual_translations: w
+                                .contextual_translations()
+                                .map(|ct| ct.translation.to_string())
+                                .collect(),
+                            note: {
+                                let n = w.note.as_ref();
+                                if n.is_empty() {
+                                    None
+                                } else {
+                                    Some(n.to_owned())
+                                }
+                            },
+                            is_punctuation: w.is_punctuation,
+                            grammar: translation_import::Grammar {
+                                original_initial_form: w
+                                    .grammar
+                                    .original_initial_form
+                                    .to_string(),
+                                target_initial_form: w.grammar.target_initial_form.to_string(),
+                                part_of_speech: w.grammar.part_of_speech.to_string(),
+                                plurality: w.grammar.plurality.as_ref().map(|s| s.to_string()),
+                                person: w.grammar.person.as_ref().map(|s| s.to_string()),
+                                tense: w.grammar.tense.as_ref().map(|s| s.to_string()),
+                                case: w.grammar.case.as_ref().map(|s| s.to_string()),
+                                other: w.grammar.other.as_ref().map(|s| s.to_string()),
+                            },
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
 }
 
 impl<'a> SentenceView<'a> {

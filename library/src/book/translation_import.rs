@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct ParagraphTranslation {
     #[serde(skip)]
     pub timestamp: u64,
@@ -13,14 +13,14 @@ pub struct ParagraphTranslation {
     pub total_tokens: Option<u64>,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Sentence {
     #[serde(alias = "fullTranslation")]
     pub full_translation: String,
     pub words: Vec<Word>,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Word {
     pub original: String,
     #[serde(alias = "contextualTranslations")]
@@ -31,7 +31,7 @@ pub struct Word {
     pub grammar: Grammar,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Grammar {
     #[serde(alias = "originalInitialForm")]
     pub original_initial_form: String,
