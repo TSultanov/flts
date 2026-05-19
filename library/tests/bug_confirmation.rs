@@ -8,7 +8,6 @@ use std::{
 use isolang::Language;
 use library::{
     book::{book::Book, serialization::Serializable, translation::Translation, translation_import},
-    dictionary::Dictionary,
     library::Library,
     translator::TranslationModel,
 };
@@ -222,21 +221,16 @@ async fn repro_translation_same_timestamp_conflict_collapses_distinct_version() 
         book.book.push_paragraph(0, "source paragraph", None);
 
         let translation = book.get_or_create_translation(&target_language).await;
-        translation
-            .lock()
-            .await
-            .add_paragraph_translation(
-                0,
-                &make_paragraph(
-                    1,
-                    "main version",
-                    source_language.to_639_3(),
-                    target_language.to_639_3(),
-                ),
-                TranslationModel::Gemini25Flash,
-            )
-            .await
-            .unwrap();
+        translation.lock().await.add_paragraph_translation(
+            0,
+            &make_paragraph(
+                1,
+                "main version",
+                source_language.to_639_3(),
+                target_language.to_639_3(),
+            ),
+            TranslationModel::Gemini25Flash,
+        );
         book.save().await.unwrap();
         book.book.id
     };
@@ -266,10 +260,6 @@ async fn repro_translation_same_timestamp_conflict_collapses_distinct_version() 
             target_language.to_639_3(),
         ),
         TranslationModel::Gemini25Flash,
-        &mut Dictionary::create(
-            source_language.to_639_3().to_owned(),
-            target_language.to_639_3().to_owned(),
-        ),
     );
     write_translation(&conflict_path, &conflict_translation);
 

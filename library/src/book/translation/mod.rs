@@ -12,7 +12,6 @@ use crate::{
         },
         translation_import,
     },
-    dictionary::Dictionary,
     translator::TranslationModel,
 };
 use std::io::{self, Write};
@@ -213,7 +212,6 @@ impl Translation {
         paragraph_index: usize,
         translation: &translation_import::ParagraphTranslation,
         model: TranslationModel,
-        dictionary: &mut Dictionary,
     ) {
         if paragraph_index >= self.paragraphs.len() {
             self.paragraphs.extend(iter::repeat_n(
@@ -241,11 +239,6 @@ impl Translation {
             let full_translation = self.push_string(&sentence.full_translation);
             let mut words = VecSlice::empty();
             for word in &sentence.words {
-                dictionary.add_translation(
-                    &word.grammar.original_initial_form,
-                    &word.grammar.target_initial_form,
-                );
-
                 let original = self.push_string(&word.original);
                 let note = self.push_string(&word.note.clone().unwrap_or("".to_string()));
                 let grammar = Grammar {

@@ -287,15 +287,6 @@ impl AppState {
                     self.notify_library_changed();
                 }
             }
-            LibraryFileChange::DictionaryChanged {
-                modified: _,
-                from,
-                to,
-            } => {
-                let payload = (from.to_639_3(), to.to_639_3());
-                info!("Emitting \"dictionary_updated\" for {payload:?}",);
-                self.app.emit("dictionary_updated", payload)?;
-            }
         }
 
         Ok(())

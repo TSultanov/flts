@@ -10,12 +10,7 @@ use std::{
 use isolang::Language;
 use library::{
     book::{book::Book, serialization::Serializable, translation::Translation, translation_import},
-    dictionary::Dictionary,
-    library::{
-        Library,
-        library_book::BookReadingState,
-        library_dictionary::{LibraryDictionary, LibraryDictionaryMetadata},
-    },
+    library::{Library, library_book::BookReadingState},
     tla_trace,
     translator::TranslationModel,
 };
@@ -211,16 +206,11 @@ async fn trace_translation_merge_and_save() {
         book.book.push_chapter(Some("Intro"));
         book.book.push_paragraph(0, "hello", None);
         let translation = book.get_or_create_translation(&target_language).await;
-        translation
-            .lock()
-            .await
-            .add_paragraph_translation(
-                0,
-                &make_paragraph(1, "v1", "en", "ru"),
-                TranslationModel::Gemini25Flash,
-            )
-            .await
-            .unwrap();
+        translation.lock().await.add_paragraph_translation(
+            0,
+            &make_paragraph(1, "v1", "en", "ru"),
+            TranslationModel::Gemini25Flash,
+        );
         book.save().await.unwrap();
         book.book.id
     };
@@ -237,28 +227,21 @@ async fn trace_translation_merge_and_save() {
     let book = library.get_book(&book_id).await.unwrap();
     let mut book = book.lock().await;
     let translation = book.get_or_create_translation(&target_language).await;
-    translation
-        .lock()
-        .await
-        .add_paragraph_translation(
-            0,
-            &make_paragraph(2, "mem", "en", "ru"),
-            TranslationModel::Gemini25Flash,
-        )
-        .await
-        .unwrap();
+    translation.lock().await.add_paragraph_translation(
+        0,
+        &make_paragraph(2, "mem", "en", "ru"),
+        TranslationModel::Gemini25Flash,
+    );
 
     sleep_for_mtime_tick();
     {
         let file = std::fs::File::open(&translation_file).unwrap();
         let mut reader = BufReader::new(file);
         let mut on_disk = Translation::deserialize(&mut reader).unwrap();
-        let mut temp_dict = Dictionary::create("en".into(), "ru".into());
         on_disk.add_paragraph_translation(
             0,
             &make_paragraph(3, "disk", "en", "ru"),
             TranslationModel::Gemini25Flash,
-            &mut temp_dict,
         );
         let file = std::fs::File::create(&translation_file).unwrap();
         let mut writer = BufWriter::new(file);
@@ -267,37 +250,4 @@ async fn trace_translation_merge_and_save() {
     }
 
     book.save().await.unwrap();
-}
-
-#[tokio::test]
-async fn trace_dictionary_load() {
-    let temp_dir = TempDir::new("flts_trace_dictionary");
-    let library_root = temp_dir.path.join("lib");
-    std::fs::create_dir_all(&library_root).unwrap();
-
-    let mut main_dict = Dictionary::create("en".into(), "ru".into());
-    main_dict.add_translation("hello", "privet");
-    let mut conflict_dict = Dictionary::create("en".into(), "ru".into());
-    conflict_dict.add_translation("world", "mir");
-
-    let main_path = library_root.join("dictionary_eng_rus.dat");
-    let conflict_path = library_root.join("dictionary_eng_rus.syncconflict.dat");
-    {
-        let file = std::fs::File::create(&main_path).unwrap();
-        let mut writer = BufWriter::new(file);
-        main_dict.serialize(&mut writer).unwrap();
-        writer.flush().unwrap();
-    }
-    {
-        let file = std::fs::File::create(&conflict_path).unwrap();
-        let mut writer = BufWriter::new(file);
-        conflict_dict.serialize(&mut writer).unwrap();
-        writer.flush().unwrap();
-    }
-
-    let _trace = TraceGuard::start("dictionary-load.ndjson");
-    let metadata = LibraryDictionaryMetadata::load(&main_path).await.unwrap();
-    let _loaded = LibraryDictionary::load_from_metadata(metadata)
-        .await
-        .unwrap();
 }

@@ -112,12 +112,10 @@ fn test_translation_add_paragraph_translation() {
             ],
         }],
     };
-    let mut dict = Dictionary::create("en".to_owned(), "ru".to_owned());
     translation.add_paragraph_translation(
         0,
         &paragraph_translation,
         TranslationModel::Gemini25Pro,
-        &mut dict,
     );
     let paragraph_view = translation.paragraph_view(0).unwrap();
     assert_eq!(paragraph_view.timestamp, 1234567890);
@@ -172,12 +170,10 @@ fn translation_serialize_deserialize_round_trip() {
             }],
         }],
     };
-    let mut dict = Dictionary::create("en".to_owned(), "ru".to_owned());
     translation.add_paragraph_translation(
         0,
         &paragraph_translation,
         TranslationModel::Gemini25Flash,
-        &mut dict,
     );
 
     // second version
@@ -228,7 +224,6 @@ fn translation_serialize_deserialize_round_trip() {
         0,
         &paragraph_translation2,
         TranslationModel::Gemini25FlashLight,
-        &mut dict,
     );
 
     let mut buf: Vec<u8> = vec![];
@@ -285,12 +280,10 @@ fn translation_serialize_v1_deserialize_round_trip() {
             }],
         }],
     };
-    let mut dict = Dictionary::create("en".to_owned(), "ru".to_owned());
     translation.add_paragraph_translation(
         0,
         &paragraph_translation,
         TranslationModel::Gemini25Flash,
-        &mut dict,
     );
 
     // second version
@@ -341,7 +334,6 @@ fn translation_serialize_v1_deserialize_round_trip() {
         0,
         &paragraph_translation2,
         TranslationModel::Gemini25FlashLight,
-        &mut dict,
     );
 
     let mut buf: Vec<u8> = vec![];
@@ -397,12 +389,10 @@ fn translation_serialize_deserialize_corruption() {
             }],
         }],
     };
-    let mut dict = Dictionary::create("en".to_owned(), "ru".to_owned());
     translation.add_paragraph_translation(
         0,
         &paragraph_translation,
         TranslationModel::Gemini25Flash,
-        &mut dict,
     );
 
     // second version
@@ -453,7 +443,6 @@ fn translation_serialize_deserialize_corruption() {
         0,
         &paragraph_translation2,
         TranslationModel::Gemini25Flash,
-        &mut dict,
     );
 
     let mut buf: Vec<u8> = vec![];
@@ -469,19 +458,16 @@ fn translation_serialize_deserialize_corruption() {
 
 #[test]
 fn merge_same_history() {
-    let mut dict = Dictionary::create("en".to_owned(), "ru".to_owned());
     let mut a = Translation::create("en", "ru");
     a.add_paragraph_translation(
         0,
         &make_paragraph(1, "v1"),
         TranslationModel::Gemini25Flash,
-        &mut dict,
     );
     a.add_paragraph_translation(
         0,
         &make_paragraph(2, "v2"),
         TranslationModel::Gemini25Flash,
-        &mut dict,
     );
 
     let mut b = Translation::create("en", "ru");
@@ -489,13 +475,11 @@ fn merge_same_history() {
         0,
         &make_paragraph(1, "v1"),
         TranslationModel::Gemini25Flash,
-        &mut dict,
     );
     b.add_paragraph_translation(
         0,
         &make_paragraph(2, "v2"),
         TranslationModel::Gemini25Flash,
-        &mut dict,
     );
 
     let merged = a.merge(&b);
@@ -511,26 +495,22 @@ fn merge_same_history() {
 
 #[test]
 fn merge_diverged_common_root() {
-    let mut dict = Dictionary::create("en".to_owned(), "ru".to_owned());
     // a: 1 -> 2 -> 4
     let mut a = Translation::create("en", "ru");
     a.add_paragraph_translation(
         0,
         &make_paragraph(1, "a1"),
         TranslationModel::Gemini25Flash,
-        &mut dict,
     );
     a.add_paragraph_translation(
         0,
         &make_paragraph(2, "a2"),
         TranslationModel::Gemini25Flash,
-        &mut dict,
     );
     a.add_paragraph_translation(
         0,
         &make_paragraph(4, "a4"),
         TranslationModel::Gemini25Flash,
-        &mut dict,
     );
 
     // b: 1 -> 3 -> 5
@@ -539,19 +519,16 @@ fn merge_diverged_common_root() {
         0,
         &make_paragraph(1, "a1"),
         TranslationModel::Gemini25Flash,
-        &mut dict,
     ); // same ts as a1 (dedup)
     b.add_paragraph_translation(
         0,
         &make_paragraph(3, "a3"),
         TranslationModel::Gemini25Flash,
-        &mut dict,
     );
     b.add_paragraph_translation(
         0,
         &make_paragraph(5, "a5"),
         TranslationModel::Gemini25Flash,
-        &mut dict,
     );
 
     let merged = a.merge(&b);
@@ -584,20 +561,17 @@ fn merge_diverged_common_root() {
 
 #[test]
 fn merge_no_common_root() {
-    let mut dict = Dictionary::create("en".to_owned(), "ru".to_owned());
     // a: 10 -> 20
     let mut a = Translation::create("en", "ru");
     a.add_paragraph_translation(
         0,
         &make_paragraph(10, "a10"),
         TranslationModel::Gemini25Flash,
-        &mut dict,
     );
     a.add_paragraph_translation(
         0,
         &make_paragraph(20, "a20"),
         TranslationModel::Gemini25Flash,
-        &mut dict,
     );
 
     // b: 5 -> 15 -> 25
@@ -606,19 +580,16 @@ fn merge_no_common_root() {
         0,
         &make_paragraph(5, "b5"),
         TranslationModel::Gemini25Flash,
-        &mut dict,
     );
     b.add_paragraph_translation(
         0,
         &make_paragraph(15, "b15"),
         TranslationModel::Gemini25Flash,
-        &mut dict,
     );
     b.add_paragraph_translation(
         0,
         &make_paragraph(25, "b25"),
         TranslationModel::Gemini25Flash,
-        &mut dict,
     );
 
     let merged = a.merge(&b);
@@ -634,20 +605,17 @@ fn merge_no_common_root() {
 
 #[test]
 fn merge_present_only_in_one_side() {
-    let mut dict = Dictionary::create("en".to_owned(), "ru".to_owned());
     // Paragraph 0 only in left, with history 1 -> 2
     let mut a = Translation::create("en", "ru");
     a.add_paragraph_translation(
         0,
         &make_paragraph(1, "a1"),
         TranslationModel::Gemini25Flash,
-        &mut dict,
     );
     a.add_paragraph_translation(
         0,
         &make_paragraph(2, "a2"),
         TranslationModel::Gemini25Flash,
-        &mut dict,
     );
     // Paragraph 1 only in right, with single version 3
     let b = {
@@ -656,7 +624,6 @@ fn merge_present_only_in_one_side() {
             1,
             &make_paragraph(3, "b3"),
             TranslationModel::Gemini25Flash,
-            &mut dict,
         );
         t
     };
@@ -681,13 +648,11 @@ fn merge_present_only_in_one_side() {
 
 #[test]
 fn visible_words_serialize_deserialize_roundtrip() {
-    let mut dict = Dictionary::create("en".to_owned(), "ru".to_owned());
     let mut translation = Translation::create("en", "ru");
     translation.add_paragraph_translation(
         0,
         &make_paragraph(1, "test"),
         TranslationModel::Gemini25Flash,
-        &mut dict,
     );
 
     // Mark some words as visible
@@ -718,7 +683,6 @@ fn visible_words_serialize_deserialize_roundtrip() {
 
 #[test]
 fn merge_visible_words_union() {
-    let mut dict = Dictionary::create("en".to_owned(), "ru".to_owned());
 
     // Create two translations with same timestamp but different visible_words
     let mut a = Translation::create("en", "ru");
@@ -726,7 +690,6 @@ fn merge_visible_words_union() {
         0,
         &make_paragraph(1, "shared"),
         TranslationModel::Gemini25Flash,
-        &mut dict,
     );
     a.mark_word_visible(0, 1);
     a.mark_word_visible(0, 3);
@@ -736,7 +699,6 @@ fn merge_visible_words_union() {
         0,
         &make_paragraph(1, "shared"),
         TranslationModel::Gemini25Flash,
-        &mut dict,
     );
     b.mark_word_visible(0, 2);
     b.mark_word_visible(0, 3); // Overlaps with a

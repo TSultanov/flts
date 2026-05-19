@@ -140,16 +140,11 @@ async fn trace_interaction_baseline() {
 
     // WorkerStoreResult: add_paragraph_translation
     let span = TraceSpan::begin("t1", "WorkerStoreResult").field("task", "t1");
-    translation
-        .lock()
-        .await
-        .add_paragraph_translation(
-            0,
-            &make_paragraph(100, "Привет мир", "en", "ru"),
-            TranslationModel::Gemini25Flash,
-        )
-        .await
-        .unwrap();
+    translation.lock().await.add_paragraph_translation(
+        0,
+        &make_paragraph(100, "Привет мир", "en", "ru"),
+        TranslationModel::Gemini25Flash,
+    );
     span.end();
 
     // WorkerSave: book.save()
@@ -321,15 +316,11 @@ async fn trace_interaction_concurrent() {
 
         // WorkerStoreResult
         let span = TraceSpan::begin("t1", "WorkerStoreResult").field("task", "t1");
-        tr.lock()
-            .await
-            .add_paragraph_translation(
-                0,
-                &make_paragraph(200, "Первый абзац", "en", "ru"),
-                TranslationModel::Gemini25Flash,
-            )
-            .await
-            .unwrap();
+        tr.lock().await.add_paragraph_translation(
+            0,
+            &make_paragraph(200, "Первый абзац", "en", "ru"),
+            TranslationModel::Gemini25Flash,
+        );
         span.end();
 
         // WorkerSave

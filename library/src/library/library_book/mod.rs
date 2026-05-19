@@ -11,7 +11,6 @@ use log::info;
 use log::warn;
 
 use crate::tla_trace::mutex::{TracedLock, TracedMutex};
-use ahash::AHashSet;
 use isolang::Language;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -24,10 +23,7 @@ use crate::{
         translation::{ParagraphTranslationView, Translation},
         translation_import,
     },
-    library::{
-        Library, LibraryBookMetadata, LibraryError, LibraryTranslationMetadata,
-        library_dictionary::DictionaryCache,
-    },
+    library::{Library, LibraryBookMetadata, LibraryError, LibraryTranslationMetadata},
     tla_trace,
     translator::TranslationModel,
 };
@@ -64,7 +60,6 @@ pub struct BookUserState {
 }
 
 pub struct LibraryBook {
-    dict_cache: Arc<DictionaryCache>,
     path: PathBuf,
     last_modified: Option<SystemTime>,
     pub book: Book,
@@ -73,7 +68,6 @@ pub struct LibraryBook {
 }
 
 pub struct LibraryTranslation {
-    dict_cache: Arc<DictionaryCache>,
     translation: Translation,
     source_language: Language,
     target_language: Language,
@@ -112,7 +106,7 @@ impl LibraryTranslation {
         self.changed = true;
     }
 
-    async fn load(dict_cache: Arc<DictionaryCache>, path: &Path) -> anyhow::Result<Self> {
+    async fn load(path: &Path) -> anyhow::Result<Self> {
         let metadata = tokio::fs::metadata(path).await?;
         let last_modified = metadata.modified().ok();
         let mut file = tokio::fs::File::open(path).await?;
@@ -124,7 +118,6 @@ impl LibraryTranslation {
         let target_language = Language::from_str(&translation.target_language)?;
 
         Ok(Self {
-            dict_cache,
             translation,
             source_language,
             target_language,
@@ -134,7 +127,6 @@ impl LibraryTranslation {
     }
 
     async fn load_from_metadata(
-        dict_cache: Arc<DictionaryCache>,
         metadata: LibraryTranslationMetadata,
     ) -> anyhow::Result<Self> {
         let translation_path = metadata.main_path.clone();
@@ -160,7 +152,7 @@ impl LibraryTranslation {
             tokio::fs::write(&metadata.main_path, buf).await?;
         }
 
-        let loaded = Self::load(dict_cache, &metadata.main_path).await?;
+        let loaded = Self::load(&metadata.main_path).await?;
         if let Some(book_dir) = translation_path.parent() {
             tla_trace::emit_translation_event(
                 book_dir,
@@ -176,24 +168,15 @@ impl LibraryTranslation {
         Ok(loaded)
     }
 
-    pub async fn add_paragraph_translation(
+    pub fn add_paragraph_translation(
         &mut self,
         paragraph_index: usize,
         translation: &translation_import::ParagraphTranslation,
         model: TranslationModel,
-    ) -> anyhow::Result<()> {
-        let dictionary = self
-            .dict_cache
-            .get_dictionary(self.source_language, self.target_language)
-            .await?;
-        self.translation.add_paragraph_translation(
-            paragraph_index,
-            translation,
-            model,
-            &mut dictionary.lock().await.dictionary,
-        );
+    ) {
+        self.translation
+            .add_paragraph_translation(paragraph_index, translation, model);
         self.changed = true;
-        Ok(())
     }
 
     pub fn translated_paragraphs_count(&self) -> usize {
@@ -327,7 +310,6 @@ impl LibraryBook {
         // Not found: create and push
         self.translations
             .push(Arc::new(TracedMutex::new(LibraryTranslation {
-                dict_cache: self.dict_cache.clone(),
                 translation: Translation::create(source_language, target_language.to_639_3()),
                 source_language: Language::from_639_3(source_language).unwrap(),
                 target_language: *target_language,
@@ -340,7 +322,6 @@ impl LibraryBook {
     }
 
     pub async fn load_from_metadata(
-        dict_cache: Arc<DictionaryCache>,
         metadata: LibraryBookMetadata,
     ) -> anyhow::Result<Self> {
         let mut candidates: Vec<(&PathBuf, Option<SystemTime>)> = Vec::new();
@@ -387,11 +368,11 @@ impl LibraryBook {
             }
         }
 
-        let mut book = Self::load(dict_cache.clone(), &metadata.main_path).await?;
+        let mut book = Self::load(&metadata.main_path).await?;
 
         for tm in metadata.translations_metadata {
             let translation = Arc::new(TracedMutex::new(
-                LibraryTranslation::load_from_metadata(dict_cache.clone(), tm).await?,
+                LibraryTranslation::load_from_metadata(tm).await?,
             ));
             book.translations.push(translation);
         }
@@ -410,7 +391,7 @@ impl LibraryBook {
         Ok(book)
     }
 
-    async fn load(dict_cache: Arc<DictionaryCache>, path: &Path) -> anyhow::Result<Self> {
+    async fn load(path: &Path) -> anyhow::Result<Self> {
         let last_modified = tokio::fs::metadata(path).await?.modified().ok();
         let mut file = tokio::fs::File::open(path).await?;
         let mut buffer = Vec::new();
@@ -419,7 +400,6 @@ impl LibraryBook {
         let book = Book::deserialize(&mut cursor)?;
 
         Ok(Self {
-            dict_cache,
             path: path.parent().unwrap().to_path_buf(),
             last_modified,
             book,
@@ -472,8 +452,6 @@ impl LibraryBook {
 
         let mut merged_translations = Vec::new();
 
-        let mut languages_to_save = AHashSet::new();
-
         for translation_arc in book.translations.drain(0..) {
             let mut translation = translation_arc.lock().await;
             let source_language = translation.translation.source_language.clone();
@@ -505,18 +483,13 @@ impl LibraryBook {
                                 .modified()
                                 .unwrap();
                         if saved_translation_last_modified > last_modified {
-                            let saved_translation = LibraryTranslation::load(
-                                book.dict_cache.clone(),
-                                &translation_path,
-                            )
-                            .await?;
+                            let saved_translation =
+                                LibraryTranslation::load(&translation_path).await?;
                             translation.merge(saved_translation);
                         }
                     }
                 } else if tokio::fs::try_exists(&translation_path).await? {
-                    let saved_translation =
-                        LibraryTranslation::load(book.dict_cache.clone(), &translation_path)
-                            .await?;
+                    let saved_translation = LibraryTranslation::load(&translation_path).await?;
                     translation.merge(saved_translation);
                 }
 
@@ -537,7 +510,6 @@ impl LibraryBook {
                     let mut buffer = Vec::new();
                     translation.translation.serialize(&mut buffer)?;
                     translation_file.write_all(&buffer).await?;
-                    languages_to_save.insert((source_language.clone(), target_language.clone()));
 
                     if (if tokio::fs::try_exists(&translation_path).await? {
                         tokio::fs::metadata(&translation_path)
@@ -577,13 +549,6 @@ impl LibraryBook {
             }
         }
 
-        for (src, tgt) in languages_to_save {
-            let src = Language::from_str(&src)?;
-            let tgt = Language::from_str(&tgt)?;
-            let dict = book.dict_cache.get_dictionary(src, tgt).await?;
-            dict.lock().await.save().await?;
-        }
-
         let book_path = book.path.join("book.dat");
         let book_path_temp = book
             .path
@@ -601,13 +566,13 @@ impl LibraryBook {
                     let saved_book_last_modified =
                         tokio::fs::metadata(&book_path).await?.modified().unwrap();
                     if saved_book_last_modified > last_modified {
-                        let saved_book = Self::load(book.dict_cache.clone(), &book_path).await?;
+                        let saved_book = Self::load(&book_path).await?;
                         book.book = saved_book.book;
                         book.last_modified = saved_book.last_modified;
                     }
                 }
             } else if tokio::fs::try_exists(&book_path).await? {
-                let saved_book = Self::load(book.dict_cache.clone(), &book_path).await?;
+                let saved_book = Self::load(&book_path).await?;
                 book.book = saved_book.book;
                 book.last_modified = saved_book.last_modified;
             }
@@ -656,11 +621,7 @@ impl LibraryBook {
         for translation_metadata in all_book_translations.translations_metadata {
             if !loaded_translations.contains(&translation_metadata.id) {
                 merged_translations.push(Arc::new(TracedMutex::new(
-                    LibraryTranslation::load_from_metadata(
-                        book.dict_cache.clone(),
-                        translation_metadata,
-                    )
-                    .await?,
+                    LibraryTranslation::load_from_metadata(translation_metadata).await?,
                 )));
             }
         }
@@ -721,7 +682,6 @@ impl Library {
         let book_root = self.library_root.join(guid.to_string());
 
         let book = Arc::new(TracedMutex::new(LibraryBook {
-            dict_cache: self.dictionaries_cache.clone(),
             path: book_root,
             last_modified: None,
             book: Book::create(guid, title, language),

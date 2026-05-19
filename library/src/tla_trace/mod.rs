@@ -2,7 +2,7 @@
 //!
 //! With the `tla_trace` feature on, the real implementations in `trace`,
 //! `interaction`, and `mutex` are wired up. Without the feature, only the
-//! `tla_trace::*` (book/translation/dictionary event emitters) and
+//! `tla_trace::*` (book/translation event emitters) and
 //! `tla_trace::mutex::*` (TracedMutex/TracedLock) surfaces are kept as
 //! zero-cost no-ops so production code can call them unconditionally.
 //! The `interaction` submodule has no no-op — its consumers are test

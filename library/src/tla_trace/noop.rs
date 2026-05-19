@@ -34,16 +34,6 @@ pub mod trace {
     ) -> anyhow::Result<()> {
         Ok(())
     }
-
-    #[inline]
-    pub async fn emit_dictionary_event(
-        _library_root: &Path,
-        _dictionary_path: &Path,
-        _name: &str,
-        _arg: Option<TraceArg>,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
 }
 
 pub mod mutex {

@@ -18,14 +18,12 @@ use crate::{
     library::{
         file_watcher::LibraryFileChange,
         library_book::{LibraryBook, load_book_user_state},
-        library_dictionary::DictionaryCache,
     },
     tla_trace::mutex::TracedMutex,
 };
 
 pub mod file_watcher;
 pub mod library_book;
-pub mod library_dictionary;
 
 /// Default number of books to pin in the warm LRU. Books accessed beyond this
 /// count are still reachable via the weak index while any holder keeps them
@@ -204,7 +202,6 @@ impl LibraryBookMetadata {
 pub struct Library {
     library_root: PathBuf,
     pub(crate) books_cache: WeakLruCache<Uuid, TracedMutex<LibraryBook>>,
-    dictionaries_cache: Arc<DictionaryCache>,
 }
 
 impl Library {
@@ -220,12 +217,9 @@ impl Library {
             tokio::fs::create_dir_all(&library_root).await?;
         }
 
-        let dictionaries_cache = Arc::new(DictionaryCache::new(&library_root));
-
         Ok(Library {
             library_root,
             books_cache: WeakLruCache::new(cache_capacity),
-            dictionaries_cache,
         })
     }
 
@@ -260,7 +254,7 @@ impl Library {
         let path = self.library_root.join(uuid.to_string());
         let metadata = LibraryBookMetadata::load(&path).await?;
         let book = Arc::new(TracedMutex::new(
-            LibraryBook::load_from_metadata(self.dictionaries_cache.clone(), metadata).await?,
+            LibraryBook::load_from_metadata(metadata).await?,
         ));
 
         Ok(self.books_cache.insert(*uuid, book).await)
@@ -347,11 +341,6 @@ impl Library {
                 } else {
                     false
                 }
-            }
-            LibraryFileChange::DictionaryChanged { modified, from, to } => {
-                self.dictionaries_cache
-                    .reload_dictionary(*modified, *from, *to)
-                    .await?
             }
         });
         trace!("Finish file change event handling");

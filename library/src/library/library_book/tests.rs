@@ -7,10 +7,7 @@ use crate::{
     book::{
         book::Book, serialization::Serializable, translation::Translation, translation_import,
     },
-    library::{
-        Library, LibraryTranslationMetadata, library_book::BookReadingState,
-        library_dictionary::DictionaryCache,
-    },
+    library::{Library, LibraryTranslationMetadata, library_book::BookReadingState},
     test_utils::TempDir,
     translator::TranslationModel,
 };
@@ -143,12 +140,6 @@ async fn save_after_load_book_and_translation_changed() {
     let source_language = Language::from_str("es").unwrap();
     let target_language = Language::from_str("en").unwrap();
 
-    let dict = library
-        .dictionaries_cache
-        .get_dictionary(source_language, target_language)
-        .await
-        .unwrap();
-
     // Create a book and attach a translation with an initial version
     let book_id = {
         let book = library
@@ -187,11 +178,9 @@ async fn save_after_load_book_and_translation_changed() {
             0,
             &initial_pt,
             TranslationModel::Gemini25Flash,
-            &mut dict.lock().await.dictionary,
         );
         book.translations
             .push(Arc::new(TracedMutex::new(super::LibraryTranslation {
-                dict_cache: library.dictionaries_cache.clone(),
                 translation: tr,
                 source_language,
                 target_language,
@@ -242,7 +231,6 @@ async fn save_after_load_book_and_translation_changed() {
                 0,
                 &new_pt,
                 TranslationModel::Gemini25Flash,
-                &mut dict.lock().await.dictionary,
             );
 
         book.save().await.unwrap();
@@ -280,12 +268,6 @@ async fn save_merges_translation_with_concurrent_on_disk_change() {
     let source_language = Language::from_str("en").unwrap();
     let target_language = Language::from_str("ru").unwrap();
 
-    let dict = library
-        .dictionaries_cache
-        .get_dictionary(source_language, target_language)
-        .await
-        .unwrap();
-
     // Create a book with a translation ts=1
     let book = library
         .create_book("Merge Book", &Language::from_639_3("eng").unwrap())
@@ -322,11 +304,9 @@ async fn save_merges_translation_with_concurrent_on_disk_change() {
         0,
         &pt1,
         TranslationModel::Gemini25Flash,
-        &mut dict.lock().await.dictionary,
     );
     book.translations
         .push(Arc::new(TracedMutex::new(super::LibraryTranslation {
-            dict_cache: library.dictionaries_cache.clone(),
             translation: tr,
             source_language,
             target_language,
@@ -344,10 +324,7 @@ async fn save_merges_translation_with_concurrent_on_disk_change() {
     ));
     book.last_modified = std::fs::metadata(&book_file).unwrap().modified().ok();
     book.translations.clear();
-    let loaded_tr =
-        super::LibraryTranslation::load(library.dictionaries_cache.clone(), &tr_path)
-            .await
-            .unwrap();
+    let loaded_tr = super::LibraryTranslation::load(&tr_path).await.unwrap();
     book.translations
         .push(Arc::new(TracedMutex::new(loaded_tr)));
 
@@ -385,7 +362,6 @@ async fn save_merges_translation_with_concurrent_on_disk_change() {
             0,
             &mem_pt,
             TranslationModel::Gemini25Flash,
-            &mut dict.lock().await.dictionary,
         );
 
     // Concurrent on-disk change ts=3
@@ -424,7 +400,6 @@ async fn save_merges_translation_with_concurrent_on_disk_change() {
             0,
             &disk_pt,
             TranslationModel::Gemini25Flash,
-            &mut dict.lock().await.dictionary,
         );
         let wf = std::fs::File::create(&tr_path).unwrap();
         let mut writer = std::io::BufWriter::new(wf);
@@ -583,15 +558,9 @@ async fn load_from_metadata_no_conflicts() {
     let dir = temp_dir.path.join("book");
     std::fs::create_dir_all(&dir).unwrap();
 
-    let dict_cache = Arc::new(DictionaryCache::new(&temp_dir.path));
 
     let source_language = Language::from_str("en").unwrap();
     let target_language = Language::from_str("ru").unwrap();
-
-    let dict = dict_cache
-        .get_dictionary(source_language, target_language)
-        .await
-        .unwrap();
 
     let main_path = dir.join("translation_en_ru.dat");
     let mut t_main =
@@ -625,7 +594,6 @@ async fn load_from_metadata_no_conflicts() {
         0,
         &pt2,
         TranslationModel::Gemini25Flash,
-        &mut dict.lock().await.dictionary,
     );
     {
         let f = std::fs::File::create(&main_path).unwrap();
@@ -643,7 +611,7 @@ async fn load_from_metadata_no_conflicts() {
     };
 
     // Act
-    let loaded = super::LibraryTranslation::load_from_metadata(dict_cache, meta)
+    let loaded = super::LibraryTranslation::load_from_metadata(meta)
         .await
         .unwrap();
 
@@ -660,15 +628,9 @@ async fn load_from_metadata_merges_conflicts_and_persists() {
     let dir = temp_dir.path.join("book2");
     std::fs::create_dir_all(&dir).unwrap();
 
-    let dict_cache = Arc::new(DictionaryCache::new(&temp_dir.path));
 
     let source_language = Language::from_str("en").unwrap();
     let target_language = Language::from_str("ru").unwrap();
-
-    let dict = dict_cache
-        .get_dictionary(source_language, target_language)
-        .await
-        .unwrap();
 
     let main_path = dir.join(format!(
         "translation_{}_{}.dat",
@@ -714,7 +676,6 @@ async fn load_from_metadata_merges_conflicts_and_persists() {
         0,
         &pt2,
         TranslationModel::Gemini25Flash,
-        &mut dict.lock().await.dictionary,
     );
     {
         let f = std::fs::File::create(&main_path).unwrap();
@@ -753,7 +714,6 @@ async fn load_from_metadata_merges_conflicts_and_persists() {
         0,
         &pt1,
         TranslationModel::Gemini25Flash,
-        &mut dict.lock().await.dictionary,
     );
     {
         let f = std::fs::File::create(&conflict1).unwrap();
@@ -792,7 +752,6 @@ async fn load_from_metadata_merges_conflicts_and_persists() {
         0,
         &pt3,
         TranslationModel::Gemini25Flash,
-        &mut dict.lock().await.dictionary,
     );
     {
         let f = std::fs::File::create(&conflict2).unwrap();
@@ -810,7 +769,7 @@ async fn load_from_metadata_merges_conflicts_and_persists() {
     };
 
     // Act
-    let loaded = super::LibraryTranslation::load_from_metadata(dict_cache, meta)
+    let loaded = super::LibraryTranslation::load_from_metadata(meta)
         .await
         .unwrap();
 
@@ -856,9 +815,7 @@ async fn library_book_load_from_metadata_no_conflicts() {
     assert!(meta.conflicting_paths.is_empty());
 
     // Act
-    let loaded = super::LibraryBook::load_from_metadata(library.dictionaries_cache, meta)
-        .await
-        .unwrap();
+    let loaded = super::LibraryBook::load_from_metadata(meta).await.unwrap();
 
     // Assert
     assert_eq!(loaded.book.title, "Original Title");
@@ -910,9 +867,7 @@ async fn library_book_load_from_metadata_selects_newest_conflict_and_cleans() {
     let meta = books.remove(0);
 
     // Act: load should select the newest (conflict), move it to main, and delete conflicts
-    let loaded = super::LibraryBook::load_from_metadata(library.dictionaries_cache, meta)
-        .await
-        .unwrap();
+    let loaded = super::LibraryBook::load_from_metadata(meta).await.unwrap();
 
     // Assert: loaded content is from conflict (newest)
     assert_eq!(loaded.book.title, "From Conflict");
@@ -970,9 +925,7 @@ async fn library_book_load_from_metadata_keeps_main_if_newest_and_cleans() {
     let meta = books.remove(0);
 
     // Act
-    let loaded = super::LibraryBook::load_from_metadata(library.dictionaries_cache, meta)
-        .await
-        .unwrap();
+    let loaded = super::LibraryBook::load_from_metadata(meta).await.unwrap();
 
     // Assert: main is kept, conflict removed
     assert_eq!(loaded.book.title, "V2");

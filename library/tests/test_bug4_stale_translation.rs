@@ -124,9 +124,7 @@ async fn test_bug4_stale_translation_stored() {
         let mut t = translation.lock().await;
 
         let stale_translation = make_translation("Кот сидел на коврике.");
-        t.add_paragraph_translation(0, &stale_translation, TranslationModel::Gemini25Flash)
-            .await
-            .unwrap();
+        t.add_paragraph_translation(0, &stale_translation, TranslationModel::Gemini25Flash);
 
         let pv = t.paragraph_view(0).unwrap();
         let sentence = pv.sentences().next().unwrap();

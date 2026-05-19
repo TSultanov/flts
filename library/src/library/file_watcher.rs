@@ -22,11 +22,6 @@ pub enum LibraryFileChange {
         to: Language,
         uuid: Uuid,
     },
-    DictionaryChanged {
-        modified: SystemTime,
-        from: Language,
-        to: Language,
-    },
 }
 
 pub struct LibraryWatcher {
@@ -63,15 +58,6 @@ impl LibraryWatcher {
                             } => info!(
                                 "Translation {} {}->{} change detected",
                                 uuid,
-                                from.to_639_3(),
-                                to.to_639_3()
-                            ),
-                            LibraryFileChange::DictionaryChanged {
-                                modified: _,
-                                from,
-                                to,
-                            } => info!(
-                                "Dictionary {} -> {} change detected",
                                 from.to_639_3(),
                                 to.to_639_3()
                             ),
@@ -159,25 +145,6 @@ impl LibraryWatcher {
                         from: Language::from_639_3(&from)?,
                         to: Language::from_639_3(&to)?,
                         uuid: Uuid::from_str(uuid).ok()?,
-                    });
-                }
-            }
-
-            // Dictionary file: dictionary_{src}_{tgt}{some junk from conflicts}.dat
-            if filename.starts_with("dictionary_") && filename.ends_with(".dat") {
-                let parts: Vec<&str> = filename
-                    .trim_start_matches("dictionary_")
-                    .trim_end_matches(".dat")
-                    .split('_')
-                    .collect();
-
-                if parts.len() >= 2 {
-                    let from: String = parts[0].chars().take(3).collect();
-                    let to: String = parts[1].chars().take(3).collect();
-                    return Some(LibraryFileChange::DictionaryChanged {
-                        modified: metadata.modified().unwrap(),
-                        from: Language::from_639_3(&from)?,
-                        to: Language::from_639_3(&to)?,
                     });
                 }
             }

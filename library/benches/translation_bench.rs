@@ -2,7 +2,6 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use library::book::serialization::Serializable;
 use library::book::translation::Translation;
 use library::book::translation_import::{Grammar, ParagraphTranslation, Sentence, Word};
-use library::dictionary::Dictionary;
 use library::translator::TranslationModel;
 use rand::distr::Alphanumeric;
 use rand::rngs::StdRng;
@@ -61,7 +60,6 @@ fn generate_random_word(rng: &mut StdRng) -> Word {
 
 fn generate_translation(paragraphs_count: usize) -> Translation {
     let mut translation = Translation::create("eng", "spa");
-    let mut dictionary = Dictionary::create("eng".to_string(), "spa".to_string());
     let mut rng = StdRng::seed_from_u64(42);
 
     for i in 0..paragraphs_count {
@@ -93,7 +91,6 @@ fn generate_translation(paragraphs_count: usize) -> Translation {
             i,
             &paragraph_translation,
             TranslationModel::Gemini25Flash,
-            &mut dictionary,
         );
     }
     translation

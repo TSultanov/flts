@@ -495,8 +495,7 @@ async fn handle_request(
     translation
         .lock()
         .await
-        .add_paragraph_translation(request.paragraph_id, &p_translation, request.model)
-        .await?;
+        .add_paragraph_translation(request.paragraph_id, &p_translation, request.model);
 
     save_notify.send(SaveNotify {
         request_id: request.request_id,

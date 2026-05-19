@@ -177,11 +177,11 @@ async fn translate_paragraph(
         .await?;
     println!("Worker {worker_id}: Translated paragraph {}", paragraph_id);
 
-    translation
-        .lock()
-        .await
-        .add_paragraph_translation(paragraph_id, &p_translation, translator.get_model())
-        .await?;
+    translation.lock().await.add_paragraph_translation(
+        paragraph_id,
+        &p_translation,
+        translator.get_model(),
+    );
 
     Ok(())
 }

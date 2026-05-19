@@ -84,9 +84,7 @@ async fn setup_dirty_library(lib_path: &Path) -> (Arc<Library>, uuid::Uuid) {
             0,
             &make_translation("Это тестовый абзац."),
             TranslationModel::Gemini25Flash,
-        )
-        .await
-        .unwrap();
+        );
 
         let pv = t.paragraph_view(0);
         assert!(

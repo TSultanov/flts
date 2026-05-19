@@ -72,7 +72,6 @@ mod translation_metadata_test {
             serialization::Serializable, translation::Translation, translation_import,
             translation_metadata::TranslationMetadata,
         },
-        dictionary::Dictionary,
         translator::TranslationModel,
     };
 
@@ -105,13 +104,11 @@ mod translation_metadata_test {
             }],
         };
 
-        let mut dict = Dictionary::create("en".to_owned(), "ru".to_owned());
 
         translation.add_paragraph_translation(
             0,
             &paragraph_translation,
             TranslationModel::Gemini25Flash,
-            &mut dict,
         );
 
         // another paragraph
@@ -162,7 +159,6 @@ mod translation_metadata_test {
             3,
             &paragraph_translation2,
             TranslationModel::Gemini25Flash,
-            &mut dict,
         );
 
         let mut buf: Vec<u8> = vec![];
@@ -204,12 +200,10 @@ mod translation_metadata_test {
                 }],
             }],
         };
-        let mut dict = Dictionary::create("en".to_owned(), "ru".to_owned());
         translation.add_paragraph_translation(
             0,
             &paragraph_translation,
             TranslationModel::Gemini25Flash,
-            &mut dict,
         );
 
         // another paragraph
@@ -260,7 +254,6 @@ mod translation_metadata_test {
             3,
             &paragraph_translation2,
             TranslationModel::Gemini25Flash,
-            &mut dict,
         );
 
         let mut buf: Vec<u8> = vec![];

@@ -634,7 +634,6 @@ mod tests {
     use super::{ParagraphSegment, paragraph_to_segments};
 
     use library::book::translation_import;
-    use library::dictionary::Dictionary;
     use library::{book::translation::ParagraphTranslationView, translator::TranslationModel};
 
     fn grammar_stub(original: &str) -> translation_import::Grammar {
@@ -684,13 +683,10 @@ mod tests {
         paragraph_index: usize,
         pt: &translation_import::ParagraphTranslation,
     ) -> ParagraphTranslationView<'a> {
-        let mut dictionary =
-            Dictionary::create(pt.source_language.clone(), pt.target_language.clone());
         translation.add_paragraph_translation(
             paragraph_index,
             pt,
             TranslationModel::OpenAIGpt52,
-            &mut dictionary,
         );
         translation
             .paragraph_view(paragraph_index)

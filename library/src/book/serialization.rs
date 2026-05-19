@@ -150,7 +150,6 @@ pub fn create_random_string(len: usize) -> String {
 pub enum Magic {
     Book,
     Translation,
-    Dictionary,
 }
 
 impl Magic {
@@ -158,7 +157,6 @@ impl Magic {
         match self {
             Magic::Book => b"BK01", // includes version indicator but still treat version separately
             Magic::Translation => b"TR01",
-            Magic::Dictionary => b"DC01",
         }
     }
 

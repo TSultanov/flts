@@ -9,10 +9,7 @@ use std::{
 use anyhow::Context;
 use serde::Serialize;
 
-use crate::{
-    book::{serialization::Serializable, translation::Translation},
-    dictionary::Dictionary,
-};
+use crate::book::{serialization::Serializable, translation::Translation};
 
 #[derive(Default)]
 struct TraceSink {
@@ -66,8 +63,6 @@ struct TraceState {
     translation_version_count: usize,
     #[serde(rename = "translationConflictCount")]
     translation_conflict_count: usize,
-    #[serde(rename = "dictionaryEntryCount")]
-    dictionary_entry_count: usize,
     #[serde(rename = "bookSaveStage")]
     book_save_stage: &'static str,
     #[serde(rename = "translationSaveStage")]
@@ -163,24 +158,6 @@ pub async fn emit_translation_event(
     emit(name, arg, state)
 }
 
-pub async fn emit_dictionary_event(
-    library_root: &Path,
-    dictionary_path: &Path,
-    name: &str,
-    arg: Option<TraceArg>,
-) -> anyhow::Result<()> {
-    let state = capture_state(
-        None,
-        library_root,
-        Some(dictionary_path),
-        "idle",
-        "idle",
-        "idle",
-    )
-    .await?;
-    emit(name, arg, state)
-}
-
 fn emit(name: &str, arg: Option<TraceArg>, state: TraceState) -> anyhow::Result<()> {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -207,7 +184,7 @@ fn emit(name: &str, arg: Option<TraceArg>, state: TraceState) -> anyhow::Result<
 
 async fn capture_state(
     book_dir: Option<&Path>,
-    library_root: &Path,
+    _library_root: &Path,
     translation_path_hint: Option<&Path>,
     book_save_stage: &'static str,
     translation_save_stage: &'static str,
@@ -273,14 +250,6 @@ async fn capture_state(
             (0, 0, 0)
         };
 
-    let dictionary_entry_count =
-        if let Some(dictionary_path) = canonical_dictionary_path(library_root).await? {
-            let dictionary = load_dictionary(&dictionary_path).await?;
-            dictionary.translation_pairs_count()
-        } else {
-            0
-        };
-
     Ok(TraceState {
         book_main_m_time,
         book_conflict_count,
@@ -290,7 +259,6 @@ async fn capture_state(
         translation_main_m_time,
         translation_version_count,
         translation_conflict_count,
-        dictionary_entry_count,
         book_save_stage,
         translation_save_stage,
         state_op_kind,
@@ -357,39 +325,8 @@ async fn first_canonical_translation_path(book_dir: &Path) -> anyhow::Result<Opt
     Ok(candidates.into_iter().next())
 }
 
-async fn canonical_dictionary_path(library_root: &Path) -> anyhow::Result<Option<PathBuf>> {
-    let mut read_dir = match tokio::fs::read_dir(library_root).await {
-        Ok(read_dir) => read_dir,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(err.into()),
-    };
-
-    let mut candidates = Vec::new();
-    while let Some(entry) = read_dir.next_entry().await? {
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        if let Some(name) = path.file_name().and_then(|n| n.to_str())
-            && is_canonical_dictionary_filename(name)
-        {
-            candidates.push(path);
-        }
-    }
-    candidates.sort();
-    Ok(candidates.into_iter().next())
-}
-
 fn is_canonical_translation_filename(name: &str) -> bool {
     if !(name.starts_with("translation_") && name.ends_with(".dat")) {
-        return false;
-    }
-    let stem = &name[..name.len() - 4];
-    !stem.contains('.') && stem.matches('_').count() == 2
-}
-
-fn is_canonical_dictionary_filename(name: &str) -> bool {
-    if !(name.starts_with("dictionary_") && name.ends_with(".dat")) {
         return false;
     }
     let stem = &name[..name.len() - 4];
@@ -435,10 +372,4 @@ async fn load_translation(path: &Path) -> anyhow::Result<Translation> {
     let content = tokio::fs::read(path).await?;
     let mut cursor = std::io::Cursor::new(content);
     Ok(Translation::deserialize(&mut cursor)?)
-}
-
-async fn load_dictionary(path: &Path) -> anyhow::Result<Dictionary> {
-    let content = tokio::fs::read(path).await?;
-    let mut cursor = std::io::Cursor::new(content);
-    Ok(Dictionary::deserialize(&mut cursor)?)
 }
