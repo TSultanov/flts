@@ -808,6 +808,96 @@ mod library_tests {
     }
 
     #[tokio::test]
+    async fn integration_apply_paragraph_merges_existing_conflict_file() {
+        use crate::card::Example;
+        let tmp = TempDir::new("flts_card_conflict_int");
+        let (library, book_id) =
+            library_with_one_paragraph_book(tmp.path.join("lib"), "No puedo más.").await;
+
+        let deck = tmp.path.join("lib").join("cards").join("spa-rus");
+        tokio::fs::create_dir_all(&deck).await.unwrap();
+
+        let other_book = Uuid::new_v4();
+        let canonical = Card {
+            version: 1,
+            id: "flts_spa_rus_poder_verb".into(),
+            lemma: "poder".into(),
+            part_of_speech: "verb".into(),
+            translations: vec!["мочь".into()],
+            examples: vec![Example {
+                source: "puedo".into(),
+                translation: "могу".into(),
+                book_id: other_book,
+                chapter: 0,
+                paragraph: 0,
+            }],
+            anki_data: None,
+        };
+        tokio::fs::write(
+            deck.join("poder_verb.json"),
+            serde_json::to_vec_pretty(&canonical).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let conflict = Card {
+            version: 1,
+            id: "flts_spa_rus_poder_verb".into(),
+            lemma: "poder".into(),
+            part_of_speech: "verb".into(),
+            translations: vec!["уметь".into()],
+            examples: vec![Example {
+                source: "pueden".into(),
+                translation: "могут".into(),
+                book_id: other_book,
+                chapter: 1,
+                paragraph: 5,
+            }],
+            anki_data: None,
+        };
+        let conflict_path = deck.join("poder_verb.sync-conflict-20260520-test.json");
+        tokio::fs::write(&conflict_path, serde_json::to_vec_pretty(&conflict).unwrap())
+            .await
+            .unwrap();
+
+        let paragraph = paragraph_with(
+            "Я больше не могу.",
+            vec![full_word("puedo", "poder", "мочь", "verb", &["могу_новое"], false)],
+        );
+        library
+            .apply_paragraph_to_cards(book_id, 0, &paragraph, Language::from_639_3("rus").unwrap())
+            .await
+            .unwrap();
+
+        // Sibling must be gone, no temp files.
+        assert!(!conflict_path.exists(), "conflict sibling must be deleted");
+        let names: Vec<String> = std::fs::read_dir(&deck)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert!(
+            names.iter().all(|n| !n.contains('~')),
+            "found stray temp file in {names:?}"
+        );
+        assert_eq!(names, vec!["poder_verb.json".to_string()]);
+
+        // Merged card has translations from canonical + conflict + new update.
+        let on_disk: Card =
+            serde_json::from_slice(&tokio::fs::read(deck.join("poder_verb.json")).await.unwrap()).unwrap();
+        assert_eq!(on_disk.translations, vec!["мочь", "уметь", "могу_новое"]);
+        assert_eq!(on_disk.examples.len(), 3);
+
+        let provenances: std::collections::HashSet<_> = on_disk
+            .examples
+            .iter()
+            .map(|e| (e.book_id, e.chapter, e.paragraph))
+            .collect();
+        assert!(provenances.contains(&(other_book, 0, 0)));
+        assert!(provenances.contains(&(other_book, 1, 5)));
+        assert!(provenances.contains(&(book_id, 0, 0)));
+    }
+
+    #[tokio::test]
     async fn integration_uses_dash_separator_for_directory() {
         let tmp = TempDir::new("flts_card_dash");
         let (library, book_id) =
