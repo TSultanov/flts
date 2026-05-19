@@ -31,6 +31,7 @@
     "fake-indexeddb": "^6.2.5",
     "fast-check": "^4.8.0",
     "jsdom": "^29.1.1",
+    "jszip": "^3.10.1",
     "svelte": "^5.55.5",
     "svelte-check": "^4.4.8",
     "typescript": "~6.0.3",
