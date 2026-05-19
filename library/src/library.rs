@@ -24,6 +24,7 @@ use crate::{
 
 pub mod file_watcher;
 pub mod library_book;
+pub mod library_card;
 
 /// Default number of books to pin in the warm LRU. Books accessed beyond this
 /// count are still reachable via the weak index while any holder keeps them
