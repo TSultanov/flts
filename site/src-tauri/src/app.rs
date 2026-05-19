@@ -193,17 +193,25 @@ impl AppState {
             let library = Arc::new(Library::open(PathBuf::from(&library_path)).await?);
             self.library.send_replace(Some(library.clone()));
 
-            let backfill_lock = self.backfill_lock.clone();
-            let backfill_library = library.clone();
-            tauri::async_runtime::spawn(async move {
-                let Ok(_guard) = backfill_lock.try_lock() else {
-                    info!("Card backfill skipped: already in progress");
-                    return;
-                };
-                if let Err(err) = backfill_library.backfill_cards_from_translations().await {
-                    warn!("Card backfill failed: {err}");
-                }
-            });
+            if std::env::var_os("FLTS_ENABLE_CARD_BACKFILL")
+                .is_some_and(|v| !v.is_empty())
+            {
+                let backfill_lock = self.backfill_lock.clone();
+                let backfill_library = library.clone();
+                tauri::async_runtime::spawn(async move {
+                    let Ok(_guard) = backfill_lock.try_lock() else {
+                        info!("Card backfill skipped: already in progress");
+                        return;
+                    };
+                    if let Err(err) = backfill_library.backfill_cards_from_translations().await {
+                        warn!("Card backfill failed: {err}");
+                    }
+                });
+            } else {
+                info!(
+                    "Card backfill disabled: set FLTS_ENABLE_CARD_BACKFILL=1 to enable"
+                );
+            }
 
             self.watcher
                 .lock()
