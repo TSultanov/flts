@@ -10,6 +10,7 @@ use std::{
 use directories::ProjectDirs;
 use isolang::Language;
 use library::{
+    cache::WeakLruCache,
     lyrics::{
         Lyrics, LyricsTranslation, cache::LyricsCache, lrclib, translation::get_lyrics_translator,
     },
@@ -18,9 +19,13 @@ use library::{
 use log::{info, warn};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::Mutex;
 
 use crate::app::{AppError, AppState, config::Config};
+
+/// Lyrics are cheap to re-fetch from the disk cache backing LyricsCache, so a
+/// modest in-memory pin is plenty even for long listening sessions.
+const LYRICS_MEM_CACHE_CAPACITY: usize = 64;
 
 #[cfg(target_os = "macos")]
 use crate::app::spotify::applescript::{NowPlaying, SpotifyWatcher};
@@ -29,7 +34,7 @@ const PROGRESS_THROTTLE: Duration = Duration::from_millis(400);
 
 pub struct LyricsState {
     cache: tokio::sync::OnceCell<Arc<LyricsCache>>,
-    lyrics: RwLock<HashMap<String, Arc<Lyrics>>>,
+    lyrics: WeakLruCache<String, Lyrics>,
     /// (track_id, src, tgt, model) → in-flight request id (for dedup).
     inflight: Mutex<HashMap<TranslationKey, usize>>,
     next_request: AtomicUsize,
@@ -55,7 +60,7 @@ impl LyricsState {
     pub fn new() -> Self {
         Self {
             cache: tokio::sync::OnceCell::new(),
-            lyrics: RwLock::new(HashMap::new()),
+            lyrics: WeakLruCache::new(LYRICS_MEM_CACHE_CAPACITY),
             inflight: Mutex::new(HashMap::new()),
             next_request: AtomicUsize::new(0),
 
@@ -193,8 +198,8 @@ pub(crate) async fn fetch_lyrics_inner(
     duration_s: Option<u32>,
 ) -> anyhow::Result<Option<Lyrics>> {
     // In-memory cache: hottest path, session-local.
-    if let Some(existing) = state.lyrics_state.lyrics.read().await.get(track_id) {
-        return Ok(Some((**existing).clone()));
+    if let Some(existing) = state.lyrics_state.lyrics.get(&track_id.to_string()).await {
+        return Ok(Some((*existing).clone()));
     }
 
     // Disk cache: skip the LRClib round-trip on songs we've fetched before.
@@ -203,9 +208,8 @@ pub(crate) async fn fetch_lyrics_inner(
         state
             .lyrics_state
             .lyrics
-            .write()
-            .await
-            .insert(track_id.to_string(), Arc::new(cached.clone()));
+            .insert(track_id.to_string(), Arc::new(cached.clone()))
+            .await;
         return Ok(Some(cached));
     }
 
@@ -215,9 +219,8 @@ pub(crate) async fn fetch_lyrics_inner(
         state
             .lyrics_state
             .lyrics
-            .write()
-            .await
-            .insert(track_id.to_string(), Arc::new(l.clone()));
+            .insert(track_id.to_string(), Arc::new(l.clone()))
+            .await;
         // Cache-write failure must not fail the user's request — log and continue.
         if let Err(err) = cache.put_raw(l).await {
             warn!("LyricsCache: failed to persist raw lyrics for {track_id}: {err}");
@@ -246,8 +249,8 @@ pub async fn get_track_lyrics_state(
         .await
         .map_err(|e| e.to_string())?;
 
-    let lyrics = if let Some(arc) = state.lyrics_state.lyrics.read().await.get(&track_id) {
-        Some((**arc).clone())
+    let lyrics = if let Some(arc) = state.lyrics_state.lyrics.get(&track_id).await {
+        Some((*arc).clone())
     } else {
         cache.get_raw(&track_id).await
     };
@@ -318,10 +321,8 @@ pub(crate) async fn dispatch_translation_inner(
     let lyrics = state
         .lyrics_state
         .lyrics
-        .read()
-        .await
-        .get(track_id)
-        .cloned();
+        .get(&track_id.to_string())
+        .await;
     let lyrics = match lyrics {
         Some(l) => l,
         None => {

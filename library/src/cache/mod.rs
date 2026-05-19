@@ -5,7 +5,9 @@ use isolang::Language;
 use crate::book::translation_import::ParagraphTranslation;
 
 pub mod disk;
+pub mod weak_lru;
 pub use disk::DiskCache;
+pub use weak_lru::WeakLruCache;
 
 const MIB: u64 = 1024 * 1024;
 

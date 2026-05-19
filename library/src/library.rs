@@ -8,14 +8,14 @@ use std::{
 use isolang::Language;
 use itertools::Itertools;
 use log::{info, trace};
-use tokio::{io::AsyncReadExt, sync::RwLock};
+use tokio::io::AsyncReadExt;
 use uuid::Uuid;
 
 use crate::{
     book::{book_metadata::BookMetadata, translation_metadata::TranslationMetadata},
+    cache::WeakLruCache,
     epub_importer::EpubBook,
     library::{
-        books_cache::{BooksCache, DEFAULT_CACHE_CAPACITY},
         file_watcher::LibraryFileChange,
         library_book::{LibraryBook, load_book_user_state},
         library_dictionary::DictionaryCache,
@@ -23,10 +23,14 @@ use crate::{
     tla_trace::mutex::TracedMutex,
 };
 
-pub mod books_cache;
 pub mod file_watcher;
 pub mod library_book;
 pub mod library_dictionary;
+
+/// Default number of books to pin in the warm LRU. Books accessed beyond this
+/// count are still reachable via the weak index while any holder keeps them
+/// alive; once the last holder drops, they unload.
+pub const DEFAULT_BOOKS_CACHE_CAPACITY: usize = 8;
 
 #[derive(Debug)]
 pub enum LibraryError {
@@ -199,13 +203,13 @@ impl LibraryBookMetadata {
 
 pub struct Library {
     library_root: PathBuf,
-    pub(crate) books_cache: RwLock<BooksCache>,
+    pub(crate) books_cache: WeakLruCache<Uuid, TracedMutex<LibraryBook>>,
     dictionaries_cache: Arc<DictionaryCache>,
 }
 
 impl Library {
     pub async fn open(library_root: PathBuf) -> anyhow::Result<Self> {
-        Self::open_with_capacity(library_root, DEFAULT_CACHE_CAPACITY).await
+        Self::open_with_capacity(library_root, DEFAULT_BOOKS_CACHE_CAPACITY).await
     }
 
     pub async fn open_with_capacity(
@@ -220,7 +224,7 @@ impl Library {
 
         Ok(Library {
             library_root,
-            books_cache: RwLock::new(BooksCache::new(cache_capacity)),
+            books_cache: WeakLruCache::new(cache_capacity),
             dictionaries_cache,
         })
     }
@@ -249,7 +253,7 @@ impl Library {
     }
 
     pub async fn get_book(&self, uuid: &Uuid) -> anyhow::Result<Arc<TracedMutex<LibraryBook>>> {
-        if let Some(book) = self.books_cache.read().await.get(uuid) {
+        if let Some(book) = self.books_cache.get(uuid).await {
             return Ok(book);
         }
 
@@ -259,12 +263,7 @@ impl Library {
             LibraryBook::load_from_metadata(self.dictionaries_cache.clone(), metadata).await?,
         ));
 
-        let mut cache = self.books_cache.write().await;
-        if let Some(existing) = cache.get(uuid) {
-            return Ok(existing);
-        }
-        cache.insert(*uuid, book.clone());
-        Ok(book)
+        Ok(self.books_cache.insert(*uuid, book).await)
     }
 
     pub async fn create_book_plain(
@@ -308,7 +307,7 @@ impl Library {
     }
 
     pub async fn save_all(&self) {
-        let books = self.books_cache.read().await.live_books();
+        let books = self.books_cache.live_values().await;
         for book_arc in books {
             let mut book = book_arc.lock().await;
             if book.has_unsaved_changes().await
@@ -326,7 +325,7 @@ impl Library {
         trace!("Starting file change event handling: {:?}...", event);
         let result = Ok(match event {
             LibraryFileChange::BookChanged { modified, uuid } => {
-                let book = { self.books_cache.read().await.get(uuid) };
+                let book = self.books_cache.get(uuid).await;
                 if let Some(book) = book {
                     book.lock().await.reload_book(*modified).await?
                 } else {
@@ -339,7 +338,7 @@ impl Library {
                 to,
                 uuid,
             } => {
-                let book = { self.books_cache.read().await.get(uuid) };
+                let book = self.books_cache.get(uuid).await;
                 if let Some(book) = book {
                     book.lock()
                         .await
@@ -524,22 +523,18 @@ mod library_tests {
             .unwrap();
 
         let id = make_saved_book(&library, "Ephemeral").await;
+        let first_ptr = Arc::as_ptr(&library.get_book(&id).await.unwrap());
+
         for i in 0..3 {
             let _ = make_saved_book(&library, &format!("Other {i}")).await;
         }
 
-        {
-            let cache = library.books_cache.read().await;
-            if let Some(weak) = cache.weak_by_id.get(&id) {
-                assert_eq!(
-                    weak.strong_count(),
-                    0,
-                    "expected Weak to be stale once the book was evicted with no external holder",
-                );
-            }
-        }
-
         let reloaded = library.get_book(&id).await.unwrap();
+        assert_ne!(
+            Arc::as_ptr(&reloaded),
+            first_ptr,
+            "evicted book without holder must reload as a fresh instance",
+        );
         assert_eq!(
             Arc::strong_count(&reloaded),
             2,
@@ -559,9 +554,8 @@ mod library_tests {
             let _ = make_saved_book(&library, &format!("Book {i}")).await;
         }
 
-        let cache = library.books_cache.read().await;
         assert_eq!(
-            cache.warm_lru.len(),
+            library.books_cache.live_values().await.len(),
             capacity,
             "warm LRU must not exceed capacity",
         );
