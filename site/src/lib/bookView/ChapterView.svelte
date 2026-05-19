@@ -1,6 +1,6 @@
 <script lang="ts">
     import { getContext, onDestroy, onMount, setContext } from "svelte";
-    import type { UUID } from "../data/v2/db";
+    import type { UUID } from "../data/uuid";
     import ParagraphView from "./ParagraphView.svelte";
     import type { Library } from "../data/library";
     import type { WordSelection } from "./ParagraphViewModel.svelte";

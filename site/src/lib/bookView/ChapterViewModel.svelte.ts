@@ -1,5 +1,5 @@
 import type { Library } from "../data/library";
-import type { UUID } from "../data/v2/db";
+import type { UUID } from "../data/uuid";
 import type { WordSelection } from "./ParagraphViewModel.svelte";
 import { ChapterParagraphsStore } from "./ChapterParagraphsStore.svelte";
 

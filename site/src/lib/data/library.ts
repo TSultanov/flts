@@ -1,5 +1,5 @@
 import type { EpubBook } from "./epubLoader";
-import type { UUID } from "./v2/db";
+import type { UUID } from "./uuid";
 import {
     type ChapterMetaView,
     type IBookMeta,

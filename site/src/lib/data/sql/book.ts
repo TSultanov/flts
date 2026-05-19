@@ -1,4 +1,4 @@
-import { generateUID, type UUID } from "../v2/db";
+import type { UUID } from "../uuid";
 
 type BookData = {
     path: string[];

@@ -1,7 +1,7 @@
 import { SvelteMap } from "svelte/reactivity";
 import { eventHub } from "../data/tauri.svelte";
 import type { Library } from "../data/library";
-import type { UUID } from "../data/v2/db";
+import type { UUID } from "../data/uuid";
 import type { ParagraphSegment } from "../data/sql/book";
 
 export type ParagraphTranslationSliceCache = {

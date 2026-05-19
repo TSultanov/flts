@@ -3,7 +3,7 @@
     import { buildLibraryFolder, Library, type LibraryFolder } from "./data/library";
     import ConfirmDialog from "./ConfirmDialog.svelte";
     import MoveFolderDialog from "./MoveFolderDialog.svelte";
-    import type { UUID } from "./data/v2/db";
+    import type { UUID } from "./data/uuid";
     import type { IBookMeta } from "./data/sql/book";
 
     const library: Library = getContext("library");

@@ -1,7 +1,7 @@
 import { invoke, type InvokeArgs } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { SvelteMap } from "svelte/reactivity";
-import type { UUID } from "./v2/db";
+import type { UUID } from "./uuid";
 
 export type UpdateEvent<TEvent = any> = {
     name: string;

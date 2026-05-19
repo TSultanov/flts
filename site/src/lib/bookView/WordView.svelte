@@ -1,7 +1,7 @@
 <script lang="ts">
     import { getContext, onMount } from "svelte";
     import type { Library } from "../data/library";
-    import type { UUID } from "../data/v2/db";
+    import type { UUID } from "../data/uuid";
     import { models, configStore } from "../config";
     import { faLanguage } from "@fortawesome/free-solid-svg-icons";
     import Fa from "svelte-fa";

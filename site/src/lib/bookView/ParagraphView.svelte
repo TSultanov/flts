@@ -4,7 +4,7 @@
     import { getContext } from "svelte";
     import CircularProgress from "../widgets/CircularProgress.svelte";
     import type { Library } from "../data/library";
-    import type { UUID } from "../data/v2/db";
+    import type { UUID } from "../data/uuid";
     import { ParagraphViewModel, type WordSelection } from "./ParagraphViewModel.svelte";
     import WordSpan from "./WordSpan.svelte";
     import {

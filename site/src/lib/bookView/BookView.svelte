@@ -1,6 +1,6 @@
 <script lang="ts">
     import WordView from "./WordView.svelte";
-    import type { UUID } from "../data/v2/db";
+    import type { UUID } from "../data/uuid";
     import { getContext, type Snippet } from "svelte";
     import { SvelteMap } from "svelte/reactivity";
     import type { BookReadingState, Library } from "../data/library";

@@ -1,6 +1,6 @@
 import type { Library } from "../data/library";
 import type { ParagraphSegment } from "../data/sql/book";
-import type { UUID } from "../data/v2/db";
+import type { UUID } from "../data/uuid";
 import type { ChapterParagraphsStore } from "./ChapterParagraphsStore.svelte";
 
 export type WordSelection = {
