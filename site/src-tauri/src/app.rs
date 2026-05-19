@@ -77,6 +77,7 @@ pub struct AppState {
     translation_queue: watch::Sender<Option<Arc<TranslationQueue>>>,
     translation_queue_init_lock: Mutex<()>,
     watcher: Arc<Mutex<LibraryWatcher>>,
+    backfill_lock: Arc<Mutex<()>>,
     translations_cache: tokio::sync::OnceCell<Arc<TranslationsCache>>,
     stats_cache: tokio::sync::OnceCell<Arc<TranslationSizeCache>>,
     pub lyrics_state: crate::app::lyrics::LyricsState,
@@ -114,6 +115,7 @@ impl AppState {
             translation_queue: watch::channel(None).0,
             translation_queue_init_lock: Mutex::new(()),
             watcher,
+            backfill_lock: Arc::new(Mutex::new(())),
             translations_cache: tokio::sync::OnceCell::new(),
             stats_cache: tokio::sync::OnceCell::new(),
             lyrics_state: crate::app::lyrics::LyricsState::new(),
@@ -190,6 +192,18 @@ impl AppState {
         if let Some(library_path) = library_path {
             let library = Arc::new(Library::open(PathBuf::from(&library_path)).await?);
             self.library.send_replace(Some(library.clone()));
+
+            let backfill_lock = self.backfill_lock.clone();
+            let backfill_library = library.clone();
+            tauri::async_runtime::spawn(async move {
+                let Ok(_guard) = backfill_lock.try_lock() else {
+                    info!("Card backfill skipped: already in progress");
+                    return;
+                };
+                if let Err(err) = backfill_library.backfill_cards_from_translations().await {
+                    warn!("Card backfill failed: {err}");
+                }
+            });
 
             self.watcher
                 .lock()
