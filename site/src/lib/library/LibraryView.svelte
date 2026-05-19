@@ -1,10 +1,10 @@
 <script lang="ts">
     import { getContext } from "svelte";
-    import { buildLibraryFolder, Library, type LibraryFolder } from "./data/library";
-    import ConfirmDialog from "./dialogs/ConfirmDialog.svelte";
-    import MoveFolderDialog from "./dialogs/MoveFolderDialog.svelte";
-    import type { UUID } from "./data/uuid";
-    import type { BookMeta } from "./data/types";
+    import { buildLibraryFolder, Library, type LibraryFolder } from "../data/library";
+    import ConfirmDialog from "../dialogs/ConfirmDialog.svelte";
+    import MoveFolderDialog from "../dialogs/MoveFolderDialog.svelte";
+    import type { UUID } from "../data/uuid";
+    import type { BookMeta } from "../data/types";
 
     const library: Library = getContext("library");
     const books = library.getLibraryBooksMetadata();

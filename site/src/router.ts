@@ -1,5 +1,5 @@
 import { createRouter } from 'sv-router';
-import LibraryView from './lib/LibraryView.svelte';
+import LibraryView from './lib/library/LibraryView.svelte';
 import ImportView from './lib/importView/ImportView.svelte';
 import Config from './lib/Config.svelte';
 import BookView from './lib/bookView/BookView.svelte';
