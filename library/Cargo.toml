@@ -46,6 +46,7 @@ objc2-ui-kit = "0.3.2"
 
 [dev-dependencies]
 criterion = "0.8.2"
+tokio = { workspace = true, features = ["test-util"] }
 
 [[bench]]
 name = "translation_bench"

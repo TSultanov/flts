@@ -59,6 +59,32 @@ impl AnkiSyncState {
             persistent_threshold: DEFAULT_PERSISTENT_THRESHOLD,
         }
     }
+
+    /// Returns true if the card is in cooldown and should be skipped this tick.
+    fn in_cooldown(&self, card_id: &str, now: tokio::time::Instant) -> bool {
+        self.backoff
+            .get(card_id)
+            .is_some_and(|e| e.next_attempt > now)
+    }
+
+    /// Clears any backoff state for this card after a successful sync.
+    fn record_success(&mut self, card_id: &str) {
+        self.backoff.remove(card_id);
+        self.persistent_set.remove(card_id);
+    }
+
+    /// Increments the card's failure counter and schedules the next attempt.
+    fn record_failure(&mut self, card_id: &str, now: tokio::time::Instant) {
+        let entry = self
+            .backoff
+            .entry(card_id.to_owned())
+            .or_insert(BackoffEntry {
+                failure_count: 0,
+                next_attempt: now,
+            });
+        entry.failure_count += 1;
+        entry.next_attempt = now + next_delay(entry.failure_count);
+    }
 }
 
 impl Default for AnkiSyncState {
@@ -76,7 +102,7 @@ pub async fn sync_pass(
     client: &dyn AnkiConnect,
     library: &Library,
     state: &mut AnkiSyncState,
-    _now: tokio::time::Instant,
+    now: tokio::time::Instant,
 ) -> Result<SyncReport> {
     let card_store = library.card_store();
     let pairs = card_store.list_pairs().await?;
@@ -127,14 +153,21 @@ pub async fn sync_pass(
                 continue;
             }
 
+            // Backoff cooldown: counted as total but not attempted.
+            if state.in_cooldown(&card_id, now) {
+                continue;
+            }
+
             report.attempted += 1;
             match sync_card(client, &mut card, src, tgt).await {
                 Ok(()) => {
                     card_store.save(&card, src_str, tgt_str).await?;
+                    state.record_success(&card_id);
                     report.succeeded += 1;
                 }
                 Err(err) => {
                     log::warn!("sync_card failed for {card_id}: {err}");
+                    state.record_failure(&card_id, now);
                     report.failed += 1;
                 }
             }
@@ -559,6 +592,51 @@ mod tests {
                 Some(AnkiState::Active)
             );
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sync_pass_skips_card_in_cooldown_and_retries_after_delay() {
+        use std::time::Duration;
+
+        let mock = MockAnkiConnect::new();
+        let (_tmp, library) = seed_library_with_cards(
+            "flts_sync_backoff",
+            &[make_card("poder", vec!["мочь"], vec![])],
+        )
+        .await;
+
+        // Bootstrap happens inside sync_pass; have the FIRST sync call fail.
+        // We need the failure to land on the per-card sync, not on bootstrap.
+        // Approach: pre-bootstrap explicitly so the next batch of failures
+        // applies to the sync_card phase.
+        let mut state = AnkiSyncState::new();
+        let now0 = tokio::time::Instant::now();
+        // First pass: succeeds, populates anki_data (Active).
+        let report0 = sync_pass(&mock, &library, &mut state, now0).await.unwrap();
+        assert_eq!(report0.succeeded, 1);
+        assert_eq!(report0.failed, 0);
+
+        // Inject one failure for the next sync_card call. sync_card on an
+        // already-Active card hits find_notes first — that call will fail.
+        mock.fail_next_n_calls(1);
+
+        let now1 = tokio::time::Instant::now();
+        let report1 = sync_pass(&mock, &library, &mut state, now1).await.unwrap();
+        assert_eq!(report1.attempted, 1);
+        assert_eq!(report1.failed, 1);
+        assert_eq!(report1.succeeded, 0);
+
+        // Without advancing time, the card must be in cooldown.
+        let report2 = sync_pass(&mock, &library, &mut state, now1).await.unwrap();
+        assert_eq!(report2.attempted, 0, "card must be skipped during cooldown");
+        assert_eq!(report2.total_cards, 1);
+
+        // Advance past the 60s delay; the card must be retried and succeed.
+        tokio::time::advance(Duration::from_secs(61)).await;
+        let now2 = tokio::time::Instant::now();
+        let report3 = sync_pass(&mock, &library, &mut state, now2).await.unwrap();
+        assert_eq!(report3.attempted, 1, "card must retry after cooldown");
+        assert_eq!(report3.succeeded, 1);
     }
 
     #[test]

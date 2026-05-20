@@ -304,6 +304,7 @@ struct MockCard {
 #[derive(Debug, Clone)]
 pub struct MockAnkiConnect {
     inner: Arc<Mutex<MockState>>,
+    fail_quota: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Default for MockAnkiConnect {
@@ -320,6 +321,7 @@ impl MockAnkiConnect {
                 version: ANKI_CONNECT_VERSION,
                 ..Default::default()
             })),
+            fail_quota: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 
@@ -331,6 +333,31 @@ impl MockAnkiConnect {
         if let Some(card) = self.inner.lock().unwrap().cards.get_mut(&card_id) {
             card.queue = -1;
         }
+    }
+
+    /// Test-only knob: cause the next `n` trait method invocations to return
+    /// an error before touching mock state. Decrements one per call.
+    pub fn fail_next_n_calls(&self, n: usize) {
+        self.fail_quota
+            .store(n, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// If a failure is queued, decrement the quota and return Err.
+    fn check_fail_quota(&self) -> Result<()> {
+        use std::sync::atomic::Ordering;
+        let mut current = self.fail_quota.load(Ordering::SeqCst);
+        while current > 0 {
+            match self.fail_quota.compare_exchange(
+                current,
+                current - 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return Err(anyhow!("mock transient failure")),
+                Err(actual) => current = actual,
+            }
+        }
+        Ok(())
     }
 
     /// Test-only accessor: returns the (fields, tags) pair for a note, if present.
@@ -347,14 +374,17 @@ impl MockAnkiConnect {
 #[async_trait]
 impl AnkiConnect for MockAnkiConnect {
     async fn version(&self) -> Result<u32> {
+        self.check_fail_quota()?;
         Ok(self.inner.lock().unwrap().version)
     }
 
     async fn model_names_and_ids(&self) -> Result<HashMap<String, i64>> {
+        self.check_fail_quota()?;
         Ok(self.inner.lock().unwrap().models.clone())
     }
 
     async fn create_model(&self, spec: ModelSpec) -> Result<i64> {
+        self.check_fail_quota()?;
         let mut state = self.inner.lock().unwrap();
         if let Some(existing) = state.models.get(&spec.model_name) {
             return Ok(*existing);
@@ -366,10 +396,12 @@ impl AnkiConnect for MockAnkiConnect {
     }
 
     async fn deck_names_and_ids(&self) -> Result<HashMap<String, i64>> {
+        self.check_fail_quota()?;
         Ok(self.inner.lock().unwrap().decks.clone())
     }
 
     async fn create_deck(&self, name: &str) -> Result<i64> {
+        self.check_fail_quota()?;
         let mut state = self.inner.lock().unwrap();
         if let Some(existing) = state.decks.get(name) {
             return Ok(*existing);
@@ -381,6 +413,7 @@ impl AnkiConnect for MockAnkiConnect {
     }
 
     async fn find_notes(&self, query: &str) -> Result<Vec<i64>> {
+        self.check_fail_quota()?;
         let tag = query
             .strip_prefix("tag:")
             .ok_or_else(|| anyhow!("MockAnkiConnect: only `tag:<value>` queries are supported"))?;
@@ -396,6 +429,7 @@ impl AnkiConnect for MockAnkiConnect {
     }
 
     async fn add_note(&self, note: NewNote) -> Result<i64> {
+        self.check_fail_quota()?;
         let mut state = self.inner.lock().unwrap();
         let note_id = state.next_id;
         state.next_id += 1;
@@ -441,6 +475,7 @@ impl AnkiConnect for MockAnkiConnect {
         note_id: i64,
         fields: BTreeMap<String, String>,
     ) -> Result<()> {
+        self.check_fail_quota()?;
         let mut state = self.inner.lock().unwrap();
         let stored = state
             .notes
@@ -453,6 +488,7 @@ impl AnkiConnect for MockAnkiConnect {
     }
 
     async fn cards_info(&self, card_ids: &[i64]) -> Result<Vec<CardInfo>> {
+        self.check_fail_quota()?;
         let state = self.inner.lock().unwrap();
         Ok(card_ids
             .iter()
@@ -470,6 +506,7 @@ impl AnkiConnect for MockAnkiConnect {
     }
 
     async fn notes_info(&self, note_ids: &[i64]) -> Result<Vec<NoteInfo>> {
+        self.check_fail_quota()?;
         let state = self.inner.lock().unwrap();
         Ok(note_ids
             .iter()
@@ -492,6 +529,7 @@ impl AnkiConnect for MockAnkiConnect {
     }
 
     async fn multi(&self, actions: Vec<MultiSubAction>) -> Result<Vec<serde_json::Value>> {
+        self.check_fail_quota()?;
         let mut out = Vec::with_capacity(actions.len());
         for sub in actions {
             let params = sub.params.unwrap_or(serde_json::Value::Null);
