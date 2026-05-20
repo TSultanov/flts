@@ -240,10 +240,16 @@ impl AppState {
                     .ok()
                     .and_then(|s| s.parse::<u64>().ok())
                     .unwrap_or(DEFAULT_ANKI_SYNC_INTERVAL_SECS);
+                // Cycle 5 will replace this throwaway sender with a
+                // stable channel on AppState. For now the task just
+                // pushes into a discarded receiver.
+                let (status_tx, _status_rx) =
+                    tokio::sync::watch::channel(crate::app::anki_sync::AnkiSyncStatus::default());
                 let task = AnkiSyncTask::init(
                     library.clone(),
                     client,
                     Duration::from_secs(interval_secs),
+                    Arc::new(status_tx),
                 );
                 *self.anki_sync_task.lock().await = Some(task);
                 info!(
