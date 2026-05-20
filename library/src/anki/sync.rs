@@ -50,6 +50,13 @@ pub async fn sync_card(
         };
         let note_id = client.add_note(note).await?;
         card.anki_data = Some(pull_state(client, note_id).await?);
+    } else {
+        // Note already exists in Anki: push current fields, then pull state.
+        let note_id = hits[0];
+        client
+            .update_note_fields(note_id, render_fields(card))
+            .await?;
+        card.anki_data = Some(pull_state(client, note_id).await?);
     }
     Ok(())
 }
@@ -162,6 +169,38 @@ mod tests {
             .await
             .unwrap();
         mock
+    }
+
+    #[tokio::test]
+    async fn sync_card_updates_existing_note_via_update_note_fields() {
+        let mock = bootstrap_mock().await;
+        let mut card = make_card("poder", vec!["мочь"], vec![]);
+
+        // First push: creates the note.
+        sync_card(&mock, &mut card, spa(), rus()).await.unwrap();
+        let original_hits = mock
+            .find_notes(&format!("tag:{}", card.id))
+            .await
+            .unwrap();
+        assert_eq!(original_hits.len(), 1);
+        let note_id = original_hits[0];
+
+        // Mutate translations locally, sync again — should update, not create.
+        card.translations.push("уметь".into());
+        sync_card(&mock, &mut card, spa(), rus()).await.unwrap();
+
+        let hits_after = mock
+            .find_notes(&format!("tag:{}", card.id))
+            .await
+            .unwrap();
+        assert_eq!(hits_after, vec![note_id], "no new note created on update");
+
+        let (fields, _) = mock.peek_note(note_id).expect("note exists");
+        assert_eq!(fields.get("Target"), Some(&"мочь; уметь".to_owned()));
+        assert_eq!(
+            card.anki_data.as_ref().map(|a| a.state),
+            Some(AnkiState::Active)
+        );
     }
 
     #[tokio::test]
