@@ -154,6 +154,18 @@ pub(crate) fn decode_response<T: for<'de> Deserialize<'de>>(body: &str) -> Resul
         .ok_or_else(|| anyhow!("AnkiConnect: empty result with no error"))
 }
 
+/// Like `decode_response` but for AnkiConnect actions that return `null` as
+/// their success result (e.g. `updateNoteFields`, `addTags`). Only an explicit
+/// `error` is treated as failure; a null/missing result is success.
+pub(crate) fn decode_void_response(body: &str) -> Result<()> {
+    let parsed: Response<serde_json::Value> = serde_json::from_str(body)
+        .map_err(|e| anyhow!("AnkiConnect: malformed response: {e}"))?;
+    if let Some(message) = parsed.error {
+        bail!("AnkiConnect: {message}");
+    }
+    Ok(())
+}
+
 // ---------- HTTP implementation ----------
 
 pub struct HttpAnkiConnect {
@@ -180,6 +192,25 @@ impl HttpAnkiConnect {
         action: &str,
         params: Option<serde_json::Value>,
     ) -> Result<T> {
+        let body = self.fetch_body(action, params).await?;
+        decode_response::<T>(&body)
+    }
+
+    /// Like `call` but for AnkiConnect actions that return null on success.
+    async fn call_void(
+        &self,
+        action: &str,
+        params: Option<serde_json::Value>,
+    ) -> Result<()> {
+        let body = self.fetch_body(action, params).await?;
+        decode_void_response(&body)
+    }
+
+    async fn fetch_body(
+        &self,
+        action: &str,
+        params: Option<serde_json::Value>,
+    ) -> Result<String> {
         let envelope = build_envelope_json(action, self.api_key.as_deref(), params);
         let resp = self
             .client
@@ -196,7 +227,7 @@ impl HttpAnkiConnect {
         if !status.is_success() {
             bail!("AnkiConnect: HTTP {status}: {body}");
         }
-        decode_response::<T>(&body)
+        Ok(body)
     }
 }
 
@@ -251,8 +282,7 @@ impl AnkiConnect for HttpAnkiConnect {
                 "fields": fields,
             }
         });
-        let _: Option<serde_json::Value> = self.call("updateNoteFields", Some(params)).await?;
-        Ok(())
+        self.call_void("updateNoteFields", Some(params)).await
     }
 
     async fn cards_info(&self, card_ids: &[i64]) -> Result<Vec<CardInfo>> {
@@ -890,6 +920,21 @@ mod tests {
         let body = r#"{"result":null,"error":null}"#;
         let err = decode_response::<i64>(body).unwrap_err();
         assert!(format!("{err}").contains("empty result"));
+    }
+
+    #[test]
+    fn http_void_response_accepts_null_result() {
+        // AnkiConnect's updateNoteFields returns `{"result":null,"error":null}`
+        // on success; decode_void_response must treat that as Ok.
+        let body = r#"{"result":null,"error":null}"#;
+        decode_void_response(body).unwrap();
+    }
+
+    #[test]
+    fn http_void_response_propagates_error_message() {
+        let body = r#"{"result":null,"error":"note was not found: 123"}"#;
+        let err = decode_void_response(body).unwrap_err();
+        assert!(format!("{err}").contains("note was not found"));
     }
 
     #[test]
