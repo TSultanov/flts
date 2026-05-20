@@ -90,6 +90,7 @@ pub struct AnkiSyncTask {
     state: Arc<Mutex<AnkiSyncState>>,
     client: Arc<dyn AnkiConnect>,
     library: Arc<Library>,
+    status_tx: Arc<watch::Sender<AnkiSyncStatus>>,
     task_handle: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -111,54 +112,8 @@ impl AnkiSyncTask {
                 let mut ticker = tokio::time::interval(interval);
                 loop {
                     ticker.tick().await;
-                    status_tx.send_modify(|s| s.state = AnkiSyncStatusState::Syncing);
-
-                    // Reachability probe — distinguishes "Anki is down"
-                    // (Unreachable, hides the button) from "Anki is up
-                    // but sync_pass returned an error" (Err, shows the
-                    // error icon).
-                    if let Err(err) = client.version().await {
-                        warn!("anki version() probe failed: {err}");
-                        status_tx.send_replace(AnkiSyncStatus {
-                            state: AnkiSyncStatusState::Unreachable,
-                            last_finished_at_ms: Some(now_unix_ms()),
-                            last_error: Some(err.to_string()),
-                            last_report: None,
-                        });
-                        continue;
-                    }
-
-                    let mut guard = state.lock().await;
-                    let now = tokio::time::Instant::now();
-                    match sync_pass(client.as_ref(), library.as_ref(), &mut guard, now).await {
-                        Ok(report) => {
-                            if report.total_cards > 0 {
-                                info!(
-                                    "anki sync_pass: total={} attempted={} succeeded={} failed={} persistent={}",
-                                    report.total_cards,
-                                    report.attempted,
-                                    report.succeeded,
-                                    report.failed,
-                                    report.persistent_failures.len(),
-                                );
-                            }
-                            status_tx.send_replace(AnkiSyncStatus {
-                                state: AnkiSyncStatusState::Ok,
-                                last_finished_at_ms: Some(now_unix_ms()),
-                                last_error: None,
-                                last_report: Some(report.into()),
-                            });
-                        }
-                        Err(err) => {
-                            warn!("anki sync_pass failed: {err}");
-                            status_tx.send_replace(AnkiSyncStatus {
-                                state: AnkiSyncStatusState::Err,
-                                last_finished_at_ms: Some(now_unix_ms()),
-                                last_error: Some(err.to_string()),
-                                last_report: None,
-                            });
-                        }
-                    }
+                    let _ =
+                        run_pass(client.as_ref(), &library, &state, &status_tx).await;
                 }
             })
         };
@@ -167,6 +122,7 @@ impl AnkiSyncTask {
             state,
             client,
             library,
+            status_tx,
             task_handle: Mutex::new(Some(task)),
         })
     }
@@ -179,6 +135,7 @@ impl AnkiSyncTask {
     }
 
     /// Run one synchronous sync_pass. Used by the app-quit final-pass hook.
+    /// Does NOT touch the status sender — exit doesn't need to update the UI.
     pub async fn run_one_pass(&self) -> anyhow::Result<SyncReport> {
         let mut guard = self.state.lock().await;
         let now = tokio::time::Instant::now();
@@ -189,6 +146,78 @@ impl AnkiSyncTask {
             now,
         )
         .await
+    }
+
+    /// On-demand sync triggered by the UI button. Same code path as a
+    /// periodic tick: Syncing → version() → sync_pass → status update.
+    /// Returns the report on success, or the error (with status flipped
+    /// to Unreachable / Err) on failure.
+    pub async fn sync_now(&self) -> anyhow::Result<SyncReportDto> {
+        run_pass(
+            self.client.as_ref(),
+            &self.library,
+            &self.state,
+            &self.status_tx,
+        )
+        .await
+    }
+}
+
+/// One sync attempt with full status side effects. Shared by the periodic
+/// tick and the on-demand `sync_now` entry point so both paths behave
+/// identically.
+async fn run_pass(
+    client: &dyn AnkiConnect,
+    library: &Arc<Library>,
+    state: &Mutex<AnkiSyncState>,
+    status_tx: &watch::Sender<AnkiSyncStatus>,
+) -> anyhow::Result<SyncReportDto> {
+    status_tx.send_modify(|s| s.state = AnkiSyncStatusState::Syncing);
+
+    if let Err(err) = client.version().await {
+        warn!("anki version() probe failed: {err}");
+        status_tx.send_replace(AnkiSyncStatus {
+            state: AnkiSyncStatusState::Unreachable,
+            last_finished_at_ms: Some(now_unix_ms()),
+            last_error: Some(err.to_string()),
+            last_report: None,
+        });
+        return Err(err);
+    }
+
+    let mut guard = state.lock().await;
+    let now = tokio::time::Instant::now();
+    match sync_pass(client, library.as_ref(), &mut guard, now).await {
+        Ok(report) => {
+            if report.total_cards > 0 {
+                info!(
+                    "anki sync_pass: total={} attempted={} succeeded={} failed={} persistent={}",
+                    report.total_cards,
+                    report.attempted,
+                    report.succeeded,
+                    report.failed,
+                    report.persistent_failures.len(),
+                );
+            }
+            let dto: SyncReportDto = report.into();
+            status_tx.send_replace(AnkiSyncStatus {
+                state: AnkiSyncStatusState::Ok,
+                last_finished_at_ms: Some(now_unix_ms()),
+                last_error: None,
+                last_report: Some(dto.clone()),
+            });
+            Ok(dto)
+        }
+        Err(err) => {
+            warn!("anki sync_pass failed: {err}");
+            status_tx.send_replace(AnkiSyncStatus {
+                state: AnkiSyncStatusState::Err,
+                last_finished_at_ms: Some(now_unix_ms()),
+                last_error: Some(err.to_string()),
+                last_report: None,
+            });
+            Err(err)
+        }
     }
 }
 
@@ -421,6 +450,58 @@ mod tests {
             AnkiSyncStatusState::Ok,
             "status must recover to Ok once version() starts succeeding"
         );
+    }
+
+    #[tokio::test]
+    async fn anki_sync_task_sync_now_runs_a_pass_and_returns_report() {
+        let (_tmp, library) = seed_library_with_card("flts_anki_sync_now_ok").await;
+        let mock: Arc<dyn AnkiConnect> = Arc::new(MockAnkiConnect::new());
+        let (status_tx, status_rx) =
+            tokio::sync::watch::channel(AnkiSyncStatus::default());
+        // Long interval so the periodic loop doesn't race the explicit
+        // sync_now call.
+        let task = AnkiSyncTask::init(
+            library.clone(),
+            mock,
+            Duration::from_secs(3600),
+            Arc::new(status_tx),
+        );
+
+        let report = task.sync_now().await.expect("sync_now succeeds");
+        assert!(
+            report.succeeded > 0,
+            "sync_now must report at least one succeeded card; got {report:?}"
+        );
+
+        let status = status_rx.borrow().clone();
+        assert_eq!(status.state, AnkiSyncStatusState::Ok);
+        assert!(status.last_report.is_some());
+
+        task.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn anki_sync_task_sync_now_returns_err_when_version_fails() {
+        let (_tmp, library) = seed_library_with_card("flts_anki_sync_now_unreachable").await;
+        let mock = Arc::new(MockAnkiConnect::new());
+        mock.fail_next_n_calls(usize::MAX);
+        let client: Arc<dyn AnkiConnect> = mock;
+        let (status_tx, status_rx) =
+            tokio::sync::watch::channel(AnkiSyncStatus::default());
+        let task = AnkiSyncTask::init(
+            library,
+            client,
+            Duration::from_secs(3600),
+            Arc::new(status_tx),
+        );
+
+        let result = task.sync_now().await;
+        assert!(result.is_err(), "version() failure must propagate");
+        let status = status_rx.borrow().clone();
+        assert_eq!(status.state, AnkiSyncStatusState::Unreachable);
+        assert!(status.last_error.is_some());
+
+        task.shutdown().await;
     }
 
     #[test]
