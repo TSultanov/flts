@@ -285,11 +285,10 @@ impl SpotifyWebState {
                 msg
             })?;
 
-        if let Some(refresh) = token.refresh_token.as_deref() {
-            if let Err(err) = save_refresh_token(refresh) {
+        if let Some(refresh) = token.refresh_token.as_deref()
+            && let Err(err) = save_refresh_token(refresh) {
                 warn!("Could not persist refresh token to keyring: {err}");
             }
-        }
 
         {
             let mut inner = self.inner.write().await;
