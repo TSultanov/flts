@@ -361,33 +361,18 @@ pub fn extract_card_updates(
             };
 
             let target_dictionary = word.grammar.target_initial_form.trim();
+            if target_dictionary.is_empty() {
+                continue;
+            }
 
             if let Some(existing) = updates.iter_mut().find(|u| u.key == key) {
-                if !target_dictionary.is_empty()
-                    && !existing.translations.iter().any(|t| t == target_dictionary)
-                {
-                    existing
-                        .translations
-                        .insert(0, target_dictionary.to_owned());
-                }
-                for t in &word.contextual_translations {
-                    if !existing.translations.contains(t) {
-                        existing.translations.push(t.clone());
-                    }
+                if !existing.translations.iter().any(|t| t == target_dictionary) {
+                    existing.translations.push(target_dictionary.to_owned());
                 }
             } else {
-                let mut translations: Vec<String> = Vec::new();
-                if !target_dictionary.is_empty() {
-                    translations.push(target_dictionary.to_owned());
-                }
-                for t in &word.contextual_translations {
-                    if !translations.contains(t) {
-                        translations.push(t.clone());
-                    }
-                }
                 updates.push(CardUpdate {
                     key,
-                    translations,
+                    translations: vec![target_dictionary.to_owned()],
                     example: Some(example.clone()),
                 });
             }
@@ -584,9 +569,9 @@ mod tests {
             update.key.id(),
             "flts_spa_rus_good_существительное_прилагательное"
         );
-        // Both translations were merged under the canonical key.
-        assert!(update.translations.contains(&"хорошо".to_string()));
-        assert!(update.translations.contains(&"добро".to_string()));
+        // Both source words share the same target_initial_form ("хорошо"),
+        // so the deduped CardUpdate carries that single dictionary translation.
+        assert_eq!(update.translations, vec!["хорошо"]);
     }
 
     #[test]
@@ -942,13 +927,15 @@ mod tests {
             0,
         );
         assert_eq!(updates.len(), 1);
-        assert_eq!(updates[0].translations, vec!["мочь", "могу", "умею"]);
+        // Both encounters share the same target_initial_form ("мочь"), so
+        // the dedup keeps a single dictionary-form translation.
+        assert_eq!(updates[0].translations, vec!["мочь"]);
         // example is from the first sentence the lemma appeared in
         assert_eq!(updates[0].example.as_ref().unwrap().translation, "Я могу.");
     }
 
     #[test]
-    fn extract_card_updates_promotes_target_initial_form_to_first_translation() {
+    fn extract_card_updates_uses_target_initial_form_for_card_translation() {
         let p = one_sentence_paragraph(
             "Байрон стал свидетелем последствий оккупации.",
             vec![full_word(
@@ -969,17 +956,24 @@ mod tests {
             0,
         );
         assert_eq!(updates.len(), 1);
-        assert_eq!(
-            updates[0].translations,
-            vec!["быть свидетелем", "свидетелем"]
-        );
+        assert_eq!(updates[0].translations, vec!["быть свидетелем"]);
     }
 
     #[test]
-    fn extract_card_updates_dedups_target_initial_form_against_contextual() {
+    fn extract_card_updates_ignores_contextual_translations() {
+        // contextualTranslations are kept for in-text reader annotations
+        // but must not bleed into card translations — those are
+        // target_initial_form only.
         let p = one_sentence_paragraph(
             "Я могу.",
-            vec![full_word("puedo", "poder", "могу", "verb", &["могу"], false)],
+            vec![full_word(
+                "puedo",
+                "poder",
+                "мочь",
+                "verb",
+                &["могу", "умею"],
+                false,
+            )],
         );
         let updates = extract_card_updates(
             &p,
@@ -990,13 +984,13 @@ mod tests {
             0,
         );
         assert_eq!(updates.len(), 1);
-        assert_eq!(updates[0].translations, vec!["могу"]);
+        assert_eq!(updates[0].translations, vec!["мочь"]);
     }
 
     #[test]
-    fn extract_card_updates_skips_empty_target_initial_form() {
-        // Empty / whitespace-only target_initial_form does not get pushed
-        // into translations; only the contextual_translations remain.
+    fn extract_card_updates_skips_word_with_empty_target_initial_form() {
+        // No targetInitialForm → no useful dictionary translation, so no
+        // card is emitted even if contextual_translations are present.
         let mut word = full_word("puedo", "poder", "", "verb", &["могу"], false);
         word.grammar.target_initial_form = "   ".into();
         let p = one_sentence_paragraph("Я могу.", vec![word]);
@@ -1008,8 +1002,7 @@ mod tests {
             0,
             0,
         );
-        assert_eq!(updates.len(), 1);
-        assert_eq!(updates[0].translations, vec!["могу"]);
+        assert!(updates.is_empty());
     }
 
     fn make_card_with(translations: Vec<&str>, examples: Vec<Example>, anki_data: Option<AnkiData>) -> Card {

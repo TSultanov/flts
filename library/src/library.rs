@@ -797,7 +797,7 @@ mod library_tests {
         let poder = std::fs::read_to_string(deck.join("poder_verb.json")).unwrap();
         let card: Card = serde_json::from_str(&poder).unwrap();
         assert_eq!(card.lemma, "poder");
-        assert_eq!(card.translations, vec!["мочь", "могу"]);
+        assert_eq!(card.translations, vec!["мочь"]);
         assert_eq!(card.examples.len(), 1);
         assert_eq!(card.examples[0].book_id, book_id);
         assert_eq!(card.examples[0].chapter, 0);
@@ -833,7 +833,7 @@ mod library_tests {
             .join("poder_verb.json");
         let body = std::fs::read_to_string(&card_path).unwrap();
         let card: Card = serde_json::from_str(&body).unwrap();
-        assert_eq!(card.translations, vec!["мочь", "могу"]);
+        assert_eq!(card.translations, vec!["мочь"]);
         assert_eq!(card.examples.len(), 1);
     }
 
@@ -880,7 +880,7 @@ mod library_tests {
             .join("spa-rus")
             .join("poder_verb.json");
         let card: Card = serde_json::from_str(&std::fs::read_to_string(&card_path).unwrap()).unwrap();
-        assert_eq!(card.translations, vec!["мочь", "могу", "могут"]);
+        assert_eq!(card.translations, vec!["мочь"]);
         assert_eq!(card.examples.len(), 2);
         assert_eq!(card.examples[0].paragraph, 0);
         assert_eq!(card.examples[1].paragraph, 1);
@@ -963,7 +963,7 @@ mod library_tests {
         // Merged card has translations from canonical + conflict + new update.
         let on_disk: Card =
             serde_json::from_slice(&tokio::fs::read(deck.join("poder_verb.json")).await.unwrap()).unwrap();
-        assert_eq!(on_disk.translations, vec!["мочь", "уметь", "могу_новое"]);
+        assert_eq!(on_disk.translations, vec!["мочь", "уметь"]);
         assert_eq!(on_disk.examples.len(), 3);
 
         let provenances: std::collections::HashSet<_> = on_disk
@@ -1144,7 +1144,7 @@ mod library_tests {
         let body = std::fs::read_to_string(&card_path).unwrap();
         let card: Card = serde_json::from_str(&body).unwrap();
         assert_eq!(card.lemma, "poder");
-        assert_eq!(card.translations, vec!["мочь", "могу"]);
+        assert_eq!(card.translations, vec!["мочь"]);
         assert_eq!(card.examples.len(), 1);
         assert_eq!(card.examples[0].book_id, book_id);
         assert_eq!(card.examples[0].chapter, 0);
@@ -1298,7 +1298,7 @@ mod library_tests {
         )
         .unwrap();
 
-        assert_eq!(rus_card.translations, vec!["мочь", "могу"]);
+        assert_eq!(rus_card.translations, vec!["мочь"]);
         assert_eq!(eng_card.translations, vec!["can"]);
     }
 }
