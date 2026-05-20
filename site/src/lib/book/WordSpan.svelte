@@ -45,6 +45,7 @@
     class="word-span"
     class:selected
     data-flat-index={flatIndex}
+    style:--familiarity-opacity={familiarity != null ? 1 - familiarity : null}
     bind:this={spanEl}
     onclick={() => onClick({ sentence, word, flatIndex })}
 >{#if (visible || selected) && translation}<span
@@ -58,6 +59,11 @@
     .word-span {
         position: relative;
         display: inline-block;
+        text-decoration: underline;
+        text-decoration-color: rgba(214, 175, 54, var(--familiarity-opacity, 0));
+        text-decoration-thickness: 2px;
+        text-underline-offset: 2px;
+        transition: text-decoration-color 200ms ease-out;
     }
     .word-span.selected {
         outline: 1px dotted var(--selected-color);
