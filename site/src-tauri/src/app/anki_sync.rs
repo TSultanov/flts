@@ -112,6 +112,22 @@ impl AnkiSyncTask {
                 loop {
                     ticker.tick().await;
                     status_tx.send_modify(|s| s.state = AnkiSyncStatusState::Syncing);
+
+                    // Reachability probe — distinguishes "Anki is down"
+                    // (Unreachable, hides the button) from "Anki is up
+                    // but sync_pass returned an error" (Err, shows the
+                    // error icon).
+                    if let Err(err) = client.version().await {
+                        warn!("anki version() probe failed: {err}");
+                        status_tx.send_replace(AnkiSyncStatus {
+                            state: AnkiSyncStatusState::Unreachable,
+                            last_finished_at_ms: Some(now_unix_ms()),
+                            last_error: Some(err.to_string()),
+                            last_report: None,
+                        });
+                        continue;
+                    }
+
                     let mut guard = state.lock().await;
                     let now = tokio::time::Instant::now();
                     match sync_pass(client.as_ref(), library.as_ref(), &mut guard, now).await {
@@ -336,6 +352,75 @@ mod tests {
             "successful tick must populate last_finished_at_ms"
         );
         assert!(status.last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn anki_sync_task_emits_unreachable_when_version_fails() {
+        let (_tmp, library) = seed_library_with_card("flts_anki_sync_unreachable").await;
+        let mock = Arc::new(MockAnkiConnect::new());
+        // Pin every AnkiConnect call to fail — version() probe at the
+        // top of each tick is what we're testing here.
+        mock.fail_next_n_calls(usize::MAX);
+        let client: Arc<dyn AnkiConnect> = mock;
+        let (status_tx, status_rx) =
+            tokio::sync::watch::channel(AnkiSyncStatus::default());
+        let task = AnkiSyncTask::init(
+            library.clone(),
+            client,
+            Duration::from_millis(10),
+            Arc::new(status_tx),
+        );
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        task.shutdown().await;
+
+        let status = status_rx.borrow().clone();
+        assert_eq!(status.state, AnkiSyncStatusState::Unreachable);
+        assert!(
+            status.last_error.is_some(),
+            "Unreachable status must carry the version() error"
+        );
+        // sync_pass must not have run — no card should have synced.
+        let card = library
+            .card_store()
+            .load("spa", "rus", "poder", "verb")
+            .await
+            .unwrap()
+            .expect("card present");
+        assert!(
+            card.anki_data.is_none(),
+            "sync_pass must be skipped when version() fails"
+        );
+    }
+
+    #[tokio::test]
+    async fn anki_sync_task_recovers_to_ok_after_version_succeeds() {
+        let (_tmp, library) = seed_library_with_card("flts_anki_sync_recover").await;
+        let mock = Arc::new(MockAnkiConnect::new());
+        // Only the first AnkiConnect call (first tick's version()) fails;
+        // subsequent ticks see version() succeed and sync_pass runs.
+        mock.fail_next_n_calls(1);
+        let client: Arc<dyn AnkiConnect> = mock;
+        let (status_tx, status_rx) =
+            tokio::sync::watch::channel(AnkiSyncStatus::default());
+        let task = AnkiSyncTask::init(
+            library.clone(),
+            client,
+            Duration::from_millis(10),
+            Arc::new(status_tx),
+        );
+
+        // Sleep long enough for several ticks to fire — first one fails,
+        // subsequent ones succeed.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        task.shutdown().await;
+
+        let status = status_rx.borrow().clone();
+        assert_eq!(
+            status.state,
+            AnkiSyncStatusState::Ok,
+            "status must recover to Ok once version() starts succeeding"
+        );
     }
 
     #[test]
