@@ -84,6 +84,15 @@ async fn pull_state(client: &dyn AnkiConnect, note_id: i64) -> Result<AnkiData> 
         .next()
         .ok_or_else(|| anyhow!("notes_info returned no entry for note {note_id}"))?;
     let cards = client.cards_info(&note.cards).await?;
+    if cards.iter().any(|c| c.is_suspended()) {
+        return Ok(AnkiData {
+            state: AnkiState::Suspended,
+            interval_days: None,
+            ease_factor: None,
+            fsrs_difficulty: None,
+            fsrs_stability: None,
+        });
+    }
     Ok(active_data_from(&cards))
 }
 
@@ -185,6 +194,29 @@ mod tests {
             .await
             .unwrap();
         mock
+    }
+
+    #[tokio::test]
+    async fn sync_card_flags_suspension_when_any_card_suspended_in_anki() {
+        let mock = bootstrap_mock().await;
+        let mut card = make_card("poder", vec!["мочь"], vec![]);
+
+        // First push to create the note + cards, then suspend one of them.
+        sync_card(&mock, &mut card, spa(), rus()).await.unwrap();
+        let note_id = mock
+            .find_notes(&format!("tag:{}", card.id))
+            .await
+            .unwrap()[0];
+        let cards = mock.notes_info(&[note_id]).await.unwrap()[0].cards.clone();
+        mock.suspend_card(cards[0]); // suspend just one direction
+
+        // Force a re-sync; the existing-note branch should detect suspension.
+        sync_card(&mock, &mut card, spa(), rus()).await.unwrap();
+
+        let anki = card.anki_data.as_ref().expect("anki_data populated");
+        assert_eq!(anki.state, AnkiState::Suspended);
+        assert_eq!(anki.interval_days, None, "retention fields dropped on suspended");
+        assert_eq!(anki.ease_factor, None);
     }
 
     #[tokio::test]
