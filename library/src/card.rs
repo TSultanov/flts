@@ -1,3 +1,4 @@
+use htmlentity::entity::{ICodedDataTrait, decode};
 use isolang::Language;
 use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
@@ -191,6 +192,64 @@ pub fn card_id(
     format!("flts_{source_language}_{target_language}_{lemma_slug}_{pos_slug}")
 }
 
+/// Stitch a sentence's word list back into a human-readable source string.
+///
+/// Two transforms run together:
+/// 1. **HTML entity decoding.** The translator prompt asks the LLM to encode
+///    punctuation as entities (`comma` → `&comma;`, etc., see
+///    [`crate::translator`]). Decode them back to literal characters so the
+///    stored example matches what a learner reads in the book.
+/// 2. **Punctuation-aware spacing.** Words come in as separate tokens; a
+///    naive `join(" ")` produces `"towns , cities ."`. We suppress the
+///    leading space when a token starts with closing/sentence punctuation,
+///    and suppress the trailing space after a token that ends with opening
+///    punctuation. Heuristic, not a full typographic engine — handles the
+///    common Western-script cases.
+pub fn render_example_source(words: &[translation_import::Word]) -> String {
+    fn decode_entities(input: &str) -> String {
+        decode(input.as_bytes())
+            .to_string()
+            .unwrap_or_else(|_| input.to_owned())
+    }
+
+    fn eats_leading_space(c: char) -> bool {
+        matches!(
+            c,
+            ',' | '.'
+                | ';'
+                | ':'
+                | '?'
+                | '!'
+                | ')'
+                | ']'
+                | '}'
+                | '\''
+                | '\u{2019}'
+                | '\u{201D}'
+                | '\u{2026}'
+        )
+    }
+
+    fn ends_with_open_bracket(c: char) -> bool {
+        matches!(c, '(' | '[' | '{' | '\u{2018}' | '\u{201C}')
+    }
+
+    let mut out = String::new();
+    let mut suppress_next_space = false;
+    for word in words {
+        let decoded = decode_entities(&word.original);
+        let starts_with_eat =
+            decoded.chars().next().is_some_and(eats_leading_space);
+        let want_space = !out.is_empty() && !starts_with_eat && !suppress_next_space;
+        if want_space {
+            out.push(' ');
+        }
+        out.push_str(&decoded);
+        suppress_next_space = decoded.chars().last().is_some_and(ends_with_open_bracket);
+    }
+    out
+}
+
 pub fn is_eligible(word: &translation_import::Word) -> bool {
     if word.is_punctuation {
         return false;
@@ -320,12 +379,7 @@ pub fn extract_card_updates(
     let mut updates: Vec<CardUpdate> = Vec::new();
 
     for sentence in &paragraph.sentences {
-        let source_text = sentence
-            .words
-            .iter()
-            .map(|w| w.original.as_str())
-            .collect::<Vec<_>>()
-            .join(" ");
+        let source_text = render_example_source(&sentence.words);
         let example = Example {
             source: source_text,
             translation: sentence.full_translation.clone(),
@@ -873,6 +927,49 @@ mod tests {
         assert_eq!(updates.len(), 1);
         assert_eq!(updates[0].key.lemma, "españa");
         assert_eq!(updates[0].key.slug, "españa");
+    }
+
+    #[test]
+    fn render_example_source_decodes_entities_and_strips_pre_punctuation_space() {
+        // Reproduces the bug reported on cards/eng-rus/across_preposition.json
+        // where the LLM's "&comma;" / "&period;" punctuation tokens got joined
+        // naively with spaces, producing "towns &comma; cities &comma; ... Midlands ."
+        // instead of "towns, cities, ... Midlands."
+        let words = vec![
+            full_word("Militia", "Militia", "", "proper_noun", &[], false),
+            full_word("and", "and", "", "coordinating_conjunction", &[], false),
+            full_word("infantrymen", "infantryman", "", "common_noun", &[], false),
+            full_word("sat", "sit", "", "verb", &[], false),
+            full_word("menacingly", "menacingly", "", "adverb", &[], false),
+            full_word("in", "in", "", "preposition", &[], false),
+            full_word("towns", "town", "", "common_noun", &[], false),
+            full_word("&comma;", ",", "", "punct", &[], true),
+            full_word("cities", "city", "", "common_noun", &[], false),
+            full_word("&comma;", ",", "", "punct", &[], true),
+            full_word("and", "and", "", "coordinating_conjunction", &[], false),
+            full_word("pubs", "pub", "", "common_noun", &[], false),
+            full_word("across", "across", "", "preposition", &[], false),
+            full_word("the", "the", "", "determiner", &[], false),
+            full_word("Midlands", "Midlands", "", "proper_noun", &[], false),
+            full_word("&period;", ".", "", "punct", &[], true),
+        ];
+        assert_eq!(
+            render_example_source(&words),
+            "Militia and infantrymen sat menacingly in towns, cities, and pubs across the Midlands."
+        );
+    }
+
+    #[test]
+    fn render_example_source_handles_opening_brackets_and_quotes() {
+        let words = vec![
+            full_word("He", "he", "", "pronoun", &[], false),
+            full_word("said", "say", "", "verb", &[], false),
+            full_word("&lpar;", "(", "", "punct", &[], true),
+            full_word("loudly", "loudly", "", "adverb", &[], false),
+            full_word("&rpar;", ")", "", "punct", &[], true),
+            full_word("&period;", ".", "", "punct", &[], true),
+        ];
+        assert_eq!(render_example_source(&words), "He said (loudly).");
     }
 
     #[test]

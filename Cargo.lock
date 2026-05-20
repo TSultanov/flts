@@ -2692,6 +2692,7 @@ dependencies = [
  "epub",
  "fnv",
  "futures-util",
+ "htmlentity",
  "isolang",
  "itertools 0.14.0",
  "log",
