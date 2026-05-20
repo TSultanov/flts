@@ -230,15 +230,22 @@ pub async fn sync_pass(
 
     // Phase 2: per-card state machine using prefetched lookup results.
     for (mut e, hits) in eligible.into_iter().zip(lookups.into_iter()) {
+        let pre_card = e.card.clone();
         let outcome = match hits {
             None => Err(anyhow!("lookup batch failed for {}", e.card_id)),
             Some(hits) => apply_lookup(client, &mut e.card, hits, e.src, e.tgt).await,
         };
         match outcome {
             Ok(()) => {
-                card_store
-                    .save(&e.card, &e.src_str, &e.tgt_str)
-                    .await?;
+                // Skip the disk write — and the resulting watcher event —
+                // when apply_lookup didn't actually change the card. Keeps
+                // periodic ticks with no Anki-side changes silent for the
+                // file watcher.
+                if e.card != pre_card {
+                    card_store
+                        .save(&e.card, &e.src_str, &e.tgt_str)
+                        .await?;
+                }
                 state.record_success(&e.card_id);
                 report.succeeded += 1;
             }
