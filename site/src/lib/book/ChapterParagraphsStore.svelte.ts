@@ -58,7 +58,10 @@ export class ChapterParagraphsStore {
         eventHub.subscribe<null>(
             "cards_updated",
             () => true,
-            () => this.#scheduleCardsRefresh(),
+            () => {
+                console.info("[cards_updated] event received; scheduling refresh");
+                this.#scheduleCardsRefresh();
+            },
         );
     }
 
@@ -69,7 +72,15 @@ export class ChapterParagraphsStore {
         this.#cardsRefreshTimer = setTimeout(() => {
             this.#cardsRefreshTimer = null;
             const ids = [...this.#translations.keys()];
-            if (ids.length === 0) return;
+            if (ids.length === 0) {
+                console.info(
+                    "[cards_updated] no cached translations to refresh",
+                );
+                return;
+            }
+            console.info(
+                `[cards_updated] refreshing ${ids.length} cached translations`,
+            );
             this.#softEnqueueTranslations(ids);
         }, CARDS_REFRESH_DEBOUNCE_MS);
     }

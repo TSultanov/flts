@@ -198,3 +198,99 @@ impl LibraryWatcher {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::TempDir;
+    use std::time::Duration;
+    use tokio::time::timeout;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn watcher_emits_card_changed_for_atomic_save() {
+        let tmp = TempDir::new("flts_watcher_card");
+        let mut watcher = LibraryWatcher::new().expect("watcher init");
+        let mut rx = watcher.take_recv().expect("receiver available");
+        watcher.set_path(&tmp.path).expect("set_path ok");
+
+        // Let the recursive watch fully install before writing.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let deck = tmp.path.join("cards").join("spa-rus");
+        tokio::fs::create_dir_all(&deck).await.unwrap();
+
+        // Mirror LibraryCardStore::save: write to temp~, then rename.
+        let canonical = deck.join("hola_noun.json");
+        let temp = deck.join("hola_noun.json~TEST1234");
+        tokio::fs::write(&temp, br#"{"version":1}"#).await.unwrap();
+        tokio::fs::rename(&temp, &canonical).await.unwrap();
+
+        let event = timeout(Duration::from_millis(2000), rx.recv())
+            .await
+            .expect("watcher fired in time")
+            .expect("channel still open");
+
+        match event {
+            LibraryFileChange::CardChanged {
+                from,
+                to,
+                lemma_slug,
+                pos_slug,
+                ..
+            } => {
+                assert_eq!(from.to_639_3(), "spa");
+                assert_eq!(to.to_639_3(), "rus");
+                assert_eq!(lemma_slug, "hola");
+                assert_eq!(pos_slug, "noun");
+            }
+            other => panic!("expected CardChanged, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn watcher_skips_sync_conflict_card_sibling() {
+        let tmp = TempDir::new("flts_watcher_conflict");
+        let mut watcher = LibraryWatcher::new().expect("watcher init");
+        let mut rx = watcher.take_recv().expect("receiver available");
+        watcher.set_path(&tmp.path).expect("set_path ok");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let deck = tmp.path.join("cards").join("spa-rus");
+        tokio::fs::create_dir_all(&deck).await.unwrap();
+        let conflict = deck.join("hola_noun.sync-conflict-20260101-abc.json");
+        tokio::fs::write(&conflict, br#"{"version":1}"#)
+            .await
+            .unwrap();
+
+        // 1500 ms > 500 ms debounce + safety. No event should fire.
+        let result = timeout(Duration::from_millis(1500), rx.recv()).await;
+        assert!(
+            result.is_err(),
+            "no event should fire for conflict sibling; got {result:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn watcher_still_classifies_translation_files() {
+        let tmp = TempDir::new("flts_watcher_translation");
+        let mut watcher = LibraryWatcher::new().expect("watcher init");
+        let mut rx = watcher.take_recv().expect("receiver available");
+        watcher.set_path(&tmp.path).expect("set_path ok");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let uuid = Uuid::new_v4();
+        let book_dir = tmp.path.join(uuid.to_string());
+        tokio::fs::create_dir_all(&book_dir).await.unwrap();
+        let path = book_dir.join("translation_spa_rus.dat");
+        tokio::fs::write(&path, b"x").await.unwrap();
+
+        let event = timeout(Duration::from_millis(2000), rx.recv())
+            .await
+            .expect("watcher fired in time")
+            .expect("channel still open");
+        assert!(
+            matches!(event, LibraryFileChange::TranslationChanged { .. }),
+            "expected TranslationChanged; got {event:?}"
+        );
+    }
+}
