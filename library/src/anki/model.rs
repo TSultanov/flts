@@ -93,13 +93,16 @@ pub async fn bootstrap(
         client.create_model(flts_model_spec()).await?;
     }
 
-    let decks = client.deck_names_and_ids().await?;
+    // AnkiConnect's `createDeck` is idempotent (no-op when the deck exists),
+    // so we call it unconditionally rather than gating on
+    // `deckNamesAndIds`. Field reports from real Anki show the pre-check can
+    // return a false positive — `deckNamesAndIds` lists the deck name but a
+    // subsequent `addNote` against that same name fails with "deck was not
+    // found". Calling `createDeck` unconditionally sidesteps that mismatch.
     for (src, tgt) in lang_pairs {
         let name = deck_name(*src, *tgt)?;
-        if !decks.contains_key(&name) {
-            log::info!("Creating Anki deck `{name}`");
-            client.create_deck(&name).await?;
-        }
+        log::info!("Ensuring Anki deck `{name}`");
+        client.create_deck(&name).await?;
     }
 
     Ok(())
