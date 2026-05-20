@@ -1,3 +1,4 @@
+pub mod anki;
 pub mod book;
 pub mod cache;
 pub mod card;
