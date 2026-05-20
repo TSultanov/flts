@@ -72,6 +72,17 @@ pub fn run() {
                     }
                 });
             }
+            {
+                let mut rx = app_state.subscribe_anki_sync_status();
+                let app = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    while rx.changed().await.is_ok() {
+                        if let Err(err) = app.emit("anki_sync_status_changed", ()) {
+                            warn!("Failed to emit anki_sync_status_changed: {err}");
+                        }
+                    }
+                });
+            }
 
             info!("Spawning async init");
             let resume_state = app_state.clone();

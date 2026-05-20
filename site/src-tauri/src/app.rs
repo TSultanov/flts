@@ -264,9 +264,16 @@ impl AppState {
                 task.shutdown().await;
             }
 
-            if std::env::var_os("FLTS_ENABLE_ANKI_SYNC")
-                .is_some_and(|v| !v.is_empty())
-            {
+            // Stage 8: sync is ON by default. Set FLTS_DISABLE_ANKI_SYNC=1
+            // (e.g. on CI machines without AnkiConnect) to suppress the
+            // task spawn.
+            let disable_env = std::env::var_os("FLTS_DISABLE_ANKI_SYNC");
+            if crate::app::anki_sync::anki_sync_disabled(disable_env.as_deref()) {
+                info!("Anki sync disabled by FLTS_DISABLE_ANKI_SYNC env var");
+                self.set_anki_sync_unreachable(
+                    "Anki sync disabled by FLTS_DISABLE_ANKI_SYNC env var",
+                );
+            } else {
                 let endpoint = config
                     .anki_endpoint
                     .clone()
@@ -287,11 +294,6 @@ impl AppState {
                 *self.anki_sync_task.lock().await = Some(task);
                 info!(
                     "Anki sync task spawned (interval = {interval_secs}s)"
-                );
-            } else {
-                info!("Anki sync disabled: set FLTS_ENABLE_ANKI_SYNC=1 to enable");
-                self.set_anki_sync_unreachable(
-                    "Anki sync disabled by FLTS_ENABLE_ANKI_SYNC env var",
                 );
             }
 

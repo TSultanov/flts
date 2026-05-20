@@ -1,10 +1,13 @@
-//! Stage 7: periodic Anki sync orchestration. Mirrors the
-//! `TranslationQueue` lifecycle — `init` spawns a tokio task that
-//! ticks `library::anki::sync::sync_pass` on a fixed interval;
-//! `shutdown` aborts + joins.
+//! Anki sync orchestration. Mirrors the `TranslationQueue` lifecycle —
+//! `init` spawns a tokio task that ticks `library::anki::sync::sync_pass`
+//! on a fixed interval; `shutdown` aborts + joins. The same `sync_now`
+//! entry point also services the on-demand UI button.
 //!
-//! Spawned from `AppState::eval_config` gated on `FLTS_ENABLE_ANKI_SYNC`.
-//! See `.specs/ANKI_PLAN.md § Stage 7`.
+//! Spawned from `AppState::eval_config` whenever a library is configured.
+//! Opt out via the `FLTS_DISABLE_ANKI_SYNC=1` env var. Status is pushed
+//! through a `watch::Sender<AnkiSyncStatus>` owned by `AppState` and
+//! forwarded to the frontend as the `anki_sync_status_changed` event.
+//! See `.specs/ANKI_PLAN.md § Stages 7-8`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -161,6 +164,15 @@ impl AnkiSyncTask {
         )
         .await
     }
+}
+
+/// Pure predicate for the `FLTS_DISABLE_ANKI_SYNC` env gate. Caller passes
+/// `std::env::var_os("FLTS_DISABLE_ANKI_SYNC").as_deref()`; we return true
+/// when the value is set and non-empty. Pure so tests don't need to mutate
+/// process env. Stage 8 default is sync-ON, so unset / empty means "spawn
+/// the task" — only an explicit `=1` (or any non-empty value) disables.
+pub fn anki_sync_disabled(env_value: Option<&std::ffi::OsStr>) -> bool {
+    env_value.is_some_and(|v| !v.is_empty())
 }
 
 /// Dispatch helper for the `sync_anki_now` Tauri command. Pulls the task
@@ -519,6 +531,22 @@ mod tests {
         assert!(status.last_error.is_some());
 
         task.shutdown().await;
+    }
+
+    #[test]
+    fn anki_sync_disabled_predicate_handles_unset_empty_and_set_values() {
+        assert!(
+            !anki_sync_disabled(None),
+            "unset env must NOT disable sync (Stage 8 default is ON)"
+        );
+        assert!(
+            !anki_sync_disabled(Some(std::ffi::OsStr::new(""))),
+            "empty env value must NOT disable sync"
+        );
+        assert!(
+            anki_sync_disabled(Some(std::ffi::OsStr::new("1"))),
+            "non-empty env value disables sync"
+        );
     }
 
     #[tokio::test]
