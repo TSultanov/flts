@@ -404,6 +404,22 @@ impl MockAnkiConnect {
             .get(&note_id)
             .map(|n| (n.fields.clone(), n.tags.clone()))
     }
+
+    /// Test-only accessor: returns the first note id whose tags contain `tag`,
+    /// if any. Matches the lookup `findNotes` performs internally; provided so
+    /// scenario tests can chain `tag → note id → peek_note` without re-running
+    /// `find_notes` through the trait surface.
+    pub fn note_id_for_tag(&self, tag: &str) -> Option<i64> {
+        let state = self.inner.lock().unwrap();
+        let mut hits: Vec<i64> = state
+            .notes
+            .iter()
+            .filter(|(_, n)| n.tags.iter().any(|t| t == tag))
+            .map(|(id, _)| *id)
+            .collect();
+        hits.sort_unstable();
+        hits.into_iter().next()
+    }
 }
 
 #[async_trait]

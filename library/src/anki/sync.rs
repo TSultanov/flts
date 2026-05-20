@@ -420,7 +420,7 @@ mod tests {
     };
     use crate::card::{AnkiData, AnkiState, Card, Example};
     use crate::library::Library;
-    use crate::test_utils::TempDir;
+    use crate::test_utils::{TempDir, full_word, one_sentence_paragraph};
 
     fn make_card(lemma: &str, translations: Vec<&str>, examples: Vec<Example>) -> Card {
         Card {
@@ -984,6 +984,90 @@ mod tests {
                 Pueden venir mañana. \u{2014} Они могут прийти завтра."
                     .to_owned()
             )
+        );
+    }
+
+    async fn library_with_one_paragraph_book(
+        library_path: std::path::PathBuf,
+        paragraph_text: &str,
+    ) -> (Library, Uuid) {
+        let library = Library::open(library_path).await.unwrap();
+        let book = library.create_book("Test Book", &spa()).await.unwrap();
+        let book_id = {
+            let mut b = book.lock().await;
+            b.book.push_chapter(Some("Intro"));
+            b.book.push_paragraph(0, paragraph_text, None);
+            b.save().await.unwrap();
+            b.book.id
+        };
+        (library, book_id)
+    }
+
+    #[tokio::test]
+    async fn e2e_paragraph_translation_creates_card_and_syncs_to_anki() {
+        let tmp = TempDir::new("flts_e2e_translate_sync");
+        let (library, book_id) =
+            library_with_one_paragraph_book(tmp.path.join("lib"), "Puedo entrar en casa.").await;
+
+        let paragraph = one_sentence_paragraph(
+            "Я могу войти в дом.",
+            vec![
+                full_word("Puedo", "poder", "мочь", "verb", &["могу"], false),
+                full_word("entrar", "entrar", "входить", "verb", &["войти"], false),
+                full_word("en", "en", "в", "prep", &["в"], false),
+                full_word("casa", "casa", "дом", "noun", &["дом"], false),
+                full_word(".", ".", ".", "punct", &[], true),
+            ],
+        );
+
+        library
+            .apply_paragraph_to_cards(book_id, 0, &paragraph, rus())
+            .await
+            .unwrap();
+
+        let mock = MockAnkiConnect::new();
+        let mut state = AnkiSyncState::new();
+        let report = sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
+            .await
+            .unwrap();
+        assert_eq!(report.attempted, 4, "four eligible lemmas (punct skipped)");
+        assert_eq!(report.succeeded, 4);
+        assert_eq!(report.failed, 0);
+
+        // Spot-check the `poder` card end-to-end: tag lookup → note fields → on-disk state.
+        let poder_tag = "flts_spa_rus_poder_verb";
+        let poder_note = mock
+            .note_id_for_tag(poder_tag)
+            .expect("poder note exists in mock");
+        let (fields, tags) = mock.peek_note(poder_note).expect("note state present");
+        assert_eq!(fields.get("Source"), Some(&"poder".to_owned()));
+        assert_eq!(fields.get("Target"), Some(&"мочь".to_owned()));
+        assert_eq!(
+            fields.get("Example"),
+            Some(&"Puedo entrar en casa. \u{2014} Я могу войти в дом.".to_owned()),
+            "example carries the paragraph source + full translation joined by em-dash"
+        );
+        assert!(
+            tags.iter().any(|t| t == poder_tag),
+            "FLTS card-id tag persists on the note"
+        );
+
+        let card = library
+            .card_store()
+            .load("spa", "rus", "poder", "verb")
+            .await
+            .unwrap()
+            .expect("poder card on disk");
+        assert_eq!(
+            card.anki_data.as_ref().map(|a| a.state),
+            Some(AnkiState::Active),
+            "card state flips to Active after first sync"
+        );
+
+        // Sanity: the noun gets its own note in the same deck.
+        assert!(
+            mock.note_id_for_tag("flts_spa_rus_casa_noun").is_some(),
+            "casa note exists in mock"
         );
     }
 }
