@@ -60,6 +60,13 @@ impl AnkiSyncState {
         }
     }
 
+    /// Override the default persistent-failure threshold (5 by spec default).
+    #[allow(dead_code)] // first non-test consumer is the Stage 9 AnkiSyncTask
+    pub fn with_threshold(mut self, threshold: u32) -> Self {
+        self.persistent_threshold = threshold;
+        self
+    }
+
     /// Returns true if the card is in cooldown and should be skipped this tick.
     fn in_cooldown(&self, card_id: &str, now: tokio::time::Instant) -> bool {
         self.backoff
@@ -74,6 +81,7 @@ impl AnkiSyncState {
     }
 
     /// Increments the card's failure counter and schedules the next attempt.
+    /// Surfaces the card in `persistent_set` once it crosses the threshold.
     fn record_failure(&mut self, card_id: &str, now: tokio::time::Instant) {
         let entry = self
             .backoff
@@ -84,6 +92,9 @@ impl AnkiSyncState {
             });
         entry.failure_count += 1;
         entry.next_attempt = now + next_delay(entry.failure_count);
+        if entry.failure_count >= self.persistent_threshold {
+            self.persistent_set.insert(card_id.to_owned());
+        }
     }
 }
 
@@ -637,6 +648,146 @@ mod tests {
         let report3 = sync_pass(&mock, &library, &mut state, now2).await.unwrap();
         assert_eq!(report3.attempted, 1, "card must retry after cooldown");
         assert_eq!(report3.succeeded, 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sync_pass_surfaces_card_in_persistent_failures_after_threshold() {
+        use std::time::Duration;
+
+        let mock = MockAnkiConnect::new();
+        let (_tmp, library) = seed_library_with_cards(
+            "flts_sync_persistent",
+            &[make_card("poder", vec!["мочь"], vec![])],
+        )
+        .await;
+
+        // Threshold of 3 means card surfaces after the 3rd consecutive failure.
+        let mut state = AnkiSyncState::new().with_threshold(3);
+        let card_id = format!("flts_spa_rus_poder_verb");
+
+        // Pre-bootstrap so failure-injection lands on sync_card, not bootstrap.
+        crate::anki::model::bootstrap(
+            &mock,
+            &[(
+                Language::from_639_3("spa").unwrap(),
+                Language::from_639_3("rus").unwrap(),
+            )],
+        )
+        .await
+        .unwrap();
+        state.bootstrapped = true;
+
+        mock.fail_next_n_calls(100);
+
+        // Tick 1: first failure. Not yet persistent.
+        let r1 = sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
+            .await
+            .unwrap();
+        assert_eq!(r1.failed, 1);
+        assert!(r1.persistent_failures.is_empty(), "after 1 failure: not persistent yet");
+
+        tokio::time::advance(Duration::from_secs(61)).await;
+        // Tick 2: second failure. Still not persistent.
+        let r2 = sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
+            .await
+            .unwrap();
+        assert_eq!(r2.failed, 1);
+        assert!(r2.persistent_failures.is_empty(), "after 2 failures: not persistent yet");
+
+        tokio::time::advance(Duration::from_secs(121)).await;
+        // Tick 3: third failure — threshold hit.
+        let r3 = sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
+            .await
+            .unwrap();
+        assert_eq!(r3.failed, 1);
+        assert_eq!(
+            r3.persistent_failures,
+            vec![card_id.clone()],
+            "after threshold hit: surfaced"
+        );
+
+        // Clear the failure injector; advance past 3-minute cooldown, retry succeeds.
+        mock.fail_next_n_calls(0);
+        tokio::time::advance(Duration::from_secs(181)).await;
+        let r4 = sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
+            .await
+            .unwrap();
+        assert_eq!(r4.succeeded, 1);
+        assert!(
+            r4.persistent_failures.is_empty(),
+            "successful retry clears persistent set"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sync_pass_converges_under_transient_failures_over_simulated_session() {
+        use std::time::Duration;
+
+        let mock = MockAnkiConnect::new();
+        let (_tmp, library) = seed_library_with_cards(
+            "flts_sync_convergence",
+            &[
+                make_card("poder", vec!["мочь"], vec![]),
+                make_card("comer", vec!["есть"], vec![]),
+                make_card("ver", vec!["видеть"], vec![]),
+                make_card("ir", vec!["идти"], vec![]),
+                make_card("ser", vec!["быть"], vec![]),
+            ],
+        )
+        .await;
+
+        let mut state = AnkiSyncState::new();
+
+        // Pre-bootstrap so failures land on per-card sync, not on bootstrap
+        // (which is unconditionally retried on failure inside sync_pass).
+        crate::anki::model::bootstrap(
+            &mock,
+            &[(
+                Language::from_639_3("spa").unwrap(),
+                Language::from_639_3("rus").unwrap(),
+            )],
+        )
+        .await
+        .unwrap();
+        state.bootstrapped = true;
+
+        // 13 transient failures, sparse enough to never trip threshold=5 per card.
+        mock.fail_next_n_calls(13);
+
+        let mut consecutive_clean = 0;
+        for tick in 0..30 {
+            tokio::time::advance(Duration::from_secs(60 * (tick + 1))).await;
+            let report = sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
+                .await
+                .unwrap();
+            if report.failed == 0 {
+                consecutive_clean += 1;
+            } else {
+                consecutive_clean = 0;
+            }
+            if consecutive_clean >= 2 {
+                break;
+            }
+        }
+        assert!(
+            consecutive_clean >= 2,
+            "expected two consecutive clean ticks within 30 ticks"
+        );
+
+        // All 5 cards must end Active; persistent set must be empty.
+        for lemma in ["poder", "comer", "ver", "ir", "ser"] {
+            let card = library
+                .card_store()
+                .load("spa", "rus", lemma, "verb")
+                .await
+                .unwrap()
+                .expect("card present");
+            assert_eq!(
+                card.anki_data.as_ref().map(|a| a.state),
+                Some(AnkiState::Active),
+                "card `{lemma}` did not converge to Active"
+            );
+        }
     }
 
     #[test]
