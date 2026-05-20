@@ -207,6 +207,47 @@ impl LibraryCardStore {
         Ok(pairs)
     }
 
+    /// Enumerate `(lemma_slug, pos_slug)` tuples for the given pair's deck dir.
+    /// Skips Syncthing `.sync-conflict-*.json` siblings and any non-`.json`
+    /// files. Missing deck dir returns `Ok(vec![])`. Result is sorted ascending.
+    pub async fn list_cards_in_pair(
+        &self,
+        source_language: &str,
+        target_language: &str,
+    ) -> anyhow::Result<Vec<(String, String)>> {
+        let deck = self.deck_dir(source_language, target_language);
+        let mut read_dir = match tokio::fs::read_dir(&deck).await {
+            Ok(rd) => rd,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+            Err(err) => return Err(err.into()),
+        };
+
+        let mut out: Vec<(String, String)> = Vec::new();
+        loop {
+            let entry = match read_dir.next_entry().await? {
+                Some(e) => e,
+                None => break,
+            };
+            let name = match entry.file_name().into_string() {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+            // Skip conflict siblings; only canonical files have direct `_<pos>.json`.
+            if name.contains(".sync-conflict-") {
+                continue;
+            }
+            let Some(stem) = name.strip_suffix(".json") else {
+                continue;
+            };
+            let Some((lemma, pos)) = stem.rsplit_once('_') else {
+                continue;
+            };
+            out.push((lemma.to_owned(), pos.to_owned()));
+        }
+        out.sort();
+        Ok(out)
+    }
+
     pub async fn save(&self, card: &Card, source_language: &str, target_language: &str) -> anyhow::Result<()> {
         let deck = self.deck_dir(source_language, target_language);
         tokio::fs::create_dir_all(&deck).await?;
@@ -616,6 +657,48 @@ mod tests {
         let loaded = store.load("spa", "rus", "poder", "verb").await.unwrap();
         assert!(loaded.is_none(), "expected None when canonical is absent");
         assert!(conflict_path.exists(), "sibling must be untouched when canonical is absent");
+    }
+
+    #[tokio::test]
+    async fn list_cards_in_pair_returns_empty_when_deck_missing() {
+        let tmp = TempDir::new("flts_list_cards_empty");
+        let store = LibraryCardStore::new(&tmp.path);
+        let cards = store.list_cards_in_pair("spa", "rus").await.unwrap();
+        assert!(cards.is_empty(), "missing deck dir must yield empty list");
+    }
+
+    #[tokio::test]
+    async fn list_cards_in_pair_returns_lemma_pos_tuples() {
+        let tmp = TempDir::new("flts_list_cards");
+        let store = LibraryCardStore::new(&tmp.path);
+        store
+            .save(&card_with("poder", "verb", vec!["мочь"], vec![]), "spa", "rus")
+            .await
+            .unwrap();
+        store
+            .save(&card_with("comer", "verb", vec!["есть"], vec![]), "spa", "rus")
+            .await
+            .unwrap();
+
+        // Seed a Syncthing conflict sibling — must be skipped.
+        let deck = tmp.path.join("cards").join("spa-rus");
+        std::fs::write(
+            deck.join("poder_verb.sync-conflict-20260520-X.json"),
+            b"{}",
+        )
+        .unwrap();
+        // And a stray non-JSON file — also skipped.
+        std::fs::write(deck.join("README"), b"ignore").unwrap();
+
+        let cards = store.list_cards_in_pair("spa", "rus").await.unwrap();
+        assert_eq!(
+            cards,
+            vec![
+                ("comer".to_owned(), "verb".to_owned()),
+                ("poder".to_owned(), "verb".to_owned()),
+            ],
+            "expected sorted lemma_pos tuples, got {cards:?}"
+        );
     }
 
     #[tokio::test]
