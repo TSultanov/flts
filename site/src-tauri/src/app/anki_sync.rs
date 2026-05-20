@@ -13,8 +13,71 @@ use library::anki::connect::AnkiConnect;
 use library::anki::sync::{AnkiSyncState, SyncReport, sync_pass};
 use library::library::Library;
 use log::{info, warn};
+use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
+
+/// High-level state of the Anki sync surface. Surfaced to the frontend
+/// for the nav button's icon state machine.
+#[derive(Clone, Copy, Default, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AnkiSyncStatusState {
+    /// No sync has run yet (or the task isn't installed).
+    #[default]
+    Idle,
+    /// A `sync_pass` is in flight.
+    Syncing,
+    /// The most recent `sync_pass` completed without error.
+    Ok,
+    /// AnkiConnect was reachable but `sync_pass` returned an error.
+    Err,
+    /// The `version()` ping failed — AnkiConnect isn't responding.
+    /// Button is hidden in this state.
+    Unreachable,
+}
+
+/// Tauri-facing DTO for the periodic / on-demand sync result. Mirrors
+/// [`library::anki::sync::SyncReport`] but adds `Serialize` and lives
+/// in the app crate so the library doesn't depend on serde at the type
+/// level.
+#[derive(Clone, Default, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncReportDto {
+    pub total_cards: usize,
+    pub attempted: usize,
+    pub succeeded: usize,
+    pub failed: usize,
+    pub persistent_failures: Vec<String>,
+}
+
+impl From<SyncReport> for SyncReportDto {
+    fn from(value: SyncReport) -> Self {
+        Self {
+            total_cards: value.total_cards,
+            attempted: value.attempted,
+            succeeded: value.succeeded,
+            failed: value.failed,
+            persistent_failures: value.persistent_failures,
+        }
+    }
+}
+
+/// Snapshot of the most recent sync attempt. Pushed through a
+/// `tokio::sync::watch` channel on every state transition.
+#[derive(Clone, Default, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnkiSyncStatus {
+    pub state: AnkiSyncStatusState,
+    /// Unix epoch ms when the most recent attempt finished. None if no
+    /// attempt has finished yet.
+    pub last_finished_at_ms: Option<i64>,
+    /// Error string from the most recent failed attempt. Populated when
+    /// `state == Err` or `state == Unreachable`.
+    pub last_error: Option<String>,
+    /// Report from the most recent successful sync. Populated when
+    /// `state == Ok`.
+    pub last_report: Option<SyncReportDto>,
+}
 
 pub struct AnkiSyncTask {
     state: Arc<Mutex<AnkiSyncState>>,
@@ -160,5 +223,67 @@ mod tests {
             card.anki_data.is_some(),
             "first periodic tick must have synced the card"
         );
+    }
+
+    #[test]
+    fn anki_sync_status_default_is_idle() {
+        let status = AnkiSyncStatus::default();
+        assert_eq!(status.state, AnkiSyncStatusState::Idle);
+        assert!(status.last_finished_at_ms.is_none());
+        assert!(status.last_error.is_none());
+        assert!(status.last_report.is_none());
+    }
+
+    #[test]
+    fn anki_sync_status_serializes_state_as_lowercase() {
+        let cases = [
+            (AnkiSyncStatusState::Idle, "\"idle\""),
+            (AnkiSyncStatusState::Syncing, "\"syncing\""),
+            (AnkiSyncStatusState::Ok, "\"ok\""),
+            (AnkiSyncStatusState::Err, "\"err\""),
+            (AnkiSyncStatusState::Unreachable, "\"unreachable\""),
+        ];
+        for (variant, expected) in cases {
+            let s = serde_json::to_string(&variant).unwrap();
+            assert_eq!(s, expected, "state variant must serialize as {expected}");
+        }
+    }
+
+    #[test]
+    fn anki_sync_status_serializes_fields_as_camel_case() {
+        let status = AnkiSyncStatus {
+            state: AnkiSyncStatusState::Ok,
+            last_finished_at_ms: Some(1_700_000_000_000),
+            last_error: None,
+            last_report: Some(SyncReportDto {
+                total_cards: 3,
+                attempted: 2,
+                succeeded: 2,
+                failed: 0,
+                persistent_failures: vec![],
+            }),
+        };
+        let s = serde_json::to_string(&status).unwrap();
+        assert!(s.contains("\"lastFinishedAtMs\""), "got {s}");
+        assert!(s.contains("\"lastReport\""), "got {s}");
+        assert!(s.contains("\"totalCards\":3"), "got {s}");
+        assert!(s.contains("\"persistentFailures\""), "got {s}");
+    }
+
+    #[test]
+    fn sync_report_dto_round_trips_from_library_report() {
+        let report = library::anki::sync::SyncReport {
+            total_cards: 5,
+            attempted: 4,
+            succeeded: 3,
+            failed: 1,
+            persistent_failures: vec!["flts_spa_rus_poder_verb".into()],
+        };
+        let dto: SyncReportDto = report.clone().into();
+        assert_eq!(dto.total_cards, report.total_cards);
+        assert_eq!(dto.attempted, report.attempted);
+        assert_eq!(dto.succeeded, report.succeeded);
+        assert_eq!(dto.failed, report.failed);
+        assert_eq!(dto.persistent_failures, report.persistent_failures);
     }
 }
