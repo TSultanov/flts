@@ -1,13 +1,142 @@
 // Stage 6: per-card push/pull. Stage 7 wraps this in a periodic loop.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use anyhow::{Result, anyhow};
 use isolang::Language;
 
 use crate::anki::connect::{AnkiConnect, CardInfo, NewNote};
-use crate::anki::model::{FLTS_MODEL_NAME, deck_name};
+use crate::anki::model::{FLTS_MODEL_NAME, bootstrap, deck_name};
 use crate::card::{AnkiData, AnkiState, Card};
+use crate::library::Library;
+
+/// In-session sync orchestration state: bootstrap flag, per-card backoff
+/// counters, and the persistent-failure set. Lives in the app crate for the
+/// app's lifetime; reset on restart by design.
+#[allow(dead_code)] // first non-test consumer is the Stage 9 AnkiSyncTask
+#[derive(Debug)]
+pub struct AnkiSyncState {
+    bootstrapped: bool,
+    backoff: HashMap<String, BackoffEntry>,
+    persistent_set: HashSet<String>,
+    persistent_threshold: u32,
+}
+
+#[allow(dead_code)] // first non-test consumer is the Stage 9 AnkiSyncTask
+#[derive(Debug, Clone)]
+struct BackoffEntry {
+    failure_count: u32,
+    next_attempt: tokio::time::Instant,
+}
+
+/// Summary of a single `sync_pass` invocation. Caller decides what to surface.
+#[allow(dead_code)] // first non-test consumer is the Stage 9 AnkiSyncTask
+#[derive(Debug, Clone, Default)]
+pub struct SyncReport {
+    pub total_cards: usize,
+    pub attempted: usize,
+    pub succeeded: usize,
+    pub failed: usize,
+    pub persistent_failures: Vec<String>,
+}
+
+const DEFAULT_PERSISTENT_THRESHOLD: u32 = 5;
+
+impl AnkiSyncState {
+    #[allow(dead_code)] // first non-test consumer is the Stage 9 AnkiSyncTask
+    pub fn new() -> Self {
+        Self {
+            bootstrapped: false,
+            backoff: HashMap::new(),
+            persistent_set: HashSet::new(),
+            persistent_threshold: DEFAULT_PERSISTENT_THRESHOLD,
+        }
+    }
+}
+
+impl Default for AnkiSyncState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Run one orchestrated sync pass over every card on disk. Bootstraps the
+/// AnkiConnect-side model+decks on the first call (gated by
+/// `state.bootstrapped`). For each card: per-id lock → reload → `sync_card`
+/// → save. Sequential per-card (cycle 7 adds `multi`-batched lookup).
+#[allow(dead_code)] // first non-test consumer is the Stage 9 AnkiSyncTask
+pub async fn sync_pass(
+    client: &dyn AnkiConnect,
+    library: &Library,
+    state: &mut AnkiSyncState,
+    _now: tokio::time::Instant,
+) -> Result<SyncReport> {
+    let card_store = library.card_store();
+    let pairs = card_store.list_pairs().await?;
+
+    if !state.bootstrapped {
+        let lang_pairs: Vec<(Language, Language)> = pairs
+            .iter()
+            .filter_map(|(s, t)| {
+                Some((Language::from_639_3(s)?, Language::from_639_3(t)?))
+            })
+            .collect();
+        bootstrap(client, &lang_pairs).await?;
+        state.bootstrapped = true;
+    }
+
+    let mut report = SyncReport::default();
+    for (src_str, tgt_str) in &pairs {
+        let (Some(src), Some(tgt)) =
+            (Language::from_639_3(src_str), Language::from_639_3(tgt_str))
+        else {
+            continue;
+        };
+
+        let card_ids = card_store
+            .list_cards_in_pair(src_str, tgt_str)
+            .await?;
+        for (lemma_slug, pos_slug) in card_ids {
+            report.total_cards += 1;
+
+            let card_id =
+                crate::card::card_id(src_str, tgt_str, &lemma_slug, &pos_slug);
+            let lock_arc = card_store.lock_for(&card_id).await;
+            let _guard = lock_arc.lock().await;
+
+            let Some(mut card) = card_store
+                .load(src_str, tgt_str, &lemma_slug, &pos_slug)
+                .await?
+            else {
+                // Race: file vanished between list and load. Skip silently.
+                continue;
+            };
+
+            // Opt-out short-circuit: counted as total but not attempted.
+            if matches!(
+                card.anki_data.as_ref().map(|a| a.state),
+                Some(AnkiState::Suspended) | Some(AnkiState::Deleted)
+            ) {
+                continue;
+            }
+
+            report.attempted += 1;
+            match sync_card(client, &mut card, src, tgt).await {
+                Ok(()) => {
+                    card_store.save(&card, src_str, tgt_str).await?;
+                    report.succeeded += 1;
+                }
+                Err(err) => {
+                    log::warn!("sync_card failed for {card_id}: {err}");
+                    report.failed += 1;
+                }
+            }
+        }
+    }
+
+    report.persistent_failures = state.persistent_set.iter().cloned().collect();
+    Ok(report)
+}
 
 /// Render a card into the three Anki note fields (`Source`, `Target`, `Example`).
 /// See `.specs/ANKI_REFINED.md § Field contents pushed to Anki`.
@@ -128,8 +257,10 @@ mod tests {
     use uuid::Uuid;
 
     use crate::anki::connect::{AnkiConnect, MockAnkiConnect};
-    use crate::anki::sync::{render_fields, sync_card};
+    use crate::anki::sync::{AnkiSyncState, render_fields, sync_card, sync_pass};
     use crate::card::{AnkiData, AnkiState, Card, Example};
+    use crate::library::Library;
+    use crate::test_utils::TempDir;
 
     fn make_card(lemma: &str, translations: Vec<&str>, examples: Vec<Example>) -> Card {
         Card {
@@ -350,6 +481,64 @@ mod tests {
         assert_eq!(anki.state, AnkiState::Active);
         assert_eq!(anki.interval_days, Some(0.0));
         assert_eq!(anki.ease_factor, Some(0.0));
+    }
+
+    async fn seed_library_with_cards(tmp_prefix: &str, cards: &[Card]) -> (TempDir, Library) {
+        let tmp = TempDir::new(tmp_prefix);
+        let library = Library::open(tmp.path.clone()).await.unwrap();
+        for card in cards {
+            library.card_store().save(card, "spa", "rus").await.unwrap();
+        }
+        (tmp, library)
+    }
+
+    #[tokio::test]
+    async fn sync_pass_walks_all_cards_and_pushes_each() {
+        let mock = MockAnkiConnect::new();
+        let (_tmp, library) = seed_library_with_cards(
+            "flts_sync_pass_happy",
+            &[
+                make_card("poder", vec!["мочь"], vec![]),
+                make_card("comer", vec!["есть"], vec![]),
+            ],
+        )
+        .await;
+
+        let mut state = AnkiSyncState::new();
+        let now = tokio::time::Instant::now();
+        let report = sync_pass(&mock, &library, &mut state, now).await.unwrap();
+
+        assert_eq!(report.total_cards, 2);
+        assert_eq!(report.attempted, 2);
+        assert_eq!(report.succeeded, 2);
+        assert_eq!(report.failed, 0);
+
+        // Bootstrap occurred: model and deck must exist.
+        let models = mock.model_names_and_ids().await.unwrap();
+        assert!(models.contains_key(crate::anki::model::FLTS_MODEL_NAME));
+        let decks = mock.deck_names_and_ids().await.unwrap();
+        assert!(decks.contains_key("FLTS::spa-rus"));
+
+        // Each card got a note tagged with its id.
+        for lemma in ["poder", "comer"] {
+            let id = format!("flts_spa_rus_{lemma}_verb");
+            let hits = mock.find_notes(&format!("tag:{id}")).await.unwrap();
+            assert_eq!(hits.len(), 1, "expected one note for {id}");
+        }
+
+        // Reloaded cards have Active anki_data.
+        for lemma in ["poder", "comer"] {
+            let card = library
+                .card_store()
+                .load("spa", "rus", lemma, "verb")
+                .await
+                .unwrap()
+                .expect("card present");
+            assert_eq!(
+                card.anki_data.as_ref().map(|a| a.state),
+                Some(AnkiState::Active)
+            );
+        }
     }
 
     #[test]
