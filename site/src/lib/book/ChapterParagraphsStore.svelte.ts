@@ -76,13 +76,16 @@ export class ChapterParagraphsStore {
 
     // Re-fetch cached translations without dropping them first. Overwrites
     // entries in place as the batch resolves, so the user sees no
-    // segments→original-text flicker. Bypasses the cached-check on purpose
-    // — we want already-cached ids to refetch — but keeps the pump's
-    // MAX_INFLIGHT/BATCH_SIZE limits.
+    // segments→original-text flicker. Bypasses `#translationsEnqueued`
+    // entirely — that set is the regular-enqueue dedup and never clears
+    // for successfully-fetched ids, so checking it would block every
+    // refresh. Dedup against the current queue contents only so a burst
+    // of `cards_updated` events doesn't push the same ids multiple times.
     #softEnqueueTranslations(ids: readonly number[]): void {
+        const alreadyQueued = new Set(this.#translationsQueue);
         for (const id of ids) {
-            if (this.#translationsEnqueued.has(id)) continue;
-            this.#translationsEnqueued.add(id);
+            if (alreadyQueued.has(id)) continue;
+            alreadyQueued.add(id);
             this.#translationsQueue.push(id);
         }
         this.#pumpTranslations();
