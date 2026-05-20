@@ -389,10 +389,12 @@ impl AppState {
         };
 
         let had_effect = library.handle_file_change_event(event).await?;
-        if !had_effect {
-            return Ok(());
-        }
 
+        // Note: do not gate the entire match on `had_effect`. CardChanged
+        // always returns Ok(false) from the library handler (no in-memory
+        // card cache), and its emit must run regardless. Per-arm `if
+        // had_effect` guards on BookChanged / TranslationChanged below
+        // preserve the prior gating for those variants only.
         match event {
             LibraryFileChange::BookChanged { modified: _, uuid } if had_effect => {
                 info!("Emitting \"book_updated\" for {uuid}");
