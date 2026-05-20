@@ -5,10 +5,13 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use anyhow::{Result, anyhow};
 use isolang::Language;
 
-use crate::anki::connect::{AnkiConnect, CardInfo, NewNote};
+use crate::anki::connect::{AnkiConnect, CardInfo, MultiSubAction, NewNote};
 use crate::anki::model::{FLTS_MODEL_NAME, bootstrap, deck_name};
 use crate::card::{AnkiData, AnkiState, Card};
 use crate::library::Library;
+
+/// Per-spec batch-size cap for `multi` calls (§ Action set).
+const MULTI_BATCH_SIZE: usize = 50;
 
 /// In-session sync orchestration state: bootstrap flag, per-card backoff
 /// counters, and the persistent-failure set. Lives in the app crate for the
@@ -106,8 +109,12 @@ impl Default for AnkiSyncState {
 
 /// Run one orchestrated sync pass over every card on disk. Bootstraps the
 /// AnkiConnect-side model+decks on the first call (gated by
-/// `state.bootstrapped`). For each card: per-id lock → reload → `sync_card`
-/// → save. Sequential per-card (cycle 7 adds `multi`-batched lookup).
+/// `state.bootstrapped`). Two-phase:
+///   Phase 1: gather eligible cards (post opt-out + cooldown filters),
+///            holding per-card locks. Batch their `findNotes` lookups via
+///            `multi` (chunked at MULTI_BATCH_SIZE).
+///   Phase 2: per eligible card, run the inline state machine using its
+///            prefetched lookup result.
 #[allow(dead_code)] // first non-test consumer is the Stage 9 AnkiSyncTask
 pub async fn sync_pass(
     client: &dyn AnkiConnect,
@@ -130,6 +137,19 @@ pub async fn sync_pass(
     }
 
     let mut report = SyncReport::default();
+
+    // Phase 1a: walk disk, acquire locks, load, filter.
+    struct Eligible {
+        card_id: String,
+        src_str: String,
+        tgt_str: String,
+        src: Language,
+        tgt: Language,
+        card: Card,
+        _guard: tokio::sync::OwnedMutexGuard<()>,
+    }
+    let mut eligible: Vec<Eligible> = Vec::new();
+
     for (src_str, tgt_str) in &pairs {
         let (Some(src), Some(tgt)) =
             (Language::from_639_3(src_str), Language::from_639_3(tgt_str))
@@ -137,22 +157,19 @@ pub async fn sync_pass(
             continue;
         };
 
-        let card_ids = card_store
-            .list_cards_in_pair(src_str, tgt_str)
-            .await?;
-        for (lemma_slug, pos_slug) in card_ids {
+        let card_files = card_store.list_cards_in_pair(src_str, tgt_str).await?;
+        for (lemma_slug, pos_slug) in card_files {
             report.total_cards += 1;
 
             let card_id =
                 crate::card::card_id(src_str, tgt_str, &lemma_slug, &pos_slug);
             let lock_arc = card_store.lock_for(&card_id).await;
-            let _guard = lock_arc.lock().await;
+            let guard = lock_arc.lock_owned().await;
 
-            let Some(mut card) = card_store
+            let Some(card) = card_store
                 .load(src_str, tgt_str, &lemma_slug, &pos_slug)
                 .await?
             else {
-                // Race: file vanished between list and load. Skip silently.
                 continue;
             };
 
@@ -163,30 +180,120 @@ pub async fn sync_pass(
             ) {
                 continue;
             }
-
             // Backoff cooldown: counted as total but not attempted.
             if state.in_cooldown(&card_id, now) {
                 continue;
             }
 
             report.attempted += 1;
-            match sync_card(client, &mut card, src, tgt).await {
-                Ok(()) => {
-                    card_store.save(&card, src_str, tgt_str).await?;
-                    state.record_success(&card_id);
-                    report.succeeded += 1;
+            eligible.push(Eligible {
+                card_id,
+                src_str: src_str.clone(),
+                tgt_str: tgt_str.clone(),
+                src,
+                tgt,
+                card,
+                _guard: guard,
+            });
+        }
+    }
+
+    // Phase 1b: batched findNotes lookup via multi, chunked. Per-card lookup
+    // result is None for chunks whose multi call errored — those cards are
+    // attributed a failure in phase 2.
+    let mut lookups: Vec<Option<Vec<i64>>> = Vec::with_capacity(eligible.len());
+    for chunk in eligible.chunks(MULTI_BATCH_SIZE) {
+        let actions: Vec<MultiSubAction> = chunk
+            .iter()
+            .map(|e| MultiSubAction {
+                action: "findNotes".to_owned(),
+                params: Some(serde_json::json!({
+                    "query": format!("tag:{}", e.card_id),
+                })),
+            })
+            .collect();
+        match client.multi(actions).await {
+            Ok(results) => {
+                for value in results {
+                    let hits: Vec<i64> = serde_json::from_value(value)?;
+                    lookups.push(Some(hits));
                 }
-                Err(err) => {
-                    log::warn!("sync_card failed for {card_id}: {err}");
-                    state.record_failure(&card_id, now);
-                    report.failed += 1;
+            }
+            Err(err) => {
+                log::warn!("multi findNotes batch failed: {err}");
+                for _ in 0..chunk.len() {
+                    lookups.push(None);
                 }
+            }
+        }
+    }
+
+    // Phase 2: per-card state machine using prefetched lookup results.
+    for (mut e, hits) in eligible.into_iter().zip(lookups.into_iter()) {
+        let outcome = match hits {
+            None => Err(anyhow!("lookup batch failed for {}", e.card_id)),
+            Some(hits) => apply_lookup(client, &mut e.card, hits, e.src, e.tgt).await,
+        };
+        match outcome {
+            Ok(()) => {
+                card_store
+                    .save(&e.card, &e.src_str, &e.tgt_str)
+                    .await?;
+                state.record_success(&e.card_id);
+                report.succeeded += 1;
+            }
+            Err(err) => {
+                log::warn!("sync failed for {}: {err}", e.card_id);
+                state.record_failure(&e.card_id, now);
+                report.failed += 1;
             }
         }
     }
 
     report.persistent_failures = state.persistent_set.iter().cloned().collect();
     Ok(report)
+}
+
+/// Phase-2 state machine: given the per-card findNotes result, dispatch to
+/// addNote / updateNoteFields and pull state. Mirrors `sync_card` post-lookup
+/// behavior so `sync_card` remains usable for single-card callers.
+async fn apply_lookup(
+    client: &dyn AnkiConnect,
+    card: &mut Card,
+    hits: Vec<i64>,
+    src: Language,
+    tgt: Language,
+) -> Result<()> {
+    if hits.is_empty() {
+        match card.anki_data.as_ref() {
+            None => {
+                let note = NewNote {
+                    deck_name: deck_name(src, tgt)?,
+                    model_name: FLTS_MODEL_NAME.to_owned(),
+                    fields: render_fields(card),
+                    tags: vec![card.id.clone()],
+                };
+                let note_id = client.add_note(note).await?;
+                card.anki_data = Some(pull_state(client, note_id).await?);
+            }
+            Some(_) => {
+                card.anki_data = Some(AnkiData {
+                    state: AnkiState::Deleted,
+                    interval_days: None,
+                    ease_factor: None,
+                    fsrs_difficulty: None,
+                    fsrs_stability: None,
+                });
+            }
+        }
+    } else {
+        let note_id = hits[0];
+        client
+            .update_note_fields(note_id, render_fields(card))
+            .await?;
+        card.anki_data = Some(pull_state(client, note_id).await?);
+    }
+    Ok(())
 }
 
 /// Render a card into the three Anki note fields (`Source`, `Target`, `Example`).
@@ -788,6 +895,75 @@ mod tests {
                 "card `{lemma}` did not converge to Active"
             );
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sync_pass_batches_find_notes_via_multi() {
+        let mock = MockAnkiConnect::new();
+        let (_tmp, library) = seed_library_with_cards(
+            "flts_sync_multi_batch",
+            &[
+                make_card("poder", vec!["мочь"], vec![]),
+                make_card("comer", vec!["есть"], vec![]),
+                make_card("ver", vec!["видеть"], vec![]),
+            ],
+        )
+        .await;
+
+        // First sync_pass: creates notes (add_note path doesn't go through
+        // the find_notes lookup batch for fresh cards). Second pass exercises
+        // the multi-batched lookup against existing notes.
+        let mut state = AnkiSyncState::new();
+        sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
+            .await
+            .unwrap();
+
+        let multi_before = mock.multi_call_count();
+        let direct_before = mock.find_notes_direct_count();
+
+        sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
+            .await
+            .unwrap();
+
+        let multi_after = mock.multi_call_count();
+        let direct_after = mock.find_notes_direct_count();
+        assert_eq!(
+            multi_after - multi_before,
+            1,
+            "expected exactly one multi call for 3 cards' findNotes lookup"
+        );
+        assert_eq!(
+            direct_after - direct_before,
+            0,
+            "no per-card find_notes calls should fire during the batched lookup"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sync_pass_chunks_find_notes_at_fifty() {
+        let mock = MockAnkiConnect::new();
+        let cards: Vec<Card> = (0..75)
+            .map(|i| make_card(&format!("verb{i:03}"), vec!["x"], vec![]))
+            .collect();
+        let (_tmp, library) = seed_library_with_cards("flts_sync_chunk_50", &cards).await;
+
+        // Seed-and-sync once to create the notes, then re-sync to exercise
+        // the multi-batched lookup over all 75 existing notes.
+        let mut state = AnkiSyncState::new();
+        sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
+            .await
+            .unwrap();
+
+        let multi_before = mock.multi_call_count();
+        sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
+            .await
+            .unwrap();
+        let multi_after = mock.multi_call_count();
+        assert_eq!(
+            multi_after - multi_before,
+            2,
+            "75 cards must split into 50 + 25 → 2 multi calls"
+        );
     }
 
     #[test]

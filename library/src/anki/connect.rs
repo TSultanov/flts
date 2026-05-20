@@ -305,6 +305,8 @@ struct MockCard {
 pub struct MockAnkiConnect {
     inner: Arc<Mutex<MockState>>,
     fail_quota: Arc<std::sync::atomic::AtomicUsize>,
+    multi_call_count: Arc<std::sync::atomic::AtomicUsize>,
+    find_notes_direct_count: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Default for MockAnkiConnect {
@@ -322,7 +324,22 @@ impl MockAnkiConnect {
                 ..Default::default()
             })),
             fail_quota: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            multi_call_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            find_notes_direct_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
+    }
+
+    /// Test-only instrumentation: number of times `multi` has been called.
+    pub fn multi_call_count(&self) -> usize {
+        self.multi_call_count
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Test-only instrumentation: number of times `find_notes` has been called
+    /// directly (i.e., not through `multi`).
+    pub fn find_notes_direct_count(&self) -> usize {
+        self.find_notes_direct_count
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub fn set_version(&self, version: u32) {
@@ -358,6 +375,24 @@ impl MockAnkiConnect {
             }
         }
         Ok(())
+    }
+
+    /// Internal `findNotes` logic: shared by the direct trait method and by
+    /// `multi` dispatch. Does NOT touch the instrumentation counter — the
+    /// caller decides whether the call counts as "direct" or as part of a batch.
+    fn find_notes_impl(&self, query: &str) -> Result<Vec<i64>> {
+        let tag = query
+            .strip_prefix("tag:")
+            .ok_or_else(|| anyhow!("MockAnkiConnect: only `tag:<value>` queries are supported"))?;
+        let state = self.inner.lock().unwrap();
+        let mut hits: Vec<i64> = state
+            .notes
+            .iter()
+            .filter(|(_, n)| n.tags.iter().any(|t| t == tag))
+            .map(|(id, _)| *id)
+            .collect();
+        hits.sort_unstable();
+        Ok(hits)
     }
 
     /// Test-only accessor: returns the (fields, tags) pair for a note, if present.
@@ -414,18 +449,9 @@ impl AnkiConnect for MockAnkiConnect {
 
     async fn find_notes(&self, query: &str) -> Result<Vec<i64>> {
         self.check_fail_quota()?;
-        let tag = query
-            .strip_prefix("tag:")
-            .ok_or_else(|| anyhow!("MockAnkiConnect: only `tag:<value>` queries are supported"))?;
-        let state = self.inner.lock().unwrap();
-        let mut hits: Vec<i64> = state
-            .notes
-            .iter()
-            .filter(|(_, n)| n.tags.iter().any(|t| t == tag))
-            .map(|(id, _)| *id)
-            .collect();
-        hits.sort_unstable();
-        Ok(hits)
+        self.find_notes_direct_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.find_notes_impl(query)
     }
 
     async fn add_note(&self, note: NewNote) -> Result<i64> {
@@ -530,6 +556,8 @@ impl AnkiConnect for MockAnkiConnect {
 
     async fn multi(&self, actions: Vec<MultiSubAction>) -> Result<Vec<serde_json::Value>> {
         self.check_fail_quota()?;
+        self.multi_call_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let mut out = Vec::with_capacity(actions.len());
         for sub in actions {
             let params = sub.params.unwrap_or(serde_json::Value::Null);
@@ -553,7 +581,9 @@ impl AnkiConnect for MockAnkiConnect {
                         .get("query")
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| anyhow!("multi findNotes: missing query"))?;
-                    serde_json::to_value(self.find_notes(query).await?)?
+                    // Use the inner helper so this doesn't count as a direct
+                    // findNotes call for instrumentation purposes.
+                    serde_json::to_value(self.find_notes_impl(query)?)?
                 }
                 "addNote" => {
                     let note: NewNote = serde_json::from_value(
