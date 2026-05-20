@@ -9,6 +9,7 @@ export type ParagraphSegment =
       word: number;
       flatIndex: number;
       translation: string | null;
+      familiarity?: number;
     };
 
 export type SeedParagraph = {
@@ -303,8 +304,9 @@ export function wordSegment(opts: {
   word: number;
   text: string;
   translation: string | null;
+  familiarity?: number;
 }): ParagraphSegment {
-  return {
+  const seg: ParagraphSegment = {
     kind: 'word',
     text: opts.text,
     sentence: opts.sentence,
@@ -312,6 +314,34 @@ export function wordSegment(opts: {
     flatIndex: opts.flatIndex,
     translation: opts.translation,
   };
+  if (opts.familiarity !== undefined) {
+    seg.familiarity = opts.familiarity;
+  }
+  return seg;
+}
+
+export async function emitCardsUpdated(page: Page): Promise<void> {
+  await page.evaluate(() => (window as any).__test.emitCardsUpdated());
+}
+
+export async function setParagraphTranslationSilent(
+  page: Page,
+  bookId: string,
+  paragraphId: number,
+  segments: ParagraphSegment[] | undefined,
+  visibleWords?: number[],
+): Promise<void> {
+  await page.evaluate(
+    ({ bookId, paragraphId, segments, visibleWords }) => {
+      (window as any).__test.setParagraphTranslationSilent(
+        bookId,
+        paragraphId,
+        segments,
+        visibleWords,
+      );
+    },
+    { bookId, paragraphId, segments, visibleWords },
+  );
 }
 
 /**

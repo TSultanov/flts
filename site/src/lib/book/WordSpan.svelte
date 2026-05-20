@@ -48,7 +48,7 @@
     style:--familiarity-opacity={familiarity != null ? 1 - familiarity : null}
     bind:this={spanEl}
     onclick={() => onClick({ sentence, word, flatIndex })}
->{#if (visible || selected) && translation}<span
+>{#if visible && translation}<span
         class="translation-overlay"
         aria-hidden="true"
         bind:this={overlayEl}

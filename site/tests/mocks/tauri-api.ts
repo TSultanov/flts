@@ -82,6 +82,7 @@ type ParagraphSegment =
       word: number;
       flatIndex: number;
       translation: string | null;
+      familiarity?: number;
     };
 
 type MockParagraph = {
@@ -633,6 +634,27 @@ if (typeof window !== 'undefined') {
       if (visibleWords !== undefined) p.visibleWords = visibleWords;
       emit('paragraph_updated', { bookId, paragraphId });
     },
+    // Like setParagraphTranslation but does not emit paragraph_updated.
+    // Used to stage post-card-update backend state before triggering
+    // the cards_updated path explicitly, so the refresh test exercises
+    // the soft-refetch code rather than the regular paragraph_updated
+    // invalidation.
+    setParagraphTranslationSilent(
+      bookId: UUID,
+      paragraphId: number,
+      segments: ParagraphSegment[] | undefined,
+      visibleWords?: number[],
+    ) {
+      const book = mockLibrary.get(bookId);
+      if (!book) return;
+      const p = book.paragraphsById.get(paragraphId);
+      if (!p) return;
+      p.segments = segments;
+      if (visibleWords !== undefined) p.visibleWords = visibleWords;
+    },
+    emitCardsUpdated() {
+      emit('cards_updated', null);
+    },
     getTranslateCalls() {
       return translateCalls.slice();
     },
@@ -913,19 +935,25 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
       const paragraphId = args?.paragraphId as number;
       const flatIndex = args?.flatIndex as number;
       markWordVisibleCalls.push({ bookId, paragraphId, flatIndex });
-      // Mirror the real backend: persist the visible word into the mock book
-      // state and emit paragraph_updated so the frontend Resource re-fetches.
+      // Mirror the real backend post-4edfa74: toggle membership in the
+      // visible-words set and always emit paragraph_updated, since every
+      // toggle flips state.
       const book = mockLibrary.get(bookId);
       const p = book?.paragraphsById.get(paragraphId);
+      let nowVisible = false;
       if (p) {
         const existing = new Set(p.visibleWords ?? []);
-        if (!existing.has(flatIndex)) {
+        if (existing.has(flatIndex)) {
+          existing.delete(flatIndex);
+          nowVisible = false;
+        } else {
           existing.add(flatIndex);
-          p.visibleWords = Array.from(existing);
-          emit('paragraph_updated', { bookId, paragraphId });
+          nowVisible = true;
         }
+        p.visibleWords = Array.from(existing);
+        emit('paragraph_updated', { bookId, paragraphId });
       }
-      return Promise.resolve(true as T);
+      return Promise.resolve(nowVisible as T);
     }
 
     case 'get_book_reading_state': {
