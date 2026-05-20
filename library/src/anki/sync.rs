@@ -1070,4 +1070,97 @@ mod tests {
             "casa note exists in mock"
         );
     }
+
+    #[tokio::test]
+    async fn e2e_suspend_in_anki_persists_through_re_translation() {
+        let tmp = TempDir::new("flts_e2e_suspend");
+        let (library, book_id) =
+            library_with_one_paragraph_book(tmp.path.join("lib"), "Puedo entrar.").await;
+
+        let paragraph = one_sentence_paragraph(
+            "Я могу войти.",
+            vec![full_word(
+                "Puedo", "poder", "мочь", "verb", &["могу"], false,
+            )],
+        );
+
+        library
+            .apply_paragraph_to_cards(book_id, 0, &paragraph, rus())
+            .await
+            .unwrap();
+
+        let mock = MockAnkiConnect::new();
+        let mut state = AnkiSyncState::new();
+        // Sync #1: create the note.
+        sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
+            .await
+            .unwrap();
+
+        let poder_tag = "flts_spa_rus_poder_verb";
+        let note_id = mock.note_id_for_tag(poder_tag).expect("note exists after first sync");
+
+        // User suspends one of the note's direction cards in Anki.
+        let card_ids = mock.notes_info(&[note_id]).await.unwrap()[0].cards.clone();
+        assert!(!card_ids.is_empty(), "note has at least one direction card");
+        mock.suspend_card(card_ids[0]);
+
+        // Sync #2: detection branch flips state to Suspended.
+        sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
+            .await
+            .unwrap();
+        let card = library
+            .card_store()
+            .load("spa", "rus", "poder", "verb")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(card.anki_data.as_ref().map(|a| a.state), Some(AnkiState::Suspended));
+
+        // Snapshot the note's fields before the re-encounter so we can detect mutation.
+        let (fields_before, _) = mock.peek_note(note_id).unwrap();
+
+        // Re-encounter: apply the same paragraph again. The local merge path is
+        // idempotent (provenance dedup); state must not regress to Active.
+        library
+            .apply_paragraph_to_cards(book_id, 0, &paragraph, rus())
+            .await
+            .unwrap();
+        let card_after_reencounter = library
+            .card_store()
+            .load("spa", "rus", "poder", "verb")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            card_after_reencounter.anki_data.as_ref().map(|a| a.state),
+            Some(AnkiState::Suspended),
+            "re-encountering the paragraph must not reset state to Active"
+        );
+
+        // Sync #3: opt-out branch short-circuits — no addNote, no updateNoteFields.
+        sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
+            .await
+            .unwrap();
+
+        // Same note id, same fields. No second note was created.
+        assert_eq!(
+            mock.note_id_for_tag(poder_tag),
+            Some(note_id),
+            "no second note created for the same tag"
+        );
+        let (fields_after, _) = mock.peek_note(note_id).unwrap();
+        assert_eq!(fields_before, fields_after, "suspended note fields untouched");
+
+        let card_final = library
+            .card_store()
+            .load("spa", "rus", "poder", "verb")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            card_final.anki_data.as_ref().map(|a| a.state),
+            Some(AnkiState::Suspended),
+            "state stays Suspended across the third sync"
+        );
+    }
 }
