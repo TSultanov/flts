@@ -2,6 +2,7 @@
     import { Router } from 'sv-router';
 	import './router';
     import Nav from "./lib/chrome/Nav.svelte";
+    import AnkiSyncButton from "./lib/chrome/AnkiSyncButton.svelte";
     import { onMount, setContext } from "svelte";
     import { Library } from "./lib/data/library";
     import { configStore } from "./lib/config/store";
@@ -99,7 +100,13 @@
 <svelte:window onresize={handleResize} />
 
 <div bind:this={nav}>
-    <Nav {links} />
+    <Nav {links}>
+        {#snippet rightActions()}
+            {#if links === fullLinks}
+                <AnkiSyncButton />
+            {/if}
+        {/snippet}
+    </Nav>
 </div>
 <div class="main" style="height: {mainHeight.value}px;">
     <Router />

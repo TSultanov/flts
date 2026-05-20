@@ -1,24 +1,40 @@
 <script lang="ts">
+    import type { Snippet } from "svelte";
     import type { RouteLinkProps } from "./Link.svelte";
     import Link from "./Link.svelte";
 
     export type NavProps = {
         links: RouteLinkProps[];
+        rightActions?: Snippet;
     };
 
-    let { links }: NavProps = $props();
+    let { links, rightActions }: NavProps = $props();
 </script>
 
 <nav>
-    {#each links as link}
-        <Link {...link} />
-    {/each}
+    <div class="links">
+        {#each links as link}
+            <Link {...link} />
+        {/each}
+    </div>
+    {#if rightActions}
+        <div class="actions">{@render rightActions()}</div>
+    {/if}
 </nav>
 
 <style>
     nav {
         display: flex;
+        justify-content: space-between;
+        align-items: center;
         background-color: var(--background-color);
         border-bottom: 1px solid var(--background-color);
+    }
+    .links {
+        display: flex;
+    }
+    .actions {
+        display: flex;
+        align-items: center;
     }
 </style>
