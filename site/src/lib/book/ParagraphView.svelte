@@ -86,7 +86,8 @@
                         word={seg.word}
                         flatIndex={seg.flatIndex}
                         translation={seg.translation}
-                        visible={vm.visibleWordsSet.has(seg.flatIndex)}
+                        manualToggle={vm.visibleWordsSet.has(seg.flatIndex)}
+                        familiarity={seg.familiarity}
                         selected={vm.isSelected(seg.sentence, seg.word)}
                         onClick={(w) =>
                             onWordClick({ paragraphId, ...w })}

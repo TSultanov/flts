@@ -36,6 +36,7 @@ export type ParagraphSegment =
           word: number,
           flatIndex: number,
           translation: string | null,
+          familiarity?: number,
       }
 
 export type ParagraphOriginal = {
