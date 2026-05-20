@@ -1163,4 +1163,109 @@ mod tests {
             "state stays Suspended across the third sync"
         );
     }
+
+    #[tokio::test]
+    async fn mock_remove_note_clears_find_notes_hits() {
+        let mock = bootstrap_mock().await;
+        let mut card = make_card("poder", vec!["мочь"], vec![]);
+        sync_card(&mock, &mut card, spa(), rus()).await.unwrap();
+
+        let tag = format!("tag:{}", card.id);
+        let hits_before = mock.find_notes(&tag).await.unwrap();
+        assert_eq!(hits_before.len(), 1);
+
+        mock.remove_note(hits_before[0]);
+
+        let hits_after = mock.find_notes(&tag).await.unwrap();
+        assert!(
+            hits_after.is_empty(),
+            "remove_note must clear findNotes hits for the note's tag"
+        );
+    }
+
+    #[tokio::test]
+    async fn e2e_delete_in_anki_persists_through_re_translation() {
+        let tmp = TempDir::new("flts_e2e_delete");
+        let (library, book_id) =
+            library_with_one_paragraph_book(tmp.path.join("lib"), "Puedo entrar.").await;
+
+        let paragraph = one_sentence_paragraph(
+            "Я могу войти.",
+            vec![full_word(
+                "Puedo", "poder", "мочь", "verb", &["могу"], false,
+            )],
+        );
+
+        library
+            .apply_paragraph_to_cards(book_id, 0, &paragraph, rus())
+            .await
+            .unwrap();
+
+        let mock = MockAnkiConnect::new();
+        let mut state = AnkiSyncState::new();
+        // Sync #1: create the note.
+        sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
+            .await
+            .unwrap();
+
+        let poder_tag = "flts_spa_rus_poder_verb";
+        let note_id = mock.note_id_for_tag(poder_tag).expect("note exists after first sync");
+
+        // User deletes the note in Anki.
+        mock.remove_note(note_id);
+        assert!(
+            mock.note_id_for_tag(poder_tag).is_none(),
+            "post-removal there's no note for the tag"
+        );
+
+        // Sync #2: detection branch flips state to Deleted (findNotes returns 0
+        // hits and the card previously had anki_data != None).
+        sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
+            .await
+            .unwrap();
+        let card = library
+            .card_store()
+            .load("spa", "rus", "poder", "verb")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(card.anki_data.as_ref().map(|a| a.state), Some(AnkiState::Deleted));
+
+        // Re-encounter: applying the same paragraph must not regress state.
+        library
+            .apply_paragraph_to_cards(book_id, 0, &paragraph, rus())
+            .await
+            .unwrap();
+        let card_after = library
+            .card_store()
+            .load("spa", "rus", "poder", "verb")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            card_after.anki_data.as_ref().map(|a| a.state),
+            Some(AnkiState::Deleted),
+            "re-encountering the paragraph must not reset state to Active"
+        );
+
+        // Sync #3: opt-out branch short-circuits — no addNote (no resurrection).
+        sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
+            .await
+            .unwrap();
+        assert!(
+            mock.note_id_for_tag(poder_tag).is_none(),
+            "deleted card must not be re-added to Anki on subsequent syncs"
+        );
+        let card_final = library
+            .card_store()
+            .load("spa", "rus", "poder", "verb")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            card_final.anki_data.as_ref().map(|a| a.state),
+            Some(AnkiState::Deleted),
+            "state stays Deleted across the third sync"
+        );
+    }
 }

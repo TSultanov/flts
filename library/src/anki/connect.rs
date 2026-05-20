@@ -352,6 +352,15 @@ impl MockAnkiConnect {
         }
     }
 
+    /// Test-only knob: simulate the user deleting a note in Anki. Removes the
+    /// note and all of its associated cards from mock state; subsequent
+    /// `find_notes(tag:...)` for the note's tag will return zero hits.
+    pub fn remove_note(&self, note_id: i64) {
+        let mut state = self.inner.lock().unwrap();
+        state.notes.remove(&note_id);
+        state.cards.retain(|_, c| c.note_id != note_id);
+    }
+
     /// Test-only knob: cause the next `n` trait method invocations to return
     /// an error before touching mock state. Decrements one per call.
     pub fn fail_next_n_calls(&self, n: usize) {
