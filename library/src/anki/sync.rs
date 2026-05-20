@@ -1268,4 +1268,61 @@ mod tests {
             "state stays Deleted across the third sync"
         );
     }
+
+    #[tokio::test]
+    async fn e2e_translation_creates_cards_when_anki_unreachable() {
+        let tmp = TempDir::new("flts_e2e_unreachable");
+        let (library, book_id) =
+            library_with_one_paragraph_book(tmp.path.join("lib"), "Puedo entrar en casa.").await;
+
+        let paragraph = one_sentence_paragraph(
+            "Я могу войти в дом.",
+            vec![
+                full_word("Puedo", "poder", "мочь", "verb", &["могу"], false),
+                full_word("casa", "casa", "дом", "noun", &["дом"], false),
+            ],
+        );
+
+        library
+            .apply_paragraph_to_cards(book_id, 0, &paragraph, rus())
+            .await
+            .unwrap();
+
+        // Card files exist on disk regardless of AnkiConnect state — the
+        // translation pipeline writes through LibraryCardStore directly.
+        for (lemma, pos) in [("poder", "verb"), ("casa", "noun")] {
+            let card = library
+                .card_store()
+                .load("spa", "rus", lemma, pos)
+                .await
+                .unwrap()
+                .unwrap_or_else(|| panic!("{lemma} card present on disk"));
+            assert!(
+                card.anki_data.is_none(),
+                "no anki_data set before any successful sync"
+            );
+        }
+
+        // A sync attempt against an unreachable Anki must leave the local
+        // card store intact. Bootstrap may bubble (the version() probe is the
+        // first call); per-card failures are recorded in backoff. Either way,
+        // the disk state is the contract.
+        let mock = MockAnkiConnect::new();
+        mock.fail_next_n_calls(usize::MAX);
+        let mut state = AnkiSyncState::new();
+        let _ = sync_pass(&mock, &library, &mut state, tokio::time::Instant::now()).await;
+
+        for (lemma, pos) in [("poder", "verb"), ("casa", "noun")] {
+            let card = library
+                .card_store()
+                .load("spa", "rus", lemma, pos)
+                .await
+                .unwrap()
+                .unwrap_or_else(|| panic!("{lemma} card still on disk after failed sync"));
+            assert!(
+                card.anki_data.is_none(),
+                "no anki_data after a fully-failing sync"
+            );
+        }
+    }
 }
