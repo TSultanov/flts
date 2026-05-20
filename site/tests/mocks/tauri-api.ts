@@ -34,6 +34,23 @@ type Config = {
   openaiApiKey?: string;
   model: number;
   libraryPath?: string;
+  ankiEndpoint?: string;
+  ankiApiKey?: string;
+};
+
+type AnkiSyncStatusState = 'idle' | 'syncing' | 'ok' | 'err' | 'unreachable';
+type SyncReportDto = {
+  totalCards: number;
+  attempted: number;
+  succeeded: number;
+  failed: number;
+  persistentFailures: string[];
+};
+type AnkiSyncStatus = {
+  state: AnkiSyncStatusState;
+  lastFinishedAtMs?: number | null;
+  lastError?: string | null;
+  lastReport?: SyncReportDto | null;
 };
 
 type MockBook = {
@@ -170,6 +187,8 @@ let mockConfig: Config = {
   libraryPath: '/mock/library/path',
   targetLanguageId: 'spa',
 };
+let mockAnkiSyncStatus: AnkiSyncStatus = { state: 'idle' };
+const syncAnkiNowCalls: Array<{ at: number }> = [];
 let mockReadingStates: Map<UUID, BookReadingState> = new Map();
 let bookIdCounter = 0;
 let requestIdCounter = 0;
@@ -481,6 +500,8 @@ export function resetMockState() {
   mockNowPlaying = null;
   mockLyricsByTrack.clear();
   mockTranslationCache.clear();
+  mockAnkiSyncStatus = { state: 'idle' };
+  syncAnkiNowCalls.length = 0;
 }
 
 type PendingSeed = {
@@ -620,6 +641,19 @@ if (typeof window !== 'undefined') {
     },
     getTranslationsBatchCalls() {
       return translationsBatchCalls.slice();
+    },
+    getConfig(): Config {
+      return { ...mockConfig };
+    },
+    setAnkiSyncStatus(status: AnkiSyncStatus) {
+      mockAnkiSyncStatus = { ...status };
+      emit('anki_sync_status_changed', undefined);
+    },
+    getAnkiSyncStatus(): AnkiSyncStatus {
+      return { ...mockAnkiSyncStatus };
+    },
+    getSyncAnkiNowCalls() {
+      return syncAnkiNowCalls.slice();
     },
     reset() {
       resetMockState();
@@ -970,6 +1004,36 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
     // The lyrics view's queue store hits these on mount; without handlers the
     // mock logs `Unhandled command` warnings and the store sits in its
     // disconnected default forever (which is fine, just noisy).
+
+    case 'get_anki_sync_status':
+      return Promise.resolve({ ...mockAnkiSyncStatus } as T);
+
+    case 'sync_anki_now': {
+      syncAnkiNowCalls.push({ at: Date.now() });
+      // Mirror the backend state machine: flip to syncing immediately,
+      // then resolve with a synthetic report and flip to ok.
+      mockAnkiSyncStatus = { state: 'syncing' };
+      emit('anki_sync_status_changed', undefined);
+      const report: SyncReportDto = {
+        totalCards: 1,
+        attempted: 1,
+        succeeded: 1,
+        failed: 0,
+        persistentFailures: [],
+      };
+      // Use a microtask delay so the syncing → ok transition is observable
+      // when the test cares about it.
+      setTimeout(() => {
+        mockAnkiSyncStatus = {
+          state: 'ok',
+          lastFinishedAtMs: Date.now(),
+          lastError: null,
+          lastReport: report,
+        };
+        emit('anki_sync_status_changed', undefined);
+      }, 10);
+      return Promise.resolve(report as T);
+    }
 
     case 'spotify_web_status':
       return Promise.resolve({
