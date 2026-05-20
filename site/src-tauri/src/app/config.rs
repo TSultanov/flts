@@ -164,48 +164,6 @@ impl Default for Config {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn config_default_has_localhost_anki_endpoint() {
-        let c = Config::default();
-        assert_eq!(c.anki_endpoint.as_deref(), Some("http://127.0.0.1:8765"));
-        assert!(c.anki_api_key.is_none());
-    }
-
-    #[test]
-    fn config_round_trips_through_serde_with_anki_fields() {
-        let mut original = Config::default();
-        original.anki_endpoint = Some("http://anki.example.com:9999".into());
-        original.anki_api_key = Some("secret-key".into());
-        let json = serde_json::to_string(&original).unwrap();
-        assert!(json.contains("\"ankiEndpoint\""));
-        assert!(json.contains("\"ankiApiKey\""));
-        let parsed: Config = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.anki_endpoint, original.anki_endpoint);
-        assert_eq!(parsed.anki_api_key, original.anki_api_key);
-    }
-
-    #[test]
-    fn config_loads_legacy_file_without_anki_fields() {
-        // Simulate a config persisted before the Anki fields existed.
-        let legacy = serde_json::json!({
-            "targetLanguageId": "eng",
-            "translationProvider": "google",
-            "geminiApiKey": null,
-            "openaiApiKey": null,
-            "model": 0,
-            "libraryPath": null,
-        });
-        let parsed: Config = serde_json::from_value(legacy).unwrap();
-        assert!(parsed.anki_endpoint.is_none(),
-            "legacy config (pre-Anki) must NOT spontaneously populate endpoint");
-        assert!(parsed.anki_api_key.is_none());
-    }
-}
-
 impl Config {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let file = File::open(path)?;
@@ -229,5 +187,51 @@ impl Config {
         serde_json::to_writer(file, self)?;
         info!("File written");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_default_has_localhost_anki_endpoint() {
+        let c = Config::default();
+        assert_eq!(c.anki_endpoint.as_deref(), Some("http://127.0.0.1:8765"));
+        assert!(c.anki_api_key.is_none());
+    }
+
+    #[test]
+    fn config_round_trips_through_serde_with_anki_fields() {
+        let original = Config {
+            anki_endpoint: Some("http://anki.example.com:9999".into()),
+            anki_api_key: Some("secret-key".into()),
+            ..Config::default()
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        assert!(json.contains("\"ankiEndpoint\""));
+        assert!(json.contains("\"ankiApiKey\""));
+        let parsed: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.anki_endpoint, original.anki_endpoint);
+        assert_eq!(parsed.anki_api_key, original.anki_api_key);
+    }
+
+    #[test]
+    fn config_loads_legacy_file_without_anki_fields() {
+        // Simulate a config persisted before the Anki fields existed.
+        let legacy = serde_json::json!({
+            "targetLanguageId": "eng",
+            "translationProvider": "google",
+            "geminiApiKey": null,
+            "openaiApiKey": null,
+            "model": 0,
+            "libraryPath": null,
+        });
+        let parsed: Config = serde_json::from_value(legacy).unwrap();
+        assert!(
+            parsed.anki_endpoint.is_none(),
+            "legacy config (pre-Anki) must NOT spontaneously populate endpoint"
+        );
+        assert!(parsed.anki_api_key.is_none());
     }
 }

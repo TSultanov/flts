@@ -25,7 +25,9 @@ use uuid::Uuid;
 
 use tauri::Emitter;
 
-use crate::app::{config::Config, translation_queue::TranslationQueue};
+use crate::app::{
+    anki_sync::AnkiSyncTask, config::Config, translation_queue::TranslationQueue,
+};
 
 #[cfg(mobile)]
 fn document_dir() -> Option<std::path::PathBuf> {
@@ -35,7 +37,10 @@ fn document_dir() -> Option<std::path::PathBuf> {
 const EXIT_STOP_QUEUE_TIMEOUT: Duration = Duration::from_secs(2);
 const EXIT_SAVE_ALL_TIMEOUT: Duration = Duration::from_secs(10);
 const EXIT_CACHE_CLOSE_TIMEOUT: Duration = Duration::from_millis(250);
+const EXIT_FINAL_SYNC_TIMEOUT: Duration = Duration::from_secs(15);
+const DEFAULT_ANKI_SYNC_INTERVAL_SECS: u64 = 300;
 
+pub mod anki_sync;
 pub mod config;
 pub mod library_view;
 pub mod lyrics;
@@ -78,6 +83,7 @@ pub struct AppState {
     translation_queue_init_lock: Mutex<()>,
     watcher: Arc<Mutex<LibraryWatcher>>,
     backfill_lock: Arc<Mutex<()>>,
+    anki_sync_task: Mutex<Option<Arc<AnkiSyncTask>>>,
     translations_cache: tokio::sync::OnceCell<Arc<TranslationsCache>>,
     stats_cache: tokio::sync::OnceCell<Arc<TranslationSizeCache>>,
     pub lyrics_state: crate::app::lyrics::LyricsState,
@@ -116,6 +122,7 @@ impl AppState {
             translation_queue_init_lock: Mutex::new(()),
             watcher,
             backfill_lock: Arc::new(Mutex::new(())),
+            anki_sync_task: Mutex::new(None),
             translations_cache: tokio::sync::OnceCell::new(),
             stats_cache: tokio::sync::OnceCell::new(),
             lyrics_state: crate::app::lyrics::LyricsState::new(),
@@ -213,6 +220,39 @@ impl AppState {
                 );
             }
 
+            // Stop any prior Anki sync task (config may have changed).
+            if let Some(task) = self.anki_sync_task.lock().await.take() {
+                info!("Stopping prior Anki sync task before re-spawn");
+                task.shutdown().await;
+            }
+
+            if std::env::var_os("FLTS_ENABLE_ANKI_SYNC")
+                .is_some_and(|v| !v.is_empty())
+            {
+                let endpoint = config
+                    .anki_endpoint
+                    .clone()
+                    .unwrap_or_else(|| "http://127.0.0.1:8765".to_owned());
+                let api_key = config.anki_api_key.clone();
+                let client: Arc<dyn library::anki::connect::AnkiConnect> =
+                    library::anki::connect::get_anki_connect(endpoint, api_key).into();
+                let interval_secs = std::env::var("FLTS_ANKI_SYNC_INTERVAL_SECS")
+                    .ok()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(DEFAULT_ANKI_SYNC_INTERVAL_SECS);
+                let task = AnkiSyncTask::init(
+                    library.clone(),
+                    client,
+                    Duration::from_secs(interval_secs),
+                );
+                *self.anki_sync_task.lock().await = Some(task);
+                info!(
+                    "Anki sync task spawned (interval = {interval_secs}s)"
+                );
+            } else {
+                info!("Anki sync disabled: set FLTS_ENABLE_ANKI_SYNC=1 to enable");
+            }
+
             self.watcher
                 .lock()
                 .await
@@ -273,6 +313,22 @@ impl AppState {
             self.stop_translation_queue(),
         )
         .await;
+        // Pull task out of the slot under lock; release the lock before awaiting
+        // so we never block on a long-running tick from inside the mutex.
+        let anki_task = self.anki_sync_task.lock().await.take();
+        if let Some(task) = anki_task {
+            run_exit_step(
+                "anki final sync",
+                EXIT_FINAL_SYNC_TIMEOUT,
+                async {
+                    if let Err(err) = task.run_one_pass().await {
+                        warn!("Anki final sync_pass failed: {err}");
+                    }
+                    task.shutdown().await;
+                },
+            )
+            .await;
+        }
         run_exit_step("save all", EXIT_SAVE_ALL_TIMEOUT, self.save_all()).await;
         self.close_caches_for_exit().await;
     }
