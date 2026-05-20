@@ -22,6 +22,13 @@ pub enum LibraryFileChange {
         to: Language,
         uuid: Uuid,
     },
+    CardChanged {
+        modified: SystemTime,
+        from: Language,
+        to: Language,
+        lemma_slug: String,
+        pos_slug: String,
+    },
 }
 
 pub struct LibraryWatcher {
@@ -58,6 +65,19 @@ impl LibraryWatcher {
                             } => info!(
                                 "Translation {} {}->{} change detected",
                                 uuid,
+                                from.to_639_3(),
+                                to.to_639_3()
+                            ),
+                            LibraryFileChange::CardChanged {
+                                modified: _,
+                                from,
+                                to,
+                                lemma_slug,
+                                pos_slug,
+                            } => info!(
+                                "Card {}_{} {}->{} change detected",
+                                lemma_slug,
+                                pos_slug,
                                 from.to_639_3(),
                                 to.to_639_3()
                             ),
@@ -145,6 +165,31 @@ impl LibraryWatcher {
                         from: Language::from_639_3(&from)?,
                         to: Language::from_639_3(&to)?,
                         uuid: Uuid::from_str(uuid).ok()?,
+                    });
+                }
+            }
+
+            // Card file: <lib>/cards/<src>-<tgt>/<lemma>_<pos>.json
+            // Syncthing conflict siblings (.sync-conflict-) are merged in
+            // by LibraryCardStore::load and must not surface as a separate
+            // change event.
+            if filename.ends_with(".json") && !filename.contains(".sync-conflict-") {
+                let parent = path.parent()?;
+                let deck_dir = parent.file_name()?.to_str()?;
+                let grand = parent.parent()?.file_name()?.to_str()?;
+                if grand == "cards"
+                    && let Some((src, tgt)) = deck_dir.split_once('-')
+                    && let Some(from) = Language::from_639_3(src)
+                    && let Some(to) = Language::from_639_3(tgt)
+                    && let Some(stem) = filename.strip_suffix(".json")
+                    && let Some((lemma_slug, pos_slug)) = stem.rsplit_once('_')
+                {
+                    return Some(LibraryFileChange::CardChanged {
+                        modified: metadata.modified().unwrap(),
+                        from,
+                        to,
+                        lemma_slug: lemma_slug.to_owned(),
+                        pos_slug: pos_slug.to_owned(),
                     });
                 }
             }

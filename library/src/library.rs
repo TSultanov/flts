@@ -501,6 +501,10 @@ impl Library {
                     false
                 }
             }
+            // No backend cache for cards (LibraryCardStore reads from
+            // disk on every load); frontend handles invalidation via the
+            // cards_updated event emitted by AppState.
+            LibraryFileChange::CardChanged { .. } => false,
         });
         trace!("Finish file change event handling");
         result

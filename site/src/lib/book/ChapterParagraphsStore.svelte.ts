@@ -12,6 +12,7 @@ export const CHAPTER_STORE_KEY = Symbol("ChapterParagraphsStore");
 
 const BATCH_SIZE = 20;
 const MAX_INFLIGHT_PER_KIND = 5;
+const CARDS_REFRESH_DEBOUNCE_MS = 500;
 
 export class ChapterParagraphsStore {
     #bookId: UUID;
@@ -27,6 +28,8 @@ export class ChapterParagraphsStore {
     #translationsQueue: number[] = [];
     #translationsEnqueued = new Set<number>();
     #translationsInflight = 0;
+
+    #cardsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
     constructor(bookId: UUID, library: Library) {
         this.#bookId = bookId;
@@ -48,6 +51,41 @@ export class ChapterParagraphsStore {
                 }
             },
         );
+
+        // Card-file changes (Anki sync writes or Syncthing pushes) require a
+        // backend re-read to update per-word familiarity. Debounced so a long
+        // sync_pass burst coalesces into a single refresh.
+        eventHub.subscribe<null>(
+            "cards_updated",
+            () => true,
+            () => this.#scheduleCardsRefresh(),
+        );
+    }
+
+    #scheduleCardsRefresh(): void {
+        if (this.#cardsRefreshTimer != null) {
+            clearTimeout(this.#cardsRefreshTimer);
+        }
+        this.#cardsRefreshTimer = setTimeout(() => {
+            this.#cardsRefreshTimer = null;
+            const ids = [...this.#translations.keys()];
+            if (ids.length === 0) return;
+            this.#softEnqueueTranslations(ids);
+        }, CARDS_REFRESH_DEBOUNCE_MS);
+    }
+
+    // Re-fetch cached translations without dropping them first. Overwrites
+    // entries in place as the batch resolves, so the user sees no
+    // segments→original-text flicker. Bypasses the cached-check on purpose
+    // — we want already-cached ids to refetch — but keeps the pump's
+    // MAX_INFLIGHT/BATCH_SIZE limits.
+    #softEnqueueTranslations(ids: readonly number[]): void {
+        for (const id of ids) {
+            if (this.#translationsEnqueued.has(id)) continue;
+            this.#translationsEnqueued.add(id);
+            this.#translationsQueue.push(id);
+        }
+        this.#pumpTranslations();
     }
 
     getOriginal(id: number): string | undefined {

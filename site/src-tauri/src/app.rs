@@ -394,7 +394,7 @@ impl AppState {
         }
 
         match event {
-            LibraryFileChange::BookChanged { modified: _, uuid } => {
+            LibraryFileChange::BookChanged { modified: _, uuid } if had_effect => {
                 info!("Emitting \"book_updated\" for {uuid}");
                 self.app.emit("book_updated", uuid)?;
                 self.notify_library_changed();
@@ -404,7 +404,7 @@ impl AppState {
                 from: _,
                 to,
                 uuid,
-            } => {
+            } if had_effect => {
                 let target_language_id = { self.config.borrow().target_language_id.clone() };
                 let target_language = Language::from_639_3(&target_language_id);
 
@@ -414,6 +414,14 @@ impl AppState {
                     self.notify_library_changed();
                 }
             }
+            LibraryFileChange::CardChanged { .. } => {
+                // Always emit — the library doesn't cache cards, so `had_effect`
+                // is unconditionally false here. The frontend invalidates its
+                // translation cache on this signal.
+                info!("Emitting \"cards_updated\"");
+                self.app.emit("cards_updated", ())?;
+            }
+            _ => {}
         }
 
         Ok(())
