@@ -37,6 +37,16 @@ pub async fn sync_card(
     src: Language,
     tgt: Language,
 ) -> Result<()> {
+    // The user opted out in Anki: never re-push, never overwrite the
+    // explicit state. Local accumulation (translations/examples) continues
+    // upstream of this call; only network sync is suppressed.
+    if matches!(
+        card.anki_data.as_ref().map(|a| a.state),
+        Some(AnkiState::Suspended) | Some(AnkiState::Deleted)
+    ) {
+        return Ok(());
+    }
+
     let query = format!("tag:{}", card.id);
     let hits = client.find_notes(&query).await?;
 
@@ -194,6 +204,47 @@ mod tests {
             .await
             .unwrap();
         mock
+    }
+
+    #[tokio::test]
+    async fn sync_card_skips_when_state_suspended() {
+        let mock = bootstrap_mock().await;
+        let mut card = make_card("poder", vec!["мочь"], vec![]);
+        let before = AnkiData {
+            state: AnkiState::Suspended,
+            interval_days: None,
+            ease_factor: None,
+            fsrs_difficulty: None,
+            fsrs_stability: None,
+        };
+        card.anki_data = Some(before.clone());
+
+        sync_card(&mock, &mut card, spa(), rus()).await.unwrap();
+
+        // No note created, no AnkiConnect mutation visible to find_notes.
+        let hits = mock.find_notes(&format!("tag:{}", card.id)).await.unwrap();
+        assert!(hits.is_empty(), "suspended card must not be pushed");
+        assert_eq!(card.anki_data.as_ref(), Some(&before), "anki_data preserved");
+    }
+
+    #[tokio::test]
+    async fn sync_card_skips_when_state_deleted() {
+        let mock = bootstrap_mock().await;
+        let mut card = make_card("poder", vec!["мочь"], vec![]);
+        let before = AnkiData {
+            state: AnkiState::Deleted,
+            interval_days: None,
+            ease_factor: None,
+            fsrs_difficulty: None,
+            fsrs_stability: None,
+        };
+        card.anki_data = Some(before.clone());
+
+        sync_card(&mock, &mut card, spa(), rus()).await.unwrap();
+
+        let hits = mock.find_notes(&format!("tag:{}", card.id)).await.unwrap();
+        assert!(hits.is_empty(), "deleted card must not be re-added");
+        assert_eq!(card.anki_data.as_ref(), Some(&before), "anki_data preserved");
     }
 
     #[tokio::test]
