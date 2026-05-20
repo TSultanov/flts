@@ -82,22 +82,20 @@ pub async fn mark_word_visible(
         return Err("Library is not configured".into());
     };
 
-    let changed = LibraryView::create(state.inner().clone(), library)
+    let now_visible = LibraryView::create(state.inner().clone(), library)
         .mark_word_visible(book_id, paragraph_id, flat_index, &target_language)
         .await
         .map_err(|err| err.to_string())?;
 
-    if changed {
-        // Notify the frontend so the paragraph-view Resource re-fetches and
-        // the just-marked overlay sticks once the user deselects.
-        let _ = app.emit(
-            "paragraph_updated",
-            serde_json::json!({
-                "bookId": book_id,
-                "paragraphId": paragraph_id,
-            }),
-        );
-    }
+    // Always emit: a toggle always flips state. ChapterParagraphsStore
+    // re-fetches the paragraph so the new manualToggle bit propagates.
+    let _ = app.emit(
+        "paragraph_updated",
+        serde_json::json!({
+            "bookId": book_id,
+            "paragraphId": paragraph_id,
+        }),
+    );
 
-    Ok(changed)
+    Ok(now_visible)
 }

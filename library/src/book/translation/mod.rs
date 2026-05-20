@@ -373,8 +373,30 @@ impl Translation {
         self.paragraph_translations[new_index].sentences = sentences;
     }
 
-    /// Marks a word index as visible (annotation shown) for the given paragraph.
-    /// Returns true if the word was newly marked visible, false if already visible or paragraph doesn't exist.
+    /// Idempotent insert into `visible_words` for merge paths that need
+    /// union semantics. Distinct from `mark_word_visible`'s toggle.
+    fn add_visible_word(&mut self, paragraph: usize, word_index: usize) {
+        if paragraph >= self.paragraphs.len() {
+            return;
+        }
+        let Some(idx) = self.paragraphs[paragraph] else {
+            return;
+        };
+        self.paragraph_translations[idx]
+            .visible_words
+            .insert(word_index);
+    }
+
+    /// Toggles the manual visibility flag for a word in the given paragraph.
+    ///
+    /// Returns `true` if the word is now manually visible (newly added),
+    /// `false` if it has been toggled off (removed from the set) or the
+    /// paragraph doesn't exist.
+    ///
+    /// Under the post-Anki-UI semantics (see `.specs/ANKI_UI.md` § Visibility
+    /// model) the persisted `visible_words` set represents user clicks XOR'd
+    /// against the auto-show derived from card familiarity. Function name
+    /// kept for API stability; on-disk schema unchanged.
     pub fn mark_word_visible(&mut self, paragraph: usize, word_index: usize) -> bool {
         if paragraph >= self.paragraphs.len() {
             return false;
@@ -385,10 +407,12 @@ impl Translation {
         };
         let pt = &mut self.paragraph_translations[paragraph_translation_idx];
         if pt.visible_words.contains(&word_index) {
-            return false;
+            pt.visible_words.remove(&word_index);
+            false
+        } else {
+            pt.visible_words.insert(word_index);
+            true
         }
-        pt.visible_words.insert(word_index);
-        true
     }
 
     fn paragraph_content_matches(
@@ -467,7 +491,7 @@ impl Translation {
                         ts,
                     );
                     for word_idx in &other_visible_words {
-                        merged_translation.mark_word_visible(paragraph_idx, *word_idx);
+                        merged_translation.add_visible_word(paragraph_idx, *word_idx);
                     }
                 }
             } else if let Some(paragarph) = self.paragraph_view(paragraph_idx)

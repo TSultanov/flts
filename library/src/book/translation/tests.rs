@@ -631,7 +631,7 @@ fn merge_present_only_in_one_side() {
 }
 
 #[test]
-fn visible_words_serialize_deserialize_roundtrip() {
+fn mark_word_visible_toggles_and_round_trips() {
     let mut translation = Translation::create("en", "ru");
     translation.add_paragraph_translation(
         0,
@@ -639,30 +639,27 @@ fn visible_words_serialize_deserialize_roundtrip() {
         TranslationModel::Gemini25Flash,
     );
 
-    // Mark some words as visible
+    // First call on each index inserts.
     assert!(translation.mark_word_visible(0, 2));
     assert!(translation.mark_word_visible(0, 5));
     assert!(translation.mark_word_visible(0, 3));
-    // Marking same word again should return false
+    // Re-marking 2 removes it (toggle, not idempotent add).
     assert!(!translation.mark_word_visible(0, 2));
 
-    // Verify visible_words before serialization
     let view = translation.paragraph_view(0).unwrap();
     let mut words: Vec<_> = view.visible_words().iter().copied().collect();
     words.sort();
-    assert_eq!(words, vec![2, 3, 5]);
+    assert_eq!(words, vec![3, 5]);
 
-    // Serialize and deserialize
     let mut buf: Vec<u8> = vec![];
     translation.serialize(&mut buf).unwrap();
     let mut cursor = Cursor::new(buf);
     let deserialized = Translation::deserialize(&mut cursor).unwrap();
 
-    // Verify visible_words after deserialization
     let view2 = deserialized.paragraph_view(0).unwrap();
     let mut words2: Vec<_> = view2.visible_words().iter().copied().collect();
     words2.sort();
-    assert_eq!(words2, vec![2, 3, 5]);
+    assert_eq!(words2, vec![3, 5]);
 }
 
 #[test]
