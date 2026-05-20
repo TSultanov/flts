@@ -1325,4 +1325,90 @@ mod tests {
             );
         }
     }
+
+    #[tokio::test]
+    async fn e2e_sync_conflict_sibling_merges_then_syncs_union_to_anki() {
+        let tmp = TempDir::new("flts_e2e_conflict_sync");
+        let (library, book_id) =
+            library_with_one_paragraph_book(tmp.path.join("lib"), "Yo puedo.").await;
+
+        // Canonical card: one translation, one example.
+        let paragraph = one_sentence_paragraph(
+            "Я могу.",
+            vec![full_word(
+                "puedo", "poder", "мочь", "verb", &["могу"], false,
+            )],
+        );
+        library
+            .apply_paragraph_to_cards(book_id, 0, &paragraph, rus())
+            .await
+            .unwrap();
+
+        // Drop a Syncthing-style conflict sibling carrying a divergent translation
+        // and a different example. Mirrors Stage 3's load_merges_single_sync_conflict_sibling
+        // layout in library_card.rs.
+        let deck = tmp.path.join("lib").join("cards").join("spa-rus");
+        let conflict_path = deck.join("poder_verb.sync-conflict-20260520-153912-XYZ.json");
+        let conflict_card = Card {
+            version: 1,
+            id: "flts_spa_rus_poder_verb".into(),
+            lemma: "poder".into(),
+            part_of_speech: "verb".into(),
+            translations: vec!["иметь возможность".into()],
+            examples: vec![Example {
+                source: "Tu puedes.".into(),
+                translation: "Ты можешь.".into(),
+                book_id,
+                chapter: 0,
+                paragraph: 0,
+            }],
+            anki_data: None,
+        };
+        let bytes = serde_json::to_vec_pretty(&conflict_card).unwrap();
+        tokio::fs::write(&conflict_path, bytes).await.unwrap();
+
+        // Sync runs sync_pass; LibraryCardStore::load auto-merges the sibling.
+        let mock = MockAnkiConnect::new();
+        let mut state = AnkiSyncState::new();
+        let report = sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
+            .await
+            .unwrap();
+        assert_eq!(report.succeeded, 1);
+
+        // The conflict sibling is gone; the canonical file carries the union.
+        assert!(
+            !conflict_path.exists(),
+            "conflict sibling consumed by merge during sync_pass"
+        );
+        let merged = library
+            .card_store()
+            .load("spa", "rus", "poder", "verb")
+            .await
+            .unwrap()
+            .expect("merged card on disk");
+        assert_eq!(merged.translations, vec!["мочь", "иметь возможность"]);
+        assert_eq!(merged.examples.len(), 2, "both examples present after merge");
+
+        // Anki receives the merged content: Target joins both translations with
+        // "; ", and Example carries both source/translation pairs sorted by
+        // source (alphabetic), joined by "<br>".
+        let note_id = mock
+            .note_id_for_tag("flts_spa_rus_poder_verb")
+            .expect("merged note pushed to Anki");
+        let (fields, _) = mock.peek_note(note_id).unwrap();
+        assert_eq!(
+            fields.get("Target"),
+            Some(&"мочь; иметь возможность".to_owned())
+        );
+        // The canonical example's source is derived from the paragraph's
+        // words (`extract_card_updates` builds it via `render_example_source`),
+        // so it's just "puedo" here. The conflict sibling carries a hand-written
+        // source "Tu puedes." Uppercase 'T' (0x54) sorts before lowercase 'p'
+        // (0x70), so the conflict example renders first.
+        assert_eq!(
+            fields.get("Example"),
+            Some(&"Tu puedes. \u{2014} Ты можешь.<br>puedo \u{2014} Я могу.".to_owned()),
+            "examples render alphabetically by source and join with <br>"
+        );
+    }
 }
