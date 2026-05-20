@@ -42,6 +42,13 @@ pub struct SyncReport {
 
 const DEFAULT_PERSISTENT_THRESHOLD: u32 = 5;
 
+/// Linear backoff schedule capped at ten minutes per spec § Failure modes.
+/// `n=0` yields zero delay (treated as "not in backoff").
+#[allow(dead_code)] // first non-test consumer is cycle 5
+pub(crate) fn next_delay(n: u32) -> std::time::Duration {
+    std::time::Duration::from_secs(60 * n.min(10) as u64)
+}
+
 impl AnkiSyncState {
     #[allow(dead_code)] // first non-test consumer is the Stage 9 AnkiSyncTask
     pub fn new() -> Self {
@@ -257,7 +264,9 @@ mod tests {
     use uuid::Uuid;
 
     use crate::anki::connect::{AnkiConnect, MockAnkiConnect};
-    use crate::anki::sync::{AnkiSyncState, render_fields, sync_card, sync_pass};
+    use crate::anki::sync::{
+        AnkiSyncState, next_delay, render_fields, sync_card, sync_pass,
+    };
     use crate::card::{AnkiData, AnkiState, Card, Example};
     use crate::library::Library;
     use crate::test_utils::TempDir;
@@ -490,6 +499,17 @@ mod tests {
             library.card_store().save(card, "spa", "rus").await.unwrap();
         }
         (tmp, library)
+    }
+
+    #[test]
+    fn next_delay_is_linear_with_ten_minute_cap() {
+        use std::time::Duration;
+        assert_eq!(next_delay(0), Duration::from_secs(0));
+        assert_eq!(next_delay(1), Duration::from_secs(60));
+        assert_eq!(next_delay(5), Duration::from_secs(300));
+        assert_eq!(next_delay(10), Duration::from_secs(600));
+        assert_eq!(next_delay(11), Duration::from_secs(600));
+        assert_eq!(next_delay(1_000_000), Duration::from_secs(600));
     }
 
     #[tokio::test]
