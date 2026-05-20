@@ -46,9 +46,9 @@ pub(crate) const PART_OF_SPEECH_VOCABULARY: &[(&str, &str)] = &[
     ("verb_modal", "modal verbs (can, must, will, should; мочь as modal; deber; -ebil- in Turkish potentialis; 能, 会, 可以)"),
     ("verb_copula", "linking copula (am tired, was hungry; ser/estar in Spanish; есть as copula; dır in Turkish; არის in Georgian; 是 in Chinese)"),
     ("predicative", "Russian-style state words used alone as predicate (можно, нельзя, пора, надо, жаль; Korean/Hungarian have analogs). Use only when the word does not inflect like a verb and functions as the predicate by itself"),
-    ("participle_present", "present participle: -ing as adjectival in English; Russian active present идущий / passive present читаемый; Turkish -an; Georgian მ-...-ელ-ი; Spanish gerundio when adjectival"),
-    ("participle_past", "past participle: -ed as adjectival in English; Russian active past прочитавший / passive past прочитанный; Turkish -mış/-dik; Georgian -ულ-ი; Spanish participio cantado; deverbal adjectives once lexicalized"),
-    ("gerund", "verb form used as a noun: English -ing as nominal subject/object; Russian verbal nouns and деепричастия when nominal; Spanish gerundio when nominal; Turkish -mek/-me nominals; Georgian masdar -ი; converbs when functioning adverbial-nominal. For an -ing word in English: noun-position → gerund, modifier-position → participle_present"),
+    ("participle_present", "present participle ONLY when the form acts as a standalone modifier of a noun (the running water, кипящая вода, идущий человек). NEVER for verbal predicates like 'is running', 'are eating' — those are `verb_auxiliary` + `verb`. Russian active present идущий / passive present читаемый used adjectivally; Turkish -an participle; Georgian მ-...-ელ-ი; Spanish gerundio when adjectival"),
+    ("participle_past", "past participle ONLY when the form acts as a standalone modifier of a noun (the broken vase, разбитая ваза, the witnessed event). NEVER for perfect-tense or passive verbal predicates like 'had witnessed', 'was eaten', 'был сделан' — those participles are tagged `verb` (the auxiliary takes `verb_auxiliary`). Russian active past прочитавший / passive past прочитанный used adjectivally; Turkish -mış/-dik; Georgian -ულ-ი; Spanish participio cantado; deverbal adjectives once lexicalized"),
+    ("gerund", "verb form used as a NOUN: English -ing as nominal subject/object (Swimming is fun; I enjoy reading); Russian verbal nouns and деепричастия when nominal; Spanish gerundio when nominal; Turkish -mek/-me nominals; Georgian masdar -ი; converbs when functioning adverbial-nominal. NEVER for the -ing inside 'is running' — that's `verb`. For an English -ing word: noun-position → gerund, modifier-position → participle_present, predicate-of-be-construction → verb"),
     ("adjective", "attributive and predicative adjectives, Japanese i-adj / na-adj (record the type in grammar.other), Russian short/long forms (form in grammar.other)"),
     ("adverb", "adverbs (modify verbs, adjectives, or other adverbs)"),
     ("determiner_article", "articles: a, an, the; el/la; der/die/das"),
@@ -242,7 +242,12 @@ pub trait Translator: Send + Sync {
         Self: Sized,
     {
         let mut pos_block = String::from(
-            "Part-of-speech vocabulary. The 'partOfSpeech' field is restricted by the JSON schema to one of the following English tags; pick the one whose scope best fits the word. Do NOT translate these tags or invent new ones. Inflection information (tense, plurality, person, case) belongs in the dedicated grammar fields, NOT in partOfSpeech.\n",
+            "Part-of-speech vocabulary. The 'partOfSpeech' field is restricted by the JSON schema to one of the following English tags; pick the one whose scope best fits the word. Do NOT translate these tags or invent new ones. Inflection information (tense, plurality, person, case) belongs in the dedicated grammar fields, NOT in partOfSpeech.\n\
+            CRITICAL RULE — tag by FUNCTION, not by MORPHOLOGY. A word's tag follows its grammatical role in this sentence, not its surface form:\n\
+              * 'had witnessed', 'is broken', 'was eaten', 'был сделан', 'has been seen' — the participle is the predicate of a perfect-tense or passive construction, so it is tagged 'verb'. The auxiliary 'had'/'is'/'was'/'был'/'has been' is tagged 'verb_auxiliary'.\n\
+              * 'the broken vase', 'a running stream', 'засвидетельствованный факт' — the participle modifies a noun standalone, so it is tagged 'participle_past' or 'participle_present' as appropriate.\n\
+              * 'Swimming is fun', 'I enjoy reading', 'чтение важно' — the -ing/verbal-noun form is the subject or object of the sentence, so it is tagged 'gerund'.\n\
+              * 'She is swimming' — 'is' is 'verb_auxiliary', 'swimming' is 'verb' (the lexical predicate, NOT a participle nor a gerund here).\n",
         );
         for (tag, description) in PART_OF_SPEECH_VOCABULARY {
             pos_block.push_str("            - ");
@@ -273,6 +278,10 @@ pub trait Translator: Send + Sync {
             - In the 'other' field, include any language-specific grammatical features not covered by standard fields
         Initial forms in the grammar section must be contain the form as it appears in the dictionaries in the language of the original and target text.
         'sourceLanguage' and 'targetLanguage' must contain ISO 639 Set 3 code of the corresponding language (e.g. 'eng', 'deu', 'rus', 'jpn', etc.).
+        Translation forms — these two fields have distinct roles, do not conflate them:
+            - 'targetInitialForm' is the DICTIONARY-form translation of the lemma in {to}, in the same part of speech as the lemma. Always populate this with a clean dictionary entry, even when the rendered sentence uses a different syntactic structure or restructures the meaning across multiple words. Illustrative example (English → Russian): source 'had witnessed' (lemma 'witness', verb) → targetInitialForm 'быть свидетелем' or 'свидетельствовать' (a Russian verb in infinitive form), NOT 'свидетелем' (an oblique noun fragment pulled from the rendered sentence). Apply the same principle for any {from}/{to} pair.
+            - 'contextualTranslations' is an array of ADDITIONAL DICTIONARY-FORM translation variants suitable for this lemma in this context. Each entry should be in the same part of speech as the lemma and in {to} dictionary form, NOT a sentence-bound fragment. Provide 1-3 alternatives when meaningful synonyms exist (illustrative example, English 'witness' as verb translated to Russian: ['наблюдать', 'свидетельствовать']). If the only good translation is targetInitialForm itself, this array can be empty.
+            - If the source word's meaning cannot be conveyed by a single {to} word — for example because the sentence restructures the idea — still produce a dictionary-form translation of the lemma in 'targetInitialForm' that best captures the source meaning, and use the 'note' field to explain the mismatch.
         {pos_block}
         Maintain consistency:
             - Use the same terminology throughout the translation
@@ -321,7 +330,7 @@ pub(crate) fn paragraph_translation_schema() -> serde_json::Value {
                                     "contextualTranslations": {
                                         "type": "array",
                                         "items": { "type": "string" },
-                                        "description": "Translation variants which are suitable for the current context"
+                                        "description": "Additional dictionary-form translation variants of the lemma in the same part of speech, NOT sentence-bound fragments. Illustrative example (English verb 'witness' translated into Russian): ['наблюдать', 'свидетельствовать']. May be empty when targetInitialForm is the only good translation."
                                     },
                                     "note": { "type": "string", "description": "Note about the translation, if necessary for understanding" },
                                     "isPunctuation": { "type": "boolean" },
@@ -330,11 +339,11 @@ pub(crate) fn paragraph_translation_schema() -> serde_json::Value {
                                         "additionalProperties": false,
                                         "properties": {
                                             "originalInitialForm": { "type": "string", "description": "Original word in its initial (dictionary) form" },
-                                            "targetInitialForm": { "type": "string", "description": "Translated word in its initial (dictionary) form" },
+                                            "targetInitialForm": { "type": "string", "description": "Dictionary-form translation of the lemma in the target language, matching the lemma's part of speech. Always populate with a clean dictionary entry even when the rendered sentence uses a different syntactic structure. Illustrative example (English -> Russian): source 'had witnessed' -> 'быть свидетелем', not 'свидетелем'. Empty only when no translatable meaning exists." },
                                             "partOfSpeech": {
                                                 "type": "string",
                                                 "enum": pos_enum,
-                                                "description": "Part of speech of the original word. Must be one of the enumerated tags; see prompt for the scope of each."
+                                                "description": "Part of speech of the original word, tagged by its FUNCTION in the sentence (not by its morphology). A participle in a perfect-tense or passive verbal predicate is 'verb', not 'participle_past'/'participle_present'. Participle tags are only for forms acting as standalone modifiers of nouns. Must be one of the enumerated tags; see prompt for the full scope of each."
                                             },
                                             "plurality": { "type": "string", "description": "Plurality of the original word, if applicable" },
                                             "person": { "type": "string", "description": "Person of the original word, if applicable" },

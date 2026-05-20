@@ -360,7 +360,16 @@ pub fn extract_card_updates(
                 pos_slug,
             };
 
+            let target_dictionary = word.grammar.target_initial_form.trim();
+
             if let Some(existing) = updates.iter_mut().find(|u| u.key == key) {
+                if !target_dictionary.is_empty()
+                    && !existing.translations.iter().any(|t| t == target_dictionary)
+                {
+                    existing
+                        .translations
+                        .insert(0, target_dictionary.to_owned());
+                }
                 for t in &word.contextual_translations {
                     if !existing.translations.contains(t) {
                         existing.translations.push(t.clone());
@@ -368,6 +377,9 @@ pub fn extract_card_updates(
                 }
             } else {
                 let mut translations: Vec<String> = Vec::new();
+                if !target_dictionary.is_empty() {
+                    translations.push(target_dictionary.to_owned());
+                }
                 for t in &word.contextual_translations {
                     if !translations.contains(t) {
                         translations.push(t.clone());
@@ -930,9 +942,74 @@ mod tests {
             0,
         );
         assert_eq!(updates.len(), 1);
-        assert_eq!(updates[0].translations, vec!["могу", "умею"]);
+        assert_eq!(updates[0].translations, vec!["мочь", "могу", "умею"]);
         // example is from the first sentence the lemma appeared in
         assert_eq!(updates[0].example.as_ref().unwrap().translation, "Я могу.");
+    }
+
+    #[test]
+    fn extract_card_updates_promotes_target_initial_form_to_first_translation() {
+        let p = one_sentence_paragraph(
+            "Байрон стал свидетелем последствий оккупации.",
+            vec![full_word(
+                "witnessed",
+                "witness",
+                "быть свидетелем",
+                "verb",
+                &["свидетелем"],
+                false,
+            )],
+        );
+        let updates = extract_card_updates(
+            &p,
+            Language::from_639_3("eng").unwrap(),
+            Language::from_639_3("rus").unwrap(),
+            Uuid::nil(),
+            0,
+            0,
+        );
+        assert_eq!(updates.len(), 1);
+        assert_eq!(
+            updates[0].translations,
+            vec!["быть свидетелем", "свидетелем"]
+        );
+    }
+
+    #[test]
+    fn extract_card_updates_dedups_target_initial_form_against_contextual() {
+        let p = one_sentence_paragraph(
+            "Я могу.",
+            vec![full_word("puedo", "poder", "могу", "verb", &["могу"], false)],
+        );
+        let updates = extract_card_updates(
+            &p,
+            Language::from_639_3("spa").unwrap(),
+            Language::from_639_3("rus").unwrap(),
+            Uuid::nil(),
+            0,
+            0,
+        );
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].translations, vec!["могу"]);
+    }
+
+    #[test]
+    fn extract_card_updates_skips_empty_target_initial_form() {
+        // Empty / whitespace-only target_initial_form does not get pushed
+        // into translations; only the contextual_translations remain.
+        let mut word = full_word("puedo", "poder", "", "verb", &["могу"], false);
+        word.grammar.target_initial_form = "   ".into();
+        let p = one_sentence_paragraph("Я могу.", vec![word]);
+        let updates = extract_card_updates(
+            &p,
+            Language::from_639_3("spa").unwrap(),
+            Language::from_639_3("rus").unwrap(),
+            Uuid::nil(),
+            0,
+            0,
+        );
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].translations, vec!["могу"]);
     }
 
     fn make_card_with(translations: Vec<&str>, examples: Vec<Example>, anki_data: Option<AnkiData>) -> Card {
