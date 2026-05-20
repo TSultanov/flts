@@ -175,6 +175,38 @@ impl LibraryCardStore {
         accepted
     }
 
+    /// Enumerate `<src>-<tgt>` deck directories under `cards/`. Names lacking
+    /// a `-` are silently skipped. Missing root returns `Ok(vec![])`. Result is
+    /// sorted ascending.
+    pub async fn list_pairs(&self) -> anyhow::Result<Vec<(String, String)>> {
+        let mut read_dir = match tokio::fs::read_dir(&self.root).await {
+            Ok(rd) => rd,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+            Err(err) => return Err(err.into()),
+        };
+
+        let mut pairs: Vec<(String, String)> = Vec::new();
+        loop {
+            let entry = match read_dir.next_entry().await? {
+                Some(e) => e,
+                None => break,
+            };
+            if !entry.file_type().await?.is_dir() {
+                continue;
+            }
+            let name = match entry.file_name().into_string() {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+            let Some((src, tgt)) = name.split_once('-') else {
+                continue;
+            };
+            pairs.push((src.to_owned(), tgt.to_owned()));
+        }
+        pairs.sort();
+        Ok(pairs)
+    }
+
     pub async fn save(&self, card: &Card, source_language: &str, target_language: &str) -> anyhow::Result<()> {
         let deck = self.deck_dir(source_language, target_language);
         tokio::fs::create_dir_all(&deck).await?;
@@ -584,5 +616,42 @@ mod tests {
         let loaded = store.load("spa", "rus", "poder", "verb").await.unwrap();
         assert!(loaded.is_none(), "expected None when canonical is absent");
         assert!(conflict_path.exists(), "sibling must be untouched when canonical is absent");
+    }
+
+    #[tokio::test]
+    async fn list_pairs_returns_empty_when_root_missing() {
+        let tmp = TempDir::new("flts_list_pairs_empty");
+        let store = LibraryCardStore::new(&tmp.path);
+        let pairs = store.list_pairs().await.unwrap();
+        assert!(pairs.is_empty(), "expected empty list when cards dir is missing");
+    }
+
+    #[tokio::test]
+    async fn list_pairs_returns_pair_for_each_deck_dir() {
+        let tmp = TempDir::new("flts_list_pairs");
+        let store = LibraryCardStore::new(&tmp.path);
+        // Bootstrap two deck dirs via save().
+        store.save(&sample_card(), "spa", "rus").await.unwrap();
+        store
+            .save(
+                &card_with("hello", "noun", vec!["привет"], vec![]),
+                "eng",
+                "rus",
+            )
+            .await
+            .unwrap();
+        // Add a non-pair directory and a stray file that must be ignored.
+        std::fs::create_dir(tmp.path.join("cards").join("not_a_pair")).unwrap();
+        std::fs::write(tmp.path.join("cards").join("README"), b"ignore me").unwrap();
+
+        let pairs = store.list_pairs().await.unwrap();
+        assert_eq!(
+            pairs,
+            vec![
+                ("eng".to_owned(), "rus".to_owned()),
+                ("spa".to_owned(), "rus".to_owned()),
+            ],
+            "expected sorted pairs, got {pairs:?}"
+        );
     }
 }
