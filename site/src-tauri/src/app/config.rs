@@ -130,6 +130,12 @@ pub struct Config {
     /// Show "Up next" in the now-playing card. Doesn't affect preloading.
     #[serde(rename = "spotifyShowNextTrack", default = "default_show_next_track")]
     pub spotify_show_next_track: bool,
+    /// AnkiConnect HTTP endpoint. Default `http://127.0.0.1:8765`.
+    #[serde(rename = "ankiEndpoint", default)]
+    pub anki_endpoint: Option<String>,
+    /// Optional AnkiConnect API key. Unset for default Anki desktop installs.
+    #[serde(rename = "ankiApiKey", default)]
+    pub anki_api_key: Option<String>,
 }
 
 fn default_preload_count() -> u32 {
@@ -152,7 +158,51 @@ impl Default for Config {
             spotify_client_id: None,
             spotify_preload_count: default_preload_count(),
             spotify_show_next_track: default_show_next_track(),
+            anki_endpoint: Some("http://127.0.0.1:8765".to_owned()),
+            anki_api_key: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_default_has_localhost_anki_endpoint() {
+        let c = Config::default();
+        assert_eq!(c.anki_endpoint.as_deref(), Some("http://127.0.0.1:8765"));
+        assert!(c.anki_api_key.is_none());
+    }
+
+    #[test]
+    fn config_round_trips_through_serde_with_anki_fields() {
+        let mut original = Config::default();
+        original.anki_endpoint = Some("http://anki.example.com:9999".into());
+        original.anki_api_key = Some("secret-key".into());
+        let json = serde_json::to_string(&original).unwrap();
+        assert!(json.contains("\"ankiEndpoint\""));
+        assert!(json.contains("\"ankiApiKey\""));
+        let parsed: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.anki_endpoint, original.anki_endpoint);
+        assert_eq!(parsed.anki_api_key, original.anki_api_key);
+    }
+
+    #[test]
+    fn config_loads_legacy_file_without_anki_fields() {
+        // Simulate a config persisted before the Anki fields existed.
+        let legacy = serde_json::json!({
+            "targetLanguageId": "eng",
+            "translationProvider": "google",
+            "geminiApiKey": null,
+            "openaiApiKey": null,
+            "model": 0,
+            "libraryPath": null,
+        });
+        let parsed: Config = serde_json::from_value(legacy).unwrap();
+        assert!(parsed.anki_endpoint.is_none(),
+            "legacy config (pre-Anki) must NOT spontaneously populate endpoint");
+        assert!(parsed.anki_api_key.is_none());
     }
 }
 
