@@ -126,9 +126,7 @@ impl LibraryTranslation {
         })
     }
 
-    async fn load_from_metadata(
-        metadata: LibraryTranslationMetadata,
-    ) -> anyhow::Result<Self> {
+    async fn load_from_metadata(metadata: LibraryTranslationMetadata) -> anyhow::Result<Self> {
         let translation_path = metadata.main_path.clone();
         if !metadata.conflicting_paths.is_empty() {
             let mut translation = {
@@ -197,7 +195,6 @@ impl LibraryTranslation {
         result
     }
 }
-
 
 impl LibraryBook {
     pub async fn has_unsaved_changes(&self) -> bool {
@@ -321,9 +318,7 @@ impl LibraryBook {
         self.translations[last].clone()
     }
 
-    pub async fn load_from_metadata(
-        metadata: LibraryBookMetadata,
-    ) -> anyhow::Result<Self> {
+    pub async fn load_from_metadata(metadata: LibraryBookMetadata) -> anyhow::Result<Self> {
         let mut candidates: Vec<(&PathBuf, Option<SystemTime>)> = Vec::new();
         candidates.push((
             &metadata.main_path,
@@ -716,4 +711,3 @@ impl Library {
         Ok(())
     }
 }
-

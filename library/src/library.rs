@@ -256,7 +256,9 @@ impl Library {
             let chapter_index = book
                 .book
                 .chapter_views()
-                .find(|ch| (0..ch.paragraph_count()).any(|i| ch.paragraph_view(i).id == paragraph_id))
+                .find(|ch| {
+                    (0..ch.paragraph_count()).any(|i| ch.paragraph_view(i).id == paragraph_id)
+                })
                 .map(|ch| ch.idx)
                 .ok_or_else(|| {
                     anyhow::anyhow!("paragraph {paragraph_id} is not attached to any chapter")
@@ -296,7 +298,11 @@ impl Library {
                     None => Card::new_from_update(&update),
                 };
                 self.card_store
-                    .save(&card, &update.key.source_language, &update.key.target_language)
+                    .save(
+                        &card,
+                        &update.key.source_language,
+                        &update.key.target_language,
+                    )
                     .await?;
                 anyhow::Ok(())
             }
@@ -808,7 +814,14 @@ mod library_tests {
 
         let paragraph = paragraph_with(
             "Я больше не могу.",
-            vec![full_word("puedo", "poder", "мочь", "verb", &["могу"], false)],
+            vec![full_word(
+                "puedo",
+                "poder",
+                "мочь",
+                "verb",
+                &["могу"],
+                false,
+            )],
         );
         let tgt = Language::from_639_3("rus").unwrap();
 
@@ -853,11 +866,25 @@ mod library_tests {
         let tgt = Language::from_639_3("rus").unwrap();
         let p_a = paragraph_with(
             "Я больше не могу.",
-            vec![full_word("puedo", "poder", "мочь", "verb", &["могу"], false)],
+            vec![full_word(
+                "puedo",
+                "poder",
+                "мочь",
+                "verb",
+                &["могу"],
+                false,
+            )],
         );
         let p_b = paragraph_with(
             "Они могут прийти завтра.",
-            vec![full_word("pueden", "poder", "мочь", "verb", &["могут"], false)],
+            vec![full_word(
+                "pueden",
+                "poder",
+                "мочь",
+                "verb",
+                &["могут"],
+                false,
+            )],
         );
 
         library
@@ -875,7 +902,8 @@ mod library_tests {
             .join("cards")
             .join("spa-rus")
             .join("poder_verb.json");
-        let card: Card = serde_json::from_str(&std::fs::read_to_string(&card_path).unwrap()).unwrap();
+        let card: Card =
+            serde_json::from_str(&std::fs::read_to_string(&card_path).unwrap()).unwrap();
         assert_eq!(card.translations, vec!["мочь"]);
         assert_eq!(card.examples.len(), 2);
         assert_eq!(card.examples[0].paragraph, 0);
@@ -931,13 +959,23 @@ mod library_tests {
             anki_data: None,
         };
         let conflict_path = deck.join("poder_verb.sync-conflict-20260520-test.json");
-        tokio::fs::write(&conflict_path, serde_json::to_vec_pretty(&conflict).unwrap())
-            .await
-            .unwrap();
+        tokio::fs::write(
+            &conflict_path,
+            serde_json::to_vec_pretty(&conflict).unwrap(),
+        )
+        .await
+        .unwrap();
 
         let paragraph = paragraph_with(
             "Я больше не могу.",
-            vec![full_word("puedo", "poder", "мочь", "verb", &["могу_новое"], false)],
+            vec![full_word(
+                "puedo",
+                "poder",
+                "мочь",
+                "verb",
+                &["могу_новое"],
+                false,
+            )],
         );
         library
             .apply_paragraph_to_cards(book_id, 0, &paragraph, Language::from_639_3("rus").unwrap())
@@ -958,7 +996,8 @@ mod library_tests {
 
         // Merged card has translations from canonical + conflict + new update.
         let on_disk: Card =
-            serde_json::from_slice(&tokio::fs::read(deck.join("poder_verb.json")).await.unwrap()).unwrap();
+            serde_json::from_slice(&tokio::fs::read(deck.join("poder_verb.json")).await.unwrap())
+                .unwrap();
         assert_eq!(on_disk.translations, vec!["мочь", "уметь"]);
         assert_eq!(on_disk.examples.len(), 3);
 
@@ -1033,7 +1072,14 @@ mod library_tests {
             library_with_one_paragraph_book(tmp.path.join("lib"), "hola").await;
         let paragraph = paragraph_with(
             "привет",
-            vec![full_word("hola", "hola", "привет", "interj", &["привет"], false)],
+            vec![full_word(
+                "hola",
+                "hola",
+                "привет",
+                "interj",
+                &["привет"],
+                false,
+            )],
         );
         library
             .apply_paragraph_to_cards(book_id, 0, &paragraph, Language::from_639_3("rus").unwrap())
@@ -1120,7 +1166,14 @@ mod library_tests {
             library_with_one_paragraph_book(library_path.clone(), "No puedo más.").await;
         let paragraph = paragraph_with(
             "Я больше не могу.",
-            vec![full_word("puedo", "poder", "мочь", "verb", &["могу"], false)],
+            vec![full_word(
+                "puedo",
+                "poder",
+                "мочь",
+                "verb",
+                &["могу"],
+                false,
+            )],
         );
         seed_translation(
             &library,
@@ -1155,7 +1208,14 @@ mod library_tests {
             library_with_one_paragraph_book(library_path.clone(), "No puedo más.").await;
         let paragraph = paragraph_with(
             "Я больше не могу.",
-            vec![full_word("puedo", "poder", "мочь", "verb", &["могу"], false)],
+            vec![full_word(
+                "puedo",
+                "poder",
+                "мочь",
+                "verb",
+                &["могу"],
+                false,
+            )],
         );
         seed_translation(
             &library,
@@ -1199,7 +1259,14 @@ mod library_tests {
         };
         let paragraph_a = paragraph_with(
             "Я больше не могу.",
-            vec![full_word("puedo", "poder", "мочь", "verb", &["могу"], false)],
+            vec![full_word(
+                "puedo",
+                "poder",
+                "мочь",
+                "verb",
+                &["могу"],
+                false,
+            )],
         );
         seed_translation(&library, book_a_id, 0, &paragraph_a, rus).await;
 
@@ -1213,7 +1280,14 @@ mod library_tests {
         };
         let paragraph_b = paragraph_with(
             "Я хочу есть.",
-            vec![full_word("comer", "comer", "есть", "verb", &["есть"], false)],
+            vec![full_word(
+                "comer",
+                "comer",
+                "есть",
+                "verb",
+                &["есть"],
+                false,
+            )],
         );
         seed_translation(&library, book_b_id, 0, &paragraph_b, rus).await;
 
@@ -1242,7 +1316,14 @@ mod library_tests {
 
         let p_rus = paragraph_with(
             "Я могу.",
-            vec![full_word("puedo", "poder", "мочь", "verb", &["могу"], false)],
+            vec![full_word(
+                "puedo",
+                "poder",
+                "мочь",
+                "verb",
+                &["могу"],
+                false,
+            )],
         );
         let p_eng = translation_import::ParagraphTranslation {
             timestamp: 0,

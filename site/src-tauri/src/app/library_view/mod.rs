@@ -169,8 +169,7 @@ impl LibraryView {
 
         let (segments, visible_words) = if let Some(t) = t_view.as_ref() {
             let fam =
-                build_paragraph_familiarity_map(t, src_lang, *target_language, card_store)
-                    .await;
+                build_paragraph_familiarity_map(t, src_lang, *target_language, card_store).await;
             (
                 Some(paragraph_to_segments(&original, t, &fam, src_lang)),
                 t.visible_words().clone(),
@@ -226,13 +225,9 @@ impl LibraryView {
             let t_view = bt.paragraph_view(id);
 
             let (segments, visible_words) = if let Some(t) = t_view.as_ref() {
-                let fam = build_paragraph_familiarity_map(
-                    t,
-                    src_lang,
-                    *target_language,
-                    card_store,
-                )
-                .await;
+                let fam =
+                    build_paragraph_familiarity_map(t, src_lang, *target_language, card_store)
+                        .await;
                 (
                     Some(paragraph_to_segments(&original, t, &fam, src_lang)),
                     t.visible_words().clone(),
@@ -484,8 +479,7 @@ async fn build_paragraph_familiarity_map(
             if lemma_canonical.is_empty() {
                 continue;
             }
-            let pos_canonical =
-                card::canonicalize_part_of_speech(&word.grammar.part_of_speech);
+            let pos_canonical = card::canonicalize_part_of_speech(&word.grammar.part_of_speech);
             let slug = card::lemma_slug(&lemma_canonical);
             let pos_slug = card::part_of_speech_slug(&pos_canonical);
             if slug.is_empty() || pos_slug.is_empty() {
@@ -606,10 +600,8 @@ fn paragraph_to_segments(
                     .map(|ct| sanitize_translation_text(ct.translation.as_ref()))
                     .filter(|t| !t.is_empty());
 
-                let lemma_canonical = card::canonicalize_lemma(
-                    &word.grammar.original_initial_form,
-                    src_lang,
-                );
+                let lemma_canonical =
+                    card::canonicalize_lemma(&word.grammar.original_initial_form, src_lang);
                 let familiarity = if lemma_canonical.is_empty() {
                     None
                 } else {
@@ -779,11 +771,7 @@ mod tests {
         paragraph_index: usize,
         pt: &translation_import::ParagraphTranslation,
     ) -> ParagraphTranslationView<'a> {
-        translation.add_paragraph_translation(
-            paragraph_index,
-            pt,
-            TranslationModel::OpenAIGpt52,
-        );
+        translation.add_paragraph_translation(paragraph_index, pt, TranslationModel::OpenAIGpt52);
         translation
             .paragraph_view(paragraph_index)
             .expect("paragraph view")
@@ -1060,12 +1048,8 @@ mod tests {
         let mut fam = HashMap::new();
         fam.insert(("hola".to_string(), "stub".to_string()), 0.5_f32);
 
-        let segments = paragraph_to_segments(
-            original,
-            &view,
-            &fam,
-            Language::from_639_3("spa").unwrap(),
-        );
+        let segments =
+            paragraph_to_segments(original, &view, &fam, Language::from_639_3("spa").unwrap());
 
         let familiarities: Vec<Option<f32>> = segments
             .iter()

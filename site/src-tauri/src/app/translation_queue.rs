@@ -492,10 +492,11 @@ async fn handle_request(
         }
     }
 
-    translation
-        .lock()
-        .await
-        .add_paragraph_translation(request.paragraph_id, &p_translation, request.model);
+    translation.lock().await.add_paragraph_translation(
+        request.paragraph_id,
+        &p_translation,
+        request.model,
+    );
 
     library
         .apply_paragraph_to_cards(

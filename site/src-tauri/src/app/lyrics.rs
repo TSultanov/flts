@@ -318,11 +318,7 @@ pub(crate) async fn dispatch_translation_inner(
     drop(inflight);
 
     // Get the lyrics for this track from in-memory cache; bail if not fetched yet.
-    let lyrics = state
-        .lyrics_state
-        .lyrics
-        .get(&track_id.to_string())
-        .await;
+    let lyrics = state.lyrics_state.lyrics.get(&track_id.to_string()).await;
     let lyrics = match lyrics {
         Some(l) => l,
         None => {
@@ -438,14 +434,11 @@ pub(crate) async fn resolve_track(
         return Ok(());
     }
     info!("Resolve: lyrics fetched, dispatching translation for {title} — {artist}");
-    if let Err(err) =
-        dispatch_translation_inner(state, app, track_id, target_lang, model).await
-    {
+    if let Err(err) = dispatch_translation_inner(state, app, track_id, target_lang, model).await {
         anyhow::bail!("translation dispatch failed: {err}");
     }
     Ok(())
 }
-
 
 async fn run_translation(
     key: &TranslationKey,

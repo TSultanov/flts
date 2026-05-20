@@ -25,9 +25,7 @@ use uuid::Uuid;
 
 use tauri::Emitter;
 
-use crate::app::{
-    anki_sync::AnkiSyncTask, config::Config, translation_queue::TranslationQueue,
-};
+use crate::app::{anki_sync::AnkiSyncTask, config::Config, translation_queue::TranslationQueue};
 
 #[cfg(mobile)]
 fn document_dir() -> Option<std::path::PathBuf> {
@@ -176,9 +174,7 @@ impl AppState {
         self.anki_sync_status.borrow().clone()
     }
 
-    pub async fn sync_anki_now(
-        &self,
-    ) -> anyhow::Result<crate::app::anki_sync::SyncReportDto> {
+    pub async fn sync_anki_now(&self) -> anyhow::Result<crate::app::anki_sync::SyncReportDto> {
         crate::app::anki_sync::sync_now_or_err(&self.anki_sync_task).await
     }
 
@@ -238,9 +234,7 @@ impl AppState {
             let library = Arc::new(Library::open(PathBuf::from(&library_path)).await?);
             self.library.send_replace(Some(library.clone()));
 
-            if std::env::var_os("FLTS_ENABLE_CARD_BACKFILL")
-                .is_some_and(|v| !v.is_empty())
-            {
+            if std::env::var_os("FLTS_ENABLE_CARD_BACKFILL").is_some_and(|v| !v.is_empty()) {
                 let backfill_lock = self.backfill_lock.clone();
                 let backfill_library = library.clone();
                 tauri::async_runtime::spawn(async move {
@@ -253,9 +247,7 @@ impl AppState {
                     }
                 });
             } else {
-                info!(
-                    "Card backfill disabled: set FLTS_ENABLE_CARD_BACKFILL=1 to enable"
-                );
+                info!("Card backfill disabled: set FLTS_ENABLE_CARD_BACKFILL=1 to enable");
             }
 
             // Stop any prior Anki sync task (config may have changed).
@@ -292,9 +284,7 @@ impl AppState {
                     self.anki_sync_status.clone(),
                 );
                 *self.anki_sync_task.lock().await = Some(task);
-                info!(
-                    "Anki sync task spawned (interval = {interval_secs}s)"
-                );
+                info!("Anki sync task spawned (interval = {interval_secs}s)");
             }
 
             self.watcher
@@ -366,16 +356,12 @@ impl AppState {
         // so we never block on a long-running tick from inside the mutex.
         let anki_task = self.anki_sync_task.lock().await.take();
         if let Some(task) = anki_task {
-            run_exit_step(
-                "anki final sync",
-                EXIT_FINAL_SYNC_TIMEOUT,
-                async {
-                    if let Err(err) = task.run_one_pass().await {
-                        warn!("Anki final sync_pass failed: {err}");
-                    }
-                    task.shutdown().await;
-                },
-            )
+            run_exit_step("anki final sync", EXIT_FINAL_SYNC_TIMEOUT, async {
+                if let Err(err) = task.run_one_pass().await {
+                    warn!("Anki final sync_pass failed: {err}");
+                }
+                task.shutdown().await;
+            })
             .await;
         }
         run_exit_step("save all", EXIT_SAVE_ALL_TIMEOUT, self.save_all()).await;

@@ -159,9 +159,7 @@ fn scan_dir(dir: &Path) -> anyhow::Result<Index> {
             let size = meta.len();
             let last_access = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
             index.total_bytes = index.total_bytes.saturating_add(size);
-            index
-                .entries
-                .insert(hash, EntryMeta { size, last_access });
+            index.entries.insert(hash, EntryMeta { size, last_access });
         }
     }
     Ok(index)
@@ -191,10 +189,9 @@ async fn writer_loop<V: Serialize + Send + 'static>(
     while let Some(op) = rx.recv().await {
         let dir = dir.clone();
         let index = index.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            write_entry(&dir, capacity_bytes, &index, op)
-        })
-        .await;
+        let result =
+            tokio::task::spawn_blocking(move || write_entry(&dir, capacity_bytes, &index, op))
+                .await;
         if let Err(e) = result {
             log::warn!("disk_cache writer task panicked: {e}");
         } else if let Ok(Err(e)) = result {

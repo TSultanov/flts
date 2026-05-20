@@ -1500,10 +1500,7 @@ impl<'a> ParagraphTranslationView<'a> {
                             },
                             is_punctuation: w.is_punctuation,
                             grammar: translation_import::Grammar {
-                                original_initial_form: w
-                                    .grammar
-                                    .original_initial_form
-                                    .to_string(),
+                                original_initial_form: w.grammar.original_initial_form.to_string(),
                                 target_initial_form: w.grammar.target_initial_form.to_string(),
                                 part_of_speech: w.grammar.part_of_speech.to_string(),
                                 plurality: w.grammar.plurality.as_ref().map(|s| s.to_string()),
@@ -1600,7 +1597,6 @@ impl<'a> WordView<'a> {
         (0..self.contextual_translations_count()).map(|t| self.contextual_translations_view(t))
     }
 }
-
 
 #[cfg(test)]
 mod tests;

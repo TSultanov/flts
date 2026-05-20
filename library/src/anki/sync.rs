@@ -128,9 +128,7 @@ pub async fn sync_pass(
     if !state.bootstrapped {
         let lang_pairs: Vec<(Language, Language)> = pairs
             .iter()
-            .filter_map(|(s, t)| {
-                Some((Language::from_639_3(s)?, Language::from_639_3(t)?))
-            })
+            .filter_map(|(s, t)| Some((Language::from_639_3(s)?, Language::from_639_3(t)?)))
             .collect();
         bootstrap(client, &lang_pairs).await?;
         state.bootstrapped = true;
@@ -151,8 +149,7 @@ pub async fn sync_pass(
     let mut eligible: Vec<Eligible> = Vec::new();
 
     for (src_str, tgt_str) in &pairs {
-        let (Some(src), Some(tgt)) =
-            (Language::from_639_3(src_str), Language::from_639_3(tgt_str))
+        let (Some(src), Some(tgt)) = (Language::from_639_3(src_str), Language::from_639_3(tgt_str))
         else {
             continue;
         };
@@ -161,8 +158,7 @@ pub async fn sync_pass(
         for (lemma_slug, pos_slug) in card_files {
             report.total_cards += 1;
 
-            let card_id =
-                crate::card::card_id(src_str, tgt_str, &lemma_slug, &pos_slug);
+            let card_id = crate::card::card_id(src_str, tgt_str, &lemma_slug, &pos_slug);
             let lock_arc = card_store.lock_for(&card_id).await;
             let guard = lock_arc.lock_owned().await;
 
@@ -242,9 +238,7 @@ pub async fn sync_pass(
                 // periodic ticks with no Anki-side changes silent for the
                 // file watcher.
                 if e.card != pre_card {
-                    card_store
-                        .save(&e.card, &e.src_str, &e.tgt_str)
-                        .await?;
+                    card_store.save(&e.card, &e.src_str, &e.tgt_str).await?;
                 }
                 state.record_success(&e.card_id);
                 report.succeeded += 1;
@@ -422,9 +416,7 @@ mod tests {
     use uuid::Uuid;
 
     use crate::anki::connect::{AnkiConnect, MockAnkiConnect};
-    use crate::anki::sync::{
-        AnkiSyncState, next_delay, render_fields, sync_card, sync_pass,
-    };
+    use crate::anki::sync::{AnkiSyncState, next_delay, render_fields, sync_card, sync_pass};
     use crate::card::{AnkiData, AnkiState, Card, Example};
     use crate::library::Library;
     use crate::test_utils::{TempDir, full_word, one_sentence_paragraph};
@@ -522,7 +514,11 @@ mod tests {
         // No note created, no AnkiConnect mutation visible to find_notes.
         let hits = mock.find_notes(&format!("tag:{}", card.id)).await.unwrap();
         assert!(hits.is_empty(), "suspended card must not be pushed");
-        assert_eq!(card.anki_data.as_ref(), Some(&before), "anki_data preserved");
+        assert_eq!(
+            card.anki_data.as_ref(),
+            Some(&before),
+            "anki_data preserved"
+        );
     }
 
     #[tokio::test]
@@ -542,7 +538,11 @@ mod tests {
 
         let hits = mock.find_notes(&format!("tag:{}", card.id)).await.unwrap();
         assert!(hits.is_empty(), "deleted card must not be re-added");
-        assert_eq!(card.anki_data.as_ref(), Some(&before), "anki_data preserved");
+        assert_eq!(
+            card.anki_data.as_ref(),
+            Some(&before),
+            "anki_data preserved"
+        );
     }
 
     #[tokio::test]
@@ -552,10 +552,7 @@ mod tests {
 
         // First push to create the note + cards, then suspend one of them.
         sync_card(&mock, &mut card, spa(), rus()).await.unwrap();
-        let note_id = mock
-            .find_notes(&format!("tag:{}", card.id))
-            .await
-            .unwrap()[0];
+        let note_id = mock.find_notes(&format!("tag:{}", card.id)).await.unwrap()[0];
         let cards = mock.notes_info(&[note_id]).await.unwrap()[0].cards.clone();
         mock.suspend_card(cards[0]); // suspend just one direction
 
@@ -564,7 +561,10 @@ mod tests {
 
         let anki = card.anki_data.as_ref().expect("anki_data populated");
         assert_eq!(anki.state, AnkiState::Suspended);
-        assert_eq!(anki.interval_days, None, "retention fields dropped on suspended");
+        assert_eq!(
+            anki.interval_days, None,
+            "retention fields dropped on suspended"
+        );
         assert_eq!(anki.ease_factor, None);
     }
 
@@ -602,10 +602,7 @@ mod tests {
 
         // First push: creates the note.
         sync_card(&mock, &mut card, spa(), rus()).await.unwrap();
-        let original_hits = mock
-            .find_notes(&format!("tag:{}", card.id))
-            .await
-            .unwrap();
+        let original_hits = mock.find_notes(&format!("tag:{}", card.id)).await.unwrap();
         assert_eq!(original_hits.len(), 1);
         let note_id = original_hits[0];
 
@@ -613,10 +610,7 @@ mod tests {
         card.translations.push("уметь".into());
         sync_card(&mock, &mut card, spa(), rus()).await.unwrap();
 
-        let hits_after = mock
-            .find_notes(&format!("tag:{}", card.id))
-            .await
-            .unwrap();
+        let hits_after = mock.find_notes(&format!("tag:{}", card.id)).await.unwrap();
         assert_eq!(hits_after, vec![note_id], "no new note created on update");
 
         let (fields, _) = mock.peek_note(note_id).expect("note exists");
@@ -634,10 +628,7 @@ mod tests {
 
         sync_card(&mock, &mut card, spa(), rus()).await.unwrap();
 
-        let hits = mock
-            .find_notes(&format!("tag:{}", card.id))
-            .await
-            .unwrap();
+        let hits = mock.find_notes(&format!("tag:{}", card.id)).await.unwrap();
         assert_eq!(hits.len(), 1, "exactly one note exists after first push");
         let (fields, tags) = mock.peek_note(hits[0]).expect("note exists");
         assert_eq!(fields.get("Source"), Some(&"poder".to_owned()));
@@ -798,7 +789,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r1.failed, 1);
-        assert!(r1.persistent_failures.is_empty(), "after 1 failure: not persistent yet");
+        assert!(
+            r1.persistent_failures.is_empty(),
+            "after 1 failure: not persistent yet"
+        );
 
         tokio::time::advance(Duration::from_secs(61)).await;
         // Tick 2: second failure. Still not persistent.
@@ -806,7 +800,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r2.failed, 1);
-        assert!(r2.persistent_failures.is_empty(), "after 2 failures: not persistent yet");
+        assert!(
+            r2.persistent_failures.is_empty(),
+            "after 2 failures: not persistent yet"
+        );
 
         tokio::time::advance(Duration::from_secs(121)).await;
         // Tick 3: third failure — threshold hit.
@@ -1087,7 +1084,12 @@ mod tests {
         let paragraph = one_sentence_paragraph(
             "Я могу войти.",
             vec![full_word(
-                "Puedo", "poder", "мочь", "verb", &["могу"], false,
+                "Puedo",
+                "poder",
+                "мочь",
+                "verb",
+                &["могу"],
+                false,
             )],
         );
 
@@ -1104,7 +1106,9 @@ mod tests {
             .unwrap();
 
         let poder_tag = "flts_spa_rus_poder_verb";
-        let note_id = mock.note_id_for_tag(poder_tag).expect("note exists after first sync");
+        let note_id = mock
+            .note_id_for_tag(poder_tag)
+            .expect("note exists after first sync");
 
         // User suspends one of the note's direction cards in Anki.
         let card_ids = mock.notes_info(&[note_id]).await.unwrap()[0].cards.clone();
@@ -1121,7 +1125,10 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(card.anki_data.as_ref().map(|a| a.state), Some(AnkiState::Suspended));
+        assert_eq!(
+            card.anki_data.as_ref().map(|a| a.state),
+            Some(AnkiState::Suspended)
+        );
 
         // Snapshot the note's fields before the re-encounter so we can detect mutation.
         let (fields_before, _) = mock.peek_note(note_id).unwrap();
@@ -1156,7 +1163,10 @@ mod tests {
             "no second note created for the same tag"
         );
         let (fields_after, _) = mock.peek_note(note_id).unwrap();
-        assert_eq!(fields_before, fields_after, "suspended note fields untouched");
+        assert_eq!(
+            fields_before, fields_after,
+            "suspended note fields untouched"
+        );
 
         let card_final = library
             .card_store()
@@ -1199,7 +1209,12 @@ mod tests {
         let paragraph = one_sentence_paragraph(
             "Я могу войти.",
             vec![full_word(
-                "Puedo", "poder", "мочь", "verb", &["могу"], false,
+                "Puedo",
+                "poder",
+                "мочь",
+                "verb",
+                &["могу"],
+                false,
             )],
         );
 
@@ -1216,7 +1231,9 @@ mod tests {
             .unwrap();
 
         let poder_tag = "flts_spa_rus_poder_verb";
-        let note_id = mock.note_id_for_tag(poder_tag).expect("note exists after first sync");
+        let note_id = mock
+            .note_id_for_tag(poder_tag)
+            .expect("note exists after first sync");
 
         // User deletes the note in Anki.
         mock.remove_note(note_id);
@@ -1236,7 +1253,10 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(card.anki_data.as_ref().map(|a| a.state), Some(AnkiState::Deleted));
+        assert_eq!(
+            card.anki_data.as_ref().map(|a| a.state),
+            Some(AnkiState::Deleted)
+        );
 
         // Re-encounter: applying the same paragraph must not regress state.
         library
@@ -1343,7 +1363,12 @@ mod tests {
         let paragraph = one_sentence_paragraph(
             "Я могу.",
             vec![full_word(
-                "puedo", "poder", "мочь", "verb", &["могу"], false,
+                "puedo",
+                "poder",
+                "мочь",
+                "verb",
+                &["могу"],
+                false,
             )],
         );
         library
@@ -1394,7 +1419,11 @@ mod tests {
             .unwrap()
             .expect("merged card on disk");
         assert_eq!(merged.translations, vec!["мочь", "иметь возможность"]);
-        assert_eq!(merged.examples.len(), 2, "both examples present after merge");
+        assert_eq!(
+            merged.examples.len(),
+            2,
+            "both examples present after merge"
+        );
 
         // Anki receives the merged content: Target joins both translations with
         // "; ", and Example carries both source/translation pairs sorted by

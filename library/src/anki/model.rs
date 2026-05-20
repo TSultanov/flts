@@ -201,7 +201,10 @@ mod tests {
             msg.contains("AnkiConnect ≥ 6"),
             "expected version-floor error, got {msg}"
         );
-        assert!(msg.contains("got 5"), "expected actual version in error: {msg}");
+        assert!(
+            msg.contains("got 5"),
+            "expected actual version in error: {msg}"
+        );
     }
 
     #[tokio::test]

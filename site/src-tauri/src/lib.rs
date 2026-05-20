@@ -109,9 +109,7 @@ pub fn run() {
                     app_state
                         .handle_file_change_event(&event)
                         .await
-                        .unwrap_or_else(|err| {
-                            warn!("Failed to process event {event:?}: {err}")
-                        });
+                        .unwrap_or_else(|err| warn!("Failed to process event {event:?}: {err}"));
                 }
                 warn!("LibraryWatcher sender disconnected; file change loop exiting");
             });

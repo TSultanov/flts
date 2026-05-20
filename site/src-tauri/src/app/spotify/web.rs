@@ -123,7 +123,6 @@ pub struct SpotifyWebStatus {
     pub last_error: Option<String>,
 }
 
-
 /// Distinguishes "refresh token is permanently dead" from "transient error
 /// (network, 5xx, parse failure)". Only the permanent variant clears the
 /// keychain entry.
@@ -388,7 +387,11 @@ impl SpotifyWebState {
         Ok(parsed.into_token_info())
     }
 
-    async fn refresh_with(&self, client_id: &str, refresh: &str) -> Result<TokenInfo, RefreshError> {
+    async fn refresh_with(
+        &self,
+        client_id: &str,
+        refresh: &str,
+    ) -> Result<TokenInfo, RefreshError> {
         let resp = self
             .client
             .post(SPOTIFY_TOKEN_URL)
@@ -420,8 +423,8 @@ impl SpotifyWebState {
                 RefreshError::Transient(format!("Spotify refresh {status}: {body}"))
             });
         }
-        let mut parsed: SpotifyTokenResponse = serde_json::from_str(&body)
-            .map_err(|e| RefreshError::Transient(e.to_string()))?;
+        let mut parsed: SpotifyTokenResponse =
+            serde_json::from_str(&body).map_err(|e| RefreshError::Transient(e.to_string()))?;
         // Spotify sometimes omits refresh_token on refresh — keep the old one.
         if parsed.refresh_token.is_none() {
             parsed.refresh_token = Some(refresh.to_string());
@@ -852,21 +855,14 @@ async fn resolve_playback_list(
         if !resolved.insert(dedup_key) {
             debug!(
                 "Resolve skip (already done): #{} {} — {}",
-                idx,
-                track.name,
-                track.artist
+                idx, track.name, track.artist
             );
             continue;
         }
         let role = if idx == 0 { "current" } else { "next" };
         info!(
             "Resolve initiate ({role} #{}): {} — {} (track_id={}, lang={}, model={})",
-            idx,
-            track.name,
-            track.artist,
-            track.id,
-            target_lang,
-            model
+            idx, track.name, track.artist, track.id, target_lang, model
         );
         let state = state.clone();
         let app = app.clone();

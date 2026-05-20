@@ -181,4 +181,3 @@ impl Translator for GeminiTranslator {
         Ok(translation)
     }
 }
-

@@ -29,7 +29,8 @@ impl LibraryCardStore {
     }
 
     pub fn deck_dir(&self, source_language: &str, target_language: &str) -> PathBuf {
-        self.root.join(format!("{source_language}-{target_language}"))
+        self.root
+            .join(format!("{source_language}-{target_language}"))
     }
 
     pub fn card_path(
@@ -62,8 +63,7 @@ impl LibraryCardStore {
         lemma_slug: &str,
         pos_slug: &str,
     ) -> anyhow::Result<Option<Card>> {
-        let canonical_path =
-            self.card_path(source_language, target_language, lemma_slug, pos_slug);
+        let canonical_path = self.card_path(source_language, target_language, lemma_slug, pos_slug);
         if !tokio::fs::try_exists(&canonical_path).await? {
             return Ok(None);
         }
@@ -248,7 +248,12 @@ impl LibraryCardStore {
         Ok(out)
     }
 
-    pub async fn save(&self, card: &Card, source_language: &str, target_language: &str) -> anyhow::Result<()> {
+    pub async fn save(
+        &self,
+        card: &Card,
+        source_language: &str,
+        target_language: &str,
+    ) -> anyhow::Result<()> {
         let deck = self.deck_dir(source_language, target_language);
         tokio::fs::create_dir_all(&deck).await?;
 
@@ -287,7 +292,11 @@ mod tests {
         let tmp = TempDir::new("flts_card_save");
         let store = LibraryCardStore::new(&tmp.path);
         store.save(&sample_card(), "spa", "rus").await.unwrap();
-        let expected = tmp.path.join("cards").join("spa-rus").join("poder_verb.json");
+        let expected = tmp
+            .path
+            .join("cards")
+            .join("spa-rus")
+            .join("poder_verb.json");
         assert!(expected.exists(), "expected card at {expected:?}");
     }
 
@@ -296,7 +305,11 @@ mod tests {
         let tmp = TempDir::new("flts_card_pretty");
         let store = LibraryCardStore::new(&tmp.path);
         store.save(&sample_card(), "spa", "rus").await.unwrap();
-        let path = tmp.path.join("cards").join("spa-rus").join("poder_verb.json");
+        let path = tmp
+            .path
+            .join("cards")
+            .join("spa-rus")
+            .join("poder_verb.json");
         let body = std::fs::read_to_string(&path).unwrap();
         assert!(body.starts_with("{\n"), "expected pretty JSON, got: {body}");
         assert!(body.contains("\"version\": 1"));
@@ -376,7 +389,13 @@ mod tests {
         }
     }
 
-    fn example(book: Uuid, chapter: usize, paragraph: usize, source: &str, translation: &str) -> Example {
+    fn example(
+        book: Uuid,
+        chapter: usize,
+        paragraph: usize,
+        source: &str,
+        translation: &str,
+    ) -> Example {
         Example {
             source: source.into(),
             translation: translation.into(),
@@ -452,7 +471,8 @@ mod tests {
         assert_eq!(deck_entries(&deck), vec!["poder_verb.json"]);
 
         let on_disk: Card =
-            serde_json::from_slice(&tokio::fs::read(deck.join("poder_verb.json")).await.unwrap()).unwrap();
+            serde_json::from_slice(&tokio::fs::read(deck.join("poder_verb.json")).await.unwrap())
+                .unwrap();
         assert_eq!(on_disk, merged);
     }
 
@@ -508,7 +528,12 @@ mod tests {
         let book = Uuid::new_v4();
         store
             .save(
-                &card_with("poder", "verb", vec!["мочь"], vec![example(book, 0, 0, "a", "1")]),
+                &card_with(
+                    "poder",
+                    "verb",
+                    vec!["мочь"],
+                    vec![example(book, 0, 0, "a", "1")],
+                ),
                 "spa",
                 "rus",
             )
@@ -519,7 +544,12 @@ mod tests {
         let foreign_path = deck.join("poder_verb.sync-conflict-X.json");
         // Foreign card masquerades under the conflict-name pattern but its lemma
         // (`comer`) would derive id `flts_spa_rus_comer_verb`, not `poder_verb`.
-        let foreign = card_with("comer", "verb", vec!["есть"], vec![example(book, 9, 9, "como", "ем")]);
+        let foreign = card_with(
+            "comer",
+            "verb",
+            vec!["есть"],
+            vec![example(book, 9, 9, "como", "ем")],
+        );
         write_pretty(&foreign_path, &foreign).await;
 
         let loaded = store
@@ -530,7 +560,10 @@ mod tests {
         assert_eq!(loaded.translations, vec!["мочь"]);
         assert_eq!(loaded.examples.len(), 1);
 
-        assert!(foreign_path.exists(), "mismatched sibling must NOT be deleted");
+        assert!(
+            foreign_path.exists(),
+            "mismatched sibling must NOT be deleted"
+        );
     }
 
     #[tokio::test]
@@ -540,7 +573,12 @@ mod tests {
         let book = Uuid::new_v4();
         store
             .save(
-                &card_with("poder", "verb", vec!["мочь"], vec![example(book, 0, 0, "a", "1")]),
+                &card_with(
+                    "poder",
+                    "verb",
+                    vec!["мочь"],
+                    vec![example(book, 0, 0, "a", "1")],
+                ),
                 "spa",
                 "rus",
             )
@@ -548,7 +586,12 @@ mod tests {
             .unwrap();
         store
             .save(
-                &card_with("comer", "verb", vec!["есть"], vec![example(book, 0, 1, "b", "2")]),
+                &card_with(
+                    "comer",
+                    "verb",
+                    vec!["есть"],
+                    vec![example(book, 0, 1, "b", "2")],
+                ),
                 "spa",
                 "rus",
             )
@@ -559,14 +602,23 @@ mod tests {
         let comer_conflict = deck.join("comer_verb.sync-conflict-X.json");
         write_pretty(
             &comer_conflict,
-            &card_with("comer", "verb", vec!["кушать"], vec![example(book, 1, 1, "c", "3")]),
+            &card_with(
+                "comer",
+                "verb",
+                vec!["кушать"],
+                vec![example(book, 1, 1, "c", "3")],
+            ),
         )
         .await;
 
         store.load("spa", "rus", "poder", "verb").await.unwrap();
-        assert!(comer_conflict.exists(), "comer's conflict file must be untouched by poder load");
+        assert!(
+            comer_conflict.exists(),
+            "comer's conflict file must be untouched by poder load"
+        );
         let poder: Card =
-            serde_json::from_slice(&tokio::fs::read(deck.join("poder_verb.json")).await.unwrap()).unwrap();
+            serde_json::from_slice(&tokio::fs::read(deck.join("poder_verb.json")).await.unwrap())
+                .unwrap();
         assert_eq!(poder.translations, vec!["мочь"]);
     }
 
@@ -577,7 +629,12 @@ mod tests {
         let book = Uuid::new_v4();
         store
             .save(
-                &card_with("poder", "verb", vec!["мочь"], vec![example(book, 0, 0, "a", "1")]),
+                &card_with(
+                    "poder",
+                    "verb",
+                    vec!["мочь"],
+                    vec![example(book, 0, 0, "a", "1")],
+                ),
                 "spa",
                 "rus",
             )
@@ -607,7 +664,12 @@ mod tests {
         let book = Uuid::new_v4();
         store
             .save(
-                &card_with("poder", "verb", vec!["мочь"], vec![example(book, 0, 0, "a", "1")]),
+                &card_with(
+                    "poder",
+                    "verb",
+                    vec!["мочь"],
+                    vec![example(book, 0, 0, "a", "1")],
+                ),
                 "spa",
                 "rus",
             )
@@ -616,7 +678,12 @@ mod tests {
         let deck = tmp.path.join("cards").join("spa-rus");
         write_pretty(
             &deck.join("poder_verb.sync-conflict-X.json"),
-            &card_with("poder", "verb", vec!["уметь"], vec![example(book, 1, 1, "b", "2")]),
+            &card_with(
+                "poder",
+                "verb",
+                vec!["уметь"],
+                vec![example(book, 1, 1, "b", "2")],
+            ),
         )
         .await;
 
@@ -638,7 +705,12 @@ mod tests {
         // Bootstrap the deck dir via a save we then remove.
         store
             .save(
-                &card_with("poder", "verb", vec!["мочь"], vec![example(book, 0, 0, "a", "1")]),
+                &card_with(
+                    "poder",
+                    "verb",
+                    vec!["мочь"],
+                    vec![example(book, 0, 0, "a", "1")],
+                ),
                 "spa",
                 "rus",
             )
@@ -649,14 +721,22 @@ mod tests {
         let conflict_path = deck.join("poder_verb.sync-conflict-X.json");
         write_pretty(
             &conflict_path,
-            &card_with("poder", "verb", vec!["уметь"], vec![example(book, 1, 1, "b", "2")]),
+            &card_with(
+                "poder",
+                "verb",
+                vec!["уметь"],
+                vec![example(book, 1, 1, "b", "2")],
+            ),
         )
         .await;
         tokio::fs::remove_file(&canonical).await.unwrap();
 
         let loaded = store.load("spa", "rus", "poder", "verb").await.unwrap();
         assert!(loaded.is_none(), "expected None when canonical is absent");
-        assert!(conflict_path.exists(), "sibling must be untouched when canonical is absent");
+        assert!(
+            conflict_path.exists(),
+            "sibling must be untouched when canonical is absent"
+        );
     }
 
     #[tokio::test]
@@ -672,21 +752,25 @@ mod tests {
         let tmp = TempDir::new("flts_list_cards");
         let store = LibraryCardStore::new(&tmp.path);
         store
-            .save(&card_with("poder", "verb", vec!["мочь"], vec![]), "spa", "rus")
+            .save(
+                &card_with("poder", "verb", vec!["мочь"], vec![]),
+                "spa",
+                "rus",
+            )
             .await
             .unwrap();
         store
-            .save(&card_with("comer", "verb", vec!["есть"], vec![]), "spa", "rus")
+            .save(
+                &card_with("comer", "verb", vec!["есть"], vec![]),
+                "spa",
+                "rus",
+            )
             .await
             .unwrap();
 
         // Seed a Syncthing conflict sibling — must be skipped.
         let deck = tmp.path.join("cards").join("spa-rus");
-        std::fs::write(
-            deck.join("poder_verb.sync-conflict-20260520-X.json"),
-            b"{}",
-        )
-        .unwrap();
+        std::fs::write(deck.join("poder_verb.sync-conflict-20260520-X.json"), b"{}").unwrap();
         // And a stray non-JSON file — also skipped.
         std::fs::write(deck.join("README"), b"ignore").unwrap();
 
@@ -706,7 +790,10 @@ mod tests {
         let tmp = TempDir::new("flts_list_pairs_empty");
         let store = LibraryCardStore::new(&tmp.path);
         let pairs = store.list_pairs().await.unwrap();
-        assert!(pairs.is_empty(), "expected empty list when cards dir is missing");
+        assert!(
+            pairs.is_empty(),
+            "expected empty list when cards dir is missing"
+        );
     }
 
     #[tokio::test]

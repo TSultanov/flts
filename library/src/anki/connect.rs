@@ -144,8 +144,8 @@ pub(crate) fn build_envelope_json(
 }
 
 pub(crate) fn decode_response<T: for<'de> Deserialize<'de>>(body: &str) -> Result<T> {
-    let parsed: Response<T> = serde_json::from_str(body)
-        .map_err(|e| anyhow!("AnkiConnect: malformed response: {e}"))?;
+    let parsed: Response<T> =
+        serde_json::from_str(body).map_err(|e| anyhow!("AnkiConnect: malformed response: {e}"))?;
     if let Some(message) = parsed.error {
         bail!("AnkiConnect: {message}");
     }
@@ -158,8 +158,8 @@ pub(crate) fn decode_response<T: for<'de> Deserialize<'de>>(body: &str) -> Resul
 /// their success result (e.g. `updateNoteFields`, `addTags`). Only an explicit
 /// `error` is treated as failure; a null/missing result is success.
 pub(crate) fn decode_void_response(body: &str) -> Result<()> {
-    let parsed: Response<serde_json::Value> = serde_json::from_str(body)
-        .map_err(|e| anyhow!("AnkiConnect: malformed response: {e}"))?;
+    let parsed: Response<serde_json::Value> =
+        serde_json::from_str(body).map_err(|e| anyhow!("AnkiConnect: malformed response: {e}"))?;
     if let Some(message) = parsed.error {
         bail!("AnkiConnect: {message}");
     }
@@ -197,20 +197,12 @@ impl HttpAnkiConnect {
     }
 
     /// Like `call` but for AnkiConnect actions that return null on success.
-    async fn call_void(
-        &self,
-        action: &str,
-        params: Option<serde_json::Value>,
-    ) -> Result<()> {
+    async fn call_void(&self, action: &str, params: Option<serde_json::Value>) -> Result<()> {
         let body = self.fetch_body(action, params).await?;
         decode_void_response(&body)
     }
 
-    async fn fetch_body(
-        &self,
-        action: &str,
-        params: Option<serde_json::Value>,
-    ) -> Result<String> {
+    async fn fetch_body(&self, action: &str, params: Option<serde_json::Value>) -> Result<String> {
         let envelope = build_envelope_json(action, self.api_key.as_deref(), params);
         let resp = self
             .client
@@ -837,7 +829,10 @@ mod tests {
     #[tokio::test]
     async fn mock_notes_info_returns_two_cards_for_added_note() {
         let mock = MockAnkiConnect::new();
-        let note_id = mock.add_note(sample_note("flts_spa_rus_poder_verb")).await.unwrap();
+        let note_id = mock
+            .add_note(sample_note("flts_spa_rus_poder_verb"))
+            .await
+            .unwrap();
         let infos = mock.notes_info(&[note_id]).await.unwrap();
         assert_eq!(infos.len(), 1);
         assert_eq!(infos[0].note_id, note_id);

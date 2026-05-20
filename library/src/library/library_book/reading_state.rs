@@ -27,9 +27,7 @@ async fn reading_state_files(path: &Path) -> anyhow::Result<Vec<(PathBuf, System
     Ok(files)
 }
 
-async fn resolve_reading_state_file(
-    path: &Path,
-) -> anyhow::Result<Option<(PathBuf, SystemTime)>> {
+async fn resolve_reading_state_file(path: &Path) -> anyhow::Result<Option<(PathBuf, SystemTime)>> {
     let mut candidates = reading_state_files(path).await?;
     if candidates.is_empty() {
         return Ok(None);

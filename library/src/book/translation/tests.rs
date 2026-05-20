@@ -108,11 +108,7 @@ fn test_translation_add_paragraph_translation() {
             ],
         }],
     };
-    translation.add_paragraph_translation(
-        0,
-        &paragraph_translation,
-        TranslationModel::Gemini25Pro,
-    );
+    translation.add_paragraph_translation(0, &paragraph_translation, TranslationModel::Gemini25Pro);
     let paragraph_view = translation.paragraph_view(0).unwrap();
     assert_eq!(paragraph_view.timestamp, 1234567890);
     assert_eq!(paragraph_view.previous_version, None);
@@ -443,28 +439,12 @@ fn translation_serialize_deserialize_corruption() {
 #[test]
 fn merge_same_history() {
     let mut a = Translation::create("en", "ru");
-    a.add_paragraph_translation(
-        0,
-        &make_paragraph(1, "v1"),
-        TranslationModel::Gemini25Flash,
-    );
-    a.add_paragraph_translation(
-        0,
-        &make_paragraph(2, "v2"),
-        TranslationModel::Gemini25Flash,
-    );
+    a.add_paragraph_translation(0, &make_paragraph(1, "v1"), TranslationModel::Gemini25Flash);
+    a.add_paragraph_translation(0, &make_paragraph(2, "v2"), TranslationModel::Gemini25Flash);
 
     let mut b = Translation::create("en", "ru");
-    b.add_paragraph_translation(
-        0,
-        &make_paragraph(1, "v1"),
-        TranslationModel::Gemini25Flash,
-    );
-    b.add_paragraph_translation(
-        0,
-        &make_paragraph(2, "v2"),
-        TranslationModel::Gemini25Flash,
-    );
+    b.add_paragraph_translation(0, &make_paragraph(1, "v1"), TranslationModel::Gemini25Flash);
+    b.add_paragraph_translation(0, &make_paragraph(2, "v2"), TranslationModel::Gemini25Flash);
 
     let merged = a.merge(&b);
 
@@ -481,39 +461,15 @@ fn merge_same_history() {
 fn merge_diverged_common_root() {
     // a: 1 -> 2 -> 4
     let mut a = Translation::create("en", "ru");
-    a.add_paragraph_translation(
-        0,
-        &make_paragraph(1, "a1"),
-        TranslationModel::Gemini25Flash,
-    );
-    a.add_paragraph_translation(
-        0,
-        &make_paragraph(2, "a2"),
-        TranslationModel::Gemini25Flash,
-    );
-    a.add_paragraph_translation(
-        0,
-        &make_paragraph(4, "a4"),
-        TranslationModel::Gemini25Flash,
-    );
+    a.add_paragraph_translation(0, &make_paragraph(1, "a1"), TranslationModel::Gemini25Flash);
+    a.add_paragraph_translation(0, &make_paragraph(2, "a2"), TranslationModel::Gemini25Flash);
+    a.add_paragraph_translation(0, &make_paragraph(4, "a4"), TranslationModel::Gemini25Flash);
 
     // b: 1 -> 3 -> 5
     let mut b = Translation::create("en", "ru");
-    b.add_paragraph_translation(
-        0,
-        &make_paragraph(1, "a1"),
-        TranslationModel::Gemini25Flash,
-    ); // same ts as a1 (dedup)
-    b.add_paragraph_translation(
-        0,
-        &make_paragraph(3, "a3"),
-        TranslationModel::Gemini25Flash,
-    );
-    b.add_paragraph_translation(
-        0,
-        &make_paragraph(5, "a5"),
-        TranslationModel::Gemini25Flash,
-    );
+    b.add_paragraph_translation(0, &make_paragraph(1, "a1"), TranslationModel::Gemini25Flash); // same ts as a1 (dedup)
+    b.add_paragraph_translation(0, &make_paragraph(3, "a3"), TranslationModel::Gemini25Flash);
+    b.add_paragraph_translation(0, &make_paragraph(5, "a5"), TranslationModel::Gemini25Flash);
 
     let merged = a.merge(&b);
 
@@ -560,11 +516,7 @@ fn merge_no_common_root() {
 
     // b: 5 -> 15 -> 25
     let mut b = Translation::create("en", "ru");
-    b.add_paragraph_translation(
-        0,
-        &make_paragraph(5, "b5"),
-        TranslationModel::Gemini25Flash,
-    );
+    b.add_paragraph_translation(0, &make_paragraph(5, "b5"), TranslationModel::Gemini25Flash);
     b.add_paragraph_translation(
         0,
         &make_paragraph(15, "b15"),
@@ -591,24 +543,12 @@ fn merge_no_common_root() {
 fn merge_present_only_in_one_side() {
     // Paragraph 0 only in left, with history 1 -> 2
     let mut a = Translation::create("en", "ru");
-    a.add_paragraph_translation(
-        0,
-        &make_paragraph(1, "a1"),
-        TranslationModel::Gemini25Flash,
-    );
-    a.add_paragraph_translation(
-        0,
-        &make_paragraph(2, "a2"),
-        TranslationModel::Gemini25Flash,
-    );
+    a.add_paragraph_translation(0, &make_paragraph(1, "a1"), TranslationModel::Gemini25Flash);
+    a.add_paragraph_translation(0, &make_paragraph(2, "a2"), TranslationModel::Gemini25Flash);
     // Paragraph 1 only in right, with single version 3
     let b = {
         let mut t = Translation::create("en", "ru");
-        t.add_paragraph_translation(
-            1,
-            &make_paragraph(3, "b3"),
-            TranslationModel::Gemini25Flash,
-        );
+        t.add_paragraph_translation(1, &make_paragraph(3, "b3"), TranslationModel::Gemini25Flash);
         t
     };
 
@@ -664,7 +604,6 @@ fn mark_word_visible_toggles_and_round_trips() {
 
 #[test]
 fn merge_visible_words_union() {
-
     // Create two translations with same timestamp but different visible_words
     let mut a = Translation::create("en", "ru");
     a.add_paragraph_translation(

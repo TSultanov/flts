@@ -102,7 +102,6 @@ mod translation_metadata_test {
             }],
         };
 
-
         translation.add_paragraph_translation(
             0,
             &paragraph_translation,

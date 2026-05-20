@@ -4,9 +4,7 @@ use crate::tla_trace::mutex::TracedMutex;
 use isolang::Language;
 
 use crate::{
-    book::{
-        book::Book, serialization::Serializable, translation::Translation, translation_import,
-    },
+    book::{book::Book, serialization::Serializable, translation::Translation, translation_import},
     library::{Library, LibraryTranslationMetadata, library_book::BookReadingState},
     test_utils::TempDir,
     translator::TranslationModel,
@@ -147,8 +145,7 @@ async fn save_after_load_book_and_translation_changed() {
             .await
             .unwrap();
         let mut book = book.lock().await;
-        let mut tr =
-            Translation::create(source_language.to_639_3(), target_language.to_639_3());
+        let mut tr = Translation::create(source_language.to_639_3(), target_language.to_639_3());
         let initial_pt = translation_import::ParagraphTranslation {
             total_tokens: None,
             timestamp: 1,
@@ -172,11 +169,7 @@ async fn save_after_load_book_and_translation_changed() {
                 }],
             }],
         };
-        tr.add_paragraph_translation(
-            0,
-            &initial_pt,
-            TranslationModel::Gemini25Flash,
-        );
+        tr.add_paragraph_translation(0, &initial_pt, TranslationModel::Gemini25Flash);
         book.translations
             .push(Arc::new(TracedMutex::new(super::LibraryTranslation {
                 translation: tr,
@@ -223,11 +216,7 @@ async fn save_after_load_book_and_translation_changed() {
             .lock()
             .await
             .translation
-            .add_paragraph_translation(
-                0,
-                &new_pt,
-                TranslationModel::Gemini25Flash,
-            );
+            .add_paragraph_translation(0, &new_pt, TranslationModel::Gemini25Flash);
 
         book.save().await.unwrap();
         book.path.clone()
@@ -294,11 +283,7 @@ async fn save_merges_translation_with_concurrent_on_disk_change() {
             }],
         }],
     };
-    tr.add_paragraph_translation(
-        0,
-        &pt1,
-        TranslationModel::Gemini25Flash,
-    );
+    tr.add_paragraph_translation(0, &pt1, TranslationModel::Gemini25Flash);
     book.translations
         .push(Arc::new(TracedMutex::new(super::LibraryTranslation {
             translation: tr,
@@ -350,11 +335,7 @@ async fn save_merges_translation_with_concurrent_on_disk_change() {
         .lock()
         .await
         .translation
-        .add_paragraph_translation(
-            0,
-            &mem_pt,
-            TranslationModel::Gemini25Flash,
-        );
+        .add_paragraph_translation(0, &mem_pt, TranslationModel::Gemini25Flash);
 
     // Concurrent on-disk change ts=3
     {
@@ -386,11 +367,7 @@ async fn save_merges_translation_with_concurrent_on_disk_change() {
                 }],
             }],
         };
-        on_disk.add_paragraph_translation(
-            0,
-            &disk_pt,
-            TranslationModel::Gemini25Flash,
-        );
+        on_disk.add_paragraph_translation(0, &disk_pt, TranslationModel::Gemini25Flash);
         let wf = std::fs::File::create(&tr_path).unwrap();
         let mut writer = std::io::BufWriter::new(wf);
         on_disk.serialize(&mut writer).unwrap();
@@ -548,13 +525,11 @@ async fn load_from_metadata_no_conflicts() {
     let dir = temp_dir.path.join("book");
     std::fs::create_dir_all(&dir).unwrap();
 
-
     let source_language = Language::from_str("en").unwrap();
     let target_language = Language::from_str("ru").unwrap();
 
     let main_path = dir.join("translation_en_ru.dat");
-    let mut t_main =
-        Translation::create(source_language.to_639_3(), target_language.to_639_3());
+    let mut t_main = Translation::create(source_language.to_639_3(), target_language.to_639_3());
     let pt2 = translation_import::ParagraphTranslation {
         total_tokens: None,
         timestamp: 2,
@@ -578,11 +553,7 @@ async fn load_from_metadata_no_conflicts() {
             }],
         }],
     };
-    t_main.add_paragraph_translation(
-        0,
-        &pt2,
-        TranslationModel::Gemini25Flash,
-    );
+    t_main.add_paragraph_translation(0, &pt2, TranslationModel::Gemini25Flash);
     {
         let f = std::fs::File::create(&main_path).unwrap();
         let mut writer = std::io::BufWriter::new(f);
@@ -616,7 +587,6 @@ async fn load_from_metadata_merges_conflicts_and_persists() {
     let dir = temp_dir.path.join("book2");
     std::fs::create_dir_all(&dir).unwrap();
 
-
     let source_language = Language::from_str("en").unwrap();
     let target_language = Language::from_str("ru").unwrap();
 
@@ -633,8 +603,7 @@ async fn load_from_metadata_merges_conflicts_and_persists() {
     let conflict2 = dir.join("translation_en_ru.conflict2.dat");
 
     // main: ts=2
-    let mut t_main =
-        Translation::create(source_language.to_639_3(), target_language.to_639_3());
+    let mut t_main = Translation::create(source_language.to_639_3(), target_language.to_639_3());
     let pt2 = translation_import::ParagraphTranslation {
         total_tokens: None,
         timestamp: 2,
@@ -658,11 +627,7 @@ async fn load_from_metadata_merges_conflicts_and_persists() {
             }],
         }],
     };
-    t_main.add_paragraph_translation(
-        0,
-        &pt2,
-        TranslationModel::Gemini25Flash,
-    );
+    t_main.add_paragraph_translation(0, &pt2, TranslationModel::Gemini25Flash);
     {
         let f = std::fs::File::create(&main_path).unwrap();
         let mut writer = std::io::BufWriter::new(f);
@@ -694,11 +659,7 @@ async fn load_from_metadata_merges_conflicts_and_persists() {
             }],
         }],
     };
-    t_c1.add_paragraph_translation(
-        0,
-        &pt1,
-        TranslationModel::Gemini25Flash,
-    );
+    t_c1.add_paragraph_translation(0, &pt1, TranslationModel::Gemini25Flash);
     {
         let f = std::fs::File::create(&conflict1).unwrap();
         let mut writer = std::io::BufWriter::new(f);
@@ -730,11 +691,7 @@ async fn load_from_metadata_merges_conflicts_and_persists() {
             }],
         }],
     };
-    t_c2.add_paragraph_translation(
-        0,
-        &pt3,
-        TranslationModel::Gemini25Flash,
-    );
+    t_c2.add_paragraph_translation(0, &pt3, TranslationModel::Gemini25Flash);
     {
         let f = std::fs::File::create(&conflict2).unwrap();
         let mut writer = std::io::BufWriter::new(f);

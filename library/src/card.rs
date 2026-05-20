@@ -128,10 +128,7 @@ pub fn canonicalize_lemma(raw: &str, _src_lang: Language) -> String {
 pub fn canonicalize_part_of_speech(raw: &str) -> String {
     let nfc: String = raw.nfc().collect();
     let lowered = nfc.to_lowercase();
-    lowered
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    lowered.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Convert a canonicalized lemma or PoS string into a filesystem-safe
@@ -256,8 +253,7 @@ pub fn render_example_source(words: &[translation_import::Word]) -> String {
     let mut suppress_next_space = false;
     for word in words {
         let decoded = decode_entities(&word.original);
-        let starts_with_eat =
-            decoded.chars().next().is_some_and(eats_leading_space);
+        let starts_with_eat = decoded.chars().next().is_some_and(eats_leading_space);
         let want_space = !out.is_empty() && !starts_with_eat && !suppress_next_space;
         if want_space {
             out.push(' ');
@@ -502,7 +498,10 @@ mod tests {
     #[test]
     fn canonicalize_whitespace_collapse() {
         assert_eq!(canonicalize_lemma("darse  cuenta", spa()), "darse cuenta");
-        assert_eq!(canonicalize_lemma("  darse\tcuenta  ", spa()), "darse cuenta");
+        assert_eq!(
+            canonicalize_lemma("  darse\tcuenta  ", spa()),
+            "darse cuenta"
+        );
     }
 
     #[test]
@@ -521,10 +520,7 @@ mod tests {
     fn slug_replaces_unsafe_chars_with_underscore() {
         // Unsafe chars become `_` (not dropped) so distinct inputs stay
         // distinct on disk and the resulting filename is readable.
-        assert_eq!(
-            lemma_slug("a/b\\c:d*e?f\"g<h>i|j"),
-            "a_b_c_d_e_f_g_h_i_j"
-        );
+        assert_eq!(lemma_slug("a/b\\c:d*e?f\"g<h>i|j"), "a_b_c_d_e_f_g_h_i_j");
     }
 
     #[test]
@@ -622,8 +618,22 @@ mod tests {
         let paragraph = one_sentence_paragraph(
             "Хорошо.",
             vec![
-                full_word("good", "good", "хорошо", "Существительное / Прилагательное", &["хорошо"], false),
-                full_word("good", "good", "хорошо", "существительное /прилагательное ", &["добро"], false),
+                full_word(
+                    "good",
+                    "good",
+                    "хорошо",
+                    "Существительное / Прилагательное",
+                    &["хорошо"],
+                    false,
+                ),
+                full_word(
+                    "good",
+                    "good",
+                    "хорошо",
+                    "существительное /прилагательное ",
+                    &["добро"],
+                    false,
+                ),
             ],
         );
         let updates = extract_card_updates(
@@ -636,7 +646,10 @@ mod tests {
         );
         assert_eq!(updates.len(), 1);
         let update = &updates[0];
-        assert_eq!(update.key.part_of_speech, "существительное / прилагательное");
+        assert_eq!(
+            update.key.part_of_speech,
+            "существительное / прилагательное"
+        );
         assert_eq!(update.key.pos_slug, "существительное_прилагательное");
         assert_eq!(
             update.key.id(),
@@ -651,7 +664,14 @@ mod tests {
     fn extract_card_updates_skips_pos_that_slugs_to_empty() {
         let paragraph = one_sentence_paragraph(
             "Хорошо.",
-            vec![full_word("good", "good", "хорошо", "///", &["хорошо"], false)],
+            vec![full_word(
+                "good",
+                "good",
+                "хорошо",
+                "///",
+                &["хорошо"],
+                false,
+            )],
         );
         let updates = extract_card_updates(
             &paragraph,
@@ -661,7 +681,10 @@ mod tests {
             0,
             0,
         );
-        assert!(updates.is_empty(), "expected pure-separator PoS to be skipped");
+        assert!(
+            updates.is_empty(),
+            "expected pure-separator PoS to be skipped"
+        );
     }
 
     #[test]
@@ -688,7 +711,10 @@ mod tests {
     #[test]
     fn eligible_keeps_word_form_numeral() {
         for lemma in ["cinco", "пять", "fünf", "five"] {
-            assert!(is_eligible(&word(lemma, false)), "expected {lemma} eligible");
+            assert!(
+                is_eligible(&word(lemma, false)),
+                "expected {lemma} eligible"
+            );
         }
     }
 
@@ -853,10 +879,7 @@ mod tests {
 
     #[test]
     fn walk_skips_punctuation() {
-        let p = one_sentence_paragraph(
-            ".",
-            vec![full_word(".", ".", ".", "punct", &[], true)],
-        );
+        let p = one_sentence_paragraph(".", vec![full_word(".", ".", ".", "punct", &[], true)]);
         let updates = extract_card_updates(
             &p,
             Language::from_639_3("spa").unwrap(),
@@ -893,7 +916,14 @@ mod tests {
     fn walk_uses_canonicalized_lemma_in_key() {
         let p = one_sentence_paragraph(
             "Mosca",
-            vec![full_word("España", "España", "Испания", "propn", &["Испания"], false)],
+            vec![full_word(
+                "España",
+                "España",
+                "Испания",
+                "propn",
+                &["Испания"],
+                false,
+            )],
         );
         let updates = extract_card_updates(
             &p,
@@ -956,7 +986,14 @@ mod tests {
         let book = Uuid::new_v4();
         let p = one_sentence_paragraph(
             "Я могу.",
-            vec![full_word("puedo", "poder", "мочь", "verb", &["могу"], false)],
+            vec![full_word(
+                "puedo",
+                "poder",
+                "мочь",
+                "verb",
+                &["могу"],
+                false,
+            )],
         );
         let updates = extract_card_updates(
             &p,
@@ -982,11 +1019,25 @@ mod tests {
             sentences: vec![
                 translation_import::Sentence {
                     full_translation: "Я могу.".into(),
-                    words: vec![full_word("puedo", "poder", "мочь", "verb", &["могу"], false)],
+                    words: vec![full_word(
+                        "puedo",
+                        "poder",
+                        "мочь",
+                        "verb",
+                        &["могу"],
+                        false,
+                    )],
                 },
                 translation_import::Sentence {
                     full_translation: "Я не могу.".into(),
-                    words: vec![full_word("puedo", "poder", "мочь", "verb", &["умею"], false)],
+                    words: vec![full_word(
+                        "puedo",
+                        "poder",
+                        "мочь",
+                        "verb",
+                        &["умею"],
+                        false,
+                    )],
                 },
             ],
         };
@@ -1077,7 +1128,11 @@ mod tests {
         assert!(updates.is_empty());
     }
 
-    fn make_card_with(translations: Vec<&str>, examples: Vec<Example>, anki_data: Option<AnkiData>) -> Card {
+    fn make_card_with(
+        translations: Vec<&str>,
+        examples: Vec<Example>,
+        anki_data: Option<AnkiData>,
+    ) -> Card {
         Card {
             version: 1,
             id: "flts_spa_rus_poder_verb".into(),
@@ -1089,7 +1144,13 @@ mod tests {
         }
     }
 
-    fn example_with(book_id: Uuid, chapter: usize, paragraph: usize, source: &str, translation: &str) -> Example {
+    fn example_with(
+        book_id: Uuid,
+        chapter: usize,
+        paragraph: usize,
+        source: &str,
+        translation: &str,
+    ) -> Example {
         Example {
             source: source.into(),
             translation: translation.into(),
