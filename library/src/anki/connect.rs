@@ -34,6 +34,7 @@ pub trait AnkiConnect: Send + Sync {
         fields: BTreeMap<String, String>,
     ) -> Result<()>;
     async fn cards_info(&self, card_ids: &[i64]) -> Result<Vec<CardInfo>>;
+    async fn notes_info(&self, note_ids: &[i64]) -> Result<Vec<NoteInfo>>;
     async fn multi(&self, actions: Vec<MultiSubAction>) -> Result<Vec<serde_json::Value>>;
 }
 
@@ -89,6 +90,16 @@ impl CardInfo {
     pub fn is_suspended(&self) -> bool {
         self.queue == -1
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NoteInfo {
+    #[serde(rename = "noteId")]
+    pub note_id: i64,
+    #[serde(default)]
+    pub cards: Vec<i64>,
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -245,6 +256,11 @@ impl AnkiConnect for HttpAnkiConnect {
     async fn cards_info(&self, card_ids: &[i64]) -> Result<Vec<CardInfo>> {
         let params = serde_json::json!({ "cards": card_ids });
         self.call::<Vec<CardInfo>>("cardsInfo", Some(params)).await
+    }
+
+    async fn notes_info(&self, note_ids: &[i64]) -> Result<Vec<NoteInfo>> {
+        let params = serde_json::json!({ "notes": note_ids });
+        self.call::<Vec<NoteInfo>>("notesInfo", Some(params)).await
     }
 
     async fn multi(&self, actions: Vec<MultiSubAction>) -> Result<Vec<serde_json::Value>> {
@@ -453,6 +469,28 @@ impl AnkiConnect for MockAnkiConnect {
             .collect())
     }
 
+    async fn notes_info(&self, note_ids: &[i64]) -> Result<Vec<NoteInfo>> {
+        let state = self.inner.lock().unwrap();
+        Ok(note_ids
+            .iter()
+            .filter_map(|id| {
+                state.notes.get(id).map(|note| {
+                    let mut cards: Vec<i64> = state
+                        .cards
+                        .iter()
+                        .filter_map(|(card_id, c)| (c.note_id == *id).then_some(*card_id))
+                        .collect();
+                    cards.sort_unstable();
+                    NoteInfo {
+                        note_id: *id,
+                        cards,
+                        tags: note.tags.clone(),
+                    }
+                })
+            })
+            .collect())
+    }
+
     async fn multi(&self, actions: Vec<MultiSubAction>) -> Result<Vec<serde_json::Value>> {
         let mut out = Vec::with_capacity(actions.len());
         for sub in actions {
@@ -512,6 +550,15 @@ impl AnkiConnect for MockAnkiConnect {
                             .ok_or_else(|| anyhow!("multi cardsInfo: missing cards"))?,
                     )?;
                     serde_json::to_value(self.cards_info(&cards).await?)?
+                }
+                "notesInfo" => {
+                    let notes: Vec<i64> = serde_json::from_value(
+                        params
+                            .get("notes")
+                            .cloned()
+                            .ok_or_else(|| anyhow!("multi notesInfo: missing notes"))?,
+                    )?;
+                    serde_json::to_value(self.notes_info(&notes).await?)?
                 }
                 other => bail!("MockAnkiConnect: unsupported multi sub-action `{other}`"),
             };
@@ -660,6 +707,24 @@ mod tests {
         let info = mock.cards_info(&[card_a]).await.unwrap();
         assert_eq!(info.len(), 1);
         assert!(info[0].is_suspended());
+    }
+
+    #[tokio::test]
+    async fn mock_notes_info_returns_two_cards_for_added_note() {
+        let mock = MockAnkiConnect::new();
+        let note_id = mock.add_note(sample_note("flts_spa_rus_poder_verb")).await.unwrap();
+        let infos = mock.notes_info(&[note_id]).await.unwrap();
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos[0].note_id, note_id);
+        assert_eq!(infos[0].cards.len(), 2);
+        assert!(infos[0].tags.iter().any(|t| t == "flts_spa_rus_poder_verb"));
+    }
+
+    #[tokio::test]
+    async fn mock_notes_info_skips_unknown_ids() {
+        let mock = MockAnkiConnect::new();
+        let infos = mock.notes_info(&[9999]).await.unwrap();
+        assert!(infos.is_empty());
     }
 
     #[tokio::test]
