@@ -144,7 +144,7 @@
             </details>
         {/if}
         {#if systemDefinition?.current}
-            <details open>
+            <details>
                 <summary>System Dictionary</summary>
                 <div class="definition">
                     {@html systemDefinition.current.definition}
