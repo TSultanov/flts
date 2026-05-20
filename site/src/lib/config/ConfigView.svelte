@@ -45,6 +45,12 @@
     let spotifyShowNextTrack: boolean = $derived(
         configStore.current?.spotifyShowNextTrack ?? true,
     );
+    let ankiEndpoint: string = $derived(
+        configStore.current?.ankiEndpoint ?? '',
+    );
+    let ankiApiKey: string = $derived(
+        configStore.current?.ankiApiKey ?? '',
+    );
     let spotifyStatus: SpotifyWebStatus = $state({
         connected: false,
         premiumRequired: false,
@@ -116,6 +122,8 @@
             spotifyClientId: spotifyClientId.trim() || undefined,
             spotifyPreloadCount,
             spotifyShowNextTrack,
+            ankiEndpoint: ankiEndpoint.trim() || undefined,
+            ankiApiKey: ankiApiKey.trim() || undefined,
         });
     }
 
@@ -307,6 +315,40 @@
                 </details>
             {/if}
 
+            <details class="anki-section">
+                <summary>Anki (optional)</summary>
+                <div class="anki-grid">
+                    <p class="hint">
+                        Requires <a
+                            href="https://ankiweb.net/shared/info/2055492159"
+                            class="external"
+                            target="_blank"
+                            rel="noopener">AnkiConnect</a
+                        > installed in Anki desktop. The toolbar button shows
+                        current sync status; cards flow to Anki automatically
+                        on a 5-minute cadence. Set <code>FLTS_DISABLE_ANKI_SYNC=1</code>
+                        in the environment to opt out entirely.
+                    </p>
+
+                    <label for="ankiEndpoint">Endpoint</label>
+                    <input
+                        id="ankiEndpoint"
+                        type="text"
+                        placeholder="http://127.0.0.1:8765"
+                        bind:value={ankiEndpoint}
+                        data-testid="anki-endpoint"
+                    />
+
+                    <label for="ankiApiKey">API key</label>
+                    <input
+                        id="ankiApiKey"
+                        type="text"
+                        bind:value={ankiApiKey}
+                        data-testid="anki-api-key"
+                    />
+                </div>
+            </details>
+
             <button id="save" onclick={save} class="primary">Save</button>
         </div>
     </div>
@@ -438,5 +480,32 @@
     }
     .spotify-notice.err {
         color: var(--error-color, #b00020);
+    }
+
+    details.anki-section {
+        grid-column: 1/4;
+        margin-top: 8px;
+        border-top: 1px solid color-mix(in srgb, currentColor 15%, transparent);
+        padding-top: 12px;
+    }
+    details.anki-section > summary {
+        cursor: pointer;
+        font-weight: 600;
+        padding: 2px 0;
+        user-select: none;
+    }
+    .anki-grid {
+        display: grid;
+        gap: 10px;
+        grid-template-columns: auto 1fr;
+        align-items: stretch;
+        justify-items: stretch;
+        margin-top: 10px;
+    }
+    .anki-grid p.hint {
+        grid-column: 1/3;
+    }
+    .anki-grid input {
+        grid-column: 2/3;
     }
 </style>
