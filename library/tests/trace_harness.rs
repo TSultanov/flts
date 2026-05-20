@@ -67,17 +67,10 @@ fn sleep_for_mtime_tick() {
     std::thread::sleep(Duration::from_millis(5));
 }
 
-fn make_paragraph(
-    ts: u64,
-    text: &str,
-    source_language: &str,
-    target_language: &str,
-) -> translation_import::ParagraphTranslation {
+fn make_paragraph(ts: u64, text: &str) -> translation_import::ParagraphTranslation {
     translation_import::ParagraphTranslation {
         total_tokens: None,
         timestamp: ts,
-        source_language: source_language.to_owned(),
-        target_language: target_language.to_owned(),
         sentences: vec![translation_import::Sentence {
             full_translation: text.into(),
             words: vec![translation_import::Word {
@@ -208,7 +201,7 @@ async fn trace_translation_merge_and_save() {
         let translation = book.get_or_create_translation(&target_language).await;
         translation.lock().await.add_paragraph_translation(
             0,
-            &make_paragraph(1, "v1", "en", "ru"),
+            &make_paragraph(1, "v1"),
             TranslationModel::Gemini25Flash,
         );
         book.save().await.unwrap();
@@ -229,7 +222,7 @@ async fn trace_translation_merge_and_save() {
     let translation = book.get_or_create_translation(&target_language).await;
     translation.lock().await.add_paragraph_translation(
         0,
-        &make_paragraph(2, "mem", "en", "ru"),
+        &make_paragraph(2, "mem"),
         TranslationModel::Gemini25Flash,
     );
 
@@ -240,7 +233,7 @@ async fn trace_translation_merge_and_save() {
         let mut on_disk = Translation::deserialize(&mut reader).unwrap();
         on_disk.add_paragraph_translation(
             0,
-            &make_paragraph(3, "disk", "en", "ru"),
+            &make_paragraph(3, "disk"),
             TranslationModel::Gemini25Flash,
         );
         let file = std::fs::File::create(&translation_file).unwrap();

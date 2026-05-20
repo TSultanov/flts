@@ -42,17 +42,10 @@ impl Drop for TempDir {
     }
 }
 
-fn make_paragraph(
-    ts: u64,
-    text: &str,
-    src: &str,
-    tgt: &str,
-) -> translation_import::ParagraphTranslation {
+fn make_paragraph(ts: u64, text: &str) -> translation_import::ParagraphTranslation {
     translation_import::ParagraphTranslation {
         total_tokens: None,
         timestamp: ts,
-        source_language: src.to_owned(),
-        target_language: tgt.to_owned(),
         sentences: vec![translation_import::Sentence {
             full_translation: text.into(),
             words: vec![translation_import::Word {
@@ -142,7 +135,7 @@ async fn trace_interaction_baseline() {
     let span = TraceSpan::begin("t1", "WorkerStoreResult").field("task", "t1");
     translation.lock().await.add_paragraph_translation(
         0,
-        &make_paragraph(100, "Привет мир", "en", "ru"),
+        &make_paragraph(100, "Привет мир"),
         TranslationModel::Gemini25Flash,
     );
     span.end();
@@ -318,7 +311,7 @@ async fn trace_interaction_concurrent() {
         let span = TraceSpan::begin("t1", "WorkerStoreResult").field("task", "t1");
         tr.lock().await.add_paragraph_translation(
             0,
-            &make_paragraph(200, "Первый абзац", "en", "ru"),
+            &make_paragraph(200, "Первый абзац"),
             TranslationModel::Gemini25Flash,
         );
         span.end();

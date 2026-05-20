@@ -672,8 +672,6 @@ mod tests {
         translation_import::ParagraphTranslation {
             timestamp: 0,
             sentences,
-            source_language: "deu".to_owned(),
-            target_language: "eng".to_owned(),
             total_tokens: None,
         }
     }

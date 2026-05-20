@@ -82,8 +82,6 @@ fn generate_translation(paragraphs_count: usize) -> Translation {
         let paragraph_translation = ParagraphTranslation {
             timestamp: 1234567890,
             sentences,
-            source_language: "eng".to_string(),
-            target_language: "spa".to_string(),
             total_tokens: Some(rng.random_range(50..200)),
         };
 

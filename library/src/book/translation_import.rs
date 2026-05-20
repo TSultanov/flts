@@ -5,10 +5,6 @@ pub struct ParagraphTranslation {
     #[serde(skip)]
     pub timestamp: u64,
     pub sentences: Vec<Sentence>,
-    #[serde(alias = "sourceLanguage")]
-    pub source_language: String,
-    #[serde(alias = "targetLanguage")]
-    pub target_language: String,
     #[serde(skip)]
     pub total_tokens: Option<u64>,
 }

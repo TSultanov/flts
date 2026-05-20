@@ -1450,16 +1450,10 @@ impl<'a> ParagraphTranslationView<'a> {
         (0..self.sentence_count()).map(|s| self.sentence_view(s))
     }
 
-    pub fn to_import(
-        &self,
-        source_language: &str,
-        target_language: &str,
-    ) -> translation_import::ParagraphTranslation {
+    pub fn to_import(&self) -> translation_import::ParagraphTranslation {
         translation_import::ParagraphTranslation {
             timestamp: self.timestamp,
             total_tokens: self.total_tokens,
-            source_language: source_language.to_owned(),
-            target_language: target_language.to_owned(),
             sentences: self
                 .sentences()
                 .map(|s| translation_import::Sentence {

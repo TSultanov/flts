@@ -652,8 +652,6 @@ mod tests {
         translation_import::ParagraphTranslation {
             timestamp: 0,
             total_tokens: None,
-            source_language: "spa".into(),
-            target_language: "rus".into(),
             sentences: vec![translation_import::Sentence {
                 full_translation: full_translation.into(),
                 words,
@@ -905,8 +903,6 @@ mod tests {
         let p = translation_import::ParagraphTranslation {
             timestamp: 0,
             total_tokens: None,
-            source_language: "spa".into(),
-            target_language: "rus".into(),
             sentences: vec![
                 translation_import::Sentence {
                     full_translation: "Я могу.".into(),

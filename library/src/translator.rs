@@ -270,7 +270,7 @@ pub trait Translator: Send + Sync {
             - Grammatical information should ONLY be about the original word and how it's used in the original language.
             - Do NOT use concepts from the {to} language when decribing the grammar.
             - Use ONLY concepts which make sense and exist in the {from} language grammatical system, but explain them in the {to} language.
-            - All the information given must be in {to} language except for the 'originalInitialForm', 'sourceLanguage', 'targetLanguage' and 'partOfSpeech' fields. 'originalInitialForm' is in {from}; 'sourceLanguage' and 'targetLanguage' are ISO 639-3 codes; 'partOfSpeech' is one of the canonical English tags listed below.
+            - All the information given must be in {to} language except for the 'originalInitialForm' and 'partOfSpeech' fields. 'originalInitialForm' is in {from}; 'partOfSpeech' is one of the canonical English tags listed below.
             - Example: For Japanese, use concepts like 'て-form', 'potential form', '連体形'
             - Example: For German, use concepts like 'dative case', 'strong declension'
             - Example: For Russian, use concepts like 'perfective aspect', 'genitive case'
@@ -284,7 +284,6 @@ pub trait Translator: Send + Sync {
             - For pronoun tags: nominative form (e.g., 'I' not 'me', 'я' not 'меня'); for possessives the citation form ('mine', 'мой').
             - For other tags: the form a {to}-language dictionary entry for this category would carry.
           The same root word can therefore land in multiple cards across different surface forms: 'mourn' (verb) and 'mourning' (participle_present) are distinct entries with distinct translations, by design.
-        'sourceLanguage' and 'targetLanguage' must contain ISO 639 Set 3 code of the corresponding language (e.g. 'eng', 'deu', 'rus', 'jpn', etc.).
         Translation forms — these two fields have distinct roles, do not conflate them:
             - 'targetInitialForm' is the CITATION-form translation in {to} for the same partOfSpeech tag the source carries (see the initial-forms rule above). Always populate this with a clean entry in that tag's citation form, even when the rendered sentence uses a different syntactic structure or restructures the meaning across multiple words. Illustrative examples (English → Russian): 'had witnessed' (tag: verb) → 'быть свидетелем' (a verb infinitive), NOT 'свидетелем'. 'the mourning lord' (tag: participle_present) → 'скорбящий' (a Russian participle), NOT 'скорбеть'. 'Swimming is fun' (tag: gerund) → 'плавание' (a verbal noun), NOT 'плавать'. Apply the same principle for any {from}/{to} pair. If the source word truly has no translatable meaning, leave 'targetInitialForm' empty — but always try first.
             - 'contextualTranslations' are translation variants that fit the CURRENT sentence in-context. They are used to annotate the original text inside the reader UI, so fragments, oblique forms, or any rendering that matches how this specific occurrence appears in the translated sentence is welcome. Distinct purpose from targetInitialForm — these are for in-text help, that one is for flashcards.
@@ -303,8 +302,7 @@ pub trait Translator: Send + Sync {
             3. Grammar: Did you avoid using TARGET language grammar concepts for SOURCE language analysis?
             4. Completeness: Does every word have all required fields filled?
             5. Consistency: Are repeated words analyzed the same way?
-            6. ISO codes: Are sourceLanguage and targetLanguage correct 3-letter ISO 639-3 codes?
-            7. partOfSpeech: Is every word's partOfSpeech one of the canonical English tags listed above?")
+            6. partOfSpeech: Is every word's partOfSpeech one of the canonical English tags listed above?")
     }
 }
 
@@ -371,11 +369,9 @@ pub(crate) fn paragraph_translation_schema() -> serde_json::Value {
                     },
                     "required": ["words", "fullTranslation"]
                 }
-            },
-            "sourceLanguage": { "type": "string" },
-            "targetLanguage": { "type": "string" }
+            }
         },
-        "required": ["sentences", "sourceLanguage", "targetLanguage"]
+        "required": ["sentences"]
     })
 }
 

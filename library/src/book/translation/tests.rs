@@ -24,8 +24,6 @@ fn make_word(original: &str) -> translation_import::Word {
 fn make_paragraph(ts: u64, text: &str) -> translation_import::ParagraphTranslation {
     translation_import::ParagraphTranslation {
         timestamp: ts,
-        source_language: "en".to_owned(),
-        target_language: "ru".to_owned(),
         sentences: vec![translation_import::Sentence {
             full_translation: text.to_string(),
             words: vec![make_word(text)],
@@ -40,8 +38,6 @@ fn test_translation_add_paragraph_translation() {
     let paragraph_translation = translation_import::ParagraphTranslation {
         total_tokens: None,
         timestamp: 1234567890,
-        source_language: "en".to_owned(),
-        target_language: "ru".to_owned(),
         sentences: vec![translation_import::Sentence {
             full_translation: "Hello, world!".to_string(),
             words: vec![
@@ -148,8 +144,6 @@ fn translation_serialize_deserialize_round_trip() {
     let paragraph_translation = translation_import::ParagraphTranslation {
         total_tokens: Some(1234),
         timestamp: 1,
-        source_language: "en".to_owned(),
-        target_language: "ru".to_owned(),
         sentences: vec![translation_import::Sentence {
             full_translation: "Hi".into(),
             words: vec![translation_import::Word {
@@ -180,8 +174,6 @@ fn translation_serialize_deserialize_round_trip() {
     let paragraph_translation2 = translation_import::ParagraphTranslation {
         total_tokens: Some(4321),
         timestamp: 2,
-        source_language: "en".to_owned(),
-        target_language: "ru".to_owned(),
         sentences: vec![translation_import::Sentence {
             full_translation: "Hi there".into(),
             words: vec![
@@ -258,8 +250,6 @@ fn translation_serialize_v1_deserialize_round_trip() {
     let paragraph_translation = translation_import::ParagraphTranslation {
         total_tokens: None,
         timestamp: 1,
-        source_language: "en".to_owned(),
-        target_language: "ru".to_owned(),
         sentences: vec![translation_import::Sentence {
             full_translation: "Hi".into(),
             words: vec![translation_import::Word {
@@ -290,8 +280,6 @@ fn translation_serialize_v1_deserialize_round_trip() {
     let paragraph_translation2 = translation_import::ParagraphTranslation {
         total_tokens: None,
         timestamp: 2,
-        source_language: "en".to_owned(),
-        target_language: "ru".to_owned(),
         sentences: vec![translation_import::Sentence {
             full_translation: "Hi there".into(),
             words: vec![
@@ -367,8 +355,6 @@ fn translation_serialize_deserialize_corruption() {
     let paragraph_translation = translation_import::ParagraphTranslation {
         total_tokens: None,
         timestamp: 1,
-        source_language: "en".to_owned(),
-        target_language: "ru".to_owned(),
         sentences: vec![translation_import::Sentence {
             full_translation: "Hi".into(),
             words: vec![translation_import::Word {
@@ -399,8 +385,6 @@ fn translation_serialize_deserialize_corruption() {
     let paragraph_translation2 = translation_import::ParagraphTranslation {
         total_tokens: None,
         timestamp: 2,
-        source_language: "en".to_owned(),
-        target_language: "ru".to_owned(),
         sentences: vec![translation_import::Sentence {
             full_translation: "Hi there".into(),
             words: vec![
@@ -719,19 +703,15 @@ fn to_import_empty_paragraph() {
     let input = translation_import::ParagraphTranslation {
         timestamp: 42,
         total_tokens: Some(17),
-        source_language: "eng".into(),
-        target_language: "rus".into(),
         sentences: vec![],
     };
     translation.add_paragraph_translation(0, &input, TranslationModel::Gemini25Flash);
 
     let view = translation.paragraph_view(0).unwrap();
-    let out = view.to_import("eng", "rus");
+    let out = view.to_import();
 
     assert_eq!(out.timestamp, 42);
     assert_eq!(out.total_tokens, Some(17));
-    assert_eq!(out.source_language, "eng");
-    assert_eq!(out.target_language, "rus");
     assert!(out.sentences.is_empty());
 }
 
@@ -741,8 +721,6 @@ fn to_import_word_grammar_and_punctuation() {
     let input = translation_import::ParagraphTranslation {
         timestamp: 100,
         total_tokens: None,
-        source_language: "spa".into(),
-        target_language: "rus".into(),
         sentences: vec![translation_import::Sentence {
             full_translation: "Я могу.".into(),
             words: vec![
@@ -784,7 +762,7 @@ fn to_import_word_grammar_and_punctuation() {
     translation.add_paragraph_translation(0, &input, TranslationModel::Gemini25Flash);
 
     let view = translation.paragraph_view(0).unwrap();
-    let out = view.to_import("spa", "rus");
+    let out = view.to_import();
 
     assert_eq!(out.sentences.len(), 1);
     let sentence = &out.sentences[0];
@@ -822,8 +800,6 @@ fn to_import_round_trip_via_add_paragraph_translation() {
     let input = translation_import::ParagraphTranslation {
         timestamp: 1234567890,
         total_tokens: Some(256),
-        source_language: "spa".into(),
-        target_language: "rus".into(),
         sentences: vec![
             translation_import::Sentence {
                 full_translation: "Я могу есть.".into(),
@@ -904,7 +880,7 @@ fn to_import_round_trip_via_add_paragraph_translation() {
     translation.add_paragraph_translation(0, &input, TranslationModel::Gemini25Flash);
 
     let view = translation.paragraph_view(0).unwrap();
-    let out = view.to_import("spa", "rus");
+    let out = view.to_import();
 
     assert_eq!(out, input);
 }

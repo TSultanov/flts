@@ -152,8 +152,6 @@ async fn save_after_load_book_and_translation_changed() {
         let initial_pt = translation_import::ParagraphTranslation {
             total_tokens: None,
             timestamp: 1,
-            source_language: source_language.to_639_3().to_owned(),
-            target_language: target_language.to_639_3().to_owned(),
             sentences: vec![translation_import::Sentence {
                 full_translation: "Hola".into(),
                 words: vec![translation_import::Word {
@@ -201,8 +199,6 @@ async fn save_after_load_book_and_translation_changed() {
         let new_pt = translation_import::ParagraphTranslation {
             total_tokens: None,
             timestamp: 2,
-            source_language: source_language.to_639_3().to_owned(),
-            target_language: target_language.to_639_3().to_owned(),
             sentences: vec![translation_import::Sentence {
                 full_translation: "Hola mundo".into(),
                 words: vec![translation_import::Word {
@@ -278,8 +274,6 @@ async fn save_merges_translation_with_concurrent_on_disk_change() {
     let pt1 = translation_import::ParagraphTranslation {
         total_tokens: None,
         timestamp: 1,
-        source_language: "en".to_owned(),
-        target_language: "ru".to_owned(),
         sentences: vec![translation_import::Sentence {
             full_translation: "v1".into(),
             words: vec![translation_import::Word {
@@ -332,8 +326,6 @@ async fn save_merges_translation_with_concurrent_on_disk_change() {
     let mem_pt = translation_import::ParagraphTranslation {
         total_tokens: None,
         timestamp: 2,
-        source_language: "en".to_owned(),
-        target_language: "ru".to_owned(),
         sentences: vec![translation_import::Sentence {
             full_translation: "mem".into(),
             words: vec![translation_import::Word {
@@ -374,8 +366,6 @@ async fn save_merges_translation_with_concurrent_on_disk_change() {
         let disk_pt = translation_import::ParagraphTranslation {
             total_tokens: None,
             timestamp: 3,
-            source_language: "en".to_owned(),
-            target_language: "ru".to_owned(),
             sentences: vec![translation_import::Sentence {
                 full_translation: "disk".into(),
                 words: vec![translation_import::Word {
@@ -568,8 +558,6 @@ async fn load_from_metadata_no_conflicts() {
     let pt2 = translation_import::ParagraphTranslation {
         total_tokens: None,
         timestamp: 2,
-        source_language: "en".to_owned(),
-        target_language: "ru".to_owned(),
         sentences: vec![translation_import::Sentence {
             full_translation: "m2".into(),
             words: vec![translation_import::Word {
@@ -650,8 +638,6 @@ async fn load_from_metadata_merges_conflicts_and_persists() {
     let pt2 = translation_import::ParagraphTranslation {
         total_tokens: None,
         timestamp: 2,
-        source_language: source_language.to_639_3().to_owned(),
-        target_language: target_language.to_639_3().to_owned(),
         sentences: vec![translation_import::Sentence {
             full_translation: "m2".into(),
             words: vec![translation_import::Word {
@@ -688,8 +674,6 @@ async fn load_from_metadata_merges_conflicts_and_persists() {
     let pt1 = translation_import::ParagraphTranslation {
         total_tokens: None,
         timestamp: 1,
-        source_language: source_language.to_639_3().to_owned(),
-        target_language: target_language.to_639_3().to_owned(),
         sentences: vec![translation_import::Sentence {
             full_translation: "c1".into(),
             words: vec![translation_import::Word {
@@ -726,8 +710,6 @@ async fn load_from_metadata_merges_conflicts_and_persists() {
     let pt3 = translation_import::ParagraphTranslation {
         total_tokens: None,
         timestamp: 3,
-        source_language: "en".to_owned(),
-        target_language: "ru".to_owned(),
         sentences: vec![translation_import::Sentence {
             full_translation: "c3".into(),
             words: vec![translation_import::Word {

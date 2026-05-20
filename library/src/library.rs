@@ -401,18 +401,14 @@ impl Library {
             };
 
             for translation_meta in &book_meta.translations_metadata {
-                let source_language =
-                    match Language::from_str(&translation_meta.source_langugage) {
-                        Ok(lang) => lang,
-                        Err(err) => {
-                            log::warn!(
-                                "Backfill: unknown source language {:?} on book {}: {err}",
-                                translation_meta.source_langugage,
-                                book_meta.id
-                            );
-                            continue;
-                        }
-                    };
+                if let Err(err) = Language::from_str(&translation_meta.source_langugage) {
+                    log::warn!(
+                        "Backfill: unknown source language {:?} on book {}: {err}",
+                        translation_meta.source_langugage,
+                        book_meta.id
+                    );
+                    continue;
+                }
                 let target_language = match Language::from_str(&translation_meta.target_language) {
                     Ok(lang) => lang,
                     Err(err) => {
@@ -429,13 +425,11 @@ impl Library {
                     let mut book = book_arc.lock().await;
                     let translation_arc = book.get_or_create_translation(&target_language).await;
                     let translation = translation_arc.lock().await;
-                    let src_639_3 = source_language.to_639_3();
-                    let tgt_639_3 = target_language.to_639_3();
                     let mut out = Vec::new();
                     for chapter in book.book.chapter_views() {
                         for paragraph in chapter.paragraphs() {
                             if let Some(view) = translation.paragraph_view(paragraph.id) {
-                                out.push((paragraph.id, view.to_import(src_639_3, tgt_639_3)));
+                                out.push((paragraph.id, view.to_import()));
                             }
                         }
                     }
@@ -556,8 +550,6 @@ mod library_tests {
         translation_import::ParagraphTranslation {
             timestamp: 0,
             total_tokens: None,
-            source_language: "spa".into(),
-            target_language: "rus".into(),
             sentences: vec![translation_import::Sentence {
                 full_translation: full_translation.into(),
                 words,
@@ -1251,8 +1243,6 @@ mod library_tests {
         let p_eng = translation_import::ParagraphTranslation {
             timestamp: 0,
             total_tokens: None,
-            source_language: "spa".into(),
-            target_language: "eng".into(),
             sentences: vec![translation_import::Sentence {
                 full_translation: "I can.".into(),
                 words: vec![full_word("puedo", "poder", "can", "verb", &["can"], false)],

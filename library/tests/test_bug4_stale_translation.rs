@@ -40,8 +40,6 @@ fn make_translation(text: &str) -> translation_import::ParagraphTranslation {
     translation_import::ParagraphTranslation {
         total_tokens: None,
         timestamp: 2000,
-        source_language: "eng".to_owned(),
-        target_language: "rus".to_owned(),
         sentences: vec![translation_import::Sentence {
             full_translation: text.into(),
             words: vec![translation_import::Word {

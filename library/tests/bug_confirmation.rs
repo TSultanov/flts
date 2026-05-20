@@ -72,17 +72,10 @@ fn overwrite_book_title(path: &Path, title: &str) {
     write_book(path, &book);
 }
 
-fn make_paragraph(
-    ts: u64,
-    text: &str,
-    source_language: &str,
-    target_language: &str,
-) -> translation_import::ParagraphTranslation {
+fn make_paragraph(ts: u64, text: &str) -> translation_import::ParagraphTranslation {
     translation_import::ParagraphTranslation {
         total_tokens: None,
         timestamp: ts,
-        source_language: source_language.to_owned(),
-        target_language: target_language.to_owned(),
         sentences: vec![translation_import::Sentence {
             full_translation: text.into(),
             words: vec![translation_import::Word {
@@ -223,12 +216,7 @@ async fn repro_translation_same_timestamp_conflict_collapses_distinct_version() 
         let translation = book.get_or_create_translation(&target_language).await;
         translation.lock().await.add_paragraph_translation(
             0,
-            &make_paragraph(
-                1,
-                "main version",
-                source_language.to_639_3(),
-                target_language.to_639_3(),
-            ),
+            &make_paragraph(1, "main version"),
             TranslationModel::Gemini25Flash,
         );
         book.save().await.unwrap();
@@ -253,12 +241,7 @@ async fn repro_translation_same_timestamp_conflict_collapses_distinct_version() 
     conflict_translation.id = main_translation.id;
     conflict_translation.add_paragraph_translation(
         0,
-        &make_paragraph(
-            1,
-            "conflict version",
-            source_language.to_639_3(),
-            target_language.to_639_3(),
-        ),
+        &make_paragraph(1, "conflict version"),
         TranslationModel::Gemini25Flash,
     );
     write_translation(&conflict_path, &conflict_translation);
