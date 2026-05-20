@@ -77,7 +77,9 @@ pub struct NewNote {
 pub struct CardInfo {
     #[serde(rename = "cardId")]
     pub card_id: i64,
-    #[serde(rename = "noteId")]
+    // AnkiConnect's cardsInfo returns the parent note id as `"note"` (not
+    // `"noteId"`). Real Anki responses fail to deserialize otherwise.
+    #[serde(rename = "note")]
     pub note_id: i64,
     pub queue: i64,
     pub interval: i64,
