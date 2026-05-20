@@ -439,6 +439,7 @@ pub fn extract_card_updates(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::{full_word, one_sentence_paragraph};
 
     fn word(lemma: &str, is_punctuation: bool) -> translation_import::Word {
         translation_import::Word {
@@ -670,46 +671,6 @@ mod tests {
     fn eligible_keeps_word_form_numeral() {
         for lemma in ["cinco", "пять", "fünf", "five"] {
             assert!(is_eligible(&word(lemma, false)), "expected {lemma} eligible");
-        }
-    }
-
-    fn full_word(
-        original: &str,
-        lemma_src: &str,
-        lemma_tgt: &str,
-        part_of_speech: &str,
-        translations: &[&str],
-        is_punctuation: bool,
-    ) -> translation_import::Word {
-        translation_import::Word {
-            original: original.into(),
-            contextual_translations: translations.iter().map(|s| (*s).into()).collect(),
-            note: None,
-            is_punctuation,
-            grammar: translation_import::Grammar {
-                original_initial_form: lemma_src.into(),
-                target_initial_form: lemma_tgt.into(),
-                part_of_speech: part_of_speech.into(),
-                plurality: None,
-                person: None,
-                tense: None,
-                case: None,
-                other: None,
-            },
-        }
-    }
-
-    fn one_sentence_paragraph(
-        full_translation: &str,
-        words: Vec<translation_import::Word>,
-    ) -> translation_import::ParagraphTranslation {
-        translation_import::ParagraphTranslation {
-            timestamp: 0,
-            total_tokens: None,
-            sentences: vec![translation_import::Sentence {
-                full_translation: full_translation.into(),
-                words,
-            }],
         }
     }
 
