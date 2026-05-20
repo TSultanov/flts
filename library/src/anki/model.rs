@@ -57,17 +57,34 @@ pub fn flts_model_spec() -> ModelSpec {
     }
 }
 
-/// The deck name FLTS uses for a given language pair: `FLTS::<src>-<tgt>`
-/// where each component is the ISO 639-3 code.
+/// The deck name FLTS uses for a given language pair:
+/// `FLTS::<src_pretty>-<tgt_pretty>` where each side prefers the
+/// language's autonym (e.g. "Русский", "Español") and falls back to
+/// the English name (e.g. "English") when no autonym is available.
+///
+/// The card-store directory layout at `cards/<src>-<tgt>/` continues to
+/// use ISO 639-3 codes and is unaffected.
 pub fn deck_name(src: Language, tgt: Language) -> Result<String> {
-    let s = src
-        .to_639_3();
-    let t = tgt
-        .to_639_3();
+    let s = pretty_name(src);
+    let t = pretty_name(tgt);
     if s.is_empty() || t.is_empty() {
-        bail!("language without a 639-3 code: {src:?} or {tgt:?}");
+        bail!("language without a printable name: {src:?} or {tgt:?}");
     }
     Ok(format!("FLTS::{s}-{t}"))
+}
+
+fn pretty_name(lang: Language) -> String {
+    let raw = lang.to_autonym().unwrap_or_else(|| lang.to_name());
+    // isolang's autonyms use each language's native casing — Russian
+    // and Spanish render lowercase ("русский", "español") because that
+    // matches the local convention. Capitalize the first grapheme for
+    // visual consistency with the English-style "FLTS::" prefix in
+    // Anki's deck list.
+    let mut chars = raw.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
 }
 
 /// First-run bootstrap. Verifies the AnkiConnect version, ensures the
@@ -126,9 +143,9 @@ mod tests {
     }
 
     #[test]
-    fn deck_name_formats_iso_639_3() {
-        assert_eq!(deck_name(spa(), rus()).unwrap(), "FLTS::spa-rus");
-        assert_eq!(deck_name(eng(), rus()).unwrap(), "FLTS::eng-rus");
+    fn deck_name_uses_autonym_or_english_name() {
+        assert_eq!(deck_name(spa(), rus()).unwrap(), "FLTS::Español-Русский");
+        assert_eq!(deck_name(eng(), rus()).unwrap(), "FLTS::English-Русский");
     }
 
     #[test]
@@ -152,8 +169,8 @@ mod tests {
         assert!(models.contains_key(FLTS_MODEL_NAME));
 
         let decks = mock.deck_names_and_ids().await.unwrap();
-        assert!(decks.contains_key("FLTS::spa-rus"));
-        assert!(decks.contains_key("FLTS::eng-rus"));
+        assert!(decks.contains_key("FLTS::Español-Русский"));
+        assert!(decks.contains_key("FLTS::English-Русский"));
         assert_eq!(decks.len(), 2);
     }
 

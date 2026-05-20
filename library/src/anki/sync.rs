@@ -695,7 +695,7 @@ mod tests {
         let models = mock.model_names_and_ids().await.unwrap();
         assert!(models.contains_key(crate::anki::model::FLTS_MODEL_NAME));
         let decks = mock.deck_names_and_ids().await.unwrap();
-        assert!(decks.contains_key("FLTS::spa-rus"));
+        assert!(decks.contains_key("FLTS::Español-Русский"));
 
         // Each card got a note tagged with its id.
         for lemma in ["poder", "comer"] {
