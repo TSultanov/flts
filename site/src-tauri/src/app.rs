@@ -84,6 +84,9 @@ pub struct AppState {
     watcher: Arc<Mutex<LibraryWatcher>>,
     backfill_lock: Arc<Mutex<()>>,
     anki_sync_task: Mutex<Option<Arc<AnkiSyncTask>>>,
+    /// Stable across `eval_config` re-spawns. The transient `AnkiSyncTask`
+    /// holds a clone and pushes status into it on every tick.
+    anki_sync_status: Arc<watch::Sender<crate::app::anki_sync::AnkiSyncStatus>>,
     translations_cache: tokio::sync::OnceCell<Arc<TranslationsCache>>,
     stats_cache: tokio::sync::OnceCell<Arc<TranslationSizeCache>>,
     pub lyrics_state: crate::app::lyrics::LyricsState,
@@ -113,6 +116,14 @@ impl AppState {
             Config::default()
         };
 
+        // Initial status: Unreachable until the first periodic / on-demand
+        // tick proves otherwise. UI hides the sync button on Unreachable, so
+        // the safe default is "hidden until we know."
+        let initial_anki_status = crate::app::anki_sync::AnkiSyncStatus {
+            state: crate::app::anki_sync::AnkiSyncStatusState::Unreachable,
+            ..Default::default()
+        };
+
         Ok(Self {
             app,
             config_path,
@@ -123,6 +134,7 @@ impl AppState {
             watcher,
             backfill_lock: Arc::new(Mutex::new(())),
             anki_sync_task: Mutex::new(None),
+            anki_sync_status: Arc::new(watch::channel(initial_anki_status).0),
             translations_cache: tokio::sync::OnceCell::new(),
             stats_cache: tokio::sync::OnceCell::new(),
             lyrics_state: crate::app::lyrics::LyricsState::new(),
@@ -152,6 +164,32 @@ impl AppState {
 
     pub fn library_sender(&self) -> Arc<watch::Sender<Option<Arc<Library>>>> {
         Arc::clone(&self.library)
+    }
+
+    pub fn subscribe_anki_sync_status(
+        &self,
+    ) -> watch::Receiver<crate::app::anki_sync::AnkiSyncStatus> {
+        self.anki_sync_status.subscribe()
+    }
+
+    pub fn anki_sync_status(&self) -> crate::app::anki_sync::AnkiSyncStatus {
+        self.anki_sync_status.borrow().clone()
+    }
+
+    pub async fn sync_anki_now(
+        &self,
+    ) -> anyhow::Result<crate::app::anki_sync::SyncReportDto> {
+        crate::app::anki_sync::sync_now_or_err(&self.anki_sync_task).await
+    }
+
+    fn set_anki_sync_unreachable(&self, reason: &str) {
+        self.anki_sync_status
+            .send_replace(crate::app::anki_sync::AnkiSyncStatus {
+                state: crate::app::anki_sync::AnkiSyncStatusState::Unreachable,
+                last_error: Some(reason.to_owned()),
+                last_finished_at_ms: None,
+                last_report: None,
+            });
     }
 
     pub async fn update_config(&self, config: Config) -> anyhow::Result<()> {
@@ -240,16 +278,11 @@ impl AppState {
                     .ok()
                     .and_then(|s| s.parse::<u64>().ok())
                     .unwrap_or(DEFAULT_ANKI_SYNC_INTERVAL_SECS);
-                // Cycle 5 will replace this throwaway sender with a
-                // stable channel on AppState. For now the task just
-                // pushes into a discarded receiver.
-                let (status_tx, _status_rx) =
-                    tokio::sync::watch::channel(crate::app::anki_sync::AnkiSyncStatus::default());
                 let task = AnkiSyncTask::init(
                     library.clone(),
                     client,
                     Duration::from_secs(interval_secs),
-                    Arc::new(status_tx),
+                    self.anki_sync_status.clone(),
                 );
                 *self.anki_sync_task.lock().await = Some(task);
                 info!(
@@ -257,6 +290,9 @@ impl AppState {
                 );
             } else {
                 info!("Anki sync disabled: set FLTS_ENABLE_ANKI_SYNC=1 to enable");
+                self.set_anki_sync_unreachable(
+                    "Anki sync disabled by FLTS_ENABLE_ANKI_SYNC env var",
+                );
             }
 
             self.watcher
@@ -269,6 +305,11 @@ impl AppState {
         } else {
             self.library.send_replace(None);
             self.stop_translation_queue().await;
+            // No library = no sync. UI hides the button.
+            if let Some(task) = self.anki_sync_task.lock().await.take() {
+                task.shutdown().await;
+            }
+            self.set_anki_sync_unreachable("Library not configured");
         }
 
         Ok(())
@@ -512,6 +553,20 @@ mod tests {
         assert!(!success);
         assert!(start.elapsed() < Duration::from_secs(1));
     }
+}
+
+#[tauri::command]
+pub async fn get_anki_sync_status(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<crate::app::anki_sync::AnkiSyncStatus, String> {
+    Ok(state.anki_sync_status())
+}
+
+#[tauri::command]
+pub async fn sync_anki_now(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<crate::app::anki_sync::SyncReportDto, String> {
+    state.sync_anki_now().await.map_err(|err| err.to_string())
 }
 
 #[tauri::command]

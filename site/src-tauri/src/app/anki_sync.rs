@@ -163,6 +163,23 @@ impl AnkiSyncTask {
     }
 }
 
+/// Dispatch helper for the `sync_anki_now` Tauri command. Pulls the task
+/// from a `Mutex<Option<Arc<AnkiSyncTask>>>` slot (typically
+/// `AppState::anki_sync_task`) and either runs `sync_now` or errors with a
+/// message explaining why. Extracted as a free fn so we can unit-test it
+/// without constructing the full `AppState`.
+pub async fn sync_now_or_err(
+    task_slot: &Mutex<Option<Arc<AnkiSyncTask>>>,
+) -> anyhow::Result<SyncReportDto> {
+    let task = task_slot.lock().await.clone();
+    match task {
+        None => anyhow::bail!(
+            "no anki sync task installed (library not configured or sync disabled)"
+        ),
+        Some(task) => task.sync_now().await,
+    }
+}
+
 /// One sync attempt with full status side effects. Shared by the periodic
 /// tick and the on-demand `sync_now` entry point so both paths behave
 /// identically.
@@ -501,6 +518,38 @@ mod tests {
         assert_eq!(status.state, AnkiSyncStatusState::Unreachable);
         assert!(status.last_error.is_some());
 
+        task.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn sync_now_or_err_returns_err_when_task_is_none() {
+        let slot: Mutex<Option<Arc<AnkiSyncTask>>> = Mutex::new(None);
+        let err = sync_now_or_err(&slot)
+            .await
+            .expect_err("missing task must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("anki sync task"),
+            "error must explain why; got {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_now_or_err_returns_report_when_task_present() {
+        let (_tmp, library) = seed_library_with_card("flts_anki_sync_slot_present").await;
+        let mock: Arc<dyn AnkiConnect> = Arc::new(MockAnkiConnect::new());
+        let task = AnkiSyncTask::init(
+            library,
+            mock,
+            Duration::from_secs(3600),
+            make_status_tx(),
+        );
+        let slot: Mutex<Option<Arc<AnkiSyncTask>>> = Mutex::new(Some(task.clone()));
+
+        let report = sync_now_or_err(&slot)
+            .await
+            .expect("present task must succeed");
+        assert!(report.succeeded > 0);
         task.shutdown().await;
     }
 
