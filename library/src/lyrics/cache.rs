@@ -5,6 +5,7 @@ use log::{info, warn};
 use tokio::{fs, io::AsyncWriteExt};
 
 use crate::lyrics::{Lyrics, LyricsTranslation};
+use crate::translator::TranslationModel;
 
 const CACHE_SUBDIR: &str = "lyrics";
 const RAW_SUBDIR: &str = "raw";
@@ -28,7 +29,7 @@ impl LyricsCache {
         &self,
         track_id: &str,
         target: &Language,
-        model: usize,
+        model: TranslationModel,
     ) -> Option<LyricsTranslation> {
         let path = self.path_for(track_id, target, model);
         match fs::read(&path).await {
@@ -70,9 +71,13 @@ impl LyricsCache {
         Ok(())
     }
 
-    fn path_for(&self, track_id: &str, target: &Language, model: usize) -> PathBuf {
+    fn path_for(&self, track_id: &str, target: &Language, model: TranslationModel) -> PathBuf {
         let safe_track = sanitize(track_id);
-        let filename = format!("{safe_track}__{}_{}.json", target.to_639_3(), model);
+        let filename = format!(
+            "{safe_track}__{}_{}.json",
+            target.to_639_3(),
+            model as usize
+        );
         self.root.join(filename)
     }
 
@@ -143,7 +148,7 @@ mod tests {
         LyricsTranslation {
             track_id: track_id.to_string(),
             target_lang: Language::from_639_3("eng").unwrap(),
-            model: 4,
+            model: TranslationModel::OpenAIGpt5Mini,
             lines: vec![LyricsLineTranslation {
                 translation: "hello".into(),
                 glosses: vec![Gloss {
@@ -177,7 +182,7 @@ mod tests {
             .get(
                 "spotify:track:nope",
                 &Language::from_639_3("eng").unwrap(),
-                4,
+                TranslationModel::OpenAIGpt5Mini,
             )
             .await;
         assert!(got.is_none());

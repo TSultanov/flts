@@ -248,7 +248,8 @@ impl Display for TranslationErrors {
     }
 }
 
-#[derive(Debug, Clone, Copy, EnumIter, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, EnumIter, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(from = "usize", into = "usize")]
 pub enum TranslationModel {
     Unknown = 0,
     Gemini25Flash = 1,
@@ -311,6 +312,18 @@ impl From<usize> for TranslationModel {
             13 => TranslationModel::Gemini31FlashLite,
             _ => TranslationModel::Unknown,
         }
+    }
+}
+
+impl From<TranslationModel> for usize {
+    fn from(model: TranslationModel) -> Self {
+        model as usize
+    }
+}
+
+impl Display for TranslationModel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", *self as usize)
     }
 }
 

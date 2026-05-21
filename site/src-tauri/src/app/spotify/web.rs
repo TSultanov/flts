@@ -286,9 +286,10 @@ impl SpotifyWebState {
             })?;
 
         if let Some(refresh) = token.refresh_token.as_deref()
-            && let Err(err) = save_refresh_token(refresh) {
-                warn!("Could not persist refresh token to keyring: {err}");
-            }
+            && let Err(err) = save_refresh_token(refresh)
+        {
+            warn!("Could not persist refresh token to keyring: {err}");
+        }
 
         {
             let mut inner = self.inner.write().await;
@@ -868,18 +869,8 @@ async fn resolve_playback_list(
         let track = (*track).clone();
         let target_lang = target_lang.clone();
         tokio::spawn(async move {
-            if let Err(err) = crate::app::lyrics::resolve_track(
-                &state,
-                &app,
-                &track.id,
-                &track.artist,
-                &track.name,
-                track.album.as_deref(),
-                Some(track.duration_ms),
-                &target_lang,
-                model,
-            )
-            .await
+            if let Err(err) =
+                crate::app::lyrics::resolve_track(&state, &app, &track, &target_lang, model).await
             {
                 warn!(
                     "Resolve failed for track={} ({}): {err}",

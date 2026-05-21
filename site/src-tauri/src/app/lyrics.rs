@@ -21,7 +21,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex;
 
-use crate::app::{AppError, AppState, config::Config};
+use crate::app::{AppError, AppState, config::Config, spotify::web::TrackMeta};
 
 /// Lyrics are cheap to re-fetch from the disk cache backing LyricsCache, so a
 /// modest in-memory pin is plenty even for long listening sessions.
@@ -191,12 +191,9 @@ pub async fn get_now_playing(
 
 pub(crate) async fn fetch_lyrics_inner(
     state: &Arc<AppState>,
-    track_id: &str,
-    artist: &str,
-    title: &str,
-    album: Option<&str>,
-    duration_s: Option<u32>,
+    track: &TrackMeta,
 ) -> anyhow::Result<Option<Lyrics>> {
+    let track_id = track.id.as_str();
     // In-memory cache: hottest path, session-local.
     if let Some(existing) = state.lyrics_state.lyrics.get(&track_id.to_string()).await {
         return Ok(Some((*existing).clone()));
@@ -213,7 +210,15 @@ pub(crate) async fn fetch_lyrics_inner(
         return Ok(Some(cached));
     }
 
-    let fetched = lrclib::fetch(track_id, artist, title, album, duration_s).await?;
+    let duration_s = (track.duration_ms + 500) / 1000;
+    let fetched = lrclib::fetch(
+        track_id,
+        &track.artist,
+        &track.name,
+        track.album.as_deref(),
+        Some(duration_s),
+    )
+    .await?;
 
     if let Some(l) = &fetched {
         state
@@ -239,7 +244,7 @@ pub async fn get_track_lyrics_state(
     state: tauri::State<'_, Arc<AppState>>,
     track_id: String,
     target_lang: String,
-    model: usize,
+    model: TranslationModel,
 ) -> Result<TrackLyricsState, String> {
     let tgt = Language::from_639_3(&target_lang)
         .ok_or_else(|| format!("unknown target lang: {target_lang}"))?;
@@ -267,19 +272,18 @@ pub(crate) async fn dispatch_translation_inner(
     app: &AppHandle,
     track_id: &str,
     target_lang: &str,
-    model: usize,
+    model: TranslationModel,
 ) -> Result<(), String> {
     let tgt = Language::from_639_3(target_lang)
         .ok_or_else(|| format!("unknown target lang: {target_lang}"))?;
-    let model_enum = TranslationModel::from(model);
-    if matches!(model_enum, TranslationModel::Unknown) {
-        return Err(format!("unknown model id: {model}"));
+    if matches!(model, TranslationModel::Unknown) {
+        return Err("unknown model id".to_string());
     }
 
     let key = TranslationKey {
         track_id: track_id.to_string(),
         tgt,
-        model: model_enum,
+        model,
     };
 
     // Cache hit → emit the same `lyrics_translation_done` event a fresh
@@ -329,7 +333,7 @@ pub(crate) async fn dispatch_translation_inner(
         }
     };
 
-    let provider = model_enum
+    let provider = model
         .provider()
         .ok_or_else(|| "unknown model provider".to_string())?;
     let cfg: Config = state.config.borrow().clone();
@@ -408,33 +412,34 @@ pub(crate) async fn dispatch_translation_inner(
 pub(crate) async fn resolve_track(
     state: &Arc<AppState>,
     app: &AppHandle,
-    track_id: &str,
-    artist: &str,
-    title: &str,
-    album: Option<&str>,
-    duration_ms: Option<u32>,
+    track: &TrackMeta,
     target_lang: &str,
-    model: usize,
+    model: TranslationModel,
 ) -> anyhow::Result<()> {
-    let duration_s = duration_ms.map(|ms| (ms + 500) / 1000);
-    let lyrics = fetch_lyrics_inner(state, track_id, artist, title, album, duration_s).await?;
+    let lyrics = fetch_lyrics_inner(state, track).await?;
 
     // Tell the frontend our determination either way: lyrics found, or
     // confirmed absent on LRClib. Either is information the UI uses.
     let _ = app.emit(
         "lyrics_resolved",
         LyricsResolved {
-            track_id: track_id.to_string(),
+            track_id: track.id.clone(),
             lyrics: lyrics.clone(),
         },
     );
 
     if lyrics.is_none() {
-        info!("Resolve: no lyrics on LRClib for {title} — {artist} (track_id={track_id})");
+        info!(
+            "Resolve: no lyrics on LRClib for {} — {} (track_id={})",
+            track.name, track.artist, track.id
+        );
         return Ok(());
     }
-    info!("Resolve: lyrics fetched, dispatching translation for {title} — {artist}");
-    if let Err(err) = dispatch_translation_inner(state, app, track_id, target_lang, model).await {
+    info!(
+        "Resolve: lyrics fetched, dispatching translation for {} — {}",
+        track.name, track.artist
+    );
+    if let Err(err) = dispatch_translation_inner(state, app, &track.id, target_lang, model).await {
         anyhow::bail!("translation dispatch failed: {err}");
     }
     Ok(())
@@ -460,7 +465,7 @@ async fn run_translation(
     let translation = LyricsTranslation {
         track_id: key.track_id.clone(),
         target_lang: key.tgt,
-        model: key.model as usize,
+        model: key.model,
         lines,
     };
 

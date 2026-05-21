@@ -116,7 +116,7 @@ pub struct Config {
     pub gemini_api_key: Option<String>,
     #[serde(rename = "openaiApiKey")]
     pub openai_api_key: Option<String>,
-    pub model: usize,
+    pub model: TranslationModel,
     #[serde(rename = "libraryPath")]
     pub library_path: Option<String>,
     /// Spotify Developer Dashboard client_id. Required for the Web API to work;
@@ -153,7 +153,7 @@ impl Default for Config {
             translation_provider: TranslationProvider::Google,
             gemini_api_key: None,
             openai_api_key: None,
-            model: TranslationModel::Gemini25Flash as usize,
+            model: TranslationModel::Gemini25Flash,
             library_path: None,
             spotify_client_id: None,
             spotify_preload_count: default_preload_count(),

@@ -591,16 +591,11 @@ pub async fn translate_paragraph(
     state: tauri::State<'_, Arc<AppState>>,
     book_id: Uuid,
     paragraph_id: usize,
-    model: usize,
+    model: TranslationModel,
     use_cache: bool,
 ) -> Result<usize, String> {
     state
-        .translate_paragraph(
-            book_id,
-            paragraph_id,
-            TranslationModel::from(model),
-            use_cache,
-        )
+        .translate_paragraph(book_id, paragraph_id, model, use_cache)
         .await
         .map_err(|err| err.to_string())
 }
