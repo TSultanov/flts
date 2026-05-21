@@ -69,10 +69,14 @@ test.describe('Chapter session position (chromium only)', () => {
     await page.waitForTimeout(500);
 
     // 4. Switch to chapter 1 via the sidebar link.
+    //    Chapters live inside the collapsible ChaptersPanel; open it first.
+    await page.locator('[data-testid="chapters-panel-handle"]').click();
     await page.locator(`a[href="/book/${bookId}/1"]`).click();
     await expect(paragraphLocator(page, 40)).toBeAttached();
 
-    // 5. Switch back to chapter 0.
+    // 5. Switch back to chapter 0. The panel auto-closes on chapter click,
+    //    so re-open it.
+    await page.locator('[data-testid="chapters-panel-handle"]').click();
     await page.locator(`a[href="/book/${bookId}/0"]`).click();
     await expect(paragraphLocator(page, 0)).toBeAttached();
 

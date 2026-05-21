@@ -7,6 +7,7 @@
     import { route, navigate } from "../../router";
     import ChapterView from "./ChapterView.svelte";
     import ChapterPlaceholderView from "./ChapterPlaceholderView.svelte";
+    import ChaptersPanel from "./ChaptersPanel.svelte";
     import type { WordSelection } from "./ParagraphViewModel.svelte";
 
     const params = $derived(route.params);
@@ -112,20 +113,16 @@
 </script>
 
 {#if chapters.current}
-    <div class="container {chapters.current.length <= 1 ? "container-twocolumn" : ""}">
-        {#if chapters.current.length > 1}
-            <div class="chapters">
-                {#each chapters.current as chapter}
-                    <p class="{chapter.id === chapterId ? "current" : ""}">
-                        <a href="/book/{bookId}/{chapter.id}"
-                            >{chapter.title ? chapter.title : "<no title>"}</a
-                        >
-                    </p>
-                {/each}
-            </div>
-        {/if}
-        {#if chapterId != null}
-            <div class="chapter-view">
+    <div class="container">
+        <div class="chapter-view">
+            {#if chapters.current.length > 1}
+                <ChaptersPanel
+                    {bookId}
+                    chapters={chapters.current}
+                    currentChapterId={chapterId}
+                />
+            {/if}
+            {#if chapterId != null}
                 {#key chapterId}
                     <ChapterView
                         {bookId}
@@ -136,17 +133,17 @@
                         bind:selection
                     />
                 {/key}
-            </div>
+            {:else}
+                <ChapterPlaceholderView />
+            {/if}
+        </div>
+        {#if chapterId != null}
             <div class="word-view">
                 {#if selection}
                     <WordView {bookId} {selection} />
                 {:else}
                     Select word to show translation
                 {/if}
-            </div>
-        {:else}
-            <div class="chapter-view">
-                <ChapterPlaceholderView />
             </div>
         {/if}
     </div>
@@ -157,54 +154,22 @@
 <style>
     .container {
         display: grid;
-        grid-template-columns: 150px auto 300px;
-        height: 100%;
-    }
-
-    .container-twocolumn {
         grid-template-columns: auto 300px;
+        height: 100%;
     }
 
     @media (max-aspect-ratio: 1/1) {
         .container {
-            grid-template-columns: 150px auto;
-            grid-template-rows: auto 300px;
-        }
-
-        .container-twocolumn {
             grid-template-columns: auto;
-        }
-
-        .word-view {
-            grid-row: 2 / 3;
-            grid-column: 2 / 3;
-        }
-
-        .container-twocolumn .word-view {
-            grid-row: 2 / 3;
-            grid-column: 1 / 2;
-        }
-
-        .chapters {
-            grid-row: 1 / 3;
+            grid-template-rows: auto 300px;
         }
     }
 
     .chapter-view {
+        position: relative;
         flex: 1 1 auto;
         hyphens: auto;
-        overflow: auto;
-    }
-
-    .chapters {
-        padding: 10px;
-        border-right: 1px solid var(--background-color);
-        overflow-y: auto;
-        overflow-x: none;
-    }
-
-    .chapters .current {
-        outline: 1px dotted var(--selected-color);
+        overflow: hidden;
     }
 
     .word-view {

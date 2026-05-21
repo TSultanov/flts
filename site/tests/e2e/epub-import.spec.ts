@@ -494,6 +494,9 @@ test.describe('EPUB Import with Mocked Translation', () => {
     // Click on the imported book to view it
     await page.click('a:has-text("Test Book")');
 
+    // Chapters live inside the collapsible ChaptersPanel; open it.
+    await page.locator('[data-testid="chapters-panel-handle"]').click();
+
     // Should be in book view with chapters
     await expect(page.locator('text=Chapter One')).toBeVisible();
     await expect(page.locator('text=Chapter Two')).toBeVisible();
