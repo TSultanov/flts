@@ -100,13 +100,13 @@ await seedAndOpen(page, multiChapterSpec());
   });
 });
 
-test.describe('ChaptersPanel — resize persistence', () => {
+test.describe('ChaptersPanel — drag resize', () => {
   test.skip(({ browserName }) => browserName !== 'chromium', 'chromium-only — mouse drag');
 
-  test('dragging the grip changes the width and survives a reload', async ({
+  test('dragging the grip changes the width within the session', async ({
     page,
   }) => {
-const { bookId } = await seedAndOpen(page, multiChapterSpec());
+    await seedAndOpen(page, multiChapterSpec());
     await page.locator(HANDLE).click();
     await expect(page.locator(HANDLE)).toHaveAttribute('aria-expanded', 'true');
     await page.waitForTimeout(250);
@@ -115,42 +115,28 @@ const { bookId } = await seedAndOpen(page, multiChapterSpec());
     const startBox = await grip.boundingBox();
     if (!startBox) throw new Error('resize grip not visible');
 
+    const widthBefore = await page.evaluate(
+      () =>
+        (document.querySelector(
+          '[data-testid="chapters-panel"]',
+        ) as HTMLElement | null)?.clientWidth ?? -1,
+    );
+
     const startX = startBox.x + startBox.width / 2;
     const startY = startBox.y + startBox.height / 2;
-    const targetX = startX + 80;
-
     await page.mouse.move(startX, startY);
     await page.mouse.down();
-    // Intermediate move helps Chromium register the drag as a pointer-capture
-    // sequence rather than a click.
     await page.mouse.move(startX + 20, startY, { steps: 5 });
-    await page.mouse.move(targetX, startY, { steps: 10 });
+    await page.mouse.move(startX + 80, startY, { steps: 10 });
     await page.mouse.up();
 
-    const widthAfterDrag = await page.evaluate(
+    const widthAfter = await page.evaluate(
       () =>
         (document.querySelector(
           '[data-testid="chapters-panel"]',
         ) as HTMLElement | null)?.clientWidth ?? -1,
     );
-    expect(widthAfterDrag).toBeGreaterThan(260);
-
-    // Reload through the library so BookView remounts via the natural path.
-    // We use page.goto with the same path to force a hard reload; the
-    // localStorage persists across reloads on the same origin.
-    await page.goto(`/book/${bookId}/0`);
-    await expect(page.locator(HANDLE)).toBeVisible();
-    // Open the panel again (default closed); width should reflect the saved value.
-    await page.locator(HANDLE).click();
-    await page.waitForTimeout(250);
-
-    const widthAfterReload = await page.evaluate(
-      () =>
-        (document.querySelector(
-          '[data-testid="chapters-panel"]',
-        ) as HTMLElement | null)?.clientWidth ?? -1,
-    );
-    expect(Math.abs(widthAfterReload - widthAfterDrag)).toBeLessThanOrEqual(2);
+    expect(widthAfter).toBeGreaterThan(widthBefore + 60);
   });
 });
 

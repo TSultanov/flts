@@ -340,11 +340,12 @@ test.describe('ParagraphView (chromium only)', () => {
     const p = paragraphLocator(page, 0);
     await wordSpan(p, 0).click();
     await expect(wordSpan(p, 0)).toHaveClass(/\bselected\b/);
-    // WordView panel renders the original word and the contextual translation
-    // list item. `.word-original` is unique to WordView; `.word-view ul li`
-    // targets the contextual-translations list specifically.
-    await expect(page.locator('.word-original')).toHaveText('hello');
-    await expect(page.locator('.word-view ul li')).toHaveText('hola');
+    // WordView now lives in a bottom overlay panel that opens collapsed
+    // (peek state) on selection. The peek shows the original word and the
+    // comma-joined contextual translations.
+    const peek = page.locator('[data-testid="word-view-peek"]');
+    await expect(peek.locator('.peek-word')).toHaveText('hello');
+    await expect(peek.locator('.peek-translations')).toHaveText('hola');
   });
 
   test('E3: clicking a word records a mark_word_visible call with the correct flatIndex', async ({

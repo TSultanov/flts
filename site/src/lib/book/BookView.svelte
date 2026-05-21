@@ -113,8 +113,8 @@
 </script>
 
 {#if chapters.current}
-    <div class="container">
-        <div class="chapter-view">
+    <div class="chapter-view">
+        <div class="chapter-area">
             {#if chapters.current.length > 1}
                 <ChaptersPanel
                     {bookId}
@@ -138,13 +138,7 @@
             {/if}
         </div>
         {#if chapterId != null}
-            <div class="word-view">
-                {#if selection}
-                    <WordView {bookId} {selection} />
-                {:else}
-                    Select word to show translation
-                {/if}
-            </div>
+            <WordView {bookId} {selection} />
         {/if}
     </div>
 {:else}
@@ -152,29 +146,23 @@
 {/if}
 
 <style>
-    .container {
-        display: grid;
-        grid-template-columns: auto 300px;
-        height: 100%;
-    }
-
-    @media (max-aspect-ratio: 1/1) {
-        .container {
-            grid-template-columns: auto;
-            grid-template-rows: auto 300px;
-        }
-    }
-
+    /* Vertical flex: chapter-area fills the remaining space, WordView's
+       slot takes its collapsed-size height at the bottom. The expanded
+       WordView body overflows up via absolute positioning inside its own
+       slot, so opening the word view never resizes .chapter-area. */
     .chapter-view {
+        display: flex;
+        flex-direction: column;
         position: relative;
-        flex: 1 1 auto;
+        height: 100%;
         hyphens: auto;
         overflow: hidden;
     }
 
-    .word-view {
-        padding: 10px;
-        border-left: 1px solid var(--background-color);
-        overflow-y: auto;
+    .chapter-area {
+        flex: 1 1 auto;
+        min-height: 0;
+        position: relative;
+        overflow: hidden;
     }
 </style>
