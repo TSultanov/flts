@@ -3,14 +3,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use async_openai::types::chat::{
-    ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
-    ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs, ResponseFormat,
-    ResponseFormatJsonSchema,
-};
-use async_openai::{Client, config::OpenAIConfig};
 use async_trait::async_trait;
-use futures_util::StreamExt;
+use futures_util::TryStreamExt;
+use gemini_rust::{Gemini, Model, ThinkingConfig};
 use isolang::Language;
 use serde_json::Value;
 use tokio::time::timeout;
@@ -20,7 +15,7 @@ use crate::{
     cache::TranslationsCache,
     translator::{
         ProgressCallback, TranslationErrors, TranslationModel, Translator,
-        paragraph_translation_schema,
+        paragraph_translation_schema, strip_additional_properties,
     },
 };
 
@@ -29,36 +24,41 @@ use super::{
     total_stream_timeout,
 };
 
-const GEMINI_OPENAI_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
-
-pub struct GeminiTranslator {
-    cache: Arc<TranslationsCache>,
-    client: Client<OpenAIConfig>,
-    schema: Arc<Value>,
-    model: Arc<str>,
-    translation_model: TranslationModel,
-    from: Language,
-    to: Language,
-}
-
-pub(crate) fn gemini_model_name(m: TranslationModel) -> anyhow::Result<&'static str> {
+pub(crate) fn gemini_model(m: TranslationModel) -> anyhow::Result<Model> {
     Ok(match m {
-        TranslationModel::Gemini25Flash => "gemini-2.5-flash",
-        TranslationModel::Gemini25Pro => "gemini-2.5-pro",
-        TranslationModel::Gemini25FlashLight => "gemini-2.5-flash-lite",
-        TranslationModel::Gemini3Pro => "gemini-3-pro-preview",
-        TranslationModel::Gemini3Flash => "gemini-3-flash-preview",
-        TranslationModel::Gemini31Pro => "gemini-3.1-pro-preview",
-        TranslationModel::Gemini31FlashLite => "gemini-3.1-flash-lite-preview",
+        TranslationModel::Gemini25Flash => Model::Gemini25Flash,
+        TranslationModel::Gemini25Pro => Model::Gemini25Pro,
+        TranslationModel::Gemini25FlashLight => Model::Gemini25FlashLite,
+        TranslationModel::Gemini3Pro => Model::Gemini3Pro,
+        TranslationModel::Gemini3Flash => Model::Gemini3Flash,
+        TranslationModel::Gemini31Pro => Model::Custom("models/gemini-3.1-pro-preview".to_string()),
+        TranslationModel::Gemini31FlashLite => {
+            Model::Custom("models/gemini-3.1-flash-lite-preview".to_string())
+        }
         _ => Err(TranslationErrors::UnknownModel)?,
     })
 }
 
-pub(crate) fn gemini_client(api_key: String) -> Client<OpenAIConfig> {
-    let config = OpenAIConfig::new()
-        .with_api_base(GEMINI_OPENAI_BASE)
-        .with_api_key(api_key);
-    Client::with_config(config)
+pub(crate) fn gemini_client(api_key: String, model: Model) -> anyhow::Result<Gemini> {
+    Ok(Gemini::with_model(api_key, model)?)
+}
+
+/// The shared paragraph schema is OpenAI-strict (uses `additionalProperties: false`).
+/// Gemini rejects that key with HTTP 400, so we hand it a stripped variant.
+pub(crate) fn gemini_paragraph_schema() -> Value {
+    let mut s = paragraph_translation_schema();
+    strip_additional_properties(&mut s);
+    s
+}
+
+pub struct GeminiTranslator {
+    cache: Arc<TranslationsCache>,
+    client: Gemini,
+    schema: Arc<Value>,
+    model: Model,
+    translation_model: TranslationModel,
+    from: Language,
+    to: Language,
 }
 
 impl GeminiTranslator {
@@ -69,14 +69,14 @@ impl GeminiTranslator {
         from: &Language,
         to: &Language,
     ) -> anyhow::Result<GeminiTranslator> {
-        let model = gemini_model_name(translation_model)?;
-        let client = gemini_client(api_key);
+        let model = gemini_model(translation_model)?;
+        let client = gemini_client(api_key, model.clone())?;
 
         Ok(Self {
             cache,
             client,
-            schema: Arc::new(paragraph_translation_schema()),
-            model: Arc::from(model),
+            schema: Arc::new(gemini_paragraph_schema()),
+            model,
             translation_model,
             from: *from,
             to: *to,
@@ -107,34 +107,29 @@ impl Translator for GeminiTranslator {
             return Ok(cached_result);
         }
 
-        let request = CreateChatCompletionRequestArgs::default()
-            .model(self.model.as_ref())
-            .messages([
-                ChatCompletionRequestMessage::System(
-                    ChatCompletionRequestSystemMessageArgs::default()
-                        .content(Self::get_prompt(self.from.to_name(), self.to.to_name()))
-                        .build()?,
-                ),
-                ChatCompletionRequestMessage::User(
-                    ChatCompletionRequestUserMessageArgs::default()
-                        .content(paragraph)
-                        .build()?,
-                ),
-            ])
-            .response_format(ResponseFormat::JsonSchema {
-                json_schema: ResponseFormatJsonSchema {
-                    description: Some("Paragraph translation".to_string()),
-                    name: "paragraph_translation".to_string(),
-                    schema: Some((*self.schema).clone()),
-                    strict: Some(true),
-                },
-            })
-            .stream(true)
-            .build()?;
+        let thinking_config = match &self.model {
+            Model::Gemini25Flash => ThinkingConfig {
+                thinking_budget: Some(0),
+                include_thoughts: Some(false),
+                thinking_level: None,
+            },
+            _ => ThinkingConfig {
+                thinking_budget: None,
+                include_thoughts: Some(false),
+                thinking_level: None,
+            },
+        };
 
         let mut stream = timeout(
             TRANSLATION_REQUEST_TIMEOUT,
-            self.client.chat().create_stream(request),
+            self.client
+                .generate_content()
+                .with_system_prompt(Self::get_prompt(self.from.to_name(), self.to.to_name()))
+                .with_user_message(paragraph)
+                .with_response_mime_type("application/json")
+                .with_response_schema((*self.schema).clone())
+                .with_thinking_config(thinking_config)
+                .execute_stream(),
         )
         .await
         .map_err(|_| anyhow::anyhow!("Gemini request timed out"))??;
@@ -143,20 +138,14 @@ impl Translator for GeminiTranslator {
 
         let full_content = timeout(total_stream_timeout(paragraph.len()), async {
             loop {
-                let next = timeout(TRANSLATION_STREAM_IDLE_TIMEOUT, stream.next())
+                let next = timeout(TRANSLATION_STREAM_IDLE_TIMEOUT, stream.try_next())
                     .await
                     .map_err(|_| anyhow::anyhow!("Gemini stream timed out"))?;
                 let should_continue = accumulator.handle_result(
                     match next {
-                        Some(Ok(response)) => Ok(Some(
-                            response
-                                .choices
-                                .first()
-                                .and_then(|choice| choice.delta.content.clone())
-                                .unwrap_or_default(),
-                        )),
-                        Some(Err(err)) => Err(err.into()),
-                        None => Ok(None),
+                        Ok(Some(response)) => Ok(Some(response.text())),
+                        Ok(None) => Ok(None),
+                        Err(err) => Err(err.into()),
                     },
                     callback.as_deref(),
                 )?;

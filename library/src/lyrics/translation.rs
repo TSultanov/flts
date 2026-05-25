@@ -8,7 +8,8 @@ use async_openai::types::chat::{
 };
 use async_openai::{Client, config::OpenAIConfig};
 use async_trait::async_trait;
-use futures_util::StreamExt;
+use futures_util::{StreamExt, TryStreamExt};
+use gemini_rust::{Gemini, Model, ThinkingConfig};
 use isolang::Language;
 use log::info;
 use serde::Deserialize;
@@ -21,7 +22,7 @@ use crate::{
     translator::{
         ProgressCallback, StreamChunkAccumulator, TRANSLATION_REQUEST_TIMEOUT,
         TRANSLATION_STREAM_IDLE_TIMEOUT, TranslationErrors, TranslationModel, TranslationProvider,
-        total_stream_timeout,
+        strip_additional_properties, total_stream_timeout,
     },
 };
 
@@ -74,6 +75,20 @@ fn is_transient_translation(err: &anyhow::Error) -> bool {
                     || t.contains("overloaded")
                     || t.contains("timeout")
             }
+            _ => false,
+        };
+    }
+
+    if let Some(ge) = err.downcast_ref::<gemini_rust::ClientError>() {
+        return match ge {
+            gemini_rust::ClientError::PerformRequest { source, .. } => is_reqwest_transient(source),
+            gemini_rust::ClientError::PerformRequestNew { source } => is_reqwest_transient(source),
+            gemini_rust::ClientError::DecodeResponse { source } => is_reqwest_transient(source),
+            gemini_rust::ClientError::BadPart { .. } => true,
+            gemini_rust::ClientError::BadResponse { code, .. } => {
+                *code == 408 || *code == 429 || (500..=599).contains(code)
+            }
+            gemini_rust::ClientError::OperationTimeout { .. } => true,
             _ => false,
         };
     }
@@ -354,12 +369,20 @@ impl LyricsTranslator for LyricsOpenAITranslator {
     }
 }
 
-// -------- Gemini (via OpenAI-compatible endpoint) -------------------------
+// -------- Gemini ----------------------------------------------------------
+
+/// Gemini rejects `additionalProperties` in `response_schema`; serve it the
+/// same source-of-truth schema with that key stripped.
+fn gemini_lyrics_schema() -> Value {
+    let mut s = lyrics_schema();
+    strip_additional_properties(&mut s);
+    s
+}
 
 pub struct LyricsGeminiTranslator {
-    client: Client<OpenAIConfig>,
+    client: Gemini,
     schema: Arc<Value>,
-    model_name: Arc<str>,
+    model: Model,
     to: Language,
 }
 
@@ -369,12 +392,12 @@ impl LyricsGeminiTranslator {
         api_key: String,
         to: Language,
     ) -> anyhow::Result<Self> {
-        let model_name = crate::translator::gemini::gemini_model_name(translation_model)?;
-        let client = crate::translator::gemini::gemini_client(api_key);
+        let model = crate::translator::gemini::gemini_model(translation_model)?;
+        let client = crate::translator::gemini::gemini_client(api_key, model.clone())?;
         Ok(Self {
             client,
-            schema: Arc::new(lyrics_schema()),
-            model_name: Arc::from(model_name),
+            schema: Arc::new(gemini_lyrics_schema()),
+            model,
             to,
         })
     }
@@ -394,43 +417,39 @@ impl LyricsTranslator for LyricsGeminiTranslator {
             is_transient_translation,
             "Gemini lyrics",
             || async move {
+                let system = system_prompt(self.to.to_name());
                 let user = user_message(lines);
 
                 info!(
-                    "Gemini lyrics: model={} to={} lines={}",
-                    self.model_name,
+                    "Gemini lyrics: model={:?} to={} lines={}",
+                    self.model,
                     self.to.to_639_3(),
                     lines.len()
                 );
 
-                let request = CreateChatCompletionRequestArgs::default()
-                    .model(self.model_name.as_ref())
-                    .messages([
-                        ChatCompletionRequestMessage::System(
-                            ChatCompletionRequestSystemMessageArgs::default()
-                                .content(system_prompt(self.to.to_name()))
-                                .build()?,
-                        ),
-                        ChatCompletionRequestMessage::User(
-                            ChatCompletionRequestUserMessageArgs::default()
-                                .content(user)
-                                .build()?,
-                        ),
-                    ])
-                    .response_format(ResponseFormat::JsonSchema {
-                        json_schema: ResponseFormatJsonSchema {
-                            description: Some("Per-line song lyrics translation".to_string()),
-                            name: "lyrics_translation".to_string(),
-                            schema: Some((*self.schema).clone()),
-                            strict: Some(true),
-                        },
-                    })
-                    .stream(true)
-                    .build()?;
+                let thinking_config = match &self.model {
+                    Model::Gemini25Flash => ThinkingConfig {
+                        thinking_budget: Some(0),
+                        include_thoughts: Some(false),
+                        thinking_level: None,
+                    },
+                    _ => ThinkingConfig {
+                        thinking_budget: None,
+                        include_thoughts: Some(false),
+                        thinking_level: None,
+                    },
+                };
 
                 let mut stream = timeout(
                     TRANSLATION_REQUEST_TIMEOUT,
-                    self.client.chat().create_stream(request),
+                    self.client
+                        .generate_content()
+                        .with_system_prompt(system)
+                        .with_user_message(user)
+                        .with_response_mime_type("application/json")
+                        .with_response_schema((*self.schema).clone())
+                        .with_thinking_config(thinking_config)
+                        .execute_stream(),
                 )
                 .await
                 .map_err(|_| anyhow::anyhow!("Gemini lyrics request timed out"))??;
@@ -438,20 +457,14 @@ impl LyricsTranslator for LyricsGeminiTranslator {
                 let mut accumulator = StreamChunkAccumulator::new("Gemini");
                 let full = timeout(total_stream_timeout(stream_budget_chars(lines)), async {
                     loop {
-                        let next = timeout(TRANSLATION_STREAM_IDLE_TIMEOUT, stream.next())
+                        let next = timeout(TRANSLATION_STREAM_IDLE_TIMEOUT, stream.try_next())
                             .await
                             .map_err(|_| anyhow::anyhow!("Gemini lyrics stream idle timeout"))?;
                         let should_continue = accumulator.handle_result(
                             match next {
-                                Some(Ok(response)) => Ok(Some(
-                                    response
-                                        .choices
-                                        .first()
-                                        .and_then(|choice| choice.delta.content.clone())
-                                        .unwrap_or_default(),
-                                )),
-                                Some(Err(err)) => Err(err.into()),
-                                None => Ok(None),
+                                Ok(Some(response)) => Ok(Some(response.text())),
+                                Ok(None) => Ok(None),
+                                Err(err) => Err(err.into()),
                             },
                             progress,
                         )?;
@@ -496,6 +509,28 @@ mod tests {
     fn openai_schema_contains_additional_properties() {
         // Sanity: source schema does set strict mode for OpenAI.
         assert!(count_additional_properties(&lyrics_schema()) > 0);
+    }
+
+    #[test]
+    fn gemini_schema_strips_additional_properties() {
+        // Gemini rejects `additionalProperties` with HTTP 400, so the variant
+        // it sees must have none — recursively.
+        assert_eq!(count_additional_properties(&gemini_lyrics_schema()), 0);
+    }
+
+    #[test]
+    fn classifier_handles_gemini_bad_response_codes() {
+        let transient = anyhow::Error::from(gemini_rust::ClientError::BadResponse {
+            code: 503,
+            description: Some("upstream".into()),
+        });
+        assert!(is_transient_translation(&transient));
+
+        let permanent = anyhow::Error::from(gemini_rust::ClientError::BadResponse {
+            code: 400,
+            description: Some("bad request".into()),
+        });
+        assert!(!is_transient_translation(&permanent));
     }
 
     #[test]

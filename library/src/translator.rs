@@ -431,6 +431,26 @@ pub trait Translator: Send + Sync {
 /// reads the same shape via JSON Schema embedded in the system prompt and
 /// produces extra empty-string fields for the optional grammar slots; those
 /// deserialize cleanly into `Option<String>`.
+/// Gemini's `response_schema` accepts a subset of JSON Schema — `additionalProperties`
+/// is rejected with HTTP 400. Strip it recursively so the shared (OpenAI-strict)
+/// schemas can be reused for Gemini's native API.
+pub(crate) fn strip_additional_properties(v: &mut serde_json::Value) {
+    match v {
+        serde_json::Value::Object(map) => {
+            map.remove("additionalProperties");
+            for child in map.values_mut() {
+                strip_additional_properties(child);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for child in items {
+                strip_additional_properties(child);
+            }
+        }
+        _ => {}
+    }
+}
+
 pub(crate) fn paragraph_translation_schema() -> serde_json::Value {
     let pos_enum: Vec<&str> = PART_OF_SPEECH_VOCABULARY
         .iter()
