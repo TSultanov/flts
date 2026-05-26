@@ -12,6 +12,7 @@ use async_openai::{Client, config::OpenAIConfig};
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use isolang::Language;
+use log::warn;
 use serde_json::Value;
 use tokio::time::timeout;
 
@@ -106,26 +107,73 @@ impl Translator for OpenAITranslator {
         }
 
         let paragraph = ctx.paragraph_text;
+        let book_id = ctx.book_id;
+        let chapter_id = ctx.chapter_id;
         let callback = ctx.callback;
         let system_prompt = format!(
             "{}\n\nReturn ONLY a single JSON object that matches the requested schema. Do not wrap it in markdown.",
             Self::get_prompt(self.from.to_name(), self.to.to_name())
         );
 
+        // Resolve per-chapter context. On wait_ready timeout, fall back to
+        // no-summaries (still send the chapter text if available); empty
+        // strings collapse the reference-material user message away
+        // entirely so this matches pre-summaries behavior under
+        // NoChapterContext.
+        let (prior_summaries, chapter_text) = match self
+            .context_provider
+            .wait_ready(book_id, chapter_id)
+            .await
+        {
+            Ok(()) => {
+                let summaries = self
+                    .context_provider
+                    .prior_summaries(book_id, chapter_id)
+                    .await
+                    .unwrap_or_default();
+                let chapter = self
+                    .context_provider
+                    .chapter_text(book_id, chapter_id)
+                    .await
+                    .unwrap_or_default();
+                (summaries, chapter)
+            }
+            Err(err) => {
+                warn!(
+                    "Chapter summary not ready for book {book_id} ch {chapter_id}; \
+                     translating without summaries. ({err})"
+                );
+                let chapter = self
+                    .context_provider
+                    .chapter_text(book_id, chapter_id)
+                    .await
+                    .unwrap_or_default();
+                (String::new(), chapter)
+            }
+        };
+
+        let mut messages: Vec<ChatCompletionRequestMessage> = Vec::with_capacity(3);
+        messages.push(ChatCompletionRequestMessage::System(
+            ChatCompletionRequestSystemMessageArgs::default()
+                .content(system_prompt)
+                .build()?,
+        ));
+        if let Some(reference) = build_reference_material(&prior_summaries, &chapter_text) {
+            messages.push(ChatCompletionRequestMessage::User(
+                ChatCompletionRequestUserMessageArgs::default()
+                    .content(reference)
+                    .build()?,
+            ));
+        }
+        messages.push(ChatCompletionRequestMessage::User(
+            ChatCompletionRequestUserMessageArgs::default()
+                .content(format!("Translate this paragraph: {paragraph}"))
+                .build()?,
+        ));
+
         let request = CreateChatCompletionRequestArgs::default()
             .model(self.model.as_ref())
-            .messages([
-                ChatCompletionRequestMessage::System(
-                    ChatCompletionRequestSystemMessageArgs::default()
-                        .content(system_prompt)
-                        .build()?,
-                ),
-                ChatCompletionRequestMessage::User(
-                    ChatCompletionRequestUserMessageArgs::default()
-                        .content(paragraph)
-                        .build()?,
-                ),
-            ])
+            .messages(messages)
             .response_format(ResponseFormat::JsonSchema {
                 json_schema: ResponseFormatJsonSchema {
                     description: Some("Paragraph translation".to_string()),
@@ -191,4 +239,24 @@ impl Translator for OpenAITranslator {
 
         Ok(translation)
     }
+}
+
+/// Same composition as the Gemini reference material — kept byte-identical
+/// across consecutive paragraphs in the same chapter so OpenAI's implicit
+/// prefix caching can match.
+fn build_reference_material(prior_summaries: &str, chapter_text: &str) -> Option<String> {
+    if prior_summaries.is_empty() && chapter_text.is_empty() {
+        return None;
+    }
+    let mut out = String::with_capacity(prior_summaries.len() + chapter_text.len() + 256);
+    if !prior_summaries.is_empty() {
+        out.push_str("Summaries of prior chapters in this book (for cross-chapter context only — do not translate them):\n\n");
+        out.push_str(prior_summaries);
+        out.push_str("\n\n");
+    }
+    if !chapter_text.is_empty() {
+        out.push_str("Full text of the current chapter (use as surrounding context; the specific paragraph to translate will follow in a separate message):\n\n");
+        out.push_str(chapter_text);
+    }
+    Some(out)
 }

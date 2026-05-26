@@ -1,23 +1,36 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use gemini_rust::{CachedContentHandle, Gemini};
+use gemini_rust::{CacheExpirationRequest, CachedContentHandle, Gemini};
 use isolang::Language;
-use log::info;
+use log::{info, warn};
 use tokio::sync::{Mutex, OnceCell};
+use uuid::Uuid;
 
 use crate::translator::TranslationModel;
 
-/// Gemini's docs default cached content to a 1h TTL when none is set; the
-/// crate's `CacheBuilder::execute` requires an explicit value, so we pick the
-/// same. Long enough for an active reading session; short enough that an idle
-/// instance doesn't accumulate storage cost.
-const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(3600);
+/// Long-ish TTL so an active reading session keeps the cache warm without
+/// rebuilding. Re-fired on every cache use (see `get_or_create`'s
+/// refresh-on-use path), so an idle book caches storage cost is bounded
+/// by inactivity, not session length.
+const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(24 * 3600);
+
+/// Discriminates the "full" chapter cache from a fallback that carries
+/// only the chapter text (used when summary generation has failed for
+/// this book).
+#[derive(Clone, Copy, Hash, Eq, PartialEq, Debug)]
+pub enum CacheVariant {
+    WithSummaries,
+    NoSummaries,
+}
 
 #[derive(Clone, Hash, Eq, PartialEq, Debug)]
 pub struct CacheKey {
     pub model: TranslationModel,
     pub from: Language,
     pub to: Language,
+    pub book_id: Uuid,
+    pub chapter_id: usize,
+    pub variant: CacheVariant,
 }
 
 /// Generic per-process registry that lazily creates one value per key and
@@ -77,45 +90,101 @@ impl<T> Registry<T> {
 
 pub type GeminiCacheRegistry = Registry<CachedContentHandle>;
 
+/// Cached payload split into the immutable system instruction (always
+/// present) and the per-chapter reference material (summaries + chapter
+/// text, optional under the `NoSummaries` variant or for empty
+/// chapters).
+pub struct CacheContent {
+    pub system_instruction: String,
+    pub user_reference_material: Option<String>,
+}
+
 impl Registry<CachedContentHandle> {
-    /// Returns a Gemini cache handle for `key`, creating it on first use. The
-    /// `system_prompt` closure is only called when the cache actually needs
-    /// to be built — repeat callers pay just one map lookup.
+    /// Returns a Gemini cache handle for `key`, creating it on first use.
+    /// The `build_content` closure is only invoked when the cache actually
+    /// needs to be built; on a hit we additionally fire-and-forget a TTL
+    /// refresh so an active reader keeps the cache warm without paying to
+    /// recreate it.
     pub async fn get_or_create<F>(
         &self,
         client: &Gemini,
         key: CacheKey,
-        system_prompt: F,
+        build_content: F,
     ) -> anyhow::Result<Arc<CachedContentHandle>>
     where
-        F: FnOnce() -> String,
+        F: FnOnce() -> CacheContent,
     {
+        // Did we already have this entry on entry to get_or_create_with?
+        // (Cheap to peek; lets us decide whether to fire the TTL refresh.)
+        let existed_before = {
+            let guard = self.inner.lock().await;
+            guard
+                .get(&key)
+                .and_then(|cell| cell.get())
+                .is_some()
+        };
+
         let key_for_init = key.clone();
-        self.get_or_create_with::<_, _, anyhow::Error>(key, || async move {
-            let prompt = system_prompt();
-            let display = format!(
-                "flts-{}-{}-{}",
-                usize::from(key_for_init.model),
-                key_for_init.from.to_639_3(),
-                key_for_init.to.to_639_3()
-            );
-            info!(
-                "Creating Gemini cache {display} ({} prompt chars, ttl {}s)",
-                prompt.len(),
-                DEFAULT_CACHE_TTL.as_secs()
-            );
-            let handle = client
-                .create_cache()
-                .with_display_name(display)?
-                .with_system_instruction(prompt)
-                .with_ttl(DEFAULT_CACHE_TTL)
-                .execute()
-                .await?;
-            info!("Created Gemini cache: {}", handle.name());
-            Ok(Arc::new(handle))
-        })
-        .await
+        let handle = self
+            .get_or_create_with::<_, _, anyhow::Error>(key.clone(), || async move {
+                let content = build_content();
+                let display = cache_display_name(&key_for_init);
+                info!(
+                    "Creating Gemini cache {display} (system {} chars, reference {} chars, ttl {}s)",
+                    content.system_instruction.len(),
+                    content.user_reference_material.as_deref().map(str::len).unwrap_or(0),
+                    DEFAULT_CACHE_TTL.as_secs()
+                );
+
+                let mut builder = client
+                    .create_cache()
+                    .with_display_name(display)?
+                    .with_system_instruction(content.system_instruction)
+                    .with_ttl(DEFAULT_CACHE_TTL);
+                if let Some(reference) = content.user_reference_material {
+                    builder = builder.with_user_message(reference);
+                }
+                let handle = builder.execute().await?;
+                info!("Created Gemini cache: {}", handle.name());
+                Ok(Arc::new(handle))
+            })
+            .await?;
+
+        if existed_before {
+            // Fire-and-forget refresh; if it fails the TTL just doesn't
+            // extend this round. We still serve the user's request.
+            let handle_for_refresh = handle.clone();
+            tokio::spawn(async move {
+                let req = CacheExpirationRequest::from_ttl(DEFAULT_CACHE_TTL);
+                if let Err(err) = handle_for_refresh.update(req).await {
+                    warn!(
+                        "Failed to refresh Gemini cache TTL ({}): {err}",
+                        handle_for_refresh.name()
+                    );
+                }
+            });
+        }
+
+        Ok(handle)
     }
+}
+
+fn cache_display_name(key: &CacheKey) -> String {
+    // Gemini's display name cap is 128 chars — book uuid is 36, the rest
+    // adds ~20, well within the limit.
+    let variant_tag = match key.variant {
+        CacheVariant::WithSummaries => "S",
+        CacheVariant::NoSummaries => "N",
+    };
+    format!(
+        "flts-{}-{}-{}-{}-c{}-{}",
+        usize::from(key.model),
+        key.from.to_639_3(),
+        key.to.to_639_3(),
+        key.book_id,
+        key.chapter_id,
+        variant_tag,
+    )
 }
 
 /// True if `err` indicates the cached content reference was rejected by the
@@ -143,11 +212,20 @@ mod tests {
 
     use isolang::Language;
 
-    use super::{CacheKey, Registry, is_cache_missing_error};
+    use uuid::Uuid;
+
+    use super::{CacheKey, CacheVariant, Registry, is_cache_missing_error};
     use crate::translator::TranslationModel;
 
     fn key(model: TranslationModel, from: Language, to: Language) -> CacheKey {
-        CacheKey { model, from, to }
+        CacheKey {
+            model,
+            from,
+            to,
+            book_id: Uuid::nil(),
+            chapter_id: 0,
+            variant: CacheVariant::WithSummaries,
+        }
     }
 
     #[tokio::test]
