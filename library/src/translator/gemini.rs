@@ -1,5 +1,5 @@
 use std::{
-    sync::{Arc, OnceLock},
+    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -18,22 +18,13 @@ use crate::{
         ChapterContextProvider, ProgressCallback, TranslationContext, TranslationErrors,
         TranslationModel, Translator,
         gemini_cache::{
-            CacheContent, CacheKey, GeminiCacheRegistry, is_cache_missing_error,
+            CacheContent, CacheKey, GeminiPromptCache, build_reference_material,
+            is_cache_missing_error,
         },
         paragraph_translation_schema, strip_additional_properties,
     },
 };
 use uuid::Uuid;
-
-/// Process-internal Gemini content-cache registry. Created lazily on first
-/// translation. Lives for the lifetime of the process — its entries are
-/// cheap (one `Arc<CachedContentHandle>` per (model, from, to)) and the
-/// server-side caches behind them auto-expire on TTL.
-static REGISTRY: OnceLock<Arc<GeminiCacheRegistry>> = OnceLock::new();
-
-fn registry() -> &'static Arc<GeminiCacheRegistry> {
-    REGISTRY.get_or_init(GeminiCacheRegistry::new)
-}
 
 use super::{
     StreamChunkAccumulator, TRANSLATION_REQUEST_TIMEOUT, TRANSLATION_STREAM_IDLE_TIMEOUT,
@@ -70,6 +61,7 @@ pub(crate) fn gemini_paragraph_schema() -> Value {
 pub struct GeminiTranslator {
     cache: Arc<TranslationsCache>,
     context_provider: Arc<dyn ChapterContextProvider>,
+    prompt_cache: Arc<GeminiPromptCache>,
     client: Gemini,
     schema: Arc<Value>,
     model: Model,
@@ -82,6 +74,7 @@ impl GeminiTranslator {
     pub fn create(
         cache: Arc<TranslationsCache>,
         context_provider: Arc<dyn ChapterContextProvider>,
+        prompt_cache: Arc<GeminiPromptCache>,
         translation_model: TranslationModel,
         api_key: String,
         from: &Language,
@@ -93,6 +86,7 @@ impl GeminiTranslator {
         Ok(Self {
             cache,
             context_provider,
+            prompt_cache,
             client,
             schema: Arc::new(gemini_paragraph_schema()),
             model,
@@ -143,7 +137,8 @@ impl GeminiTranslator {
         let to = self.to;
         let key = self.cache_key(book_id, chapter_id);
 
-        let cache_handle: Arc<CachedContentHandle> = registry()
+        let cache_handle: Arc<CachedContentHandle> = self
+            .prompt_cache
             .get_or_create(&self.client, key.clone(), || {
                 let reference = build_reference_material(&prior_summaries, &chapter_text);
                 CacheContent {
@@ -195,27 +190,6 @@ impl GeminiTranslator {
         let translation: ParagraphTranslation = serde_json::from_str(&full_content)?;
         Ok(translation)
     }
-}
-
-/// Compose the per-chapter reference-material payload that the cache
-/// holds. Returns `None` when both pieces are empty (e.g.,
-/// `NoChapterContext`), so the cache effectively reverts to system-prompt
-/// only.
-fn build_reference_material(prior_summaries: &str, chapter_text: &str) -> Option<String> {
-    if prior_summaries.is_empty() && chapter_text.is_empty() {
-        return None;
-    }
-    let mut out = String::with_capacity(prior_summaries.len() + chapter_text.len() + 256);
-    if !prior_summaries.is_empty() {
-        out.push_str("Summaries of prior chapters in this book (for cross-chapter context only — do not translate them):\n\n");
-        out.push_str(prior_summaries);
-        out.push_str("\n\n");
-    }
-    if !chapter_text.is_empty() {
-        out.push_str("Full text of the current chapter (use as surrounding context; the specific paragraph to translate will follow in a separate message):\n\n");
-        out.push_str(chapter_text);
-    }
-    Some(out)
 }
 
 #[async_trait]
@@ -278,7 +252,7 @@ impl Translator for GeminiTranslator {
                 warn!(
                     "Gemini cache appears expired/missing; evicting and retrying. ({err})"
                 );
-                registry()
+                self.prompt_cache
                     .evict(&self.cache_key(book_id, chapter_id))
                     .await;
                 self.attempt_translation(

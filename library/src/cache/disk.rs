@@ -31,10 +31,9 @@ struct EntryMeta {
     last_access: SystemTime,
 }
 
-struct WriteOp<V> {
-    hash: u64,
-    key: String,
-    value: V,
+enum WriteOp<V> {
+    Insert { hash: u64, key: String, value: V },
+    Remove { hash: u64 },
 }
 
 fn hash_key(key: &str) -> u64 {
@@ -108,7 +107,19 @@ where
         let hash = hash_key(&key);
         let tx = self.writer_tx.lock().unwrap();
         if let Some(tx) = tx.as_ref() {
-            let _ = tx.send(WriteOp { hash, key, value });
+            let _ = tx.send(WriteOp::Insert { hash, key, value });
+        }
+    }
+
+    /// Removes the entry for `key` from disk and from the in-memory index.
+    /// Routed through the writer channel so it serializes after any pending
+    /// `insert` for the same key. Fire-and-forget: if the writer has shut
+    /// down the call is a no-op.
+    pub fn remove(&self, key: &str) {
+        let hash = hash_key(key);
+        let tx = self.writer_tx.lock().unwrap();
+        if let Some(tx) = tx.as_ref() {
+            let _ = tx.send(WriteOp::Remove { hash });
         }
     }
 
@@ -189,9 +200,13 @@ async fn writer_loop<V: Serialize + Send + 'static>(
     while let Some(op) = rx.recv().await {
         let dir = dir.clone();
         let index = index.clone();
-        let result =
-            tokio::task::spawn_blocking(move || write_entry(&dir, capacity_bytes, &index, op))
-                .await;
+        let result = tokio::task::spawn_blocking(move || match op {
+            WriteOp::Insert { hash, key, value } => {
+                write_entry(&dir, capacity_bytes, &index, hash, key, value)
+            }
+            WriteOp::Remove { hash } => remove_entry(&dir, &index, hash),
+        })
+        .await;
         if let Err(e) = result {
             log::warn!("disk_cache writer task panicked: {e}");
         } else if let Ok(Err(e)) = result {
@@ -204,11 +219,13 @@ fn write_entry<V: Serialize>(
     dir: &Path,
     capacity_bytes: u64,
     index: &StdMutex<Index>,
-    op: WriteOp<V>,
+    hash: u64,
+    key: String,
+    value: V,
 ) -> anyhow::Result<()> {
-    let bytes = encode(&op.key, &op.value)?;
+    let bytes = encode(&key, &value)?;
     let size = bytes.len() as u64;
-    let path = entry_path(dir, op.hash);
+    let path = entry_path(dir, hash);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -220,12 +237,12 @@ fn write_entry<V: Serialize>(
     let now = SystemTime::now();
     let victims: Vec<u64> = {
         let mut idx = index.lock().unwrap();
-        if let Some(prev) = idx.entries.get(&op.hash).copied() {
+        if let Some(prev) = idx.entries.get(&hash).copied() {
             idx.total_bytes = idx.total_bytes.saturating_sub(prev.size);
         }
         idx.total_bytes = idx.total_bytes.saturating_add(size);
         idx.entries.insert(
-            op.hash,
+            hash,
             EntryMeta {
                 size,
                 last_access: now,
@@ -237,7 +254,7 @@ fn write_entry<V: Serialize>(
             let mut by_access: Vec<(u64, EntryMeta)> = idx
                 .entries
                 .iter()
-                .filter(|(h, _)| **h != op.hash)
+                .filter(|(h, _)| **h != hash)
                 .map(|(h, m)| (*h, *m))
                 .collect();
             by_access.sort_by_key(|(_, m)| m.last_access);
@@ -257,6 +274,21 @@ fn write_entry<V: Serialize>(
         let _ = std::fs::remove_file(entry_path(dir, h));
     }
     Ok(())
+}
+
+fn remove_entry(dir: &Path, index: &StdMutex<Index>, hash: u64) -> anyhow::Result<()> {
+    {
+        let mut idx = index.lock().unwrap();
+        if let Some(prev) = idx.entries.remove(&hash) {
+            idx.total_bytes = idx.total_bytes.saturating_sub(prev.size);
+        }
+    }
+    let path = entry_path(dir, hash);
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
+    }
 }
 
 #[cfg(test)]
@@ -335,6 +367,56 @@ mod tests {
                 })
             );
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn remove_deletes_file_and_decrements_index() {
+        let dir = tmpdir("remove");
+        let cache = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
+        cache.insert(
+            "doomed".into(),
+            V {
+                s: "bye".into(),
+                n: 1,
+            },
+        );
+        cache.insert(
+            "kept".into(),
+            V {
+                s: "stay".into(),
+                n: 2,
+            },
+        );
+        cache.close().await;
+
+        let cache = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
+        assert!(cache.get("doomed").await.unwrap().is_some());
+        let bytes_before = cache.index.lock().unwrap().total_bytes;
+        cache.remove("doomed");
+        cache.close().await;
+
+        let cache = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
+        assert!(cache.get("doomed").await.unwrap().is_none());
+        assert!(cache.get("kept").await.unwrap().is_some());
+        let bytes_after = cache.index.lock().unwrap().total_bytes;
+        assert!(
+            bytes_after < bytes_before,
+            "total_bytes should decrease after remove ({bytes_before} -> {bytes_after})"
+        );
+        cache.close().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn remove_missing_key_is_noop() {
+        let dir = tmpdir("remove-missing");
+        let cache = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
+        cache.remove("never-inserted");
+        cache.close().await;
+        let cache = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
+        assert!(cache.get("never-inserted").await.unwrap().is_none());
+        cache.close().await;
         let _ = std::fs::remove_dir_all(&dir);
     }
 

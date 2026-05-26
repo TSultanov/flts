@@ -16,6 +16,11 @@ const TRANSLATIONS_CACHE_STORAGE_CAPACITY: u64 = 128 * MIB;
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 const TRANSLATIONS_CACHE_STORAGE_CAPACITY: u64 = 1024 * MIB;
 
+/// Disk capacity for the Gemini prompt-cache name index. Each entry is on
+/// the order of 150 bytes (name + fingerprint + timestamp + key string,
+/// after zstd), so 4 MiB comfortably holds tens of thousands of entries.
+pub const GEMINI_PROMPT_CACHE_CAPACITY: u64 = 4 * MIB;
+
 pub struct TranslationsCache {
     cache: DiskCache<ParagraphTranslation>,
 }

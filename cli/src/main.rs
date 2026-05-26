@@ -17,12 +17,12 @@ use display_error_chain::DisplayErrorChain;
 use file_format::FileFormat;
 use isolang::Language;
 use library::{
-    cache::TranslationsCache,
+    cache::{GEMINI_PROMPT_CACHE_CAPACITY, TranslationsCache},
     epub_importer::EpubBook,
     library::Library,
     translator::{
         ChapterContextProvider, NoChapterContext, TranslationContext, TranslationModel,
-        TranslationProvider, Translator, get_translator,
+        TranslationProvider, Translator, gemini_cache::GeminiPromptCache, get_translator,
     },
 };
 use tokio::time::{Duration, sleep};
@@ -235,6 +235,7 @@ async fn run_saver(library: Arc<Library>, book_id: Uuid, rx: flume::Receiver<()>
 async fn translate_book(
     library: Arc<Library>,
     cache: Arc<TranslationsCache>,
+    gemini_prompt_cache: Arc<GeminiPromptCache>,
     api_key: &str,
     book_id: Uuid,
     tgt_lang: &str,
@@ -308,6 +309,7 @@ async fn translate_book(
         let translator = get_translator(
             cache.clone(),
             context_provider,
+            gemini_prompt_cache.clone(),
             TranslationProvider::Google,
             TranslationModel::Gemini25Flash,
             api_key.to_owned(),
@@ -388,6 +390,12 @@ async fn get_cache() -> anyhow::Result<TranslationsCache> {
     TranslationsCache::create(cache_dir).await
 }
 
+async fn get_gemini_prompt_cache() -> anyhow::Result<Arc<GeminiPromptCache>> {
+    let dirs = ProjectDirs::from("", "TS", "FLTS").unwrap();
+    let cache_dir = dirs.cache_dir().join("gemini_caches");
+    GeminiPromptCache::open(&cache_dir, GEMINI_PROMPT_CACHE_CAPACITY).await
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     match do_main().await {
@@ -434,9 +442,11 @@ async fn do_main() -> anyhow::Result<()> {
                 n_parallel,
             } => {
                 let cache = Arc::new(get_cache().await?);
+                let gemini_prompt_cache = get_gemini_prompt_cache().await?;
                 translate_book(
                     library,
                     cache,
+                    gemini_prompt_cache,
                     api_key,
                     *id,
                     translation_language,

@@ -11,13 +11,13 @@ use std::{
 use directories::ProjectDirs;
 use isolang::Language;
 use library::{
-    cache::TranslationsCache,
+    cache::{GEMINI_PROMPT_CACHE_CAPACITY, TranslationsCache},
     library::{
         Library,
         file_watcher::{LibraryFileChange, LibraryWatcher},
     },
     translation_stats::TranslationSizeCache,
-    translator::TranslationModel,
+    translator::{TranslationModel, gemini_cache::GeminiPromptCache},
 };
 use log::{info, warn};
 use tokio::sync::{Mutex, watch};
@@ -94,6 +94,7 @@ pub struct AppState {
     anki_sync_status: Arc<watch::Sender<crate::app::anki_sync::AnkiSyncStatus>>,
     translations_cache: tokio::sync::OnceCell<Arc<TranslationsCache>>,
     stats_cache: tokio::sync::OnceCell<Arc<TranslationSizeCache>>,
+    gemini_prompt_cache: tokio::sync::OnceCell<Arc<GeminiPromptCache>>,
     pub lyrics_state: crate::app::lyrics::LyricsState,
     pub spotify_web: Arc<crate::app::spotify::web::SpotifyWebState>,
 }
@@ -144,6 +145,7 @@ impl AppState {
             anki_sync_status: Arc::new(watch::channel(initial_anki_status).0),
             translations_cache: tokio::sync::OnceCell::new(),
             stats_cache: tokio::sync::OnceCell::new(),
+            gemini_prompt_cache: tokio::sync::OnceCell::new(),
             lyrics_state: crate::app::lyrics::LyricsState::new(),
             spotify_web: Arc::new(crate::app::spotify::web::SpotifyWebState::new()),
         })
@@ -353,6 +355,17 @@ impl AppState {
             .cloned()
     }
 
+    async fn get_gemini_prompt_cache(&self) -> anyhow::Result<Arc<GeminiPromptCache>> {
+        self.gemini_prompt_cache
+            .get_or_try_init(|| async {
+                let dirs = ProjectDirs::from("", "TS", "FLTS").ok_or(AppError::ProjectDirsError)?;
+                let cache_dir = dirs.cache_dir().join("gemini_caches");
+                GeminiPromptCache::open(&cache_dir, GEMINI_PROMPT_CACHE_CAPACITY).await
+            })
+            .await
+            .cloned()
+    }
+
     pub async fn shutdown(&self) {
         // Best effort only: do not let app exit hang forever on any shutdown step.
         run_exit_step(
@@ -442,6 +455,7 @@ impl AppState {
         let config = self.config.borrow().clone();
         let cache = self.get_translations_cache().await?;
         let stats_cache = self.get_stats_cache().await?;
+        let gemini_prompt_cache = self.get_gemini_prompt_cache().await?;
         let summary_queue = self.get_or_init_summary_generation_queue(library.clone()).await?;
         let context_provider: Arc<dyn library::translator::ChapterContextProvider> =
             Arc::new(SummaryBackedChapterContext {
@@ -452,6 +466,7 @@ impl AppState {
             library,
             cache,
             stats_cache,
+            gemini_prompt_cache,
             context_provider,
             &config,
             self.app.clone(),
@@ -555,6 +570,18 @@ impl AppState {
             .await
             {
                 info!("Translation stats cache closed");
+            }
+        }
+        if let Some(cache) = self.gemini_prompt_cache.get() {
+            info!("Closing Gemini prompt cache");
+            if run_exit_step(
+                "gemini prompt cache close",
+                EXIT_CACHE_CLOSE_TIMEOUT,
+                cache.close(),
+            )
+            .await
+            {
+                info!("Gemini prompt cache closed");
             }
         }
     }

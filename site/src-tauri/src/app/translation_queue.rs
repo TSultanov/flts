@@ -14,7 +14,7 @@ use library::{
     translation_stats::TranslationSizeCache,
     translator::{
         ChapterContextProvider, TranslationContext, TranslationModel, TranslationProvider,
-        get_translator,
+        gemini_cache::GeminiPromptCache, get_translator,
     },
 };
 use log::{info, warn};
@@ -144,6 +144,7 @@ impl TranslationQueue {
         library: Arc<Library>,
         cache: Arc<TranslationsCache>,
         stats_cache: Arc<TranslationSizeCache>,
+        gemini_prompt_cache: Arc<GeminiPromptCache>,
         context_provider: Arc<dyn ChapterContextProvider>,
         config: &Config,
         app: tauri::AppHandle,
@@ -177,6 +178,7 @@ impl TranslationQueue {
                     let library = library.clone();
                     let cache = cache.clone();
                     let context_provider = context_provider.clone();
+                    let gemini_prompt_cache = gemini_prompt_cache.clone();
                     let gemini_api_key = gemini_api_key.clone();
                     let openai_api_key = openai_api_key.clone();
                     let app = app.clone();
@@ -185,6 +187,7 @@ impl TranslationQueue {
                         library,
                         cache,
                         context_provider,
+                        gemini_prompt_cache,
                         stats_cache.clone(),
                         target_language,
                         gemini_api_key,
@@ -317,6 +320,7 @@ async fn handle_request(
     library: Arc<Library>,
     cache: Arc<TranslationsCache>,
     context_provider: Arc<dyn ChapterContextProvider>,
+    gemini_prompt_cache: Arc<GeminiPromptCache>,
     stats_cache: Arc<TranslationSizeCache>,
     target_language: Language,
     gemini_api_key: Option<String>,
@@ -367,6 +371,7 @@ async fn handle_request(
     let translator = get_translator(
         cache,
         context_provider,
+        gemini_prompt_cache,
         provider,
         request.model,
         api_key,

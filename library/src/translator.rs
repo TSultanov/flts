@@ -1,5 +1,5 @@
 pub(crate) mod gemini;
-pub(crate) mod gemini_cache;
+pub mod gemini_cache;
 pub(crate) mod openai;
 
 use std::{fmt::Display, sync::Arc, time::Duration};
@@ -572,6 +572,7 @@ pub(crate) fn paragraph_translation_schema() -> serde_json::Value {
 pub fn get_translator(
     cache: Arc<TranslationsCache>,
     context_provider: Arc<dyn ChapterContextProvider>,
+    gemini_prompt_cache: Arc<gemini_cache::GeminiPromptCache>,
     provider: TranslationProvider,
     translation_model: TranslationModel,
     api_key: String,
@@ -582,6 +583,7 @@ pub fn get_translator(
         TranslationProvider::Google => Ok(Box::new(GeminiTranslator::create(
             cache,
             context_provider,
+            gemini_prompt_cache,
             translation_model,
             api_key,
             &from,
