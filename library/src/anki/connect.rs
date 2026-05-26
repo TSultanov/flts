@@ -19,6 +19,16 @@ use serde::{Deserialize, Serialize};
 const ANKI_CONNECT_VERSION: u32 = 6;
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Total attempts (initial + retries) for a single AnkiConnect HTTP send.
+/// Only retries `.send()` failures — i.e. connection refused / reset before
+/// any response was received. Body-read failures and AnkiConnect-level errors
+/// return immediately, since the server has already side-effected (retrying a
+/// non-idempotent action like addNote would duplicate notes).
+const HTTP_RETRY_ATTEMPTS: u32 = 3;
+/// Sleep durations between retry attempts, in ms. Length must be
+/// `HTTP_RETRY_ATTEMPTS - 1`.
+const HTTP_RETRY_DELAYS_MS: [u64; 2] = [100, 300];
+
 #[async_trait]
 pub trait AnkiConnect: Send + Sync {
     async fn version(&self) -> Result<u32>;
@@ -204,13 +214,44 @@ impl HttpAnkiConnect {
 
     async fn fetch_body(&self, action: &str, params: Option<serde_json::Value>) -> Result<String> {
         let envelope = build_envelope_json(action, self.api_key.as_deref(), params);
-        let resp = self
-            .client
-            .post(&self.endpoint)
-            .json(&envelope)
-            .send()
-            .await
-            .map_err(|e| anyhow!("AnkiConnect: HTTP request failed: {e}"))?;
+        // Retry only `.send()` failures — the request never reached the
+        // server, so even non-idempotent actions like addNote are safe to
+        // retry. Once `.send()` resolves, we commit to the response.
+        let mut last_err: Option<reqwest::Error> = None;
+        let mut resp = None;
+        for attempt in 0..HTTP_RETRY_ATTEMPTS {
+            match self
+                .client
+                .post(&self.endpoint)
+                .json(&envelope)
+                .send()
+                .await
+            {
+                Ok(r) => {
+                    resp = Some(r);
+                    break;
+                }
+                Err(e) => {
+                    if attempt + 1 < HTTP_RETRY_ATTEMPTS {
+                        let delay_ms = HTTP_RETRY_DELAYS_MS[attempt as usize];
+                        log::debug!(
+                            "AnkiConnect: transient send error on attempt {}/{}: {e}; retrying in {delay_ms}ms",
+                            attempt + 1,
+                            HTTP_RETRY_ATTEMPTS,
+                        );
+                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                    }
+                    last_err = Some(e);
+                }
+            }
+        }
+        let resp = match resp {
+            Some(r) => r,
+            None => {
+                let e = last_err.expect("at least one send error when resp is None");
+                bail!("AnkiConnect: HTTP request failed: {e}");
+            }
+        };
         let status = resp.status();
         let body = resp
             .text()
@@ -525,6 +566,13 @@ impl MockAnkiConnect {
         state.cards.retain(|_, c| c.note_id != note_id);
     }
 
+    /// Test-only knob: simulate the user deleting a deck in Anki. Subsequent
+    /// `add_note` / `update_note_fields` against the deck will fail with the
+    /// same "deck was not found" string real AnkiConnect emits.
+    pub fn remove_deck(&self, name: &str) {
+        self.inner.lock().unwrap().decks.remove(name);
+    }
+
     /// Test-only knob: cause the next `n` trait method invocations to return
     /// an error before touching mock state. Decrements one per call.
     pub fn fail_next_n_calls(&self, n: usize) {
@@ -646,6 +694,12 @@ impl AnkiConnect for MockAnkiConnect {
     async fn add_note(&self, note: NewNote) -> Result<i64> {
         self.check_fail_quota()?;
         let mut state = self.inner.lock().unwrap();
+        // Mirror real AnkiConnect: addNote against a missing deck fails with
+        // "deck was not found: <name>". Lets sync recovery tests exercise the
+        // out-of-band deck-deletion path.
+        if !state.decks.contains_key(&note.deck_name) {
+            bail!("AnkiConnect: deck was not found: {}", note.deck_name);
+        }
         let note_id = state.next_id;
         state.next_id += 1;
         let card_a = state.next_id;
@@ -692,10 +746,20 @@ impl AnkiConnect for MockAnkiConnect {
     ) -> Result<()> {
         self.check_fail_quota()?;
         let mut state = self.inner.lock().unwrap();
+        let deck = state
+            .notes
+            .get(&note_id)
+            .ok_or_else(|| anyhow!("MockAnkiConnect: unknown note {note_id}"))?
+            .deck
+            .clone();
+        // Same out-of-band-deletion fidelity as `add_note` above.
+        if !state.decks.contains_key(&deck) {
+            bail!("AnkiConnect: deck was not found: {}", deck);
+        }
         let stored = state
             .notes
             .get_mut(&note_id)
-            .ok_or_else(|| anyhow!("MockAnkiConnect: unknown note {note_id}"))?;
+            .expect("note existed under same lock");
         for (field, value) in fields {
             stored.fields.insert(field, value);
         }
@@ -867,6 +931,15 @@ mod tests {
         }
     }
 
+    /// Mock seeded with the deck `sample_note` targets. The mock's add_note now
+    /// validates the deck (matching real AnkiConnect), so unit tests that push
+    /// a `sample_note` must create the deck first.
+    async fn mock_with_sample_deck() -> MockAnkiConnect {
+        let mock = MockAnkiConnect::new();
+        mock.create_deck("FLTS::spa-rus").await.unwrap();
+        mock
+    }
+
     #[tokio::test]
     async fn mock_version_returns_six() {
         let mock = MockAnkiConnect::new();
@@ -909,7 +982,7 @@ mod tests {
 
     #[tokio::test]
     async fn mock_add_note_then_find_by_tag() {
-        let mock = MockAnkiConnect::new();
+        let mock = mock_with_sample_deck().await;
         let id = mock
             .add_note(sample_note("flts_spa_rus_poder_verb"))
             .await
@@ -933,7 +1006,7 @@ mod tests {
 
     #[tokio::test]
     async fn mock_update_note_fields_mutates_visible_state() {
-        let mock = MockAnkiConnect::new();
+        let mock = mock_with_sample_deck().await;
         let id = mock.add_note(sample_note("flts_test")).await.unwrap();
         let mut fields = BTreeMap::new();
         fields.insert("Target".into(), "уметь; мочь".into());
@@ -945,7 +1018,7 @@ mod tests {
 
     #[tokio::test]
     async fn mock_cards_info_returns_card_records_for_added_note() {
-        let mock = MockAnkiConnect::new();
+        let mock = mock_with_sample_deck().await;
         let _ = mock.add_note(sample_note("flts_test")).await.unwrap();
         // We don't know the card ids without peeking, but cards_info on an empty
         // slice should return empty; on a non-existent id, also empty.
@@ -957,7 +1030,7 @@ mod tests {
 
     #[tokio::test]
     async fn mock_cards_info_reflects_suspension() {
-        let mock = MockAnkiConnect::new();
+        let mock = mock_with_sample_deck().await;
         let note_id = mock.add_note(sample_note("flts_test")).await.unwrap();
         // The note's two cards were assigned ids note_id+1 and note_id+2.
         let card_a = note_id + 1;
@@ -969,7 +1042,7 @@ mod tests {
 
     #[tokio::test]
     async fn mock_notes_info_returns_two_cards_for_added_note() {
-        let mock = MockAnkiConnect::new();
+        let mock = mock_with_sample_deck().await;
         let note_id = mock
             .add_note(sample_note("flts_spa_rus_poder_verb"))
             .await
@@ -990,7 +1063,7 @@ mod tests {
 
     #[tokio::test]
     async fn mock_multi_dispatches_subactions_in_order() {
-        let mock = MockAnkiConnect::new();
+        let mock = mock_with_sample_deck().await;
         let actions = vec![
             MultiSubAction {
                 action: "addNote".into(),
@@ -1006,6 +1079,41 @@ mod tests {
         let id_a = results[0].as_i64().unwrap();
         let id_b = results[1].as_i64().unwrap();
         assert_ne!(id_a, id_b);
+    }
+
+    #[tokio::test]
+    async fn http_anki_connect_retries_send_errors_with_backoff() {
+        // Bind to an ephemeral port, capture it, then drop the listener so
+        // subsequent connects to that port are refused. This exercises the
+        // real reqwest `.send()` error path against the production
+        // HttpAnkiConnect (no mocking).
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let client = HttpAnkiConnect::new(format!("http://127.0.0.1:{port}/"), None);
+
+        let start = std::time::Instant::now();
+        let err = client.version().await.unwrap_err();
+        let elapsed = start.elapsed();
+
+        assert!(
+            format!("{err}").contains("HTTP request failed"),
+            "expected the canonical send-failure message, got: {err}"
+        );
+
+        let expected_min = std::time::Duration::from_millis(
+            HTTP_RETRY_DELAYS_MS.iter().sum::<u64>(),
+        );
+        assert!(
+            elapsed >= expected_min,
+            "expected at least {expected_min:?} elapsed (one sleep per retry), got {elapsed:?}"
+        );
+        // Sanity bound: must not have spent the full HTTP_TIMEOUT looping.
+        assert!(
+            elapsed < HTTP_TIMEOUT,
+            "retries took {elapsed:?}, suspiciously close to HTTP_TIMEOUT — runaway loop?"
+        );
     }
 
     #[test]

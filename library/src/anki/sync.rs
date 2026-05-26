@@ -217,6 +217,12 @@ pub async fn sync_pass(
             }
             Err(err) => {
                 log::warn!("multi findNotes batch failed: {err}");
+                if is_missing_resource_error(&err) {
+                    log::info!(
+                        "Anki deck/model missing; clearing bootstrap flag so next sync re-creates it"
+                    );
+                    state.bootstrapped = false;
+                }
                 for _ in 0..chunk.len() {
                     lookups.push(None);
                 }
@@ -252,12 +258,33 @@ pub async fn sync_pass(
                 log::warn!("sync failed for {}: {err}", e.card_id);
                 state.record_failure(&e.card_id, now);
                 report.failed += 1;
+                if is_missing_resource_error(&err) {
+                    log::info!(
+                        "Anki deck/model missing; clearing bootstrap flag so next sync re-creates it"
+                    );
+                    state.bootstrapped = false;
+                }
             }
         }
     }
 
     report.persistent_failures = state.persistent_set.iter().cloned().collect();
     Ok(report)
+}
+
+/// Detects AnkiConnect "…was not found" failures for the FLTS deck or note
+/// model — i.e. the user deleted the deck/model in Anki out-of-band. Walks the
+/// anyhow chain so wrapped errors are matched too. The next `sync_pass` will
+/// re-run `bootstrap()` (idempotent for both `create_model` and `create_deck`)
+/// and the failing cards retry via the existing backoff/cooldown.
+fn is_missing_resource_error(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        let s = cause.to_string().to_lowercase();
+        s.contains("deck was not found")
+            || s.contains("deck not found")
+            || s.contains("model was not found")
+            || s.contains("model not found")
+    })
 }
 
 /// Phase-2 state machine: given the per-card findNotes result, dispatch to
@@ -713,6 +740,66 @@ mod tests {
                 Some(AnkiState::Active)
             );
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sync_pass_clears_bootstrapped_when_deck_deleted_out_of_band() {
+        use std::time::Duration;
+
+        let mock = MockAnkiConnect::new();
+        let (_tmp, library) = seed_library_with_cards(
+            "flts_sync_deck_deleted",
+            &[make_card("poder", vec!["мочь"], vec![])],
+        )
+        .await;
+
+        let mut state = AnkiSyncState::new();
+
+        // Tick 1: happy path — bootstraps, deck created, card pushed.
+        let r1 = sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
+            .await
+            .unwrap();
+        assert_eq!(r1.succeeded, 1);
+        assert!(state.bootstrapped);
+        assert!(
+            mock.deck_names_and_ids()
+                .await
+                .unwrap()
+                .contains_key("FLTS::Español-Русский")
+        );
+
+        // User deletes the deck in Anki out-of-band.
+        mock.remove_deck("FLTS::Español-Русский");
+
+        // Tick 2: card is Active locally, so sync_pass goes through the
+        // update_note_fields path — which now fails with the missing-deck
+        // string. sync_pass must record the failure AND clear bootstrapped.
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let r2 = sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
+            .await
+            .unwrap();
+        assert_eq!(r2.failed, 1);
+        assert_eq!(r2.succeeded, 0);
+        assert!(
+            !state.bootstrapped,
+            "missing-deck error must invalidate the bootstrap gate"
+        );
+
+        // Tick 3: after the backoff window, sync_pass re-runs bootstrap (deck
+        // reappears) and the card succeeds again.
+        tokio::time::advance(Duration::from_secs(61)).await;
+        let r3 = sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
+            .await
+            .unwrap();
+        assert_eq!(r3.succeeded, 1);
+        assert!(state.bootstrapped);
+        assert!(
+            mock.deck_names_and_ids()
+                .await
+                .unwrap()
+                .contains_key("FLTS::Español-Русский"),
+            "bootstrap must have re-created the deleted deck"
+        );
     }
 
     #[tokio::test(start_paused = true)]
