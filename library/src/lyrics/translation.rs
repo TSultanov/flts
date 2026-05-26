@@ -449,6 +449,9 @@ impl LyricsTranslator for LyricsGeminiTranslator {
                         .with_response_mime_type("application/json")
                         .with_response_schema((*self.schema).clone())
                         .with_thinking_config(thinking_config)
+                        .with_safety_settings(
+                            crate::translator::gemini::permissive_safety_settings(),
+                        )
                         .execute_stream(),
                 )
                 .await

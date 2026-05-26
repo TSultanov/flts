@@ -5,7 +5,10 @@ use std::{
 
 use async_trait::async_trait;
 use futures_util::TryStreamExt;
-use gemini_rust::{CachedContentHandle, Gemini, Model, ThinkingConfig};
+use gemini_rust::{
+    CachedContentHandle, Gemini, HarmBlockThreshold, HarmCategory, Model, SafetySetting,
+    ThinkingConfig,
+};
 use isolang::Language;
 use log::{info, warn};
 use serde_json::Value;
@@ -51,6 +54,27 @@ pub(crate) fn gemini_model(m: TranslationModel) -> anyhow::Result<Model> {
 
 pub(crate) fn gemini_client(api_key: String, model: Model) -> anyhow::Result<Gemini> {
     Ok(Gemini::with_model(api_key, model)?)
+}
+
+/// Permissive safety_settings for every Gemini request the project
+/// makes. Book translation legitimately reproduces content (drugs,
+/// violence, prejudice, sexuality) from published source material; the
+/// chat-assistant-tuned defaults over-block on this workload. Does NOT
+/// affect Google's non-configurable prohibited-use-policy filters.
+pub(crate) fn permissive_safety_settings() -> Vec<SafetySetting> {
+    [
+        HarmCategory::Harassment,
+        HarmCategory::HateSpeech,
+        HarmCategory::SexuallyExplicit,
+        HarmCategory::DangerousContent,
+        HarmCategory::CivicIntegrity,
+    ]
+    .into_iter()
+    .map(|category| SafetySetting {
+        category,
+        threshold: HarmBlockThreshold::BlockNone,
+    })
+    .collect()
 }
 
 /// The shared paragraph schema is OpenAI-strict (uses `additionalProperties: false`).
@@ -161,6 +185,7 @@ impl GeminiTranslator {
                 .with_response_mime_type("application/json")
                 .with_response_schema((*self.schema).clone())
                 .with_thinking_config(self.thinking_config())
+                .with_safety_settings(permissive_safety_settings())
                 .execute_stream(),
         )
         .await

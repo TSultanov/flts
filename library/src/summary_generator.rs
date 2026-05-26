@@ -120,6 +120,7 @@ pub async fn generate_chapter_summary(
                     .generate_content()
                     .with_system_prompt(system)
                     .with_user_message(user)
+                    .with_safety_settings(crate::translator::gemini::permissive_safety_settings())
                     .execute(),
             )
             .await
