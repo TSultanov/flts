@@ -271,6 +271,7 @@ pub enum TranslationModel {
     OpenAIGpt54Mini = 11,
     Gemini31Pro = 12,
     Gemini31FlashLite = 13,
+    Gemini35Flash = 14,
 }
 
 impl TranslationModel {
@@ -282,7 +283,8 @@ impl TranslationModel {
             | TranslationModel::Gemini3Pro
             | TranslationModel::Gemini3Flash
             | TranslationModel::Gemini31Pro
-            | TranslationModel::Gemini31FlashLite => Some(TranslationProvider::Google),
+            | TranslationModel::Gemini31FlashLite 
+            | TranslationModel::Gemini35Flash => Some(TranslationProvider::Google),
 
             TranslationModel::OpenAIGpt52
             | TranslationModel::OpenAIGpt52Pro
@@ -312,6 +314,7 @@ impl From<usize> for TranslationModel {
             11 => TranslationModel::OpenAIGpt54Mini,
             12 => TranslationModel::Gemini31Pro,
             13 => TranslationModel::Gemini31FlashLite,
+            14 => TranslationModel::Gemini35Flash,
             _ => TranslationModel::Unknown,
         }
     }

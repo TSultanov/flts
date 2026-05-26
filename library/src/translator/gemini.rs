@@ -41,7 +41,10 @@ pub(crate) fn gemini_model(m: TranslationModel) -> anyhow::Result<Model> {
         TranslationModel::Gemini31Pro => Model::Custom("models/gemini-3.1-pro-preview".to_string()),
         TranslationModel::Gemini31FlashLite => {
             Model::Custom("models/gemini-3.1-flash-lite-preview".to_string())
-        }
+        },
+        TranslationModel::Gemini35Flash => {
+            Model::Custom("models/gemini-3.5-flash".to_string())
+        },
         _ => Err(TranslationErrors::UnknownModel)?,
     })
 }
