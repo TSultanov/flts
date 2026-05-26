@@ -10,8 +10,11 @@ use std::time::Duration;
 use async_openai::types::chat::{
     ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
     ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs,
+    CreateChatCompletionResponse,
 };
+use gemini_rust::GenerationResponse;
 use isolang::Language;
+use log::{debug, info};
 use tokio::time::timeout;
 
 use crate::translator::{TranslationModel, TranslationProvider};
@@ -99,6 +102,14 @@ pub async fn generate_chapter_summary(
     let system = system_prompt(book_language);
     let user = user_message(book_title, chapter_title, chapter_text, prior_summary);
 
+    debug!(
+        "summary request: provider={provider:?} model={model:?} book={book_title:?} \
+         chapter={chapter_title:?} chars(text/prior/sys)={}/{}/{}",
+        chapter_text.len(),
+        prior_summary.map(|s| s.len()).unwrap_or(0),
+        system.len(),
+    );
+
     match provider {
         TranslationProvider::Google => {
             let gemini_model = crate::translator::gemini::gemini_model(model)?;
@@ -116,8 +127,19 @@ pub async fn generate_chapter_summary(
 
             let text = response.text();
             if text.is_empty() {
-                anyhow::bail!("Gemini summary returned empty content");
+                let diag = describe_empty_gemini_response(&response);
+                anyhow::bail!("Gemini summary returned empty content ({diag})");
             }
+            info!(
+                "Gemini summary ok: response_id={:?} model={:?} \
+                 tokens(prompt/cand/thoughts/total)={:?}/{:?}/{:?}/{:?}",
+                response.response_id.as_deref(),
+                response.model_version.as_deref(),
+                response.usage_metadata.as_ref().and_then(|u| u.prompt_token_count),
+                response.usage_metadata.as_ref().and_then(|u| u.candidates_token_count),
+                response.usage_metadata.as_ref().and_then(|u| u.thoughts_token_count),
+                response.usage_metadata.as_ref().and_then(|u| u.total_token_count),
+            );
             Ok(text)
         }
         TranslationProvider::Openai => {
@@ -149,16 +171,122 @@ pub async fn generate_chapter_summary(
 
             let text = response
                 .choices
-                .into_iter()
-                .next()
-                .and_then(|c| c.message.content)
+                .first()
+                .and_then(|c| c.message.content.clone())
                 .unwrap_or_default();
             if text.is_empty() {
-                anyhow::bail!("OpenAI summary returned empty content");
+                let diag = describe_empty_openai_response(&response);
+                anyhow::bail!("OpenAI summary returned empty content ({diag})");
             }
+            info!(
+                "OpenAI summary ok: id={:?} model={:?} \
+                 tokens(prompt/completion/total)={:?}/{:?}/{:?}",
+                response.id,
+                response.model,
+                response.usage.as_ref().map(|u| u.prompt_tokens),
+                response.usage.as_ref().map(|u| u.completion_tokens),
+                response.usage.as_ref().map(|u| u.total_tokens),
+            );
             Ok(text)
         }
     }
+}
+
+/// Build a compact diagnostic string from a Gemini response whose `text()`
+/// was empty, surfacing the fields that explain *why* nothing came back:
+/// candidate count, finish_reason, the shape of `content.parts` (since
+/// `text()` only reads parts\[0\] when it's `Part::Text`), elevated safety
+/// ratings, prompt block reason, token usage (the thinking-budget smoking
+/// gun for Gemini 2.5/3), and ids for support repros.
+fn describe_empty_gemini_response(resp: &GenerationResponse) -> String {
+    let mut bits: Vec<String> = Vec::new();
+    bits.push(format!("candidates={}", resp.candidates.len()));
+    if let Some(c) = resp.candidates.first() {
+        bits.push(format!("finish_reason={:?}", c.finish_reason));
+        let parts_shape = match c.content.parts.as_ref() {
+            None => "parts=None".to_string(),
+            Some(v) if v.is_empty() => "parts=[]".to_string(),
+            Some(v) => {
+                let names: Vec<&'static str> = v.iter().map(part_variant_name).collect();
+                format!("parts={names:?}")
+            },
+        };
+        bits.push(parts_shape);
+        if let Some(ratings) = c.safety_ratings.as_ref() {
+            let elevated: Vec<String> = ratings
+                .iter()
+                .filter(|r| {
+                    matches!(
+                        r.probability,
+                        gemini_rust::HarmProbability::Medium | gemini_rust::HarmProbability::High
+                    )
+                })
+                .map(|r| format!("{:?}={:?}", r.category, r.probability))
+                .collect();
+            if !elevated.is_empty() {
+                bits.push(format!("safety=[{}]", elevated.join(",")));
+            }
+        }
+    }
+    if let Some(pf) = resp.prompt_feedback.as_ref()
+        && let Some(br) = pf.block_reason.as_ref()
+    {
+        bits.push(format!("prompt_block_reason={br:?}"));
+    }
+    if let Some(um) = resp.usage_metadata.as_ref() {
+        bits.push(format!(
+            "tokens(prompt/cand/thoughts/total)={:?}/{:?}/{:?}/{:?}",
+            um.prompt_token_count,
+            um.candidates_token_count,
+            um.thoughts_token_count,
+            um.total_token_count,
+        ));
+    }
+    if let Some(rid) = resp.response_id.as_deref() {
+        bits.push(format!("response_id={rid}"));
+    }
+    if let Some(mv) = resp.model_version.as_deref() {
+        bits.push(format!("model_version={mv}"));
+    }
+    bits.join(", ")
+}
+
+fn part_variant_name(p: &gemini_rust::Part) -> &'static str {
+    use gemini_rust::Part;
+    match p {
+        Part::Text { thought: Some(true), .. } => "Text(thought)",
+        Part::Text { .. } => "Text",
+        Part::InlineData { .. } => "InlineData",
+        Part::FunctionCall { .. } => "FunctionCall",
+        Part::FunctionResponse { .. } => "FunctionResponse",
+        Part::FileData { .. } => "FileData",
+        Part::ExecutableCode { .. } => "ExecutableCode",
+        Part::CodeExecutionResult { .. } => "CodeExecutionResult",
+    }
+}
+
+/// Same idea for OpenAI: when `choices[0].message.content` is empty/missing,
+/// surface choice count, finish_reason (`length`, `content_filter`, etc.),
+/// any explicit `refusal` string, token usage, and ids.
+fn describe_empty_openai_response(resp: &CreateChatCompletionResponse) -> String {
+    let mut bits: Vec<String> = Vec::new();
+    bits.push(format!("choices={}", resp.choices.len()));
+    if let Some(c) = resp.choices.first() {
+        bits.push(format!("finish_reason={:?}", c.finish_reason));
+        bits.push(format!("content_is_some={}", c.message.content.is_some()));
+        if let Some(refusal) = c.message.refusal.as_deref() {
+            bits.push(format!("refusal={refusal:?}"));
+        }
+    }
+    if let Some(u) = resp.usage.as_ref() {
+        bits.push(format!(
+            "tokens(prompt/completion/total)={}/{}/{}",
+            u.prompt_tokens, u.completion_tokens, u.total_tokens,
+        ));
+    }
+    bits.push(format!("id={:?}", resp.id));
+    bits.push(format!("model={:?}", resp.model));
+    bits.join(", ")
 }
 
 #[cfg(test)]
