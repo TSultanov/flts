@@ -51,6 +51,17 @@ fn system_prompt(book_language: &Language) -> String {
          150-250 words is a good target — shorter is fine if the chapter introduces \
          little new context.\n\
          \n\
+         When the chapter depicts sensitive material — illicit drugs, violence, \
+         sexual content, self-harm, prejudice, or other content-moderation \
+         hot-buttons — describe the register, tone, and translation challenge in \
+         general terms, but do NOT enumerate specific street slang, name specific \
+         substances, define drug or criminal vocabulary, or produce glossary-style \
+         lists of such terms with explanations. Example of what to say: \"the \
+         chapter uses period-specific {lang} drug slang in informal teenage \
+         register; the translator should match the era and the generational \
+         tone.\" Example of what NOT to say: \"key terms include X (meaning Y), \
+         Z (meaning W) …\" — that style of list is unsafe.\n\
+         \n\
          The output must be in {lang} (the book's language). Plain prose, no \
          markdown, no headings."
     )
