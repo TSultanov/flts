@@ -294,6 +294,146 @@ impl AnkiConnect for HttpAnkiConnect {
     }
 }
 
+// ---------- Serialized wrapper (single-flight worker task) ----------
+
+/// Wraps any `AnkiConnect` and serializes all method calls through a
+/// dedicated worker task. AnkiConnect handles concurrent requests poorly,
+/// so we guarantee at most one in-flight call by having the worker drain
+/// a request channel one task at a time. Callers see the normal async
+/// API; the serialization is structural (single consumer of a single
+/// channel), not lock-based.
+pub struct SerializedAnkiConnect {
+    tx: tokio::sync::mpsc::UnboundedSender<AnkiTask>,
+    worker: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+type AnkiTask = Box<
+    dyn FnOnce(Arc<dyn AnkiConnect>) -> futures_util::future::BoxFuture<'static, ()>
+        + Send,
+>;
+
+impl SerializedAnkiConnect {
+    pub fn new(inner: Arc<dyn AnkiConnect>) -> Self {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AnkiTask>();
+        let worker = tokio::spawn(async move {
+            while let Some(task) = rx.recv().await {
+                task(inner.clone()).await;
+            }
+        });
+        Self {
+            tx,
+            worker: std::sync::Mutex::new(Some(worker)),
+        }
+    }
+
+    fn dispatch<F, Fut, T>(&self, f: F) -> Result<tokio::sync::oneshot::Receiver<Result<T>>>
+    where
+        F: FnOnce(Arc<dyn AnkiConnect>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<T>> + Send + 'static,
+        T: Send + 'static,
+    {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        let task: AnkiTask = Box::new(move |inner| {
+            Box::pin(async move {
+                let _ = reply_tx.send(f(inner).await);
+            })
+        });
+        self.tx
+            .send(task)
+            .map_err(|_| anyhow!("SerializedAnkiConnect worker has shut down"))?;
+        Ok(reply_rx)
+    }
+}
+
+impl Drop for SerializedAnkiConnect {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.worker.lock()
+            && let Some(handle) = guard.take()
+        {
+            handle.abort();
+        }
+    }
+}
+
+#[async_trait]
+impl AnkiConnect for SerializedAnkiConnect {
+    async fn version(&self) -> Result<u32> {
+        self.dispatch(|inner| async move { inner.version().await })?
+            .await
+            .map_err(|_| anyhow!("SerializedAnkiConnect reply dropped"))?
+    }
+
+    async fn model_names_and_ids(&self) -> Result<HashMap<String, i64>> {
+        self.dispatch(|inner| async move { inner.model_names_and_ids().await })?
+            .await
+            .map_err(|_| anyhow!("SerializedAnkiConnect reply dropped"))?
+    }
+
+    async fn create_model(&self, spec: ModelSpec) -> Result<i64> {
+        self.dispatch(move |inner| async move { inner.create_model(spec).await })?
+            .await
+            .map_err(|_| anyhow!("SerializedAnkiConnect reply dropped"))?
+    }
+
+    async fn deck_names_and_ids(&self) -> Result<HashMap<String, i64>> {
+        self.dispatch(|inner| async move { inner.deck_names_and_ids().await })?
+            .await
+            .map_err(|_| anyhow!("SerializedAnkiConnect reply dropped"))?
+    }
+
+    async fn create_deck(&self, name: &str) -> Result<i64> {
+        let name = name.to_owned();
+        self.dispatch(move |inner| async move { inner.create_deck(&name).await })?
+            .await
+            .map_err(|_| anyhow!("SerializedAnkiConnect reply dropped"))?
+    }
+
+    async fn find_notes(&self, query: &str) -> Result<Vec<i64>> {
+        let query = query.to_owned();
+        self.dispatch(move |inner| async move { inner.find_notes(&query).await })?
+            .await
+            .map_err(|_| anyhow!("SerializedAnkiConnect reply dropped"))?
+    }
+
+    async fn add_note(&self, note: NewNote) -> Result<i64> {
+        self.dispatch(move |inner| async move { inner.add_note(note).await })?
+            .await
+            .map_err(|_| anyhow!("SerializedAnkiConnect reply dropped"))?
+    }
+
+    async fn update_note_fields(
+        &self,
+        note_id: i64,
+        fields: BTreeMap<String, String>,
+    ) -> Result<()> {
+        self.dispatch(move |inner| async move {
+            inner.update_note_fields(note_id, fields).await
+        })?
+        .await
+        .map_err(|_| anyhow!("SerializedAnkiConnect reply dropped"))?
+    }
+
+    async fn cards_info(&self, card_ids: &[i64]) -> Result<Vec<CardInfo>> {
+        let card_ids = card_ids.to_vec();
+        self.dispatch(move |inner| async move { inner.cards_info(&card_ids).await })?
+            .await
+            .map_err(|_| anyhow!("SerializedAnkiConnect reply dropped"))?
+    }
+
+    async fn notes_info(&self, note_ids: &[i64]) -> Result<Vec<NoteInfo>> {
+        let note_ids = note_ids.to_vec();
+        self.dispatch(move |inner| async move { inner.notes_info(&note_ids).await })?
+            .await
+            .map_err(|_| anyhow!("SerializedAnkiConnect reply dropped"))?
+    }
+
+    async fn multi(&self, actions: Vec<MultiSubAction>) -> Result<Vec<serde_json::Value>> {
+        self.dispatch(move |inner| async move { inner.multi(actions).await })?
+            .await
+            .map_err(|_| anyhow!("SerializedAnkiConnect reply dropped"))?
+    }
+}
+
 // ---------- In-memory mock ----------
 
 #[derive(Debug, Default)]
@@ -691,7 +831,8 @@ pub fn get_anki_connect(endpoint: String, api_key: Option<String>) -> Box<dyn An
     if std::env::var_os("FLTS_MOCK_ANKICONNECT").is_some_and(|v| !v.is_empty()) {
         Box::new(MockAnkiConnect::new())
     } else {
-        Box::new(HttpAnkiConnect::new(endpoint, api_key))
+        let http: Arc<dyn AnkiConnect> = Arc::new(HttpAnkiConnect::new(endpoint, api_key));
+        Box::new(SerializedAnkiConnect::new(http))
     }
 }
 
@@ -945,5 +1086,120 @@ mod tests {
         assert!(info.is_suspended());
         let active = CardInfo { queue: 0, ..info };
         assert!(!active.is_suspended());
+    }
+
+    // ---------- SerializedAnkiConnect ----------
+
+    /// Test-only `AnkiConnect` that sleeps on every call and panics if it
+    /// observes more than one concurrent invocation. Used to assert
+    /// `SerializedAnkiConnect`'s single-flight guarantee.
+    struct SerializationProbe {
+        in_flight: std::sync::atomic::AtomicUsize,
+        delay: Duration,
+    }
+
+    impl SerializationProbe {
+        fn new(delay: Duration) -> Self {
+            Self {
+                in_flight: std::sync::atomic::AtomicUsize::new(0),
+                delay,
+            }
+        }
+
+        async fn guarded<T>(&self, value: T) -> T {
+            use std::sync::atomic::Ordering;
+            let before = self.in_flight.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(
+                before, 0,
+                "SerializedAnkiConnect must serialize: observed {} in-flight",
+                before + 1
+            );
+            tokio::time::sleep(self.delay).await;
+            self.in_flight.fetch_sub(1, Ordering::SeqCst);
+            value
+        }
+    }
+
+    #[async_trait]
+    impl AnkiConnect for SerializationProbe {
+        async fn version(&self) -> Result<u32> {
+            Ok(self.guarded(6).await)
+        }
+        async fn model_names_and_ids(&self) -> Result<HashMap<String, i64>> {
+            Ok(self.guarded(HashMap::new()).await)
+        }
+        async fn create_model(&self, _spec: ModelSpec) -> Result<i64> {
+            Ok(self.guarded(1).await)
+        }
+        async fn deck_names_and_ids(&self) -> Result<HashMap<String, i64>> {
+            Ok(self.guarded(HashMap::new()).await)
+        }
+        async fn create_deck(&self, _name: &str) -> Result<i64> {
+            Ok(self.guarded(1).await)
+        }
+        async fn find_notes(&self, _query: &str) -> Result<Vec<i64>> {
+            Ok(self.guarded(vec![]).await)
+        }
+        async fn add_note(&self, _note: NewNote) -> Result<i64> {
+            Ok(self.guarded(1).await)
+        }
+        async fn update_note_fields(
+            &self,
+            _note_id: i64,
+            _fields: BTreeMap<String, String>,
+        ) -> Result<()> {
+            self.guarded(()).await;
+            Ok(())
+        }
+        async fn cards_info(&self, _card_ids: &[i64]) -> Result<Vec<CardInfo>> {
+            Ok(self.guarded(vec![]).await)
+        }
+        async fn notes_info(&self, _note_ids: &[i64]) -> Result<Vec<NoteInfo>> {
+            Ok(self.guarded(vec![]).await)
+        }
+        async fn multi(
+            &self,
+            _actions: Vec<MultiSubAction>,
+        ) -> Result<Vec<serde_json::Value>> {
+            Ok(self.guarded(vec![]).await)
+        }
+    }
+
+    #[tokio::test]
+    async fn serialized_anki_connect_serializes_concurrent_version_calls() {
+        let probe: Arc<dyn AnkiConnect> = Arc::new(SerializationProbe::new(
+            Duration::from_millis(50),
+        ));
+        let serialized = Arc::new(SerializedAnkiConnect::new(probe));
+
+        let n = 5;
+        let start = std::time::Instant::now();
+        let mut handles = Vec::new();
+        for _ in 0..n {
+            let s = serialized.clone();
+            handles.push(tokio::spawn(async move { s.version().await }));
+        }
+        for h in handles {
+            assert_eq!(h.await.unwrap().unwrap(), 6);
+        }
+        let elapsed = start.elapsed();
+        // 5 × 50 ms = 250 ms; allow a generous lower bound to absorb
+        // scheduler jitter. If the wrapper failed to serialize, total
+        // wall-clock would collapse to ~50 ms.
+        assert!(
+            elapsed >= Duration::from_millis(200),
+            "expected serialized run ≥ 200 ms, got {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn serialized_anki_connect_propagates_results_through_worker() {
+        let probe: Arc<dyn AnkiConnect> = Arc::new(SerializationProbe::new(
+            Duration::from_millis(1),
+        ));
+        let serialized = SerializedAnkiConnect::new(probe);
+        assert_eq!(serialized.version().await.unwrap(), 6);
+        assert_eq!(serialized.create_deck("FLTS::spa-rus").await.unwrap(), 1);
+        assert!(serialized.find_notes("tag:foo").await.unwrap().is_empty());
     }
 }

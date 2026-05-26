@@ -106,6 +106,12 @@ impl AnkiSyncTask {
     ) -> Arc<Self> {
         let state = Arc::new(Mutex::new(AnkiSyncState::new()));
 
+        // Subscribe to the card-store's change signal so a sync pass kicks
+        // off as soon as a card lands on disk (translation completion,
+        // backfill, future write paths). Notify's natural coalescing
+        // (≤1 pending permit) collapses bursts into one follow-up pass.
+        let wake = library.card_store().change_notify();
+
         let task = {
             let state = state.clone();
             let client = client.clone();
@@ -113,8 +119,14 @@ impl AnkiSyncTask {
             let status_tx = status_tx.clone();
             tokio::spawn(async move {
                 let mut ticker = tokio::time::interval(interval);
+                // `interval` fires immediately on first poll; that's
+                // intentional — preserve the original "run a pass shortly
+                // after init" behavior.
                 loop {
-                    ticker.tick().await;
+                    tokio::select! {
+                        _ = ticker.tick() => {}
+                        _ = wake.notified() => {}
+                    }
                     let _ = run_pass(client.as_ref(), &library, &state, &status_tx).await;
                 }
             })
@@ -299,6 +311,62 @@ mod tests {
         let (_tmp, library) = seed_library_with_card("flts_anki_sync_smoke").await;
         let mock: Arc<dyn AnkiConnect> = Arc::new(MockAnkiConnect::new());
         let task = AnkiSyncTask::init(library, mock, Duration::from_millis(50), make_status_tx());
+        task.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn anki_sync_task_runs_pass_when_card_change_notify_fires() {
+        // Long interval so the periodic ticker can't be what triggers the
+        // pass — only the card-store wake from `save()` should drive it.
+        let (_tmp, library) = seed_library_with_card("flts_anki_sync_wake").await;
+        let mock_for_task: Arc<dyn AnkiConnect> = Arc::new(MockAnkiConnect::new());
+        let task = AnkiSyncTask::init(
+            library.clone(),
+            mock_for_task,
+            Duration::from_secs(3600),
+            make_status_tx(),
+        );
+
+        // Drop a second card into the store; `save()` fires the wake, the
+        // worker loop's `select!` resolves on `wake.notified()`, runs a
+        // pass, and both cards are synced.
+        let card2 = Card {
+            version: 1,
+            id: "flts_spa_rus_comer_verb".into(),
+            lemma: "comer".into(),
+            part_of_speech: "verb".into(),
+            translations: vec!["есть".into()],
+            examples: vec![],
+            anki_data: None,
+        };
+        library
+            .card_store()
+            .save(&card2, "spa", "rus")
+            .await
+            .unwrap();
+
+        // Poll briefly for the card to become Active. 500 ms is well under
+        // the 1-hour interval; failure here means the wake didn't drive a
+        // pass.
+        let deadline = std::time::Instant::now() + Duration::from_millis(500);
+        loop {
+            let loaded = library
+                .card_store()
+                .load("spa", "rus", "comer", "verb")
+                .await
+                .unwrap()
+                .expect("comer card present");
+            if loaded.anki_data.is_some() {
+                break;
+            }
+            if std::time::Instant::now() > deadline {
+                panic!(
+                    "card_change_notify wake did not trigger a sync_pass within 500 ms (card still unsynced)"
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
         task.shutdown().await;
     }
 

@@ -236,9 +236,14 @@ pub async fn sync_pass(
                 // Skip the disk write — and the resulting watcher event —
                 // when apply_lookup didn't actually change the card. Keeps
                 // periodic ticks with no Anki-side changes silent for the
-                // file watcher.
+                // file watcher. Use the silent save: the only thing changed
+                // here is `anki_data`, which sync wrote in response to its
+                // own AnkiConnect round-trip — waking ourselves would
+                // self-trigger a redundant follow-up pass.
                 if e.card != pre_card {
-                    card_store.save(&e.card, &e.src_str, &e.tgt_str).await?;
+                    card_store
+                        .save_without_wake(&e.card, &e.src_str, &e.tgt_str)
+                        .await?;
                 }
                 state.record_success(&e.card_id);
                 report.succeeded += 1;

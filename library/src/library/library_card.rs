@@ -4,7 +4,7 @@ use std::{
     sync::Arc,
 };
 
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 use crate::{
     book::serialization::create_random_string,
@@ -14,6 +14,7 @@ use crate::{
 pub struct LibraryCardStore {
     root: PathBuf,
     locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    change_notify: Arc<Notify>,
 }
 
 impl LibraryCardStore {
@@ -21,7 +22,15 @@ impl LibraryCardStore {
         Self {
             root: library_root.join("cards"),
             locks: Mutex::new(HashMap::new()),
+            change_notify: Arc::new(Notify::new()),
         }
+    }
+
+    /// Returns a handle to the wake signal that fires after every successful
+    /// `save` (but not `save_without_wake`). Used by the Anki sync task to
+    /// trigger a sync pass as soon as a card lands on disk.
+    pub fn change_notify(&self) -> Arc<Notify> {
+        self.change_notify.clone()
     }
 
     pub fn root(&self) -> &Path {
@@ -94,7 +103,11 @@ impl LibraryCardStore {
             base.merge(card.clone());
         }
 
-        self.save(&base, source_language, target_language).await?;
+        // Merge writeback is a normalization triggered by `load`, not a
+        // user-driven card change. Silent so sync isn't woken just because
+        // a conflict sibling happened to be present.
+        self.save_without_wake(&base, source_language, target_language)
+            .await?;
 
         for (path, _) in accepted {
             if let Err(err) = tokio::fs::remove_file(&path).await {
@@ -248,11 +261,39 @@ impl LibraryCardStore {
         Ok(out)
     }
 
+    /// Persist a card to disk and wake any sync task listening on
+    /// `change_notify`. Use this from user-driven write paths (translation
+    /// completion, backfill, on-disk edits).
     pub async fn save(
         &self,
         card: &Card,
         source_language: &str,
         target_language: &str,
+    ) -> anyhow::Result<()> {
+        self.save_inner(card, source_language, target_language, true)
+            .await
+    }
+
+    /// Persist a card to disk WITHOUT firing the change-notify wake. Use
+    /// from code paths that themselves run inside a sync pass (or otherwise
+    /// shouldn't self-trigger one), e.g. sync_pass writing back pulled
+    /// `anki_data`, or `load` normalizing a conflict merge.
+    pub async fn save_without_wake(
+        &self,
+        card: &Card,
+        source_language: &str,
+        target_language: &str,
+    ) -> anyhow::Result<()> {
+        self.save_inner(card, source_language, target_language, false)
+            .await
+    }
+
+    async fn save_inner(
+        &self,
+        card: &Card,
+        source_language: &str,
+        target_language: &str,
+        notify: bool,
     ) -> anyhow::Result<()> {
         let deck = self.deck_dir(source_language, target_language);
         tokio::fs::create_dir_all(&deck).await?;
@@ -266,6 +307,9 @@ impl LibraryCardStore {
         let bytes = serde_json::to_vec_pretty(card)?;
         tokio::fs::write(&temp, bytes).await?;
         tokio::fs::rename(&temp, &canonical).await?;
+        if notify {
+            self.change_notify.notify_one();
+        }
         Ok(())
     }
 }
@@ -314,6 +358,43 @@ mod tests {
         assert!(body.starts_with("{\n"), "expected pretty JSON, got: {body}");
         assert!(body.contains("\"version\": 1"));
         assert!(body.contains("\"anki_data\": null"));
+    }
+
+    #[tokio::test]
+    async fn save_fires_change_notify() {
+        let tmp = TempDir::new("flts_card_notify");
+        let store = LibraryCardStore::new(&tmp.path);
+        let notify = store.change_notify();
+        let waiter = tokio::spawn(async move {
+            tokio::time::timeout(std::time::Duration::from_secs(2), notify.notified())
+                .await
+                .expect("change_notify must fire within timeout")
+        });
+        store.save(&sample_card(), "spa", "rus").await.unwrap();
+        waiter.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn save_without_wake_does_not_fire_change_notify() {
+        let tmp = TempDir::new("flts_card_silent");
+        let store = LibraryCardStore::new(&tmp.path);
+        let notify = store.change_notify();
+        store
+            .save_without_wake(&sample_card(), "spa", "rus")
+            .await
+            .unwrap();
+        // notify_one is queued (max 1 permit). If save_without_wake wakes
+        // erroneously, this notified() returns immediately; otherwise it
+        // pends until the timeout elapses.
+        let pending = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            notify.notified(),
+        )
+        .await;
+        assert!(
+            pending.is_err(),
+            "save_without_wake must not fire change_notify"
+        );
     }
 
     #[tokio::test]
