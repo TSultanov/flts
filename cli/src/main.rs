@@ -17,6 +17,7 @@ use display_error_chain::DisplayErrorChain;
 use file_format::FileFormat;
 use isolang::Language;
 use library::{
+    book::chapter_summaries::ChapterSummaries,
     cache::{GEMINI_PROMPT_CACHE_CAPACITY, TranslationsCache},
     epub_importer::EpubBook,
     library::Library,
@@ -62,6 +63,17 @@ enum Commands {
     },
     /// List books
     List {},
+    /// Dump chapter summaries for a book
+    Summaries {
+        /// Book ID
+        id: Uuid,
+        /// Only show this chapter (0-indexed)
+        #[arg(short, long)]
+        chapter: Option<usize>,
+        /// Hide summary text; print one header line per chapter
+        #[arg(long)]
+        headers_only: bool,
+    },
     /// Translate book
     Translate {
         /// Book ID
@@ -128,6 +140,83 @@ async fn add_epub(library: &Arc<Library>, path: &Path, lang: &str) -> anyhow::Re
     let book = library.get_book(&book_id).await?;
     let book = book.lock().await;
     println!("Created book {} (id: {})", book.book.title, book.book.id);
+
+    Ok(())
+}
+
+async fn dump_summaries(
+    library: &Arc<Library>,
+    book_id: Uuid,
+    chapter_filter: Option<usize>,
+    headers_only: bool,
+) -> anyhow::Result<()> {
+    let books = library.list_books().await?;
+    let meta = books
+        .iter()
+        .find(|b| b.id == book_id)
+        .ok_or_else(|| anyhow::anyhow!("Book {book_id} not found in library"))?;
+
+    let Some(main) = meta.chapter_summaries_main_path.as_ref() else {
+        println!(
+            "Book {} ({}): no chapter_summaries.dat sidecar yet",
+            meta.title, book_id
+        );
+        return Ok(());
+    };
+
+    let summaries =
+        ChapterSummaries::load_from_metadata(main, &meta.chapter_summaries_conflicting_paths).await?;
+
+    let titles: Vec<Option<String>> = {
+        let book = library.get_book(&book_id).await?;
+        let book = book.lock().await;
+        (0..summaries.entries.len())
+            .map(|i| book.book.chapter_view(i).title.as_ref().map(|t| t.to_string()))
+            .collect()
+    };
+
+    let generated = summaries.entries.iter().filter(|e| e.generated).count();
+    println!("Book: {} ({})", meta.title, meta.id);
+    println!(
+        "Chapters: {} generated, {} pending",
+        generated,
+        summaries.entries.len() - generated,
+    );
+    println!();
+
+    for (i, entry) in summaries.entries.iter().enumerate() {
+        if let Some(only) = chapter_filter
+            && only != i
+        {
+            continue;
+        }
+
+        let title = titles.get(i).and_then(|t| t.as_deref()).unwrap_or("");
+        let title_suffix = if title.is_empty() {
+            String::new()
+        } else {
+            format!(": {title}")
+        };
+        println!("=== Chapter {i}{title_suffix} ===");
+
+        if !entry.generated {
+            println!("pending");
+            println!();
+            continue;
+        }
+        println!(
+            "generated=true model={:?} timestamp={} chars={}",
+            entry.model,
+            entry.timestamp,
+            entry.text.chars().count(),
+        );
+
+        if !headers_only {
+            println!();
+            println!("{}", entry.text);
+        }
+        println!();
+    }
 
     Ok(())
 }
@@ -434,6 +523,13 @@ async fn do_main() -> anyhow::Result<()> {
             }
             Commands::List {} => {
                 list_books(&library).await?;
+            }
+            Commands::Summaries {
+                id,
+                chapter,
+                headers_only,
+            } => {
+                dump_summaries(&library, *id, *chapter, *headers_only).await?;
             }
             Commands::Translate {
                 id,
