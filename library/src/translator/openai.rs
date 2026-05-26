@@ -32,7 +32,6 @@ use super::{
 
 pub struct OpenAITranslator {
     cache: Arc<TranslationsCache>,
-    #[allow(dead_code)] // wired in Phase 4 (chapter-context preamble user message)
     context_provider: Arc<dyn ChapterContextProvider>,
     client: Client<OpenAIConfig>,
     schema: Arc<Value>,

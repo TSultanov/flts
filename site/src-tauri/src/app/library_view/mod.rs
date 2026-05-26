@@ -278,18 +278,28 @@ impl LibraryView {
 
     pub async fn list_book_chapters(&mut self, book_id: Uuid) -> anyhow::Result<Vec<ChapterView>> {
         let book = self.library.get_book(&book_id).await?;
-        let book = book.lock().await;
-        let book = &book.book;
-        let chapters = book
-            .chapter_views()
-            .map(|v| ChapterView {
-                id: v.idx,
-                title: v
-                    .title
-                    .map(|s| s.to_string())
-                    .unwrap_or("<no title>".to_owned()),
-            })
-            .collect();
+        let chapters = {
+            let book = book.lock().await;
+            let book = &book.book;
+            book.chapter_views()
+                .map(|v| ChapterView {
+                    id: v.idx,
+                    title: v
+                        .title
+                        .map(|s| s.to_string())
+                        .unwrap_or("<no title>".to_owned()),
+                })
+                .collect()
+        };
+        // User opened a book → resume / start summary generation in the
+        // background. Idempotent: no-op if all summaries already done.
+        if let Ok(queue) = self
+            .state
+            .get_or_init_summary_generation_queue(self.library.clone())
+            .await
+        {
+            queue.enqueue(book_id);
+        }
         Ok(chapters)
     }
 
@@ -369,6 +379,7 @@ impl LibraryView {
             .await?;
 
         self.state.notify_library_changed();
+        self.enqueue_summary_generation(id).await;
 
         Ok(id)
     }
@@ -381,8 +392,22 @@ impl LibraryView {
         let id = self.library.create_book_epub(book, source_language).await?;
 
         self.state.notify_library_changed();
+        self.enqueue_summary_generation(id).await;
 
         Ok(id)
+    }
+
+    async fn enqueue_summary_generation(&self, book_id: Uuid) {
+        match self
+            .state
+            .get_or_init_summary_generation_queue(self.library.clone())
+            .await
+        {
+            Ok(queue) => queue.enqueue(book_id),
+            Err(err) => log::warn!(
+                "Failed to init summary generation queue for book {book_id}: {err}"
+            ),
+        }
     }
 
     pub async fn get_book_reading_state(

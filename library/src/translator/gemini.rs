@@ -69,7 +69,6 @@ pub(crate) fn gemini_paragraph_schema() -> Value {
 
 pub struct GeminiTranslator {
     cache: Arc<TranslationsCache>,
-    #[allow(dead_code)] // wired in Phase 4 (per-chapter cache payload)
     context_provider: Arc<dyn ChapterContextProvider>,
     client: Gemini,
     schema: Arc<Value>,

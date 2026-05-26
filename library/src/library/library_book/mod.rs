@@ -91,6 +91,12 @@ impl TracedLock for LibraryTranslation {
     }
 }
 
+impl LibraryBook {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
 impl LibraryTranslation {
     pub fn is_changed(&self) -> bool {
         self.changed

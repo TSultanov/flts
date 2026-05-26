@@ -25,7 +25,10 @@ use uuid::Uuid;
 
 use tauri::Emitter;
 
-use crate::app::{anki_sync::AnkiSyncTask, config::Config, translation_queue::TranslationQueue};
+use crate::app::{
+    anki_sync::AnkiSyncTask, chapter_context::SummaryBackedChapterContext, config::Config,
+    summary_generation_queue::SummaryGenerationQueue, translation_queue::TranslationQueue,
+};
 
 #[cfg(mobile)]
 fn document_dir() -> Option<std::path::PathBuf> {
@@ -39,10 +42,12 @@ const EXIT_FINAL_SYNC_TIMEOUT: Duration = Duration::from_secs(15);
 const DEFAULT_ANKI_SYNC_INTERVAL_SECS: u64 = 300;
 
 pub mod anki_sync;
+pub mod chapter_context;
 pub mod config;
 pub mod library_view;
 pub mod lyrics;
 pub mod spotify;
+pub mod summary_generation_queue;
 pub mod translation_queue;
 #[derive(Debug)]
 pub enum AppError {
@@ -79,6 +84,8 @@ pub struct AppState {
     library: Arc<watch::Sender<Option<Arc<Library>>>>,
     translation_queue: watch::Sender<Option<Arc<TranslationQueue>>>,
     translation_queue_init_lock: Mutex<()>,
+    summary_generation_queue: watch::Sender<Option<Arc<SummaryGenerationQueue>>>,
+    summary_generation_queue_init_lock: Mutex<()>,
     watcher: Arc<Mutex<LibraryWatcher>>,
     backfill_lock: Arc<Mutex<()>>,
     anki_sync_task: Mutex<Option<Arc<AnkiSyncTask>>>,
@@ -129,6 +136,8 @@ impl AppState {
             library: Arc::new(watch::channel::<Option<Arc<Library>>>(None).0),
             translation_queue: watch::channel(None).0,
             translation_queue_init_lock: Mutex::new(()),
+            summary_generation_queue: watch::channel(None).0,
+            summary_generation_queue_init_lock: Mutex::new(()),
             watcher,
             backfill_lock: Arc::new(Mutex::new(())),
             anki_sync_task: Mutex::new(None),
@@ -433,10 +442,17 @@ impl AppState {
         let config = self.config.borrow().clone();
         let cache = self.get_translations_cache().await?;
         let stats_cache = self.get_stats_cache().await?;
+        let summary_queue = self.get_or_init_summary_generation_queue(library.clone()).await?;
+        let context_provider: Arc<dyn library::translator::ChapterContextProvider> =
+            Arc::new(SummaryBackedChapterContext {
+                queue: summary_queue,
+                library: library.clone(),
+            });
         let queue = TranslationQueue::init(
             library,
             cache,
             stats_cache,
+            context_provider,
             &config,
             self.app.clone(),
             self.library_sender(),
@@ -444,6 +460,28 @@ impl AppState {
         .ok_or(AppError::NoTranslationQueueError)?;
 
         self.translation_queue.send_replace(Some(queue.clone()));
+        Ok(queue)
+    }
+
+    pub async fn get_or_init_summary_generation_queue(
+        &self,
+        library: Arc<Library>,
+    ) -> anyhow::Result<Arc<SummaryGenerationQueue>> {
+        if let Some(queue) = self.summary_generation_queue.borrow().clone() {
+            return Ok(queue);
+        }
+
+        let _guard = self.summary_generation_queue_init_lock.lock().await;
+
+        if let Some(queue) = self.summary_generation_queue.borrow().clone() {
+            return Ok(queue);
+        }
+
+        let config = self.config.borrow().clone();
+        let queue = SummaryGenerationQueue::init(library, &config, self.app.clone());
+
+        self.summary_generation_queue
+            .send_replace(Some(queue.clone()));
         Ok(queue)
     }
 

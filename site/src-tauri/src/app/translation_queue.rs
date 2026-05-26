@@ -13,8 +13,8 @@ use library::{
     library::Library,
     translation_stats::TranslationSizeCache,
     translator::{
-        ChapterContextProvider, NoChapterContext, TranslationContext, TranslationModel,
-        TranslationProvider, get_translator,
+        ChapterContextProvider, TranslationContext, TranslationModel, TranslationProvider,
+        get_translator,
     },
 };
 use log::{info, warn};
@@ -144,6 +144,7 @@ impl TranslationQueue {
         library: Arc<Library>,
         cache: Arc<TranslationsCache>,
         stats_cache: Arc<TranslationSizeCache>,
+        context_provider: Arc<dyn ChapterContextProvider>,
         config: &Config,
         app: tauri::AppHandle,
         library_tx: Arc<watch::Sender<Option<Arc<Library>>>>,
@@ -175,6 +176,7 @@ impl TranslationQueue {
                 while let Some(request) = rx_translate.recv().await {
                     let library = library.clone();
                     let cache = cache.clone();
+                    let context_provider = context_provider.clone();
                     let gemini_api_key = gemini_api_key.clone();
                     let openai_api_key = openai_api_key.clone();
                     let app = app.clone();
@@ -182,6 +184,7 @@ impl TranslationQueue {
                     let outcome = handle_request(
                         library,
                         cache,
+                        context_provider,
                         stats_cache.clone(),
                         target_language,
                         gemini_api_key,
@@ -313,6 +316,7 @@ impl TranslationQueue {
 async fn handle_request(
     library: Arc<Library>,
     cache: Arc<TranslationsCache>,
+    context_provider: Arc<dyn ChapterContextProvider>,
     stats_cache: Arc<TranslationSizeCache>,
     target_language: Language,
     gemini_api_key: Option<String>,
@@ -360,7 +364,6 @@ async fn handle_request(
         }
     };
 
-    let context_provider: Arc<dyn ChapterContextProvider> = Arc::new(NoChapterContext);
     let translator = get_translator(
         cache,
         context_provider,

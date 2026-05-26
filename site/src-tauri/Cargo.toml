@@ -27,6 +27,7 @@ strum = { workspace = true }
 isolang = { workspace = true, features = ["list_languages", "local_names", "serde"] }
 directories = { workspace = true }
 anyhow = { workspace = true }
+async-trait = "0.1.89"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "fs", "time", "io-util", "process"] }
 tauri-plugin-dialog = "2.7.0"
 uuid = { workspace = true }
