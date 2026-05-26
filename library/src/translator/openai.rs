@@ -39,6 +39,23 @@ pub struct OpenAITranslator {
     to: Language,
 }
 
+pub(crate) fn openai_model_name(m: TranslationModel) -> anyhow::Result<&'static str> {
+    Ok(match m {
+        TranslationModel::OpenAIGpt52 => "gpt-5.2",
+        TranslationModel::OpenAIGpt52Pro => "gpt-5.2-pro",
+        TranslationModel::OpenAIGpt5Mini => "gpt-5-mini",
+        TranslationModel::OpenAIGpt5Nano => "gpt-5-nano",
+        TranslationModel::OpenAIGpt54 => "gpt-5.4",
+        TranslationModel::OpenAIGpt54Mini => "gpt-5.4-mini",
+        _ => Err(TranslationErrors::UnknownModel)?,
+    })
+}
+
+pub(crate) fn openai_client(api_key: String) -> Client<OpenAIConfig> {
+    let config = OpenAIConfig::new().with_api_key(api_key);
+    Client::with_config(config)
+}
+
 impl OpenAITranslator {
     pub fn create(
         cache: Arc<TranslationsCache>,
@@ -48,19 +65,8 @@ impl OpenAITranslator {
         to: &Language,
     ) -> anyhow::Result<Self> {
         let schema = paragraph_translation_schema();
-
-        let model = match translation_model {
-            TranslationModel::OpenAIGpt52 => "gpt-5.2",
-            TranslationModel::OpenAIGpt52Pro => "gpt-5.2-pro",
-            TranslationModel::OpenAIGpt5Mini => "gpt-5-mini",
-            TranslationModel::OpenAIGpt5Nano => "gpt-5-nano",
-            TranslationModel::OpenAIGpt54 => "gpt-5.4",
-            TranslationModel::OpenAIGpt54Mini => "gpt-5.4-mini",
-            _ => Err(TranslationErrors::UnknownModel)?,
-        };
-
-        let config = OpenAIConfig::new().with_api_key(api_key);
-        let client = Client::with_config(config);
+        let model = openai_model_name(translation_model)?;
+        let client = openai_client(api_key);
 
         Ok(Self {
             cache,

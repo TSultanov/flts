@@ -11,11 +11,10 @@ use async_openai::types::chat::{
     ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
     ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs,
 };
-use async_openai::{Client, config::OpenAIConfig};
 use isolang::Language;
 use tokio::time::timeout;
 
-use crate::translator::{TranslationErrors, TranslationModel, TranslationProvider};
+use crate::translator::{TranslationModel, TranslationProvider};
 
 /// Generous ceiling for a non-streaming summary call. Summaries are short
 /// outputs (~200 tokens) but a slow model on a long chapter input may take
@@ -122,18 +121,8 @@ pub async fn generate_chapter_summary(
             Ok(text)
         }
         TranslationProvider::Openai => {
-            let model_name = match model {
-                TranslationModel::OpenAIGpt52 => "gpt-5.2",
-                TranslationModel::OpenAIGpt52Pro => "gpt-5.2-pro",
-                TranslationModel::OpenAIGpt5Mini => "gpt-5-mini",
-                TranslationModel::OpenAIGpt5Nano => "gpt-5-nano",
-                TranslationModel::OpenAIGpt54 => "gpt-5.4",
-                TranslationModel::OpenAIGpt54Mini => "gpt-5.4-mini",
-                _ => return Err(TranslationErrors::UnknownModel.into()),
-            };
-
-            let config = OpenAIConfig::new().with_api_key(api_key.to_string());
-            let client = Client::with_config(config);
+            let model_name = crate::translator::openai::openai_model_name(model)?;
+            let client = crate::translator::openai::openai_client(api_key.to_string());
 
             let request = CreateChatCompletionRequestArgs::default()
                 .model(model_name)

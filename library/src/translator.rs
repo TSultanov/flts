@@ -1,6 +1,6 @@
 pub(crate) mod gemini;
 pub(crate) mod gemini_cache;
-mod openai;
+pub(crate) mod openai;
 
 use std::{fmt::Display, sync::Arc, time::Duration};
 
