@@ -131,6 +131,19 @@ impl Book {
     pub fn paragraphs_count(&self) -> usize {
         self.paragraphs.len()
     }
+
+    /// Linear scan over chapters to find which one contains the given
+    /// flat paragraph id. `None` if the id is out of range or not
+    /// assigned to any chapter.
+    pub fn chapter_for_paragraph(&self, paragraph_id: usize) -> Option<usize> {
+        for (chapter_idx, chapter) in self.chapters.iter().enumerate() {
+            let indices = chapter.paragraphs.slice(&self.paragraph_map);
+            if indices.iter().any(|&id| id == paragraph_id) {
+                return Some(chapter_idx);
+            }
+        }
+        None
+    }
 }
 
 impl<'a> ChapterView<'a> {

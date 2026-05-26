@@ -15,7 +15,8 @@ use crate::{
     book::translation_import::ParagraphTranslation,
     cache::TranslationsCache,
     translator::{
-        ProgressCallback, TranslationErrors, TranslationModel, Translator,
+        ChapterContextProvider, ProgressCallback, TranslationContext, TranslationErrors,
+        TranslationModel, Translator,
         gemini_cache::{CacheKey, GeminiCacheRegistry, is_cache_missing_error},
         paragraph_translation_schema, strip_additional_properties,
     },
@@ -65,6 +66,8 @@ pub(crate) fn gemini_paragraph_schema() -> Value {
 
 pub struct GeminiTranslator {
     cache: Arc<TranslationsCache>,
+    #[allow(dead_code)] // wired in Phase 4 (per-chapter cache payload)
+    context_provider: Arc<dyn ChapterContextProvider>,
     client: Gemini,
     schema: Arc<Value>,
     model: Model,
@@ -76,6 +79,7 @@ pub struct GeminiTranslator {
 impl GeminiTranslator {
     pub fn create(
         cache: Arc<TranslationsCache>,
+        context_provider: Arc<dyn ChapterContextProvider>,
         translation_model: TranslationModel,
         api_key: String,
         from: &Language,
@@ -86,6 +90,7 @@ impl GeminiTranslator {
 
         Ok(Self {
             cache,
+            context_provider,
             client,
             schema: Arc::new(gemini_paragraph_schema()),
             model,
@@ -185,14 +190,12 @@ impl Translator for GeminiTranslator {
 
     async fn get_translation(
         &self,
-        paragraph: &str,
-        use_cache: bool,
-        callback: Option<Box<ProgressCallback>>,
+        ctx: TranslationContext<'_>,
     ) -> anyhow::Result<ParagraphTranslation> {
-        if use_cache
+        if ctx.use_cache
             && let Some(cached_result) = self
                 .cache
-                .get(&self.from, &self.to, paragraph)
+                .get(&self.from, &self.to, ctx.paragraph_text)
                 .await
                 .ok()
                 .flatten()
@@ -200,7 +203,8 @@ impl Translator for GeminiTranslator {
             return Ok(cached_result);
         }
 
-        let cb = callback.as_deref();
+        let paragraph = ctx.paragraph_text;
+        let cb = ctx.callback.as_deref();
         let mut translation = match self.attempt_translation(paragraph, cb).await {
             Ok(t) => t,
             Err(err) if is_cache_missing_error(&err) => {

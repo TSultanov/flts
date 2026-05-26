@@ -19,8 +19,8 @@ use crate::{
     book::translation_import::ParagraphTranslation,
     cache::TranslationsCache,
     translator::{
-        ProgressCallback, TranslationErrors, TranslationModel, Translator,
-        paragraph_translation_schema,
+        ChapterContextProvider, TranslationContext, TranslationErrors, TranslationModel,
+        Translator, paragraph_translation_schema,
     },
 };
 
@@ -31,6 +31,8 @@ use super::{
 
 pub struct OpenAITranslator {
     cache: Arc<TranslationsCache>,
+    #[allow(dead_code)] // wired in Phase 4 (chapter-context preamble user message)
+    context_provider: Arc<dyn ChapterContextProvider>,
     client: Client<OpenAIConfig>,
     schema: Arc<Value>,
     model: Arc<str>,
@@ -59,6 +61,7 @@ pub(crate) fn openai_client(api_key: String) -> Client<OpenAIConfig> {
 impl OpenAITranslator {
     pub fn create(
         cache: Arc<TranslationsCache>,
+        context_provider: Arc<dyn ChapterContextProvider>,
         translation_model: TranslationModel,
         api_key: String,
         from: &Language,
@@ -70,6 +73,7 @@ impl OpenAITranslator {
 
         Ok(Self {
             cache,
+            context_provider,
             client,
             schema: Arc::new(schema),
             model: Arc::from(model),
@@ -88,14 +92,12 @@ impl Translator for OpenAITranslator {
 
     async fn get_translation(
         &self,
-        paragraph: &str,
-        use_cache: bool,
-        callback: Option<Box<ProgressCallback>>,
+        ctx: TranslationContext<'_>,
     ) -> anyhow::Result<ParagraphTranslation> {
-        if use_cache
+        if ctx.use_cache
             && let Some(cached_result) = self
                 .cache
-                .get(&self.from, &self.to, paragraph)
+                .get(&self.from, &self.to, ctx.paragraph_text)
                 .await
                 .ok()
                 .flatten()
@@ -103,6 +105,8 @@ impl Translator for OpenAITranslator {
             return Ok(cached_result);
         }
 
+        let paragraph = ctx.paragraph_text;
+        let callback = ctx.callback;
         let system_prompt = format!(
             "{}\n\nReturn ONLY a single JSON object that matches the requested schema. Do not wrap it in markdown.",
             Self::get_prompt(self.from.to_name(), self.to.to_name())

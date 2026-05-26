@@ -9,6 +9,7 @@ use isolang::Language;
 use serde::{Deserialize, Serialize};
 use strum::EnumIter;
 use tokio::time::Instant;
+use uuid::Uuid;
 
 use crate::{
     book::translation_import::ParagraphTranslation, cache::TranslationsCache,
@@ -345,15 +346,66 @@ impl TranslationProvider {
     }
 }
 
+/// Per-paragraph translation request. Carries everything the translator
+/// needs to locate the paragraph in its surrounding chapter and call its
+/// `ChapterContextProvider`.
+pub struct TranslationContext<'a> {
+    pub paragraph_text: &'a str,
+    pub book_id: Uuid,
+    pub chapter_id: usize,
+    pub use_cache: bool,
+    pub callback: Option<Box<ProgressCallback>>,
+}
+
+/// Translator-facing view onto book-level chapter context. Lives on the
+/// Tauri-side `SummaryGenerationQueue` for real translations; the CLI
+/// uses [`NoChapterContext`] which makes every query a no-op so
+/// translation behaves like the pre-summaries version.
+#[async_trait]
+pub trait ChapterContextProvider: Send + Sync {
+    /// Returns when summaries `0..=chapter_index` are all generated. May
+    /// time out at the call site if the queue gets stuck.
+    async fn wait_ready(&self, book_id: Uuid, chapter_index: usize) -> anyhow::Result<()>;
+
+    /// Concatenated source-language summaries for chapters
+    /// `0..chapter_index` with `Chapter X: <title>` headers. Empty when
+    /// `chapter_index == 0` or no summaries are available.
+    async fn prior_summaries(
+        &self,
+        book_id: Uuid,
+        chapter_index: usize,
+    ) -> anyhow::Result<String>;
+
+    /// Full source text of `chapter_index` with paragraph separators.
+    async fn chapter_text(&self, book_id: Uuid, chapter_index: usize) -> anyhow::Result<String>;
+}
+
+/// Always-ready, always-empty provider. Used by the CLI (no
+/// summary infrastructure) and by tests; the per-(book, chapter) Gemini
+/// cache will degrade to "system prompt only" content under this
+/// provider, matching the pre-summaries behavior.
+pub struct NoChapterContext;
+
+#[async_trait]
+impl ChapterContextProvider for NoChapterContext {
+    async fn wait_ready(&self, _: Uuid, _: usize) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn prior_summaries(&self, _: Uuid, _: usize) -> anyhow::Result<String> {
+        Ok(String::new())
+    }
+    async fn chapter_text(&self, _: Uuid, _: usize) -> anyhow::Result<String> {
+        Ok(String::new())
+    }
+}
+
 #[async_trait]
 pub trait Translator: Send + Sync {
     fn get_model(&self) -> TranslationModel;
 
     async fn get_translation(
         &self,
-        paragraph: &str,
-        use_cache: bool,
-        callback: Option<Box<ProgressCallback>>,
+        ctx: TranslationContext<'_>,
     ) -> anyhow::Result<ParagraphTranslation>;
 
     fn get_prompt(from: &str, to: &str) -> String
@@ -519,6 +571,7 @@ pub(crate) fn paragraph_translation_schema() -> serde_json::Value {
 
 pub fn get_translator(
     cache: Arc<TranslationsCache>,
+    context_provider: Arc<dyn ChapterContextProvider>,
     provider: TranslationProvider,
     translation_model: TranslationModel,
     api_key: String,
@@ -528,6 +581,7 @@ pub fn get_translator(
     match provider {
         TranslationProvider::Google => Ok(Box::new(GeminiTranslator::create(
             cache,
+            context_provider,
             translation_model,
             api_key,
             &from,
@@ -535,6 +589,7 @@ pub fn get_translator(
         )?)),
         TranslationProvider::Openai => Ok(Box::new(OpenAITranslator::create(
             cache,
+            context_provider,
             translation_model,
             api_key,
             &from,

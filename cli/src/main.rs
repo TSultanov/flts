@@ -20,7 +20,10 @@ use library::{
     cache::TranslationsCache,
     epub_importer::EpubBook,
     library::Library,
-    translator::{TranslationModel, TranslationProvider, Translator, get_translator},
+    translator::{
+        ChapterContextProvider, NoChapterContext, TranslationContext, TranslationModel,
+        TranslationProvider, Translator, get_translator,
+    },
 };
 use tokio::time::{Duration, sleep};
 use tokio::{sync::Mutex, task::JoinSet};
@@ -160,12 +163,17 @@ async fn translate_paragraph(
     paragraph_id: usize,
     worker_id: usize,
 ) -> anyhow::Result<()> {
-    let (translation, paragraph_text) = {
+    let (translation, paragraph_text, chapter_id) = {
         let book = library.get_book(&book_id).await?;
         let mut book = book.lock().await;
         let translation = book.get_or_create_translation(tgt_lang).await;
         let paragraph = book.book.paragraph_view(paragraph_id);
-        (translation, paragraph.original_text.to_string())
+        let chapter_id = book.book.chapter_for_paragraph(paragraph_id).unwrap_or(0);
+        (
+            translation,
+            paragraph.original_text.to_string(),
+            chapter_id,
+        )
     };
     println!(
         "Worker {worker_id}: Translating paragraph {}: \"{}...\"",
@@ -173,7 +181,13 @@ async fn translate_paragraph(
         String::from_iter(paragraph_text.chars().take(40))
     );
     let p_translation = translator
-        .get_translation(&paragraph_text, true, None)
+        .get_translation(TranslationContext {
+            paragraph_text: &paragraph_text,
+            book_id,
+            chapter_id,
+            use_cache: true,
+            callback: None,
+        })
         .await?;
     println!("Worker {worker_id}: Translated paragraph {}", paragraph_id);
 
@@ -290,8 +304,10 @@ async fn translate_book(
         let library1 = library.clone();
         let rx = rx.clone();
         let tx_save_w = tx_save.clone();
+        let context_provider: Arc<dyn ChapterContextProvider> = Arc::new(NoChapterContext);
         let translator = get_translator(
             cache.clone(),
+            context_provider,
             TranslationProvider::Google,
             TranslationModel::Gemini25Flash,
             api_key.to_owned(),

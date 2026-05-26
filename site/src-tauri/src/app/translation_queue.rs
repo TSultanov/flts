@@ -12,7 +12,10 @@ use library::{
     cache::TranslationsCache,
     library::Library,
     translation_stats::TranslationSizeCache,
-    translator::{TranslationModel, TranslationProvider, get_translator},
+    translator::{
+        ChapterContextProvider, NoChapterContext, TranslationContext, TranslationModel,
+        TranslationProvider, get_translator,
+    },
 };
 use log::{info, warn};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -319,15 +322,20 @@ async fn handle_request(
     save_notify: &UnboundedSender<SaveNotify>,
     request: &TranslationRequest,
 ) -> anyhow::Result<()> {
-    let (translation, paragraph_text, source_language) = {
+    let (translation, paragraph_text, source_language, chapter_id) = {
         let book = library.get_book(&request.book_id).await?;
         let mut book = book.lock().await;
         let translation = book.get_or_create_translation(&target_language).await;
         let paragraph = book.book.paragraph_view(request.paragraph_id);
+        let chapter_id = book
+            .book
+            .chapter_for_paragraph(request.paragraph_id)
+            .unwrap_or(0);
         (
             translation,
             paragraph.original_text.to_string(),
             Language::from_639_3(&book.book.language).unwrap(),
+            chapter_id,
         )
     };
 
@@ -352,8 +360,10 @@ async fn handle_request(
         }
     };
 
+    let context_provider: Arc<dyn ChapterContextProvider> = Arc::new(NoChapterContext);
     let translator = get_translator(
         cache,
+        context_provider,
         provider,
         request.model,
         api_key,
@@ -448,7 +458,13 @@ async fn handle_request(
     };
 
     let p_translation = translator
-        .get_translation(&paragraph_text, request.use_cache, Some(callback))
+        .get_translation(TranslationContext {
+            paragraph_text: &paragraph_text,
+            book_id: request.book_id,
+            chapter_id,
+            use_cache: request.use_cache,
+            callback: Some(callback),
+        })
         .await?;
     info!("Translated paragraph {}", request.paragraph_id);
 
