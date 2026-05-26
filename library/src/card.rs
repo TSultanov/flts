@@ -101,12 +101,14 @@ impl PartialEq for CardKey {
 }
 impl Eq for CardKey {}
 
-pub fn canonicalize_lemma(raw: &str, _src_lang: Language) -> String {
-    // _src_lang is reserved for locale-aware lowercase (Turkish dotted/dotless `i`).
-    // Stage 2 uses Unicode default. See .specs/ANKI_PLAN.md "Known follow-ups".
+/// Display-form normalization: NFC + apostrophe + whitespace collapse,
+/// preserving the LLM-emitted casing. Use for the lemma stored on
+/// CardKey / Card (rendered to the user, sent to Anki Source field).
+/// Pair with [`canonicalize_lemma`] + [`lemma_slug`] for the lowercased
+/// filesystem/id side.
+pub fn canonicalize_lemma_display(raw: &str) -> String {
     let nfc: String = raw.nfc().collect();
-    let lowered = nfc.to_lowercase();
-    let apostrophe_normalized: String = lowered
+    let apostrophe_normalized: String = nfc
         .chars()
         .map(|c| match c {
             '\u{2018}' | '\u{2019}' | '\u{02BC}' => '\'',
@@ -117,6 +119,12 @@ pub fn canonicalize_lemma(raw: &str, _src_lang: Language) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+pub fn canonicalize_lemma(raw: &str, _src_lang: Language) -> String {
+    // _src_lang is reserved for locale-aware lowercase (Turkish dotted/dotless `i`).
+    // Stage 2 uses Unicode default. See .specs/ANKI_PLAN.md "Known follow-ups".
+    canonicalize_lemma_display(raw).to_lowercase()
 }
 
 pub fn canonicalize_part_of_speech(raw: &str) -> String {
@@ -422,11 +430,15 @@ pub fn extract_card_updates(
             if !is_eligible(word) {
                 continue;
             }
-            let lemma = canonicalize_lemma(&word.grammar.original_initial_form, src_lang);
+            // Display form preserves the LLM-emitted casing (e.g. "Harry",
+            // "Haus", "I") so the rendered card matches the citation form.
+            // Slug uses the lowercased pipeline so the filesystem identity
+            // and across-occurrence dedup stay stable.
+            let lemma = canonicalize_lemma_display(&word.grammar.original_initial_form);
             if lemma.is_empty() {
                 continue;
             }
-            let slug = lemma_slug(&lemma);
+            let slug = lemma_slug(&lemma.to_lowercase());
             if slug.is_empty() {
                 continue;
             }
@@ -505,6 +517,21 @@ mod tests {
     #[test]
     fn canonicalize_lowercase() {
         assert_eq!(canonicalize_lemma("España", spa()), "españa");
+    }
+
+    #[test]
+    fn canonicalize_lemma_display_preserves_case() {
+        // Display normalization keeps the LLM-emitted casing while still
+        // applying NFC, apostrophe normalization, and whitespace collapse.
+        assert_eq!(canonicalize_lemma_display("Harry"), "Harry");
+        assert_eq!(canonicalize_lemma_display("España"), "España");
+        assert_eq!(canonicalize_lemma_display("Haus"), "Haus");
+        assert_eq!(canonicalize_lemma_display("I"), "I");
+        assert_eq!(canonicalize_lemma_display("  HARRY jr  "), "HARRY jr");
+        // NFC composition still runs.
+        assert_eq!(canonicalize_lemma_display("Espan\u{0303}a"), "España");
+        // Curly apostrophe still normalized.
+        assert_eq!(canonicalize_lemma_display("L\u{2019}Amour"), "L'Amour");
     }
 
     #[test]
@@ -897,7 +924,7 @@ mod tests {
     }
 
     #[test]
-    fn walk_uses_canonicalized_lemma_in_key() {
+    fn walk_preserves_llm_casing_in_key_lemma() {
         let p = one_sentence_paragraph(
             "Mosca",
             vec![full_word(
@@ -918,8 +945,71 @@ mod tests {
             0,
         );
         assert_eq!(updates.len(), 1);
-        assert_eq!(updates[0].key.lemma, "españa");
+        // Display lemma keeps the LLM-emitted casing.
+        assert_eq!(updates[0].key.lemma, "España");
+        // Slug is lowercased so the filesystem identity is stable.
         assert_eq!(updates[0].key.slug, "españa");
+        assert_eq!(updates[0].key.id(), "flts_spa_rus_españa");
+    }
+
+    #[test]
+    fn walk_preserves_proper_noun_casing_into_card_lemma() {
+        // Round-trip: a `proper_noun` like "Harry" lands on Card.lemma as
+        // "Harry" but the on-disk identity (slug, id) lowercases.
+        let p = one_sentence_paragraph(
+            "Harry caught the Snitch.",
+            vec![full_word(
+                "Harry",
+                "Harry",
+                "Гарри",
+                "proper_noun",
+                &["Гарри"],
+                false,
+            )],
+        );
+        let updates = extract_card_updates(
+            &p,
+            Language::from_639_3("eng").unwrap(),
+            Language::from_639_3("rus").unwrap(),
+            Uuid::nil(),
+            0,
+            0,
+        );
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].key.lemma, "Harry");
+        assert_eq!(updates[0].key.slug, "harry");
+
+        let card = Card::new_from_update(&updates[0]);
+        assert_eq!(card.lemma, "Harry");
+        assert_eq!(card.id, "flts_eng_rus_harry");
+    }
+
+    #[test]
+    fn walk_preserves_german_common_noun_casing() {
+        // German common nouns are capitalized by orthographic rule; the
+        // LLM emits them that way and we must preserve it in the display
+        // lemma. Slug still lowercases.
+        let p = one_sentence_paragraph(
+            "Das Haus ist groß.",
+            vec![
+                full_word("Das", "der", "дом", "determiner_article", &["дом"], false),
+                full_word("Haus", "Haus", "дом", "common_noun", &["дом"], false),
+            ],
+        );
+        let updates = extract_card_updates(
+            &p,
+            Language::from_639_3("deu").unwrap(),
+            Language::from_639_3("rus").unwrap(),
+            Uuid::nil(),
+            0,
+            0,
+        );
+        let haus = updates
+            .iter()
+            .find(|u| u.key.slug == "haus")
+            .expect("Haus update emitted");
+        assert_eq!(haus.key.lemma, "Haus");
+        assert_eq!(haus.key.slug, "haus");
     }
 
     #[test]

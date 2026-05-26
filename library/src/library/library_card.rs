@@ -291,7 +291,10 @@ impl LibraryCardStore {
         let deck = self.deck_dir(source_language, target_language);
         tokio::fs::create_dir_all(&deck).await?;
 
-        let slug = lemma_slug(&card.lemma);
+        // `card.lemma` is already NFC + apostrophe + whitespace-normalized
+        // by extract_card_updates (the only writer), but case-preserving.
+        // Lowercase before slugging so the filename matches the slug pipeline.
+        let slug = lemma_slug(&card.lemma.to_lowercase());
         let file_name = format!("{slug}.json");
         let canonical = deck.join(&file_name);
         let temp = deck.join(format!("{file_name}~{}", create_random_string(8)));
