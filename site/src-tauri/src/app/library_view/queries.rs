@@ -33,6 +33,8 @@ pub async fn list_book_chapters(
     state: tauri::State<'_, Arc<AppState>>,
     book_id: Uuid,
 ) -> Result<Vec<ChapterView>, String> {
+    let target_language_id = { state.config.borrow().target_language_id.clone() };
+    let target_language = Language::from_639_3(&target_language_id);
     let library = state.library.borrow().clone();
     let Some(library) = library else {
         return Ok(vec![]);
@@ -40,7 +42,7 @@ pub async fn list_book_chapters(
 
     let mut library_view = LibraryView::create(state.inner().clone(), library);
     library_view
-        .list_book_chapters(book_id)
+        .list_book_chapters(book_id, target_language.as_ref())
         .await
         .map_err(|err| err.to_string())
 }

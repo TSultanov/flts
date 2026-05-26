@@ -94,6 +94,7 @@ type MockParagraph = {
 type ChapterMetaView = {
   id: number;
   title: string;
+  translationRatio: number;
 };
 
 type ParagraphView = {
@@ -290,6 +291,10 @@ function applyTranslationCompletion(
   p.segments = segments;
   if (visibleWords) p.visibleWords = visibleWords;
   emit('paragraph_updated', { bookId, paragraphId });
+  // Mirror production: app.rs emits book_updated after a translation change
+  // (via the file-watcher TranslationChanged path). The chapter list Resource
+  // subscribes to book_updated, so without this it never refreshes in e2e.
+  emit('book_updated', bookId);
 }
 
 function emitStarted(
@@ -692,6 +697,7 @@ if (typeof window !== 'undefined') {
       p.segments = segments;
       if (visibleWords !== undefined) p.visibleWords = visibleWords;
       emit('paragraph_updated', { bookId, paragraphId });
+      emit('book_updated', bookId);
     },
     // Like setParagraphTranslation but does not emit paragraph_updated.
     // Used to stage post-card-update backend state before triggering
@@ -988,10 +994,19 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
         return Promise.resolve([] as T);
       }
 
-      const chapters: ChapterMetaView[] = book.chapters.map((chapter, idx) => ({
-        id: idx,
-        title: chapter.title || `Chapter ${idx + 1}`,
-      }));
+      const chapters: ChapterMetaView[] = book.chapters.map((chapter, idx) => {
+        const total = chapter.paragraphIds.length;
+        const translated = chapter.paragraphIds.reduce(
+          (count, pid) =>
+            count + (book.paragraphsById.get(pid)?.segments ? 1 : 0),
+          0,
+        );
+        return {
+          id: idx,
+          title: chapter.title || `Chapter ${idx + 1}`,
+          translationRatio: total === 0 ? 0 : translated / total,
+        };
+      });
 
       return Promise.resolve(chapters as T);
     }

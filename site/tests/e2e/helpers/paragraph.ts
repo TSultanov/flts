@@ -349,6 +349,26 @@ export async function setParagraphTranslationSilent(
   );
 }
 
+export async function setParagraphTranslation(
+  page: Page,
+  bookId: string,
+  paragraphId: number,
+  segments: ParagraphSegment[],
+  visibleWords?: number[],
+): Promise<void> {
+  await page.evaluate(
+    ({ bookId, paragraphId, segments, visibleWords }) => {
+      (window as any).__test.setParagraphTranslation(
+        bookId,
+        paragraphId,
+        segments,
+        visibleWords,
+      );
+    },
+    { bookId, paragraphId, segments, visibleWords },
+  );
+}
+
 /**
  * Build a segments array that tiles the entire fillerHtml(idx) source text,
  * one word-segment per whitespace-delimited token. This mirrors production,

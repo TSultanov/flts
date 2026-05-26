@@ -283,6 +283,23 @@ impl LibraryBook {
         Ok(self.user_state.folder_path.clone())
     }
 
+    pub async fn get_translation(
+        &self,
+        target_language: &Language,
+    ) -> Option<Arc<TracedMutex<LibraryTranslation>>> {
+        let source_language = &self.book.language;
+        for t in self.translations.iter() {
+            let guard = t.lock().await;
+            if &guard.translation.source_language == source_language
+                && guard.translation.target_language == target_language.to_639_3()
+            {
+                drop(guard);
+                return Some(t.clone());
+            }
+        }
+        None
+    }
+
     pub async fn get_or_create_translation(
         &mut self,
         target_language: &Language,

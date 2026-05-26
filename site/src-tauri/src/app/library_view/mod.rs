@@ -43,6 +43,8 @@ pub struct LibraryBookMetadataView {
 pub struct ChapterView {
     id: usize,
     title: String,
+    #[serde(rename = "translationRatio")]
+    translation_ratio: f64,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -289,18 +291,50 @@ impl LibraryView {
             .collect())
     }
 
-    pub async fn list_book_chapters(&mut self, book_id: Uuid) -> anyhow::Result<Vec<ChapterView>> {
+    pub async fn list_book_chapters(
+        &mut self,
+        book_id: Uuid,
+        target_language: Option<&Language>,
+    ) -> anyhow::Result<Vec<ChapterView>> {
         let book = self.library.get_book(&book_id).await?;
-        let chapters = {
-            let book = book.lock().await;
-            let book = &book.book;
-            book.chapter_views()
-                .map(|v| ChapterView {
-                    id: v.idx,
-                    title: v
+        let chapters: Vec<ChapterView> = {
+            let book_guard = book.lock().await;
+            let translation_arc = match target_language {
+                Some(tl) => book_guard.get_translation(tl).await,
+                None => None,
+            };
+            let translation_guard = match &translation_arc {
+                Some(arc) => Some(arc.lock().await),
+                None => None,
+            };
+            book_guard
+                .book
+                .chapter_views()
+                .map(|chapter| {
+                    let total = chapter.paragraph_count();
+                    let translated = if let Some(t) = translation_guard.as_ref() {
+                        chapter
+                            .paragraphs()
+                            .filter(|p| t.paragraph_view(p.id).is_some())
+                            .count()
+                    } else {
+                        0
+                    };
+                    let translation_ratio = if total == 0 {
+                        0.0
+                    } else {
+                        translated as f64 / total as f64
+                    };
+                    let id = chapter.idx;
+                    let title = chapter
                         .title
                         .map(|s| s.to_string())
-                        .unwrap_or("<no title>".to_owned()),
+                        .unwrap_or("<no title>".to_owned());
+                    ChapterView {
+                        id,
+                        title,
+                        translation_ratio,
+                    }
                 })
                 .collect()
         };

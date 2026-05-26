@@ -58,6 +58,11 @@
                 >
                     {chapter.title ? chapter.title : "<no title>"}
                 </a>
+                {#if chapter.translationRatio < 1}
+                    <span class="ratio" data-testid="chapter-translation-ratio">
+                        {(chapter.translationRatio * 100).toFixed(0)}%
+                    </span>
+                {/if}
                 {#if summaryStatusHolder.store?.isActivelyGenerating(chapter.id)}
                     <span class="spinner" data-testid="summary-spinner">
                         <CircularProgress
@@ -96,6 +101,14 @@
 
     .chapters p {
         margin: 0.25em 0;
+        display: flex;
+        align-items: center;
+        gap: 0.4em;
+    }
+
+    .chapters p a {
+        flex: 1 1 auto;
+        min-width: 0;
     }
 
     .chapters .current {
@@ -106,9 +119,16 @@
         opacity: 0.5;
     }
 
+    .chapters .ratio {
+        flex: 0 0 auto;
+        color: var(--text-color-muted);
+        font-size: 0.85em;
+        font-variant-numeric: tabular-nums;
+    }
+
     .chapters .spinner {
+        flex: 0 0 auto;
         display: inline-block;
-        margin-left: 0.4em;
         vertical-align: middle;
     }
 

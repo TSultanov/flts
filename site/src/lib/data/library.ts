@@ -53,6 +53,7 @@ export type ParagraphTranslationSlice = {
 export type ChapterMetaView = {
     id: number,
     title: string,
+    translationRatio: number,
 }
 
 export interface BookMeta {
