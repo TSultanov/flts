@@ -2,6 +2,7 @@
 
 pub mod book;
 pub mod book_metadata;
+pub mod chapter_summaries;
 pub mod serialization;
 mod soa_helpers;
 pub mod translation;
