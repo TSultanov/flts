@@ -5,7 +5,10 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use anyhow::{Result, anyhow};
 use isolang::Language;
 
-use crate::anki::connect::{AnkiConnect, CardInfo, MultiSubAction, NewNote};
+use crate::anki::connect::{
+    AnkiConnect, CardInfo, MultiSubAction, NewNote, NoteInfo, decode_multi_sub,
+    decode_multi_sub_void,
+};
 use crate::anki::model::{FLTS_MODEL_NAME, bootstrap, deck_name};
 use crate::card::{AnkiData, AnkiState, Card};
 use crate::library::Library;
@@ -50,6 +53,18 @@ const DEFAULT_PERSISTENT_THRESHOLD: u32 = 5;
 #[allow(dead_code)] // first non-test consumer is cycle 5
 pub(crate) fn next_delay(n: u32) -> std::time::Duration {
     std::time::Duration::from_secs(60 * n.min(10) as u64)
+}
+
+/// One eligible card after Phase 1a's filtering. Carries the loaded card,
+/// its identifiers, and the owned per-card lock guard (dropped at end of pass).
+struct Eligible {
+    card_id: String,
+    src_str: String,
+    tgt_str: String,
+    src: Language,
+    tgt: Language,
+    card: Card,
+    _guard: tokio::sync::OwnedMutexGuard<()>,
 }
 
 impl AnkiSyncState {
@@ -137,15 +152,6 @@ pub async fn sync_pass(
     let mut report = SyncReport::default();
 
     // Phase 1a: walk disk, acquire locks, load, filter.
-    struct Eligible {
-        card_id: String,
-        src_str: String,
-        tgt_str: String,
-        src: Language,
-        tgt: Language,
-        card: Card,
-        _guard: tokio::sync::OwnedMutexGuard<()>,
-    }
     let mut eligible: Vec<Eligible> = Vec::new();
 
     for (src_str, tgt_str) in &pairs {
@@ -208,8 +214,19 @@ pub async fn sync_pass(
         match client.multi(actions).await {
             Ok(results) => {
                 for value in results {
-                    let hits: Vec<i64> = serde_json::from_value(value)?;
-                    lookups.push(Some(hits));
+                    match decode_multi_sub::<Vec<i64>>(value) {
+                        Ok(hits) => lookups.push(Some(hits)),
+                        Err(err) => {
+                            log::warn!("multi findNotes sub-action failed: {err}");
+                            if is_missing_resource_error(&err) {
+                                log::info!(
+                                    "Anki deck/model missing; clearing bootstrap flag so next sync re-creates it"
+                                );
+                                state.bootstrapped = false;
+                            }
+                            lookups.push(None);
+                        }
+                    }
                 }
             }
             Err(err) => {
@@ -227,22 +244,87 @@ pub async fn sync_pass(
         }
     }
 
-    // Phase 2: per-card state machine using prefetched lookup results.
-    for (mut e, hits) in eligible.into_iter().zip(lookups.into_iter()) {
+    // Phase 2: classify each eligible card into one action kind, then run
+    // batched writes (Phase 2a), batched state pull (2b + 2c), and apply
+    // results per card (2d). Replaces the old per-card serial state machine.
+    let actions: Vec<CardAction> = eligible
+        .iter()
+        .zip(lookups.iter())
+        .map(|(e, hits)| match hits {
+            None => CardAction::LookupFailed,
+            Some(hits) if hits.is_empty() && e.card.anki_data.is_none() => CardAction::Add,
+            Some(hits) if hits.is_empty() => CardAction::LocalDeleteOnly,
+            Some(hits) => CardAction::UpdateNote(hits[0]),
+        })
+        .collect();
+
+    let mut write_outcomes = batch_writes(client, &eligible, &actions, state).await?;
+    let (notes_by_id, cards_by_id) =
+        batch_pull_state(client, &actions, &mut write_outcomes, state).await;
+
+    for (idx, mut e) in eligible.into_iter().enumerate() {
         let pre_card = e.card.clone();
-        let outcome = match hits {
-            None => Err(anyhow!("lookup batch failed for {}", e.card_id)),
-            Some(hits) => apply_lookup(client, &mut e.card, hits, e.src, e.tgt).await,
+        let outcome: Result<()> = match &actions[idx] {
+            CardAction::LookupFailed => Err(anyhow!("lookup batch failed for {}", e.card_id)),
+            CardAction::LocalDeleteOnly => {
+                e.card.anki_data = Some(AnkiData {
+                    state: AnkiState::Deleted,
+                    interval_days: None,
+                    ease_factor: None,
+                    fsrs_difficulty: None,
+                    fsrs_stability: None,
+                });
+                Ok(())
+            }
+            CardAction::Add | CardAction::UpdateNote(_) => {
+                // Take ownership of the write outcome so we can move the Err
+                // out (anyhow::Error doesn't Clone).
+                let outcome =
+                    std::mem::replace(&mut write_outcomes[idx], WriteOutcome::Skipped);
+                match outcome {
+                    WriteOutcome::Err(err) => Err(err),
+                    WriteOutcome::Skipped => {
+                        unreachable!("Add/UpdateNote actions must have a write outcome")
+                    }
+                    WriteOutcome::AddOk { note_id } | WriteOutcome::UpdateOk { note_id } => {
+                        match notes_by_id.get(&note_id) {
+                            None => {
+                                Err(anyhow!("notes_info returned no entry for note {note_id}"))
+                            }
+                            Some(note) => {
+                                let cards: Vec<CardInfo> = note
+                                    .cards
+                                    .iter()
+                                    .filter_map(|cid| cards_by_id.get(cid).cloned())
+                                    .collect();
+                                if cards.is_empty() {
+                                    Err(anyhow!("no cards returned for note {note_id}"))
+                                } else if cards.iter().any(|c| c.is_suspended()) {
+                                    e.card.anki_data = Some(AnkiData {
+                                        state: AnkiState::Suspended,
+                                        interval_days: None,
+                                        ease_factor: None,
+                                        fsrs_difficulty: None,
+                                        fsrs_stability: None,
+                                    });
+                                    Ok(())
+                                } else {
+                                    e.card.anki_data = Some(active_data_from(&cards));
+                                    Ok(())
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         };
+
         match outcome {
             Ok(()) => {
                 // Skip the disk write — and the resulting watcher event —
-                // when apply_lookup didn't actually change the card. Keeps
-                // periodic ticks with no Anki-side changes silent for the
-                // file watcher. Use the silent save: the only thing changed
-                // here is `anki_data`, which sync wrote in response to its
-                // own AnkiConnect round-trip — waking ourselves would
-                // self-trigger a redundant follow-up pass.
+                // when nothing changed. Use the silent save: only `anki_data`
+                // was touched in response to our own AnkiConnect round-trip;
+                // waking ourselves would self-trigger a redundant pass.
                 if e.card != pre_card {
                     card_store
                         .save_without_wake(&e.card, &e.src_str, &e.tgt_str)
@@ -269,6 +351,233 @@ pub async fn sync_pass(
     Ok(report)
 }
 
+/// Classification of one eligible card based on its Phase 1b lookup result
+/// and its prior `anki_data`. Drives the Phase 2 batched dispatch.
+#[derive(Debug)]
+enum CardAction {
+    /// Fresh card (no prior anki_data, findNotes returned 0 hits): create
+    /// the note via addNote and pull its state.
+    Add,
+    /// Existing note (findNotes returned ≥1 hit): push current fields via
+    /// updateNoteFields and pull its state. The carried i64 is the note id.
+    UpdateNote(i64),
+    /// Card had prior anki_data but findNotes returned 0 hits — user
+    /// deleted the note in Anki out-of-band. Mark Deleted locally; no HTTP.
+    LocalDeleteOnly,
+    /// Phase 1b's lookup batch failed for this card's chunk. Skip Phase 2a/b/c
+    /// and record a failure in Phase 2d.
+    LookupFailed,
+}
+
+/// Result of one card's Phase 2a write attempt.
+#[derive(Debug)]
+enum WriteOutcome {
+    /// Card didn't enter the write batch (LocalDeleteOnly / LookupFailed) or
+    /// its outcome has already been consumed.
+    Skipped,
+    /// addNote succeeded; the new note id is carried for the state-pull phase.
+    AddOk { note_id: i64 },
+    /// updateNoteFields succeeded; the existing note id is carried for the
+    /// state-pull phase.
+    UpdateOk { note_id: i64 },
+    /// addNote or updateNoteFields errored (either a per-sub-action error
+    /// inside the multi response, or the whole multi HTTP call failed).
+    Err(anyhow::Error),
+}
+
+/// Phase 2a: batched addNote / updateNoteFields via `multi`, chunked at
+/// `MULTI_BATCH_SIZE`. Returns one `WriteOutcome` per element of `eligible`.
+/// Flips `state.bootstrapped = false` on any error whose chain indicates a
+/// missing deck/model.
+async fn batch_writes(
+    client: &dyn AnkiConnect,
+    eligible: &[Eligible],
+    actions: &[CardAction],
+    state: &mut AnkiSyncState,
+) -> Result<Vec<WriteOutcome>> {
+    struct PendingWrite {
+        idx: usize,
+        kind: WriteKind,
+    }
+    enum WriteKind {
+        Add,
+        UpdateNoteFields { note_id: i64 },
+    }
+
+    let mut pending: Vec<PendingWrite> = Vec::new();
+    for (idx, action) in actions.iter().enumerate() {
+        match action {
+            CardAction::Add => pending.push(PendingWrite {
+                idx,
+                kind: WriteKind::Add,
+            }),
+            CardAction::UpdateNote(note_id) => pending.push(PendingWrite {
+                idx,
+                kind: WriteKind::UpdateNoteFields { note_id: *note_id },
+            }),
+            CardAction::LocalDeleteOnly | CardAction::LookupFailed => {}
+        }
+    }
+
+    let mut outcomes: Vec<WriteOutcome> =
+        (0..eligible.len()).map(|_| WriteOutcome::Skipped).collect();
+
+    for chunk in pending.chunks(MULTI_BATCH_SIZE) {
+        let mut sub_actions: Vec<MultiSubAction> = Vec::with_capacity(chunk.len());
+        for p in chunk {
+            let e = &eligible[p.idx];
+            match &p.kind {
+                WriteKind::Add => {
+                    let note = NewNote {
+                        deck_name: deck_name(e.src, e.tgt)?,
+                        model_name: FLTS_MODEL_NAME.to_owned(),
+                        fields: render_fields(&e.card),
+                        tags: vec![e.card_id.clone()],
+                    };
+                    sub_actions.push(MultiSubAction {
+                        action: "addNote".to_owned(),
+                        params: Some(serde_json::json!({ "note": note })),
+                    });
+                }
+                WriteKind::UpdateNoteFields { note_id } => {
+                    sub_actions.push(MultiSubAction {
+                        action: "updateNoteFields".to_owned(),
+                        params: Some(serde_json::json!({
+                            "note": {
+                                "id": note_id,
+                                "fields": render_fields(&e.card),
+                            }
+                        })),
+                    });
+                }
+            }
+        }
+
+        match client.multi(sub_actions).await {
+            Ok(results) => {
+                for (p, value) in chunk.iter().zip(results) {
+                    let outcome = match &p.kind {
+                        WriteKind::Add => match decode_multi_sub::<i64>(value) {
+                            Ok(note_id) => WriteOutcome::AddOk { note_id },
+                            Err(err) => {
+                                if is_missing_resource_error(&err) {
+                                    state.bootstrapped = false;
+                                }
+                                WriteOutcome::Err(err)
+                            }
+                        },
+                        WriteKind::UpdateNoteFields { note_id } => {
+                            match decode_multi_sub_void(value) {
+                                Ok(()) => WriteOutcome::UpdateOk { note_id: *note_id },
+                                Err(err) => {
+                                    if is_missing_resource_error(&err) {
+                                        state.bootstrapped = false;
+                                    }
+                                    WriteOutcome::Err(err)
+                                }
+                            }
+                        }
+                    };
+                    outcomes[p.idx] = outcome;
+                }
+            }
+            Err(err) => {
+                log::warn!("multi write batch failed: {err}");
+                if is_missing_resource_error(&err) {
+                    log::info!(
+                        "Anki deck/model missing; clearing bootstrap flag so next sync re-creates it"
+                    );
+                    state.bootstrapped = false;
+                }
+                let msg = err.to_string();
+                for p in chunk {
+                    outcomes[p.idx] =
+                        WriteOutcome::Err(anyhow!("multi write batch failed: {msg}"));
+                }
+            }
+        }
+    }
+
+    Ok(outcomes)
+}
+
+/// Phase 2b + 2c: single `notes_info` plural call followed by a single
+/// `cards_info` plural call. Returns lookup maps keyed by id. On either
+/// plural-call failure, downgrades the corresponding `write_outcomes[i]` from
+/// AddOk/UpdateOk to Err so Phase 2d records those cards as failed; next tick
+/// reconciles via findNotes → idempotent updateNoteFields → retry pull.
+async fn batch_pull_state(
+    client: &dyn AnkiConnect,
+    actions: &[CardAction],
+    write_outcomes: &mut [WriteOutcome],
+    state: &mut AnkiSyncState,
+) -> (HashMap<i64, NoteInfo>, HashMap<i64, CardInfo>) {
+    let pull_note_ids: Vec<i64> = write_outcomes
+        .iter()
+        .filter_map(|outcome| match outcome {
+            WriteOutcome::AddOk { note_id } | WriteOutcome::UpdateOk { note_id } => {
+                Some(*note_id)
+            }
+            _ => None,
+        })
+        .collect();
+    let _ = actions; // reserved for future per-action diagnostics
+
+    if pull_note_ids.is_empty() {
+        return (HashMap::new(), HashMap::new());
+    }
+
+    let notes_by_id: HashMap<i64, NoteInfo> = match client.notes_info(&pull_note_ids).await {
+        Ok(infos) => infos.into_iter().map(|n| (n.note_id, n)).collect(),
+        Err(err) => {
+            log::warn!("notes_info batch failed: {err}");
+            if is_missing_resource_error(&err) {
+                state.bootstrapped = false;
+            }
+            let msg = err.to_string();
+            for outcome in write_outcomes.iter_mut() {
+                if matches!(
+                    outcome,
+                    WriteOutcome::AddOk { .. } | WriteOutcome::UpdateOk { .. }
+                ) {
+                    *outcome = WriteOutcome::Err(anyhow!("notes_info failed: {msg}"));
+                }
+            }
+            return (HashMap::new(), HashMap::new());
+        }
+    };
+
+    let all_card_ids: Vec<i64> = notes_by_id
+        .values()
+        .flat_map(|n| n.cards.iter().copied())
+        .collect();
+    if all_card_ids.is_empty() {
+        return (notes_by_id, HashMap::new());
+    }
+
+    let cards_by_id: HashMap<i64, CardInfo> = match client.cards_info(&all_card_ids).await {
+        Ok(cards) => cards.into_iter().map(|c| (c.card_id, c)).collect(),
+        Err(err) => {
+            log::warn!("cards_info batch failed: {err}");
+            if is_missing_resource_error(&err) {
+                state.bootstrapped = false;
+            }
+            let msg = err.to_string();
+            for outcome in write_outcomes.iter_mut() {
+                if matches!(
+                    outcome,
+                    WriteOutcome::AddOk { .. } | WriteOutcome::UpdateOk { .. }
+                ) {
+                    *outcome = WriteOutcome::Err(anyhow!("cards_info failed: {msg}"));
+                }
+            }
+            return (notes_by_id, HashMap::new());
+        }
+    };
+
+    (notes_by_id, cards_by_id)
+}
+
 /// Detects AnkiConnect "…was not found" failures for the FLTS deck or note
 /// model — i.e. the user deleted the deck/model in Anki out-of-band. Walks the
 /// anyhow chain so wrapped errors are matched too. The next `sync_pass` will
@@ -282,48 +591,6 @@ fn is_missing_resource_error(err: &anyhow::Error) -> bool {
             || s.contains("model was not found")
             || s.contains("model not found")
     })
-}
-
-/// Phase-2 state machine: given the per-card findNotes result, dispatch to
-/// addNote / updateNoteFields and pull state. Mirrors `sync_card` post-lookup
-/// behavior so `sync_card` remains usable for single-card callers.
-async fn apply_lookup(
-    client: &dyn AnkiConnect,
-    card: &mut Card,
-    hits: Vec<i64>,
-    src: Language,
-    tgt: Language,
-) -> Result<()> {
-    if hits.is_empty() {
-        match card.anki_data.as_ref() {
-            None => {
-                let note = NewNote {
-                    deck_name: deck_name(src, tgt)?,
-                    model_name: FLTS_MODEL_NAME.to_owned(),
-                    fields: render_fields(card),
-                    tags: vec![card.id.clone()],
-                };
-                let note_id = client.add_note(note).await?;
-                card.anki_data = Some(pull_state(client, note_id).await?);
-            }
-            Some(_) => {
-                card.anki_data = Some(AnkiData {
-                    state: AnkiState::Deleted,
-                    interval_days: None,
-                    ease_factor: None,
-                    fsrs_difficulty: None,
-                    fsrs_stability: None,
-                });
-            }
-        }
-    } else {
-        let note_id = hits[0];
-        client
-            .update_note_fields(note_id, render_fields(card))
-            .await?;
-        card.anki_data = Some(pull_state(client, note_id).await?);
-    }
-    Ok(())
 }
 
 /// Render a card into the three Anki note fields (`Source`, `Target`, `Example`).
@@ -1027,10 +1294,13 @@ mod tests {
 
         let multi_after = mock.multi_call_count();
         let direct_after = mock.find_notes_direct_count();
+        // Second pass over 3 existing notes: one multi for Phase 1b findNotes,
+        // one multi for Phase 2a updateNoteFields. Both fit in a single 50-cap
+        // chunk.
         assert_eq!(
             multi_after - multi_before,
-            1,
-            "expected exactly one multi call for 3 cards' findNotes lookup"
+            2,
+            "expected 1 findNotes multi + 1 updateNoteFields multi for 3 cards"
         );
         assert_eq!(
             direct_after - direct_before,
@@ -1059,10 +1329,206 @@ mod tests {
             .await
             .unwrap();
         let multi_after = mock.multi_call_count();
+        // 2 for Phase 1b findNotes (50+25) + 2 for Phase 2a updateNoteFields
+        // (50+25). Both phases use the same MULTI_BATCH_SIZE=50 cap.
+        assert_eq!(
+            multi_after - multi_before,
+            4,
+            "75 cards: 2 findNotes chunks + 2 updateNoteFields chunks = 4 multi calls"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_pass_phase_2a_batches_writes_via_multi() {
+        // Three fresh cards: Phase 1b runs one findNotes multi (all hits empty);
+        // Phase 2a runs one addNote multi (all in a single 50-cap chunk). No
+        // per-card add_note path should fire on its own.
+        let mock = MockAnkiConnect::new();
+        let (_tmp, library) = seed_library_with_cards(
+            "flts_sync_phase_2a_batches",
+            &[
+                make_card("poder", vec!["мочь"], vec![]),
+                make_card("comer", vec!["есть"], vec![]),
+                make_card("ver", vec!["видеть"], vec![]),
+            ],
+        )
+        .await;
+
+        let mut state = AnkiSyncState::new();
+        let multi_before = mock.multi_call_count();
+        sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
+            .await
+            .unwrap();
+        let multi_after = mock.multi_call_count();
         assert_eq!(
             multi_after - multi_before,
             2,
-            "75 cards must split into 50 + 25 → 2 multi calls"
+            "first pass over 3 fresh cards: 1 findNotes batch + 1 addNote batch"
+        );
+        // Three notes really did get created.
+        for lemma in ["poder", "comer", "ver"] {
+            let tag = format!("flts_spa_rus_{lemma}");
+            assert!(
+                mock.note_id_for_tag(&tag).is_some(),
+                "note for {tag} must exist after batched add"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn sync_pass_uses_single_notes_info_and_cards_info_per_pass() {
+        let mock = MockAnkiConnect::new();
+        let cards: Vec<Card> = (0..5)
+            .map(|i| make_card(&format!("verb{i}"), vec!["x"], vec![]))
+            .collect();
+        let (_tmp, library) =
+            seed_library_with_cards("flts_sync_state_pull_singletons", &cards).await;
+
+        let mut state = AnkiSyncState::new();
+        // First pass: 5 fresh cards → addNote batch → state pull.
+        let notes_before = mock.notes_info_call_count();
+        let cards_before = mock.cards_info_call_count();
+        sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
+            .await
+            .unwrap();
+        assert_eq!(
+            mock.notes_info_call_count() - notes_before,
+            1,
+            "state pull must collapse to a single notes_info call across all 5 cards"
+        );
+        assert_eq!(
+            mock.cards_info_call_count() - cards_before,
+            1,
+            "state pull must collapse to a single cards_info call across all 5 cards"
+        );
+
+        // Second pass: 5 existing cards → updateNoteFields batch → state pull.
+        let notes_before = mock.notes_info_call_count();
+        let cards_before = mock.cards_info_call_count();
+        sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
+            .await
+            .unwrap();
+        assert_eq!(
+            mock.notes_info_call_count() - notes_before,
+            1,
+            "second pass must also use one notes_info call"
+        );
+        assert_eq!(
+            mock.cards_info_call_count() - cards_before,
+            1,
+            "second pass must also use one cards_info call"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sync_pass_isolates_per_sub_action_failure_in_phase_2a() {
+        let mock = MockAnkiConnect::new();
+        let (_tmp, library) = seed_library_with_cards(
+            "flts_sync_per_sub_action_failure",
+            &[
+                make_card("good_a", vec!["a"], vec![]),
+                make_card("bad", vec!["b"], vec![]),
+                make_card("good_b", vec!["c"], vec![]),
+            ],
+        )
+        .await;
+
+        // Pre-bootstrap so the failure injection lands on Phase 2a, not on
+        // bootstrap's create_model/create_deck.
+        let mut state = AnkiSyncState::new();
+        crate::anki::model::bootstrap(&mock, &[(spa(), rus())])
+            .await
+            .unwrap();
+        state.bootstrapped = true;
+
+        // Flag the middle card; its addNote sub-action will fail inside the
+        // multi response while the other two succeed.
+        mock.fail_add_note_with_tag("flts_spa_rus_bad");
+
+        let now = tokio::time::Instant::now();
+        let report = sync_pass(&mock, &library, &mut state, now).await.unwrap();
+        assert_eq!(report.succeeded, 2);
+        assert_eq!(report.failed, 1);
+        assert_eq!(report.attempted, 3);
+
+        // Only the bad card enters cooldown.
+        for lemma in ["good_a", "good_b"] {
+            let card = library
+                .card_store()
+                .load("spa", "rus", lemma)
+                .await
+                .unwrap()
+                .expect("card present");
+            assert_eq!(
+                card.anki_data.as_ref().map(|a| a.state),
+                Some(AnkiState::Active),
+                "{lemma} must end Active when its sub-action succeeded"
+            );
+        }
+        let bad = library
+            .card_store()
+            .load("spa", "rus", "bad")
+            .await
+            .unwrap()
+            .expect("bad card present");
+        assert!(
+            bad.anki_data.is_none(),
+            "bad card must not be marked Active when its addNote sub-action failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_pass_local_delete_branch_skips_phase_2a_writes() {
+        // Card has prior anki_data (was Active), but the matching note in Anki
+        // has been removed out-of-band. findNotes returns 0 hits → LocalDeleteOnly.
+        // That path must NOT enter the Phase 2a multi batch; only Phase 1b's
+        // findNotes multi fires.
+        let mock = MockAnkiConnect::new();
+        let (_tmp, library) = seed_library_with_cards(
+            "flts_sync_local_delete_only",
+            &[make_card("poder", vec!["мочь"], vec![])],
+        )
+        .await;
+
+        let mut state = AnkiSyncState::new();
+        // First pass: creates the note normally.
+        sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
+            .await
+            .unwrap();
+        let note_id = mock
+            .note_id_for_tag("flts_spa_rus_poder")
+            .expect("note exists after first pass");
+
+        // User deletes the note in Anki out-of-band.
+        mock.remove_note(note_id);
+
+        let multi_before = mock.multi_call_count();
+        let notes_before = mock.notes_info_call_count();
+        let cards_before = mock.cards_info_call_count();
+        let report = sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
+            .await
+            .unwrap();
+        let multi_after = mock.multi_call_count();
+        assert_eq!(report.succeeded, 1);
+        assert_eq!(
+            multi_after - multi_before,
+            1,
+            "LocalDeleteOnly must skip Phase 2a; only the Phase 1b findNotes multi fires"
+        );
+        // No notes_info / cards_info either — no notes to pull state for.
+        assert_eq!(mock.notes_info_call_count() - notes_before, 0);
+        assert_eq!(mock.cards_info_call_count() - cards_before, 0);
+
+        let card = library
+            .card_store()
+            .load("spa", "rus", "poder")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            card.anki_data.as_ref().map(|a| a.state),
+            Some(AnkiState::Deleted),
+            "LocalDeleteOnly must flip state to Deleted"
         );
     }
 

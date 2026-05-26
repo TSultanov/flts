@@ -176,6 +176,48 @@ pub(crate) fn decode_void_response(body: &str) -> Result<()> {
     Ok(())
 }
 
+/// Decode one element of a `multi` response array. Real AnkiConnect packages
+/// a sub-action error as `{"result": null, "error": "msg"}` inside the array,
+/// rather than failing the whole `multi` call. This helper distinguishes
+/// per-sub-action success from per-sub-action error, and tolerates the legacy
+/// shape where a successful sub-result is the bare value (some older
+/// AnkiConnect builds emitted that for `findNotes`).
+pub(crate) fn decode_multi_sub<T: for<'de> Deserialize<'de>>(
+    value: serde_json::Value,
+) -> Result<T> {
+    if let Some(obj) = value.as_object() {
+        if let Some(serde_json::Value::String(msg)) = obj.get("error") {
+            bail!("AnkiConnect: {msg}");
+        }
+        if obj.contains_key("result") {
+            let parsed: Response<T> = serde_json::from_value(value)
+                .map_err(|e| anyhow!("AnkiConnect: malformed multi sub-response: {e}"))?;
+            if let Some(message) = parsed.error {
+                bail!("AnkiConnect: {message}");
+            }
+            return parsed
+                .result
+                .ok_or_else(|| anyhow!("AnkiConnect: empty multi sub-result with no error"));
+        }
+    }
+    serde_json::from_value(value)
+        .map_err(|e| anyhow!("AnkiConnect: malformed multi sub-response: {e}"))
+}
+
+/// Like [`decode_multi_sub`] but for sub-actions that return `null` on success
+/// (`updateNoteFields`, etc.). Only a non-null `"error"` is treated as failure.
+pub(crate) fn decode_multi_sub_void(value: serde_json::Value) -> Result<()> {
+    if value.is_null() {
+        return Ok(());
+    }
+    if let Some(obj) = value.as_object() {
+        if let Some(serde_json::Value::String(msg)) = obj.get("error") {
+            bail!("AnkiConnect: {msg}");
+        }
+    }
+    Ok(())
+}
+
 // ---------- HTTP implementation ----------
 
 pub struct HttpAnkiConnect {
@@ -512,6 +554,9 @@ pub struct MockAnkiConnect {
     fail_quota: Arc<std::sync::atomic::AtomicUsize>,
     multi_call_count: Arc<std::sync::atomic::AtomicUsize>,
     find_notes_direct_count: Arc<std::sync::atomic::AtomicUsize>,
+    notes_info_call_count: Arc<std::sync::atomic::AtomicUsize>,
+    cards_info_call_count: Arc<std::sync::atomic::AtomicUsize>,
+    fail_add_note_tags: Arc<Mutex<Vec<String>>>,
 }
 
 impl Default for MockAnkiConnect {
@@ -531,6 +576,9 @@ impl MockAnkiConnect {
             fail_quota: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             multi_call_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             find_notes_direct_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            notes_info_call_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            cards_info_call_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            fail_add_note_tags: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -545,6 +593,28 @@ impl MockAnkiConnect {
     pub fn find_notes_direct_count(&self) -> usize {
         self.find_notes_direct_count
             .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Test-only instrumentation: number of times `notes_info` has been called.
+    pub fn notes_info_call_count(&self) -> usize {
+        self.notes_info_call_count
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Test-only instrumentation: number of times `cards_info` has been called.
+    pub fn cards_info_call_count(&self) -> usize {
+        self.cards_info_call_count
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Test-only knob: any subsequent `add_note` call whose tag list contains
+    /// `tag` will fail with a transient-style error. Used to exercise
+    /// per-sub-action failure isolation inside `multi` batches.
+    pub fn fail_add_note_with_tag(&self, tag: &str) {
+        self.fail_add_note_tags
+            .lock()
+            .unwrap()
+            .push(tag.to_owned());
     }
 
     pub fn set_version(&self, version: u32) {
@@ -693,6 +763,12 @@ impl AnkiConnect for MockAnkiConnect {
 
     async fn add_note(&self, note: NewNote) -> Result<i64> {
         self.check_fail_quota()?;
+        {
+            let fail_tags = self.fail_add_note_tags.lock().unwrap();
+            if let Some(hit) = fail_tags.iter().find(|t| note.tags.iter().any(|nt| nt == *t)) {
+                bail!("MockAnkiConnect: forced add_note failure for tag {hit}");
+            }
+        }
         let mut state = self.inner.lock().unwrap();
         // Mirror real AnkiConnect: addNote against a missing deck fails with
         // "deck was not found: <name>". Lets sync recovery tests exercise the
@@ -768,6 +844,8 @@ impl AnkiConnect for MockAnkiConnect {
 
     async fn cards_info(&self, card_ids: &[i64]) -> Result<Vec<CardInfo>> {
         self.check_fail_quota()?;
+        self.cards_info_call_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let state = self.inner.lock().unwrap();
         Ok(card_ids
             .iter()
@@ -786,6 +864,8 @@ impl AnkiConnect for MockAnkiConnect {
 
     async fn notes_info(&self, note_ids: &[i64]) -> Result<Vec<NoteInfo>> {
         self.check_fail_quota()?;
+        self.notes_info_call_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let state = self.inner.lock().unwrap();
         Ok(note_ids
             .iter()
@@ -811,79 +891,114 @@ impl AnkiConnect for MockAnkiConnect {
         self.check_fail_quota()?;
         self.multi_call_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // Per-sub-action errors are packaged as `{"result": null, "error": "..."}`
+        // in the response array, mirroring real AnkiConnect. The whole call
+        // only fails if shape parsing fails (`bail!` for an unsupported action,
+        // top-level fail_quota) — i.e. things that can't happen sub-action-by-
+        // sub-action in real AnkiConnect either.
         let mut out = Vec::with_capacity(actions.len());
         for sub in actions {
             let params = sub.params.unwrap_or(serde_json::Value::Null);
-            let result = match sub.action.as_str() {
-                "version" => serde_json::to_value(self.version().await?)?,
-                "modelNamesAndIds" => serde_json::to_value(self.model_names_and_ids().await?)?,
-                "deckNamesAndIds" => serde_json::to_value(self.deck_names_and_ids().await?)?,
-                "createDeck" => {
-                    let name = params
-                        .get("deck")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| anyhow!("multi createDeck: missing deck"))?;
-                    serde_json::to_value(self.create_deck(name).await?)?
-                }
-                "createModel" => {
-                    let spec: ModelSpec = serde_json::from_value(params)?;
-                    serde_json::to_value(self.create_model(spec).await?)?
-                }
-                "findNotes" => {
-                    let query = params
-                        .get("query")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| anyhow!("multi findNotes: missing query"))?;
-                    // Use the inner helper so this doesn't count as a direct
-                    // findNotes call for instrumentation purposes.
-                    serde_json::to_value(self.find_notes_impl(query)?)?
-                }
-                "addNote" => {
-                    let note: NewNote = serde_json::from_value(
-                        params
-                            .get("note")
-                            .cloned()
-                            .ok_or_else(|| anyhow!("multi addNote: missing note"))?,
-                    )?;
-                    serde_json::to_value(self.add_note(note).await?)?
-                }
+            let sub_result: Result<serde_json::Value> = match sub.action.as_str() {
+                "version" => self
+                    .version()
+                    .await
+                    .and_then(|v| Ok(serde_json::to_value(v)?)),
+                "modelNamesAndIds" => self
+                    .model_names_and_ids()
+                    .await
+                    .and_then(|v| Ok(serde_json::to_value(v)?)),
+                "deckNamesAndIds" => self
+                    .deck_names_and_ids()
+                    .await
+                    .and_then(|v| Ok(serde_json::to_value(v)?)),
+                "createDeck" => match params.get("deck").and_then(|v| v.as_str()) {
+                    Some(name) => self
+                        .create_deck(name)
+                        .await
+                        .and_then(|v| Ok(serde_json::to_value(v)?)),
+                    None => Err(anyhow!("multi createDeck: missing deck")),
+                },
+                "createModel" => match serde_json::from_value::<ModelSpec>(params) {
+                    Ok(spec) => self
+                        .create_model(spec)
+                        .await
+                        .and_then(|v| Ok(serde_json::to_value(v)?)),
+                    Err(e) => Err(anyhow!("multi createModel: {e}")),
+                },
+                "findNotes" => match params.get("query").and_then(|v| v.as_str()) {
+                    Some(query) => self
+                        .find_notes_impl(query)
+                        .and_then(|v| Ok(serde_json::to_value(v)?)),
+                    None => Err(anyhow!("multi findNotes: missing query")),
+                },
+                "addNote" => match params
+                    .get("note")
+                    .cloned()
+                    .ok_or_else(|| anyhow!("multi addNote: missing note"))
+                    .and_then(|v| serde_json::from_value::<NewNote>(v).map_err(|e| anyhow!(e)))
+                {
+                    Ok(note) => self
+                        .add_note(note)
+                        .await
+                        .and_then(|v| Ok(serde_json::to_value(v)?)),
+                    Err(e) => Err(e),
+                },
                 "updateNoteFields" => {
-                    let note = params
-                        .get("note")
-                        .ok_or_else(|| anyhow!("multi updateNoteFields: missing note"))?;
-                    let note_id = note
-                        .get("id")
-                        .and_then(|v| v.as_i64())
-                        .ok_or_else(|| anyhow!("multi updateNoteFields: missing id"))?;
-                    let fields: BTreeMap<String, String> = serde_json::from_value(
-                        note.get("fields")
-                            .cloned()
-                            .ok_or_else(|| anyhow!("multi updateNoteFields: missing fields"))?,
-                    )?;
-                    self.update_note_fields(note_id, fields).await?;
-                    serde_json::Value::Null
+                    let parsed: Result<(i64, BTreeMap<String, String>)> = (|| {
+                        let note = params
+                            .get("note")
+                            .ok_or_else(|| anyhow!("multi updateNoteFields: missing note"))?;
+                        let note_id = note
+                            .get("id")
+                            .and_then(|v| v.as_i64())
+                            .ok_or_else(|| anyhow!("multi updateNoteFields: missing id"))?;
+                        let fields: BTreeMap<String, String> = serde_json::from_value(
+                            note.get("fields")
+                                .cloned()
+                                .ok_or_else(|| anyhow!("multi updateNoteFields: missing fields"))?,
+                        )?;
+                        Ok((note_id, fields))
+                    })();
+                    match parsed {
+                        Ok((note_id, fields)) => self
+                            .update_note_fields(note_id, fields)
+                            .await
+                            .map(|()| serde_json::Value::Null),
+                        Err(e) => Err(e),
+                    }
                 }
-                "cardsInfo" => {
-                    let cards: Vec<i64> = serde_json::from_value(
-                        params
-                            .get("cards")
-                            .cloned()
-                            .ok_or_else(|| anyhow!("multi cardsInfo: missing cards"))?,
-                    )?;
-                    serde_json::to_value(self.cards_info(&cards).await?)?
-                }
-                "notesInfo" => {
-                    let notes: Vec<i64> = serde_json::from_value(
-                        params
-                            .get("notes")
-                            .cloned()
-                            .ok_or_else(|| anyhow!("multi notesInfo: missing notes"))?,
-                    )?;
-                    serde_json::to_value(self.notes_info(&notes).await?)?
-                }
+                "cardsInfo" => match params
+                    .get("cards")
+                    .cloned()
+                    .ok_or_else(|| anyhow!("multi cardsInfo: missing cards"))
+                    .and_then(|v| serde_json::from_value::<Vec<i64>>(v).map_err(|e| anyhow!(e)))
+                {
+                    Ok(cards) => self
+                        .cards_info(&cards)
+                        .await
+                        .and_then(|v| Ok(serde_json::to_value(v)?)),
+                    Err(e) => Err(e),
+                },
+                "notesInfo" => match params
+                    .get("notes")
+                    .cloned()
+                    .ok_or_else(|| anyhow!("multi notesInfo: missing notes"))
+                    .and_then(|v| serde_json::from_value::<Vec<i64>>(v).map_err(|e| anyhow!(e)))
+                {
+                    Ok(notes) => self
+                        .notes_info(&notes)
+                        .await
+                        .and_then(|v| Ok(serde_json::to_value(v)?)),
+                    Err(e) => Err(e),
+                },
                 other => bail!("MockAnkiConnect: unsupported multi sub-action `{other}`"),
             };
-            out.push(result);
+            let packaged = match sub_result {
+                Ok(v) => v,
+                Err(e) => serde_json::json!({ "result": null, "error": e.to_string() }),
+            };
+            out.push(packaged);
         }
         Ok(out)
     }
@@ -1079,6 +1194,115 @@ mod tests {
         let id_a = results[0].as_i64().unwrap();
         let id_b = results[1].as_i64().unwrap();
         assert_ne!(id_a, id_b);
+    }
+
+    #[tokio::test]
+    async fn mock_multi_packages_sub_action_error_without_failing_whole_call() {
+        // Deck "FLTS::spa-rus" is NOT created, so the first addNote will fail
+        // with "deck was not found"; the second targets a deck we DO create.
+        // Real AnkiConnect packages this as a per-element error object inside
+        // the multi result array; the whole call must still return Ok.
+        let mock = MockAnkiConnect::new();
+        mock.create_deck("OtherDeck").await.unwrap();
+        let mut good_fields = BTreeMap::new();
+        good_fields.insert("Source".into(), "ok".into());
+        good_fields.insert("Target".into(), "ok".into());
+        good_fields.insert("Example".into(), String::new());
+        let good_note = NewNote {
+            deck_name: "OtherDeck".into(),
+            model_name: "FLTS Bilingual v1".into(),
+            fields: good_fields,
+            tags: vec!["good".into()],
+        };
+        let actions = vec![
+            MultiSubAction {
+                action: "addNote".into(),
+                params: Some(serde_json::json!({ "note": sample_note("flts_missing_deck") })),
+            },
+            MultiSubAction {
+                action: "addNote".into(),
+                params: Some(serde_json::json!({ "note": good_note })),
+            },
+        ];
+        let results = mock.multi(actions).await.expect("multi returns Ok");
+        assert_eq!(results.len(), 2);
+        // First element is the wrapped error.
+        let err_obj = results[0].as_object().expect("first element is an object");
+        assert!(err_obj.get("result").map(|v| v.is_null()).unwrap_or(false));
+        let err_msg = err_obj
+            .get("error")
+            .and_then(|v| v.as_str())
+            .expect("error string present");
+        assert!(
+            err_msg.contains("deck was not found"),
+            "expected real AnkiConnect-style error, got {err_msg}"
+        );
+        // Second element is the bare success value (the new note id).
+        assert!(
+            results[1].as_i64().is_some(),
+            "second element must be a bare i64 success, got {}",
+            results[1]
+        );
+    }
+
+    #[tokio::test]
+    async fn mock_fail_add_note_with_tag_makes_matching_add_note_fail() {
+        let mock = mock_with_sample_deck().await;
+        mock.fail_add_note_with_tag("flts_spa_rus_poder_verb");
+        let err = mock
+            .add_note(sample_note("flts_spa_rus_poder_verb"))
+            .await
+            .expect_err("flagged tag must fail");
+        assert!(format!("{err}").contains("flts_spa_rus_poder_verb"));
+        // Non-matching tag still succeeds.
+        mock.add_note(sample_note("other_tag")).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn mock_instrumentation_counts_notes_info_and_cards_info_calls() {
+        let mock = mock_with_sample_deck().await;
+        let note_id = mock.add_note(sample_note("flts_x")).await.unwrap();
+        assert_eq!(mock.notes_info_call_count(), 0);
+        assert_eq!(mock.cards_info_call_count(), 0);
+        mock.notes_info(&[note_id]).await.unwrap();
+        assert_eq!(mock.notes_info_call_count(), 1);
+        mock.cards_info(&[]).await.unwrap();
+        assert_eq!(mock.cards_info_call_count(), 1);
+    }
+
+    #[test]
+    fn decode_multi_sub_decodes_bare_success_value() {
+        // Legacy / current mock shape: success result is just the value.
+        let v = serde_json::json!(42);
+        let n: i64 = decode_multi_sub(v).unwrap();
+        assert_eq!(n, 42);
+    }
+
+    #[test]
+    fn decode_multi_sub_decodes_response_envelope() {
+        // Some AnkiConnect builds wrap success values in the Response envelope.
+        let v = serde_json::json!({ "result": 42, "error": null });
+        let n: i64 = decode_multi_sub(v).unwrap();
+        assert_eq!(n, 42);
+    }
+
+    #[test]
+    fn decode_multi_sub_propagates_error_object() {
+        let v = serde_json::json!({ "result": null, "error": "deck was not found" });
+        let err = decode_multi_sub::<i64>(v).unwrap_err();
+        assert!(format!("{err}").contains("deck was not found"));
+    }
+
+    #[test]
+    fn decode_multi_sub_void_accepts_null_and_propagates_error() {
+        decode_multi_sub_void(serde_json::Value::Null).unwrap();
+        decode_multi_sub_void(serde_json::json!({ "result": null, "error": null })).unwrap();
+        let err = decode_multi_sub_void(serde_json::json!({
+            "result": null,
+            "error": "note was not found",
+        }))
+        .unwrap_err();
+        assert!(format!("{err}").contains("note was not found"));
     }
 
     #[tokio::test]
