@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use htmlentity::entity::{ICodedDataTrait, decode};
 use isolang::Language;
 use serde::{Deserialize, Serialize};
@@ -12,14 +14,13 @@ pub struct Card {
     pub version: u32,
     pub id: String,
     pub lemma: String,
-    pub part_of_speech: String,
-    pub translations: Vec<String>,
+    pub translations: BTreeMap<String, Vec<String>>,
     pub examples: Vec<Example>,
     pub anki_data: Option<AnkiData>,
 }
 
 fn default_version() -> u32 {
-    1
+    2
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -76,33 +77,26 @@ pub struct CardKey {
     pub target_language: String,
     pub lemma: String,
     pub slug: String,
-    pub part_of_speech: String,
-    pub pos_slug: String,
 }
 
 impl CardKey {
     pub fn id(&self) -> String {
-        card_id(
-            &self.source_language,
-            &self.target_language,
-            &self.slug,
-            &self.pos_slug,
-        )
+        card_id(&self.source_language, &self.target_language, &self.slug)
     }
 }
 
 // Card identity is the on-disk identity: same language pair, same lemma
-// slug, same PoS slug => same card. The `lemma` and `part_of_speech`
-// display strings are first-write-wins metadata and must not participate
-// in equality, since two variants of the same PoS (e.g. "noun / adj" vs
-// "noun/adj") slug to the same filename and would otherwise collide on
-// disk while extract_card_updates kept them as separate update records.
+// slug => same card. PoS is no longer part of identity — a single lemma
+// card holds translations across all its grammatical roles, grouped by
+// PoS inside the translations map. The `lemma` display string is
+// first-write-wins metadata and does not participate in equality, since
+// different surface variants slug identically and would otherwise
+// collide on disk.
 impl PartialEq for CardKey {
     fn eq(&self, other: &Self) -> bool {
         self.source_language == other.source_language
             && self.target_language == other.target_language
             && self.slug == other.slug
-            && self.pos_slug == other.pos_slug
     }
 }
 impl Eq for CardKey {}
@@ -198,13 +192,8 @@ pub fn part_of_speech_slug(canonical: &str) -> String {
     fs_safe_slug(canonical)
 }
 
-pub fn card_id(
-    source_language: &str,
-    target_language: &str,
-    lemma_slug: &str,
-    pos_slug: &str,
-) -> String {
-    format!("flts_{source_language}_{target_language}_{lemma_slug}_{pos_slug}")
+pub fn card_id(source_language: &str, target_language: &str, lemma_slug: &str) -> String {
+    format!("flts_{source_language}_{target_language}_{lemma_slug}")
 }
 
 /// Stitch a sentence's word list back into a human-readable source string.
@@ -295,28 +284,33 @@ pub const EXAMPLES_CAP: usize = 10;
 #[derive(Debug, Clone, PartialEq)]
 pub struct CardUpdate {
     pub key: CardKey,
+    /// The grammatical-role bucket this update lands in. Multiple updates
+    /// with the same `key` but different `part_of_speech` accumulate into
+    /// the card's `translations` map as separate POS buckets.
+    pub part_of_speech: String,
     pub translations: Vec<String>,
     pub example: Option<Example>,
 }
 
 impl Card {
     pub fn new_from_update(update: &CardUpdate) -> Self {
-        let mut translations: Vec<String> = Vec::with_capacity(update.translations.len());
+        let mut bucket: Vec<String> = Vec::with_capacity(update.translations.len());
         for t in &update.translations {
-            if !translations.contains(t) {
-                translations.push(t.clone());
+            if !bucket.contains(t) {
+                bucket.push(t.clone());
             }
         }
+        let mut translations: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        translations.insert(update.part_of_speech.clone(), bucket);
         let examples = update
             .example
             .as_ref()
             .map(|e| vec![e.clone()])
             .unwrap_or_default();
         Card {
-            version: 1,
+            version: 2,
             id: update.key.id(),
             lemma: update.key.lemma.clone(),
-            part_of_speech: update.key.part_of_speech.clone(),
             translations,
             examples,
             anki_data: None,
@@ -324,9 +318,13 @@ impl Card {
     }
 
     pub fn apply_update(&mut self, update: &CardUpdate) {
+        let bucket = self
+            .translations
+            .entry(update.part_of_speech.clone())
+            .or_default();
         for t in &update.translations {
-            if !self.translations.contains(t) {
-                self.translations.push(t.clone());
+            if !bucket.contains(t) {
+                bucket.push(t.clone());
             }
         }
         if let Some(example) = &update.example
@@ -341,15 +339,33 @@ impl Card {
         }
     }
 
+    /// Flatten the per-PoS translation buckets into a single ordered, deduped
+    /// list. Iteration order is the BTreeMap's PoS-key order; within each
+    /// bucket, insertion order is preserved.
+    pub fn translations_flat(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for bucket in self.translations.values() {
+            for t in bucket {
+                if !out.iter().any(|existing| existing == t) {
+                    out.push(t.clone());
+                }
+            }
+        }
+        out
+    }
+
     /// Merge `other` into `self` for cross-instance conflict reconciliation.
     /// Caller has already verified that `self.id == other.id` (i.e. both files
-    /// address the same `(src, tgt, slug, pos)` key). `self.anki_data` is kept;
+    /// address the same `(src, tgt, slug)` key). `self.anki_data` is kept;
     /// `other.anki_data` is discarded — it's a local cache, not authoritative
     /// across instances.
     pub fn merge(&mut self, other: Card) {
-        for t in other.translations {
-            if !self.translations.contains(&t) {
-                self.translations.push(t);
+        for (pos, translations) in other.translations {
+            let bucket = self.translations.entry(pos).or_default();
+            for t in translations {
+                if !bucket.contains(&t) {
+                    bucket.push(t);
+                }
             }
         }
 
@@ -424,8 +440,6 @@ pub fn extract_card_updates(
                 target_language: target_language.to_owned(),
                 lemma,
                 slug,
-                part_of_speech,
-                pos_slug,
             };
 
             let target_dictionary = word.grammar.target_initial_form.trim();
@@ -433,13 +447,17 @@ pub fn extract_card_updates(
                 continue;
             }
 
-            if let Some(existing) = updates.iter_mut().find(|u| u.key == key) {
+            if let Some(existing) = updates
+                .iter_mut()
+                .find(|u| u.key == key && part_of_speech_slug(&u.part_of_speech) == pos_slug)
+            {
                 if !existing.translations.iter().any(|t| t == target_dictionary) {
                     existing.translations.push(target_dictionary.to_owned());
                 }
             } else {
                 updates.push(CardUpdate {
                     key,
+                    part_of_speech,
                     translations: vec![target_dictionary.to_owned()],
                     example: Some(example.clone()),
                 });
@@ -541,10 +559,7 @@ mod tests {
 
     #[test]
     fn card_id_format() {
-        assert_eq!(
-            card_id("spa", "rus", "poder", "verb"),
-            "flts_spa_rus_poder_verb"
-        );
+        assert_eq!(card_id("spa", "rus", "poder"), "flts_spa_rus_poder");
     }
 
     #[test]
@@ -646,15 +661,8 @@ mod tests {
         );
         assert_eq!(updates.len(), 1);
         let update = &updates[0];
-        assert_eq!(
-            update.key.part_of_speech,
-            "существительное / прилагательное"
-        );
-        assert_eq!(update.key.pos_slug, "существительное_прилагательное");
-        assert_eq!(
-            update.key.id(),
-            "flts_spa_rus_good_существительное_прилагательное"
-        );
+        assert_eq!(update.part_of_speech, "существительное / прилагательное");
+        assert_eq!(update.key.id(), "flts_spa_rus_good");
         // Both source words share the same target_initial_form ("хорошо"),
         // so the deduped CardUpdate carries that single dictionary translation.
         assert_eq!(update.translations, vec!["хорошо"]);
@@ -724,8 +732,15 @@ mod tests {
             target_language: "rus".into(),
             lemma: "poder".into(),
             slug: "poder".into(),
+        }
+    }
+
+    fn verb_update(translations: Vec<&str>, example: Option<Example>) -> CardUpdate {
+        CardUpdate {
+            key: poder_key(),
             part_of_speech: "verb".into(),
-            pos_slug: "verb".into(),
+            translations: translations.into_iter().map(String::from).collect(),
+            example,
         }
     }
 
@@ -740,98 +755,75 @@ mod tests {
     }
 
     #[test]
-    fn new_card_from_update_has_version_1_anki_data_null() {
-        let update = CardUpdate {
-            key: poder_key(),
-            translations: vec!["мочь".into()],
-            example: Some(example_at(Uuid::nil(), 1, 2)),
-        };
+    fn new_card_from_update_has_version_2_anki_data_null() {
+        let update = verb_update(vec!["мочь"], Some(example_at(Uuid::nil(), 1, 2)));
         let card = Card::new_from_update(&update);
-        assert_eq!(card.version, 1);
-        assert_eq!(card.id, "flts_spa_rus_poder_verb");
+        assert_eq!(card.version, 2);
+        assert_eq!(card.id, "flts_spa_rus_poder");
         assert_eq!(card.lemma, "poder");
-        assert_eq!(card.part_of_speech, "verb");
-        assert_eq!(card.translations, vec!["мочь"]);
+        assert_eq!(card.translations_flat(), vec!["мочь"]);
+        assert_eq!(card.translations.get("verb").unwrap().as_slice(), ["мочь"]);
         assert_eq!(card.examples.len(), 1);
         assert!(card.anki_data.is_none());
     }
 
     #[test]
     fn apply_update_adds_new_translation() {
-        let mut card = Card::new_from_update(&CardUpdate {
-            key: poder_key(),
-            translations: vec!["мочь".into()],
-            example: None,
-        });
-        card.apply_update(&CardUpdate {
-            key: poder_key(),
-            translations: vec!["уметь".into()],
-            example: None,
-        });
-        assert_eq!(card.translations, vec!["мочь", "уметь"]);
+        let mut card = Card::new_from_update(&verb_update(vec!["мочь"], None));
+        card.apply_update(&verb_update(vec!["уметь"], None));
+        assert_eq!(card.translations_flat(), vec!["мочь", "уметь"]);
     }
 
     #[test]
     fn apply_update_dedups_translation() {
-        let mut card = Card::new_from_update(&CardUpdate {
+        let mut card = Card::new_from_update(&verb_update(vec!["мочь"], None));
+        card.apply_update(&verb_update(vec!["мочь", "уметь", "мочь"], None));
+        assert_eq!(card.translations_flat(), vec!["мочь", "уметь"]);
+    }
+
+    #[test]
+    fn apply_update_groups_translations_by_pos() {
+        // Same lemma surfacing under two PoS values lands in two map
+        // buckets and translations_flat() returns the deduped union.
+        let mut card = Card::new_from_update(&verb_update(vec!["мочь"], None));
+        card.apply_update(&CardUpdate {
             key: poder_key(),
+            part_of_speech: "verb_auxiliary".into(),
             translations: vec!["мочь".into()],
             example: None,
         });
-        card.apply_update(&CardUpdate {
-            key: poder_key(),
-            translations: vec!["мочь".into(), "уметь".into(), "мочь".into()],
-            example: None,
-        });
-        assert_eq!(card.translations, vec!["мочь", "уметь"]);
+        assert_eq!(card.translations.len(), 2);
+        assert_eq!(card.translations.get("verb").unwrap().as_slice(), ["мочь"]);
+        assert_eq!(
+            card.translations.get("verb_auxiliary").unwrap().as_slice(),
+            ["мочь"]
+        );
+        // Dedup across buckets in the flat view.
+        assert_eq!(card.translations_flat(), vec!["мочь"]);
     }
 
     #[test]
     fn apply_update_adds_new_example_with_distinct_provenance() {
         let book = Uuid::new_v4();
-        let mut card = Card::new_from_update(&CardUpdate {
-            key: poder_key(),
-            translations: vec![],
-            example: Some(example_at(book, 1, 1)),
-        });
-        card.apply_update(&CardUpdate {
-            key: poder_key(),
-            translations: vec![],
-            example: Some(example_at(book, 1, 2)),
-        });
+        let mut card = Card::new_from_update(&verb_update(vec![], Some(example_at(book, 1, 1))));
+        card.apply_update(&verb_update(vec![], Some(example_at(book, 1, 2))));
         assert_eq!(card.examples.len(), 2);
     }
 
     #[test]
     fn apply_update_skips_example_with_same_provenance() {
         let book = Uuid::new_v4();
-        let mut card = Card::new_from_update(&CardUpdate {
-            key: poder_key(),
-            translations: vec![],
-            example: Some(example_at(book, 1, 1)),
-        });
-        card.apply_update(&CardUpdate {
-            key: poder_key(),
-            translations: vec![],
-            example: Some(example_at(book, 1, 1)),
-        });
+        let mut card = Card::new_from_update(&verb_update(vec![], Some(example_at(book, 1, 1))));
+        card.apply_update(&verb_update(vec![], Some(example_at(book, 1, 1))));
         assert_eq!(card.examples.len(), 1);
     }
 
     #[test]
     fn apply_update_caps_examples_at_10() {
         let book = Uuid::new_v4();
-        let mut card = Card::new_from_update(&CardUpdate {
-            key: poder_key(),
-            translations: vec![],
-            example: Some(example_at(book, 0, 0)),
-        });
+        let mut card = Card::new_from_update(&verb_update(vec![], Some(example_at(book, 0, 0))));
         for i in 1..20 {
-            card.apply_update(&CardUpdate {
-                key: poder_key(),
-                translations: vec![],
-                example: Some(example_at(book, 0, i)),
-            });
+            card.apply_update(&verb_update(vec![], Some(example_at(book, 0, i))));
         }
         assert_eq!(card.examples.len(), EXAMPLES_CAP);
         // earliest-by-insertion retained
@@ -841,17 +833,9 @@ mod tests {
 
     #[test]
     fn apply_update_handles_empty_translations_no_example() {
-        let mut card = Card::new_from_update(&CardUpdate {
-            key: poder_key(),
-            translations: vec!["мочь".into()],
-            example: None,
-        });
+        let mut card = Card::new_from_update(&verb_update(vec!["мочь"], None));
         let before = card.clone();
-        card.apply_update(&CardUpdate {
-            key: poder_key(),
-            translations: vec![],
-            example: None,
-        });
+        card.apply_update(&verb_update(vec![], None));
         assert_eq!(card, before);
     }
 
@@ -1133,12 +1117,16 @@ mod tests {
         examples: Vec<Example>,
         anki_data: Option<AnkiData>,
     ) -> Card {
+        let mut map: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        map.insert(
+            "verb".into(),
+            translations.into_iter().map(String::from).collect(),
+        );
         Card {
-            version: 1,
-            id: "flts_spa_rus_poder_verb".into(),
+            version: 2,
+            id: "flts_spa_rus_poder".into(),
             lemma: "poder".into(),
-            part_of_speech: "verb".into(),
-            translations: translations.into_iter().map(String::from).collect(),
+            translations: map,
             examples,
             anki_data,
         }
@@ -1165,7 +1153,7 @@ mod tests {
         let mut base = make_card_with(vec!["мочь"], vec![], None);
         let other = make_card_with(vec!["уметь"], vec![], None);
         base.merge(other);
-        assert_eq!(base.translations, vec!["мочь", "уметь"]);
+        assert_eq!(base.translations_flat(), vec!["мочь", "уметь"]);
     }
 
     #[test]
@@ -1173,7 +1161,7 @@ mod tests {
         let mut base = make_card_with(vec!["мочь", "уметь"], vec![], None);
         let other = make_card_with(vec!["мочь"], vec![], None);
         base.merge(other);
-        assert_eq!(base.translations, vec!["мочь", "уметь"]);
+        assert_eq!(base.translations_flat(), vec!["мочь", "уметь"]);
     }
 
     #[test]
@@ -1181,7 +1169,7 @@ mod tests {
         let mut base = make_card_with(vec!["a", "b"], vec![], None);
         let other = make_card_with(vec!["b", "c", "a"], vec![], None);
         base.merge(other);
-        assert_eq!(base.translations, vec!["a", "b", "c"]);
+        assert_eq!(base.translations_flat(), vec!["a", "b", "c"]);
     }
 
     #[test]
@@ -1242,8 +1230,8 @@ mod tests {
         ba.merge(make_card_with(vec!["x", "y"], a_examples, None));
 
         // Translations differ in order (base-first), so compare as sets.
-        let ab_t: std::collections::HashSet<_> = ab.translations.iter().collect();
-        let ba_t: std::collections::HashSet<_> = ba.translations.iter().collect();
+        let ab_t: std::collections::HashSet<_> = ab.translations_flat().into_iter().collect();
+        let ba_t: std::collections::HashSet<_> = ba.translations_flat().into_iter().collect();
         assert_eq!(ab_t, ba_t);
 
         // Examples are sort-and-truncated when over cap, so order is deterministic.
@@ -1274,12 +1262,13 @@ mod tests {
 
     #[test]
     fn card_round_trips_through_json() {
+        let mut translations: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        translations.insert("verb".into(), vec!["мочь".into()]);
         let card = Card {
-            version: 1,
-            id: "flts_spa_rus_poder_verb".into(),
+            version: 2,
+            id: "flts_spa_rus_poder".into(),
             lemma: "poder".into(),
-            part_of_speech: "verb".into(),
-            translations: vec!["мочь".into()],
+            translations,
             examples: vec![Example {
                 source: "No puedo más.".into(),
                 translation: "Я больше не могу.".into(),
@@ -1292,7 +1281,7 @@ mod tests {
         let json = serde_json::to_string(&card).unwrap();
         let back: Card = serde_json::from_str(&json).unwrap();
         assert_eq!(card, back);
-        assert!(json.contains("\"version\":1"));
+        assert!(json.contains("\"version\":2"));
         assert!(json.contains("\"anki_data\":null"));
     }
 

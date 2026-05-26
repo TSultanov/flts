@@ -503,11 +503,11 @@ async fn build_paragraph_familiarity_map(
     src_lang: Language,
     tgt_lang: Language,
     card_store: &Arc<LibraryCardStore>,
-) -> HashMap<(String, String), f32> {
+) -> HashMap<String, f32> {
     let src = src_lang.to_639_3();
     let tgt = tgt_lang.to_639_3();
 
-    let mut keys: Vec<(String, String)> = Vec::new();
+    let mut slugs: Vec<String> = Vec::new();
     for sentence in translation.sentences() {
         for word in sentence.words() {
             if word.is_punctuation {
@@ -518,30 +518,23 @@ async fn build_paragraph_familiarity_map(
             if lemma_canonical.is_empty() {
                 continue;
             }
-            let pos_canonical = card::canonicalize_part_of_speech(&word.grammar.part_of_speech);
             let slug = card::lemma_slug(&lemma_canonical);
-            let pos_slug = card::part_of_speech_slug(&pos_canonical);
-            if slug.is_empty() || pos_slug.is_empty() {
+            if slug.is_empty() {
                 continue;
             }
-            let key = (slug, pos_slug);
-            if !keys.contains(&key) {
-                keys.push(key);
+            if !slugs.contains(&slug) {
+                slugs.push(slug);
             }
         }
     }
 
-    let mut out: HashMap<(String, String), f32> = HashMap::with_capacity(keys.len());
-    for (slug, pos_slug) in keys {
-        let card_opt = card_store
-            .load(src, tgt, &slug, &pos_slug)
-            .await
-            .ok()
-            .flatten();
+    let mut out: HashMap<String, f32> = HashMap::with_capacity(slugs.len());
+    for slug in slugs {
+        let card_opt = card_store.load(src, tgt, &slug).await.ok().flatten();
         if let Some(f) =
             card::familiarity_from(card_opt.as_ref().and_then(|c| c.anki_data.as_ref()))
         {
-            out.insert((slug, pos_slug), f);
+            out.insert(slug, f);
         }
     }
     out
@@ -550,7 +543,7 @@ async fn build_paragraph_familiarity_map(
 fn paragraph_to_segments(
     original: &str,
     translation: &ParagraphTranslationView,
-    card_familiarity: &HashMap<(String, String), f32>,
+    card_familiarity: &HashMap<String, f32>,
     src_lang: Language,
 ) -> Vec<ParagraphSegment> {
     let mut segments: Vec<ParagraphSegment> = Vec::new();
@@ -644,14 +637,11 @@ fn paragraph_to_segments(
                 let familiarity = if lemma_canonical.is_empty() {
                     None
                 } else {
-                    let pos_canonical =
-                        card::canonicalize_part_of_speech(&word.grammar.part_of_speech);
                     let slug = card::lemma_slug(&lemma_canonical);
-                    let pos_slug = card::part_of_speech_slug(&pos_canonical);
-                    if slug.is_empty() || pos_slug.is_empty() {
+                    if slug.is_empty() {
                         None
                     } else {
-                        card_familiarity.get(&(slug, pos_slug)).copied()
+                        card_familiarity.get(&slug).copied()
                     }
                 };
 
@@ -1085,7 +1075,7 @@ mod tests {
         let view = view_from_import(&mut t, 0, &pt);
 
         let mut fam = HashMap::new();
-        fam.insert(("hola".to_string(), "stub".to_string()), 0.5_f32);
+        fam.insert("hola".to_string(), 0.5_f32);
 
         let segments =
             paragraph_to_segments(original, &view, &fam, Language::from_639_3("spa").unwrap());

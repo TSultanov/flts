@@ -8,7 +8,7 @@ use tokio::sync::{Mutex, Notify};
 
 use crate::{
     book::serialization::create_random_string,
-    card::{Card, card_id, lemma_slug, part_of_speech_slug},
+    card::{Card, card_id, lemma_slug},
 };
 
 pub struct LibraryCardStore {
@@ -47,10 +47,9 @@ impl LibraryCardStore {
         source_language: &str,
         target_language: &str,
         lemma_slug: &str,
-        pos_slug: &str,
     ) -> PathBuf {
         self.deck_dir(source_language, target_language)
-            .join(format!("{lemma_slug}_{pos_slug}.json"))
+            .join(format!("{lemma_slug}.json"))
     }
 
     pub async fn lock_for(&self, id: &str) -> Arc<Mutex<()>> {
@@ -70,9 +69,8 @@ impl LibraryCardStore {
         source_language: &str,
         target_language: &str,
         lemma_slug: &str,
-        pos_slug: &str,
     ) -> anyhow::Result<Option<Card>> {
-        let canonical_path = self.card_path(source_language, target_language, lemma_slug, pos_slug);
+        let canonical_path = self.card_path(source_language, target_language, lemma_slug);
         if !tokio::fs::try_exists(&canonical_path).await? {
             return Ok(None);
         }
@@ -80,9 +78,9 @@ impl LibraryCardStore {
         let mut base: Card = serde_json::from_slice(&canonical_bytes)?;
 
         let deck_dir = self.deck_dir(source_language, target_language);
-        let canonical_file_name = format!("{lemma_slug}_{pos_slug}.json");
-        let file_name_prefix = format!("{lemma_slug}_{pos_slug}.");
-        let expected_id = card_id(source_language, target_language, lemma_slug, pos_slug);
+        let canonical_file_name = format!("{lemma_slug}.json");
+        let file_name_prefix = format!("{lemma_slug}.");
+        let expected_id = card_id(source_language, target_language, lemma_slug);
 
         let accepted = self
             .scan_conflict_siblings(
@@ -173,7 +171,6 @@ impl LibraryCardStore {
                 source_language,
                 target_language,
                 &lemma_slug(&card.lemma),
-                &part_of_speech_slug(&card.part_of_speech),
             );
             if sibling_id != expected_id {
                 log::warn!(
@@ -220,14 +217,14 @@ impl LibraryCardStore {
         Ok(pairs)
     }
 
-    /// Enumerate `(lemma_slug, pos_slug)` tuples for the given pair's deck dir.
-    /// Skips Syncthing `.sync-conflict-*.json` siblings and any non-`.json`
-    /// files. Missing deck dir returns `Ok(vec![])`. Result is sorted ascending.
+    /// Enumerate lemma slugs for the given pair's deck dir. Skips Syncthing
+    /// `.sync-conflict-*.json` siblings and any non-`.json` files. Missing
+    /// deck dir returns `Ok(vec![])`. Result is sorted ascending.
     pub async fn list_cards_in_pair(
         &self,
         source_language: &str,
         target_language: &str,
-    ) -> anyhow::Result<Vec<(String, String)>> {
+    ) -> anyhow::Result<Vec<String>> {
         let deck = self.deck_dir(source_language, target_language);
         let mut read_dir = match tokio::fs::read_dir(&deck).await {
             Ok(rd) => rd,
@@ -235,7 +232,7 @@ impl LibraryCardStore {
             Err(err) => return Err(err.into()),
         };
 
-        let mut out: Vec<(String, String)> = Vec::new();
+        let mut out: Vec<String> = Vec::new();
         loop {
             let entry = match read_dir.next_entry().await? {
                 Some(e) => e,
@@ -245,17 +242,13 @@ impl LibraryCardStore {
                 Ok(n) => n,
                 Err(_) => continue,
             };
-            // Skip conflict siblings; only canonical files have direct `_<pos>.json`.
             if name.contains(".sync-conflict-") {
                 continue;
             }
             let Some(stem) = name.strip_suffix(".json") else {
                 continue;
             };
-            let Some((lemma, pos)) = stem.rsplit_once('_') else {
-                continue;
-            };
-            out.push((lemma.to_owned(), pos.to_owned()));
+            out.push(stem.to_owned());
         }
         out.sort();
         Ok(out)
@@ -299,8 +292,7 @@ impl LibraryCardStore {
         tokio::fs::create_dir_all(&deck).await?;
 
         let slug = lemma_slug(&card.lemma);
-        let pos_slug = part_of_speech_slug(&card.part_of_speech);
-        let file_name = format!("{slug}_{pos_slug}.json");
+        let file_name = format!("{slug}.json");
         let canonical = deck.join(&file_name);
         let temp = deck.join(format!("{file_name}~{}", create_random_string(8)));
 
@@ -320,12 +312,14 @@ mod tests {
     use crate::{card::Card, test_utils::TempDir};
 
     fn sample_card() -> Card {
+        let mut translations: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        translations.insert("verb".into(), vec!["мочь".into()]);
         Card {
-            version: 1,
-            id: "flts_spa_rus_poder_verb".into(),
+            version: 2,
+            id: "flts_spa_rus_poder".into(),
             lemma: "poder".into(),
-            part_of_speech: "verb".into(),
-            translations: vec!["мочь".into()],
+            translations,
             examples: vec![],
             anki_data: None,
         }
@@ -340,7 +334,7 @@ mod tests {
             .path
             .join("cards")
             .join("spa-rus")
-            .join("poder_verb.json");
+            .join("poder.json");
         assert!(expected.exists(), "expected card at {expected:?}");
     }
 
@@ -353,10 +347,10 @@ mod tests {
             .path
             .join("cards")
             .join("spa-rus")
-            .join("poder_verb.json");
+            .join("poder.json");
         let body = std::fs::read_to_string(&path).unwrap();
         assert!(body.starts_with("{\n"), "expected pretty JSON, got: {body}");
-        assert!(body.contains("\"version\": 1"));
+        assert!(body.contains("\"version\": 2"));
         assert!(body.contains("\"anki_data\": null"));
     }
 
@@ -417,7 +411,7 @@ mod tests {
     async fn load_returns_none_for_missing() {
         let tmp = TempDir::new("flts_card_missing");
         let store = LibraryCardStore::new(&tmp.path);
-        let card = store.load("spa", "rus", "poder", "verb").await.unwrap();
+        let card = store.load("spa", "rus", "poder").await.unwrap();
         assert!(card.is_none());
     }
 
@@ -428,7 +422,7 @@ mod tests {
         let original = sample_card();
         store.save(&original, "spa", "rus").await.unwrap();
         let loaded = store
-            .load("spa", "rus", "poder", "verb")
+            .load("spa", "rus", "poder")
             .await
             .unwrap()
             .expect("card present");
@@ -439,9 +433,9 @@ mod tests {
     async fn per_card_lock_is_per_id() {
         let tmp = TempDir::new("flts_card_lock");
         let store = LibraryCardStore::new(&tmp.path);
-        let a1 = store.lock_for("flts_spa_rus_poder_verb").await;
-        let a2 = store.lock_for("flts_spa_rus_poder_verb").await;
-        let b = store.lock_for("flts_spa_rus_poder_noun").await;
+        let a1 = store.lock_for("flts_spa_rus_poder").await;
+        let a2 = store.lock_for("flts_spa_rus_poder").await;
+        let b = store.lock_for("flts_spa_rus_comer").await;
         assert!(Arc::ptr_eq(&a1, &a2), "same id should yield same Arc");
         assert!(
             !Arc::ptr_eq(&a1, &b),
@@ -459,12 +453,17 @@ mod tests {
         examples: Vec<Example>,
     ) -> Card {
         let slug = lemma_slug(lemma);
+        let mut by_pos: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        by_pos.insert(
+            part_of_speech.into(),
+            translations.into_iter().map(String::from).collect(),
+        );
         Card {
-            version: 1,
-            id: format!("flts_spa_rus_{slug}_{part_of_speech}"),
+            version: 2,
+            id: format!("flts_spa_rus_{slug}"),
             lemma: lemma.into(),
-            part_of_speech: part_of_speech.into(),
-            translations: translations.into_iter().map(String::from).collect(),
+            translations: by_pos,
             examples,
             anki_data: None,
         }
@@ -507,14 +506,14 @@ mod tests {
         store.save(&sample_card(), "spa", "rus").await.unwrap();
 
         let loaded = store
-            .load("spa", "rus", "poder", "verb")
+            .load("spa", "rus", "poder")
             .await
             .unwrap()
             .expect("card present");
         assert_eq!(loaded, sample_card());
 
         let deck = tmp.path.join("cards").join("spa-rus");
-        assert_eq!(deck_entries(&deck), vec!["poder_verb.json"]);
+        assert_eq!(deck_entries(&deck), vec!["poder.json"]);
     }
 
     #[tokio::test]
@@ -531,7 +530,7 @@ mod tests {
         store.save(&canonical, "spa", "rus").await.unwrap();
 
         let deck = tmp.path.join("cards").join("spa-rus");
-        let conflict_path = deck.join("poder_verb.sync-conflict-20260520-153912-XYZ.json");
+        let conflict_path = deck.join("poder.sync-conflict-20260520-153912-XYZ.json");
         let conflict = card_with(
             "poder",
             "verb",
@@ -541,18 +540,18 @@ mod tests {
         write_pretty(&conflict_path, &conflict).await;
 
         let merged = store
-            .load("spa", "rus", "poder", "verb")
+            .load("spa", "rus", "poder")
             .await
             .unwrap()
             .expect("card present");
-        assert_eq!(merged.translations, vec!["мочь", "уметь"]);
+        assert_eq!(merged.translations_flat(), vec!["мочь", "уметь"]);
         assert_eq!(merged.examples.len(), 2);
 
         assert!(!conflict_path.exists(), "conflict sibling must be deleted");
-        assert_eq!(deck_entries(&deck), vec!["poder_verb.json"]);
+        assert_eq!(deck_entries(&deck), vec!["poder.json"]);
 
         let on_disk: Card =
-            serde_json::from_slice(&tokio::fs::read(deck.join("poder_verb.json")).await.unwrap())
+            serde_json::from_slice(&tokio::fs::read(deck.join("poder.json")).await.unwrap())
                 .unwrap();
         assert_eq!(on_disk, merged);
     }
@@ -583,23 +582,23 @@ mod tests {
                 vec![example(book, 0, p, &format!("s{p}"), &format!("t{p}"))],
             );
             write_pretty(
-                &deck.join(format!("poder_verb.sync-conflict-20260520-{suffix}.json")),
+                &deck.join(format!("poder.sync-conflict-20260520-{suffix}.json")),
                 &p_card,
             )
             .await;
         }
 
         let merged = store
-            .load("spa", "rus", "poder", "verb")
+            .load("spa", "rus", "poder")
             .await
             .unwrap()
             .expect("card present");
         assert_eq!(
-            merged.translations,
+            merged.translations_flat(),
             vec!["мочь", "уметь", "иметь возможность", "сметь"]
         );
         assert_eq!(merged.examples.len(), 4);
-        assert_eq!(deck_entries(&deck), vec!["poder_verb.json"]);
+        assert_eq!(deck_entries(&deck), vec!["poder.json"]);
     }
 
     #[tokio::test]
@@ -622,7 +621,7 @@ mod tests {
             .unwrap();
 
         let deck = tmp.path.join("cards").join("spa-rus");
-        let foreign_path = deck.join("poder_verb.sync-conflict-X.json");
+        let foreign_path = deck.join("poder.sync-conflict-X.json");
         // Foreign card masquerades under the conflict-name pattern but its lemma
         // (`comer`) would derive id `flts_spa_rus_comer_verb`, not `poder_verb`.
         let foreign = card_with(
@@ -634,11 +633,11 @@ mod tests {
         write_pretty(&foreign_path, &foreign).await;
 
         let loaded = store
-            .load("spa", "rus", "poder", "verb")
+            .load("spa", "rus", "poder")
             .await
             .unwrap()
             .expect("card present");
-        assert_eq!(loaded.translations, vec!["мочь"]);
+        assert_eq!(loaded.translations_flat(), vec!["мочь"]);
         assert_eq!(loaded.examples.len(), 1);
 
         assert!(
@@ -680,7 +679,7 @@ mod tests {
             .unwrap();
 
         let deck = tmp.path.join("cards").join("spa-rus");
-        let comer_conflict = deck.join("comer_verb.sync-conflict-X.json");
+        let comer_conflict = deck.join("comer.sync-conflict-X.json");
         write_pretty(
             &comer_conflict,
             &card_with(
@@ -692,15 +691,15 @@ mod tests {
         )
         .await;
 
-        store.load("spa", "rus", "poder", "verb").await.unwrap();
+        store.load("spa", "rus", "poder").await.unwrap();
         assert!(
             comer_conflict.exists(),
             "comer's conflict file must be untouched by poder load"
         );
         let poder: Card =
-            serde_json::from_slice(&tokio::fs::read(deck.join("poder_verb.json")).await.unwrap())
+            serde_json::from_slice(&tokio::fs::read(deck.join("poder.json")).await.unwrap())
                 .unwrap();
-        assert_eq!(poder.translations, vec!["мочь"]);
+        assert_eq!(poder.translations_flat(), vec!["мочь"]);
     }
 
     #[tokio::test]
@@ -723,17 +722,17 @@ mod tests {
             .unwrap();
 
         let deck = tmp.path.join("cards").join("spa-rus");
-        let corrupt_path = deck.join("poder_verb.sync-conflict-corrupt.json");
+        let corrupt_path = deck.join("poder.sync-conflict-corrupt.json");
         tokio::fs::write(&corrupt_path, b"{not valid json")
             .await
             .unwrap();
 
         let loaded = store
-            .load("spa", "rus", "poder", "verb")
+            .load("spa", "rus", "poder")
             .await
             .unwrap()
             .expect("card present");
-        assert_eq!(loaded.translations, vec!["мочь"]);
+        assert_eq!(loaded.translations_flat(), vec!["мочь"]);
         assert_eq!(loaded.examples.len(), 1);
         assert!(corrupt_path.exists(), "corrupt sibling must NOT be deleted");
     }
@@ -758,7 +757,7 @@ mod tests {
             .unwrap();
         let deck = tmp.path.join("cards").join("spa-rus");
         write_pretty(
-            &deck.join("poder_verb.sync-conflict-X.json"),
+            &deck.join("poder.sync-conflict-X.json"),
             &card_with(
                 "poder",
                 "verb",
@@ -768,14 +767,14 @@ mod tests {
         )
         .await;
 
-        store.load("spa", "rus", "poder", "verb").await.unwrap();
+        store.load("spa", "rus", "poder").await.unwrap();
 
         let entries = deck_entries(&deck);
         assert!(
             entries.iter().all(|n| !n.contains('~')),
             "found stray temp file in {entries:?}"
         );
-        assert_eq!(entries, vec!["poder_verb.json"]);
+        assert_eq!(entries, vec!["poder.json"]);
     }
 
     #[tokio::test]
@@ -798,8 +797,8 @@ mod tests {
             .await
             .unwrap();
         let deck = tmp.path.join("cards").join("spa-rus");
-        let canonical = deck.join("poder_verb.json");
-        let conflict_path = deck.join("poder_verb.sync-conflict-X.json");
+        let canonical = deck.join("poder.json");
+        let conflict_path = deck.join("poder.sync-conflict-X.json");
         write_pretty(
             &conflict_path,
             &card_with(
@@ -812,7 +811,7 @@ mod tests {
         .await;
         tokio::fs::remove_file(&canonical).await.unwrap();
 
-        let loaded = store.load("spa", "rus", "poder", "verb").await.unwrap();
+        let loaded = store.load("spa", "rus", "poder").await.unwrap();
         assert!(loaded.is_none(), "expected None when canonical is absent");
         assert!(
             conflict_path.exists(),
@@ -829,7 +828,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_cards_in_pair_returns_lemma_pos_tuples() {
+    async fn list_cards_in_pair_returns_lemma_slugs() {
         let tmp = TempDir::new("flts_list_cards");
         let store = LibraryCardStore::new(&tmp.path);
         store
@@ -851,18 +850,15 @@ mod tests {
 
         // Seed a Syncthing conflict sibling — must be skipped.
         let deck = tmp.path.join("cards").join("spa-rus");
-        std::fs::write(deck.join("poder_verb.sync-conflict-20260520-X.json"), b"{}").unwrap();
+        std::fs::write(deck.join("poder.sync-conflict-20260520-X.json"), b"{}").unwrap();
         // And a stray non-JSON file — also skipped.
         std::fs::write(deck.join("README"), b"ignore").unwrap();
 
         let cards = store.list_cards_in_pair("spa", "rus").await.unwrap();
         assert_eq!(
             cards,
-            vec![
-                ("comer".to_owned(), "verb".to_owned()),
-                ("poder".to_owned(), "verb".to_owned()),
-            ],
-            "expected sorted lemma_pos tuples, got {cards:?}"
+            vec!["comer".to_owned(), "poder".to_owned()],
+            "expected sorted lemma slugs, got {cards:?}"
         );
     }
 

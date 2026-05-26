@@ -317,7 +317,6 @@ impl Library {
                         &update.key.source_language,
                         &update.key.target_language,
                         &update.key.slug,
-                        &update.key.pos_slug,
                     )
                     .await?;
                 let card = match existing {
@@ -820,16 +819,16 @@ mod library_tests {
         assert_eq!(
             names,
             vec![
-                "más_adv.json".to_string(),
-                "no_adv.json".to_string(),
-                "poder_verb.json".to_string(),
+                "más.json".to_string(),
+                "no.json".to_string(),
+                "poder.json".to_string(),
             ]
         );
 
-        let poder = std::fs::read_to_string(deck.join("poder_verb.json")).unwrap();
+        let poder = std::fs::read_to_string(deck.join("poder.json")).unwrap();
         let card: Card = serde_json::from_str(&poder).unwrap();
         assert_eq!(card.lemma, "poder");
-        assert_eq!(card.translations, vec!["мочь"]);
+        assert_eq!(card.translations_flat(), vec!["мочь"]);
         assert_eq!(card.examples.len(), 1);
         assert_eq!(card.examples[0].book_id, book_id);
         assert_eq!(card.examples[0].chapter, 0);
@@ -869,10 +868,10 @@ mod library_tests {
             .join("lib")
             .join("cards")
             .join("spa-rus")
-            .join("poder_verb.json");
+            .join("poder.json");
         let body = std::fs::read_to_string(&card_path).unwrap();
         let card: Card = serde_json::from_str(&body).unwrap();
-        assert_eq!(card.translations, vec!["мочь"]);
+        assert_eq!(card.translations_flat(), vec!["мочь"]);
         assert_eq!(card.examples.len(), 1);
     }
 
@@ -931,10 +930,10 @@ mod library_tests {
             .join("lib")
             .join("cards")
             .join("spa-rus")
-            .join("poder_verb.json");
+            .join("poder.json");
         let card: Card =
             serde_json::from_str(&std::fs::read_to_string(&card_path).unwrap()).unwrap();
-        assert_eq!(card.translations, vec!["мочь"]);
+        assert_eq!(card.translations_flat(), vec!["мочь"]);
         assert_eq!(card.examples.len(), 2);
         assert_eq!(card.examples[0].paragraph, 0);
         assert_eq!(card.examples[1].paragraph, 1);
@@ -951,12 +950,14 @@ mod library_tests {
         tokio::fs::create_dir_all(&deck).await.unwrap();
 
         let other_book = Uuid::new_v4();
+        let mut canonical_translations: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        canonical_translations.insert("verb".into(), vec!["мочь".into()]);
         let canonical = Card {
-            version: 1,
-            id: "flts_spa_rus_poder_verb".into(),
+            version: 2,
+            id: "flts_spa_rus_poder".into(),
             lemma: "poder".into(),
-            part_of_speech: "verb".into(),
-            translations: vec!["мочь".into()],
+            translations: canonical_translations,
             examples: vec![Example {
                 source: "puedo".into(),
                 translation: "могу".into(),
@@ -967,18 +968,20 @@ mod library_tests {
             anki_data: None,
         };
         tokio::fs::write(
-            deck.join("poder_verb.json"),
+            deck.join("poder.json"),
             serde_json::to_vec_pretty(&canonical).unwrap(),
         )
         .await
         .unwrap();
 
+        let mut conflict_translations: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        conflict_translations.insert("verb".into(), vec!["уметь".into()]);
         let conflict = Card {
-            version: 1,
-            id: "flts_spa_rus_poder_verb".into(),
+            version: 2,
+            id: "flts_spa_rus_poder".into(),
             lemma: "poder".into(),
-            part_of_speech: "verb".into(),
-            translations: vec!["уметь".into()],
+            translations: conflict_translations,
             examples: vec![Example {
                 source: "pueden".into(),
                 translation: "могут".into(),
@@ -988,7 +991,7 @@ mod library_tests {
             }],
             anki_data: None,
         };
-        let conflict_path = deck.join("poder_verb.sync-conflict-20260520-test.json");
+        let conflict_path = deck.join("poder.sync-conflict-20260520-test.json");
         tokio::fs::write(
             &conflict_path,
             serde_json::to_vec_pretty(&conflict).unwrap(),
@@ -1022,13 +1025,13 @@ mod library_tests {
             names.iter().all(|n| !n.contains('~')),
             "found stray temp file in {names:?}"
         );
-        assert_eq!(names, vec!["poder_verb.json".to_string()]);
+        assert_eq!(names, vec!["poder.json".to_string()]);
 
         // Merged card has translations from canonical + conflict + new update.
         let on_disk: Card =
-            serde_json::from_slice(&tokio::fs::read(deck.join("poder_verb.json")).await.unwrap())
+            serde_json::from_slice(&tokio::fs::read(deck.join("poder.json")).await.unwrap())
                 .unwrap();
-        assert_eq!(on_disk.translations, vec!["мочь", "уметь"]);
+        assert_eq!(on_disk.translations_flat(), vec!["мочь", "уметь"]);
         assert_eq!(on_disk.examples.len(), 3);
 
         let provenances: std::collections::HashSet<_> = on_disk
@@ -1048,8 +1051,9 @@ mod library_tests {
         //   "Существительное / Прилагательное"
         //   "глагол (герундий/причастие настоящего времени)"
         // The slashes were interpreted as path separators and the card
-        // file never landed. Now: pos_slug strips them and the card
-        // persists at a safe filename.
+        // file never landed. v2 schema keys cards by lemma only — the
+        // noisy PoS lives inside the translations map keys, so the card
+        // file lands at a safe lemma-only filename.
         let tmp = TempDir::new("flts_card_noisy_pos");
         let (library, book_id) =
             library_with_one_paragraph_book(tmp.path.join("lib"), "good judge").await;
@@ -1086,12 +1090,34 @@ mod library_tests {
             .map(|e| e.unwrap().file_name().into_string().unwrap())
             .collect();
         assert!(
-            names.contains("good_существительное_прилагательное.json"),
-            "expected the 'good' card with safe slugged filename, got {names:?}"
+            names.contains("good.json"),
+            "expected the 'good' card at a lemma-only filename, got {names:?}"
         );
         assert!(
-            names.contains("judge_глагол_герундий_причастие_настоящего_времени.json"),
-            "expected the 'judge' card with safe slugged filename, got {names:?}"
+            names.contains("judge.json"),
+            "expected the 'judge' card at a lemma-only filename, got {names:?}"
+        );
+
+        // The noisy PoS strings survive as keys inside the card's
+        // translations map (the canonicalized form, slashes preserved).
+        let good: Card =
+            serde_json::from_slice(&std::fs::read(deck.join("good.json")).unwrap()).unwrap();
+        assert!(
+            good.translations
+                .keys()
+                .any(|k| k.contains("существительное")),
+            "expected noisy PoS as a key inside translations, got {:?}",
+            good.translations.keys().collect::<Vec<_>>()
+        );
+        let judge: Card =
+            serde_json::from_slice(&std::fs::read(deck.join("judge.json")).unwrap()).unwrap();
+        assert!(
+            judge
+                .translations
+                .keys()
+                .any(|k| k.contains("глагол")),
+            "expected noisy PoS as a key inside translations, got {:?}",
+            judge.translations.keys().collect::<Vec<_>>()
         );
     }
 
@@ -1219,11 +1245,11 @@ mod library_tests {
         let card_path = library_path
             .join("cards")
             .join("spa-rus")
-            .join("poder_verb.json");
+            .join("poder.json");
         let body = std::fs::read_to_string(&card_path).unwrap();
         let card: Card = serde_json::from_str(&body).unwrap();
         assert_eq!(card.lemma, "poder");
-        assert_eq!(card.translations, vec!["мочь"]);
+        assert_eq!(card.translations_flat(), vec!["мочь"]);
         assert_eq!(card.examples.len(), 1);
         assert_eq!(card.examples[0].book_id, book_id);
         assert_eq!(card.examples[0].chapter, 0);
@@ -1258,17 +1284,17 @@ mod library_tests {
 
         library.backfill_cards_from_translations().await.unwrap();
         let deck_dir = library_path.join("cards").join("spa-rus");
-        let after_first: Vec<u8> = std::fs::read(deck_dir.join("poder_verb.json")).unwrap();
+        let after_first: Vec<u8> = std::fs::read(deck_dir.join("poder.json")).unwrap();
 
         library.backfill_cards_from_translations().await.unwrap();
-        let after_second: Vec<u8> = std::fs::read(deck_dir.join("poder_verb.json")).unwrap();
+        let after_second: Vec<u8> = std::fs::read(deck_dir.join("poder.json")).unwrap();
 
         assert_eq!(after_first, after_second);
         let names: Vec<String> = std::fs::read_dir(&deck_dir)
             .unwrap()
             .map(|e| e.unwrap().file_name().into_string().unwrap())
             .collect();
-        assert_eq!(names, vec!["poder_verb.json".to_string()]);
+        assert_eq!(names, vec!["poder.json".to_string()]);
     }
 
     #[tokio::test]
@@ -1325,10 +1351,10 @@ mod library_tests {
 
         let deck = library_path.join("cards").join("spa-rus");
         let poder: Card =
-            serde_json::from_str(&std::fs::read_to_string(deck.join("poder_verb.json")).unwrap())
+            serde_json::from_str(&std::fs::read_to_string(deck.join("poder.json")).unwrap())
                 .unwrap();
         let comer: Card =
-            serde_json::from_str(&std::fs::read_to_string(deck.join("comer_verb.json")).unwrap())
+            serde_json::from_str(&std::fs::read_to_string(deck.join("comer.json")).unwrap())
                 .unwrap();
 
         assert_eq!(poder.examples.len(), 1);
@@ -1387,7 +1413,7 @@ mod library_tests {
                 library_path
                     .join("cards")
                     .join("spa-rus")
-                    .join("poder_verb.json"),
+                    .join("poder.json"),
             )
             .unwrap(),
         )
@@ -1397,13 +1423,13 @@ mod library_tests {
                 library_path
                     .join("cards")
                     .join("spa-eng")
-                    .join("poder_verb.json"),
+                    .join("poder.json"),
             )
             .unwrap(),
         )
         .unwrap();
 
-        assert_eq!(rus_card.translations, vec!["мочь"]);
-        assert_eq!(eng_card.translations, vec!["can"]);
+        assert_eq!(rus_card.translations_flat(), vec!["мочь"]);
+        assert_eq!(eng_card.translations_flat(), vec!["can"]);
     }
 }

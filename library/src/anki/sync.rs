@@ -155,17 +155,14 @@ pub async fn sync_pass(
         };
 
         let card_files = card_store.list_cards_in_pair(src_str, tgt_str).await?;
-        for (lemma_slug, pos_slug) in card_files {
+        for lemma_slug in card_files {
             report.total_cards += 1;
 
-            let card_id = crate::card::card_id(src_str, tgt_str, &lemma_slug, &pos_slug);
+            let card_id = crate::card::card_id(src_str, tgt_str, &lemma_slug);
             let lock_arc = card_store.lock_for(&card_id).await;
             let guard = lock_arc.lock_owned().await;
 
-            let Some(card) = card_store
-                .load(src_str, tgt_str, &lemma_slug, &pos_slug)
-                .await?
-            else {
+            let Some(card) = card_store.load(src_str, tgt_str, &lemma_slug).await? else {
                 continue;
             };
 
@@ -335,7 +332,7 @@ async fn apply_lookup(
 pub(crate) fn render_fields(card: &Card) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     out.insert("Source".into(), card.lemma.clone());
-    out.insert("Target".into(), card.translations.join("; "));
+    out.insert("Target".into(), card.translations_flat().join("; "));
 
     let mut examples = card.examples.clone();
     examples.sort_by(|a, b| a.source.cmp(&b.source));
@@ -454,12 +451,16 @@ mod tests {
     use crate::test_utils::{TempDir, full_word, one_sentence_paragraph};
 
     fn make_card(lemma: &str, translations: Vec<&str>, examples: Vec<Example>) -> Card {
+        let mut by_pos: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        by_pos.insert(
+            "verb".into(),
+            translations.into_iter().map(String::from).collect(),
+        );
         Card {
-            version: 1,
-            id: format!("flts_spa_rus_{lemma}_verb"),
+            version: 2,
+            id: format!("flts_spa_rus_{lemma}"),
             lemma: lemma.into(),
-            part_of_speech: "verb".into(),
-            translations: translations.into_iter().map(String::from).collect(),
+            translations: by_pos,
             examples,
             anki_data: None,
         }
@@ -639,7 +640,10 @@ mod tests {
         let note_id = original_hits[0];
 
         // Mutate translations locally, sync again — should update, not create.
-        card.translations.push("уметь".into());
+        card.translations
+            .entry("verb".into())
+            .or_default()
+            .push("уметь".into());
         sync_card(&mock, &mut card, spa(), rus()).await.unwrap();
 
         let hits_after = mock.find_notes(&format!("tag:{}", card.id)).await.unwrap();
@@ -722,7 +726,7 @@ mod tests {
 
         // Each card got a note tagged with its id.
         for lemma in ["poder", "comer"] {
-            let id = format!("flts_spa_rus_{lemma}_verb");
+            let id = format!("flts_spa_rus_{lemma}");
             let hits = mock.find_notes(&format!("tag:{id}")).await.unwrap();
             assert_eq!(hits.len(), 1, "expected one note for {id}");
         }
@@ -731,7 +735,7 @@ mod tests {
         for lemma in ["poder", "comer"] {
             let card = library
                 .card_store()
-                .load("spa", "rus", lemma, "verb")
+                .load("spa", "rus", lemma)
                 .await
                 .unwrap()
                 .expect("card present");
@@ -860,7 +864,7 @@ mod tests {
 
         // Threshold of 3 means card surfaces after the 3rd consecutive failure.
         let mut state = AnkiSyncState::new().with_threshold(3);
-        let card_id = format!("flts_spa_rus_poder_verb");
+        let card_id = format!("flts_spa_rus_poder");
 
         // Pre-bootstrap so failure-injection lands on sync_card, not bootstrap.
         crate::anki::model::bootstrap(
@@ -981,7 +985,7 @@ mod tests {
         for lemma in ["poder", "comer", "ver", "ir", "ser"] {
             let card = library
                 .card_store()
-                .load("spa", "rus", lemma, "verb")
+                .load("spa", "rus", lemma)
                 .await
                 .unwrap()
                 .expect("card present");
@@ -1131,7 +1135,7 @@ mod tests {
         assert_eq!(report.failed, 0);
 
         // Spot-check the `poder` card end-to-end: tag lookup → note fields → on-disk state.
-        let poder_tag = "flts_spa_rus_poder_verb";
+        let poder_tag = "flts_spa_rus_poder";
         let poder_note = mock
             .note_id_for_tag(poder_tag)
             .expect("poder note exists in mock");
@@ -1150,7 +1154,7 @@ mod tests {
 
         let card = library
             .card_store()
-            .load("spa", "rus", "poder", "verb")
+            .load("spa", "rus", "poder")
             .await
             .unwrap()
             .expect("poder card on disk");
@@ -1162,7 +1166,7 @@ mod tests {
 
         // Sanity: the noun gets its own note in the same deck.
         assert!(
-            mock.note_id_for_tag("flts_spa_rus_casa_noun").is_some(),
+            mock.note_id_for_tag("flts_spa_rus_casa").is_some(),
             "casa note exists in mock"
         );
     }
@@ -1197,7 +1201,7 @@ mod tests {
             .await
             .unwrap();
 
-        let poder_tag = "flts_spa_rus_poder_verb";
+        let poder_tag = "flts_spa_rus_poder";
         let note_id = mock
             .note_id_for_tag(poder_tag)
             .expect("note exists after first sync");
@@ -1213,7 +1217,7 @@ mod tests {
             .unwrap();
         let card = library
             .card_store()
-            .load("spa", "rus", "poder", "verb")
+            .load("spa", "rus", "poder")
             .await
             .unwrap()
             .unwrap();
@@ -1233,7 +1237,7 @@ mod tests {
             .unwrap();
         let card_after_reencounter = library
             .card_store()
-            .load("spa", "rus", "poder", "verb")
+            .load("spa", "rus", "poder")
             .await
             .unwrap()
             .unwrap();
@@ -1262,7 +1266,7 @@ mod tests {
 
         let card_final = library
             .card_store()
-            .load("spa", "rus", "poder", "verb")
+            .load("spa", "rus", "poder")
             .await
             .unwrap()
             .unwrap();
@@ -1322,7 +1326,7 @@ mod tests {
             .await
             .unwrap();
 
-        let poder_tag = "flts_spa_rus_poder_verb";
+        let poder_tag = "flts_spa_rus_poder";
         let note_id = mock
             .note_id_for_tag(poder_tag)
             .expect("note exists after first sync");
@@ -1341,7 +1345,7 @@ mod tests {
             .unwrap();
         let card = library
             .card_store()
-            .load("spa", "rus", "poder", "verb")
+            .load("spa", "rus", "poder")
             .await
             .unwrap()
             .unwrap();
@@ -1357,7 +1361,7 @@ mod tests {
             .unwrap();
         let card_after = library
             .card_store()
-            .load("spa", "rus", "poder", "verb")
+            .load("spa", "rus", "poder")
             .await
             .unwrap()
             .unwrap();
@@ -1377,7 +1381,7 @@ mod tests {
         );
         let card_final = library
             .card_store()
-            .load("spa", "rus", "poder", "verb")
+            .load("spa", "rus", "poder")
             .await
             .unwrap()
             .unwrap();
@@ -1409,10 +1413,10 @@ mod tests {
 
         // Card files exist on disk regardless of AnkiConnect state — the
         // translation pipeline writes through LibraryCardStore directly.
-        for (lemma, pos) in [("poder", "verb"), ("casa", "noun")] {
+        for lemma in ["poder", "casa"] {
             let card = library
                 .card_store()
-                .load("spa", "rus", lemma, pos)
+                .load("spa", "rus", lemma)
                 .await
                 .unwrap()
                 .unwrap_or_else(|| panic!("{lemma} card present on disk"));
@@ -1431,10 +1435,10 @@ mod tests {
         let mut state = AnkiSyncState::new();
         let _ = sync_pass(&mock, &library, &mut state, tokio::time::Instant::now()).await;
 
-        for (lemma, pos) in [("poder", "verb"), ("casa", "noun")] {
+        for lemma in ["poder", "casa"] {
             let card = library
                 .card_store()
-                .load("spa", "rus", lemma, pos)
+                .load("spa", "rus", lemma)
                 .await
                 .unwrap()
                 .unwrap_or_else(|| panic!("{lemma} card still on disk after failed sync"));
@@ -1472,13 +1476,14 @@ mod tests {
         // and a different example. Mirrors Stage 3's load_merges_single_sync_conflict_sibling
         // layout in library_card.rs.
         let deck = tmp.path.join("lib").join("cards").join("spa-rus");
-        let conflict_path = deck.join("poder_verb.sync-conflict-20260520-153912-XYZ.json");
+        let conflict_path = deck.join("poder.sync-conflict-20260520-153912-XYZ.json");
+        let mut conflict_translations: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        conflict_translations.insert("verb".into(), vec!["иметь возможность".into()]);
         let conflict_card = Card {
-            version: 1,
-            id: "flts_spa_rus_poder_verb".into(),
+            version: 2,
+            id: "flts_spa_rus_poder".into(),
             lemma: "poder".into(),
-            part_of_speech: "verb".into(),
-            translations: vec!["иметь возможность".into()],
+            translations: conflict_translations,
             examples: vec![Example {
                 source: "Tu puedes.".into(),
                 translation: "Ты можешь.".into(),
@@ -1506,11 +1511,14 @@ mod tests {
         );
         let merged = library
             .card_store()
-            .load("spa", "rus", "poder", "verb")
+            .load("spa", "rus", "poder")
             .await
             .unwrap()
             .expect("merged card on disk");
-        assert_eq!(merged.translations, vec!["мочь", "иметь возможность"]);
+        assert_eq!(
+            merged.translations_flat(),
+            vec!["мочь", "иметь возможность"]
+        );
         assert_eq!(
             merged.examples.len(),
             2,
@@ -1521,7 +1529,7 @@ mod tests {
         // "; ", and Example carries both source/translation pairs sorted by
         // source (alphabetic), joined by "<br>".
         let note_id = mock
-            .note_id_for_tag("flts_spa_rus_poder_verb")
+            .note_id_for_tag("flts_spa_rus_poder")
             .expect("merged note pushed to Anki");
         let (fields, _) = mock.peek_note(note_id).unwrap();
         assert_eq!(

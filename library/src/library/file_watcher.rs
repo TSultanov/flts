@@ -27,7 +27,6 @@ pub enum LibraryFileChange {
         from: Language,
         to: Language,
         lemma_slug: String,
-        pos_slug: String,
     },
 }
 
@@ -73,11 +72,9 @@ impl LibraryWatcher {
                                 from,
                                 to,
                                 lemma_slug,
-                                pos_slug,
                             } => info!(
-                                "Card {}_{} {}->{} change detected",
+                                "Card {} {}->{} change detected",
                                 lemma_slug,
-                                pos_slug,
                                 from.to_639_3(),
                                 to.to_639_3()
                             ),
@@ -182,14 +179,12 @@ impl LibraryWatcher {
                     && let Some(from) = Language::from_639_3(src)
                     && let Some(to) = Language::from_639_3(tgt)
                     && let Some(stem) = filename.strip_suffix(".json")
-                    && let Some((lemma_slug, pos_slug)) = stem.rsplit_once('_')
                 {
                     return Some(LibraryFileChange::CardChanged {
                         modified: metadata.modified().unwrap(),
                         from,
                         to,
-                        lemma_slug: lemma_slug.to_owned(),
-                        pos_slug: pos_slug.to_owned(),
+                        lemma_slug: stem.to_owned(),
                     });
                 }
             }
@@ -235,13 +230,11 @@ mod tests {
                 from,
                 to,
                 lemma_slug,
-                pos_slug,
                 ..
             } => {
                 assert_eq!(from.to_639_3(), "spa");
                 assert_eq!(to.to_639_3(), "rus");
-                assert_eq!(lemma_slug, "hola");
-                assert_eq!(pos_slug, "noun");
+                assert_eq!(lemma_slug, "hola_noun");
             }
             other => panic!("expected CardChanged, got {other:?}"),
         }

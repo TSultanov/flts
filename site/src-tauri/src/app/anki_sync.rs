@@ -284,12 +284,14 @@ mod tests {
     async fn seed_library_with_card(tmp_prefix: &str) -> (TempDir, Arc<Library>) {
         let tmp = TempDir::new(tmp_prefix);
         let library = Arc::new(Library::open(tmp.path.clone()).await.unwrap());
+        let mut translations: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        translations.insert("verb".into(), vec!["мочь".into()]);
         let card = Card {
-            version: 1,
-            id: "flts_spa_rus_poder_verb".into(),
+            version: 2,
+            id: "flts_spa_rus_poder".into(),
             lemma: "poder".into(),
-            part_of_speech: "verb".into(),
-            translations: vec!["мочь".into()],
+            translations,
             examples: vec![],
             anki_data: None,
         };
@@ -330,12 +332,14 @@ mod tests {
         // Drop a second card into the store; `save()` fires the wake, the
         // worker loop's `select!` resolves on `wake.notified()`, runs a
         // pass, and both cards are synced.
+        let mut translations2: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        translations2.insert("verb".into(), vec!["есть".into()]);
         let card2 = Card {
-            version: 1,
-            id: "flts_spa_rus_comer_verb".into(),
+            version: 2,
+            id: "flts_spa_rus_comer".into(),
             lemma: "comer".into(),
-            part_of_speech: "verb".into(),
-            translations: vec!["есть".into()],
+            translations: translations2,
             examples: vec![],
             anki_data: None,
         };
@@ -352,7 +356,7 @@ mod tests {
         loop {
             let loaded = library
                 .card_store()
-                .load("spa", "rus", "comer", "verb")
+                .load("spa", "rus", "comer")
                 .await
                 .unwrap()
                 .expect("comer card present");
@@ -387,7 +391,7 @@ mod tests {
 
         let card = library
             .card_store()
-            .load("spa", "rus", "poder", "verb")
+            .load("spa", "rus", "poder")
             .await
             .unwrap()
             .expect("card present");
@@ -499,7 +503,7 @@ mod tests {
         // sync_pass must not have run — no card should have synced.
         let card = library
             .card_store()
-            .load("spa", "rus", "poder", "verb")
+            .load("spa", "rus", "poder")
             .await
             .unwrap()
             .expect("card present");
