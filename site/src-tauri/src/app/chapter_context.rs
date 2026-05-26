@@ -31,6 +31,15 @@ pub struct SummaryBackedChapterContext {
 #[async_trait]
 impl ChapterContextProvider for SummaryBackedChapterContext {
     async fn wait_ready(&self, book_id: Uuid, chapter_index: usize) -> anyhow::Result<()> {
+        // Chapter 0 has no prior chapters to summarize — translating its
+        // paragraphs doesn't need any summary to be ready.
+        if chapter_index == 0 {
+            return Ok(());
+        }
+        // For chapter K we only need summaries 0..K-1 (the prior
+        // chapters), since `prior_summaries(K)` only reads that range.
+        let needed = chapter_index - 1;
+
         // Make sure the book is enqueued; harmless no-op if already
         // processing or already complete.
         self.queue.enqueue(book_id);
@@ -42,7 +51,7 @@ impl ChapterContextProvider for SummaryBackedChapterContext {
         let mut rx = state.subscribe_ready();
         // Quick check before subscribing for the next change.
         if let Some(ready_through) = *rx.borrow()
-            && ready_through >= chapter_index
+            && ready_through >= needed
         {
             return Ok(());
         }
@@ -51,7 +60,7 @@ impl ChapterContextProvider for SummaryBackedChapterContext {
             loop {
                 rx.changed().await?;
                 if let Some(ready_through) = *rx.borrow()
-                    && ready_through >= chapter_index
+                    && ready_through >= needed
                 {
                     return Ok::<(), anyhow::Error>(());
                 }

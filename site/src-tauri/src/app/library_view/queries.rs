@@ -6,8 +6,8 @@ use uuid::Uuid;
 use crate::app::AppState;
 
 use super::{
-    BookReadingStateView, ChapterView, LibraryBookMetadataView, LibraryView, ParagraphOriginal,
-    ParagraphTranslationSlice, ParagraphView, WordView,
+    BookReadingStateView, BookSummaryStatusView, ChapterView, LibraryBookMetadataView,
+    LibraryView, ParagraphOriginal, ParagraphTranslationSlice, ParagraphView, WordView,
 };
 
 #[tauri::command]
@@ -155,6 +155,33 @@ pub async fn get_paragraph_translations_batch(
         .get_paragraph_translations_batch(book_id, paragraph_ids, &target_language)
         .await
         .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub async fn get_book_summary_status(
+    state: tauri::State<'_, Arc<AppState>>,
+    book_id: Uuid,
+) -> Result<BookSummaryStatusView, String> {
+    let library = state.library.borrow().clone();
+    let Some(library) = library else {
+        return Err("Library is not configured".into());
+    };
+
+    let queue = state
+        .get_or_init_summary_generation_queue(library.clone())
+        .await
+        .map_err(|err| err.to_string())?;
+    let book_state = queue
+        .get_or_init_book_state(&library, book_id)
+        .await
+        .map_err(|err| err.to_string())?;
+    let summaries = book_state.summaries.lock().await;
+    let actively_generating = summaries.entries.iter().position(|e| !e.generated);
+    Ok(BookSummaryStatusView {
+        total_chapters: summaries.entries.len(),
+        generated: summaries.entries.iter().map(|e| e.generated).collect(),
+        actively_generating,
+    })
 }
 
 #[tauri::command]

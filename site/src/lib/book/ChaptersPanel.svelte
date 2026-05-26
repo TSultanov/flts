@@ -1,9 +1,15 @@
 <script lang="ts">
     import Fa from "svelte-fa";
     import { faChevronLeft, faChevronRight } from "@fortawesome/free-solid-svg-icons";
+    import { getContext } from "svelte";
     import type { ChapterMetaView } from "../data/library";
     import type { UUID } from "../data/uuid";
     import ResizableOverlayPanel from "../widgets/ResizableOverlayPanel.svelte";
+    import CircularProgress from "../widgets/CircularProgress.svelte";
+    import {
+        SUMMARY_STATUS_KEY,
+        type BookSummaryStatusStore,
+    } from "./BookSummaryStatusStore.svelte";
 
     const {
         bookId,
@@ -14,6 +20,9 @@
         chapters: ChapterMetaView[];
         currentChapterId: number | null;
     } = $props();
+
+    const summaryStatusHolder: { store: BookSummaryStatusStore | null } =
+        getContext(SUMMARY_STATUS_KEY);
 
     let isOpen = $state(false);
     let width = $state(260);
@@ -35,13 +44,30 @@
 >
     <nav class="chapters">
         {#each chapters as chapter}
-            <p class={chapter.id === currentChapterId ? "current" : ""}>
+            <p
+                data-testid="chapter-row"
+                data-chapter-id={chapter.id}
+                class:current={chapter.id === currentChapterId}
+                class:dim={summaryStatusHolder.store
+                    ? !summaryStatusHolder.store.isGenerated(chapter.id)
+                    : false}
+            >
                 <a
                     href="/book/{bookId}/{chapter.id}"
                     onclick={handleChapterClick}
                 >
                     {chapter.title ? chapter.title : "<no title>"}
                 </a>
+                {#if summaryStatusHolder.store?.isActivelyGenerating(chapter.id)}
+                    <span class="spinner" data-testid="summary-spinner">
+                        <CircularProgress
+                            size="0.9em"
+                            strokeWidth={3}
+                            color="var(--text-color)"
+                            indeterminate
+                        />
+                    </span>
+                {/if}
             </p>
         {/each}
     </nav>
@@ -74,6 +100,16 @@
 
     .chapters .current {
         outline: 1px dotted var(--selected-color);
+    }
+
+    .chapters p.dim {
+        opacity: 0.5;
+    }
+
+    .chapters .spinner {
+        display: inline-block;
+        margin-left: 0.4em;
+        vertical-align: middle;
     }
 
     .edge-handle {

@@ -66,6 +66,10 @@ export type SeedSpec = {
     info: WordInfoSeed;
   }>;
   readingState?: { chapterId: number; paragraphId: number; pageOffset?: number };
+  summaryStatus?: {
+    generated: boolean[];
+    activelyGenerating?: number | null;
+  };
 };
 
 let bookIdSeq = 0;
@@ -121,6 +125,7 @@ export async function seedAndOpen(
         info: wordInfoDefaults(w.info),
       })),
       readingState: s.readingState,
+      summaryStatus: s.summaryStatus,
     };
   }, fullSpec);
 

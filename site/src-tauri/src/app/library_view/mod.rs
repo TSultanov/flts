@@ -46,6 +46,19 @@ pub struct ChapterView {
 }
 
 #[derive(Clone, serde::Serialize)]
+pub struct BookSummaryStatusView {
+    #[serde(rename = "totalChapters")]
+    pub total_chapters: usize,
+    /// Per-chapter `generated` flag, indexed by chapter id.
+    pub generated: Vec<bool>,
+    /// First not-yet-generated chapter index. By the chained-generation
+    /// invariant this is also the chapter the worker would process
+    /// next; the UI uses it to render the in-flight spinner.
+    #[serde(rename = "activelyGenerating", skip_serializing_if = "Option::is_none")]
+    pub actively_generating: Option<usize>,
+}
+
+#[derive(Clone, serde::Serialize)]
 pub struct ParagraphView {
     id: usize,
     original: String,

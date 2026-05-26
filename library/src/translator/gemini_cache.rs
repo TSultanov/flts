@@ -14,15 +14,6 @@ use crate::translator::TranslationModel;
 /// by inactivity, not session length.
 const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(24 * 3600);
 
-/// Discriminates the "full" chapter cache from a fallback that carries
-/// only the chapter text (used when summary generation has failed for
-/// this book).
-#[derive(Clone, Copy, Hash, Eq, PartialEq, Debug)]
-pub enum CacheVariant {
-    WithSummaries,
-    NoSummaries,
-}
-
 #[derive(Clone, Hash, Eq, PartialEq, Debug)]
 pub struct CacheKey {
     pub model: TranslationModel,
@@ -30,7 +21,6 @@ pub struct CacheKey {
     pub to: Language,
     pub book_id: Uuid,
     pub chapter_id: usize,
-    pub variant: CacheVariant,
 }
 
 /// Generic per-process registry that lazily creates one value per key and
@@ -92,8 +82,8 @@ pub type GeminiCacheRegistry = Registry<CachedContentHandle>;
 
 /// Cached payload split into the immutable system instruction (always
 /// present) and the per-chapter reference material (summaries + chapter
-/// text, optional under the `NoSummaries` variant or for empty
-/// chapters).
+/// text). The reference material is `None` only for the `NoChapterContext`
+/// stub (CLI path), which has nothing chapter-scoped to send.
 pub struct CacheContent {
     pub system_instruction: String,
     pub user_reference_material: Option<String>,
@@ -172,18 +162,13 @@ impl Registry<CachedContentHandle> {
 fn cache_display_name(key: &CacheKey) -> String {
     // Gemini's display name cap is 128 chars — book uuid is 36, the rest
     // adds ~20, well within the limit.
-    let variant_tag = match key.variant {
-        CacheVariant::WithSummaries => "S",
-        CacheVariant::NoSummaries => "N",
-    };
     format!(
-        "flts-{}-{}-{}-{}-c{}-{}",
+        "flts-{}-{}-{}-{}-c{}",
         usize::from(key.model),
         key.from.to_639_3(),
         key.to.to_639_3(),
         key.book_id,
         key.chapter_id,
-        variant_tag,
     )
 }
 
@@ -214,7 +199,7 @@ mod tests {
 
     use uuid::Uuid;
 
-    use super::{CacheKey, CacheVariant, Registry, is_cache_missing_error};
+    use super::{CacheKey, Registry, is_cache_missing_error};
     use crate::translator::TranslationModel;
 
     fn key(model: TranslationModel, from: Language, to: Language) -> CacheKey {
@@ -224,7 +209,6 @@ mod tests {
             to,
             book_id: Uuid::nil(),
             chapter_id: 0,
-            variant: CacheVariant::WithSummaries,
         }
     }
 

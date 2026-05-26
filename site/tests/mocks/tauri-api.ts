@@ -198,6 +198,50 @@ let requestIdCounter = 0;
 
 const DEFAULT_TRANSLATE_CONFIG: TranslateConfig = { kind: 'immediate' };
 
+// ----- Chapter-summary status simulation ---------------------------------
+
+type SummaryStatusState = {
+  totalChapters: number;
+  generated: boolean[];
+  activelyGenerating: number | null;
+};
+
+const summaryStatusByBook = new Map<UUID, SummaryStatusState>();
+
+function defaultSummaryStatus(chapterCount: number): SummaryStatusState {
+  return {
+    totalChapters: chapterCount,
+    generated: Array.from({ length: chapterCount }, () => true),
+    activelyGenerating: null,
+  };
+}
+
+function getOrInitSummaryStatus(bookId: UUID): SummaryStatusState | null {
+  const existing = summaryStatusByBook.get(bookId);
+  if (existing) return existing;
+  const book = mockLibrary.get(bookId);
+  if (!book) return null;
+  const state = defaultSummaryStatus(book.chapters.length);
+  summaryStatusByBook.set(bookId, state);
+  return state;
+}
+
+function emitSummaryProgress(
+  bookId: UUID,
+  status: 'in_progress' | 'done' | 'failed',
+  current: number,
+  total: number,
+  error?: string,
+): void {
+  emit('summary_generation_progress', {
+    bookId,
+    current,
+    total,
+    status,
+    ...(error !== undefined ? { error } : {}),
+  });
+}
+
 // Keyed by `${bookId}:${paragraphId}`
 const translateConfigs = new Map<string, TranslateConfig>();
 const activeActivities = new Map<string, ParagraphTranslationActivity>();
@@ -503,6 +547,7 @@ export function resetMockState() {
   mockTranslationCache.clear();
   mockAnkiSyncStatus = { state: 'idle' };
   syncAnkiNowCalls.length = 0;
+  summaryStatusByBook.clear();
 }
 
 type PendingSeed = {
@@ -525,6 +570,10 @@ type PendingSeed = {
     info: WordInfo;
   }>;
   readingState?: { chapterId: number; paragraphId: number; pageOffset?: number };
+  summaryStatus?: {
+    generated: boolean[];
+    activelyGenerating?: number | null;
+  };
 };
 
 function applyPendingSeed(seed: PendingSeed): void {
@@ -555,6 +604,16 @@ function applyPendingSeed(seed: PendingSeed): void {
       chapterId: seed.readingState.chapterId,
       paragraphId: seed.readingState.paragraphId,
       pageOffset: seed.readingState.pageOffset ?? 0,
+    });
+  }
+  if (seed.summaryStatus) {
+    summaryStatusByBook.set(seed.bookId, {
+      totalChapters: seed.summaryStatus.generated.length,
+      generated: seed.summaryStatus.generated.slice(),
+      activelyGenerating:
+        seed.summaryStatus.activelyGenerating === undefined
+          ? null
+          : seed.summaryStatus.activelyGenerating,
     });
   }
 }
@@ -676,6 +735,83 @@ if (typeof window !== 'undefined') {
     },
     getSyncAnkiNowCalls() {
       return syncAnkiNowCalls.slice();
+    },
+    setSummaryStatus(
+      bookId: UUID,
+      opts: {
+        generated: boolean[];
+        activelyGenerating?: number | null;
+      },
+    ) {
+      const status: SummaryStatusState = {
+        totalChapters: opts.generated.length,
+        generated: opts.generated.slice(),
+        activelyGenerating:
+          opts.activelyGenerating === undefined
+            ? null
+            : opts.activelyGenerating,
+      };
+      summaryStatusByBook.set(bookId, status);
+      const generatedCount = status.generated.filter((g) => g).length;
+      if (status.activelyGenerating !== null) {
+        emitSummaryProgress(
+          bookId,
+          'in_progress',
+          status.activelyGenerating,
+          status.totalChapters,
+        );
+      } else if (generatedCount === status.totalChapters) {
+        emitSummaryProgress(
+          bookId,
+          'done',
+          status.totalChapters,
+          status.totalChapters,
+        );
+      } else {
+        emitSummaryProgress(
+          bookId,
+          'failed',
+          generatedCount,
+          status.totalChapters,
+          'simulated failure',
+        );
+      }
+    },
+    advanceSummaryGeneration(bookId: UUID) {
+      const status = getOrInitSummaryStatus(bookId);
+      if (!status) return;
+      const nextIdx = status.generated.findIndex((g) => !g);
+      if (nextIdx === -1) {
+        // Already done — re-emit a "done" event for idempotency.
+        emitSummaryProgress(
+          bookId,
+          'done',
+          status.totalChapters,
+          status.totalChapters,
+        );
+        return;
+      }
+      status.generated[nextIdx] = true;
+      const afterIdx = status.generated.findIndex((g) => !g);
+      if (afterIdx === -1) {
+        status.activelyGenerating = null;
+        emitSummaryProgress(
+          bookId,
+          'done',
+          status.totalChapters,
+          status.totalChapters,
+        );
+      } else {
+        status.activelyGenerating = afterIdx;
+        // The backend's post-save emit is `current = idx + 1`, which is
+        // exactly `afterIdx` (the next pending chapter index).
+        emitSummaryProgress(
+          bookId,
+          'in_progress',
+          afterIdx,
+          status.totalChapters,
+        );
+      }
     },
     reset() {
       resetMockState();
@@ -819,6 +955,29 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
       mockLibrary.set(id, newBook);
       emit('library_updated', Array.from(mockLibrary.values()));
       return Promise.resolve(id as T);
+    }
+
+    case 'get_book_summary_status': {
+      const bookId = args?.bookId as UUID;
+      const status = getOrInitSummaryStatus(bookId);
+      if (!status) {
+        return Promise.resolve({
+          totalChapters: 0,
+          generated: [] as boolean[],
+        } as T);
+      }
+      const payload: {
+        totalChapters: number;
+        generated: boolean[];
+        activelyGenerating?: number;
+      } = {
+        totalChapters: status.totalChapters,
+        generated: status.generated.slice(),
+      };
+      if (status.activelyGenerating !== null) {
+        payload.activelyGenerating = status.activelyGenerating;
+      }
+      return Promise.resolve(payload as T);
     }
 
     case 'list_book_chapters': {

@@ -12,7 +12,6 @@ use async_openai::{Client, config::OpenAIConfig};
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use isolang::Language;
-use log::warn;
 use serde_json::Value;
 use tokio::time::timeout;
 
@@ -114,42 +113,23 @@ impl Translator for OpenAITranslator {
             Self::get_prompt(self.from.to_name(), self.to.to_name())
         );
 
-        // Resolve per-chapter context. On wait_ready timeout, fall back to
-        // no-summaries (still send the chapter text if available); empty
-        // strings collapse the reference-material user message away
-        // entirely so this matches pre-summaries behavior under
-        // NoChapterContext.
-        let (prior_summaries, chapter_text) = match self
-            .context_provider
+        // Block until the prerequisite per-chapter summaries are ready.
+        // The UI gates translate buttons on the same predicate, so this
+        // is normally near-instant. Any actual error propagates — there
+        // is no "translate without summaries" fallback any more.
+        self.context_provider
             .wait_ready(book_id, chapter_id)
+            .await?;
+        let prior_summaries = self
+            .context_provider
+            .prior_summaries(book_id, chapter_id)
             .await
-        {
-            Ok(()) => {
-                let summaries = self
-                    .context_provider
-                    .prior_summaries(book_id, chapter_id)
-                    .await
-                    .unwrap_or_default();
-                let chapter = self
-                    .context_provider
-                    .chapter_text(book_id, chapter_id)
-                    .await
-                    .unwrap_or_default();
-                (summaries, chapter)
-            }
-            Err(err) => {
-                warn!(
-                    "Chapter summary not ready for book {book_id} ch {chapter_id}; \
-                     translating without summaries. ({err})"
-                );
-                let chapter = self
-                    .context_provider
-                    .chapter_text(book_id, chapter_id)
-                    .await
-                    .unwrap_or_default();
-                (String::new(), chapter)
-            }
-        };
+            .unwrap_or_default();
+        let chapter_text = self
+            .context_provider
+            .chapter_text(book_id, chapter_id)
+            .await
+            .unwrap_or_default();
 
         let mut messages: Vec<ChatCompletionRequestMessage> = Vec::with_capacity(3);
         messages.push(ChatCompletionRequestMessage::System(

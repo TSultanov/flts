@@ -11,9 +11,14 @@
         CHAPTER_STORE_KEY,
         type ChapterParagraphsStore,
     } from "./ChapterParagraphsStore.svelte";
+    import {
+        SUMMARY_STATUS_KEY,
+        type BookSummaryStatusStore,
+    } from "./BookSummaryStatusStore.svelte";
 
     let {
         bookId,
+        chapterId,
         paragraphId,
         selection = null,
         mounted = true,
@@ -21,6 +26,7 @@
         onReady,
     }: {
         bookId: UUID;
+        chapterId: number;
         paragraphId: number;
         selection?: WordSelection | null;
         mounted?: boolean;
@@ -35,6 +41,13 @@
 
     const library: Library = getContext("library");
     const store: ChapterParagraphsStore = getContext(CHAPTER_STORE_KEY);
+    const summaryStatusHolder: { store: BookSummaryStatusStore | null } =
+        getContext(SUMMARY_STATUS_KEY);
+    // Default to "ready" during the sub-frame window before the store
+    // is constructed in BookView's $effect.
+    const canTranslate = $derived(
+        summaryStatusHolder.store?.canTranslate(chapterId) ?? true,
+    );
     const vm = new ParagraphViewModel(library, store, {
         get bookId() { return bookId; },
         get paragraphId() { return paragraphId; },
@@ -59,9 +72,11 @@
         <button
             class="translate"
             aria-label="Translate paragraph"
-            title="Translate paragraph"
+            title={canTranslate
+                ? "Translate paragraph"
+                : "Waiting for chapter summaries…"}
             onclick={(e) => vm.translate(!(e.metaKey || e.ctrlKey))}
-            disabled={vm.isTranslating || !vm.originalText}
+            disabled={vm.isTranslating || !vm.originalText || !canTranslate}
         >
             {#if vm.isTranslating}
                 <CircularProgress

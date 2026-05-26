@@ -136,6 +136,7 @@ pub fn run() {
             app::library_view::import_plain_text,
             app::library_view::import_epub,
             app::library_view::get_book_reading_state,
+            app::library_view::get_book_summary_status,
             app::library_view::save_book_reading_state,
             app::library_view::move_book,
             app::library_view::delete_book,

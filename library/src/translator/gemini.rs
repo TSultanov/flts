@@ -18,7 +18,7 @@ use crate::{
         ChapterContextProvider, ProgressCallback, TranslationContext, TranslationErrors,
         TranslationModel, Translator,
         gemini_cache::{
-            CacheContent, CacheKey, CacheVariant, GeminiCacheRegistry, is_cache_missing_error,
+            CacheContent, CacheKey, GeminiCacheRegistry, is_cache_missing_error,
         },
         paragraph_translation_schema, strip_additional_properties,
     },
@@ -102,14 +102,13 @@ impl GeminiTranslator {
         })
     }
 
-    fn cache_key(&self, book_id: Uuid, chapter_id: usize, variant: CacheVariant) -> CacheKey {
+    fn cache_key(&self, book_id: Uuid, chapter_id: usize) -> CacheKey {
         CacheKey {
             model: self.translation_model,
             from: self.from,
             to: self.to,
             book_id,
             chapter_id,
-            variant,
         }
     }
 
@@ -138,12 +137,11 @@ impl GeminiTranslator {
         chapter_id: usize,
         prior_summaries: String,
         chapter_text: String,
-        variant: CacheVariant,
         callback: Option<&ProgressCallback>,
     ) -> anyhow::Result<ParagraphTranslation> {
         let from = self.from;
         let to = self.to;
-        let key = self.cache_key(book_id, chapter_id, variant);
+        let key = self.cache_key(book_id, chapter_id);
 
         let cache_handle: Arc<CachedContentHandle> = registry()
             .get_or_create(&self.client, key.clone(), || {
@@ -246,41 +244,23 @@ impl Translator for GeminiTranslator {
         let chapter_id = ctx.chapter_id;
         let cb = ctx.callback.as_deref();
 
-        // Resolve per-chapter context. If summary generation has failed
-        // (timeout from wait_ready, or the provider couldn't materialize
-        // the strings), fall back to a no-summaries cache variant that
-        // still carries the chapter text if available.
-        let (prior_summaries, chapter_text, variant) = match self
-            .context_provider
+        // Block until the prerequisite per-chapter summaries are ready.
+        // The UI gates translate buttons on the same predicate, so this
+        // is normally near-instant. Any actual error propagates — there
+        // is no "translate without summaries" fallback any more.
+        self.context_provider
             .wait_ready(book_id, chapter_id)
+            .await?;
+        let prior_summaries = self
+            .context_provider
+            .prior_summaries(book_id, chapter_id)
             .await
-        {
-            Ok(()) => {
-                let summaries = self
-                    .context_provider
-                    .prior_summaries(book_id, chapter_id)
-                    .await
-                    .unwrap_or_default();
-                let chapter = self
-                    .context_provider
-                    .chapter_text(book_id, chapter_id)
-                    .await
-                    .unwrap_or_default();
-                (summaries, chapter, CacheVariant::WithSummaries)
-            }
-            Err(err) => {
-                warn!(
-                    "Chapter summary not ready for book {book_id} ch {chapter_id}; \
-                     translating without summaries. ({err})"
-                );
-                let chapter = self
-                    .context_provider
-                    .chapter_text(book_id, chapter_id)
-                    .await
-                    .unwrap_or_default();
-                (String::new(), chapter, CacheVariant::NoSummaries)
-            }
-        };
+            .unwrap_or_default();
+        let chapter_text = self
+            .context_provider
+            .chapter_text(book_id, chapter_id)
+            .await
+            .unwrap_or_default();
 
         let first = self
             .attempt_translation(
@@ -289,7 +269,6 @@ impl Translator for GeminiTranslator {
                 chapter_id,
                 prior_summaries.clone(),
                 chapter_text.clone(),
-                variant,
                 cb,
             )
             .await;
@@ -300,7 +279,7 @@ impl Translator for GeminiTranslator {
                     "Gemini cache appears expired/missing; evicting and retrying. ({err})"
                 );
                 registry()
-                    .evict(&self.cache_key(book_id, chapter_id, variant))
+                    .evict(&self.cache_key(book_id, chapter_id))
                     .await;
                 self.attempt_translation(
                     paragraph,
@@ -308,7 +287,6 @@ impl Translator for GeminiTranslator {
                     chapter_id,
                     prior_summaries,
                     chapter_text,
-                    variant,
                     cb,
                 )
                 .await?

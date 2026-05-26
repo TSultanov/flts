@@ -90,6 +90,7 @@
             {#each vm.paragraphIds as paragraphId (paragraphId)}
                 <ParagraphView
                     {bookId}
+                    {chapterId}
                     {paragraphId}
                     {selection}
                     mounted={vm.isMounted(paragraphId)}

@@ -1,13 +1,15 @@
 <script lang="ts">
     let {
-        value,
-        max,
+        value = 0,
+        max = 1,
+        indeterminate = false,
         size = "1em",
         strokeWidth = 3,
         color = "var(--text-inverted)",
     }: {
-        value: number;
-        max: number;
+        value?: number;
+        max?: number;
+        indeterminate?: boolean;
         size?: string;
         strokeWidth?: number;
         color?: string;
@@ -19,7 +21,9 @@
     const percent = $derived(
         Math.max(0, Math.min(1, max > 0 ? value / max : 0)),
     );
-    const dashOffset = $derived(circumference * (1 - percent));
+    const dashOffset = $derived(
+        indeterminate ? circumference * 0.75 : circumference * (1 - percent),
+    );
 </script>
 
 <div class="circular-progress" style:width={size} style:height={size}>
@@ -29,6 +33,7 @@
         stroke={color}
         stroke-width={strokeWidth}
         stroke-linecap="round"
+        class:indeterminate
     >
         <circle cx="12" cy="12" r={radius} stroke-opacity="0.2" />
 
@@ -59,5 +64,14 @@
 
     circle {
         transition: stroke-dashoffset 0.1s linear;
+    }
+
+    svg.indeterminate {
+        animation: cp-spin 1s linear infinite;
+    }
+
+    @keyframes cp-spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
     }
 </style>

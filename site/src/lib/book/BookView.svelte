@@ -1,7 +1,7 @@
 <script lang="ts">
     import WordView from "./WordView.svelte";
     import type { UUID } from "../data/uuid";
-    import { getContext, type Snippet } from "svelte";
+    import { getContext, onDestroy, setContext, type Snippet } from "svelte";
     import { SvelteMap } from "svelte/reactivity";
     import type { BookReadingState, Library } from "../data/library";
     import { route, navigate } from "../../router";
@@ -9,6 +9,10 @@
     import ChapterPlaceholderView from "./ChapterPlaceholderView.svelte";
     import ChaptersPanel from "./ChaptersPanel.svelte";
     import type { WordSelection } from "./ParagraphViewModel.svelte";
+    import {
+        BookSummaryStatusStore,
+        SUMMARY_STATUS_KEY,
+    } from "./BookSummaryStatusStore.svelte";
 
     const params = $derived(route.params);
 
@@ -19,6 +23,24 @@
 
     const library: Library = getContext("library");
     const chapters = $derived(library.getBookChapters(bookId as UUID));
+
+    // One summary-status store per opened book. Held in a reactive
+    // holder so the context value can be set once at init while the
+    // underlying store is swapped when bookId changes. The store is
+    // null between mount and the first $effect tick; consumers default
+    // to "fully ready" during that sub-frame window.
+    const summaryStatusHolder: { store: BookSummaryStatusStore | null } =
+        $state({ store: null });
+    setContext(SUMMARY_STATUS_KEY, summaryStatusHolder);
+    let summaryStatusForBookId: UUID | null = null;
+    $effect(() => {
+        if (summaryStatusForBookId !== bookId) {
+            summaryStatusHolder.store?.dispose();
+            summaryStatusHolder.store = new BookSummaryStatusStore(bookId);
+            summaryStatusForBookId = bookId;
+        }
+    });
+    onDestroy(() => summaryStatusHolder.store?.dispose());
 
     let readingState: BookReadingState | null = $state(null);
     // Per-chapter session positions. Seeded from the backend reading-state
