@@ -71,6 +71,13 @@ pub struct LibraryBookMetadata {
     pub paragraphs_count: usize,
     pub translations_metadata: Vec<LibraryTranslationMetadata>,
     pub folder_path: Vec<String>,
+    /// `chapter_summaries.dat` for this book, if present. `None` for
+    /// legacy books that predate the sidecar; the summary generation queue
+    /// creates one on first enqueue.
+    pub chapter_summaries_main_path: Option<PathBuf>,
+    /// Sibling `chapter_summaries~*.dat` files left behind by an
+    /// interrupted save. Merged into the main file at load time.
+    pub chapter_summaries_conflicting_paths: Vec<PathBuf>,
 }
 
 impl LibraryBookMetadata {
@@ -191,6 +198,27 @@ impl LibraryBookMetadata {
             }
         };
 
+        // Discover chapter_summaries.dat (main) plus any crash-conflict
+        // siblings (chapter_summaries~*.dat). Mirrors the book / translation
+        // conflict-file discovery above.
+        let chapter_summaries_path = path.join("chapter_summaries.dat");
+        let chapter_summaries_main_path = if tokio::fs::try_exists(&chapter_summaries_path).await? {
+            Some(chapter_summaries_path)
+        } else {
+            None
+        };
+        let mut chapter_summaries_conflicting_paths = Vec::new();
+        let mut summaries_dir = tokio::fs::read_dir(path).await?;
+        while let Some(entry) = summaries_dir.next_entry().await? {
+            let p = entry.path();
+            if let Some(name) = p.file_name().and_then(|n| n.to_str())
+                && name.starts_with("chapter_summaries~")
+                && name.ends_with(".dat")
+            {
+                chapter_summaries_conflicting_paths.push(p);
+            }
+        }
+
         info!("Loaded metadata for {path:?}");
         Ok(LibraryBookMetadata {
             id: book_metadata.id,
@@ -201,6 +229,8 @@ impl LibraryBookMetadata {
             paragraphs_count: book_metadata.paragraphs_count,
             translations_metadata,
             folder_path,
+            chapter_summaries_main_path,
+            chapter_summaries_conflicting_paths,
         })
     }
 }
