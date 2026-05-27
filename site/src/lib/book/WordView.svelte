@@ -110,6 +110,9 @@
                         >{w.contextualTranslations.join(", ")}</span
                     >
                 {/if}
+                {#if w.note}
+                    <span class="peek-note">{w.note}</span>
+                {/if}
                 <div class="peek-spacer"></div>
                 {#if isIos}
                     <button
@@ -282,6 +285,14 @@
 
     .peek-translations {
         color: var(--dialog-text-secondary);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        min-width: 0;
+    }
+
+    .peek-note {
+        color: var(--dialog-text-secondary);
+        font-style: italic;
         overflow: hidden;
         text-overflow: ellipsis;
         min-width: 0;
