@@ -254,6 +254,13 @@ const translateCalls: Array<{
   useCache: boolean;
   model: unknown;
 }> = [];
+const translateChapterCalls: Array<{
+  bookId: UUID;
+  chapterId: number;
+  useCache: boolean;
+  model: unknown;
+  enqueuedCount: number;
+}> = [];
 const markWordVisibleCalls: Array<{
   bookId: UUID;
   paragraphId: number;
@@ -543,6 +550,7 @@ export function resetMockState() {
   activeActivities.clear();
   wordInfos.clear();
   translateCalls.length = 0;
+  translateChapterCalls.length = 0;
   markWordVisibleCalls.length = 0;
   translationsBatchCalls.length = 0;
   translationWorkQueue.length = 0;
@@ -722,6 +730,9 @@ if (typeof window !== 'undefined') {
     },
     getTranslateCalls() {
       return translateCalls.slice();
+    },
+    getTranslateChapterCalls() {
+      return translateChapterCalls.slice();
     },
     getMarkWordVisibleCalls() {
       return markWordVisibleCalls.slice();
@@ -1094,6 +1105,39 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
       runTranslateRequest(requestId, bookId, paragraphId, cfg);
 
       return Promise.resolve(requestId as T);
+    }
+
+    case 'translate_chapter': {
+      const bookId = args?.bookId as UUID;
+      const chapterId = args?.chapterId as number;
+      const useCache = args?.useCache as boolean;
+      const model = args?.model;
+
+      const book = mockLibrary.get(bookId);
+      const chapter = book?.chapters[chapterId];
+      let enqueuedCount = 0;
+      if (book && chapter) {
+        for (const paragraphId of chapter.paragraphIds) {
+          const p = book.paragraphsById.get(paragraphId);
+          // Filter already-translated paragraphs server-side, mirroring
+          // AppState::translate_chapter.
+          if (!p || p.segments) continue;
+          const requestId = ++requestIdCounter;
+          const cfg =
+            translateConfigs.get(paragraphKey(bookId, paragraphId)) ??
+            DEFAULT_TRANSLATE_CONFIG;
+          runTranslateRequest(requestId, bookId, paragraphId, cfg);
+          enqueuedCount++;
+        }
+      }
+      translateChapterCalls.push({
+        bookId,
+        chapterId,
+        useCache,
+        model,
+        enqueuedCount,
+      });
+      return Promise.resolve(enqueuedCount as T);
     }
 
     case 'get_paragraph_translation_activity': {

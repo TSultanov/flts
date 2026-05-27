@@ -124,6 +124,7 @@ pub fn run() {
             app::get_anki_sync_status,
             app::sync_anki_now,
             app::translate_paragraph,
+            app::translate_chapter,
             app::get_paragraph_translation_activity,
             app::library_view::list_books,
             app::library_view::list_book_chapters,

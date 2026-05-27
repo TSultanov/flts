@@ -518,6 +518,60 @@ impl AppState {
             .await
     }
 
+    pub async fn translate_chapter(
+        &self,
+        book_id: Uuid,
+        chapter_id: usize,
+        model: TranslationModel,
+        use_cache: bool,
+    ) -> anyhow::Result<usize> {
+        let library = self
+            .library
+            .borrow()
+            .clone()
+            .ok_or(AppError::NoLibraryError)?;
+
+        let target_language_id = { self.config.borrow().target_language_id.clone() };
+        let target_language = Language::from_639_3(&target_language_id)
+            .ok_or_else(|| anyhow::anyhow!("invalid target language: {target_language_id}"))?;
+
+        // Collect untranslated paragraph ids under the book lock, then drop it
+        // before enqueueing — queue.translate re-acquires the book lock per item.
+        let untranslated: Vec<usize> = {
+            let book = library.get_book(&book_id).await?;
+            let book = book.lock().await;
+            let translation_arc = book.get_translation(&target_language).await;
+            let translation_guard = match &translation_arc {
+                Some(arc) => Some(arc.lock().await),
+                None => None,
+            };
+            let chapter = book.book.chapter_view(chapter_id);
+            chapter
+                .paragraphs()
+                .filter(|p| {
+                    translation_guard
+                        .as_ref()
+                        .map(|t| t.paragraph_view(p.id).is_none())
+                        .unwrap_or(true)
+                })
+                .map(|p| p.id)
+                .collect()
+        };
+
+        let queue = self.get_or_init_translation_queue(library).await?;
+        for paragraph_id in &untranslated {
+            // Dedup-on-enqueue is handled by TranslationQueue::translate.
+            // Swallow per-item errors so one bad paragraph doesn't abandon the rest.
+            if let Err(err) = queue
+                .translate(book_id, *paragraph_id, model, use_cache)
+                .await
+            {
+                warn!("translate_chapter: failed to enqueue paragraph {paragraph_id}: {err}");
+            }
+        }
+        Ok(untranslated.len())
+    }
+
     pub async fn get_paragraph_translation_activity(
         &self,
         book_id: Uuid,
@@ -661,6 +715,20 @@ pub async fn translate_paragraph(
 ) -> Result<usize, String> {
     state
         .translate_paragraph(book_id, paragraph_id, model, use_cache)
+        .await
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub async fn translate_chapter(
+    state: tauri::State<'_, Arc<AppState>>,
+    book_id: Uuid,
+    chapter_id: usize,
+    model: TranslationModel,
+    use_cache: bool,
+) -> Result<usize, String> {
+    state
+        .translate_chapter(book_id, chapter_id, model, use_cache)
         .await
         .map_err(|err| err.to_string())
 }

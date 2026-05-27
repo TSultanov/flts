@@ -1,4 +1,6 @@
 <script lang="ts">
+    import Fa from "svelte-fa";
+    import { faLanguage } from "@fortawesome/free-solid-svg-icons";
     import { getContext, onDestroy, onMount, setContext } from "svelte";
     import type { UUID } from "../data/uuid";
     import ParagraphView from "./ParagraphView.svelte";
@@ -6,11 +8,16 @@
     import type { WordSelection } from "./ParagraphViewModel.svelte";
     import { ChapterViewModel, type WordClickInfo } from "./ChapterViewModel.svelte";
     import { CHAPTER_STORE_KEY } from "./ChapterParagraphsStore.svelte";
+    import {
+        SUMMARY_STATUS_KEY,
+        type BookSummaryStatusStore,
+    } from "./BookSummaryStatusStore.svelte";
 
     let {
         selection = $bindable(),
         bookId,
         chapterId,
+        translationRatio = 0,
         initialParagraphId = null,
         initialPageOffset = 0,
         onPositionChange,
@@ -18,12 +25,25 @@
         selection: WordSelection | null;
         bookId: UUID;
         chapterId: number;
+        translationRatio?: number;
         initialParagraphId?: number | null;
         initialPageOffset?: number;
         onPositionChange?: (paragraphId: number, pageOffset: number) => void;
     } = $props();
 
     const library: Library = getContext("library");
+    const summaryStatusHolder: { store: BookSummaryStatusStore | null } =
+        getContext(SUMMARY_STATUS_KEY);
+    const canTranslate = $derived(
+        summaryStatusHolder.store?.canTranslate(chapterId) ?? true,
+    );
+    const showTranslateChapterButton = $derived(translationRatio < 1);
+
+    function handleTranslateChapter() {
+        library
+            .translateChapter(bookId, chapterId)
+            .catch((err) => console.error("Failed to translate chapter", err));
+    }
 
     let paragraphsContainer = $state<HTMLDivElement | null>(null);
     // Bound to clientHeight and fed into the `column-width` CSS property
@@ -68,6 +88,21 @@
 </script>
 
 <div class="chapter-container">
+    {#if showTranslateChapterButton}
+        <button
+            type="button"
+            class="translate-chapter"
+            data-testid="translate-chapter-button"
+            aria-label="Translate all untranslated paragraphs in this chapter"
+            title={canTranslate
+                ? "Translate all untranslated paragraphs in this chapter"
+                : "Waiting for chapter summaries…"}
+            disabled={!canTranslate}
+            onclick={handleTranslateChapter}
+        >
+            <Fa icon={faLanguage} />
+        </button>
+    {/if}
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <section class="chapter" onclick={handleBackgroundClick}>
@@ -104,11 +139,45 @@
 
 <style>
     .chapter-container {
+        position: relative;
         background-color: var(--hover-color);
         padding: 10px 25px;
         justify-content: center;
         height: 100%;
         overflow: hidden;
+    }
+
+    .translate-chapter {
+        position: absolute;
+        top: 14px;
+        right: 14px;
+        z-index: 11;
+        width: 36px;
+        height: 36px;
+        padding: 0;
+        border: 1px solid var(--background-color);
+        border-radius: 50%;
+        background-color: var(--dialog-background);
+        color: var(--dialog-text);
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 2px 2px 4px rgba(0, 0, 0, 0.2);
+        font-size: 1.1em;
+    }
+
+    .translate-chapter:hover:not(:disabled) {
+        background-color: var(--button-cancel-hover);
+    }
+
+    .translate-chapter:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+
+    .translate-chapter :global(svg) {
+        pointer-events: none;
     }
 
     .chapter {

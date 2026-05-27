@@ -181,6 +181,11 @@ export class Library {
         return await invoke<number>("translate_paragraph", { bookId, paragraphId, model: model ?? config.model, useCache });
     }
 
+    async translateChapter(bookId: UUID, chapterId: number, model: number | undefined = undefined, useCache: boolean = true) {
+        let config = await getConfig();
+        return await invoke<number>("translate_chapter", { bookId, chapterId, model: model ?? config.model, useCache });
+    }
+
     getParagraphTranslationActivity(bookId: UUID, paragraphId: number): ParagraphTranslationActivityResource {
         return new ParagraphTranslationActivityResource(bookId, paragraphId);
     }
