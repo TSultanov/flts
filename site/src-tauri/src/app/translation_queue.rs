@@ -635,7 +635,7 @@ async fn save_and_emit(
 ) -> anyhow::Result<()> {
     save_book(library, msg.book_id).await?;
     info!(
-        "Emitting \"paragraph_updated\" for {}/{}",
+        "Emitting \"paragraph_updated\" and \"book_updated\" for {}/{}",
         msg.book_id, msg.paragraph_id
     );
     app.emit(
@@ -645,6 +645,11 @@ async fn save_and_emit(
             paragraph_id: msg.paragraph_id,
         },
     )?;
+    // The file-watcher TranslationChanged path won't fire `book_updated` for
+    // our own writes (reload_translations sees in-memory == disk and returns
+    // had_effect=false), so emit directly here. Chapter-list `Resource`s in
+    // the frontend subscribe to this to refresh per-chapter translation %.
+    app.emit("book_updated", msg.book_id)?;
     library_tx.send_modify(|_| {});
     Ok(())
 }
