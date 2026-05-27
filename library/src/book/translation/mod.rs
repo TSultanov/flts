@@ -373,9 +373,13 @@ impl Translation {
         self.paragraph_translations[new_index].sentences = sentences;
     }
 
-    /// Idempotent insert into `visible_words` for merge paths that need
-    /// union semantics. Distinct from `mark_word_visible`'s toggle.
-    fn add_visible_word(&mut self, paragraph: usize, word_index: usize) {
+    /// Idempotent insert into `visible_words` for the legacy merge path —
+    /// preserves the union of clicks from two diverged stores when reconciling
+    /// historical book data. Live writes from the click path are no longer
+    /// wired up (reveal is ephemeral on the frontend), so this is also the
+    /// only handle the TLA+ trace harnesses use to simulate concurrent
+    /// translation-lock writes.
+    pub fn add_visible_word(&mut self, paragraph: usize, word_index: usize) {
         if paragraph >= self.paragraphs.len() {
             return;
         }
@@ -385,34 +389,6 @@ impl Translation {
         self.paragraph_translations[idx]
             .visible_words
             .insert(word_index);
-    }
-
-    /// Toggles the manual visibility flag for a word in the given paragraph.
-    ///
-    /// Returns `true` if the word is now manually visible (newly added),
-    /// `false` if it has been toggled off (removed from the set) or the
-    /// paragraph doesn't exist.
-    ///
-    /// Under the post-Anki-UI semantics (see `.specs/ANKI_UI.md` § Visibility
-    /// model) the persisted `visible_words` set represents user clicks XOR'd
-    /// against the auto-show derived from card familiarity. Function name
-    /// kept for API stability; on-disk schema unchanged.
-    pub fn mark_word_visible(&mut self, paragraph: usize, word_index: usize) -> bool {
-        if paragraph >= self.paragraphs.len() {
-            return false;
-        }
-        let paragraph_translation_idx = match self.paragraphs[paragraph] {
-            Some(idx) => idx,
-            None => return false,
-        };
-        let pt = &mut self.paragraph_translations[paragraph_translation_idx];
-        if pt.visible_words.contains(&word_index) {
-            pt.visible_words.remove(&word_index);
-            false
-        } else {
-            pt.visible_words.insert(word_index);
-            true
-        }
     }
 
     fn paragraph_content_matches(

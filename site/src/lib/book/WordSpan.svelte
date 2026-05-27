@@ -8,7 +8,7 @@
         word,
         flatIndex,
         translation,
-        manualToggle,
+        manualShown,
         familiarity,
         selected,
         onClick,
@@ -18,14 +18,14 @@
         word: number;
         flatIndex: number;
         translation: string | null;
-        manualToggle: boolean;
+        manualShown: boolean;
         familiarity?: number;
         selected: boolean;
         onClick: (info: { sentence: number; word: number; flatIndex: number }) => void;
     } = $props();
 
     const autoShow = $derived(familiarity != null && familiarity < 0.5);
-    const visible = $derived(autoShow !== manualToggle);
+    const visible = $derived(autoShow || manualShown);
 
     let spanEl: HTMLSpanElement | null = $state(null);
     let overlayEl: HTMLSpanElement | null = $state(null);

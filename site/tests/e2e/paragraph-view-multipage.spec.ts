@@ -192,10 +192,10 @@ test.describe('ParagraphView (multipage, chromium only)', () => {
 
   // ----- M5 ----------------------------------------------------------------
 
-  test('M5: visible-words annotations apply on scroll-into-view and persist across churn', async ({
+  test('M5: auto-show annotations apply on scroll-into-view and persist across churn', async ({
     page,
   }) => {
-    const segmentsFor = (prefix: string) =>
+    const segmentsFor = (prefix: string, autoShow: number[]) =>
       [0, 1, 2].flatMap((i) => [
         ...(i > 0 ? [{ kind: 'gap' as const, html: ' ' }] : []),
         wordSegment({
@@ -204,16 +204,17 @@ test.describe('ParagraphView (multipage, chromium only)', () => {
           word: i,
           text: `${prefix}-${i}`,
           translation: `t${prefix.replace('w', '')}-${i}`,
+          familiarity: autoShow.includes(i) ? 0 : 1,
         }),
       ]);
-    const segments40 = segmentsFor('w40');
-    const segments65 = segmentsFor('w65');
+    const segments40 = segmentsFor('w40', [0, 2]);
+    const segments65 = segmentsFor('w65', [1]);
 
     await seedAndOpen(
       page,
       multipageSpec(COUNT, {
-        40: { segments: segments40, visibleWords: [0, 2] },
-        65: { segments: segments65, visibleWords: [1] },
+        40: { segments: segments40 },
+        65: { segments: segments65 },
       }),
     );
 
@@ -446,19 +447,24 @@ test.describe('ParagraphView (multipage, chromium only)', () => {
 
   // ----- L4 ----------------------------------------------------------------
 
-  test('L4: re-mounted paragraph restores its visible-word overlays', async ({ page }) => {
-    // Attach translations to the first few words so the visibleWords annotation
-    // has overlay text to display.
+  test('L4: re-mounted paragraph restores its auto-shown overlays', async ({ page }) => {
+    // Attach translations + familiarity 0 to words 0 and 2 so they auto-show.
+    // Word 1 stays at familiarity 1 (hidden), giving the test a contrast
+    // between auto-shown and hidden spans through the unmount/remount cycle.
     const segments50 = fillerSegments(50).map((seg) => {
       if (seg.kind === 'word' && seg.flatIndex < 3) {
-        return { ...seg, translation: `tr-${seg.flatIndex}` };
+        return {
+          ...seg,
+          translation: `tr-${seg.flatIndex}`,
+          familiarity: seg.flatIndex === 1 ? 1 : 0,
+        };
       }
       return seg;
     });
     await seedAndOpen(
       page,
       multipageSpec(COUNT, {
-        50: { segments: segments50, visibleWords: [0, 2] },
+        50: { segments: segments50 },
       }),
     );
 

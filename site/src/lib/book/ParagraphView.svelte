@@ -23,6 +23,7 @@
         selection = null,
         mounted = true,
         onWordClick,
+        isWordRevealed,
         onReady,
     }: {
         bookId: UUID;
@@ -36,6 +37,7 @@
             word: number;
             flatIndex: number;
         }) => void;
+        isWordRevealed: (flatIndex: number) => boolean;
         onReady?: () => void;
     } = $props();
 
@@ -101,7 +103,7 @@
                         word={seg.word}
                         flatIndex={seg.flatIndex}
                         translation={seg.translation}
-                        manualToggle={vm.visibleWordsSet.has(seg.flatIndex)}
+                        manualShown={isWordRevealed(seg.flatIndex)}
                         familiarity={seg.familiarity}
                         selected={vm.isSelected(seg.sentence, seg.word)}
                         onClick={(w) =>

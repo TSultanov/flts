@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use ahash::AHashSet;
 use htmlentity::entity::{ICodedDataTrait, decode};
 use isolang::Language;
 use library::card;
@@ -65,8 +64,6 @@ pub struct ParagraphView {
     id: usize,
     original: String,
     segments: Option<Vec<ParagraphSegment>>,
-    #[serde(rename = "visibleWords")]
-    visible_words: AHashSet<usize>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -79,8 +76,6 @@ pub struct ParagraphOriginal {
 pub struct ParagraphTranslationSlice {
     id: usize,
     segments: Option<Vec<ParagraphSegment>>,
-    #[serde(rename = "visibleWords")]
-    visible_words: AHashSet<usize>,
 }
 
 #[derive(Clone, serde::Serialize, Debug, PartialEq)]
@@ -183,22 +178,18 @@ impl LibraryView {
         let bt = book_translation.lock().await;
         let t_view = bt.paragraph_view(paragraph_id);
 
-        let (segments, visible_words) = if let Some(t) = t_view.as_ref() {
+        let segments = if let Some(t) = t_view.as_ref() {
             let fam =
                 build_paragraph_familiarity_map(t, src_lang, *target_language, card_store).await;
-            (
-                Some(paragraph_to_segments(&original, t, &fam, src_lang)),
-                t.visible_words().clone(),
-            )
+            Some(paragraph_to_segments(&original, t, &fam, src_lang))
         } else {
-            (None, AHashSet::default())
+            None
         };
 
         Ok(ParagraphView {
             id: paragraph_id,
             original: original.to_string(),
             segments,
-            visible_words,
         })
     }
 
@@ -240,23 +231,16 @@ impl LibraryView {
             let original = p.original_html.unwrap_or(p.original_text);
             let t_view = bt.paragraph_view(id);
 
-            let (segments, visible_words) = if let Some(t) = t_view.as_ref() {
+            let segments = if let Some(t) = t_view.as_ref() {
                 let fam =
                     build_paragraph_familiarity_map(t, src_lang, *target_language, card_store)
                         .await;
-                (
-                    Some(paragraph_to_segments(&original, t, &fam, src_lang)),
-                    t.visible_words().clone(),
-                )
+                Some(paragraph_to_segments(&original, t, &fam, src_lang))
             } else {
-                (None, AHashSet::default())
+                None
             };
 
-            out.push(ParagraphTranslationSlice {
-                id,
-                segments,
-                visible_words,
-            });
+            out.push(ParagraphTranslationSlice { id, segments });
         }
         Ok(out)
     }
@@ -500,30 +484,6 @@ impl LibraryView {
         Ok(())
     }
 
-    pub async fn mark_word_visible(
-        &self,
-        book_id: Uuid,
-        paragraph_id: usize,
-        flat_index: usize,
-        target_language: &Language,
-    ) -> anyhow::Result<bool> {
-        let book = self.library.get_book(&book_id).await?;
-        let mut book = book.lock().await;
-        let book_translation = book.get_or_create_translation(target_language).await;
-
-        let result = {
-            let mut bt = book_translation.lock().await;
-            bt.mark_word_visible(paragraph_id, flat_index)
-        };
-
-        // Persist to disk
-        if result {
-            book.save().await?;
-        }
-
-        Ok(result)
-    }
-
     pub async fn handle_file_change_event(
         &mut self,
         event: &LibraryFileChange,
@@ -675,6 +635,9 @@ fn paragraph_to_segments(
                     if slug.is_empty() {
                         None
                     } else {
+                        // A missing map entry means the card is dormant
+                        // (Suspended/Deleted). A never-synced card is mapped
+                        // to Some(0.0) by `build_paragraph_familiarity_map`.
                         card_familiarity.get(&slug).copied()
                     }
                 };

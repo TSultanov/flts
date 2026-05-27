@@ -88,7 +88,6 @@ type ParagraphSegment =
 type MockParagraph = {
   html: string;
   segments?: ParagraphSegment[];
-  visibleWords?: number[];
 };
 
 type ChapterMetaView = {
@@ -101,7 +100,6 @@ type ParagraphView = {
   id: number;
   original: string;
   segments?: ParagraphSegment[];
-  visibleWords: number[];
 };
 
 type BookReadingState = {
@@ -125,12 +123,11 @@ type ProgressStep = {
 };
 
 export type TranslateConfig =
-  | { kind: 'immediate'; segments?: ParagraphSegment[]; visibleWords?: number[] }
+  | { kind: 'immediate'; segments?: ParagraphSegment[] }
   | {
       kind: 'progress';
       steps: ProgressStep[];
       segments: ParagraphSegment[];
-      visibleWords?: number[];
     }
   | { kind: 'error'; errorMessage: string; delayMs: number };
 
@@ -261,11 +258,6 @@ const translateChapterCalls: Array<{
   model: unknown;
   enqueuedCount: number;
 }> = [];
-const markWordVisibleCalls: Array<{
-  bookId: UUID;
-  paragraphId: number;
-  flatIndex: number;
-}> = [];
 const translationsBatchCalls: Array<{
   bookId: UUID;
   paragraphIds: number[];
@@ -289,14 +281,12 @@ function applyTranslationCompletion(
   bookId: UUID,
   paragraphId: number,
   segments: ParagraphSegment[],
-  visibleWords?: number[],
 ): void {
   const book = mockLibrary.get(bookId);
   if (!book) return;
   const p = book.paragraphsById.get(paragraphId);
   if (!p) return;
   p.segments = segments;
-  if (visibleWords) p.visibleWords = visibleWords;
   emit('paragraph_updated', { bookId, paragraphId });
   // Mirror production: app.rs emits book_updated after a translation change
   // (via the file-watcher TranslationChanged path). The chapter list Resource
@@ -418,12 +408,7 @@ async function runTranslationWork(
   if (cfg.kind === 'immediate') {
     await sleep(100);
     if (cfg.segments !== undefined) {
-      applyTranslationCompletion(
-        bookId,
-        paragraphId,
-        cfg.segments,
-        cfg.visibleWords,
-      );
+      applyTranslationCompletion(bookId, paragraphId, cfg.segments);
     } else {
       emit('paragraph_updated', { bookId, paragraphId });
     }
@@ -457,12 +442,7 @@ async function runTranslationWork(
     await sleep(step.delayMs);
   }
 
-  applyTranslationCompletion(
-    bookId,
-    paragraphId,
-    cfg.segments,
-    cfg.visibleWords,
-  );
+  applyTranslationCompletion(bookId, paragraphId, cfg.segments);
   activeActivities.delete(key);
   emitFinished(bookId, paragraphId, requestId, null);
 }
@@ -490,7 +470,6 @@ function buildBookFromChapters(
     paragraphs: Array<{
       html: string;
       segments?: ParagraphSegment[];
-      visibleWords?: number[];
     }>;
   }>,
 ): MockBook {
@@ -503,7 +482,6 @@ function buildBookFromChapters(
       paragraphsById.set(pid, {
         html: p.html,
         segments: p.segments,
-        visibleWords: p.visibleWords,
       });
       paragraphIds.push(pid);
     }
@@ -551,7 +529,6 @@ export function resetMockState() {
   wordInfos.clear();
   translateCalls.length = 0;
   translateChapterCalls.length = 0;
-  markWordVisibleCalls.length = 0;
   translationsBatchCalls.length = 0;
   translationWorkQueue.length = 0;
   translationWorkerBusy = false;
@@ -571,7 +548,6 @@ type PendingSeed = {
     paragraphs: Array<{
       html: string;
       segments?: ParagraphSegment[];
-      visibleWords?: number[];
     }>;
   }>;
   translateConfigs?: Array<{ paragraphId: number; cfg: TranslateConfig }>;
@@ -656,7 +632,6 @@ if (typeof window !== 'undefined') {
         paragraphs: Array<{
           html: string;
           segments?: ParagraphSegment[];
-          visibleWords?: number[];
         }>;
       }>;
     }): UUID {
@@ -696,14 +671,12 @@ if (typeof window !== 'undefined') {
       bookId: UUID,
       paragraphId: number,
       segments: ParagraphSegment[] | undefined,
-      visibleWords?: number[],
     ) {
       const book = mockLibrary.get(bookId);
       if (!book) return;
       const p = book.paragraphsById.get(paragraphId);
       if (!p) return;
       p.segments = segments;
-      if (visibleWords !== undefined) p.visibleWords = visibleWords;
       emit('paragraph_updated', { bookId, paragraphId });
       emit('book_updated', bookId);
     },
@@ -716,14 +689,12 @@ if (typeof window !== 'undefined') {
       bookId: UUID,
       paragraphId: number,
       segments: ParagraphSegment[] | undefined,
-      visibleWords?: number[],
     ) {
       const book = mockLibrary.get(bookId);
       if (!book) return;
       const p = book.paragraphsById.get(paragraphId);
       if (!p) return;
       p.segments = segments;
-      if (visibleWords !== undefined) p.visibleWords = visibleWords;
     },
     emitCardsUpdated() {
       emit('cards_updated', null);
@@ -733,9 +704,6 @@ if (typeof window !== 'undefined') {
     },
     getTranslateChapterCalls() {
       return translateChapterCalls.slice();
-    },
-    getMarkWordVisibleCalls() {
-      return markWordVisibleCalls.slice();
     },
     getTranslationsBatchCalls() {
       return translationsBatchCalls.slice();
@@ -1045,7 +1013,6 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
         id: paragraphId,
         original: p.html,
         segments: p.segments,
-        visibleWords: p.visibleWords ?? [],
       };
       return Promise.resolve(view as T);
     }
@@ -1074,9 +1041,7 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
       if (!book) return Promise.reject(new Error('book not found'));
       const rows = paragraphIds.flatMap((id) => {
         const p = book.paragraphsById.get(id);
-        return p
-          ? [{ id, segments: p.segments, visibleWords: p.visibleWords ?? [] }]
-          : [];
+        return p ? [{ id, segments: p.segments }] : [];
       });
       return Promise.resolve(rows as T);
     }
@@ -1146,32 +1111,6 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
       const activity =
         activeActivities.get(paragraphKey(bookId, paragraphId)) ?? null;
       return Promise.resolve(activity as T);
-    }
-
-    case 'mark_word_visible': {
-      const bookId = args?.bookId as UUID;
-      const paragraphId = args?.paragraphId as number;
-      const flatIndex = args?.flatIndex as number;
-      markWordVisibleCalls.push({ bookId, paragraphId, flatIndex });
-      // Mirror the real backend post-4edfa74: toggle membership in the
-      // visible-words set and always emit paragraph_updated, since every
-      // toggle flips state.
-      const book = mockLibrary.get(bookId);
-      const p = book?.paragraphsById.get(paragraphId);
-      let nowVisible = false;
-      if (p) {
-        const existing = new Set(p.visibleWords ?? []);
-        if (existing.has(flatIndex)) {
-          existing.delete(flatIndex);
-          nowVisible = false;
-        } else {
-          existing.add(flatIndex);
-          nowVisible = true;
-        }
-        p.visibleWords = Array.from(existing);
-        emit('paragraph_updated', { bookId, paragraphId });
-      }
-      return Promise.resolve(nowVisible as T);
     }
 
     case 'get_book_reading_state': {

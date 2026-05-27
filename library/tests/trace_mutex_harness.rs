@@ -230,7 +230,7 @@ async fn trace_mutex_watcher_and_mark() {
             let fra = Language::from_639_3("fra").unwrap();
             let trans_arc = book.get_or_create_translation(&fra).await;
             let mut tguard = trans_arc.lock().await;
-            let _ = tguard.mark_word_visible(0, 0);
+            tguard.add_visible_word(0, 0);
             drop(tguard);
 
             book.save().await.unwrap();

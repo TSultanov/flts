@@ -1,7 +1,6 @@
 import { expect, test } from '@playwright/test';
 import {
   emitCardsUpdated,
-  getMarkWordVisibleCalls,
   paragraphLocator,
   seedAndOpen,
   setParagraphTranslationSilent,
@@ -142,9 +141,9 @@ test.describe('Anki familiarity (chromium only)', () => {
     await expect(span.locator('.translation-overlay')).toHaveCount(0);
   });
 
-  // ----- B: click-toggle ---------------------------------------------------
+  // ----- B: click reveals, never hides ------------------------------------
 
-  test('B1: click auto-shown word toggles overlay off and back on', async ({ page }) => {
+  test('B1: clicking an auto-shown word keeps the overlay visible', async ({ page }) => {
     await seedAndOpen(page, {
       chapters: [
         {
@@ -169,16 +168,15 @@ test.describe('Anki familiarity (chromium only)', () => {
     const span = wordSpan(paragraphLocator(page, 0), 0);
     await expect(span.locator('.translation-overlay')).toBeVisible();
 
+    // Click on a visible word is a no-op for visibility — it never hides.
     await span.click();
-    await expect(span.locator('.translation-overlay')).toHaveCount(0);
-    expect((await getMarkWordVisibleCalls(page)).length).toBe(1);
+    await expect(span.locator('.translation-overlay')).toBeVisible();
 
     await span.click();
     await expect(span.locator('.translation-overlay')).toBeVisible();
-    expect((await getMarkWordVisibleCalls(page)).length).toBe(2);
   });
 
-  test('B2: click faded word reveals overlay; click again hides it', async ({ page }) => {
+  test('B2: click faded word reveals overlay; further clicks keep it shown', async ({ page }) => {
     await seedAndOpen(page, {
       chapters: [
         {
@@ -205,11 +203,10 @@ test.describe('Anki familiarity (chromium only)', () => {
 
     await span.click();
     await expect(span.locator('.translation-overlay')).toBeVisible();
-    expect((await getMarkWordVisibleCalls(page)).length).toBe(1);
 
+    // Second click does not hide — reveal is add-only.
     await span.click();
-    await expect(span.locator('.translation-overlay')).toHaveCount(0);
-    expect((await getMarkWordVisibleCalls(page)).length).toBe(2);
+    await expect(span.locator('.translation-overlay')).toBeVisible();
   });
 
   // ----- C: live refresh via cards_updated --------------------------------

@@ -141,7 +141,6 @@ pub fn run() {
             app::library_view::save_book_reading_state,
             app::library_view::move_book,
             app::library_view::delete_book,
-            app::library_view::mark_word_visible,
             app::get_system_definition,
             app::show_system_dictionary,
             app::lyrics::start_spotify_watcher,

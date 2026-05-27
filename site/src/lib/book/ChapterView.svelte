@@ -130,6 +130,8 @@
                     {selection}
                     mounted={vm.isMounted(paragraphId)}
                     onWordClick={handleWordClick}
+                    isWordRevealed={(flatIndex) =>
+                        vm.isWordRevealed(paragraphId, flatIndex)}
                     onReady={() => vm.registerParagraphReady(paragraphId)}
                 />
             {/each}

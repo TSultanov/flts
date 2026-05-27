@@ -56,11 +56,19 @@ pub enum AnkiState {
 pub const MATURE_DAYS: f32 = 90.0;
 
 /// Map a card's Anki retention state into a `[0.0, 1.0]` familiarity scalar
-/// for the reader-side UI. `None` means dormant — no underline, no auto-overlay.
+/// for the reader-side UI.
+///
+/// A missing `anki_data` (card not yet synced to Anki) collapses to `Some(0.0)`
+/// — the reader treats a never-studied word as the lowest knowledge level, so
+/// the underline renders at full opacity and the translation auto-overlays.
+/// Suspended/Deleted return `None` (dormant) — the user actively retired the
+/// card from study, so no underline and no overlay.
 ///
 /// See `.specs/ANKI_UI.md` § Familiarity scalar for the contract.
 pub fn familiarity_from(anki_data: Option<&AnkiData>) -> Option<f32> {
-    let data = anki_data?;
+    let Some(data) = anki_data else {
+        return Some(0.0);
+    };
     match data.state {
         AnkiState::Suspended | AnkiState::Deleted => None,
         AnkiState::Active => {
@@ -1398,8 +1406,10 @@ mod tests {
     }
 
     #[test]
-    fn familiarity_none_when_no_anki_data() {
-        assert_eq!(familiarity_from(None), None);
+    fn familiarity_zero_when_no_anki_data() {
+        // Never-synced cards collapse to the lowest knowledge level so the
+        // reader shows the underline + auto-overlay by default.
+        approx(familiarity_from(None).unwrap(), 0.0);
     }
 
     #[test]

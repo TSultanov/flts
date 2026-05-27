@@ -36,9 +36,6 @@ export class ParagraphViewModel {
     segments = $derived<ParagraphSegment[] | null>(
         this.#translation?.segments ?? null,
     );
-    visibleWordsSet = $derived(
-        new Set(this.#translation?.visibleWords ?? []),
-    );
     isTranslating = $derived(this.#activity.current !== null);
     progressChars = $derived(this.#activity.current?.progressChars ?? 0);
     expectedChars = $derived(this.#activity.current?.expectedChars ?? 100);

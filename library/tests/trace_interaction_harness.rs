@@ -238,13 +238,17 @@ async fn trace_interaction_baseline() {
         .end();
 
     // === MarkWordVisible ===
+    // Live writes from the click path are gone, but the trace spec still
+    // models a fast translation-lock mutation under this name. The legacy
+    // merge-path helper `add_visible_word` is the surviving handle that
+    // performs an equivalent under-lock write.
     let span = TraceSpan::begin("t2", "MarkWordVisible")
         .field("task", "t2")
         .field("book", "b1");
     {
         let mut b = book_handle.lock().await;
         let tr = b.get_or_create_translation(&ru()).await;
-        tr.lock().await.mark_word_visible(0, 0);
+        tr.lock().await.add_visible_word(0, 0);
         b.save().await.unwrap();
     }
     span.end();

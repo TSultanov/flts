@@ -15,16 +15,14 @@ export type ParagraphSegment =
 export type SeedParagraph = {
   html: string;
   segments?: ParagraphSegment[];
-  visibleWords?: number[];
 };
 
 export type TranslateConfig =
-  | { kind: 'immediate'; segments?: ParagraphSegment[]; visibleWords?: number[] }
+  | { kind: 'immediate'; segments?: ParagraphSegment[] }
   | {
       kind: 'progress';
       steps: Array<{ progress: number; total: number; delayMs: number }>;
       segments: ParagraphSegment[];
-      visibleWords?: number[];
     }
   | { kind: 'error'; errorMessage: string; delayMs: number };
 
@@ -187,12 +185,6 @@ export async function getTranslateCalls(
   return page.evaluate(() => (window as any).__test.getTranslateCalls());
 }
 
-export async function getMarkWordVisibleCalls(
-  page: Page,
-): Promise<Array<{ bookId: string; paragraphId: number; flatIndex: number }>> {
-  return page.evaluate(() => (window as any).__test.getMarkWordVisibleCalls());
-}
-
 export async function getTranslationsBatchCalls(
   page: Page,
 ): Promise<Array<{ bookId: string; paragraphIds: number[]; at: number }>> {
@@ -250,7 +242,7 @@ export function fillerHtml(idx: number): string {
 
 /**
  * Build a SeedSpec with N filler paragraphs. Per-paragraph overrides
- * (translation, visibleWords) merge in via `overrides`.
+ * (translation, segments) merge in via `overrides`.
  */
 export function multipageSpec(
   count: number,
@@ -334,18 +326,16 @@ export async function setParagraphTranslationSilent(
   bookId: string,
   paragraphId: number,
   segments: ParagraphSegment[] | undefined,
-  visibleWords?: number[],
 ): Promise<void> {
   await page.evaluate(
-    ({ bookId, paragraphId, segments, visibleWords }) => {
+    ({ bookId, paragraphId, segments }) => {
       (window as any).__test.setParagraphTranslationSilent(
         bookId,
         paragraphId,
         segments,
-        visibleWords,
       );
     },
-    { bookId, paragraphId, segments, visibleWords },
+    { bookId, paragraphId, segments },
   );
 }
 
@@ -354,18 +344,16 @@ export async function setParagraphTranslation(
   bookId: string,
   paragraphId: number,
   segments: ParagraphSegment[],
-  visibleWords?: number[],
 ): Promise<void> {
   await page.evaluate(
-    ({ bookId, paragraphId, segments, visibleWords }) => {
+    ({ bookId, paragraphId, segments }) => {
       (window as any).__test.setParagraphTranslation(
         bookId,
         paragraphId,
         segments,
-        visibleWords,
       );
     },
-    { bookId, paragraphId, segments, visibleWords },
+    { bookId, paragraphId, segments },
   );
 }
 

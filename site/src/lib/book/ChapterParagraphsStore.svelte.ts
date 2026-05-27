@@ -5,7 +5,6 @@ import type { UUID } from "../data/uuid";
 
 export type ParagraphTranslationSliceCache = {
     segments: ParagraphSegment[] | null;
-    visibleWords: number[];
 };
 
 export const CHAPTER_STORE_KEY = Symbol("ChapterParagraphsStore");
@@ -173,7 +172,6 @@ export class ChapterParagraphsStore {
                     for (const row of rows) {
                         this.#translations.set(row.id, {
                             segments: row.segments ?? null,
-                            visibleWords: row.visibleWords,
                         });
                     }
                 })

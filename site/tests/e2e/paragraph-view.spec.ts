@@ -1,7 +1,6 @@
 import { expect, test } from '@playwright/test';
 import {
   expectTranslated,
-  getMarkWordVisibleCalls,
   getTranslateCalls,
   paragraphLocator,
   seedAndOpen,
@@ -348,65 +347,57 @@ test.describe('ParagraphView (chromium only)', () => {
     await expect(peek.locator('.peek-translations')).toHaveText('hola');
   });
 
-  test('E3: clicking a word records a mark_word_visible call with the correct flatIndex', async ({
+  // ----- Group F: reveal-on-click annotation ------------------------------
+
+  test('F1: a familiarity-0 word renders the translation overlay automatically', async ({
     page,
   }) => {
+    // Words at familiarity 0 (e.g. never-synced cards) auto-show their
+    // overlay without any user click. Words at familiarity 1 stay hidden.
     const segments = [
       wordSegment({
-        flatIndex: 7,
+        flatIndex: 0,
         sentence: 0,
         word: 0,
-        text: 'w',
-        translation: 't',
+        text: 'w0',
+        translation: 't0',
+        familiarity: 0,
+      }),
+      { kind: 'gap' as const, html: ' ' },
+      wordSegment({
+        flatIndex: 1,
+        sentence: 0,
+        word: 1,
+        text: 'w1',
+        translation: 't1',
+        familiarity: 1,
+      }),
+      { kind: 'gap' as const, html: ' ' },
+      wordSegment({
+        flatIndex: 2,
+        sentence: 0,
+        word: 2,
+        text: 'w2',
+        translation: 't2',
+        familiarity: 0,
       }),
     ];
-    const { bookId } = await seedAndOpen(page, {
-      chapters: [{ paragraphs: [{ html: 'orig', segments }] }],
-    });
-
-    const p = paragraphLocator(page, 0);
-    await wordSpan(p, 7).click();
-    await expect
-      .poll(async () => (await getMarkWordVisibleCalls(page)).length)
-      .toBe(1);
-    const calls = await getMarkWordVisibleCalls(page);
-    expect(calls[0]).toMatchObject({ bookId, paragraphId: 0, flatIndex: 7 });
-  });
-
-  // ----- Group F: visible-words annotation restore ------------------------
-
-  test('F1: visible-words array mounts a translation overlay on those spans only', async ({
-    page,
-  }) => {
-    const segments = [0, 1, 2].flatMap((i) => [
-      ...(i > 0 ? [{ kind: 'gap' as const, html: ' ' }] : []),
-      wordSegment({
-        flatIndex: i,
-        sentence: 0,
-        word: i,
-        text: `w${i}`,
-        translation: `t${i}`,
-      }),
-    ]);
     await seedAndOpen(page, {
-      chapters: [
-        {
-          paragraphs: [{ html: 'orig', segments, visibleWords: [0, 2] }],
-        },
-      ],
+      chapters: [{ paragraphs: [{ html: 'orig', segments }] }],
     });
 
     const p = paragraphLocator(page, 0);
     await expect(wordSpan(p, 0).locator('.translation-overlay')).toHaveCount(1);
     await expect(wordSpan(p, 2).locator('.translation-overlay')).toHaveCount(1);
-    // The one we didn't seed has no overlay.
+    // Familiar word (familiarity 1) stays hidden until the user clicks it.
     await expect(wordSpan(p, 1).locator('.translation-overlay')).toHaveCount(0);
   });
 
   test('F3: clicking a word paints its overlay and the overlay persists after deselect', async ({
     page,
   }) => {
-    // No visibleWords seeded — the only path to the overlay is the click.
+    // No familiarity seeded — no auto-show; the only path to the overlay
+    // is the user clicking the word.
     const segments = [0, 1, 2].flatMap((i) => [
       ...(i > 0 ? [{ kind: 'gap' as const, html: ' ' }] : []),
       wordSegment({
@@ -462,9 +453,11 @@ test.describe('ParagraphView (chromium only)', () => {
     await expect.poll(() => isOverlayPainted(2)).toBe(false);
   });
 
-  test('F2: visible-word translation overlays are actually painted (opacity > 0)', async ({
+  test('F2: auto-shown translation overlays are actually painted (opacity > 0)', async ({
     page,
   }) => {
+    // Seed words 0 and 2 at familiarity 0 (auto-show); word 1 at familiarity
+    // 1 (stays hidden).
     const segments = [0, 1, 2].flatMap((i) => [
       ...(i > 0 ? [{ kind: 'gap' as const, html: ' ' }] : []),
       wordSegment({
@@ -473,14 +466,11 @@ test.describe('ParagraphView (chromium only)', () => {
         word: i,
         text: `w${i}`,
         translation: `t${i}`,
+        familiarity: i === 1 ? 1 : 0,
       }),
     ]);
     await seedAndOpen(page, {
-      chapters: [
-        {
-          paragraphs: [{ html: 'orig', segments, visibleWords: [0, 2] }],
-        },
-      ],
+      chapters: [{ paragraphs: [{ html: 'orig', segments }] }],
     });
 
     // Implementation-agnostic visibility probe. The "translation overlay" can

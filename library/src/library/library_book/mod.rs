@@ -190,16 +190,6 @@ impl LibraryTranslation {
     pub fn paragraph_view(&'_ self, paragraph: usize) -> Option<ParagraphTranslationView<'_>> {
         self.translation.paragraph_view(paragraph)
     }
-
-    /// Marks a word index as visible (annotation shown) for the given paragraph.
-    /// Returns true if the word was newly marked visible.
-    pub fn mark_word_visible(&mut self, paragraph: usize, word_index: usize) -> bool {
-        let result = self.translation.mark_word_visible(paragraph, word_index);
-        if result {
-            self.changed = true;
-        }
-        result
-    }
 }
 
 impl LibraryBook {

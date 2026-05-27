@@ -47,7 +47,6 @@ export type ParagraphOriginal = {
 export type ParagraphTranslationSlice = {
     id: number,
     segments?: ParagraphSegment[],
-    visibleWords: number[],
 }
 
 export type ChapterMetaView = {
@@ -234,10 +233,6 @@ export class Library {
 
     async moveBook(bookUid: UUID, newPath: string[]) {
         await invoke("move_book", { bookId: bookUid, path: newPath });
-    }
-
-    async markWordVisible(bookId: UUID, paragraphId: number, flatIndex: number): Promise<boolean> {
-        return await invoke<boolean>("mark_word_visible", { bookId, paragraphId, flatIndex });
     }
 
     async deleteBooksInBatch(bookUids: UUID[]) {

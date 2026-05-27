@@ -91,6 +91,11 @@ export class ChapterViewModel {
     #initialRevealRaf: number | null = null;
     #noRestoreRevealHook: (() => void) | null = null;
 
+    // Ephemeral set of "user clicked to reveal" words, keyed by
+    // `${paragraphId}:${flatIndex}`. Resets when the chapter is unmounted —
+    // initial visibility per word is driven entirely by card familiarity.
+    #revealedWordKeys: Set<string> = $state(new Set());
+
     constructor(library: Library, props: ChapterVMProps) {
         this.#library = library;
         this.#props = props;
@@ -183,16 +188,24 @@ export class ChapterViewModel {
     }
 
     handleWordClick(info: WordClickInfo): WordSelection {
-        this.#library
-            .markWordVisible(this.#props.bookId, info.paragraphId, info.flatIndex)
-            .catch((err) =>
-                console.error("Failed to mark word visible", err),
-            );
+        // Add-only: a click reveals a hidden word and is a no-op if it's
+        // already shown. New Set instance so Svelte's `$state` reactivity
+        // notices the change.
+        const key = `${info.paragraphId}:${info.flatIndex}`;
+        if (!this.#revealedWordKeys.has(key)) {
+            const next = new Set(this.#revealedWordKeys);
+            next.add(key);
+            this.#revealedWordKeys = next;
+        }
         return {
             paragraphId: info.paragraphId,
             sentence: info.sentence,
             word: info.word,
         };
+    }
+
+    isWordRevealed(paragraphId: number, flatIndex: number): boolean {
+        return this.#revealedWordKeys.has(`${paragraphId}:${flatIndex}`);
     }
 
     startInitialSync(): () => void {
