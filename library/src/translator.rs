@@ -15,7 +15,7 @@ use crate::{
     translator::gemini::GeminiTranslator, translator::openai::OpenAITranslator,
 };
 
-pub const TRANSLATION_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+pub const TRANSLATION_REQUEST_TIMEOUT: Duration = Duration::from_secs(1200);
 pub const TRANSLATION_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
 const TRANSLATION_TOTAL_TIMEOUT_BASE: Duration = Duration::from_secs(180);
 const TRANSLATION_TOTAL_TIMEOUT_PER_CHAR: Duration = Duration::from_millis(100);
