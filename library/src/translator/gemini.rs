@@ -215,7 +215,8 @@ impl GeminiTranslator {
         .await
         .map_err(|_| anyhow::anyhow!("Gemini total stream timeout"))??;
 
-        let translation: ParagraphTranslation = serde_json::from_str(&full_content)?;
+        let mut translation: ParagraphTranslation = serde_json::from_str(&full_content)?;
+        translation.normalize_html_entities();
         Ok(translation)
     }
 }

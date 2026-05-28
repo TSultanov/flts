@@ -241,6 +241,7 @@ impl Translator for OpenAITranslator {
         .map_err(|_| anyhow::anyhow!("OpenAI total stream timeout"))??;
 
         let mut translation: ParagraphTranslation = serde_json::from_str(&full_content)?;
+        translation.normalize_html_entities();
 
         // Note: Usage data might not be available in stream chunks easily or at all in some API versions for stream.
         // We'll skip setting usage for now or check if the final chunk has usage?
