@@ -8,7 +8,6 @@ use async_trait::async_trait;
 use isolang::Language;
 use serde::{Deserialize, Serialize};
 use strum::EnumIter;
-use tokio::time::Instant;
 use uuid::Uuid;
 
 use crate::{
@@ -17,9 +16,8 @@ use crate::{
 };
 
 pub const TRANSLATION_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
-pub const TRANSLATION_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
-const TRANSLATION_INTER_CHUNK_TIMEOUT: Duration = Duration::from_secs(30);
-const TRANSLATION_TOTAL_TIMEOUT_BASE: Duration = Duration::from_secs(60);
+pub const TRANSLATION_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
+const TRANSLATION_TOTAL_TIMEOUT_BASE: Duration = Duration::from_secs(180);
 const TRANSLATION_TOTAL_TIMEOUT_PER_CHAR: Duration = Duration::from_millis(100);
 
 pub type ProgressCallback = dyn Fn(usize) + Send + Sync;
@@ -180,7 +178,6 @@ pub struct StreamChunkAccumulator {
     provider: &'static str,
     full_content: String,
     saw_chunk_error: bool,
-    last_progress_at: Instant,
 }
 
 impl StreamChunkAccumulator {
@@ -189,7 +186,6 @@ impl StreamChunkAccumulator {
             provider,
             full_content: String::new(),
             saw_chunk_error: false,
-            last_progress_at: Instant::now(),
         }
     }
 
@@ -198,20 +194,19 @@ impl StreamChunkAccumulator {
         result: anyhow::Result<Option<String>>,
         callback: Option<&ProgressCallback>,
     ) -> anyhow::Result<bool> {
+        // Receiving any chunk — even one with empty `content` — proves the
+        // server is still alive. DeepSeek's reasoning models stream large
+        // amounts of `reasoning_content` that async_openai's typed delta drops,
+        // so we see those as empty here; treating them as heartbeats lets the
+        // surrounding stream-idle timeout (which fires when no chunk arrives
+        // at all) handle stuck-stream detection.
         match result {
             Ok(Some(text)) => {
                 if !text.is_empty() {
                     self.full_content.push_str(&text);
-                    self.last_progress_at = Instant::now();
                     if let Some(cb) = callback {
                         cb(self.full_content.len());
                     }
-                } else if self.last_progress_at.elapsed() > TRANSLATION_INTER_CHUNK_TIMEOUT {
-                    anyhow::bail!(
-                        "{} stream inter-chunk timeout (no progress for {:?})",
-                        self.provider,
-                        TRANSLATION_INTER_CHUNK_TIMEOUT
-                    );
                 }
                 Ok(true)
             }
@@ -272,6 +267,9 @@ pub enum TranslationModel {
     Gemini31Pro = 12,
     Gemini31FlashLite = 13,
     Gemini35Flash = 14,
+
+    DeepSeekV4Flash = 15,
+    DeepSeekV4Pro = 16,
 }
 
 impl TranslationModel {
@@ -292,6 +290,10 @@ impl TranslationModel {
             | TranslationModel::OpenAIGpt5Nano
             | TranslationModel::OpenAIGpt54
             | TranslationModel::OpenAIGpt54Mini => Some(TranslationProvider::Openai),
+
+            TranslationModel::DeepSeekV4Flash | TranslationModel::DeepSeekV4Pro => {
+                Some(TranslationProvider::Deepseek)
+            }
 
             TranslationModel::Unknown => None,
         }
@@ -315,6 +317,8 @@ impl From<usize> for TranslationModel {
             12 => TranslationModel::Gemini31Pro,
             13 => TranslationModel::Gemini31FlashLite,
             14 => TranslationModel::Gemini35Flash,
+            15 => TranslationModel::DeepSeekV4Flash,
+            16 => TranslationModel::DeepSeekV4Pro,
             _ => TranslationModel::Unknown,
         }
     }
@@ -338,6 +342,7 @@ pub enum TranslationProvider {
     #[default]
     Google,
     Openai,
+    Deepseek,
 }
 
 impl TranslationProvider {
@@ -345,6 +350,7 @@ impl TranslationProvider {
         match self {
             TranslationProvider::Google => "Google",
             TranslationProvider::Openai => "OpenAI",
+            TranslationProvider::Deepseek => "DeepSeek",
         }
     }
 }
@@ -594,14 +600,16 @@ pub fn get_translator(
             &from,
             &to,
         )?)),
-        TranslationProvider::Openai => Ok(Box::new(OpenAITranslator::create(
-            cache,
-            context_provider,
-            translation_model,
-            api_key,
-            &from,
-            &to,
-        )?)),
+        TranslationProvider::Openai | TranslationProvider::Deepseek => {
+            Ok(Box::new(OpenAITranslator::create(
+                cache,
+                context_provider,
+                translation_model,
+                api_key,
+                &from,
+                &to,
+            )?))
+        }
     }
 }
 
@@ -689,54 +697,26 @@ mod tests {
     }
 
     #[test]
-    fn inter_chunk_timeout_fires_on_empty_chunk_flood() {
-        use tokio::time::Instant;
-
+    fn empty_content_chunks_are_treated_as_heartbeats() {
+        // DeepSeek's reasoning models stream chunks whose `delta.content` is
+        // None (the reasoning payload sits in a field async_openai drops).
+        // The accumulator must keep going when it sees those, then accept
+        // real content afterwards.
         let mut accumulator = StreamChunkAccumulator::new("OpenAI");
-        // Send one real chunk so we're past the "empty stream" case
+        for _ in 0..20 {
+            assert!(
+                accumulator
+                    .handle_result(Ok(Some(String::new())), None)
+                    .unwrap(),
+                "empty chunk should not terminate the stream"
+            );
+        }
         assert!(
             accumulator
-                .handle_result(Ok(Some("a".into())), None)
+                .handle_result(Ok(Some("hello".into())), None)
                 .unwrap()
         );
-
-        // Force last_progress_at into the past
-        accumulator.last_progress_at = Instant::now()
-            - super::TRANSLATION_INTER_CHUNK_TIMEOUT
-            - std::time::Duration::from_secs(1);
-
-        let err = accumulator
-            .handle_result(Ok(Some(String::new())), None)
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("inter-chunk timeout"),
-            "unexpected: {err}"
-        );
-    }
-
-    #[test]
-    fn inter_chunk_timeout_resets_on_non_empty_chunk() {
-        use tokio::time::Instant;
-
-        let mut accumulator = StreamChunkAccumulator::new("Gemini");
-        assert!(
-            accumulator
-                .handle_result(Ok(Some("a".into())), None)
-                .unwrap()
-        );
-
-        // Push last_progress_at into the past
-        accumulator.last_progress_at = Instant::now()
-            - super::TRANSLATION_INTER_CHUNK_TIMEOUT
-            - std::time::Duration::from_secs(1);
-
-        // A non-empty chunk should reset the timer, not fail
-        assert!(
-            accumulator
-                .handle_result(Ok(Some("b".into())), None)
-                .unwrap()
-        );
-        assert_eq!(accumulator.full_content, "ab");
+        assert_eq!(accumulator.finish().unwrap(), "hello");
     }
 
     #[test]

@@ -20,7 +20,7 @@ use crate::{
     cache::TranslationsCache,
     translator::{
         ChapterContextProvider, TranslationContext, TranslationErrors, TranslationModel,
-        Translator, paragraph_translation_schema,
+        TranslationProvider, Translator, paragraph_translation_schema,
     },
 };
 
@@ -40,6 +40,8 @@ pub struct OpenAITranslator {
     to: Language,
 }
 
+pub(crate) const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
+
 pub(crate) fn openai_model_name(m: TranslationModel) -> anyhow::Result<&'static str> {
     Ok(match m {
         TranslationModel::OpenAIGpt52 => "gpt-5.2",
@@ -48,13 +50,29 @@ pub(crate) fn openai_model_name(m: TranslationModel) -> anyhow::Result<&'static 
         TranslationModel::OpenAIGpt5Nano => "gpt-5-nano",
         TranslationModel::OpenAIGpt54 => "gpt-5.4",
         TranslationModel::OpenAIGpt54Mini => "gpt-5.4-mini",
+        TranslationModel::DeepSeekV4Flash => "deepseek-v4-flash",
+        TranslationModel::DeepSeekV4Pro => "deepseek-v4-pro",
         _ => Err(TranslationErrors::UnknownModel)?,
     })
 }
 
-pub(crate) fn openai_client(api_key: String) -> Client<OpenAIConfig> {
-    let config = OpenAIConfig::new().with_api_key(api_key);
+pub(crate) fn openai_client(api_key: String, base_url: Option<&str>) -> Client<OpenAIConfig> {
+    let mut config = OpenAIConfig::new().with_api_key(api_key);
+    if let Some(url) = base_url {
+        config = config.with_api_base(url);
+    }
     Client::with_config(config)
+}
+
+/// Returns the base URL override for OpenAI-compatible providers. `None`
+/// means use async_openai's default (api.openai.com).
+pub(crate) fn openai_compat_base_url(
+    provider: crate::translator::TranslationProvider,
+) -> Option<&'static str> {
+    match provider {
+        crate::translator::TranslationProvider::Deepseek => Some(DEEPSEEK_BASE_URL),
+        _ => None,
+    }
 }
 
 impl OpenAITranslator {
@@ -68,7 +86,10 @@ impl OpenAITranslator {
     ) -> anyhow::Result<Self> {
         let schema = paragraph_translation_schema();
         let model = openai_model_name(translation_model)?;
-        let client = openai_client(api_key);
+        let base_url = translation_model
+            .provider()
+            .and_then(openai_compat_base_url);
+        let client = openai_client(api_key, base_url);
 
         Ok(Self {
             cache,
@@ -108,10 +129,23 @@ impl Translator for OpenAITranslator {
         let book_id = ctx.book_id;
         let chapter_id = ctx.chapter_id;
         let callback = ctx.callback;
-        let system_prompt = format!(
+        let is_deepseek = matches!(
+            self.translation_model.provider(),
+            Some(TranslationProvider::Deepseek)
+        );
+        let mut system_prompt = format!(
             "{}\n\nReturn ONLY a single JSON object that matches the requested schema. Do not wrap it in markdown.",
             Self::get_prompt(self.from.to_name(), self.to.to_name())
         );
+        // DeepSeek's JSON mode does not enforce a schema server-side — it only
+        // guarantees valid JSON — so we inline the schema in the prompt so the
+        // model has the target shape to fill in.
+        if is_deepseek {
+            if let Ok(schema_text) = serde_json::to_string_pretty(&*self.schema) {
+                system_prompt.push_str("\n\nJSON schema for the response:\n");
+                system_prompt.push_str(&schema_text);
+            }
+        }
 
         // Block until the prerequisite per-chapter summaries are ready.
         // The UI gates translate buttons on the same predicate, so this
@@ -150,17 +184,23 @@ impl Translator for OpenAITranslator {
                 .build()?,
         ));
 
-        let request = CreateChatCompletionRequestArgs::default()
-            .model(self.model.as_ref())
-            .messages(messages)
-            .response_format(ResponseFormat::JsonSchema {
+        let response_format = if is_deepseek {
+            ResponseFormat::JsonObject
+        } else {
+            ResponseFormat::JsonSchema {
                 json_schema: ResponseFormatJsonSchema {
                     description: Some("Paragraph translation".to_string()),
                     name: "paragraph_translation".to_string(),
                     schema: Some((*self.schema).clone()),
                     strict: Some(true),
                 },
-            })
+            }
+        };
+
+        let request = CreateChatCompletionRequestArgs::default()
+            .model(self.model.as_ref())
+            .messages(messages)
+            .response_format(response_format)
             .stream(true)
             .build()?;
 

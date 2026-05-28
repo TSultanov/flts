@@ -28,6 +28,7 @@
     );
     let geminiApiKey: string | undefined = $derived(configStore.current?.geminiApiKey);
     let openaiApiKey: string | undefined = $derived(configStore.current?.openaiApiKey);
+    let deepseekApiKey: string | undefined = $derived(configStore.current?.deepseekApiKey);
     let targetLanguage: string | undefined = $derived(
         configStore.current?.targetLanguageId,
     );
@@ -116,6 +117,7 @@
             translationProvider,
             geminiApiKey,
             openaiApiKey,
+            deepseekApiKey,
             targetLanguageId: targetLanguage,
             model,
             libraryPath: libraryPath ?? undefined,
@@ -200,6 +202,7 @@
                 {#if providers.length === 0}
                     <option value="google">Google</option>
                     <option value="openai">OpenAI</option>
+                    <option value="deepseek">DeepSeek</option>
                 {:else}
                     {#each providers as provider}
                         <option value={provider.id}>{provider.name}</option>
@@ -213,6 +216,9 @@
             {:else if translationProvider === 'openai'}
                 <label for="openai">OpenAI API KEY</label>
                 <input id="openai" type="text" bind:value={openaiApiKey} />
+            {:else if translationProvider === 'deepseek'}
+                <label for="deepseek">DeepSeek API KEY</label>
+                <input id="deepseek" type="text" bind:value={deepseekApiKey} />
             {/if}
 
             <label for="model">Model</label>

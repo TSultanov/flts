@@ -40,6 +40,8 @@ fn model_pretty_name(model: TranslationModel) -> &'static str {
         TranslationModel::Gemini31Pro => "Gemini 3.1 Pro (Preview)",
         TranslationModel::Gemini31FlashLite => "Gemini 3.1 Flash-Lite (Preview)",
         TranslationModel::Gemini35Flash => "Gemini 3.5 Flash",
+        TranslationModel::DeepSeekV4Flash => "DeepSeek V4 Flash",
+        TranslationModel::DeepSeekV4Pro => "DeepSeek V4 Pro",
         TranslationModel::Unknown => "Not set",
     }
 }
@@ -73,6 +75,12 @@ pub fn get_translation_providers() -> Vec<ProviderMeta> {
             name: TranslationProvider::Openai.display_name(),
             default_model_id: TranslationModel::OpenAIGpt5Mini as i32,
             api_key_field: "openaiApiKey",
+        },
+        ProviderMeta {
+            id: TranslationProvider::Deepseek,
+            name: TranslationProvider::Deepseek.display_name(),
+            default_model_id: TranslationModel::DeepSeekV4Flash as i32,
+            api_key_field: "deepseekApiKey",
         },
     ]
 }
@@ -117,6 +125,8 @@ pub struct Config {
     pub gemini_api_key: Option<String>,
     #[serde(rename = "openaiApiKey")]
     pub openai_api_key: Option<String>,
+    #[serde(rename = "deepseekApiKey", default)]
+    pub deepseek_api_key: Option<String>,
     pub model: TranslationModel,
     #[serde(rename = "libraryPath")]
     pub library_path: Option<String>,
@@ -154,6 +164,7 @@ impl Default for Config {
             translation_provider: TranslationProvider::Google,
             gemini_api_key: None,
             openai_api_key: None,
+            deepseek_api_key: None,
             model: TranslationModel::Gemini25Flash,
             library_path: None,
             spotify_client_id: None,

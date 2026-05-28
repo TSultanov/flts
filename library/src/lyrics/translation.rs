@@ -139,9 +139,9 @@ pub fn get_lyrics_translator(
         TranslationProvider::Google => Ok(Box::new(LyricsGeminiTranslator::create(
             model, api_key, to,
         )?)),
-        TranslationProvider::Openai => Ok(Box::new(LyricsOpenAITranslator::create(
-            model, api_key, to,
-        )?)),
+        TranslationProvider::Openai | TranslationProvider::Deepseek => Ok(Box::new(
+            LyricsOpenAITranslator::create(model, api_key, to)?,
+        )),
     }
 }
 
@@ -235,6 +235,7 @@ pub struct LyricsOpenAITranslator {
     client: Client<OpenAIConfig>,
     schema: Arc<Value>,
     model_name: Arc<str>,
+    is_deepseek: bool,
     to: Language,
 }
 
@@ -245,12 +246,17 @@ impl LyricsOpenAITranslator {
         to: Language,
     ) -> anyhow::Result<Self> {
         let model_name = openai_model_name(translation_model)?;
-        let config = OpenAIConfig::new().with_api_key(api_key);
+        let provider = translation_model.provider();
+        let mut config = OpenAIConfig::new().with_api_key(api_key);
+        if let Some(url) = provider.and_then(crate::translator::openai::openai_compat_base_url) {
+            config = config.with_api_base(url);
+        }
         let client = Client::with_config(config);
         Ok(Self {
             client,
             schema: Arc::new(lyrics_schema()),
             model_name: Arc::from(model_name),
+            is_deepseek: provider == Some(TranslationProvider::Deepseek),
             to,
         })
     }
@@ -264,6 +270,8 @@ fn openai_model_name(m: TranslationModel) -> anyhow::Result<&'static str> {
         TranslationModel::OpenAIGpt5Nano => "gpt-5-nano",
         TranslationModel::OpenAIGpt54 => "gpt-5.4",
         TranslationModel::OpenAIGpt54Mini => "gpt-5.4-mini",
+        TranslationModel::DeepSeekV4Flash => "deepseek-v4-flash",
+        TranslationModel::DeepSeekV4Pro => "deepseek-v4-pro",
         _ => Err(TranslationErrors::UnknownModel)?,
     })
 }
@@ -283,12 +291,30 @@ impl LyricsTranslator for LyricsOpenAITranslator {
             is_transient_translation,
             "OpenAI lyrics",
             || async move {
-                let system = format!(
+                let mut system = format!(
                     "{}\n\nReturn ONLY a single JSON object that matches the requested schema. Do not wrap it in markdown.",
                     system_prompt(self.to.to_name())
                 );
+                if self.is_deepseek {
+                    if let Ok(schema_text) = serde_json::to_string_pretty(&*self.schema) {
+                        system.push_str("\n\nJSON schema for the response:\n");
+                        system.push_str(&schema_text);
+                    }
+                }
                 let user = user_message(lines);
 
+                let response_format = if self.is_deepseek {
+                    ResponseFormat::JsonObject
+                } else {
+                    ResponseFormat::JsonSchema {
+                        json_schema: ResponseFormatJsonSchema {
+                            description: Some("Per-line song lyrics translation".to_string()),
+                            name: "lyrics_translation".to_string(),
+                            schema: Some((*self.schema).clone()),
+                            strict: Some(true),
+                        },
+                    }
+                };
                 let request = CreateChatCompletionRequestArgs::default()
                     .model(self.model_name.as_ref())
                     .messages([
@@ -303,14 +329,7 @@ impl LyricsTranslator for LyricsOpenAITranslator {
                                 .build()?,
                         ),
                     ])
-                    .response_format(ResponseFormat::JsonSchema {
-                        json_schema: ResponseFormatJsonSchema {
-                            description: Some("Per-line song lyrics translation".to_string()),
-                            name: "lyrics_translation".to_string(),
-                            schema: Some((*self.schema).clone()),
-                            strict: Some(true),
-                        },
-                    })
+                    .response_format(response_format)
                     .stream(true)
                     .build()?;
 

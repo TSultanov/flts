@@ -154,9 +154,11 @@ pub async fn generate_chapter_summary(
             );
             Ok(text)
         }
-        TranslationProvider::Openai => {
+        TranslationProvider::Openai | TranslationProvider::Deepseek => {
             let model_name = crate::translator::openai::openai_model_name(model)?;
-            let client = crate::translator::openai::openai_client(api_key.to_string());
+            let base_url = crate::translator::openai::openai_compat_base_url(provider);
+            let client =
+                crate::translator::openai::openai_client(api_key.to_string(), base_url);
 
             let request = CreateChatCompletionRequestArgs::default()
                 .model(model_name)

@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { Resource } from '../data/tauri.svelte';
 
-export type TranslationProvider = 'google' | 'openai';
+export type TranslationProvider = 'google' | 'openai' | 'deepseek';
 
 export type Model = {
     id: number,
@@ -13,7 +13,7 @@ export type ProviderMeta = {
     id: TranslationProvider,
     name: string,
     defaultModelId: number,
-    apiKeyField: 'geminiApiKey' | 'openaiApiKey',
+    apiKeyField: 'geminiApiKey' | 'openaiApiKey' | 'deepseekApiKey',
 };
 
 export type Language = {
@@ -27,6 +27,7 @@ export type Config = {
     translationProvider: TranslationProvider,
     geminiApiKey?: string,
     openaiApiKey?: string,
+    deepseekApiKey?: string,
     model: number,
     libraryPath?: string,
     spotifyClientId?: string,

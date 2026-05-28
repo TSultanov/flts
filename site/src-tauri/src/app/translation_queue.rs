@@ -152,6 +152,7 @@ impl TranslationQueue {
     ) -> Option<Arc<Self>> {
         let gemini_api_key = config.gemini_api_key.clone();
         let openai_api_key = config.openai_api_key.clone();
+        let deepseek_api_key = config.deepseek_api_key.clone();
         let target_language = Language::from_639_3(&config.target_language_id)?;
 
         let (tx_save, rx_save) = unbounded_channel::<SaveNotify>();
@@ -181,6 +182,7 @@ impl TranslationQueue {
                     let gemini_prompt_cache = gemini_prompt_cache.clone();
                     let gemini_api_key = gemini_api_key.clone();
                     let openai_api_key = openai_api_key.clone();
+                    let deepseek_api_key = deepseek_api_key.clone();
                     let app = app.clone();
 
                     let outcome = handle_request(
@@ -192,6 +194,7 @@ impl TranslationQueue {
                         target_language,
                         gemini_api_key,
                         openai_api_key,
+                        deepseek_api_key,
                         app.clone(),
                         state.clone(),
                         &tx_save,
@@ -325,6 +328,7 @@ async fn handle_request(
     target_language: Language,
     gemini_api_key: Option<String>,
     openai_api_key: Option<String>,
+    deepseek_api_key: Option<String>,
     app: tauri::AppHandle,
     state: Arc<Mutex<TranslationQueueState>>,
     save_notify: &UnboundedSender<SaveNotify>,
@@ -365,6 +369,9 @@ async fn handle_request(
         }
         TranslationProvider::Openai => {
             openai_api_key.ok_or(anyhow::anyhow!("No OpenAI API key"))?
+        }
+        TranslationProvider::Deepseek => {
+            deepseek_api_key.ok_or(anyhow::anyhow!("No DeepSeek API key"))?
         }
     };
 

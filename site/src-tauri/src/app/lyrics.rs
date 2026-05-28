@@ -340,6 +340,7 @@ pub(crate) async fn dispatch_translation_inner(
     let api_key = match provider {
         library::translator::TranslationProvider::Google => cfg.gemini_api_key,
         library::translator::TranslationProvider::Openai => cfg.openai_api_key,
+        library::translator::TranslationProvider::Deepseek => cfg.deepseek_api_key,
     }
     .ok_or_else(|| "no API key configured for selected provider".to_string())?;
 
