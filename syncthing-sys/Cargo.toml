@@ -1,0 +1,13 @@
+[package]
+name = "syncthing-sys"
+version = "0.1.0"
+edition = "2021"
+description = "FFI bindings to the embedded Syncthing engine (Go c-archive)"
+publish = false
+
+[lib]
+# No proc-macro / no doctests; this is a thin FFI shim.
+doctest = false
+
+[build-dependencies]
+# build.rs shells out to `go build`; no extra crates needed.

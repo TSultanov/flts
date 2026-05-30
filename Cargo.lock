@@ -5148,6 +5148,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "syncthing-sys"
+version = "0.1.0"
+
+[[package]]
 name = "synstructure"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
