@@ -18,6 +18,7 @@
         spotifyWebStatus,
         type SpotifyWebStatus,
     } from "../spotify/queueStore";
+    import SyncDevicesView from "../sync/SyncDevicesView.svelte";
 
     const SPOTIFY_DASHBOARD_URL = 'https://developer.spotify.com/dashboard';
     const SPOTIFY_REDIRECT_URI = 'http://127.0.0.1:53682/callback';
@@ -358,6 +359,13 @@
                 </div>
             </details>
 
+            <details class="sync-section">
+                <summary>Sync (optional)</summary>
+                <div class="sync-grid">
+                    <SyncDevicesView />
+                </div>
+            </details>
+
             <button id="save" onclick={save} class="primary">Save</button>
         </div>
     </div>
@@ -508,5 +516,21 @@
     }
     .anki-grid input {
         grid-column: 2/3;
+    }
+
+    details.sync-section {
+        grid-column: 1/4;
+        margin-top: 8px;
+        border-top: 1px solid color-mix(in srgb, currentColor 15%, transparent);
+        padding-top: 12px;
+    }
+    details.sync-section > summary {
+        cursor: pointer;
+        font-weight: 600;
+        padding: 2px 0;
+        user-select: none;
+    }
+    .sync-grid {
+        margin-top: 10px;
     }
 </style>

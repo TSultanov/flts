@@ -26,6 +26,7 @@
     "@stryker-mutator/vitest-runner": "^9.6.1",
     "@sveltejs/vite-plugin-svelte": "^7.1.2",
     "@tsconfig/svelte": "^5.0.8",
+    "@types/qrcode": "^1.5.6",
     "@vitest/coverage-v8": "^4.1.6",
     "@vitest/ui": "^4.1.6",
     "fake-indexeddb": "^6.2.5",
@@ -48,6 +49,7 @@
     "@types/jsdom": "^28.0.2",
     "dexie": "^4.4.2",
     "epubts": "^0.2.0",
+    "qrcode": "^1.5.4",
     "sv-router": "^0.16.1",
     "svelte-fa": "^4.0.4"
   }

@@ -14,10 +14,18 @@ use std::{
 
 use anyhow::{Result, anyhow};
 
-use super::control::{FolderSpec, HttpSyncthing, OptionsPatch, SyncthingApi};
+use super::control::{DeviceInfo, FolderSpec, HttpSyncthing, OptionsPatch, SyncthingApi};
 
 /// Fixed app folder ID for the synced library. Stable across devices.
 pub const LIBRARY_FOLDER_ID: &str = "flts-library";
+
+/// A paired peer as shown in the device-management UI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerInfo {
+    pub device_id: String,
+    pub name: String,
+    pub connected: bool,
+}
 
 /// How long to wait for the engine's REST API to come up before giving up.
 const REST_READY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -38,6 +46,9 @@ pub struct EngineConfig {
 pub struct SyncEngine {
     client: Arc<dyn SyncthingApi>,
     my_id: String,
+    /// The synced library path, kept so we can re-share the folder when the
+    /// peer set changes.
+    library_root: String,
 }
 
 impl SyncEngine {
@@ -58,6 +69,7 @@ impl SyncEngine {
         let client: Arc<dyn SyncthingApi> =
             Arc::new(HttpSyncthing::new(format!("http://{addr}"), api_key));
         let my_id = wait_until_up(client.as_ref()).await?;
+        let library_root = cfg.library_root.to_string_lossy().into_owned();
 
         // Hermetic mode keeps discovery off and binds loopback only (matching
         // the startup flags); the default reaches peers anywhere (global
@@ -80,12 +92,79 @@ impl SyncEngine {
             .ensure_folder(FolderSpec {
                 id: LIBRARY_FOLDER_ID.to_string(),
                 label: "FLTS Library".to_string(),
-                path: cfg.library_root.to_string_lossy().into_owned(),
+                path: library_root.clone(),
                 device_ids: vec![my_id.clone()],
             })
             .await?;
 
-        Ok(Self { client, my_id })
+        Ok(Self {
+            client,
+            my_id,
+            library_root,
+        })
+    }
+
+    /// Adds (or renames) a peer and shares the library folder with the full
+    /// peer set. The peer's `autoAcceptFolders` is set, so once they add us back
+    /// the folder is accepted on their side automatically.
+    pub async fn add_peer(&self, device_id: &str, name: &str) -> anyhow::Result<()> {
+        self.client.add_device(device_id, name).await?;
+        self.reshare_library().await
+    }
+
+    /// Removes a peer and re-shares the folder without it.
+    pub async fn remove_peer(&self, device_id: &str) -> anyhow::Result<()> {
+        self.client.remove_device(device_id).await?;
+        self.reshare_library().await
+    }
+
+    /// Peers (everything but this device) with live connection state.
+    pub async fn list_peers(&self) -> anyhow::Result<Vec<PeerInfo>> {
+        let devices = self.client.list_devices().await?;
+        let connections = self.client.connections().await?;
+        Ok(devices
+            .into_iter()
+            .filter(|d| d.device_id != self.my_id)
+            .map(|DeviceInfo { device_id, name }| PeerInfo {
+                connected: connections.get(&device_id).copied().unwrap_or(false),
+                device_id,
+                name,
+            })
+            .collect())
+    }
+
+    /// Shares the library folder with this device plus every configured peer.
+    async fn reshare_library(&self) -> anyhow::Result<()> {
+        let mut device_ids: Vec<String> = self
+            .client
+            .list_devices()
+            .await?
+            .into_iter()
+            .map(|d| d.device_id)
+            .collect();
+        if !device_ids.iter().any(|id| id == &self.my_id) {
+            device_ids.push(self.my_id.clone());
+        }
+        self.client
+            .ensure_folder(FolderSpec {
+                id: LIBRARY_FOLDER_ID.to_string(),
+                label: "FLTS Library".to_string(),
+                path: self.library_root.clone(),
+                device_ids,
+            })
+            .await
+    }
+
+    /// Test-only constructor that injects a control client (e.g. a mock),
+    /// bypassing the real engine so peer/share logic is unit-testable without a
+    /// running Syncthing or valid device IDs.
+    #[cfg(test)]
+    fn for_test(client: Arc<dyn SyncthingApi>, my_id: String, library_root: String) -> Self {
+        Self {
+            client,
+            my_id,
+            library_root,
+        }
     }
 
     /// The control client, for the daemon and Tauri commands.
@@ -148,6 +227,35 @@ fn pick_free_port() -> Result<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sync::control::MockSyncthing;
+
+    #[tokio::test]
+    async fn add_remove_peer_reshares_library_folder() {
+        let mock = Arc::new(MockSyncthing::new("SELF"));
+        let engine =
+            SyncEngine::for_test(mock.clone(), "SELF".into(), "/tmp/flts-lib".into());
+
+        engine.add_peer("PEER1", "Laptop").await.unwrap();
+
+        // Folder is shared with this device plus the new peer.
+        let folders = mock.folders();
+        assert_eq!(folders.len(), 1);
+        assert_eq!(folders[0].path, "/tmp/flts-lib");
+        assert!(folders[0].device_ids.contains(&"SELF".to_string()));
+        assert!(folders[0].device_ids.contains(&"PEER1".to_string()));
+
+        // list_peers excludes self.
+        let peers = engine.list_peers().await.unwrap();
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].device_id, "PEER1");
+        assert!(!peers[0].connected);
+
+        // Removal drops the peer from both the device list and the folder.
+        engine.remove_peer("PEER1").await.unwrap();
+        assert!(engine.list_peers().await.unwrap().is_empty());
+        let folders = mock.folders();
+        assert!(!folders.last().unwrap().device_ids.contains(&"PEER1".to_string()));
+    }
 
     /// Full Phase 2 engine path against the real Go engine (hermetic): start,
     /// apply discovery options + ensure the library folder, expose `my_id`, and
