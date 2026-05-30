@@ -11,6 +11,7 @@
         syncSetDeviceName,
         canScan,
         scanDeviceId,
+        cancelScan,
         pairingPayload,
         type SyncStatus,
         type ThisDevice,
@@ -28,6 +29,7 @@
     let devices = $state<DeviceEntry[]>([]);
     let pending = $state<PendingEntry[]>([]);
     let busy = $state(false);
+    let scanning = $state(false);
     let error = $state("");
 
     let newId = $state("");
@@ -140,7 +142,11 @@
 
     async function scanToAdd() {
         busy = true;
+        scanning = true;
         error = "";
+        // Make the page transparent so the camera (rendered behind the webview)
+        // shows through; the overlay below provides the Cancel control.
+        document.documentElement.classList.add("barcode-scanning");
         try {
             const scanned = await scanDeviceId();
             if (scanned) {
@@ -149,8 +155,19 @@
             }
         } catch (e) {
             error = String(e);
+        } finally {
+            document.documentElement.classList.remove("barcode-scanning");
+            scanning = false;
+            busy = false;
         }
-        busy = false;
+    }
+
+    async function stopScan() {
+        try {
+            await cancelScan();
+        } catch (e) {
+            error = String(e);
+        }
     }
 
     async function remove(id: string) {
@@ -171,6 +188,16 @@
         }
     }
 </script>
+
+{#if scanning}
+    <!-- Transparent overlay so the camera (behind the webview) shows through;
+         provides the scan frame + Cancel control. -->
+    <div class="scan-overlay">
+        <div class="scan-frame"></div>
+        <p class="scan-hint">Point at the other device's QR code</p>
+        <button class="scan-cancel" onclick={stopScan}>Cancel</button>
+    </div>
+{/if}
 
 <div class="sync">
     {#if !enabled}
@@ -386,5 +413,49 @@
         margin: 0;
         color: #f85149;
         font-size: 0.85em;
+    }
+
+    /* While scanning, make the whole page transparent so the camera (rendered
+       behind the webview by the OS scanner) is visible, and hide the app so its
+       opaque backgrounds don't cover it. The overlay re-shows itself. */
+    :global(html.barcode-scanning),
+    :global(html.barcode-scanning body) {
+        background: transparent !important;
+    }
+    :global(html.barcode-scanning body > *) {
+        visibility: hidden;
+    }
+
+    .scan-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        visibility: visible;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 18px;
+        background: transparent;
+    }
+    .scan-frame {
+        width: 240px;
+        height: 240px;
+        border: 3px solid #fff;
+        border-radius: 16px;
+        box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.4);
+    }
+    .scan-hint {
+        margin: 0;
+        color: #fff;
+        text-shadow: 0 1px 4px rgba(0, 0, 0, 0.9);
+    }
+    .scan-cancel {
+        padding: 10px 28px;
+        border-radius: 8px;
+        border: none;
+        background: #fff;
+        color: #000;
+        font-weight: 600;
     }
 </style>

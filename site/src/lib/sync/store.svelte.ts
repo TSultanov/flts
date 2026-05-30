@@ -65,17 +65,20 @@ export function canScan(): boolean {
 
 /// Opens the camera to scan a peer's pairing QR and returns its device ID +
 /// name, or null if cancelled. Mobile only.
+///
+/// The native scanner renders the camera *behind* the webview, so the caller is
+/// responsible for making the page transparent while this runs (see the
+/// `barcode-scanning` handling in SyncDevicesView).
 export async function scanDeviceId(): Promise<{ deviceId: string; name?: string } | null> {
     const { scan, Format } = await import("@tauri-apps/plugin-barcode-scanner");
-    // The native scanner renders the camera behind the webview; hide app chrome
-    // while it's active.
-    document.body.classList.add("barcode-scanning");
-    try {
-        const result = await scan({ windowed: true, formats: [Format.QRCode] });
-        return parsePairingPayload(result.content);
-    } finally {
-        document.body.classList.remove("barcode-scanning");
-    }
+    const result = await scan({ windowed: true, formats: [Format.QRCode] });
+    return parsePairingPayload(result.content);
+}
+
+/// Cancels an in-progress scan (the overlay's Cancel button).
+export async function cancelScan(): Promise<void> {
+    const { cancel } = await import("@tauri-apps/plugin-barcode-scanner");
+    await cancel();
 }
 
 /// The QR encodes a `{deviceId,name}` JSON blob (or, for older codes, a bare
