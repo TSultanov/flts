@@ -11,6 +11,8 @@
 //! owns only the *transport*.
 
 pub mod control;
+pub mod reconcile;
+pub mod roster;
 
 #[cfg(feature = "sync-engine")]
 pub mod engine;

@@ -6,6 +6,7 @@
 //! sync daemon and torn down on shutdown.
 
 use std::{
+    collections::BTreeSet,
     net::TcpListener,
     path::PathBuf,
     sync::Arc,
@@ -15,6 +16,8 @@ use std::{
 use anyhow::{Result, anyhow};
 
 use super::control::{DeviceInfo, FolderSpec, HttpSyncthing, OptionsPatch, SyncthingApi};
+use super::reconcile::reconcile;
+use super::roster::RosterStore;
 
 /// Fixed app folder ID for the synced library. Stable across devices.
 pub const LIBRARY_FOLDER_ID: &str = "flts-library";
@@ -49,6 +52,9 @@ pub struct SyncEngine {
     /// The synced library path, kept so we can re-share the folder when the
     /// peer set changes.
     library_root: String,
+    /// The shared device roster (`<library_root>/.flts/devices.json`); the
+    /// source of truth for the mesh.
+    roster: RosterStore,
 }
 
 impl SyncEngine {
@@ -69,6 +75,7 @@ impl SyncEngine {
         let client: Arc<dyn SyncthingApi> =
             Arc::new(HttpSyncthing::new(format!("http://{addr}"), api_key));
         let my_id = wait_until_up(client.as_ref()).await?;
+        let roster = RosterStore::new(&cfg.library_root);
         let library_root = cfg.library_root.to_string_lossy().into_owned();
 
         // Hermetic mode keeps discovery off and binds loopback only (matching
@@ -101,6 +108,7 @@ impl SyncEngine {
             client,
             my_id,
             library_root,
+            roster,
         })
     }
 
@@ -155,15 +163,70 @@ impl SyncEngine {
             .await
     }
 
+    /// Pair with a peer: record it in the shared roster (so it propagates to
+    /// every node) and add it to this engine immediately. The roster is the
+    /// mesh's source of truth; `add_peer` just makes the local effect instant.
+    pub async fn pair_device(&self, device_id: &str, name: &str) -> anyhow::Result<()> {
+        self.roster.add_device(device_id, name)?;
+        self.add_peer(device_id, name).await
+    }
+
+    /// Unpair a peer: tombstone it in the roster (propagates the removal) and
+    /// drop it locally.
+    pub async fn unpair_device(&self, device_id: &str) -> anyhow::Result<()> {
+        self.roster.remove_device(device_id)?;
+        self.remove_peer(device_id).await
+    }
+
+    /// Ensure this device is listed in the roster under `name`, so peers learn
+    /// about it and add it back (completing the mutual pairing for the mesh).
+    pub fn ensure_self_in_roster(&self, name: &str) -> anyhow::Result<()> {
+        self.roster.ensure_self(&self.my_id, name)?;
+        Ok(())
+    }
+
+    /// One reconcile pass: load the shared roster (merging any conflict
+    /// siblings) and bring this engine's device set in line with it — adding
+    /// devices others paired and removing tombstoned ones. This is what turns a
+    /// single pairing into a full mesh.
+    pub async fn reconcile_once(&self) -> anyhow::Result<()> {
+        let roster = self.roster.load()?;
+        let engine_ids: BTreeSet<String> = self
+            .client
+            .list_devices()
+            .await?
+            .into_iter()
+            .map(|d| d.device_id)
+            .collect();
+
+        let plan = reconcile(&roster, &engine_ids, &self.my_id);
+        if plan.is_empty() {
+            return Ok(());
+        }
+        for (id, name) in &plan.to_add {
+            if let Err(err) = self.add_peer(id, name).await {
+                anyhow::bail!("reconcile: adding {id} failed: {err}");
+            }
+        }
+        for id in &plan.to_remove {
+            if let Err(err) = self.remove_peer(id).await {
+                anyhow::bail!("reconcile: removing {id} failed: {err}");
+            }
+        }
+        Ok(())
+    }
+
     /// Test-only constructor that injects a control client (e.g. a mock),
     /// bypassing the real engine so peer/share logic is unit-testable without a
     /// running Syncthing or valid device IDs.
     #[cfg(test)]
     fn for_test(client: Arc<dyn SyncthingApi>, my_id: String, library_root: String) -> Self {
+        let roster = RosterStore::new(std::path::Path::new(&library_root));
         Self {
             client,
             my_id,
             library_root,
+            roster,
         }
     }
 
@@ -255,6 +318,77 @@ mod tests {
         assert!(engine.list_peers().await.unwrap().is_empty());
         let folders = mock.folders();
         assert!(!folders.last().unwrap().device_ids.contains(&"PEER1".to_string()));
+    }
+
+    fn scratch_root(tag: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("flts-mesh-{tag}-{nanos}"))
+    }
+
+    #[tokio::test]
+    async fn pair_writes_roster_and_lists_self() {
+        let root = scratch_root("pair");
+        let mock = Arc::new(MockSyncthing::new("SELF"));
+        let engine = SyncEngine::for_test(mock, "SELF".into(), root.to_string_lossy().into());
+
+        engine.ensure_self_in_roster("My Mac").unwrap();
+        engine.pair_device("PEER1", "Laptop").await.unwrap();
+
+        let roster = RosterStore::new(&root).load().unwrap();
+        assert_eq!(roster.devices.get("SELF").unwrap().name, "My Mac");
+        assert!(roster.devices.contains_key("PEER1"), "peer recorded in roster");
+        let peers = engine.list_peers().await.unwrap();
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].device_id, "PEER1");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn reconcile_adds_devices_paired_on_another_node() {
+        let root = scratch_root("recadd");
+        let mock = Arc::new(MockSyncthing::new("SELF"));
+        let engine = SyncEngine::for_test(mock.clone(), "SELF".into(), root.to_string_lossy().into());
+
+        // A peer paired this device on ANOTHER node: it lands in the synced
+        // roster, but our engine doesn't know it yet.
+        RosterStore::new(&root).add_device("PEERX", "Other").unwrap();
+        assert!(engine.list_peers().await.unwrap().is_empty());
+
+        engine.reconcile_once().await.unwrap();
+
+        let peers = engine.list_peers().await.unwrap();
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].device_id, "PEERX");
+        // And the library folder is now shared with the new peer.
+        assert!(mock
+            .folders()
+            .last()
+            .unwrap()
+            .device_ids
+            .contains(&"PEERX".to_string()));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn reconcile_removes_tombstoned_devices() {
+        let root = scratch_root("recrm");
+        let mock = Arc::new(MockSyncthing::new("SELF"));
+        let engine = SyncEngine::for_test(mock, "SELF".into(), root.to_string_lossy().into());
+
+        engine.add_peer("PEER1", "x").await.unwrap();
+        assert_eq!(engine.list_peers().await.unwrap().len(), 1);
+
+        // Removed on another node → tombstoned in the synced roster.
+        RosterStore::new(&root).remove_device("PEER1").unwrap();
+        engine.reconcile_once().await.unwrap();
+
+        assert!(engine.list_peers().await.unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Full Phase 2 engine path against the real Go engine (hermetic): start,

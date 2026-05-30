@@ -97,7 +97,7 @@ pub async fn sync_add_device(
         .await
         .ok_or_else(|| "sync is not running; enable it first".to_string())?;
     engine
-        .add_peer(device_id.trim(), name.trim())
+        .pair_device(device_id.trim(), name.trim())
         .await
         .map_err(|err| err.to_string())
 }
@@ -113,7 +113,7 @@ pub async fn sync_remove_device(
         .await
         .ok_or_else(|| "sync is not running".to_string())?;
     engine
-        .remove_peer(&device_id)
+        .unpair_device(&device_id)
         .await
         .map_err(|err| err.to_string())
 }

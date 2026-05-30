@@ -451,9 +451,23 @@ impl AppState {
             }
         };
         let hermetic = std::env::var_os("FLTS_SYNC_HERMETIC").is_some_and(|v| !v.is_empty());
+        // Roster display name: the user's choice, else the OS hostname (which is
+        // also Syncthing's own default), else a generic fallback.
+        let device_name = config
+            .sync_device_name
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| tauri_plugin_os::hostname().into())
+            .unwrap_or_else(|| "FLTS device".to_string());
 
-        match SyncTask::init(home, library_root.to_path_buf(), hermetic, self.sync_status.clone())
-            .await
+        match SyncTask::init(
+            home,
+            library_root.to_path_buf(),
+            device_name,
+            hermetic,
+            self.sync_status.clone(),
+        )
+        .await
         {
             Ok(task) => {
                 *self.sync_task.lock().await = Some(task);

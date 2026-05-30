@@ -74,6 +74,7 @@ impl SyncTask {
     pub async fn init(
         home: PathBuf,
         library_root: PathBuf,
+        device_name: String,
         hermetic: bool,
         status_tx: Arc<watch::Sender<SyncStatus>>,
     ) -> anyhow::Result<Arc<Self>> {
@@ -93,7 +94,13 @@ impl SyncTask {
         let my_id = engine.my_id().to_string();
         info!("Sync engine online; device id = {my_id}");
 
-        // Seed status and spawn the poller.
+        // List this device in the shared roster so peers add it back (mutual
+        // pairing → mesh).
+        if let Err(err) = engine.ensure_self_in_roster(&device_name) {
+            warn!("Could not record this device in the roster: {err}");
+        }
+
+        // Seed status and spawn the reconcile+status poller.
         push_status(engine.client().as_ref(), &status_tx, &my_id).await;
         let handle = {
             let engine = engine.clone();
@@ -103,6 +110,11 @@ impl SyncTask {
                 let mut ticker = tokio::time::interval(DEFAULT_POLL_INTERVAL);
                 loop {
                     ticker.tick().await;
+                    // Bring the engine in line with the roster (devices paired
+                    // on other nodes), then refresh status.
+                    if let Err(err) = engine.reconcile_once().await {
+                        warn!("Sync reconcile failed: {err}");
+                    }
                     push_status(engine.client().as_ref(), &status_tx, &my_id).await;
                 }
             })
