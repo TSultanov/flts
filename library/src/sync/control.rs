@@ -120,6 +120,10 @@ pub trait SyncthingApi: Send + Sync {
     /// Remove a peer device from the config.
     async fn remove_device(&self, device_id: &str) -> Result<()>;
 
+    /// Rename a device (used to set this device's own announced name, so peers
+    /// see something meaningful instead of the hostname).
+    async fn rename_device(&self, device_id: &str, name: &str) -> Result<()>;
+
     /// Pin a peer's connection addresses (e.g. `tcp://host:22000`). Used by the
     /// test harness to wire static topology in lieu of discovery; production
     /// leaves devices on `dynamic`.
@@ -265,6 +269,13 @@ impl SyncthingApi for HttpSyncthing {
 
     async fn remove_device(&self, device_id: &str) -> Result<()> {
         self.delete(&format!("/rest/config/devices/{device_id}"))
+            .await
+    }
+
+    async fn rename_device(&self, device_id: &str, name: &str) -> Result<()> {
+        let mut device = self.get(&format!("/rest/config/devices/{device_id}")).await?;
+        device["name"] = serde_json::Value::String(name.to_string());
+        self.put(&format!("/rest/config/devices/{device_id}"), &device)
             .await
     }
 
@@ -434,6 +445,19 @@ impl SyncthingApi for MockSyncthing {
         state.devices.retain(|d| d.device_id != device_id);
         state.connected.remove(device_id);
         state.addresses.remove(device_id);
+        Ok(())
+    }
+
+    async fn rename_device(&self, device_id: &str, name: &str) -> Result<()> {
+        let mut state = self.state.lock().unwrap();
+        if let Some(d) = state.devices.iter_mut().find(|d| d.device_id == device_id) {
+            d.name = name.to_string();
+        } else {
+            state.devices.push(DeviceInfo {
+                device_id: device_id.to_string(),
+                name: name.to_string(),
+            });
+        }
         Ok(())
     }
 

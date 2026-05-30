@@ -28,6 +28,10 @@ export async function syncSetEnabled(enabled: boolean): Promise<void> {
     await invoke("sync_set_enabled", { enabled });
 }
 
+export async function syncSetDeviceName(name: string): Promise<void> {
+    await invoke("sync_set_device_name", { name });
+}
+
 export async function syncGetThisDevice(): Promise<ThisDevice | null> {
     return await invoke<ThisDevice | null>("sync_get_this_device");
 }
@@ -59,30 +63,40 @@ export function canScan(): boolean {
     }
 }
 
-/// Opens the camera to scan a peer's pairing QR and returns its device ID, or
-/// null if cancelled. Mobile only.
-export async function scanDeviceId(): Promise<string | null> {
+/// Opens the camera to scan a peer's pairing QR and returns its device ID +
+/// name, or null if cancelled. Mobile only.
+export async function scanDeviceId(): Promise<{ deviceId: string; name?: string } | null> {
     const { scan, Format } = await import("@tauri-apps/plugin-barcode-scanner");
     // The native scanner renders the camera behind the webview; hide app chrome
     // while it's active.
     document.body.classList.add("barcode-scanning");
     try {
         const result = await scan({ windowed: true, formats: [Format.QRCode] });
-        return extractDeviceId(result.content);
+        return parsePairingPayload(result.content);
     } finally {
         document.body.classList.remove("barcode-scanning");
     }
 }
 
-/// The QR encodes the bare device ID (optionally a `{deviceId,name}` JSON blob);
-/// accept either.
-function extractDeviceId(content: string): string {
+/// The QR encodes a `{deviceId,name}` JSON blob (or, for older codes, a bare
+/// device ID); accept either.
+export function parsePairingPayload(
+    content: string,
+): { deviceId: string; name?: string } | null {
     const trimmed = content.trim();
+    if (!trimmed) return null;
     try {
         const obj = JSON.parse(trimmed);
-        if (obj && typeof obj.deviceId === "string") return obj.deviceId;
+        if (obj && typeof obj.deviceId === "string") {
+            return { deviceId: obj.deviceId, name: typeof obj.name === "string" ? obj.name : undefined };
+        }
     } catch {
         // not JSON — treat as a raw device ID
     }
-    return trimmed;
+    return { deviceId: trimmed };
+}
+
+/// The pairing QR payload for this device (id + name).
+export function pairingPayload(deviceId: string, name?: string): string {
+    return JSON.stringify({ deviceId, name: name ?? "" });
 }

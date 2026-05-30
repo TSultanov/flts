@@ -74,6 +74,25 @@ impl Display for AppError {
     }
 }
 
+/// A sensible default device name for the sync roster. Uses the OS hostname
+/// (stripping a trailing `.local`), but falls back to a platform label when the
+/// hostname is missing or useless — notably iOS, where it is `localhost`.
+fn default_device_name() -> String {
+    let raw = tauri_plugin_os::hostname();
+    let host = raw.trim().trim_end_matches(".local").trim();
+    if !host.is_empty() && !host.eq_ignore_ascii_case("localhost") {
+        return host.to_string();
+    }
+    #[cfg(target_os = "ios")]
+    {
+        "iPad".to_string()
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        "FLTS device".to_string()
+    }
+}
+
 /// Resolves the app config directory (holds `config.json` and, from Phase 2,
 /// the Syncthing home). Honors `FLTS_CONFIG_DIR` so E2E harnesses get a fully
 /// isolated config; otherwise the per-platform `ProjectDirs.config_dir()`.
@@ -267,6 +286,23 @@ impl AppState {
         self.update_config(config).await
     }
 
+    /// Persist the device's display name and apply it live to the running engine
+    /// (no restart). Used by the `sync_set_device_name` command.
+    pub async fn set_sync_device_name(&self, name: String) -> anyhow::Result<()> {
+        let trimmed = name.trim().to_string();
+        let mut config = self.config.borrow().clone();
+        config.sync_device_name = Some(trimmed.clone()).filter(|s| !s.is_empty());
+        config.save(&self.config_path)?;
+        self.config.send_replace(config);
+
+        if !trimmed.is_empty() {
+            if let Some(engine) = self.sync_engine().await {
+                engine.set_device_name(&trimmed).await?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn subscribe_library(&self) -> watch::Receiver<Option<Arc<Library>>> {
         self.library.subscribe()
     }
@@ -451,14 +487,14 @@ impl AppState {
             }
         };
         let hermetic = std::env::var_os("FLTS_SYNC_HERMETIC").is_some_and(|v| !v.is_empty());
-        // Roster display name: the user's choice, else the OS hostname (which is
-        // also Syncthing's own default), else a generic fallback.
+        // Device display name: the user's choice, else a sensible default
+        // (hostname on desktop; a platform label where the hostname is useless,
+        // e.g. iOS returns "localhost").
         let device_name = config
             .sync_device_name
             .clone()
             .filter(|s| !s.trim().is_empty())
-            .or_else(|| tauri_plugin_os::hostname().into())
-            .unwrap_or_else(|| "FLTS device".to_string());
+            .unwrap_or_else(default_device_name);
 
         match SyncTask::init(
             home,

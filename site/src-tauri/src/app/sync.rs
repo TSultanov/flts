@@ -51,11 +51,33 @@ pub async fn sync_get_this_device(
     let Some(engine) = state.sync_engine().await else {
         return Ok(None);
     };
-    let name = state.config_borrow_sync_device_name();
+    let my_id = engine.my_id().to_string();
+    // The effective name is whatever Syncthing's own device entry carries
+    // (set via set_device_name), falling back to the persisted config value.
+    let name = engine
+        .client()
+        .list_devices()
+        .await
+        .ok()
+        .and_then(|devs| devs.into_iter().find(|d| d.device_id == my_id).map(|d| d.name))
+        .filter(|n| !n.trim().is_empty())
+        .or_else(|| state.config_borrow_sync_device_name());
     Ok(Some(ThisDevice {
-        device_id: engine.my_id().to_string(),
+        device_id: my_id,
         name,
     }))
+}
+
+/// Rename this device (persisted + applied to the running engine + roster).
+#[tauri::command]
+pub async fn sync_set_device_name(
+    state: tauri::State<'_, Arc<AppState>>,
+    name: String,
+) -> Result<(), String> {
+    state
+        .set_sync_device_name(name)
+        .await
+        .map_err(|err| err.to_string())
 }
 
 /// Enable or disable native sync. Persists the flag and re-evaluates config,

@@ -171,11 +171,13 @@ impl SyncEngine {
         self.remove_peer(device_id).await
     }
 
-    /// Ensure this device is listed in the roster under `name`, so peers learn
-    /// about it and add it back (completing the mutual pairing for the mesh).
-    pub fn ensure_self_in_roster(&self, name: &str) -> anyhow::Result<()> {
+    /// Sets this device's display name everywhere it matters: the shared roster
+    /// (so peers that reconcile learn it) and Syncthing's own device entry (so
+    /// the name it *announces* — seen in a peer's pending/connection list — is
+    /// meaningful instead of the hostname).
+    pub async fn set_device_name(&self, name: &str) -> anyhow::Result<()> {
         self.roster.ensure_self(&self.my_id, name)?;
-        Ok(())
+        self.client.rename_device(&self.my_id, name).await
     }
 
     /// One reconcile pass: load the shared roster (merging any conflict
@@ -327,7 +329,7 @@ mod tests {
         let mock = Arc::new(MockSyncthing::new("SELF"));
         let engine = SyncEngine::for_test(mock, "SELF".into(), root.to_string_lossy().into());
 
-        engine.ensure_self_in_roster("My Mac").unwrap();
+        engine.set_device_name("My Mac").await.unwrap();
         engine.pair_device("PEER1", "Laptop").await.unwrap();
 
         let roster = RosterStore::new(&root).load().unwrap();

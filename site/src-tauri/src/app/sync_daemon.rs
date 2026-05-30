@@ -102,10 +102,10 @@ impl SyncTask {
         let my_id = engine.my_id().to_string();
         info!("Sync engine online; device id = {my_id}");
 
-        // List this device in the shared roster so peers add it back (mutual
-        // pairing → mesh).
-        if let Err(err) = engine.ensure_self_in_roster(&device_name) {
-            warn!("Could not record this device in the roster: {err}");
+        // Name this device (roster + Syncthing's own entry) so peers see a
+        // meaningful name, and so they add it back via the roster (mesh).
+        if let Err(err) = engine.set_device_name(&device_name).await {
+            warn!("Could not set this device's name: {err}");
         }
 
         // Seed status and spawn the reconcile+status poller.

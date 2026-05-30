@@ -8,8 +8,10 @@
         syncListPending,
         syncAddDevice,
         syncRemoveDevice,
+        syncSetDeviceName,
         canScan,
         scanDeviceId,
+        pairingPayload,
         type SyncStatus,
         type ThisDevice,
         type DeviceEntry,
@@ -30,6 +32,8 @@
 
     let newId = $state("");
     let newName = $state("");
+    // Editable name for this device (seeded from the backend, edited locally).
+    let deviceName = $state("");
 
     function statusLabel(s: SyncStatus | undefined): string {
         switch (s?.state) {
@@ -51,12 +55,31 @@
             thisDevice = await syncGetThisDevice();
             devices = await syncListDevices();
             pending = await syncListPending();
+            // Seed the editable name once (don't clobber an in-progress edit).
+            if (!deviceName && thisDevice?.name) deviceName = thisDevice.name;
             qrDataUrl = thisDevice?.deviceId
-                ? await QRCode.toDataURL(thisDevice.deviceId, { margin: 1, width: 220 })
+                ? await QRCode.toDataURL(
+                      pairingPayload(thisDevice.deviceId, thisDevice.name),
+                      { margin: 1, width: 220 },
+                  )
                 : "";
         } catch (e) {
             error = String(e);
         }
+    }
+
+    async function rename() {
+        const name = deviceName.trim();
+        if (!name) return;
+        busy = true;
+        error = "";
+        try {
+            await syncSetDeviceName(name);
+            await refresh();
+        } catch (e) {
+            error = String(e);
+        }
+        busy = false;
     }
 
     // Re-fetch identity + device list whenever sync state / device count moves
@@ -119,8 +142,11 @@
         busy = true;
         error = "";
         try {
-            const id = await scanDeviceId();
-            if (id) newId = id;
+            const scanned = await scanDeviceId();
+            if (scanned) {
+                newId = scanned.deviceId;
+                if (scanned.name) newName = scanned.name;
+            }
         } catch (e) {
             error = String(e);
         }
@@ -172,6 +198,19 @@
                 {/if}
                 <div class="this-device-info">
                     <p class="label">This device</p>
+                    <div class="name-row">
+                        <input
+                            class="name-input"
+                            placeholder="Device name"
+                            bind:value={deviceName}
+                        />
+                        <button
+                            onclick={rename}
+                            disabled={busy ||
+                                !deviceName.trim() ||
+                                deviceName.trim() === thisDevice.name}>Rename</button
+                        >
+                    </div>
                     <code class="id">{thisDevice.deviceId}</code>
                     <button onclick={copyId}>Copy ID</button>
                 </div>
@@ -297,6 +336,16 @@
     .add-actions {
         display: flex;
         gap: 8px;
+    }
+
+    .name-row {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+    }
+    .name-input {
+        flex: 1;
+        min-width: 0;
     }
 
     .devices {

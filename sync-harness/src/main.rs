@@ -107,7 +107,7 @@ async fn setup(name: String, library_root: PathBuf, home: PathBuf, bep_port: u16
         })
         .await?,
     );
-    engine.ensure_self_in_roster(&name)?;
+    engine.set_device_name(&name).await?;
 
     Ok(Node {
         engine,
