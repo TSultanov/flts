@@ -44,7 +44,7 @@
             ? !!configStore.current?.openaiApiKey
             : !!configStore.current?.geminiApiKey;
 
-        if (!apiKeyOk || !configStore.current?.libraryPath || !configStore.current?.targetLanguageId) {
+        if (!apiKeyOk || !configStore.current?.targetLanguageId) {
             return configOnlyLinks;
         } else {
             return fullLinks;
@@ -64,7 +64,7 @@
         const apiKeyOk = configStore.current?.translationProvider === 'openai'
             ? !!configStore.current?.openaiApiKey
             : !!configStore.current?.geminiApiKey;
-        const configComplete = apiKeyOk && configStore.current?.libraryPath && configStore.current?.targetLanguageId;
+        const configComplete = apiKeyOk && configStore.current?.targetLanguageId;
 
         if (!configComplete) {
             // Must go to config if not configured

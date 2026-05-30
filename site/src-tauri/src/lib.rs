@@ -120,6 +120,7 @@ pub fn run() {
             app::config::get_models,
             app::config::get_languages,
             app::get_config,
+            app::get_library_root,
             app::update_config,
             app::get_anki_sync_status,
             app::sync_anki_now,

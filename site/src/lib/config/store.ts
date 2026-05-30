@@ -29,7 +29,6 @@ export type Config = {
     openaiApiKey?: string,
     deepseekApiKey?: string,
     model: number,
-    libraryPath?: string,
     spotifyClientId?: string,
     spotifyPreloadCount?: number,
     spotifyShowNextTrack?: boolean,

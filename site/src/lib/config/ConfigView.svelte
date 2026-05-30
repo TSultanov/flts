@@ -10,7 +10,6 @@
         type ProviderMeta,
         type TranslationProvider,
     } from "./store";
-    import { open } from "@tauri-apps/plugin-dialog";
     import { platform } from "@tauri-apps/plugin-os";
     import { invoke } from "@tauri-apps/api/core";
     import {
@@ -32,7 +31,8 @@
     let targetLanguage: string | undefined = $derived(
         configStore.current?.targetLanguageId,
     );
-    let libraryPath: string | undefined = $derived(configStore.current?.libraryPath);
+    // App-managed, read-only storage location (no folder picker anymore).
+    let storageLocation: string = $state("");
     let model: number = $derived(configStore.current?.model ?? 0);
     let models: Model[] = $state([]);
     let providers: ProviderMeta[] = $state([]);
@@ -107,6 +107,11 @@
         ]);
         models = loadedModels;
         providers = loadedProviders;
+        try {
+            storageLocation = await invoke<string>("get_library_root");
+        } catch {
+            storageLocation = "";
+        }
         if (isMac) {
             spotifyStatus = await spotifyWebStatus();
         }
@@ -120,7 +125,6 @@
             deepseekApiKey,
             targetLanguageId: targetLanguage,
             model,
-            libraryPath: libraryPath ?? undefined,
             spotifyClientId: spotifyClientId.trim() || undefined,
             spotifyPreloadCount,
             spotifyShowNextTrack,
@@ -171,13 +175,6 @@
         }
     });
 
-    async function selectDirectory() {
-        libraryPath =
-            (await open({
-                multiple: false,
-                directory: true,
-            })) ?? libraryPath;
-    }
 </script>
 
 {#await languages}
@@ -228,11 +225,14 @@
                 {/each}
             </select>
 
-            <label for="library">Library</label>
-            <input id="library" type="text" bind:value={libraryPath} />
-            <button id="selectDirectory" onclick={selectDirectory}
-                >Select directory</button
-            >
+            <label for="storage">Storage</label>
+            <input
+                id="storage"
+                type="text"
+                readonly
+                title={storageLocation}
+                value={storageLocation}
+            />
 
             {#if isMac}
                 <details class="spotify-section">
@@ -384,14 +384,6 @@
     input,
     select {
         grid-column: 2/4;
-    }
-
-    input#library {
-        grid-column: 2/3;
-    }
-
-    button#selectDirectory {
-        grid-column: 3/4;
     }
 
     button#save {

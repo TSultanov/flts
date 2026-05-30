@@ -128,7 +128,10 @@ pub struct Config {
     #[serde(rename = "deepseekApiKey", default)]
     pub deepseek_api_key: Option<String>,
     pub model: TranslationModel,
-    #[serde(rename = "libraryPath")]
+    /// LEGACY / migration-read-only. The library location is now app-managed
+    /// (`resolve_library_root`); this is only read once to migrate an existing
+    /// user-picked library, then cleared. Never written by new code.
+    #[serde(rename = "libraryPath", default)]
     pub library_path: Option<String>,
     /// Spotify Developer Dashboard client_id. Required for the Web API to work;
     /// users register their own dev app (PKCE flow, no client secret needed)

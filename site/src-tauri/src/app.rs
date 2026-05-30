@@ -30,11 +30,6 @@ use crate::app::{
     summary_generation_queue::SummaryGenerationQueue, translation_queue::TranslationQueue,
 };
 
-#[cfg(mobile)]
-fn document_dir() -> Option<std::path::PathBuf> {
-    directories::UserDirs::new().and_then(|u| u.document_dir().map(std::path::Path::to_owned))
-}
-
 const EXIT_STOP_QUEUE_TIMEOUT: Duration = Duration::from_secs(2);
 const EXIT_SAVE_ALL_TIMEOUT: Duration = Duration::from_secs(10);
 const EXIT_CACHE_CLOSE_TIMEOUT: Duration = Duration::from_millis(250);
@@ -77,6 +72,94 @@ impl Display for AppError {
     }
 }
 
+/// Resolves the app config directory (holds `config.json` and, from Phase 2,
+/// the Syncthing home). Honors `FLTS_CONFIG_DIR` so E2E harnesses get a fully
+/// isolated config; otherwise the per-platform `ProjectDirs.config_dir()`.
+fn resolve_config_dir() -> anyhow::Result<PathBuf> {
+    if let Some(dir) = std::env::var_os("FLTS_CONFIG_DIR").filter(|v| !v.is_empty()) {
+        return Ok(PathBuf::from(dir));
+    }
+    let dirs = ProjectDirs::from("com", "TS", "FLTS").ok_or(AppError::ProjectDirsError)?;
+    Ok(dirs.config_dir().to_path_buf())
+}
+
+/// Resolves the app-managed library root. It is deterministic and app-private —
+/// the user never picks it.
+///
+/// Order of precedence:
+/// 1. `FLTS_LIBRARY_DIR` — explicit override (tests, power users).
+/// 2. `<FLTS_CONFIG_DIR>/library` — keeps the single-env E2E isolation working.
+/// 3. `ProjectDirs.data_dir()/library` — the per-platform default. On iOS this
+///    is under `Library/Application Support`, which is **private** (not visible
+///    to the Files app, unlike `Documents/`) and **backed up by default** — so
+///    no `isExcludedFromBackup` handling is needed.
+fn resolve_library_root() -> anyhow::Result<PathBuf> {
+    if let Some(dir) = std::env::var_os("FLTS_LIBRARY_DIR").filter(|v| !v.is_empty()) {
+        return Ok(PathBuf::from(dir));
+    }
+    if let Some(cfg) = std::env::var_os("FLTS_CONFIG_DIR").filter(|v| !v.is_empty()) {
+        return Ok(PathBuf::from(cfg).join("library"));
+    }
+    let dirs = ProjectDirs::from("com", "TS", "FLTS").ok_or(AppError::ProjectDirsError)?;
+    Ok(dirs.data_dir().join("library"))
+}
+
+/// What a legacy-library migration actually did. Returned so callers can log
+/// the right message and tests can assert behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MigrationOutcome {
+    /// Source absent, or already at the destination — nothing moved.
+    NothingToDo,
+    /// Source relocated into the (previously empty) destination.
+    Moved,
+    /// Destination already had content; kept it, left the source untouched.
+    KeptExisting,
+}
+
+/// Moves a legacy library at `old` into `new_root`, non-destructively: only when
+/// the destination is absent or empty. Pure filesystem logic (no config), so it
+/// is unit-testable. Uses `rename` with a cross-filesystem recursive-copy
+/// fallback, removing the source only after a fully successful copy.
+fn migrate_library_files(old: &Path, new_root: &Path) -> anyhow::Result<MigrationOutcome> {
+    if old == new_root || !old.exists() {
+        return Ok(MigrationOutcome::NothingToDo);
+    }
+
+    let new_is_empty = !new_root.exists()
+        || fs::read_dir(new_root)
+            .map(|mut d| d.next().is_none())
+            .unwrap_or(false);
+    if !new_is_empty {
+        return Ok(MigrationOutcome::KeptExisting);
+    }
+
+    if let Some(parent) = new_root.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if fs::rename(old, new_root).is_err() {
+        copy_dir_recursive(old, new_root)?;
+        fs::remove_dir_all(old)?;
+    }
+    Ok(MigrationOutcome::Moved)
+}
+
+/// Recursively copies `src` into `dst`, used as the cross-filesystem fallback
+/// when a plain `rename` of the legacy library fails (e.g. moving from a
+/// user-picked external volume into the app data dir).
+fn copy_dir_recursive(src: &Path, dst: &Path) -> anyhow::Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let target = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
 pub struct AppState {
     app: tauri::AppHandle,
     config_path: PathBuf,
@@ -103,15 +186,11 @@ impl AppState {
     pub fn new(app: tauri::AppHandle, watcher: Arc<Mutex<LibraryWatcher>>) -> anyhow::Result<Self> {
         info!("Startup!");
 
-        let dirs = ProjectDirs::from("com", "TS", "FLTS").ok_or(AppError::ProjectDirsError)?;
-        let config_dir = dirs.config_dir();
+        let config_dir = resolve_config_dir()?;
 
-        if !fs::exists(config_dir)? {
-            fs::create_dir(config_dir)?;
+        if !fs::exists(&config_dir)? {
+            fs::create_dir_all(&config_dir)?;
         }
-
-        // #[cfg(mobile)]
-        // let config_dir = config_dir().unwrap();
 
         info!("config_dir = {:?}", config_dir);
         let config_path = config_dir.join("config.json");
@@ -200,33 +279,12 @@ impl AppState {
     }
 
     pub async fn update_config(&self, config: Config) -> anyhow::Result<()> {
-        #[cfg(mobile)]
-        let mut config = config;
-
         // Translator settings (provider/key/model) are captured when the translation queue is created.
         // Reset it so the next translation uses the latest config.
         self.stop_translation_queue().await;
 
-        #[cfg(mobile)]
-        {
-            let library_path = {
-                let documents = document_dir();
-                if let Some(documents) = &documents
-                    && !fs::exists(documents)?
-                {
-                    fs::create_dir(documents)?;
-                };
-                let library_directory = documents.map(|p| p.join("FLTSLibrary"));
-                if let Some(library_directory) = &library_directory
-                    && !fs::exists(library_directory)?
-                {
-                    fs::create_dir(library_directory)?;
-                };
-                library_directory.map(|d| d.to_string_lossy().to_string())
-            };
-
-            config.library_path = library_path;
-        }
+        // The library location is now app-managed (resolve_library_root); the
+        // frontend no longer sends a path, so there's nothing to compute here.
         info!("config = {:?}", config);
 
         config.save(&self.config_path)?;
@@ -237,84 +295,114 @@ impl AppState {
 
     pub async fn eval_config(&self) -> anyhow::Result<()> {
         let config = self.config.borrow().clone();
-        let library_path = config.library_path.clone();
 
-        info!("library_path = {library_path:?}");
+        // The library root is now app-managed (no user picker). Resolve it,
+        // migrate any legacy user-picked library into it (once), then open it.
+        let library_root = resolve_library_root()?;
+        info!("library_root = {library_root:?}");
+        self.migrate_legacy_library(&config, &library_root).await?;
 
-        if let Some(library_path) = library_path {
-            let library = Arc::new(Library::open(PathBuf::from(&library_path)).await?);
-            self.library.send_replace(Some(library.clone()));
+        let library = Arc::new(Library::open(library_root.clone()).await?);
+        self.library.send_replace(Some(library.clone()));
 
-            if std::env::var_os("FLTS_ENABLE_CARD_BACKFILL").is_some_and(|v| !v.is_empty()) {
-                let backfill_lock = self.backfill_lock.clone();
-                let backfill_library = library.clone();
-                tauri::async_runtime::spawn(async move {
-                    let Ok(_guard) = backfill_lock.try_lock() else {
-                        info!("Card backfill skipped: already in progress");
-                        return;
-                    };
-                    if let Err(err) = backfill_library.backfill_cards_from_translations().await {
-                        warn!("Card backfill failed: {err}");
-                    }
-                });
-            } else {
-                info!("Card backfill disabled: set FLTS_ENABLE_CARD_BACKFILL=1 to enable");
-            }
-
-            // Stop any prior Anki sync task (config may have changed).
-            if let Some(task) = self.anki_sync_task.lock().await.take() {
-                info!("Stopping prior Anki sync task before re-spawn");
-                task.shutdown().await;
-            }
-
-            // Stage 8: sync is ON by default. Set FLTS_DISABLE_ANKI_SYNC=1
-            // (e.g. on CI machines without AnkiConnect) to suppress the
-            // task spawn.
-            let disable_env = std::env::var_os("FLTS_DISABLE_ANKI_SYNC");
-            if crate::app::anki_sync::anki_sync_disabled(disable_env.as_deref()) {
-                info!("Anki sync disabled by FLTS_DISABLE_ANKI_SYNC env var");
-                self.set_anki_sync_unreachable(
-                    "Anki sync disabled by FLTS_DISABLE_ANKI_SYNC env var",
-                );
-            } else {
-                let endpoint = config
-                    .anki_endpoint
-                    .clone()
-                    .unwrap_or_else(|| "http://127.0.0.1:8765".to_owned());
-                let api_key = config.anki_api_key.clone();
-                let client: Arc<dyn library::anki::connect::AnkiConnect> =
-                    library::anki::connect::get_anki_connect(endpoint, api_key).into();
-                let interval_secs = std::env::var("FLTS_ANKI_SYNC_INTERVAL_SECS")
-                    .ok()
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .unwrap_or(DEFAULT_ANKI_SYNC_INTERVAL_SECS);
-                let task = AnkiSyncTask::init(
-                    library.clone(),
-                    client,
-                    Duration::from_secs(interval_secs),
-                    self.anki_sync_status.clone(),
-                );
-                *self.anki_sync_task.lock().await = Some(task);
-                info!("Anki sync task spawned (interval = {interval_secs}s)");
-            }
-
-            self.watcher
-                .lock()
-                .await
-                .set_path(&Path::new(&library_path).to_path_buf())
-                .unwrap_or_else(|err| {
-                    warn!("Failed to set watcher path to {}: {}", library_path, err)
-                });
+        if std::env::var_os("FLTS_ENABLE_CARD_BACKFILL").is_some_and(|v| !v.is_empty()) {
+            let backfill_lock = self.backfill_lock.clone();
+            let backfill_library = library.clone();
+            tauri::async_runtime::spawn(async move {
+                let Ok(_guard) = backfill_lock.try_lock() else {
+                    info!("Card backfill skipped: already in progress");
+                    return;
+                };
+                if let Err(err) = backfill_library.backfill_cards_from_translations().await {
+                    warn!("Card backfill failed: {err}");
+                }
+            });
         } else {
-            self.library.send_replace(None);
-            self.stop_translation_queue().await;
-            // No library = no sync. UI hides the button.
-            if let Some(task) = self.anki_sync_task.lock().await.take() {
-                task.shutdown().await;
-            }
-            self.set_anki_sync_unreachable("Library not configured");
+            info!("Card backfill disabled: set FLTS_ENABLE_CARD_BACKFILL=1 to enable");
         }
 
+        // Stop any prior Anki sync task (config may have changed).
+        if let Some(task) = self.anki_sync_task.lock().await.take() {
+            info!("Stopping prior Anki sync task before re-spawn");
+            task.shutdown().await;
+        }
+
+        // Stage 8: sync is ON by default. Set FLTS_DISABLE_ANKI_SYNC=1
+        // (e.g. on CI machines without AnkiConnect) to suppress the
+        // task spawn.
+        let disable_env = std::env::var_os("FLTS_DISABLE_ANKI_SYNC");
+        if crate::app::anki_sync::anki_sync_disabled(disable_env.as_deref()) {
+            info!("Anki sync disabled by FLTS_DISABLE_ANKI_SYNC env var");
+            self.set_anki_sync_unreachable("Anki sync disabled by FLTS_DISABLE_ANKI_SYNC env var");
+        } else {
+            let endpoint = config
+                .anki_endpoint
+                .clone()
+                .unwrap_or_else(|| "http://127.0.0.1:8765".to_owned());
+            let api_key = config.anki_api_key.clone();
+            let client: Arc<dyn library::anki::connect::AnkiConnect> =
+                library::anki::connect::get_anki_connect(endpoint, api_key).into();
+            let interval_secs = std::env::var("FLTS_ANKI_SYNC_INTERVAL_SECS")
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(DEFAULT_ANKI_SYNC_INTERVAL_SECS);
+            let task = AnkiSyncTask::init(
+                library.clone(),
+                client,
+                Duration::from_secs(interval_secs),
+                self.anki_sync_status.clone(),
+            );
+            *self.anki_sync_task.lock().await = Some(task);
+            info!("Anki sync task spawned (interval = {interval_secs}s)");
+        }
+
+        self.watcher
+            .lock()
+            .await
+            .set_path(&library_root)
+            .unwrap_or_else(|err| {
+                warn!("Failed to set watcher path to {}: {}", library_root.display(), err)
+            });
+
+        Ok(())
+    }
+
+    /// One-time, idempotent migration of a legacy user-picked library (the old
+    /// `config.library_path`, including the old mobile `Documents/FLTSLibrary`
+    /// default) into the app-managed root. Non-destructive: never clobbers a
+    /// populated destination. Clears the legacy pointer when done so subsequent
+    /// runs are no-ops.
+    async fn migrate_legacy_library(&self, config: &Config, new_root: &Path) -> anyhow::Result<()> {
+        let Some(old) = config
+            .library_path
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+        else {
+            return Ok(());
+        };
+
+        match migrate_library_files(&old, new_root)? {
+            MigrationOutcome::Moved => info!("Migrated library {old:?} -> {new_root:?}"),
+            MigrationOutcome::KeptExisting => warn!(
+                "Library destination {new_root:?} already has content; keeping it and leaving \
+                 the legacy library at {old:?} untouched"
+            ),
+            MigrationOutcome::NothingToDo => {}
+        }
+
+        self.clear_library_path().await
+    }
+
+    /// Drops the legacy `library_path` from the persisted config (it is now
+    /// migration-read-only). No-op if already cleared.
+    async fn clear_library_path(&self) -> anyhow::Result<()> {
+        let mut config = self.config.borrow().clone();
+        if config.library_path.is_some() {
+            config.library_path = None;
+            config.save(&self.config_path)?;
+            self.config.send_replace(config);
+        }
         Ok(())
     }
 
@@ -670,6 +758,89 @@ mod tests {
         assert!(!success);
         assert!(start.elapsed() < Duration::from_secs(1));
     }
+
+    /// A unique scratch directory under the OS temp dir (no tempfile dep).
+    fn scratch_dir(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("flts-mig-{tag}-{}-{nanos}", std::process::id()))
+    }
+
+    #[test]
+    fn migration_moves_into_empty_destination() {
+        let base = scratch_dir("move");
+        let old = base.join("old");
+        let new = base.join("new");
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join("book.dat"), b"hello").unwrap();
+
+        let outcome = migrate_library_files(&old, &new).unwrap();
+
+        assert_eq!(outcome, MigrationOutcome::Moved);
+        assert!(!old.exists(), "source removed after move");
+        assert_eq!(fs::read(new.join("book.dat")).unwrap(), b"hello");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn migration_is_non_destructive_when_destination_populated() {
+        let base = scratch_dir("keep");
+        let old = base.join("old");
+        let new = base.join("new");
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join("book.dat"), b"legacy").unwrap();
+        fs::create_dir_all(&new).unwrap();
+        fs::write(new.join("book.dat"), b"current").unwrap();
+
+        let outcome = migrate_library_files(&old, &new).unwrap();
+
+        assert_eq!(outcome, MigrationOutcome::KeptExisting);
+        assert!(old.exists(), "legacy library left untouched");
+        assert_eq!(fs::read(new.join("book.dat")).unwrap(), b"current");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn migration_noop_when_source_missing_or_same() {
+        let base = scratch_dir("noop");
+        let old = base.join("old");
+        let new = base.join("new");
+
+        // Source missing.
+        assert_eq!(
+            migrate_library_files(&old, &new).unwrap(),
+            MigrationOutcome::NothingToDo
+        );
+
+        // Source == destination.
+        fs::create_dir_all(&old).unwrap();
+        assert_eq!(
+            migrate_library_files(&old, &old).unwrap(),
+            MigrationOutcome::NothingToDo
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn resolve_library_root_honors_overrides() {
+        // FLTS_LIBRARY_DIR wins outright.
+        unsafe { std::env::set_var("FLTS_LIBRARY_DIR", "/tmp/flts-explicit") };
+        assert_eq!(
+            resolve_library_root().unwrap(),
+            PathBuf::from("/tmp/flts-explicit")
+        );
+        unsafe { std::env::remove_var("FLTS_LIBRARY_DIR") };
+
+        // Else <FLTS_CONFIG_DIR>/library for E2E isolation.
+        unsafe { std::env::set_var("FLTS_CONFIG_DIR", "/tmp/flts-cfg") };
+        assert_eq!(
+            resolve_library_root().unwrap(),
+            PathBuf::from("/tmp/flts-cfg/library")
+        );
+        unsafe { std::env::remove_var("FLTS_CONFIG_DIR") };
+    }
 }
 
 #[tauri::command]
@@ -703,6 +874,15 @@ pub async fn update_config(
 #[tauri::command]
 pub async fn get_config(state: tauri::State<'_, Arc<AppState>>) -> Result<Config, String> {
     Ok(state.config.borrow().clone())
+}
+
+/// The app-managed library storage location, for read-only display in settings
+/// (the folder picker is gone — see `resolve_library_root`).
+#[tauri::command]
+pub async fn get_library_root() -> Result<String, String> {
+    resolve_library_root()
+        .map(|p| p.to_string_lossy().into_owned())
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
