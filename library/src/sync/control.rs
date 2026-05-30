@@ -47,24 +47,31 @@ pub struct FolderSpec {
     pub device_ids: Vec<String>,
 }
 
-/// The discovery/connectivity options we toggle. Maps onto the booleans of
+/// The discovery/connectivity options we toggle. Maps onto fields of
 /// `GET/PUT /rest/config/options`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OptionsPatch {
     pub global_discovery: bool,
     pub local_discovery: bool,
     pub relays: bool,
     pub nat: bool,
+    /// BEP listen addresses (the `listenAddresses` option). FLTS uses dynamic
+    /// ports (`:0`) instead of Syncthing's default `22000` so the embedded
+    /// engine **coexists with a user's own Syncthing install** rather than
+    /// fighting it for the port. Empty = leave the engine default untouched.
+    pub listen_addresses: Vec<String>,
 }
 
 impl Default for OptionsPatch {
-    /// Production default: reach peers anywhere (needed for iPad off-LAN).
+    /// Production default: reach peers anywhere (needed for iPad off-LAN), on
+    /// dynamic ports so we never collide with another Syncthing on this host.
     fn default() -> Self {
         Self {
             global_discovery: true,
             local_discovery: true,
             relays: true,
             nat: true,
+            listen_addresses: vec!["tcp://0.0.0.0:0".into(), "quic://0.0.0.0:0".into()],
         }
     }
 }
@@ -261,6 +268,14 @@ impl SyncthingApi for HttpSyncthing {
         options["localAnnounceEnabled"] = serde_json::Value::Bool(opts.local_discovery);
         options["relaysEnabled"] = serde_json::Value::Bool(opts.relays);
         options["natEnabled"] = serde_json::Value::Bool(opts.nat);
+        if !opts.listen_addresses.is_empty() {
+            options["listenAddresses"] = serde_json::Value::Array(
+                opts.listen_addresses
+                    .iter()
+                    .map(|a| serde_json::Value::String(a.clone()))
+                    .collect(),
+            );
+        }
         self.put("/rest/config/options", &options).await
     }
 }
@@ -308,7 +323,7 @@ impl MockSyncthing {
 
     /// The last options patch applied, if any.
     pub fn options(&self) -> Option<OptionsPatch> {
-        self.state.lock().unwrap().options
+        self.state.lock().unwrap().options.clone()
     }
 }
 

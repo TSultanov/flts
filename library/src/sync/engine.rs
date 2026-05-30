@@ -59,14 +59,17 @@ impl SyncEngine {
             Arc::new(HttpSyncthing::new(format!("http://{addr}"), api_key));
         let my_id = wait_until_up(client.as_ref()).await?;
 
-        // Hermetic mode keeps discovery off (matching the startup flags); the
-        // default reaches peers anywhere (global discovery + relays).
+        // Hermetic mode keeps discovery off and binds loopback only (matching
+        // the startup flags); the default reaches peers anywhere (global
+        // discovery + relays) on dynamic ports that won't collide with a user's
+        // own Syncthing.
         let options = if cfg.hermetic {
             OptionsPatch {
                 global_discovery: false,
                 local_discovery: false,
                 relays: false,
                 nat: false,
+                listen_addresses: vec!["tcp://127.0.0.1:0".into()],
             }
         } else {
             OptionsPatch::default()
