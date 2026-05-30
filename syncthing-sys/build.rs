@@ -46,8 +46,8 @@ fn main() {
 
 fn build_archive(go_dir: &Path, archive: &Path) {
     let go = env::var("FLTS_GO_BIN").unwrap_or_else(|_| "go".to_string());
-    let status = Command::new(&go)
-        .current_dir(go_dir)
+    let mut cmd = Command::new(&go);
+    cmd.current_dir(go_dir)
         .args([
             "build",
             // `noassets`: skip the generated Web-GUI asset blob. FLTS drives the
@@ -61,8 +61,17 @@ fn build_archive(go_dir: &Path, archive: &Path) {
             archive.to_str().expect("archive path is utf-8"),
             ".",
         ])
-        // Keep cgo on (default) and let Go pick the host toolchain.
-        .env("CGO_ENABLED", "1")
+        .env("CGO_ENABLED", "1");
+
+    // Cross-compile for iOS when Cargo is targeting it; otherwise the host go
+    // toolchain builds for the host. Tauri builds the app for aarch64-apple-ios
+    // (device) and the *-ios-sim / x86_64-apple-ios simulator triples.
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if target_os == "ios" {
+        apply_ios_cross_env(&mut cmd);
+    }
+
+    let status = cmd
         .status()
         .unwrap_or_else(|e| panic!("failed to spawn `{go}`: {e}. Is the Go toolchain installed?"));
     assert!(
@@ -72,15 +81,64 @@ fn build_archive(go_dir: &Path, archive: &Path) {
     assert!(archive.exists(), "go build did not produce {}", archive.display());
 }
 
+/// Configures the Go build to cross-compile a c-archive for the active iOS
+/// target, pointing cgo's clang at the right SDK (device vs simulator).
+fn apply_ios_cross_env(cmd: &mut Command) {
+    let target = env::var("TARGET").unwrap_or_default();
+    let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+
+    // Simulator triples are `*-apple-ios-sim` (Apple Silicon) and
+    // `x86_64-apple-ios` (Intel); `aarch64-apple-ios` is the device.
+    let is_simulator = target.ends_with("-sim") || arch == "x86_64";
+    let (sdk, min_flag) = if is_simulator {
+        ("iphonesimulator", "-mios-simulator-version-min=13.0")
+    } else {
+        ("iphoneos", "-miphoneos-version-min=13.0")
+    };
+
+    let goarch = match arch.as_str() {
+        "aarch64" => "arm64",
+        "x86_64" => "amd64",
+        other => panic!("unsupported iOS arch: {other}"),
+    };
+    let clang_arch = if arch == "aarch64" { "arm64" } else { "x86_64" };
+
+    let sdk_path = xcrun(&["--sdk", sdk, "--show-sdk-path"]);
+    let clang = xcrun(&["--sdk", sdk, "--find", "clang"]);
+    let cc = format!("{clang} -arch {clang_arch} -isysroot {sdk_path} {min_flag}");
+
+    cmd.env("GOOS", "ios").env("GOARCH", goarch).env("CC", cc);
+}
+
+/// Runs `xcrun` and returns its trimmed stdout.
+fn xcrun(args: &[&str]) -> String {
+    let out = Command::new("xcrun")
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run xcrun {args:?}: {e}"));
+    assert!(out.status.success(), "xcrun {args:?} failed");
+    String::from_utf8(out.stdout)
+        .expect("xcrun output is utf-8")
+        .trim()
+        .to_string()
+}
+
 /// System libraries the Go runtime + crypto/net stack require at link time.
 fn link_platform_libs() {
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     match target_os.as_str() {
-        "macos" | "ios" => {
+        "macos" => {
             // Go's net/crypto on Darwin pull in these frameworks + resolv;
-            // CoreServices is needed for the FSEvents-based file watcher.
+            // CoreServices provides FSEvents for the file watcher (macOS only).
             println!("cargo:rustc-link-lib=framework=CoreFoundation");
             println!("cargo:rustc-link-lib=framework=CoreServices");
+            println!("cargo:rustc-link-lib=framework=Security");
+            println!("cargo:rustc-link-lib=resolv");
+        }
+        "ios" => {
+            // iOS has no CoreServices/FSEvents (Syncthing's watcher falls back
+            // to kqueue, which is in libSystem — no extra framework needed).
+            println!("cargo:rustc-link-lib=framework=CoreFoundation");
             println!("cargo:rustc-link-lib=framework=Security");
             println!("cargo:rustc-link-lib=resolv");
         }

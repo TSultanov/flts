@@ -40,9 +40,7 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
-	<key>UIFileSharingEnabled</key>
-	<true/>
-	<key>LSSupportsOpeningDocumentsInPlace</key>
-	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>FLTS uses the camera to scan another device&apos;s pairing QR code.</string>
 </dict>
 </plist>

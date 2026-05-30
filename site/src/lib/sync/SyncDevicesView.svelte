@@ -7,10 +7,14 @@
         syncListDevices,
         syncAddDevice,
         syncRemoveDevice,
+        canScan,
+        scanDeviceId,
         type SyncStatus,
         type ThisDevice,
         type DeviceEntry,
     } from "./store.svelte";
+
+    const scanAvailable = canScan();
 
     let status = $derived(syncStatus.current);
     let enabled = $derived(!!status && status.state !== "disabled");
@@ -87,6 +91,18 @@
         busy = false;
     }
 
+    async function scanToAdd() {
+        busy = true;
+        error = "";
+        try {
+            const id = await scanDeviceId();
+            if (id) newId = id;
+        } catch (e) {
+            error = String(e);
+        }
+        busy = false;
+    }
+
     async function remove(id: string) {
         busy = true;
         error = "";
@@ -145,7 +161,12 @@
         </p>
         <input placeholder="Device ID" bind:value={newId} />
         <input placeholder="Name (optional)" bind:value={newName} />
-        <button onclick={add} disabled={busy || !newId.trim()}>Add device</button>
+        <div class="add-actions">
+            {#if scanAvailable}
+                <button onclick={scanToAdd} disabled={busy}>Scan QR</button>
+            {/if}
+            <button onclick={add} disabled={busy || !newId.trim()}>Add device</button>
+        </div>
 
         {#if devices.length > 0}
             <p class="label">Paired devices</p>
@@ -233,6 +254,11 @@
         font-size: 0.72em;
         word-break: break-all;
         opacity: 0.85;
+    }
+
+    .add-actions {
+        display: flex;
+        gap: 8px;
     }
 
     .devices {
