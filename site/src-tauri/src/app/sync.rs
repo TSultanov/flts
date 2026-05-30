@@ -27,6 +27,14 @@ pub struct DeviceEntry {
     pub connected: bool,
 }
 
+/// An unknown device awaiting approval (the other half of a one-sided pairing).
+#[derive(Debug, Clone, Serialize)]
+pub struct PendingEntry {
+    #[serde(rename = "deviceId")]
+    pub device_id: String,
+    pub name: String,
+}
+
 #[tauri::command]
 pub async fn get_sync_status(
     state: tauri::State<'_, Arc<AppState>>,
@@ -100,6 +108,30 @@ pub async fn sync_add_device(
         .pair_device(device_id.trim(), name.trim())
         .await
         .map_err(|err| err.to_string())
+}
+
+/// Devices that tried to connect but aren't paired yet — the user accepts one
+/// (via `sync_add_device`) to complete pairing without adding both sides
+/// manually. Empty when sync isn't running.
+#[tauri::command]
+pub async fn sync_list_pending(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<Vec<PendingEntry>, String> {
+    let Some(engine) = state.sync_engine().await else {
+        return Ok(Vec::new());
+    };
+    let pending = engine
+        .client()
+        .pending_devices()
+        .await
+        .map_err(|err| err.to_string())?;
+    Ok(pending
+        .into_iter()
+        .map(|p| PendingEntry {
+            device_id: p.device_id,
+            name: p.name,
+        })
+        .collect())
 }
 
 /// Unpair a peer device and stop sharing the library with it.

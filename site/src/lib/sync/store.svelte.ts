@@ -14,6 +14,7 @@ export type SyncStatus = {
 
 export type ThisDevice = { deviceId: string; name?: string };
 export type DeviceEntry = { deviceId: string; name: string; connected: boolean };
+export type PendingEntry = { deviceId: string; name: string };
 
 /// Live sync status, refreshed whenever the backend emits `sync_status_changed`.
 export const syncStatus = new Resource<SyncStatus>(
@@ -33,6 +34,10 @@ export async function syncGetThisDevice(): Promise<ThisDevice | null> {
 
 export async function syncListDevices(): Promise<DeviceEntry[]> {
     return await invoke<DeviceEntry[]>("sync_list_devices");
+}
+
+export async function syncListPending(): Promise<PendingEntry[]> {
+    return await invoke<PendingEntry[]>("sync_list_pending");
 }
 
 export async function syncAddDevice(deviceId: string, name: string): Promise<void> {

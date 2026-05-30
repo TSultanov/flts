@@ -145,6 +145,7 @@ pub fn run() {
             app::sync::sync_get_this_device,
             app::sync::sync_set_enabled,
             app::sync::sync_list_devices,
+            app::sync::sync_list_pending,
             app::sync::sync_add_device,
             app::sync::sync_remove_device,
             app::translate_paragraph,

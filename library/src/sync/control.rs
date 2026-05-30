@@ -37,6 +37,14 @@ pub struct DeviceInfo {
     pub name: String,
 }
 
+/// An unknown device that tried to connect — surfaced so the user can approve
+/// it (the second half of pairing, instead of adding both sides manually).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingDevice {
+    pub device_id: String,
+    pub name: String,
+}
+
 /// A Syncthing folder to create-or-update (`ensure_folder`). The peer list must
 /// include this device; the engine passes the full membership.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,15 +71,21 @@ pub struct OptionsPatch {
 }
 
 impl Default for OptionsPatch {
-    /// Production default: reach peers anywhere (needed for iPad off-LAN), on
-    /// dynamic ports so we never collide with another Syncthing on this host.
+    /// Production default: reach peers anywhere (needed for iPad off-LAN), on a
+    /// dynamic port so we never collide with another Syncthing on this host.
+    ///
+    /// TCP only — no `quic://` listener. quic-go (pinned by Syncthing) panics
+    /// during its TLS handshake on newer Go toolchains ("crypto/tls bug: where's
+    /// my session ticket?"), and because the engine runs in-process that panic
+    /// takes down the whole app. TCP carries all sync; relays + global discovery
+    /// still provide off-LAN reach.
     fn default() -> Self {
         Self {
             global_discovery: true,
             local_discovery: true,
             relays: true,
             nat: true,
-            listen_addresses: vec!["tcp://0.0.0.0:0".into(), "quic://0.0.0.0:0".into()],
+            listen_addresses: vec!["tcp://0.0.0.0:0".into()],
         }
     }
 }
@@ -121,6 +135,10 @@ pub trait SyncthingApi: Send + Sync {
 
     /// Toggle global/local discovery, relays, and NAT traversal.
     async fn set_options(&self, opts: OptionsPatch) -> Result<()>;
+
+    /// Unknown devices that have tried to connect (Syncthing's "pending
+    /// devices"). Accepting one = `add_device` with its ID.
+    async fn pending_devices(&self) -> Result<Vec<PendingDevice>>;
 }
 
 // ---------- HTTP implementation ----------
@@ -309,6 +327,26 @@ impl SyncthingApi for HttpSyncthing {
         }
         self.put("/rest/config/options", &options).await
     }
+
+    async fn pending_devices(&self) -> Result<Vec<PendingDevice>> {
+        // `{ "<deviceID>": { "time": "...", "name": "...", "address": "..." } }`
+        let value = self.get("/rest/cluster/pending/devices").await?;
+        let mut out = Vec::new();
+        if let Some(map) = value.as_object() {
+            for (device_id, info) in map {
+                let name = info
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                out.push(PendingDevice {
+                    device_id: device_id.clone(),
+                    name,
+                });
+            }
+        }
+        Ok(out)
+    }
 }
 
 // ---------- In-memory mock ----------
@@ -321,6 +359,7 @@ struct MockState {
     options: Option<OptionsPatch>,
     connected: HashMap<String, bool>,
     addresses: HashMap<String, Vec<String>>,
+    pending: Vec<PendingDevice>,
 }
 
 /// In-memory `SyncthingApi` for unit tests — records mutations and serves back
@@ -356,6 +395,14 @@ impl MockSyncthing {
     /// The last options patch applied, if any.
     pub fn options(&self) -> Option<OptionsPatch> {
         self.state.lock().unwrap().options.clone()
+    }
+
+    /// Seed a pending (unknown, awaiting-approval) device for tests.
+    pub fn set_pending(&self, device_id: &str, name: &str) {
+        self.state.lock().unwrap().pending.push(PendingDevice {
+            device_id: device_id.to_string(),
+            name: name.to_string(),
+        });
     }
 }
 
@@ -414,6 +461,10 @@ impl SyncthingApi for MockSyncthing {
         self.state.lock().unwrap().options = Some(opts);
         Ok(())
     }
+
+    async fn pending_devices(&self) -> Result<Vec<PendingDevice>> {
+        Ok(self.state.lock().unwrap().pending.clone())
+    }
 }
 
 #[cfg(test)]
@@ -448,6 +499,17 @@ mod tests {
 
         api.set_options(OptionsPatch::default()).await.unwrap();
         assert_eq!(api.options(), Some(OptionsPatch::default()));
+    }
+
+    #[tokio::test]
+    async fn mock_surfaces_pending_devices() {
+        let api = MockSyncthing::new("ME");
+        assert!(api.pending_devices().await.unwrap().is_empty());
+        api.set_pending("PEER-X", "iPad");
+        let pending = api.pending_devices().await.unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].device_id, "PEER-X");
+        assert_eq!(pending[0].name, "iPad");
     }
 
     #[tokio::test]

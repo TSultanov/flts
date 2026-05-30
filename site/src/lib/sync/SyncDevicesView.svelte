@@ -5,6 +5,7 @@
         syncSetEnabled,
         syncGetThisDevice,
         syncListDevices,
+        syncListPending,
         syncAddDevice,
         syncRemoveDevice,
         canScan,
@@ -12,6 +13,7 @@
         type SyncStatus,
         type ThisDevice,
         type DeviceEntry,
+        type PendingEntry,
     } from "./store.svelte";
 
     const scanAvailable = canScan();
@@ -22,6 +24,7 @@
     let thisDevice = $state<ThisDevice | null>(null);
     let qrDataUrl = $state("");
     let devices = $state<DeviceEntry[]>([]);
+    let pending = $state<PendingEntry[]>([]);
     let busy = $state(false);
     let error = $state("");
 
@@ -47,6 +50,7 @@
         try {
             thisDevice = await syncGetThisDevice();
             devices = await syncListDevices();
+            pending = await syncListPending();
             qrDataUrl = thisDevice?.deviceId
                 ? await QRCode.toDataURL(thisDevice.deviceId, { margin: 1, width: 220 })
                 : "";
@@ -62,6 +66,14 @@
     $effect(() => {
         void refreshKey;
         refresh();
+    });
+
+    // While sync is on, poll for pending devices + connection changes (these
+    // don't move deviceCount, so the key above won't catch them).
+    $effect(() => {
+        if (!enabled) return;
+        const id = setInterval(refresh, 4000);
+        return () => clearInterval(id);
     });
 
     async function toggle() {
@@ -84,6 +96,18 @@
             await syncAddDevice(id, newName.trim() || "Device");
             newId = "";
             newName = "";
+            await refresh();
+        } catch (e) {
+            error = String(e);
+        }
+        busy = false;
+    }
+
+    async function accept(p: PendingEntry) {
+        busy = true;
+        error = "";
+        try {
+            await syncAddDevice(p.deviceId, p.name || "Device");
             await refresh();
         } catch (e) {
             error = String(e);
@@ -154,10 +178,24 @@
             </div>
         {/if}
 
+        {#if pending.length > 0}
+            <p class="label">Wants to connect</p>
+            <ul class="devices">
+                {#each pending as p (p.deviceId)}
+                    <li>
+                        <span class="dot starting"></span>
+                        <span class="name">{p.name || p.deviceId.slice(0, 7)}</span>
+                        <button onclick={() => accept(p)} disabled={busy}>Accept</button>
+                    </li>
+                {/each}
+            </ul>
+        {/if}
+
         <p class="label">Pair a device</p>
         <p class="hint">
-            Paste the other device's ID (shown in its sync settings or via its QR
-            code), then add this device's ID there too.
+            Add the other device's ID below (scan its QR or paste it). You only
+            need to do this on one device — the other will show a "Wants to
+            connect" prompt to accept.
         </p>
         <input placeholder="Device ID" bind:value={newId} />
         <input placeholder="Name (optional)" bind:value={newName} />
