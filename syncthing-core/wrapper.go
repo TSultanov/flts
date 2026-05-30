@@ -77,6 +77,14 @@ func flts_st_start(home, guiAddr, apiKey *C.char, hermetic C.int) C.int {
 	addr := C.GoString(guiAddr)
 	key := C.GoString(apiKey)
 
+	// Keep ALL Syncthing files under our managed home. We pass the device
+	// cert/config/DB paths explicitly below, but a few locations (notably the
+	// GUI HTTPS cert at ${config}/https-cert.pem) are resolved through these
+	// global base dirs; without this they leak to the XDG default, which may
+	// not exist (e.g. a fresh container) and fails app startup.
+	_ = locations.SetBaseDir(locations.ConfigBaseDir, homeDir)
+	_ = locations.SetBaseDir(locations.DataBaseDir, homeDir)
+
 	certFile := filepath.Join(homeDir, "cert.pem")
 	keyFile := filepath.Join(homeDir, "key.pem")
 	configPath := filepath.Join(homeDir, "config.xml")

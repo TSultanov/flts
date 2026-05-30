@@ -1,0 +1,43 @@
+# Three isolated FLTS sync nodes on one bridge network. Each runs the real
+# engine + roster/reconcile; they connect directly via static addresses
+# (no public discovery). The test runner (run.sh) drives them over the mapped
+# control ports and asserts sync + mesh convergence.
+
+services:
+  node-a:
+    build:
+      context: ../..
+      dockerfile: tests/docker/Dockerfile
+    image: flts-sync-harness
+    environment:
+      FLTS_NODE_NAME: node-a
+      FLTS_LIBRARY_DIR: /data/library
+      FLTS_SYNC_HOME: /data/syncthing
+      FLTS_HARNESS_PORT: "8090"
+      FLTS_BEP_PORT: "22000"
+    ports:
+      - "18090:8090"
+
+  node-b:
+    image: flts-sync-harness
+    depends_on: [node-a]
+    environment:
+      FLTS_NODE_NAME: node-b
+      FLTS_LIBRARY_DIR: /data/library
+      FLTS_SYNC_HOME: /data/syncthing
+      FLTS_HARNESS_PORT: "8090"
+      FLTS_BEP_PORT: "22000"
+    ports:
+      - "18091:8090"
+
+  node-c:
+    image: flts-sync-harness
+    depends_on: [node-a]
+    environment:
+      FLTS_NODE_NAME: node-c
+      FLTS_LIBRARY_DIR: /data/library
+      FLTS_SYNC_HOME: /data/syncthing
+      FLTS_HARNESS_PORT: "8090"
+      FLTS_BEP_PORT: "22000"
+    ports:
+      - "18092:8090"

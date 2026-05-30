@@ -23,8 +23,9 @@ use super::roster::RosterStore;
 pub const LIBRARY_FOLDER_ID: &str = "flts-library";
 
 /// A paired peer as shown in the device-management UI.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct PeerInfo {
+    #[serde(rename = "deviceId")]
     pub device_id: String,
     pub name: String,
     pub connected: bool,
@@ -41,8 +42,13 @@ pub struct EngineConfig {
     pub home: PathBuf,
     /// The folder to sync — the app-managed library root.
     pub library_root: PathBuf,
-    /// Hermetic mode (tests/Docker): no public/LAN discovery, relays, or NAT.
-    pub hermetic: bool,
+    /// Discovery/relays/listen options applied over REST once the engine is up.
+    /// Production uses [`OptionsPatch::default`]; tests/Docker pass tailored
+    /// patches (e.g. [`OptionsPatch::loopback`] or a fixed LAN listen port).
+    pub options: OptionsPatch,
+    /// Go startup flag: bind loopback only and skip boot-time discovery (unit
+    /// tests). Docker passes `false` so the node binds a routable address.
+    pub loopback_only: bool,
 }
 
 /// A running engine plus a control client bound to it.
@@ -69,7 +75,7 @@ impl SyncEngine {
         let port = pick_free_port()?;
         let addr = format!("127.0.0.1:{port}");
 
-        syncthing_sys::start(&cfg.home, &addr, &api_key, cfg.hermetic)
+        syncthing_sys::start(&cfg.home, &addr, &api_key, cfg.loopback_only)
             .map_err(|e| anyhow!("starting syncthing engine failed: {e}"))?;
 
         let client: Arc<dyn SyncthingApi> =
@@ -78,22 +84,9 @@ impl SyncEngine {
         let roster = RosterStore::new(&cfg.library_root);
         let library_root = cfg.library_root.to_string_lossy().into_owned();
 
-        // Hermetic mode keeps discovery off and binds loopback only (matching
-        // the startup flags); the default reaches peers anywhere (global
-        // discovery + relays) on dynamic ports that won't collide with a user's
-        // own Syncthing.
-        let options = if cfg.hermetic {
-            OptionsPatch {
-                global_discovery: false,
-                local_discovery: false,
-                relays: false,
-                nat: false,
-                listen_addresses: vec!["tcp://127.0.0.1:0".into()],
-            }
-        } else {
-            OptionsPatch::default()
-        };
-        client.set_options(options).await?;
+        // Apply the caller's discovery/listen options over REST. (The Go startup
+        // flag above only governs the brief pre-REST boot window.)
+        client.set_options(cfg.options).await?;
 
         client
             .ensure_folder(FolderSpec {
@@ -409,7 +402,8 @@ mod tests {
         let engine = SyncEngine::start(EngineConfig {
             home,
             library_root: library.clone(),
-            hermetic: true,
+            options: OptionsPatch::loopback(),
+            loopback_only: true,
         })
         .await
         .expect("engine starts and configures");

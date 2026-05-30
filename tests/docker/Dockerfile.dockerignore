@@ -1,0 +1,8 @@
+# Keep the build context small + reproducible (BuildKit reads the
+# <dockerfile>.dockerignore sibling).
+target/
+**/target/
+node_modules/
+**/node_modules/
+site/dist/
+.git/

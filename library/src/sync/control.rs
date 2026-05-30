@@ -76,6 +76,20 @@ impl Default for OptionsPatch {
     }
 }
 
+impl OptionsPatch {
+    /// Fully local: no discovery, relays, or NAT, BEP bound to loopback only.
+    /// For unit/integration tests that must not touch the network.
+    pub fn loopback() -> Self {
+        Self {
+            global_discovery: false,
+            local_discovery: false,
+            relays: false,
+            nat: false,
+            listen_addresses: vec!["tcp://127.0.0.1:0".into()],
+        }
+    }
+}
+
 #[async_trait]
 pub trait SyncthingApi: Send + Sync {
     /// This device's Syncthing ID. Also the natural "is the engine up?" probe.
@@ -91,6 +105,11 @@ pub trait SyncthingApi: Send + Sync {
 
     /// Remove a peer device from the config.
     async fn remove_device(&self, device_id: &str) -> Result<()>;
+
+    /// Pin a peer's connection addresses (e.g. `tcp://host:22000`). Used by the
+    /// test harness to wire static topology in lieu of discovery; production
+    /// leaves devices on `dynamic`.
+    async fn set_device_addresses(&self, device_id: &str, addresses: Vec<String>) -> Result<()>;
 
     /// Per-device connection state, keyed by device ID (`connected` flag from
     /// `GET /rest/system/connections`).
@@ -231,6 +250,18 @@ impl SyncthingApi for HttpSyncthing {
             .await
     }
 
+    async fn set_device_addresses(&self, device_id: &str, addresses: Vec<String>) -> Result<()> {
+        let mut device = self.get(&format!("/rest/config/devices/{device_id}")).await?;
+        device["addresses"] = serde_json::Value::Array(
+            addresses
+                .into_iter()
+                .map(serde_json::Value::String)
+                .collect(),
+        );
+        self.put(&format!("/rest/config/devices/{device_id}"), &device)
+            .await
+    }
+
     async fn connections(&self) -> Result<HashMap<String, bool>> {
         let value = self.get("/rest/system/connections").await?;
         let mut out = HashMap::new();
@@ -289,6 +320,7 @@ struct MockState {
     folders: Vec<FolderSpec>,
     options: Option<OptionsPatch>,
     connected: HashMap<String, bool>,
+    addresses: HashMap<String, Vec<String>>,
 }
 
 /// In-memory `SyncthingApi` for unit tests — records mutations and serves back
@@ -354,6 +386,16 @@ impl SyncthingApi for MockSyncthing {
         let mut state = self.state.lock().unwrap();
         state.devices.retain(|d| d.device_id != device_id);
         state.connected.remove(device_id);
+        state.addresses.remove(device_id);
+        Ok(())
+    }
+
+    async fn set_device_addresses(&self, device_id: &str, addresses: Vec<String>) -> Result<()> {
+        self.state
+            .lock()
+            .unwrap()
+            .addresses
+            .insert(device_id.to_string(), addresses);
         Ok(())
     }
 

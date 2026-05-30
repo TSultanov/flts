@@ -83,11 +83,19 @@ impl SyncTask {
             ..Default::default()
         });
 
+        // Hermetic (tests/E2E): stay fully local. Otherwise reach peers anywhere
+        // on dynamic ports.
+        let options = if hermetic {
+            library::sync::control::OptionsPatch::loopback()
+        } else {
+            library::sync::control::OptionsPatch::default()
+        };
         let engine = Arc::new(
             SyncEngine::start(EngineConfig {
                 home,
                 library_root,
-                hermetic,
+                options,
+                loopback_only: hermetic,
             })
             .await?,
         );

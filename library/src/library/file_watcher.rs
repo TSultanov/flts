@@ -2,7 +2,7 @@ use isolang::Language;
 use itertools::Itertools;
 use log::{error, info, warn};
 use notify::{Event, EventKind, RecursiveMode};
-use notify_debouncer_full::{DebounceEventResult, Debouncer, FileIdMap, new_debouncer};
+use notify_debouncer_full::{DebounceEventResult, Debouncer, RecommendedCache, new_debouncer};
 use std::fs;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -32,7 +32,7 @@ pub enum LibraryFileChange {
 
 pub struct LibraryWatcher {
     path: Option<PathBuf>,
-    debouncer: Debouncer<notify::RecommendedWatcher, FileIdMap>,
+    debouncer: Debouncer<notify::RecommendedWatcher, RecommendedCache>,
     change_rx: Option<UnboundedReceiver<LibraryFileChange>>,
 }
 

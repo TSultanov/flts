@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["cli", "library", "site/src-tauri", "syncthing-sys"]
+members = ["cli", "library", "site/src-tauri", "sync-harness", "syncthing-sys"]
 
 [workspace.dependencies]
 ahash = "0.8.12"
