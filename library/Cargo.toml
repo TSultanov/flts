@@ -6,6 +6,11 @@ edition = "2024"
 [features]
 default = []
 tla_trace = []
+# Pulls in the embedded Syncthing engine FFI (syncthing-sys → Go c-archive).
+# Off by default so `cargo test -p library` stays fast and Go-free; the app and
+# the sync harness enable it. The pure sync logic (control/roster/reconcile) is
+# always compiled — only `sync::engine` is gated.
+sync-engine = ["dep:syncthing-sys"]
 
 [dependencies]
 ahash = { workspace = true }
@@ -30,6 +35,7 @@ scraper = { version = "0.26.0", default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
 strum = { workspace = true }
+syncthing-sys = { path = "../syncthing-sys", optional = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "fs", "time", "io-util", "process"] }
 unicode-normalization = { workspace = true }
 uuid = { workspace = true }

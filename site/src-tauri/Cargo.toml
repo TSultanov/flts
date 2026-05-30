@@ -19,7 +19,7 @@ tauri-build = { version = "2.5.6", features = [] }
 [dependencies]
 serde_json = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-library = { path = "../../library" }
+library = { path = "../../library", features = ["sync-engine"] }
 log = { workspace = true }
 tauri = { version = "2.10.3", features = [] }
 tauri-plugin-log = "2.8.0"

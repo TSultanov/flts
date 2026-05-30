@@ -84,6 +84,18 @@ pub fn run() {
                 });
             }
 
+            {
+                let mut rx = app_state.subscribe_sync_status();
+                let app = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    while rx.changed().await.is_ok() {
+                        if let Err(err) = app.emit("sync_status_changed", ()) {
+                            warn!("Failed to emit sync_status_changed: {err}");
+                        }
+                    }
+                });
+            }
+
             info!("Spawning async init");
             let resume_state = app_state.clone();
             tauri::async_runtime::spawn(async move {
@@ -124,6 +136,9 @@ pub fn run() {
             app::update_config,
             app::get_anki_sync_status,
             app::sync_anki_now,
+            app::sync::get_sync_status,
+            app::sync::sync_get_this_device,
+            app::sync::sync_set_enabled,
             app::translate_paragraph,
             app::translate_chapter,
             app::get_paragraph_translation_activity,

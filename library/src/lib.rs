@@ -7,6 +7,7 @@ pub mod library;
 pub mod lyrics;
 pub mod retry;
 pub mod summary_generator;
+pub mod sync;
 pub mod system_dictionary;
 pub mod tla_trace;
 pub mod translation_stats;

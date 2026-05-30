@@ -34,6 +34,8 @@ export type Config = {
     spotifyShowNextTrack?: boolean,
     ankiEndpoint?: string,
     ankiApiKey?: string,
+    syncEnabled?: boolean,
+    syncDeviceName?: string,
 }
 
 export async function getModels(): Promise<Model[]> {

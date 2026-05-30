@@ -150,6 +150,14 @@ pub struct Config {
     /// Optional AnkiConnect API key. Unset for default Anki desktop installs.
     #[serde(rename = "ankiApiKey", default)]
     pub anki_api_key: Option<String>,
+    /// Native Syncthing device sync. Off by default; the user opts in from the
+    /// sync UI (which then starts the embedded engine).
+    #[serde(rename = "syncEnabled", default)]
+    pub sync_enabled: bool,
+    /// This device's display name in the sync roster. Defaults to the hostname
+    /// (which is also Syncthing's own default), so `None` is fine.
+    #[serde(rename = "syncDeviceName", default)]
+    pub sync_device_name: Option<String>,
 }
 
 fn default_preload_count() -> u32 {
@@ -175,6 +183,8 @@ impl Default for Config {
             spotify_show_next_track: default_show_next_track(),
             anki_endpoint: Some("http://127.0.0.1:8765".to_owned()),
             anki_api_key: None,
+            sync_enabled: false,
+            sync_device_name: None,
         }
     }
 }

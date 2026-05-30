@@ -43,6 +43,8 @@ pub mod library_view;
 pub mod lyrics;
 pub mod spotify;
 pub mod summary_generation_queue;
+pub mod sync;
+pub mod sync_daemon;
 pub mod translation_queue;
 #[derive(Debug)]
 pub enum AppError {
@@ -175,6 +177,9 @@ pub struct AppState {
     /// Stable across `eval_config` re-spawns. The transient `AnkiSyncTask`
     /// holds a clone and pushes status into it on every tick.
     anki_sync_status: Arc<watch::Sender<crate::app::anki_sync::AnkiSyncStatus>>,
+    sync_task: Mutex<Option<Arc<crate::app::sync_daemon::SyncTask>>>,
+    /// Stable across re-spawns, like `anki_sync_status`.
+    sync_status: Arc<watch::Sender<crate::app::sync_daemon::SyncStatus>>,
     translations_cache: tokio::sync::OnceCell<Arc<TranslationsCache>>,
     stats_cache: tokio::sync::OnceCell<Arc<TranslationSizeCache>>,
     gemini_prompt_cache: tokio::sync::OnceCell<Arc<GeminiPromptCache>>,
@@ -222,6 +227,10 @@ impl AppState {
             backfill_lock: Arc::new(Mutex::new(())),
             anki_sync_task: Mutex::new(None),
             anki_sync_status: Arc::new(watch::channel(initial_anki_status).0),
+            sync_task: Mutex::new(None),
+            sync_status: Arc::new(
+                watch::channel(crate::app::sync_daemon::SyncStatus::default()).0,
+            ),
             translations_cache: tokio::sync::OnceCell::new(),
             stats_cache: tokio::sync::OnceCell::new(),
             gemini_prompt_cache: tokio::sync::OnceCell::new(),
@@ -240,6 +249,22 @@ impl AppState {
             .spotify_client_id
             .clone()
             .filter(|s| !s.trim().is_empty())
+    }
+
+    pub fn config_borrow_sync_device_name(&self) -> Option<String> {
+        self.config
+            .borrow()
+            .sync_device_name
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+    }
+
+    /// Persist the `syncEnabled` flag and re-evaluate config (starts/stops the
+    /// embedded engine). Used by the `sync_set_enabled` command.
+    pub async fn set_sync_enabled(&self, enabled: bool) -> anyhow::Result<()> {
+        let mut config = self.config.borrow().clone();
+        config.sync_enabled = enabled;
+        self.update_config(config).await
     }
 
     pub fn subscribe_library(&self) -> watch::Receiver<Option<Arc<Library>>> {
@@ -266,6 +291,27 @@ impl AppState {
 
     pub async fn sync_anki_now(&self) -> anyhow::Result<crate::app::anki_sync::SyncReportDto> {
         crate::app::anki_sync::sync_now_or_err(&self.anki_sync_task).await
+    }
+
+    pub fn subscribe_sync_status(
+        &self,
+    ) -> watch::Receiver<crate::app::sync_daemon::SyncStatus> {
+        self.sync_status.subscribe()
+    }
+
+    pub fn sync_status(&self) -> crate::app::sync_daemon::SyncStatus {
+        self.sync_status.borrow().clone()
+    }
+
+    /// The running sync engine, if a task is installed (for sync Tauri commands).
+    pub async fn sync_engine(
+        &self,
+    ) -> Option<Arc<library::sync::engine::SyncEngine>> {
+        self.sync_task
+            .lock()
+            .await
+            .as_ref()
+            .map(|task| task.engine())
     }
 
     fn set_anki_sync_unreachable(&self, reason: &str) {
@@ -364,7 +410,60 @@ impl AppState {
                 warn!("Failed to set watcher path to {}: {}", library_root.display(), err)
             });
 
+        self.eval_sync(&config, &library_root).await;
+
         Ok(())
+    }
+
+    /// (Re)starts or tears down the native sync task to match config + env.
+    /// Opt-in via `syncEnabled`; `FLTS_DISABLE_SYNC` / `FLTS_MOCK_SYNC` force it
+    /// off (CI / E2E); `FLTS_SYNC_HERMETIC` keeps it local (tests / Docker).
+    /// Never fails `eval_config` — a sync start error is surfaced via status.
+    async fn eval_sync(&self, config: &Config, library_root: &Path) {
+        use crate::app::sync_daemon::{SyncStatus, SyncTask, sync_disabled};
+
+        // Stop any prior task first (config may have changed).
+        if let Some(task) = self.sync_task.lock().await.take() {
+            info!("Stopping prior sync task before re-spawn");
+            task.shutdown().await;
+        }
+
+        let mock = std::env::var_os("FLTS_MOCK_SYNC").is_some_and(|v| !v.is_empty());
+        let disabled = sync_disabled(std::env::var_os("FLTS_DISABLE_SYNC").as_deref());
+
+        if !config.sync_enabled {
+            info!("Sync disabled (syncEnabled = false)");
+            self.sync_status.send_replace(SyncStatus::disabled());
+            return;
+        }
+        if disabled || mock {
+            info!("Sync suppressed by env (FLTS_DISABLE_SYNC / FLTS_MOCK_SYNC)");
+            self.sync_status.send_replace(SyncStatus::disabled());
+            return;
+        }
+
+        let home = match resolve_config_dir() {
+            Ok(dir) => dir.join("syncthing"),
+            Err(err) => {
+                warn!("Cannot resolve syncthing home: {err}");
+                self.sync_status.send_replace(SyncStatus::error(err.to_string()));
+                return;
+            }
+        };
+        let hermetic = std::env::var_os("FLTS_SYNC_HERMETIC").is_some_and(|v| !v.is_empty());
+
+        match SyncTask::init(home, library_root.to_path_buf(), hermetic, self.sync_status.clone())
+            .await
+        {
+            Ok(task) => {
+                *self.sync_task.lock().await = Some(task);
+                info!("Sync task spawned");
+            }
+            Err(err) => {
+                warn!("Sync engine failed to start: {err}");
+                self.sync_status.send_replace(SyncStatus::error(err.to_string()));
+            }
+        }
     }
 
     /// One-time, idempotent migration of a legacy user-picked library (the old
@@ -473,6 +572,10 @@ impl AppState {
                 task.shutdown().await;
             })
             .await;
+        }
+        let sync_task = self.sync_task.lock().await.take();
+        if let Some(task) = sync_task {
+            run_exit_step("sync engine shutdown", EXIT_STOP_QUEUE_TIMEOUT, task.shutdown()).await;
         }
         run_exit_step("save all", EXIT_SAVE_ALL_TIMEOUT, self.save_all()).await;
         self.close_caches_for_exit().await;

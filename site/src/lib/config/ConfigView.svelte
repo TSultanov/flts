@@ -130,6 +130,9 @@
             spotifyShowNextTrack,
             ankiEndpoint: ankiEndpoint.trim() || undefined,
             ankiApiKey: ankiApiKey.trim() || undefined,
+            // Preserve sync settings (managed by the sync UI, not this form).
+            syncEnabled: configStore.current?.syncEnabled,
+            syncDeviceName: configStore.current?.syncDeviceName,
         });
     }
 
