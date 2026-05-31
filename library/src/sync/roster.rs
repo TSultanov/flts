@@ -176,6 +176,30 @@ impl RosterStore {
         Ok(roster)
     }
 
+    /// The `modifiedBy` device id of each pending `.sync-conflict-*` sibling — the
+    /// merge sources the next [`load`](Self::load) will fold in. Trace-only: lets
+    /// the engine emit one `RosterSync` event per incoming roster before the load
+    /// clears the siblings. The id is the last `-` segment of the Syncthing name
+    /// `devices.sync-conflict-<date>-<time>-<modifiedBy>.json`.
+    /// The canonical roster on disk WITHOUT merging siblings — the pre-`load`
+    /// state, so the engine can tell whether a `load` actually changed anything
+    /// (and thus whether to emit `RosterSync`). Trace-only.
+    #[cfg(feature = "tla_trace")]
+    pub(crate) fn snapshot_for_trace(&self) -> Roster {
+        read_roster(&self.path).unwrap_or_default()
+    }
+
+    #[cfg(feature = "tla_trace")]
+    pub(crate) fn pending_sibling_sources(&self) -> Vec<String> {
+        self.conflict_siblings()
+            .iter()
+            .filter_map(|p| {
+                let stem = p.file_stem()?.to_str()?; // strips ".json"
+                stem.rsplit('-').next().map(str::to_string)
+            })
+            .collect()
+    }
+
     /// `.flts/devices.sync-conflict-*.json` siblings, sorted for determinism.
     fn conflict_siblings(&self) -> Vec<PathBuf> {
         let prefix = format!("{ROSTER_BASENAME}.sync-conflict-");

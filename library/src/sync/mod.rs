@@ -16,3 +16,9 @@ pub mod roster;
 
 #[cfg(feature = "sync-engine")]
 pub mod engine;
+
+/// Trace-harness scenarios that drive the roster mesh and emit NDJSON traces for
+/// the `spec/roster/` TLA+ spec. Test-only, and gated on `tla_trace` (needs the
+/// `engine` glue, so also `sync-engine`).
+#[cfg(all(test, feature = "tla_trace", feature = "sync-engine"))]
+mod trace_harness;

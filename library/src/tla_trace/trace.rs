@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs::File,
     io::{BufWriter, Write},
     path::{Path, PathBuf},
@@ -8,6 +9,7 @@ use std::{
 
 use anyhow::Context;
 use serde::Serialize;
+use serde_json::json;
 
 use crate::book::{serialization::Serializable, translation::Translation};
 
@@ -156,6 +158,57 @@ pub async fn emit_translation_event(
     )
     .await?;
     emit(name, arg, state)
+}
+
+/// Emits one roster-mesh trace event for the `spec/roster/` spec (Trace.tla).
+///
+/// Envelope: `{tag:"trace", ts:<nanos>, event:{name, node, target?, src?, ts,
+/// roster:{active:{id->addedAtMs}, tomb:{id->removedAtMs}}, engine:[peer ids]}}`.
+/// `ts` is the operation's own millisecond stamp (addedAtMs/removedAtMs, or 0 for
+/// sync/reconcile); `active`/`tomb`/`engine` are this node's POST-state.
+pub fn emit_roster_event(
+    name: &str,
+    node: &str,
+    target: Option<&str>,
+    src: Option<&str>,
+    ts: u64,
+    active: &BTreeMap<String, u64>,
+    tomb: &BTreeMap<String, u64>,
+    engine: &[String],
+) -> anyhow::Result<()> {
+    let now_ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+        .to_string();
+
+    let mut event = serde_json::Map::new();
+    event.insert("name".into(), json!(name));
+    event.insert("node".into(), json!(node));
+    if let Some(t) = target {
+        event.insert("target".into(), json!(t));
+    }
+    if let Some(s) = src {
+        event.insert("src".into(), json!(s));
+    }
+    event.insert("ts".into(), json!(ts));
+    event.insert("roster".into(), json!({ "active": active, "tomb": tomb }));
+    event.insert("engine".into(), json!(engine));
+
+    let envelope = json!({
+        "tag": "trace",
+        "ts": now_ns,
+        "event": serde_json::Value::Object(event),
+    });
+
+    let mut guard = sink().lock().unwrap();
+    let Some(writer) = guard.writer.as_mut() else {
+        return Ok(());
+    };
+    serde_json::to_writer(&mut *writer, &envelope).context("serializing roster trace event")?;
+    writer.write_all(b"\n").context("writing trace newline")?;
+    writer.flush().context("flushing trace event")?;
+    Ok(())
 }
 
 fn emit(name: &str, arg: Option<TraceArg>, state: TraceState) -> anyhow::Result<()> {

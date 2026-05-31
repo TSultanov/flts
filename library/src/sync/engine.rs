@@ -160,15 +160,27 @@ impl SyncEngine {
     /// every node) and add it to this engine immediately. The roster is the
     /// mesh's source of truth; `add_peer` just makes the local effect instant.
     pub async fn pair_device(&self, device_id: &str, name: &str) -> anyhow::Result<()> {
-        self.roster.add_device(device_id, name)?;
-        self.add_peer(device_id, name).await
+        let _roster = self.roster.add_device(device_id, name)?;
+        self.add_peer(device_id, name).await?;
+        #[cfg(feature = "tla_trace")]
+        {
+            let ts = _roster.devices.get(device_id).map(|r| r.added_at_ms).unwrap_or(0);
+            self.trace_emit("PairOn", Some(device_id), None, ts).await;
+        }
+        Ok(())
     }
 
     /// Unpair a peer: tombstone it in the roster (propagates the removal) and
     /// drop it locally.
     pub async fn unpair_device(&self, device_id: &str) -> anyhow::Result<()> {
-        self.roster.remove_device(device_id)?;
-        self.remove_peer(device_id).await
+        let _roster = self.roster.remove_device(device_id)?;
+        self.remove_peer(device_id).await?;
+        #[cfg(feature = "tla_trace")]
+        {
+            let ts = _roster.removed.get(device_id).copied().unwrap_or(0);
+            self.trace_emit("UnpairOn", Some(device_id), None, ts).await;
+        }
+        Ok(())
     }
 
     /// Sets this device's display name everywhere it matters: the shared roster
@@ -176,8 +188,14 @@ impl SyncEngine {
     /// the name it *announces* — seen in a peer's pending/connection list — is
     /// meaningful instead of the hostname).
     pub async fn set_device_name(&self, name: &str) -> anyhow::Result<()> {
-        self.roster.ensure_self(&self.my_id, name)?;
-        self.client.rename_device(&self.my_id, name).await
+        let _roster = self.roster.ensure_self(&self.my_id, name)?;
+        self.client.rename_device(&self.my_id, name).await?;
+        #[cfg(feature = "tla_trace")]
+        {
+            let ts = _roster.devices.get(&self.my_id).map(|r| r.added_at_ms).unwrap_or(0);
+            self.trace_emit("EnsureSelf", None, None, ts).await;
+        }
+        Ok(())
     }
 
     /// One reconcile pass: load the shared roster (merging any conflict
@@ -185,7 +203,23 @@ impl SyncEngine {
     /// devices others paired and removing tombstoned ones. This is what turns a
     /// single pairing into a full mesh.
     pub async fn reconcile_once(&self) -> anyhow::Result<()> {
+        // Trace: peek the incoming conflict siblings BEFORE load clears them, and
+        // the pre-merge roster, so we can emit a RosterSync per sibling that
+        // actually changed our roster.
+        #[cfg(feature = "tla_trace")]
+        let sibling_srcs = self.roster.pending_sibling_sources();
+        #[cfg(feature = "tla_trace")]
+        let pre_roster = self.roster.snapshot_for_trace();
+
         let roster = self.roster.load()?;
+
+        #[cfg(feature = "tla_trace")]
+        if roster != pre_roster {
+            for src in &sibling_srcs {
+                self.trace_emit("RosterSync", None, Some(src), 0).await;
+            }
+        }
+
         let engine_ids: BTreeSet<String> = self
             .client
             .list_devices()
@@ -208,14 +242,44 @@ impl SyncEngine {
                 anyhow::bail!("reconcile: removing {id} failed: {err}");
             }
         }
+
+        // Trace: the engine device set changed to match the roster.
+        #[cfg(feature = "tla_trace")]
+        self.trace_emit("ReconcileNode", None, None, 0).await;
         Ok(())
+    }
+
+    /// Trace hook: emit one roster-mesh event (`spec/roster/`) with this node's
+    /// POST-state — its roster (`active`/`tomb` maps) and engine peer set. No-op
+    /// unless a trace sink is installed; compiled out without `tla_trace`.
+    #[cfg(feature = "tla_trace")]
+    async fn trace_emit(&self, name: &str, target: Option<&str>, src: Option<&str>, ts: u64) {
+        use std::collections::BTreeMap;
+        let roster = self.roster.load().unwrap_or_default();
+        let active: BTreeMap<String, u64> = roster
+            .devices
+            .iter()
+            .map(|(id, rec)| (id.clone(), rec.added_at_ms))
+            .collect();
+        let tomb: BTreeMap<String, u64> = roster.removed.clone();
+        let engine: Vec<String> = self
+            .client
+            .list_devices()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|d| d.device_id)
+            .filter(|id| *id != self.my_id)
+            .collect();
+        let _ =
+            crate::tla_trace::emit_roster_event(name, &self.my_id, target, src, ts, &active, &tomb, &engine);
     }
 
     /// Test-only constructor that injects a control client (e.g. a mock),
     /// bypassing the real engine so peer/share logic is unit-testable without a
     /// running Syncthing or valid device IDs.
     #[cfg(test)]
-    fn for_test(client: Arc<dyn SyncthingApi>, my_id: String, library_root: String) -> Self {
+    pub(crate) fn for_test(client: Arc<dyn SyncthingApi>, my_id: String, library_root: String) -> Self {
         let roster = RosterStore::new(std::path::Path::new(&library_root));
         Self {
             client,
