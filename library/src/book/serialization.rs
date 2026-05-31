@@ -232,9 +232,11 @@ impl<'a> io::Write for ChecksumedWriter<'a> {
     }
 }
 
-pub fn validate_hash<T: io::Seek + io::Read>(reader: &mut T) -> io::Result<bool> {
+/// Reads the trailing 8-byte FNV content hash without rehashing the body.
+/// Returns the stored hash and the byte offset where it begins (= body length).
+/// Leaves the reader seeked to the start of the stream.
+pub fn read_stored_hash<T: io::Seek + io::Read>(reader: &mut T) -> io::Result<(u64, u64)> {
     reader.seek(io::SeekFrom::End(-8))?;
-
     let end = reader.stream_position()?;
 
     let mut hash_buf = [0u8; 8];
@@ -242,6 +244,18 @@ pub fn validate_hash<T: io::Seek + io::Read>(reader: &mut T) -> io::Result<bool>
     let read_hash = u64::from_le_bytes(hash_buf);
 
     reader.seek(io::SeekFrom::Start(0))?;
+    Ok((read_hash, end))
+}
+
+/// Opens `path` and returns its trailing 8-byte FNV content hash, without
+/// deserializing the body. Used to detect "same content" file-watcher echoes.
+pub fn read_stored_hash_from_path(path: &std::path::Path) -> io::Result<u64> {
+    let mut file = std::fs::File::open(path)?;
+    Ok(read_stored_hash(&mut file)?.0)
+}
+
+pub fn validate_hash<T: io::Seek + io::Read>(reader: &mut T) -> io::Result<bool> {
+    let (read_hash, end) = read_stored_hash(reader)?;
 
     let mut hasher = fnv::FnvHasher::default();
 
@@ -422,5 +436,38 @@ mod serialization_tests {
         let mut cur = Cursor::new(buf);
         let decoded = read_opt(&mut cur).unwrap();
         assert_eq!(decoded, slice);
+    }
+
+    #[test]
+    fn read_stored_hash_extracts_trailing_u64_and_body_len() {
+        // Build a "file": arbitrary body followed by an 8-byte LE hash.
+        let body: &[u8] = b"the quick brown fox";
+        let hash: u64 = 0x0102_0304_0506_0708;
+        let mut bytes = body.to_vec();
+        bytes.extend_from_slice(&hash.to_le_bytes());
+
+        let mut cur = Cursor::new(bytes.clone());
+        let (read_hash, end) = read_stored_hash(&mut cur).unwrap();
+        assert_eq!(read_hash, hash);
+        assert_eq!(end, body.len() as u64);
+        // Cursor is rewound to the start for the caller.
+        assert_eq!(cur.position(), 0);
+    }
+
+    #[test]
+    fn read_stored_hash_agrees_with_validate_hash() {
+        // A genuinely valid container: body + FNV(body) as the trailing hash.
+        let body: &[u8] = b"content that will be checksummed";
+        let mut hasher = fnv::FnvHasher::default();
+        hasher.write(body);
+        let hash = hasher.finish();
+
+        let mut bytes = body.to_vec();
+        bytes.extend_from_slice(&hash.to_le_bytes());
+
+        let mut cur = Cursor::new(bytes);
+        assert!(validate_hash(&mut cur).unwrap());
+        let (read_hash, _) = read_stored_hash(&mut cur).unwrap();
+        assert_eq!(read_hash, hash);
     }
 }

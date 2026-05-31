@@ -1,4 +1,9 @@
-use std::{io::Write, str::FromStr, sync::Arc};
+use std::{
+    io::Write,
+    str::FromStr,
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 
 use crate::tla_trace::mutex::TracedMutex;
 use isolang::Language;
@@ -176,6 +181,7 @@ async fn save_after_load_book_and_translation_changed() {
                 source_language,
                 target_language,
                 last_modified: None,
+                last_saved_hash: None,
                 changed: true,
             })));
         book.save().await.unwrap();
@@ -212,10 +218,11 @@ async fn save_after_load_book_and_translation_changed() {
                 }],
             }],
         };
+        // Go through the wrapper so the dirty flag is set, matching production
+        // (the inner Translation has no dirty tracking of its own).
         book.translations[0]
             .lock()
             .await
-            .translation
             .add_paragraph_translation(0, &new_pt, TranslationModel::Gemini25Flash);
 
         book.save().await.unwrap();
@@ -290,6 +297,7 @@ async fn save_merges_translation_with_concurrent_on_disk_change() {
             source_language,
             target_language,
             last_modified: None,
+            last_saved_hash: None,
             changed: true,
         })));
     book.save().await.unwrap();
@@ -898,4 +906,226 @@ async fn delete_book_removes_directory() {
 
     assert!(!book_dir.exists());
     assert!(library.list_books().await.unwrap().is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// File-watcher echo suppression (save/reload loop fix)
+// ---------------------------------------------------------------------------
+
+fn simple_paragraph(text: &str, timestamp: u64) -> translation_import::ParagraphTranslation {
+    translation_import::ParagraphTranslation {
+        total_tokens: None,
+        timestamp,
+        sentences: vec![translation_import::Sentence {
+            full_translation: text.into(),
+            words: vec![translation_import::Word {
+                original: text.into(),
+                contextual_translations: vec![text.into()],
+                note: Some(String::new()),
+                is_punctuation: false,
+                grammar: translation_import::Grammar {
+                    original_initial_form: text.into(),
+                    target_initial_form: text.into(),
+                    part_of_speech: "n".into(),
+                    plurality: None,
+                    person: None,
+                    tense: None,
+                    case: None,
+                    other: None,
+                },
+            }],
+        }],
+    }
+}
+
+/// Pushes the file's mtime into the future without touching its bytes,
+/// mirroring how our own atomic save (or a Syncthing re-touch) bumps mtime.
+/// Returns the time it set.
+fn bump_mtime_future(path: &std::path::Path) -> SystemTime {
+    let future = SystemTime::now() + Duration::from_secs(3600);
+    let file = std::fs::File::options().write(true).open(path).unwrap();
+    file.set_modified(future).unwrap();
+    future
+}
+
+/// Creates a book with one en->ru translation, saves it, and returns the
+/// locked book plus the translation file path. After save the in-memory
+/// translation/book carry their `last_saved_hash`.
+async fn book_with_saved_translation(
+    library: &Library,
+    title: &str,
+) -> (Arc<TracedMutex<super::LibraryBook>>, std::path::PathBuf) {
+    let source_language = Language::from_str("en").unwrap();
+    let target_language = Language::from_str("ru").unwrap();
+    let book = library
+        .create_book(title, &Language::from_639_3("eng").unwrap())
+        .await
+        .unwrap();
+    {
+        let mut book = book.lock().await;
+        let mut tr = Translation::create(source_language.to_639_3(), target_language.to_639_3());
+        tr.add_paragraph_translation(
+            0,
+            &simple_paragraph("v1", 1),
+            TranslationModel::Gemini25Flash,
+        );
+        book.translations
+            .push(Arc::new(TracedMutex::new(super::LibraryTranslation {
+                translation: tr,
+                source_language,
+                target_language,
+                last_modified: None,
+                last_saved_hash: None,
+                changed: true,
+            })));
+        book.save().await.unwrap();
+    }
+    let tr_path = {
+        let book = book.lock().await;
+        book.path.join(format!(
+            "translation_{}_{}.dat",
+            source_language.to_639_3(),
+            target_language.to_639_3()
+        ))
+    };
+    (book, tr_path)
+}
+
+#[tokio::test]
+async fn serialize_is_deterministic() {
+    // The echo gate assumes re-serializing identical state yields identical
+    // bytes (and thus an identical trailing hash). Guard that assumption.
+    let source_language = Language::from_str("en").unwrap();
+    let target_language = Language::from_str("ru").unwrap();
+    let mut tr = Translation::create(source_language.to_639_3(), target_language.to_639_3());
+    tr.add_paragraph_translation(0, &simple_paragraph("hello", 1), TranslationModel::Gemini25Flash);
+    tr.add_paragraph_translation(1, &simple_paragraph("world", 2), TranslationModel::Gemini25Flash);
+
+    let mut a = Vec::new();
+    let mut b = Vec::new();
+    tr.serialize(&mut a).unwrap();
+    tr.serialize(&mut b).unwrap();
+    assert_eq!(a, b, "translation serialization must be byte-deterministic");
+
+    let book = Book::create(
+        uuid::Uuid::new_v4(),
+        "Det Book",
+        &Language::from_639_3("eng").unwrap(),
+    );
+    let mut ba = Vec::new();
+    let mut bb = Vec::new();
+    book.serialize(&mut ba).unwrap();
+    book.serialize(&mut bb).unwrap();
+    assert_eq!(ba, bb, "book serialization must be byte-deterministic");
+}
+
+#[tokio::test]
+async fn save_clears_changed_flag() {
+    let temp_dir = TempDir::new("flts_test_book");
+    let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
+    let (book, _tr_path) = book_with_saved_translation(&library, "Clean").await;
+
+    let book = book.lock().await;
+    assert!(
+        !book.has_unsaved_changes().await,
+        "translation should be clean after a successful save"
+    );
+}
+
+#[tokio::test]
+async fn reload_translations_skips_same_content_echo() {
+    let temp_dir = TempDir::new("flts_test_book");
+    let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
+    let (book, tr_path) = book_with_saved_translation(&library, "Echo Tr").await;
+
+    let before = std::fs::read(&tr_path).unwrap();
+    // Bump mtime only — content is byte-identical (our own write echo).
+    let future = bump_mtime_future(&tr_path);
+
+    let from = Language::from_str("en").unwrap();
+    let to = Language::from_str("ru").unwrap();
+    let saved = book
+        .lock()
+        .await
+        .reload_translations(future, from, to)
+        .await
+        .unwrap();
+
+    assert!(!saved, "same-content echo must not trigger a re-save");
+    assert_eq!(
+        std::fs::read(&tr_path).unwrap(),
+        before,
+        "file must be left untouched"
+    );
+}
+
+#[tokio::test]
+async fn reload_translations_saves_on_external_change() {
+    let temp_dir = TempDir::new("flts_test_book");
+    let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
+    let (book, tr_path) = book_with_saved_translation(&library, "Ext Tr").await;
+
+    // Externally rewrite the translation with genuinely different content.
+    {
+        let f = std::fs::File::open(&tr_path).unwrap();
+        let mut reader = std::io::BufReader::new(f);
+        let mut on_disk = Translation::deserialize(&mut reader).unwrap();
+        on_disk.add_paragraph_translation(
+            0,
+            &simple_paragraph("external", 5),
+            TranslationModel::Gemini25Flash,
+        );
+        let wf = std::fs::File::create(&tr_path).unwrap();
+        let mut writer = std::io::BufWriter::new(wf);
+        on_disk.serialize(&mut writer).unwrap();
+    }
+    let future = bump_mtime_future(&tr_path);
+
+    let from = Language::from_str("en").unwrap();
+    let to = Language::from_str("ru").unwrap();
+    let saved = book
+        .lock()
+        .await
+        .reload_translations(future, from, to)
+        .await
+        .unwrap();
+
+    assert!(saved, "a genuine external content change must trigger a save");
+}
+
+#[tokio::test]
+async fn reload_book_skips_same_content_echo() {
+    let temp_dir = TempDir::new("flts_test_book");
+    let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
+    let (book, _tr_path) = book_with_saved_translation(&library, "Echo Bk").await;
+
+    let book_file = book.lock().await.path.join("book.dat");
+    let before = std::fs::read(&book_file).unwrap();
+    let future = bump_mtime_future(&book_file);
+
+    let saved = book.lock().await.reload_book(future).await.unwrap();
+
+    assert!(!saved, "same-content book echo must not trigger a re-save");
+    assert_eq!(
+        std::fs::read(&book_file).unwrap(),
+        before,
+        "book.dat must be left untouched"
+    );
+}
+
+#[tokio::test]
+async fn reload_book_saves_on_external_change() {
+    let temp_dir = TempDir::new("flts_test_book");
+    let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
+    let (book_a, _tr_a) = book_with_saved_translation(&library, "Bk A").await;
+    let (book_b, _tr_b) = book_with_saved_translation(&library, "Bk B").await;
+
+    // Overwrite A's book.dat with B's (different content => different hash).
+    let a_file = book_a.lock().await.path.join("book.dat");
+    let b_file = book_b.lock().await.path.join("book.dat");
+    std::fs::copy(&b_file, &a_file).unwrap();
+    let future = bump_mtime_future(&a_file);
+
+    let saved = book_a.lock().await.reload_book(future).await.unwrap();
+    assert!(saved, "a genuine external book change must trigger a save");
 }

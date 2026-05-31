@@ -19,7 +19,7 @@ use uuid::Uuid;
 use crate::{
     book::{
         book::Book,
-        serialization::{Serializable, create_random_string},
+        serialization::{Serializable, create_random_string, read_stored_hash_from_path},
         translation::{ParagraphTranslationView, Translation},
         translation_import,
     },
@@ -62,6 +62,9 @@ pub struct BookUserState {
 pub struct LibraryBook {
     path: PathBuf,
     last_modified: Option<SystemTime>,
+    /// Trailing FNV content hash of the last `book.dat` we read or wrote.
+    /// Used to drop file-watcher echoes of our own writes (same content).
+    last_saved_hash: Option<u64>,
     pub book: Book,
     translations: Vec<Arc<TracedMutex<LibraryTranslation>>>,
     user_state: BookUserState,
@@ -72,7 +75,21 @@ pub struct LibraryTranslation {
     source_language: Language,
     target_language: Language,
     last_modified: Option<SystemTime>,
+    /// Trailing FNV content hash of the last translation file we read or wrote.
+    /// Used to drop file-watcher echoes of our own writes (same content).
+    last_saved_hash: Option<u64>,
     changed: bool,
+}
+
+/// Extracts the trailing 8-byte FNV content hash from a freshly serialized
+/// buffer (the `.dat` format appends it last). Returns `None` if the buffer is
+/// somehow shorter than the hash.
+fn trailing_hash(buffer: &[u8]) -> Option<u64> {
+    let len = buffer.len();
+    if len < 8 {
+        return None;
+    }
+    Some(u64::from_le_bytes(buffer[len - 8..len].try_into().ok()?))
 }
 
 impl TracedLock for LibraryBook {
@@ -118,6 +135,7 @@ impl LibraryTranslation {
         let mut file = tokio::fs::File::open(path).await?;
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer).await?;
+        let last_saved_hash = trailing_hash(&buffer);
         let mut cursor = std::io::Cursor::new(buffer);
         let translation = Translation::deserialize(&mut cursor)?;
         let source_language = Language::from_str(&translation.source_language)?;
@@ -128,6 +146,7 @@ impl LibraryTranslation {
             source_language,
             target_language,
             last_modified,
+            last_saved_hash,
             changed: false,
         })
     }
@@ -324,6 +343,7 @@ impl LibraryBook {
                 source_language: Language::from_639_3(source_language).unwrap(),
                 target_language: *target_language,
                 last_modified: None,
+                last_saved_hash: None,
                 changed: true,
             })));
 
@@ -404,12 +424,14 @@ impl LibraryBook {
         let mut file = tokio::fs::File::open(path).await?;
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer).await?;
+        let last_saved_hash = trailing_hash(&buffer);
         let mut cursor = std::io::Cursor::new(buffer);
         let book = Book::deserialize(&mut cursor)?;
 
         Ok(Self {
             path: path.parent().unwrap().to_path_buf(),
             last_modified,
+            last_saved_hash,
             book,
             translations: vec![],
             user_state: BookUserState::default(),
@@ -417,12 +439,27 @@ impl LibraryBook {
     }
 
     pub async fn reload_book(&mut self, modified: SystemTime) -> anyhow::Result<bool> {
-        Ok(if self.last_modified.is_none_or(|lm| lm < modified) {
-            self.save().await?;
-            true
-        } else {
-            false
-        })
+        // Quick reject: nothing on disk is newer than what we hold.
+        if self.last_modified.is_some_and(|lm| lm >= modified) {
+            return Ok(false);
+        }
+
+        // The mtime advanced, but that alone doesn't mean the content changed:
+        // our own atomic save (and Syncthing re-touching the file) bumps the
+        // mtime without changing bytes. Drop the echo when the on-disk content
+        // hash matches what we last wrote/read, so we don't re-save in a loop.
+        let book_path = self.path.join("book.dat");
+        if let Some(saved_hash) = self.last_saved_hash
+            && let Ok(disk_hash) = read_stored_hash_from_path(&book_path)
+            && disk_hash == saved_hash
+        {
+            // Same content; adopt the new mtime so we stop re-checking it.
+            self.last_modified = Some(modified);
+            return Ok(false);
+        }
+
+        self.save().await?;
+        Ok(true)
     }
 
     pub async fn reload_translations(
@@ -434,13 +471,33 @@ impl LibraryBook {
         let mut needs_save = false;
 
         for translation in &self.translations {
-            let t = translation.lock().await;
-            if t.source_language == from
-                && t.target_language == to
-                && t.last_modified.is_none_or(|lm| lm < modified)
-            {
-                needs_save = true;
+            let mut t = translation.lock().await;
+            if t.source_language != from || t.target_language != to {
+                continue;
             }
+
+            // Quick reject on mtime.
+            if t.last_modified.is_some_and(|lm| lm >= modified) {
+                continue;
+            }
+
+            // Content-gate: drop echoes of our own writes (same content,
+            // bumped mtime). Only a genuinely different on-disk hash warrants
+            // a reload+merge+save.
+            let file_name = format!(
+                "translation_{}_{}.dat",
+                t.translation.source_language, t.translation.target_language
+            );
+            let translation_path = self.path.join(file_name);
+            if let Some(saved_hash) = t.last_saved_hash
+                && let Ok(disk_hash) = read_stored_hash_from_path(&translation_path)
+                && disk_hash == saved_hash
+            {
+                t.last_modified = Some(modified);
+                continue;
+            }
+
+            needs_save = true;
         }
 
         Ok(if needs_save {
@@ -537,6 +594,11 @@ impl LibraryBook {
                             .await?
                             .modified()
                             .ok();
+                        // Record the content we just wrote so the file-watcher
+                        // echo of this very write is recognised and dropped,
+                        // and clear the dirty flag now that it's persisted.
+                        translation.last_saved_hash = trailing_hash(&buffer);
+                        translation.changed = false;
                         tla_trace::emit_translation_event(
                             &book.path,
                             &translation_path,
@@ -577,17 +639,32 @@ impl LibraryBook {
                         let saved_book = Self::load(&book_path).await?;
                         book.book = saved_book.book;
                         book.last_modified = saved_book.last_modified;
+                        book.last_saved_hash = saved_book.last_saved_hash;
                     }
                 }
             } else if tokio::fs::try_exists(&book_path).await? {
                 let saved_book = Self::load(&book_path).await?;
                 book.book = saved_book.book;
                 book.last_modified = saved_book.last_modified;
+                book.last_saved_hash = saved_book.last_saved_hash;
+            }
+
+            let mut buffer = Vec::new();
+            book.book.serialize(&mut buffer)?;
+            let new_hash = trailing_hash(&buffer);
+
+            // If the freshly serialized book is byte-identical to what's
+            // already on disk, skip the write: rewriting it would only emit a
+            // spurious BookChanged watcher event and feed the save/reload loop.
+            if let Some(new_hash) = new_hash
+                && book.last_saved_hash == Some(new_hash)
+                && tokio::fs::try_exists(&book_path).await?
+            {
+                book.last_modified = tokio::fs::metadata(&book_path).await?.modified().ok();
+                break;
             }
 
             let mut file = tokio::fs::File::create(&book_path_temp).await?;
-            let mut buffer = Vec::new();
-            book.book.serialize(&mut buffer)?;
             file.write_all(&buffer).await?;
 
             tla_trace::emit_book_event(&book.path, "SaveBookBegin", None, "ready", "idle", "idle")
@@ -606,6 +683,7 @@ impl LibraryBook {
                 tokio::fs::rename(&book_path_temp, &book_path).await?;
 
                 book.last_modified = tokio::fs::metadata(&book_path).await?.modified().ok();
+                book.last_saved_hash = new_hash;
                 tla_trace::emit_book_event(
                     &book.path,
                     "SaveBookFinish",
@@ -692,6 +770,7 @@ impl Library {
         let book = Arc::new(TracedMutex::new(LibraryBook {
             path: book_root,
             last_modified: None,
+            last_saved_hash: None,
             book: Book::create(guid, title, language),
             translations: vec![],
             user_state: BookUserState::default(),
