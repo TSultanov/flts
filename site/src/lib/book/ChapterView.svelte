@@ -222,4 +222,15 @@
         pointer-events: none;
         scroll-snap-align: start;
     }
+
+    @media (max-width: 768px) {
+        .chapter-container {
+            padding: 0;
+        }
+
+        .chapter {
+            border: none;
+            box-shadow: none;
+        }
+    }
 </style>
