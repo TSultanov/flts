@@ -25,6 +25,24 @@ export const syncStatus = new Resource<SyncStatus>(
     { state: "disabled", deviceCount: 0, connectedCount: 0 },
 );
 
+// One-shot request to expand the Sync section in settings (set by the nav
+// status button, consumed by ConfigView). Reactive so it works whether the
+// config page is already open or navigated to.
+let openSyncRequested = $state(false);
+
+export function requestOpenSyncSection(): void {
+    openSyncRequested = true;
+}
+
+/// Returns true once per request, then resets.
+export function takeOpenSyncRequest(): boolean {
+    if (openSyncRequested) {
+        openSyncRequested = false;
+        return true;
+    }
+    return false;
+}
+
 export async function syncSetEnabled(enabled: boolean): Promise<void> {
     await invoke("sync_set_enabled", { enabled });
 }

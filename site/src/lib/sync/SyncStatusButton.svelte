@@ -1,7 +1,7 @@
 <script lang="ts">
     import Fa from "svelte-fa";
     import { navigate } from "../../router";
-    import { syncStatus } from "./store.svelte";
+    import { syncStatus, requestOpenSyncSection } from "./store.svelte";
     import {
         iconForState,
         isVisible,
@@ -23,6 +23,7 @@
     );
 
     function onClick() {
+        requestOpenSyncSection();
         navigate("/config");
     }
 </script>

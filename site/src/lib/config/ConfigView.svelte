@@ -19,6 +19,19 @@
         type SpotifyWebStatus,
     } from "../spotify/queueStore";
     import SyncDevicesView from "../sync/SyncDevicesView.svelte";
+    import { takeOpenSyncRequest } from "../sync/store.svelte";
+
+    // Expand (and scroll to) the Sync section when arriving via the nav button.
+    let syncOpen = $state(false);
+    let syncDetails = $state<HTMLDetailsElement>();
+    $effect(() => {
+        if (takeOpenSyncRequest()) {
+            syncOpen = true;
+            requestAnimationFrame(() =>
+                syncDetails?.scrollIntoView({ behavior: "smooth", block: "start" }),
+            );
+        }
+    });
 
     const SPOTIFY_DASHBOARD_URL = 'https://developer.spotify.com/dashboard';
     const SPOTIFY_REDIRECT_URI = 'http://127.0.0.1:53682/callback';
@@ -371,7 +384,11 @@
                 </div>
             </details>
 
-            <details class="sync-section">
+            <details
+                class="sync-section"
+                bind:open={syncOpen}
+                bind:this={syncDetails}
+            >
                 <summary>Sync (optional)</summary>
                 <div class="sync-grid">
                     <SyncDevicesView />
