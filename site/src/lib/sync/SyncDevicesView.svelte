@@ -10,6 +10,7 @@
         syncRemoveDevice,
         syncSetDeviceName,
         canScan,
+        ensureCameraPermission,
         scanDeviceId,
         cancelScan,
         pairingPayload,
@@ -70,7 +71,7 @@
                   )
                 : "";
         } catch (e) {
-            error = String(e);
+            error = errMessage(e);
         }
     }
 
@@ -83,7 +84,7 @@
             await syncSetDeviceName(name);
             await refresh();
         } catch (e) {
-            error = String(e);
+            error = errMessage(e);
         }
         busy = false;
     }
@@ -111,7 +112,7 @@
         try {
             await syncSetEnabled(!enabled);
         } catch (e) {
-            error = String(e);
+            error = errMessage(e);
         }
         busy = false;
     }
@@ -127,7 +128,7 @@
             newName = "";
             await refresh();
         } catch (e) {
-            error = String(e);
+            error = errMessage(e);
         }
         busy = false;
     }
@@ -139,15 +140,48 @@
             await syncAddDevice(p.deviceId, p.name || "Device");
             await refresh();
         } catch (e) {
-            error = String(e);
+            error = errMessage(e);
         }
         busy = false;
     }
 
+    // Tauri/plugin errors reject with structured objects, not strings, so
+    // `String(e)` renders "[object Object]". Pull out something human-readable.
+    function errMessage(e: unknown): string {
+        if (typeof e === "string") return e;
+        if (e instanceof Error) return e.message;
+        if (e && typeof e === "object") {
+            const m = (e as { message?: unknown }).message;
+            if (typeof m === "string") return m;
+            try {
+                return JSON.stringify(e);
+            } catch {
+                /* fall through */
+            }
+        }
+        return String(e);
+    }
+
     async function scanToAdd() {
+        error = "";
+        // The scanner won't open without the camera permission, and `scan()`
+        // doesn't request it — so ask first (the OS shows its prompt). Do this
+        // before going transparent so a denial leaves the UI intact.
+        let allowed: boolean;
+        try {
+            allowed = await ensureCameraPermission();
+        } catch (e) {
+            error = errMessage(e);
+            return;
+        }
+        if (!allowed) {
+            error =
+                "Camera access is needed to scan a pairing QR code. Enable it for FLTS in system settings.";
+            return;
+        }
+
         busy = true;
         scanning = true;
-        error = "";
         // Make the page transparent so the camera (rendered behind the webview)
         // shows through; the overlay below provides the Cancel control.
         document.documentElement.classList.add("barcode-scanning");
@@ -158,19 +192,32 @@
                 if (scanned.name) newName = scanned.name;
             }
         } catch (e) {
-            error = String(e);
+            // Cancelling (stopScan) tears the scan down and flips `scanning`
+            // off; the plugin may then reject the now-stale scan() — don't
+            // surface that as an error.
+            if (scanning) error = errMessage(e);
         } finally {
-            document.documentElement.classList.remove("barcode-scanning");
-            scanning = false;
-            busy = false;
+            endScan();
         }
     }
 
+    // Restore the UI after a scan ends — success, error, or cancel. Idempotent,
+    // so it's safe for both scanToAdd's finally and stopScan to call it.
+    function endScan() {
+        document.documentElement.classList.remove("barcode-scanning");
+        scanning = false;
+        busy = false;
+    }
+
     async function stopScan() {
+        // Restore the UI immediately. Cancelling does NOT reliably settle the
+        // pending scan() promise, so scanToAdd's finally may never run — relying
+        // on it leaves the page transparent with content hidden (apparent hang).
+        endScan();
         try {
             await cancelScan();
-        } catch (e) {
-            error = String(e);
+        } catch {
+            // Best-effort; the UI is already restored.
         }
     }
 
@@ -181,7 +228,7 @@
             await syncRemoveDevice(id);
             await refresh();
         } catch (e) {
-            error = String(e);
+            error = errMessage(e);
         }
         busy = false;
     }

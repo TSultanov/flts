@@ -82,6 +82,21 @@ export function canScan(): boolean {
     }
 }
 
+/// Ensures the camera permission the QR scanner needs is granted, prompting the
+/// user once if it hasn't been decided yet. Returns whether scanning may
+/// proceed. `scan()` does NOT request the permission itself, so on a fresh
+/// install it fails outright unless this runs first.
+export async function ensureCameraPermission(): Promise<boolean> {
+    const { checkPermissions, requestPermissions } = await import(
+        "@tauri-apps/plugin-barcode-scanner"
+    );
+    let state = await checkPermissions();
+    if (state === "prompt" || state === "prompt-with-rationale") {
+        state = await requestPermissions();
+    }
+    return state === "granted";
+}
+
 /// Opens the camera to scan a peer's pairing QR and returns its device ID +
 /// name, or null if cancelled. Mobile only.
 ///
