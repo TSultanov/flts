@@ -1,14 +1,26 @@
 --------------------------- MODULE base ---------------------------
 (*
- * TLA+ specification for the FLTS file synchronization / merge subsystem.
+ * TLA+ specification for the FLTS file-merge subsystem.
+ *
+ * SCOPE: this module models the conflict-resolution / merge layer ONLY (Family 4
+ * of spec/modeling-brief.md). Since feat/native-sync-v2 the transport is embedded
+ * Syncthing, so the conflict siblings injected below (`Inject*Conflict`) are
+ * concretely Syncthing `.sync-conflict-<date>-<time>-<modifiedBy>.<ext>` files,
+ * and each file's `mtime` is the origin device's wall clock that Syncthing
+ * preserves on delivery (NOT a single monotonic clock — see brief Families 1 & 4
+ * on cross-device clock skew, a dimension this module does not yet vary).
+ *
+ * The NEW Syncthing roster-mesh protocol (brief Families 1-3, 5: roster CRDT,
+ * reconcile, mesh closure, echo-gate quiescence) is NOT modeled here — it is the
+ * proposed sibling spec to be authored from spec/modeling-brief.md §§ 3-6.
  *
  * Derived from:
  *   - library/src/library.rs
- *   - library/src/library/library_book.rs
+ *   - library/src/library/library_book/mod.rs
  *   - library/src/book/translation.rs
- *   - library/src/library/library_dictionary.rs
+ *   - library/src/library/library_card.rs (dictionary/card union)
  *
- * Bug families:
+ * Bug families covered here (brief Family 4):
  *   1. Whole-file newest-wins conflict resolution for book.dat and state.json
  *   2. Book save/reload overwrites newer disk state instead of merging
  *   3. Translation history identity is timestamp-based
@@ -178,7 +190,8 @@ Init ==
 
 \* --------------------------------------------------------------------------
 \* Environment action: create a divergent book conflict sibling.
-\* Models an external sync system producing `book*.dat` siblings.
+\* Models Syncthing delivering a `book.sync-conflict-*.dat` sibling (a peer's
+\* concurrent edit of book.dat). mtime is the peer's wall clock.
 \* --------------------------------------------------------------------------
 InjectBookConflict(e) ==
     /\ e \in BookEdit
@@ -230,7 +243,8 @@ EditMemoryBook(e) ==
 
 \* --------------------------------------------------------------------------
 \* Environment action: external process rewrites canonical book.dat.
-\* Models a watcher-visible disk update that races with local save.
+\* Models Syncthing pulling a peer's newer book.dat (watcher-visible) that races
+\* with a local save. See brief Family 5 for the echo-gate that this can trip.
 \* --------------------------------------------------------------------------
 InjectNewerBookOnDisk(e) ==
     /\ e \in BookEdit
@@ -378,9 +392,9 @@ UpdateFolderPathPersist ==
                    translationLastModified, translationSaveStage, translationSaveIntent>>
 
 \* --------------------------------------------------------------------------
-\* Environment action: sync creates a state conflict with a different reading
-\* position from another device.  folder_path is always carried over from
-\* stateMain because it is the same on every device (by design).
+\* Environment action: Syncthing delivers a `state.sync-conflict-*.json` sibling
+\* with a different reading position from another device.  folder_path is always
+\* carried over from stateMain because it is the same on every device (by design).
 \* --------------------------------------------------------------------------
 InjectStateReadingConflict(r) ==
     /\ r \in ReadingPos
@@ -436,7 +450,8 @@ AddMemoryTranslationVersion(vid, ts, words) ==
     /\ UNCHANGED <<diskVars, memBook, memState, saveVars, nextTime>>
 
 \* --------------------------------------------------------------------------
-\* Environment action: create translation conflict sibling.
+\* Environment action: Syncthing delivers a `translation_*.sync-conflict-*.dat`
+\* sibling (a peer's concurrent translation edit).
 \* --------------------------------------------------------------------------
 InjectTranslationConflict(vid, ts, words) ==
     /\ vid \in VersionId
@@ -531,7 +546,8 @@ SaveTranslationFinish ==
                    stateOpKind, pendingReading, pendingFolder>>
 
 \* --------------------------------------------------------------------------
-\* Environment action: create dictionary conflict sibling.
+\* Environment action: Syncthing delivers a card/dictionary
+\* `*.sync-conflict-*.json` sibling (union-merged; see library_card.rs).
 \* --------------------------------------------------------------------------
 InjectDictionaryConflict(d) ==
     /\ d \in DictEntry
