@@ -131,7 +131,10 @@
         {/snippet}
     </Nav>
 </div>
-<div class="main" style="height: {mainHeight.value}px;">
+<!-- Subtract the bottom safe-area inset so content clears the mobile system nav
+     bar; env() is 0 on desktop. mainHeight already nets out the top inset via
+     nav.clientHeight (see Nav.svelte). -->
+<div class="main" style="height: calc({mainHeight.value}px - env(safe-area-inset-bottom));">
     <Router />
 </div>
 
