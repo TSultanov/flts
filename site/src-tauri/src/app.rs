@@ -1062,6 +1062,36 @@ pub async fn get_library_root() -> Result<String, String> {
         .map_err(|err| err.to_string())
 }
 
+/// Opens the library storage location in the OS file manager (desktop).
+#[tauri::command]
+pub async fn reveal_library_root() -> Result<(), String> {
+    let path = resolve_library_root().map_err(|err| err.to_string())?;
+    let _ = fs::create_dir_all(&path);
+    reveal_in_file_manager(&path).map_err(|err| err.to_string())
+}
+
+fn reveal_in_file_manager(path: &Path) -> anyhow::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open").arg(path).spawn()?;
+        Ok(())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer").arg(path).spawn()?;
+        Ok(())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open").arg(path).spawn()?;
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        anyhow::bail!("revealing {path:?} is not supported on this platform")
+    }
+}
+
 #[tauri::command]
 pub async fn translate_paragraph(
     state: tauri::State<'_, Arc<AppState>>,

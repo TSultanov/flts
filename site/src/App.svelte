@@ -3,6 +3,7 @@
 	import './router';
     import Nav from "./lib/chrome/Nav.svelte";
     import AnkiSyncButton from "./lib/chrome/AnkiSyncButton.svelte";
+    import SyncStatusButton from "./lib/sync/SyncStatusButton.svelte";
     import { onMount, setContext } from "svelte";
     import { Library } from "./lib/data/library";
     import { configStore } from "./lib/config/store";
@@ -123,6 +124,7 @@
 <div bind:this={nav}>
     <Nav {links}>
         {#snippet rightActions()}
+            <SyncStatusButton />
             {#if links === fullLinks}
                 <AnkiSyncButton />
             {/if}

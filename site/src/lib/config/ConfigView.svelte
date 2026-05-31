@@ -118,6 +118,14 @@
         }
     });
 
+    async function revealStorage() {
+        try {
+            await invoke("reveal_library_root");
+        } catch (e) {
+            console.warn("reveal_library_root failed", e);
+        }
+    }
+
     async function save() {
         await setConfig({
             translationProvider,
@@ -232,11 +240,15 @@
             <label for="storage">Storage</label>
             <input
                 id="storage"
+                class:full={!isMac}
                 type="text"
                 readonly
                 title={storageLocation}
                 value={storageLocation}
             />
+            {#if isMac}
+                <button id="revealStorage" onclick={revealStorage}>Reveal</button>
+            {/if}
 
             {#if isMac}
                 <details class="spotify-section">
@@ -395,6 +407,16 @@
     input,
     select {
         grid-column: 2/4;
+    }
+
+    input#storage {
+        grid-column: 2/3;
+    }
+    input#storage.full {
+        grid-column: 2/4;
+    }
+    button#revealStorage {
+        grid-column: 3/4;
     }
 
     button#save {

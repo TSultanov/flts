@@ -2,13 +2,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { platform } from "@tauri-apps/plugin-os";
 import { Resource } from "../data/tauri.svelte";
 
-export type SyncState = "disabled" | "starting" | "online" | "error";
+export type SyncState = "disabled" | "starting" | "online" | "syncing" | "error";
 
 export type SyncStatus = {
     state: SyncState;
     deviceId?: string;
     deviceCount: number;
     connectedCount: number;
+    completion?: number;
     lastError?: string;
 };
 

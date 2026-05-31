@@ -138,6 +138,7 @@ pub fn run() {
             app::config::get_languages,
             app::get_config,
             app::get_library_root,
+            app::reveal_library_root,
             app::update_config,
             app::get_anki_sync_status,
             app::sync_anki_now,

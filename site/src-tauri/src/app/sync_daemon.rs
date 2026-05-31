@@ -21,8 +21,10 @@ pub enum SyncState {
     Disabled,
     /// Engine is starting / not yet reachable.
     Starting,
-    /// Engine up; `device_id` known.
+    /// Engine up and the library folder is fully in sync.
     Online,
+    /// Actively transferring data with a peer (`completion` < 100).
+    Syncing,
     /// Engine failed to start or a poll errored; see `last_error`.
     Error,
 }
@@ -40,6 +42,9 @@ pub struct SyncStatus {
     /// How many of those peers are currently connected.
     #[serde(rename = "connectedCount")]
     pub connected_count: usize,
+    /// Folder sync progress (0–100) while `state` is `Syncing`.
+    #[serde(rename = "completion")]
+    pub completion: Option<f64>,
     #[serde(rename = "lastError")]
     pub last_error: Option<String>,
 }
@@ -170,6 +175,10 @@ async fn push_status(
 ) {
     let devices = client.list_devices().await;
     let connections = client.connections().await;
+    let completion = client
+        .folder_completion(library::sync::engine::LIBRARY_FOLDER_ID)
+        .await
+        .ok();
 
     match (devices, connections) {
         (Ok(devices), Ok(connections)) => {
@@ -182,11 +191,19 @@ async fn push_status(
                 .iter()
                 .filter(|d| connections.get(&d.device_id).copied().unwrap_or(false))
                 .count();
+            // "Syncing" only when actually behind AND a peer is connected to
+            // catch up from — otherwise a stuck percentage would be misleading.
+            let syncing = connected > 0 && completion.is_some_and(|c| c < 99.99);
             status_tx.send_replace(SyncStatus {
-                state: SyncState::Online,
+                state: if syncing {
+                    SyncState::Syncing
+                } else {
+                    SyncState::Online
+                },
                 device_id: Some(my_id.to_string()),
                 device_count: peers.len(),
                 connected_count: connected,
+                completion: if syncing { completion } else { None },
                 last_error: None,
             });
         }
@@ -222,6 +239,36 @@ mod tests {
         assert_eq!(status.device_id.as_deref(), Some("SELF"));
         assert_eq!(status.device_count, 2, "peers exclude self");
         assert_eq!(status.connected_count, 1);
+    }
+
+    #[tokio::test]
+    async fn push_status_reports_syncing_with_completion() {
+        let api = MockSyncthing::new("SELF");
+        api.add_device("SELF", "me").await.unwrap();
+        api.add_device("PEER", "p").await.unwrap();
+        api.set_connected("PEER", true);
+        api.set_completion(42.0);
+
+        let (tx, rx) = watch::channel(SyncStatus::default());
+        push_status(&api, &tx, "SELF").await;
+        assert_eq!(rx.borrow().state, SyncState::Syncing);
+        assert_eq!(rx.borrow().completion, Some(42.0));
+
+        // Caught up → Online, no percentage.
+        api.set_completion(100.0);
+        push_status(&api, &tx, "SELF").await;
+        assert_eq!(rx.borrow().state, SyncState::Online);
+        assert_eq!(rx.borrow().completion, None);
+    }
+
+    #[tokio::test]
+    async fn not_syncing_without_a_connected_peer() {
+        let api = MockSyncthing::new("SELF");
+        api.add_device("PEER", "p").await.unwrap();
+        api.set_completion(10.0); // behind, but nobody connected to catch up from
+        let (tx, rx) = watch::channel(SyncStatus::default());
+        push_status(&api, &tx, "SELF").await;
+        assert_eq!(rx.borrow().state, SyncState::Online);
     }
 
     #[test]

@@ -143,6 +143,10 @@ pub trait SyncthingApi: Send + Sync {
     /// Unknown devices that have tried to connect (Syncthing's "pending
     /// devices"). Accepting one = `add_device` with its ID.
     async fn pending_devices(&self) -> Result<Vec<PendingDevice>>;
+
+    /// This device's completion for a folder, 0–100. Below 100 means we're
+    /// still pulling data from peers (used to show sync progress).
+    async fn folder_completion(&self, folder_id: &str) -> Result<f64>;
 }
 
 // ---------- HTTP implementation ----------
@@ -339,6 +343,16 @@ impl SyncthingApi for HttpSyncthing {
         self.put("/rest/config/options", &options).await
     }
 
+    async fn folder_completion(&self, folder_id: &str) -> Result<f64> {
+        let value = self
+            .get(&format!("/rest/db/completion?folder={folder_id}"))
+            .await?;
+        Ok(value
+            .get("completion")
+            .and_then(|c| c.as_f64())
+            .unwrap_or(100.0))
+    }
+
     async fn pending_devices(&self) -> Result<Vec<PendingDevice>> {
         // `{ "<deviceID>": { "time": "...", "name": "...", "address": "..." } }`
         let value = self.get("/rest/cluster/pending/devices").await?;
@@ -371,6 +385,7 @@ struct MockState {
     connected: HashMap<String, bool>,
     addresses: HashMap<String, Vec<String>>,
     pending: Vec<PendingDevice>,
+    completion: f64,
 }
 
 /// In-memory `SyncthingApi` for unit tests — records mutations and serves back
@@ -384,9 +399,15 @@ impl MockSyncthing {
         Self {
             state: Mutex::new(MockState {
                 my_id: my_id.to_string(),
+                completion: 100.0,
                 ..Default::default()
             }),
         }
+    }
+
+    /// Set the folder completion percentage reported by `folder_completion`.
+    pub fn set_completion(&self, pct: f64) {
+        self.state.lock().unwrap().completion = pct;
     }
 
     /// Mark a peer connected/disconnected (drives `connections()` in tests).
@@ -488,6 +509,10 @@ impl SyncthingApi for MockSyncthing {
 
     async fn pending_devices(&self) -> Result<Vec<PendingDevice>> {
         Ok(self.state.lock().unwrap().pending.clone())
+    }
+
+    async fn folder_completion(&self, _folder_id: &str) -> Result<f64> {
+        Ok(self.state.lock().unwrap().completion)
     }
 }
 

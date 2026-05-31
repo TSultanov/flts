@@ -41,6 +41,10 @@
         switch (s?.state) {
             case "starting":
                 return "Starting…";
+            case "syncing":
+                return s.completion != null
+                    ? `Syncing — ${Math.floor(s.completion)}%`
+                    : "Syncing…";
             case "online":
                 return s.deviceCount === 0
                     ? "Online — no devices paired yet"
@@ -329,7 +333,8 @@
     .dot.online {
         background: #3fb950;
     }
-    .dot.starting {
+    .dot.starting,
+    .dot.syncing {
         background: #d29922;
     }
     .dot.error,
