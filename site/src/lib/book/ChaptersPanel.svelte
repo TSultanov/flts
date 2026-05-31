@@ -168,4 +168,11 @@
     .edge-handle.open {
         left: var(--panel-width);
     }
+
+    @media (max-width: 576px) {
+        .edge-handle {
+            width: 13px;
+            height: 40px;
+        }
+    }
 </style>

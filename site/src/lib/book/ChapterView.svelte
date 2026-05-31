@@ -182,6 +182,13 @@
         pointer-events: none;
     }
 
+    @media (max-width: 576px) {
+        .translate-chapter {
+            top: 8px;
+            right: 8px;
+        }
+    }
+
     .chapter {
         padding: 1cm 0;
         max-width: 800px;
@@ -231,6 +238,12 @@
         .chapter {
             border: none;
             box-shadow: none;
+        }
+    }
+
+    @media (max-width: 576px) {
+        .chapter {
+            padding: 6mm 0;
         }
     }
 </style>

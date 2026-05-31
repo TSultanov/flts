@@ -145,4 +145,22 @@
         align-items: center;
         justify-content: center;
     }
+
+    @media (max-width: 576px) {
+        .paragraph-wrapper {
+            grid-template-columns: 8mm auto 8mm;
+        }
+
+        button.translate {
+            --font-size: 12px;
+            font-size: var(--font-size);
+            width: calc(2 * var(--font-size));
+            height: calc(2 * var(--font-size));
+        }
+
+        :global(.svelte-fa-base) {
+            --font-size: 12px;
+            font-size: var(--font-size);
+        }
+    }
 </style>
