@@ -24,7 +24,17 @@ fn main() {
     );
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let archive = out_dir.join("libsyncthing_core.a");
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+
+    // Android's cgo only supports `-buildmode=c-shared`, so there we build a
+    // shared object and link it dynamically; every other target links a static
+    // c-archive (no extra runtime artifact to ship).
+    let android = target_os == "android";
+    let lib = out_dir.join(if android {
+        "libsyncthing_core.so"
+    } else {
+        "libsyncthing_core.a"
+    });
 
     // Re-run if any Go source or the module manifest changes.
     println!("cargo:rerun-if-changed={}", go_dir.join("go.mod").display());
@@ -35,16 +45,25 @@ fn main() {
         }
     }
 
-    build_archive(&go_dir, &archive);
+    build_archive(&go_dir, &lib, &target_os);
 
-    // Link the static archive (`libsyncthing_core.a` -> `-lsyncthing_core`).
     println!("cargo:rustc-link-search=native={}", out_dir.display());
-    println!("cargo:rustc-link-lib=static=syncthing_core");
+    if android {
+        // Link the shared object (`libsyncthing_core.so` -> `-lsyncthing_core`),
+        // giving `libapp_lib.so` a DT_NEEDED on it, then stage it into the Tauri
+        // Android project's jniLibs so Gradle packages the two side by side.
+        println!("cargo:rustc-link-lib=dylib=syncthing_core");
+        stage_android_jnilib(&crate_dir, &lib);
+    } else {
+        // Link the static archive (`libsyncthing_core.a` -> `-lsyncthing_core`).
+        println!("cargo:rustc-link-lib=static=syncthing_core");
+    }
 
     link_platform_libs();
 }
 
-fn build_archive(go_dir: &Path, archive: &Path) {
+fn build_archive(go_dir: &Path, lib: &Path, target_os: &str) {
+    let android = target_os == "android";
     let go = env::var("FLTS_GO_BIN").unwrap_or_else(|_| "go".to_string());
     let mut cmd = Command::new(&go);
     cmd.current_dir(go_dir)
@@ -56,29 +75,40 @@ fn build_archive(go_dir: &Path, archive: &Path) {
             // real assets aren't present in the module cache anyway.
             "-tags",
             "noassets",
-            "-buildmode=c-archive",
-            "-o",
-            archive.to_str().expect("archive path is utf-8"),
-            ".",
+            if android {
+                "-buildmode=c-shared"
+            } else {
+                "-buildmode=c-archive"
+            },
         ])
+        .arg("-o")
+        .arg(lib)
         .env("CGO_ENABLED", "1");
 
-    // Cross-compile for iOS when Cargo is targeting it; otherwise the host go
-    // toolchain builds for the host. Tauri builds the app for aarch64-apple-ios
-    // (device) and the *-ios-sim / x86_64-apple-ios simulator triples.
-    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    // Pin the shared object's SONAME to its bare name so the consumer records a
+    // plain `libsyncthing_core.so` DT_NEEDED (not the absolute OUT_DIR path),
+    // which Android resolves from the app's own lib directory at load time.
+    if android {
+        cmd.arg("-ldflags=-extldflags=-Wl,-soname,libsyncthing_core.so");
+    }
+    cmd.arg(".");
+
+    // Cross-compile for iOS/Android when Cargo is targeting them; otherwise the
+    // host go toolchain builds for the host. Tauri builds the app for
+    // aarch64-apple-ios (device) and the *-ios-sim / x86_64-apple-ios simulator
+    // triples, and for the four Android ABIs (arm64-v8a, armeabi-v7a, x86_64,
+    // x86).
     if target_os == "ios" {
         apply_ios_cross_env(&mut cmd);
+    } else if android {
+        apply_android_cross_env(&mut cmd);
     }
 
     let status = cmd
         .status()
         .unwrap_or_else(|e| panic!("failed to spawn `{go}`: {e}. Is the Go toolchain installed?"));
-    assert!(
-        status.success(),
-        "`go build -buildmode=c-archive` failed (status {status})"
-    );
-    assert!(archive.exists(), "go build did not produce {}", archive.display());
+    assert!(status.success(), "`go build` failed (status {status})");
+    assert!(lib.exists(), "go build did not produce {}", lib.display());
 }
 
 /// Configures the Go build to cross-compile a c-archive for the active iOS
@@ -108,6 +138,106 @@ fn apply_ios_cross_env(cmd: &mut Command) {
     let cc = format!("{clang} -arch {clang_arch} -isysroot {sdk_path} {min_flag}");
 
     cmd.env("GOOS", "ios").env("GOARCH", goarch).env("CC", cc);
+}
+
+/// Configures the Go build to cross-compile a c-archive for the active Android
+/// target, pointing cgo's CC at the matching NDK clang wrapper. Mirrors
+/// `apply_ios_cross_env` but for the four Android ABIs.
+fn apply_android_cross_env(cmd: &mut Command) {
+    let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+
+    // Map the Rust target arch to (GOARCH, NDK clang triple, GOARM). The NDK
+    // ships per-API clang wrappers named `<triple><api>-clang`; only 32-bit ARM
+    // needs GOARM. ABIs: arm64-v8a, armeabi-v7a, x86_64, x86.
+    let (goarch, clang_triple, goarm): (&str, &str, Option<&str>) = match arch.as_str() {
+        "aarch64" => ("arm64", "aarch64-linux-android", None),
+        "arm" => ("arm", "armv7a-linux-androideabi", Some("7")),
+        "x86_64" => ("amd64", "x86_64-linux-android", None),
+        "x86" => ("386", "i686-linux-android", None),
+        other => panic!("unsupported Android arch: {other}"),
+    };
+
+    // The cgo target API level must be >= the app's minSdk (see
+    // gen/android/app/build.gradle.kts; tauri.conf.json android.minSdkVersion).
+    // Overridable for forward-compat, but defaults to match the Rust linker
+    // (cargo-tauri links the lib with `<triple>24-clang`).
+    println!("cargo:rerun-if-env-changed=FLTS_ANDROID_API");
+    let api = env::var("FLTS_ANDROID_API").unwrap_or_else(|_| "24".to_string());
+
+    let bin = ndk_llvm_bin();
+    let clang = bin.join(format!("{clang_triple}{api}-clang"));
+    assert!(
+        clang.exists(),
+        "NDK clang not found at {} — is the NDK r23+ and the API level valid?",
+        clang.display()
+    );
+
+    cmd.env("GOOS", "android")
+        .env("GOARCH", goarch)
+        .env("CC", &clang);
+    if let Some(v) = goarm {
+        cmd.env("GOARM", v);
+    }
+}
+
+/// Locates the NDK's prebuilt LLVM `bin` dir (which holds the clang wrappers),
+/// resolving the NDK root from the standard env vars and globbing the single
+/// host-tagged prebuilt directory (e.g. `darwin-x86_64`).
+fn ndk_llvm_bin() -> PathBuf {
+    let ndk = ["NDK_HOME", "ANDROID_NDK_HOME", "ANDROID_NDK_ROOT"]
+        .into_iter()
+        .find_map(|var| {
+            println!("cargo:rerun-if-env-changed={var}");
+            env::var(var).ok().filter(|p| !p.is_empty())
+        })
+        .map(PathBuf::from)
+        .expect(
+            "Android build needs the NDK: set NDK_HOME (or ANDROID_NDK_HOME) to an NDK r23+",
+        );
+
+    let prebuilt = ndk.join("toolchains/llvm/prebuilt");
+    let host_tag = std::fs::read_dir(&prebuilt)
+        .unwrap_or_else(|e| panic!("reading {}: {e}", prebuilt.display()))
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .find(|n| !n.starts_with('.'))
+        .unwrap_or_else(|| panic!("no prebuilt toolchain under {}", prebuilt.display()));
+
+    prebuilt.join(host_tag).join("bin")
+}
+
+/// Stages the freshly built `libsyncthing_core.so` into the Tauri Android
+/// project's `jniLibs/<abi>/` so Gradle bundles it into the APK next to
+/// `libapp_lib.so` (which links against it). `syncthing-sys` lives at the
+/// workspace root, so the app's generated Android tree is a fixed sibling path;
+/// if it isn't present (e.g. a standalone crate build), staging is skipped and
+/// linking still succeeds against the copy in OUT_DIR.
+fn stage_android_jnilib(crate_dir: &Path, lib: &Path) {
+    let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    let abi = match arch.as_str() {
+        "aarch64" => "arm64-v8a",
+        "arm" => "armeabi-v7a",
+        "x86_64" => "x86_64",
+        "x86" => "x86",
+        other => panic!("unsupported Android arch: {other}"),
+    };
+
+    let workspace = crate_dir.parent().expect("syncthing-sys has a parent dir");
+    let gen_android = workspace.join("site/src-tauri/gen/android");
+    if !gen_android.exists() {
+        println!(
+            "cargo:warning=syncthing-sys: {} absent; skipping jniLibs staging",
+            gen_android.display()
+        );
+        return;
+    }
+
+    let jnilibs = gen_android.join("app/src/main/jniLibs").join(abi);
+    std::fs::create_dir_all(&jnilibs)
+        .unwrap_or_else(|e| panic!("creating {}: {e}", jnilibs.display()));
+    let dest = jnilibs.join("libsyncthing_core.so");
+    std::fs::copy(lib, &dest)
+        .unwrap_or_else(|e| panic!("staging {} -> {}: {e}", lib.display(), dest.display()));
 }
 
 /// Runs `xcrun` and returns its trimmed stdout.
@@ -145,6 +275,11 @@ fn link_platform_libs() {
         "linux" => {
             println!("cargo:rustc-link-lib=pthread");
             println!("cargo:rustc-link-lib=dl");
+        }
+        "android" => {
+            // Bionic folds pthread/dl into libc, but the Go runtime's cgo glue
+            // logs through liblog, which the final (Rust) link must resolve.
+            println!("cargo:rustc-link-lib=log");
         }
         _ => {}
     }

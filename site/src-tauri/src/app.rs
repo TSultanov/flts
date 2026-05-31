@@ -8,6 +8,7 @@ use std::{
     time::Duration,
 };
 
+#[cfg(not(target_os = "android"))]
 use directories::ProjectDirs;
 use isolang::Language;
 use library::{
@@ -95,13 +96,47 @@ fn default_device_name() -> String {
 
 /// Resolves the app config directory (holds `config.json` and, from Phase 2,
 /// the Syncthing home). Honors `FLTS_CONFIG_DIR` so E2E harnesses get a fully
-/// isolated config; otherwise the per-platform `ProjectDirs.config_dir()`.
-fn resolve_config_dir() -> anyhow::Result<PathBuf> {
+/// isolated config; otherwise the per-platform default.
+///
+/// On Android the `directories` crate returns no `ProjectDirs` (there is no
+/// XDG/HOME in the app sandbox), so we resolve via Tauri's path API, which maps
+/// to the app-private internal-storage dir; every other platform keeps
+/// `ProjectDirs.config_dir()`. `app` is required on Android, ignored elsewhere.
+fn resolve_config_dir(app: Option<&tauri::AppHandle>) -> anyhow::Result<PathBuf> {
     if let Some(dir) = std::env::var_os("FLTS_CONFIG_DIR").filter(|v| !v.is_empty()) {
         return Ok(PathBuf::from(dir));
     }
-    let dirs = ProjectDirs::from("com", "TS", "FLTS").ok_or(AppError::ProjectDirsError)?;
-    Ok(dirs.config_dir().to_path_buf())
+    #[cfg(target_os = "android")]
+    {
+        use tauri::Manager;
+        let app = app.ok_or_else(|| anyhow::anyhow!("AppHandle required to resolve config dir on Android"))?;
+        return Ok(app.path().app_config_dir()?);
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        let dirs = ProjectDirs::from("com", "TS", "FLTS").ok_or(AppError::ProjectDirsError)?;
+        Ok(dirs.config_dir().to_path_buf())
+    }
+}
+
+/// Resolves the per-platform cache directory (transient, OS-evictable). Mirrors
+/// [`resolve_config_dir`]'s Android handling; non-Android keeps the historical
+/// `ProjectDirs::from("", "TS", "FLTS").cache_dir()` (empty qualifier) so
+/// existing installs' cache locations don't move.
+fn resolve_cache_dir(app: Option<&tauri::AppHandle>) -> anyhow::Result<PathBuf> {
+    #[cfg(target_os = "android")]
+    {
+        use tauri::Manager;
+        let app = app.ok_or_else(|| anyhow::anyhow!("AppHandle required to resolve cache dir on Android"))?;
+        return Ok(app.path().app_cache_dir()?);
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        let dirs = ProjectDirs::from("", "TS", "FLTS").ok_or(AppError::ProjectDirsError)?;
+        Ok(dirs.cache_dir().to_path_buf())
+    }
 }
 
 /// Resolves the app-managed library root. It is deterministic and app-private —
@@ -110,19 +145,31 @@ fn resolve_config_dir() -> anyhow::Result<PathBuf> {
 /// Order of precedence:
 /// 1. `FLTS_LIBRARY_DIR` — explicit override (tests, power users).
 /// 2. `<FLTS_CONFIG_DIR>/library` — keeps the single-env E2E isolation working.
-/// 3. `ProjectDirs.data_dir()/library` — the per-platform default. On iOS this
-///    is under `Library/Application Support`, which is **private** (not visible
-///    to the Files app, unlike `Documents/`) and **backed up by default** — so
-///    no `isExcludedFromBackup` handling is needed.
-fn resolve_library_root() -> anyhow::Result<PathBuf> {
+/// 3. The per-platform app-private data dir + `/library`. On iOS this is under
+///    `Library/Application Support`, which is **private** (not visible to the
+///    Files app, unlike `Documents/`) and **backed up by default** — so no
+///    `isExcludedFromBackup` handling is needed. On Android it resolves via
+///    Tauri's path API (internal storage); elsewhere `ProjectDirs.data_dir()`.
+///    `app` is required on Android, ignored elsewhere.
+fn resolve_library_root(app: Option<&tauri::AppHandle>) -> anyhow::Result<PathBuf> {
     if let Some(dir) = std::env::var_os("FLTS_LIBRARY_DIR").filter(|v| !v.is_empty()) {
         return Ok(PathBuf::from(dir));
     }
     if let Some(cfg) = std::env::var_os("FLTS_CONFIG_DIR").filter(|v| !v.is_empty()) {
         return Ok(PathBuf::from(cfg).join("library"));
     }
-    let dirs = ProjectDirs::from("com", "TS", "FLTS").ok_or(AppError::ProjectDirsError)?;
-    Ok(dirs.data_dir().join("library"))
+    #[cfg(target_os = "android")]
+    {
+        use tauri::Manager;
+        let app = app.ok_or_else(|| anyhow::anyhow!("AppHandle required to resolve library root on Android"))?;
+        return Ok(app.path().app_data_dir()?.join("library"));
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        let dirs = ProjectDirs::from("com", "TS", "FLTS").ok_or(AppError::ProjectDirsError)?;
+        Ok(dirs.data_dir().join("library"))
+    }
 }
 
 /// What a legacy-library migration actually did. Returned so callers can log
@@ -210,7 +257,7 @@ impl AppState {
     pub fn new(app: tauri::AppHandle, watcher: Arc<Mutex<LibraryWatcher>>) -> anyhow::Result<Self> {
         info!("Startup!");
 
-        let config_dir = resolve_config_dir()?;
+        let config_dir = resolve_config_dir(Some(&app))?;
 
         if !fs::exists(&config_dir)? {
             fs::create_dir_all(&config_dir)?;
@@ -304,7 +351,7 @@ impl AppState {
         }
         info!("Sync engine unreachable after wake; restarting");
         let config = self.config.borrow().clone();
-        match resolve_library_root() {
+        match resolve_library_root(Some(&self.app)) {
             Ok(root) => self.eval_sync(&config, &root).await,
             Err(err) => warn!("wake_sync: cannot resolve library root: {err}"),
         }
@@ -404,7 +451,7 @@ impl AppState {
 
         // The library root is now app-managed (no user picker). Resolve it,
         // migrate any legacy user-picked library into it (once), then open it.
-        let library_root = resolve_library_root()?;
+        let library_root = resolve_library_root(Some(&self.app))?;
         info!("library_root = {library_root:?}");
         self.migrate_legacy_library(&config, &library_root).await?;
 
@@ -502,7 +549,7 @@ impl AppState {
             return;
         }
 
-        let home = match resolve_config_dir() {
+        let home = match resolve_config_dir(Some(&self.app)) {
             Ok(dir) => dir.join("syncthing"),
             Err(err) => {
                 warn!("Cannot resolve syncthing home: {err}");
@@ -597,9 +644,8 @@ impl AppState {
     async fn get_translations_cache(&self) -> anyhow::Result<Arc<TranslationsCache>> {
         self.translations_cache
             .get_or_try_init(|| async {
-                let dirs = ProjectDirs::from("", "TS", "FLTS").ok_or(AppError::ProjectDirsError)?;
-                let cache_dir = dirs.cache_dir();
-                Ok(Arc::new(TranslationsCache::create(cache_dir).await?))
+                let cache_dir = resolve_cache_dir(Some(&self.app))?;
+                Ok(Arc::new(TranslationsCache::create(&cache_dir).await?))
             })
             .await
             .cloned()
@@ -608,9 +654,8 @@ impl AppState {
     async fn get_stats_cache(&self) -> anyhow::Result<Arc<TranslationSizeCache>> {
         self.stats_cache
             .get_or_try_init(|| async {
-                let dirs = ProjectDirs::from("", "TS", "FLTS").ok_or(AppError::ProjectDirsError)?;
-                let cache_dir = dirs.cache_dir();
-                Ok(Arc::new(TranslationSizeCache::create(cache_dir).await?))
+                let cache_dir = resolve_cache_dir(Some(&self.app))?;
+                Ok(Arc::new(TranslationSizeCache::create(&cache_dir).await?))
             })
             .await
             .cloned()
@@ -619,8 +664,7 @@ impl AppState {
     async fn get_gemini_prompt_cache(&self) -> anyhow::Result<Arc<GeminiPromptCache>> {
         self.gemini_prompt_cache
             .get_or_try_init(|| async {
-                let dirs = ProjectDirs::from("", "TS", "FLTS").ok_or(AppError::ProjectDirsError)?;
-                let cache_dir = dirs.cache_dir().join("gemini_caches");
+                let cache_dir = resolve_cache_dir(Some(&self.app))?.join("gemini_caches");
                 GeminiPromptCache::open(&cache_dir, GEMINI_PROMPT_CACHE_CAPACITY).await
             })
             .await
@@ -1005,7 +1049,7 @@ mod tests {
         // FLTS_LIBRARY_DIR wins outright.
         unsafe { std::env::set_var("FLTS_LIBRARY_DIR", "/tmp/flts-explicit") };
         assert_eq!(
-            resolve_library_root().unwrap(),
+            resolve_library_root(None).unwrap(),
             PathBuf::from("/tmp/flts-explicit")
         );
         unsafe { std::env::remove_var("FLTS_LIBRARY_DIR") };
@@ -1013,7 +1057,7 @@ mod tests {
         // Else <FLTS_CONFIG_DIR>/library for E2E isolation.
         unsafe { std::env::set_var("FLTS_CONFIG_DIR", "/tmp/flts-cfg") };
         assert_eq!(
-            resolve_library_root().unwrap(),
+            resolve_library_root(None).unwrap(),
             PathBuf::from("/tmp/flts-cfg/library")
         );
         unsafe { std::env::remove_var("FLTS_CONFIG_DIR") };
@@ -1056,16 +1100,16 @@ pub async fn get_config(state: tauri::State<'_, Arc<AppState>>) -> Result<Config
 /// The app-managed library storage location, for read-only display in settings
 /// (the folder picker is gone — see `resolve_library_root`).
 #[tauri::command]
-pub async fn get_library_root() -> Result<String, String> {
-    resolve_library_root()
+pub async fn get_library_root(app: tauri::AppHandle) -> Result<String, String> {
+    resolve_library_root(Some(&app))
         .map(|p| p.to_string_lossy().into_owned())
         .map_err(|err| err.to_string())
 }
 
 /// Opens the library storage location in the OS file manager (desktop).
 #[tauri::command]
-pub async fn reveal_library_root() -> Result<(), String> {
-    let path = resolve_library_root().map_err(|err| err.to_string())?;
+pub async fn reveal_library_root(app: tauri::AppHandle) -> Result<(), String> {
+    let path = resolve_library_root(Some(&app)).map_err(|err| err.to_string())?;
     let _ = fs::create_dir_all(&path);
     reveal_in_file_manager(&path).map_err(|err| err.to_string())
 }
