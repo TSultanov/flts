@@ -1,21 +1,17 @@
 --------------------------- MODULE Trace ---------------------------
 (*
- * Trace-validation wrapper for the roster-mesh spec.
+ * Trace-validation wrapper for the roster-mesh spec (vector-clock model).
  *
  * Replays an NDJSON trace (one event per membership transition, emitted per the
  * sibling instrumentation-spec.md) against base.tla. Each event carries the
- * emitting node's POST-state: its roster (active: dev->addedAtMs, tomb:
- * dev->removedAtMs) and engine peer set. The wrappers fire the matching base
- * action for that node and assert the node's resulting roster/engine match.
+ * emitting node's POST-state: per device its add/remove vector clocks, plus its
+ * engine peer set. The wrappers fire the matching base action for that node and
+ * assert the node's resulting roster/engine match.
  *
- * SCOPE / STATUS: this is the Phase-3 scaffold. `gseq` / `lastOp` are
- * modeling-only ground truth with no code counterpart, so they advance but are
- * NOT validated (the causal invariants stay MC-only — see brief-coverage.md).
- * Wall-clock ms are mapped to a dense rank (DenseTs) so timestamps stay in
- * 0..MaxClock. It must be exercised against real harness traces in
- * harness-generation + validation-workflow; `Node` and `MaxClock` in Trace.cfg
- * are set from the harness's actual device ids / distinct-timestamp count, and
- * silent actions may need to be added for state the harness does not log.
+ * STATUS: Phase-3 scaffold, exercised by harness/roster/run.sh traces. `gAdd` /
+ * `gRem` are modeling-only ground truth with no code counterpart, so they advance
+ * but are NOT validated (the causal invariants stay MC-only). `Node`/`MaxClock`
+ * in Trace.cfg come from the harness's device ids / op counts.
  *)
 
 EXTENDS base, Json, IOUtils, Sequences, TLC
@@ -43,38 +39,24 @@ traceVars == <<l>>
 logline == TraceLog[l]
 
 \* ============================================================================
-\* DENSE TIMESTAMP MAPPING (real ms -> small rank in 0..MaxClock)
-\* ============================================================================
-
-EventTsValues(ev) ==
-    LET act == ev.roster.active
-        tmb == ev.roster.tomb
-    IN  ({ act[d] : d \in DOMAIN act } \cup { tmb[d] : d \in DOMAIN tmb }
-         \cup {ev.ts}) \ {0}
-
-ObservedTs ==
-    UNION { EventTsValues(TraceLog[i].event) : i \in 1..Len(TraceLog) }
-
-DenseTs(t) ==
-    IF t = 0 THEN 0
-    ELSE Cardinality({ x \in ObservedTs : x <= t })
-
-\* ============================================================================
 \* EXPECTED POST-STATE FROM THE EVENT
 \* ============================================================================
 
 EvNode   == logline.event.node
-EvActive == logline.event.roster.active          \* record: deviceId -> addedAtMs
-EvTomb   == logline.event.roster.tomb            \* record: deviceId -> removedAtMs
+EvRoster == logline.event.roster        \* record: deviceId -> [add |-> vc, rem |-> vc]
 EvEngine == { logline.event.engine[i] : i \in DOMAIN logline.event.engine }
 
-\* The node's roster and engine after the action must match the event exactly:
-\* same active / tombstoned device sets, dense-ranked timestamps, and peer set.
+\* A sparse JSON vclock `{deviceId: counter}` as a total VC (missing = 0).
+ToVC(m) == [k \in Node |-> IF k \in DOMAIN m THEN m[k] ELSE 0]
+
+\* The node's roster and engine after the action must match the event: every
+\* device's add/rem clocks, devices absent from the event are EmptyEntry, and the
+\* peer set is exact.
 ValidateNode(n) ==
-    /\ { d \in Node : Active(roster'[n], d) }     = DOMAIN EvActive
-    /\ { d \in Node : Tombstoned(roster'[n], d) } = DOMAIN EvTomb
-    /\ \A d \in DOMAIN EvActive : roster'[n].active[d].ts = DenseTs(EvActive[d])
-    /\ \A d \in DOMAIN EvTomb   : roster'[n].tomb[d].ts   = DenseTs(EvTomb[d])
+    /\ \A d \in DOMAIN EvRoster :
+          /\ roster'[n][d].add = ToVC(EvRoster[d].add)
+          /\ roster'[n][d].rem = ToVC(EvRoster[d].rem)
+    /\ \A d \in Node \ DOMAIN EvRoster : roster'[n][d] = EmptyEntry
     /\ engine'[n] = EvEngine
 
 IsEvent(name) ==
@@ -89,25 +71,25 @@ StepTrace == l' = l + 1
 
 PairOnIfLogged ==
     /\ IsEvent("PairOn")
-    /\ PairOn(EvNode, logline.event.target, DenseTs(logline.event.ts))
+    /\ PairOn(EvNode, logline.event.target)
     /\ ValidateNode(EvNode)
     /\ StepTrace
 
 UnpairOnIfLogged ==
     /\ IsEvent("UnpairOn")
-    /\ UnpairOn(EvNode, logline.event.target, DenseTs(logline.event.ts))
+    /\ UnpairOn(EvNode, logline.event.target)
     /\ ValidateNode(EvNode)
     /\ StepTrace
 
 ApprovePendingIfLogged ==
     /\ IsEvent("ApprovePending")
-    /\ ApprovePending(EvNode, logline.event.target, DenseTs(logline.event.ts))
+    /\ ApprovePending(EvNode, logline.event.target)
     /\ ValidateNode(EvNode)
     /\ StepTrace
 
 EnsureSelfIfLogged ==
     /\ IsEvent("EnsureSelf")
-    /\ EnsureSelf(EvNode, DenseTs(logline.event.ts))
+    /\ EnsureSelf(EvNode)
     /\ ValidateNode(EvNode)
     /\ StepTrace
 

@@ -30,16 +30,16 @@ feature (zero-cost no-op when off). There is no patch/apply step.
 
 | Event | File:fn | Trigger | Notes |
 |---|---|---|---|
-| `EnsureSelf` | `engine.rs` `set_device_name` | after `ensure_self` + `rename_device` | `ts` = self `addedAtMs` |
-| `PairOn` | `engine.rs` `pair_device` | after `add_device` + `add_peer` | `ts` = target `addedAtMs`. **ApprovePending is folded in here** (identical effect) |
-| `UnpairOn` | `engine.rs` `unpair_device` | after `remove_device` + `remove_peer` | `ts` = target `removedAtMs` |
+| `EnsureSelf` | `engine.rs` `set_device_name` | after `ensure_self` + `rename_device` | self's add vc |
+| `PairOn` | `engine.rs` `pair_device` | after `add_device` + `add_peer` | target's add vc. **ApprovePending is folded in here** (identical effect) |
+| `UnpairOn` | `engine.rs` `unpair_device` | after `remove_device` + `remove_peer` | target's rem vc |
 | `RosterSync` | `engine.rs` `reconcile_once` | after `load`, IFF it changed the roster | one per merged sibling; `src` = sibling `modifiedBy`; emitted only when `snapshot_for_trace() != load()` |
 | `ReconcileNode` | `engine.rs` `reconcile_once` | after the add/remove apply loop | only when the plan was non-empty (engine changed) |
 
-Every event carries the emitting node's POST-state: `node`, `roster.active`
-(`id->addedAtMs`), `roster.tomb` (`id->removedAtMs`), `engine` (peer ids, self
-excluded). `gseq`/`lastOp` are spec-only ground truth and are NOT captured (the
-causal invariants stay MC-only).
+Every event carries the emitting node's POST-state: `node`, `roster`
+(`{id: {add: <vclock>, rem: <vclock>}}`, a vclock = `{deviceId: counter}`),
+`engine` (peer ids, self excluded). `gAdd`/`gRem` are spec-only ground truth and
+are NOT captured (the causal invariants stay MC-only).
 
 ## Common adjustments
 
@@ -52,9 +52,9 @@ causal invariants stay MC-only).
 - **Move a capture point** (before↔after an op): move the `self.trace_emit(...)`
   call; `trace_emit` re-reads the roster/engine, so it always reflects the state
   at the call site.
-- **Timestamps**: `ts` and `addedAtMs`/`removedAtMs` are real `now_ms()` values.
-  `Trace.tla` maps them through `DenseTs` (order-preserving), so set
-  `Trace.cfg`'s `MaxClock >= ` the number of distinct ms in the trace.
+- **Vector clocks**: each entry's `add`/`rem` is a logical vclock with small
+  integer counters; set `Trace.cfg`'s `MaxClock >=` the largest component in the
+  trace (≥ the max ops any single node issues).
 - **Node ids**: the harness uses literal `"n1"/"n2"/"n3"` device ids; `Trace.cfg`
   sets `Node = {"n1","n2","n3"}` (strings, to match the JSON keys).
 

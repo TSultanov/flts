@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeMap,
     fs::File,
     io::{BufWriter, Write},
     path::{Path, PathBuf},
@@ -162,18 +161,16 @@ pub async fn emit_translation_event(
 
 /// Emits one roster-mesh trace event for the `spec/roster/` spec (Trace.tla).
 ///
-/// Envelope: `{tag:"trace", ts:<nanos>, event:{name, node, target?, src?, ts,
-/// roster:{active:{id->addedAtMs}, tomb:{id->removedAtMs}}, engine:[peer ids]}}`.
-/// `ts` is the operation's own millisecond stamp (addedAtMs/removedAtMs, or 0 for
-/// sync/reconcile); `active`/`tomb`/`engine` are this node's POST-state.
+/// Envelope: `{tag:"trace", ts:<nanos>, event:{name, node, target?, src?,
+/// roster:{<id>:{add:<vclock>, rem:<vclock>}}, engine:[peer ids]}}`. `roster` is
+/// this node's POST-state — each device's add/remove vector clocks (the CRDT
+/// state, `vclock` = `{deviceId: counter}`); `engine` is its peer set.
 pub fn emit_roster_event(
     name: &str,
     node: &str,
     target: Option<&str>,
     src: Option<&str>,
-    ts: u64,
-    active: &BTreeMap<String, u64>,
-    tomb: &BTreeMap<String, u64>,
+    roster: serde_json::Value,
     engine: &[String],
 ) -> anyhow::Result<()> {
     let now_ns = SystemTime::now()
@@ -191,8 +188,7 @@ pub fn emit_roster_event(
     if let Some(s) = src {
         event.insert("src".into(), json!(s));
     }
-    event.insert("ts".into(), json!(ts));
-    event.insert("roster".into(), json!({ "active": active, "tomb": tomb }));
+    event.insert("roster".into(), roster);
     event.insert("engine".into(), json!(engine));
 
     let envelope = json!({

@@ -2,7 +2,6 @@
 //! surfaces when the `tla_trace` feature is off.
 
 pub mod trace {
-    use std::collections::BTreeMap;
     use std::path::Path;
 
     #[derive(Debug, Clone, Default)]
@@ -12,15 +11,12 @@ pub mod trace {
     }
 
     #[inline]
-    #[allow(clippy::too_many_arguments)]
     pub fn emit_roster_event(
         _name: &str,
         _node: &str,
         _target: Option<&str>,
         _src: Option<&str>,
-        _ts: u64,
-        _active: &BTreeMap<String, u64>,
-        _tomb: &BTreeMap<String, u64>,
+        _roster: serde_json::Value,
         _engine: &[String],
     ) -> anyhow::Result<()> {
         Ok(())

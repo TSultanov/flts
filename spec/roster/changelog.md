@@ -20,3 +20,25 @@ illegal structural states (spec ⊆ legal).
 Bug hunting: 1 bug found (F1 — clock-skew/equal-ms device resurrection; the brief's
 C1 design question, now confirmed reachable). F2 and F3 exhaustively clean. Full
 write-up in bug-report.md.
+
+## Round 2 - F1 fix (vector-clock CRDT)
+
+- [fix-impl] roster.rs: replaced wall-clock LWW with a vector-clock CRDT
+  (remove-wins) — `is_present` = add context strictly dominates remove context.
+  Convergence proven by a proptest (commutative/associative/idempotent over mixed
+  legacy/new inputs); causal unit tests (dominant-remove-wins under skew,
+  concurrent-remove-wins, re-add) + upgrade tests (legacy deserialize, legacy⊔new
+  remove-wins, self-heal) pass. Additive schema keeps old `devices`/`removed`
+  fields for not-yet-upgraded nodes.
+- [fix-spec] base.tla: re-grounded to the vector-clock model — entries are
+  `[add: VC, rem: VC]`, ops stamp the node's advanced context, `RosterSync` joins
+  pointwise, `Present` = add strictly dominates rem. `gAdd`/`gRem` ground truth
+  replace `gseq`/`lastOp`. `NoSpuriousResurrection` re-stated causally.
+- [re-verify] MC.cfg convergence clean (2,539 states). **MC_hunt_f1 now clean**
+  (10,463 states, depth 18 — the resurrection is gone). f2 clean (9,921), f3 clean
+  (179, hub mesh closes). Both traces re-validate against the updated Trace.tla.
+
+## Result (final)
+
+Converged; F1 bug found in Round 1 and **fixed + re-verified in Round 2**. The
+roster CRDT is now causally correct (remove-wins) and convergent. F2/F3 hold.

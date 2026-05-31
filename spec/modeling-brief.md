@@ -243,7 +243,7 @@ content is recognized as the app's own (or Syncthing's) echo and dropped.
 
 | ID | Description | Suggested action |
 |---|---|---|
-| C1 | Both the roster CRDT and `book.dat`/`state.json` resolution order by **wall-clock** timestamps (`now_ms`, preserved mtime). Decide if clock skew is acceptable or a logical clock / version vector is warranted | Design review |
+| C1 | **RESOLVED for the roster.** TLA+ (F1, `NoSpuriousResurrection`) confirmed wall-clock LWW silently resurrects a removed device under skew/equal-ms; the roster now uses a **vector-clock CRDT (remove-wins)** — `library/src/sync/roster.rs` `is_present` orders by causal context, not `now_ms`. (`book.dat`/`state.json` still order by preserved mtime — separate, lower-stakes, single-value resolution; revisit if it ever bites.) | Done (roster); review pending for book/state |
 | C2 | `chunk_by(id)` in translation discovery assumes id-adjacency; `read_dir` order is unspecified | Sort by id before `chunk_by`, or group with a map (`library/src/library.rs:166-171`) |
 | C3 | The daemon poller never auto-approves pending devices; the first pairing needs manual two-sided approval. Confirm this is intended (QR flow) and that no mesh case relies on auto-approval | Confirm product intent |
 | C4 | `ensure_self` re-adds self with a fresh `addedAtMs` on a name change — confirm it cannot resurrect a self that another node legitimately tombstoned | Review `set_device_name` vs tombstones |

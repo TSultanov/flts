@@ -37,30 +37,30 @@ CounterType ==
      approve    : 0..MaxApproveLimit,
      ensureSelf : 0..MaxEnsureSelfLimit]
 
-mcvars == <<roster, engine, gseq, lastOp, faultCounters>>
+mcvars == <<roster, engine, gAdd, gRem, faultCounters>>
 
 \* ============================================================================
 \* BOUNDED MEMBERSHIP ACTIONS
 \* ============================================================================
 
-MCPairOn(n, m, ts) ==
+MCPairOn(n, m) ==
     /\ faultCounters.pair < MaxPairLimit
-    /\ rm!PairOn(n, m, ts)
+    /\ rm!PairOn(n, m)
     /\ faultCounters' = [faultCounters EXCEPT !.pair = @ + 1]
 
-MCUnpairOn(n, m, ts) ==
+MCUnpairOn(n, m) ==
     /\ faultCounters.unpair < MaxUnpairLimit
-    /\ rm!UnpairOn(n, m, ts)
+    /\ rm!UnpairOn(n, m)
     /\ faultCounters' = [faultCounters EXCEPT !.unpair = @ + 1]
 
-MCApprovePending(n, p, ts) ==
+MCApprovePending(n, p) ==
     /\ faultCounters.approve < MaxApproveLimit
-    /\ rm!ApprovePending(n, p, ts)
+    /\ rm!ApprovePending(n, p)
     /\ faultCounters' = [faultCounters EXCEPT !.approve = @ + 1]
 
-MCEnsureSelf(n, ts) ==
+MCEnsureSelf(n) ==
     /\ faultCounters.ensureSelf < MaxEnsureSelfLimit
-    /\ rm!EnsureSelf(n, ts)
+    /\ rm!EnsureSelf(n)
     /\ faultCounters' = [faultCounters EXCEPT !.ensureSelf = @ + 1]
 
 \* ============================================================================
@@ -83,10 +83,10 @@ MCInit ==
     /\ Init
     /\ faultCounters = [pair |-> 0, unpair |-> 0, approve |-> 0, ensureSelf |-> 0]
 
-PairStep    == \E n, m \in Node : \E ts \in 0..MaxClock : MCPairOn(n, m, ts)
-UnpairStep  == \E n, m \in Node : \E ts \in 0..MaxClock : MCUnpairOn(n, m, ts)
-ApproveStep == \E n, p \in Node : \E ts \in 0..MaxClock : MCApprovePending(n, p, ts)
-EnsureStep  == \E n \in Node    : \E ts \in 0..MaxClock : MCEnsureSelf(n, ts)
+PairStep    == \E n, m \in Node : MCPairOn(n, m)
+UnpairStep  == \E n, m \in Node : MCUnpairOn(n, m)
+ApproveStep == \E n, p \in Node : MCApprovePending(n, p)
+EnsureStep  == \E n \in Node    : MCEnsureSelf(n)
 SyncStep    == \E src, dst \in Node : MCRosterSync(src, dst)
 ReconStep   == \E n \in Node    : MCReconcileNode(n)
 
@@ -115,7 +115,7 @@ Symmetry == Permutations(Node)
 
 \* Exclude the fault counters from the fingerprint so counter values don't blow up
 \* the state graph.
-View == <<roster, engine, gseq, lastOp>>
+View == <<roster, engine, gAdd, gRem>>
 
 \* ============================================================================
 \* FAMILY 3 — MESH CLOSURE (liveness)

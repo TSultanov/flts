@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 29602c0fecd8bf196f85c2ba3f245a0753954bc79e6967fef1eb0b3194927d8d # shrinks to a = Roster { devices: {"X": DeviceRecord { name: "n", added_at_ms: 0 }}, removed: {}, adds: {"X": AddStamp { name: "n", added_at_ms: 0, vc: {} }}, removes: {} }, b = Roster { devices: {"X": DeviceRecord { name: "n", added_at_ms: 1 }}, removed: {}, adds: {"X": AddStamp { name: "n", added_at_ms: 1, vc: {"A": 0} }}, removes: {} }
+cc 7594e99104731c2a627c796aa35dd6a2524ee728110ec78867569fe665161661 # shrinks to a = Roster { devices: {"Y": DeviceRecord { name: "n", added_at_ms: 0 }}, removed: {}, adds: {"Y": AddStamp { name: "n", added_at_ms: 0, vc: {"B": 1} }}, removes: {} }, b = Roster { devices: {"Y": DeviceRecord { name: "n", added_at_ms: 0 }}, removed: {}, adds: {"Y": AddStamp { name: "n", added_at_ms: 0, vc: {"C": 1} }}, removes: {} }, c = Roster { devices: {"Y": DeviceRecord { name: "n", added_at_ms: 1 }}, removed: {}, adds: {"Y": AddStamp { name: "n", added_at_ms: 1, vc: {"B": 1} }}, removes: {} }

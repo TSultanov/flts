@@ -9,11 +9,18 @@
 
 ## Bug 1: A removed device silently resurrects mesh-wide under clock skew / equal-ms
 
+> **STATUS: FIXED.** Membership is now a vector-clock CRDT (remove-wins): merge
+> orders add vs remove by causal context, not wall clock (`roster.rs`
+> `is_present` = add context strictly dominates remove context). After the fix,
+> `MC_hunt_f1.cfg` reports **no violation** (`NoSpuriousResurrection` re-stated
+> causally; exhaustive, 10,463 states, `spec/roster/output/MC_hunt_f1.out`), and
+> the Rust convergence proptest + causal unit tests pass. See `changelog.md`.
+
 - **Bug Family**: F1 — roster CRDT last-writer-wins under per-device wall clocks
 - **Severity**: High (a removed/unpaired device is silently re-admitted to the synced library on every node — an access-control/privacy consequence — though it requires a concurrent add+remove of the same device plus a clock-skew/equal-timestamp condition)
-- **Invariant violated**: `NoSpuriousResurrection`
+- **Invariant violated** (pre-fix): `NoSpuriousResurrection`
 - **Config**: `MC_hunt_f1.cfg` (3 nodes, `MaxClock=2`)
-- **Counterexample**: 11 states; `spec/roster/output/MC_hunt_f1.out` (8,139,892 distinct states explored before the violation)
+- **Counterexample** (pre-fix): 11 states; 8,139,892 distinct states explored before the violation
 
 ### Trace Summary
 

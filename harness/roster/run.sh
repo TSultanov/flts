@@ -38,7 +38,7 @@ for path in sorted(pathlib.Path("traces").glob("roster_*.ndjson")):
         if ev.get("tag") != "trace":
             raise SystemExit(f"{path}:{i}: missing trace tag")
         name = ev["event"]["name"]
-        for k in ("node", "ts", "roster", "engine"):
+        for k in ("node", "roster", "engine"):
             if k not in ev["event"]:
                 raise SystemExit(f"{path}:{i}: event missing {k}")
         seen.add(name)
