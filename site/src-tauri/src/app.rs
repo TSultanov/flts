@@ -286,6 +286,30 @@ impl AppState {
         self.update_config(config).await
     }
 
+    /// Called when the app returns to the foreground. On iOS the system tears
+    /// down the engine's sockets (incl. its loopback REST listener) while the
+    /// app is suspended, and it doesn't reliably rebind — so if the engine is
+    /// now unreachable, restart it. A healthy engine is left alone (the poller
+    /// refreshes peers on its own).
+    pub async fn wake_sync(&self) {
+        if !self.config.borrow().sync_enabled {
+            return;
+        }
+        let healthy = match self.sync_engine().await {
+            Some(engine) => engine.client().my_id().await.is_ok(),
+            None => false,
+        };
+        if healthy {
+            return;
+        }
+        info!("Sync engine unreachable after wake; restarting");
+        let config = self.config.borrow().clone();
+        match resolve_library_root() {
+            Ok(root) => self.eval_sync(&config, &root).await,
+            Err(err) => warn!("wake_sync: cannot resolve library root: {err}"),
+        }
+    }
+
     /// Persist the device's display name and apply it live to the running engine
     /// (no restart). Used by the `sync_set_device_name` command.
     pub async fn set_sync_device_name(&self, name: String) -> anyhow::Result<()> {

@@ -144,6 +144,7 @@ pub fn run() {
             app::sync::get_sync_status,
             app::sync::sync_get_this_device,
             app::sync::sync_set_device_name,
+            app::sync::sync_wake,
             app::sync::sync_set_enabled,
             app::sync::sync_list_devices,
             app::sync::sync_list_pending,

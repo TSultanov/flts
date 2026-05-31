@@ -8,6 +8,7 @@
     import { configStore } from "./lib/config/store";
     import { navigate } from './router';
     import { platform } from '@tauri-apps/plugin-os';
+    import { invoke } from '@tauri-apps/api/core';
 
     let isMac = false;
     try {
@@ -94,6 +95,26 @@
 
     onMount(async () => {
         mainHeight.value = window.innerHeight - (nav?.clientHeight ?? 0);
+    });
+
+    // When the app returns to the foreground, nudge sync: on iOS the system
+    // tears down the embedded engine's sockets while suspended, so the backend
+    // restarts it if it became unreachable. No-op when sync is off/healthy.
+    onMount(() => {
+        let waking = false;
+        const onVisible = async () => {
+            if (document.visibilityState !== "visible" || waking) return;
+            waking = true;
+            try {
+                await invoke("sync_wake");
+            } catch (e) {
+                console.warn("sync_wake failed", e);
+            } finally {
+                waking = false;
+            }
+        };
+        document.addEventListener("visibilitychange", onVisible);
+        return () => document.removeEventListener("visibilitychange", onVisible);
     });
 </script>
 

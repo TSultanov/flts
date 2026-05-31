@@ -68,6 +68,14 @@ pub async fn sync_get_this_device(
     }))
 }
 
+/// Called when the app returns to the foreground (mobile): restarts the engine
+/// if it became unreachable while suspended. No-op when sync is off or healthy.
+#[tauri::command]
+pub async fn sync_wake(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
+    state.wake_sync().await;
+    Ok(())
+}
+
 /// Rename this device (persisted + applied to the running engine + roster).
 #[tauri::command]
 pub async fn sync_set_device_name(
