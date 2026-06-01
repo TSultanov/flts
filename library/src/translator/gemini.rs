@@ -79,10 +79,26 @@ pub(crate) fn permissive_safety_settings() -> Vec<SafetySetting> {
 
 /// The shared paragraph schema is OpenAI-strict (uses `additionalProperties: false`).
 /// Gemini rejects that key with HTTP 400, so we hand it a stripped variant.
+///
+/// We also relax the `required` arrays for Gemini: unlike OpenAI strict mode,
+/// Gemini omits a non-required property when it has no content. Dropping the
+/// optional grammar/translation fields from `required` lets Gemini skip empty
+/// inflection slots, absent notes, and the entire grammar block for punctuation
+/// — which is where most of the per-word output scaffolding was being spent.
 pub(crate) fn gemini_paragraph_schema() -> Value {
     let mut s = paragraph_translation_schema();
     strip_additional_properties(&mut s);
+    relax_required_for_gemini(&mut s);
     s
+}
+
+/// Narrow the `required` arrays so Gemini emits only the fields it has content
+/// for. Keeps the always-present anchors (`o`/`p` per word, `lf`/`lt`/`pos` per
+/// grammar) required; everything else becomes optional and is omitted when empty.
+fn relax_required_for_gemini(schema: &mut Value) {
+    let word = &mut schema["properties"]["s"]["items"]["properties"]["wl"]["items"];
+    word["required"] = serde_json::json!(["o", "p"]);
+    word["properties"]["g"]["required"] = serde_json::json!(["lf", "lt", "pos"]);
 }
 
 pub struct GeminiTranslator {
@@ -316,4 +332,51 @@ impl Translator for GeminiTranslator {
 
 fn full_content_size(t: &ParagraphTranslation) -> usize {
     serde_json::to_string(t).map(|s| s.len()).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn word_node(schema: &Value) -> &Value {
+        &schema["properties"]["s"]["items"]["properties"]["wl"]["items"]
+    }
+
+    #[test]
+    fn gemini_schema_relaxes_required_and_strips_additional_properties() {
+        let schema = gemini_paragraph_schema();
+
+        // additionalProperties stripped recursively (Gemini rejects it).
+        assert!(
+            !serde_json::to_string(&schema)
+                .unwrap()
+                .contains("additionalProperties")
+        );
+
+        let word = word_node(&schema);
+        assert_eq!(word["required"], serde_json::json!(["o", "p"]));
+        assert_eq!(
+            word["properties"]["g"]["required"],
+            serde_json::json!(["lf", "lt", "pos"])
+        );
+    }
+
+    #[test]
+    fn openai_base_schema_keeps_everything_required() {
+        // The OpenAI-strict base must keep all keys required and retain
+        // additionalProperties:false.
+        let schema = paragraph_translation_schema();
+        assert!(
+            serde_json::to_string(&schema)
+                .unwrap()
+                .contains("additionalProperties")
+        );
+
+        let word = word_node(&schema);
+        assert_eq!(word["required"], serde_json::json!(["o", "t", "n", "g", "p"]));
+        assert_eq!(
+            word["properties"]["g"]["required"],
+            serde_json::json!(["pos", "lf", "lt", "pl", "pe", "te", "ca", "ot"])
+        );
+    }
 }

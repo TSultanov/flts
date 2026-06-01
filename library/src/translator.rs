@@ -26,7 +26,7 @@ pub fn total_stream_timeout(input_len: usize) -> Duration {
     TRANSLATION_TOTAL_TIMEOUT_BASE + TRANSLATION_TOTAL_TIMEOUT_PER_CHAR * (input_len as u32)
 }
 
-/// Closed set of values the LLM may return in `grammar.partOfSpeech`.
+/// Closed set of values the LLM may return in the grammar `pos` field.
 /// The schema's `enum` keyword is built from these tags, and the prompt
 /// renders each tag with its description so the LLM has guidance on
 /// which to pick.
@@ -440,6 +440,12 @@ pub trait Translator: Send + Sync {
 
         format!(
         "You are given a paragraph in a foreign language. The goal is to construct a translation which can be used by somebody who speaks the {to} language to learn the original language.
+        OUTPUT FORMAT — the response is a compact JSON object with SHORT keys. This text refers to fields by descriptive names; map them to the JSON keys as follows and emit ONLY the short keys:
+            - 's' = sentences (array); each sentence has 'wl' = words (array) and 'ft' = fullTranslation (string).
+            - Per word: 'o' = original word; 't' = contextualTranslations (array of strings); 'n' = note (string); 'p' = isPunctuation (boolean); 'g' = grammar (object).
+            - Inside 'g': 'lf' = originalInitialForm; 'lt' = targetInitialForm; 'pos' = partOfSpeech; 'pl' = plurality; 'pe' = person; 'te' = tense; 'ca' = case; 'ot' = other.
+            - Do not emit a field that has no content; omit it instead of sending an empty string (where the schema allows). Never invent keys outside this list.
+            - For PUNCTUATION tokens, emit only 'o' (the punctuation, HTML-encoded) and 'p' set to true; omit 't', 'n', and the whole 'g' object — punctuation needs no translation or grammar.
         For each sentence provide a good, but close to the original, translation from {from} into the {to} language.
         For each word in the sentence, provide a full translation from {from} into {to} language. Give several translation variants if necessary.
         For compound words and contractions treat them as single words with appropriate grammatical information. Describe the full form in the 'note' field if necessary.
@@ -524,59 +530,62 @@ pub(crate) fn paragraph_translation_schema() -> serde_json::Value {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-            "sentences": {
+            "s": {
                 "type": "array",
+                "description": "Sentences of the paragraph, in order",
                 "items": {
                     "type": "object",
                     "additionalProperties": false,
                     "properties": {
-                        "words": {
+                        "wl": {
                             "type": "array",
+                            "description": "Words/tokens of the sentence, in original order, including punctuation",
                             "items": {
                                 "type": "object",
                                 "additionalProperties": false,
                                 "properties": {
-                                    "original": { "type": "string", "description": "Original word" },
-                                    "contextualTranslations": {
+                                    "o": { "type": "string", "description": "Original word" },
+                                    "t": {
                                         "type": "array",
                                         "items": { "type": "string" },
-                                        "description": "Translation variants suitable for the current sentence context, used to help the reader understand the original text in-place (in the reader UI annotations). Fragments and oblique forms are fine here — they should match how this word is rendered in the translated sentence. Distinct from targetInitialForm, which is the dictionary form."
+                                        "description": "Translation variants suitable for the current sentence context, used to help the reader understand the original text in-place (in the reader UI annotations). Fragments and oblique forms are fine here — they should match how this word is rendered in the translated sentence. Distinct from lt (the dictionary form)."
                                     },
-                                    "note": { "type": "string", "description": "Note about the translation, if necessary for understanding" },
-                                    "isPunctuation": { "type": "boolean" },
-                                    "grammar": {
+                                    "n": { "type": "string", "description": "Note about the translation, if necessary for understanding" },
+                                    "p": { "type": "boolean", "description": "True when this token is punctuation rather than a word" },
+                                    "g": {
                                         "type": "object",
                                         "additionalProperties": false,
+                                        "description": "Grammatical analysis of the original word",
                                         "properties": {
-                                            "originalInitialForm": { "type": "string", "description": "Citation form of the original word for the chosen partOfSpeech tag. For verb tags: bare infinitive (mourn). For participle_present / participle_past / gerund tags: the participial / gerund form itself (mourning, broken, swimming), NOT the verb infinitive. For noun tags: nominative singular. The form must agree with the partOfSpeech tag's surface category." },
-                                            "targetInitialForm": { "type": "string", "description": "Citation form of the translation in the target language for the same partOfSpeech tag the source carries. Always populate with a clean entry in that tag's citation form even when the rendered sentence uses a different syntactic structure. Illustrative examples (English -> Russian): 'had witnessed' (verb) -> 'быть свидетелем' (infinitive); 'the mourning lord' (participle_present) -> 'скорбящий' (participle); 'Swimming is fun' (gerund) -> 'плавание' (verbal noun). Empty only when no translatable meaning exists." },
-                                            "partOfSpeech": {
+                                            "lf": { "type": "string", "description": "Citation form of the original word for the chosen pos tag. For verb tags: bare infinitive (mourn). For participle_present / participle_past / gerund tags: the participial / gerund form itself (mourning, broken, swimming), NOT the verb infinitive. For noun tags: nominative singular. The form must agree with the pos tag's surface category." },
+                                            "lt": { "type": "string", "description": "Citation form of the translation in the target language for the same pos tag the source carries. Always populate with a clean entry in that tag's citation form even when the rendered sentence uses a different syntactic structure. Illustrative examples (English -> Russian): 'had witnessed' (verb) -> 'быть свидетелем' (infinitive); 'the mourning lord' (participle_present) -> 'скорбящий' (participle); 'Swimming is fun' (gerund) -> 'плавание' (verbal noun). Empty only when no translatable meaning exists." },
+                                            "pos": {
                                                 "type": "string",
                                                 "enum": pos_enum,
                                                 "description": "Part of speech of the original word, tagged by its FUNCTION in the sentence (not by its morphology). A participle in a perfect-tense or passive verbal predicate is 'verb', not 'participle_past'/'participle_present'. Participle tags are only for forms acting as standalone modifiers of nouns. Must be one of the enumerated tags; see prompt for the full scope of each."
                                             },
-                                            "plurality": { "type": "string", "description": "Plurality of the original word, if applicable" },
-                                            "person": { "type": "string", "description": "Person of the original word, if applicable" },
-                                            "tense": { "type": "string", "description": "Tense of the original word, if applicable" },
-                                            "case": { "type": "string", "description": "What case the original word is in, if applicable" },
-                                            "other": { "type": "string", "description": "Other grammatical information about the original word, if not described by other fields" }
+                                            "pl": { "type": "string", "description": "Plurality of the original word, if applicable" },
+                                            "pe": { "type": "string", "description": "Person of the original word, if applicable" },
+                                            "te": { "type": "string", "description": "Tense of the original word, if applicable" },
+                                            "ca": { "type": "string", "description": "What case the original word is in, if applicable" },
+                                            "ot": { "type": "string", "description": "Other grammatical information about the original word, if not described by other fields" }
                                         },
                                         "required": [
-                                            "partOfSpeech", "originalInitialForm", "targetInitialForm",
-                                            "plurality", "person", "tense", "case", "other"
+                                            "pos", "lf", "lt",
+                                            "pl", "pe", "te", "ca", "ot"
                                         ]
                                     }
                                 },
-                                "required": ["original", "contextualTranslations", "note", "grammar", "isPunctuation"]
+                                "required": ["o", "t", "n", "g", "p"]
                             }
                         },
-                        "fullTranslation": { "type": "string", "description": "Full translation of the sentence" }
+                        "ft": { "type": "string", "description": "Full translation of the sentence" }
                     },
-                    "required": ["words", "fullTranslation"]
+                    "required": ["wl", "ft"]
                 }
             }
         },
-        "required": ["sentences"]
+        "required": ["s"]
     })
 }
 
