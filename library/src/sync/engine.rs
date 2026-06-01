@@ -70,7 +70,8 @@ pub struct SyncEngine {
 impl SyncEngine {
     /// Starts the engine, waits for REST, and applies the FLTS configuration
     /// (discovery options + the `flts-library` folder pointed at the library
-    /// root, initially shared only with this device).
+    /// root, shared with this device plus every peer already in the engine
+    /// config).
     pub async fn start(cfg: EngineConfig) -> Result<Self> {
         std::fs::create_dir_all(&cfg.home)
             .map_err(|e| anyhow!("creating syncthing home {:?} failed: {e}", cfg.home))?;
@@ -93,22 +94,22 @@ impl SyncEngine {
         // flag above only governs the brief pre-REST boot window.)
         client.set_options(cfg.options).await?;
 
-        client
-            .ensure_folder(FolderSpec {
-                id: LIBRARY_FOLDER_ID.to_string(),
-                label: "FLTS Library".to_string(),
-                path: library_root.clone(),
-                device_ids: vec![my_id.clone()],
-            })
-            .await?;
-
-        Ok(Self {
+        let engine = Self {
             gui_url,
             client,
             my_id,
             library_root,
             roster,
-        })
+        };
+
+        // Create the library folder and share it with this device plus every
+        // peer already in the engine config. `ensure_folder` PUTs the full
+        // device list, so a self-only call here would un-share the folder from
+        // peers persisted in a previous session — and reconcile won't re-add
+        // them (they're already present), so sync would silently stall.
+        engine.reshare_library().await?;
+
+        Ok(engine)
     }
 
     /// Loopback origin of the engine's REST/GUI endpoint (Syncthing's own web
@@ -361,7 +362,7 @@ fn pick_free_port() -> Result<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sync::control::MockSyncthing;
+    use crate::sync::control::{MockSyncthing, SyncthingApi};
 
     #[tokio::test]
     async fn add_remove_peer_reshares_library_folder() {
@@ -389,6 +390,29 @@ mod tests {
         assert!(engine.list_peers().await.unwrap().is_empty());
         let folders = mock.folders();
         assert!(!folders.last().unwrap().device_ids.contains(&"PEER1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn start_time_reshare_covers_persisted_peers() {
+        // Peers paired in a previous session are persisted in the engine's
+        // device list but the folder is not (yet) shared with them — exactly the
+        // state after a restart, before the start-time reshare runs.
+        let mock = Arc::new(MockSyncthing::new("SELF"));
+        mock.add_device("PEER1", "Laptop").await.unwrap();
+        mock.add_device("PEER2", "Phone").await.unwrap();
+        let engine =
+            SyncEngine::for_test(mock.clone(), "SELF".into(), "/tmp/flts-lib".into());
+
+        // The reshare `start` performs once the engine is up.
+        engine.reshare_library().await.unwrap();
+
+        // Folder is shared with this device AND every persisted peer — not just
+        // self, which is the bug that left sync stalled across restarts.
+        let folders = mock.folders();
+        let shared = &folders.last().unwrap().device_ids;
+        for id in ["SELF", "PEER1", "PEER2"] {
+            assert!(shared.contains(&id.to_string()), "folder must be shared with {id}");
+        }
     }
 
     fn scratch_root(tag: &str) -> std::path::PathBuf {
