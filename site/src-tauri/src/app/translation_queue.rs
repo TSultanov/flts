@@ -19,7 +19,8 @@ use library::{
 };
 use log::{info, warn};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{Mutex, Semaphore, watch};
+use tokio::task::JoinSet;
 use uuid::Uuid;
 
 use crate::app::config::Config;
@@ -154,6 +155,8 @@ impl TranslationQueue {
         let openai_api_key = config.openai_api_key.clone();
         let deepseek_api_key = config.deepseek_api_key.clone();
         let target_language = Language::from_639_3(&config.target_language_id)?;
+        // Clamp so a stray 0 can never deadlock the semaphore.
+        let concurrency = config.translation_concurrency.max(1) as usize;
 
         let (tx_save, rx_save) = unbounded_channel::<SaveNotify>();
 
@@ -174,51 +177,83 @@ impl TranslationQueue {
         let translate_task = {
             let state = state.clone();
             let app = app.clone();
+            // Bound how many paragraph translations run concurrently. Acquiring a
+            // permit before receiving the next request applies backpressure: once
+            // `concurrency` are in flight the loop parks until one finishes.
+            let semaphore = Arc::new(Semaphore::new(concurrency));
             tokio::spawn(async move {
-                while let Some(request) = rx_translate.recv().await {
-                    let library = library.clone();
-                    let cache = cache.clone();
-                    let context_provider = context_provider.clone();
-                    let gemini_prompt_cache = gemini_prompt_cache.clone();
-                    let gemini_api_key = gemini_api_key.clone();
-                    let openai_api_key = openai_api_key.clone();
-                    let deepseek_api_key = deepseek_api_key.clone();
-                    let app = app.clone();
+                // Child tasks live in this JoinSet so they're aborted together
+                // when the parent task is aborted on shutdown (JoinSet aborts all
+                // its tasks on drop).
+                let mut join_set: JoinSet<()> = JoinSet::new();
+                loop {
+                    tokio::select! {
+                        // Reap finished translations so completed handles don't
+                        // accumulate. Biased toward draining first.
+                        biased;
+                        Some(_) = join_set.join_next() => {}
+                        maybe_request = rx_translate.recv() => {
+                            let Some(request) = maybe_request else { break };
 
-                    let outcome = handle_request(
-                        library,
-                        cache,
-                        context_provider,
-                        gemini_prompt_cache,
-                        stats_cache.clone(),
-                        target_language,
-                        gemini_api_key,
-                        openai_api_key,
-                        deepseek_api_key,
-                        app.clone(),
-                        state.clone(),
-                        &tx_save,
-                        &request,
-                    )
-                    .await;
+                            // Held for the task's lifetime; released when it ends,
+                            // which is what lets a parked `acquire_owned` proceed.
+                            let permit = semaphore
+                                .clone()
+                                .acquire_owned()
+                                .await
+                                .expect("translation semaphore never closed");
 
-                    if let Err(err) = outcome {
-                        warn!(
-                            "Failed to translate {}/{}: {}",
-                            request.book_id, request.paragraph_id, err
-                        );
-                        state
-                            .lock()
-                            .await
-                            .active_translations
-                            .remove(&(request.book_id, request.paragraph_id));
-                        emit_finished(
-                            &app,
-                            request.book_id,
-                            request.paragraph_id,
-                            request.request_id,
-                            Some(err.to_string()),
-                        );
+                            let library = library.clone();
+                            let cache = cache.clone();
+                            let context_provider = context_provider.clone();
+                            let gemini_prompt_cache = gemini_prompt_cache.clone();
+                            let stats_cache = stats_cache.clone();
+                            let gemini_api_key = gemini_api_key.clone();
+                            let openai_api_key = openai_api_key.clone();
+                            let deepseek_api_key = deepseek_api_key.clone();
+                            let app = app.clone();
+                            let state = state.clone();
+                            let tx_save = tx_save.clone();
+
+                            join_set.spawn(async move {
+                                let _permit = permit;
+                                let outcome = handle_request(
+                                    library,
+                                    cache,
+                                    context_provider,
+                                    gemini_prompt_cache,
+                                    stats_cache,
+                                    target_language,
+                                    gemini_api_key,
+                                    openai_api_key,
+                                    deepseek_api_key,
+                                    app.clone(),
+                                    state.clone(),
+                                    &tx_save,
+                                    &request,
+                                )
+                                .await;
+
+                                if let Err(err) = outcome {
+                                    warn!(
+                                        "Failed to translate {}/{}: {}",
+                                        request.book_id, request.paragraph_id, err
+                                    );
+                                    state
+                                        .lock()
+                                        .await
+                                        .active_translations
+                                        .remove(&(request.book_id, request.paragraph_id));
+                                    emit_finished(
+                                        &app,
+                                        request.book_id,
+                                        request.paragraph_id,
+                                        request.request_id,
+                                        Some(err.to_string()),
+                                    );
+                                }
+                            });
+                        }
                     }
                 }
             })

@@ -48,6 +48,9 @@
     // App-managed, read-only storage location (no folder picker anymore).
     let storageLocation: string = $state("");
     let model: number = $derived(configStore.current?.model ?? 0);
+    let translationConcurrency: number = $derived(
+        configStore.current?.translationConcurrency ?? 8,
+    );
     let models: Model[] = $state([]);
     let providers: ProviderMeta[] = $state([]);
 
@@ -147,6 +150,7 @@
             deepseekApiKey,
             targetLanguageId: targetLanguage,
             model,
+            translationConcurrency,
             spotifyClientId: spotifyClientId.trim() || undefined,
             spotifyPreloadCount,
             spotifyShowNextTrack,
@@ -249,6 +253,15 @@
                     <option value={model.id}>{model.name}</option>
                 {/each}
             </select>
+
+            <label for="translationConcurrency">Parallel translations</label>
+            <input
+                id="translationConcurrency"
+                type="number"
+                min="1"
+                max="16"
+                bind:value={translationConcurrency}
+            />
 
             <label for="storage">Storage</label>
             <input
@@ -428,6 +441,10 @@
 
     input#storage {
         grid-column: 2/3;
+    }
+    input#translationConcurrency {
+        grid-column: 2/4;
+        max-width: 6em;
     }
     input#storage.full {
         grid-column: 2/4;

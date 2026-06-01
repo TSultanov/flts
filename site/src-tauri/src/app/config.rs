@@ -158,10 +158,20 @@ pub struct Config {
     /// (which is also Syncthing's own default), so `None` is fine.
     #[serde(rename = "syncDeviceName", default)]
     pub sync_device_name: Option<String>,
+    /// Max paragraph translations run concurrently. 1 = serial.
+    #[serde(
+        rename = "translationConcurrency",
+        default = "default_translation_concurrency"
+    )]
+    pub translation_concurrency: u32,
 }
 
 fn default_preload_count() -> u32 {
     1
+}
+
+fn default_translation_concurrency() -> u32 {
+    8
 }
 
 fn default_show_next_track() -> bool {
@@ -185,6 +195,7 @@ impl Default for Config {
             anki_api_key: None,
             sync_enabled: false,
             sync_device_name: None,
+            translation_concurrency: default_translation_concurrency(),
         }
     }
 }
@@ -258,5 +269,26 @@ mod tests {
             "legacy config (pre-Anki) must NOT spontaneously populate endpoint"
         );
         assert!(parsed.anki_api_key.is_none());
+    }
+
+    #[test]
+    fn config_default_translation_concurrency_is_eight() {
+        assert_eq!(Config::default().translation_concurrency, 8);
+    }
+
+    #[test]
+    fn config_loads_legacy_file_without_translation_concurrency() {
+        // A config persisted before translation_concurrency existed must fall
+        // back to the default rather than failing to parse.
+        let legacy = serde_json::json!({
+            "targetLanguageId": "eng",
+            "translationProvider": "google",
+            "geminiApiKey": null,
+            "openaiApiKey": null,
+            "model": 0,
+            "libraryPath": null,
+        });
+        let parsed: Config = serde_json::from_value(legacy).unwrap();
+        assert_eq!(parsed.translation_concurrency, 8);
     }
 }
