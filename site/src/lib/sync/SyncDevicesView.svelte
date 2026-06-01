@@ -4,6 +4,8 @@
         syncStatus,
         syncSetEnabled,
         syncGetThisDevice,
+        syncWebUiUrl,
+        openExternalUrl,
         syncListDevices,
         syncListPending,
         syncAddDevice,
@@ -35,6 +37,8 @@
 
     let newId = $state("");
     let newName = $state("");
+    // Syncthing's own web dashboard URL — only ever set in debug builds.
+    let webUiUrl = $state<string | null>(null);
     // Editable name for this device (seeded from the backend, edited locally).
     let deviceName = $state("");
 
@@ -60,6 +64,7 @@
     async function refresh() {
         try {
             thisDevice = await syncGetThisDevice();
+            webUiUrl = await syncWebUiUrl();
             devices = await syncListDevices();
             pending = await syncListPending();
             // Seed the editable name once (don't clobber an in-progress edit).
@@ -267,6 +272,14 @@
 
         {#if status?.state === "error" && status?.lastError}
             <p class="err">{status.lastError}</p>
+        {/if}
+
+        {#if webUiUrl}
+            <div class="status-line">
+                <button class="link" onclick={() => openExternalUrl(webUiUrl!)}>
+                    Open Syncthing dashboard
+                </button>
+            </div>
         {/if}
 
         {#if thisDevice}

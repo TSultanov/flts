@@ -55,6 +55,17 @@ export async function syncGetThisDevice(): Promise<ThisDevice | null> {
     return await invoke<ThisDevice | null>("sync_get_this_device");
 }
 
+/// Loopback URL of Syncthing's own web dashboard. Non-null only in debug builds
+/// with the engine running (release ships without the web UI).
+export async function syncWebUiUrl(): Promise<string | null> {
+    return await invoke<string | null>("sync_web_ui_url");
+}
+
+/// Opens an http(s) URL in the system browser (validated backend-side).
+export async function openExternalUrl(url: string): Promise<void> {
+    await invoke("open_external_url", { url });
+}
+
 export async function syncListDevices(): Promise<DeviceEntry[]> {
     return await invoke<DeviceEntry[]>("sync_list_devices");
 }

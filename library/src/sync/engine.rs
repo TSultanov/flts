@@ -53,6 +53,10 @@ pub struct EngineConfig {
 
 /// A running engine plus a control client bound to it.
 pub struct SyncEngine {
+    /// Loopback origin of the engine's REST/GUI endpoint, e.g.
+    /// `http://127.0.0.1:54321`. In debug builds Syncthing's own web dashboard
+    /// is served here (see `syncthing-sys/build.rs`).
+    gui_url: String,
     client: Arc<dyn SyncthingApi>,
     my_id: String,
     /// The synced library path, kept so we can re-share the folder when the
@@ -78,8 +82,9 @@ impl SyncEngine {
         syncthing_sys::start(&cfg.home, &addr, &api_key, cfg.loopback_only)
             .map_err(|e| anyhow!("starting syncthing engine failed: {e}"))?;
 
+        let gui_url = format!("http://{addr}");
         let client: Arc<dyn SyncthingApi> =
-            Arc::new(HttpSyncthing::new(format!("http://{addr}"), api_key));
+            Arc::new(HttpSyncthing::new(gui_url.clone(), api_key));
         let my_id = wait_until_up(client.as_ref()).await?;
         let roster = RosterStore::new(&cfg.library_root, &my_id);
         let library_root = cfg.library_root.to_string_lossy().into_owned();
@@ -98,11 +103,18 @@ impl SyncEngine {
             .await?;
 
         Ok(Self {
+            gui_url,
             client,
             my_id,
             library_root,
             roster,
         })
+    }
+
+    /// Loopback origin of the engine's REST/GUI endpoint (Syncthing's own web
+    /// dashboard, in debug builds).
+    pub fn gui_url(&self) -> &str {
+        &self.gui_url
     }
 
     /// Adds (or renames) a peer and shares the library folder with the full
@@ -281,6 +293,7 @@ impl SyncEngine {
     pub(crate) fn for_test(client: Arc<dyn SyncthingApi>, my_id: String, library_root: String) -> Self {
         let roster = RosterStore::new(std::path::Path::new(&library_root), &my_id);
         Self {
+            gui_url: "http://127.0.0.1:0".to_string(),
             client,
             my_id,
             library_root,

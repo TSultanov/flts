@@ -38,6 +38,8 @@ fn main() {
 
     // Re-run if any Go source or the module manifest changes.
     println!("cargo:rerun-if-changed={}", go_dir.join("go.mod").display());
+    // ...or the committed Web-GUI vendor assets (used only by debug builds).
+    println!("cargo:rerun-if-changed={}", go_dir.join("webui-vendor").display());
     for entry in std::fs::read_dir(&go_dir).expect("read syncthing-core dir") {
         let path = entry.expect("dir entry").path();
         if path.extension().is_some_and(|e| e == "go") {
@@ -65,22 +67,34 @@ fn main() {
 fn build_archive(go_dir: &Path, lib: &Path, target_os: &str) {
     let android = target_os == "android";
     let go = env::var("FLTS_GO_BIN").unwrap_or_else(|_| "go".to_string());
+
+    // Debug builds embed Syncthing's real Web GUI so the app can open the
+    // dashboard for diagnostics; release builds skip it (see `embed_web_ui`).
+    let debug = env::var("PROFILE").as_deref() == Ok("debug");
+    let assets_modfile = debug.then(|| embed_web_ui_modfile(&go, go_dir));
+
     let mut cmd = Command::new(&go);
-    cmd.current_dir(go_dir)
-        .args([
-            "build",
-            // `noassets`: skip the generated Web-GUI asset blob. FLTS drives the
-            // engine over REST, never serves its GUI, so the minimal fallback in
-            // syncthing's `lib/api/auto/noassets.go` is sufficient — and the
-            // real assets aren't present in the module cache anyway.
-            "-tags",
-            "noassets",
-            if android {
-                "-buildmode=c-shared"
-            } else {
-                "-buildmode=c-archive"
-            },
-        ])
+    cmd.current_dir(go_dir).arg("build");
+    match &assets_modfile {
+        // Point the build at an alternate go.mod whose `replace` swaps the
+        // Syncthing module for a writable copy carrying the generated
+        // `lib/api/auto/gui.files.go`; without `noassets`, `auto.Assets()` then
+        // serves the full dashboard. (An `-overlay` can't do this: Go forbids
+        // overlaying files beneath GOMODCACHE.)
+        Some(modfile) => {
+            cmd.arg("-modfile").arg(modfile);
+        }
+        // `noassets`: skip the Web-GUI asset blob. FLTS drives the engine over
+        // REST, so the minimal fallback in `lib/api/auto/noassets.go` suffices.
+        None => {
+            cmd.args(["-tags", "noassets"]);
+        }
+    }
+    cmd.arg(if android {
+        "-buildmode=c-shared"
+    } else {
+        "-buildmode=c-archive"
+    })
         .arg("-o")
         .arg(lib)
         .env("CGO_ENABLED", "1");
@@ -109,6 +123,93 @@ fn build_archive(go_dir: &Path, lib: &Path, target_os: &str) {
         .unwrap_or_else(|e| panic!("failed to spawn `{go}`: {e}. Is the Go toolchain installed?"));
     assert!(status.success(), "`go build` failed (status {status})");
     assert!(lib.exists(), "go build did not produce {}", lib.display());
+}
+
+/// Prepares a writable copy of the Syncthing module carrying the generated
+/// Web-GUI asset file, and returns the path to an alternate `go.mod` whose
+/// `replace` points the build at that copy. Built without the `noassets` tag,
+/// `auto.Assets()` then serves the full dashboard.
+///
+/// Why a copy + replace rather than an `-overlay`: the upstream
+/// `lib/api/auto/gui.files.go` is generated (gitignored) and so absent from the
+/// module cache, and Go refuses to `-overlay` any file beneath GOMODCACHE. A
+/// local-directory `replace` sidesteps both — it bypasses go.sum for that module
+/// and gives us a writable tree to generate into. Host toolchain only (no cross
+/// env): `genassets.go` is a standalone `//go:build ignore` file walker.
+fn embed_web_ui_modfile(go: &str, go_dir: &Path) -> PathBuf {
+    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+
+    // Resolve the Syncthing module's source dir in the (immutable) module cache.
+    let out = Command::new(go)
+        .current_dir(go_dir)
+        .args(["list", "-m", "-f", "{{.Dir}}", "github.com/syncthing/syncthing"])
+        .output()
+        .expect("failed to run `go list -m`");
+    assert!(
+        out.status.success(),
+        "`go list -m github.com/syncthing/syncthing` failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let st_src = PathBuf::from(String::from_utf8(out.stdout).unwrap().trim());
+
+    // Refresh a writable copy of the module under OUT_DIR. The cache tree is
+    // read-only, so `rm -rf` clears any prior (possibly read-only) copy and
+    // `cp -R …/.` copies its contents; then make it writable so we can drop the
+    // generated file in.
+    let st_copy = out_dir.join("syncthing-src");
+    run(Command::new("rm").arg("-rf").arg(&st_copy));
+    std::fs::create_dir_all(&st_copy)
+        .unwrap_or_else(|e| panic!("creating {}: {e}", st_copy.display()));
+    run(Command::new("cp").arg("-R").arg(format!("{}/.", st_src.display())).arg(&st_copy));
+    run(Command::new("chmod").arg("-R").arg("u+w").arg(&st_copy));
+
+    // The Go module ships the GUI source but not the third-party `vendor/` libs
+    // (Go's zip packaging strips nested `vendor/` dirs). Drop our committed copy
+    // into the default theme so genassets embeds a fully working dashboard.
+    let vendor_src = go_dir.join("webui-vendor");
+    let vendor_dst = st_copy.join("gui/default/vendor");
+    std::fs::create_dir_all(&vendor_dst)
+        .unwrap_or_else(|e| panic!("creating {}: {e}", vendor_dst.display()));
+    run(Command::new("cp").arg("-R").arg(format!("{}/.", vendor_src.display())).arg(&vendor_dst));
+
+    // Generate the assets into the copy's `auto` package from its own `gui/`.
+    run(Command::new(go)
+        .current_dir(go_dir)
+        .arg("run")
+        .arg(st_copy.join("script/genassets.go"))
+        .arg("-o")
+        .arg(st_copy.join("lib/api/auto/gui.files.go"))
+        .arg(st_copy.join("gui")));
+
+    // Alternate go.mod = the real one plus a replace onto the copy. `-modfile`
+    // derives the matching sum file by swapping the extension, so copy go.sum
+    // alongside (the replaced module no longer needs a checksum, but the rest do).
+    let go_mod = std::fs::read_to_string(go_dir.join("go.mod"))
+        .expect("reading syncthing-core/go.mod");
+    let alt_mod = out_dir.join("go.webui.mod");
+    std::fs::write(
+        &alt_mod,
+        format!(
+            "{go_mod}\nreplace github.com/syncthing/syncthing => {}\n",
+            st_copy.display()
+        ),
+    )
+    .unwrap_or_else(|e| panic!("writing {}: {e}", alt_mod.display()));
+    std::fs::copy(go_dir.join("go.sum"), out_dir.join("go.webui.sum"))
+        .expect("copying go.sum alongside the alternate go.mod");
+
+    alt_mod
+}
+
+/// Runs a command, panicking with its stderr on failure.
+fn run(cmd: &mut Command) {
+    let out = cmd.output().unwrap_or_else(|e| panic!("failed to spawn {cmd:?}: {e}"));
+    assert!(
+        out.status.success(),
+        "{cmd:?} failed ({}): {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 /// Configures the Go build to cross-compile a c-archive for the active iOS

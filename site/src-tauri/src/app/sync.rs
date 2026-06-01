@@ -68,6 +68,20 @@ pub async fn sync_get_this_device(
     }))
 }
 
+/// Loopback URL of Syncthing's own web dashboard, for opening it in a browser.
+/// `Some` only in debug builds with the engine running — release builds ship
+/// `-tags noassets` (no real UI), so this returns `None` and the UI hides the
+/// button without needing a frontend build-flag check.
+#[tauri::command]
+pub async fn sync_web_ui_url(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<Option<String>, String> {
+    if !cfg!(debug_assertions) {
+        return Ok(None);
+    }
+    Ok(state.sync_engine().await.map(|e| e.gui_url().to_string()))
+}
+
 /// Called when the app returns to the foreground (mobile): restarts the engine
 /// if it became unreachable while suspended. No-op when sync is off or healthy.
 #[tauri::command]
