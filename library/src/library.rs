@@ -536,10 +536,23 @@ impl Library {
                     false
                 }
             }
-            // No backend cache for cards (LibraryCardStore reads from
-            // disk on every load); frontend handles invalidation via the
-            // cards_updated event emitted by AppState.
-            LibraryFileChange::CardChanged { .. } => false,
+            // Drop the store's cached familiarity for this card so the next
+            // read repopulates from disk; the frontend separately refreshes
+            // via the cards_updated event emitted by AppState. Returns false:
+            // there is no in-memory book/translation state to reload here.
+            LibraryFileChange::CardChanged {
+                from,
+                to,
+                lemma_slug,
+                ..
+            } => {
+                self.card_store().invalidate_familiarity(
+                    from.to_639_3(),
+                    to.to_639_3(),
+                    lemma_slug,
+                );
+                false
+            }
         });
         trace!("Finish file change event handling");
         result

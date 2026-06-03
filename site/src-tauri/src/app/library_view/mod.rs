@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use htmlentity::entity::{ICodedDataTrait, decode};
@@ -6,7 +6,6 @@ use isolang::Language;
 use library::card;
 use library::epub_importer::EpubBook;
 use library::library::file_watcher::LibraryFileChange;
-use library::library::library_card::LibraryCardStore;
 use library::translator::TranslationModel;
 use library::{
     book::translation::ParagraphTranslationView,
@@ -179,8 +178,12 @@ impl LibraryView {
         let t_view = bt.paragraph_view(paragraph_id);
 
         let segments = if let Some(t) = t_view.as_ref() {
-            let fam =
-                build_paragraph_familiarity_map(t, src_lang, *target_language, card_store).await;
+            let mut slug_set: HashSet<String> = HashSet::new();
+            collect_paragraph_slugs(t, src_lang, &mut slug_set);
+            let slugs: Vec<String> = slug_set.into_iter().collect();
+            let fam = card_store
+                .familiarities(src_lang.to_639_3(), target_language.to_639_3(), &slugs)
+                .await;
             Some(paragraph_to_segments(&original, t, &fam, src_lang))
         } else {
             None
@@ -224,24 +227,42 @@ impl LibraryView {
 
         let src_lang = Language::from_639_3(&book.book.language).unwrap();
         let card_store = self.library.card_store();
-        let mut out = Vec::with_capacity(paragraph_ids.len());
 
+        // First pass: resolve each paragraph's original text + translation
+        // view, and accumulate the union of lemma slugs across the whole batch
+        // (deduped via a HashSet) so we hit the card store exactly once.
+        let mut prepared: Vec<(usize, String, Option<ParagraphTranslationView<'_>>)> =
+            Vec::with_capacity(paragraph_ids.len());
+        let mut slug_set: HashSet<String> = HashSet::new();
         for id in paragraph_ids {
             let p = book.book.paragraph_view(id);
-            let original = p.original_html.unwrap_or(p.original_text);
+            let original = p.original_html.unwrap_or(p.original_text).to_string();
             let t_view = bt.paragraph_view(id);
-
-            let segments = if let Some(t) = t_view.as_ref() {
-                let fam =
-                    build_paragraph_familiarity_map(t, src_lang, *target_language, card_store)
-                        .await;
-                Some(paragraph_to_segments(&original, t, &fam, src_lang))
-            } else {
-                None
-            };
-
-            out.push(ParagraphTranslationSlice { id, segments });
+            if let Some(t) = t_view.as_ref() {
+                collect_paragraph_slugs(t, src_lang, &mut slug_set);
+            }
+            prepared.push((id, original, t_view));
         }
+
+        // One cache-backed familiarity lookup for the entire page.
+        let slugs: Vec<String> = slug_set.into_iter().collect();
+        let fam = card_store
+            .familiarities(src_lang.to_639_3(), target_language.to_639_3(), &slugs)
+            .await;
+
+        // Second pass: build segments against the shared familiarity map.
+        let out = prepared
+            .iter()
+            .map(|(id, original, t_view)| {
+                let segments = t_view
+                    .as_ref()
+                    .map(|t| paragraph_to_segments(original, t, &fam, src_lang));
+                ParagraphTranslationSlice {
+                    id: *id,
+                    segments,
+                }
+            })
+            .collect();
         Ok(out)
     }
 
@@ -492,16 +513,14 @@ impl LibraryView {
     }
 }
 
-async fn build_paragraph_familiarity_map(
+/// Accumulate the lemma slugs of every non-punctuation word in a paragraph
+/// translation into `out`. The dedup is the caller's `HashSet`, so a slug
+/// shared across paragraphs (or repeated within one) is loaded only once.
+fn collect_paragraph_slugs(
     translation: &ParagraphTranslationView<'_>,
     src_lang: Language,
-    tgt_lang: Language,
-    card_store: &Arc<LibraryCardStore>,
-) -> HashMap<String, f32> {
-    let src = src_lang.to_639_3();
-    let tgt = tgt_lang.to_639_3();
-
-    let mut slugs: Vec<String> = Vec::new();
+    out: &mut HashSet<String>,
+) {
     for sentence in translation.sentences() {
         for word in sentence.words() {
             if word.is_punctuation {
@@ -516,22 +535,9 @@ async fn build_paragraph_familiarity_map(
             if slug.is_empty() {
                 continue;
             }
-            if !slugs.contains(&slug) {
-                slugs.push(slug);
-            }
+            out.insert(slug);
         }
     }
-
-    let mut out: HashMap<String, f32> = HashMap::with_capacity(slugs.len());
-    for slug in slugs {
-        let card_opt = card_store.load(src, tgt, &slug).await.ok().flatten();
-        if let Some(f) =
-            card::familiarity_from(card_opt.as_ref().and_then(|c| c.anki_data.as_ref()))
-        {
-            out.insert(slug, f);
-        }
-    }
-    out
 }
 
 fn paragraph_to_segments(
@@ -637,7 +643,7 @@ fn paragraph_to_segments(
                     } else {
                         // A missing map entry means the card is dormant
                         // (Suspended/Deleted). A never-synced card is mapped
-                        // to Some(0.0) by `build_paragraph_familiarity_map`.
+                        // to Some(0.0) by `LibraryCardStore::familiarities`.
                         card_familiarity.get(&slug).copied()
                     }
                 };
