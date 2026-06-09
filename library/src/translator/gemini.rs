@@ -95,6 +95,7 @@ pub(crate) fn gemini_paragraph_schema() -> Value {
     let mut s = paragraph_translation_schema();
     strip_additional_properties(&mut s);
     relax_required_for_gemini(&mut s);
+    add_property_ordering_for_gemini(&mut s);
     s
 }
 
@@ -105,6 +106,25 @@ fn relax_required_for_gemini(schema: &mut Value) {
     let word = &mut schema["properties"]["s"]["items"]["properties"]["wl"]["items"];
     word["required"] = serde_json::json!(["o", "p"]);
     word["properties"]["g"]["required"] = serde_json::json!(["lf", "lt", "pos"]);
+}
+
+/// Pin the key order Gemini's constrained decoder emits. Without
+/// `propertyOrdering` the decoder follows the schema's own key order, and
+/// serde_json's `json!` maps are alphabetical — NOT the order the prompt
+/// legend teaches; Google documents `propertyOrdering` as the fix for the
+/// resulting structured-output unreliability (we see it as repetition
+/// loops that stream until a timeout). `o` goes first so every word item
+/// must open by anchoring to a fresh source token — the strongest
+/// anti-repetition anchor — and `p` second so punctuation items close
+/// after two keys. Gemini-only: OpenAI strict mode rejects the keyword.
+fn add_property_ordering_for_gemini(schema: &mut Value) {
+    schema["propertyOrdering"] = serde_json::json!(["s"]);
+    let sentence = &mut schema["properties"]["s"]["items"];
+    sentence["propertyOrdering"] = serde_json::json!(["wl", "ft"]);
+    let word = &mut sentence["properties"]["wl"]["items"];
+    word["propertyOrdering"] = serde_json::json!(["o", "p", "t", "n", "g"]);
+    word["properties"]["g"]["propertyOrdering"] =
+        serde_json::json!(["lf", "lt", "pos", "pl", "pe", "te", "ca", "ot"]);
 }
 
 pub struct GeminiTranslator {
@@ -437,15 +457,65 @@ mod tests {
     }
 
     #[test]
-    fn openai_base_schema_keeps_everything_required() {
-        // The OpenAI-strict base must keep all keys required and retain
-        // additionalProperties:false.
-        let schema = paragraph_translation_schema();
-        assert!(
-            serde_json::to_string(&schema)
-                .unwrap()
-                .contains("additionalProperties")
+    fn gemini_schema_pins_property_ordering() {
+        let schema = gemini_paragraph_schema();
+
+        assert_eq!(schema["propertyOrdering"], serde_json::json!(["s"]));
+        assert_eq!(
+            schema["properties"]["s"]["items"]["propertyOrdering"],
+            serde_json::json!(["wl", "ft"])
         );
+        let word = word_node(&schema);
+        assert_eq!(
+            word["propertyOrdering"],
+            serde_json::json!(["o", "p", "t", "n", "g"])
+        );
+        assert_eq!(
+            word["properties"]["g"]["propertyOrdering"],
+            serde_json::json!(["lf", "lt", "pos", "pl", "pe", "te", "ca", "ot"])
+        );
+
+        // Every ordering array must list exactly the properties of its node,
+        // or Gemini rejects the schema.
+        for (node, ordering) in [
+            (&schema, &schema["propertyOrdering"]),
+            (
+                &schema["properties"]["s"]["items"],
+                &schema["properties"]["s"]["items"]["propertyOrdering"],
+            ),
+            (word, &word["propertyOrdering"]),
+            (
+                &word["properties"]["g"],
+                &word["properties"]["g"]["propertyOrdering"],
+            ),
+        ] {
+            let mut ordered: Vec<&str> = ordering
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect();
+            let mut declared: Vec<&str> = node["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            ordered.sort_unstable();
+            declared.sort_unstable();
+            assert_eq!(ordered, declared);
+        }
+    }
+
+    #[test]
+    fn openai_base_schema_keeps_everything_required() {
+        // The OpenAI-strict base must keep all keys required, retain
+        // additionalProperties:false, and stay free of the Gemini-only
+        // propertyOrdering keyword (OpenAI strict mode rejects it).
+        let schema = paragraph_translation_schema();
+        let serialized = serde_json::to_string(&schema).unwrap();
+        assert!(serialized.contains("additionalProperties"));
+        assert!(!serialized.contains("propertyOrdering"));
 
         let word = word_node(&schema);
         assert_eq!(word["required"], serde_json::json!(["o", "t", "n", "g", "p"]));
