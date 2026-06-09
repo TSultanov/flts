@@ -1,16 +1,16 @@
 use std::{
     sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
 use futures_util::TryStreamExt;
 use gemini_rust::{
-    CachedContentHandle, Gemini, HarmBlockThreshold, HarmCategory, Model, SafetySetting,
-    ThinkingConfig,
+    CachedContentHandle, FinishReason, Gemini, HarmBlockThreshold, HarmCategory, Model,
+    SafetySetting, ThinkingConfig, UsageMetadata,
 };
 use isolang::Language;
-use log::{info, warn};
+use log::{debug, info, warn};
 use serde_json::Value;
 use tokio::time::timeout;
 
@@ -216,32 +216,98 @@ impl GeminiTranslator {
         .await
         .map_err(|_| anyhow::anyhow!("Gemini request timed out"))??;
 
+        // The accumulator and stream metadata live OUTSIDE the timed future:
+        // when a timeout fires the future is dropped, but the diagnostics
+        // below still need to report how much arrived and what the server
+        // last said (finish reason / usage), otherwise aborts are opaque.
         let mut accumulator = StreamChunkAccumulator::new("Gemini");
+        let mut last_finish_reason: Option<FinishReason> = None;
+        let mut last_usage: Option<UsageMetadata> = None;
+        let started = Instant::now();
 
-        let full_content = timeout(total_stream_timeout(paragraph.len()), async {
+        let drain = async {
             loop {
                 let next = timeout(TRANSLATION_STREAM_IDLE_TIMEOUT, stream.try_next())
                     .await
                     .map_err(|_| anyhow::anyhow!("Gemini stream timed out"))?;
-                let should_continue = accumulator.handle_result(
-                    match next {
-                        Ok(Some(response)) => Ok(Some(response.text())),
-                        Ok(None) => Ok(None),
-                        Err(err) => Err(err.into()),
-                    },
-                    callback,
-                )?;
-                if !should_continue {
+                let item = match next {
+                    Ok(Some(response)) => {
+                        if let Some(reason) = response
+                            .candidates
+                            .first()
+                            .and_then(|c| c.finish_reason.clone())
+                        {
+                            last_finish_reason = Some(reason);
+                        }
+                        if let Some(usage) = response.usage_metadata.clone() {
+                            last_usage = Some(usage);
+                        }
+                        Ok(Some(response.text()))
+                    }
+                    Ok(None) => Ok(None),
+                    Err(err) => Err(err.into()),
+                };
+                if !accumulator.handle_result(item, callback)? {
                     break;
                 }
             }
-            accumulator.finish()
-        })
-        .await
-        .map_err(|_| anyhow::anyhow!("Gemini total stream timeout"))??;
+            anyhow::Ok(())
+        };
+
+        let drained = timeout(total_stream_timeout(paragraph.len()), drain)
+            .await
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("Gemini total stream timeout")));
+
+        if let Err(err) = drained {
+            warn!(
+                "Gemini stream aborted after {:.1?}: {err} (paragraph {} chars, accumulated {} chars, finish_reason {:?}, usage {:?})",
+                started.elapsed(),
+                paragraph.len(),
+                accumulator.len(),
+                last_finish_reason,
+                last_usage,
+            );
+            if !accumulator.is_empty() {
+                debug!("Gemini aborted stream tail: …{}", accumulator.tail(300));
+            }
+            return Err(err);
+        }
+
+        let full_content = accumulator.finish()?;
+
+        // A MAX_TOKENS finish means the JSON is truncated. Bail before the
+        // serde parse: a serde error is classified permanent and would kill
+        // the requeue path, but hitting the server's output cap is a
+        // constrained-decoding runaway worth retrying.
+        if last_finish_reason == Some(FinishReason::MaxTokens) {
+            warn!(
+                "Gemini hit max output tokens after {:.1?} (paragraph {} chars, accumulated {} chars, usage {:?})",
+                started.elapsed(),
+                paragraph.len(),
+                full_content.len(),
+                last_usage,
+            );
+            anyhow::bail!(
+                "Gemini hit max output tokens ({} chars accumulated)",
+                full_content.len()
+            );
+        }
+
+        let usage = last_usage.as_ref();
+        info!(
+            "Gemini stream finished in {:.1?}: finish_reason {:?}, tokens prompt={:?} cached={:?} thoughts={:?} output={:?} total={:?}",
+            started.elapsed(),
+            last_finish_reason,
+            usage.and_then(|u| u.prompt_token_count),
+            usage.and_then(|u| u.cached_content_token_count),
+            usage.and_then(|u| u.thoughts_token_count),
+            usage.and_then(|u| u.candidates_token_count),
+            usage.and_then(|u| u.total_token_count),
+        );
 
         let mut translation: ParagraphTranslation = serde_json::from_str(&full_content)?;
         translation.normalize_html_entities();
+        translation.total_tokens = usage.and_then(|u| u.total_token_count).map(|c| c as u64);
         Ok(translation)
     }
 }

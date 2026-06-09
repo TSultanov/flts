@@ -223,6 +223,27 @@ impl StreamChunkAccumulator {
         }
     }
 
+    /// Bytes accumulated so far. Read by provider drain loops for
+    /// abort-path diagnostics (the accumulator outlives the timed future).
+    pub fn len(&self) -> usize {
+        self.full_content.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.full_content.is_empty()
+    }
+
+    /// Up to the last `n` bytes of the accumulated content, snapped forward
+    /// to a char boundary. Lets abort paths show what the model was sending
+    /// (e.g. a repetition loop) without dumping the whole response.
+    pub fn tail(&self, n: usize) -> &str {
+        let mut start = self.full_content.len().saturating_sub(n);
+        while !self.full_content.is_char_boundary(start) {
+            start += 1;
+        }
+        &self.full_content[start..]
+    }
+
     pub fn finish(self) -> anyhow::Result<String> {
         if self.full_content.is_empty() {
             anyhow::bail!("{} returned empty content", self.provider);
@@ -699,6 +720,10 @@ pub fn is_transient_translation_error(err: &anyhow::Error) -> bool {
         " 529",
         "stream idle timeout",
         "total stream timeout",
+        // Server-side cap (finishReason MAX_TOKENS): a constrained-decoding
+        // repetition loop, not a deterministic property of the paragraph —
+        // worth a fresh attempt.
+        "max output tokens",
     ];
     TRANSIENT_SIGS.iter().any(|s| msg_lower.contains(s))
 }
@@ -810,6 +835,24 @@ mod tests {
     }
 
     #[test]
+    fn tail_snaps_to_char_boundary() {
+        let mut accumulator = StreamChunkAccumulator::new("Gemini");
+        assert!(accumulator.is_empty());
+        assert_eq!(accumulator.tail(10), "");
+
+        // "ё" is 2 bytes in UTF-8; a byte-based cut would land mid-char.
+        assert!(
+            accumulator
+                .handle_result(Ok(Some("приём".into())), None)
+                .unwrap()
+        );
+        assert_eq!(accumulator.len(), "приём".len());
+        assert_eq!(accumulator.tail(3), "м");
+        assert_eq!(accumulator.tail(4), "ём");
+        assert_eq!(accumulator.tail(1000), "приём");
+    }
+
+    #[test]
     fn total_stream_timeout_scales_with_input() {
         let short = super::total_stream_timeout(100);
         let long = super::total_stream_timeout(1000);
@@ -846,6 +889,9 @@ mod tests {
         )));
         assert!(is_transient_translation_error(&anyhow::anyhow!(
             "Gemini stream timed out"
+        )));
+        assert!(is_transient_translation_error(&anyhow::anyhow!(
+            "Gemini hit max output tokens (123456 chars accumulated)"
         )));
     }
 
