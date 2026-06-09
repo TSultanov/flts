@@ -1,6 +1,5 @@
 use std::{sync::Arc, time::Duration};
 
-use async_openai::error::OpenAIError;
 use async_openai::types::chat::{
     ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
     ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs, ResponseFormat,
@@ -22,7 +21,7 @@ use crate::{
     translator::{
         ProgressCallback, StreamChunkAccumulator, TRANSLATION_REQUEST_TIMEOUT,
         TRANSLATION_STREAM_IDLE_TIMEOUT, TranslationErrors, TranslationModel, TranslationProvider,
-        strip_additional_properties, total_stream_timeout,
+        is_transient_translation_error, strip_additional_properties, total_stream_timeout,
     },
 };
 
@@ -37,83 +36,6 @@ const TRANSLATION_RETRY: RetryConfig = RetryConfig {
     max_delay: Duration::from_secs(10),
     jitter_frac: 0.3,
 };
-
-fn is_reqwest_transient(re: &reqwest::Error) -> bool {
-    re.is_timeout() || re.is_connect() || re.is_request()
-}
-
-/// Classifier for `retry()` around `translate_song`. Each attempt rebuilds the
-/// request and stream from scratch, so we need to know which errors are worth that.
-///
-/// Hybrid: structured downcasts where the provider crates expose typed errors,
-/// substring match for messages that originate from our own `map_err` calls
-/// (e.g. "OpenAI lyrics request timed out") or that arrive without preserved sources.
-fn is_transient_translation(err: &anyhow::Error) -> bool {
-    if err.downcast_ref::<serde_json::Error>().is_some() {
-        return false;
-    }
-
-    let msg_lower = format!("{err:#}").to_lowercase();
-    for sig in [
-        "alignment error",
-        "unknown model",
-        "stream failed after retry",
-    ] {
-        if msg_lower.contains(sig) {
-            return false;
-        }
-    }
-
-    if let Some(oe) = err.downcast_ref::<OpenAIError>() {
-        return match oe {
-            OpenAIError::Reqwest(re) => is_reqwest_transient(re),
-            OpenAIError::StreamError(_) => true,
-            OpenAIError::ApiError(api) => {
-                let t = api.r#type.as_deref().unwrap_or("").to_lowercase();
-                t.contains("server_error")
-                    || t.contains("rate_limit")
-                    || t.contains("overloaded")
-                    || t.contains("timeout")
-            }
-            _ => false,
-        };
-    }
-
-    if let Some(ge) = err.downcast_ref::<gemini_rust::ClientError>() {
-        return match ge {
-            gemini_rust::ClientError::PerformRequest { source, .. } => is_reqwest_transient(source),
-            gemini_rust::ClientError::PerformRequestNew { source } => is_reqwest_transient(source),
-            gemini_rust::ClientError::DecodeResponse { source } => is_reqwest_transient(source),
-            gemini_rust::ClientError::BadPart { .. } => true,
-            gemini_rust::ClientError::BadResponse { code, .. } => {
-                *code == 408 || *code == 429 || (500..=599).contains(code)
-            }
-            gemini_rust::ClientError::OperationTimeout { .. } => true,
-            _ => false,
-        };
-    }
-
-    if let Some(re) = err.downcast_ref::<reqwest::Error>() {
-        return is_reqwest_transient(re);
-    }
-
-    const TRANSIENT_SIGS: &[&str] = &[
-        "timeout",
-        "timed out",
-        "connection",
-        "reset by peer",
-        "rate limit",
-        " 429",
-        " 500",
-        " 502",
-        " 503",
-        " 504",
-        " 529",
-        "stream idle timeout",
-        "total stream timeout",
-    ];
-    TRANSIENT_SIGS.iter().any(|s| msg_lower.contains(s))
-}
 
 #[derive(Debug, Deserialize)]
 struct LyricsResponse {
@@ -288,7 +210,7 @@ impl LyricsTranslator for LyricsOpenAITranslator {
 
         retry(
             TRANSLATION_RETRY,
-            is_transient_translation,
+            is_transient_translation_error,
             "OpenAI lyrics",
             || async move {
                 let mut system = format!(
@@ -433,7 +355,7 @@ impl LyricsTranslator for LyricsGeminiTranslator {
 
         retry(
             TRANSLATION_RETRY,
-            is_transient_translation,
+            is_transient_translation_error,
             "Gemini lyrics",
             || async move {
                 let system = system_prompt(self.to.to_name());
@@ -541,49 +463,26 @@ mod tests {
     }
 
     #[test]
-    fn classifier_handles_gemini_bad_response_codes() {
-        let transient = anyhow::Error::from(gemini_rust::ClientError::BadResponse {
-            code: 503,
-            description: Some("upstream".into()),
-        });
-        assert!(is_transient_translation(&transient));
-
-        let permanent = anyhow::Error::from(gemini_rust::ClientError::BadResponse {
-            code: 400,
-            description: Some("bad request".into()),
-        });
-        assert!(!is_transient_translation(&permanent));
-    }
-
-    #[test]
     fn classifier_treats_self_emitted_timeouts_as_transient() {
-        assert!(is_transient_translation(&anyhow::anyhow!(
+        // The lyrics path emits its own "...lyrics..." timeout strings; confirm
+        // the shared classifier still catches them via its generic signatures.
+        assert!(is_transient_translation_error(&anyhow::anyhow!(
             "OpenAI lyrics request timed out"
         )));
-        assert!(is_transient_translation(&anyhow::anyhow!(
+        assert!(is_transient_translation_error(&anyhow::anyhow!(
             "Gemini lyrics stream idle timeout"
         )));
-        assert!(is_transient_translation(&anyhow::anyhow!(
+        assert!(is_transient_translation_error(&anyhow::anyhow!(
             "OpenAI lyrics total stream timeout"
         )));
     }
 
     #[test]
-    fn classifier_rejects_permanent_errors() {
-        assert!(!is_transient_translation(&anyhow::anyhow!(
+    fn classifier_rejects_lyrics_alignment_error() {
+        // Alignment mismatch is lyrics-specific and permanent — retrying a
+        // deterministic miscount just burns tokens.
+        assert!(!is_transient_translation_error(&anyhow::anyhow!(
             "Lyrics translation alignment error: expected 5 lines, got 4"
         )));
-        assert!(!is_transient_translation(&anyhow::anyhow!("Unknown model")));
-        assert!(!is_transient_translation(&anyhow::anyhow!(
-            "OpenAI stream failed after retry: bad bytes"
-        )));
-    }
-
-    #[test]
-    fn classifier_rejects_serde_parse_errors() {
-        let parse_err: serde_json::Error =
-            serde_json::from_str::<serde_json::Value>("not json").unwrap_err();
-        let wrapped: anyhow::Error = parse_err.into();
-        assert!(!is_transient_translation(&wrapped));
     }
 }

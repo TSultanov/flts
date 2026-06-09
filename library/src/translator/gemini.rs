@@ -1,6 +1,6 @@
 use std::{
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
@@ -33,6 +33,12 @@ use super::{
     StreamChunkAccumulator, TRANSLATION_REQUEST_TIMEOUT, TRANSLATION_STREAM_IDLE_TIMEOUT,
     total_stream_timeout,
 };
+
+/// The cached-content POST runs before `TRANSLATION_REQUEST_TIMEOUT` wraps
+/// anything, and gemini-rust's reqwest client has no timeout of its own — an
+/// unbounded await here hangs every paragraph of the chapter (they share the
+/// cache init future) with no error and no requeue.
+const CACHE_CREATE_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub(crate) fn gemini_model(m: TranslationModel) -> anyhow::Result<Model> {
     Ok(match m {
@@ -180,16 +186,19 @@ impl GeminiTranslator {
         let to = self.to;
         let key = self.cache_key(book_id, chapter_id);
 
-        let cache_handle: Arc<CachedContentHandle> = self
-            .prompt_cache
-            .get_or_create(&self.client, key.clone(), || {
-                let reference = build_reference_material(&prior_summaries, &chapter_text);
-                CacheContent {
-                    system_instruction: Self::get_prompt(from.to_name(), to.to_name()),
-                    user_reference_material: reference,
-                }
-            })
-            .await?;
+        let cache_handle: Arc<CachedContentHandle> = timeout(
+            CACHE_CREATE_TIMEOUT,
+            self.prompt_cache
+                .get_or_create(&self.client, key.clone(), || {
+                    let reference = build_reference_material(&prior_summaries, &chapter_text);
+                    CacheContent {
+                        system_instruction: Self::get_prompt(from.to_name(), to.to_name()),
+                        user_reference_material: reference,
+                    }
+                }),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("Gemini cache creation timed out"))??;
 
         let user_message = format!("Translate this paragraph: {paragraph}");
         let mut stream = timeout(

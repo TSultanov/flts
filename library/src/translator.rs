@@ -622,11 +622,92 @@ pub fn get_translator(
     }
 }
 
+fn is_reqwest_transient(re: &reqwest::Error) -> bool {
+    re.is_timeout() || re.is_connect() || re.is_request()
+}
+
+/// Whether a translation error is worth restarting the request from scratch.
+/// Used both by the lyrics `retry()` loop and by the book paragraph queue's
+/// requeue-on-failure path.
+///
+/// Hybrid: structured downcasts where the provider crates expose typed errors,
+/// substring match for messages that originate from our own `map_err` calls
+/// (e.g. "OpenAI request timed out", "Gemini total stream timeout") or that
+/// arrive without preserved sources.
+pub fn is_transient_translation_error(err: &anyhow::Error) -> bool {
+    use async_openai::error::OpenAIError;
+
+    if err.downcast_ref::<serde_json::Error>().is_some() {
+        return false;
+    }
+
+    let msg_lower = format!("{err:#}").to_lowercase();
+    for sig in [
+        "alignment error",
+        "unknown model",
+        "stream failed after retry",
+    ] {
+        if msg_lower.contains(sig) {
+            return false;
+        }
+    }
+
+    if let Some(oe) = err.downcast_ref::<OpenAIError>() {
+        return match oe {
+            OpenAIError::Reqwest(re) => is_reqwest_transient(re),
+            OpenAIError::StreamError(_) => true,
+            OpenAIError::ApiError(api) => {
+                let t = api.r#type.as_deref().unwrap_or("").to_lowercase();
+                t.contains("server_error")
+                    || t.contains("rate_limit")
+                    || t.contains("overloaded")
+                    || t.contains("timeout")
+            }
+            _ => false,
+        };
+    }
+
+    if let Some(ge) = err.downcast_ref::<gemini_rust::ClientError>() {
+        return match ge {
+            gemini_rust::ClientError::PerformRequest { source, .. } => is_reqwest_transient(source),
+            gemini_rust::ClientError::PerformRequestNew { source } => is_reqwest_transient(source),
+            gemini_rust::ClientError::DecodeResponse { source } => is_reqwest_transient(source),
+            gemini_rust::ClientError::BadPart { .. } => true,
+            gemini_rust::ClientError::BadResponse { code, .. } => {
+                *code == 408 || *code == 429 || (500..=599).contains(code)
+            }
+            gemini_rust::ClientError::OperationTimeout { .. } => true,
+            _ => false,
+        };
+    }
+
+    if let Some(re) = err.downcast_ref::<reqwest::Error>() {
+        return is_reqwest_transient(re);
+    }
+
+    const TRANSIENT_SIGS: &[&str] = &[
+        "timeout",
+        "timed out",
+        "connection",
+        "reset by peer",
+        "rate limit",
+        " 429",
+        " 500",
+        " 502",
+        " 503",
+        " 504",
+        " 529",
+        "stream idle timeout",
+        "total stream timeout",
+    ];
+    TRANSIENT_SIGS.iter().any(|s| msg_lower.contains(s))
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use super::StreamChunkAccumulator;
+    use super::{StreamChunkAccumulator, is_transient_translation_error};
 
     #[test]
     fn first_chunk_error_is_retried() {
@@ -737,5 +818,56 @@ mod tests {
             short,
             super::TRANSLATION_TOTAL_TIMEOUT_BASE + super::TRANSLATION_TOTAL_TIMEOUT_PER_CHAR * 100
         );
+    }
+
+    #[test]
+    fn classifier_handles_gemini_bad_response_codes() {
+        let transient = anyhow::Error::from(gemini_rust::ClientError::BadResponse {
+            code: 503,
+            description: Some("upstream".into()),
+        });
+        assert!(is_transient_translation_error(&transient));
+
+        let permanent = anyhow::Error::from(gemini_rust::ClientError::BadResponse {
+            code: 400,
+            description: Some("bad request".into()),
+        });
+        assert!(!is_transient_translation_error(&permanent));
+    }
+
+    #[test]
+    fn classifier_treats_paragraph_timeouts_as_transient() {
+        // The exact strings the book paragraph translators emit on timeout.
+        assert!(is_transient_translation_error(&anyhow::anyhow!(
+            "OpenAI request timed out"
+        )));
+        assert!(is_transient_translation_error(&anyhow::anyhow!(
+            "OpenAI total stream timeout"
+        )));
+        assert!(is_transient_translation_error(&anyhow::anyhow!(
+            "Gemini stream timed out"
+        )));
+    }
+
+    #[test]
+    fn classifier_rejects_permanent_errors() {
+        // Stale-paragraph guards from the queue must NOT be retried.
+        assert!(!is_transient_translation_error(&anyhow::anyhow!(
+            "Paragraph 3 content changed during translation — discarding stale translation"
+        )));
+        assert!(!is_transient_translation_error(&anyhow::anyhow!(
+            "Unknown model provider"
+        )));
+        assert!(!is_transient_translation_error(&anyhow::anyhow!(
+            "OpenAI stream failed after retry: bad bytes"
+        )));
+    }
+
+    #[test]
+    fn classifier_rejects_serde_parse_errors() {
+        let parse_err: serde_json::Error =
+            serde_json::from_str::<serde_json::Value>("not json").unwrap_err();
+        let wrapped: anyhow::Error = parse_err.into();
+        assert!(!is_transient_translation_error(&wrapped));
     }
 }

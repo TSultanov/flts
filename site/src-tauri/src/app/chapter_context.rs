@@ -66,11 +66,14 @@ impl ChapterContextProvider for SummaryBackedChapterContext {
                 }
             }
         };
+        // "timed out" keeps this within the transient-error signatures of
+        // `is_transient_translation_error`, so the translation queue requeues
+        // the paragraph instead of failing it — summaries usually finish soon.
         timeout(WAIT_READY_TIMEOUT, wait)
             .await
             .map_err(|_| {
                 anyhow::anyhow!(
-                    "chapter summaries not ready for book {book_id} chapter {chapter_index} within {WAIT_READY_TIMEOUT:?}"
+                    "chapter summaries for book {book_id} chapter {chapter_index} timed out after {WAIT_READY_TIMEOUT:?}"
                 )
             })??;
         Ok(())
@@ -110,5 +113,23 @@ impl ChapterContextProvider for SummaryBackedChapterContext {
             text.push_str(&para.original_text);
         }
         Ok(text)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wait_ready_timeout_error_is_transient() {
+        // The translation queue only requeues this failure if the message
+        // matches a transient signature; a reword that drops "timed out"
+        // would silently turn it back into a permanent error.
+        let book_id = Uuid::new_v4();
+        let chapter_index = 5usize;
+        let err = anyhow::anyhow!(
+            "chapter summaries for book {book_id} chapter {chapter_index} timed out after {WAIT_READY_TIMEOUT:?}"
+        );
+        assert!(library::translator::is_transient_translation_error(&err));
     }
 }

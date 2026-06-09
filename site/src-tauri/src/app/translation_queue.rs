@@ -14,7 +14,7 @@ use library::{
     translation_stats::TranslationSizeCache,
     translator::{
         ChapterContextProvider, TranslationContext, TranslationModel, TranslationProvider,
-        gemini_cache::GeminiPromptCache, get_translator,
+        gemini_cache::GeminiPromptCache, get_translator, is_transient_translation_error,
     },
 };
 use log::{info, warn};
@@ -28,12 +28,98 @@ use tauri::Emitter;
 
 const TRANSLATION_PROGRESS_UPDATE_INTERVAL: Duration = Duration::from_millis(500);
 
+/// Total attempts (initial + restarts) a paragraph gets before a transient
+/// failure is surfaced to the user. Restarts go to the back of the queue, so
+/// the spacing between them is "however long the other queued items take";
+/// this cap only bounds the worst case when the queue is otherwise empty and
+/// the failure is instantaneous.
+const MAX_TRANSLATION_ATTEMPTS: u32 = 4;
+
 struct TranslationRequest {
     request_id: usize,
     book_id: Uuid,
     paragraph_id: usize,
     model: TranslationModel,
     use_cache: bool,
+    /// 0 on first enqueue; incremented each time the worker requeues this
+    /// paragraph after a transient failure.
+    attempt: u32,
+}
+
+/// Decide whether a failed request should be restarted (re-enqueued) rather
+/// than surfaced as a terminal error. Pure so it can be unit-tested without a
+/// running queue.
+fn should_requeue(err: &anyhow::Error, attempt: u32) -> bool {
+    attempt + 1 < MAX_TRANSLATION_ATTEMPTS && is_transient_translation_error(err)
+}
+
+#[derive(Debug, PartialEq)]
+enum FailureDisposition {
+    /// Re-enqueued to the back of the queue; the activity entry survives with
+    /// progress reset. Caller should push a progress-reset event to the UI.
+    Requeued { expected_chars: usize },
+    /// Out of restarts (or error is permanent / queue is shutting down); the
+    /// activity entry is removed. Caller should emit the finished-with-error
+    /// event.
+    Terminal,
+}
+
+/// Everything the worker does with a failed request except the Tauri event
+/// emission, so the requeue mechanics are unit-testable with a real state map
+/// and channel.
+async fn handle_translation_failure(
+    state: &Arc<Mutex<TranslationQueueState>>,
+    requeue_tx: &UnboundedSender<TranslationRequest>,
+    request: &TranslationRequest,
+    err: &anyhow::Error,
+) -> FailureDisposition {
+    if should_requeue(err, request.attempt) {
+        let next_attempt = request.attempt + 1;
+        // Keep the active_translations entry so the same request_id, the UI
+        // spinner, and the translate() dedup all survive the restart; just
+        // reset the visible progress.
+        let expected_chars = {
+            let mut s = state.lock().await;
+            match s
+                .active_translations
+                .get_mut(&(request.book_id, request.paragraph_id))
+            {
+                Some(activity) => {
+                    activity.progress_chars = 0;
+                    activity.expected_chars
+                }
+                None => 0,
+            }
+        };
+        let requeued = requeue_tx.send(TranslationRequest {
+            request_id: request.request_id,
+            book_id: request.book_id,
+            paragraph_id: request.paragraph_id,
+            model: request.model,
+            use_cache: request.use_cache,
+            attempt: next_attempt,
+        });
+        if requeued.is_ok() {
+            warn!(
+                "Transient failure translating {}/{} (attempt {}/{}): {}; requeued",
+                request.book_id, request.paragraph_id, next_attempt, MAX_TRANSLATION_ATTEMPTS, err
+            );
+            return FailureDisposition::Requeued { expected_chars };
+        }
+        // Channel gone (queue shutting down): fall through to the terminal
+        // path so the failure is still reported.
+    }
+
+    warn!(
+        "Failed to translate {}/{}: {}",
+        request.book_id, request.paragraph_id, err
+    );
+    state
+        .lock()
+        .await
+        .active_translations
+        .remove(&(request.book_id, request.paragraph_id));
+    FailureDisposition::Terminal
 }
 
 #[derive(Clone, Copy)]
@@ -177,6 +263,11 @@ impl TranslationQueue {
         let translate_task = {
             let state = state.clone();
             let app = app.clone();
+            // A sender clone so a worker can re-enqueue a transiently-failed
+            // paragraph onto the back of its own queue. Holding an extra sender
+            // is harmless: shutdown is driven by `abort()`/`Drop`, not by the
+            // channel closing, so the loop never relies on `recv()` → `None`.
+            let requeue_tx = tx_translate.clone();
             // Bound how many paragraph translations run concurrently. Acquiring a
             // permit before receiving the next request applies backpressure: once
             // `concurrency` are in flight the loop parks until one finishes.
@@ -214,6 +305,7 @@ impl TranslationQueue {
                             let app = app.clone();
                             let state = state.clone();
                             let tx_save = tx_save.clone();
+                            let requeue_tx = requeue_tx.clone();
 
                             join_set.spawn(async move {
                                 let _permit = permit;
@@ -235,22 +327,38 @@ impl TranslationQueue {
                                 .await;
 
                                 if let Err(err) = outcome {
-                                    warn!(
-                                        "Failed to translate {}/{}: {}",
-                                        request.book_id, request.paragraph_id, err
-                                    );
-                                    state
-                                        .lock()
-                                        .await
-                                        .active_translations
-                                        .remove(&(request.book_id, request.paragraph_id));
-                                    emit_finished(
-                                        &app,
-                                        request.book_id,
-                                        request.paragraph_id,
-                                        request.request_id,
-                                        Some(err.to_string()),
-                                    );
+                                    match handle_translation_failure(
+                                        &state,
+                                        &requeue_tx,
+                                        &request,
+                                        &err,
+                                    )
+                                    .await
+                                    {
+                                        FailureDisposition::Requeued { expected_chars } => {
+                                            // Drop the UI's progress ring back to
+                                            // zero so the restart is visible.
+                                            let _ = app.emit(
+                                                "paragraph_translation_progress",
+                                                ParagraphTranslationProgressEvent {
+                                                    book_id: request.book_id,
+                                                    paragraph_id: request.paragraph_id,
+                                                    request_id: request.request_id,
+                                                    progress_chars: 0,
+                                                    expected_chars,
+                                                },
+                                            );
+                                        }
+                                        FailureDisposition::Terminal => {
+                                            emit_finished(
+                                                &app,
+                                                request.book_id,
+                                                request.paragraph_id,
+                                                request.request_id,
+                                                Some(err.to_string()),
+                                            );
+                                        }
+                                    }
                                 }
                             });
                         }
@@ -277,6 +385,24 @@ impl TranslationQueue {
             info!("TranslationQueue shutdown — aborting background tasks");
             tasks.abort();
             tasks.wait_for_shutdown().await;
+        }
+
+        // Aborting dropped every in-flight and channel-pending request without
+        // a finished event. The frontend keeps its per-paragraph activity state
+        // purely from events (it never re-polls), so emit a terminal event for
+        // each stranded entry or its spinner survives the queue forever.
+        let stranded: Vec<_> = {
+            let mut state = self.state.lock().await;
+            state.active_translations.drain().collect()
+        };
+        for ((book_id, paragraph_id), activity) in stranded {
+            emit_finished(
+                &self.app,
+                book_id,
+                paragraph_id,
+                activity.request_id,
+                Some("translation cancelled".to_string()),
+            );
         }
     }
 
@@ -327,6 +453,7 @@ impl TranslationQueue {
             paragraph_id,
             model,
             use_cache,
+            attempt: 0,
         }) {
             self.state
                 .lock()
@@ -386,9 +513,19 @@ async fn handle_request(
         )
     };
 
+    let retry_note = if request.attempt > 0 {
+        format!(
+            " (retry {}/{})",
+            request.attempt + 1,
+            MAX_TRANSLATION_ATTEMPTS
+        )
+    } else {
+        String::new()
+    };
     info!(
-        "Translating paragraph {} with model {:?}: \"{}...\"",
+        "Translating paragraph {}{} with model {:?}: \"{}...\"",
         request.paragraph_id,
+        retry_note,
         request.model,
         String::from_iter(paragraph_text.chars().take(40))
     );
@@ -701,5 +838,151 @@ async fn wait_for_shutdown_task(task_name: &str, task: tokio::task::JoinHandle<(
         Ok(()) => {}
         Err(err) if err.is_cancelled() => {}
         Err(err) => warn!("Translation queue {task_name} task failed during shutdown: {err}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn requeues_transient_failure_on_first_attempt() {
+        let err = anyhow::anyhow!("OpenAI request timed out");
+        assert!(should_requeue(&err, 0));
+    }
+
+    #[test]
+    fn stops_requeueing_once_attempts_exhausted() {
+        // On the final allowed attempt there is no restart left to grant.
+        let err = anyhow::anyhow!("OpenAI total stream timeout");
+        assert!(!should_requeue(&err, MAX_TRANSLATION_ATTEMPTS - 1));
+        // ...but the attempt just before it still requeues.
+        assert!(should_requeue(&err, MAX_TRANSLATION_ATTEMPTS - 2));
+    }
+
+    #[test]
+    fn never_requeues_non_transient_failure() {
+        // The stale-paragraph guard in handle_request is permanent.
+        let err = anyhow::anyhow!(
+            "Paragraph 3 content changed during translation — discarding stale translation"
+        );
+        assert!(!should_requeue(&err, 0));
+    }
+
+    fn state_with_entry(
+        book_id: Uuid,
+        paragraph_id: usize,
+        request_id: usize,
+    ) -> Arc<Mutex<TranslationQueueState>> {
+        let mut active_translations = HashMap::new();
+        active_translations.insert(
+            (book_id, paragraph_id),
+            ParagraphTranslationActivity {
+                request_id,
+                progress_chars: 1234,
+                expected_chars: 5000,
+            },
+        );
+        Arc::new(Mutex::new(TranslationQueueState {
+            active_translations,
+        }))
+    }
+
+    fn request(book_id: Uuid, paragraph_id: usize, attempt: u32) -> TranslationRequest {
+        TranslationRequest {
+            request_id: 7,
+            book_id,
+            paragraph_id,
+            model: TranslationModel::Gemini25Flash,
+            use_cache: true,
+            attempt,
+        }
+    }
+
+    #[tokio::test]
+    async fn transient_failure_re_adds_request_to_queue() {
+        let book_id = Uuid::new_v4();
+        let state = state_with_entry(book_id, 3, 7);
+        let (tx, mut rx) = unbounded_channel::<TranslationRequest>();
+        let err = anyhow::anyhow!("Gemini request timed out");
+
+        let disposition =
+            handle_translation_failure(&state, &tx, &request(book_id, 3, 0), &err).await;
+
+        assert_eq!(
+            disposition,
+            FailureDisposition::Requeued {
+                expected_chars: 5000
+            }
+        );
+        // The restart really is back on the queue, with the attempt bumped
+        // and the same request_id.
+        let requeued = rx.try_recv().expect("requeued request on the channel");
+        assert_eq!(requeued.attempt, 1);
+        assert_eq!(requeued.request_id, 7);
+        assert_eq!(requeued.book_id, book_id);
+        assert_eq!(requeued.paragraph_id, 3);
+        // The activity entry survives (same request_id) with progress reset,
+        // so the UI spinner and translate() dedup keep working.
+        let s = state.lock().await;
+        let activity = s.active_translations.get(&(book_id, 3)).unwrap();
+        assert_eq!(activity.request_id, 7);
+        assert_eq!(activity.progress_chars, 0);
+        assert_eq!(activity.expected_chars, 5000);
+    }
+
+    #[tokio::test]
+    async fn exhausted_attempts_fail_terminally() {
+        let book_id = Uuid::new_v4();
+        let state = state_with_entry(book_id, 3, 7);
+        let (tx, mut rx) = unbounded_channel::<TranslationRequest>();
+        let err = anyhow::anyhow!("Gemini request timed out");
+
+        let disposition = handle_translation_failure(
+            &state,
+            &tx,
+            &request(book_id, 3, MAX_TRANSLATION_ATTEMPTS - 1),
+            &err,
+        )
+        .await;
+
+        assert_eq!(disposition, FailureDisposition::Terminal);
+        assert!(rx.try_recv().is_err(), "nothing should be requeued");
+        assert!(
+            state.lock().await.active_translations.is_empty(),
+            "entry must be removed so the paragraph can be re-translated"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_transient_failure_fails_terminally() {
+        let book_id = Uuid::new_v4();
+        let state = state_with_entry(book_id, 3, 7);
+        let (tx, mut rx) = unbounded_channel::<TranslationRequest>();
+        let err = anyhow::anyhow!(
+            "Paragraph 3 content changed during translation — discarding stale translation"
+        );
+
+        let disposition =
+            handle_translation_failure(&state, &tx, &request(book_id, 3, 0), &err).await;
+
+        assert_eq!(disposition, FailureDisposition::Terminal);
+        assert!(rx.try_recv().is_err(), "nothing should be requeued");
+        assert!(state.lock().await.active_translations.is_empty());
+    }
+
+    #[tokio::test]
+    async fn closed_queue_degrades_to_terminal_failure() {
+        let book_id = Uuid::new_v4();
+        let state = state_with_entry(book_id, 3, 7);
+        let (tx, rx) = unbounded_channel::<TranslationRequest>();
+        drop(rx); // queue shutting down
+        let err = anyhow::anyhow!("Gemini request timed out");
+
+        let disposition =
+            handle_translation_failure(&state, &tx, &request(book_id, 3, 0), &err).await;
+
+        assert_eq!(disposition, FailureDisposition::Terminal);
+        assert!(state.lock().await.active_translations.is_empty());
     }
 }
