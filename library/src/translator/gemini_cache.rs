@@ -15,11 +15,16 @@ use uuid::Uuid;
 
 use crate::{cache::DiskCache, translator::TranslationModel};
 
-/// Long-ish TTL so an active reading session keeps the cache warm without
-/// rebuilding. Refreshed on every cache use (in-memory hit and disk-hit
-/// reconstitution), so an idle book caches storage cost is bounded by
-/// inactivity, not session length.
-const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(24 * 3600);
+/// Refreshed on every cache use (in-memory hit and disk-hit
+/// reconstitution), so an active reading session keeps the cache warm no
+/// matter how long it runs — the TTL only determines the post-last-use
+/// billing tail. Explicit-cache storage is billed per token-hour, and each
+/// chapter caches the system prompt plus the full chapter text, so a long
+/// TTL pays for ~TTL hours of storage on every chapter after the reader
+/// moves on. 1h trades a rare cache rebuild (one chapter re-upload via the
+/// existing 403/404 evict-retry path) after a >1h pause for a 24x smaller
+/// tail than the previous 24h value.
+const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(3600);
 
 #[derive(Clone, Hash, Eq, PartialEq, Debug)]
 pub struct CacheKey {
