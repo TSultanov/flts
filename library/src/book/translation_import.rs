@@ -78,7 +78,14 @@ pub struct Word {
     pub contextual_translations: Vec<String>,
     #[serde(rename = "n", alias = "note", default)]
     pub note: Option<String>,
-    #[serde(rename = "p", alias = "isPunctuation", alias = "is_punctuation")]
+    // `default`: Gemini's relaxed schema lets non-punctuation words omit
+    // `p` entirely (absent == false), saving ~4 output tokens per word.
+    #[serde(
+        rename = "p",
+        alias = "isPunctuation",
+        alias = "is_punctuation",
+        default
+    )]
     pub is_punctuation: bool,
     #[serde(rename = "g", alias = "grammar", default)]
     pub grammar: Grammar,
@@ -189,6 +196,25 @@ mod tests {
         ] {
             assert!(!json.contains(key), "unexpected long key {key} in {json}");
         }
+    }
+
+    #[test]
+    fn deserializes_word_without_punctuation_flag() {
+        // Gemini's relaxed schema omits `p` for normal words; absence means
+        // "not punctuation". Punctuation tokens still emit `p: true`.
+        let json = r#"{
+            "s": [{
+                "ft": "Hola.",
+                "wl": [
+                    { "o": "hi", "t": ["hola"], "g": { "lf": "hi", "lt": "hola", "pos": "interjection" } },
+                    { "o": "&period;", "p": true }
+                ]
+            }]
+        }"#;
+        let p: ParagraphTranslation = serde_json::from_str(json).unwrap();
+        let words = &p.sentences[0].words;
+        assert!(!words[0].is_punctuation);
+        assert!(words[1].is_punctuation);
     }
 
     #[test]

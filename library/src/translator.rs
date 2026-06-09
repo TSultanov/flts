@@ -463,7 +463,7 @@ pub trait Translator: Send + Sync {
         "You are given a paragraph in a foreign language. The goal is to construct a translation which can be used by somebody who speaks the {to} language to learn the original language.
         OUTPUT FORMAT — the response is a compact JSON object with SHORT keys. This text refers to fields by descriptive names; map them to the JSON keys as follows and emit ONLY the short keys:
             - 's' = sentences (array); each sentence has 'wl' = words (array) and 'ft' = fullTranslation (string).
-            - Per word: 'o' = original word; 't' = contextualTranslations (array of strings); 'n' = note (string); 'p' = isPunctuation (boolean); 'g' = grammar (object).
+            - Per word: 'o' = original word; 't' = contextualTranslations (array of strings); 'n' = note (string); 'p' = isPunctuation (boolean; emit it only for punctuation tokens, always as true — omit it for normal words where the schema allows); 'g' = grammar (object).
             - Inside 'g': 'lf' = originalInitialForm; 'lt' = targetInitialForm; 'pos' = partOfSpeech; 'pl' = plurality; 'pe' = person; 'te' = tense; 'ca' = case; 'ot' = other.
             - Do not emit a field that has no content; omit it instead of sending an empty string (where the schema allows). Never invent keys outside this list.
             - For PUNCTUATION tokens, emit only 'o' (the punctuation, HTML-encoded) and 'p' set to true; omit 't', 'n', and the whole 'g' object — punctuation needs no translation or grammar.

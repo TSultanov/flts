@@ -100,11 +100,14 @@ pub(crate) fn gemini_paragraph_schema() -> Value {
 }
 
 /// Narrow the `required` arrays so Gemini emits only the fields it has content
-/// for. Keeps the always-present anchors (`o`/`p` per word, `lf`/`lt`/`pos` per
-/// grammar) required; everything else becomes optional and is omitted when empty.
+/// for. Keeps the always-present anchors (`o` per word, `lf`/`lt`/`pos` per
+/// grammar) required; everything else becomes optional and is omitted when
+/// empty. `p` is optional too: only punctuation tokens emit it (as `true`),
+/// so every normal word saves the `"p":false` scaffolding — the importer's
+/// serde `default` reads absence as false.
 fn relax_required_for_gemini(schema: &mut Value) {
     let word = &mut schema["properties"]["s"]["items"]["properties"]["wl"]["items"];
-    word["required"] = serde_json::json!(["o", "p"]);
+    word["required"] = serde_json::json!(["o"]);
     word["properties"]["g"]["required"] = serde_json::json!(["lf", "lt", "pos"]);
 }
 
@@ -449,7 +452,7 @@ mod tests {
         );
 
         let word = word_node(&schema);
-        assert_eq!(word["required"], serde_json::json!(["o", "p"]));
+        assert_eq!(word["required"], serde_json::json!(["o"]));
         assert_eq!(
             word["properties"]["g"]["required"],
             serde_json::json!(["lf", "lt", "pos"])
