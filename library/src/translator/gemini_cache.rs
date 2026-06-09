@@ -6,6 +6,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use futures_util::StreamExt;
 use gemini_rust::{CacheExpirationRequest, CachedContentHandle, Gemini};
 use isolang::Language;
 use log::{info, warn};
@@ -26,6 +27,12 @@ use crate::{cache::DiskCache, translator::TranslationModel};
 /// tail than the previous 24h value.
 const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(3600);
 
+/// Display-name prefix shared by every cache FLTS has ever created (all
+/// historical formats started with it). [`GeminiPromptCache::purge_all`]
+/// deletes exactly the server-side caches matching this prefix, so it must
+/// stay in sync with [`cache_display_name`].
+pub const FLTS_CACHE_DISPLAY_PREFIX: &str = "flts-";
+
 #[derive(Clone, Hash, Eq, PartialEq, Debug)]
 pub struct CacheKey {
     pub model: TranslationModel,
@@ -42,6 +49,14 @@ pub struct CacheKey {
 pub struct CacheContent {
     pub system_instruction: String,
     pub user_reference_material: Option<String>,
+}
+
+/// Outcome of [`GeminiPromptCache::purge_all`].
+pub struct PurgeReport {
+    /// Number of server-side caches successfully deleted.
+    pub deleted: usize,
+    /// One `"name: error"` entry per cache whose DELETE failed.
+    pub failures: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -78,6 +93,59 @@ impl GeminiPromptCache {
 
     pub async fn close(&self) {
         self.disk.close().await;
+    }
+
+    /// Drops every in-memory slot and all persisted disk entries. Local
+    /// counterpart of [`purge_all`]: after the server-side caches are gone
+    /// the persisted names point at nothing, so keeping them would cost one
+    /// failing request per chapter before the 403/404 retry path recovers.
+    pub async fn clear_local(&self) {
+        {
+            let mut guard = self.inflight.lock().await;
+            guard.clear();
+        }
+        self.disk.clear();
+    }
+
+    /// Deletes every FLTS-created cache (display name prefix
+    /// [`FLTS_CACHE_DISPLAY_PREFIX`]) on the Gemini account behind
+    /// `api_key`, then clears the local pointers. The full list is
+    /// collected before any delete so a listing failure (offline, bad key)
+    /// aborts with `Err` while both server and local state are untouched.
+    /// Individual delete failures don't stop the sweep — they're reported
+    /// in [`PurgeReport::failures`]; the survivors expire via TTL or a
+    /// retry of the purge. Safe to run during active translation: tasks
+    /// holding a deleted cache recover via the existing 403/404
+    /// evict-and-retry path.
+    pub async fn purge_all(&self, api_key: &str) -> anyhow::Result<PurgeReport> {
+        let client = Gemini::new(api_key)?;
+
+        let mut names = Vec::new();
+        {
+            let stream = client.list_cached_contents(100);
+            futures_util::pin_mut!(stream);
+            while let Some(summary) = stream.next().await {
+                let summary = summary?;
+                if is_flts_cache(summary.display_name.as_deref()) {
+                    names.push(summary.name);
+                }
+            }
+        }
+
+        let mut deleted = 0usize;
+        let mut failures = Vec::new();
+        for name in names {
+            match client.get_cached_content(&name).delete().await {
+                Ok(()) => {
+                    info!("Deleted Gemini cache {name}");
+                    deleted += 1;
+                }
+                Err((_, err)) => failures.push(format!("{name}: {err}")),
+            }
+        }
+
+        self.clear_local().await;
+        Ok(PurgeReport { deleted, failures })
     }
 
     /// Drops the in-memory slot for `key` AND removes the persisted disk
@@ -223,13 +291,19 @@ fn cache_display_name(key: &CacheKey) -> String {
     // Gemini's display name cap is 128 chars — book uuid is 36, the rest
     // adds ~20, well within the limit.
     format!(
-        "flts-{}-{}-{}-{}-c{}",
+        "{FLTS_CACHE_DISPLAY_PREFIX}{}-{}-{}-{}-c{}",
         usize::from(key.model),
         key.from.to_639_3(),
         key.to.to_639_3(),
         key.book_id,
         key.chapter_id,
     )
+}
+
+/// True if a server-side cache was created by FLTS (any historical
+/// version), judged by its display-name prefix.
+fn is_flts_cache(display_name: Option<&str>) -> bool {
+    display_name.is_some_and(|d| d.starts_with(FLTS_CACHE_DISPLAY_PREFIX))
 }
 
 /// Compose the per-chapter reference-material payload that the cache
@@ -464,6 +538,56 @@ mod tests {
         };
         assert_eq!(h.name(), "cachedContents/persisted");
         assert_eq!(counter.load(Ordering::SeqCst), 1);
+        cache.close().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn is_flts_cache_matches_only_prefixed_names() {
+        assert!(is_flts_cache(Some("flts-1-eng-rus-uuid-c0")));
+        assert!(is_flts_cache(Some("flts-1-eng-rus")));
+        assert!(!is_flts_cache(Some("flts")));
+        assert!(!is_flts_cache(Some("other-cache")));
+        assert!(!is_flts_cache(None));
+    }
+
+    #[test]
+    fn cache_display_name_starts_with_purge_prefix() {
+        let k = key(TranslationModel::Gemini25Flash, Language::Eng, Language::Rus, 3);
+        assert!(cache_display_name(&k).starts_with(FLTS_CACHE_DISPLAY_PREFIX));
+    }
+
+    #[tokio::test]
+    async fn clear_local_drops_inflight_and_disk() {
+        let dir = tmpdir("clear-local");
+        let c_a = make_content("a");
+        let c_b = make_content("b");
+        let k1 = key(TranslationModel::Gemini25Flash, Language::Eng, Language::Rus, 0);
+        let k2 = key(TranslationModel::Gemini25Flash, Language::Eng, Language::Rus, 1);
+        let cache = seed_then_open(
+            &dir,
+            &[
+                (k1.clone(), &c_a, "cachedContents/k1"),
+                (k2.clone(), &c_b, "cachedContents/k2"),
+            ],
+        )
+        .await;
+
+        // Populate the inflight map via a disk-hit (no network).
+        let client = fake_client();
+        cache
+            .get_or_create(&client, k1.clone(), || make_content("a"))
+            .await
+            .unwrap();
+        assert!(!cache.inflight.lock().await.is_empty());
+
+        cache.clear_local().await;
+        assert!(cache.inflight.lock().await.is_empty());
+        cache.close().await;
+
+        let cache = GeminiPromptCache::open(&dir, 1024 * 1024).await.unwrap();
+        assert!(cache.disk.get(&disk_key(&k1)).await.unwrap().is_none());
+        assert!(cache.disk.get(&disk_key(&k2)).await.unwrap().is_none());
         cache.close().await;
         let _ = std::fs::remove_dir_all(&dir);
     }

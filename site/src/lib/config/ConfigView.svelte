@@ -5,6 +5,7 @@
         getLanguages,
         getModels,
         getTranslationProviders,
+        purgeGeminiCaches,
         setConfig,
         type Model,
         type ProviderMeta,
@@ -76,6 +77,9 @@
     });
     let spotifyBusy: boolean = $state(false);
     let spotifyError: string | null = $state(null);
+    let purgeBusy: boolean = $state(false);
+    let purgeError: string | null = $state(null);
+    let purgeDeleted: number | null = $state(null);
     // Spotify integration is macOS-only — same constraint as LyricsView.
     let isMac: boolean = $state(false);
     let redirectCopied: boolean = $state(false);
@@ -192,6 +196,19 @@
         }
     }
 
+    async function purgeCaches() {
+        purgeError = null;
+        purgeDeleted = null;
+        purgeBusy = true;
+        try {
+            purgeDeleted = await purgeGeminiCaches();
+        } catch (e) {
+            purgeError = String(e);
+        } finally {
+            purgeBusy = false;
+        }
+    }
+
     $effect(() => {
         // Keep model selection consistent with provider.
         const providerMeta = providers.find((p) => p.id === translationProvider);
@@ -239,6 +256,21 @@
             {#if translationProvider === 'google'}
                 <label for="apikey">Gemini API KEY</label>
                 <input id="apikey" type="text" bind:value={geminiApiKey} />
+                <button
+                    id="purgeGeminiCaches"
+                    onclick={purgeCaches}
+                    disabled={purgeBusy || !configStore.current?.geminiApiKey}
+                    title="Deletes all FLTS-created Gemini context caches from Google's servers (they cost money while they exist)"
+                >
+                    {purgeBusy ? 'Removing...' : 'Remove server caches'}
+                </button>
+                {#if purgeError}
+                    <div class="spotify-notice err">{purgeError}</div>
+                {:else if purgeDeleted !== null}
+                    <div class="spotify-notice">
+                        Removed {purgeDeleted} cached item{purgeDeleted === 1 ? '' : 's'}
+                    </div>
+                {/if}
             {:else if translationProvider === 'openai'}
                 <label for="openai">OpenAI API KEY</label>
                 <input id="openai" type="text" bind:value={openaiApiKey} />
@@ -451,6 +483,11 @@
     }
     button#revealStorage {
         grid-column: 3/4;
+    }
+
+    button#purgeGeminiCaches {
+        grid-column: 2/4;
+        justify-self: start;
     }
 
     button#save {

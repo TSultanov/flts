@@ -62,5 +62,9 @@ export async function getConfig() {
     return await invoke<Config>("get_config");
 }
 
+export async function purgeGeminiCaches(): Promise<number> {
+    return await invoke<number>("purge_gemini_caches");
+}
+
 export const configStore = new Resource<Config>("get_config", {}, [{ name: "config_updated", filter: () => true }]);
 export const models = new Resource<Model[]>("get_models", {}, [], []);

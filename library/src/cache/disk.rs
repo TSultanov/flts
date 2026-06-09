@@ -34,6 +34,7 @@ struct EntryMeta {
 enum WriteOp<V> {
     Insert { hash: u64, key: String, value: V },
     Remove { hash: u64 },
+    Clear,
 }
 
 fn hash_key(key: &str) -> u64 {
@@ -123,6 +124,17 @@ where
         }
     }
 
+    /// Removes every entry from disk and the in-memory index. Routed
+    /// through the writer channel so it serializes after pending `insert`s;
+    /// inserts enqueued after `clear` survive. Fire-and-forget: if the
+    /// writer has shut down the call is a no-op.
+    pub fn clear(&self) {
+        let tx = self.writer_tx.lock().unwrap();
+        if let Some(tx) = tx.as_ref() {
+            let _ = tx.send(WriteOp::Clear);
+        }
+    }
+
     pub async fn close(&self) {
         {
             let mut tx = self.writer_tx.lock().unwrap();
@@ -205,6 +217,7 @@ async fn writer_loop<V: Serialize + Send + 'static>(
                 write_entry(&dir, capacity_bytes, &index, hash, key, value)
             }
             WriteOp::Remove { hash } => remove_entry(&dir, &index, hash),
+            WriteOp::Clear => clear_all(&dir, &index),
         })
         .await;
         if let Err(e) = result {
@@ -272,6 +285,34 @@ fn write_entry<V: Serialize>(
 
     for h in victims {
         let _ = std::fs::remove_file(entry_path(dir, h));
+    }
+    Ok(())
+}
+
+/// Wipes the in-memory index first (concurrent `get`s miss immediately),
+/// then deletes whole shard directories — which also sweeps any orphaned
+/// `.bin.tmp` files that a crashed write may have left behind.
+fn clear_all(dir: &Path, index: &StdMutex<Index>) -> anyhow::Result<()> {
+    {
+        let mut idx = index.lock().unwrap();
+        idx.entries.clear();
+        idx.total_bytes = 0;
+    }
+    let shards = match std::fs::read_dir(dir) {
+        Ok(it) => it,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    for shard in shards.flatten() {
+        let path = shard.path();
+        if !path.is_dir() {
+            continue;
+        }
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
     }
     Ok(())
 }
@@ -416,6 +457,72 @@ mod tests {
         cache.close().await;
         let cache = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
         assert!(cache.get("never-inserted").await.unwrap().is_none());
+        cache.close().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn clear_removes_all_entries_and_resets_index() {
+        let dir = tmpdir("clear-all");
+        let cache = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
+        for i in 0..5 {
+            cache.insert(
+                format!("key-{i}"),
+                V {
+                    s: format!("val-{i}"),
+                    n: i,
+                },
+            );
+        }
+        cache.clear();
+        cache.close().await;
+
+        let cache = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
+        for i in 0..5 {
+            assert!(cache.get(&format!("key-{i}")).await.unwrap().is_none());
+        }
+        assert_eq!(cache.index.lock().unwrap().total_bytes, 0);
+        cache.close().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn clear_orders_after_pending_inserts() {
+        let dir = tmpdir("clear-ordering");
+        let cache = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
+        cache.insert(
+            "a".into(),
+            V {
+                s: "wiped".into(),
+                n: 1,
+            },
+        );
+        cache.clear();
+        cache.insert(
+            "b".into(),
+            V {
+                s: "survives".into(),
+                n: 2,
+            },
+        );
+        cache.close().await;
+
+        let cache = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
+        assert!(cache.get("a").await.unwrap().is_none());
+        assert!(cache.get("b").await.unwrap().is_some());
+        cache.close().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn clear_on_empty_is_noop() {
+        let dir = tmpdir("clear-empty");
+        let cache = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
+        cache.clear();
+        cache.close().await;
+
+        let cache = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
+        assert_eq!(cache.index.lock().unwrap().total_bytes, 0);
         cache.close().await;
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -140,6 +140,7 @@ pub fn run() {
             app::get_library_root,
             app::reveal_library_root,
             app::update_config,
+            app::purge_gemini_caches,
             app::get_anki_sync_status,
             app::sync_anki_now,
             app::sync::get_sync_status,

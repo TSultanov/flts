@@ -1097,6 +1097,46 @@ pub async fn get_config(state: tauri::State<'_, Arc<AppState>>) -> Result<Config
     Ok(state.config.borrow().clone())
 }
 
+/// Deletes all FLTS-created Gemini server-side context caches (display
+/// name prefix "flts-") and clears the local cache pointers. Safe during
+/// active translation: affected chapters self-heal via the 403/404
+/// evict-and-retry path. Returns the number of deleted caches.
+#[tauri::command]
+pub async fn purge_gemini_caches(state: tauri::State<'_, Arc<AppState>>) -> Result<usize, String> {
+    let api_key = state
+        .config
+        .borrow()
+        .gemini_api_key
+        .clone()
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| "No Gemini API key configured".to_string())?;
+    let cache = state
+        .get_gemini_prompt_cache()
+        .await
+        .map_err(|err| err.to_string())?;
+    info!("Purging Gemini server caches");
+    let report = cache
+        .purge_all(&api_key)
+        .await
+        .map_err(|err| err.to_string())?;
+    info!(
+        "Gemini cache purge: {} deleted, {} failed",
+        report.deleted,
+        report.failures.len()
+    );
+    if report.failures.is_empty() {
+        Ok(report.deleted)
+    } else {
+        Err(format!(
+            "Removed {} cache(s), but {} deletion(s) failed (first: {})",
+            report.deleted,
+            report.failures.len(),
+            report.failures[0]
+        ))
+    }
+}
+
 /// The app-managed library storage location, for read-only display in settings
 /// (the folder picker is gone — see `resolve_library_root`).
 #[tauri::command]
