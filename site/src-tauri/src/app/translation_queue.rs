@@ -29,10 +29,9 @@ use tauri::Emitter;
 const TRANSLATION_PROGRESS_UPDATE_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Total attempts (initial + restarts) a paragraph gets before a transient
-/// failure is surfaced to the user. Restarts go to the back of the queue, so
-/// the spacing between them is "however long the other queued items take";
-/// this cap only bounds the worst case when the queue is otherwise empty and
-/// the failure is instantaneous.
+/// failure is surfaced to the user. Restarts run as the very next item (they
+/// take priority over queued fresh requests), so when a failure is
+/// instantaneous this cap is the only thing bounding the retry loop.
 const MAX_TRANSLATION_ATTEMPTS: u32 = 4;
 
 struct TranslationRequest {
@@ -55,8 +54,9 @@ fn should_requeue(err: &anyhow::Error, attempt: u32) -> bool {
 
 #[derive(Debug, PartialEq)]
 enum FailureDisposition {
-    /// Re-enqueued to the back of the queue; the activity entry survives with
-    /// progress reset. Caller should push a progress-reset event to the UI.
+    /// Re-enqueued on the priority retry lane (runs as the very next item);
+    /// the activity entry survives with progress reset. Caller should push a
+    /// progress-reset event to the UI.
     Requeued { expected_chars: usize },
     /// Out of restarts (or error is permanent / queue is shutting down); the
     /// activity entry is removed. Caller should emit the finished-with-error
@@ -69,7 +69,7 @@ enum FailureDisposition {
 /// and channel.
 async fn handle_translation_failure(
     state: &Arc<Mutex<TranslationQueueState>>,
-    requeue_tx: &UnboundedSender<TranslationRequest>,
+    retry_tx: &UnboundedSender<TranslationRequest>,
     request: &TranslationRequest,
     err: &anyhow::Error,
 ) -> FailureDisposition {
@@ -91,7 +91,7 @@ async fn handle_translation_failure(
                 None => 0,
             }
         };
-        let requeued = requeue_tx.send(TranslationRequest {
+        let requeued = retry_tx.send(TranslationRequest {
             request_id: request.request_id,
             book_id: request.book_id,
             paragraph_id: request.paragraph_id,
@@ -263,11 +263,12 @@ impl TranslationQueue {
         let translate_task = {
             let state = state.clone();
             let app = app.clone();
-            // A sender clone so a worker can re-enqueue a transiently-failed
-            // paragraph onto the back of its own queue. Holding an extra sender
-            // is harmless: shutdown is driven by `abort()`/`Drop`, not by the
-            // channel closing, so the loop never relies on `recv()` → `None`.
-            let requeue_tx = tx_translate.clone();
+            // Restarts travel on their own channel so the select below can give
+            // them priority: a transiently-failed paragraph runs as the very
+            // next item instead of waiting behind everything already queued.
+            // The loop owns a sender (cloned per child task), so this channel
+            // can never close while the loop is alive.
+            let (tx_retry, mut rx_retry) = unbounded_channel::<TranslationRequest>();
             // Bound how many paragraph translations run concurrently. Acquiring a
             // permit before receiving the next request applies backpressure: once
             // `concurrency` are in flight the loop parks until one finishes.
@@ -278,91 +279,89 @@ impl TranslationQueue {
                 // its tasks on drop).
                 let mut join_set: JoinSet<()> = JoinSet::new();
                 loop {
-                    tokio::select! {
+                    let request = tokio::select! {
                         // Reap finished translations so completed handles don't
-                        // accumulate. Biased toward draining first.
+                        // accumulate, then prefer retries over fresh requests.
+                        // Biased so this priority order is deterministic.
                         biased;
-                        Some(_) = join_set.join_next() => {}
+                        Some(_) = join_set.join_next() => continue,
+                        Some(request) = rx_retry.recv() => request,
                         maybe_request = rx_translate.recv() => {
                             let Some(request) = maybe_request else { break };
-
-                            // Held for the task's lifetime; released when it ends,
-                            // which is what lets a parked `acquire_owned` proceed.
-                            let permit = semaphore
-                                .clone()
-                                .acquire_owned()
-                                .await
-                                .expect("translation semaphore never closed");
-
-                            let library = library.clone();
-                            let cache = cache.clone();
-                            let context_provider = context_provider.clone();
-                            let gemini_prompt_cache = gemini_prompt_cache.clone();
-                            let stats_cache = stats_cache.clone();
-                            let gemini_api_key = gemini_api_key.clone();
-                            let openai_api_key = openai_api_key.clone();
-                            let deepseek_api_key = deepseek_api_key.clone();
-                            let app = app.clone();
-                            let state = state.clone();
-                            let tx_save = tx_save.clone();
-                            let requeue_tx = requeue_tx.clone();
-
-                            join_set.spawn(async move {
-                                let _permit = permit;
-                                let outcome = handle_request(
-                                    library,
-                                    cache,
-                                    context_provider,
-                                    gemini_prompt_cache,
-                                    stats_cache,
-                                    target_language,
-                                    gemini_api_key,
-                                    openai_api_key,
-                                    deepseek_api_key,
-                                    app.clone(),
-                                    state.clone(),
-                                    &tx_save,
-                                    &request,
-                                )
-                                .await;
-
-                                if let Err(err) = outcome {
-                                    match handle_translation_failure(
-                                        &state,
-                                        &requeue_tx,
-                                        &request,
-                                        &err,
-                                    )
-                                    .await
-                                    {
-                                        FailureDisposition::Requeued { expected_chars } => {
-                                            // Drop the UI's progress ring back to
-                                            // zero so the restart is visible.
-                                            let _ = app.emit(
-                                                "paragraph_translation_progress",
-                                                ParagraphTranslationProgressEvent {
-                                                    book_id: request.book_id,
-                                                    paragraph_id: request.paragraph_id,
-                                                    request_id: request.request_id,
-                                                    progress_chars: 0,
-                                                    expected_chars,
-                                                },
-                                            );
-                                        }
-                                        FailureDisposition::Terminal => {
-                                            emit_finished(
-                                                &app,
-                                                request.book_id,
-                                                request.paragraph_id,
-                                                request.request_id,
-                                                Some(err.to_string()),
-                                            );
-                                        }
-                                    }
-                                }
-                            });
+                            request
                         }
-                    }
+                    };
+
+                    // Held for the task's lifetime; released when it ends,
+                    // which is what lets a parked `acquire_owned` proceed.
+                    let permit = semaphore
+                        .clone()
+                        .acquire_owned()
+                        .await
+                        .expect("translation semaphore never closed");
+
+                    let library = library.clone();
+                    let cache = cache.clone();
+                    let context_provider = context_provider.clone();
+                    let gemini_prompt_cache = gemini_prompt_cache.clone();
+                    let stats_cache = stats_cache.clone();
+                    let gemini_api_key = gemini_api_key.clone();
+                    let openai_api_key = openai_api_key.clone();
+                    let deepseek_api_key = deepseek_api_key.clone();
+                    let app = app.clone();
+                    let state = state.clone();
+                    let tx_save = tx_save.clone();
+                    let tx_retry = tx_retry.clone();
+
+                    join_set.spawn(async move {
+                        let _permit = permit;
+                        let outcome = handle_request(
+                            library,
+                            cache,
+                            context_provider,
+                            gemini_prompt_cache,
+                            stats_cache,
+                            target_language,
+                            gemini_api_key,
+                            openai_api_key,
+                            deepseek_api_key,
+                            app.clone(),
+                            state.clone(),
+                            &tx_save,
+                            &request,
+                        )
+                        .await;
+
+                        if let Err(err) = outcome {
+                            match handle_translation_failure(&state, &tx_retry, &request, &err)
+                                .await
+                            {
+                                FailureDisposition::Requeued { expected_chars } => {
+                                    // Drop the UI's progress ring back to
+                                    // zero so the restart is visible.
+                                    let _ = app.emit(
+                                        "paragraph_translation_progress",
+                                        ParagraphTranslationProgressEvent {
+                                            book_id: request.book_id,
+                                            paragraph_id: request.paragraph_id,
+                                            request_id: request.request_id,
+                                            progress_chars: 0,
+                                            expected_chars,
+                                        },
+                                    );
+                                }
+                                FailureDisposition::Terminal => {
+                                    emit_finished(
+                                        &app,
+                                        request.book_id,
+                                        request.paragraph_id,
+                                        request.request_id,
+                                        Some(err.to_string()),
+                                    );
+                                }
+                            }
+                        }
+                    });
                 }
             })
         };
