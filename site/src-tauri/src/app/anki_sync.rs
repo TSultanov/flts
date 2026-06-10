@@ -148,14 +148,6 @@ impl AnkiSyncTask {
         }
     }
 
-    /// Run one synchronous sync_pass. Used by the app-quit final-pass hook.
-    /// Does NOT touch the status sender — exit doesn't need to update the UI.
-    pub async fn run_one_pass(&self) -> anyhow::Result<SyncReport> {
-        let mut guard = self.state.lock().await;
-        let now = tokio::time::Instant::now();
-        sync_pass(self.client.as_ref(), self.library.as_ref(), &mut guard, now).await
-    }
-
     /// On-demand sync triggered by the UI button. Same code path as a
     /// periodic tick: Syncing → version() → sync_pass → status update.
     /// Returns the report on success, or the error (with status flipped

@@ -34,7 +34,6 @@ use crate::app::{
 const EXIT_STOP_QUEUE_TIMEOUT: Duration = Duration::from_secs(2);
 const EXIT_SAVE_ALL_TIMEOUT: Duration = Duration::from_secs(10);
 const EXIT_CACHE_CLOSE_TIMEOUT: Duration = Duration::from_millis(250);
-const EXIT_FINAL_SYNC_TIMEOUT: Duration = Duration::from_secs(15);
 const DEFAULT_ANKI_SYNC_INTERVAL_SECS: u64 = 300;
 
 pub mod anki_sync;
@@ -681,15 +680,12 @@ impl AppState {
         .await;
         // Pull task out of the slot under lock; release the lock before awaiting
         // so we never block on a long-running tick from inside the mutex.
+        // No final sync_pass here: the task already syncs on every card-store
+        // change and the next launch syncs immediately, while a flush against
+        // a slow/unreachable AnkiConnect made app exit hang for many seconds.
         let anki_task = self.anki_sync_task.lock().await.take();
         if let Some(task) = anki_task {
-            run_exit_step("anki final sync", EXIT_FINAL_SYNC_TIMEOUT, async {
-                if let Err(err) = task.run_one_pass().await {
-                    warn!("Anki final sync_pass failed: {err}");
-                }
-                task.shutdown().await;
-            })
-            .await;
+            run_exit_step("anki sync shutdown", EXIT_STOP_QUEUE_TIMEOUT, task.shutdown()).await;
         }
         let sync_task = self.sync_task.lock().await.take();
         if let Some(task) = sync_task {
