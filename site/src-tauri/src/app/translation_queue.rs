@@ -13,7 +13,7 @@ use library::{
     library::Library,
     translation_stats::TranslationSizeCache,
     translator::{
-        ChapterContextProvider, TranslationContext, TranslationModel, TranslationProvider,
+        ChapterContextProvider, TranslationContext, TranslationModel,
         gemini_cache::GeminiPromptCache, get_translator, is_transient_translation_error,
     },
 };
@@ -23,7 +23,7 @@ use tokio::sync::{Mutex, Semaphore, watch};
 use tokio::task::JoinSet;
 use uuid::Uuid;
 
-use crate::app::config::Config;
+use crate::app::config::{ApiKeys, Config};
 use tauri::Emitter;
 
 const TRANSLATION_PROGRESS_UPDATE_INTERVAL: Duration = Duration::from_millis(500);
@@ -237,10 +237,7 @@ impl TranslationQueue {
         app: tauri::AppHandle,
         library_tx: Arc<watch::Sender<Option<Arc<Library>>>>,
     ) -> Option<Arc<Self>> {
-        let gemini_api_key = config.gemini_api_key.clone();
-        let openai_api_key = config.openai_api_key.clone();
-        let deepseek_api_key = config.deepseek_api_key.clone();
-        let zai_api_key = config.zai_api_key.clone();
+        let api_keys = config.api_keys();
         let target_language = Language::from_639_3(&config.target_language_id)?;
         // Clamp so a stray 0 can never deadlock the semaphore.
         let concurrency = config.translation_concurrency.max(1) as usize;
@@ -306,10 +303,7 @@ impl TranslationQueue {
                     let context_provider = context_provider.clone();
                     let gemini_prompt_cache = gemini_prompt_cache.clone();
                     let stats_cache = stats_cache.clone();
-                    let gemini_api_key = gemini_api_key.clone();
-                    let openai_api_key = openai_api_key.clone();
-                    let deepseek_api_key = deepseek_api_key.clone();
-                    let zai_api_key = zai_api_key.clone();
+                    let api_keys = api_keys.clone();
                     let app = app.clone();
                     let state = state.clone();
                     let tx_save = tx_save.clone();
@@ -324,10 +318,7 @@ impl TranslationQueue {
                             gemini_prompt_cache,
                             stats_cache,
                             target_language,
-                            gemini_api_key,
-                            openai_api_key,
-                            deepseek_api_key,
-                            zai_api_key,
+                            api_keys,
                             app.clone(),
                             state.clone(),
                             &tx_save,
@@ -482,7 +473,6 @@ impl TranslationQueue {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn handle_request(
     library: Arc<Library>,
     cache: Arc<TranslationsCache>,
@@ -490,10 +480,7 @@ async fn handle_request(
     gemini_prompt_cache: Arc<GeminiPromptCache>,
     stats_cache: Arc<TranslationSizeCache>,
     target_language: Language,
-    gemini_api_key: Option<String>,
-    openai_api_key: Option<String>,
-    deepseek_api_key: Option<String>,
-    zai_api_key: Option<String>,
+    api_keys: ApiKeys,
     app: tauri::AppHandle,
     state: Arc<Mutex<TranslationQueueState>>,
     save_notify: &UnboundedSender<SaveNotify>,
@@ -538,20 +525,10 @@ async fn handle_request(
         .provider()
         .ok_or(anyhow::anyhow!("Unknown model provider"))?;
 
-    let api_key = match provider {
-        TranslationProvider::Google => {
-            gemini_api_key.ok_or(anyhow::anyhow!("No Gemini API key"))?
-        }
-        TranslationProvider::Openai => {
-            openai_api_key.ok_or(anyhow::anyhow!("No OpenAI API key"))?
-        }
-        TranslationProvider::Deepseek => {
-            deepseek_api_key.ok_or(anyhow::anyhow!("No DeepSeek API key"))?
-        }
-        TranslationProvider::Zai => {
-            zai_api_key.ok_or(anyhow::anyhow!("No z.AI API key"))?
-        }
-    };
+    let api_key = api_keys
+        .for_provider(provider)
+        .ok_or_else(|| anyhow::anyhow!("no api key for provider {provider:?}"))?
+        .to_owned();
 
     let translator = get_translator(
         cache,

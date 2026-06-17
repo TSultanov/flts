@@ -121,6 +121,25 @@ pub fn get_languages() -> Vec<Language> {
     languages
 }
 
+#[derive(Clone)]
+pub struct ApiKeys {
+    pub gemini: Option<String>,
+    pub openai: Option<String>,
+    pub deepseek: Option<String>,
+    pub zai: Option<String>,
+}
+
+impl ApiKeys {
+    pub fn for_provider(&self, provider: TranslationProvider) -> Option<&str> {
+        match provider {
+            TranslationProvider::Google => self.gemini.as_deref(),
+            TranslationProvider::Openai => self.openai.as_deref(),
+            TranslationProvider::Deepseek => self.deepseek.as_deref(),
+            TranslationProvider::Zai => self.zai.as_deref(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     #[serde(rename = "targetLanguageId")]
@@ -211,6 +230,15 @@ impl Default for Config {
 }
 
 impl Config {
+    pub fn api_keys(&self) -> ApiKeys {
+        ApiKeys {
+            gemini: self.gemini_api_key.clone(),
+            openai: self.openai_api_key.clone(),
+            deepseek: self.deepseek_api_key.clone(),
+            zai: self.zai_api_key.clone(),
+        }
+    }
+
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let file = File::open(path)?;
         Ok(match serde_json::from_reader::<_, Self>(file) {

@@ -16,8 +16,10 @@ use library::{
     },
     library::Library,
     summary_generator::generate_chapter_summary,
-    translator::{TranslationModel, TranslationProvider},
+    translator::TranslationModel,
 };
+
+use crate::app::config::{ApiKeys, Config};
 use log::{info, warn};
 use tauri::Emitter;
 use tokio::sync::{
@@ -27,8 +29,6 @@ use tokio::sync::{
 };
 use tokio::task::JoinHandle;
 use uuid::Uuid;
-
-use crate::app::config::Config;
 
 /// Per-book in-memory state: the loaded sidecar (which gets mutated as
 /// chapters complete) and a watch channel carrying the highest-ready
@@ -68,10 +68,7 @@ impl SummaryGenerationQueue {
         app: tauri::AppHandle,
     ) -> Arc<Self> {
         let model = config.model;
-        let gemini_api_key = config.gemini_api_key.clone();
-        let openai_api_key = config.openai_api_key.clone();
-        let deepseek_api_key = config.deepseek_api_key.clone();
-        let zai_api_key = config.zai_api_key.clone();
+        let api_keys = config.api_keys();
 
         let (enqueue_tx, mut enqueue_rx) = unbounded_channel::<Uuid>();
         let book_state: Arc<Mutex<HashMap<Uuid, Arc<BookSummaryState>>>> =
@@ -85,10 +82,7 @@ impl SummaryGenerationQueue {
                     library.clone(),
                     book_state_for_worker.clone(),
                     model,
-                    gemini_api_key.as_deref(),
-                    openai_api_key.as_deref(),
-                    deepseek_api_key.as_deref(),
-                    zai_api_key.as_deref(),
+                    &api_keys,
                     &app,
                 )
                 .await;
@@ -189,22 +183,15 @@ async fn process_book(
     library: Arc<Library>,
     book_state: Arc<Mutex<HashMap<Uuid, Arc<BookSummaryState>>>>,
     model: TranslationModel,
-    gemini_api_key: Option<&str>,
-    openai_api_key: Option<&str>,
-    deepseek_api_key: Option<&str>,
-    zai_api_key: Option<&str>,
+    api_keys: &ApiKeys,
     app: &tauri::AppHandle,
 ) -> anyhow::Result<()> {
     let provider = model
         .provider()
         .ok_or_else(|| anyhow::anyhow!("model has no provider"))?;
-    let api_key = match provider {
-        TranslationProvider::Google => gemini_api_key,
-        TranslationProvider::Openai => openai_api_key,
-        TranslationProvider::Deepseek => deepseek_api_key,
-        TranslationProvider::Zai => zai_api_key,
-    }
-    .ok_or_else(|| anyhow::anyhow!("no api key for provider {provider:?}"))?;
+    let api_key = api_keys
+        .for_provider(provider)
+        .ok_or_else(|| anyhow::anyhow!("no api key for provider {provider:?}"))?;
 
     let state = load_or_init(&book_state, &library, book_id).await?;
 
