@@ -42,6 +42,7 @@ fn model_pretty_name(model: TranslationModel) -> &'static str {
         TranslationModel::Gemini35Flash => "Gemini 3.5 Flash",
         TranslationModel::DeepSeekV4Flash => "DeepSeek V4 Flash",
         TranslationModel::DeepSeekV4Pro => "DeepSeek V4 Pro",
+        TranslationModel::ZaiGlm52 => "z.AI GLM-5.2",
         TranslationModel::Unknown => "Not set",
     }
 }
@@ -81,6 +82,12 @@ pub fn get_translation_providers() -> Vec<ProviderMeta> {
             name: TranslationProvider::Deepseek.display_name(),
             default_model_id: TranslationModel::DeepSeekV4Flash as i32,
             api_key_field: "deepseekApiKey",
+        },
+        ProviderMeta {
+            id: TranslationProvider::Zai,
+            name: TranslationProvider::Zai.display_name(),
+            default_model_id: TranslationModel::ZaiGlm52 as i32,
+            api_key_field: "zaiApiKey",
         },
     ]
 }
@@ -127,6 +134,8 @@ pub struct Config {
     pub openai_api_key: Option<String>,
     #[serde(rename = "deepseekApiKey", default)]
     pub deepseek_api_key: Option<String>,
+    #[serde(rename = "zaiApiKey", default)]
+    pub zai_api_key: Option<String>,
     pub model: TranslationModel,
     /// LEGACY / migration-read-only. The library location is now app-managed
     /// (`resolve_library_root`); this is only read once to migrate an existing
@@ -186,6 +195,7 @@ impl Default for Config {
             gemini_api_key: None,
             openai_api_key: None,
             deepseek_api_key: None,
+            zai_api_key: None,
             model: TranslationModel::Gemini25Flash,
             library_path: None,
             spotify_client_id: None,

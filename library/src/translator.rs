@@ -291,6 +291,8 @@ pub enum TranslationModel {
 
     DeepSeekV4Flash = 15,
     DeepSeekV4Pro = 16,
+
+    ZaiGlm52 = 17,
 }
 
 impl TranslationModel {
@@ -316,6 +318,8 @@ impl TranslationModel {
                 Some(TranslationProvider::Deepseek)
             }
 
+            TranslationModel::ZaiGlm52 => Some(TranslationProvider::Zai),
+
             TranslationModel::Unknown => None,
         }
     }
@@ -340,6 +344,7 @@ impl From<usize> for TranslationModel {
             14 => TranslationModel::Gemini35Flash,
             15 => TranslationModel::DeepSeekV4Flash,
             16 => TranslationModel::DeepSeekV4Pro,
+            17 => TranslationModel::ZaiGlm52,
             _ => TranslationModel::Unknown,
         }
     }
@@ -364,6 +369,7 @@ pub enum TranslationProvider {
     Google,
     Openai,
     Deepseek,
+    Zai,
 }
 
 impl TranslationProvider {
@@ -372,6 +378,7 @@ impl TranslationProvider {
             TranslationProvider::Google => "Google",
             TranslationProvider::Openai => "OpenAI",
             TranslationProvider::Deepseek => "DeepSeek",
+            TranslationProvider::Zai => "z.AI",
         }
     }
 }
@@ -630,7 +637,7 @@ pub fn get_translator(
             &from,
             &to,
         )?)),
-        TranslationProvider::Openai | TranslationProvider::Deepseek => {
+        TranslationProvider::Openai | TranslationProvider::Deepseek | TranslationProvider::Zai => {
             Ok(Box::new(OpenAITranslator::create(
                 cache,
                 context_provider,

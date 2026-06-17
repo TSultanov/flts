@@ -61,9 +61,9 @@ pub fn get_lyrics_translator(
         TranslationProvider::Google => Ok(Box::new(LyricsGeminiTranslator::create(
             model, api_key, to,
         )?)),
-        TranslationProvider::Openai | TranslationProvider::Deepseek => Ok(Box::new(
-            LyricsOpenAITranslator::create(model, api_key, to)?,
-        )),
+        TranslationProvider::Openai | TranslationProvider::Deepseek | TranslationProvider::Zai => {
+            Ok(Box::new(LyricsOpenAITranslator::create(model, api_key, to)?))
+        }
     }
 }
 
@@ -158,6 +158,7 @@ pub struct LyricsOpenAITranslator {
     schema: Arc<Value>,
     model_name: Arc<str>,
     is_deepseek: bool,
+    is_zai: bool,
     to: Language,
 }
 
@@ -178,7 +179,8 @@ impl LyricsOpenAITranslator {
             client,
             schema: Arc::new(lyrics_schema()),
             model_name: Arc::from(model_name),
-            is_deepseek: provider == Some(TranslationProvider::Deepseek),
+            is_deepseek: matches!(provider, Some(TranslationProvider::Deepseek) | Some(TranslationProvider::Zai)),
+            is_zai: matches!(provider, Some(TranslationProvider::Zai)),
             to,
         })
     }
@@ -194,6 +196,7 @@ fn openai_model_name(m: TranslationModel) -> anyhow::Result<&'static str> {
         TranslationModel::OpenAIGpt54Mini => "gpt-5.4-mini",
         TranslationModel::DeepSeekV4Flash => "deepseek-v4-flash",
         TranslationModel::DeepSeekV4Pro => "deepseek-v4-pro",
+        TranslationModel::ZaiGlm52 => "glm-5.2",
         _ => Err(TranslationErrors::UnknownModel)?,
     })
 }
@@ -237,23 +240,18 @@ impl LyricsTranslator for LyricsOpenAITranslator {
                         },
                     }
                 };
-                let request = CreateChatCompletionRequestArgs::default()
-                    .model(self.model_name.as_ref())
-                    .messages([
-                        ChatCompletionRequestMessage::System(
-                            ChatCompletionRequestSystemMessageArgs::default()
-                                .content(system)
-                                .build()?,
-                        ),
-                        ChatCompletionRequestMessage::User(
-                            ChatCompletionRequestUserMessageArgs::default()
-                                .content(user)
-                                .build()?,
-                        ),
-                    ])
-                    .response_format(response_format)
-                    .stream(true)
-                    .build()?;
+                let messages = [
+                    ChatCompletionRequestMessage::System(
+                        ChatCompletionRequestSystemMessageArgs::default()
+                            .content(system)
+                            .build()?,
+                    ),
+                    ChatCompletionRequestMessage::User(
+                        ChatCompletionRequestUserMessageArgs::default()
+                            .content(user)
+                            .build()?,
+                    ),
+                ];
 
                 info!(
                     "OpenAI lyrics: model={} to={} lines={}",
@@ -262,44 +260,73 @@ impl LyricsTranslator for LyricsOpenAITranslator {
                     lines.len()
                 );
 
-                let mut stream = timeout(
-                    TRANSLATION_REQUEST_TIMEOUT,
-                    self.client.chat().create_stream(request),
-                )
-                .await
-                .map_err(|_| anyhow::anyhow!("OpenAI lyrics request timed out"))??;
+                let full = if self.is_zai {
+                    // z.AI does not reliably support SSE streaming; use a single blocking call.
+                    let request = CreateChatCompletionRequestArgs::default()
+                        .model(self.model_name.as_ref())
+                        .messages(messages)
+                        .response_format(response_format)
+                        .build()?;
+                    let response = timeout(
+                        TRANSLATION_REQUEST_TIMEOUT,
+                        self.client.chat().create(request),
+                    )
+                    .await
+                    .map_err(|_| anyhow::anyhow!("OpenAI lyrics request timed out"))??;
+                    response
+                        .choices
+                        .first()
+                        .and_then(|c| c.message.content.clone())
+                        .unwrap_or_default()
+                } else {
+                    let request = CreateChatCompletionRequestArgs::default()
+                        .model(self.model_name.as_ref())
+                        .messages(messages)
+                        .response_format(response_format)
+                        .stream(true)
+                        .build()?;
+                    let mut stream = timeout(
+                        TRANSLATION_REQUEST_TIMEOUT,
+                        self.client.chat().create_stream(request),
+                    )
+                    .await
+                    .map_err(|_| anyhow::anyhow!("OpenAI lyrics request timed out"))??;
 
-                let mut accumulator = StreamChunkAccumulator::new("OpenAI");
-                let full = timeout(
-                    total_stream_timeout(stream_budget_chars(lines)),
-                    async {
-                        loop {
-                            let next = timeout(TRANSLATION_STREAM_IDLE_TIMEOUT, stream.next())
-                                .await
-                                .map_err(|_| anyhow::anyhow!("OpenAI lyrics stream idle timeout"))?;
-                            let should_continue = accumulator.handle_result(
-                                match next {
-                                    Some(Ok(response)) => Ok(Some(
-                                        response
-                                            .choices
-                                            .first()
-                                            .and_then(|choice| choice.delta.content.clone())
-                                            .unwrap_or_default(),
-                                    )),
-                                    Some(Err(err)) => Err(err.into()),
-                                    None => Ok(None),
-                                },
-                                progress,
-                            )?;
-                            if !should_continue {
-                                break;
+                    let mut accumulator = StreamChunkAccumulator::new("OpenAI");
+                    timeout(
+                        total_stream_timeout(stream_budget_chars(lines)),
+                        async {
+                            loop {
+                                let next =
+                                    timeout(TRANSLATION_STREAM_IDLE_TIMEOUT, stream.next())
+                                        .await
+                                        .map_err(|_| {
+                                            anyhow::anyhow!("OpenAI lyrics stream idle timeout")
+                                        })?;
+                                let should_continue = accumulator.handle_result(
+                                    match next {
+                                        Some(Ok(response)) => Ok(Some(
+                                            response
+                                                .choices
+                                                .first()
+                                                .and_then(|choice| choice.delta.content.clone())
+                                                .unwrap_or_default(),
+                                        )),
+                                        Some(Err(err)) => Err(err.into()),
+                                        None => Ok(None),
+                                    },
+                                    progress,
+                                )?;
+                                if !should_continue {
+                                    break;
+                                }
                             }
-                        }
-                        accumulator.finish()
-                    },
-                )
-                .await
-                .map_err(|_| anyhow::anyhow!("OpenAI lyrics total stream timeout"))??;
+                            accumulator.finish()
+                        },
+                    )
+                    .await
+                    .map_err(|_| anyhow::anyhow!("OpenAI lyrics total stream timeout"))??
+                };
 
                 let parsed: LyricsResponse = serde_json::from_str(&full)?;
                 validate_alignment(lines.len(), parsed.lines.len())?;

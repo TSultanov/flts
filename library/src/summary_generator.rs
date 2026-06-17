@@ -154,7 +154,7 @@ pub async fn generate_chapter_summary(
             );
             Ok(text)
         }
-        TranslationProvider::Openai | TranslationProvider::Deepseek => {
+        TranslationProvider::Openai | TranslationProvider::Deepseek | TranslationProvider::Zai => {
             let model_name = crate::translator::openai::openai_model_name(model)?;
             let base_url = crate::translator::openai::openai_compat_base_url(provider);
             let client =

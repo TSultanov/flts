@@ -43,6 +43,7 @@
     let geminiApiKey: string | undefined = $derived(configStore.current?.geminiApiKey);
     let openaiApiKey: string | undefined = $derived(configStore.current?.openaiApiKey);
     let deepseekApiKey: string | undefined = $derived(configStore.current?.deepseekApiKey);
+    let zaiApiKey: string | undefined = $derived(configStore.current?.zaiApiKey);
     let targetLanguage: string | undefined = $derived(
         configStore.current?.targetLanguageId,
     );
@@ -152,6 +153,7 @@
             geminiApiKey,
             openaiApiKey,
             deepseekApiKey,
+            zaiApiKey,
             targetLanguageId: targetLanguage,
             model,
             translationConcurrency,
@@ -246,6 +248,7 @@
                     <option value="google">Google</option>
                     <option value="openai">OpenAI</option>
                     <option value="deepseek">DeepSeek</option>
+                    <option value="zai">z.AI</option>
                 {:else}
                     {#each providers as provider}
                         <option value={provider.id}>{provider.name}</option>
@@ -253,7 +256,10 @@
                 {/if}
             </select>
 
-            {#if translationProvider === 'google'}
+            {#if translationProvider === 'zai'}
+                <label for="zai">z.AI API KEY</label>
+                <input id="zai" type="text" bind:value={zaiApiKey} />
+            {:else if translationProvider === 'google'}
                 <label for="apikey">Gemini API KEY</label>
                 <input id="apikey" type="text" bind:value={geminiApiKey} />
                 <button

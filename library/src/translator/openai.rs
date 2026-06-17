@@ -41,6 +41,7 @@ pub struct OpenAITranslator {
 }
 
 pub(crate) const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
+pub(crate) const ZAI_BASE_URL: &str = "https://api.z.ai/api/paas/v4/";
 
 pub(crate) fn openai_model_name(m: TranslationModel) -> anyhow::Result<&'static str> {
     Ok(match m {
@@ -52,6 +53,7 @@ pub(crate) fn openai_model_name(m: TranslationModel) -> anyhow::Result<&'static 
         TranslationModel::OpenAIGpt54Mini => "gpt-5.4-mini",
         TranslationModel::DeepSeekV4Flash => "deepseek-v4-flash",
         TranslationModel::DeepSeekV4Pro => "deepseek-v4-pro",
+        TranslationModel::ZaiGlm52 => "glm-5.2",
         _ => Err(TranslationErrors::UnknownModel)?,
     })
 }
@@ -71,6 +73,7 @@ pub(crate) fn openai_compat_base_url(
 ) -> Option<&'static str> {
     match provider {
         crate::translator::TranslationProvider::Deepseek => Some(DEEPSEEK_BASE_URL),
+        crate::translator::TranslationProvider::Zai => Some(ZAI_BASE_URL),
         _ => None,
     }
 }
@@ -131,7 +134,7 @@ impl Translator for OpenAITranslator {
         let callback = ctx.callback;
         let is_deepseek = matches!(
             self.translation_model.provider(),
-            Some(TranslationProvider::Deepseek)
+            Some(TranslationProvider::Deepseek) | Some(TranslationProvider::Zai)
         );
         let mut system_prompt = format!(
             "{}\n\nReturn ONLY a single JSON object that matches the requested schema. Do not wrap it in markdown.",
@@ -197,48 +200,70 @@ impl Translator for OpenAITranslator {
             }
         };
 
-        let request = CreateChatCompletionRequestArgs::default()
-            .model(self.model.as_ref())
-            .messages(messages)
-            .response_format(response_format)
-            .stream(true)
-            .build()?;
+        let is_zai = matches!(
+            self.translation_model.provider(),
+            Some(TranslationProvider::Zai)
+        );
 
-        let mut stream = timeout(
-            TRANSLATION_REQUEST_TIMEOUT,
-            self.client.chat().create_stream(request),
-        )
-        .await
-        .map_err(|_| anyhow::anyhow!("OpenAI request timed out"))??;
-        let mut accumulator = StreamChunkAccumulator::new("OpenAI");
-
-        let full_content = timeout(total_stream_timeout(paragraph.len()), async {
-            loop {
-                let next = timeout(TRANSLATION_STREAM_IDLE_TIMEOUT, stream.next())
+        let full_content = if is_zai {
+            // z.AI does not reliably support SSE streaming; use a single blocking call.
+            let request = CreateChatCompletionRequestArgs::default()
+                .model(self.model.as_ref())
+                .messages(messages)
+                .response_format(response_format)
+                .build()?;
+            let response =
+                timeout(TRANSLATION_REQUEST_TIMEOUT, self.client.chat().create(request))
                     .await
-                    .map_err(|_| anyhow::anyhow!("OpenAI stream timed out"))?;
-                let should_continue = accumulator.handle_result(
-                    match next {
-                        Some(Ok(response)) => Ok(Some(
-                            response
-                                .choices
-                                .first()
-                                .and_then(|choice| choice.delta.content.clone())
-                                .unwrap_or_default(),
-                        )),
-                        Some(Err(err)) => Err(err.into()),
-                        None => Ok(None),
-                    },
-                    callback.as_deref(),
-                )?;
-                if !should_continue {
-                    break;
+                    .map_err(|_| anyhow::anyhow!("OpenAI request timed out"))??;
+            response
+                .choices
+                .first()
+                .and_then(|c| c.message.content.clone())
+                .unwrap_or_default()
+        } else {
+            let request = CreateChatCompletionRequestArgs::default()
+                .model(self.model.as_ref())
+                .messages(messages)
+                .response_format(response_format)
+                .stream(true)
+                .build()?;
+            let mut stream = timeout(
+                TRANSLATION_REQUEST_TIMEOUT,
+                self.client.chat().create_stream(request),
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("OpenAI request timed out"))??;
+            let mut accumulator = StreamChunkAccumulator::new("OpenAI");
+
+            timeout(total_stream_timeout(paragraph.len()), async {
+                loop {
+                    let next = timeout(TRANSLATION_STREAM_IDLE_TIMEOUT, stream.next())
+                        .await
+                        .map_err(|_| anyhow::anyhow!("OpenAI stream timed out"))?;
+                    let should_continue = accumulator.handle_result(
+                        match next {
+                            Some(Ok(response)) => Ok(Some(
+                                response
+                                    .choices
+                                    .first()
+                                    .and_then(|choice| choice.delta.content.clone())
+                                    .unwrap_or_default(),
+                            )),
+                            Some(Err(err)) => Err(err.into()),
+                            None => Ok(None),
+                        },
+                        callback.as_deref(),
+                    )?;
+                    if !should_continue {
+                        break;
+                    }
                 }
-            }
-            accumulator.finish()
-        })
-        .await
-        .map_err(|_| anyhow::anyhow!("OpenAI total stream timeout"))??;
+                accumulator.finish()
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("OpenAI total stream timeout"))??
+        };
 
         let mut translation: ParagraphTranslation = serde_json::from_str(&full_content)?;
         translation.normalize_html_entities();

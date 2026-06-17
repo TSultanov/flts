@@ -71,6 +71,7 @@ impl SummaryGenerationQueue {
         let gemini_api_key = config.gemini_api_key.clone();
         let openai_api_key = config.openai_api_key.clone();
         let deepseek_api_key = config.deepseek_api_key.clone();
+        let zai_api_key = config.zai_api_key.clone();
 
         let (enqueue_tx, mut enqueue_rx) = unbounded_channel::<Uuid>();
         let book_state: Arc<Mutex<HashMap<Uuid, Arc<BookSummaryState>>>> =
@@ -87,6 +88,7 @@ impl SummaryGenerationQueue {
                     gemini_api_key.as_deref(),
                     openai_api_key.as_deref(),
                     deepseek_api_key.as_deref(),
+                    zai_api_key.as_deref(),
                     &app,
                 )
                 .await;
@@ -190,6 +192,7 @@ async fn process_book(
     gemini_api_key: Option<&str>,
     openai_api_key: Option<&str>,
     deepseek_api_key: Option<&str>,
+    zai_api_key: Option<&str>,
     app: &tauri::AppHandle,
 ) -> anyhow::Result<()> {
     let provider = model
@@ -199,6 +202,7 @@ async fn process_book(
         TranslationProvider::Google => gemini_api_key,
         TranslationProvider::Openai => openai_api_key,
         TranslationProvider::Deepseek => deepseek_api_key,
+        TranslationProvider::Zai => zai_api_key,
     }
     .ok_or_else(|| anyhow::anyhow!("no api key for provider {provider:?}"))?;
 
