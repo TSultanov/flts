@@ -23,7 +23,7 @@ use tokio::sync::{Mutex, Semaphore, watch};
 use tokio::task::JoinSet;
 use uuid::Uuid;
 
-use crate::app::config::{ApiKeys, Config};
+use crate::app::config::Config;
 use tauri::Emitter;
 
 const TRANSLATION_PROGRESS_UPDATE_INTERVAL: Duration = Duration::from_millis(500);
@@ -311,19 +311,30 @@ impl TranslationQueue {
 
                     join_set.spawn(async move {
                         let _permit = permit;
-                        let outcome = handle_request(
-                            library,
-                            cache,
-                            context_provider,
-                            gemini_prompt_cache,
-                            stats_cache,
-                            target_language,
-                            api_keys,
-                            app.clone(),
-                            state.clone(),
-                            &tx_save,
-                            &request,
-                        )
+                        let outcome = async {
+                            let provider = request
+                                .model
+                                .provider()
+                                .ok_or_else(|| anyhow::anyhow!("Unknown model provider"))?;
+                            let api_key = api_keys
+                                .for_provider(provider)
+                                .ok_or_else(|| anyhow::anyhow!("no api key for provider {provider:?}"))?
+                                .to_owned();
+                            handle_request(
+                                library,
+                                cache,
+                                context_provider,
+                                gemini_prompt_cache,
+                                stats_cache,
+                                target_language,
+                                api_key,
+                                app.clone(),
+                                state.clone(),
+                                &tx_save,
+                                &request,
+                            )
+                            .await
+                        }
                         .await;
 
                         if let Err(err) = outcome {
@@ -480,7 +491,7 @@ async fn handle_request(
     gemini_prompt_cache: Arc<GeminiPromptCache>,
     stats_cache: Arc<TranslationSizeCache>,
     target_language: Language,
-    api_keys: ApiKeys,
+    api_key: String,
     app: tauri::AppHandle,
     state: Arc<Mutex<TranslationQueueState>>,
     save_notify: &UnboundedSender<SaveNotify>,
@@ -524,11 +535,6 @@ async fn handle_request(
         .model
         .provider()
         .ok_or(anyhow::anyhow!("Unknown model provider"))?;
-
-    let api_key = api_keys
-        .for_provider(provider)
-        .ok_or_else(|| anyhow::anyhow!("no api key for provider {provider:?}"))?
-        .to_owned();
 
     let translator = get_translator(
         cache,

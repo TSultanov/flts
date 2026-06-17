@@ -16,10 +16,10 @@ use library::{
     },
     library::Library,
     summary_generator::generate_chapter_summary,
-    translator::TranslationModel,
+    translator::{TranslationModel, TranslationProvider},
 };
 
-use crate::app::config::{ApiKeys, Config};
+use crate::app::config::Config;
 use log::{info, warn};
 use tauri::Emitter;
 use tokio::sync::{
@@ -76,13 +76,29 @@ impl SummaryGenerationQueue {
 
         let book_state_for_worker = book_state.clone();
         let task = tokio::spawn(async move {
+            let provider = match model.provider() {
+                Some(p) => p,
+                None => {
+                    warn!("Summary generation disabled: model has no provider");
+                    return;
+                }
+            };
+            let api_key = match api_keys.for_provider(provider) {
+                Some(k) => k.to_owned(),
+                None => {
+                    warn!("Summary generation disabled: no api key for provider {provider:?}");
+                    return;
+                }
+            };
+
             while let Some(book_id) = enqueue_rx.recv().await {
                 let outcome = process_book(
                     book_id,
                     library.clone(),
                     book_state_for_worker.clone(),
+                    provider,
                     model,
-                    &api_keys,
+                    &api_key,
                     &app,
                 )
                 .await;
@@ -182,17 +198,11 @@ async fn process_book(
     book_id: Uuid,
     library: Arc<Library>,
     book_state: Arc<Mutex<HashMap<Uuid, Arc<BookSummaryState>>>>,
+    provider: TranslationProvider,
     model: TranslationModel,
-    api_keys: &ApiKeys,
+    api_key: &str,
     app: &tauri::AppHandle,
 ) -> anyhow::Result<()> {
-    let provider = model
-        .provider()
-        .ok_or_else(|| anyhow::anyhow!("model has no provider"))?;
-    let api_key = api_keys
-        .for_provider(provider)
-        .ok_or_else(|| anyhow::anyhow!("no api key for provider {provider:?}"))?;
-
     let state = load_or_init(&book_state, &library, book_id).await?;
 
     // Pull stable book metadata once. The sidecar path also stays stable
