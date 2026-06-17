@@ -15,8 +15,7 @@ use library::{
         ChapterSummaries, ChapterSummary, chapter_summaries_path,
     },
     library::Library,
-    summary_generator::generate_chapter_summary,
-    translator::{TranslationModel, TranslationProvider},
+    summary_generator::ChapterSummarizer,
 };
 
 use crate::app::config::Config;
@@ -90,15 +89,20 @@ impl SummaryGenerationQueue {
                     return;
                 }
             };
+            let summarizer = match ChapterSummarizer::create(provider, model, &api_key) {
+                Ok(s) => Arc::new(s),
+                Err(err) => {
+                    warn!("Summary generation disabled: {err}");
+                    return;
+                }
+            };
 
             while let Some(book_id) = enqueue_rx.recv().await {
                 let outcome = process_book(
                     book_id,
                     library.clone(),
                     book_state_for_worker.clone(),
-                    provider,
-                    model,
-                    &api_key,
+                    summarizer.clone(),
                     &app,
                 )
                 .await;
@@ -198,9 +202,7 @@ async fn process_book(
     book_id: Uuid,
     library: Arc<Library>,
     book_state: Arc<Mutex<HashMap<Uuid, Arc<BookSummaryState>>>>,
-    provider: TranslationProvider,
-    model: TranslationModel,
-    api_key: &str,
+    summarizer: Arc<ChapterSummarizer>,
     app: &tauri::AppHandle,
 ) -> anyhow::Result<()> {
     let state = load_or_init(&book_state, &library, book_id).await?;
@@ -262,17 +264,15 @@ async fn process_book(
         emit_progress(app, book_id, idx, total, "in_progress", None);
 
         info!("Generating summary: book={book_id} chapter={idx}/{total}");
-        let summary_text = match generate_chapter_summary(
-            provider,
-            model,
-            api_key,
-            &book_language,
-            &book_title,
-            chapter_title.as_deref(),
-            &chapter_text,
-            if prior.is_empty() { None } else { Some(&prior) },
-        )
-        .await
+        let summary_text = match summarizer
+            .generate(
+                &book_language,
+                &book_title,
+                chapter_title.as_deref(),
+                &chapter_text,
+                if prior.is_empty() { None } else { Some(&prior) },
+            )
+            .await
         {
             Ok(text) => text,
             Err(err) => {
@@ -289,7 +289,7 @@ async fn process_book(
             let mut summaries = state.summaries.lock().await;
             summaries.entries[idx] = ChapterSummary {
                 generated: true,
-                model,
+                model: summarizer.model,
                 timestamp: SystemTime::now()
                     .duration_since(SystemTime::UNIX_EPOCH)
                     .map(|d| d.as_secs())

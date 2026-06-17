@@ -320,14 +320,24 @@ impl TranslationQueue {
                                 .for_provider(provider)
                                 .ok_or_else(|| anyhow::anyhow!("no api key for provider {provider:?}"))?
                                 .to_owned();
+                            let model = request.model;
+                            let make_translator = move |source_language: Language| {
+                                get_translator(
+                                    cache,
+                                    context_provider,
+                                    gemini_prompt_cache,
+                                    provider,
+                                    model,
+                                    api_key,
+                                    source_language,
+                                    target_language,
+                                )
+                            };
                             handle_request(
                                 library,
-                                cache,
-                                context_provider,
-                                gemini_prompt_cache,
+                                make_translator,
                                 stats_cache,
                                 target_language,
-                                api_key,
                                 app.clone(),
                                 state.clone(),
                                 &tx_save,
@@ -486,12 +496,9 @@ impl TranslationQueue {
 
 async fn handle_request(
     library: Arc<Library>,
-    cache: Arc<TranslationsCache>,
-    context_provider: Arc<dyn ChapterContextProvider>,
-    gemini_prompt_cache: Arc<GeminiPromptCache>,
+    make_translator: impl FnOnce(Language) -> anyhow::Result<Box<dyn library::translator::Translator>>,
     stats_cache: Arc<TranslationSizeCache>,
     target_language: Language,
-    api_key: String,
     app: tauri::AppHandle,
     state: Arc<Mutex<TranslationQueueState>>,
     save_notify: &UnboundedSender<SaveNotify>,
@@ -531,21 +538,7 @@ async fn handle_request(
         String::from_iter(paragraph_text.chars().take(40))
     );
 
-    let provider = request
-        .model
-        .provider()
-        .ok_or(anyhow::anyhow!("Unknown model provider"))?;
-
-    let translator = get_translator(
-        cache,
-        context_provider,
-        gemini_prompt_cache,
-        provider,
-        request.model,
-        api_key,
-        source_language,
-        target_language,
-    )?;
+    let translator = make_translator(source_language)?;
 
     let source_len = paragraph_text.len();
     let stats = stats_cache.get(&source_language, &target_language).await;

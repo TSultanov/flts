@@ -7,12 +7,16 @@
 
 use std::time::Duration;
 
-use async_openai::types::chat::{
-    ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
-    ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs,
-    CreateChatCompletionResponse,
+use async_openai::{
+    Client,
+    config::OpenAIConfig,
+    types::chat::{
+        ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
+        ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs,
+        CreateChatCompletionResponse,
+    },
 };
-use gemini_rust::GenerationResponse;
+use gemini_rust::{Gemini, GenerationResponse};
 use isolang::Language;
 use log::{debug, info};
 use tokio::time::timeout;
@@ -24,6 +28,152 @@ use crate::translator::{TranslationModel, TranslationProvider};
 /// a while; we don't want to retry aggressively because the caller will
 /// just give up on the book.
 const SUMMARY_REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
+
+enum SummaryBackend {
+    Gemini(Gemini),
+    OpenAi {
+        client: Client<OpenAIConfig>,
+        model_name: String,
+    },
+}
+
+/// Pre-built LLM client for chapter summary generation.
+///
+/// Create once per queue worker (model/provider/key are invariant for the
+/// lifetime of the queue) and share via `Arc`. Call `generate` for each chapter.
+pub struct ChapterSummarizer {
+    pub model: TranslationModel,
+    backend: SummaryBackend,
+}
+
+impl ChapterSummarizer {
+    pub fn create(
+        provider: TranslationProvider,
+        model: TranslationModel,
+        api_key: &str,
+    ) -> anyhow::Result<Self> {
+        let backend = match provider {
+            TranslationProvider::Google => {
+                let gemini_model = crate::translator::gemini::gemini_model(model)?;
+                let client =
+                    crate::translator::gemini::gemini_client(api_key.to_string(), gemini_model)?;
+                SummaryBackend::Gemini(client)
+            }
+            TranslationProvider::Openai
+            | TranslationProvider::Deepseek
+            | TranslationProvider::Zai => {
+                let model_name = crate::translator::openai::openai_model_name(model)?.to_owned();
+                let base_url = crate::translator::openai::openai_compat_base_url(provider);
+                let client =
+                    crate::translator::openai::openai_client(api_key.to_string(), base_url);
+                SummaryBackend::OpenAi { client, model_name }
+            }
+        };
+        Ok(Self { model, backend })
+    }
+
+    /// Run a single non-streaming summary call. Returns the plain-text summary
+    /// in the book's source language.
+    pub async fn generate(
+        &self,
+        book_language: &Language,
+        book_title: &str,
+        chapter_title: Option<&str>,
+        chapter_text: &str,
+        prior_summary: Option<&str>,
+    ) -> anyhow::Result<String> {
+        let system = system_prompt(book_language);
+        let user = user_message(book_title, chapter_title, chapter_text, prior_summary);
+
+        debug!(
+            "summary request: model={:?} book={book_title:?} \
+             chapter={chapter_title:?} chars(text/prior/sys)={}/{}/{}",
+            self.model,
+            chapter_text.len(),
+            prior_summary.map(|s| s.len()).unwrap_or(0),
+            system.len(),
+        );
+
+        match &self.backend {
+            SummaryBackend::Gemini(client) => {
+                let response = timeout(
+                    SUMMARY_REQUEST_TIMEOUT,
+                    client
+                        .generate_content()
+                        .with_system_prompt(system)
+                        .with_user_message(user)
+                        .with_safety_settings(
+                            crate::translator::gemini::permissive_safety_settings(),
+                        )
+                        .execute(),
+                )
+                .await
+                .map_err(|_| anyhow::anyhow!("Gemini summary request timed out"))??;
+
+                let text = response.text();
+                if text.is_empty() {
+                    let diag = describe_empty_gemini_response(&response);
+                    anyhow::bail!("Gemini summary returned empty content ({diag})");
+                }
+                info!(
+                    "Gemini summary ok: response_id={:?} model={:?} \
+                     tokens(prompt/cand/thoughts/total)={:?}/{:?}/{:?}/{:?}",
+                    response.response_id.as_deref(),
+                    response.model_version.as_deref(),
+                    response.usage_metadata.as_ref().and_then(|u| u.prompt_token_count),
+                    response.usage_metadata.as_ref().and_then(|u| u.candidates_token_count),
+                    response.usage_metadata.as_ref().and_then(|u| u.thoughts_token_count),
+                    response.usage_metadata.as_ref().and_then(|u| u.total_token_count),
+                );
+                Ok(text)
+            }
+            SummaryBackend::OpenAi { client, model_name } => {
+                let request = CreateChatCompletionRequestArgs::default()
+                    .model(model_name.clone())
+                    .messages([
+                        ChatCompletionRequestMessage::System(
+                            ChatCompletionRequestSystemMessageArgs::default()
+                                .content(system)
+                                .build()?,
+                        ),
+                        ChatCompletionRequestMessage::User(
+                            ChatCompletionRequestUserMessageArgs::default()
+                                .content(user)
+                                .build()?,
+                        ),
+                    ])
+                    .build()?;
+
+                let response = timeout(
+                    SUMMARY_REQUEST_TIMEOUT,
+                    client.chat().create(request),
+                )
+                .await
+                .map_err(|_| anyhow::anyhow!("OpenAI summary request timed out"))??;
+
+                let text = response
+                    .choices
+                    .first()
+                    .and_then(|c| c.message.content.clone())
+                    .unwrap_or_default();
+                if text.is_empty() {
+                    let diag = describe_empty_openai_response(&response);
+                    anyhow::bail!("OpenAI summary returned empty content ({diag})");
+                }
+                info!(
+                    "OpenAI summary ok: id={:?} model={:?} \
+                     tokens(prompt/completion/total)={:?}/{:?}/{:?}",
+                    response.id,
+                    response.model,
+                    response.usage.as_ref().map(|u| u.prompt_tokens),
+                    response.usage.as_ref().map(|u| u.completion_tokens),
+                    response.usage.as_ref().map(|u| u.total_tokens),
+                );
+                Ok(text)
+            }
+        }
+    }
+}
 
 fn system_prompt(book_language: &Language) -> String {
     let lang = book_language.to_name();
@@ -98,114 +248,6 @@ fn user_message(
     out
 }
 
-/// Run a single non-streaming summary call against the user's selected
-/// model. Returns the plain-text summary in the book's language.
-pub async fn generate_chapter_summary(
-    provider: TranslationProvider,
-    model: TranslationModel,
-    api_key: &str,
-    book_language: &Language,
-    book_title: &str,
-    chapter_title: Option<&str>,
-    chapter_text: &str,
-    prior_summary: Option<&str>,
-) -> anyhow::Result<String> {
-    let system = system_prompt(book_language);
-    let user = user_message(book_title, chapter_title, chapter_text, prior_summary);
-
-    debug!(
-        "summary request: provider={provider:?} model={model:?} book={book_title:?} \
-         chapter={chapter_title:?} chars(text/prior/sys)={}/{}/{}",
-        chapter_text.len(),
-        prior_summary.map(|s| s.len()).unwrap_or(0),
-        system.len(),
-    );
-
-    match provider {
-        TranslationProvider::Google => {
-            let gemini_model = crate::translator::gemini::gemini_model(model)?;
-            let client = crate::translator::gemini::gemini_client(api_key.to_string(), gemini_model)?;
-            let response = timeout(
-                SUMMARY_REQUEST_TIMEOUT,
-                client
-                    .generate_content()
-                    .with_system_prompt(system)
-                    .with_user_message(user)
-                    .with_safety_settings(crate::translator::gemini::permissive_safety_settings())
-                    .execute(),
-            )
-            .await
-            .map_err(|_| anyhow::anyhow!("Gemini summary request timed out"))??;
-
-            let text = response.text();
-            if text.is_empty() {
-                let diag = describe_empty_gemini_response(&response);
-                anyhow::bail!("Gemini summary returned empty content ({diag})");
-            }
-            info!(
-                "Gemini summary ok: response_id={:?} model={:?} \
-                 tokens(prompt/cand/thoughts/total)={:?}/{:?}/{:?}/{:?}",
-                response.response_id.as_deref(),
-                response.model_version.as_deref(),
-                response.usage_metadata.as_ref().and_then(|u| u.prompt_token_count),
-                response.usage_metadata.as_ref().and_then(|u| u.candidates_token_count),
-                response.usage_metadata.as_ref().and_then(|u| u.thoughts_token_count),
-                response.usage_metadata.as_ref().and_then(|u| u.total_token_count),
-            );
-            Ok(text)
-        }
-        TranslationProvider::Openai | TranslationProvider::Deepseek | TranslationProvider::Zai => {
-            let model_name = crate::translator::openai::openai_model_name(model)?;
-            let base_url = crate::translator::openai::openai_compat_base_url(provider);
-            let client =
-                crate::translator::openai::openai_client(api_key.to_string(), base_url);
-
-            let request = CreateChatCompletionRequestArgs::default()
-                .model(model_name)
-                .messages([
-                    ChatCompletionRequestMessage::System(
-                        ChatCompletionRequestSystemMessageArgs::default()
-                            .content(system)
-                            .build()?,
-                    ),
-                    ChatCompletionRequestMessage::User(
-                        ChatCompletionRequestUserMessageArgs::default()
-                            .content(user)
-                            .build()?,
-                    ),
-                ])
-                .build()?;
-
-            let response = timeout(
-                SUMMARY_REQUEST_TIMEOUT,
-                client.chat().create(request),
-            )
-            .await
-            .map_err(|_| anyhow::anyhow!("OpenAI summary request timed out"))??;
-
-            let text = response
-                .choices
-                .first()
-                .and_then(|c| c.message.content.clone())
-                .unwrap_or_default();
-            if text.is_empty() {
-                let diag = describe_empty_openai_response(&response);
-                anyhow::bail!("OpenAI summary returned empty content ({diag})");
-            }
-            info!(
-                "OpenAI summary ok: id={:?} model={:?} \
-                 tokens(prompt/completion/total)={:?}/{:?}/{:?}",
-                response.id,
-                response.model,
-                response.usage.as_ref().map(|u| u.prompt_tokens),
-                response.usage.as_ref().map(|u| u.completion_tokens),
-                response.usage.as_ref().map(|u| u.total_tokens),
-            );
-            Ok(text)
-        }
-    }
-}
-
 /// Build a compact diagnostic string from a Gemini response whose `text()`
 /// was empty, surfacing the fields that explain *why* nothing came back:
 /// candidate count, finish_reason, the shape of `content.parts` (since
@@ -223,7 +265,7 @@ fn describe_empty_gemini_response(resp: &GenerationResponse) -> String {
             Some(v) => {
                 let names: Vec<&'static str> = v.iter().map(part_variant_name).collect();
                 format!("parts={names:?}")
-            },
+            }
         };
         bits.push(parts_shape);
         if let Some(ratings) = c.safety_ratings.as_ref() {
