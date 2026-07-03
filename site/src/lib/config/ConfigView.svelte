@@ -37,40 +37,52 @@
     const SPOTIFY_DASHBOARD_URL = 'https://developer.spotify.com/dashboard';
     const SPOTIFY_REDIRECT_URI = 'http://127.0.0.1:53682/callback';
 
-    let translationProvider: TranslationProvider = $derived(
-        configStore.current?.translationProvider ?? 'google',
-    );
-    let geminiApiKey: string | undefined = $derived(configStore.current?.geminiApiKey);
-    let openaiApiKey: string | undefined = $derived(configStore.current?.openaiApiKey);
-    let deepseekApiKey: string | undefined = $derived(configStore.current?.deepseekApiKey);
-    let zaiApiKey: string | undefined = $derived(configStore.current?.zaiApiKey);
-    let targetLanguage: string | undefined = $derived(
-        configStore.current?.targetLanguageId,
-    );
+    // Editable form fields. Seeded ONCE from configStore by the guarded $effect
+    // below — deliberately NOT $derived, so a background config_updated refetch
+    // (e.g. triggered by the embedded sync controls) cannot clobber the user's
+    // typed-but-unsaved edits.
+    let translationProvider: TranslationProvider = $state('google');
+    let geminiApiKey: string | undefined = $state(undefined);
+    let openaiApiKey: string | undefined = $state(undefined);
+    let deepseekApiKey: string | undefined = $state(undefined);
+    let zaiApiKey: string | undefined = $state(undefined);
+    let targetLanguage: string | undefined = $state(undefined);
     // App-managed, read-only storage location (no folder picker anymore).
     let storageLocation: string = $state("");
-    let model: number = $derived(configStore.current?.model ?? 0);
-    let translationConcurrency: number = $derived(
-        configStore.current?.translationConcurrency ?? 8,
-    );
+    let model: number = $state(0);
+    let translationConcurrency: number = $state(8);
     let models: Model[] = $state([]);
     let providers: ProviderMeta[] = $state([]);
 
-    let spotifyClientId: string = $derived(
-        configStore.current?.spotifyClientId ?? '',
-    );
-    let spotifyPreloadCount: number = $derived(
-        configStore.current?.spotifyPreloadCount ?? 1,
-    );
-    let spotifyShowNextTrack: boolean = $derived(
-        configStore.current?.spotifyShowNextTrack ?? true,
-    );
-    let ankiEndpoint: string = $derived(
-        configStore.current?.ankiEndpoint ?? '',
-    );
-    let ankiApiKey: string = $derived(
-        configStore.current?.ankiApiKey ?? '',
-    );
+    let spotifyClientId: string = $state('');
+    let spotifyPreloadCount: number = $state(1);
+    let spotifyShowNextTrack: boolean = $state(true);
+    let ankiEndpoint: string = $state('');
+    let ankiApiKey: string = $state('');
+
+    // Seed the editable fields exactly once, when config first loads. `seeded`
+    // is a plain (non-reactive) flag: later config_updated refetches re-run this
+    // effect but bail out, so unsaved edits survive. sync settings stay
+    // authoritative in configStore (save() re-reads them from there).
+    let seeded = false;
+    $effect(() => {
+        const cfg = configStore.current;
+        if (seeded || !cfg) return;
+        translationProvider = cfg.translationProvider ?? 'google';
+        geminiApiKey = cfg.geminiApiKey;
+        openaiApiKey = cfg.openaiApiKey;
+        deepseekApiKey = cfg.deepseekApiKey;
+        zaiApiKey = cfg.zaiApiKey;
+        targetLanguage = cfg.targetLanguageId;
+        model = cfg.model ?? 0;
+        translationConcurrency = cfg.translationConcurrency ?? 8;
+        spotifyClientId = cfg.spotifyClientId ?? '';
+        spotifyPreloadCount = cfg.spotifyPreloadCount ?? 1;
+        spotifyShowNextTrack = cfg.spotifyShowNextTrack ?? true;
+        ankiEndpoint = cfg.ankiEndpoint ?? '';
+        ankiApiKey = cfg.ankiApiKey ?? '';
+        seeded = true;
+    });
     let spotifyStatus: SpotifyWebStatus = $state({
         connected: false,
         premiumRequired: false,
@@ -81,6 +93,7 @@
     let purgeBusy: boolean = $state(false);
     let purgeError: string | null = $state(null);
     let purgeDeleted: number | null = $state(null);
+    let saveError: string | null = $state(null);
     // Spotify integration is macOS-only — same constraint as LyricsView.
     let isMac: boolean = $state(false);
     let redirectCopied: boolean = $state(false);
@@ -148,24 +161,38 @@
     }
 
     async function save() {
-        await setConfig({
-            translationProvider,
-            geminiApiKey,
-            openaiApiKey,
-            deepseekApiKey,
-            zaiApiKey,
-            targetLanguageId: targetLanguage,
-            model,
-            translationConcurrency,
-            spotifyClientId: spotifyClientId.trim() || undefined,
-            spotifyPreloadCount,
-            spotifyShowNextTrack,
-            ankiEndpoint: ankiEndpoint.trim() || undefined,
-            ankiApiKey: ankiApiKey.trim() || undefined,
-            // Preserve sync settings (managed by the sync UI, not this form).
-            syncEnabled: configStore.current?.syncEnabled,
-            syncDeviceName: configStore.current?.syncDeviceName,
-        });
+        saveError = null;
+        try {
+            await setConfig({
+                translationProvider,
+                geminiApiKey,
+                openaiApiKey,
+                deepseekApiKey,
+                zaiApiKey,
+                targetLanguageId: targetLanguage,
+                model,
+                // Emptying a number input binds null; serde #[serde(default)]
+                // rejects an explicit null, so coerce back to the default.
+                translationConcurrency: Number.isFinite(translationConcurrency)
+                    ? translationConcurrency
+                    : 8,
+                spotifyClientId: spotifyClientId.trim() || undefined,
+                spotifyPreloadCount: Number.isFinite(spotifyPreloadCount)
+                    ? spotifyPreloadCount
+                    : 1,
+                spotifyShowNextTrack,
+                ankiEndpoint: ankiEndpoint.trim() || undefined,
+                ankiApiKey: ankiApiKey.trim() || undefined,
+                // Preserve sync settings (managed by the sync UI, not this form).
+                syncEnabled: configStore.current?.syncEnabled,
+                syncDeviceName: configStore.current?.syncDeviceName,
+            });
+        } catch (e) {
+            // Never let a rejected save be silent. Surface it, and re-throw so
+            // callers that chain off save() (e.g. connectSpotify) still abort.
+            saveError = String(e);
+            throw e;
+        }
     }
 
     async function connectSpotify() {
@@ -446,7 +473,16 @@
                 </div>
             </details>
 
-            <button id="save" onclick={save} class="primary">Save</button>
+            {#if saveError}
+                <div class="spotify-notice err">Could not save: {saveError}</div>
+            {/if}
+            <button
+                id="save"
+                onclick={() => {
+                    void save().catch(() => {});
+                }}
+                class="primary">Save</button
+            >
         </div>
     </div>
 {/await}

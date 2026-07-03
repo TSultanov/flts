@@ -28,7 +28,11 @@
         translationRatio?: number;
         initialParagraphId?: number | null;
         initialPageOffset?: number;
-        onPositionChange?: (paragraphId: number, pageOffset: number) => void;
+        onPositionChange?: (
+            chapterId: number,
+            paragraphId: number,
+            pageOffset: number,
+        ) => void;
     } = $props();
 
     const library: Library = getContext("library");

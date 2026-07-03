@@ -411,16 +411,34 @@ impl LibraryView {
     ) -> anyhow::Result<Option<WordView>> {
         let (book_translation, source_language_code) = {
             let book = self.library.get_book(&book_id).await?;
-            let mut book = book.lock().await;
+            let book = book.lock().await;
             (
-                book.get_or_create_translation(target_language).await,
+                // Read-only lookup: minting an empty translation here would
+                // cement a failed-to-load book as untranslated and churn ids
+                // across synced devices (see get_paragraph_translations_batch).
+                book.get_translation(target_language).await,
                 book.book.language.clone(),
             )
         };
 
+        let Some(book_translation) = book_translation else {
+            return Ok(None);
+        };
+
         Ok(
             if let Some(paragraph) = book_translation.lock().await.paragraph_view(paragraph_id) {
+                // The frontend re-fetches word info on `book_updated` with the
+                // still-selected {sentence, word}; a re-translation can shrink
+                // the paragraph so those indices no longer exist. Guard before
+                // the direct-indexing views (they panic out of range, and
+                // panic=abort would take down the whole app).
+                if sentence_id >= paragraph.sentence_count() {
+                    return Ok(None);
+                }
                 let sentence = paragraph.sentence_view(sentence_id);
+                if word_id >= sentence.word_count() {
+                    return Ok(None);
+                }
                 let word = sentence.word_view(word_id);
                 Some(WordView {
                     original: word.original.to_string(),

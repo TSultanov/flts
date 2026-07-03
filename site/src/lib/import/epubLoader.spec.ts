@@ -47,4 +47,22 @@ describe('getSanitizedHtml', () => {
         const el = createElementFromHtml('<p>foo <br> bar</p>');
         expect(getSanitizedHtml(el, false)).toBe('foo <br> bar');
     })
+
+    it('escapes special characters in text nodes to prevent HTML injection', () => {
+        const el = document.createElement('b');
+        el.appendChild(document.createTextNode('<script>alert(1)</script>'));
+        expect(getSanitizedHtml(el)).toBe('<b>&lt;script&gt;alert(1)&lt;/script&gt;</b>');
+    });
+
+    it('escapes special characters on the forbidden-tag path', () => {
+        const el = document.createElement('span');
+        el.appendChild(document.createTextNode('a < b & c'));
+        expect(getSanitizedHtml(el)).toBe('a &lt; b &amp; c');
+    });
+
+    it('preserves original html entities inside gaps', () => {
+        // innerHTML decodes "&amp;" to "&"; getSanitizedHtml must re-encode it.
+        const el = createElementFromHtml('<b>Tom &amp; Jerry</b>');
+        expect(getSanitizedHtml(el)).toBe('<b>Tom &amp; Jerry</b>');
+    });
 });

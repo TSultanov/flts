@@ -75,6 +75,10 @@
                       { margin: 1, width: 220 },
                   )
                 : "";
+            // A fully successful refresh clears a prior transient error. Not
+            // cleared at entry: that would flicker, and would wipe a message a
+            // mutating handler just set before it kicks off its own refresh.
+            error = "";
         } catch (e) {
             error = errMessage(e);
         }

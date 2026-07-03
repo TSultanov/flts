@@ -78,8 +78,16 @@
         }
     });
 
-    function handlePositionChange(paragraphId: number, pageOffset: number) {
-        if (chapterId == null) return;
+    function handlePositionChange(
+        chapterId: number,
+        paragraphId: number,
+        pageOffset: number,
+    ) {
+        // chapterId is passed by the emitting VM (captured non-reactively at
+        // its construction), NOT read from the ambient reactive derived. On
+        // an A→B chapter switch the derived has already advanced to B by the
+        // time chapter A's teardown flushes its pending position, so reading
+        // the ambient value here would write A's paragraph under chapter B.
         positionByChapter.set(chapterId, { paragraphId, pageOffset });
         library
             .saveBookReadingState(

@@ -1190,3 +1190,57 @@ async fn failed_save_keeps_in_memory_translations() {
         2
     );
 }
+
+#[tokio::test]
+async fn reload_translations_absorbs_older_mtime_remote_change() {
+    // Regression: Syncthing stamps a delivered file with the SOURCE device's
+    // clock, so a genuine remote translation edit can arrive with an mtime
+    // <= our last local save. The old mtime quick-reject dropped it (and a
+    // later local save then overwrote the remote change on disk). The gate
+    // is now content-hash based, so the remote paragraph must be absorbed.
+    let temp_dir = TempDir::new("flts_test_book");
+    let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
+    let (book, tr_path) = book_with_saved_translation(&library, "Remote Book").await;
+
+    let source_language = Language::from_str("en").unwrap();
+    let target_language = Language::from_str("ru").unwrap();
+
+    // Simulate a remote edit landing on disk: same translation plus an extra
+    // paragraph, written with an mtime an hour in the PAST.
+    let mut remote = Translation::create(
+        source_language.to_639_3(),
+        target_language.to_639_3(),
+    );
+    remote.add_paragraph_translation(0, &simple_paragraph("v1", 1), TranslationModel::Gemini25Flash);
+    remote.add_paragraph_translation(1, &simple_paragraph("remote", 2), TranslationModel::Gemini25Flash);
+    let mut buf = Vec::new();
+    remote.serialize(&mut buf).unwrap();
+    std::fs::write(&tr_path, &buf).unwrap();
+    let past = SystemTime::now() - Duration::from_secs(3600);
+    std::fs::File::options()
+        .write(true)
+        .open(&tr_path)
+        .unwrap()
+        .set_modified(past)
+        .unwrap();
+
+    let had_effect = book
+        .lock()
+        .await
+        .reload_translations(past, source_language, target_language)
+        .await
+        .unwrap();
+    assert!(had_effect, "an older-mtime remote change must not be dropped");
+
+    let translation = book
+        .lock()
+        .await
+        .get_translation(&target_language)
+        .await
+        .unwrap();
+    assert_eq!(
+        translation.lock().await.translated_paragraphs_count(),
+        2,
+        "the remote paragraph must be merged into the in-memory translation"
+    );
+}

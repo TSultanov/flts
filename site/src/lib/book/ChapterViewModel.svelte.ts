@@ -9,7 +9,11 @@ export type ChapterVMProps = {
     initialParagraphId: number | null;
     initialPageOffset: number;
     container: HTMLDivElement | null;
-    onPositionChange?: (paragraphId: number, pageOffset: number) => void;
+    onPositionChange?: (
+        chapterId: number,
+        paragraphId: number,
+        pageOffset: number,
+    ) => void;
 };
 
 export type WordClickInfo = {
@@ -46,6 +50,12 @@ const ESTIMATED_PARAGRAPH_HEIGHT_PX = 100;
 export class ChapterViewModel {
     #library!: Library;
     #props!: ChapterVMProps;
+    // Captured non-reactively at construction. The {#key chapterId} block in
+    // BookView guarantees this VM instance owns exactly one chapter, so the
+    // position callback can carry the chapter it belongs to instead of
+    // reading the parent's ambient (reactive) chapterId, which may already
+    // have advanced to the next chapter by the time a flush fires.
+    #chapterId!: number;
 
     #store!: ChapterParagraphsStore;
     #originalsKickedFor: number | null = null;
@@ -99,6 +109,7 @@ export class ChapterViewModel {
     constructor(library: Library, props: ChapterVMProps) {
         this.#library = library;
         this.#props = props;
+        this.#chapterId = props.chapterId;
         this.#store = new ChapterParagraphsStore(props.bookId, library);
         // Belt-and-braces: if neither the restore nor the no-restore
         // reveal path fires (paragraph fetch stuck, etc.), this timer
@@ -260,6 +271,26 @@ export class ChapterViewModel {
         }
 
         if (this.#initialParagraphSyncedFor === initialParagraphId) {
+            return noop;
+        }
+
+        // Echo guard: our own scroll save mutates the reactive
+        // positionByChapter map in BookView, which flows back down as a
+        // changed initialParagraphId and re-fires this effect. That new
+        // target differs from #initialParagraphSyncedFor (it's the
+        // just-saved paragraph), so the equality guard above lets it
+        // through and it would kick a full, disruptive re-restore. Skip
+        // any target the VM itself just emitted. #lastSavedParagraph is
+        // null until the first real save, so this never swallows the
+        // fresh-open (initialParagraphId == null) reveal path, and it
+        // still lets a genuine late external seed (backend reading-state
+        // resolving after mount — a paragraph this VM never emitted)
+        // drive the restore.
+        if (
+            this.#lastSavedParagraph !== null &&
+            initialParagraphId === this.#lastSavedParagraph
+        ) {
+            this.#initialParagraphSyncedFor = initialParagraphId;
             return noop;
         }
 
@@ -539,6 +570,7 @@ export class ChapterViewModel {
                 this.#lastSavedPageOffset !== this.#visiblePageOffset)
         ) {
             this.#props.onPositionChange?.(
+                this.#chapterId,
                 this.#visibleParagraphId,
                 this.#visiblePageOffset,
             );
@@ -665,7 +697,11 @@ export class ChapterViewModel {
             }
             this.#lastSavedParagraph = paragraphId;
             this.#lastSavedPageOffset = pageOffset;
-            this.#props.onPositionChange?.(paragraphId, pageOffset);
+            this.#props.onPositionChange?.(
+                this.#chapterId,
+                paragraphId,
+                pageOffset,
+            );
         }, 400);
     }
 

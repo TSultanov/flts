@@ -439,15 +439,13 @@ impl LibraryBook {
     }
 
     pub async fn reload_book(&mut self, modified: SystemTime) -> anyhow::Result<bool> {
-        // Quick reject: nothing on disk is newer than what we hold.
-        if self.last_modified.is_some_and(|lm| lm >= modified) {
-            return Ok(false);
-        }
-
-        // The mtime advanced, but that alone doesn't mean the content changed:
-        // our own atomic save (and Syncthing re-touching the file) bumps the
-        // mtime without changing bytes. Drop the echo when the on-disk content
-        // hash matches what we last wrote/read, so we don't re-save in a loop.
+        // Echo-vs-real is decided purely by content hash, NOT mtime. An mtime
+        // quick-reject would drop a genuine remote change whose delivered
+        // mtime is <= ours: Syncthing stamps files with the SOURCE device's
+        // clock, so with clock skew a real remote edit routinely arrives
+        // "older" than our last local save. Our own writes (and Syncthing
+        // re-touching a file) bump the mtime without changing bytes, and the
+        // hash match below drops those echoes so we don't re-save in a loop.
         let book_path = self.path.join("book.dat");
         if let Some(saved_hash) = self.last_saved_hash
             && let Ok(disk_hash) = read_stored_hash_from_path(&book_path)
@@ -476,13 +474,9 @@ impl LibraryBook {
                 continue;
             }
 
-            // Quick reject on mtime.
-            if t.last_modified.is_some_and(|lm| lm >= modified) {
-                continue;
-            }
-
-            // Content-gate: drop echoes of our own writes (same content,
-            // bumped mtime). Only a genuinely different on-disk hash warrants
+            // Content-gate only (no mtime quick-reject): a Syncthing-delivered
+            // remote edit can carry an mtime <= ours, so drop echoes by hash
+            // equality alone. Only a genuinely different on-disk hash warrants
             // a reload+merge+save.
             let file_name = format!(
                 "translation_{}_{}.dat",
@@ -565,20 +559,16 @@ impl LibraryBook {
                         None
                     };
 
-                if let Some(last_modified) = translation.last_modified {
-                    if tokio::fs::try_exists(&translation_path).await? {
-                        let saved_translation_last_modified =
-                            tokio::fs::metadata(&translation_path)
-                                .await?
-                                .modified()
-                                .unwrap();
-                        if saved_translation_last_modified > last_modified {
-                            let saved_translation =
-                                LibraryTranslation::load(&translation_path).await?;
-                            translation.merge(saved_translation);
-                        }
-                    }
-                } else if tokio::fs::try_exists(&translation_path).await? {
+                // Absorb the on-disk copy whenever its content differs from
+                // what we last persisted — content-based, not mtime-based,
+                // because a Syncthing-delivered remote edit carries the
+                // source device's clock and can look "older" than our last
+                // local save. merge() is an additive union, so pulling in
+                // disk never loses local translations.
+                if tokio::fs::try_exists(&translation_path).await?
+                    && read_stored_hash_from_path(&translation_path).ok()
+                        != translation.last_saved_hash
+                {
                     let saved_translation = LibraryTranslation::load(&translation_path).await?;
                     translation.merge(saved_translation);
                 }
@@ -658,19 +648,16 @@ impl LibraryBook {
                 None
             };
 
-            // If disk is newer, load it into memory (last writer wins).
-            if let Some(last_modified) = book.last_modified {
-                if tokio::fs::try_exists(&book_path).await? {
-                    let saved_book_last_modified =
-                        tokio::fs::metadata(&book_path).await?.modified().unwrap();
-                    if saved_book_last_modified > last_modified {
-                        let saved_book = Self::load(&book_path).await?;
-                        book.book = saved_book.book;
-                        book.last_modified = saved_book.last_modified;
-                        book.last_saved_hash = saved_book.last_saved_hash;
-                    }
-                }
-            } else if tokio::fs::try_exists(&book_path).await? {
+            // Adopt the on-disk book when its content differs from what we
+            // last persisted (content-based, not mtime-based — a remote edit
+            // delivered by Syncthing can carry an older clock; an mtime gate
+            // would drop it and then overwrite the canonical file with our
+            // stale copy, destroying the remote change across the mesh).
+            // book.dat is effectively immutable after import, so adopting
+            // disk here cannot lose a local edit.
+            if tokio::fs::try_exists(&book_path).await?
+                && read_stored_hash_from_path(&book_path).ok() != book.last_saved_hash
+            {
                 let saved_book = Self::load(&book_path).await?;
                 book.book = saved_book.book;
                 book.last_modified = saved_book.last_modified;

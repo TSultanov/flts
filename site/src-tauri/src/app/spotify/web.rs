@@ -158,6 +158,21 @@ struct Inner {
     poll_handle: Option<JoinHandle<()>>,
     premium_required: bool,
     last_error: Option<String>,
+    /// Bumped by connect()/disconnect() while holding the write lock. A token
+    /// refresh in `access_token` captures this before awaiting the network and
+    /// re-checks it before writing back, so a refresh that races a disconnect
+    /// can't resurrect a torn-down session. See `accepts_generation`.
+    generation: u64,
+}
+
+impl Inner {
+    /// A refreshed access token may only be written back if the session
+    /// generation hasn't advanced since the refresh started. connect() and
+    /// disconnect() bump `generation`, so a refresh that completes after either
+    /// ran must be discarded rather than resurrecting the old session.
+    fn accepts_generation(&self, captured: u64) -> bool {
+        self.generation == captured
+    }
 }
 
 pub struct SpotifyWebState {
@@ -250,6 +265,9 @@ impl SpotifyWebState {
             let mut inner = self.inner.write().await;
             inner.client_id = Some(client_id.clone());
             inner.last_error = None;
+            // Invalidate any in-flight token refresh from a prior session so it
+            // can't clobber the fresh token we're about to obtain.
+            inner.generation = inner.generation.wrapping_add(1);
         }
 
         let verifier = generate_verifier();
@@ -307,6 +325,10 @@ impl SpotifyWebState {
             inner.token = None;
             inner.premium_required = false;
             inner.last_error = None;
+            // Bump the generation so any token refresh currently awaiting the
+            // network (started before this disconnect) discards its result
+            // instead of re-setting `token` and resurrecting the session.
+            inner.generation = inner.generation.wrapping_add(1);
             // Poll loop stays alive — its job is to keep resolving the
             // current track from AppleScript signals. Without a token its
             // queue fetches become no-ops, which is exactly what we want.
@@ -444,18 +466,32 @@ impl SpotifyWebState {
                 return Some(tok.access_token.clone());
             }
         }
-        // Need refresh.
-        let (client_id, refresh) = {
+        // Need refresh. Capture the current generation alongside the
+        // credentials so we can detect a disconnect/reconnect that lands while
+        // we're awaiting the token endpoint below.
+        let (client_id, refresh, captured_gen) = {
             let inner = self.inner.read().await;
             let cid = inner.client_id.clone()?;
             let r = inner.token.as_ref().and_then(|t| t.refresh_token.clone())?;
-            (cid, r)
+            (cid, r, inner.generation)
         };
         match self.refresh_with(&client_id, &refresh).await {
             Ok(token) => {
-                let access = token.access_token.clone();
                 let mut inner = self.inner.write().await;
+                if !inner.accepts_generation(captured_gen) {
+                    // disconnect()/connect() ran during the refresh await. The
+                    // session this token belonged to is gone; writing it back
+                    // would resurrect it. Drop the token silently.
+                    warn!(
+                        "Spotify Web: token refresh completed after disconnect/reconnect; discarding stale token"
+                    );
+                    return None;
+                }
+                let access = token.access_token.clone();
                 inner.token = Some(token);
+                // A successful refresh means we're healthy again — clear any
+                // stale transient error banner from a previous failed attempt.
+                inner.last_error = None;
                 Some(access)
             }
             Err(RefreshError::InvalidGrant(_)) => {
@@ -541,9 +577,13 @@ impl SpotifyWebState {
             .collect();
 
         // Reset the "premium required" flag now that we got a real response.
+        // A successful fetch also means any earlier transient error has cleared,
+        // so drop the stale `last_error` banner instead of letting one blip
+        // persist for the rest of the session.
         {
             let mut inner = self.inner.write().await;
             inner.premium_required = false;
+            inner.last_error = None;
         }
 
         Ok(Some(QueueSnapshot {
@@ -650,7 +690,12 @@ async fn poll_loop(
     // the AppleScript watcher (current) and Spotify Web (next + context).
     let mut list = PlaybackList::default();
     let mut last_ids: Vec<String> = Vec::new();
-    let mut resolved: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Shared with the per-track resolve tasks so they can evict a track's key
+    // on failure, letting a later poll pass re-attempt it (see BUG A fix in
+    // resolve_playback_list). Held only for the brief insert/remove — never
+    // across an await — so a std Mutex is correct here.
+    let resolved: Arc<std::sync::Mutex<std::collections::HashSet<String>>> =
+        Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
 
     let mut state_rx = watcher.subscribe();
     // None means we haven't seen the watcher emit yet. The first emit is
@@ -785,7 +830,7 @@ async fn poll_loop(
             // Resolve lyrics+translation for everything in the list. Dedup'd
             // across the whole session — once a track has been kicked off,
             // it's done whether it appears as current or as a future "next".
-            resolve_playback_list(&app_state, &app, &list, &mut resolved).await;
+            resolve_playback_list(&app_state, &app, &list, &resolved).await;
         }
     }
 }
@@ -812,7 +857,7 @@ async fn resolve_playback_list(
     state: &Arc<crate::app::AppState>,
     app: &AppHandle,
     list: &PlaybackList,
-    resolved: &mut std::collections::HashSet<String>,
+    resolved: &Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 ) {
     let cfg = state.config.borrow().clone();
     let target_lang = cfg.target_language_id.clone();
@@ -852,12 +897,18 @@ async fn resolve_playback_list(
 
     for (idx, track) in to_resolve.iter().enumerate() {
         let dedup_key = format!("{}|{}|{}", track.id, target_lang, model);
-        if !resolved.insert(dedup_key) {
-            debug!(
-                "Resolve skip (already done): #{} {} — {}",
-                idx, track.name, track.artist
-            );
-            continue;
+        {
+            // Claim the key under the lock. If it was already claimed (a task is
+            // in flight or succeeded this session), skip. Cloned so we retain
+            // ownership of `dedup_key` for the eviction path below.
+            let mut r = resolved.lock().unwrap();
+            if !r.insert(dedup_key.clone()) {
+                debug!(
+                    "Resolve skip (already done): #{} {} — {}",
+                    idx, track.name, track.artist
+                );
+                continue;
+            }
         }
         let role = if idx == 0 { "current" } else { "next" };
         info!(
@@ -868,6 +919,7 @@ async fn resolve_playback_list(
         let app = app.clone();
         let track = (*track).clone();
         let target_lang = target_lang.clone();
+        let resolved = resolved.clone();
         tokio::spawn(async move {
             if let Err(err) =
                 crate::app::lyrics::resolve_track(&state, &app, &track, &target_lang, model).await
@@ -875,6 +927,26 @@ async fn resolve_playback_list(
                 warn!(
                     "Resolve failed for track={} ({}): {err}",
                     track.id, track.name
+                );
+                // BUG A: a transient failure (e.g. LRClib retries exhausted, or
+                // a translation dispatch error on a preloaded track) is NOT
+                // terminal. Evict the dedup key so the next poll pass whose list
+                // changes re-dispatches this track instead of leaving it wedged
+                // on a spinner for the rest of the session.
+                resolved.lock().unwrap().remove(&dedup_key);
+                // BUG A complement: the currently-playing track's list doesn't
+                // change on failure, so eviction alone wouldn't re-dispatch it
+                // until the next track change. Emit a terminal error keyed on
+                // track.id so the frontend leaves the "Fetching lyrics…" /
+                // "Translating…" spinner. resolve_track has a single caller
+                // (this one), so emitting here is equivalent to emitting inside
+                // it — and keeps the change within this file's ownership.
+                let _ = app.emit(
+                    "lyrics_translation_error",
+                    crate::app::lyrics::LyricsTranslationError {
+                        track_id: track.id.clone(),
+                        error: err.to_string(),
+                    },
                 );
             }
         });
@@ -1100,5 +1172,40 @@ mod tests {
     #[test]
     fn url_encodes_reserved() {
         assert_eq!(urlencode("a b/c"), "a%20b%2Fc");
+    }
+
+    // BUG C: a token refresh that completes after disconnect()/connect() bumped
+    // the generation must be discarded, not written back.
+    #[test]
+    fn refreshed_token_rejected_after_generation_bump() {
+        let mut inner = Inner::default();
+        // A refresh started at generation 0 is accepted while still on gen 0.
+        assert!(inner.accepts_generation(0));
+        // disconnect()/connect() bump the generation while holding the lock.
+        inner.generation = inner.generation.wrapping_add(1);
+        // The in-flight refresh (captured gen 0) is now stale and rejected...
+        assert!(!inner.accepts_generation(0));
+        // ...while a refresh started after the bump (gen 1) is still valid.
+        assert!(inner.accepts_generation(1));
+    }
+
+    // BUG A: claiming a track dedups concurrent/repeat work, but evicting the
+    // key on failure lets a later poll pass re-attempt it. Exercises the exact
+    // Arc<Mutex<HashSet>> claim/release contract resolve_playback_list relies on.
+    #[test]
+    fn dedup_claim_then_evict_allows_retry() {
+        use std::collections::HashSet;
+        use std::sync::Mutex;
+        let resolved: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+        let key = "spotify:track:abc|eng|1".to_string();
+
+        // First claim wins (dispatch happens).
+        assert!(resolved.lock().unwrap().insert(key.clone()));
+        // A second claim while the first is outstanding is deduped (skipped).
+        assert!(!resolved.lock().unwrap().insert(key.clone()));
+        // On failure the task evicts the key...
+        resolved.lock().unwrap().remove(&key);
+        // ...so the next poll pass can re-dispatch instead of wedging forever.
+        assert!(resolved.lock().unwrap().insert(key.clone()));
     }
 }

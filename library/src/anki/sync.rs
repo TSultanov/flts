@@ -258,6 +258,19 @@ pub async fn sync_pass(
         })
         .collect();
 
+    // Data-loss guard. A LocalDeleteOnly means findNotes returned 0 hits for a
+    // card that was previously synced. If EVERY eligible card reports 0 hits —
+    // as happens when AnkiConnect is pointed at the WRONG/empty collection
+    // (switched profile, opened a test profile, restored a backup missing the
+    // notes, or a freshly re-bootstrapped empty deck) — honoring those deletes
+    // would irreversibly flip every card to Deleted and wipe all local Anki
+    // state. Only trust a LocalDeleteOnly once at least one card in this pass
+    // matched an existing note (an UpdateNote): positive proof that the loaded
+    // collection really contains FLTS notes.
+    let any_note_found = actions
+        .iter()
+        .any(|a| matches!(a, CardAction::UpdateNote(_)));
+
     let mut write_outcomes = batch_writes(client, &eligible, &actions, state).await?;
     let (notes_by_id, cards_by_id) =
         batch_pull_state(client, &actions, &mut write_outcomes, state).await;
@@ -267,13 +280,18 @@ pub async fn sync_pass(
         let outcome: Result<()> = match &actions[idx] {
             CardAction::LookupFailed => Err(anyhow!("lookup batch failed for {}", e.card_id)),
             CardAction::LocalDeleteOnly => {
-                e.card.anki_data = Some(AnkiData {
-                    state: AnkiState::Deleted,
-                    interval_days: None,
-                    ease_factor: None,
-                    fsrs_difficulty: None,
-                    fsrs_stability: None,
-                });
+                // Only honor the out-of-band deletion when this pass saw at
+                // least one real note; otherwise leave anki_data untouched (no
+                // disk write) so a wrong/empty collection can't mass-delete.
+                if any_note_found {
+                    e.card.anki_data = Some(AnkiData {
+                        state: AnkiState::Deleted,
+                        interval_days: None,
+                        ease_factor: None,
+                        fsrs_difficulty: None,
+                        fsrs_stability: None,
+                    });
+                }
                 Ok(())
             }
             CardAction::Add | CardAction::UpdateNote(_) => {
@@ -362,7 +380,9 @@ enum CardAction {
     /// updateNoteFields and pull its state. The carried i64 is the note id.
     UpdateNote(i64),
     /// Card had prior anki_data but findNotes returned 0 hits — user
-    /// deleted the note in Anki out-of-band. Mark Deleted locally; no HTTP.
+    /// deleted the note in Anki out-of-band. Marked Deleted locally (no HTTP),
+    /// but only when some other card in the pass matched a note; see the
+    /// `any_note_found` guard in `sync_pass`.
     LocalDeleteOnly,
     /// Phase 1b's lookup batch failed for this card's chunk. Skip Phase 2a/b/c
     /// and record a failure in Phase 2d.
@@ -1482,7 +1502,9 @@ mod tests {
         // Card has prior anki_data (was Active), but the matching note in Anki
         // has been removed out-of-band. findNotes returns 0 hits → LocalDeleteOnly.
         // That path must NOT enter the Phase 2a multi batch; only Phase 1b's
-        // findNotes multi fires.
+        // findNotes multi fires. Because this lone card is the only one in the
+        // pass, nothing corroborates the collection, so the data-loss guard must
+        // leave its state intact rather than flip it to Deleted.
         let mock = MockAnkiConnect::new();
         let (_tmp, library) = seed_library_with_cards(
             "flts_sync_local_delete_only",
@@ -1527,8 +1549,131 @@ mod tests {
             .unwrap();
         assert_eq!(
             card.anki_data.as_ref().map(|a| a.state),
+            Some(AnkiState::Active),
+            "with no corroborating hit in the pass, the guard must leave state \
+             intact rather than flip a lone card to Deleted"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_pass_guard_leaves_all_states_intact_when_no_note_matches() {
+        // Simulates pointing AnkiConnect at the WRONG/empty collection (switched
+        // profile, opened a test profile, restored a backup missing the notes,
+        // re-bootstrapped empty deck): every previously-synced card reports 0
+        // findNotes hits. The guard must NOT mass-flip them to Deleted — doing so
+        // would irreversibly wipe all local Anki state.
+        let mock = MockAnkiConnect::new();
+        let (_tmp, library) = seed_library_with_cards(
+            "flts_sync_guard_all_zero",
+            &[
+                make_card("poder", vec!["мочь"], vec![]),
+                make_card("comer", vec!["есть"], vec![]),
+            ],
+        )
+        .await;
+
+        let mut state = AnkiSyncState::new();
+        // First pass: both cards created and marked Active.
+        sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
+            .await
+            .unwrap();
+        for lemma in ["poder", "comer"] {
+            let card = library
+                .card_store()
+                .load("spa", "rus", lemma)
+                .await
+                .unwrap()
+                .expect("card present");
+            assert_eq!(
+                card.anki_data.as_ref().map(|a| a.state),
+                Some(AnkiState::Active),
+                "{lemma} must be Active after first sync"
+            );
+        }
+
+        // The whole collection vanishes out-of-band (both notes removed) — the
+        // wrong/empty-profile scenario.
+        for lemma in ["poder", "comer"] {
+            let note_id = mock
+                .note_id_for_tag(&format!("flts_spa_rus_{lemma}"))
+                .expect("note exists");
+            mock.remove_note(note_id);
+        }
+
+        // Second pass: every card is LocalDeleteOnly and no card is UpdateNote,
+        // so the guard leaves all states untouched (still Active, no Deleted
+        // flips, no disk writes).
+        sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
+            .await
+            .unwrap();
+        for lemma in ["poder", "comer"] {
+            let card = library
+                .card_store()
+                .load("spa", "rus", lemma)
+                .await
+                .unwrap()
+                .expect("card present");
+            assert_eq!(
+                card.anki_data.as_ref().map(|a| a.state),
+                Some(AnkiState::Active),
+                "{lemma} must NOT be flipped to Deleted when no card in the pass matched a note"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn sync_pass_guard_honors_single_delete_when_another_card_matches() {
+        // A genuine single-note out-of-band deletion: poder's note is removed,
+        // but comer still matches. comer's hit corroborates the collection, so
+        // the guard honors poder's deletion (flip to Deleted) while comer stays
+        // Active.
+        let mock = MockAnkiConnect::new();
+        let (_tmp, library) = seed_library_with_cards(
+            "flts_sync_guard_mixed",
+            &[
+                make_card("poder", vec!["мочь"], vec![]),
+                make_card("comer", vec!["есть"], vec![]),
+            ],
+        )
+        .await;
+
+        let mut state = AnkiSyncState::new();
+        sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
+            .await
+            .unwrap();
+
+        // Delete only poder's note; comer's note survives.
+        let poder_note = mock
+            .note_id_for_tag("flts_spa_rus_poder")
+            .expect("poder note exists");
+        mock.remove_note(poder_note);
+
+        sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
+            .await
+            .unwrap();
+
+        let poder = library
+            .card_store()
+            .load("spa", "rus", "poder")
+            .await
+            .unwrap()
+            .expect("poder present");
+        assert_eq!(
+            poder.anki_data.as_ref().map(|a| a.state),
             Some(AnkiState::Deleted),
-            "LocalDeleteOnly must flip state to Deleted"
+            "a genuine single deletion is still honored when another card corroborates"
+        );
+
+        let comer = library
+            .card_store()
+            .load("spa", "rus", "comer")
+            .await
+            .unwrap()
+            .expect("comer present");
+        assert_eq!(
+            comer.anki_data.as_ref().map(|a| a.state),
+            Some(AnkiState::Active),
+            "the surviving card stays Active"
         );
     }
 
@@ -1782,6 +1927,15 @@ mod tests {
 
         library
             .apply_paragraph_to_cards(book_id, 0, &paragraph, rus())
+            .await
+            .unwrap();
+
+        // A second, co-resident card that stays synced. Its findNotes hit in
+        // sync #2 corroborates that the loaded Anki collection is the real one,
+        // so the data-loss guard honors poder's genuine out-of-band deletion.
+        library
+            .card_store()
+            .save(&make_card("comer", vec!["есть"], vec![]), "spa", "rus")
             .await
             .unwrap();
 

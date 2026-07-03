@@ -1,7 +1,7 @@
 use std::{fs::File, path::Path};
 
 use library::translator::{TranslationModel, TranslationProvider};
-use log::{info, warn};
+use log::warn;
 use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
 use strum::IntoEnumIterator;
@@ -245,21 +245,43 @@ impl Config {
             Ok(json) => json,
             Err(err) => {
                 warn!("Failed to parse config: {}. Loading default values.", err);
+                // Preserve the unparseable file for diagnosis instead of
+                // letting the next save silently overwrite the only copy.
+                let corrupt = path.with_extension("json.corrupt");
+                if let Err(copy_err) = std::fs::rename(path, &corrupt) {
+                    warn!("Could not preserve corrupt config at {corrupt:?}: {copy_err}");
+                }
                 Self::default()
             }
         })
     }
 
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
-        info!("Open {path:?}");
-        let file = OpenOptions::new()
-            .truncate(true)
-            .write(true)
-            .create(true)
-            .open(path)?;
-        info!("File opened");
-        serde_json::to_writer(file, self)?;
-        info!("File written");
+        // Atomic write: serialize to a sibling temp, fsync, then rename over
+        // the target. A truncate-in-place (the previous approach) leaves an
+        // empty/partial config.json if the process is killed mid-write — on
+        // iOS/Android the OS terminating a backgrounded app during a save is
+        // routine — and load() then silently resets every setting to default.
+        let dir = path.parent().unwrap_or_else(|| Path::new("."));
+        let tmp = dir.join(format!("config.json~{}.tmp", std::process::id()));
+
+        let write_result = (|| -> anyhow::Result<()> {
+            let file = OpenOptions::new()
+                .truncate(true)
+                .write(true)
+                .create(true)
+                .open(&tmp)?;
+            serde_json::to_writer(&file, self)?;
+            file.sync_all()?;
+            Ok(())
+        })();
+
+        if let Err(err) = write_result {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(err);
+        }
+
+        std::fs::rename(&tmp, path)?;
         Ok(())
     }
 }

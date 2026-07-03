@@ -38,8 +38,15 @@ impl EpubBook {
         for spine_item in &spine_items {
             // Get TOC elements that match this spine item
             // Compute c_href_doc once per spine item, not for every TOC element
-            let resource = epub.resources.get(&spine_item.idref).unwrap();
-            let c_href_doc = resource.path.to_str().unwrap().replace("OEBPS/", "");
+            // Skip malformed spine items whose manifest resource is missing or
+            // has a non-UTF-8 path, so a bad EPUB doesn't panic the whole import.
+            let Some(resource) = epub.resources.get(&spine_item.idref) else {
+                continue;
+            };
+            let Some(resource_path) = resource.path.to_str() else {
+                continue;
+            };
+            let c_href_doc = resource_path.replace("OEBPS/", "");
 
             let toc_elements: Vec<_> = toc_items
                 .iter()
@@ -289,11 +296,17 @@ fn find_next_sibling(element: ElementRef) -> Option<ElementRef> {
     None
 }
 
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
 fn get_sanitized_html(element: ElementRef, keep_bounding_tag: bool) -> String {
     let tag_lower = element.value().name().to_lowercase();
 
     if keep_bounding_tag && !ALLOWED_TAGS.contains(&tag_lower.as_str()) {
-        return element.text().collect::<String>();
+        return escape_html(&element.text().collect::<String>());
     }
 
     if tag_lower == "br" {
@@ -314,7 +327,7 @@ fn get_sanitized_html(element: ElementRef, keep_bounding_tag: bool) -> String {
                 }
             }
             Node::Text(text) => {
-                html.push_str(text);
+                html.push_str(&escape_html(text));
             }
             _ => {}
         }

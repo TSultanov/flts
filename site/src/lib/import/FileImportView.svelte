@@ -22,19 +22,26 @@
     let sourceLanguageId = $state("eng");
 
     $effect(() => {
-        book.then((book) => {
-            if (book) {
-                let idx = 0;
-                for (const c of book.chapters) {
-                    if (c.paragraphs.length > 0) {
-                        selectedChapters.add(idx);
+        book
+            .then((book) => {
+                if (book) {
+                    let idx = 0;
+                    for (const c of book.chapters) {
+                        if (c.paragraphs.length > 0) {
+                            selectedChapters.add(idx);
+                        }
+                        idx += 1;
                     }
-                    idx += 1;
+                } else {
+                    selectedChapters.clear();
                 }
-            } else {
+            })
+            .catch(() => {
+                // Parsing failed (bad/non-epub file); the {:catch} arm shows the
+                // error. Clear any stale selection and swallow the rejection so
+                // it isn't reported as unhandled.
                 selectedChapters.clear();
-            }
-        });
+            });
     });
 
     function checkboxChanged(idx: number, value: boolean) {
@@ -111,6 +118,11 @@
                 <button onclick={importBook} class="primary">Import</button>
             </div>
         {/if}
+    {:catch err}
+        <p class="error">
+            Could not load this file. Please choose a valid EPUB.
+            {err instanceof Error ? err.message : ""}
+        </p>
     {/await}
 </div>
 
@@ -148,5 +160,9 @@
     .button {
         flex: 0 1 auto;
         text-align: right;
+    }
+
+    .error {
+        color: #b00020;
     }
 </style>

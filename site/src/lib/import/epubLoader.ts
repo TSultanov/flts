@@ -144,9 +144,13 @@ function textBetween(start: Element, end: Element | null): Paragraph[] {
     return texts;
 }
 
+function escapeHtml(s: string): string {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 export function getSanitizedHtml(element: Element, keepBoundingTag = true) {
     if (keepBoundingTag && !allowListedTags.includes(element.tagName.toLowerCase())) {
-        return element.textContent ?? "";
+        return escapeHtml(element.textContent ?? "");
     }
 
     if (element.tagName.toLowerCase() === "br") {
@@ -159,7 +163,7 @@ export function getSanitizedHtml(element: Element, keepBoundingTag = true) {
         if (child.nodeType === Node.ELEMENT_NODE) {
             html += getSanitizedHtml(child as Element);
         } else if (child.nodeType === Node.TEXT_NODE) {
-            html += (child as Text).textContent;
+            html += escapeHtml((child as Text).textContent ?? "");
         }
     }
 
