@@ -435,6 +435,11 @@ impl AppState {
         // Reset it so the next translation uses the latest config.
         self.stop_translation_queue().await;
 
+        // eval_config below swaps in a freshly-opened Library; any book the
+        // stopped queue translated but had not yet saved would be lost with
+        // the old instance. Flush everything first (mirrors shutdown()).
+        self.save_all().await;
+
         // The library location is now app-managed (resolve_library_root); the
         // frontend no longer sends a path, so there's nothing to compute here.
         info!("config = {:?}", config);
@@ -634,7 +639,11 @@ impl AppState {
     }
 
     pub async fn save_all(&self) {
-        if let Some(library) = self.library.borrow().clone() {
+        // Bind before awaiting: an `if let` on the borrow() temporary keeps
+        // the watch read-guard alive across the await, making every caller's
+        // future !Send.
+        let library = self.library.borrow().clone();
+        if let Some(library) = library {
             info!("Saving all dirty books before shutdown");
             library.save_all().await;
         }
@@ -761,11 +770,11 @@ impl AppState {
         let cache = self.get_translations_cache().await?;
         let stats_cache = self.get_stats_cache().await?;
         let gemini_prompt_cache = self.get_gemini_prompt_cache().await?;
-        let summary_queue = self.get_or_init_summary_generation_queue(library.clone()).await?;
+        let summary_queue = self.get_or_init_summary_generation_queue().await?;
         let context_provider: Arc<dyn library::translator::ChapterContextProvider> =
             Arc::new(SummaryBackedChapterContext {
                 queue: summary_queue,
-                library: library.clone(),
+                library_rx: self.subscribe_library(),
             });
         let queue = TranslationQueue::init(
             library,
@@ -785,7 +794,6 @@ impl AppState {
 
     pub async fn get_or_init_summary_generation_queue(
         &self,
-        library: Arc<Library>,
     ) -> anyhow::Result<Arc<SummaryGenerationQueue>> {
         if let Some(queue) = self.summary_generation_queue.borrow().clone() {
             return Ok(queue);
@@ -798,7 +806,8 @@ impl AppState {
         }
 
         let config = self.config.borrow().clone();
-        let queue = SummaryGenerationQueue::init(library, &config, self.app.clone());
+        let queue =
+            SummaryGenerationQueue::init(self.subscribe_library(), &config, self.app.clone());
 
         self.summary_generation_queue
             .send_replace(Some(queue.clone()));
@@ -882,13 +891,26 @@ impl AppState {
         book_id: Uuid,
         paragraph_id: usize,
     ) -> anyhow::Result<Option<translation_queue::ParagraphTranslationActivity>> {
-        let library = self
-            .library
-            .borrow()
-            .clone()
-            .ok_or(AppError::NoLibraryError)?;
-        let queue = self.get_or_init_translation_queue(library).await?;
-        Ok(queue.get_active_translation(book_id, paragraph_id).await)
+        // Pure read: no queue means nothing is active. Initializing the
+        // queue here could pin a stale Library if this lands inside
+        // update_config's stop→eval_config window. (Bind before awaiting so
+        // the watch read-guard doesn't cross the await.)
+        let queue = self.translation_queue.borrow().clone();
+        match queue {
+            Some(queue) => Ok(queue.get_active_translation(book_id, paragraph_id).await),
+            None => Ok(None),
+        }
+    }
+
+    pub async fn list_paragraph_translation_activity(
+        &self,
+    ) -> anyhow::Result<Vec<translation_queue::ActiveParagraphTranslation>> {
+        // Pure read; see get_paragraph_translation_activity.
+        let queue = self.translation_queue.borrow().clone();
+        match queue {
+            Some(queue) => Ok(queue.list_active_translations().await),
+            None => Ok(Vec::new()),
+        }
     }
 }
 
@@ -1208,6 +1230,16 @@ pub async fn get_paragraph_translation_activity(
 ) -> Result<Option<translation_queue::ParagraphTranslationActivity>, String> {
     state
         .get_paragraph_translation_activity(book_id, paragraph_id)
+        .await
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub async fn list_paragraph_translation_activity(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<Vec<translation_queue::ActiveParagraphTranslation>, String> {
+    state
+        .list_paragraph_translation_activity()
         .await
         .map_err(|err| err.to_string())
 }

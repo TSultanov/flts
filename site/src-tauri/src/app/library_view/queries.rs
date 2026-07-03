@@ -170,7 +170,7 @@ pub async fn get_book_summary_status(
     };
 
     let queue = state
-        .get_or_init_summary_generation_queue(library.clone())
+        .get_or_init_summary_generation_queue()
         .await
         .map_err(|err| err.to_string())?;
     let book_state = queue

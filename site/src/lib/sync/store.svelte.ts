@@ -101,9 +101,15 @@ export async function ensureCameraPermission(): Promise<boolean> {
     const { checkPermissions, requestPermissions } = await import(
         "@tauri-apps/plugin-barcode-scanner"
     );
-    let state = await checkPermissions();
+    // The plugin's index.d.ts re-exports PermissionState without importing
+    // it locally, so its declared return type accidentally resolves to the
+    // DOM-global PermissionState, which lacks 'prompt-with-rationale' — a
+    // value that does occur at runtime on Android. Cast to the Tauri union
+    // the plugin actually returns.
+    type TauriPermissionState = import("@tauri-apps/api/core").PermissionState;
+    let state = (await checkPermissions()) as TauriPermissionState;
     if (state === "prompt" || state === "prompt-with-rationale") {
-        state = await requestPermissions();
+        state = (await requestPermissions()) as TauriPermissionState;
     }
     return state === "granted";
 }

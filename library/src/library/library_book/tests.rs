@@ -1129,3 +1129,64 @@ async fn reload_book_saves_on_external_change() {
     let saved = book_a.lock().await.reload_book(future).await.unwrap();
     assert!(saved, "a genuine external book change must trigger a save");
 }
+
+#[tokio::test]
+async fn failed_save_keeps_in_memory_translations() {
+    // Regression: save() used to drain the in-memory translations vec at
+    // entry and only restore it on full success. Any mid-save error (here:
+    // the end-of-save metadata rescan choking on an unparseable
+    // translation_*.dat) left the cached book with zero translations —
+    // blanking the whole book in the UI until an app restart.
+    let temp_dir = TempDir::new("flts_test_book");
+    let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
+    let (book, _tr_path) = book_with_saved_translation(&library, "Drain Book").await;
+    let mut book = book.lock().await;
+
+    let garbage = book.path.join("translation_zzz_yyy.dat");
+    std::fs::write(&garbage, b"not a translation file").unwrap();
+
+    // Dirty the translation so the failing save exercises the write path
+    // too, not just the rescan.
+    book.translations[0]
+        .lock()
+        .await
+        .add_paragraph_translation(
+            1,
+            &simple_paragraph("v2", 2),
+            TranslationModel::Gemini25Flash,
+        );
+
+    let result = book.save().await;
+    assert!(
+        result.is_err(),
+        "planted garbage translation file must fail the save"
+    );
+
+    // The failed save must leave the in-memory translations intact.
+    assert_eq!(book.translations.len(), 1);
+    let target_language = Language::from_str("ru").unwrap();
+    let translation = book
+        .get_translation(&target_language)
+        .await
+        .expect("translation must survive a failed save");
+    assert_eq!(
+        translation.lock().await.translated_paragraphs_count(),
+        2,
+        "paragraph translations must survive a failed save"
+    );
+
+    // Once the obstruction is gone, the next save succeeds and the
+    // translations are still there.
+    std::fs::remove_file(&garbage).unwrap();
+    book.save().await.unwrap();
+    assert_eq!(book.translations.len(), 1);
+    assert_eq!(
+        book.get_translation(&target_language)
+            .await
+            .unwrap()
+            .lock()
+            .await
+            .translated_paragraphs_count(),
+        2
+    );
+}

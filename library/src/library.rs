@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     error::Error,
     fmt::Display,
     path::{Path, PathBuf},
@@ -239,6 +240,11 @@ pub struct Library {
     library_root: PathBuf,
     pub(crate) books_cache: WeakLruCache<Uuid, TracedMutex<LibraryBook>>,
     card_store: Arc<LibraryCardStore>,
+    /// Per-book-id single-flight guards for cache-miss loads. `get_book`
+    /// must not run `load_from_metadata` concurrently for the same id: it
+    /// mutates the book directory (conflict-file merge). Entries are
+    /// pruned once the last interested caller finishes.
+    load_flights: tokio::sync::Mutex<HashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl Library {
@@ -260,6 +266,7 @@ impl Library {
             library_root,
             books_cache: WeakLruCache::new(cache_capacity),
             card_store,
+            load_flights: tokio::sync::Mutex::new(HashMap::new()),
         })
     }
 
@@ -373,13 +380,56 @@ impl Library {
             return Ok(book);
         }
 
-        let path = self.library_root.join(uuid.to_string());
-        let metadata = LibraryBookMetadata::load(&path).await?;
-        let book = Arc::new(TracedMutex::new(
-            LibraryBook::load_from_metadata(metadata).await?,
-        ));
+        // Single-flight per book id: `load_from_metadata` mutates the book
+        // directory (moves the newest conflict file over book.dat, deletes
+        // the rest), so two concurrent cache-miss loads for the same id
+        // would race on those filesystem changes. Only one loader runs at a
+        // time; late arrivals re-check the cache under the flight lock.
+        let flight = {
+            let mut flights = self.load_flights.lock().await;
+            flights.entry(*uuid).or_default().clone()
+        };
 
-        Ok(self.books_cache.insert(*uuid, book).await)
+        let result = {
+            let _guard = flight.lock().await;
+            // A concurrent loader may have populated the cache while we
+            // waited for the flight lock.
+            if let Some(book) = self.books_cache.get(uuid).await {
+                Ok(book)
+            } else {
+                async {
+                    let path = self.library_root.join(uuid.to_string());
+                    let metadata = LibraryBookMetadata::load(&path).await?;
+                    let book = Arc::new(TracedMutex::new(
+                        LibraryBook::load_from_metadata(metadata).await?,
+                    ));
+                    anyhow::Ok(self.books_cache.insert(*uuid, book).await)
+                }
+                .await
+            }
+        };
+
+        // Prune the flight entry once no caller holds the guard any more.
+        // Our own clone is dropped before the check, so the last finisher
+        // sees strong_count == 1 (the map's own reference) and removes the
+        // entry; while waiters are still queued their clones keep the count
+        // higher and the last of them prunes instead. An entry can never be
+        // removed out from under a waiter — its clone pins the count.
+        // (Address as usize: a raw pointer across the .await below would
+        // make this future !Send.)
+        let flight_addr = Arc::as_ptr(&flight) as usize;
+        drop(flight);
+        {
+            let mut flights = self.load_flights.lock().await;
+            if let Some(entry) = flights.get(uuid)
+                && Arc::as_ptr(entry) as usize == flight_addr
+                && Arc::strong_count(entry) <= 1
+            {
+                flights.remove(uuid);
+            }
+        }
+
+        result
     }
 
     pub async fn create_book_plain(
@@ -799,6 +849,66 @@ mod library_tests {
             Arc::strong_count(&reloaded),
             2,
             "expected exactly two strong refs: caller + LRU pin",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_get_book_single_flight_after_eviction() {
+        let temp_dir = TempDir::new("flts_test");
+        let library = Arc::new(
+            Library::open_with_capacity(temp_dir.path.join("lib"), 1)
+                .await
+                .unwrap(),
+        );
+
+        let id = make_saved_book(&library, "Raced").await;
+
+        // Plant a conflict sibling so racing loaders would fight over the
+        // merge (delete book.dat / rename the sibling over it) if the
+        // single-flight guard ever regresses.
+        let book_dir = temp_dir.path.join("lib").join(id.to_string());
+        tokio::fs::copy(
+            book_dir.join("book.dat"),
+            book_dir.join("book.sync-conflict-race.dat"),
+        )
+        .await
+        .unwrap();
+
+        // Capacity 1: creating another book evicts the target from the warm
+        // LRU, and no caller holds an Arc, so the next get_book must load.
+        let _ = make_saved_book(&library, "Filler").await;
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let library = library.clone();
+            handles.push(tokio::spawn(async move { library.get_book(&id).await }));
+        }
+        let mut books = Vec::new();
+        for handle in handles {
+            books.push(
+                handle
+                    .await
+                    .unwrap()
+                    .expect("concurrent get_book must not fail"),
+            );
+        }
+
+        let first = &books[0];
+        for book in &books[1..] {
+            assert!(
+                Arc::ptr_eq(first, book),
+                "all concurrent callers must resolve to the same instance",
+            );
+        }
+
+        assert!(book_dir.join("book.dat").exists());
+        assert!(
+            !book_dir.join("book.sync-conflict-race.dat").exists(),
+            "conflict sibling must be merged away exactly once",
+        );
+        assert!(
+            library.load_flights.lock().await.is_empty(),
+            "flight guards must be pruned once all callers finish",
         );
     }
 

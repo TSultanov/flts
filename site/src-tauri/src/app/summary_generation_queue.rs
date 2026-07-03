@@ -8,7 +8,11 @@
 //! Gemini / OpenAI translators can `wait_ready` before composing a
 //! per-paragraph request.
 
-use std::{collections::HashMap, sync::Arc, time::SystemTime};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Weak},
+    time::SystemTime,
+};
 
 use library::{
     book::chapter_summaries::{
@@ -54,15 +58,41 @@ struct SummaryGenerationProgress {
     error: Option<String>,
 }
 
+/// Book states plus the `Library` instance they were loaded under.
+/// `eval_config` swaps the library on every config change; states loaded
+/// under the old instance are dropped rather than carried over, so the
+/// queue can never mutate a sidecar through a stale book cache.
+struct BookStates {
+    library: Weak<Library>,
+    by_book: HashMap<Uuid, Arc<BookSummaryState>>,
+}
+
+impl BookStates {
+    /// Invalidates all cached states when `library` is not the instance
+    /// they were loaded under. In-flight waiters on an evicted state's
+    /// `ready_tx` never see another send and fall back to the `wait_ready`
+    /// timeout, which the translation queue treats as transient (requeue).
+    fn ensure_library(&mut self, library: &Arc<Library>) {
+        let same = self
+            .library
+            .upgrade()
+            .is_some_and(|current| Arc::ptr_eq(&current, library));
+        if !same {
+            self.by_book.clear();
+            self.library = Arc::downgrade(library);
+        }
+    }
+}
+
 pub struct SummaryGenerationQueue {
     enqueue_tx: UnboundedSender<Uuid>,
-    book_state: Arc<Mutex<HashMap<Uuid, Arc<BookSummaryState>>>>,
+    book_state: Arc<Mutex<BookStates>>,
     task: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl SummaryGenerationQueue {
     pub fn init(
-        library: Arc<Library>,
+        library_rx: watch::Receiver<Option<Arc<Library>>>,
         config: &Config,
         app: tauri::AppHandle,
     ) -> Arc<Self> {
@@ -70,8 +100,10 @@ impl SummaryGenerationQueue {
         let api_keys = config.api_keys();
 
         let (enqueue_tx, mut enqueue_rx) = unbounded_channel::<Uuid>();
-        let book_state: Arc<Mutex<HashMap<Uuid, Arc<BookSummaryState>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let book_state: Arc<Mutex<BookStates>> = Arc::new(Mutex::new(BookStates {
+            library: Weak::new(),
+            by_book: HashMap::new(),
+        }));
 
         let book_state_for_worker = book_state.clone();
         let task = tokio::spawn(async move {
@@ -100,7 +132,7 @@ impl SummaryGenerationQueue {
             while let Some(book_id) = enqueue_rx.recv().await {
                 let outcome = process_book(
                     book_id,
-                    library.clone(),
+                    &library_rx,
                     book_state_for_worker.clone(),
                     summarizer.clone(),
                     &app,
@@ -128,10 +160,12 @@ impl SummaryGenerationQueue {
 
     /// Returns the in-memory state for `book_id`, loading the sidecar
     /// from disk on first call. Used by the `ChapterContextProvider` to
-    /// subscribe to readiness and read summary text.
+    /// subscribe to readiness and read summary text. `library` must be
+    /// the *current* library (from the AppState watch channel): states
+    /// cached under a previous instance are invalidated on the way in.
     pub async fn get_or_init_book_state(
         &self,
-        library: &Library,
+        library: &Arc<Library>,
         book_id: Uuid,
     ) -> anyhow::Result<Arc<BookSummaryState>> {
         load_or_init(&self.book_state, library, book_id).await
@@ -146,13 +180,14 @@ impl SummaryGenerationQueue {
 }
 
 async fn load_or_init(
-    book_state: &Arc<Mutex<HashMap<Uuid, Arc<BookSummaryState>>>>,
-    library: &Library,
+    book_state: &Arc<Mutex<BookStates>>,
+    library: &Arc<Library>,
     book_id: Uuid,
 ) -> anyhow::Result<Arc<BookSummaryState>> {
     {
-        let guard = book_state.lock().await;
-        if let Some(state) = guard.get(&book_id) {
+        let mut guard = book_state.lock().await;
+        guard.ensure_library(library);
+        if let Some(state) = guard.by_book.get(&book_id) {
             return Ok(state.clone());
         }
     }
@@ -188,41 +223,53 @@ async fn load_or_init(
         ready_tx,
     });
 
-    // Race-safe insert: another caller may have inserted while we were
-    // doing I/O. If so, return their copy.
+    // Race-safe insert: another caller may have inserted (or the library
+    // may have been swapped) while we were doing I/O. If a state for this
+    // book already exists under the current library, return their copy.
     let mut guard = book_state.lock().await;
-    if let Some(existing) = guard.get(&book_id) {
+    guard.ensure_library(library);
+    if let Some(existing) = guard.by_book.get(&book_id) {
         return Ok(existing.clone());
     }
-    guard.insert(book_id, state.clone());
+    guard.by_book.insert(book_id, state.clone());
     Ok(state)
 }
 
 async fn process_book(
     book_id: Uuid,
-    library: Arc<Library>,
-    book_state: Arc<Mutex<HashMap<Uuid, Arc<BookSummaryState>>>>,
+    library_rx: &watch::Receiver<Option<Arc<Library>>>,
+    book_state: Arc<Mutex<BookStates>>,
     summarizer: Arc<ChapterSummarizer>,
     app: &tauri::AppHandle,
 ) -> anyhow::Result<()> {
-    let state = load_or_init(&book_state, &library, book_id).await?;
-
-    // Pull stable book metadata once. The sidecar path also stays stable
-    // for the life of the book.
-    let (book_path, book_title, book_language) = {
-        let book = library.get_book(&book_id).await?;
-        let book = book.lock().await;
-        let lang = isolang::Language::from_639_3(&book.book.language)
-            .ok_or_else(|| anyhow::anyhow!("unknown book language: {}", book.book.language))?;
-        (
-            book.path().to_path_buf(),
-            book.book.title.clone(),
-            lang,
-        )
-    };
-    let sidecar_path = chapter_summaries_path(&book_path);
-
     loop {
+        // Re-resolve the library AND the book state every iteration:
+        // `eval_config` can swap the Library mid-book (this loop runs for
+        // minutes), after which waiters subscribe to a state loaded under
+        // the NEW instance — notifying only a state captured at book start
+        // would strand them on a channel nobody sends on. Resolving with
+        // the current instance also keeps ensure_library from fighting:
+        // the worker never re-seeds the map under a stale library.
+        let library = library_rx.borrow().clone();
+        let Some(library) = library else {
+            warn!("Summary generation for book {book_id} stopped: no library open");
+            return Ok(());
+        };
+        let state = load_or_init(&book_state, &library, book_id).await?;
+
+        let (book_path, book_title, book_language) = {
+            let book = library.get_book(&book_id).await?;
+            let book = book.lock().await;
+            let lang = isolang::Language::from_639_3(&book.book.language)
+                .ok_or_else(|| anyhow::anyhow!("unknown book language: {}", book.book.language))?;
+            (
+                book.path().to_path_buf(),
+                book.book.title.clone(),
+                lang,
+            )
+        };
+        let sidecar_path = chapter_summaries_path(&book_path);
+
         // Snapshot the next chapter to summarize + the prior summary, all
         // under the summaries lock to avoid TOCTOU. Drop the lock before
         // making the LLM call.

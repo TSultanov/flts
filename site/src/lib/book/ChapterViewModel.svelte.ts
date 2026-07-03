@@ -506,6 +506,7 @@ export class ChapterViewModel {
     }
 
     dispose(): void {
+        this.#store.dispose();
         if (this.#scrollRaf !== null) {
             cancelAnimationFrame(this.#scrollRaf);
             this.#scrollRaf = null;

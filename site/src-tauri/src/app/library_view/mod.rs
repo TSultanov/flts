@@ -164,9 +164,22 @@ impl LibraryView {
         target_language: &Language,
     ) -> anyhow::Result<ParagraphView> {
         let book = self.library.get_book(&book_id).await?;
-        let mut book = book.lock().await;
+        let book = book.lock().await;
 
-        let book_translation = book.get_or_create_translation(target_language).await;
+        // The frontend can hold paragraph ids from before a sync-triggered
+        // book reload; indexing past the end would panic the command.
+        if paragraph_id >= book.book.paragraphs_count() {
+            anyhow::bail!(
+                "paragraph {paragraph_id} out of range for book {book_id} ({} paragraphs)",
+                book.book.paragraphs_count()
+            );
+        }
+
+        // Read-only lookup: minting an empty translation here (the previous
+        // get_or_create_translation call) would cement a book whose
+        // translations failed to load as "untranslated" and create divergent
+        // translation ids across synced devices.
+        let book_translation = book.get_translation(target_language).await;
 
         let paragraph = book.book.paragraph_view(paragraph_id);
         let original = paragraph.original_html.unwrap_or(paragraph.original_text);
@@ -174,8 +187,11 @@ impl LibraryView {
         let src_lang = Language::from_639_3(&book.book.language).unwrap();
         let card_store = self.library.card_store();
 
-        let bt = book_translation.lock().await;
-        let t_view = bt.paragraph_view(paragraph_id);
+        let bt = match &book_translation {
+            Some(t) => Some(t.lock().await),
+            None => None,
+        };
+        let t_view = bt.as_ref().and_then(|bt| bt.paragraph_view(paragraph_id));
 
         let segments = if let Some(t) = t_view.as_ref() {
             let mut slug_set: HashSet<String> = HashSet::new();
@@ -203,8 +219,12 @@ impl LibraryView {
     ) -> anyhow::Result<Vec<ParagraphOriginal>> {
         let book = self.library.get_book(&book_id).await?;
         let book = book.lock().await;
+        // Silently skip ids past the end of the book (stale frontend state
+        // after a sync-triggered reload shrank it) instead of panicking the
+        // whole batch.
         Ok(paragraph_ids
             .into_iter()
+            .filter(|id| *id < book.book.paragraphs_count())
             .map(|id| {
                 let p = book.book.paragraph_view(id);
                 let original = p.original_html.unwrap_or(p.original_text).to_string();
@@ -220,10 +240,16 @@ impl LibraryView {
         target_language: &Language,
     ) -> anyhow::Result<Vec<ParagraphTranslationSlice>> {
         let book = self.library.get_book(&book_id).await?;
-        let mut book = book.lock().await;
+        let book = book.lock().await;
 
-        let book_translation = book.get_or_create_translation(target_language).await;
-        let bt = book_translation.lock().await;
+        // Read-only lookup — see get_paragraph_view for why this must not
+        // fall back to get_or_create_translation. A book with no matching
+        // translation yields `segments: None` for every row.
+        let book_translation = book.get_translation(target_language).await;
+        let bt = match &book_translation {
+            Some(t) => Some(t.lock().await),
+            None => None,
+        };
 
         let src_lang = Language::from_639_3(&book.book.language).unwrap();
         let card_store = self.library.card_store();
@@ -231,13 +257,18 @@ impl LibraryView {
         // First pass: resolve each paragraph's original text + translation
         // view, and accumulate the union of lemma slugs across the whole batch
         // (deduped via a HashSet) so we hit the card store exactly once.
+        // Ids past the end of the book (stale frontend state after a
+        // sync-triggered reload) are skipped instead of panicking the batch.
         let mut prepared: Vec<(usize, String, Option<ParagraphTranslationView<'_>>)> =
             Vec::with_capacity(paragraph_ids.len());
         let mut slug_set: HashSet<String> = HashSet::new();
         for id in paragraph_ids {
+            if id >= book.book.paragraphs_count() {
+                continue;
+            }
             let p = book.book.paragraph_view(id);
             let original = p.original_html.unwrap_or(p.original_text).to_string();
-            let t_view = bt.paragraph_view(id);
+            let t_view = bt.as_ref().and_then(|bt| bt.paragraph_view(id));
             if let Some(t) = t_view.as_ref() {
                 collect_paragraph_slugs(t, src_lang, &mut slug_set);
             }
@@ -347,7 +378,7 @@ impl LibraryView {
         // background. Idempotent: no-op if all summaries already done.
         if let Ok(queue) = self
             .state
-            .get_or_init_summary_generation_queue(self.library.clone())
+            .get_or_init_summary_generation_queue()
             .await
         {
             queue.enqueue(book_id);
@@ -452,7 +483,7 @@ impl LibraryView {
     async fn enqueue_summary_generation(&self, book_id: Uuid) {
         match self
             .state
-            .get_or_init_summary_generation_queue(self.library.clone())
+            .get_or_init_summary_generation_queue()
             .await
         {
             Ok(queue) => queue.enqueue(book_id),

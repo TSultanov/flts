@@ -244,9 +244,10 @@ impl ChapterSummaries {
                 None
             };
             if post_modified == pre_modified || pre_modified.is_none() {
-                if tokio::fs::try_exists(main_path).await? {
-                    tokio::fs::remove_file(main_path).await?;
-                }
+                // Atomic replace: rename over the destination without
+                // removing it first — remove+rename leaves a window with no
+                // file on disk, so a crash (or a concurrent temp sweep
+                // eating our temp) would take the main file with it.
                 tokio::fs::rename(&temp_path, main_path).await?;
                 self.last_modified = tokio::fs::metadata(main_path).await?.modified().ok();
                 return Ok(());

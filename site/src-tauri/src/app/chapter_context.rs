@@ -10,6 +10,7 @@ use library::{
     library::Library,
     translator::ChapterContextProvider,
 };
+use tokio::sync::watch;
 use tokio::time::timeout;
 use uuid::Uuid;
 
@@ -25,7 +26,19 @@ const WAIT_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct SummaryBackedChapterContext {
     pub queue: Arc<SummaryGenerationQueue>,
-    pub library: Arc<Library>,
+    /// The AppState library channel, borrowed per operation so a config
+    /// change (which swaps in a fresh `Library`) is picked up instead of
+    /// pinning the instance that existed at construction time.
+    pub library_rx: watch::Receiver<Option<Arc<Library>>>,
+}
+
+impl SummaryBackedChapterContext {
+    fn current_library(&self) -> anyhow::Result<Arc<Library>> {
+        self.library_rx
+            .borrow()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("no library is open"))
+    }
 }
 
 #[async_trait]
@@ -44,9 +57,10 @@ impl ChapterContextProvider for SummaryBackedChapterContext {
         // processing or already complete.
         self.queue.enqueue(book_id);
 
+        let library = self.current_library()?;
         let state = self
             .queue
-            .get_or_init_book_state(&self.library, book_id)
+            .get_or_init_book_state(&library, book_id)
             .await?;
         let mut rx = state.subscribe_ready();
         // Quick check before subscribing for the next change.
@@ -84,9 +98,10 @@ impl ChapterContextProvider for SummaryBackedChapterContext {
         book_id: Uuid,
         chapter_index: usize,
     ) -> anyhow::Result<String> {
+        let library = self.current_library()?;
         let state = self
             .queue
-            .get_or_init_book_state(&self.library, book_id)
+            .get_or_init_book_state(&library, book_id)
             .await?;
         let summaries = state.summaries.lock().await;
         Ok(concat_prior_summaries(&summaries, chapter_index))
@@ -97,7 +112,7 @@ impl ChapterContextProvider for SummaryBackedChapterContext {
         book_id: Uuid,
         chapter_index: usize,
     ) -> anyhow::Result<String> {
-        let book = self.library.get_book(&book_id).await?;
+        let book = self.current_library()?.get_book(&book_id).await?;
         let book = book.lock().await;
         if chapter_index >= book.book.chapter_count() {
             anyhow::bail!(

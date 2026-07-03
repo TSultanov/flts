@@ -513,11 +513,36 @@ impl LibraryBook {
             tokio::fs::create_dir_all(&self.path).await?;
         }
 
+        // Best-effort cleanup of temp files leaked by previously-failed
+        // saves. Restricted to the exact names THIS function creates
+        // (`book.dat~XXXX` / `translation_….dat~XXXX`): saves are
+        // serialized per book by the mutex, so a match is always a
+        // leftover — but other writers (the chapter-summaries sidecar)
+        // use the same `~` convention in this directory WITHOUT holding
+        // the book lock, and their in-flight temps must not be swept.
+        if let Ok(mut entries) = tokio::fs::read_dir(&self.path).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.starts_with("book.dat~")
+                    || (name.starts_with("translation_") && name.contains(".dat~"))
+                {
+                    let _ = tokio::fs::remove_file(entry.path()).await;
+                }
+            }
+        }
+
         let book = self;
 
+        // Iterate over a snapshot of the Arcs instead of draining the vec:
+        // save() has dozens of fallible awaits, and an early `?` return
+        // must not leave the in-memory book without its translations. The
+        // book instance stays cached, so a drained vec would blank every
+        // translation in the UI until the app reloads it from disk.
+        let translation_arcs = book.translations.clone();
         let mut merged_translations = Vec::new();
 
-        for translation_arc in book.translations.drain(0..) {
+        for translation_arc in translation_arcs {
             let mut translation = translation_arc.lock().await;
             let source_language = translation.translation.source_language.clone();
             let target_language = translation.translation.target_language.clone();
@@ -586,9 +611,12 @@ impl LibraryBook {
                     }) == translation_path_modified_pre_save
                         || translation_path_modified_pre_save.is_none()
                     {
-                        if tokio::fs::try_exists(&translation_path).await? {
-                            tokio::fs::remove_file(&translation_path).await?;
-                        }
+                        // Atomic replace: renaming over the destination
+                        // without removing it first — remove+rename leaves
+                        // a window with no file on disk, which concurrent
+                        // readers (metadata scans, sync rescans) see as an
+                        // error. rename() replaces atomically on Unix and
+                        // uses MOVEFILE_REPLACE_EXISTING on Windows.
                         tokio::fs::rename(&translation_path_temp, &translation_path).await?;
                         translation.last_modified = tokio::fs::metadata(&translation_path)
                             .await?
@@ -677,9 +705,7 @@ impl LibraryBook {
             }) == book_path_modified_pre_save
                 || book_path_modified_pre_save.is_none()
             {
-                if tokio::fs::try_exists(&book_path).await? {
-                    tokio::fs::remove_file(&book_path).await?;
-                }
+                // Atomic replace; see the translation rename above.
                 tokio::fs::rename(&book_path_temp, &book_path).await?;
 
                 book.last_modified = tokio::fs::metadata(&book_path).await?.modified().ok();

@@ -156,6 +156,7 @@ pub fn run() {
             app::translate_paragraph,
             app::translate_chapter,
             app::get_paragraph_translation_activity,
+            app::list_paragraph_translation_activity,
             app::library_view::list_books,
             app::library_view::list_book_chapters,
             app::library_view::get_book_chapter_paragraph_ids,
