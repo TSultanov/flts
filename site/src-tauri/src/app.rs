@@ -432,8 +432,12 @@ impl AppState {
 
     pub async fn update_config(&self, config: Config) -> anyhow::Result<()> {
         // Translator settings (provider/key/model) are captured when the translation queue is created.
-        // Reset it so the next translation uses the latest config.
+        // Reset it so the next translation uses the latest config. The
+        // summary queue captures its summarizer (model + api key) the same
+        // way, so reset it too — otherwise summaries keep using the old
+        // credentials until app restart.
         self.stop_translation_queue().await;
+        self.stop_summary_generation_queue().await;
 
         // eval_config below swaps in a freshly-opened Library; any book the
         // stopped queue translated but had not yet saved would be lost with
@@ -635,6 +639,14 @@ impl AppState {
             info!("Stopping translation queue");
             queue.shutdown().await;
             info!("Translation queue stopped");
+        }
+    }
+
+    pub async fn stop_summary_generation_queue(&self) {
+        if let Some(queue) = self.summary_generation_queue.send_replace(None) {
+            info!("Stopping summary generation queue");
+            queue.shutdown().await;
+            info!("Summary generation queue stopped");
         }
     }
 

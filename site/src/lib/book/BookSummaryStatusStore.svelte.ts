@@ -25,24 +25,59 @@ export class BookSummaryStatusStore {
     #activelyGenerating: number | null = $state(null);
     #unsubscribe: () => void;
 
+    #onVisibilityChange: (() => void) | null = null;
+
     constructor(bookId: UUID) {
         this.#bookId = bookId;
 
-        invoke<BookSummaryStatusView>("get_book_summary_status", { bookId })
-            .then((res) => {
-                this.#totalChapters = res.totalChapters;
-                this.#generated = res.generated.slice();
-                this.#activelyGenerating = res.activelyGenerating ?? null;
-            })
-            .catch((err) =>
-                console.error("Failed to load summary status", err),
-            );
+        this.#refetch();
 
         this.#unsubscribe = eventHub.subscribe<SummaryGenerationProgress>(
             "summary_generation_progress",
             (ev) => ev.bookId === bookId,
             (ev) => this.#apply(ev),
         );
+
+        // summary_generation_progress events lost while iOS suspends the
+        // WKWebView would otherwise leave translate buttons stuck on
+        // "waiting for chapter summaries" until the book is reopened —
+        // this store is per-book, so a chapter switch doesn't rebuild it.
+        // Re-sync from the backend snapshot on resume.
+        if (typeof document !== "undefined") {
+            this.#onVisibilityChange = () => {
+                if (document.visibilityState === "visible") this.#refetch();
+            };
+            document.addEventListener(
+                "visibilitychange",
+                this.#onVisibilityChange,
+            );
+        }
+    }
+
+    #refetch(): void {
+        invoke<BookSummaryStatusView>("get_book_summary_status", {
+            bookId: this.#bookId,
+        })
+            .then((res) => {
+                // Merge rather than replace: `generated` only ever goes
+                // false→true, so OR-ing with the current state means a
+                // snapshot captured just before a progress event landed
+                // can never regress the UI.
+                const next = this.#generated.slice();
+                while (next.length < res.generated.length) next.push(false);
+                res.generated.forEach((g, i) => {
+                    if (g) next[i] = true;
+                });
+                this.#generated = next;
+                this.#totalChapters = Math.max(
+                    this.#totalChapters,
+                    res.totalChapters,
+                );
+                this.#activelyGenerating = res.activelyGenerating ?? null;
+            })
+            .catch((err) =>
+                console.error("Failed to load summary status", err),
+            );
     }
 
     #apply(ev: SummaryGenerationProgress): void {
@@ -93,5 +128,12 @@ export class BookSummaryStatusStore {
 
     dispose(): void {
         this.#unsubscribe();
+        if (this.#onVisibilityChange) {
+            document.removeEventListener(
+                "visibilitychange",
+                this.#onVisibilityChange,
+            );
+            this.#onVisibilityChange = null;
+        }
     }
 }
