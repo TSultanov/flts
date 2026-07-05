@@ -184,7 +184,12 @@ impl LibraryView {
         let paragraph = book.book.paragraph_view(paragraph_id);
         let original = paragraph.original_html.unwrap_or(paragraph.original_text);
 
-        let src_lang = Language::from_639_3(&book.book.language).unwrap();
+        let src_lang = Language::from_639_3(&book.book.language).ok_or_else(|| {
+            anyhow::anyhow!(
+                "book has invalid ISO-639-3 language code: {:?}",
+                book.book.language
+            )
+        })?;
         let card_store = self.library.card_store();
 
         let bt = match &book_translation {
@@ -251,7 +256,12 @@ impl LibraryView {
             None => None,
         };
 
-        let src_lang = Language::from_639_3(&book.book.language).unwrap();
+        let src_lang = Language::from_639_3(&book.book.language).ok_or_else(|| {
+            anyhow::anyhow!(
+                "book has invalid ISO-639-3 language code: {:?}",
+                book.book.language
+            )
+        })?;
         let card_store = self.library.card_store();
 
         // First pass: resolve each paragraph's original text + translation
@@ -312,7 +322,13 @@ impl LibraryView {
                 });
 
                 let translation_ratio = translation
-                    .map(|t| t.translated_paragraphs_count as f64 / b.paragraphs_count as f64)
+                    .map(|t| {
+                        if b.paragraphs_count == 0 {
+                            0.0
+                        } else {
+                            t.translated_paragraphs_count as f64 / b.paragraphs_count as f64
+                        }
+                    })
                     .unwrap_or(0.0);
 
                 LibraryBookMetadataView {
@@ -393,6 +409,14 @@ impl LibraryView {
     ) -> anyhow::Result<Vec<usize>> {
         let book = self.library.get_book(&book_id).await?;
         let book = book.lock().await;
+        // Guard the raw (frontend/URL-supplied) chapter_id. An out-of-range
+        // index would panic on the Vec access inside chapter_view, and
+        // panic = "abort" takes the whole app down. A stale or deep-linked id
+        // just yields an empty paragraph list (matches the sibling batch
+        // commands, which silently skip out-of-range ids).
+        if chapter_id >= book.book.chapter_count() {
+            return Ok(Vec::new());
+        }
         Ok(book
             .book
             .chapter_view(chapter_id)

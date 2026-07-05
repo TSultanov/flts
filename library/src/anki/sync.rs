@@ -213,6 +213,22 @@ pub async fn sync_pass(
             .collect();
         match client.multi(actions).await {
             Ok(results) => {
+                if results.len() != chunk.len() {
+                    // A conforming AnkiConnect returns exactly one result per
+                    // sub-action. A short (or long) response would desync
+                    // `lookups` from `eligible` and later panic on
+                    // `actions[idx]` (out of bounds / unreachable!); treat the
+                    // whole chunk as a lookup failure instead.
+                    log::warn!(
+                        "multi findNotes returned {} results for {} actions; treating batch as failed",
+                        results.len(),
+                        chunk.len()
+                    );
+                    for _ in 0..chunk.len() {
+                        lookups.push(None);
+                    }
+                    continue;
+                }
                 for value in results {
                     match decode_multi_sub::<Vec<i64>>(value) {
                         Ok(hits) => lookups.push(Some(hits)),
@@ -365,7 +381,11 @@ pub async fn sync_pass(
         }
     }
 
-    report.persistent_failures = state.persistent_set.iter().cloned().collect();
+    // Sort so the serialized report is deterministic run-to-run (the source is
+    // a HashSet, whose iteration order varies).
+    let mut persistent_failures: Vec<String> = state.persistent_set.iter().cloned().collect();
+    persistent_failures.sort();
+    report.persistent_failures = persistent_failures;
     Ok(report)
 }
 

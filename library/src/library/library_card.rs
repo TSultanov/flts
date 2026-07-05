@@ -11,6 +11,13 @@ use crate::{
     card::{Card, card_id, familiarity_from, lemma_slug},
 };
 
+/// Upper bound on `fam_cache` entries before it is cleared wholesale. It is a
+/// pure derived index (repopulated from disk on miss), so clearing is always
+/// safe; the cap sits well above any realistic reading vocabulary, so in
+/// practice this is effectively never reached — it just removes the unbounded
+/// growth over a very long-lived process.
+const FAM_CACHE_MAX_ENTRIES: usize = 100_000;
+
 pub struct LibraryCardStore {
     root: PathBuf,
     locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
@@ -194,6 +201,9 @@ impl LibraryCardStore {
                 .await;
 
             let mut cache = self.fam_cache.write().unwrap();
+            if cache.len() >= FAM_CACHE_MAX_ENTRIES {
+                cache.clear();
+            }
             for (slug, fam, cacheable) in loaded {
                 if cacheable {
                     let id = card_id(source_language, target_language, &slug);

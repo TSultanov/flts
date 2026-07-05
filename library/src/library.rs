@@ -164,6 +164,14 @@ impl LibraryBookMetadata {
             }
         }
 
+        // read_dir yields entries in filesystem order, but chunk_by groups
+        // only *consecutive* equal keys. Sort by translation id first so a
+        // Syncthing conflict sibling that came back non-adjacent to its
+        // canonical file lands in the same group (and is reconciled) instead
+        // of forming a second, duplicate LibraryTranslation entry with empty
+        // conflicting_paths.
+        all_translations.sort_by_key(|(_, translation)| translation.id);
+
         let grouped_translations = all_translations
             .into_iter()
             .chunk_by(|(_, translation)| translation.id);
@@ -508,7 +516,16 @@ impl Library {
 
                 let collected: Vec<(usize, translation_import::ParagraphTranslation)> = {
                     let mut book = book_arc.lock().await;
-                    let translation_arc = book.get_or_create_translation(&target_language).await;
+                    let translation_arc = match book
+                        .get_or_create_translation(&target_language)
+                        .await
+                    {
+                        Ok(arc) => arc,
+                        Err(err) => {
+                            log::warn!("Backfill: {err} on book {}", book_meta.id);
+                            continue;
+                        }
+                    };
                     let translation = translation_arc.lock().await;
                     let mut out = Vec::new();
                     for chapter in book.book.chapter_views() {
@@ -1297,7 +1314,10 @@ mod library_tests {
         use crate::translator::TranslationModel;
         let book_arc = library.get_book(&book_id).await.unwrap();
         let mut book = book_arc.lock().await;
-        let translation_arc = book.get_or_create_translation(&target_language).await;
+        let translation_arc = book
+            .get_or_create_translation(&target_language)
+            .await
+            .unwrap();
         translation_arc.lock().await.add_paragraph_translation(
             paragraph_id,
             paragraph,

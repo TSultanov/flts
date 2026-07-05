@@ -65,7 +65,7 @@ async fn list_books_conflicting_translation_versions() {
         .lock()
         .await
         .get_or_create_translation(&Language::from_str("en").unwrap())
-        .await;
+        .await.unwrap();
     book1.lock().await.save().await.unwrap();
 
     let translation_file = book1.lock().await.path.join(format!(

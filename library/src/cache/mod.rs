@@ -32,9 +32,17 @@ impl TranslationsCache {
         Ok(Self { cache })
     }
 
+    /// Bump whenever the translation prompt or output schema changes (the
+    /// `translator` prompt text, the part-of-speech vocabulary, the grammar
+    /// schema, etc.). It is part of the cache key, so bumping it makes every
+    /// previously-cached translation a miss and forces a re-translation with
+    /// the new prompt instead of serving the stale old result forever.
+    const PROMPT_SCHEMA_VERSION: &'static str = "v1";
+
     fn make_key(source_language: &Language, target_language: &Language, paragraph: &str) -> String {
         format!(
-            "{}\n{}\n{}",
+            "{}\n{}\n{}\n{}",
+            Self::PROMPT_SCHEMA_VERSION,
             source_language.to_639_3(),
             target_language.to_639_3(),
             paragraph

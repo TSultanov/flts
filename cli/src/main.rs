@@ -255,7 +255,7 @@ async fn translate_paragraph(
     let (translation, paragraph_text, chapter_id) = {
         let book = library.get_book(&book_id).await?;
         let mut book = book.lock().await;
-        let translation = book.get_or_create_translation(tgt_lang).await;
+        let translation = book.get_or_create_translation(tgt_lang).await?;
         let paragraph = book.book.paragraph_view(paragraph_id);
         let chapter_id = book.book.chapter_for_paragraph(paragraph_id).unwrap_or(0);
         (
@@ -341,9 +341,9 @@ async fn translate_book(
 
         let paragraph_count = book.book.paragraphs_count();
 
-        let translation = book.get_or_create_translation(&target_lang).await;
+        let translation = book.get_or_create_translation(&target_lang).await?;
         let untranslated_paragraphs_count =
-            paragraph_count - translation.lock().await.translated_paragraphs_count();
+            paragraph_count.saturating_sub(translation.lock().await.translated_paragraphs_count());
         println!(
             "Translating book {} from {} to {}",
             book.book.title,

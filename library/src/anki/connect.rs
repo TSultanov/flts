@@ -256,9 +256,24 @@ impl HttpAnkiConnect {
 
     async fn fetch_body(&self, action: &str, params: Option<serde_json::Value>) -> Result<String> {
         let envelope = build_envelope_json(action, self.api_key.as_deref(), params);
-        // Retry only `.send()` failures — the request never reached the
-        // server, so even non-idempotent actions like addNote are safe to
-        // retry. Once `.send()` resolves, we commit to the response.
+        // A reqwest `.send()` error resolves *before* response headers arrive,
+        // but that does NOT guarantee the request never reached the server: the
+        // body may have been sent and executed (e.g. addNote created the note)
+        // before the connection dropped. Retrying a non-idempotent action would
+        // then create a duplicate. So only retry `.send()` failures for
+        // idempotent actions; for the rest, surface the error and let the next
+        // sync tick reconcile (findNotes → updateNoteFields).
+        let idempotent = matches!(
+            action,
+            "version"
+                | "findNotes"
+                | "notesInfo"
+                | "cardsInfo"
+                | "deckNamesAndIds"
+                | "modelNamesAndIds"
+                | "createDeck"
+                | "updateNoteFields"
+        );
         let mut last_err: Option<reqwest::Error> = None;
         let mut resp = None;
         for attempt in 0..HTTP_RETRY_ATTEMPTS {
@@ -274,6 +289,13 @@ impl HttpAnkiConnect {
                     break;
                 }
                 Err(e) => {
+                    // Non-idempotent action (addNote / createModel / multi):
+                    // the server may already have executed it, so a retry risks
+                    // a duplicate. Treat the send error as terminal.
+                    if !idempotent {
+                        last_err = Some(e);
+                        break;
+                    }
                     if attempt + 1 < HTTP_RETRY_ATTEMPTS {
                         let delay_ms = HTTP_RETRY_DELAYS_MS[attempt as usize];
                         log::debug!(

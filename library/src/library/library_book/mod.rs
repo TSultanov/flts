@@ -312,7 +312,7 @@ impl LibraryBook {
     pub async fn get_or_create_translation(
         &mut self,
         target_language: &Language,
-    ) -> Arc<TracedMutex<LibraryTranslation>> {
+    ) -> anyhow::Result<Arc<TracedMutex<LibraryTranslation>>> {
         let source_language = &self.book.language;
 
         for (t_idx, t) in self.translations.iter().enumerate() {
@@ -331,16 +331,23 @@ impl LibraryBook {
                 };
 
                 if tgt_match {
-                    return self.translations[t_idx].clone();
+                    return Ok(self.translations[t_idx].clone());
                 }
             }
         }
 
-        // Not found: create and push
+        // Not found: create and push. `source_language` is the book's own
+        // language field; it is normally a valid ISO-639-3 code, but a
+        // hand-edited / corrupted / foreign-tool book.dat can carry a bad
+        // value. Return an error instead of panicking (panic = "abort" would
+        // take the whole app down).
+        let parsed_source = Language::from_639_3(source_language).ok_or_else(|| {
+            anyhow::anyhow!("book has invalid ISO-639-3 language code: {source_language:?}")
+        })?;
         self.translations
             .push(Arc::new(TracedMutex::new(LibraryTranslation {
                 translation: Translation::create(source_language, target_language.to_639_3()),
-                source_language: Language::from_639_3(source_language).unwrap(),
+                source_language: parsed_source,
                 target_language: *target_language,
                 last_modified: None,
                 last_saved_hash: None,
@@ -348,7 +355,7 @@ impl LibraryBook {
             })));
 
         let last = self.translations.len() - 1;
-        self.translations[last].clone()
+        Ok(self.translations[last].clone())
     }
 
     pub async fn load_from_metadata(metadata: LibraryBookMetadata) -> anyhow::Result<Self> {

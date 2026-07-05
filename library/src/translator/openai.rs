@@ -5,8 +5,8 @@ use std::{
 
 use async_openai::types::chat::{
     ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
-    ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs, ResponseFormat,
-    ResponseFormatJsonSchema,
+    ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs, FinishReason,
+    ResponseFormat, ResponseFormatJsonSchema,
 };
 use async_openai::{Client, config::OpenAIConfig};
 use async_trait::async_trait;
@@ -205,7 +205,7 @@ impl Translator for OpenAITranslator {
             Some(TranslationProvider::Zai)
         );
 
-        let full_content = if is_zai {
+        let (full_content, finish_reason) = if is_zai {
             // z.AI does not reliably support SSE streaming; use a single blocking call.
             let request = CreateChatCompletionRequestArgs::default()
                 .model(self.model.as_ref())
@@ -216,11 +216,12 @@ impl Translator for OpenAITranslator {
                 timeout(TRANSLATION_REQUEST_TIMEOUT, self.client.chat().create(request))
                     .await
                     .map_err(|_| anyhow::anyhow!("OpenAI request timed out"))??;
-            response
-                .choices
-                .first()
+            let choice = response.choices.first();
+            let content = choice
                 .and_then(|c| c.message.content.clone())
-                .unwrap_or_default()
+                .unwrap_or_default();
+            let finish = choice.and_then(|c| c.finish_reason);
+            (content, finish)
         } else {
             let request = CreateChatCompletionRequestArgs::default()
                 .model(self.model.as_ref())
@@ -237,10 +238,16 @@ impl Translator for OpenAITranslator {
             let mut accumulator = StreamChunkAccumulator::new("OpenAI");
 
             timeout(total_stream_timeout(paragraph.len()), async {
+                let mut finish_reason: Option<FinishReason> = None;
                 loop {
                     let next = timeout(TRANSLATION_STREAM_IDLE_TIMEOUT, stream.next())
                         .await
                         .map_err(|_| anyhow::anyhow!("OpenAI stream timed out"))?;
+                    if let Some(Ok(response)) = &next
+                        && let Some(fr) = response.choices.first().and_then(|c| c.finish_reason)
+                    {
+                        finish_reason = Some(fr);
+                    }
                     let should_continue = accumulator.handle_result(
                         match next {
                             Some(Ok(response)) => Ok(Some(
@@ -259,11 +266,23 @@ impl Translator for OpenAITranslator {
                         break;
                     }
                 }
-                accumulator.finish()
+                anyhow::Ok((accumulator.finish()?, finish_reason))
             })
             .await
             .map_err(|_| anyhow::anyhow!("OpenAI total stream timeout"))??
         };
+
+        // A truncated response (finish_reason == Length, i.e. the model hit
+        // max output tokens) yields invalid JSON. serde would then fail and be
+        // classified as a *permanent* error, killing the paragraph on the first
+        // attempt. Bail before parsing with a message the classifier treats as
+        // transient (mirrors the Gemini MAX_TOKENS path) so it is retried.
+        if finish_reason == Some(FinishReason::Length) {
+            anyhow::bail!(
+                "OpenAI hit max output tokens ({} chars accumulated)",
+                full_content.len()
+            );
+        }
 
         let mut translation: ParagraphTranslation = serde_json::from_str(&full_content)?;
         translation.normalize_html_entities();

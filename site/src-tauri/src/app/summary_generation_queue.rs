@@ -296,6 +296,17 @@ async fn process_book(
         let (chapter_title, chapter_text) = {
             let book = library.get_book(&book_id).await?;
             let book = book.lock().await;
+            // `idx` comes from the sidecar entry count, which can outlive a
+            // book whose chapter count shrank (re-import / reshaped book.dat).
+            // An out-of-range index would panic in chapter_view, and
+            // panic = "abort" takes the whole app down; skip this tick instead.
+            if idx >= book.book.chapter_count() {
+                log::warn!(
+                    "summary sidecar index {idx} exceeds chapter count {} for book {book_id}; skipping",
+                    book.book.chapter_count()
+                );
+                return Ok(());
+            }
             let chapter = book.book.chapter_view(idx);
             let title = chapter.title.as_ref().map(|t| t.to_string());
             let mut text = String::new();

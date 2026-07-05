@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use htmlentity::entity::{ICodedDataTrait, decode};
 use isolang::Language;
@@ -399,13 +399,38 @@ impl Card {
         }
 
         if combined.len() > EXAMPLES_CAP {
+            // Order deterministically by provenance first (keeps merge
+            // commutative and, for a single book, retains the lowest
+            // chapter/paragraph examples). Then round-robin across books so a
+            // lemma spanning several books keeps a spread of examples instead
+            // of filling the cap entirely from whichever book_id sorts first.
             combined.sort_by(|a, b| {
                 a.book_id
                     .cmp(&b.book_id)
                     .then(a.chapter.cmp(&b.chapter))
                     .then(a.paragraph.cmp(&b.paragraph))
             });
-            combined.truncate(EXAMPLES_CAP);
+            let mut by_book: BTreeMap<Uuid, VecDeque<Example>> = BTreeMap::new();
+            for e in combined {
+                by_book.entry(e.book_id).or_default().push_back(e);
+            }
+            let mut picked: Vec<Example> = Vec::with_capacity(EXAMPLES_CAP);
+            while picked.len() < EXAMPLES_CAP {
+                let mut progressed = false;
+                for group in by_book.values_mut() {
+                    if let Some(e) = group.pop_front() {
+                        picked.push(e);
+                        progressed = true;
+                        if picked.len() >= EXAMPLES_CAP {
+                            break;
+                        }
+                    }
+                }
+                if !progressed {
+                    break;
+                }
+            }
+            combined = picked;
         }
 
         self.examples = combined;
@@ -1309,6 +1334,31 @@ mod tests {
         assert_eq!(base.examples.len(), EXAMPLES_CAP);
         let paragraphs: Vec<usize> = base.examples.iter().map(|e| e.paragraph).collect();
         assert_eq!(paragraphs, vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    }
+
+    #[test]
+    fn merge_spreads_retained_examples_across_books() {
+        // A lemma appearing in two books, each with more than half the cap of
+        // examples. The retained set must draw from BOTH books (round-robin)
+        // rather than filling the cap entirely from whichever book_id sorts
+        // first (the pre-fix behavior).
+        let book_a = Uuid::new_v4();
+        let book_b = Uuid::new_v4();
+        let a_examples: Vec<Example> = (0..8)
+            .map(|p| example_with(book_a, 0, p, &format!("a{p}"), &format!("ta{p}")))
+            .collect();
+        let b_examples: Vec<Example> = (0..8)
+            .map(|p| example_with(book_b, 0, p, &format!("b{p}"), &format!("tb{p}")))
+            .collect();
+        let mut base = make_card_with(vec![], a_examples, None);
+        base.merge(make_card_with(vec![], b_examples, None));
+
+        assert_eq!(base.examples.len(), EXAMPLES_CAP);
+        let from_a = base.examples.iter().filter(|e| e.book_id == book_a).count();
+        let from_b = base.examples.iter().filter(|e| e.book_id == book_b).count();
+        // Round-robin across two books fills the 10-slot cap 5 from each.
+        assert_eq!(from_a, 5, "expected an even spread across books, got {from_a} from A");
+        assert_eq!(from_b, 5, "expected an even spread across books, got {from_b} from B");
     }
 
     #[test]

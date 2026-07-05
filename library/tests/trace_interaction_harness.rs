@@ -120,7 +120,7 @@ async fn trace_interaction_baseline() {
     let span = TraceSpan::begin("t1", "WorkerReadParagraph").field("task", "t1");
     let translation = {
         let mut b = book_handle.lock().await;
-        let tr = b.get_or_create_translation(&ru()).await;
+        let tr = b.get_or_create_translation(&ru()).await.unwrap();
         let _pv = b.book.paragraph_view(0);
         tr
     };
@@ -247,7 +247,7 @@ async fn trace_interaction_baseline() {
         .field("book", "b1");
     {
         let mut b = book_handle.lock().await;
-        let tr = b.get_or_create_translation(&ru()).await;
+        let tr = b.get_or_create_translation(&ru()).await.unwrap();
         tr.lock().await.add_visible_word(0, 0);
         b.save().await.unwrap();
     }
@@ -300,7 +300,7 @@ async fn trace_interaction_concurrent() {
         let span = TraceSpan::begin("t1", "WorkerReadParagraph").field("task", "t1");
         let tr = {
             let mut b = bh.lock().await;
-            let tr = b.get_or_create_translation(&ru()).await;
+            let tr = b.get_or_create_translation(&ru()).await.unwrap();
             let _pv = b.book.paragraph_view(0);
             tr
         };

@@ -19,11 +19,18 @@ pub const TRANSLATION_REQUEST_TIMEOUT: Duration = Duration::from_secs(1200);
 pub const TRANSLATION_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
 const TRANSLATION_TOTAL_TIMEOUT_BASE: Duration = Duration::from_secs(180);
 const TRANSLATION_TOTAL_TIMEOUT_PER_CHAR: Duration = Duration::from_millis(100);
+/// Upper bound on the whole-stream watchdog. Without it, the per-char term
+/// scales linearly with input length (a ~1 MB paragraph would yield a ~28-hour
+/// timeout, defeating the watchdog). One hour comfortably covers any real
+/// paragraph while still catching a genuinely stuck stream.
+const TRANSLATION_TOTAL_TIMEOUT_MAX: Duration = Duration::from_secs(3600);
 
 pub type ProgressCallback = dyn Fn(usize) + Send + Sync;
 
 pub fn total_stream_timeout(input_len: usize) -> Duration {
-    TRANSLATION_TOTAL_TIMEOUT_BASE + TRANSLATION_TOTAL_TIMEOUT_PER_CHAR * (input_len as u32)
+    let scaled = TRANSLATION_TOTAL_TIMEOUT_PER_CHAR
+        .saturating_mul(input_len.min(u32::MAX as usize) as u32);
+    (TRANSLATION_TOTAL_TIMEOUT_BASE + scaled).min(TRANSLATION_TOTAL_TIMEOUT_MAX)
 }
 
 /// Closed set of values the LLM may return in the grammar `pos` field.

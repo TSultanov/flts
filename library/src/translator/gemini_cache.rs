@@ -27,6 +27,12 @@ use crate::{cache::DiskCache, translator::TranslationModel};
 /// tail than the previous 24h value.
 const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(3600);
 
+/// Minimum spacing between TTL-refresh PATCHes for a single cache key. Half
+/// the TTL keeps the cache comfortably warm (each refresh sets expiry to
+/// now + TTL) while collapsing what used to be one refresh per paragraph into
+/// ~1 refresh per half-TTL window per chapter.
+const REFRESH_MIN_INTERVAL_SECS: u64 = DEFAULT_CACHE_TTL.as_secs() / 2;
+
 /// Display-name prefix shared by every cache FLTS has ever created (all
 /// historical formats started with it). [`GeminiPromptCache::purge_all`]
 /// deletes exactly the server-side caches matching this prefix, so it must
@@ -80,6 +86,9 @@ struct DiskEntry {
 pub struct GeminiPromptCache {
     disk: Arc<DiskCache<DiskEntry>>,
     inflight: Mutex<HashMap<CacheKey, Arc<OnceCell<Arc<CachedContentHandle>>>>>,
+    /// Last time (unix seconds) a TTL-refresh PATCH was fired for each key,
+    /// used to throttle refreshes on repeated in-memory cache hits.
+    last_refresh: Mutex<HashMap<CacheKey, u64>>,
 }
 
 impl GeminiPromptCache {
@@ -88,6 +97,7 @@ impl GeminiPromptCache {
         Ok(Arc::new(Self {
             disk,
             inflight: Mutex::new(HashMap::new()),
+            last_refresh: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -104,6 +114,7 @@ impl GeminiPromptCache {
             let mut guard = self.inflight.lock().await;
             guard.clear();
         }
+        self.last_refresh.lock().await.clear();
         self.disk.clear();
     }
 
@@ -157,6 +168,7 @@ impl GeminiPromptCache {
             let mut guard = self.inflight.lock().await;
             guard.remove(key);
         }
+        self.last_refresh.lock().await.remove(key);
         self.disk.remove(&disk_key(key));
     }
 
@@ -240,10 +252,32 @@ impl GeminiPromptCache {
 
         let handle = handle.clone();
         if existed_before_in_memory {
-            spawn_ttl_refresh(handle.clone());
+            // Repeat in-memory hit (every paragraph after the first in a
+            // chapter). Throttle so we don't fire a fresh refresh PATCH per
+            // paragraph; ~1 per half-TTL window keeps the cache warm.
+            self.maybe_refresh_ttl(&key, handle.clone()).await;
         }
 
         Ok(handle)
+    }
+
+    /// Fire a TTL-refresh PATCH for `key` only when the previous one was more
+    /// than [`REFRESH_MIN_INTERVAL_SECS`] ago, recording the new time.
+    async fn maybe_refresh_ttl(&self, key: &CacheKey, handle: Arc<CachedContentHandle>) {
+        let now = now_secs();
+        let due = {
+            let mut guard = self.last_refresh.lock().await;
+            match guard.get(key) {
+                Some(&last) if now.saturating_sub(last) < REFRESH_MIN_INTERVAL_SECS => false,
+                _ => {
+                    guard.insert(key.clone(), now);
+                    true
+                }
+            }
+        };
+        if due {
+            spawn_ttl_refresh(handle);
+        }
     }
 }
 
@@ -337,13 +371,28 @@ pub fn is_cache_missing_error(err: &anyhow::Error) -> bool {
     let gemini_rust::ClientError::BadResponse { code, description } = ce else {
         return false;
     };
-    if *code != 403 && *code != 404 {
-        return false;
+    // A 404 on a request that references a cached content means the cache is
+    // gone (expired/deleted), regardless of the exact wording — treat any 404
+    // as missing so a future change to Google's error text can't silently
+    // disable the evict-and-rebuild path.
+    if *code == 404 {
+        return true;
     }
-    description
-        .as_deref()
-        .map(|d| d.to_lowercase().contains("cachedcontent"))
-        .unwrap_or(false)
+    // A 403 is only a cache problem when the message says so; unrelated 403s
+    // (quota, auth) must not trigger a needless evict-and-rebuild.
+    if *code == 403 {
+        return description
+            .as_deref()
+            .map(|d| {
+                let d = d.to_lowercase();
+                d.contains("cachedcontent")
+                    || d.contains("cached content")
+                    || d.contains("cache")
+                    || d.contains("expired")
+            })
+            .unwrap_or(false);
+    }
+    false
 }
 
 #[cfg(test)]
@@ -646,6 +695,31 @@ mod tests {
         assert!(!is_cache_missing_error(&err));
 
         let err = anyhow::anyhow!("some random error");
+        assert!(!is_cache_missing_error(&err));
+    }
+
+    #[test]
+    fn is_cache_missing_error_treats_any_404_and_broad_403_terms_as_missing() {
+        // Any 404 is a missing cache, independent of the exact wording (so a
+        // future change to Google's error text can't disable the rebuild path).
+        let err = anyhow::Error::from(gemini_rust::ClientError::BadResponse {
+            code: 404,
+            description: Some("resource not found".into()),
+        });
+        assert!(is_cache_missing_error(&err));
+
+        // A 403 mentioning a cache term (wording variants).
+        let err = anyhow::Error::from(gemini_rust::ClientError::BadResponse {
+            code: 403,
+            description: Some("the cache has expired".into()),
+        });
+        assert!(is_cache_missing_error(&err));
+
+        // A 403 with no cache term is still not a cache miss.
+        let err = anyhow::Error::from(gemini_rust::ClientError::BadResponse {
+            code: 403,
+            description: Some("Permission denied on resource".into()),
+        });
         assert!(!is_cache_missing_error(&err));
     }
 }

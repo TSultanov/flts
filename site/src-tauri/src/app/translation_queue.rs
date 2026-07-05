@@ -582,9 +582,15 @@ async fn handle_request(
             .book
             .chapter_for_paragraph(request.paragraph_id)
             .unwrap_or(0);
+        let source_language = Language::from_639_3(&book.book.language).ok_or_else(|| {
+            anyhow::anyhow!(
+                "book has invalid ISO-639-3 language code: {:?}",
+                book.book.language
+            )
+        })?;
         (
             paragraph.original_text.to_string(),
-            Language::from_639_3(&book.book.language).unwrap(),
+            source_language,
             chapter_id,
         )
     };
@@ -750,7 +756,7 @@ async fn handle_request(
         // detached by then (book reloaded after a sync change, evicted from
         // the cache, or its translations vec rebuilt) — a write into a
         // detached instance is invisible to readers and never saved.
-        let translation = book.get_or_create_translation(&target_language).await;
+        let translation = book.get_or_create_translation(&target_language).await?;
         translation.lock().await.add_paragraph_translation(
             request.paragraph_id,
             &p_translation,

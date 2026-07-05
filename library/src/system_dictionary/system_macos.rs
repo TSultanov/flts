@@ -75,16 +75,19 @@ pub fn get_definition(
         }
     };
 
-    // We also need text definition for transcription extraction
-    let text_definition_ref =
-        unsafe { DCSCopyTextDefinition(dictionary_ptr, cf_word.as_concrete_TypeRef(), range) };
-
     if definition_ref.is_null() {
         return None;
     }
 
     let definition_cf: CFString = unsafe { TCFType::wrap_under_create_rule(definition_ref) };
     let definition_text = definition_cf.to_string();
+
+    // Fetch the text definition (Create Rule — the caller owns it) only after
+    // the early return above. Fetching it before leaked one CFString on every
+    // lookup miss: when definition_ref was null we returned without ever
+    // wrapping/releasing text_definition_ref.
+    let text_definition_ref =
+        unsafe { DCSCopyTextDefinition(dictionary_ptr, cf_word.as_concrete_TypeRef(), range) };
 
     let transcription = if !text_definition_ref.is_null() {
         let text_def_cf: CFString = unsafe { TCFType::wrap_under_create_rule(text_definition_ref) };

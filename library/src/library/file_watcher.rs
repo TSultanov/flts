@@ -141,7 +141,7 @@ impl LibraryWatcher {
             if filename.starts_with("book") && filename.ends_with(".dat") {
                 let uuid = path.parent()?.file_name()?.to_str()?;
                 return Some(LibraryFileChange::BookChanged {
-                    modified: metadata.modified().unwrap(),
+                    modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
                     uuid: Uuid::from_str(uuid).ok()?,
                 });
             }
@@ -158,7 +158,7 @@ impl LibraryWatcher {
                     let from: String = parts[0].chars().take(3).collect();
                     let to: String = parts[1].chars().take(3).collect();
                     return Some(LibraryFileChange::TranslationChanged {
-                        modified: metadata.modified().unwrap(),
+                        modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
                         from: Language::from_639_3(&from)?,
                         to: Language::from_639_3(&to)?,
                         uuid: Uuid::from_str(uuid).ok()?,
@@ -181,7 +181,7 @@ impl LibraryWatcher {
                     && let Some(stem) = filename.strip_suffix(".json")
                 {
                     return Some(LibraryFileChange::CardChanged {
-                        modified: metadata.modified().unwrap(),
+                        modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
                         from,
                         to,
                         lemma_slug: stem.to_owned(),

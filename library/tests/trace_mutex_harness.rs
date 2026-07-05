@@ -78,7 +78,7 @@ async fn trace_mutex_concurrent_save_and_list() {
     {
         let book_arc = library.get_book(&book_id).await.unwrap();
         let mut book = book_arc.lock().await;
-        let _trans = book.get_or_create_translation(&fra).await;
+        let _trans = book.get_or_create_translation(&fra).await.unwrap();
         book.save().await.unwrap();
     }
 
@@ -120,7 +120,7 @@ async fn trace_mutex_concurrent_save_and_list() {
             let mut book = book_arc.lock().await;
             let fra = Language::from_639_3("fra").unwrap();
             // get_or_create_translation does double-lock (AcqTrans/RelTrans twice)
-            let trans_arc = book.get_or_create_translation(&fra).await;
+            let trans_arc = book.get_or_create_translation(&fra).await.unwrap();
             // Paragraph access: another AcqTrans/RelTrans
             let _guard = trans_arc.lock().await;
             drop(_guard);
@@ -140,7 +140,7 @@ async fn trace_mutex_concurrent_save_and_list() {
             let book_arc = lib3.get_book(&bid3).await.unwrap();
             let mut book = book_arc.lock().await;
             let fra = Language::from_639_3("fra").unwrap();
-            let trans_arc = book.get_or_create_translation(&fra).await;
+            let trans_arc = book.get_or_create_translation(&fra).await.unwrap();
             let _guard = trans_arc.lock().await;
             drop(_guard);
             drop(book);
@@ -183,7 +183,7 @@ async fn trace_mutex_watcher_and_mark() {
     {
         let book_arc = library.get_book(&book_id).await.unwrap();
         let mut book = book_arc.lock().await;
-        let _trans = book.get_or_create_translation(&fra).await;
+        let _trans = book.get_or_create_translation(&fra).await.unwrap();
         book.save().await.unwrap();
     }
 
@@ -203,7 +203,7 @@ async fn trace_mutex_watcher_and_mark() {
 
             // Access translation (nested lock under book)
             let fra = Language::from_639_3("fra").unwrap();
-            let trans_arc = book.get_or_create_translation(&fra).await;
+            let trans_arc = book.get_or_create_translation(&fra).await.unwrap();
             let _tguard = trans_arc.lock().await;
             // Simulate processing
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
@@ -228,7 +228,7 @@ async fn trace_mutex_watcher_and_mark() {
             let mut book = book_arc.lock().await;
 
             let fra = Language::from_639_3("fra").unwrap();
-            let trans_arc = book.get_or_create_translation(&fra).await;
+            let trans_arc = book.get_or_create_translation(&fra).await.unwrap();
             let mut tguard = trans_arc.lock().await;
             tguard.add_visible_word(0, 0);
             drop(tguard);
@@ -272,7 +272,7 @@ async fn trace_mutex_double_lock_pattern() {
     {
         let book_arc = library.get_book(&book_id).await.unwrap();
         let mut book = book_arc.lock().await;
-        let _trans = book.get_or_create_translation(&fra).await;
+        let _trans = book.get_or_create_translation(&fra).await.unwrap();
         book.save().await.unwrap();
     }
 
@@ -291,7 +291,7 @@ async fn trace_mutex_double_lock_pattern() {
 
             // get_or_create_translation: double-lock pattern (2× AcqTrans/RelTrans)
             let fra = Language::from_639_3("fra").unwrap();
-            let trans_arc = book.get_or_create_translation(&fra).await;
+            let trans_arc = book.get_or_create_translation(&fra).await.unwrap();
 
             // Explicit paragraph read (3rd AcqTrans/RelTrans)
             let _guard = trans_arc.lock().await;

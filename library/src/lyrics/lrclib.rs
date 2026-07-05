@@ -186,8 +186,28 @@ fn parse_lrc(raw: &str) -> Vec<LyricsLine> {
         }
     }
 
-    out.sort_by_key(|l| l.time_ms.unwrap_or(u32::MAX));
-    out
+    // Sort timed lines chronologically without collapsing untimed lines
+    // (blank stanza breaks, `[ar:]`/`[ti:]` headers) to the very end: give
+    // each untimed line the timestamp of the preceding timed line so a stable
+    // sort keeps it attached to its stanza. For an already-ordered file the
+    // keys are non-decreasing and the (stable) sort is a no-op, preserving the
+    // original structure exactly.
+    let mut last_time = 0u32;
+    let mut keyed: Vec<(u32, LyricsLine)> = out
+        .into_iter()
+        .map(|line| {
+            let key = match line.time_ms {
+                Some(t) => {
+                    last_time = t;
+                    t
+                }
+                None => last_time,
+            };
+            (key, line)
+        })
+        .collect();
+    keyed.sort_by_key(|(key, _)| *key);
+    keyed.into_iter().map(|(_, line)| line).collect()
 }
 
 #[cfg(test)]

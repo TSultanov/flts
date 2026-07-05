@@ -118,7 +118,7 @@ async fn test_bug4_stale_translation_stored() {
             "Book should have 2 paragraphs after reload"
         );
 
-        let translation = book.get_or_create_translation(&ru).await;
+        let translation = book.get_or_create_translation(&ru).await.unwrap();
         let mut t = translation.lock().await;
 
         let stale_translation = make_translation("Кот сидел на коврике.");
@@ -136,7 +136,7 @@ async fn test_bug4_stale_translation_stored() {
     {
         let book_handle = library.get_book(&book_id).await.unwrap();
         let mut book = book_handle.lock().await;
-        let translation = book.get_or_create_translation(&ru).await;
+        let translation = book.get_or_create_translation(&ru).await.unwrap();
         let t = translation.lock().await;
         let pv = t.paragraph_view(0);
 
