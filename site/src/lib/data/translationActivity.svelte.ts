@@ -135,6 +135,14 @@ class ActiveTranslationsStore {
                 }
             });
         }
+
+        // Adopt translations already in flight at store creation: their
+        // `started` events predate our subscription (webview launch/reload
+        // while the backend keeps translating), and the progress handler
+        // deliberately won't create entries (hazard 1), so only a snapshot
+        // can reveal them. The token machinery protects against a live
+        // `started` racing this initial pass.
+        void this.#reconcile();
     }
 
     // Replace the store's entries wholesale with the Rust-side snapshot:

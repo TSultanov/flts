@@ -80,23 +80,8 @@
         // Otherwise, stay on the current page
     });
 
-    let nav: HTMLElement | undefined = $state();
-    const mainHeight: {
-        value: number;
-    } = $state({ value: 700 });
-
-    setContext("mainHeight", mainHeight);
-
-    function handleResize() {
-        mainHeight.value = window.innerHeight - (nav?.clientHeight ?? 0);
-    }
-
     const library = new Library();
     setContext("library", library);
-
-    onMount(async () => {
-        mainHeight.value = window.innerHeight - (nav?.clientHeight ?? 0);
-    });
 
     // When the app returns to the foreground, nudge sync: on iOS the system
     // tears down the embedded engine's sockets while suspended, so the backend
@@ -119,27 +104,30 @@
     });
 </script>
 
-<svelte:window onresize={handleResize} />
-
-<div bind:this={nav}>
-    <Nav {links}>
-        {#snippet rightActions()}
-            <SyncStatusButton />
-            {#if links === fullLinks}
-                <AnkiSyncButton />
-            {/if}
-        {/snippet}
-    </Nav>
-</div>
-<!-- Subtract the bottom safe-area inset so content clears the mobile system nav
-     bar; env() is 0 on desktop. mainHeight already nets out the top inset via
-     nav.clientHeight (see Nav.svelte). -->
-<div class="main" style="height: calc({mainHeight.value}px - env(safe-area-inset-bottom));">
+<Nav {links}>
+    {#snippet rightActions()}
+        <SyncStatusButton />
+        {#if links === fullLinks}
+            <AnkiSyncButton />
+        {/if}
+    {/snippet}
+</Nav>
+<div class="main">
     <Router />
 </div>
 
 <style>
+    /* #app is a full-height flex column; .main takes whatever the nav
+       leaves, tracked by the browser itself. Measuring window.innerHeight
+       from JS (the previous approach) raced WKWebView's launch sizing and
+       the async application of safe-area insets — neither of which fires a
+       resize event — leaving a random stale height for the whole session.
+       The bottom margin keeps content clear of the mobile home indicator;
+       env() is 0 on desktop. The top inset is absorbed by the nav's own
+       safe-area padding (see Nav.svelte). */
     .main {
-        height: 100%;
+        flex: 1 1 auto;
+        min-height: 0;
+        margin-bottom: env(safe-area-inset-bottom);
     }
 </style>

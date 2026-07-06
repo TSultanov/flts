@@ -495,6 +495,17 @@ impl SpotifyWebState {
                 Some(access)
             }
             Err(RefreshError::InvalidGrant(_)) => {
+                let mut inner = self.inner.write().await;
+                if !inner.accepts_generation(captured_gen) {
+                    // The revoked token belonged to a session that was torn
+                    // down while we awaited the endpoint. The keyring now
+                    // holds the NEW session's token — deleting it here would
+                    // wipe that session's credentials.
+                    warn!(
+                        "Spotify Web: stale refresh failed with invalid_grant after disconnect/reconnect; ignoring"
+                    );
+                    return None;
+                }
                 // Token was revoked or expired mid-session. Drop it so future
                 // fetch_queue calls silently no-op (the poll loop keeps
                 // running for current-track resolution either way).
@@ -502,7 +513,6 @@ impl SpotifyWebState {
                 if let Err(err) = delete_refresh_token() {
                     debug!("Keyring delete after invalid_grant: {err}");
                 }
-                let mut inner = self.inner.write().await;
                 inner.token = None;
                 inner.last_error =
                     Some("Spotify access was revoked — please reconnect.".to_string());
@@ -511,6 +521,11 @@ impl SpotifyWebState {
             Err(RefreshError::Transient(err)) => {
                 warn!("Spotify Web: refresh failed (transient): {err}");
                 let mut inner = self.inner.write().await;
+                if !inner.accepts_generation(captured_gen) {
+                    // Stale session's failure — don't surface an error banner
+                    // on the session that replaced it.
+                    return None;
+                }
                 inner.last_error = Some(err);
                 None
             }

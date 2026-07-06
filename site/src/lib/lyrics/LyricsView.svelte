@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { onMount, onDestroy, getContext } from 'svelte';
+    import { onMount, onDestroy } from 'svelte';
     import { platform } from '@tauri-apps/plugin-os';
     import { configStore } from '../config/store';
     import {
@@ -21,8 +21,6 @@
     } from './types';
     import NowPlayingCard from './NowPlayingCard.svelte';
     import LyricsList from './LyricsList.svelte';
-
-    const mainHeight = getContext<{ value: number }>('mainHeight');
 
     // Detect macOS — on other platforms, render an explanation and bail.
     let isMac = $state(false);
@@ -263,7 +261,7 @@
         </p>
     </div>
 {:else}
-    <div class="root" style="height: {mainHeight?.value ?? 700}px;">
+    <div class="root">
         <NowPlayingCard {nowPlaying} {livePositionMs} {nextTrack} />
         {#if statusMessage}
             <div class="status-bar {statusMessage.level}">

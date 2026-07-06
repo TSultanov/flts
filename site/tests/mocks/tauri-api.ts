@@ -398,6 +398,41 @@ function runTranslateRequest(
   );
 }
 
+// Seeded in-flight requests whose step timers haven't started yet, keyed by
+// paragraph. The timers start on the app's first activity query for that
+// paragraph, not at seed time: seeding happens at page-init, and a countdown
+// racing app boot means the request can finish before the test's first
+// assertion ever sees the spinner.
+const pendingInFlightWork = new Map<string, () => void>();
+
+function seedInFlightRequest(
+  requestId: number,
+  bookId: UUID,
+  paragraphId: number,
+  cfg: TranslateConfig,
+): void {
+  const key = paragraphKey(bookId, paragraphId);
+  activeActivities.set(key, {
+    requestId,
+    progressChars: 0,
+    expectedChars: 0,
+  });
+  pendingInFlightWork.set(key, () =>
+    enqueueTranslationWork(() =>
+      runTranslationWork(requestId, bookId, paragraphId, key, cfg),
+    ),
+  );
+}
+
+/** Starts a seeded in-flight request's timers on first observation. */
+function startPendingInFlightWork(key: string): void {
+  const start = pendingInFlightWork.get(key);
+  if (start) {
+    pendingInFlightWork.delete(key);
+    start();
+  }
+}
+
 async function runTranslationWork(
   requestId: number,
   bookId: UUID,
@@ -526,6 +561,7 @@ export function resetMockState() {
   requestIdCounter = 0;
   translateConfigs.clear();
   activeActivities.clear();
+  pendingInFlightWork.clear();
   wordInfos.clear();
   translateCalls.length = 0;
   translateChapterCalls.length = 0;
@@ -580,7 +616,7 @@ function applyPendingSeed(seed: PendingSeed): void {
     translateConfigs.set(paragraphKey(seed.bookId, tc.paragraphId), tc.cfg);
   }
   for (const inf of seed.inFlight ?? []) {
-    runTranslateRequest(inf.requestId, seed.bookId, inf.paragraphId, inf.cfg);
+    seedInFlightRequest(inf.requestId, seed.bookId, inf.paragraphId, inf.cfg);
   }
   for (const w of seed.wordInfos ?? []) {
     wordInfos.set(
@@ -1108,9 +1144,30 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
     case 'get_paragraph_translation_activity': {
       const bookId = args?.bookId as UUID;
       const paragraphId = args?.paragraphId as number;
-      const activity =
-        activeActivities.get(paragraphKey(bookId, paragraphId)) ?? null;
+      const key = paragraphKey(bookId, paragraphId);
+      const activity = activeActivities.get(key) ?? null;
+      // The app has now observed the seeded in-flight activity; start its
+      // progress timers.
+      startPendingInFlightWork(key);
       return Promise.resolve(activity as T);
+    }
+
+    case 'list_paragraph_translation_activity': {
+      const rows = [...activeActivities.entries()].map(([key, activity]) => {
+        // paragraphKey is `${bookId}:${paragraphId}`; bookIds contain no ':'.
+        const sep = key.lastIndexOf(':');
+        return {
+          bookId: key.slice(0, sep) as UUID,
+          paragraphId: Number(key.slice(sep + 1)),
+          ...activity,
+        };
+      });
+      // The snapshot observes every seeded in-flight activity; start their
+      // progress timers.
+      for (const key of [...pendingInFlightWork.keys()]) {
+        startPendingInFlightWork(key);
+      }
+      return Promise.resolve(rows as T);
     }
 
     case 'get_book_reading_state': {

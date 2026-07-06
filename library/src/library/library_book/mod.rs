@@ -6,9 +6,7 @@ use std::{
     time::SystemTime,
 };
 
-use log::info;
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-use log::warn;
+use log::{info, warn};
 
 use crate::tla_trace::mutex::{TracedLock, TracedMutex};
 use isolang::Language;
@@ -576,8 +574,21 @@ impl LibraryBook {
                     && read_stored_hash_from_path(&translation_path).ok()
                         != translation.last_saved_hash
                 {
-                    let saved_translation = LibraryTranslation::load(&translation_path).await?;
-                    translation.merge(saved_translation);
+                    match LibraryTranslation::load(&translation_path).await {
+                        Ok(saved_translation) => translation.merge(saved_translation),
+                        // An unparseable disk copy (torn write, truncated
+                        // sync delivery) has nothing to merge. Overwrite it
+                        // from memory instead: erroring out here would wedge
+                        // every future save of this book while the in-memory
+                        // state is the only surviving copy.
+                        Err(err) => {
+                            warn!(
+                                "Overwriting unreadable translation file {}: {err:#}",
+                                translation_path.display()
+                            );
+                            translation.changed = true;
+                        }
+                    }
                 }
 
                 tla_trace::emit_translation_event(
@@ -665,10 +676,24 @@ impl LibraryBook {
             if tokio::fs::try_exists(&book_path).await?
                 && read_stored_hash_from_path(&book_path).ok() != book.last_saved_hash
             {
-                let saved_book = Self::load(&book_path).await?;
-                book.book = saved_book.book;
-                book.last_modified = saved_book.last_modified;
-                book.last_saved_hash = saved_book.last_saved_hash;
+                match Self::load(&book_path).await {
+                    Ok(saved_book) => {
+                        book.book = saved_book.book;
+                        book.last_modified = saved_book.last_modified;
+                        book.last_saved_hash = saved_book.last_saved_hash;
+                    }
+                    // An unparseable disk copy has nothing to adopt. Clear
+                    // the echo hash so the identical-content skip below
+                    // can't fire and the write repairs the file from memory;
+                    // erroring out would wedge every future save of the book.
+                    Err(err) => {
+                        warn!(
+                            "Overwriting unreadable book file {}: {err:#}",
+                            book_path.display()
+                        );
+                        book.last_saved_hash = None;
+                    }
+                }
             }
 
             let mut buffer = Vec::new();

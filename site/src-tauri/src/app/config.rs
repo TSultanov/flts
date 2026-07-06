@@ -262,8 +262,13 @@ impl Config {
         // empty/partial config.json if the process is killed mid-write — on
         // iOS/Android the OS terminating a backgrounded app during a save is
         // routine — and load() then silently resets every setting to default.
+        // The temp name carries a per-save sequence number: save() callers
+        // are unserialized async commands, and a shared temp path would let
+        // one save truncate the file another is about to rename into place.
+        static SAVE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SAVE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir = path.parent().unwrap_or_else(|| Path::new("."));
-        let tmp = dir.join(format!("config.json~{}.tmp", std::process::id()));
+        let tmp = dir.join(format!("config.json~{}-{}.tmp", std::process::id(), seq));
 
         let write_result = (|| -> anyhow::Result<()> {
             let file = OpenOptions::new()

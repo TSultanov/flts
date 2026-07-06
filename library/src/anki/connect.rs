@@ -244,18 +244,24 @@ impl HttpAnkiConnect {
         action: &str,
         params: Option<serde_json::Value>,
     ) -> Result<T> {
-        let body = self.fetch_body(action, params).await?;
+        let body = self
+            .fetch_body(action, params, is_idempotent_action(action))
+            .await?;
         decode_response::<T>(&body)
     }
 
     /// Like `call` but for AnkiConnect actions that return null on success.
     async fn call_void(&self, action: &str, params: Option<serde_json::Value>) -> Result<()> {
-        let body = self.fetch_body(action, params).await?;
+        let body = self
+            .fetch_body(action, params, is_idempotent_action(action))
+            .await?;
         decode_void_response(&body)
     }
 
-    async fn fetch_body(&self, action: &str, params: Option<serde_json::Value>) -> Result<String> {
-        let envelope = build_envelope_json(action, self.api_key.as_deref(), params);
+    async fn fetch_body(
+        &self,
+        action: &str,
+        params: Option<serde_json::Value>,
         // A reqwest `.send()` error resolves *before* response headers arrive,
         // but that does NOT guarantee the request never reached the server: the
         // body may have been sent and executed (e.g. addNote created the note)
@@ -263,17 +269,9 @@ impl HttpAnkiConnect {
         // then create a duplicate. So only retry `.send()` failures for
         // idempotent actions; for the rest, surface the error and let the next
         // sync tick reconcile (findNotes → updateNoteFields).
-        let idempotent = matches!(
-            action,
-            "version"
-                | "findNotes"
-                | "notesInfo"
-                | "cardsInfo"
-                | "deckNamesAndIds"
-                | "modelNamesAndIds"
-                | "createDeck"
-                | "updateNoteFields"
-        );
+        idempotent: bool,
+    ) -> Result<String> {
+        let envelope = build_envelope_json(action, self.api_key.as_deref(), params);
         let mut last_err: Option<reqwest::Error> = None;
         let mut resp = None;
         for attempt in 0..HTTP_RETRY_ATTEMPTS {
@@ -393,10 +391,29 @@ impl AnkiConnect for HttpAnkiConnect {
     }
 
     async fn multi(&self, actions: Vec<MultiSubAction>) -> Result<Vec<serde_json::Value>> {
+        // A multi batch is as safe to retry as its least-safe sub-action:
+        // the lookup batches (all findNotes) are pure reads and must keep
+        // the transient-send retry, while addNote batches must not be
+        // re-sent.
+        let idempotent = actions.iter().all(|a| is_idempotent_action(&a.action));
         let params = serde_json::json!({ "actions": actions });
-        self.call::<Vec<serde_json::Value>>("multi", Some(params))
-            .await
+        let body = self.fetch_body("multi", Some(params), idempotent).await?;
+        decode_response::<Vec<serde_json::Value>>(&body)
     }
+}
+
+fn is_idempotent_action(action: &str) -> bool {
+    matches!(
+        action,
+        "version"
+            | "findNotes"
+            | "notesInfo"
+            | "cardsInfo"
+            | "deckNamesAndIds"
+            | "modelNamesAndIds"
+            | "createDeck"
+            | "updateNoteFields"
+    )
 }
 
 // ---------- Serialized wrapper (single-flight worker task) ----------
@@ -1359,6 +1376,56 @@ mod tests {
         assert!(
             elapsed < HTTP_TIMEOUT,
             "retries took {elapsed:?}, suspiciously close to HTTP_TIMEOUT — runaway loop?"
+        );
+    }
+
+    #[tokio::test]
+    async fn http_multi_lookup_batch_retries_but_mutation_batch_does_not() {
+        // Same dropped-listener trick as above: connects are refused, so
+        // every `.send()` fails before a response.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let client = HttpAnkiConnect::new(format!("http://127.0.0.1:{port}/"), None);
+
+        // A lookup-only multi batch (pure reads) must keep the transient
+        // retry: one blip must not fail a whole findNotes chunk.
+        let start = std::time::Instant::now();
+        client
+            .multi(vec![MultiSubAction {
+                action: "findNotes".to_owned(),
+                params: Some(serde_json::json!({ "query": "tag:flts_x" })),
+            }])
+            .await
+            .unwrap_err();
+        let expected_min =
+            std::time::Duration::from_millis(HTTP_RETRY_DELAYS_MS.iter().sum::<u64>());
+        assert!(
+            start.elapsed() >= expected_min,
+            "lookup-only multi must retry send errors (expected >= {expected_min:?}, got {:?})",
+            start.elapsed()
+        );
+
+        // A batch containing addNote may already have side-effected on the
+        // server; it must fail terminally on the first send error.
+        let start = std::time::Instant::now();
+        client
+            .multi(vec![
+                MultiSubAction {
+                    action: "findNotes".to_owned(),
+                    params: Some(serde_json::json!({ "query": "tag:flts_x" })),
+                },
+                MultiSubAction {
+                    action: "addNote".to_owned(),
+                    params: Some(serde_json::json!({ "note": {} })),
+                },
+            ])
+            .await
+            .unwrap_err();
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(HTTP_RETRY_DELAYS_MS[0]),
+            "a multi batch containing addNote must not be retried, got {:?}",
+            start.elapsed()
         );
     }
 

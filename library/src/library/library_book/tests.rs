@@ -1192,6 +1192,63 @@ async fn failed_save_keeps_in_memory_translations() {
 }
 
 #[tokio::test]
+async fn save_repairs_corrupt_translation_file() {
+    // Regression: the content-hash absorb gate turned an unparseable disk
+    // copy (torn write, truncated sync delivery) into a hard error — every
+    // subsequent save() of the book failed, and the in-memory translations
+    // (the only surviving copy) were lost on exit. A corrupt file must
+    // instead be overwritten from memory, like the old mtime gate did.
+    let temp_dir = TempDir::new("flts_test_book");
+    let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
+    let (book, tr_path) = book_with_saved_translation(&library, "Corrupt Tr").await;
+
+    // Truncate the on-disk translation mid-file: trailing hash is garbage.
+    let bytes = std::fs::read(&tr_path).unwrap();
+    std::fs::write(&tr_path, &bytes[..bytes.len() / 2]).unwrap();
+
+    let mut book = book.lock().await;
+    book.translations[0].lock().await.add_paragraph_translation(
+        1,
+        &simple_paragraph("v2", 2),
+        TranslationModel::Gemini25Flash,
+    );
+    book.save()
+        .await
+        .expect("save must repair a corrupt translation file, not wedge");
+
+    // The repaired file must parse again and hold the in-memory state.
+    let f = std::fs::File::open(&tr_path).unwrap();
+    let mut reader = std::io::BufReader::new(f);
+    let on_disk = Translation::deserialize(&mut reader).unwrap();
+    assert_eq!(on_disk.translated_paragraphs_count(), 2);
+}
+
+#[tokio::test]
+async fn save_repairs_corrupt_book_file() {
+    // Same regression as above, for book.dat: an unparseable disk copy must
+    // be rewritten from memory instead of failing every future save.
+    let temp_dir = TempDir::new("flts_test_book");
+    let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
+    let (book, _tr_path) = book_with_saved_translation(&library, "Corrupt Bk").await;
+
+    let book_file = book.lock().await.path.join("book.dat");
+    let bytes = std::fs::read(&book_file).unwrap();
+    std::fs::write(&book_file, &bytes[..bytes.len() / 2]).unwrap();
+
+    book.lock()
+        .await
+        .save()
+        .await
+        .expect("save must repair a corrupt book.dat, not wedge");
+
+    let repaired = std::fs::read(&book_file).unwrap();
+    assert_eq!(
+        repaired, bytes,
+        "book.dat must be rewritten from the in-memory book"
+    );
+}
+
+#[tokio::test]
 async fn reload_translations_absorbs_older_mtime_remote_change() {
     // Regression: Syncthing stamps a delivered file with the SOURCE device's
     // clock, so a genuine remote translation edit can arrive with an mtime

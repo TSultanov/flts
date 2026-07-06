@@ -265,9 +265,12 @@ test.describe('ParagraphView (chromium only)', () => {
           requestId: 42,
           cfg: {
             kind: 'progress',
+            // The mock starts ticking at page-init, BEFORE the app mounts, so
+            // these delays must comfortably outlive app boot or the spinner is
+            // already gone when the first assertion runs on a fast machine.
             steps: [
-              { progress: 30, total: 100, delayMs: 200 },
-              { progress: 100, total: 100, delayMs: 200 },
+              { progress: 30, total: 100, delayMs: 800 },
+              { progress: 100, total: 100, delayMs: 800 },
             ],
             segments: [
               wordSegment({
