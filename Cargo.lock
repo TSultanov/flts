@@ -175,6 +175,7 @@ dependencies = [
  "htmlentity",
  "isolang",
  "keyring",
+ "libc",
  "library",
  "log",
  "rand 0.10.1",

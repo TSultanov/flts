@@ -41,6 +41,10 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "sync-s
 webbrowser = "1"
 rand = { workspace = true }
 
+[target.'cfg(unix)'.dependencies]
+# Only for raising RLIMIT_NOFILE at startup (see `raise_open_file_limit`).
+libc = "0.2"
+
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-window-state = "2.4.1"
 
