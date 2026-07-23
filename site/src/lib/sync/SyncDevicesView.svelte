@@ -12,6 +12,7 @@
         syncRemoveDevice,
         syncSetDeviceName,
         canScan,
+        isIos,
         ensureCameraPermission,
         scanDeviceId,
         cancelScan,
@@ -23,6 +24,7 @@
     } from "./store.svelte";
 
     const scanAvailable = canScan();
+    const onIos = isIos();
 
     let status = $derived(syncStatus.current);
     let enabled = $derived(!!status && status.state !== "disabled");
@@ -247,6 +249,10 @@
             await navigator.clipboard.writeText(thisDevice.deviceId);
         }
     }
+
+    async function copyWebUiUrl() {
+        if (webUiUrl) await navigator.clipboard.writeText(webUiUrl);
+    }
 </script>
 
 {#if scanning}
@@ -279,11 +285,28 @@
         {/if}
 
         {#if webUiUrl}
-            <div class="status-line">
-                <button class="link" onclick={() => openExternalUrl(webUiUrl!)}>
-                    Open Syncthing dashboard
-                </button>
-            </div>
+            {#if onIos}
+                <!-- No "open" button: leaving FLTS suspends the engine that
+                     serves the dashboard. Show the (per-run, ephemeral) URL so
+                     it can be typed or pasted into a browser alongside the app. -->
+                <div class="dashboard">
+                    <p class="label">Syncthing dashboard</p>
+                    <code class="id">{webUiUrl}</code>
+                    <button onclick={copyWebUiUrl}>Copy URL</button>
+                    <p class="hint">
+                        Open this in a browser on this device, keeping FLTS on
+                        screen (Split View) — the app itself serves the
+                        dashboard, so it stops responding once iOS suspends it.
+                        The port changes every time sync restarts.
+                    </p>
+                </div>
+            {:else}
+                <div class="status-line">
+                    <button class="link" onclick={() => openExternalUrl(webUiUrl!)}>
+                        Open Syncthing dashboard
+                    </button>
+                </div>
+            {/if}
         {/if}
 
         {#if thisDevice}
@@ -427,6 +450,18 @@
         font-size: 0.72em;
         word-break: break-all;
         opacity: 0.85;
+    }
+
+    .dashboard {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 6px;
+    }
+    .dashboard .id {
+        font-size: 0.85em;
+        user-select: text;
+        -webkit-user-select: text;
     }
 
     .add-actions {

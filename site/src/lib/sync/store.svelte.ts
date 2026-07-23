@@ -61,6 +61,17 @@ export async function syncWebUiUrl(): Promise<string | null> {
     return await invoke<string | null>("sync_web_ui_url");
 }
 
+/// True on iOS. The dashboard URL is shown there for manual entry rather than
+/// opened: the engine serving it runs inside FLTS, so handing the URL to Safari
+/// backgrounds (and soon suspends) the very process that would answer it.
+export function isIos(): boolean {
+    try {
+        return platform() === "ios";
+    } catch {
+        return false;
+    }
+}
+
 /// Opens an http(s) URL in the system browser (validated backend-side).
 export async function openExternalUrl(url: string): Promise<void> {
     await invoke("open_external_url", { url });
