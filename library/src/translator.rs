@@ -300,6 +300,9 @@ pub enum TranslationModel {
     DeepSeekV4Pro = 16,
 
     ZaiGlm52 = 17,
+
+    Gemini36Flash = 18,
+    Gemini37Flash = 19,
 }
 
 impl TranslationModel {
@@ -311,8 +314,10 @@ impl TranslationModel {
             | TranslationModel::Gemini3Pro
             | TranslationModel::Gemini3Flash
             | TranslationModel::Gemini31Pro
-            | TranslationModel::Gemini31FlashLite 
-            | TranslationModel::Gemini35Flash => Some(TranslationProvider::Google),
+            | TranslationModel::Gemini31FlashLite
+            | TranslationModel::Gemini35Flash
+            | TranslationModel::Gemini36Flash
+            | TranslationModel::Gemini37Flash => Some(TranslationProvider::Google),
 
             TranslationModel::OpenAIGpt52
             | TranslationModel::OpenAIGpt52Pro
@@ -352,6 +357,8 @@ impl From<usize> for TranslationModel {
             15 => TranslationModel::DeepSeekV4Flash,
             16 => TranslationModel::DeepSeekV4Pro,
             17 => TranslationModel::ZaiGlm52,
+            18 => TranslationModel::Gemini36Flash,
+            19 => TranslationModel::Gemini37Flash,
             _ => TranslationModel::Unknown,
         }
     }

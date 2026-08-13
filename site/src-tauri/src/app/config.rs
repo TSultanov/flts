@@ -40,6 +40,8 @@ fn model_pretty_name(model: TranslationModel) -> &'static str {
         TranslationModel::Gemini31Pro => "Gemini 3.1 Pro (Preview)",
         TranslationModel::Gemini31FlashLite => "Gemini 3.1 Flash-Lite (Preview)",
         TranslationModel::Gemini35Flash => "Gemini 3.5 Flash",
+        TranslationModel::Gemini36Flash => "Gemini 3.6 Flash",
+        TranslationModel::Gemini37Flash => "Gemini 3.7 Flash",
         TranslationModel::DeepSeekV4Flash => "DeepSeek V4 Flash",
         TranslationModel::DeepSeekV4Pro => "DeepSeek V4 Pro",
         TranslationModel::ZaiGlm52 => "z.AI GLM-5.2",
@@ -68,7 +70,7 @@ pub fn get_translation_providers() -> Vec<ProviderMeta> {
         ProviderMeta {
             id: TranslationProvider::Google,
             name: TranslationProvider::Google.display_name(),
-            default_model_id: TranslationModel::Gemini25Flash as i32,
+            default_model_id: TranslationModel::Gemini37Flash as i32,
             api_key_field: "geminiApiKey",
         },
         ProviderMeta {
@@ -215,7 +217,7 @@ impl Default for Config {
             openai_api_key: None,
             deepseek_api_key: None,
             zai_api_key: None,
-            model: TranslationModel::Gemini25Flash,
+            model: TranslationModel::Gemini37Flash,
             library_path: None,
             spotify_client_id: None,
             spotify_preload_count: default_preload_count(),
