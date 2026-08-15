@@ -194,6 +194,10 @@ pub struct Config {
         default = "default_translation_concurrency"
     )]
     pub translation_concurrency: u32,
+    /// When true, the reader hides familiarity underlines and does not
+    /// auto-show translation overlays. Translations appear only after a tap.
+    #[serde(rename = "tapToRevealTranslations", default)]
+    pub tap_to_reveal_translations: bool,
 }
 
 fn default_preload_count() -> u32 {
@@ -227,6 +231,7 @@ impl Default for Config {
             sync_enabled: false,
             sync_device_name: None,
             translation_concurrency: default_translation_concurrency(),
+            tap_to_reveal_translations: false,
         }
     }
 }
@@ -357,5 +362,39 @@ mod tests {
         });
         let parsed: Config = serde_json::from_value(legacy).unwrap();
         assert_eq!(parsed.translation_concurrency, 8);
+    }
+
+    #[test]
+    fn config_default_tap_to_reveal_is_false() {
+        assert!(!Config::default().tap_to_reveal_translations);
+    }
+
+    #[test]
+    fn config_round_trips_tap_to_reveal_translations() {
+        let original = Config {
+            tap_to_reveal_translations: true,
+            ..Config::default()
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        assert!(json.contains("\"tapToRevealTranslations\":true"));
+        let parsed: Config = serde_json::from_str(&json).unwrap();
+        assert!(parsed.tap_to_reveal_translations);
+    }
+
+    #[test]
+    fn config_loads_legacy_file_without_tap_to_reveal() {
+        let legacy = serde_json::json!({
+            "targetLanguageId": "eng",
+            "translationProvider": "google",
+            "geminiApiKey": null,
+            "openaiApiKey": null,
+            "model": 0,
+            "libraryPath": null,
+        });
+        let parsed: Config = serde_json::from_value(legacy).unwrap();
+        assert!(
+            !parsed.tap_to_reveal_translations,
+            "legacy config must keep today's auto-underline / auto-overlay behaviour"
+        );
     }
 }
