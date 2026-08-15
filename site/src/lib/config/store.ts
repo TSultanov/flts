@@ -38,6 +38,7 @@ export type Config = {
     ankiApiKey?: string,
     syncEnabled?: boolean,
     syncDeviceName?: string,
+    tapToRevealTranslations?: boolean,
 }
 
 export async function getModels(): Promise<Model[]> {

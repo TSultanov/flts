@@ -59,6 +59,7 @@
     let spotifyShowNextTrack: boolean = $state(true);
     let ankiEndpoint: string = $state('');
     let ankiApiKey: string = $state('');
+    let tapToRevealTranslations: boolean = $state(false);
 
     // Seed the editable fields exactly once, when config first loads. `seeded`
     // is a plain (non-reactive) flag: later config_updated refetches re-run this
@@ -81,6 +82,7 @@
         spotifyShowNextTrack = cfg.spotifyShowNextTrack ?? true;
         ankiEndpoint = cfg.ankiEndpoint ?? '';
         ankiApiKey = cfg.ankiApiKey ?? '';
+        tapToRevealTranslations = cfg.tapToRevealTranslations ?? false;
         seeded = true;
     });
     let spotifyStatus: SpotifyWebStatus = $state({
@@ -186,6 +188,7 @@
                 // Preserve sync settings (managed by the sync UI, not this form).
                 syncEnabled: configStore.current?.syncEnabled,
                 syncDeviceName: configStore.current?.syncDeviceName,
+                tapToRevealTranslations,
             });
         } catch (e) {
             // Never let a rejected save be silent. Surface it, and re-throw so
@@ -327,6 +330,18 @@
                 max="16"
                 bind:value={translationConcurrency}
             />
+
+            <label for="tapToRevealTranslations">Tap to reveal translations</label>
+            <input
+                id="tapToRevealTranslations"
+                type="checkbox"
+                bind:checked={tapToRevealTranslations}
+                data-testid="tap-to-reveal"
+            />
+            <p class="hint tap-to-reveal-hint">
+                Hides unknown-word underlines and automatic translation previews.
+                Translations appear only after you tap a word.
+            </p>
 
             <label for="storage">Storage</label>
             <input
@@ -519,6 +534,13 @@
     input#translationConcurrency {
         grid-column: 2/4;
         max-width: 6em;
+    }
+    input#tapToRevealTranslations {
+        grid-column: 2/4;
+        justify-self: start;
+    }
+    p.hint.tap-to-reveal-hint {
+        grid-column: 1/4;
     }
     input#storage.full {
         grid-column: 2/4;

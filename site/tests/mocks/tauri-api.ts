@@ -36,6 +36,7 @@ type Config = {
   libraryPath?: string;
   ankiEndpoint?: string;
   ankiApiKey?: string;
+  tapToRevealTranslations?: boolean;
 };
 
 type AnkiSyncStatusState = 'idle' | 'syncing' | 'ok' | 'err' | 'unreachable';

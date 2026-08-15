@@ -22,4 +22,19 @@ describe('Config type', () => {
         // touch the variable so unused-binding linters don't complain
         void withoutAnki;
     });
+
+    it('accepts tapToRevealTranslations as an optional boolean', () => {
+        const withFlag: Config = {
+            translationProvider: 'google',
+            model: 0,
+            tapToRevealTranslations: true,
+        };
+        expectTypeOf(withFlag.tapToRevealTranslations).toEqualTypeOf<boolean | undefined>();
+
+        const withoutFlag: Config = {
+            translationProvider: 'google',
+            model: 0,
+        };
+        void withoutFlag;
+    });
 });
