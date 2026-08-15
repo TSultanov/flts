@@ -1,5 +1,28 @@
 import { test, expect } from '@playwright/test';
 
+async function openFileImport(page: import('@playwright/test').Page) {
+  await page.goto('/import');
+  await page.click('text=File import');
+}
+
+async function uploadEpub(
+  page: import('@playwright/test').Page,
+  buffer: Buffer,
+  name: string,
+) {
+  await page.locator('input[type="file"]').setInputFiles({
+    name,
+    mimeType: 'application/epub+zip',
+    buffer,
+  });
+  await page.waitForSelector('h1', { timeout: 10000 });
+}
+
+// Plain-text import also has #src-lang; both tabs stay in the DOM.
+function srcLang(page: import('@playwright/test').Page) {
+  return page.locator('.container').nth(1).locator('#src-lang');
+}
+
 test.describe('EPUB Import with Mocked Translation', () => {
   test.beforeEach(async ({ page }) => {
     // Listen to console messages to debug issues
@@ -620,5 +643,101 @@ test.describe('EPUB Import with Mocked Translation', () => {
     
     // File input should be visible and ready for new upload
     await expect(page.locator('input[type="file"]')).toBeVisible();
+  });
+
+  test('preselects Spanish from dc:language es', async ({ page }) => {
+    await openFileImport(page);
+    const { createTestEpub } = await import('../fixtures/epub-generator');
+    const buffer = await createTestEpub({
+      title: 'Libro',
+      chapters: [{ title: 'Uno', content: '<p>Hola.</p>' }],
+      language: 'es',
+    });
+    await uploadEpub(page, buffer, 'es.epub');
+    await expect(srcLang(page)).toHaveValue('spa');
+  });
+
+  test('preselects German from BCP-47 de-DE', async ({ page }) => {
+    await openFileImport(page);
+    const { createTestEpub } = await import('../fixtures/epub-generator');
+    const buffer = await createTestEpub({
+      title: 'Buch',
+      chapters: [{ title: 'Eins', content: '<p>Hallo.</p>' }],
+      language: 'de-DE',
+    });
+    await uploadEpub(page, buffer, 'de.epub');
+    await expect(srcLang(page)).toHaveValue('deu');
+  });
+
+  test('keeps eng when dc:language is missing', async ({ page }) => {
+    await openFileImport(page);
+    const { createTestEpub } = await import('../fixtures/epub-generator');
+    const buffer = await createTestEpub({
+      title: 'No Lang',
+      chapters: [{ title: 'Ch', content: '<p>Hi.</p>' }],
+      language: null,
+    });
+    await uploadEpub(page, buffer, 'none.epub');
+    await expect(srcLang(page)).toHaveValue('eng');
+  });
+
+  test('keeps eng when dc:language is unparseable', async ({ page }) => {
+    await openFileImport(page);
+    const { createTestEpub } = await import('../fixtures/epub-generator');
+    const buffer = await createTestEpub({
+      title: 'Bad Lang',
+      chapters: [{ title: 'Ch', content: '<p>Hi.</p>' }],
+      // isolang treats primary subtag `not` as ISO 639-3; ??? is unparseable.
+      language: '???',
+    });
+    await uploadEpub(page, buffer, 'bad.epub');
+    await expect(srcLang(page)).toHaveValue('eng');
+  });
+
+  test('keeps eng when parsed language is not in the dropdown', async ({ page }) => {
+    // mock parse_language_id maps nl → nld; nld is not in mockLanguages
+    await openFileImport(page);
+    const { createTestEpub } = await import('../fixtures/epub-generator');
+    const buffer = await createTestEpub({
+      title: 'Boek',
+      chapters: [{ title: 'Een', content: '<p>Hallo.</p>' }],
+      language: 'nl',
+    });
+    await uploadEpub(page, buffer, 'nl.epub');
+    await expect(srcLang(page)).toHaveValue('eng');
+  });
+
+  test('lets the user override a preselected language', async ({ page }) => {
+    await openFileImport(page);
+    const { createTestEpub } = await import('../fixtures/epub-generator');
+    const buffer = await createTestEpub({
+      title: 'Libro',
+      chapters: [{ title: 'Uno', content: '<p>Hola.</p>' }],
+      language: 'es',
+    });
+    await uploadEpub(page, buffer, 'es.epub');
+    await expect(srcLang(page)).toHaveValue('spa');
+    await srcLang(page).selectOption('deu');
+    await expect(srcLang(page)).toHaveValue('deu');
+  });
+
+  test('resets to eng when a later file has no language', async ({ page }) => {
+    await openFileImport(page);
+    const { createTestEpub } = await import('../fixtures/epub-generator');
+    const spanish = await createTestEpub({
+      title: 'Libro',
+      chapters: [{ title: 'Uno', content: '<p>Hola.</p>' }],
+      language: 'es',
+    });
+    await uploadEpub(page, spanish, 'es.epub');
+    await expect(srcLang(page)).toHaveValue('spa');
+
+    const none = await createTestEpub({
+      title: 'No Lang',
+      chapters: [{ title: 'Ch', content: '<p>Hi.</p>' }],
+      language: null,
+    });
+    await uploadEpub(page, none, 'none.epub');
+    await expect(srcLang(page)).toHaveValue('eng');
   });
 });

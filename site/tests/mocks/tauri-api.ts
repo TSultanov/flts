@@ -895,6 +895,26 @@ const mockProviders: ProviderMeta[] = [
 // InvokeArgs type for compatibility
 export type InvokeArgs = Record<string, unknown>;
 
+/** Playwright stand-in for Rust `parse_language_id`. Isolang is not imported. */
+function mockParseLanguageId(code: unknown): string | null {
+  if (typeof code !== 'string') return null;
+  const raw = code.trim();
+  if (!raw) return null;
+  const primary = raw.split(/[-_]/)[0].toLowerCase();
+  const map: Record<string, string> = {
+    en: 'eng', eng: 'eng',
+    es: 'spa', spa: 'spa',
+    de: 'deu', deu: 'deu',
+    ru: 'rus', rus: 'rus',
+    zh: 'zho', zho: 'zho',
+    ka: 'kat', kat: 'kat',
+    fr: 'fra', fra: 'fra',
+    nl: 'nld', nld: 'nld',
+    und: 'und',
+  };
+  return map[primary] ?? null;
+}
+
 /**
  * Mock implementation of Tauri's invoke function.
  * Handles all commands used by the application.
@@ -906,6 +926,9 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
     // Config commands
     case 'get_languages':
       return Promise.resolve(mockLanguages as T);
+
+    case 'parse_language_id':
+      return Promise.resolve(mockParseLanguageId(args?.code) as T);
 
     case 'get_models':
       return Promise.resolve(mockModels as T);
