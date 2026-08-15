@@ -600,6 +600,7 @@ type PendingSeed = {
     generated: boolean[];
     activelyGenerating?: number | null;
   };
+  config?: { tapToRevealTranslations?: boolean };
 };
 
 function applyPendingSeed(seed: PendingSeed): void {
@@ -641,6 +642,9 @@ function applyPendingSeed(seed: PendingSeed): void {
           ? null
           : seed.summaryStatus.activelyGenerating,
     });
+  }
+  if (seed.config) {
+    mockConfig = { ...mockConfig, ...seed.config };
   }
 }
 

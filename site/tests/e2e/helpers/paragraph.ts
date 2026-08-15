@@ -68,6 +68,7 @@ export type SeedSpec = {
     generated: boolean[];
     activelyGenerating?: number | null;
   };
+  config?: { tapToRevealTranslations?: boolean };
 };
 
 let bookIdSeq = 0;
@@ -124,6 +125,7 @@ export async function seedAndOpen(
       })),
       readingState: s.readingState,
       summaryStatus: s.summaryStatus,
+      config: s.config,
     };
   }, fullSpec);
 

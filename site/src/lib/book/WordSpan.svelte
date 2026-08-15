@@ -1,6 +1,7 @@
 <script lang="ts">
     import { fade } from "svelte/transition";
     import { sizeOverlay } from "./translationOverlay";
+    import { configStore } from "../config/store";
 
     let {
         text,
@@ -24,8 +25,16 @@
         onClick: (info: { sentence: number; word: number; flatIndex: number }) => void;
     } = $props();
 
-    const autoShow = $derived(familiarity != null && familiarity < 0.5);
+    const tapToReveal = $derived(
+        configStore.current?.tapToRevealTranslations === true,
+    );
+    const autoShow = $derived(
+        !tapToReveal && familiarity != null && familiarity < 0.5,
+    );
     const visible = $derived(autoShow || manualShown);
+    const underlineOpacity = $derived(
+        tapToReveal || familiarity == null ? null : 1 - familiarity,
+    );
 
     let spanEl: HTMLSpanElement | null = $state(null);
     let overlayEl: HTMLSpanElement | null = $state(null);
@@ -44,8 +53,9 @@
 <span
     class="word-span"
     class:selected
+    class:tap-to-reveal={tapToReveal}
     data-flat-index={flatIndex}
-    style:--familiarity-opacity={familiarity != null ? 1 - familiarity : null}
+    style:--familiarity-opacity={underlineOpacity}
     bind:this={spanEl}
     onclick={() => onClick({ sentence, word, flatIndex })}
 >{#if visible && translation}<span
@@ -64,6 +74,9 @@
         text-decoration-thickness: 2px;
         text-underline-offset: 2px;
         transition: text-decoration-color 200ms ease-out;
+    }
+    .word-span.tap-to-reveal {
+        text-decoration: none;
     }
     .word-span.selected {
         outline: 1px dotted var(--selected-color);
