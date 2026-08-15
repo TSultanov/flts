@@ -1,6 +1,6 @@
 <script lang="ts">
     import { getContext } from "svelte";
-    import { parseEpub } from "./epubLoader";
+    import { parseEpub, type EpubBook } from "./epubLoader";
     import type { Library } from "../data/library";
     import { parseLanguageId, type Language } from "../config/store";
     import { Resource } from "../data/tauri.svelte";
@@ -8,6 +8,11 @@
     import { navigate } from "../../router";
 
     let files: FileList | null | undefined = $state();
+    const fileKey = $derived(
+        files?.[0]
+            ? `${files[0].name}:${files[0].size}:${files[0].lastModified}`
+            : "",
+    );
 
     const book = $derived.by(async () => {
         if (files && files.length > 0) {
@@ -18,68 +23,65 @@
         return null;
     });
 
-    const selectedChapters = $state(new Set<number>());
     const languages = new Resource<Language[]>("get_languages", {}, [], []);
-    let sourceLanguageId = $state("eng");
-    let suggestionGen = 0;
 
-    $effect(() => {
-        const availableIds = (languages.current ?? []).map((l) => l.id);
-        const pending = book;
-        const gen = ++suggestionGen;
-        pending
-            .then(async (parsed) => {
-                if (gen !== suggestionGen) return;
-                if (!parsed) {
-                    sourceLanguageId = "eng";
-                    return;
+    const suggestedLanguageId = $derived.by(async () => {
+        try {
+            const parsed = await book;
+            if (!parsed) {
+                return "eng";
+            }
+            let parsedId: string | null = null;
+            if (parsed.language) {
+                try {
+                    parsedId = await parseLanguageId(parsed.language);
+                } catch {
+                    parsedId = null;
                 }
-                let parsedId: string | null = null;
-                if (parsed.language) {
-                    try {
-                        parsedId = await parseLanguageId(parsed.language);
-                    } catch {
-                        parsedId = null;
-                    }
-                }
-                if (gen !== suggestionGen) return;
-                sourceLanguageId = suggestSourceLanguage(parsedId, availableIds);
-            })
-            .catch(() => {
-                if (gen !== suggestionGen) return;
-                sourceLanguageId = "eng";
-            });
-    });
-
-    $effect(() => {
-        book
-            .then((book) => {
-                if (book) {
-                    let idx = 0;
-                    for (const c of book.chapters) {
-                        if (c.paragraphs.length > 0) {
-                            selectedChapters.add(idx);
-                        }
-                        idx += 1;
-                    }
-                } else {
-                    selectedChapters.clear();
-                }
-            })
-            .catch(() => {
-                // Parsing failed (bad/non-epub file); the {:catch} arm shows the
-                // error. Clear any stale selection and swallow the rejection so
-                // it isn't reported as unhandled.
-                selectedChapters.clear();
-            });
-    });
-
-    function checkboxChanged(idx: number, value: boolean) {
-        if (value) {
-            selectedChapters.add(idx);
-        } else {
-            selectedChapters.delete(idx);
+            }
+            return suggestSourceLanguage(
+                parsedId,
+                (languages.current ?? []).map((l) => l.id),
+            );
+        } catch {
+            // Book parse failed; {:catch} on `book` shows the error.
+            return "eng";
         }
+    });
+    let languageOverride = $state<{ key: string; id: string } | null>(null);
+    let chapterOverride = $state<{ key: string; selected: Set<number> } | null>(
+        null,
+    );
+
+    function defaultSelectedChapters(epubBook: EpubBook): Set<number> {
+        const selected = new Set<number>();
+        epubBook.chapters.forEach((chapter, idx) => {
+            if (chapter.paragraphs.length > 0) {
+                selected.add(idx);
+            }
+        });
+        return selected;
+    }
+
+    function selectedChapters(epubBook: EpubBook): Set<number> {
+        if (chapterOverride?.key === fileKey) {
+            return chapterOverride.selected;
+        }
+        return defaultSelectedChapters(epubBook);
+    }
+
+    function sourceLanguageId(suggested: string): string {
+        return languageOverride?.key === fileKey ? languageOverride.id : suggested;
+    }
+
+    function checkboxChanged(epubBook: EpubBook, idx: number, value: boolean) {
+        const next = new Set(selectedChapters(epubBook));
+        if (value) {
+            next.add(idx);
+        } else {
+            next.delete(idx);
+        }
+        chapterOverride = { key: fileKey, selected: next };
     }
 
     const library: Library = getContext("library");
@@ -87,13 +89,14 @@
     async function importBook() {
         const epubBook = await book;
         if (epubBook) {
-            const langId = sourceLanguageId;
+            const suggested = await suggestedLanguageId;
+            const chapters = selectedChapters(epubBook);
             await library.importEpub({
                 title: epubBook.title,
                 chapters: epubBook.chapters.filter((_, idx) =>
-                    selectedChapters.has(idx),
+                    chapters.has(idx),
                 ),
-            }, langId);
+            }, sourceLanguageId(suggested));
             navigate("/library");
         }
     }
@@ -105,12 +108,23 @@
         <p>Loading...</p>
     {:then book}
         {#if book}
-            <label for="src-lang">Source language:</label>
-            <select id="src-lang" bind:value={sourceLanguageId}>
-                {#each languages.current ?? [] as l}
-                    <option value={l.id}>{l.name}{l.localName ? ` (${l.localName})` : ""}</option>
-                {/each}
-            </select>
+            {#await suggestedLanguageId then suggested}
+                <label for="src-lang">Source language:</label>
+                <select
+                    id="src-lang"
+                    value={sourceLanguageId(suggested)}
+                    onchange={(e) => {
+                        languageOverride = {
+                            key: fileKey,
+                            id: (e.currentTarget as HTMLSelectElement).value,
+                        };
+                    }}
+                >
+                    {#each languages.current ?? [] as l}
+                        <option value={l.id}>{l.name}{l.localName ? ` (${l.localName})` : ""}</option>
+                    {/each}
+                </select>
+            {/await}
             <div class="preview">
                 <h1>{book.title}</h1>
                 <h2>Select chapters to import</h2>
@@ -124,6 +138,7 @@
                                         checked
                                         onchange={(e) => {
                                             checkboxChanged(
+                                                book,
                                                 idx,
                                                 (e.target as HTMLInputElement)
                                                     ?.checked,
