@@ -1,4 +1,4 @@
-use std::{fs::File, path::Path};
+use std::{fs::File, path::Path, str::FromStr};
 
 use library::translator::{TranslationModel, TranslationProvider};
 use log::warn;
@@ -121,6 +121,26 @@ pub fn get_languages() -> Vec<Language> {
         .collect();
     languages.sort_by_key(|l| l.name);
     languages
+}
+
+pub fn parse_language_code(code: Option<&str>) -> Option<String> {
+    let raw = code?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let primary = raw
+        .split(['-', '_'])
+        .next()
+        .unwrap_or(raw)
+        .to_ascii_lowercase();
+    isolang::Language::from_str(&primary)
+        .ok()
+        .map(|language| language.to_639_3().to_string())
+}
+
+#[tauri::command]
+pub fn parse_language_id(code: Option<String>) -> Option<String> {
+    parse_language_code(code.as_deref())
 }
 
 #[derive(Clone)]
@@ -396,5 +416,44 @@ mod tests {
             !parsed.tap_to_reveal_translations,
             "legacy config must keep today's auto-underline / auto-overlay behaviour"
         );
+    }
+
+    #[test]
+    fn parse_language_code_maps_iso_codes_and_bcp47_to_639_3() {
+        let cases: &[(&str, Option<&str>)] = &[
+            ("en", Some("eng")),
+            ("eng", Some("eng")),
+            ("es", Some("spa")),
+            ("spa", Some("spa")),
+            ("de", Some("deu")),
+            ("deu", Some("deu")),
+            ("ru", Some("rus")),
+            ("zh", Some("zho")),
+            ("ka", Some("kat")),
+            ("fr", Some("fra")),
+            ("nl", Some("nld")),
+            ("und", Some("und")),
+            ("en-US", Some("eng")),
+            ("zh-Hans-CN", Some("zho")),
+            ("de_DE", Some("deu")),
+            ("spa-MX", Some("spa")),
+            ("EN", Some("eng")),
+            ("  es  ", Some("spa")),
+            ("", None),
+            ("   ", None),
+            ("???", None),
+            // Primary subtag "not" is ISO 639-3 Nomatsiguenga; use a non-code primary.
+            ("xx-not-a-language", None),
+            ("ger", None),
+            ("chi", None),
+        ];
+        for (input, want) in cases {
+            assert_eq!(
+                parse_language_code(Some(input)).as_deref(),
+                *want,
+                "input {input:?}"
+            );
+        }
+        assert_eq!(parse_language_code(None), None);
     }
 }

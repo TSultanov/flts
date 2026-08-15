@@ -197,6 +197,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app::config::get_models,
             app::config::get_languages,
+            app::config::parse_language_id,
             app::get_config,
             app::get_library_root,
             app::reveal_library_root,
