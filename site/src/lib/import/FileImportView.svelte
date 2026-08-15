@@ -2,8 +2,9 @@
     import { getContext } from "svelte";
     import { parseEpub } from "./epubLoader";
     import type { Library } from "../data/library";
-    import type { Language } from "../config/store";
+    import { parseLanguageId, type Language } from "../config/store";
     import { Resource } from "../data/tauri.svelte";
+    import { suggestSourceLanguage } from "./suggestSourceLanguage";
     import { navigate } from "../../router";
 
     let files: FileList | null | undefined = $state();
@@ -20,6 +21,35 @@
     const selectedChapters = $state(new Set<number>());
     const languages = new Resource<Language[]>("get_languages", {}, [], []);
     let sourceLanguageId = $state("eng");
+    let suggestionGen = 0;
+
+    $effect(() => {
+        const availableIds = (languages.current ?? []).map((l) => l.id);
+        const pending = book;
+        const gen = ++suggestionGen;
+        pending
+            .then(async (parsed) => {
+                if (gen !== suggestionGen) return;
+                if (!parsed) {
+                    sourceLanguageId = "eng";
+                    return;
+                }
+                let parsedId: string | null = null;
+                if (parsed.language) {
+                    try {
+                        parsedId = await parseLanguageId(parsed.language);
+                    } catch {
+                        parsedId = null;
+                    }
+                }
+                if (gen !== suggestionGen) return;
+                sourceLanguageId = suggestSourceLanguage(parsedId, availableIds);
+            })
+            .catch(() => {
+                if (gen !== suggestionGen) return;
+                sourceLanguageId = "eng";
+            });
+    });
 
     $effect(() => {
         book

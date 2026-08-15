@@ -56,6 +56,10 @@ export async function getLanguages() {
     return languages;
 }
 
+export async function parseLanguageId(code: string): Promise<string | null> {
+    return invoke<string | null>("parse_language_id", { code });
+}
+
 export async function setConfig(config: Config) {
     await invoke("update_config", { config: config });
 }
