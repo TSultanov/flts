@@ -6,6 +6,7 @@ const allowListedTags = ["em", "i", "b", "br"];
 export interface EpubBook {
     title: string,
     chapters: EpubChapter[],
+    language?: string,
 }
 
 export interface EpubChapter {
@@ -39,9 +40,11 @@ export async function parseEpub(file: File): Promise<EpubBook> {
     if (epub.metadata.title) {
         title.push(epub.metadata.title);
     }
+    const language = epub.metadata.language?.trim();
     return {
         title: title.join(' - '),
         chapters,
+        ...(language ? { language } : {}),
     };
 }
 

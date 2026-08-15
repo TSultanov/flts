@@ -1,11 +1,40 @@
 import { describe, it, expect } from 'vitest';
-import { getSanitizedHtml } from './epubLoader';
+import { getSanitizedHtml, parseEpub } from './epubLoader';
+import { createTestEpub } from '../../../tests/fixtures/epub-generator';
 
 function createElementFromHtml(html: string): Element {
     const div = document.createElement('div');
     div.innerHTML = html;
     return div.firstElementChild!;
 }
+
+async function epubFile(language?: string | null): Promise<File> {
+    const buf = await createTestEpub({
+        title: 'Lang Book',
+        chapters: [{ title: 'Ch', content: '<p>Hello.</p>' }],
+        ...(language !== undefined ? { language } : {}),
+    });
+    return new File([new Uint8Array(buf)], 'book.epub', {
+        type: 'application/epub+zip',
+    });
+}
+
+describe('parseEpub language metadata', () => {
+    it('returns dc:language when present', async () => {
+        const book = await parseEpub(await epubFile('es'));
+        expect(book.language).toBe('es');
+    });
+
+    it('returns a BCP-47 tag unchanged (parser lives in isolang)', async () => {
+        const book = await parseEpub(await epubFile('en-US'));
+        expect(book.language).toBe('en-US');
+    });
+
+    it('omits language when dc:language is missing', async () => {
+        const book = await parseEpub(await epubFile(null));
+        expect(book.language).toBeUndefined();
+    });
+});
 
 describe('getSanitizedHtml', () => {
     it('allows allowed tags', () => {

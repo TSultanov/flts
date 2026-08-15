@@ -10,6 +10,7 @@ export function createTestEpub(options: {
     title: string;
     content: string; // HTML content
   }>;
+  language?: string | null;
 }): Promise<Buffer> {
   const zip = new JSZip();
 
@@ -27,7 +28,11 @@ export function createTestEpub(options: {
   zip.file('META-INF/container.xml', containerXml);
 
   // 3. Content files
-  const { title, author = 'Test Author', chapters } = options;
+  const { title, author = 'Test Author', chapters, language } = options;
+  const languageXml =
+    language === null
+      ? ''
+      : `<dc:language>${escapeXml(language ?? 'en')}</dc:language>`;
 
   // Create package.opf (content manifest)
   const contentOpf = `<?xml version="1.0" encoding="UTF-8"?>
@@ -36,7 +41,7 @@ export function createTestEpub(options: {
     <dc:title>${escapeXml(title)}</dc:title>
     <dc:creator>${escapeXml(author)}</dc:creator>
     <dc:identifier id="bookid">test-book-${Date.now()}</dc:identifier>
-    <dc:language>en</dc:language>
+    ${languageXml}
   </metadata>
   <manifest>
     <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
