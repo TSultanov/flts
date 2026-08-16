@@ -64,8 +64,10 @@ impl ChapterSummarizer {
             | TranslationProvider::Zai => {
                 let model_name = crate::translator::openai::openai_model_name(model)?.to_owned();
                 let base_url = crate::translator::openai::openai_compat_base_url(provider);
-                let client =
-                    crate::translator::openai::openai_client(api_key.to_string(), base_url);
+                let client = crate::translator::openai::openai_client(
+                    api_key.to_string(),
+                    base_url.as_deref(),
+                );
                 SummaryBackend::OpenAi { client, model_name }
             }
         };

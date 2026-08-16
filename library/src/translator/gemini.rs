@@ -64,8 +64,16 @@ pub(crate) fn gemini_model(m: TranslationModel) -> anyhow::Result<Model> {
     })
 }
 
+/// Empty is treated as unset so an exported-but-blank var doesn't break the client.
+fn gemini_base_url_override(raw: Option<String>) -> Option<reqwest::Url> {
+    raw.filter(|s| !s.is_empty()).and_then(|s| s.parse().ok())
+}
+
 pub(crate) fn gemini_client(api_key: String, model: Model) -> anyhow::Result<Gemini> {
-    Ok(Gemini::with_model(api_key, model)?)
+    match gemini_base_url_override(std::env::var("FLTS_GEMINI_BASE_URL").ok()) {
+        Some(url) => Ok(Gemini::with_model_and_base_url(api_key, model, url)?),
+        None => Ok(Gemini::with_model(api_key, model)?),
+    }
 }
 
 /// Permissive safety_settings for every Gemini request the project
@@ -442,6 +450,14 @@ fn full_content_size(t: &ParagraphTranslation) -> usize {
 mod tests {
     use super::*;
 
+    #[test]
+    fn base_url_override_parses() {
+        assert!(gemini_base_url_override(None).is_none());
+        assert!(gemini_base_url_override(Some(String::new())).is_none());
+        let url = gemini_base_url_override(Some("http://127.0.0.1:4001/v1beta/".into())).unwrap();
+        assert_eq!(url.as_str(), "http://127.0.0.1:4001/v1beta/");
+    }
+
     fn word_node(schema: &Value) -> &Value {
         &schema["properties"]["s"]["items"]["properties"]["wl"]["items"]
     }
@@ -527,7 +543,10 @@ mod tests {
         assert!(!serialized.contains("propertyOrdering"));
 
         let word = word_node(&schema);
-        assert_eq!(word["required"], serde_json::json!(["o", "t", "n", "g", "p"]));
+        assert_eq!(
+            word["required"],
+            serde_json::json!(["o", "t", "n", "g", "p"])
+        );
         assert_eq!(
             word["properties"]["g"]["required"],
             serde_json::json!(["pos", "lf", "lt", "pl", "pe", "te", "ca", "ot"])

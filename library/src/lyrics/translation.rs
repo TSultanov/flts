@@ -172,7 +172,7 @@ impl LyricsOpenAITranslator {
         let provider = translation_model.provider();
         let mut config = OpenAIConfig::new().with_api_key(api_key);
         if let Some(url) = provider.and_then(crate::translator::openai::openai_compat_base_url) {
-            config = config.with_api_base(url);
+            config = config.with_api_base(&url);
         }
         let client = Client::with_config(config);
         Ok(Self {

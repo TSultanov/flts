@@ -67,6 +67,14 @@ pub async fn fetch(
     .await
 }
 
+/// The env var carries an origin, not a full endpoint; empty is treated as unset.
+fn resolve_get_url(env_origin: Option<String>) -> String {
+    match env_origin.filter(|s| !s.is_empty()) {
+        Some(origin) => format!("{}/api/get", origin.trim_end_matches('/')),
+        None => LRCLIB_BASE.to_string(),
+    }
+}
+
 async fn fetch_once(
     track_id: &str,
     artist: &str,
@@ -92,7 +100,11 @@ async fn fetch_once(
         query.push(("duration", duration_s.to_string()));
     }
 
-    let resp = client.get(LRCLIB_BASE).query(&query).send().await?;
+    let resp = client
+        .get(resolve_get_url(std::env::var("FLTS_LRCLIB_BASE_URL").ok()))
+        .query(&query)
+        .send()
+        .await?;
 
     // 404 is "track not in DB" — returned as Ok(None) BEFORE the classifier sees anything,
     // so the retry helper never treats it as transient.
@@ -213,6 +225,16 @@ fn parse_lrc(raw: &str) -> Vec<LyricsLine> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn get_url_env_resolution() {
+        assert_eq!(resolve_get_url(None), LRCLIB_BASE);
+        assert_eq!(
+            resolve_get_url(Some("http://127.0.0.1:4002/".into())),
+            "http://127.0.0.1:4002/api/get"
+        );
+        assert_eq!(resolve_get_url(Some(String::new())), LRCLIB_BASE);
+    }
 
     #[test]
     fn parse_lrc_basic_timestamps() {

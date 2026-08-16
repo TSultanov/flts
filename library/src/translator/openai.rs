@@ -66,14 +66,27 @@ pub(crate) fn openai_client(api_key: String, base_url: Option<&str>) -> Client<O
     Client::with_config(config)
 }
 
+/// Empty is treated as unset so an exported-but-blank var falls back to the real host.
+fn resolve_compat_base(env_val: Option<String>, default: &str) -> String {
+    env_val
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| default.to_string())
+}
+
 /// Returns the base URL override for OpenAI-compatible providers. `None`
 /// means use async_openai's default (api.openai.com).
 pub(crate) fn openai_compat_base_url(
     provider: crate::translator::TranslationProvider,
-) -> Option<&'static str> {
+) -> Option<String> {
     match provider {
-        crate::translator::TranslationProvider::Deepseek => Some(DEEPSEEK_BASE_URL),
-        crate::translator::TranslationProvider::Zai => Some(ZAI_BASE_URL),
+        crate::translator::TranslationProvider::Deepseek => Some(resolve_compat_base(
+            std::env::var("FLTS_DEEPSEEK_BASE_URL").ok(),
+            DEEPSEEK_BASE_URL,
+        )),
+        crate::translator::TranslationProvider::Zai => Some(resolve_compat_base(
+            std::env::var("FLTS_ZAI_BASE_URL").ok(),
+            ZAI_BASE_URL,
+        )),
         _ => None,
     }
 }
@@ -92,7 +105,7 @@ impl OpenAITranslator {
         let base_url = translation_model
             .provider()
             .and_then(openai_compat_base_url);
-        let client = openai_client(api_key, base_url);
+        let client = openai_client(api_key, base_url.as_deref());
 
         Ok(Self {
             cache,
@@ -323,4 +336,25 @@ fn build_reference_material(prior_summaries: &str, chapter_text: &str) -> Option
         out.push_str(chapter_text);
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compat_base_url_env_resolution() {
+        assert_eq!(
+            resolve_compat_base(None, DEEPSEEK_BASE_URL),
+            DEEPSEEK_BASE_URL
+        );
+        assert_eq!(
+            resolve_compat_base(Some("http://127.0.0.1:4001".into()), DEEPSEEK_BASE_URL),
+            "http://127.0.0.1:4001"
+        );
+        assert_eq!(
+            resolve_compat_base(Some(String::new()), ZAI_BASE_URL),
+            ZAI_BASE_URL
+        );
+    }
 }
