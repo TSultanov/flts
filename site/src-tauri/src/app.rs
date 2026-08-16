@@ -119,11 +119,22 @@ fn resolve_config_dir(app: Option<&tauri::AppHandle>) -> anyhow::Result<PathBuf>
     }
 }
 
-/// Resolves the per-platform cache directory (transient, OS-evictable). Mirrors
-/// [`resolve_config_dir`]'s Android handling; non-Android keeps the historical
-/// `ProjectDirs::from("", "TS", "FLTS").cache_dir()` (empty qualifier) so
-/// existing installs' cache locations don't move.
+/// `<FLTS_CONFIG_DIR>/cache`, or `None` when unset/empty. Pure so it is
+/// testable without mutating process env.
+fn cache_dir_override(env: Option<String>) -> Option<PathBuf> {
+    env.filter(|v| !v.is_empty())
+        .map(|dir| PathBuf::from(dir).join("cache"))
+}
+
+/// Resolves the per-platform cache directory (transient, OS-evictable). Honors
+/// `FLTS_CONFIG_DIR` (as `<dir>/cache`) so E2E runs don't share the real cache.
+/// Otherwise mirrors [`resolve_config_dir`]'s Android handling; non-Android
+/// keeps the historical `ProjectDirs::from("", "TS", "FLTS").cache_dir()` (empty
+/// qualifier) so existing installs' cache locations don't move.
 fn resolve_cache_dir(app: Option<&tauri::AppHandle>) -> anyhow::Result<PathBuf> {
+    if let Some(dir) = cache_dir_override(std::env::var("FLTS_CONFIG_DIR").ok()) {
+        return Ok(dir);
+    }
     #[cfg(target_os = "android")]
     {
         use tauri::Manager;
@@ -1147,6 +1158,16 @@ mod tests {
             PathBuf::from("/tmp/flts-cfg/library")
         );
         unsafe { std::env::remove_var("FLTS_CONFIG_DIR") };
+    }
+
+    #[test]
+    fn cache_dir_override_follows_config_dir() {
+        assert_eq!(
+            cache_dir_override(Some("/tmp/flts-cfg".into())),
+            Some(PathBuf::from("/tmp/flts-cfg/cache"))
+        );
+        assert_eq!(cache_dir_override(Some(String::new())), None);
+        assert_eq!(cache_dir_override(None), None);
     }
 }
 
