@@ -141,13 +141,20 @@ async function blockAnki(h: RealHarness): Promise<void> {
   await h.anki.addRule({ action: { type: 'status', code: 503 } });
 }
 
-/** Waits out the woken passes: the log stops growing once the wake is drained. */
+/**
+ * Waits out the woken passes. A stable request log is not enough on its own: a
+ * pass that has entered `run_pass` but not yet issued its `version()` probe
+ * looks identical to no pass at all, and would then be unblocked by the
+ * caller's `clearRules()` and steal the sync the test means to own. `syncing`
+ * is set at the top of `run_pass`, before the probe, so it closes that window.
+ */
 async function quiesce(h: RealHarness): Promise<void> {
   const deadline = Date.now() + 30_000;
   let last = -1;
   for (;;) {
     const n = (await h.anki.requests()).length;
-    if (n === last) return;
+    const { state } = await h.invoke<Status>('get_anki_sync_status');
+    if (n === last && state !== 'syncing') return;
     last = n;
     if (Date.now() > deadline) throw new Error('anki sim never went quiet');
     await sleep(1500);
@@ -283,11 +290,13 @@ test.describe('Anki failure injection', () => {
 
     await sleep(62_000);
 
+    const mark = (await harness.anki.requests()).length;
     const third = await syncNow(harness);
     expect(third.attempted).toBe(3);
     expect(third.succeeded).toBe(3);
     expect(third.failed).toBe(0);
     // Convergence went through updateNoteFields — never a second addNote.
+    expect(await countIn(harness, '"action":"updateNoteFields"', mark)).toBe(3);
     for (const lemma of lemmas) expect(await addsOf(harness, lemma)).toBe(1);
     expect(ankiStates(harness)).toEqual(['active', 'active', 'active']);
   });
@@ -313,7 +322,7 @@ test.describe('Anki failure injection', () => {
     expect(ankiStates(harness)).toEqual(['active', 'active', 'active']);
   });
 
-  test('recovers after an AnkiConnect outage, then the next sync is a no-op', async ({
+  test('recovers after an AnkiConnect outage and re-syncs without re-adding', async ({
     harness,
   }) => {
     const lemmas = nonceLemmas(3);
@@ -341,5 +350,6 @@ test.describe('Anki failure injection', () => {
     const settled = await syncNow(harness);
     expect(settled.succeeded).toBe(3);
     expect(await countIn(harness, '"action":"addNote"', mark)).toBe(0);
+    expect(await countIn(harness, '"action":"updateNoteFields"', mark)).toBe(3);
   });
 });
