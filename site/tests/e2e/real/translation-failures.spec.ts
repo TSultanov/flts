@@ -60,7 +60,7 @@ async function seedOneParagraph(page: Page, text: string) {
 function collectWarnings(page: Page): string[] {
   const warnings: string[] = [];
   page.on('console', (msg) => {
-    if (msg.type() === 'warning' || msg.type() === 'warn') warnings.push(msg.text());
+    if (msg.type() === 'warning') warnings.push(msg.text());
   });
   return warnings;
 }
@@ -198,6 +198,7 @@ test.describe('LLM failure injection', () => {
     page,
     harness,
   }) => {
+    const warnings = collectWarnings(page);
     const text = nonceText();
     const { bookId, p, btn } = await seedOneParagraph(page, text);
 
@@ -220,9 +221,15 @@ test.describe('LLM failure injection', () => {
       model: 1,
       useCache: false,
     });
+    // translate_paragraph returns on enqueue and 500 is transient (4 attempts),
+    // so the terminal failure — which is what the save path runs on — is only
+    // reached at the finished-with-error warning. Asserting earlier would race it.
     await expect
-      .poll(() => streamCallsFor(text), { timeout: 60_000 })
-      .toBeGreaterThan(before);
+      .poll(() => warnings.some((w) => w.includes('Translation failed for paragraph 0')), {
+        timeout: 60_000,
+      })
+      .toBe(true);
+    expect(await streamCallsFor(text)).toBeGreaterThan(before);
 
     // The old translation survives the failed pass, in the live view...
     await expect(p.locator('.word-span')).toHaveCount(wordCount);
