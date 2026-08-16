@@ -17,7 +17,10 @@
     "test:mutation:incremental": "stryker run --incremental",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
-    "test:e2e:debug": "playwright test --debug"
+    "test:e2e:debug": "playwright test --debug",
+    "test:e2e:real": "playwright test -c playwright.real.config.ts",
+    "test:e2e:real:ui": "playwright test -c playwright.real.config.ts --ui",
+    "test:e2e:real:debug": "playwright test -c playwright.real.config.ts --debug"
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",

@@ -33,3 +33,4 @@ coverage/
 # Playwright test results
 test-results/
 playwright-report/
+playwright-report-real/
