@@ -54,7 +54,13 @@ pub struct LlmSimState {
 
 impl LlmSimState {
     pub fn reset(&self) {
-        *self.inner.lock().unwrap() = Inner::default();
+        let mut inner = self.inner.lock().unwrap();
+        // Cache names stay monotonic across resets: the app persists them to
+        // disk, so a reused name would resurrect a cache it already dropped.
+        *inner = Inner {
+            next_cache: inner.next_cache,
+            ..Inner::default()
+        };
     }
 
     /// `{"scripts": [{matchSubstring, translation, stream?, chunks?}], "fallback": "minimal"}`.

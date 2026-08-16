@@ -225,6 +225,36 @@ async fn openai_non_stream_returns_message_content() {
 }
 
 #[tokio::test]
+async fn cache_names_never_repeat_across_reset() {
+    let (base, c) = start().await;
+    let first = create_cache(&c, &base).await;
+
+    let r = c.post(format!("{base}/_sim/reset")).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+
+    assert_ne!(create_cache(&c, &base).await, first);
+}
+
+async fn create_cache(c: &reqwest::Client, base: &str) -> String {
+    let r = c
+        .post(format!("{base}/v1beta/cachedContents"))
+        .json(&json!({
+            "model": "models/gemini-2.5-flash",
+            "displayName": "flts-1-spa-eng-book-c0",
+            "contents": [{"role": "user", "parts": [{"text": "chapter text"}]}],
+            "ttl": "3600s",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    r.json::<Value>().await.unwrap()["name"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+#[tokio::test]
 async fn cached_contents_create_delete_then_use_returns_404() {
     let (base, c) = start().await;
     seed(&c, &base, script_seed(3)).await;
