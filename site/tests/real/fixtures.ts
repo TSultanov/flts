@@ -223,6 +223,8 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
             FLTS_ZAI_BASE_URL: `http://127.0.0.1:${ports.llm}`,
             FLTS_LRCLIB_BASE_URL: `http://127.0.0.1:${ports.lrclib}`,
             FLTS_DISABLE_SYNC: '1',
+            // Never the developer's real "FLTS-Spotify" keychain entry.
+            FLTS_KEYRING_SERVICE: `FLTS-E2E-${path.basename(configDir)}`,
             FLTS_ANKI_SYNC_INTERVAL_SECS: '3600',
           },
         }) as ChildProcessWithoutNullStreams;

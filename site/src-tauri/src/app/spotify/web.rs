@@ -222,7 +222,7 @@ impl SpotifyWebState {
         let Some(client_id) = client_id else {
             return;
         };
-        let Some(refresh) = load_refresh_token() else {
+        let Some(refresh) = load_refresh_token().await else {
             return;
         };
         {
@@ -240,7 +240,7 @@ impl SpotifyWebState {
                     "Spotify Web: stored refresh token is no longer valid \
                      (revoked or expired); clearing keychain entry"
                 );
-                if let Err(err) = delete_refresh_token() {
+                if let Err(err) = delete_refresh_token().await {
                     debug!("Keyring delete after invalid_grant: {err}");
                 }
                 let mut inner = self.inner.write().await;
@@ -304,7 +304,7 @@ impl SpotifyWebState {
             })?;
 
         if let Some(refresh) = token.refresh_token.as_deref()
-            && let Err(err) = save_refresh_token(refresh)
+            && let Err(err) = save_refresh_token(refresh.to_string()).await
         {
             warn!("Could not persist refresh token to keyring: {err}");
         }
@@ -333,7 +333,7 @@ impl SpotifyWebState {
             // current track from AppleScript signals. Without a token its
             // queue fetches become no-ops, which is exactly what we want.
         }
-        if let Err(err) = delete_refresh_token() {
+        if let Err(err) = delete_refresh_token().await {
             debug!("Keyring delete: {err}");
         }
         // Clear queue snapshot so the UI hides Up Next.
@@ -510,7 +510,7 @@ impl SpotifyWebState {
                 // fetch_queue calls silently no-op (the poll loop keeps
                 // running for current-track resolution either way).
                 warn!("Spotify Web: refresh token revoked mid-session; clearing");
-                if let Err(err) = delete_refresh_token() {
+                if let Err(err) = delete_refresh_token().await {
                     debug!("Keyring delete after invalid_grant: {err}");
                 }
                 inner.token = None;
@@ -1087,21 +1087,66 @@ fn decode_url(s: &str) -> String {
 
 // ----- Keyring helpers --------------------------------------------------
 
-fn load_refresh_token() -> Option<String> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT).ok()?;
-    entry.get_password().ok()
+/// Long enough for a user to answer a keychain password prompt.
+const KEYRING_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// One at a time: a timed-out `spawn_blocking` thread stays parked on the OS
+/// dialog forever (runtime shutdown waits on it), so never start a second.
+static KEYRING_GATE: Mutex<()> = Mutex::const_new(());
+
+/// Overridable so tests never touch the developer's real login keychain.
+fn keyring_service() -> &'static str {
+    static SERVICE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SERVICE.get_or_init(|| {
+        std::env::var("FLTS_KEYRING_SERVICE")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| KEYRING_SERVICE.to_string())
+    })
 }
 
-fn save_refresh_token(token: &str) -> anyhow::Result<()> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)?;
-    entry.set_password(token)?;
-    Ok(())
+/// The keychain blocks indefinitely on its access-confirmation dialog, so
+/// calls run off-runtime under a hard bound. The token is a convenience
+/// cache: a lost call just costs a manual reconnect.
+async fn keyring_op<T: Send + 'static>(
+    f: impl FnOnce() -> T + Send + 'static,
+) -> anyhow::Result<T> {
+    let _gate = KEYRING_GATE.lock().await;
+    match time::timeout(KEYRING_TIMEOUT, tokio::task::spawn_blocking(f)).await {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(err)) => Err(anyhow::anyhow!("keychain task failed: {err}")),
+        Err(_) => Err(anyhow::anyhow!("keychain call timed out")),
+    }
 }
 
-fn delete_refresh_token() -> anyhow::Result<()> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)?;
-    entry.delete_credential()?;
-    Ok(())
+async fn load_refresh_token() -> Option<String> {
+    keyring_op(|| {
+        let entry = keyring::Entry::new(keyring_service(), KEYRING_ACCOUNT).ok()?;
+        entry.get_password().ok()
+    })
+    .await
+    .unwrap_or_else(|err| {
+        warn!("Keyring load: {err}");
+        None
+    })
+}
+
+async fn save_refresh_token(token: String) -> anyhow::Result<()> {
+    keyring_op(move || -> anyhow::Result<()> {
+        let entry = keyring::Entry::new(keyring_service(), KEYRING_ACCOUNT)?;
+        entry.set_password(&token)?;
+        Ok(())
+    })
+    .await?
+}
+
+async fn delete_refresh_token() -> anyhow::Result<()> {
+    keyring_op(|| -> anyhow::Result<()> {
+        let entry = keyring::Entry::new(keyring_service(), KEYRING_ACCOUNT)?;
+        entry.delete_credential()?;
+        Ok(())
+    })
+    .await?
 }
 
 // ----- Tauri commands ----------------------------------------------------
