@@ -1420,9 +1420,11 @@ name = "e2e-sims"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-openai",
  "axum",
  "env_logger",
  "futures-util",
+ "gemini-rust",
  "http-body",
  "log",
  "reqwest 0.12.28",

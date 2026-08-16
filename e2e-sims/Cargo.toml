@@ -20,3 +20,7 @@ env_logger = "0.11"
 
 [dev-dependencies]
 reqwest = { workspace = true }
+# Same crates (and versions) the app decodes these protocols with: the tests
+# pin the sim's response shapes against the real deserializers.
+async-openai = { version = "0.34.0", features = ["_api", "chat-completion", "chat-completion-types"] }
+gemini-rust = "1.7.1"
