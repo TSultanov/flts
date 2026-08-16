@@ -7,7 +7,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use directories::ProjectDirs;
 use isolang::Language;
 use library::{
     cache::WeakLruCache,
@@ -21,7 +20,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex;
 
-use crate::app::{AppError, AppState, config::Config, spotify::web::TrackMeta};
+use crate::app::{AppState, config::Config, spotify::web::TrackMeta};
 
 /// Lyrics are cheap to re-fetch from the disk cache backing LyricsCache, so a
 /// modest in-memory pin is plenty even for long listening sessions.
@@ -69,11 +68,13 @@ impl LyricsState {
         }
     }
 
-    async fn lyrics_cache(&self) -> anyhow::Result<Arc<LyricsCache>> {
+    /// Must go through `resolve_cache_dir` — resolving ProjectDirs inline here
+    /// escaped the `FLTS_CONFIG_DIR` isolation E2E runs depend on.
+    async fn lyrics_cache(&self, app: Option<&AppHandle>) -> anyhow::Result<Arc<LyricsCache>> {
         self.cache
             .get_or_try_init(|| async {
-                let dirs = ProjectDirs::from("", "TS", "FLTS").ok_or(AppError::ProjectDirsError)?;
-                Ok::<_, anyhow::Error>(Arc::new(LyricsCache::new(dirs.cache_dir())))
+                let dir = crate::app::resolve_cache_dir(app)?;
+                Ok::<_, anyhow::Error>(Arc::new(LyricsCache::new(&dir)))
             })
             .await
             .cloned()
@@ -200,7 +201,7 @@ pub(crate) async fn fetch_lyrics_inner(
     }
 
     // Disk cache: skip the LRClib round-trip on songs we've fetched before.
-    let cache = state.lyrics_state.lyrics_cache().await?;
+    let cache = state.lyrics_state.lyrics_cache(Some(&state.app)).await?;
     if let Some(cached) = cache.get_raw(track_id).await {
         state
             .lyrics_state
@@ -250,7 +251,7 @@ pub async fn get_track_lyrics_state(
         .ok_or_else(|| format!("unknown target lang: {target_lang}"))?;
     let cache = state
         .lyrics_state
-        .lyrics_cache()
+        .lyrics_cache(Some(&state.app))
         .await
         .map_err(|e| e.to_string())?;
 
@@ -293,7 +294,7 @@ pub(crate) async fn dispatch_translation_inner(
     // need to know whether the data came from disk or the network.
     let cache = state
         .lyrics_state
-        .lyrics_cache()
+        .lyrics_cache(Some(&state.app))
         .await
         .map_err(|e| e.to_string())?;
     if let Some(cached) = cache.get(track_id, &tgt, model).await {
