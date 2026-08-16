@@ -66,9 +66,8 @@ impl SyncStatus {
 /// How often the poller refreshes device/connection counts.
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(10);
 
-/// Probe budget for "is the engine still reachable" checks (app wake). Much
-/// shorter than the REST client's own 30 s timeout: on wake an unresponsive
-/// engine is the *expected* case and the frontend awaits the invoke.
+/// Wake-probe budget: an unreachable engine is the expected case on wake and
+/// the frontend awaits the invoke.
 pub(crate) const WAKE_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// True when the engine's REST API answers `my_id` within `timeout`.
@@ -303,9 +302,7 @@ mod tests {
 
     #[tokio::test]
     async fn probe_healthy_returns_false_quickly_when_my_id_hangs() {
-        /// A client whose my_id never resolves — models the wedged engine a
-        /// foregrounding iOS app probes. Only my_id is reachable from
-        /// probe_healthy; every other method is unreachable in this test.
+        /// my_id never resolves; no other method is reachable from probe_healthy.
         struct HangingApi;
         #[async_trait::async_trait]
         impl library::sync::control::SyncthingApi for HangingApi {

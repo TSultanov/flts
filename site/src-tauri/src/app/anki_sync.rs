@@ -198,12 +198,8 @@ async fn run_pass(
     state: &Mutex<AnkiSyncState>,
     status_tx: &watch::Sender<AnkiSyncStatus>,
 ) -> anyhow::Result<SyncReportDto> {
-    // One pass at a time, without queueing: a pass can hold this lock for
-    // minutes (per-card HTTP), and both callers are better served by an
-    // immediate answer — the periodic tick just skips (the in-flight pass is
-    // already doing the work) and the UI's "sync now" reports instead of
-    // hanging. Acquired before the status flip so a bail leaves status to the
-    // pass that actually runs.
+    // One pass at a time, no queueing — a pass can hold this for minutes.
+    // Bail before the status flip so it stays owned by the running pass.
     let Ok(mut guard) = state.try_lock() else {
         anyhow::bail!("anki sync already in progress");
     };
@@ -577,8 +573,7 @@ mod tests {
         // Long interval so the periodic loop can't interfere mid-test.
         let task = AnkiSyncTask::init(library, mock, Duration::from_secs(3600), make_status_tx());
 
-        // Model an in-flight pass by holding the state lock (run_pass holds it
-        // for the whole pass).
+        // Model an in-flight pass by holding the state lock.
         let in_flight = task.state.lock().await;
 
         let started = std::time::Instant::now();

@@ -80,11 +80,9 @@ impl SyncEngine {
         let port = pick_free_port()?;
         let addr = format!("127.0.0.1:{port}");
 
-        // The Go call blocks for the whole engine boot (cert generation, DB
-        // open). Run it on the blocking pool so it can never pin a tokio
-        // worker, and so callers' timeouts have an await point to fire at.
-        // Dropping this await detaches (not cancels) the Go boot: callers must
-        // be run-to-completion tasks, or an orphaned engine keeps the port.
+        // Blocking pool: the boot must not pin a tokio worker, and callers'
+        // timeouts need an await point. Dropping this await detaches (not
+        // cancels) the boot — callers must run to completion.
         {
             let home = cfg.home.clone();
             let addr = addr.clone();
@@ -327,9 +325,8 @@ impl SyncEngine {
         &self.my_id
     }
 
-    /// Stops the engine cleanly. Idempotent on the Go side. The Go call blocks
-    /// for the full teardown (connection close, DB flush), so it runs on the
-    /// blocking pool — exit-path timeouts must be able to preempt it.
+    /// Stops the engine cleanly. Idempotent on the Go side. Runs on the
+    /// blocking pool so exit-path timeouts can preempt the teardown.
     pub async fn stop(&self) -> Result<()> {
         tokio::task::spawn_blocking(syncthing_sys::stop)
             .await

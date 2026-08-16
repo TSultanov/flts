@@ -33,10 +33,8 @@ mod tests;
 pub use reading_state::load_book_user_state;
 use reading_state::{load_user_state_from_dir, persist_user_state};
 
-/// Cap for the save/merge retry loops. Each retry means the canonical file
-/// changed on disk between our pre-save read and the rename (e.g. a Syncthing
-/// delivery); with a persistent racer an uncapped loop spins at full CPU while
-/// the book mutex is held, freezing every reader of this book.
+/// Bounds save retries so a persistent on-disk racer (e.g. sync deliveries)
+/// can't spin us while the book mutex is held.
 const MAX_SAVE_ATTEMPTS: u32 = 5;
 const SAVE_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
 
@@ -663,8 +661,7 @@ impl LibraryBook {
                     break;
                 }
 
-                // The canonical file changed mid-save; back off before the
-                // re-read+merge so a sync burst can land instead of racing us.
+                // Back off so the racing writer can land.
                 if attempt < MAX_SAVE_ATTEMPTS {
                     tokio::time::sleep(SAVE_RETRY_BACKOFF * attempt).await;
                 }
@@ -765,8 +762,7 @@ impl LibraryBook {
                 saved = true;
                 break;
             }
-            // Attempt to merge and save again otherwise. Back off first so a
-            // sync burst can land instead of racing us.
+            // Back off so the racing writer can land, then merge and retry.
             if attempt < MAX_SAVE_ATTEMPTS {
                 tokio::time::sleep(SAVE_RETRY_BACKOFF * attempt).await;
             }

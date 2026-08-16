@@ -238,9 +238,7 @@ pub struct AppState {
     summary_generation_queue_init_lock: Mutex<()>,
     watcher: Arc<Mutex<LibraryWatcher>>,
     backfill_lock: Arc<Mutex<()>>,
-    /// Serializes every config/sync evaluation (`update_config`, startup
-    /// `eval_config`, `wake_sync`): the Go engine is one-per-process, so two
-    /// interleaved restarts leave the loser polling a dead port for 30 s.
+    /// Serializes config/sync evaluation: the Go engine is one-per-process.
     /// Lock order: eval_lock → translation_queue_init_lock →
     /// summary_generation_queue_init_lock. Task-slot mutexes are leaves.
     eval_lock: Mutex<()>,
@@ -363,8 +361,7 @@ impl AppState {
         }
         info!("Sync engine unreachable after wake; restarting");
         let _eval = self.eval_lock.lock().await;
-        // Another evaluation may have restarted the engine while we waited on
-        // the lock; don't bounce a healthy engine.
+        // Don't bounce an engine another evaluation just restarted.
         if let Some(engine) = self.sync_engine().await
             && crate::app::sync_daemon::probe_healthy(
                 engine.client().as_ref(),
@@ -456,30 +453,21 @@ impl AppState {
     }
 
     pub async fn update_config(&self, config: Config) -> anyhow::Result<()> {
-        // Serialize against every other config/sync evaluation: concurrent
-        // engine restarts leave one side polling a dead port for 30 s.
         let _eval = self.eval_lock.lock().await;
 
-        // Hold both queue-init locks across stop → library swap so no command
-        // can build a queue pinned to the outgoing Library instance (its
-        // saves would go to a detached library — silent lost work). Dropped
-        // before the slow eval_sync tail so translates don't queue behind an
-        // engine restart.
+        // Hold the init locks across stop → library swap so no queue is built
+        // against the outgoing Library; drop them before the slow eval_sync
+        // tail so translates don't wait on an engine restart.
         let (config, library_root) = {
             let _tq_init = self.translation_queue_init_lock.lock().await;
             let _sq_init = self.summary_generation_queue_init_lock.lock().await;
 
-            // Translator settings (provider/key/model) are captured when the
-            // translation queue is created. Reset it so the next translation
-            // uses the latest config; the summary queue captures its
-            // summarizer the same way.
+            // Queues capture translator/summarizer settings at creation;
+            // reset so the next run uses the new config.
             self.stop_translation_queue().await;
             self.stop_summary_generation_queue().await;
 
-            // eval_library_config below swaps in a freshly-opened Library;
-            // any book the stopped queue translated but had not yet saved
-            // would be lost with the old instance. Flush everything first
-            // (mirrors shutdown()).
+            // Flush unsaved books before the Library swap (mirrors shutdown()).
             self.save_all().await;
 
             info!("config = {:?}", config);
@@ -498,10 +486,8 @@ impl AppState {
         Ok(())
     }
 
-    /// Everything `eval_config` does short of the sync engine: migrate + open
-    /// the library, (re)spawn the Anki task, point the watcher. Returns the
-    /// config snapshot and resolved library root for the `eval_sync` tail.
-    /// Caller must hold `eval_lock`.
+    /// Migrate + open the library, (re)spawn the Anki task, point the
+    /// watcher. Caller must hold `eval_lock`.
     async fn eval_library_config(&self) -> anyhow::Result<(Config, PathBuf)> {
         let config = self.config.borrow().clone();
 
@@ -530,8 +516,7 @@ impl AppState {
             info!("Card backfill disabled: set FLTS_ENABLE_CARD_BACKFILL=1 to enable");
         }
 
-        // Stop any prior Anki sync task (config may have changed). Standalone
-        // take so the slot mutex is not held across the await (see eval_sync).
+        // Take standalone: the slot mutex must not span the shutdown await.
         let prior = self.anki_sync_task.lock().await.take();
         if let Some(task) = prior {
             info!("Stopping prior Anki sync task before re-spawn");
@@ -586,10 +571,8 @@ impl AppState {
     async fn eval_sync(&self, config: &Config, library_root: &Path) {
         use crate::app::sync_daemon::{SyncStatus, SyncTask, sync_disabled};
 
-        // Stop any prior task first (config may have changed). Take the task
-        // out in a standalone statement — under Rust 2024 an `if let` on the
-        // lock().await temporary holds the slot mutex across the (slow) engine
-        // shutdown, freezing every sync command that reads the slot.
+        // Take standalone: the slot mutex must not span the slow shutdown —
+        // sync commands read this slot.
         let prior = self.sync_task.lock().await.take();
         if let Some(task) = prior {
             info!("Stopping prior sync task before re-spawn");
@@ -828,9 +811,8 @@ impl AppState {
             return Ok(queue);
         }
 
-        // Re-read the library under the init lock: update_config holds this
-        // lock across stop → library swap, so what we read here can never be
-        // the outgoing instance.
+        // Read under the init lock: update_config holds it across the Library
+        // swap, so this can never be the outgoing instance.
         let library = self
             .library
             .borrow()
@@ -1064,10 +1046,8 @@ mod tests {
         assert!(start.elapsed() < Duration::from_secs(1));
     }
 
-    /// C1 regression: a shutdown step whose slow work runs on the blocking
-    /// pool must still be preemptable by run_exit_step's timeout. (A raw
-    /// synchronous FFI call inside the future has no await point, so the
-    /// timeout could never fire — that was the app-exit hang.)
+    /// Slow work routed through spawn_blocking must stay preemptable by
+    /// run_exit_step's timeout; a raw blocking call has no await point.
     #[tokio::test]
     async fn exit_step_times_out_when_step_blocks_a_thread_via_spawn_blocking() {
         let started = Instant::now();
@@ -1352,8 +1332,7 @@ pub async fn get_system_definition(
         })
         .map_err(|e| e.to_string())?;
 
-        // Await without parking a tokio worker, and bound the wait so a
-        // stalled main loop can't leave the invoke pending forever.
+        // Bound the wait so a stalled main loop can't leave the invoke pending.
         match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
             Ok(Ok(result)) => Ok(result),
             Ok(Err(_)) => Err("system dictionary lookup was dropped".to_string()),
