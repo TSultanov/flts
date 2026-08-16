@@ -78,17 +78,27 @@ async fn truncate_yields_invalid_json() {
     )
     .await;
 
-    // Either the truncated body fails to arrive at all, or it arrives unparseable.
-    match c.get(format!("{base}/hello")).send().await {
-        Err(_) => {}
-        Ok(r) => match r.text().await {
-            Err(_) => {}
-            Ok(body) => {
-                assert!(body.len() < r#"{"msg":"hi"}"#.len());
-                assert!(serde_json::from_str::<Value>(&body).is_err());
-            }
-        },
-    }
+    // Headers promise the whole body; the short one on the wire must read as an
+    // incomplete message, not a well-formed short response.
+    let full = r#"{"msg":"hi"}"#.len() as u64;
+    let err = match c.get(format!("{base}/hello")).send().await {
+        Err(e) => format!("{e:?}"),
+        Ok(r) => {
+            assert_eq!(
+                r.content_length(),
+                Some(full),
+                "truncate must keep the full body's Content-Length"
+            );
+            format!(
+                "{:?}",
+                r.text()
+                    .await
+                    .expect_err("truncated body must not read back")
+            )
+        }
+    };
+    // Distinguishes a short-of-Content-Length body from any other failure.
+    assert!(err.contains("IncompleteMessage"), "{err}");
 }
 
 #[tokio::test]

@@ -14,7 +14,9 @@ use axum::{
 };
 use std::{
     io,
+    pin::Pin,
     sync::Arc,
+    task::{Context, Poll},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -73,7 +75,9 @@ pub async fn fault_layer(State(state): State<Arc<SimState>>, req: Request, next:
         Action::Truncate { fraction } => {
             let (parts, body) = split(next.run(req).await).await;
             let n = ((body.len() as f32 * fraction.clamp(0.0, 1.0)) as usize).min(body.len());
-            Response::from_parts(parts, Body::from(body.slice(..n)))
+            // Streamed so hyper keeps the full body's Content-Length: the client
+            // sees a message that ends short of what the headers promised.
+            Response::from_parts(parts, truncated_body(body.slice(..n), body.len()))
         }
         Action::Corrupt { mode } => {
             let (mut parts, body) = split(next.run(req).await).await;
@@ -118,4 +122,34 @@ fn errored_body(prefix: Bytes) -> Body {
     let items: Vec<Result<Bytes, io::Error>> =
         vec![Ok(prefix), Err(io::Error::other("sim: connection dropped"))];
     Body::from_stream(futures_util::stream::iter(items))
+}
+
+/// Yields `prefix` but promises `promised` bytes, so the message ends short of
+/// its Content-Length. An unknown size hint would make hyper switch to chunked.
+struct ShortBody {
+    prefix: Option<Bytes>,
+    promised: u64,
+}
+
+impl http_body::Body for ShortBody {
+    type Data = Bytes;
+    type Error = io::Error;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<Bytes>, io::Error>>> {
+        Poll::Ready(self.prefix.take().map(|b| Ok(http_body::Frame::data(b))))
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        http_body::SizeHint::with_exact(self.promised)
+    }
+}
+
+fn truncated_body(prefix: Bytes, promised: usize) -> Body {
+    Body::new(ShortBody {
+        prefix: Some(prefix),
+        promised: promised as u64,
+    })
 }

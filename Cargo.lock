@@ -1423,6 +1423,7 @@ dependencies = [
  "axum",
  "env_logger",
  "futures-util",
+ "http-body",
  "log",
  "reqwest 0.12.28",
  "serde",
