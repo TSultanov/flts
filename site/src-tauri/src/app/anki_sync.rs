@@ -198,6 +198,16 @@ async fn run_pass(
     state: &Mutex<AnkiSyncState>,
     status_tx: &watch::Sender<AnkiSyncStatus>,
 ) -> anyhow::Result<SyncReportDto> {
+    // One pass at a time, without queueing: a pass can hold this lock for
+    // minutes (per-card HTTP), and both callers are better served by an
+    // immediate answer — the periodic tick just skips (the in-flight pass is
+    // already doing the work) and the UI's "sync now" reports instead of
+    // hanging. Acquired before the status flip so a bail leaves status to the
+    // pass that actually runs.
+    let Ok(mut guard) = state.try_lock() else {
+        anyhow::bail!("anki sync already in progress");
+    };
+
     status_tx.send_modify(|s| s.state = AnkiSyncStatusState::Syncing);
 
     if let Err(err) = client.version().await {
@@ -211,7 +221,6 @@ async fn run_pass(
         return Err(err);
     }
 
-    let mut guard = state.lock().await;
     let now = tokio::time::Instant::now();
     match sync_pass(client, library.as_ref(), &mut guard, now).await {
         Ok(report) => {
@@ -558,6 +567,36 @@ mod tests {
         assert_eq!(status.state, AnkiSyncStatusState::Ok);
         assert!(status.last_report.is_some());
 
+        task.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn sync_now_reports_in_progress_instead_of_waiting() {
+        let (_tmp, library) = seed_library_with_card("flts_anki_sync_busy").await;
+        let mock: Arc<dyn AnkiConnect> = Arc::new(MockAnkiConnect::new());
+        // Long interval so the periodic loop can't interfere mid-test.
+        let task = AnkiSyncTask::init(library, mock, Duration::from_secs(3600), make_status_tx());
+
+        // Model an in-flight pass by holding the state lock (run_pass holds it
+        // for the whole pass).
+        let in_flight = task.state.lock().await;
+
+        let started = std::time::Instant::now();
+        let err = task
+            .sync_now()
+            .await
+            .expect_err("sync_now must not wait behind an in-flight pass");
+        assert!(
+            err.to_string().contains("in progress"),
+            "error must say a sync is running; got {err:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "must return immediately, took {:?}",
+            started.elapsed()
+        );
+
+        drop(in_flight);
         task.shutdown().await;
     }
 
