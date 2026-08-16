@@ -11,6 +11,8 @@ use tokio::{net::TcpListener, sync::Notify, task::JoinHandle};
 pub struct RequestRecord {
     pub method: String,
     pub path: String,
+    /// Raw query string, sans `?`. Rules never match on it.
+    pub query: Option<String>,
     pub body: String,
     pub ts_ms: u128,
 }

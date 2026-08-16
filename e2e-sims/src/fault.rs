@@ -34,11 +34,7 @@ pub async fn fault_layer(State(state): State<Arc<SimState>>, req: Request, next:
     let (parts, body) = req.into_parts();
     let method = parts.method.to_string();
     let path = parts.uri.path().to_string();
-    // Rules match on the bare path; the log keeps the query so tests can assert on params.
-    let logged_path = parts
-        .uri
-        .path_and_query()
-        .map_or_else(|| path.clone(), ToString::to_string);
+    let query = parts.uri.query().map(str::to_owned);
     let bytes = match to_bytes(body, MAX_BODY).await {
         Ok(b) => b,
         Err(e) => {
@@ -48,7 +44,8 @@ pub async fn fault_layer(State(state): State<Arc<SimState>>, req: Request, next:
 
     state.log.lock().unwrap().push(RequestRecord {
         method: method.clone(),
-        path: logged_path,
+        path: path.clone(),
+        query,
         body: String::from_utf8_lossy(&bytes).into_owned(),
         ts_ms: SystemTime::now()
             .duration_since(UNIX_EPOCH)

@@ -135,10 +135,10 @@ async fn album_and_duration_are_ignored_for_lookup_but_logged() {
         .json()
         .await
         .unwrap();
-    let path = log[0]["path"].as_str().unwrap();
-    assert!(path.starts_with("/api/get?"), "{path}");
-    assert!(path.contains("album_name=Some"), "{path}");
-    assert!(path.contains("duration=226"), "{path}");
+    assert_eq!(log[0]["path"], "/api/get");
+    let query = log[0]["query"].as_str().unwrap();
+    assert!(query.contains("album_name=Some"), "{query}");
+    assert!(query.contains("duration=226"), "{query}");
 }
 
 #[tokio::test]
