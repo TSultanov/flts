@@ -2,6 +2,7 @@
 // store, import the book through the real backend and script the LLM sim so
 // the app's own translation pipeline produces the expected segments.
 import type { Page } from '@playwright/test';
+import { realModeUnsupported } from './backend-mode';
 import { getHarness } from '../../real/harness-registry';
 import type { ParagraphSegment, SeedSpec, TranslateConfig } from './paragraph';
 
@@ -24,7 +25,13 @@ type SimWord = {
 };
 
 /** Paragraph text per id, so `getTranslateCalls` can attribute sim requests. */
-type SeedIndex = { bookId: string; texts: Map<number, string> };
+type SeedIndex = {
+  bookId: string;
+  /** Longest text first: "Paragraph 1" must not swallow "Paragraph 10". */
+  texts: Array<[number, string]>;
+  /** Requests the seed itself made; the mock's call log excludes them. */
+  seedRequests: number;
+};
 
 let lastSeed: SeedIndex | undefined;
 
@@ -107,13 +114,15 @@ function assertMatchable(text: string): string {
 }
 
 function rejectUnsupported(spec: SeedSpec): void {
-  for (const field of ['inFlight', 'wordInfos', 'readingState', 'summaryStatus'] as const) {
-    if (spec[field] !== undefined) {
-      throw new Error(`not supported in real mode: ${field}`);
-    }
-  }
-  if (spec.config !== undefined) {
-    throw new Error('not supported in real mode: config');
+  const fields = [
+    'inFlight',
+    'wordInfos',
+    'readingState',
+    'summaryStatus',
+    'config',
+  ] as const;
+  for (const field of fields) {
+    if (spec[field] !== undefined) realModeUnsupported(field);
   }
 }
 
@@ -194,7 +203,7 @@ export async function realSeedAndOpen(
   }
 
   const bookId = await importBook(spec, chapters);
-  lastSeed = { bookId, texts };
+
 
   // Pre-translated paragraphs: run them through the real translate pipeline
   // before the page opens, so the view loads with segments already stored.
@@ -233,6 +242,12 @@ export async function realSeedAndOpen(
     });
   }
 
+  lastSeed = {
+    bookId,
+    texts: [...texts].sort((a, b) => b[1].length - a[1].length),
+    seedRequests: (await harness.llm.requests()).length,
+  };
+
   await page.goto(opts.path ?? `/book/${bookId}/0`);
   return { bookId };
 }
@@ -252,31 +267,26 @@ function applyConfig(
 }
 
 /**
- * Reconstructed from the LLM sim's request log: the sim sees prompts, not
- * commands, so `paragraphId` is recovered by locating the paragraph text in
- * the body and `model` is unavailable.
+ * Reconstructed from the LLM sim's request log. Paragraph translation is the
+ * only caller that streams (`:streamGenerateContent`); chapter summaries use
+ * the unary `:generateContent` on the same host and quote paragraph text, so
+ * the path is what separates them. Requests the seed itself issued are sliced
+ * off, matching the mock's log which only records post-seed commands.
+ * `paragraphId` is recovered from the prompt text; `model` is not on the wire.
  */
 export async function realTranslateCalls(): Promise<
   Array<{ bookId: string; paragraphId: number; useCache: boolean; model: unknown }>
 > {
   const harness = getHarness();
   const seed = lastSeed;
-  const reqs = await harness.llm.requests();
+  const reqs = (await harness.llm.requests()).slice(seed?.seedRequests ?? 0);
   return reqs
-    .filter((r) => r.path.includes('generateContent'))
-    .map((r) => {
-      let paragraphId = -1;
-      for (const [id, text] of seed?.texts ?? []) {
-        if (r.body.includes(text)) {
-          paragraphId = id;
-          break;
-        }
-      }
-      return {
-        bookId: seed?.bookId ?? '',
-        paragraphId,
-        useCache: r.body.includes('cachedContent'),
-        model: null,
-      };
-    });
+    .filter((r) => r.path.endsWith(':streamGenerateContent'))
+    .map((r) => ({
+      bookId: seed?.bookId ?? '',
+      paragraphId:
+        seed?.texts.find(([, text]) => r.body.includes(text))?.[0] ?? -1,
+      useCache: r.body.includes('cachedContent'),
+      model: null,
+    }));
 }
