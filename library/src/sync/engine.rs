@@ -80,8 +80,21 @@ impl SyncEngine {
         let port = pick_free_port()?;
         let addr = format!("127.0.0.1:{port}");
 
-        syncthing_sys::start(&cfg.home, &addr, &api_key, cfg.loopback_only)
+        // The Go call blocks for the whole engine boot (cert generation, DB
+        // open). Run it on the blocking pool so it can never pin a tokio
+        // worker, and so callers' timeouts have an await point to fire at.
+        {
+            let home = cfg.home.clone();
+            let addr = addr.clone();
+            let api_key = api_key.clone();
+            let loopback_only = cfg.loopback_only;
+            tokio::task::spawn_blocking(move || {
+                syncthing_sys::start(&home, &addr, &api_key, loopback_only)
+            })
+            .await
+            .map_err(|e| anyhow!("syncthing start task panicked: {e}"))?
             .map_err(|e| anyhow!("starting syncthing engine failed: {e}"))?;
+        }
 
         let gui_url = format!("http://{addr}");
         let client: Arc<dyn SyncthingApi> =
@@ -312,9 +325,14 @@ impl SyncEngine {
         &self.my_id
     }
 
-    /// Stops the engine cleanly. Idempotent on the Go side.
-    pub fn stop(&self) -> Result<()> {
-        syncthing_sys::stop().map_err(|e| anyhow!("stopping syncthing engine failed: {e}"))
+    /// Stops the engine cleanly. Idempotent on the Go side. The Go call blocks
+    /// for the full teardown (connection close, DB flush), so it runs on the
+    /// blocking pool — exit-path timeouts must be able to preempt it.
+    pub async fn stop(&self) -> Result<()> {
+        tokio::task::spawn_blocking(syncthing_sys::stop)
+            .await
+            .map_err(|e| anyhow!("syncthing stop task panicked: {e}"))?
+            .map_err(|e| anyhow!("stopping syncthing engine failed: {e}"))
     }
 }
 
@@ -517,7 +535,7 @@ mod tests {
         let devices_self = engine.client().my_id().await.unwrap();
         assert_eq!(devices_self, id, "client talks to the same engine");
 
-        engine.stop().expect("engine stops cleanly");
+        engine.stop().await.expect("engine stops cleanly");
         let _ = std::fs::remove_dir_all(&base);
     }
 }

@@ -151,7 +151,7 @@ impl SyncTask {
             handle.abort();
             let _ = handle.await;
         }
-        if let Err(err) = self.engine.stop() {
+        if let Err(err) = self.engine.stop().await {
             warn!("Sync engine stop failed: {err}");
         }
         self.status_tx.send_replace(SyncStatus::disabled());

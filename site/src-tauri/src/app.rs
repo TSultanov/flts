@@ -1010,6 +1010,28 @@ mod tests {
         assert!(start.elapsed() < Duration::from_secs(1));
     }
 
+    /// C1 regression: a shutdown step whose slow work runs on the blocking
+    /// pool must still be preemptable by run_exit_step's timeout. (A raw
+    /// synchronous FFI call inside the future has no await point, so the
+    /// timeout could never fire — that was the app-exit hang.)
+    #[tokio::test]
+    async fn exit_step_times_out_when_step_blocks_a_thread_via_spawn_blocking() {
+        let started = Instant::now();
+        let success = run_exit_step("blocked step", Duration::from_millis(50), async {
+            let _ = tokio::task::spawn_blocking(|| {
+                std::thread::sleep(Duration::from_millis(500));
+            })
+            .await;
+        })
+        .await;
+        assert!(!success, "step must time out, not complete");
+        assert!(
+            started.elapsed() < Duration::from_millis(400),
+            "timeout must preempt the blocked thread, elapsed {:?}",
+            started.elapsed()
+        );
+    }
+
     /// A unique scratch directory under the OS temp dir (no tempfile dep).
     fn scratch_dir(tag: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()
