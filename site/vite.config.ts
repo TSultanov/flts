@@ -16,6 +16,14 @@ export default defineConfig({
         '@tauri-apps/plugin-dialog': resolve(__dirname, 'tests/mocks/tauri-dialog.ts'),
         '@tauri-apps/plugin-os': resolve(__dirname, 'tests/mocks/tauri-os.ts'),
       }),
+      // Real-backend tier: core/event go over the WS bridge; dialog/os stay
+      // mocked (no headless equivalent for native pickers).
+      ...(process.env.PLAYWRIGHT_REAL && {
+        '@tauri-apps/api/core': resolve(__dirname, 'tests/real/tauri-shim-core.ts'),
+        '@tauri-apps/api/event': resolve(__dirname, 'tests/real/tauri-shim-event.ts'),
+        '@tauri-apps/plugin-dialog': resolve(__dirname, 'tests/mocks/tauri-dialog.ts'),
+        '@tauri-apps/plugin-os': resolve(__dirname, 'tests/mocks/tauri-os.ts'),
+      }),
     },
   },
   server: {
@@ -34,7 +42,9 @@ export default defineConfig({
       // embedding a snapshot of the real (or stale-mock) module. Without
       // this, listen/emit and mock state Maps end up split across two
       // module instances and events get lost.
-      ...(process.env.PLAYWRIGHT
+      // Same hazard under PLAYWRIGHT_REAL: a pre-bundled plugin copy would
+      // bypass the alias and split the bridge socket across two instances.
+      ...(process.env.PLAYWRIGHT || process.env.PLAYWRIGHT_REAL
         ? [
             '@tauri-apps/api',
             '@tauri-apps/api/core',

@@ -7,7 +7,8 @@ export default defineConfig({
       '**/node_modules/**',
       '**/dist/**',
       '**/cypress/**',
-      'test?(s)/**',
+      // Narrowed from `test?(s)/**` so tests/real/*.test.ts runs under vitest.
+      'test?(s)/e2e/**',
       '**/*.e2e.{js,ts}',
       '**/tests/e2e/**',
       '**/e2e/**',
