@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './helpers/test';
 import { fillerHtml, seedAndOpen } from './helpers/paragraph';
 
 // Covers the BookView chapters-panel redesign:

@@ -1,4 +1,6 @@
 import { expect, type Locator, type Page } from '@playwright/test';
+import { isRealMode, realModeUnsupported } from './backend-mode';
+import { realSeedAndOpen, realTranslateCalls } from './real-seed';
 
 export type ParagraphSegment =
   | { kind: 'gap'; html: string }
@@ -78,7 +80,9 @@ function makeBookId(): string {
 }
 
 /**
- * Seed the mock backend and open the chapter at index 0.
+ * Seed the backend and open the chapter at index 0. In real mode the work is
+ * delegated to real-seed.ts (real import + scripted LLM sim); the signature
+ * and return value are identical in both tiers.
  *
  * page.goto triggers a hard reload that wipes the mock module's in-memory
  * state. We install an init script that re-applies the seed on every page
@@ -90,6 +94,7 @@ export async function seedAndOpen(
   opts: { path?: string } = {},
 ): Promise<{ bookId: string }> {
   page.on('pageerror', (err) => console.log('PAGE ERROR:', err.message));
+  if (isRealMode()) return realSeedAndOpen(page, spec, opts);
   const bookId = spec.bookId ?? makeBookId();
   const fullSpec = { ...spec, bookId };
 
@@ -143,6 +148,7 @@ export async function setTranslateConfig(
   paragraphId: number,
   cfg: TranslateConfig,
 ): Promise<void> {
+  if (isRealMode()) realModeUnsupported('setTranslateConfig');
   await page.evaluate(
     ({ bookId, paragraphId, cfg }) => {
       (window as any).__test.setTranslateConfig(bookId, paragraphId, cfg);
@@ -159,6 +165,7 @@ export async function setWordInfo(
   wordId: number,
   info: WordInfoSeed,
 ): Promise<void> {
+  if (isRealMode()) realModeUnsupported('setWordInfo');
   const full = {
     original: info.original,
     note: info.note ?? '',
@@ -184,12 +191,14 @@ export async function setWordInfo(
 export async function getTranslateCalls(
   page: Page,
 ): Promise<Array<{ bookId: string; paragraphId: number; useCache: boolean; model: unknown }>> {
+  if (isRealMode()) return realTranslateCalls();
   return page.evaluate(() => (window as any).__test.getTranslateCalls());
 }
 
 export async function getTranslationsBatchCalls(
   page: Page,
 ): Promise<Array<{ bookId: string; paragraphIds: number[]; at: number }>> {
+  if (isRealMode()) realModeUnsupported('getTranslationsBatchCalls');
   return page.evaluate(() => (window as any).__test.getTranslationsBatchCalls());
 }
 
@@ -320,6 +329,7 @@ export function wordSegment(opts: {
 }
 
 export async function emitCardsUpdated(page: Page): Promise<void> {
+  if (isRealMode()) realModeUnsupported('emitCardsUpdated');
   await page.evaluate(() => (window as any).__test.emitCardsUpdated());
 }
 
@@ -329,6 +339,7 @@ export async function setParagraphTranslationSilent(
   paragraphId: number,
   segments: ParagraphSegment[] | undefined,
 ): Promise<void> {
+  if (isRealMode()) realModeUnsupported('setParagraphTranslationSilent');
   await page.evaluate(
     ({ bookId, paragraphId, segments }) => {
       (window as any).__test.setParagraphTranslationSilent(
@@ -347,6 +358,7 @@ export async function setParagraphTranslation(
   paragraphId: number,
   segments: ParagraphSegment[],
 ): Promise<void> {
+  if (isRealMode()) realModeUnsupported('setParagraphTranslation');
   await page.evaluate(
     ({ bookId, paragraphId, segments }) => {
       (window as any).__test.setParagraphTranslation(

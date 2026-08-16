@@ -1,4 +1,5 @@
-import { test, expect, type Page } from '@playwright/test';
+import { type Page } from '@playwright/test';
+import { test, expect } from './helpers/test';
 
 const TARGET = 'spa'; // mock config default targetLanguageId
 const MODEL = 0; // mock config default model

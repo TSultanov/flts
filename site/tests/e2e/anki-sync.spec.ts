@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
+import { type Page } from '@playwright/test';
+import { expect, test } from './helpers/test';
 
 // Public-behavior tests for the Anki sync UI surface. Exercises both the
 // nav button (visibility + click + status update) and the Config UI

@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
+import { setHarness } from './harness-registry';
 import { SimClient } from './sim-client';
 
 export { expect };
@@ -267,11 +268,13 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
           );
         }
 
+        setHarness(harness);
         await use(harness);
       } catch (err) {
         workerHadFailure = true;
         throw err;
       } finally {
+        setHarness(undefined);
         bridge?.close();
         if (app) await killTree(app);
         if (sims) await killTree(sims);

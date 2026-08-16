@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './helpers/test';
 
 test.describe('FLTS Application', () => {
   test('app loads successfully', async ({ page }) => {

@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
+import { type Page } from '@playwright/test';
+import { expect, test } from './helpers/test';
 import { fillerHtml, seedAndOpen } from './helpers/paragraph';
 
 // Covers the chapter-summary status surface:

@@ -2,10 +2,37 @@ import { defineConfig, devices } from '@playwright/test';
 
 // Real-backend tier: the frontend talks to a headless `app` binary over the WS
 // bridge instead of the mocks. The mock tier (playwright.config.ts) is untouched.
+// Helpers branch on this (helpers/backend-mode.ts); set here so a bare
+// `playwright test -c playwright.real.config.ts` behaves like the pnpm script.
+process.env.PLAYWRIGHT_REAL ||= 'true';
+
 export default defineConfig({
   testDir: './tests/e2e',
-  // Only tests/e2e/real/** belongs to this tier; Task 13 shrinks this list.
-  testIgnore: /tests[/\\]e2e[/\\](?!real[/\\]).*\.spec\.ts$/,
+  // Enabled here: tests/e2e/real/** plus app, text-import, epub-import,
+  // chapters-panel, chapter-translate-all — everything that only needs the
+  // shared helper contract. Each ignore below names what blocks it.
+  testIgnore: [
+    // Mock-only `window.__test` surfaces with no real-backend equivalent.
+    'anki-sync.spec.ts', // __test.setAnkiSyncStatus / getSyncAnkiNowCalls
+    'dialogs.spec.ts', // __test.seedBook
+    'lyrics.spec.ts', // __mockSpotifyState / __mockLyrics / __mockPlatform
+    'chapter-initial-translation-batch.spec.ts', // __test.getTranslationsBatchCalls
+    // Seed fields the real pipeline cannot forge.
+    'chapter-reading-state.spec.ts', // readingState
+    'chapter-session-position.spec.ts', // readingState
+    'chapter-summary-status.spec.ts', // summaryStatus + advanceSummaryGeneration
+    'word-view-panel.spec.ts', // wordInfos
+    'tap-to-reveal.spec.ts', // config seeding + per-word familiarity
+    'anki-familiarity.spec.ts', // per-word familiarity + emitCardsUpdated
+    // Segment text that deliberately diverges from the paragraph original;
+    // real segments are sliced out of the original, so it cannot diverge.
+    'paragraph-view.spec.ts', // + setTranslateConfig/inFlight in most cases
+    'paragraph-view-multipage.spec.ts', // same, plus familiarity overlays
+    // Needs translated paragraphs in chapter >0, which the real backend
+    // currently cannot produce — see task-13-report.md ("stale summary-ready
+    // watch"); re-check when that is fixed.
+    'chapter-translation-ratio.spec.ts',
+  ],
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: 0,

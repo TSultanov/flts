@@ -1,4 +1,5 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './helpers/test';
+import { isRealMode } from './helpers/backend-mode';
 
 async function openFileImport(page: import('@playwright/test').Page) {
   await page.goto('/import');
@@ -695,6 +696,8 @@ test.describe('EPUB Import with Mocked Translation', () => {
   });
 
   test('keeps eng when parsed language is not in the dropdown', async ({ page }) => {
+    // Premise is the mock's short language list; the real backend does offer nld.
+    test.skip(isRealMode(), 'depends on the mock language list');
     // mock parse_language_id maps nl → nld; nld is not in mockLanguages
     await openFileImport(page);
     const { createTestEpub } = await import('../fixtures/epub-generator');

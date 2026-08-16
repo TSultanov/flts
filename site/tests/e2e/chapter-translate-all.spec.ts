@@ -1,4 +1,6 @@
-import { expect, test, type Page } from '@playwright/test';
+import { type Page } from '@playwright/test';
+import { expect, test } from './helpers/test';
+import { isRealMode } from './helpers/backend-mode';
 import {
   fillerHtml,
   fillerSegments,
@@ -80,6 +82,8 @@ test.describe('translate-chapter button — click behaviour', () => {
   test('clicking schedules every untranslated paragraph via one translate_chapter call', async ({
     page,
   }) => {
+    // Asserts on the mock's translate_chapter call log; no real-tier equivalent.
+    test.skip(isRealMode(), 'mock-only __test.getTranslateChapterCalls');
     const { bookId } = await seedAndOpen(page, {
       chapters: [chapterSpec(3, 1), chapterSpec(2, 0, 10)],
       // Provide explicit segments for the untranslated paragraphs so the
@@ -133,6 +137,9 @@ test.describe('translate-chapter button — summary gating', () => {
   test.skip(({ browserName }) => browserName === 'firefox', 'chromium + webkit only');
 
   test('disabled when prior-chapter summary is not yet generated', async ({ page }) => {
+    // Needs a half-generated summaryStatus, which the real backend generates
+    // eagerly on import and the seed helper cannot forge.
+    test.skip(isRealMode(), 'summaryStatus seeding is mock-only');
     // Open chapter 1; canTranslate(1) requires chapter 0's summary,
     // which is not yet generated.
     const bookId = `test-book-summary-gating-${Date.now()}`;

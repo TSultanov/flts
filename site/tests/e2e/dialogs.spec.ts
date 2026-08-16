@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
+import { type Page } from '@playwright/test';
+import { expect, test } from './helpers/test';
 
 // Public-behavior tests for the three library dialogs. Drives the real entry
 // points (Select All -> Move/Delete Selected) so the tests survive any
