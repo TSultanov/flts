@@ -1,0 +1,20 @@
+[package]
+name = "e2e-sims"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "flts-e2e-sims"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.8"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "io-util"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = "0.11"
+
+[dev-dependencies]
+reqwest = { workspace = true }
