@@ -482,8 +482,10 @@ impl AppState {
             info!("Card backfill disabled: set FLTS_ENABLE_CARD_BACKFILL=1 to enable");
         }
 
-        // Stop any prior Anki sync task (config may have changed).
-        if let Some(task) = self.anki_sync_task.lock().await.take() {
+        // Stop any prior Anki sync task (config may have changed). Standalone
+        // take so the slot mutex is not held across the await (see eval_sync).
+        let prior = self.anki_sync_task.lock().await.take();
+        if let Some(task) = prior {
             info!("Stopping prior Anki sync task before re-spawn");
             task.shutdown().await;
         }
@@ -537,8 +539,12 @@ impl AppState {
     async fn eval_sync(&self, config: &Config, library_root: &Path) {
         use crate::app::sync_daemon::{SyncStatus, SyncTask, sync_disabled};
 
-        // Stop any prior task first (config may have changed).
-        if let Some(task) = self.sync_task.lock().await.take() {
+        // Stop any prior task first (config may have changed). Take the task
+        // out in a standalone statement — under Rust 2024 an `if let` on the
+        // lock().await temporary holds the slot mutex across the (slow) engine
+        // shutdown, freezing every sync command that reads the slot.
+        let prior = self.sync_task.lock().await.take();
+        if let Some(task) = prior {
             info!("Stopping prior sync task before re-spawn");
             task.shutdown().await;
         }
