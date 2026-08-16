@@ -83,6 +83,8 @@ impl SyncEngine {
         // The Go call blocks for the whole engine boot (cert generation, DB
         // open). Run it on the blocking pool so it can never pin a tokio
         // worker, and so callers' timeouts have an await point to fire at.
+        // Dropping this await detaches (not cancels) the Go boot: callers must
+        // be run-to-completion tasks, or an orphaned engine keeps the port.
         {
             let home = cfg.home.clone();
             let addr = addr.clone();

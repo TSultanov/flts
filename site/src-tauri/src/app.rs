@@ -365,15 +365,14 @@ impl AppState {
         let _eval = self.eval_lock.lock().await;
         // Another evaluation may have restarted the engine while we waited on
         // the lock; don't bounce a healthy engine.
-        if let Some(engine) = self.sync_engine().await {
-            if crate::app::sync_daemon::probe_healthy(
+        if let Some(engine) = self.sync_engine().await
+            && crate::app::sync_daemon::probe_healthy(
                 engine.client().as_ref(),
                 crate::app::sync_daemon::WAKE_PROBE_TIMEOUT,
             )
             .await
-            {
-                return;
-            }
+        {
+            return;
         }
         let config = self.config.borrow().clone();
         match resolve_library_root(Some(&self.app)) {
