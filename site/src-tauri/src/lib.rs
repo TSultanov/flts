@@ -6,6 +6,8 @@ use tauri::{Builder, Emitter, Manager, RunEvent};
 use tokio::sync::Mutex;
 
 pub mod app;
+#[cfg(feature = "e2e-bridge")]
+pub mod bridge;
 
 /// Raises the process's open-file soft limit, returning a line describing the
 /// outcome (logged once the logger is up — this has to run before it is).
@@ -67,6 +69,14 @@ fn raise_open_file_limit() -> String {
 pub fn run() {
     // Before anything else opens a file — including the webview.
     let fd_limit = raise_open_file_limit();
+
+    #[allow(unused_mut)]
+    let mut context = tauri::generate_context!();
+    // Headless: the WS bridge stands in for the webview's IPC channel.
+    #[cfg(feature = "e2e-bridge")]
+    if std::env::var("FLTS_E2E_BRIDGE_PORT").is_ok() {
+        context.config_mut().app.windows.clear();
+    }
 
     #[allow(unused_mut)]
     let mut builder = Builder::default()
@@ -192,6 +202,11 @@ pub fn run() {
                 warn!("LibraryWatcher sender disconnected; file change loop exiting");
             });
 
+            #[cfg(feature = "e2e-bridge")]
+            if let Ok(port) = std::env::var("FLTS_E2E_BRIDGE_PORT") {
+                crate::bridge::spawn(app.handle().clone(), port.parse()?);
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -246,7 +261,7 @@ pub fn run() {
             app::spotify::web::spotify_web_get_queue,
             app::spotify::web::open_external_url,
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application")
         .run(|app_handle, event| {
             if let RunEvent::Exit = event {
