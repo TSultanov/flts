@@ -14,7 +14,7 @@ use axum::routing::get;
 use futures_util::{SinkExt, StreamExt};
 use log::{info, warn};
 use serde_json::{Value, json};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Listener, Manager};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -78,6 +78,28 @@ pub const COMMANDS: &[&str] = &[
     "open_external_url",
 ];
 
+/// Backend events mirrored to every connected client. Must track the emit call
+/// sites; `forwarded_events_track_emit_sites` enforces it.
+pub const FORWARDED_EVENTS: &[&str] = &[
+    "anki_sync_status_changed",
+    "book_updated",
+    "cards_updated",
+    "config_updated",
+    "library_updated",
+    "lyrics_resolved",
+    "lyrics_translation_done",
+    "lyrics_translation_error",
+    "lyrics_translation_progress",
+    "paragraph_translation_finished",
+    "paragraph_translation_progress",
+    "paragraph_translation_started",
+    "paragraph_updated",
+    "spotify_queue",
+    "spotify_state",
+    "summary_generation_progress",
+    "sync_status_changed",
+];
+
 /// Binds `127.0.0.1:port` (0 = ephemeral) and announces the real port on
 /// stdout so a harness can read it back.
 pub fn spawn(app: AppHandle, port: u16) {
@@ -129,6 +151,17 @@ async fn serve_conn(socket: WebSocket, app: AppHandle) {
         }
     });
 
+    // `listen_any` (EventTarget::Any) receives emits regardless of their target.
+    let listeners: Vec<_> = FORWARDED_EVENTS
+        .iter()
+        .map(|name| {
+            let tx = tx.clone();
+            app.listen_any(*name, move |ev| {
+                let _ = tx.send(event_frame(name, ev.payload()));
+            })
+        })
+        .collect();
+
     while let Some(Ok(msg)) = stream.next().await {
         let text = match msg {
             Message::Text(t) => t.to_string(),
@@ -162,8 +195,18 @@ async fn serve_conn(socket: WebSocket, app: AppHandle) {
         });
     }
 
+    for id in listeners {
+        app.unlisten(id);
+    }
     drop(tx);
     let _ = writer.await;
+}
+
+/// Raw Tauri payloads are JSON; anything else is passed through as a string.
+fn event_frame(name: &str, payload: &str) -> String {
+    let payload = serde_json::from_str::<Value>(payload)
+        .unwrap_or_else(|_| Value::String(payload.to_string()));
+    json!({ "event": name, "payload": payload }).to_string()
 }
 
 fn wrap<T: serde::Serialize, E: serde::Serialize>(r: Result<T, E>) -> Result<Value, Value> {
@@ -511,6 +554,74 @@ mod tests {
             );
         }
         assert_eq!(arms.len(), COMMANDS.len(), "duplicate dispatch arm");
+    }
+
+    /// Every emitted name in the crate; comments stripped, and the literal may
+    /// sit lines below its emit call.
+    fn emitted_event_names() -> Vec<String> {
+        fn walk(dir: &std::path::Path, out: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).expect("read_dir") {
+                let path = entry.expect("dir entry").path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let src = std::fs::read_to_string(&path).expect("read");
+                    let code: String = src
+                        .lines()
+                        .filter(|l| !l.trim_start().starts_with("//"))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    scan(&code, &path, out);
+                }
+            }
+        }
+        // Built by concat so this scanner's own source holds no emit token.
+        fn scan(src: &str, path: &std::path::Path, out: &mut Vec<String>) {
+            let pat = concat!(".emit", "(");
+            let mut rest = src;
+            while let Some(at) = rest.find(pat) {
+                rest = &rest[at + pat.len()..];
+                let name = rest
+                    .trim_start()
+                    .strip_prefix('"')
+                    .and_then(|s| s.split_once('"'))
+                    .map(|(name, _)| name)
+                    .unwrap_or_else(|| panic!("non-literal emit name in {}", path.display()));
+                out.push(name.to_string());
+            }
+        }
+
+        let mut out = Vec::new();
+        walk(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut out,
+        );
+        out
+    }
+
+    #[test]
+    fn forwarded_events_track_emit_sites() {
+        let names = emitted_event_names();
+        assert!(!names.is_empty(), "emit scanner found nothing");
+        for name in &names {
+            assert!(
+                FORWARDED_EVENTS.contains(&name.as_str()),
+                "backend emits unforwarded event: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn event_frames_unwrap_json_payloads() {
+        let frame: Value = serde_json::from_str(&event_frame("book_updated", "{\"a\":1}")).unwrap();
+        assert_eq!(frame["event"], "book_updated");
+        assert_eq!(frame["payload"], json!({"a": 1}));
+    }
+
+    #[test]
+    fn event_frames_fall_back_to_string_payloads() {
+        let frame: Value = serde_json::from_str(&event_frame("book_updated", "not json")).unwrap();
+        assert_eq!(frame["payload"], json!("not json"));
     }
 
     #[test]
