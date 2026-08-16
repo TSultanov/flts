@@ -83,6 +83,14 @@ impl RuleSet {
         self.rules.clear();
     }
 
+    pub fn len(&self) -> usize {
+        self.rules.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.rules.is_empty()
+    }
+
     pub fn calls(&self) -> u64 {
         self.calls
     }
