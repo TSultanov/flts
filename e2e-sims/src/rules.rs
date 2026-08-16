@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Rule {
+    /// Omitted = default Matcher = matches everything.
+    #[serde(default)]
     pub matcher: Matcher,
     pub action: Action,
     /// None = always; Some(n) = fires n more times then expires.
@@ -183,6 +185,17 @@ mod tests {
             },
             times,
         }
+    }
+    #[test]
+    fn matcher_omitted_matches_everything() {
+        let r: Rule = serde_json::from_str(r#"{"action":{"type":"status","code":503}}"#).unwrap();
+        assert!(r.matcher.method.is_none() && r.matcher.path_glob.is_none());
+        let mut rs = RuleSet::default();
+        rs.push(r);
+        assert!(matches!(
+            rs.decide("GET", "/anything", b""),
+            Action::Status { code: 503, .. }
+        ));
     }
     #[test]
     fn empty_ruleset_passthrough() {

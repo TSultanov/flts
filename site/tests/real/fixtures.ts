@@ -70,12 +70,21 @@ function awaitStdoutLine(
     child.once('exit', (code) =>
       finish(() => reject(new Error(`${what}: process exited early (${code})`))),
     );
+    // Without this, spawn ENOENT is an uncaught exception, not a fixture failure.
+    child.once('error', (err) =>
+      finish(() => reject(new Error(`${what}: spawn failed: ${err.message}`))),
+    );
   });
 }
 
 async function killTree(child: ChildProcessWithoutNullStreams): Promise<void> {
+  // No pid = spawn itself failed; there is nothing to reap and no 'exit' coming.
+  if (child.pid === undefined) return;
   if (child.exitCode !== null || child.signalCode !== null) return;
-  const exited = new Promise<void>((r) => child.once('exit', () => r()));
+  const exited = new Promise<void>((r) => {
+    child.once('exit', () => r());
+    child.once('close', () => r());
+  });
   child.kill('SIGTERM');
   const killer = setTimeout(() => child.kill('SIGKILL'), 3000);
   await exited;
@@ -144,109 +153,135 @@ type TestFixtures = { autoReset: void };
 export const test = base.extend<TestFixtures, WorkerFixtures>({
   harness: [
     async ({}, use, workerInfo) => {
-      const sims = spawn(path.join(repoRoot, 'target/debug/flts-e2e-sims'), {
-        // stdin stays piped and open: the sims exit on EOF.
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: process.env,
-      }) as ChildProcessWithoutNullStreams;
+      // Everything below lives in one try/finally so teardown owns both children
+      // (and the temp dir) no matter where setup fails.
+      let sims: ChildProcessWithoutNullStreams | undefined;
+      let app: ChildProcessWithoutNullStreams | undefined;
+      let bridge: BridgeClient | undefined;
+      let configDir: string | undefined;
       let simsStderr = '';
-      sims.stderr.on('data', (c) => (simsStderr = (simsStderr + c).slice(-8000)));
-
-      let ports: SimPorts;
-      try {
-        const line = await awaitStdoutLine(
-          sims,
-          'flts-e2e-sims port line',
-          (l) => l.trim().startsWith('{'),
-          10_000,
-        );
-        ports = JSON.parse(line);
-      } catch (err) {
-        await killTree(sims);
-        throw new Error(`${(err as Error).message}\nsims stderr:\n${simsStderr}`);
-      }
-
-      const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'flts-e2e-'));
-      fs.writeFileSync(
-        path.join(configDir, 'config.json'),
-        JSON.stringify(
-          {
-            targetLanguageId: 'eng',
-            translationProvider: 'google',
-            geminiApiKey: 'sim-key',
-            openaiApiKey: 'sim-key',
-            deepseekApiKey: 'sim-key',
-            zaiApiKey: 'sim-key',
-            // TranslationModel serializes as usize; 1 = Gemini25Flash.
-            model: 1,
-            ankiEndpoint: `http://127.0.0.1:${ports.anki}`,
-            syncEnabled: false,
-          },
-          null,
-          2,
-        ),
-      );
-
-      const app = spawn(path.join(repoRoot, 'target/debug/app'), {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
-          FLTS_E2E_BRIDGE_PORT: '0',
-          FLTS_CONFIG_DIR: configDir,
-          FLTS_GEMINI_BASE_URL: `http://127.0.0.1:${ports.llm}/v1beta/`,
-          OPENAI_BASE_URL: `http://127.0.0.1:${ports.llm}/v1`,
-          FLTS_DEEPSEEK_BASE_URL: `http://127.0.0.1:${ports.llm}`,
-          FLTS_ZAI_BASE_URL: `http://127.0.0.1:${ports.llm}`,
-          FLTS_LRCLIB_BASE_URL: `http://127.0.0.1:${ports.lrclib}`,
-          FLTS_DISABLE_SYNC: '1',
-          FLTS_ANKI_SYNC_INTERVAL_SECS: '3600',
-        },
-      }) as ChildProcessWithoutNullStreams;
       let stderrBuf = '';
-      app.stderr.on('data', (c) => (stderrBuf = (stderrBuf + c).slice(-64_000)));
-      app.stdout.on('data', () => {});
 
-      let bridgePort: number;
       try {
-        const line = await awaitStdoutLine(
-          app,
-          'app bridge line',
-          (l) => l.startsWith('FLTS_E2E_BRIDGE_LISTENING'),
-          30_000,
+        sims = spawn(path.join(repoRoot, 'target/debug/flts-e2e-sims'), {
+          // stdin stays piped and open: the sims exit on EOF.
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: process.env,
+        }) as ChildProcessWithoutNullStreams;
+        sims.on('error', () => {}); // surfaced via awaitStdoutLine
+        sims.stdin.on('error', () => {}); // EPIPE on kill is expected
+        sims.stderr.on(
+          'data',
+          (c) => (simsStderr = (simsStderr + c).slice(-8000)),
         );
-        bridgePort = JSON.parse(
-          line.slice('FLTS_E2E_BRIDGE_LISTENING'.length).trim(),
-        ).port;
+
+        let ports: SimPorts;
+        try {
+          const line = await awaitStdoutLine(
+            sims,
+            'flts-e2e-sims port line',
+            (l) => l.trim().startsWith('{'),
+            10_000,
+          );
+          ports = JSON.parse(line);
+        } catch (err) {
+          throw new Error(
+            `${(err as Error).message}\nsims stderr:\n${simsStderr}`,
+          );
+        }
+
+        configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'flts-e2e-'));
+        fs.writeFileSync(
+          path.join(configDir, 'config.json'),
+          JSON.stringify(
+            {
+              targetLanguageId: 'eng',
+              translationProvider: 'google',
+              geminiApiKey: 'sim-key',
+              openaiApiKey: 'sim-key',
+              deepseekApiKey: 'sim-key',
+              zaiApiKey: 'sim-key',
+              // TranslationModel serializes as usize; 1 = Gemini25Flash.
+              model: 1,
+              ankiEndpoint: `http://127.0.0.1:${ports.anki}`,
+              syncEnabled: false,
+            },
+            null,
+            2,
+          ),
+        );
+
+        app = spawn(path.join(repoRoot, 'target/debug/app'), {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: {
+            ...process.env,
+            FLTS_E2E_BRIDGE_PORT: '0',
+            FLTS_CONFIG_DIR: configDir,
+            FLTS_GEMINI_BASE_URL: `http://127.0.0.1:${ports.llm}/v1beta/`,
+            OPENAI_BASE_URL: `http://127.0.0.1:${ports.llm}/v1`,
+            FLTS_DEEPSEEK_BASE_URL: `http://127.0.0.1:${ports.llm}`,
+            FLTS_ZAI_BASE_URL: `http://127.0.0.1:${ports.llm}`,
+            FLTS_LRCLIB_BASE_URL: `http://127.0.0.1:${ports.lrclib}`,
+            FLTS_DISABLE_SYNC: '1',
+            FLTS_ANKI_SYNC_INTERVAL_SECS: '3600',
+          },
+        }) as ChildProcessWithoutNullStreams;
+        app.on('error', () => {});
+        app.stdin.on('error', () => {});
+        app.stderr.on('data', (c) => (stderrBuf = (stderrBuf + c).slice(-64_000)));
+        app.stdout.on('data', () => {});
+
+        let bridgePort: number;
+        try {
+          const line = await awaitStdoutLine(
+            app,
+            'app bridge line',
+            (l) => l.startsWith('FLTS_E2E_BRIDGE_LISTENING'),
+            30_000,
+          );
+          bridgePort = JSON.parse(
+            line.slice('FLTS_E2E_BRIDGE_LISTENING'.length).trim(),
+          ).port;
+        } catch (err) {
+          throw new Error(`${(err as Error).message}\napp stderr:\n${stderrBuf}`);
+        }
+
+        bridge = new BridgeClient(bridgePort);
+        const harness: RealHarness = {
+          llm: new SimClient(`http://127.0.0.1:${ports.llm}`),
+          lrclib: new SimClient(`http://127.0.0.1:${ports.lrclib}`),
+          anki: new SimClient(`http://127.0.0.1:${ports.anki}`),
+          bridgePort,
+          configDir,
+          appStderr: () => stderrBuf,
+          invoke: (cmd, args) => bridge!.invoke(cmd, args),
+        };
+        try {
+          // The app answers on the bridge before any test runs.
+          await harness.invoke('get_config');
+        } catch (err) {
+          throw new Error(
+            `bridge health check (get_config) failed: ${(err as Error).message}\napp stderr:\n${stderrBuf}`,
+          );
+        }
+
+        await use(harness);
       } catch (err) {
-        await killTree(app);
-        await killTree(sims);
-        throw new Error(
-          `${(err as Error).message}\napp stderr:\n${stderrBuf}\nconfigDir kept: ${configDir}`,
-        );
-      }
-
-      const bridge = new BridgeClient(bridgePort);
-      const harness: RealHarness = {
-        llm: new SimClient(`http://127.0.0.1:${ports.llm}`),
-        lrclib: new SimClient(`http://127.0.0.1:${ports.lrclib}`),
-        anki: new SimClient(`http://127.0.0.1:${ports.anki}`),
-        bridgePort,
-        configDir,
-        appStderr: () => stderrBuf,
-        invoke: (cmd, args) => bridge.invoke(cmd, args),
-      };
-      // Health check: the app answers on the bridge before any test runs.
-      await harness.invoke('get_config');
-
-      await use(harness);
-
-      bridge.close();
-      await killTree(app);
-      await killTree(sims);
-      if (workerHadFailure) {
-        console.log(`[worker ${workerInfo.workerIndex}] config dir: ${configDir}`);
-      } else {
-        fs.rmSync(configDir, { recursive: true, force: true });
+        workerHadFailure = true;
+        throw err;
+      } finally {
+        bridge?.close();
+        if (app) await killTree(app);
+        if (sims) await killTree(sims);
+        if (configDir) {
+          if (workerHadFailure) {
+            console.log(
+              `[worker ${workerInfo.workerIndex}] config dir kept: ${configDir}`,
+            );
+          } else {
+            fs.rmSync(configDir, { recursive: true, force: true });
+          }
+        }
       }
     },
     { scope: 'worker', auto: true, timeout: 120_000 },

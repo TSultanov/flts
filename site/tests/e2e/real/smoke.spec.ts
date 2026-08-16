@@ -19,3 +19,11 @@ test('lrclib request log is reachable', async ({ harness }) => {
   const reqs = await harness.lrclib.requests();
   expect(Array.isArray(reqs)).toBe(true);
 });
+
+test('a matcher-less rule is accepted (matches everything)', async ({
+  harness,
+}) => {
+  await harness.lrclib.addRule({ action: { type: 'status', code: 503 } });
+  expect(harness.lrclib.rules()).toHaveLength(1);
+  await harness.lrclib.clearRules();
+});
