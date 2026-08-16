@@ -238,6 +238,12 @@ pub struct AppState {
     summary_generation_queue_init_lock: Mutex<()>,
     watcher: Arc<Mutex<LibraryWatcher>>,
     backfill_lock: Arc<Mutex<()>>,
+    /// Serializes every config/sync evaluation (`update_config`, startup
+    /// `eval_config`, `wake_sync`): the Go engine is one-per-process, so two
+    /// interleaved restarts leave the loser polling a dead port for 30 s.
+    /// Lock order: eval_lock → translation_queue_init_lock →
+    /// summary_generation_queue_init_lock. Task-slot mutexes are leaves.
+    eval_lock: Mutex<()>,
     anki_sync_task: Mutex<Option<Arc<AnkiSyncTask>>>,
     /// Stable across `eval_config` re-spawns. The transient `AnkiSyncTask`
     /// holds a clone and pushes status into it on every tick.
@@ -290,6 +296,7 @@ impl AppState {
             summary_generation_queue_init_lock: Mutex::new(()),
             watcher,
             backfill_lock: Arc::new(Mutex::new(())),
+            eval_lock: Mutex::new(()),
             anki_sync_task: Mutex::new(None),
             anki_sync_status: Arc::new(watch::channel(initial_anki_status).0),
             sync_task: Mutex::new(None),
@@ -355,6 +362,19 @@ impl AppState {
             return;
         }
         info!("Sync engine unreachable after wake; restarting");
+        let _eval = self.eval_lock.lock().await;
+        // Another evaluation may have restarted the engine while we waited on
+        // the lock; don't bounce a healthy engine.
+        if let Some(engine) = self.sync_engine().await {
+            if crate::app::sync_daemon::probe_healthy(
+                engine.client().as_ref(),
+                crate::app::sync_daemon::WAKE_PROBE_TIMEOUT,
+            )
+            .await
+            {
+                return;
+            }
+        }
         let config = self.config.borrow().clone();
         match resolve_library_root(Some(&self.app)) {
             Ok(root) => self.eval_sync(&config, &root).await,
@@ -437,30 +457,53 @@ impl AppState {
     }
 
     pub async fn update_config(&self, config: Config) -> anyhow::Result<()> {
-        // Translator settings (provider/key/model) are captured when the translation queue is created.
-        // Reset it so the next translation uses the latest config. The
-        // summary queue captures its summarizer (model + api key) the same
-        // way, so reset it too — otherwise summaries keep using the old
-        // credentials until app restart.
-        self.stop_translation_queue().await;
-        self.stop_summary_generation_queue().await;
+        // Serialize against every other config/sync evaluation: concurrent
+        // engine restarts leave one side polling a dead port for 30 s.
+        let _eval = self.eval_lock.lock().await;
 
-        // eval_config below swaps in a freshly-opened Library; any book the
-        // stopped queue translated but had not yet saved would be lost with
-        // the old instance. Flush everything first (mirrors shutdown()).
-        self.save_all().await;
+        // Hold both queue-init locks across stop → library swap so no command
+        // can build a queue pinned to the outgoing Library instance (its
+        // saves would go to a detached library — silent lost work). Dropped
+        // before the slow eval_sync tail so translates don't queue behind an
+        // engine restart.
+        let (config, library_root) = {
+            let _tq_init = self.translation_queue_init_lock.lock().await;
+            let _sq_init = self.summary_generation_queue_init_lock.lock().await;
 
-        // The library location is now app-managed (resolve_library_root); the
-        // frontend no longer sends a path, so there's nothing to compute here.
-        info!("config = {:?}", config);
+            // Translator settings (provider/key/model) are captured when the
+            // translation queue is created. Reset it so the next translation
+            // uses the latest config; the summary queue captures its
+            // summarizer the same way.
+            self.stop_translation_queue().await;
+            self.stop_summary_generation_queue().await;
 
-        config.save(&self.config_path)?;
-        self.config.send_replace(config);
-        self.eval_config().await?;
+            // eval_library_config below swaps in a freshly-opened Library;
+            // any book the stopped queue translated but had not yet saved
+            // would be lost with the old instance. Flush everything first
+            // (mirrors shutdown()).
+            self.save_all().await;
+
+            info!("config = {:?}", config);
+            config.save(&self.config_path)?;
+            self.config.send_replace(config);
+            self.eval_library_config().await?
+        };
+        self.eval_sync(&config, &library_root).await;
         Ok(())
     }
 
     pub async fn eval_config(&self) -> anyhow::Result<()> {
+        let _eval = self.eval_lock.lock().await;
+        let (config, library_root) = self.eval_library_config().await?;
+        self.eval_sync(&config, &library_root).await;
+        Ok(())
+    }
+
+    /// Everything `eval_config` does short of the sync engine: migrate + open
+    /// the library, (re)spawn the Anki task, point the watcher. Returns the
+    /// config snapshot and resolved library root for the `eval_sync` tail.
+    /// Caller must hold `eval_lock`.
+    async fn eval_library_config(&self) -> anyhow::Result<(Config, PathBuf)> {
         let config = self.config.borrow().clone();
 
         // The library root is now app-managed (no user picker). Resolve it,
@@ -533,12 +576,11 @@ impl AppState {
                 warn!("Failed to set watcher path to {}: {}", library_root.display(), err)
             });
 
-        self.eval_sync(&config, &library_root).await;
-
-        Ok(())
+        Ok((config, library_root))
     }
 
     /// (Re)starts or tears down the native sync task to match config + env.
+    /// Caller must hold `eval_lock`.
     /// Opt-in via `syncEnabled`; `FLTS_DISABLE_SYNC` / `FLTS_MOCK_SYNC` force it
     /// off (CI / E2E); `FLTS_SYNC_HERMETIC` keeps it local (tests / Docker).
     /// Never fails `eval_config` — a sync start error is surfaced via status.
@@ -775,10 +817,7 @@ impl AppState {
         Ok(())
     }
 
-    async fn get_or_init_translation_queue(
-        &self,
-        library: Arc<Library>,
-    ) -> anyhow::Result<Arc<TranslationQueue>> {
+    async fn get_or_init_translation_queue(&self) -> anyhow::Result<Arc<TranslationQueue>> {
         if let Some(queue) = self.translation_queue.borrow().clone() {
             return Ok(queue);
         }
@@ -789,6 +828,15 @@ impl AppState {
         if let Some(queue) = self.translation_queue.borrow().clone() {
             return Ok(queue);
         }
+
+        // Re-read the library under the init lock: update_config holds this
+        // lock across stop → library swap, so what we read here can never be
+        // the outgoing instance.
+        let library = self
+            .library
+            .borrow()
+            .clone()
+            .ok_or(AppError::NoLibraryError)?;
 
         let config = self.config.borrow().clone();
         let cache = self.get_translations_cache().await?;
@@ -845,12 +893,7 @@ impl AppState {
         model: TranslationModel,
         use_cache: bool,
     ) -> anyhow::Result<usize> {
-        let library = self
-            .library
-            .borrow()
-            .clone()
-            .ok_or(AppError::NoLibraryError)?;
-        let queue = self.get_or_init_translation_queue(library).await?;
+        let queue = self.get_or_init_translation_queue().await?;
         queue
             .translate(book_id, paragraph_id, model, use_cache)
             .await
@@ -896,7 +939,7 @@ impl AppState {
                 .collect()
         };
 
-        let queue = self.get_or_init_translation_queue(library).await?;
+        let queue = self.get_or_init_translation_queue().await?;
         for paragraph_id in &untranslated {
             // Dedup-on-enqueue is handled by TranslationQueue::translate.
             // Swallow per-item errors so one bad paragraph doesn't abandon the rest.
