@@ -342,7 +342,13 @@ impl AppState {
             return;
         }
         let healthy = match self.sync_engine().await {
-            Some(engine) => engine.client().my_id().await.is_ok(),
+            Some(engine) => {
+                crate::app::sync_daemon::probe_healthy(
+                    engine.client().as_ref(),
+                    crate::app::sync_daemon::WAKE_PROBE_TIMEOUT,
+                )
+                .await
+            }
             None => false,
         };
         if healthy {

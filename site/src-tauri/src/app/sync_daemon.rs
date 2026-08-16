@@ -66,6 +66,22 @@ impl SyncStatus {
 /// How often the poller refreshes device/connection counts.
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(10);
 
+/// Probe budget for "is the engine still reachable" checks (app wake). Much
+/// shorter than the REST client's own 30 s timeout: on wake an unresponsive
+/// engine is the *expected* case and the frontend awaits the invoke.
+pub(crate) const WAKE_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// True when the engine's REST API answers `my_id` within `timeout`.
+pub(crate) async fn probe_healthy(
+    client: &dyn library::sync::control::SyncthingApi,
+    timeout: Duration,
+) -> bool {
+    tokio::time::timeout(timeout, client.my_id())
+        .await
+        .map(|r| r.is_ok())
+        .unwrap_or(false)
+}
+
 pub struct SyncTask {
     engine: Arc<SyncEngine>,
     status_tx: Arc<watch::Sender<SyncStatus>>,
@@ -277,5 +293,63 @@ mod tests {
         assert!(!sync_disabled(None));
         assert!(!sync_disabled(Some(OsStr::new(""))));
         assert!(sync_disabled(Some(OsStr::new("1"))));
+    }
+
+    #[tokio::test]
+    async fn probe_healthy_true_for_responsive_engine() {
+        let api = MockSyncthing::new("SELF");
+        assert!(probe_healthy(&api, Duration::from_secs(1)).await);
+    }
+
+    #[tokio::test]
+    async fn probe_healthy_returns_false_quickly_when_my_id_hangs() {
+        /// A client whose my_id never resolves — models the wedged engine a
+        /// foregrounding iOS app probes. Only my_id is reachable from
+        /// probe_healthy; every other method is unreachable in this test.
+        struct HangingApi;
+        #[async_trait::async_trait]
+        impl library::sync::control::SyncthingApi for HangingApi {
+            async fn my_id(&self) -> anyhow::Result<String> {
+                std::future::pending().await
+            }
+            async fn list_devices(&self) -> anyhow::Result<Vec<library::sync::control::DeviceInfo>> {
+                unreachable!()
+            }
+            async fn add_device(&self, _: &str, _: &str) -> anyhow::Result<()> {
+                unreachable!()
+            }
+            async fn remove_device(&self, _: &str) -> anyhow::Result<()> {
+                unreachable!()
+            }
+            async fn rename_device(&self, _: &str, _: &str) -> anyhow::Result<()> {
+                unreachable!()
+            }
+            async fn set_device_addresses(&self, _: &str, _: Vec<String>) -> anyhow::Result<()> {
+                unreachable!()
+            }
+            async fn connections(&self) -> anyhow::Result<std::collections::HashMap<String, bool>> {
+                unreachable!()
+            }
+            async fn ensure_folder(&self, _: library::sync::control::FolderSpec) -> anyhow::Result<()> {
+                unreachable!()
+            }
+            async fn set_options(&self, _: library::sync::control::OptionsPatch) -> anyhow::Result<()> {
+                unreachable!()
+            }
+            async fn pending_devices(&self) -> anyhow::Result<Vec<library::sync::control::PendingDevice>> {
+                unreachable!()
+            }
+            async fn folder_completion(&self, _: &str) -> anyhow::Result<f64> {
+                unreachable!()
+            }
+        }
+
+        let started = std::time::Instant::now();
+        assert!(!probe_healthy(&HangingApi, Duration::from_millis(50)).await);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "probe must give up at its own timeout, elapsed {:?}",
+            started.elapsed()
+        );
     }
 }
