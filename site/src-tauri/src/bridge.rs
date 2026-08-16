@@ -470,6 +470,49 @@ mod tests {
         }
     }
 
+    /// Arm literals of `dispatch`'s match, read out of this file's own source.
+    /// Anchored on the first `match cmd {` (the dispatch one — this module's
+    /// copy of the marker comes later) and stopped at the `other =>` fallback,
+    /// so no other literal in the file can leak in.
+    fn dispatch_arms() -> Vec<&'static str> {
+        let src = include_str!("bridge.rs");
+        let block = src
+            .split("match cmd {")
+            .nth(1)
+            .expect("dispatch match block")
+            .split("other =>")
+            .next()
+            .expect("fallback arm");
+        block
+            .lines()
+            .filter_map(|l| {
+                let l = l.trim();
+                let rest = l.strip_prefix('"')?;
+                let (name, tail) = rest.split_once('"')?;
+                tail.trim_start().starts_with("=>").then_some(name)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn commands_match_dispatch_arms() {
+        let arms = dispatch_arms();
+        assert!(!arms.is_empty(), "arm parser found nothing");
+        for cmd in COMMANDS {
+            assert!(
+                arms.contains(cmd),
+                "COMMANDS entry has no dispatch arm: {cmd}"
+            );
+        }
+        for arm in &arms {
+            assert!(
+                COMMANDS.contains(arm),
+                "dispatch arm missing from COMMANDS: {arm}"
+            );
+        }
+        assert_eq!(arms.len(), COMMANDS.len(), "duplicate dispatch arm");
+    }
+
     #[test]
     fn args_of_maps_camel_case() {
         #[derive(serde::Deserialize)]
