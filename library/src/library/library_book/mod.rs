@@ -33,6 +33,13 @@ mod tests;
 pub use reading_state::load_book_user_state;
 use reading_state::{load_user_state_from_dir, persist_user_state};
 
+/// Cap for the save/merge retry loops. Each retry means the canonical file
+/// changed on disk between our pre-save read and the rename (e.g. a Syncthing
+/// delivery); with a persistent racer an uncapped loop spins at full CPU while
+/// the book mutex is held, freezing every reader of this book.
+const MAX_SAVE_ATTEMPTS: u32 = 5;
+const SAVE_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BookReadingState {
     #[serde(alias = "chapterId")]
@@ -553,7 +560,8 @@ impl LibraryBook {
                 create_random_string(8)
             ));
 
-            loop {
+            let mut saved = false;
+            for attempt in 1..=MAX_SAVE_ATTEMPTS {
                 let translation_path_modified_pre_save =
                     if tokio::fs::try_exists(&translation_path).await? {
                         tokio::fs::metadata(&translation_path)
@@ -646,12 +654,26 @@ impl LibraryBook {
                         )
                         .await?;
                         merged_translations.push(translation_arc.clone());
+                        saved = true;
                         break;
                     }
                 } else {
                     merged_translations.push(translation_arc.clone());
+                    saved = true;
                     break;
                 }
+
+                // The canonical file changed mid-save; back off before the
+                // re-read+merge so a sync burst can land instead of racing us.
+                if attempt < MAX_SAVE_ATTEMPTS {
+                    tokio::time::sleep(SAVE_RETRY_BACKOFF * attempt).await;
+                }
+            }
+            if !saved {
+                anyhow::bail!(
+                    "translation {} kept changing on disk during save ({MAX_SAVE_ATTEMPTS} attempts)",
+                    translation_path.display()
+                );
             }
         }
 
@@ -659,7 +681,8 @@ impl LibraryBook {
         let book_path_temp = book
             .path
             .join(format!("book.dat~{}", create_random_string(8)));
-        loop {
+        let mut saved = false;
+        for attempt in 1..=MAX_SAVE_ATTEMPTS {
             let book_path_modified_pre_save = if tokio::fs::try_exists(&book_path).await? {
                 tokio::fs::metadata(&book_path).await?.modified().ok()
             } else {
@@ -708,6 +731,7 @@ impl LibraryBook {
                 && tokio::fs::try_exists(&book_path).await?
             {
                 book.last_modified = tokio::fs::metadata(&book_path).await?.modified().ok();
+                saved = true;
                 break;
             }
 
@@ -738,9 +762,20 @@ impl LibraryBook {
                     "idle",
                 )
                 .await?;
+                saved = true;
                 break;
             }
-            // Attempt to merge and save again otherwise
+            // Attempt to merge and save again otherwise. Back off first so a
+            // sync burst can land instead of racing us.
+            if attempt < MAX_SAVE_ATTEMPTS {
+                tokio::time::sleep(SAVE_RETRY_BACKOFF * attempt).await;
+            }
+        }
+        if !saved {
+            anyhow::bail!(
+                "book {} kept changing on disk during save ({MAX_SAVE_ATTEMPTS} attempts)",
+                book_path.display()
+            );
         }
 
         let all_book_translations = LibraryBookMetadata::load(&book.path).await?;
