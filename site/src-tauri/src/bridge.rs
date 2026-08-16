@@ -78,6 +78,12 @@ pub const COMMANDS: &[&str] = &[
     "open_external_url",
 ];
 
+/// Bridge-only commands with no `generate_handler!` counterpart: entry points
+/// the production frontend reaches through a driver the harness cannot run
+/// headlessly (here, the Spotify poller). They call the same backend functions
+/// production does — no test-only logic behind them.
+pub const E2E_ONLY_COMMANDS: &[&str] = &["e2e_resolve_track"];
+
 /// Backend events mirrored to every connected client. Must track the emit call
 /// sites; `forwarded_events_track_emit_sites` enforces it.
 pub const FORWARDED_EVENTS: &[&str] = &[
@@ -471,6 +477,33 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: Value) -> Result<Value, Valu
             wrap(crate::app::spotify::web::open_external_url(url).await)
         }
 
+        // --- bridge-only (see E2E_ONLY_COMMANDS) ---
+        // Production reaches resolve_track only from the Spotify poll loop.
+        "e2e_resolve_track" => {
+            let (track_id, name, artist, album, duration_ms, target_lang, model) = args!(args, {
+                track_id: String, name: String, artist: String, album: Option<String>,
+                duration_ms: u32, target_lang: String, model: TranslationModel
+            });
+            let track = crate::app::spotify::web::TrackMeta {
+                id: track_id,
+                name,
+                artist,
+                album,
+                duration_ms,
+            };
+            wrap(
+                crate::app::lyrics::resolve_track(
+                    &state.inner().clone(),
+                    app,
+                    &track,
+                    &target_lang,
+                    model,
+                )
+                .await
+                .map_err(|e| e.to_string()),
+            )
+        }
+
         other => Err(json!(format!("unknown command: {other}"))),
     }
 }
@@ -541,19 +574,27 @@ mod tests {
     fn commands_match_dispatch_arms() {
         let arms = dispatch_arms();
         assert!(!arms.is_empty(), "arm parser found nothing");
-        for cmd in COMMANDS {
+        let declared: Vec<&str> = COMMANDS.iter().chain(E2E_ONLY_COMMANDS).copied().collect();
+        for cmd in &declared {
             assert!(
                 arms.contains(cmd),
-                "COMMANDS entry has no dispatch arm: {cmd}"
+                "declared command has no dispatch arm: {cmd}"
             );
         }
         for arm in &arms {
+            assert!(declared.contains(arm), "undeclared dispatch arm: {arm}");
+        }
+        assert_eq!(arms.len(), declared.len(), "duplicate dispatch arm");
+    }
+
+    #[test]
+    fn e2e_only_commands_are_not_production_commands() {
+        for cmd in E2E_ONLY_COMMANDS {
             assert!(
-                COMMANDS.contains(arm),
-                "dispatch arm missing from COMMANDS: {arm}"
+                !registered().contains(cmd) && !COMMANDS.contains(cmd),
+                "e2e-only command shadows a real one: {cmd}"
             );
         }
-        assert_eq!(arms.len(), COMMANDS.len(), "duplicate dispatch arm");
     }
 
     /// Every emitted name in the crate; comments stripped, and the literal may
