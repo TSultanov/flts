@@ -83,6 +83,22 @@ describe('bridgeInvoke', () => {
     await expect(bridgeInvoke('c')).resolves.toBe('done');
   });
 
+  it('rejects in-flight calls when the socket drops, then reconnects', async () => {
+    let seen = 0;
+    onFrame = (frame, send) => {
+      // Strand the first call, then kill the connection under it.
+      if (++seen === 1) return void sockets[0].terminate();
+      send({ id: frame.id, ok: 'after-reconnect' });
+    };
+    const { bridgeInvoke } = await loadTransport();
+
+    await expect(bridgeInvoke('c')).rejects.toThrow(/bridge socket closed/);
+    expect(server.clients.size).toBe(0);
+
+    await expect(bridgeInvoke('c')).resolves.toBe('after-reconnect');
+    expect(sockets).toHaveLength(2);
+  });
+
   it('rejects when no bridge port was injected', async () => {
     delete (globalThis as any).__FLTS_BRIDGE_PORT;
     const { bridgeInvoke } = await loadTransport();
