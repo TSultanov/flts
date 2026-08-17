@@ -46,6 +46,7 @@ pub struct BookReadingState {
     pub paragraph_id: usize,
     // Which column of the saved paragraph the reader was on; zero unless the
     // paragraph flowed across columns. Tells restore which page to land on.
+    // serde default keeps pre-field state.json loadable.
     #[serde(default, alias = "pageOffset")]
     pub page_offset: usize,
 }

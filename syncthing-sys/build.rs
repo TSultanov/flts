@@ -304,6 +304,7 @@ fn link_platform_libs() {
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     match target_os.as_str() {
         "macos" => {
+            // Go's net/crypto pull in CoreFoundation/Security/resolv;
             // CoreServices provides FSEvents for the file watcher.
             println!("cargo:rustc-link-lib=framework=CoreFoundation");
             println!("cargo:rustc-link-lib=framework=CoreServices");
