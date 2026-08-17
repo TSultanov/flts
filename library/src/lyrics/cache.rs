@@ -10,10 +10,8 @@ use crate::translator::TranslationModel;
 const CACHE_SUBDIR: &str = "lyrics";
 const RAW_SUBDIR: &str = "raw";
 
-/// Disk cache for translated lyrics, keyed by (track_id, source_lang, target_lang, model).
-///
-/// Stored as one JSON file per entry under `<cache_dir>/lyrics/<key>.json`.
-/// Created lazily on first write.
+/// Translated lyrics keyed by (track_id, source_lang, target_lang, model), one
+/// JSON file per entry under `<cache_dir>/lyrics/`, created on first write.
 pub struct LyricsCache {
     root: PathBuf,
 }
@@ -56,7 +54,7 @@ impl LyricsCache {
         let path = self.path_for(&t.track_id, &t.target_lang, t.model);
         let bytes = serde_json::to_vec(t)?;
 
-        // Write to a temp file in the same dir, then rename — atomic on POSIX.
+        // Same-dir temp then rename, so the replace is atomic.
         let tmp = path.with_extension("json.tmp");
         let mut f = fs::File::create(&tmp).await?;
         f.write_all(&bytes).await?;
@@ -81,8 +79,8 @@ impl LyricsCache {
         self.root.join(filename)
     }
 
-    /// Look up the raw (untranslated) lyrics for a track. Cache miss / corruption / I/O
-    /// errors all return `None` — the caller should fall back to a fresh fetch.
+    /// Raw lyrics for a track; miss, corruption, and I/O errors all yield
+    /// `None`, so the caller refetches.
     pub async fn get_raw(&self, track_id: &str) -> Option<Lyrics> {
         let path = self.raw_path_for(track_id);
         match fs::read(&path).await {
@@ -104,8 +102,8 @@ impl LyricsCache {
         }
     }
 
-    /// Persist the raw lyrics for a track. Stored under `<root>/raw/<track>.json` so
-    /// it can't collide with translation entries that live directly under `<root>/`.
+    /// Persists raw lyrics under `<root>/raw/`, away from the translation
+    /// entries directly under `<root>/`.
     pub async fn put_raw(&self, lyrics: &Lyrics) -> anyhow::Result<()> {
         let dir = self.root.join(RAW_SUBDIR);
         fs::create_dir_all(&dir).await?;
@@ -230,8 +228,7 @@ mod tests {
 
     #[tokio::test]
     async fn raw_and_translation_do_not_collide() {
-        // Translation files live at <root>/<track>__<lang>_<model>.json,
-        // raw files at <root>/raw/<track>.json — same track id must not overwrite either.
+        // A shared track id must not let raw and translation files collide.
         let dir = TempDir::new("flts_lyrics_cache_both");
         let cache = LyricsCache::new(&dir.path);
         let t = sample("spotify:track:abc");

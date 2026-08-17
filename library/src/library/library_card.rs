@@ -11,24 +11,19 @@ use crate::{
     card::{Card, card_id, familiarity_from, lemma_slug},
 };
 
-/// Upper bound on `fam_cache` entries before it is cleared wholesale. It is a
-/// pure derived index (repopulated from disk on miss), so clearing is always
-/// safe; the cap sits well above any realistic reading vocabulary, so in
-/// practice this is effectively never reached — it just removes the unbounded
-/// growth over a very long-lived process.
+/// Entry cap before `fam_cache` is cleared wholesale. It's a derived index
+/// repopulated on miss, so clearing is always safe; the cap only bounds growth
+/// in a very long-lived process.
 const FAM_CACHE_MAX_ENTRIES: usize = 100_000;
 
 pub struct LibraryCardStore {
     root: PathBuf,
     locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     change_notify: Arc<Notify>,
-    /// Reader-side familiarity scalar per `card_id(src, tgt, slug)`, holding
-    /// the result of [`familiarity_from`] so page renders never re-read or
-    /// re-parse card JSON. `None` = dormant (Suspended/Deleted), `Some(0.0)`
-    /// = never-synced / no file on disk, `Some(scalar)` = active. Kept fresh
-    /// by `save_inner` (our own writes) and `invalidate_familiarity` (changes
-    /// that land on disk from outside, e.g. Syncthing). The lock is only ever
-    /// held around the map operation itself, never across an `.await`.
+    /// [`familiarity_from`] per `card_id`, so page renders never re-parse card
+    /// JSON. `None` is dormant, `Some(0.0)` never-synced. Kept fresh by
+    /// `save_inner` and `invalidate_familiarity`. The lock is never held across
+    /// an `.await`.
     fam_cache: RwLock<HashMap<String, Option<f32>>>,
 }
 
@@ -42,9 +37,7 @@ impl LibraryCardStore {
         }
     }
 
-    /// Returns a handle to the wake signal that fires after every successful
-    /// `save` (but not `save_without_wake`). Used by the Anki sync task to
-    /// trigger a sync pass as soon as a card lands on disk.
+    /// Wake signal fired by `save`, but not `save_without_wake`.
     pub fn change_notify(&self) -> Arc<Notify> {
         self.change_notify.clone()
     }
@@ -76,11 +69,8 @@ impl LibraryCardStore {
             .clone()
     }
 
-    /// Read and parse the canonical card file only — no Syncthing conflict
-    /// scan and no writeback, so it touches a single file and never enumerates
-    /// the deck directory. This is the cheap read backing the reader-side
-    /// familiarity path; use [`load`] when conflict reconciliation is required
-    /// (the write/sync paths).
+    /// The canonical card file alone — one file, no deck-dir scan, no
+    /// writeback. Use [`load`] where conflict reconciliation is required.
     pub async fn load_canonical(
         &self,
         source_language: &str,
@@ -95,10 +85,8 @@ impl LibraryCardStore {
         Ok(Some(serde_json::from_slice(&canonical_bytes)?))
     }
 
-    /// Load a card and reconcile any Syncthing-style `.sync-conflict-*.json`
-    /// siblings into the canonical file. Callers must hold the per-card-id
-    /// lock (see `lock_for`) — load may write the merged result back to disk
-    /// and delete conflict siblings.
+    /// Load a card, merging any `.sync-conflict-*.json` siblings back into the
+    /// canonical file. Callers must hold the per-card-id lock: this writes.
     pub async fn load(
         &self,
         source_language: &str,
@@ -136,9 +124,7 @@ impl LibraryCardStore {
             base.merge(card.clone());
         }
 
-        // Merge writeback is a normalization triggered by `load`, not a
-        // user-driven card change. Silent so sync isn't woken just because
-        // a conflict sibling happened to be present.
+        // Normalization, not a user-driven change: don't wake sync.
         self.save_without_wake(&base, source_language, target_language)
             .await?;
 
@@ -151,20 +137,15 @@ impl LibraryCardStore {
         Ok(Some(base))
     }
 
-    /// Resolve the reader-side familiarity scalar for many lemma slugs at
-    /// once. Returns a slug→scalar map containing only the slugs that should
-    /// render (i.e. those whose [`familiarity_from`] yielded `Some`); an
-    /// absent slug means the word is dormant. Warm slugs are served from the
-    /// in-memory cache; cold slugs are read once from their canonical card
-    /// file (no deck-dir scan), concurrently, and memoized. Reads are pure, so
-    /// no per-card lock is required.
+    /// Familiarity scalars for many slugs. Only renderable slugs appear; an
+    /// absent slug is dormant. Cold slugs are read concurrently from their
+    /// canonical file and memoized. Pure reads, so no per-card lock.
     pub async fn familiarities(
         &self,
         source_language: &str,
         target_language: &str,
         slugs: &[String],
     ) -> HashMap<String, f32> {
-        // Partition into cache hits (resolved immediately) and misses.
         let mut resolved: HashMap<String, Option<f32>> = HashMap::with_capacity(slugs.len());
         let mut misses: Vec<String> = Vec::new();
         {
@@ -192,9 +173,8 @@ impl LibraryCardStore {
                                 familiarity_from(card.as_ref().and_then(|c| c.anki_data.as_ref()));
                             (slug, fam, true)
                         }
-                        // Don't poison the cache on a transient read error:
-                        // render this word as never-synced but leave it a miss
-                        // so the next render retries from disk.
+                        // Leave a read error uncached so the next render
+                        // retries from disk.
                         Err(_) => (slug, Some(0.0), false),
                     }
                 }))
@@ -219,9 +199,8 @@ impl LibraryCardStore {
             .collect()
     }
 
-    /// Drop the cached familiarity for one card so the next read repopulates
-    /// it from disk. Use when a card file changes outside our own `save`
-    /// (e.g. Syncthing delivers an update from another device).
+    /// Drops one cached familiarity, for card files changed outside our own
+    /// `save` (e.g. a Syncthing delivery).
     pub fn invalidate_familiarity(
         &self,
         source_language: &str,
@@ -301,9 +280,7 @@ impl LibraryCardStore {
         accepted
     }
 
-    /// Enumerate `<src>-<tgt>` deck directories under `cards/`. Names lacking
-    /// a `-` are silently skipped. Missing root returns `Ok(vec![])`. Result is
-    /// sorted ascending.
+    /// Sorted `<src>-<tgt>` deck directories; names lacking a `-` are skipped.
     pub async fn list_pairs(&self) -> anyhow::Result<Vec<(String, String)>> {
         let mut read_dir = match tokio::fs::read_dir(&self.root).await {
             Ok(rd) => rd,
@@ -333,9 +310,8 @@ impl LibraryCardStore {
         Ok(pairs)
     }
 
-    /// Enumerate lemma slugs for the given pair's deck dir. Skips Syncthing
-    /// `.sync-conflict-*.json` siblings and any non-`.json` files. Missing
-    /// deck dir returns `Ok(vec![])`. Result is sorted ascending.
+    /// Sorted lemma slugs in the pair's deck dir, skipping conflict siblings
+    /// and non-`.json` files.
     pub async fn list_cards_in_pair(
         &self,
         source_language: &str,
@@ -370,9 +346,7 @@ impl LibraryCardStore {
         Ok(out)
     }
 
-    /// Persist a card to disk and wake any sync task listening on
-    /// `change_notify`. Use this from user-driven write paths (translation
-    /// completion, backfill, on-disk edits).
+    /// Persist and wake `change_notify`. For user-driven write paths.
     pub async fn save(
         &self,
         card: &Card,
@@ -383,10 +357,8 @@ impl LibraryCardStore {
             .await
     }
 
-    /// Persist a card to disk WITHOUT firing the change-notify wake. Use
-    /// from code paths that themselves run inside a sync pass (or otherwise
-    /// shouldn't self-trigger one), e.g. sync_pass writing back pulled
-    /// `anki_data`, or `load` normalizing a conflict merge.
+    /// Persist without the wake, for paths that run inside a sync pass and
+    /// must not self-trigger another.
     pub async fn save_without_wake(
         &self,
         card: &Card,
@@ -407,9 +379,8 @@ impl LibraryCardStore {
         let deck = self.deck_dir(source_language, target_language);
         tokio::fs::create_dir_all(&deck).await?;
 
-        // `card.lemma` is already NFC + apostrophe + whitespace-normalized
-        // by extract_card_updates (the only writer), but case-preserving.
-        // Lowercase before slugging so the filename matches the slug pipeline.
+        // `card.lemma` is normalized but case-preserving; lowercase so the
+        // filename matches the slug pipeline.
         let slug = lemma_slug(&card.lemma.to_lowercase());
         let file_name = format!("{slug}.json");
         let canonical = deck.join(&file_name);
@@ -419,9 +390,7 @@ impl LibraryCardStore {
         tokio::fs::write(&temp, bytes).await?;
         tokio::fs::rename(&temp, &canonical).await?;
 
-        // Keep the reader-side familiarity cache fresh without a re-read — we
-        // hold the authoritative card. Covers card creation, Anki sync
-        // writeback, and the conflict-merge writeback inside `load`.
+        // We hold the authoritative card, so refresh without a re-read.
         let id = card_id(source_language, target_language, &slug);
         self.fam_cache
             .write()
@@ -506,9 +475,7 @@ mod tests {
             .save_without_wake(&sample_card(), "spa", "rus")
             .await
             .unwrap();
-        // notify_one is queued (max 1 permit). If save_without_wake wakes
-        // erroneously, this notified() returns immediately; otherwise it
-        // pends until the timeout elapses.
+        // A queued permit would make notified() return immediately.
         let pending = tokio::time::timeout(
             std::time::Duration::from_millis(100),
             notify.notified(),
@@ -751,8 +718,7 @@ mod tests {
 
         let deck = tmp.path.join("cards").join("spa-rus");
         let foreign_path = deck.join("poder.sync-conflict-X.json");
-        // Foreign card masquerades under the conflict-name pattern but its lemma
-        // (`comer`) would derive id `flts_spa_rus_comer_verb`, not `poder_verb`.
+        // A sibling whose lemma derives a different id must be skipped.
         let foreign = card_with(
             "comer",
             "verb",
@@ -911,7 +877,6 @@ mod tests {
         let tmp = TempDir::new("flts_load_canonical_absent");
         let store = LibraryCardStore::new(&tmp.path);
         let book = Uuid::new_v4();
-        // Bootstrap the deck dir via a save we then remove.
         store
             .save(
                 &card_with(
@@ -977,10 +942,8 @@ mod tests {
             .await
             .unwrap();
 
-        // Seed a Syncthing conflict sibling — must be skipped.
         let deck = tmp.path.join("cards").join("spa-rus");
         std::fs::write(deck.join("poder.sync-conflict-20260520-X.json"), b"{}").unwrap();
-        // And a stray non-JSON file — also skipped.
         std::fs::write(deck.join("README"), b"ignore").unwrap();
 
         let cards = store.list_cards_in_pair("spa", "rus").await.unwrap();
@@ -1006,7 +969,6 @@ mod tests {
     async fn list_pairs_returns_pair_for_each_deck_dir() {
         let tmp = TempDir::new("flts_list_pairs");
         let store = LibraryCardStore::new(&tmp.path);
-        // Bootstrap two deck dirs via save().
         store.save(&sample_card(), "spa", "rus").await.unwrap();
         store
             .save(
@@ -1016,7 +978,6 @@ mod tests {
             )
             .await
             .unwrap();
-        // Add a non-pair directory and a stray file that must be ignored.
         std::fs::create_dir(tmp.path.join("cards").join("not_a_pair")).unwrap();
         std::fs::write(tmp.path.join("cards").join("README"), b"ignore me").unwrap();
 
@@ -1069,14 +1030,11 @@ mod tests {
         }
     }
 
-    // A mature Active card (stability == MATURE_DAYS) collapses to familiarity
-    // 1.0 by the `familiarity_from` contract — handy as an exact assertion.
+    // Stability == MATURE_DAYS collapses to exactly 1.0.
     #[tokio::test]
     async fn familiarities_maps_states_like_per_word_path() {
         let tmp = TempDir::new("flts_fam_states");
-        // Write cards through one store, then read cold through a fresh store
-        // so the in-memory cache starts empty and `familiarities` exercises
-        // the `load_canonical` + `familiarity_from` path.
+        // A fresh store starts with an empty cache, so this reads cold.
         {
             let writer = LibraryCardStore::new(&tmp.path);
             writer
@@ -1121,7 +1079,6 @@ mod tests {
         let tmp = TempDir::new("flts_fam_cache");
         let store = LibraryCardStore::new(&tmp.path);
 
-        // save updates the cache without a re-read.
         store
             .save_without_wake(
                 &card_with_anki("poder", AnkiState::Active, Some(90.0)),
@@ -1135,7 +1092,6 @@ mod tests {
             .await;
         assert_eq!(fam.get("poder").copied(), Some(1.0));
 
-        // Mutate the on-disk file behind the cache's back: still served stale.
         write_pretty(
             &store.card_path("spa", "rus", "poder"),
             &card_with_anki("poder", AnkiState::Suspended, None),
@@ -1150,7 +1106,6 @@ mod tests {
             "cache hit should not re-read disk"
         );
 
-        // After invalidation the next read reflects disk: dormant → absent.
         store.invalidate_familiarity("spa", "rus", "poder");
         let fam = store
             .familiarities("spa", "rus", &["poder".to_string()])
@@ -1183,7 +1138,6 @@ mod tests {
         )
         .await;
 
-        // Canonical read returns the single file untouched, sibling intact.
         let only = store
             .load_canonical("spa", "rus", "poder")
             .await
@@ -1195,7 +1149,6 @@ mod tests {
             "load_canonical must not touch conflict siblings"
         );
 
-        // The full `load` still reconciles and cleans up the sibling.
         let merged = store
             .load("spa", "rus", "poder")
             .await

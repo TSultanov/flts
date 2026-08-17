@@ -44,12 +44,8 @@ pub struct BookReadingState {
     pub chapter_id: usize,
     #[serde(alias = "paragraphId")]
     pub paragraph_id: usize,
-    // Which column of the saved paragraph the reader was on. Zero for
-    // single-column paragraphs (the desktop common case). On touch
-    // devices, where break-inside: auto lets a paragraph flow across
-    // multiple columns, this tells restore which page to land on.
-    // Serde default keeps state.json files written before this field
-    // existed loadable.
+    // Which column of the saved paragraph the reader was on; zero unless the
+    // paragraph flowed across columns. Tells restore which page to land on.
     #[serde(default, alias = "pageOffset")]
     pub page_offset: usize,
 }
@@ -65,8 +61,8 @@ pub struct BookUserState {
 pub struct LibraryBook {
     path: PathBuf,
     last_modified: Option<SystemTime>,
-    /// Trailing FNV content hash of the last `book.dat` we read or wrote.
-    /// Used to drop file-watcher echoes of our own writes (same content).
+    /// Trailing FNV hash of the last `book.dat` read or written; drops
+    /// file-watcher echoes of our own writes.
     last_saved_hash: Option<u64>,
     pub book: Book,
     translations: Vec<Arc<TracedMutex<LibraryTranslation>>>,
@@ -78,15 +74,13 @@ pub struct LibraryTranslation {
     source_language: Language,
     target_language: Language,
     last_modified: Option<SystemTime>,
-    /// Trailing FNV content hash of the last translation file we read or wrote.
-    /// Used to drop file-watcher echoes of our own writes (same content).
+    /// Trailing FNV hash of the last translation file read or written; drops
+    /// file-watcher echoes of our own writes.
     last_saved_hash: Option<u64>,
     changed: bool,
 }
 
-/// Extracts the trailing 8-byte FNV content hash from a freshly serialized
-/// buffer (the `.dat` format appends it last). Returns `None` if the buffer is
-/// somehow shorter than the hash.
+/// The trailing 8-byte FNV hash the `.dat` format appends, if present.
 fn trailing_hash(buffer: &[u8]) -> Option<u64> {
     let len = buffer.len();
     if len < 8 {
@@ -319,9 +313,8 @@ impl LibraryBook {
         let source_language = &self.book.language;
 
         for (t_idx, t) in self.translations.iter().enumerate() {
-            // Double-lock pattern: check source then target language.
-            // Each lock is acquired and released independently; TracedMutex
-            // emits AcqTrans/RelTrans automatically for each.
+            // Two independent lock acquisitions, so TracedMutex emits a
+            // matched Acq/Rel pair for each.
             let src_match = {
                 let guard = t.lock().await;
                 &guard.translation.source_language == source_language
@@ -339,11 +332,8 @@ impl LibraryBook {
             }
         }
 
-        // Not found: create and push. `source_language` is the book's own
-        // language field; it is normally a valid ISO-639-3 code, but a
-        // hand-edited / corrupted / foreign-tool book.dat can carry a bad
-        // value. Return an error instead of panicking (panic = "abort" would
-        // take the whole app down).
+        // A corrupted or foreign-tool book.dat can carry a bad language code;
+        // error out rather than panic, since panic aborts the whole app.
         let parsed_source = Language::from_639_3(source_language).ok_or_else(|| {
             anyhow::anyhow!("book has invalid ISO-639-3 language code: {source_language:?}")
         })?;
@@ -401,7 +391,7 @@ impl LibraryBook {
 
         for p in metadata.conflicting_paths {
             if p.exists() {
-                // It's possible we've just moved the newest conflict into main, so ignore missing
+                // The newest conflict may already have moved into main.
                 let _ = tokio::fs::remove_file(p).await;
             }
         }
@@ -449,19 +439,15 @@ impl LibraryBook {
     }
 
     pub async fn reload_book(&mut self, modified: SystemTime) -> anyhow::Result<bool> {
-        // Echo-vs-real is decided purely by content hash, NOT mtime. An mtime
-        // quick-reject would drop a genuine remote change whose delivered
-        // mtime is <= ours: Syncthing stamps files with the SOURCE device's
-        // clock, so with clock skew a real remote edit routinely arrives
-        // "older" than our last local save. Our own writes (and Syncthing
-        // re-touching a file) bump the mtime without changing bytes, and the
-        // hash match below drops those echoes so we don't re-save in a loop.
+        // Echo-vs-real is decided by content hash, never mtime: Syncthing
+        // stamps the source device's clock, so a real remote edit can arrive
+        // "older" than our last save, while our own writes bump mtime without
+        // changing bytes.
         let book_path = self.path.join("book.dat");
         if let Some(saved_hash) = self.last_saved_hash
             && let Ok(disk_hash) = read_stored_hash_from_path(&book_path)
             && disk_hash == saved_hash
         {
-            // Same content; adopt the new mtime so we stop re-checking it.
             self.last_modified = Some(modified);
             return Ok(false);
         }
@@ -484,10 +470,8 @@ impl LibraryBook {
                 continue;
             }
 
-            // Content-gate only (no mtime quick-reject): a Syncthing-delivered
-            // remote edit can carry an mtime <= ours, so drop echoes by hash
-            // equality alone. Only a genuinely different on-disk hash warrants
-            // a reload+merge+save.
+            // Content-gate only: a delivered remote edit can carry an mtime
+            // <= ours, so only a differing hash warrants reload+merge+save.
             let file_name = format!(
                 "translation_{}_{}.dat",
                 t.translation.source_language, t.translation.target_language
@@ -517,13 +501,9 @@ impl LibraryBook {
             tokio::fs::create_dir_all(&self.path).await?;
         }
 
-        // Best-effort cleanup of temp files leaked by previously-failed
-        // saves. Restricted to the exact names THIS function creates
-        // (`book.dat~XXXX` / `translation_….dat~XXXX`): saves are
-        // serialized per book by the mutex, so a match is always a
-        // leftover — but other writers (the chapter-summaries sidecar)
-        // use the same `~` convention in this directory WITHOUT holding
-        // the book lock, and their in-flight temps must not be swept.
+        // Sweep temps leaked by failed saves. Only the names this function
+        // creates: the book mutex makes a match a leftover, while other
+        // writers share the `~` convention without holding that lock.
         if let Ok(mut entries) = tokio::fs::read_dir(&self.path).await {
             while let Ok(Some(entry)) = entries.next_entry().await {
                 let name = entry.file_name();
@@ -538,11 +518,8 @@ impl LibraryBook {
 
         let book = self;
 
-        // Iterate over a snapshot of the Arcs instead of draining the vec:
-        // save() has dozens of fallible awaits, and an early `?` return
-        // must not leave the in-memory book without its translations. The
-        // book instance stays cached, so a drained vec would blank every
-        // translation in the UI until the app reloads it from disk.
+        // Snapshot rather than drain: an early `?` must not leave the cached
+        // book without its translations, blanking them in the UI.
         let translation_arcs = book.translations.clone();
         let mut merged_translations = Vec::new();
 
@@ -570,23 +547,17 @@ impl LibraryBook {
                         None
                     };
 
-                // Absorb the on-disk copy whenever its content differs from
-                // what we last persisted — content-based, not mtime-based,
-                // because a Syncthing-delivered remote edit carries the
-                // source device's clock and can look "older" than our last
-                // local save. merge() is an additive union, so pulling in
-                // disk never loses local translations.
+                // Absorb any on-disk copy whose content differs from what we
+                // persisted; mtime is unreliable across devices, and merge is
+                // an additive union so this cannot lose local translations.
                 if tokio::fs::try_exists(&translation_path).await?
                     && read_stored_hash_from_path(&translation_path).ok()
                         != translation.last_saved_hash
                 {
                     match LibraryTranslation::load(&translation_path).await {
                         Ok(saved_translation) => translation.merge(saved_translation),
-                        // An unparseable disk copy (torn write, truncated
-                        // sync delivery) has nothing to merge. Overwrite it
-                        // from memory instead: erroring out here would wedge
-                        // every future save of this book while the in-memory
-                        // state is the only surviving copy.
+                        // An unparseable copy has nothing to merge; erroring
+                        // would wedge every future save of this book.
                         Err(err) => {
                             warn!(
                                 "Overwriting unreadable translation file {}: {err:#}",
@@ -625,20 +596,15 @@ impl LibraryBook {
                     }) == translation_path_modified_pre_save
                         || translation_path_modified_pre_save.is_none()
                     {
-                        // Atomic replace: renaming over the destination
-                        // without removing it first — remove+rename leaves
-                        // a window with no file on disk, which concurrent
-                        // readers (metadata scans, sync rescans) see as an
-                        // error. rename() replaces atomically on Unix and
-                        // uses MOVEFILE_REPLACE_EXISTING on Windows.
+                        // Rename over the destination: remove+rename would
+                        // leave a window where concurrent readers see no file.
                         tokio::fs::rename(&translation_path_temp, &translation_path).await?;
                         translation.last_modified = tokio::fs::metadata(&translation_path)
                             .await?
                             .modified()
                             .ok();
-                        // Record the content we just wrote so the file-watcher
-                        // echo of this very write is recognised and dropped,
-                        // and clear the dirty flag now that it's persisted.
+                        // Record what we wrote so this write's watcher echo
+                        // is recognised and dropped.
                         translation.last_saved_hash = trailing_hash(&buffer);
                         translation.changed = false;
                         tla_trace::emit_translation_event(
@@ -686,13 +652,10 @@ impl LibraryBook {
                 None
             };
 
-            // Adopt the on-disk book when its content differs from what we
-            // last persisted (content-based, not mtime-based — a remote edit
-            // delivered by Syncthing can carry an older clock; an mtime gate
-            // would drop it and then overwrite the canonical file with our
-            // stale copy, destroying the remote change across the mesh).
-            // book.dat is effectively immutable after import, so adopting
-            // disk here cannot lose a local edit.
+            // Adopt any on-disk book whose content differs: an mtime gate
+            // would drop a remote edit carrying an older clock and then
+            // overwrite it mesh-wide. book.dat is immutable after import, so
+            // adopting disk cannot lose a local edit.
             if tokio::fs::try_exists(&book_path).await?
                 && read_stored_hash_from_path(&book_path).ok() != book.last_saved_hash
             {
@@ -702,10 +665,8 @@ impl LibraryBook {
                         book.last_modified = saved_book.last_modified;
                         book.last_saved_hash = saved_book.last_saved_hash;
                     }
-                    // An unparseable disk copy has nothing to adopt. Clear
-                    // the echo hash so the identical-content skip below
-                    // can't fire and the write repairs the file from memory;
-                    // erroring out would wedge every future save of the book.
+                    // Nothing to adopt: clear the echo hash so the skip below
+                    // can't fire and the write repairs the file from memory.
                     Err(err) => {
                         warn!(
                             "Overwriting unreadable book file {}: {err:#}",
@@ -720,9 +681,8 @@ impl LibraryBook {
             book.book.serialize(&mut buffer)?;
             let new_hash = trailing_hash(&buffer);
 
-            // If the freshly serialized book is byte-identical to what's
-            // already on disk, skip the write: rewriting it would only emit a
-            // spurious BookChanged watcher event and feed the save/reload loop.
+            // Skip a byte-identical rewrite; it would only emit a spurious
+            // BookChanged event and feed the save/reload loop.
             if let Some(new_hash) = new_hash
                 && book.last_saved_hash == Some(new_hash)
                 && tokio::fs::try_exists(&book_path).await?
@@ -762,7 +722,7 @@ impl LibraryBook {
                 saved = true;
                 break;
             }
-            // Back off so the racing writer can land, then merge and retry.
+            // Back off so the racing writer can land.
             if attempt < MAX_SAVE_ATTEMPTS {
                 tokio::time::sleep(SAVE_RETRY_BACKOFF * attempt).await;
             }

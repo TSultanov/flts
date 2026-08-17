@@ -1,10 +1,5 @@
-//! Builds the `syncthing-core` Go module into a static c-archive and links it
-//! into this crate.
-//!
-//! Phase 0: the archive currently exposes only `flts_st_ping`. The build logic
-//! here (locate the Go module, run `go build -buildmode=c-archive`, emit the
-//! link directives + platform system libraries) is the part that has to be
-//! right for the real engine to link later, so it is built and exercised now.
+//! Builds the `syncthing-core` Go module into a c-archive (c-shared on Android)
+//! and emits the link directives for it.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -26,9 +21,7 @@ fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
 
-    // Android's cgo only supports `-buildmode=c-shared`, so there we build a
-    // shared object and link it dynamically; every other target links a static
-    // c-archive (no extra runtime artifact to ship).
+    // Android's cgo only supports `-buildmode=c-shared`.
     let android = target_os == "android";
     let lib = out_dir.join(if android {
         "libsyncthing_core.so"
@@ -36,9 +29,7 @@ fn main() {
         "libsyncthing_core.a"
     });
 
-    // Re-run if any Go source or the module manifest changes.
     println!("cargo:rerun-if-changed={}", go_dir.join("go.mod").display());
-    // ...or the committed Web-GUI vendor assets (used only by debug builds).
     println!("cargo:rerun-if-changed={}", go_dir.join("webui-vendor").display());
     for entry in std::fs::read_dir(&go_dir).expect("read syncthing-core dir") {
         let path = entry.expect("dir entry").path();
@@ -51,13 +42,9 @@ fn main() {
 
     println!("cargo:rustc-link-search=native={}", out_dir.display());
     if android {
-        // Link the shared object (`libsyncthing_core.so` -> `-lsyncthing_core`),
-        // giving `libapp_lib.so` a DT_NEEDED on it, then stage it into the Tauri
-        // Android project's jniLibs so Gradle packages the two side by side.
         println!("cargo:rustc-link-lib=dylib=syncthing_core");
         stage_android_jnilib(&crate_dir, &lib);
     } else {
-        // Link the static archive (`libsyncthing_core.a` -> `-lsyncthing_core`).
         println!("cargo:rustc-link-lib=static=syncthing_core");
     }
 
@@ -68,24 +55,17 @@ fn build_archive(go_dir: &Path, lib: &Path, target_os: &str) {
     let android = target_os == "android";
     let go = env::var("FLTS_GO_BIN").unwrap_or_else(|_| "go".to_string());
 
-    // Debug builds embed Syncthing's real Web GUI so the app can open the
-    // dashboard for diagnostics; release builds skip it (see `embed_web_ui`).
+    // Debug builds embed Syncthing's Web GUI for diagnostics; release skips it.
     let debug = env::var("PROFILE").as_deref() == Ok("debug");
     let assets_modfile = debug.then(|| embed_web_ui_modfile(&go, go_dir));
 
     let mut cmd = Command::new(&go);
     cmd.current_dir(go_dir).arg("build");
     match &assets_modfile {
-        // Point the build at an alternate go.mod whose `replace` swaps the
-        // Syncthing module for a writable copy carrying the generated
-        // `lib/api/auto/gui.files.go`; without `noassets`, `auto.Assets()` then
-        // serves the full dashboard. (An `-overlay` can't do this: Go forbids
-        // overlaying files beneath GOMODCACHE.)
         Some(modfile) => {
             cmd.arg("-modfile").arg(modfile);
         }
-        // `noassets`: skip the Web-GUI asset blob. FLTS drives the engine over
-        // REST, so the minimal fallback in `lib/api/auto/noassets.go` suffices.
+        // FLTS drives the engine over REST; the `noassets` fallback suffices.
         None => {
             cmd.args(["-tags", "noassets"]);
         }
@@ -99,19 +79,12 @@ fn build_archive(go_dir: &Path, lib: &Path, target_os: &str) {
         .arg(lib)
         .env("CGO_ENABLED", "1");
 
-    // Pin the shared object's SONAME to its bare name so the consumer records a
-    // plain `libsyncthing_core.so` DT_NEEDED (not the absolute OUT_DIR path),
-    // which Android resolves from the app's own lib directory at load time.
+    // Bare SONAME so the DT_NEEDED is resolved from the app's lib dir, not OUT_DIR.
     if android {
         cmd.arg("-ldflags=-extldflags=-Wl,-soname,libsyncthing_core.so");
     }
     cmd.arg(".");
 
-    // Cross-compile for iOS/Android when Cargo is targeting them; otherwise the
-    // host go toolchain builds for the host. Tauri builds the app for
-    // aarch64-apple-ios (device) and the *-ios-sim / x86_64-apple-ios simulator
-    // triples, and for the four Android ABIs (arm64-v8a, armeabi-v7a, x86_64,
-    // x86).
     if target_os == "ios" {
         apply_ios_cross_env(&mut cmd);
     } else if android {
@@ -125,21 +98,15 @@ fn build_archive(go_dir: &Path, lib: &Path, target_os: &str) {
     assert!(lib.exists(), "go build did not produce {}", lib.display());
 }
 
-/// Prepares a writable copy of the Syncthing module carrying the generated
-/// Web-GUI asset file, and returns the path to an alternate `go.mod` whose
-/// `replace` points the build at that copy. Built without the `noassets` tag,
-/// `auto.Assets()` then serves the full dashboard.
+/// Returns an alternate `go.mod` whose `replace` points at a writable copy of
+/// the Syncthing module carrying the generated `lib/api/auto/gui.files.go`.
 ///
-/// Why a copy + replace rather than an `-overlay`: the upstream
-/// `lib/api/auto/gui.files.go` is generated (gitignored) and so absent from the
-/// module cache, and Go refuses to `-overlay` any file beneath GOMODCACHE. A
-/// local-directory `replace` sidesteps both — it bypasses go.sum for that module
-/// and gives us a writable tree to generate into. Host toolchain only (no cross
-/// env): `genassets.go` is a standalone `//go:build ignore` file walker.
+/// `-overlay` can't work here: the generated file is absent from the module
+/// cache and Go forbids overlaying anything beneath GOMODCACHE. Host toolchain
+/// only — `genassets.go` is a standalone `//go:build ignore` walker.
 fn embed_web_ui_modfile(go: &str, go_dir: &Path) -> PathBuf {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
-    // Resolve the Syncthing module's source dir in the (immutable) module cache.
     let out = Command::new(go)
         .current_dir(go_dir)
         .args(["list", "-m", "-f", "{{.Dir}}", "github.com/syncthing/syncthing"])
@@ -152,10 +119,7 @@ fn embed_web_ui_modfile(go: &str, go_dir: &Path) -> PathBuf {
     );
     let st_src = PathBuf::from(String::from_utf8(out.stdout).unwrap().trim());
 
-    // Refresh a writable copy of the module under OUT_DIR. The cache tree is
-    // read-only, so `rm -rf` clears any prior (possibly read-only) copy and
-    // `cp -R …/.` copies its contents; then make it writable so we can drop the
-    // generated file in.
+    // The cache tree is read-only, hence the rm/cp/chmod dance.
     let st_copy = out_dir.join("syncthing-src");
     run(Command::new("rm").arg("-rf").arg(&st_copy));
     std::fs::create_dir_all(&st_copy)
@@ -163,16 +127,13 @@ fn embed_web_ui_modfile(go: &str, go_dir: &Path) -> PathBuf {
     run(Command::new("cp").arg("-R").arg(format!("{}/.", st_src.display())).arg(&st_copy));
     run(Command::new("chmod").arg("-R").arg("u+w").arg(&st_copy));
 
-    // The Go module ships the GUI source but not the third-party `vendor/` libs
-    // (Go's zip packaging strips nested `vendor/` dirs). Drop our committed copy
-    // into the default theme so genassets embeds a fully working dashboard.
+    // Go's zip packaging strips nested `vendor/` dirs, so supply our own copy.
     let vendor_src = go_dir.join("webui-vendor");
     let vendor_dst = st_copy.join("gui/default/vendor");
     std::fs::create_dir_all(&vendor_dst)
         .unwrap_or_else(|e| panic!("creating {}: {e}", vendor_dst.display()));
     run(Command::new("cp").arg("-R").arg(format!("{}/.", vendor_src.display())).arg(&vendor_dst));
 
-    // Generate the assets into the copy's `auto` package from its own `gui/`.
     run(Command::new(go)
         .current_dir(go_dir)
         .arg("run")
@@ -181,9 +142,7 @@ fn embed_web_ui_modfile(go: &str, go_dir: &Path) -> PathBuf {
         .arg(st_copy.join("lib/api/auto/gui.files.go"))
         .arg(st_copy.join("gui")));
 
-    // Alternate go.mod = the real one plus a replace onto the copy. `-modfile`
-    // derives the matching sum file by swapping the extension, so copy go.sum
-    // alongside (the replaced module no longer needs a checksum, but the rest do).
+    // `-modfile` derives its sum file by swapping the extension, hence go.webui.sum.
     let go_mod = std::fs::read_to_string(go_dir.join("go.mod"))
         .expect("reading syncthing-core/go.mod");
     let alt_mod = out_dir.join("go.webui.mod");
@@ -212,14 +171,12 @@ fn run(cmd: &mut Command) {
     );
 }
 
-/// Configures the Go build to cross-compile a c-archive for the active iOS
-/// target, pointing cgo's clang at the right SDK (device vs simulator).
+/// Points cgo's clang at the SDK matching the active iOS target.
 fn apply_ios_cross_env(cmd: &mut Command) {
     let target = env::var("TARGET").unwrap_or_default();
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
 
-    // Simulator triples are `*-apple-ios-sim` (Apple Silicon) and
-    // `x86_64-apple-ios` (Intel); `aarch64-apple-ios` is the device.
+    // Simulator triples: `*-apple-ios-sim` and `x86_64-apple-ios`.
     let is_simulator = target.ends_with("-sim") || arch == "x86_64";
     let (sdk, min_flag) = if is_simulator {
         ("iphonesimulator", "-mios-simulator-version-min=13.0")
@@ -241,15 +198,11 @@ fn apply_ios_cross_env(cmd: &mut Command) {
     cmd.env("GOOS", "ios").env("GOARCH", goarch).env("CC", cc);
 }
 
-/// Configures the Go build to cross-compile a c-archive for the active Android
-/// target, pointing cgo's CC at the matching NDK clang wrapper. Mirrors
-/// `apply_ios_cross_env` but for the four Android ABIs.
+/// Points cgo's CC at the NDK clang wrapper matching the active Android target.
 fn apply_android_cross_env(cmd: &mut Command) {
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
 
-    // Map the Rust target arch to (GOARCH, NDK clang triple, GOARM). The NDK
-    // ships per-API clang wrappers named `<triple><api>-clang`; only 32-bit ARM
-    // needs GOARM. ABIs: arm64-v8a, armeabi-v7a, x86_64, x86.
+    // Only 32-bit ARM needs GOARM.
     let (goarch, clang_triple, goarm): (&str, &str, Option<&str>) = match arch.as_str() {
         "aarch64" => ("arm64", "aarch64-linux-android", None),
         "arm" => ("arm", "armv7a-linux-androideabi", Some("7")),
@@ -258,10 +211,7 @@ fn apply_android_cross_env(cmd: &mut Command) {
         other => panic!("unsupported Android arch: {other}"),
     };
 
-    // The cgo target API level must be >= the app's minSdk (see
-    // gen/android/app/build.gradle.kts; tauri.conf.json android.minSdkVersion).
-    // Overridable for forward-compat, but defaults to match the Rust linker
-    // (cargo-tauri links the lib with `<triple>24-clang`).
+    // Must be >= the app's minSdk; 24 matches the linker cargo-tauri uses.
     println!("cargo:rerun-if-env-changed=FLTS_ANDROID_API");
     let api = env::var("FLTS_ANDROID_API").unwrap_or_else(|_| "24".to_string());
 
@@ -281,9 +231,7 @@ fn apply_android_cross_env(cmd: &mut Command) {
     }
 }
 
-/// Locates the NDK's prebuilt LLVM `bin` dir (which holds the clang wrappers),
-/// resolving the NDK root from the standard env vars and globbing the single
-/// host-tagged prebuilt directory (e.g. `darwin-x86_64`).
+/// Locates the NDK's prebuilt LLVM `bin` dir holding the clang wrappers.
 fn ndk_llvm_bin() -> PathBuf {
     let ndk = ["NDK_HOME", "ANDROID_NDK_HOME", "ANDROID_NDK_ROOT"]
         .into_iter()
@@ -307,12 +255,9 @@ fn ndk_llvm_bin() -> PathBuf {
     prebuilt.join(host_tag).join("bin")
 }
 
-/// Stages the freshly built `libsyncthing_core.so` into the Tauri Android
-/// project's `jniLibs/<abi>/` so Gradle bundles it into the APK next to
-/// `libapp_lib.so` (which links against it). `syncthing-sys` lives at the
-/// workspace root, so the app's generated Android tree is a fixed sibling path;
-/// if it isn't present (e.g. a standalone crate build), staging is skipped and
-/// linking still succeeds against the copy in OUT_DIR.
+/// Copies `libsyncthing_core.so` into the Tauri Android project's
+/// `jniLibs/<abi>/` so Gradle packages it beside `libapp_lib.so`. Skipped when
+/// that tree is absent; linking still resolves against the OUT_DIR copy.
 fn stage_android_jnilib(crate_dir: &Path, lib: &Path) {
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let abi = match arch.as_str() {
@@ -359,16 +304,14 @@ fn link_platform_libs() {
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     match target_os.as_str() {
         "macos" => {
-            // Go's net/crypto on Darwin pull in these frameworks + resolv;
-            // CoreServices provides FSEvents for the file watcher (macOS only).
+            // CoreServices provides FSEvents for the file watcher.
             println!("cargo:rustc-link-lib=framework=CoreFoundation");
             println!("cargo:rustc-link-lib=framework=CoreServices");
             println!("cargo:rustc-link-lib=framework=Security");
             println!("cargo:rustc-link-lib=resolv");
         }
         "ios" => {
-            // iOS has no CoreServices/FSEvents (Syncthing's watcher falls back
-            // to kqueue, which is in libSystem — no extra framework needed).
+            // No CoreServices; the watcher falls back to kqueue in libSystem.
             println!("cargo:rustc-link-lib=framework=CoreFoundation");
             println!("cargo:rustc-link-lib=framework=Security");
             println!("cargo:rustc-link-lib=resolv");
@@ -378,8 +321,7 @@ fn link_platform_libs() {
             println!("cargo:rustc-link-lib=dl");
         }
         "android" => {
-            // Bionic folds pthread/dl into libc, but the Go runtime's cgo glue
-            // logs through liblog, which the final (Rust) link must resolve.
+            // Bionic folds pthread/dl into libc; cgo glue still needs liblog.
             println!("cargo:rustc-link-lib=log");
         }
         _ => {}

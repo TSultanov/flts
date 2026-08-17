@@ -1,7 +1,6 @@
-//! `ChapterContextProvider` implementation backed by the
-//! `SummaryGenerationQueue` (for summaries) and the in-memory library
-//! (for chapter text). Lives in the Tauri app crate because both
-//! dependencies are app-scoped; the library crate stays unaware.
+//! `ChapterContextProvider` over the `SummaryGenerationQueue` and the in-memory
+//! library. Both dependencies are app-scoped, so it lives here rather than in
+//! the library crate.
 
 use std::{sync::Arc, time::Duration};
 
@@ -18,17 +17,14 @@ use crate::app::summary_generation_queue::{
     SummaryGenerationQueue, concat_prior_summaries,
 };
 
-/// How long a paragraph translation will wait for `wait_ready` before
-/// degrading to the no-summaries cache variant. Picked to comfortably
-/// cover a few Flash-Lite summary calls (each ~1–3s) while still bounding
-/// pathological "stuck book" scenarios.
+/// Covers a few Flash-Lite summary calls (~1–3s each) while still bounding a
+/// stuck book.
 const WAIT_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct SummaryBackedChapterContext {
     pub queue: Arc<SummaryGenerationQueue>,
-    /// The AppState library channel, borrowed per operation so a config
-    /// change (which swaps in a fresh `Library`) is picked up instead of
-    /// pinning the instance that existed at construction time.
+    /// Borrowed per operation, so a config change swapping in a fresh `Library`
+    /// is picked up rather than pinned at construction.
     pub library_rx: watch::Receiver<Option<Arc<Library>>>,
 }
 
@@ -44,17 +40,13 @@ impl SummaryBackedChapterContext {
 #[async_trait]
 impl ChapterContextProvider for SummaryBackedChapterContext {
     async fn wait_ready(&self, book_id: Uuid, chapter_index: usize) -> anyhow::Result<()> {
-        // Chapter 0 has no prior chapters to summarize — translating its
-        // paragraphs doesn't need any summary to be ready.
         if chapter_index == 0 {
             return Ok(());
         }
-        // For chapter K we only need summaries 0..K-1 (the prior
-        // chapters), since `prior_summaries(K)` only reads that range.
+        // `prior_summaries(K)` reads only 0..K-1.
         let needed = chapter_index - 1;
 
-        // Make sure the book is enqueued; harmless no-op if already
-        // processing or already complete.
+        // No-op when already processing or complete.
         self.queue.enqueue(book_id);
 
         let library = self.current_library()?;
@@ -80,9 +72,8 @@ impl ChapterContextProvider for SummaryBackedChapterContext {
                 }
             }
         };
-        // "timed out" keeps this within the transient-error signatures of
-        // `is_transient_translation_error`, so the translation queue requeues
-        // the paragraph instead of failing it — summaries usually finish soon.
+        // "timed out" must stay in the message: it is what makes
+        // `is_transient_translation_error` requeue rather than fail.
         timeout(WAIT_READY_TIMEOUT, wait)
             .await
             .map_err(|_| {
@@ -137,9 +128,7 @@ mod tests {
 
     #[test]
     fn wait_ready_timeout_error_is_transient() {
-        // The translation queue only requeues this failure if the message
-        // matches a transient signature; a reword that drops "timed out"
-        // would silently turn it back into a permanent error.
+        // Rewording the message away from "timed out" makes it permanent.
         let book_id = Uuid::new_v4();
         let chapter_index = 5usize;
         let err = anyhow::anyhow!(

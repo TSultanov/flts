@@ -1,10 +1,7 @@
 /**
- * Mock implementation of @tauri-apps/plugin-os for Playwright tests.
- *
- * `platform()` reads from `window.__mockPlatform` on every call so tests can
- * set the value via `page.addInitScript(() => { window.__mockPlatform = 'linux' })`
- * before any app code (including App.svelte's module-level
- * `try { isMac = platform() === 'macos' }`) runs. Defaults to `'macos'`.
+ * Stand-in for @tauri-apps/plugin-os. `platform()` re-reads
+ * `window.__mockPlatform` on every call so `page.addInitScript` can set it
+ * before module-level app code runs. Defaults to `'macos'`.
  */
 
 export function platform(): string {

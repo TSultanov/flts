@@ -23,10 +23,8 @@ export async function getNowPlaying(): Promise<NowPlaying | null> {
     return (await invoke<NowPlaying | null>('get_now_playing')) ?? null;
 }
 
-/// Read-only snapshot of the backend's cached state for `trackId`. Returns
-/// `{ lyrics, translation }` with whatever's currently resolved (both can be
-/// null). Pure data fetch — never causes the backend to do work; the resolver
-/// runs on its own schedule and pushes updates through events.
+/// Read-only snapshot; never makes the backend resolve. Either field can be
+/// null, and updates arrive through events.
 export async function getTrackLyricsState(args: {
     trackId: string;
     targetLang: string;
@@ -39,8 +37,7 @@ export async function getTrackLyricsState(args: {
     });
 }
 
-/// Subscribes to all backend events that describe a track's lyrics+translation
-/// lifecycle. Consumers filter by `trackId` against whatever they're showing.
+/// Fires for every track, so consumers must filter by `trackId`.
 export async function listenLyricsState(handlers: {
     onLyricsResolved?: (e: LyricsResolved) => void;
     onProgress?: (e: LyricsTranslationProgress) => void;
@@ -82,8 +79,7 @@ export async function listenLyricsState(handlers: {
     };
 }
 
-/// Listens to `spotify_state` and exposes the latest payload as a Svelte
-/// readable store. Returns the store plus a teardown function.
+/// Returns the store plus a teardown function.
 export function spotifyStateStore(): {
     store: Readable<NowPlaying | null>;
     cleanup: () => void;

@@ -15,7 +15,6 @@
     let visible = $derived(isVisible(state));
     let spinning = $derived(isSpinning(state));
     let tooltip = $derived(tooltipFor(status));
-    // Show the percentage while syncing.
     let label = $derived(
         state === "syncing" && status?.completion != null
             ? `${Math.floor(status.completion)}%`

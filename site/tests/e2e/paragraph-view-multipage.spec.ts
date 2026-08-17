@@ -15,20 +15,16 @@ import {
   wordSpan,
 } from './helpers/paragraph';
 
-// Lazy-loading regression suite. With the current (eager-mount) implementation
-// these all pass trivially because no paragraph ever unmounts. Once paragraphs
-// virtualize on scroll, this file catches any user-visible regression.
+// Lazy-loading regressions: everything a user must still see when paragraphs
+// virtualize on scroll.
 test.describe('ParagraphView (multipage, chromium only)', () => {
   test.skip(({ browserName }) => browserName !== 'chromium', 'chromium-only');
 
   const COUNT = 80;
 
-  // ----- M1 ----------------------------------------------------------------
-
   test('M1: 80 paragraphs render in order; chapter is genuinely long', async ({ page }) => {
     await seedAndOpen(page, multipageSpec(COUNT));
 
-    // All wrappers present and in order.
     const ids = await page.evaluate(() => {
       const wrappers = document.querySelectorAll(
         '.paragraphs-container .paragraph-wrapper',
@@ -39,16 +35,13 @@ test.describe('ParagraphView (multipage, chromium only)', () => {
     });
     expect(ids).toEqual(Array.from({ length: COUNT }, (_, i) => String(i)));
 
-    // The chapter spans >50 viewports of horizontal scroll — this confirms
-    // we have a real long-scroll target, not a 5-paragraph "chapter".
+    // Confirms a real long-scroll target: >50 viewports wide.
     const ratio = await page.evaluate(() => {
       const c = document.querySelector('.paragraphs-container') as HTMLElement;
       return c.scrollWidth / c.clientWidth;
     });
     expect(ratio).toBeGreaterThan(50);
   });
-
-  // ----- M2 ----------------------------------------------------------------
 
   test('M2: translate a middle paragraph (40) after scrolling to it', async ({ page }) => {
     const segments = [
@@ -87,8 +80,6 @@ test.describe('ParagraphView (multipage, chromium only)', () => {
     expect(calls[0]).toMatchObject({ bookId, paragraphId: 40 });
   });
 
-  // ----- M3 ----------------------------------------------------------------
-
   test('M3: spinner persists across scroll-away-and-back during a long translation', async ({
     page,
   }) => {
@@ -124,26 +115,20 @@ test.describe('ParagraphView (multipage, chromium only)', () => {
     await scrollToParagraph(page, 40);
     await translateButton(p40).click();
 
-    // Spinner visible, button disabled before we navigate away.
     await expect(p40.locator('.circular-progress')).toBeVisible();
     await expect(translateButton(p40)).toBeDisabled();
 
-    // Scroll churn — visit both ends then return.
     await scrollToParagraph(page, 0);
     await scrollToParagraph(page, 79);
     await scrollToParagraph(page, 40);
 
-    // Spinner state survived. Button is still disabled.
     await expect(p40.locator('.circular-progress')).toBeVisible();
     await expect(translateButton(p40)).toBeDisabled();
 
-    // Eventually finishes.
     await expectTranslated(p40);
     await expect(p40.locator('.circular-progress')).toHaveCount(0);
     await expect(p40.getByText('multipage done')).toBeVisible();
   });
-
-  // ----- M4 ----------------------------------------------------------------
 
   test('M4: translation completing while scrolled away still lands on return', async ({
     page,
@@ -180,7 +165,6 @@ test.describe('ParagraphView (multipage, chromium only)', () => {
     await translateButton(p40).click();
     await expect(p40.locator('.circular-progress')).toBeVisible();
 
-    // Immediately scroll away, then wait past the translation's completion.
     await scrollToParagraph(page, 0);
     await page.waitForTimeout(900);
 
@@ -189,8 +173,6 @@ test.describe('ParagraphView (multipage, chromium only)', () => {
     await expectTranslated(p40);
     await expect(p40.getByText('finished while away')).toBeVisible();
   });
-
-  // ----- M5 ----------------------------------------------------------------
 
   test('M5: auto-show annotations apply on scroll-into-view and persist across churn', async ({
     page,
@@ -224,8 +206,7 @@ test.describe('ParagraphView (multipage, chromium only)', () => {
     const overlay = (p: ReturnType<typeof paragraphLocator>, i: number) =>
       wordSpan(p, i).locator('.translation-overlay');
 
-    // With lazy mount the paragraph must be within the mount window before
-    // overlays exist — scroll there first, then assert.
+    // Overlays only exist inside the mount window.
     await scrollToParagraph(page, 40);
     await expect(overlay(p40, 0)).toHaveCount(1);
     await expect(overlay(p40, 2)).toHaveCount(1);
@@ -236,8 +217,7 @@ test.describe('ParagraphView (multipage, chromium only)', () => {
     await expect(overlay(p65, 0)).toHaveCount(0);
     await expect(overlay(p65, 2)).toHaveCount(0);
 
-    // Scroll churn must not lose overlays once we return to the annotated
-    // paragraph.
+    // Scroll churn must not lose the overlays.
     await scrollToParagraph(page, 0);
     await scrollToParagraph(page, 40);
     await expect(overlay(p40, 0)).toHaveCount(1);
@@ -245,8 +225,6 @@ test.describe('ParagraphView (multipage, chromium only)', () => {
     await scrollToParagraph(page, 65);
     await expect(overlay(p65, 1)).toHaveCount(1);
   });
-
-  // ----- M6 ----------------------------------------------------------------
 
   test('M6: two in-flight translations stay in their own lanes', async ({ page }) => {
     await seedAndOpen(
@@ -306,11 +284,10 @@ test.describe('ParagraphView (multipage, chromium only)', () => {
     await translateButton(p65).click();
     await expect(p65.locator('.circular-progress')).toBeVisible();
 
-    // Scroll back to 10. Its spinner is still up — the two are independent.
+    // The two translations are independent.
     await scrollToParagraph(page, 10);
     await expect(p10.locator('.circular-progress')).toBeVisible();
 
-    // Wait for both to land.
     await expectTranslated(p10);
     await expect(p10.getByText('p10 done')).toBeVisible();
 
@@ -323,13 +300,9 @@ test.describe('ParagraphView (multipage, chromium only)', () => {
     expect(calls.map((c) => c.paragraphId).sort((a, b) => a - b)).toEqual([10, 65]);
   });
 
-  // ===== Lazy-mount regression suite (L1–L6) ===============================
-  //
-  // The shared fixture pre-translates every paragraph with segments that tile
-  // the entire original filler text, so mounted vs unmounted rendering
-  // produces near-identical layout. This mirrors how the real backend emits
-  // segments and keeps the mount-window decision driven by viewport distance
-  // rather than artificial size deltas between the two render branches.
+  // The shared fixture tiles every paragraph with segments, as the backend
+  // does, so mounted and unmounted layouts match and the mount window is
+  // decided by viewport distance rather than a size delta between branches.
 
   function allTranslatedSpec() {
     const overrides: Record<number, { segments: ReturnType<typeof fillerSegments> }> = {};
@@ -339,44 +312,31 @@ test.describe('ParagraphView (multipage, chromium only)', () => {
     return multipageSpec(COUNT, overrides);
   }
 
-  // ----- L1 ----------------------------------------------------------------
-
   test('L1: far paragraphs render no WordSpans on initial load', async ({ page }) => {
     await seedAndOpen(page, allTranslatedSpec());
 
-    // Wait for the chapter to be ready so the mount-window compute has fired.
     await expectWordSpansMounted(page, 0);
 
-    // Initial load lands at paragraph 0. Far paragraphs (40, 79) must not
-    // have mounted WordSpans.
+    // Load lands at paragraph 0, so 40 and 79 must have no WordSpans.
     await expectWordSpansUnmounted(page, 40);
     await expectWordSpansUnmounted(page, 79);
 
-    // Far paragraphs also must not carry a translate button — only the
-    // plain original <p> survives in the unmounted state.
+    // Unmounted leaves only the plain original <p>: no translate button.
     await expect(translateButton(paragraphLocator(page, 40))).toHaveCount(0);
     await expect(translateButton(paragraphLocator(page, 79))).toHaveCount(0);
   });
 
-  // ----- L1b ---------------------------------------------------------------
-
   test('L1b: untranslated far paragraphs also drop the translate button', async ({ page }) => {
-    // No pre-translation anywhere: every paragraph starts in state A.
     await seedAndOpen(page, multipageSpec(COUNT));
 
-    // Near paragraphs keep the translate button (state A in-window).
     await expect(translateButton(paragraphLocator(page, 0))).toHaveCount(1);
 
-    // Far paragraphs lose it even though they're untranslated.
     await expect(translateButton(paragraphLocator(page, 40))).toHaveCount(0);
     await expect(translateButton(paragraphLocator(page, 79))).toHaveCount(0);
 
-    // Scrolling them back into the mount window restores the button.
     await scrollToParagraph(page, 40);
     await expect(translateButton(paragraphLocator(page, 40))).toHaveCount(1);
   });
-
-  // ----- L2 ----------------------------------------------------------------
 
   test('L2: scroll moves the mount window symmetrically', async ({ page }) => {
     await seedAndOpen(page, allTranslatedSpec());
@@ -396,20 +356,15 @@ test.describe('ParagraphView (multipage, chromium only)', () => {
     await expectWordSpansUnmounted(page, 79);
   });
 
-  // ----- L3 ----------------------------------------------------------------
-
   test('L3: scroll across mount-window boundaries does not jump position', async ({ page }) => {
     await seedAndOpen(page, allTranslatedSpec());
 
-    // Land near the middle so we have plenty of room to cross mount-window
-    // boundaries in both directions.
+    // Mid-chapter, so mount-window boundaries can be crossed both ways.
     await scrollToParagraph(page, 40);
 
-    // Capture the offset of a paragraph that is JUST inside the mount window
-    // (paragraph 38, two before visible). Then step the scroll forward a few
-    // small amounts, each crossing the mount-window edge. The reference
-    // paragraph's relative position must change smoothly — a mount/unmount
-    // cascade that resized siblings would push it sideways non-monotonically.
+    // Paragraph 38 sits just inside the mount window; stepping across the
+    // window edge must move it smoothly, since a mount/unmount cascade that
+    // resized siblings would shift it non-monotonically.
     const samples = await page.evaluate(async () => {
       const container = document.querySelector('.paragraphs-container') as HTMLElement;
       const ref = container.querySelector(
@@ -420,7 +375,6 @@ test.describe('ParagraphView (multipage, chromium only)', () => {
       const out: Array<{ scrollLeft: number; refLeft: number }> = [];
       for (let i = 0; i <= 20; i++) {
         container.scrollLeft = startScroll + (pageWidth * 2 * i) / 20;
-        // One paint cycle is sufficient — no need to wait many frames.
         await new Promise((r) => setTimeout(r, 30));
         out.push({
           scrollLeft: container.scrollLeft,
@@ -431,26 +385,19 @@ test.describe('ParagraphView (multipage, chromium only)', () => {
     });
 
     expect(samples.length).toBe(21);
-    // scrollLeft must increase monotonically (we asked for monotone targets).
     for (let i = 1; i < samples.length; i++) {
       expect(samples[i].scrollLeft).toBeGreaterThanOrEqual(samples[i - 1].scrollLeft - 1);
     }
-    // refLeft = ref.rectLeft. As we scroll right, the ref's viewport-relative
-    // position must decrease monotonically (it moves leftward). Any sudden
-    // mount/unmount-induced reflow would break this monotony.
+    // Scrolling right must move the ref leftward, monotonically.
     for (let i = 1; i < samples.length; i++) {
       const delta = samples[i].refLeft - samples[i - 1].refLeft;
-      // Allow ~2px tolerance for sub-pixel rounding.
       expect(delta).toBeLessThanOrEqual(2);
     }
   });
 
-  // ----- L4 ----------------------------------------------------------------
-
   test('L4: re-mounted paragraph restores its auto-shown overlays', async ({ page }) => {
-    // Attach translations + familiarity 0 to words 0 and 2 so they auto-show.
-    // Word 1 stays at familiarity 1 (hidden), giving the test a contrast
-    // between auto-shown and hidden spans through the unmount/remount cycle.
+    // Words 0 and 2 auto-show, word 1 stays hidden: a contrast that must
+    // survive the unmount/remount cycle.
     const segments50 = fillerSegments(50).map((seg) => {
       if (seg.kind === 'word' && seg.flatIndex < 3) {
         return {
@@ -468,8 +415,7 @@ test.describe('ParagraphView (multipage, chromium only)', () => {
       }),
     );
 
-    // Visit 50, leave (it unmounts), come back. Overlays must be present
-    // again after the round trip.
+    // Overlays must return after the unmount round trip.
     await scrollToParagraph(page, 50);
     const p50 = paragraphLocator(page, 50);
     await expect(wordSpan(p50, 0).locator('.translation-overlay')).toHaveCount(1);
@@ -483,8 +429,6 @@ test.describe('ParagraphView (multipage, chromium only)', () => {
     await expect(wordSpan(p50, 2).locator('.translation-overlay')).toHaveCount(1);
     await expect(wordSpan(p50, 1).locator('.translation-overlay')).toHaveCount(0);
   });
-
-  // ----- L5 ----------------------------------------------------------------
 
   test('L5: selection survives an unmount/remount cycle', async ({ page }) => {
     const segments40 = fillerSegments(40);
@@ -502,19 +446,15 @@ test.describe('ParagraphView (multipage, chromium only)', () => {
     await expectWordSpansUnmounted(page, 40);
 
     await scrollToParagraph(page, 40);
-    // The selection lives in ChapterView, so after re-mount the same word
-    // must reappear highlighted.
+    // The selection lives in ChapterView, so it must survive re-mount.
     await expect(wordSpan(p40, 1)).toHaveClass(/selected/);
   });
-
-  // ----- L6 ----------------------------------------------------------------
 
   test('L6: translation completing on an unmounted paragraph still renders on return', async ({
     page,
   }) => {
     const { bookId } = await seedAndOpen(page, multipageSpec(COUNT));
 
-    // Scroll to 40 so it's in the mount window, kick off a slow translate.
     await scrollToParagraph(page, 40);
     await setTranslateConfig(page, bookId, 40, {
       kind: 'progress',
@@ -535,12 +475,10 @@ test.describe('ParagraphView (multipage, chromium only)', () => {
     await translateButton(paragraphLocator(page, 40)).click();
     await expect(paragraphLocator(page, 40).locator('.circular-progress')).toBeVisible();
 
-    // Scroll away so paragraph 40 unmounts WHILE the translation is still
-    // running. Wait past completion in the background.
+    // Paragraph 40 must unmount while its translation is still running.
     await scrollToParagraph(page, 0);
     await page.waitForTimeout(900);
 
-    // Return: WordSpans must render with the late-arriving segments.
     await scrollToParagraph(page, 40);
     await expectTranslated(paragraphLocator(page, 40));
     await expect(paragraphLocator(page, 40).getByText('late mount')).toBeVisible();

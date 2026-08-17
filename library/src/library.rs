@@ -32,9 +32,8 @@ pub mod file_watcher;
 pub mod library_book;
 pub mod library_card;
 
-/// Default number of books to pin in the warm LRU. Books accessed beyond this
-/// count are still reachable via the weak index while any holder keeps them
-/// alive; once the last holder drops, they unload.
+/// Books pinned in the warm LRU. Beyond it a book stays reachable through the
+/// weak index until its last holder drops.
 pub const DEFAULT_BOOKS_CACHE_CAPACITY: usize = 8;
 
 #[derive(Debug)]
@@ -72,12 +71,10 @@ pub struct LibraryBookMetadata {
     pub paragraphs_count: usize,
     pub translations_metadata: Vec<LibraryTranslationMetadata>,
     pub folder_path: Vec<String>,
-    /// `chapter_summaries.dat` for this book, if present. `None` for
-    /// legacy books that predate the sidecar; the summary generation queue
-    /// creates one on first enqueue.
+    /// `chapter_summaries.dat`, if present; the generation queue creates one
+    /// on first enqueue.
     pub chapter_summaries_main_path: Option<PathBuf>,
-    /// Sibling `chapter_summaries~*.dat` files left behind by an
-    /// interrupted save. Merged into the main file at load time.
+    /// `chapter_summaries~*.dat` left by an interrupted save; merged on load.
     pub chapter_summaries_conflicting_paths: Vec<PathBuf>,
 }
 
@@ -164,12 +161,8 @@ impl LibraryBookMetadata {
             }
         }
 
-        // read_dir yields entries in filesystem order, but chunk_by groups
-        // only *consecutive* equal keys. Sort by translation id first so a
-        // Syncthing conflict sibling that came back non-adjacent to its
-        // canonical file lands in the same group (and is reconciled) instead
-        // of forming a second, duplicate LibraryTranslation entry with empty
-        // conflicting_paths.
+        // chunk_by groups only consecutive equal keys, so sort by translation
+        // id first or a non-adjacent conflict sibling forms its own group.
         all_translations.sort_by_key(|(_, translation)| translation.id);
 
         let grouped_translations = all_translations
@@ -182,7 +175,8 @@ impl LibraryBookMetadata {
         let mut translations_metadata = Vec::new();
 
         for (_, mut translations) in grouped_translations {
-            let (main_path, main_translation) = translations.next().unwrap(); // There is always at least one translation in chunk
+            // A chunk always holds at least one translation.
+            let (main_path, main_translation) = translations.next().unwrap();
 
             let conflicting_iterations = translations.map(|(p, _)| p).collect();
 
@@ -207,9 +201,7 @@ impl LibraryBookMetadata {
             }
         };
 
-        // Discover chapter_summaries.dat (main) plus any crash-conflict
-        // siblings (chapter_summaries~*.dat). Mirrors the book / translation
-        // conflict-file discovery above.
+        // chapter_summaries.dat plus any `~` siblings, as above.
         let chapter_summaries_path = path.join("chapter_summaries.dat");
         let chapter_summaries_main_path = if tokio::fs::try_exists(&chapter_summaries_path).await? {
             Some(chapter_summaries_path)
@@ -248,10 +240,9 @@ pub struct Library {
     library_root: PathBuf,
     pub(crate) books_cache: WeakLruCache<Uuid, TracedMutex<LibraryBook>>,
     card_store: Arc<LibraryCardStore>,
-    /// Per-book-id single-flight guards for cache-miss loads. `get_book`
-    /// must not run `load_from_metadata` concurrently for the same id: it
-    /// mutates the book directory (conflict-file merge). Entries are
-    /// pruned once the last interested caller finishes.
+    /// Single-flight guards per book id: `load_from_metadata` mutates the book
+    /// directory, so it must not run twice for one id. Pruned once the last
+    /// interested caller finishes.
     load_flights: tokio::sync::Mutex<HashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>,
 }
 
@@ -376,7 +367,7 @@ impl Library {
                 Ok(book) => books.push(book),
                 Err(err) => {
                     println!("Failed to load book at path {:?}: error {}", path, err)
-                } // TODO logging
+                }
             };
         }
 
@@ -388,11 +379,8 @@ impl Library {
             return Ok(book);
         }
 
-        // Single-flight per book id: `load_from_metadata` mutates the book
-        // directory (moves the newest conflict file over book.dat, deletes
-        // the rest), so two concurrent cache-miss loads for the same id
-        // would race on those filesystem changes. Only one loader runs at a
-        // time; late arrivals re-check the cache under the flight lock.
+        // `load_from_metadata` rewrites the book directory, so two cache-miss
+        // loads for one id would race; late arrivals re-check under the lock.
         let flight = {
             let mut flights = self.load_flights.lock().await;
             flights.entry(*uuid).or_default().clone()
@@ -400,8 +388,7 @@ impl Library {
 
         let result = {
             let _guard = flight.lock().await;
-            // A concurrent loader may have populated the cache while we
-            // waited for the flight lock.
+            // A concurrent loader may have filled the cache while we waited.
             if let Some(book) = self.books_cache.get(uuid).await {
                 Ok(book)
             } else {
@@ -417,14 +404,10 @@ impl Library {
             }
         };
 
-        // Prune the flight entry once no caller holds the guard any more.
-        // Our own clone is dropped before the check, so the last finisher
-        // sees strong_count == 1 (the map's own reference) and removes the
-        // entry; while waiters are still queued their clones keep the count
-        // higher and the last of them prunes instead. An entry can never be
-        // removed out from under a waiter — its clone pins the count.
-        // (Address as usize: a raw pointer across the .await below would
-        // make this future !Send.)
+        // Prune once no caller holds the guard: our clone drops first, so only
+        // the last finisher sees strong_count == 1. A waiter's clone pins the
+        // count, so an entry can't vanish under it. (Address as usize: a raw
+        // pointer across the .await would make this future !Send.)
         let flight_addr = Arc::as_ptr(&flight) as usize;
         drop(flight);
         {
@@ -603,10 +586,8 @@ impl Library {
                     false
                 }
             }
-            // Drop the store's cached familiarity for this card so the next
-            // read repopulates from disk; the frontend separately refreshes
-            // via the cards_updated event emitted by AppState. Returns false:
-            // there is no in-memory book/translation state to reload here.
+            // Invalidate so the next read repopulates from disk. False: there
+            // is no in-memory book or translation state to reload.
             LibraryFileChange::CardChanged {
                 from,
                 to,
@@ -880,8 +861,7 @@ mod library_tests {
 
         let id = make_saved_book(&library, "Raced").await;
 
-        // Plant a conflict sibling so racing loaders would fight over the
-        // merge (delete book.dat / rename the sibling over it) if the
+        // A conflict sibling makes racing loaders fight over the merge if the
         // single-flight guard ever regresses.
         let book_dir = temp_dir.path.join("lib").join(id.to_string());
         tokio::fs::copy(
@@ -891,8 +871,7 @@ mod library_tests {
         .await
         .unwrap();
 
-        // Capacity 1: creating another book evicts the target from the warm
-        // LRU, and no caller holds an Arc, so the next get_book must load.
+        // Capacity 1 evicts the target, so the next get_book must load.
         let _ = make_saved_book(&library, "Filler").await;
 
         let mut handles = Vec::new();
@@ -1155,7 +1134,6 @@ mod library_tests {
             .await
             .unwrap();
 
-        // Sibling must be gone, no temp files.
         assert!(!conflict_path.exists(), "conflict sibling must be deleted");
         let names: Vec<String> = std::fs::read_dir(&deck)
             .unwrap()
@@ -1167,7 +1145,6 @@ mod library_tests {
         );
         assert_eq!(names, vec!["poder.json".to_string()]);
 
-        // Merged card has translations from canonical + conflict + new update.
         let on_disk: Card =
             serde_json::from_slice(&tokio::fs::read(deck.join("poder.json")).await.unwrap())
                 .unwrap();
@@ -1186,14 +1163,8 @@ mod library_tests {
 
     #[tokio::test]
     async fn integration_noisy_pos_persists_to_disk() {
-        // Regression for the os-error-2 the user observed when the LLM
-        // returned multi-PoS values like
-        //   "Существительное / Прилагательное"
-        //   "глагол (герундий/причастие настоящего времени)"
-        // The slashes were interpreted as path separators and the card
-        // file never landed. v2 schema keys cards by lemma only — the
-        // noisy PoS lives inside the translations map keys, so the card
-        // file lands at a safe lemma-only filename.
+        // Slashes in multi-PoS values would read as path separators; cards are
+        // keyed by lemma alone so the filename stays safe.
         let tmp = TempDir::new("flts_card_noisy_pos");
         let (library, book_id) =
             library_with_one_paragraph_book(tmp.path.join("lib"), "good judge").await;
@@ -1238,8 +1209,7 @@ mod library_tests {
             "expected the 'judge' card at a lemma-only filename, got {names:?}"
         );
 
-        // The noisy PoS strings survive as keys inside the card's
-        // translations map (the canonicalized form, slashes preserved).
+        // The noisy PoS strings survive as translations-map keys.
         let good: Card =
             serde_json::from_slice(&std::fs::read(deck.join("good.json")).unwrap()).unwrap();
         assert!(

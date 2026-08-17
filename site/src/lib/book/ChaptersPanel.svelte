@@ -137,9 +137,8 @@
         top: 50%;
         left: 0;
         z-index: 11;
-        /* Centering via negative margin so the global `button:active`
-           transform from app.css doesn't override our centering and yank
-           the button out of position mid-click. */
+        /* Negative margin, not a transform: app.css's global
+           `button:active` transform would yank it mid-click. */
         margin-top: -28px;
         width: 22px;
         height: 56px;

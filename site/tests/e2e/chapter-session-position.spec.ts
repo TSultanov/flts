@@ -14,8 +14,7 @@ test.describe('Chapter session position (chromium only)', () => {
   test('navigating away from a chapter and back lands on the in-session position, not the original saved one', async ({
     page,
   }) => {
-    // Two chapters, paragraphs 0..39 in ch0 and 40..79 in ch1. Saved state
-    // points deep into ch0 so the restore-to-paragraph-30 path is exercised.
+    // Paragraphs 0..39 in ch0, 40..79 in ch1; saved state points deep into ch0.
     const ch0Paragraphs = Array.from({ length: 40 }, (_, i) => ({
       html: fillerHtml(i),
     }));
@@ -35,11 +34,9 @@ test.describe('Chapter session position (chromium only)', () => {
       },
       { path: '/library' },
     );
-    // Open the book — BookView mounts, navigates to /book/:id/0 (saved chapter).
     await page.locator(`a[href="/book/${bookId}"]`).first().click();
     await page.waitForSelector('.paragraphs-container');
 
-    // 1. Restore lands on the saved paragraph.
     await expect(paragraphLocator(page, SAVED_PARAGRAPH)).toBeAttached();
     const POLL = { timeout: 3000, intervals: [50, 100, 200] } as const;
     await expect
@@ -61,27 +58,21 @@ test.describe('Chapter session position (chromium only)', () => {
       )
       .toBe(true);
 
-    // 2. Scroll to paragraph 0 (start of chapter 0).
     await scrollToParagraph(page, 0);
-    // 3. Wait long enough for ChapterViewModel's 400 ms-debounced save to
-    //    fire — that's the signal that BookView's positionByChapter map has
-    //    captured the new ch0 position.
+    // Outlast the 400ms save debounce, which is what updates positionByChapter.
     await page.waitForTimeout(500);
 
-    // 4. Switch to chapter 1 via the sidebar link.
-    //    Chapters live inside the collapsible ChaptersPanel; open it first.
+    // Chapter links live inside the collapsible ChaptersPanel.
     await page.locator('[data-testid="chapters-panel-handle"]').click();
     await page.locator(`a[href="/book/${bookId}/1"]`).click();
     await expect(paragraphLocator(page, 40)).toBeAttached();
 
-    // 5. Switch back to chapter 0. The panel auto-closes on chapter click,
-    //    so re-open it.
+    // The panel auto-closes on chapter click.
     await page.locator('[data-testid="chapters-panel-handle"]').click();
     await page.locator(`a[href="/book/${bookId}/0"]`).click();
     await expect(paragraphLocator(page, 0)).toBeAttached();
 
-    // 6. The visible page must be paragraph 0 (where we left ch0 in this
-    //    session), NOT paragraph 30 (the original cross-session saved state).
+    // In-session position (paragraph 0) must win over the saved state (30).
     await expect
       .poll(
         async () =>
@@ -101,7 +92,6 @@ test.describe('Chapter session position (chromium only)', () => {
       )
       .toBe(true);
 
-    // And paragraph 30 must NOT be in the visible viewport on this visit.
     const p30Visible = await page.evaluate(() => {
       const container = document.querySelector(
         '.paragraphs-container',

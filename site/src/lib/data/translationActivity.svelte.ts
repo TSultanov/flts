@@ -34,36 +34,21 @@ type FinishedEvent = {
 const activityKey = (bookId: UUID, paragraphId: number) =>
     `${bookId}:${paragraphId}`;
 
-// Row shape of the `list_paragraph_translation_activity` snapshot command.
 type ActiveTranslationRow = {
     bookId: UUID;
     paragraphId: number;
 } & ParagraphTranslationActivity;
 
-// Single source of truth for active paragraph translations, driven by the
-// started/progress/finished Tauri events.
+// Source of truth for active paragraph translations. Two hazards shape it:
 //
-// Two hazards are handled beyond plain event mirroring:
-//
-// 1. Event ordering: `paragraph_translation_progress` is emitted from a
-//    detached throttler task on the Rust side while
-//    `paragraph_translation_finished` comes from the saver task — nothing
-//    orders them, so a throttled progress event can arrive AFTER the
-//    finished event for the same request. Only `started` may create an
-//    entry; `progress` updates an existing entry with a matching requestId
-//    and is otherwise dropped, so a late straggler cannot resurrect a
-//    finished entry into an eternal spinner.
-//
-// 2. Event loss (iOS): while the app is backgrounded the WKWebView is
-//    suspended and Tauri events emitted in that window are lost — stranding
-//    entries whose `finished` we never saw AND hiding activity whose
-//    `started` we never saw. On visibilitychange back to visible we fetch
-//    the full snapshot from the Rust `list_paragraph_translation_activity`
-//    command and replace our entries wholesale.
+// 1. Ordering: progress (throttler task) and finished (saver task) are
+//    unordered, so progress can arrive after finished. Only `started` may
+//    create an entry, so a straggler can't resurrect an eternal spinner.
+// 2. Loss: a suspended iOS WKWebView drops events entirely, both stranding
+//    and hiding entries — visibilitychange re-syncs from the snapshot.
 class ActiveTranslationsStore {
     #entries = new SvelteMap<string, ParagraphTranslationActivity>();
-    // Monotonic token; a reconcile pass only applies its results if no newer
-    // pass has started while it was awaiting the snapshot.
+    // A reconcile pass applies only if no newer pass started meanwhile.
     #reconcileToken = 0;
 
     constructor() {
@@ -71,10 +56,8 @@ class ActiveTranslationsStore {
             "paragraph_translation_started",
             () => true,
             (p) => {
-                // Any lifecycle change invalidates an in-flight reconcile
-                // pass: its snapshot predates this event (events and invoke
-                // responses travel on independent channels — nothing orders
-                // them), so applying it could delete this fresh entry.
+                // An in-flight reconcile's snapshot predates this event and
+                // would delete the fresh entry; invalidate it.
                 this.#reconcileToken++;
                 this.#entries.set(activityKey(p.bookId, p.paragraphId), {
                     requestId: p.requestId,
@@ -89,8 +72,7 @@ class ActiveTranslationsStore {
             (p) => {
                 const key = activityKey(p.bookId, p.paragraphId);
                 const existing = this.#entries.get(key);
-                // Only update an entry that `started` created for this exact
-                // request; see hazard 1 above.
+                // Hazard 1: never create, only update this exact request.
                 if (!existing || existing.requestId !== p.requestId) return;
                 this.#entries.set(key, {
                     requestId: p.requestId,
@@ -109,25 +91,20 @@ class ActiveTranslationsStore {
                         p.error,
                     );
                 }
-                // See the started handler: a snapshot captured before this
-                // event must not be applied after it (it would resurrect
-                // the entry as a phantom spinner).
+                // A snapshot captured before this event would resurrect the
+                // entry as a phantom spinner.
                 this.#reconcileToken++;
                 const key = activityKey(p.bookId, p.paragraphId);
                 const existing = this.#entries.get(key);
-                // Delete only the entry this request created: a stale
-                // finished emitted just before a rapid re-translate's
-                // started must not kill the newer request's spinner. (An
-                // entry stranded with a lost started is cleaned up by the
-                // visibilitychange reconcile instead.)
+                // Delete only this request's entry — a stale finished must
+                // not kill a rapid re-translate's newer spinner.
                 if (existing && existing.requestId === p.requestId) {
                     this.#entries.delete(key);
                 }
             },
         );
 
-        // Guarded so importing this module in tests / non-browser contexts
-        // doesn't blow up.
+        // Guarded for non-browser (test) contexts.
         if (typeof document !== "undefined") {
             document.addEventListener("visibilitychange", () => {
                 if (document.visibilityState === "visible") {
@@ -136,21 +113,14 @@ class ActiveTranslationsStore {
             });
         }
 
-        // Adopt translations already in flight at store creation: their
-        // `started` events predate our subscription (webview launch/reload
-        // while the backend keeps translating), and the progress handler
-        // deliberately won't create entries (hazard 1), so only a snapshot
-        // can reveal them. The token machinery protects against a live
-        // `started` racing this initial pass.
+        // Translations already running at webview launch have a `started`
+        // predating our subscription, and progress won't create entries —
+        // only a snapshot can reveal them.
         void this.#reconcile();
     }
 
-    // Replace the store's entries wholesale with the Rust-side snapshot:
-    // entries Rust no longer tracks are deleted, entries it does track are
-    // adopted — including ones whose `started` event was lost during
-    // suspension. A live event landing in the small window between snapshot
-    // capture and apply is corrected by the next progress/finished event for
-    // that request; a pass superseded by a newer one applies nothing.
+    // Replaces entries wholesale with the backend snapshot, adopting any
+    // whose `started` was lost.
     async #reconcile(): Promise<void> {
         const token = ++this.#reconcileToken;
         let snapshot: ActiveTranslationRow[];

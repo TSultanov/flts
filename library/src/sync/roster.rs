@@ -5,10 +5,9 @@
 //! receives the roster reconciles it against its own engine, so adding a device
 //! on any node propagates everywhere (see [`super::reconcile`]).
 //!
-//! Because the file syncs, concurrent edits on two nodes can produce Syncthing
-//! `.sync-conflict-*` siblings. [`RosterStore::load`] union-merges them and
-//! cleans them up — the same approach the card store uses
-//! ([`crate::library::library_card`]).
+//! Because the file syncs, concurrent edits can produce Syncthing
+//! `.sync-conflict-*` siblings; [`RosterStore::load`] union-merges and clears
+//! them, as [`crate::library::library_card`] does for cards.
 //!
 //! ## Causal merge (remove-wins)
 //!
@@ -18,15 +17,13 @@
 //! causal context and stamps the relevant context. Merge joins the two contexts
 //! pointwise (a semilattice → commutative, associative, idempotent), and a device
 //! is **present iff its add context strictly dominates its remove context**. This
-//! is *remove-wins*: a removal that causally follows the add it observed always
-//! wins (regardless of wall-clock skew — the bug this replaced, see
-//! `spec/roster/bug-report.md`), and a concurrent removal also wins because it
-//! carries its origin node's component that the adds cannot cover. A later re-add
-//! observes the tombstone, so its context dominates and the device comes back.
+//! is *remove-wins*: a removal that causally follows the add it observed wins
+//! regardless of wall-clock skew, and a concurrent removal wins because it
+//! carries a component the adds cannot cover. A re-add observing the tombstone
+//! dominates it, so the device comes back.
 //!
-//! The legacy `devices`/`removed` fields are kept (and serialized) so a
-//! not-yet-upgraded node can still read the file; new nodes treat them as a
-//! derived view and seed empty contexts from them (see [`Roster::normalize`]).
+//! The `devices`/`removed` fields are serialized so a node on the old schema can
+//! still read the file; they are a derived view (see [`Roster::normalize`]).
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -69,7 +66,7 @@ fn vc_canon(vc: &mut VClock) {
     vc.retain(|_, v| *v > 0);
 }
 
-/// One device in the legacy compatibility view.
+/// One device in the derived compatibility view.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct DeviceRecord {
     pub name: String,
@@ -96,15 +93,15 @@ pub struct RemStamp {
     pub vc: VClock,
 }
 
-/// The full mesh membership. `adds`/`removes` are authoritative (causal); the
-/// `devices`/`removed` maps are a derived view kept in sync for old-schema
-/// readers (see module docs). All fields `#[serde(default)]` so old files parse.
+/// The full mesh membership. `adds`/`removes` are authoritative (causal);
+/// `devices`/`removed` are a derived view for old-schema readers. Every field
+/// defaults so files from either schema parse.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct Roster {
-    /// Derived view: currently-present devices (for not-yet-upgraded readers).
+    /// Derived view: currently-present devices.
     #[serde(default)]
     pub devices: BTreeMap<String, DeviceRecord>,
-    /// Derived view: tombstoned devices `deviceId -> removed_at_ms` (legacy).
+    /// Derived view: tombstoned devices `deviceId -> removed_at_ms`.
     #[serde(default)]
     pub removed: BTreeMap<String, u64>,
     /// Authoritative add context per device.
@@ -116,16 +113,14 @@ pub struct Roster {
 }
 
 impl Roster {
-    /// Whether a device is currently a member: its add context must strictly
-    /// dominate its remove context (remove-wins on concurrency). When both
-    /// contexts are empty (a pure-legacy record from an old node) fall back to
-    /// the old wall-clock rule so old data keeps its prior meaning until a new
-    /// node re-stamps it.
+    /// Member iff its add context strictly dominates its remove context
+    /// (remove-wins on concurrency). Two empty contexts mean an old-schema
+    /// record, which keeps wall-clock meaning until some node re-stamps it.
     pub fn is_present(&self, id: &str) -> bool {
         match (self.adds.get(id), self.removes.get(id)) {
             (Some(a), Some(r)) => {
                 if a.vc.is_empty() && r.vc.is_empty() {
-                    a.added_at_ms >= r.removed_at_ms // legacy LWW
+                    a.added_at_ms >= r.removed_at_ms // old-schema LWW
                 } else {
                     vc_strictly_dominates(&a.vc, &r.vc)
                 }
@@ -148,9 +143,8 @@ impl Roster {
         ctx
     }
 
-    /// Seed authoritative `adds`/`removes` from the legacy `devices`/`removed`
-    /// view when reading a file an old node wrote (empty contexts), then rebuild
-    /// the derived view so the two are consistent. Idempotent.
+    /// Seed `adds`/`removes` from the `devices`/`removed` view when a file
+    /// carries only that, then rebuild the derived view. Idempotent.
     pub fn normalize(&mut self) {
         for (id, rec) in &self.devices {
             self.adds.entry(id.clone()).or_insert_with(|| AddStamp {
@@ -165,8 +159,7 @@ impl Roster {
                 vc: VClock::new(),
             });
         }
-        // Canonicalize every clock (drop zero components) so comparisons are
-        // well-defined regardless of how the file encoded them.
+        // Canonicalize so comparisons don't depend on the file's encoding.
         for a in self.adds.values_mut() {
             vc_canon(&mut a.vc);
         }
@@ -176,8 +169,7 @@ impl Roster {
         self.rebuild_view();
     }
 
-    /// Recompute the legacy `devices`/`removed` view from the authoritative
-    /// `adds`/`removes` + the presence rule.
+    /// Recompute the derived view from `adds`/`removes` and the presence rule.
     fn rebuild_view(&mut self) {
         let ids: BTreeSet<String> = self
             .adds
@@ -206,9 +198,8 @@ impl Roster {
         self.removed = removed;
     }
 
-    /// Union-merge two roster copies. Per device, the add and remove contexts are
-    /// joined pointwise; presence is then recomputed. Commutative, associative,
-    /// and idempotent (pointwise max is a semilattice).
+    /// Union-merge: per device, join both contexts pointwise and recompute
+    /// presence. Commutative, associative, idempotent (a semilattice).
     pub fn merge(&self, other: &Roster) -> Roster {
         let mut a = self.clone();
         a.normalize();
@@ -233,12 +224,9 @@ impl Roster {
     }
 }
 
-/// Join two add stamps (one may be absent): the causal context is the pointwise
-/// max (authoritative, decides presence). The advisory `name`/`added_at_ms` are
-/// resolved by plain max — a commutative/associative monoid, so the whole merge
-/// converges byte-for-byte regardless of order. (These fields are display-only;
+/// Join two add stamps. Display-only `name`/`added_at_ms` resolve by plain max:
 /// a join can synthesize a clock no single op holds, so a domination-based pick
-/// would not be associative — see the convergence proptest.)
+/// would not be associative.
 fn join_add(a: Option<&AddStamp>, b: Option<&AddStamp>) -> AddStamp {
     match (a, b) {
         (Some(a), Some(b)) => AddStamp {
@@ -304,7 +292,6 @@ impl RosterStore {
                 roster = roster.merge(&other);
             }
         }
-        // Persist the merged roster, then clear the siblings (best effort).
         self.save(&roster)?;
         for sib in &siblings {
             if let Err(err) = fs::remove_file(sib) {
@@ -326,19 +313,15 @@ impl RosterStore {
         Ok(())
     }
 
-    /// This node's causal context for `roster`, advanced by one local tick — the
-    /// vector clock to stamp on the operation about to be issued. Bumping this
-    /// node's own component over the join of everything seen guarantees the new
-    /// op strictly dominates whatever it observed for this device.
+    /// The clock to stamp on the next local op: bumping this node's component
+    /// over the join of everything seen makes the op dominate what it observed.
     fn next_vc(&self, roster: &Roster) -> VClock {
         let mut vc = roster.context();
         *vc.entry(self.node_id.clone()).or_insert(0) += 1;
         vc
     }
 
-    /// Adds or refreshes a device. The new add carries a context that dominates
-    /// any tombstone it observed, so it wins (re-add works). Returns the saved
-    /// roster.
+    /// Adds or refreshes a device; the add dominates any tombstone it observed.
     pub fn add_device(&self, device_id: &str, name: &str) -> Result<Roster> {
         let mut roster = self.load()?;
         let vc = self.next_vc(&roster);
@@ -355,8 +338,7 @@ impl RosterStore {
         Ok(roster)
     }
 
-    /// Tombstones a device (opt-in removal). The removal carries a context that
-    /// dominates the add it observed → remove-wins. Returns the saved roster.
+    /// Tombstones a device; the removal dominates the add it observed.
     pub fn remove_device(&self, device_id: &str) -> Result<Roster> {
         let mut roster = self.load()?;
         let vc = self.next_vc(&roster);
@@ -372,8 +354,7 @@ impl RosterStore {
         Ok(roster)
     }
 
-    /// Ensures this device is listed (so peers learn about it). No-op if already
-    /// active; updates the name if it changed.
+    /// Ensures this device is listed so peers learn about it.
     pub fn ensure_self(&self, my_id: &str, name: &str) -> Result<Roster> {
         let roster = self.load()?;
         let needs_write = match roster.devices.get(my_id) {
@@ -386,19 +367,15 @@ impl RosterStore {
         Ok(roster)
     }
 
-    /// The `modifiedBy` device id of each pending `.sync-conflict-*` sibling — the
-    /// merge sources the next [`load`](Self::load) will fold in. Trace-only: lets
-    /// the engine emit one `RosterSync` event per incoming roster before the load
-    /// clears the siblings. The id is the last `-` segment of the Syncthing name
-    /// `devices.sync-conflict-<date>-<time>-<modifiedBy>.json`.
-    /// The canonical roster on disk WITHOUT merging siblings — the pre-`load`
-    /// state, so the engine can tell whether a `load` actually changed anything
-    /// (and thus whether to emit `RosterSync`). Trace-only.
+    /// The on-disk roster without sibling merging, so the engine can tell
+    /// whether a `load` changed anything. Trace-only.
     #[cfg(feature = "tla_trace")]
     pub(crate) fn snapshot_for_trace(&self) -> Roster {
         read_roster(&self.path).unwrap_or_default()
     }
 
+    /// `modifiedBy` id of each pending sibling, taken from the last `-` segment
+    /// of `devices.sync-conflict-<date>-<time>-<modifiedBy>.json`. Trace-only.
     #[cfg(feature = "tla_trace")]
     pub(crate) fn pending_sibling_sources(&self) -> Vec<String> {
         self.conflict_siblings()
@@ -492,23 +469,19 @@ mod tests {
 
     #[test]
     fn dominant_remove_wins_despite_clock_skew() {
-        // node A added X at vc{A:1}, wall-clock ms 100.
         let added = one("X", Some(add("x", 100, vc(&[("A", 1)]))), None);
-        // node B observed that add, then removed X — vc{A:1,B:1} dominates the add
-        // — but B's wall clock is BEHIND, so removed_at_ms (0) < added_at_ms (100).
+        // B observed the add then removed X, but its wall clock lags.
         let removed = one("X", None, Some(rem(0, vc(&[("A", 1), ("B", 1)]))));
 
         let ab = added.merge(&removed);
         let ba = removed.merge(&added);
         assert_eq!(ab, ba, "merge is commutative");
-        // The old wall-clock rule would resurrect X here; causal order does not.
         assert!(!ab.is_present("X"), "causally-later removal wins under skew");
         assert!(ab.removed.contains_key("X"));
     }
 
     #[test]
     fn concurrent_add_and_remove_remove_wins() {
-        // A adds X (didn't see B); C removes X (didn't see the add) — concurrent.
         let added = one("X", Some(add("x", 5, vc(&[("A", 1)]))), None);
         let removed = one("X", None, Some(rem(5, vc(&[("C", 1)]))));
         let m = added.merge(&removed);
@@ -517,7 +490,6 @@ mod tests {
 
     #[test]
     fn re_add_after_remove_resurrects() {
-        // X removed at vc{A:1,B:1}; a re-add that observed it (vc{A:1,B:2}) wins.
         let removed = one("X", Some(add("x", 1, vc(&[("A", 1)]))), Some(rem(2, vc(&[("A", 1), ("B", 1)]))));
         assert!(!removed.is_present("X"));
         let readd = one("X", Some(add("x", 3, vc(&[("A", 1), ("B", 2)]))), None);
@@ -531,7 +503,6 @@ mod tests {
         let store = RosterStore::new(&tmp, "SELF");
         store.add_device("A", "alpha").unwrap();
 
-        // A Syncthing conflict sibling written by another node adds B.
         let other = one("B", Some(add("beta", now_ms(), vc(&[("OTHER", 1)]))), None);
         let sibling = tmp
             .join(".flts")
@@ -550,7 +521,6 @@ mod tests {
 
     #[test]
     fn add_remove_readd_via_store_no_sleep() {
-        // The causal clock removes the need for the old sleep(2ms) hack.
         let tmp = std::env::temp_dir().join(format!("flts-roster-rr-{}", now_ms()));
         let store = RosterStore::new(&tmp, "SELF");
 
@@ -568,11 +538,10 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
     }
 
-    // ---- Upgrade / mixed-version compatibility ----
+    // ---- Mixed-schema compatibility ----
 
     #[test]
     fn legacy_json_deserializes_and_normalizes() {
-        // A file written by an old node: only devices/removed, no vc fields.
         let legacy = r#"{"devices":{"A":{"name":"alpha","addedAtMs":10}},"removed":{"B":5}}"#;
         let mut roster: Roster = serde_json::from_str(legacy).unwrap();
         roster.normalize();
@@ -583,7 +552,7 @@ mod tests {
 
     #[test]
     fn legacy_add_loses_to_new_remove() {
-        // Legacy add (empty vc) vs a new remove that carries a real vc → removed.
+        // Add without a vc vs a remove carrying one.
         let legacy_add = one("X", Some(add("x", 100, VClock::new())), None);
         let new_remove = one("X", None, Some(rem(0, vc(&[("B", 1)]))));
         assert!(!legacy_add.merge(&new_remove).is_present("X"));
@@ -591,8 +560,7 @@ mod tests {
 
     #[test]
     fn new_node_op_restamps_legacy_entry() {
-        // A new node loads a legacy file, then issues an op → the entry gains a vc
-        // (self-healing), and the causal rules apply from then on.
+        // An op over an unstamped file self-heals the entry with a vc.
         let tmp = std::env::temp_dir().join(format!("flts-roster-heal-{}", now_ms()));
         fs::create_dir_all(tmp.join(".flts")).unwrap();
         fs::write(
@@ -608,7 +576,7 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
     }
 
-    // ---- Convergence (the property the wall-clock merge lacked) ----
+    // ---- Convergence ----
 
     fn arb_vc() -> impl Strategy<Value = VClock> {
         prop::collection::btree_map("[A-C]", 0u64..3, 0..3)

@@ -1,16 +1,9 @@
-//! Headless FLTS sync node for multi-node integration tests.
+//! Headless FLTS sync node for multi-node integration tests: the real
+//! `library::sync` engine behind a tiny HTTP control API (`/id`, `/pair`,
+//! `/book`, `/devices`, `/books`).
 //!
-//! Embeds the *real* engine + roster/reconcile (`library::sync`) — everything a
-//! desktop runs except the Tauri/WebView layer — and exposes a tiny HTTP control
-//! API so a test runner (curl / a script) can drive it: read this device's ID,
-//! pair a peer, create a book, and list devices/books to assert convergence.
-//!
-//! Networking is deterministic and discovery-free: each node binds a fixed BEP
-//! port and a background loop pins every peer's address from its roster name
-//! (`tcp://<name>:<bep_port>`). In Docker/compose the device name equals the
-//! service hostname, so even mesh peers discovered via the roster connect
-//! directly — no public or local discovery server needed. (Production uses
-//! real discovery; address-pinning is test-only scaffolding.)
+//! Discovery is off; peers are dialled at `tcp://<roster name>:<bep_port>`, so
+//! device names must equal resolvable hostnames (compose service names).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -48,7 +41,6 @@ fn main() -> Result<()> {
         node.engine.my_id()
     );
 
-    // Background: reconcile against the synced roster, then pin peer addresses.
     {
         let node = node.clone();
         rt.spawn(async move {
@@ -65,8 +57,6 @@ fn main() -> Result<()> {
         });
     }
 
-    // Blocking control server on the main thread; each request blocks on the
-    // runtime for its async work while the reconcile task runs on worker threads.
     let server = tiny_http::Server::http(("0.0.0.0", control_port))
         .map_err(|e| anyhow!("control server bind failed: {e}"))?;
     for mut req in server.incoming_requests() {
@@ -90,7 +80,6 @@ async fn setup(name: String, library_root: PathBuf, home: PathBuf, bep_port: u16
     std::fs::create_dir_all(&library_root)?;
     let library = Arc::new(Library::open(library_root.clone()).await?);
 
-    // No discovery/relays/NAT; bind a known, routable port for static dialing.
     let options = OptionsPatch {
         global_discovery: false,
         local_discovery: false,

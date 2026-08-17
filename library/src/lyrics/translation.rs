@@ -25,9 +25,8 @@ use crate::{
     },
 };
 
-/// Songs are short; constrain LLM responses to a generous size even for long ones.
-/// Used to compute `total_stream_timeout` budget when `input_len` is small (the LRC
-/// itself is short, but the response can be 3–5× larger thanks to translations + glosses).
+/// Response ceiling: an LRC is short, but translations and glosses inflate the
+/// response 3-5x, so the stream-timeout budget can't be sized off input alone.
 const RESPONSE_LENGTH_FACTOR: usize = 6;
 
 const TRANSLATION_RETRY: RetryConfig = RetryConfig {
@@ -143,9 +142,8 @@ fn validate_alignment(expected: usize, got: usize) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Approximate response budget for the total-stream timeout. Songs are short, so
-/// `total_stream_timeout(_)` of 30s + 0.1s/char is generous when we feed it
-/// `lines_len * 6` (translation + glosses inflation).
+/// Response budget for the total-stream timeout, `lines_len * 6` covering the
+/// translation + gloss inflation.
 fn stream_budget_chars(lines: &[LyricsLine]) -> usize {
     let raw: usize = lines.iter().map(|l| l.text.len()).sum();
     raw * RESPONSE_LENGTH_FACTOR + 256
@@ -208,7 +206,7 @@ impl LyricsTranslator for LyricsOpenAITranslator {
         lines: &[LyricsLine],
         progress: Option<Box<ProgressCallback>>,
     ) -> anyhow::Result<Vec<LyricsLineTranslation>> {
-        // Re-borrow per attempt so the retry closure can be `FnMut` without consuming progress.
+        // Re-borrow per attempt so the retry closure stays `FnMut`.
         let progress = progress.as_deref();
 
         retry(
@@ -261,7 +259,7 @@ impl LyricsTranslator for LyricsOpenAITranslator {
                 );
 
                 let full = if self.is_zai {
-                    // z.AI does not reliably support SSE streaming; use a single blocking call.
+                    // z.AI's SSE streaming is unreliable, so make one call.
                     let request = CreateChatCompletionRequestArgs::default()
                         .model(self.model_name.as_ref())
                         .messages(messages)
@@ -339,8 +337,7 @@ impl LyricsTranslator for LyricsOpenAITranslator {
 
 // -------- Gemini ----------------------------------------------------------
 
-/// Gemini rejects `additionalProperties` in `response_schema`; serve it the
-/// same source-of-truth schema with that key stripped.
+/// Gemini rejects `additionalProperties`, so it gets the same schema stripped.
 fn gemini_lyrics_schema() -> Value {
     let mut s = lyrics_schema();
     strip_additional_properties(&mut s);
@@ -478,21 +475,19 @@ mod tests {
 
     #[test]
     fn openai_schema_contains_additional_properties() {
-        // Sanity: source schema does set strict mode for OpenAI.
         assert!(count_additional_properties(&lyrics_schema()) > 0);
     }
 
     #[test]
     fn gemini_schema_strips_additional_properties() {
-        // Gemini rejects `additionalProperties` with HTTP 400, so the variant
-        // it sees must have none — recursively.
+        // Gemini 400s on `additionalProperties` at any depth.
         assert_eq!(count_additional_properties(&gemini_lyrics_schema()), 0);
     }
 
     #[test]
     fn classifier_treats_self_emitted_timeouts_as_transient() {
-        // The lyrics path emits its own "...lyrics..." timeout strings; confirm
-        // the shared classifier still catches them via its generic signatures.
+        // The shared classifier must still catch the lyrics-specific timeout
+        // strings via its generic signatures.
         assert!(is_transient_translation_error(&anyhow::anyhow!(
             "OpenAI lyrics request timed out"
         )));
@@ -506,8 +501,7 @@ mod tests {
 
     #[test]
     fn classifier_rejects_lyrics_alignment_error() {
-        // Alignment mismatch is lyrics-specific and permanent — retrying a
-        // deterministic miscount just burns tokens.
+        // A miscount is deterministic, so retrying it just burns tokens.
         assert!(!is_transient_translation_error(&anyhow::anyhow!(
             "Lyrics translation alignment error: expected 5 lines, got 4"
         )));

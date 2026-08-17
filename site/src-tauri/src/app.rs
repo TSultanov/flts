@@ -71,9 +71,8 @@ impl Display for AppError {
     }
 }
 
-/// A sensible default device name for the sync roster. Uses the OS hostname
-/// (stripping a trailing `.local`), but falls back to a platform label when the
-/// hostname is missing or useless — notably iOS, where it is `localhost`.
+/// Sync-roster device name: OS hostname sans `.local`, or a platform label when
+/// the hostname is useless (iOS reports `localhost`).
 fn default_device_name() -> String {
     let raw = tauri_plugin_os::hostname();
     let host = raw.trim().trim_end_matches(".local").trim();
@@ -90,14 +89,9 @@ fn default_device_name() -> String {
     }
 }
 
-/// Resolves the app config directory (holds `config.json` and, from Phase 2,
-/// the Syncthing home). Honors `FLTS_CONFIG_DIR` so E2E harnesses get a fully
-/// isolated config; otherwise the per-platform default.
-///
-/// On Android the `directories` crate returns no `ProjectDirs` (there is no
-/// XDG/HOME in the app sandbox), so we resolve via Tauri's path API, which maps
-/// to the app-private internal-storage dir; every other platform keeps
-/// `ProjectDirs.config_dir()`. `app` is required on Android, ignored elsewhere.
+/// Config dir (`config.json`, Syncthing home). `FLTS_CONFIG_DIR` overrides so
+/// E2E runs are isolated. Android has no XDG/HOME, so it goes through Tauri's
+/// path API — `app` is required there, ignored elsewhere.
 fn resolve_config_dir(app: Option<&tauri::AppHandle>) -> anyhow::Result<PathBuf> {
     if let Some(dir) = std::env::var_os("FLTS_CONFIG_DIR").filter(|v| !v.is_empty()) {
         return Ok(PathBuf::from(dir));
@@ -116,18 +110,16 @@ fn resolve_config_dir(app: Option<&tauri::AppHandle>) -> anyhow::Result<PathBuf>
     }
 }
 
-/// `<FLTS_CONFIG_DIR>/cache`, or `None` when unset/empty. Pure so it is
-/// testable without mutating process env.
+/// `<FLTS_CONFIG_DIR>/cache`, or `None` when unset/empty. Pure so tests need no
+/// process env.
 fn cache_dir_override(env: Option<String>) -> Option<PathBuf> {
     env.filter(|v| !v.is_empty())
         .map(|dir| PathBuf::from(dir).join("cache"))
 }
 
-/// Resolves the per-platform cache directory (transient, OS-evictable). Honors
-/// `FLTS_CONFIG_DIR` (as `<dir>/cache`) so E2E runs don't share the real cache.
-/// Otherwise mirrors [`resolve_config_dir`]'s Android handling; non-Android
-/// uses `ProjectDirs::from("", "TS", "FLTS").cache_dir()` (empty qualifier) so
-/// existing installs' cache locations don't move.
+/// Per-platform cache dir (transient, OS-evictable). `FLTS_CONFIG_DIR` overrides
+/// as `<dir>/cache`. The empty `ProjectDirs` qualifier is load-bearing: changing
+/// it would relocate existing installs' caches.
 fn resolve_cache_dir(app: Option<&tauri::AppHandle>) -> anyhow::Result<PathBuf> {
     if let Some(dir) = cache_dir_override(std::env::var("FLTS_CONFIG_DIR").ok()) {
         return Ok(dir);
@@ -146,18 +138,11 @@ fn resolve_cache_dir(app: Option<&tauri::AppHandle>) -> anyhow::Result<PathBuf> 
     }
 }
 
-/// Resolves the app-managed library root. It is deterministic and app-private —
-/// the user never picks it.
-///
-/// Order of precedence:
-/// 1. `FLTS_LIBRARY_DIR` — explicit override (tests, power users).
-/// 2. `<FLTS_CONFIG_DIR>/library` — keeps the single-env E2E isolation working.
-/// 3. The per-platform app-private data dir + `/library`. On iOS this is under
-///    `Library/Application Support`, which is **private** (not visible to the
-///    Files app, unlike `Documents/`) and **backed up by default** — so no
-///    `isExcludedFromBackup` handling is needed. On Android it resolves via
-///    Tauri's path API (internal storage); elsewhere `ProjectDirs.data_dir()`.
-///    `app` is required on Android, ignored elsewhere.
+/// App-managed library root; the user never picks it.
+/// `FLTS_LIBRARY_DIR` > `<FLTS_CONFIG_DIR>/library` > app-private data dir.
+/// The iOS data dir is `Library/Application Support`: invisible to the Files app
+/// and backed up by default, so no `isExcludedFromBackup` handling is needed.
+/// `app` is required on Android, ignored elsewhere.
 fn resolve_library_root(app: Option<&tauri::AppHandle>) -> anyhow::Result<PathBuf> {
     if let Some(dir) = std::env::var_os("FLTS_LIBRARY_DIR").filter(|v| !v.is_empty()) {
         return Ok(PathBuf::from(dir));
@@ -179,22 +164,17 @@ fn resolve_library_root(app: Option<&tauri::AppHandle>) -> anyhow::Result<PathBu
     }
 }
 
-/// What a legacy-library migration actually did. Returned so callers can log
-/// the right message and tests can assert behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MigrationOutcome {
-    /// Source absent, or already at the destination — nothing moved.
+    /// Source absent or already at the destination.
     NothingToDo,
-    /// Source relocated into the (previously empty) destination.
     Moved,
-    /// Destination already had content; kept it, left the source untouched.
+    /// Destination had content; source left untouched.
     KeptExisting,
 }
 
-/// Moves a legacy library at `old` into `new_root`, non-destructively: only when
-/// the destination is absent or empty. Pure filesystem logic (no config), so it
-/// is unit-testable. Uses `rename` with a cross-filesystem recursive-copy
-/// fallback, removing the source only after a fully successful copy.
+/// Moves a legacy library into `new_root` only when the destination is absent or
+/// empty. The source is removed only after a fully successful copy.
 fn migrate_library_files(old: &Path, new_root: &Path) -> anyhow::Result<MigrationOutcome> {
     if old == new_root || !old.exists() {
         return Ok(MigrationOutcome::NothingToDo);
@@ -218,9 +198,7 @@ fn migrate_library_files(old: &Path, new_root: &Path) -> anyhow::Result<Migratio
     Ok(MigrationOutcome::Moved)
 }
 
-/// Recursively copies `src` into `dst`, used as the cross-filesystem fallback
-/// when a plain `rename` of the legacy library fails (e.g. moving from a
-/// user-picked external volume into the app data dir).
+/// Cross-filesystem fallback for when `rename` cannot move the legacy library.
 fn copy_dir_recursive(src: &Path, dst: &Path) -> anyhow::Result<()> {
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
@@ -282,9 +260,8 @@ impl AppState {
             Config::default()
         };
 
-        // Initial status: Unreachable until the first periodic / on-demand
-        // tick proves otherwise. UI hides the sync button on Unreachable, so
-        // the safe default is "hidden until we know."
+        // Unreachable until a tick proves otherwise: the UI hides the sync
+        // button in that state, so it stays hidden until we know.
         let initial_anki_status = crate::app::anki_sync::AnkiSyncStatus {
             state: crate::app::anki_sync::AnkiSyncStatusState::Unreachable,
             ..Default::default()
@@ -338,25 +315,22 @@ impl AppState {
             .filter(|s| !s.trim().is_empty())
     }
 
-    /// Persist the `syncEnabled` flag and re-evaluate config (starts/stops the
-    /// embedded engine). Used by the `sync_set_enabled` command.
+    /// Persists `syncEnabled` and re-evaluates config, starting/stopping the
+    /// embedded engine.
     pub async fn set_sync_enabled(&self, enabled: bool) -> anyhow::Result<()> {
         let mut config = self.config.borrow().clone();
         config.sync_enabled = enabled;
         self.update_config(config).await
     }
 
-    /// Called when the app returns to the foreground. On iOS the system tears
-    /// down the engine's sockets (incl. its loopback REST listener) while the
-    /// app is suspended, and it doesn't reliably rebind — so if the engine is
-    /// now unreachable, restart it. A healthy engine is left alone (the poller
-    /// refreshes peers on its own).
+    /// Call on foreground. iOS tears down the engine's sockets (incl. its
+    /// loopback REST listener) during suspension and doesn't reliably rebind, so
+    /// an unreachable engine is restarted; a healthy one is left alone.
     pub async fn wake_sync(&self) {
         if !self.config.borrow().sync_enabled {
             return;
         }
-        // Not an accessor call, so gate explicitly: a wake must not race the
-        // startup evaluation into a second engine start.
+        // Gate explicitly: a wake must not race startup into a second engine start.
         if let Err(err) = self.gated.await_ready().await {
             warn!("wake_sync: startup did not complete: {err}");
             return;
@@ -393,8 +367,7 @@ impl AppState {
         }
     }
 
-    /// Persist the device's display name and apply it live to the running engine
-    /// (no restart). Used by the `sync_set_device_name` command.
+    /// Persists the display name and applies it live, without an engine restart.
     pub async fn set_sync_device_name(&self, name: String) -> anyhow::Result<()> {
         let trimmed = name.trim().to_string();
         let mut config = self.config.borrow().clone();
@@ -418,7 +391,7 @@ impl AppState {
         self.gated.notify_library_changed();
     }
 
-    /// The gated library handle: every command reaches the library through here.
+    /// Every command reaches the library through here.
     pub async fn library(&self) -> Result<Arc<Library>, String> {
         self.gated.library().await
     }
@@ -451,7 +424,7 @@ impl AppState {
         self.sync_status.borrow().clone()
     }
 
-    /// The running sync engine, if a task is installed (for sync Tauri commands).
+    /// The running sync engine, if a task is installed.
     pub async fn sync_engine(
         &self,
     ) -> Result<Option<Arc<library::sync::engine::SyncEngine>>, String> {
@@ -468,10 +441,9 @@ impl AppState {
             });
     }
 
-    /// Persist and apply a new config. Rebuilds gated state rather than reading
-    /// it, so it waits out a startup in flight but still runs on a *failed*
-    /// one — the repair path — and republishes its own outcome, unlatching the
-    /// app without a restart.
+    /// Persists and applies a new config. Rebuilds gated state rather than
+    /// reading it, so it waits out a startup in flight yet still runs on a
+    /// *failed* one — the repair path — and republishes its own outcome.
     pub async fn update_config(&self, config: Config) -> anyhow::Result<()> {
         self.gated
             .await_settled()
@@ -493,12 +465,11 @@ impl AppState {
             let _tq_init = self.translation_queue_init_lock.lock().await;
             let _sq_init = self.summary_generation_queue_init_lock.lock().await;
 
-            // Queues capture translator/summarizer settings at creation;
-            // reset so the next run uses the new config.
+            // Queues capture translator/summarizer settings at creation.
             self.stop_translation_queue().await;
             self.stop_summary_generation_queue().await;
 
-            // Flush unsaved books before the Library swap (mirrors shutdown()).
+            // Flush unsaved books before the Library swap.
             self.save_all().await;
 
             info!("config = {:?}", config);
@@ -517,13 +488,11 @@ impl AppState {
         Ok(())
     }
 
-    /// Migrate + open the library, (re)spawn the Anki task, point the
+    /// Migrates + opens the library, (re)spawns the Anki task, points the
     /// watcher. Caller must hold `eval_lock`.
     async fn eval_library_config(&self) -> anyhow::Result<(Config, PathBuf)> {
         let config = self.config.borrow().clone();
 
-        // The library root is now app-managed (no user picker). Resolve it,
-        // migrate any legacy user-picked library into it (once), then open it.
         let library_root = resolve_library_root(Some(&self.app))?;
         info!("library_root = {library_root:?}");
         self.migrate_legacy_library(&config, &library_root).await?;
@@ -553,9 +522,7 @@ impl AppState {
             task.shutdown().await;
         }
 
-        // Stage 8: sync is ON by default. Set FLTS_DISABLE_ANKI_SYNC=1
-        // (e.g. on CI machines without AnkiConnect) to suppress the
-        // task spawn.
+        // FLTS_DISABLE_ANKI_SYNC=1 suppresses the spawn (CI has no AnkiConnect).
         let disable_env = std::env::var_os("FLTS_DISABLE_ANKI_SYNC");
         if crate::app::anki_sync::anki_sync_disabled(disable_env.as_deref()) {
             info!("Anki sync disabled by FLTS_DISABLE_ANKI_SYNC env var");
@@ -630,9 +597,6 @@ impl AppState {
             }
         };
         let hermetic = std::env::var_os("FLTS_SYNC_HERMETIC").is_some_and(|v| !v.is_empty());
-        // Device display name: the user's choice, else a sensible default
-        // (hostname on desktop; a platform label where the hostname is useless,
-        // e.g. iOS returns "localhost").
         let device_name = config
             .sync_device_name
             .clone()
@@ -659,11 +623,9 @@ impl AppState {
         }
     }
 
-    /// One-time, idempotent migration of a legacy user-picked library (the old
-    /// `config.library_path`, including the old mobile `Documents/FLTSLibrary`
-    /// default) into the app-managed root. Non-destructive: never clobbers a
-    /// populated destination. Clears the legacy pointer when done so subsequent
-    /// runs are no-ops.
+    /// Idempotent migration of a `config.library_path` library into the
+    /// app-managed root. Never clobbers a populated destination; clears the
+    /// pointer so subsequent runs are no-ops.
     async fn migrate_legacy_library(&self, config: &Config, new_root: &Path) -> anyhow::Result<()> {
         let Some(old) = config
             .library_path
@@ -686,8 +648,7 @@ impl AppState {
         self.clear_library_path().await
     }
 
-    /// Drops the legacy `library_path` from the persisted config (it is now
-    /// migration-read-only). No-op if already cleared.
+    /// Drops `library_path` from the persisted config; no-op if already cleared.
     async fn clear_library_path(&self) -> anyhow::Result<()> {
         let mut config = self.config.borrow().clone();
         if config.library_path.is_some() {
@@ -753,18 +714,16 @@ impl AppState {
     }
 
     pub async fn shutdown(&self) {
-        // Best effort only: do not let app exit hang forever on any shutdown step.
+        // Best effort: no shutdown step may hang app exit.
         run_exit_step(
             "translation queue shutdown",
             EXIT_STOP_QUEUE_TIMEOUT,
             self.stop_translation_queue(),
         )
         .await;
-        // Pull task out of the slot under lock; release the lock before awaiting
-        // so we never block on a long-running tick from inside the mutex.
-        // No final sync_pass here: the task already syncs on every card-store
-        // change and the next launch syncs immediately, while a flush against
-        // a slow/unreachable AnkiConnect made app exit hang for many seconds.
+        // Take the task out of its slot before awaiting, so a long tick can't
+        // block inside the mutex. No final sync_pass: a flush against a slow
+        // AnkiConnect would stall exit, and the next launch syncs immediately.
         let anki_task = self.gated.take_anki_task().await;
         if let Some(task) = anki_task {
             run_exit_step("anki sync shutdown", EXIT_STOP_QUEUE_TIMEOUT, task.shutdown()).await;
@@ -785,11 +744,8 @@ impl AppState {
 
         let had_effect = library.handle_file_change_event(event).await?;
 
-        // Note: do not gate the entire match on `had_effect`. CardChanged
-        // always returns Ok(false) from the library handler (no in-memory
-        // card cache), and its emit must run regardless. Per-arm `if
-        // had_effect` guards on BookChanged / TranslationChanged below
-        // preserve the prior gating for those variants only.
+        // `had_effect` gates per arm, not the whole match: the library has no
+        // card cache, so CardChanged is always false yet must still notify.
         match event {
             LibraryFileChange::BookChanged { modified: _, uuid } if had_effect => {
                 info!("Emitting \"book_updated\" for {uuid}");
@@ -812,9 +768,7 @@ impl AppState {
                 }
             }
             LibraryFileChange::CardChanged { .. } => {
-                // Always emit — the library doesn't cache cards, so `had_effect`
-                // is unconditionally false here. The frontend invalidates its
-                // translation cache on this signal.
+                // Unconditional: the frontend invalidates its translation cache here.
                 info!("Emitting \"cards_updated\"");
                 self.app.emit("cards_updated", ())?;
             }
@@ -838,7 +792,7 @@ impl AppState {
 
         let _guard = self.translation_queue_init_lock.lock().await;
 
-        // Another caller may have populated the queue while we were waiting.
+        // Another caller may have populated the queue while we waited.
         if let Some(queue) = self.translation_queue.borrow().clone() {
             return Ok(queue);
         }
@@ -924,8 +878,7 @@ impl AppState {
         let target_language = Language::from_639_3(&target_language_id)
             .ok_or_else(|| anyhow::anyhow!("invalid target language: {target_language_id}"))?;
 
-        // Collect untranslated paragraph ids under the book lock, then drop it
-        // before enqueueing — queue.translate re-acquires the book lock per item.
+        // Drop the book lock before enqueueing: queue.translate re-acquires it.
         let untranslated: Vec<usize> = {
             let book = library.get_book(&book_id).await?;
             let book = book.lock().await;
@@ -949,7 +902,6 @@ impl AppState {
 
         let queue = self.get_or_init_translation_queue().await?;
         for paragraph_id in &untranslated {
-            // Dedup-on-enqueue is handled by TranslationQueue::translate.
             // Swallow per-item errors so one bad paragraph doesn't abandon the rest.
             if let Err(err) = queue
                 .translate(book_id, *paragraph_id, model, use_cache)
@@ -966,10 +918,9 @@ impl AppState {
         book_id: Uuid,
         paragraph_id: usize,
     ) -> anyhow::Result<Option<translation_queue::ParagraphTranslationActivity>> {
-        // Pure read: no queue means nothing is active. Initializing the
-        // queue here could pin a stale Library if this lands inside
-        // update_config's stop→eval_config window. (Bind before awaiting so
-        // the watch read-guard doesn't cross the await.)
+        // Pure read: initializing the queue here could pin a stale Library inside
+        // update_config's stop→eval window. Bind first, so no read-guard crosses
+        // the await.
         let queue = self.translation_queue.borrow().clone();
         match queue {
             Some(queue) => Ok(queue.get_active_translation(book_id, paragraph_id).await),
@@ -1073,8 +1024,8 @@ mod tests {
         assert!(start.elapsed() < Duration::from_secs(1));
     }
 
-    /// Slow work routed through spawn_blocking must stay preemptable by
-    /// run_exit_step's timeout; a raw blocking call has no await point.
+    /// Work on spawn_blocking must stay preemptable by run_exit_step's timeout;
+    /// a raw blocking call has no await point.
     #[tokio::test]
     async fn exit_step_times_out_when_step_blocks_a_thread_via_spawn_blocking() {
         let started = Instant::now();
@@ -1093,7 +1044,6 @@ mod tests {
         );
     }
 
-    /// A unique scratch directory under the OS temp dir (no tempfile dep).
     fn scratch_dir(tag: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1220,10 +1170,9 @@ pub async fn get_config(state: tauri::State<'_, Arc<AppState>>) -> Result<Config
     Ok(state.config.borrow().clone())
 }
 
-/// Deletes all FLTS-created Gemini server-side context caches (display
-/// name prefix "flts-") and clears the local cache pointers. Safe during
-/// active translation: affected chapters self-heal via the 403/404
-/// evict-and-retry path. Returns the number of deleted caches.
+/// Deletes every FLTS-created Gemini server-side context cache (display name
+/// prefix "flts-") and clears the local pointers; returns the count. Safe during
+/// active translation: chapters self-heal via the 403/404 evict-and-retry path.
 #[tauri::command]
 pub async fn purge_gemini_caches(state: tauri::State<'_, Arc<AppState>>) -> Result<usize, String> {
     let api_key = state
@@ -1260,8 +1209,7 @@ pub async fn purge_gemini_caches(state: tauri::State<'_, Arc<AppState>>) -> Resu
     }
 }
 
-/// The app-managed library storage location, for read-only display in settings
-/// (the folder picker is gone — see `resolve_library_root`).
+/// The app-managed library location, for read-only display in settings.
 #[tauri::command]
 pub async fn get_library_root(app: tauri::AppHandle) -> Result<String, String> {
     resolve_library_root(Some(&app))
@@ -1269,7 +1217,7 @@ pub async fn get_library_root(app: tauri::AppHandle) -> Result<String, String> {
         .map_err(|err| err.to_string())
 }
 
-/// Opens the library storage location in the OS file manager (desktop).
+/// Opens the library location in the desktop OS file manager.
 #[tauri::command]
 pub async fn reveal_library_root(app: tauri::AppHandle) -> Result<(), String> {
     let path = resolve_library_root(Some(&app)).map_err(|err| err.to_string())?;

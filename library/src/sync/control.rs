@@ -1,15 +1,10 @@
 //! Syncthing REST control client.
 //!
-//! Mirrors the [`AnkiConnect`](crate::anki::connect) shape: one async trait, a
-//! reqwest HTTP implementation (`X-API-Key`, timeout, send-retry), and an
-//! in-memory mock for unit tests. Higher layers (`sync::engine`, the sync
-//! daemon) program against the trait.
+//! One async trait, a reqwest HTTP implementation, and an in-memory mock.
 //!
-//! We model only the few fields we read as typed structs; the engine's *config*
-//! mutations (folders, options, devices) go through `serde_json::Value` so we
-//! don't have to track Syncthing's large, version-drifting config schema — we
-//! fetch a defaults blob, tweak the handful of fields we care about, and PUT it
-//! back.
+//! Only the fields we read are typed. Config mutations go through
+//! `serde_json::Value` — fetch a defaults blob, tweak, PUT it back — so
+//! Syncthing's large, version-drifting config schema needn't be tracked.
 
 use std::{collections::HashMap, sync::Mutex, time::Duration};
 
@@ -37,16 +32,14 @@ pub struct DeviceInfo {
     pub name: String,
 }
 
-/// An unknown device that tried to connect — surfaced so the user can approve
-/// it (the second half of pairing, instead of adding both sides manually).
+/// An unknown device that tried to connect, surfaced for user approval.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingDevice {
     pub device_id: String,
     pub name: String,
 }
 
-/// A Syncthing folder to create-or-update (`ensure_folder`). The peer list must
-/// include this device; the engine passes the full membership.
+/// A folder to create-or-update. `device_ids` must include this device.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FolderSpec {
     pub id: String,
@@ -63,22 +56,18 @@ pub struct OptionsPatch {
     pub local_discovery: bool,
     pub relays: bool,
     pub nat: bool,
-    /// BEP listen addresses (the `listenAddresses` option). FLTS uses dynamic
-    /// ports (`:0`) instead of Syncthing's default `22000` so the embedded
-    /// engine **coexists with a user's own Syncthing install** rather than
-    /// fighting it for the port. Empty = leave the engine default untouched.
+    /// BEP listen addresses. Dynamic ports (`:0`) keep the embedded engine off
+    /// `22000`, so a user's own Syncthing install can coexist. Empty leaves the
+    /// engine default untouched.
     pub listen_addresses: Vec<String>,
 }
 
 impl Default for OptionsPatch {
-    /// Production default: reach peers anywhere (needed for iPad off-LAN), on a
-    /// dynamic port so we never collide with another Syncthing on this host.
+    /// Reach peers anywhere, on a dynamic port.
     ///
-    /// TCP only — no `quic://` listener. quic-go (pinned by Syncthing) panics
-    /// during its TLS handshake on newer Go toolchains ("crypto/tls bug: where's
-    /// my session ticket?"), and because the engine runs in-process that panic
-    /// takes down the whole app. TCP carries all sync; relays + global discovery
-    /// still provide off-LAN reach.
+    /// TCP only: quic-go panics in its TLS handshake on newer Go toolchains,
+    /// and the in-process engine would take the app down with it. Relays plus
+    /// global discovery still cover off-LAN reach.
     fn default() -> Self {
         Self {
             global_discovery: true,
@@ -91,8 +80,7 @@ impl Default for OptionsPatch {
 }
 
 impl OptionsPatch {
-    /// Fully local: no discovery, relays, or NAT, BEP bound to loopback only.
-    /// For unit/integration tests that must not touch the network.
+    /// Loopback-only, for tests that must not touch the network.
     pub fn loopback() -> Self {
         Self {
             global_discovery: false,
@@ -106,46 +94,38 @@ impl OptionsPatch {
 
 #[async_trait]
 pub trait SyncthingApi: Send + Sync {
-    /// This device's Syncthing ID. Also the natural "is the engine up?" probe.
+    /// This device's Syncthing ID; also the "is the engine up?" probe.
     async fn my_id(&self) -> Result<String>;
 
-    /// Devices currently in the config (excluding or including self per
-    /// Syncthing — callers filter against `my_id` when they need peers only).
+    /// Devices in the config; filter against `my_id` for peers only.
     async fn list_devices(&self) -> Result<Vec<DeviceInfo>>;
 
-    /// Add (or update) a peer device. Sets `autoAcceptFolders` so a folder the
-    /// peer shares with us is accepted without manual approval.
+    /// Adds or updates a peer, setting `autoAcceptFolders` so folders it shares
+    /// need no manual approval.
     async fn add_device(&self, device_id: &str, name: &str) -> Result<()>;
 
-    /// Remove a peer device from the config.
     async fn remove_device(&self, device_id: &str) -> Result<()>;
 
-    /// Rename a device (used to set this device's own announced name, so peers
-    /// see something meaningful instead of the hostname).
+    /// Renames a device; sets the announced name, which otherwise is the
+    /// hostname.
     async fn rename_device(&self, device_id: &str, name: &str) -> Result<()>;
 
-    /// Pin a peer's connection addresses (e.g. `tcp://host:22000`). Used by the
-    /// test harness to wire static topology in lieu of discovery; production
-    /// leaves devices on `dynamic`.
+    /// Pins a peer's addresses, wiring static topology in lieu of discovery.
+    /// Production leaves devices on `dynamic`.
     async fn set_device_addresses(&self, device_id: &str, addresses: Vec<String>) -> Result<()>;
 
-    /// Per-device connection state, keyed by device ID (`connected` flag from
-    /// `GET /rest/system/connections`).
+    /// Per-device `connected` flag, keyed by device ID.
     async fn connections(&self) -> Result<HashMap<String, bool>>;
 
-    /// Create or update a folder, pointing it at `spec.path` with the given
-    /// peer membership.
     async fn ensure_folder(&self, spec: FolderSpec) -> Result<()>;
 
     /// Toggle global/local discovery, relays, and NAT traversal.
     async fn set_options(&self, opts: OptionsPatch) -> Result<()>;
 
-    /// Unknown devices that have tried to connect (Syncthing's "pending
-    /// devices"). Accepting one = `add_device` with its ID.
+    /// Devices that tried to connect; accept one via `add_device`.
     async fn pending_devices(&self) -> Result<Vec<PendingDevice>>;
 
-    /// This device's completion for a folder, 0–100. Below 100 means we're
-    /// still pulling data from peers (used to show sync progress).
+    /// This device's folder completion, 0–100; below 100 means still pulling.
     async fn folder_completion(&self, folder_id: &str) -> Result<f64>;
 }
 
@@ -188,9 +168,8 @@ impl HttpSyncthing {
         Ok(())
     }
 
-    /// One REST round-trip. Retries only connection (`send`) failures — the
-    /// request never reached the engine, so even non-idempotent verbs are safe
-    /// to retry. Once a response arrives we commit to it.
+    /// Retries only connection failures: the request never reached the engine,
+    /// so even non-idempotent verbs are safe. A response is committed to.
     async fn send(
         &self,
         method: reqwest::Method,
@@ -261,8 +240,7 @@ impl SyncthingApi for HttpSyncthing {
     }
 
     async fn add_device(&self, device_id: &str, name: &str) -> Result<()> {
-        // Start from the engine's device defaults so required fields are sane,
-        // then set identity + auto-accept.
+        // Start from the engine's defaults so required fields stay sane.
         let mut device = self.get("/rest/config/defaults/device").await?;
         device["deviceID"] = serde_json::Value::String(device_id.to_string());
         device["name"] = serde_json::Value::String(name.to_string());
@@ -311,7 +289,6 @@ impl SyncthingApi for HttpSyncthing {
     }
 
     async fn ensure_folder(&self, spec: FolderSpec) -> Result<()> {
-        // Start from folder defaults, then set identity, path, and membership.
         let mut folder = self.get("/rest/config/defaults/folder").await?;
         folder["id"] = serde_json::Value::String(spec.id.clone());
         folder["label"] = serde_json::Value::String(spec.label);
@@ -388,8 +365,7 @@ struct MockState {
     completion: f64,
 }
 
-/// In-memory `SyncthingApi` for unit tests — records mutations and serves back
-/// configured state without a running engine.
+/// In-memory `SyncthingApi`: records mutations, serves configured state.
 pub struct MockSyncthing {
     state: Mutex<MockState>,
 }
@@ -405,12 +381,11 @@ impl MockSyncthing {
         }
     }
 
-    /// Set the folder completion percentage reported by `folder_completion`.
     pub fn set_completion(&self, pct: f64) {
         self.state.lock().unwrap().completion = pct;
     }
 
-    /// Mark a peer connected/disconnected (drives `connections()` in tests).
+    /// Marks a peer connected/disconnected, driving `connections()`.
     pub fn set_connected(&self, device_id: &str, connected: bool) {
         self.state
             .lock()
@@ -419,17 +394,14 @@ impl MockSyncthing {
             .insert(device_id.to_string(), connected);
     }
 
-    /// Snapshot of the folders the engine was asked to ensure.
     pub fn folders(&self) -> Vec<FolderSpec> {
         self.state.lock().unwrap().folders.clone()
     }
 
-    /// The last options patch applied, if any.
     pub fn options(&self) -> Option<OptionsPatch> {
         self.state.lock().unwrap().options.clone()
     }
 
-    /// Seed a pending (unknown, awaiting-approval) device for tests.
     pub fn set_pending(&self, device_id: &str, name: &str) {
         self.state.lock().unwrap().pending.push(PendingDevice {
             device_id: device_id.to_string(),

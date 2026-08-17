@@ -2,27 +2,25 @@
 pub fn show_dictionary(word: &str) {
     use std::ffi::c_void;
 
-    // We need to defer the dictionary presentation to the next run loop iteration
-    // because UIReferenceLibraryViewController uses WebKit internally, which runs
-    // a nested run loop that interferes with Tao's event loop.
+    // Defer presentation a run loop: UIReferenceLibraryViewController runs a
+    // nested WebKit run loop that interferes with Tao's event loop.
 
-    // Define dispatch types
     type DispatchQueueT = *const c_void;
     type DispatchBlock = extern "C" fn(*mut c_void);
 
-    // Link to libdispatch (part of libSystem on iOS)
+    // libdispatch is part of libSystem on iOS.
     unsafe extern "C" {
-        // On iOS, dispatch_get_main_queue is a macro that returns &_dispatch_main_q
+        // dispatch_get_main_queue is a macro over &_dispatch_main_q.
         static _dispatch_main_q: c_void;
         fn dispatch_async_f(queue: DispatchQueueT, context: *mut c_void, work: DispatchBlock);
     }
 
-    // Box the word string to pass it through the C callback
+    // Box the word so it can cross the C callback.
     let word_box = Box::new(word.to_string());
     let word_ptr = Box::into_raw(word_box) as *mut c_void;
 
     extern "C" fn show_dictionary_impl(context: *mut c_void) {
-        // Safety: we're reconstructing the Box we created above
+        // Safety: reconstructing the Box created above.
         let word = unsafe { Box::from_raw(context as *mut String) };
 
         use objc2::MainThreadOnly;
@@ -45,15 +43,12 @@ pub fn show_dictionary(word: &str) {
 
         let app = UIApplication::sharedApplication(mtm);
 
-        // Use the modern UIWindowScene API instead of deprecated UIApplication.windows
         let connected_scenes = app.connectedScenes();
         let mut root_vc = None;
 
         for scene in connected_scenes.iter() {
-            // Try to downcast UIScene to UIWindowScene
             let scene_ref: &UIScene = &scene;
             if let Some(window_scene) = scene_ref.downcast_ref::<UIWindowScene>() {
-                // First try keyWindow, then fall back to iterating windows
                 if let Some(key_window) = window_scene.keyWindow() {
                     root_vc = key_window.rootViewController();
                     if root_vc.is_some() {
@@ -61,7 +56,7 @@ pub fn show_dictionary(word: &str) {
                     }
                 }
 
-                // Fall back to iterating windows if keyWindow didn't work
+                // keyWindow can be absent; iterate windows instead.
                 let windows = window_scene.windows();
                 for i in 0..windows.len() {
                     let window = windows.objectAtIndex(i);
@@ -90,7 +85,7 @@ pub fn show_dictionary(word: &str) {
         }
     }
 
-    // Dispatch to the main queue asynchronously to break out of the current run loop iteration
+    // Async so we leave the current run loop iteration.
     unsafe {
         let main_queue = &_dispatch_main_q as *const c_void;
         dispatch_async_f(main_queue, word_ptr, show_dictionary_impl);

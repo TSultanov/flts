@@ -8,8 +8,7 @@ import type {
 } from "../data/library";
 import type { UUID } from "../data/uuid";
 
-// Test double for the eventHub singleton: records subscriptions, lets
-// tests fire events, and tracks unsubscription via an `active` flag.
+// eventHub double: records subscriptions, fires events, tracks unsubscribe.
 const hubState = vi.hoisted(() => {
     type Sub = {
         name: string;
@@ -93,8 +92,7 @@ const seg = (html: string): ParagraphSegment[] => [{ kind: "gap", html }];
 const range = (start: number, end: number): number[] =>
     Array.from({ length: end - start }, (_, i) => start + i);
 
-// Fake timers don't fake microtasks, so a few awaits drain the
-// .then/.catch/.finally chains hanging off resolved deferreds.
+// Fake timers don't fake microtasks; drain the chains off resolved deferreds.
 async function flush(): Promise<void> {
     for (let i = 0; i < 10; i++) {
         await Promise.resolve();
@@ -127,8 +125,7 @@ describe("ChapterParagraphsStore.dispose", () => {
         await flush();
         expect(store.getTranslation(1)?.segments).toEqual(seg("v1"));
 
-        // Fill all original slots and leave one chunk queued to prove the
-        // pump goes quiet after dispose.
+        // Leave a chunk queued to prove the pump goes quiet after dispose.
         store.enqueueOriginals(range(0, 120));
         expect(originalCalls.length).toBe(5);
 
@@ -246,8 +243,7 @@ describe("ChapterParagraphsStore batch watchdog", () => {
         await flush();
         expect(store.getOriginal(0)).toBe("late");
 
-        // ...but must not release a slot twice: with 2 batches in flight,
-        // exactly 3 more of the 5 new chunks may dispatch.
+        // ...without releasing a slot twice: 2 in flight, so 3 of 5 dispatch.
         store.enqueueOriginals(range(200, 300));
         expect(originalCalls.length).toBe(10);
         store.dispose();
@@ -268,9 +264,8 @@ describe("ChapterParagraphsStore batch watchdog", () => {
         await flush();
         expect(store.getTranslation(1)?.segments).toEqual(seg("v1"));
 
-        // The hung batch finally resolves with a null row; its epoch is
-        // unchanged so it reaches the write path, where the null-clobber
-        // rule preserves v1.
+        // The hung batch's null row has an unchanged epoch, so it reaches
+        // the write path — where the null-clobber rule preserves v1.
         translationCalls[0].d.resolve([{ id: 1 }]);
         await flush();
         expect(store.getTranslation(1)?.segments).toEqual(seg("v1"));
@@ -289,14 +284,12 @@ describe("post-watchdog invalidation", () => {
         vi.advanceTimersByTime(30_000);
         await flush();
 
-        // The translation lands backend-side while the original fetch is
-        // still pending; the update must be honored even though the id is
-        // in neither the cache nor the dedup set anymore.
+        // The update must be honored even though the id is in neither the
+        // cache nor the dedup set.
         hubState.fire("paragraph_updated", { bookId, paragraphId: 7 });
         expect(translationCalls.length).toBe(2);
 
-        // The hung fetch finally resolves with a stale null row — it must
-        // be epoch-rejected, not cached as untranslated.
+        // The stale null row must be epoch-rejected, not cached.
         translationCalls[0].d.resolve([{ id: 7 }]);
         await flush();
         expect(store.getTranslation(7)).toBeNull();

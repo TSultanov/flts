@@ -1,9 +1,7 @@
 //! First-run bootstrap for AnkiConnect: version check, note-model creation,
 //! per-language-pair deck creation.
 //!
-//! Stage 5 surface: the bootstrap helper is callable from tests today and
-//! from the Stage 7 sync orchestrator once it lands. Idempotent — re-running
-//! against an already-bootstrapped Anki is a no-op.
+//! Idempotent: re-running against a bootstrapped Anki is a no-op.
 
 use anyhow::{Result, anyhow, bail};
 use isolang::Language;
@@ -20,9 +18,8 @@ text-align: center; color: #1a1a1a; background-color: #fafafa; padding: 20px; } 
 .example { font-size: 18px; color: #555; font-style: italic; margin-top: 15px; \
 padding: 10px; border-top: 1px dashed #ccc; }";
 
-/// Build the canonical `FLTS Bilingual v1` model spec with generic field names
-/// (`Source`, `Target`, `Example`) so a single model serves every language
-/// pair. Card templates and CSS are adapted from `.specs/ANKI.md`.
+/// The `FLTS Bilingual v1` model spec. Field names are generic so one model
+/// serves every language pair; templates and CSS follow `.specs/ANKI.md`.
 pub fn flts_model_spec() -> ModelSpec {
     let front_source = "<div class=\"front\">{{Source}}</div>".to_owned();
     let back_source_to_target = "<div class=\"front\">{{Source}}</div>\
@@ -57,13 +54,8 @@ pub fn flts_model_spec() -> ModelSpec {
     }
 }
 
-/// The deck name FLTS uses for a given language pair:
-/// `FLTS::<src_pretty>-<tgt_pretty>` where each side prefers the
-/// language's autonym (e.g. "Русский", "Español") and falls back to
-/// the English name (e.g. "English") when no autonym is available.
-///
-/// The card-store directory layout at `cards/<src>-<tgt>/` continues to
-/// use ISO 639-3 codes and is unaffected.
+/// `FLTS::<src>-<tgt>`, each side the language's autonym where one exists and
+/// its English name otherwise. The card store keeps ISO 639-3 codes.
 pub fn deck_name(src: Language, tgt: Language) -> Result<String> {
     let s = pretty_name(src);
     let t = pretty_name(tgt);
@@ -75,11 +67,8 @@ pub fn deck_name(src: Language, tgt: Language) -> Result<String> {
 
 fn pretty_name(lang: Language) -> String {
     let raw = lang.to_autonym().unwrap_or_else(|| lang.to_name());
-    // isolang's autonyms use each language's native casing — Russian
-    // and Spanish render lowercase ("русский", "español") because that
-    // matches the local convention. Capitalize the first grapheme for
-    // visual consistency with the English-style "FLTS::" prefix in
-    // Anki's deck list.
+    // Autonyms carry native casing (lowercase for Russian, Spanish);
+    // capitalize for consistency with the "FLTS::" prefix.
     let mut chars = raw.chars();
     match chars.next() {
         Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
@@ -87,12 +76,8 @@ fn pretty_name(lang: Language) -> String {
     }
 }
 
-/// First-run bootstrap. Verifies the AnkiConnect version, ensures the
-/// `FLTS Bilingual v1` note model exists, and ensures a `FLTS::<src>-<tgt>`
-/// deck exists for every language pair the caller hands in.
-///
-/// Idempotent: calling twice against the same Anki instance is a no-op on
-/// the second call.
+/// Verifies the AnkiConnect version, then ensures the note model and one deck
+/// per language pair exist. Idempotent.
 pub async fn bootstrap(
     client: &dyn AnkiConnect,
     lang_pairs: &[(Language, Language)],
@@ -110,12 +95,8 @@ pub async fn bootstrap(
         client.create_model(flts_model_spec()).await?;
     }
 
-    // AnkiConnect's `createDeck` is idempotent (no-op when the deck exists),
-    // so we call it unconditionally rather than gating on
-    // `deckNamesAndIds`. Field reports from real Anki show the pre-check can
-    // return a false positive — `deckNamesAndIds` lists the deck name but a
-    // subsequent `addNote` against that same name fails with "deck was not
-    // found". Calling `createDeck` unconditionally sidesteps that mismatch.
+    // `createDeck` is idempotent, and gating on `deckNamesAndIds` risks a
+    // false positive where the listed deck still fails `addNote`.
     for (src, tgt) in lang_pairs {
         let name = deck_name(*src, *tgt)?;
         log::info!("Ensuring Anki deck `{name}`");

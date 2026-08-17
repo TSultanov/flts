@@ -2,14 +2,9 @@ import { type Page } from '@playwright/test';
 import { expect, test } from './helpers/test';
 import { fillerHtml, seedAndOpen } from './helpers/paragraph';
 
-// Covers the chapter-summary status surface:
-//  - chapters whose summary isn't generated are visually dim
-//  - the chapter currently being summarized shows a small spinner
-//  - paragraphs' translate buttons are disabled until summaries for all
-//    PRIOR chapters are ready (chapter 0 is always translatable)
-//
-// The summary worker is fully mocked from the browser-mode harness — no
-// Tauri binary is involved here.
+// Chapter-summary status surface: dimming, the in-progress spinner, and the
+// rule that a chapter is translatable only once every PRIOR summary is ready
+// (chapter 0 always is). Summary worker is mocked; no Tauri binary.
 
 test.describe.configure({ mode: 'parallel' });
 
@@ -106,14 +101,12 @@ test.describe('chapter-summary status — visual + gating', () => {
     await expect(spinnerInRow(page, 1)).toHaveCount(0);
     await expect(spinnerInRow(page, 2)).toHaveCount(0);
 
-    // Chapter 0 needs no prior summary, so its buttons are enabled even
-    // when its own summary hasn't been generated yet.
+    // Chapter 0 has no prior, so its own summary is irrelevant.
     await navigateToChapter(page, bookId, 0);
     await expect(
       page.locator('.paragraph-wrapper button.translate').first(),
     ).toBeEnabled();
 
-    // Chapter 1 requires chapter 0's summary.
     await page.locator(HANDLE).click();
     await navigateToChapter(page, bookId, 1);
     await expect(
@@ -147,13 +140,11 @@ test.describe('chapter-summary status — visual + gating', () => {
     await expect(rowFor(page, 2)).toHaveClass(/dim/);
     await expect(spinnerInRow(page, 2)).toHaveCount(0);
 
-    // Chapter 1 is now translatable (chapter 0's summary ready).
     await navigateToChapter(page, bookId, 1);
     await expect(
       page.locator('.paragraph-wrapper button.translate').first(),
     ).toBeEnabled();
 
-    // Chapter 2 still blocked (chapter 1's summary not ready).
     await page.locator(HANDLE).click();
     await navigateToChapter(page, bookId, 2);
     await expect(
@@ -206,24 +197,18 @@ test.describe('chapter-summary status — visual + gating', () => {
     const spinner = spinnerInRow(page, 0);
     await expect(spinner).toHaveCount(1);
 
-    // Bounding box must have real size.
     const box = await spinner.boundingBox();
     expect(box).not.toBeNull();
     expect(box!.width).toBeGreaterThan(2);
     expect(box!.height).toBeGreaterThan(2);
 
-    // Sample a few pixels from the screenshot and assert at least one is
-    // not pure white — i.e. the SVG stroke is actually painted, not the
-    // invisible white-on-white case we just fixed.
+    // The stroke must actually be painted, not white-on-white.
     const png = await spinner.screenshot();
-    // Save the screenshot for manual inspection.
     await page.screenshot({
       path: 'test-results/chapters-panel-spinner.png',
       fullPage: false,
     });
-    // PNG signature is 8 bytes; we just need any non-white opaque byte
-    // somewhere. A simple heuristic: look for any byte < 200 in the
-    // image data portion (anything reasonably darker than pure white).
+    // Heuristic: any byte < 200 past the 8-byte PNG signature.
     let hasDarkPixel = false;
     for (let i = 100; i < png.length; i++) {
       if (png[i] < 200) {
@@ -249,8 +234,7 @@ test.describe('chapter-summary status — visual + gating', () => {
     await expect(rowFor(page, 1)).toHaveClass(/dim/);
     await expect(spinnerInRow(page, 1)).toHaveCount(1);
 
-    // setSummaryStatus with activelyGenerating: null and not-all-done
-    // emits a "failed" event in the mock.
+    // activelyGenerating: null + not-all-done makes the mock emit "failed".
     await page.evaluate(
       (id) =>
         (window as any).__test.setSummaryStatus(id, {
@@ -267,9 +251,7 @@ test.describe('chapter-summary status — visual + gating', () => {
     await expect(spinnerInRow(page, 1)).toHaveCount(0);
     await expect(spinnerInRow(page, 2)).toHaveCount(0);
 
-    // Chapter 1's prior (chapter 0) IS generated, so its paragraphs are
-    // still translatable — the failure only affects chapters that need
-    // chapter 1's summary as a prior, i.e. chapter 2.
+    // Chapter 1's prior is generated, so only chapter 2 is blocked.
     await navigateToChapter(page, bookId, 1);
     await expect(
       page.locator('.paragraph-wrapper button.translate').first(),

@@ -50,13 +50,11 @@
     }
 
     let paragraphsContainer = $state<HTMLDivElement | null>(null);
-    // Bound to clientHeight and fed into the `column-width` CSS property
-    // as a minimum-width hint. Any value ≥ clientWidth forces the browser
-    // to render exactly one visible column; using clientHeight guarantees
-    // that for any normal aspect ratio.
+    // `column-width` minimum hint: any value ≥ clientWidth forces exactly
+    // one visible column, which clientHeight guarantees at normal aspect
+    // ratios. One visible column is one page.
     let columnWidthHint = $state(200);
-    // Snap targets must sit at multiples of the *visible* column width
-    // (`clientWidth`), which is what one "page" actually is.
+    // Snap targets sit at multiples of the visible column width — one page.
     let containerVisibleWidth = $state(800);
 
     const vm = new ChapterViewModel(library, {
@@ -221,9 +219,8 @@
         opacity: 1;
     }
 
-    /* One snap target per column. Absolutely positioned so they sit at
-       exact column boundaries regardless of paragraph layout, and so
-       they don't participate in the multi-column flow. */
+    /* One per column, absolute so they land on exact column boundaries
+       and stay out of the multi-column flow. */
     .snap-target {
         position: absolute;
         top: 0;

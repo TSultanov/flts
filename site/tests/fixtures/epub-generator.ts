@@ -1,8 +1,6 @@
 import JSZip from 'jszip';
 
-/**
- * Creates a minimal valid EPUB file as a Buffer for testing purposes
- */
+/** Builds a minimal valid EPUB as a Buffer. */
 export function createTestEpub(options: {
   title: string;
   author?: string;
@@ -14,11 +12,9 @@ export function createTestEpub(options: {
 }): Promise<Buffer> {
   const zip = new JSZip();
 
-  // Required EPUB structure
-  // 1. mimetype file (must be first and uncompressed)
+  // Must be the first entry and uncompressed.
   zip.file('mimetype', 'application/epub+zip', { compression: 'STORE' });
 
-  // 2. META-INF/container.xml
   const containerXml = `<?xml version="1.0" encoding="UTF-8"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
   <rootfiles>
@@ -27,14 +23,12 @@ export function createTestEpub(options: {
 </container>`;
   zip.file('META-INF/container.xml', containerXml);
 
-  // 3. Content files
   const { title, author = 'Test Author', chapters, language } = options;
   const languageXml =
     language === null
       ? ''
       : `<dc:language>${escapeXml(language ?? 'en')}</dc:language>`;
 
-  // Create package.opf (content manifest)
   const contentOpf = `<?xml version="1.0" encoding="UTF-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid" version="2.0">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
@@ -57,7 +51,6 @@ export function createTestEpub(options: {
 </package>`;
   zip.file('OEBPS/content.opf', contentOpf);
 
-  // Create table of contents (NCX)
   const tocNcx = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE ncx PUBLIC "-//NISO//DTD ncx 2005-1//EN" "http://www.daisy.org/z3986/2005/ncx-2005-1.dtd">
 <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
@@ -88,7 +81,6 @@ export function createTestEpub(options: {
 </ncx>`;
   zip.file('OEBPS/toc.ncx', tocNcx);
 
-  // Create HTML table of contents
   const tocXhtml = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
 <html xmlns="http://www.w3.org/1999/xhtml">
@@ -106,9 +98,7 @@ export function createTestEpub(options: {
 </html>`;
   zip.file('OEBPS/toc.xhtml', tocXhtml);
 
-  // Create chapter files
   chapters.forEach((chapter, i) => {
-    // Clean up content: remove leading whitespace from each line and join with single space
     const cleanedContent = chapter.content
       .split('\n')
       .map(line => line.trim())
@@ -132,9 +122,6 @@ export function createTestEpub(options: {
   return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' }).then(data => Buffer.from(data));
 }
 
-/**
- * Creates a simple EPUB with basic text content
- */
 export function createSimpleTestEpub(): Promise<Buffer> {
   return createTestEpub({
     title: 'Test Book',
@@ -152,9 +139,6 @@ export function createSimpleTestEpub(): Promise<Buffer> {
   });
 }
 
-/**
- * Creates an EPUB with complex formatting and structure
- */
 export function createComplexTestEpub(): Promise<Buffer> {
   return createTestEpub({
     title: 'Complex Test Book: A Study in EPUB Structure',
@@ -191,9 +175,6 @@ export function createComplexTestEpub(): Promise<Buffer> {
   });
 }
 
-/**
- * Creates an EPUB with empty chapters to test edge cases
- */
 export function createEmptyChaptersTestEpub(): Promise<Buffer> {
   return createTestEpub({
     title: 'Empty Chapters Test',
@@ -219,9 +200,6 @@ export function createEmptyChaptersTestEpub(): Promise<Buffer> {
   });
 }
 
-/**
- * Creates an EPUB with multilingual content for testing internationalization
- */
 export function createMultilingualTestEpub(): Promise<Buffer> {
   return createTestEpub({
     title: 'Multilingual Test Book',

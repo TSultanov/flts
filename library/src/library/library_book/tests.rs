@@ -112,22 +112,18 @@ async fn save_after_load_trivial_book_change() {
     let library_path = temp_dir.path.join("lib");
     let library = Library::open(library_path.clone()).await.unwrap();
 
-    // Create and save
     let book = library
         .create_book("First Title", &Language::from_639_3("eng").unwrap())
         .await
         .unwrap();
     book.lock().await.save().await.unwrap();
 
-    // Simulate "loaded": set last_modified from disk
     let book_file = book.lock().await.path.join("book.dat");
     book.lock().await.last_modified = std::fs::metadata(&book_file).unwrap().modified().ok();
 
-    // Change and save again
     book.lock().await.book.title = "Updated Title".into();
     book.lock().await.save().await.unwrap();
 
-    // Verify on-disk
     let f = std::fs::File::open(&book_file).unwrap();
     let mut reader = std::io::BufReader::new(f);
     let loaded_book = Book::deserialize(&mut reader).unwrap();
@@ -143,7 +139,6 @@ async fn save_after_load_book_and_translation_changed() {
     let source_language = Language::from_str("es").unwrap();
     let target_language = Language::from_str("en").unwrap();
 
-    // Create a book and attach a translation with an initial version
     let book_id = {
         let book = library
             .create_book("First Book", &source_language)
@@ -188,12 +183,10 @@ async fn save_after_load_book_and_translation_changed() {
         book.book.id
     };
 
-    // Reload book
     let path = {
         let book = library.get_book(&book_id).await.unwrap();
         let mut book = book.lock().await;
 
-        // Modify both book and translation
         book.book.title = "Second Edition".into();
         let new_pt = translation_import::ParagraphTranslation {
             total_tokens: None,
@@ -218,8 +211,8 @@ async fn save_after_load_book_and_translation_changed() {
                 }],
             }],
         };
-        // Go through the wrapper so the dirty flag is set, matching production
-        // (the inner Translation has no dirty tracking of its own).
+        // Go through the wrapper so the dirty flag is set; the inner
+        // Translation has no dirty tracking of its own.
         book.translations[0]
             .lock()
             .await
@@ -236,13 +229,11 @@ async fn save_after_load_book_and_translation_changed() {
         target_language.to_639_3()
     ));
 
-    // Verify book updated
     let bf = std::fs::File::open(&book_file).unwrap();
     let mut reader = std::io::BufReader::new(bf);
     let loaded_book = Book::deserialize(&mut reader).unwrap();
     assert_eq!(loaded_book.title, "Second Edition");
 
-    // Verify translation latest version
     let tf = std::fs::File::open(&tr_file).unwrap();
     let mut reader = std::io::BufReader::new(tf);
     let tr2 = Translation::deserialize(&mut reader).unwrap();
@@ -260,7 +251,6 @@ async fn save_merges_translation_with_concurrent_on_disk_change() {
     let source_language = Language::from_str("en").unwrap();
     let target_language = Language::from_str("ru").unwrap();
 
-    // Create a book with a translation ts=1
     let book = library
         .create_book("Merge Book", &Language::from_639_3("eng").unwrap())
         .await
@@ -302,7 +292,6 @@ async fn save_merges_translation_with_concurrent_on_disk_change() {
         })));
     book.save().await.unwrap();
 
-    // Treat as loaded instance with last_modified
     let book_file = book.path.join("book.dat");
     let tr_path = book.path.join(format!(
         "translation_{}_{}.dat",
@@ -315,7 +304,6 @@ async fn save_merges_translation_with_concurrent_on_disk_change() {
     book.translations
         .push(Arc::new(TracedMutex::new(loaded_tr)));
 
-    // In-memory change ts=2
     let mem_pt = translation_import::ParagraphTranslation {
         total_tokens: None,
         timestamp: 2,
@@ -345,7 +333,6 @@ async fn save_merges_translation_with_concurrent_on_disk_change() {
         .translation
         .add_paragraph_translation(0, &mem_pt, TranslationModel::Gemini25Flash);
 
-    // Concurrent on-disk change ts=3
     {
         let mut on_disk = {
             let f = std::fs::File::open(&tr_path).unwrap();
@@ -381,7 +368,6 @@ async fn save_merges_translation_with_concurrent_on_disk_change() {
         on_disk.serialize(&mut writer).unwrap();
     }
 
-    // Save should merge: latest ts=3 -> ts=2 -> ts=1
     book.save().await.unwrap();
     let tf = std::fs::File::open(&tr_path).unwrap();
     let mut reader = std::io::BufReader::new(tf);
@@ -528,7 +514,6 @@ async fn load_user_state_from_legacy_file() {
 
 #[tokio::test]
 async fn load_from_metadata_no_conflicts() {
-    // Arrange: create a single main translation file with a simple history
     let temp_dir = TempDir::new("flts_test_book");
     let dir = temp_dir.path.join("book");
     std::fs::create_dir_all(&dir).unwrap();
@@ -577,12 +562,10 @@ async fn load_from_metadata_no_conflicts() {
         conflicting_paths: vec![],
     };
 
-    // Act
     let loaded = super::LibraryTranslation::load_from_metadata(meta)
         .await
         .unwrap();
 
-    // Assert: translation loaded and unchanged, latest ts=2
     let latest = loaded.translation.paragraph_view(0).unwrap();
     assert_eq!(latest.timestamp, 2);
     assert_eq!(latest.sentence_view(0).full_translation, "m2");
@@ -590,7 +573,6 @@ async fn load_from_metadata_no_conflicts() {
 
 #[tokio::test]
 async fn load_from_metadata_merges_conflicts_and_persists() {
-    // Arrange: create main + two conflict files with different timestamps
     let temp_dir = TempDir::new("flts_test_book");
     let dir = temp_dir.path.join("book2");
     std::fs::create_dir_all(&dir).unwrap();
@@ -610,7 +592,6 @@ async fn load_from_metadata_merges_conflicts_and_persists() {
     ));
     let conflict2 = dir.join("translation_en_ru.conflict2.dat");
 
-    // main: ts=2
     let mut t_main = Translation::create(source_language.to_639_3(), target_language.to_639_3());
     let pt2 = translation_import::ParagraphTranslation {
         total_tokens: None,
@@ -642,7 +623,6 @@ async fn load_from_metadata_merges_conflicts_and_persists() {
         t_main.serialize(&mut writer).unwrap();
     }
 
-    // conflict1: ts=1
     let mut t_c1 = Translation::create(source_language.to_639_3(), target_language.to_639_3());
     let pt1 = translation_import::ParagraphTranslation {
         total_tokens: None,
@@ -674,7 +654,6 @@ async fn load_from_metadata_merges_conflicts_and_persists() {
         t_c1.serialize(&mut writer).unwrap();
     }
 
-    // conflict2: ts=3
     let mut t_c2 = Translation::create("en", "ru");
     let pt3 = translation_import::ParagraphTranslation {
         total_tokens: None,
@@ -715,12 +694,10 @@ async fn load_from_metadata_merges_conflicts_and_persists() {
         conflicting_paths: vec![conflict1.clone(), conflict2.clone()],
     };
 
-    // Act
     let loaded = super::LibraryTranslation::load_from_metadata(meta)
         .await
         .unwrap();
 
-    // Assert: merged order latest=3, then 2, then 1
     let latest = loaded.translation.paragraph_view(0).unwrap();
     assert_eq!(latest.timestamp, 3);
     assert_eq!(latest.sentence_view(0).full_translation, "c3");
@@ -732,7 +709,6 @@ async fn load_from_metadata_merges_conflicts_and_persists() {
     assert_eq!(prev2.sentence_view(0).full_translation, "c1");
     assert!(prev2.get_previous_version().is_none());
 
-    // Also verify that the main file now contains the merged result (latest ts=3)
     let f = std::fs::File::open(&main_path).unwrap();
     let mut reader = std::io::BufReader::new(f);
     let on_disk = Translation::deserialize(&mut reader).unwrap();
@@ -743,7 +719,6 @@ async fn load_from_metadata_merges_conflicts_and_persists() {
 
 #[tokio::test]
 async fn library_book_load_from_metadata_no_conflicts() {
-    // Arrange
     let temp_dir = TempDir::new("flts_test_book");
     let library_path = temp_dir.path.join("lib");
     let library = Library::open(library_path.clone()).await.unwrap();
@@ -755,16 +730,13 @@ async fn library_book_load_from_metadata_no_conflicts() {
     let mut book = book.lock().await;
     book.save().await.unwrap();
 
-    // Acquire metadata for the only book
     let mut books = library.list_books().await.unwrap();
     assert_eq!(books.len(), 1);
     let meta = books.remove(0);
     assert!(meta.conflicting_paths.is_empty());
 
-    // Act
     let loaded = super::LibraryBook::load_from_metadata(meta).await.unwrap();
 
-    // Assert
     assert_eq!(loaded.book.title, "Original Title");
 }
 
@@ -772,7 +744,6 @@ async fn library_book_load_from_metadata_no_conflicts() {
 async fn library_book_load_from_metadata_selects_newest_conflict_and_cleans() {
     use std::{thread::sleep, time::Duration};
 
-    // Arrange
     let temp_dir = TempDir::new("flts_test_book");
     let library_path = temp_dir.path.join("lib");
     let library = Library::open(library_path.clone()).await.unwrap();
@@ -794,10 +765,8 @@ async fn library_book_load_from_metadata_selects_newest_conflict_and_cleans() {
             .replace(".dat", ".syncconflict-newer.dat"),
     );
 
-    // Create conflict as a copy first (same id)
     std::fs::copy(&book_file, &conflict_path).unwrap();
 
-    // Ensure timestamp difference and update conflict content to be "newer"
     sleep(Duration::from_millis(5));
     let rf = std::fs::File::open(&conflict_path).unwrap();
     let mut reader = std::io::BufReader::new(rf);
@@ -807,18 +776,14 @@ async fn library_book_load_from_metadata_selects_newest_conflict_and_cleans() {
     let mut writer = std::io::BufWriter::new(wf);
     conflict_book.serialize(&mut writer).unwrap();
 
-    // Acquire metadata (should include the conflict)
     let mut books = library.list_books().await.unwrap();
     assert_eq!(books.len(), 1);
     assert_eq!(books[0].conflicting_paths.len(), 1);
     let meta = books.remove(0);
 
-    // Act: load should select the newest (conflict), move it to main, and delete conflicts
     let loaded = super::LibraryBook::load_from_metadata(meta).await.unwrap();
 
-    // Assert: loaded content is from conflict (newest)
     assert_eq!(loaded.book.title, "From Conflict");
-    // On-disk main should now contain the conflict content and conflict file should be gone
     let f = std::fs::File::open(&book_file).unwrap();
     let mut reader = std::io::BufReader::new(f);
     let on_disk = Book::deserialize(&mut reader).unwrap();
@@ -830,7 +795,6 @@ async fn library_book_load_from_metadata_selects_newest_conflict_and_cleans() {
 async fn library_book_load_from_metadata_keeps_main_if_newest_and_cleans() {
     use std::{thread::sleep, time::Duration};
 
-    // Arrange
     let temp_dir = TempDir::new("flts_test_book");
     let library_path = temp_dir.path.join("lib");
     let library = Library::open(library_path.clone()).await.unwrap();
@@ -852,10 +816,8 @@ async fn library_book_load_from_metadata_keeps_main_if_newest_and_cleans() {
             .replace(".dat", ".syncconflict-older.dat"),
     );
 
-    // Create conflict as a copy (same id)
     std::fs::copy(&book_file, &conflict_path).unwrap();
 
-    // Now update the MAIN file to be newer with a different title
     sleep(Duration::from_millis(5));
     let rf = std::fs::File::open(&book_file).unwrap();
     let mut reader = std::io::BufReader::new(rf);
@@ -865,16 +827,13 @@ async fn library_book_load_from_metadata_keeps_main_if_newest_and_cleans() {
     let mut writer = std::io::BufWriter::new(wf);
     main_book.serialize(&mut writer).unwrap();
 
-    // Acquire metadata (should include conflict)
     let mut books = library.list_books().await.unwrap();
     assert_eq!(books.len(), 1);
     assert_eq!(books[0].conflicting_paths.len(), 1);
     let meta = books.remove(0);
 
-    // Act
     let loaded = super::LibraryBook::load_from_metadata(meta).await.unwrap();
 
-    // Assert: main is kept, conflict removed
     assert_eq!(loaded.book.title, "V2");
     let f = std::fs::File::open(&book_file).unwrap();
     let mut reader = std::io::BufReader::new(f);
@@ -908,9 +867,7 @@ async fn delete_book_removes_directory() {
     assert!(library.list_books().await.unwrap().is_empty());
 }
 
-// ---------------------------------------------------------------------------
-// File-watcher echo suppression (save/reload loop fix)
-// ---------------------------------------------------------------------------
+// ---- File-watcher echo suppression ----
 
 fn simple_paragraph(text: &str, timestamp: u64) -> translation_import::ParagraphTranslation {
     translation_import::ParagraphTranslation {
@@ -938,9 +895,8 @@ fn simple_paragraph(text: &str, timestamp: u64) -> translation_import::Paragraph
     }
 }
 
-/// Pushes the file's mtime into the future without touching its bytes,
-/// mirroring how our own atomic save (or a Syncthing re-touch) bumps mtime.
-/// Returns the time it set.
+/// Pushes the mtime forward without touching the bytes, as our own atomic save
+/// or a Syncthing re-touch does. Returns the time it set.
 fn bump_mtime_future(path: &std::path::Path) -> SystemTime {
     let future = SystemTime::now() + Duration::from_secs(3600);
     let file = std::fs::File::options().write(true).open(path).unwrap();
@@ -948,9 +904,8 @@ fn bump_mtime_future(path: &std::path::Path) -> SystemTime {
     future
 }
 
-/// Creates a book with one en->ru translation, saves it, and returns the
-/// locked book plus the translation file path. After save the in-memory
-/// translation/book carry their `last_saved_hash`.
+/// A saved book with one en->ru translation, returned locked alongside the
+/// translation path; both carry their `last_saved_hash`.
 async fn book_with_saved_translation(
     library: &Library,
     title: &str,
@@ -993,8 +948,7 @@ async fn book_with_saved_translation(
 
 #[tokio::test]
 async fn serialize_is_deterministic() {
-    // The echo gate assumes re-serializing identical state yields identical
-    // bytes (and thus an identical trailing hash). Guard that assumption.
+    // The echo gate assumes re-serializing identical state is byte-identical.
     let source_language = Language::from_str("en").unwrap();
     let target_language = Language::from_str("ru").unwrap();
     let mut tr = Translation::create(source_language.to_639_3(), target_language.to_639_3());
@@ -1039,7 +993,6 @@ async fn reload_translations_skips_same_content_echo() {
     let (book, tr_path) = book_with_saved_translation(&library, "Echo Tr").await;
 
     let before = std::fs::read(&tr_path).unwrap();
-    // Bump mtime only — content is byte-identical (our own write echo).
     let future = bump_mtime_future(&tr_path);
 
     let from = Language::from_str("en").unwrap();
@@ -1065,7 +1018,6 @@ async fn reload_translations_saves_on_external_change() {
     let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
     let (book, tr_path) = book_with_saved_translation(&library, "Ext Tr").await;
 
-    // Externally rewrite the translation with genuinely different content.
     {
         let f = std::fs::File::open(&tr_path).unwrap();
         let mut reader = std::io::BufReader::new(f);
@@ -1120,7 +1072,6 @@ async fn reload_book_saves_on_external_change() {
     let (book_a, _tr_a) = book_with_saved_translation(&library, "Bk A").await;
     let (book_b, _tr_b) = book_with_saved_translation(&library, "Bk B").await;
 
-    // Overwrite A's book.dat with B's (different content => different hash).
     let a_file = book_a.lock().await.path.join("book.dat");
     let b_file = book_b.lock().await.path.join("book.dat");
     std::fs::copy(&b_file, &a_file).unwrap();
@@ -1132,11 +1083,8 @@ async fn reload_book_saves_on_external_change() {
 
 #[tokio::test]
 async fn failed_save_keeps_in_memory_translations() {
-    // Regression: save() used to drain the in-memory translations vec at
-    // entry and only restore it on full success. Any mid-save error (here:
-    // the end-of-save metadata rescan choking on an unparseable
-    // translation_*.dat) left the cached book with zero translations —
-    // blanking the whole book in the UI until an app restart.
+    // A mid-save error (here the metadata rescan choking on an unparseable
+    // translation_*.dat) must not blank the cached book's translations.
     let temp_dir = TempDir::new("flts_test_book");
     let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
     let (book, _tr_path) = book_with_saved_translation(&library, "Drain Book").await;
@@ -1145,8 +1093,7 @@ async fn failed_save_keeps_in_memory_translations() {
     let garbage = book.path.join("translation_zzz_yyy.dat");
     std::fs::write(&garbage, b"not a translation file").unwrap();
 
-    // Dirty the translation so the failing save exercises the write path
-    // too, not just the rescan.
+    // Dirty it so the failing save exercises the write path, not just rescan.
     book.translations[0]
         .lock()
         .await
@@ -1162,7 +1109,6 @@ async fn failed_save_keeps_in_memory_translations() {
         "planted garbage translation file must fail the save"
     );
 
-    // The failed save must leave the in-memory translations intact.
     assert_eq!(book.translations.len(), 1);
     let target_language = Language::from_str("ru").unwrap();
     let translation = book
@@ -1175,8 +1121,6 @@ async fn failed_save_keeps_in_memory_translations() {
         "paragraph translations must survive a failed save"
     );
 
-    // Once the obstruction is gone, the next save succeeds and the
-    // translations are still there.
     std::fs::remove_file(&garbage).unwrap();
     book.save().await.unwrap();
     assert_eq!(book.translations.len(), 1);
@@ -1193,16 +1137,12 @@ async fn failed_save_keeps_in_memory_translations() {
 
 #[tokio::test]
 async fn save_repairs_corrupt_translation_file() {
-    // Regression: the content-hash absorb gate turned an unparseable disk
-    // copy (torn write, truncated sync delivery) into a hard error — every
-    // subsequent save() of the book failed, and the in-memory translations
-    // (the only surviving copy) were lost on exit. A corrupt file must
-    // instead be overwritten from memory, like the old mtime gate did.
+    // A corrupt disk copy must be overwritten from memory; failing the save
+    // would lose the in-memory state, the only surviving copy.
     let temp_dir = TempDir::new("flts_test_book");
     let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
     let (book, tr_path) = book_with_saved_translation(&library, "Corrupt Tr").await;
 
-    // Truncate the on-disk translation mid-file: trailing hash is garbage.
     let bytes = std::fs::read(&tr_path).unwrap();
     std::fs::write(&tr_path, &bytes[..bytes.len() / 2]).unwrap();
 
@@ -1216,7 +1156,6 @@ async fn save_repairs_corrupt_translation_file() {
         .await
         .expect("save must repair a corrupt translation file, not wedge");
 
-    // The repaired file must parse again and hold the in-memory state.
     let f = std::fs::File::open(&tr_path).unwrap();
     let mut reader = std::io::BufReader::new(f);
     let on_disk = Translation::deserialize(&mut reader).unwrap();
@@ -1225,8 +1164,7 @@ async fn save_repairs_corrupt_translation_file() {
 
 #[tokio::test]
 async fn save_repairs_corrupt_book_file() {
-    // Same regression as above, for book.dat: an unparseable disk copy must
-    // be rewritten from memory instead of failing every future save.
+    // As above for book.dat: an unparseable copy is rewritten from memory.
     let temp_dir = TempDir::new("flts_test_book");
     let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
     let (book, _tr_path) = book_with_saved_translation(&library, "Corrupt Bk").await;
@@ -1250,11 +1188,8 @@ async fn save_repairs_corrupt_book_file() {
 
 #[tokio::test]
 async fn reload_translations_absorbs_older_mtime_remote_change() {
-    // Regression: Syncthing stamps a delivered file with the SOURCE device's
-    // clock, so a genuine remote translation edit can arrive with an mtime
-    // <= our last local save. The old mtime quick-reject dropped it (and a
-    // later local save then overwrote the remote change on disk). The gate
-    // is now content-hash based, so the remote paragraph must be absorbed.
+    // A delivered remote edit carries the source device's clock, so it can
+    // arrive with an mtime <= our last save and must still be absorbed.
     let temp_dir = TempDir::new("flts_test_book");
     let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
     let (book, tr_path) = book_with_saved_translation(&library, "Remote Book").await;
@@ -1262,8 +1197,7 @@ async fn reload_translations_absorbs_older_mtime_remote_change() {
     let source_language = Language::from_str("en").unwrap();
     let target_language = Language::from_str("ru").unwrap();
 
-    // Simulate a remote edit landing on disk: same translation plus an extra
-    // paragraph, written with an mtime an hour in the PAST.
+    // A remote edit: same translation plus a paragraph, mtime an hour back.
     let mut remote = Translation::create(
         source_language.to_639_3(),
         target_language.to_639_3(),

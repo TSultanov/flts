@@ -24,11 +24,9 @@
     const library: Library = getContext("library");
     const chapters = $derived(library.getBookChapters(bookId as UUID));
 
-    // One summary-status store per opened book. Held in a reactive
-    // holder so the context value can be set once at init while the
-    // underlying store is swapped when bookId changes. The store is
-    // null between mount and the first $effect tick; consumers default
-    // to "fully ready" during that sub-frame window.
+    // One store per book, in a holder so the context value is set once at
+    // init while the store swaps on bookId. Null until the first $effect
+    // tick; consumers default to "fully ready" for that sub-frame.
     const summaryStatusHolder: { store: BookSummaryStatusStore | null } =
         $state({ store: null });
     setContext(SUMMARY_STATUS_KEY, summaryStatusHolder);
@@ -43,10 +41,8 @@
     onDestroy(() => summaryStatusHolder.store?.dispose());
 
     let readingState: BookReadingState | null = $state(null);
-    // Per-chapter session positions. Seeded from the backend reading-state
-    // on book open, then kept in sync via the ChapterView onPositionChange
-    // callback. Survives intra-session chapter navigation; the backend
-    // store still gets every save for cross-session persistence.
+    // Per-chapter session positions, so intra-session chapter navigation
+    // keeps its place. The backend still gets every save.
     let positionByChapter = $state(
         new SvelteMap<number, { paragraphId: number; pageOffset: number }>(),
     );
@@ -83,11 +79,9 @@
         paragraphId: number,
         pageOffset: number,
     ) {
-        // chapterId is passed by the emitting VM (captured non-reactively at
-        // its construction), NOT read from the ambient reactive derived. On
-        // an A→B chapter switch the derived has already advanced to B by the
-        // time chapter A's teardown flushes its pending position, so reading
-        // the ambient value here would write A's paragraph under chapter B.
+        // chapterId comes from the emitting VM, never the ambient derived:
+        // on an A→B switch the derived is already B when A's teardown
+        // flushes, which would file A's paragraph under chapter B.
         positionByChapter.set(chapterId, { paragraphId, pageOffset });
         library
             .saveBookReadingState(
@@ -177,10 +171,9 @@
 {/if}
 
 <style>
-    /* Vertical flex: chapter-area fills the remaining space, WordView's
-       slot takes its collapsed-size height at the bottom. The expanded
-       WordView body overflows up via absolute positioning inside its own
-       slot, so opening the word view never resizes .chapter-area. */
+    /* WordView's slot only ever takes its collapsed height; the expanded
+       body overflows upward absolutely, so opening the word view never
+       resizes .chapter-area (which would reflow the page columns). */
     .chapter-view {
         display: flex;
         flex-direction: column;

@@ -355,7 +355,6 @@ async fn translate_book(
             paragraph_count
         );
 
-        // Collect untranslated paragraph IDs with minimal lock contention
         let untranslated_ids: Vec<usize> = {
             let t = translation.lock().await;
             let mut ids = Vec::new();
@@ -382,7 +381,6 @@ async fn translate_book(
 
     let (tx, rx) = flume::unbounded();
 
-    // Channel to notify saver about new changes
     let (tx_save, rx_save) = flume::unbounded::<()>();
     let saver_library = library.clone();
     let saver_handle = tokio::spawn(async move {
@@ -408,9 +406,7 @@ async fn translate_book(
         set.spawn(async move {
             println!("Worker {}: spawning...", i);
             let target_lang1 = target_lang;
-            // Receive until the channel is closed (all senders dropped)
             while let Ok(p_id) = rx.recv_async().await {
-                // Bounded retry inside the worker instead of re-queuing
                 let mut attempt = 1u32;
                 loop {
                     let result = translate_paragraph(
@@ -425,7 +421,6 @@ async fn translate_book(
 
                     match result {
                         Ok(_) => {
-                            // Notify saver that new data is available
                             let _ = tx_save_w.send_async(()).await;
                             break
                         },
@@ -459,12 +454,11 @@ async fn translate_book(
     }
 
     drop(tx);
-    // Drop main saver sender so channel can close when workers finish
+    // Closes the saver channel once workers finish.
     drop(tx_save);
 
     set.join_all().await;
 
-    // Wait for saver to flush any pending changes
     let _ = saver_handle.await;
 
     let elapsed_time = start_time.elapsed();

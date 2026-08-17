@@ -11,9 +11,8 @@ export type TrackMeta = {
 };
 
 export type QueueSnapshot = {
-    /// "playlist" | "album" | "artist" | "show" | null. Preload should only
-    /// fire for "playlist" / "album" — for the others, the next track is
-    /// either undefined (autoplay) or not a song.
+    /// Preload only for "playlist"/"album"; elsewhere the next track is
+    /// either autoplay-undefined or not a song.
     contextType: string | null;
     currentlyPlayingId: string | null;
     upcoming: TrackMeta[];
@@ -41,10 +40,8 @@ export async function spotifyWebGetQueue(): Promise<QueueSnapshot | null> {
     return (await invoke<QueueSnapshot | null>('spotify_web_get_queue')) ?? null;
 }
 
-/// Subscribes to `spotify_queue` and surfaces snapshots plus the timestamp at
-/// which they arrived. Consumers can use `receivedAt` to ignore stale snapshots
-/// (e.g. "Up next" hides itself when the latest event is >30s old, indicating
-/// playback stopped or the watcher fell behind).
+/// `receivedAt` lets consumers drop stale snapshots — a watcher that fell
+/// behind still reports the old queue.
 export type QueueStoreValue = {
     snapshot: QueueSnapshot | null;
     receivedAt: number;

@@ -29,10 +29,9 @@ use tauri::Emitter;
 
 const TRANSLATION_PROGRESS_UPDATE_INTERVAL: Duration = Duration::from_millis(500);
 
-/// Total attempts (initial + restarts) a paragraph gets before a transient
-/// failure is surfaced to the user. Restarts run as the very next item (they
-/// take priority over queued fresh requests), so when a failure is
-/// instantaneous this cap is the only thing bounding the retry loop.
+/// Attempts (initial + restarts) before a transient failure reaches the user.
+/// Restarts jump the queue, so on instant failures this cap alone bounds the
+/// retry loop.
 const MAX_TRANSLATION_ATTEMPTS: u32 = 4;
 
 struct TranslationRequest {
@@ -41,33 +40,27 @@ struct TranslationRequest {
     paragraph_id: usize,
     model: TranslationModel,
     use_cache: bool,
-    /// 0 on first enqueue; incremented each time the worker requeues this
-    /// paragraph after a transient failure.
+    /// 0 on first enqueue, bumped per transient-failure requeue.
     attempt: u32,
 }
 
-/// Decide whether a failed request should be restarted (re-enqueued) rather
-/// than surfaced as a terminal error. Pure so it can be unit-tested without a
-/// running queue.
+/// Whether a failure earns a restart instead of a terminal error.
 fn should_requeue(err: &anyhow::Error, attempt: u32) -> bool {
     attempt + 1 < MAX_TRANSLATION_ATTEMPTS && is_transient_translation_error(err)
 }
 
 #[derive(Debug, PartialEq)]
 enum FailureDisposition {
-    /// Re-enqueued on the priority retry lane (runs as the very next item);
-    /// the activity entry survives with progress reset. Caller should push a
-    /// progress-reset event to the UI.
+    /// On the priority retry lane; the activity entry survives with progress
+    /// reset, and the caller pushes a progress-reset event.
     Requeued { expected_chars: usize },
-    /// Out of restarts (or error is permanent / queue is shutting down); the
-    /// activity entry is removed. Caller should emit the finished-with-error
-    /// event.
+    /// Permanent error, restarts exhausted, or shutting down: the activity entry
+    /// is gone and the caller emits the finished-with-error event.
     Terminal,
 }
 
-/// Everything the worker does with a failed request except the Tauri event
-/// emission, so the requeue mechanics are unit-testable with a real state map
-/// and channel.
+/// The failure path minus the Tauri events, so requeue mechanics stay testable
+/// against a real state map and channel.
 async fn handle_translation_failure(
     state: &Arc<Mutex<TranslationQueueState>>,
     retry_tx: &UnboundedSender<TranslationRequest>,
@@ -76,9 +69,8 @@ async fn handle_translation_failure(
 ) -> FailureDisposition {
     if should_requeue(err, request.attempt) {
         let next_attempt = request.attempt + 1;
-        // Keep the active_translations entry so the same request_id, the UI
-        // spinner, and the translate() dedup all survive the restart; just
-        // reset the visible progress.
+        // The entry must survive so request_id, the spinner, and translate()'s
+        // dedup outlive the restart; only progress resets.
         let expected_chars = {
             let mut s = state.lock().await;
             match s
@@ -107,8 +99,7 @@ async fn handle_translation_failure(
             );
             return FailureDisposition::Requeued { expected_chars };
         }
-        // Channel gone (queue shutting down): fall through to the terminal
-        // path so the failure is still reported.
+        // Channel gone: fall through so the failure is still reported.
     }
 
     warn!(
@@ -130,11 +121,9 @@ struct SaveNotify {
     request_id: usize,
     book_id: Uuid,
     paragraph_id: usize,
-    /// Pins the exact LibraryBook instance the translation was written
-    /// into until the saver has persisted it. Without the pin, a cache
-    /// eviction between write and save (the warm LRU holds only 8 books
-    /// and get() does not refresh recency) drops the only copy of the
-    /// dirty data while the UI is told the translation succeeded.
+    /// Pins the exact LibraryBook the translation went into until it is
+    /// persisted; otherwise a cache eviction between write and save drops the
+    /// only copy of dirty data the UI already reported as saved.
     book: BookHandle,
 }
 
@@ -209,10 +198,9 @@ impl TranslationQueueTasks {
     }
 
     async fn wait_for_shutdown(self) {
-        // Abort the translate loop first: its exit (and its JoinSet's)
-        // drops every tx_save clone, closing the saver channel — which is
-        // what lets run_saver's graceful drain (finish pending batches,
-        // flush dirty books) actually run instead of being aborted mid-save.
+        // Abort the translate loop first: its exit drops every tx_save clone and
+        // closes the saver channel, which is what triggers run_saver's graceful
+        // drain instead of an abort mid-save.
         self.translate_task.abort();
         wait_for_shutdown_task("translate", self.translate_task).await;
 
@@ -232,9 +220,8 @@ impl TranslationQueueTasks {
     }
 }
 
-/// Upper bound on the graceful saver drain at shutdown: enough for a
-/// pending batch save plus its retry sleeps, small enough not to blow the
-/// app's exit-step timeouts.
+/// Fits a pending batch save plus its retry sleeps, but stays under the app's
+/// exit-step timeouts.
 const SAVER_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct TranslationQueue {
@@ -292,26 +279,18 @@ impl TranslationQueue {
         let translate_task = {
             let state = state.clone();
             let app = app.clone();
-            // Restarts travel on their own channel so the select below can give
-            // them priority: a transiently-failed paragraph runs as the very
-            // next item instead of waiting behind everything already queued.
-            // The loop owns a sender (cloned per child task), so this channel
-            // can never close while the loop is alive.
+            // Restarts get their own channel so the select can prioritize them
+            // over queued fresh requests. The loop owns a sender, so it never
+            // closes while the loop lives.
             let (tx_retry, mut rx_retry) = unbounded_channel::<TranslationRequest>();
-            // Bound how many paragraph translations run concurrently. Acquiring a
-            // permit before receiving the next request applies backpressure: once
-            // `concurrency` are in flight the loop parks until one finishes.
             let semaphore = Arc::new(Semaphore::new(concurrency));
             tokio::spawn(async move {
-                // Child tasks live in this JoinSet so they're aborted together
-                // when the parent task is aborted on shutdown (JoinSet aborts all
-                // its tasks on drop).
+                // Dropping the JoinSet aborts the children with the parent.
                 let mut join_set: JoinSet<()> = JoinSet::new();
                 loop {
                     let request = tokio::select! {
-                        // Reap finished translations so completed handles don't
-                        // accumulate, then prefer retries over fresh requests.
-                        // Biased so this priority order is deterministic.
+                        // Reap finished handles, then prefer retries; biased so
+                        // that priority is deterministic.
                         biased;
                         Some(_) = join_set.join_next() => continue,
                         Some(request) = rx_retry.recv() => request,
@@ -321,8 +300,9 @@ impl TranslationQueue {
                         }
                     };
 
-                    // Held for the task's lifetime; released when it ends,
-                    // which is what lets a parked `acquire_owned` proceed.
+                    // Acquired before the next receive, so an in-flight limit of
+                    // `concurrency` parks the loop as backpressure. Held for the
+                    // task's lifetime.
                     let permit = semaphore
                         .clone()
                         .acquire_owned()
@@ -383,8 +363,7 @@ impl TranslationQueue {
                                 .await
                             {
                                 FailureDisposition::Requeued { expected_chars } => {
-                                    // Drop the UI's progress ring back to
-                                    // zero so the restart is visible.
+                                    // Zero the progress ring so the restart shows.
                                     let _ = app.emit(
                                         "paragraph_translation_progress",
                                         ParagraphTranslationProgressEvent {
@@ -428,16 +407,14 @@ impl TranslationQueue {
         let tasks = self.tasks.lock().await.take();
         if let Some(tasks) = tasks {
             info!("TranslationQueue shutdown — stopping background tasks");
-            // No blanket abort here: wait_for_shutdown aborts the translate
-            // loop but lets the saver drain gracefully so completed
+            // Not a blanket abort: the saver must drain so completed
             // translations reach disk.
             tasks.wait_for_shutdown().await;
         }
 
-        // Aborting dropped every in-flight and channel-pending request without
-        // a finished event. The frontend keeps its per-paragraph activity state
-        // purely from events (it never re-polls), so emit a terminal event for
-        // each stranded entry or its spinner survives the queue forever.
+        // The abort strands in-flight and pending requests with no finished
+        // event, and the frontend drives activity state purely from events, so
+        // every stranded entry needs a terminal one or its spinner never stops.
         let stranded: Vec<_> = {
             let mut state = self.state.lock().await;
             state.active_translations.drain().collect()
@@ -460,8 +437,7 @@ impl TranslationQueue {
         model: TranslationModel,
         use_cache: bool,
     ) -> anyhow::Result<usize> {
-        // Hold lock across check + insert to prevent TOCTOU race where two
-        // concurrent calls both pass the dedup check and send duplicate requests.
+        // One lock across check + insert, or two callers both pass the dedup.
         let mut state = self.state.lock().await;
         if let Some(activity) = state.active_translations.get(&(book_id, paragraph_id)) {
             return Ok(activity.request_id);
@@ -478,12 +454,8 @@ impl TranslationQueue {
         );
         drop(state);
 
-        // Announce activity at enqueue, not when the worker picks the request
-        // up. Otherwise queued paragraphs sit silently until earlier ones finish
-        // — the frontend would show a spinner only on the in-flight item, not
-        // on the ones the user clicked while one was still running. expected_chars
-        // is unknown until the worker estimates; it is updated via the progress
-        // event emitted at the start of handle_request.
+        // Announced at enqueue, not pickup, so every clicked paragraph spins
+        // immediately. expected_chars stays 0 until handle_request estimates it.
         let _ = self.app.emit(
             "paragraph_translation_started",
             ParagraphTranslationStartedEvent {
@@ -526,10 +498,9 @@ impl TranslationQueue {
             .copied()
     }
 
-    /// Snapshot of every active translation. The frontend reconciles
-    /// against this after the webview was suspended (iOS backgrounds the
-    /// WKWebView and events emitted meanwhile are lost) — it is the only
-    /// way it can discover activity whose `started` event never arrived.
+    /// Snapshot of every active translation. iOS suspends the WKWebView and
+    /// loses events meanwhile, so this is the frontend's only way to recover
+    /// activity whose `started` event never arrived.
     pub async fn list_active_translations(&self) -> Vec<ActiveParagraphTranslation> {
         self.state
             .lock()
@@ -622,10 +593,7 @@ async fn handle_request(
         expected_size, source_len, stats.ratio, stats.n
     );
 
-    // Record expected size in the activity snapshot and push it to the UI as
-    // a progress event with progress_chars=0. The started event already fired
-    // at enqueue with expected_chars=0; this is the first refinement once the
-    // worker actually picks up the request.
+    // First refinement of the enqueue-time expected_chars=0.
     {
         let mut s = state.lock().await;
         if let Some(activity) = s
@@ -673,8 +641,7 @@ async fn handle_request(
             s.last_progress = progress_len;
             drop(s);
 
-            // Update the in-memory snapshot so a late-mounting UI fetching
-            // the current activity sees fresh progress.
+            // Keeps the snapshot fresh for a late-mounting UI.
             let state = state.clone();
             let app = app.clone();
             tauri::async_runtime::spawn(async move {
@@ -711,7 +678,6 @@ async fn handle_request(
         .await?;
     info!("Translated paragraph {}", request.paragraph_id);
 
-    // Measure actual translation JSON size and update stats
     let actual_size = serde_json::to_string(&p_translation)
         .map(|s| s.len())
         .unwrap_or(0);
@@ -725,9 +691,8 @@ async fn handle_request(
         actual_size as f64 / source_len as f64
     );
 
-    // F4 fix: Re-read paragraph text and verify it hasn't changed since we started translating.
-    // Between our initial read and now, the book could have been reloaded (e.g., file watcher
-    // picked up a sync update), which would make this translation stale.
+    // The book may have been reloaded during the call (file watcher, sync), which
+    // would make this translation stale.
     let book_handle = library.get_book(&request.book_id).await?;
     {
         let mut book = book_handle.lock().await;
@@ -750,12 +715,10 @@ async fn handle_request(
             ));
         }
 
-        // Acquire the translation from the book instance that is current at
-        // write time, under the same book lock as the staleness checks
-        // above. An Arc captured before the minutes-long LLM call can be
-        // detached by then (book reloaded after a sync change, evicted from
-        // the cache, or its translations vec rebuilt) — a write into a
-        // detached instance is invisible to readers and never saved.
+        // Must come from the instance current at write time, under the same lock
+        // as the staleness checks: an Arc captured before the minutes-long LLM
+        // call may be detached, and writes into a detached instance are invisible
+        // and never saved.
         let translation = book.get_or_create_translation(&target_language).await?;
         translation.lock().await.add_paragraph_translation(
             request.paragraph_id,
@@ -783,10 +746,9 @@ async fn handle_request(
     Ok(())
 }
 
-/// How many times a book save is attempted (with a delay between tries)
-/// before the batch is surfaced to the UI as failed. Transient fs races —
-/// e.g. the sync daemon rewriting a file mid-save — usually clear within a
-/// beat, and the translations stay live in memory either way.
+/// Save tries before the batch is reported failed. Transient fs races (the sync
+/// daemon rewriting a file mid-save) clear within a beat, and the translations
+/// stay live in memory regardless.
 const MAX_SAVE_ATTEMPTS: u32 = 3;
 const SAVE_RETRY_DELAY: Duration = Duration::from_secs(1);
 
@@ -796,11 +758,9 @@ async fn run_saver(
     state: Arc<Mutex<TranslationQueueState>>,
     mut rx: UnboundedReceiver<SaveNotify>,
 ) {
-    // One actor per book coalesces saves: the first notify saves right away,
-    // and notifies arriving while that save runs are batched into the next
-    // one — the save's own duration is the debounce window. (The previous
-    // 1s-delay design was dead code: its Vacant arm never inserted into the
-    // map, so every notify saved immediately.)
+    // One actor per book coalesces saves: the first notify saves at once and
+    // notifies arriving during that save batch into the next, so the save's own
+    // duration is the debounce window.
     let mut actors: HashMap<Uuid, UnboundedSender<SaveNotify>> = HashMap::new();
     let mut join_set: JoinSet<()> = JoinSet::new();
 
@@ -815,22 +775,18 @@ async fn run_saver(
             ));
             tx
         });
-        // Only fails once the actor exited, which cannot happen while we
-        // still hold its sender.
+        // Cannot fail: the actor outlives the sender we hold.
         let _ = tx.send(msg);
     }
 
-    // Queue shutting down: close the actor channels and let them drain
-    // (shutdown() aborts the translate loop first, which drops every
-    // tx_save clone and closes our rx — so this path really runs).
+    // Reached because shutdown() aborts the translate loop first, closing our rx.
     drop(actors);
     while join_set.join_next().await.is_some() {}
 }
 
-/// Save every distinct pinned book instance referenced by the batch plus
-/// any instances left dirty by earlier failed batches. Normally that is
-/// exactly one instance; it differs only when the cache swapped the book
-/// between writes.
+/// Saves every distinct pinned instance in the batch plus any left dirty by
+/// earlier failures. More than one only when the cache swapped the book between
+/// writes.
 async fn save_pinned(batch: &[SaveNotify], unsaved: &[BookHandle]) -> anyhow::Result<()> {
     let mut distinct: Vec<&BookHandle> = Vec::new();
     for handle in unsaved.iter().chain(batch.iter().map(|m| &m.book)) {
@@ -851,9 +807,8 @@ async fn book_saver(
     state: Arc<Mutex<TranslationQueueState>>,
     mut rx: UnboundedReceiver<SaveNotify>,
 ) {
-    // Instances whose last save failed terminally, kept pinned and retried
-    // with the next batch so the dirty data survives cache eviction until
-    // it reaches disk.
+    // Instances whose save failed, pinned and retried with the next batch so the
+    // dirty data survives cache eviction until it reaches disk.
     let mut unsaved: Vec<BookHandle> = Vec::new();
 
     while let Some(first) = rx.recv().await {
@@ -890,15 +845,10 @@ async fn book_saver(
             }
         }
 
-        // Even when the save failed, the translations are still live in
-        // memory (save() no longer drops them on error) and served by the
-        // read path, so the paragraphs are announced as updated either way;
-        // the finished event below carries the save error, if any. The
-        // file-watcher TranslationChanged path won't fire `book_updated` for
-        // our own writes (reload_translations sees in-memory == disk and
-        // returns had_effect=false), so emit it directly here. Chapter-list
-        // `Resource`s in the frontend subscribe to it to refresh per-chapter
-        // translation %.
+        // Announced even on save failure: the translations stay live in memory
+        // and the finished event below carries the error. The file watcher stays
+        // silent for our own writes (in-memory == disk), so `book_updated` must
+        // be raised here for the frontend's chapter-list resources.
         for msg in &batch {
             let _ = app.emit(
                 "paragraph_updated",
@@ -929,8 +879,7 @@ async fn book_saver(
         }
     }
 
-    // Channel closed (graceful drain): last-chance flush of anything a
-    // terminal failure left dirty, so it isn't lost when the pins drop.
+    // Graceful drain: flush what failures left dirty before the pins drop.
     for handle in &unsaved {
         let mut book = handle.lock().await;
         if let Err(err) = book.save().await {
@@ -978,10 +927,8 @@ mod tests {
 
     #[test]
     fn stops_requeueing_once_attempts_exhausted() {
-        // On the final allowed attempt there is no restart left to grant.
         let err = anyhow::anyhow!("OpenAI total stream timeout");
         assert!(!should_requeue(&err, MAX_TRANSLATION_ATTEMPTS - 1));
-        // ...but the attempt just before it still requeues.
         assert!(should_requeue(&err, MAX_TRANSLATION_ATTEMPTS - 2));
     }
 
@@ -1040,15 +987,11 @@ mod tests {
                 expected_chars: 5000
             }
         );
-        // The restart really is back on the queue, with the attempt bumped
-        // and the same request_id.
         let requeued = rx.try_recv().expect("requeued request on the channel");
         assert_eq!(requeued.attempt, 1);
         assert_eq!(requeued.request_id, 7);
         assert_eq!(requeued.book_id, book_id);
         assert_eq!(requeued.paragraph_id, 3);
-        // The activity entry survives (same request_id) with progress reset,
-        // so the UI spinner and translate() dedup keep working.
         let s = state.lock().await;
         let activity = s.active_translations.get(&(book_id, 3)).unwrap();
         assert_eq!(activity.request_id, 7);

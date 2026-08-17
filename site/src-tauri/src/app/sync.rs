@@ -1,8 +1,4 @@
 //! Tauri commands for native device sync.
-//!
-//! Phase 2 surface: read status, read this device's identity, toggle sync on/off
-//! (which restarts/stops the engine via `eval_config`). Pairing and device-list
-//! commands land in Phase 3.
 
 use std::sync::Arc;
 
@@ -42,8 +38,7 @@ pub async fn get_sync_status(
     Ok(state.sync_status())
 }
 
-/// This device's Syncthing ID + configured name. `None` when sync isn't running
-/// yet (engine not started), so the UI can prompt the user to enable it.
+/// This device's Syncthing ID + name; `None` while the engine isn't running.
 #[tauri::command]
 pub async fn sync_get_this_device(
     state: tauri::State<'_, Arc<AppState>>,
@@ -52,8 +47,7 @@ pub async fn sync_get_this_device(
         return Ok(None);
     };
     let my_id = engine.my_id().to_string();
-    // The effective name is whatever Syncthing's own device entry carries
-    // (set via set_device_name), falling back to the persisted config value.
+    // Syncthing's own device entry is authoritative; config is the fallback.
     let name = engine
         .client()
         .list_devices()
@@ -68,10 +62,8 @@ pub async fn sync_get_this_device(
     }))
 }
 
-/// Loopback URL of Syncthing's own web dashboard, for opening it in a browser.
-/// `Some` only in debug builds with the engine running — release builds ship
-/// `-tags noassets` (no real UI), so this returns `None` and the UI hides the
-/// button without needing a frontend build-flag check.
+/// Loopback URL of Syncthing's dashboard. `Some` only in debug builds with the
+/// engine up: release ships `-tags noassets`, so `None` hides the UI button.
 #[tauri::command]
 pub async fn sync_web_ui_url(
     state: tauri::State<'_, Arc<AppState>>,
@@ -82,15 +74,15 @@ pub async fn sync_web_ui_url(
     Ok(state.sync_engine().await?.map(|e| e.gui_url().to_string()))
 }
 
-/// Called when the app returns to the foreground (mobile): restarts the engine
-/// if it became unreachable while suspended. No-op when sync is off or healthy.
+/// Call on mobile foreground: restarts an engine that went unreachable while
+/// suspended. No-op when sync is off or healthy.
 #[tauri::command]
 pub async fn sync_wake(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
     state.wake_sync().await;
     Ok(())
 }
 
-/// Rename this device (persisted + applied to the running engine + roster).
+/// Renames this device across config, the running engine, and the roster.
 #[tauri::command]
 pub async fn sync_set_device_name(
     state: tauri::State<'_, Arc<AppState>>,
@@ -102,8 +94,7 @@ pub async fn sync_set_device_name(
         .map_err(|err| err.to_string())
 }
 
-/// Enable or disable native sync. Persists the flag and re-evaluates config,
-/// which starts or stops the embedded engine.
+/// Persists the flag and re-evaluates config, starting or stopping the engine.
 #[tauri::command]
 pub async fn sync_set_enabled(
     state: tauri::State<'_, Arc<AppState>>,
@@ -135,9 +126,8 @@ pub async fn sync_list_devices(
         .collect())
 }
 
-/// Pair with a peer: add its device ID (from a scanned/pasted code) and share
-/// the library folder. The peer must add this device too — the roster mesh
-/// (Phase 4) propagates that automatically once one side pairs.
+/// Adds a peer's device ID and shares the library folder. The peer must add this
+/// device too, which the roster mesh propagates once either side pairs.
 #[tauri::command]
 pub async fn sync_add_device(
     state: tauri::State<'_, Arc<AppState>>,
@@ -154,9 +144,8 @@ pub async fn sync_add_device(
         .map_err(|err| err.to_string())
 }
 
-/// Devices that tried to connect but aren't paired yet — the user accepts one
-/// (via `sync_add_device`) to complete pairing without adding both sides
-/// manually. Empty when sync isn't running.
+/// Devices that tried to connect but aren't paired; accepting one via
+/// `sync_add_device` completes pairing. Empty when sync isn't running.
 #[tauri::command]
 pub async fn sync_list_pending(
     state: tauri::State<'_, Arc<AppState>>,

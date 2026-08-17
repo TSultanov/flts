@@ -166,7 +166,6 @@ fn translation_serialize_deserialize_round_trip() {
         TranslationModel::Gemini25Flash,
     );
 
-    // second version
     let paragraph_translation2 = translation_import::ParagraphTranslation {
         total_tokens: Some(4321),
         timestamp: 2,
@@ -221,7 +220,6 @@ fn translation_serialize_deserialize_round_trip() {
 
     assert_eq!(translation2.source_language, "en");
     assert_eq!(translation2.target_language, "ru");
-    // Latest paragraph view
     let latest = translation2.paragraph_view(0).unwrap();
     assert_eq!(latest.sentence_count(), 1);
     assert_eq!(latest.model, TranslationModel::Gemini25FlashLight);
@@ -234,7 +232,6 @@ fn translation_serialize_deserialize_round_trip() {
     assert_eq!(word0.contextual_translations_count(), 1);
     let word1 = sentence.word_view(1);
     assert_eq!(word1.original, "there");
-    // Previous version chain
     let prev = latest.get_previous_version().unwrap();
     let prev_sentence = prev.sentence_view(0);
     assert_eq!(prev_sentence.full_translation, "Hi");
@@ -272,7 +269,6 @@ fn translation_serialize_v1_deserialize_round_trip() {
         TranslationModel::Gemini25Flash,
     );
 
-    // second version
     let paragraph_translation2 = translation_import::ParagraphTranslation {
         total_tokens: None,
         timestamp: 2,
@@ -327,7 +323,6 @@ fn translation_serialize_v1_deserialize_round_trip() {
 
     assert_eq!(translation2.source_language, "en");
     assert_eq!(translation2.target_language, "ru");
-    // Latest paragraph view
     let latest = translation2.paragraph_view(0).unwrap();
     assert_eq!(latest.sentence_count(), 1);
     assert_eq!(latest.model, TranslationModel::Unknown);
@@ -339,7 +334,6 @@ fn translation_serialize_v1_deserialize_round_trip() {
     assert_eq!(word0.contextual_translations_count(), 1);
     let word1 = sentence.word_view(1);
     assert_eq!(word1.original, "there");
-    // Previous version chain
     let prev = latest.get_previous_version().unwrap();
     let prev_sentence = prev.sentence_view(0);
     assert_eq!(prev_sentence.full_translation, "Hi");
@@ -377,7 +371,6 @@ fn translation_serialize_deserialize_corruption() {
         TranslationModel::Gemini25Flash,
     );
 
-    // second version
     let paragraph_translation2 = translation_import::ParagraphTranslation {
         total_tokens: None,
         timestamp: 2,
@@ -428,7 +421,6 @@ fn translation_serialize_deserialize_corruption() {
     let mut buf: Vec<u8> = vec![];
     translation.serialize(&mut buf).unwrap();
 
-    // Corrupt
     buf[12] = 0xae;
 
     let mut cursor = Cursor::new(buf);
@@ -467,13 +459,12 @@ fn merge_diverged_common_root() {
 
     // b: 1 -> 3 -> 5
     let mut b = Translation::create("en", "ru");
-    b.add_paragraph_translation(0, &make_paragraph(1, "a1"), TranslationModel::Gemini25Flash); // same ts as a1 (dedup)
+    b.add_paragraph_translation(0, &make_paragraph(1, "a1"), TranslationModel::Gemini25Flash); // same ts as a1
     b.add_paragraph_translation(0, &make_paragraph(3, "a3"), TranslationModel::Gemini25Flash);
     b.add_paragraph_translation(0, &make_paragraph(5, "a5"), TranslationModel::Gemini25Flash);
 
     let merged = a.merge(&b);
 
-    // Expect order by ts: 1,2,3,4,5 (latest=5)
     let mut ts = Vec::new();
     let mut v = merged.paragraph_view(0).unwrap();
     ts.push(v.timestamp);
@@ -482,7 +473,6 @@ fn merge_diverged_common_root() {
         v = prev;
     }
     assert_eq!(ts, vec![5, 4, 3, 2, 1]);
-    // Verify content for unique timestamps
     assert_eq!(
         merged
             .paragraph_view(0)
@@ -554,7 +544,6 @@ fn merge_present_only_in_one_side() {
 
     let merged = a.merge(&b);
 
-    // Paragraph 0 preserved history
     let mut ts0 = Vec::new();
     let mut v0 = merged.paragraph_view(0).unwrap();
     ts0.push(v0.timestamp);
@@ -564,7 +553,6 @@ fn merge_present_only_in_one_side() {
     }
     assert_eq!(ts0, vec![2, 1]);
 
-    // Paragraph 1 from right present
     let v1 = merged.paragraph_view(1).unwrap();
     assert_eq!(v1.timestamp, 3);
     assert!(v1.get_previous_version().is_none());
@@ -572,10 +560,8 @@ fn merge_present_only_in_one_side() {
 
 #[test]
 fn merge_visible_words_union() {
-    // Legacy merge: two translations with the same timestamp but disjoint
-    // historical `visible_words` should merge into the union. The live click
-    // path is no longer wired (reveal is ephemeral on the frontend), but the
-    // on-disk merge path still needs to behave correctly for old books.
+    // Same timestamp, disjoint `visible_words`: the on-disk merge must union
+    // them for books that carry the field.
     let mut a = Translation::create("en", "ru");
     a.add_paragraph_translation(
         0,
@@ -697,11 +683,8 @@ fn to_import_word_grammar_and_punctuation() {
 
 #[test]
 fn to_import_round_trip_via_add_paragraph_translation() {
-    // Construct a paragraph that uses only the conventions that survive a
-    // round trip through Translation's interned string store: notes are
-    // either `None` or non-empty `Some(_)`. An input `Some("")` is stored
-    // as `""` and decoded back as `None`, so it would fail an exact equality
-    // assertion; the fixture below avoids that case on purpose.
+    // Only round-trip-stable conventions: a note is `None` or non-empty, since
+    // `Some("")` decodes back as `None`.
     let input = translation_import::ParagraphTranslation {
         timestamp: 1234567890,
         total_tokens: Some(256),

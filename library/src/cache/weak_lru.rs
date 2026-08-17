@@ -45,11 +45,8 @@ where
         let mut inner = self.inner.write().await;
         let value = inner.weak_by_id.get(key).and_then(Weak::upgrade)?;
 
-        // Refresh recency so an actively-read value isn't treated as the
-        // oldest insert and evicted underneath its reader (which would force a
-        // disk reload on the next access). Move its warm pin to the back; if
-        // the value is live but had already fallen out of the warm set, re-pin
-        // it (possibly evicting the current oldest).
+        // Refresh recency so an actively-read value isn't evicted underneath
+        // its reader; re-pin a live value that already fell out of the warm set.
         if let Some(pos) = inner.warm_lru.iter().position(|(k, _)| k == key) {
             if let Some(entry) = inner.warm_lru.remove(pos) {
                 inner.warm_lru.push_back(entry);
@@ -64,10 +61,8 @@ where
         Some(value)
     }
 
-    /// Insert a freshly-loaded value. If a concurrent task already inserted
-    /// a live value for `key`, the caller's `value` is dropped and the
-    /// existing `Arc` is returned. Otherwise the new value is registered
-    /// (pinned in the LRU, possibly evicting the oldest) and returned back.
+    /// Insert a freshly-loaded value, or return the live `Arc` a concurrent
+    /// task already registered for `key` (dropping the caller's `value`).
     pub async fn insert(&self, key: K, value: Arc<V>) -> Arc<V> {
         let mut inner = self.inner.write().await;
 
@@ -164,18 +159,15 @@ mod tests {
 
     #[tokio::test]
     async fn get_refreshes_recency_so_touched_entry_survives_eviction() {
-        // No external holders: the warm pin is the only strong ref, so an
-        // evicted key's Weak dies and get() returns None.
+        // With the warm pin the only strong ref, an evicted key's Weak dies.
         let cache: WeakLruCache<usize, String> = WeakLruCache::new(2);
         cache.insert(1, Arc::new("one".to_string())).await;
         cache.insert(2, Arc::new("two".to_string())).await;
 
-        // Touch key 1 -> most-recently-used. Under the old FIFO behavior get
-        // was a no-op and key 1 (oldest insert) would be evicted next.
+        // Touch key 1 so it becomes most-recently-used.
         assert!(cache.get(&1).await.is_some());
 
-        // Insert a third: capacity 2 evicts the least-recently-used, which is
-        // now key 2, not the freshly-touched key 1.
+        // Capacity 2 evicts key 2, not the freshly-touched key 1.
         cache.insert(3, Arc::new("three".to_string())).await;
 
         assert!(cache.get(&1).await.is_some(), "touched key 1 must survive");

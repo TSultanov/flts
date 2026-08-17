@@ -12,14 +12,11 @@ describe('Config type', () => {
         expectTypeOf(withAnki.ankiEndpoint).toEqualTypeOf<string | undefined>();
         expectTypeOf(withAnki.ankiApiKey).toEqualTypeOf<string | undefined>();
 
-        // Both must be omittable — they're optional, so a Config without them
-        // is still a valid Config (legacy frontend builds against legacy
-        // config files).
+        // Must stay omittable: config files written without them are valid.
         const withoutAnki: Config = {
             translationProvider: 'google',
             model: 0,
         };
-        // touch the variable so unused-binding linters don't complain
         void withoutAnki;
     });
 

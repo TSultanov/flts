@@ -1,13 +1,10 @@
-//! Anki sync orchestration. Mirrors the `TranslationQueue` lifecycle —
-//! `init` spawns a tokio task that ticks `library::anki::sync::sync_pass`
-//! on a fixed interval; `shutdown` aborts + joins. The same `sync_now`
-//! entry point also services the on-demand UI button.
+//! Anki sync orchestration: a tokio task ticking
+//! `library::anki::sync::sync_pass`, with `sync_now` serving the UI button
+//! through the same path.
 //!
-//! Spawned from `AppState::eval_config` whenever a library is configured.
-//! Opt out via the `FLTS_DISABLE_ANKI_SYNC=1` env var. Status is pushed
-//! through a `watch::Sender<AnkiSyncStatus>` owned by `AppState` and
-//! forwarded to the frontend as the `anki_sync_status_changed` event.
-//! See `.specs/ANKI_PLAN.md § Stages 7-8`.
+//! Spawned from `AppState::eval_config`, opted out of with
+//! `FLTS_DISABLE_ANKI_SYNC=1`. Status goes out on an `AppState`-owned
+//! `watch::Sender<AnkiSyncStatus>`, forwarded as `anki_sync_status_changed`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,29 +24,23 @@ fn now_unix_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// High-level state of the Anki sync surface. Surfaced to the frontend
-/// for the nav button's icon state machine.
+/// Drives the nav button's icon state machine.
 #[derive(Clone, Copy, Default, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum AnkiSyncStatusState {
-    /// No sync has run yet (or the task isn't installed).
+    /// Nothing has run yet, or no task is installed.
     #[default]
     Idle,
-    /// A `sync_pass` is in flight.
     Syncing,
-    /// The most recent `sync_pass` completed without error.
     Ok,
-    /// AnkiConnect was reachable but `sync_pass` returned an error.
+    /// AnkiConnect answered but `sync_pass` failed.
     Err,
-    /// The `version()` ping failed — AnkiConnect isn't responding.
-    /// Button is hidden in this state.
+    /// The `version()` ping failed; the button hides in this state.
     Unreachable,
 }
 
-/// Tauri-facing DTO for the periodic / on-demand sync result. Mirrors
-/// [`library::anki::sync::SyncReport`] but adds `Serialize` and lives
-/// in the app crate so the library doesn't depend on serde at the type
-/// level.
+/// [`library::anki::sync::SyncReport`] plus `Serialize`, kept here so the
+/// library needs no serde.
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncReportDto {
@@ -72,20 +63,16 @@ impl From<SyncReport> for SyncReportDto {
     }
 }
 
-/// Snapshot of the most recent sync attempt. Pushed through a
-/// `tokio::sync::watch` channel on every state transition.
+/// Snapshot of the latest sync attempt, pushed on every state transition.
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnkiSyncStatus {
     pub state: AnkiSyncStatusState,
-    /// Unix epoch ms when the most recent attempt finished. None if no
-    /// attempt has finished yet.
+    /// Unix epoch ms the last attempt finished.
     pub last_finished_at_ms: Option<i64>,
-    /// Error string from the most recent failed attempt. Populated when
-    /// `state == Err` or `state == Unreachable`.
+    /// Set while `state` is `Err` or `Unreachable`.
     pub last_error: Option<String>,
-    /// Report from the most recent successful sync. Populated when
-    /// `state == Ok`.
+    /// Set while `state` is `Ok`.
     pub last_report: Option<SyncReportDto>,
 }
 
@@ -106,10 +93,8 @@ impl AnkiSyncTask {
     ) -> Arc<Self> {
         let state = Arc::new(Mutex::new(AnkiSyncState::new()));
 
-        // Subscribe to the card-store's change signal so a sync pass kicks
-        // off as soon as a card lands on disk (translation completion,
-        // backfill, future write paths). Notify's natural coalescing
-        // (≤1 pending permit) collapses bursts into one follow-up pass.
+        // Syncs as soon as a card lands on disk; Notify's single pending permit
+        // collapses bursts into one follow-up pass.
         let wake = library.card_store().change_notify();
 
         let task = {
@@ -119,9 +104,8 @@ impl AnkiSyncTask {
             let status_tx = status_tx.clone();
             tokio::spawn(async move {
                 let mut ticker = tokio::time::interval(interval);
-                // `interval` fires immediately on first poll; that's
-                // intentional — preserve the original "run a pass shortly
-                // after init" behavior.
+                // `interval`'s immediate first tick is wanted: a pass runs
+                // shortly after init.
                 loop {
                     tokio::select! {
                         _ = ticker.tick() => {}
@@ -148,10 +132,8 @@ impl AnkiSyncTask {
         }
     }
 
-    /// On-demand sync triggered by the UI button. Same code path as a
-    /// periodic tick: Syncing → version() → sync_pass → status update.
-    /// Returns the report on success, or the error (with status flipped
-    /// to Unreachable / Err) on failure.
+    /// On-demand sync for the UI button, along the periodic tick's path:
+    /// Syncing → version() → sync_pass → status update.
     pub async fn sync_now(&self) -> anyhow::Result<SyncReportDto> {
         run_pass(
             self.client.as_ref(),
@@ -163,20 +145,14 @@ impl AnkiSyncTask {
     }
 }
 
-/// Pure predicate for the `FLTS_DISABLE_ANKI_SYNC` env gate. Caller passes
-/// `std::env::var_os("FLTS_DISABLE_ANKI_SYNC").as_deref()`; we return true
-/// when the value is set and non-empty. Pure so tests don't need to mutate
-/// process env. Stage 8 default is sync-ON, so unset / empty means "spawn
-/// the task" — only an explicit `=1` (or any non-empty value) disables.
+/// `FLTS_DISABLE_ANKI_SYNC` gate: sync is on unless the value is non-empty.
+/// Pure, so tests need no process env.
 pub fn anki_sync_disabled(env_value: Option<&std::ffi::OsStr>) -> bool {
     env_value.is_some_and(|v| !v.is_empty())
 }
 
-/// Dispatch helper for the `sync_anki_now` Tauri command. Pulls the task
-/// from a `Mutex<Option<Arc<AnkiSyncTask>>>` slot (typically
-/// `AppState::anki_sync_task`) and either runs `sync_now` or errors with a
-/// message explaining why. Extracted as a free fn so we can unit-test it
-/// without constructing the full `AppState`.
+/// `sync_anki_now`'s body, taken out of `AppState` so tests can drive it with
+/// just a task slot.
 pub async fn sync_now_or_err(
     task_slot: &Mutex<Option<Arc<AnkiSyncTask>>>,
 ) -> anyhow::Result<SyncReportDto> {
@@ -189,17 +165,16 @@ pub async fn sync_now_or_err(
     }
 }
 
-/// One sync attempt with full status side effects. Shared by the periodic
-/// tick and the on-demand `sync_now` entry point so both paths behave
-/// identically.
+/// One sync attempt with its status side effects, shared by the periodic tick
+/// and `sync_now`.
 async fn run_pass(
     client: &dyn AnkiConnect,
     library: &Arc<Library>,
     state: &Mutex<AnkiSyncState>,
     status_tx: &watch::Sender<AnkiSyncStatus>,
 ) -> anyhow::Result<SyncReportDto> {
-    // One pass at a time, no queueing — a pass can hold this for minutes.
-    // Bail before the status flip so it stays owned by the running pass.
+    // One pass at a time, no queueing: a pass can hold this for minutes. Bail
+    // before the status flip so it stays owned by the running pass.
     let Ok(mut guard) = state.try_lock() else {
         anyhow::bail!("anki sync already in progress");
     };
@@ -326,9 +301,7 @@ mod tests {
             make_status_tx(),
         );
 
-        // Drop a second card into the store; `save()` fires the wake, the
-        // worker loop's `select!` resolves on `wake.notified()`, runs a
-        // pass, and both cards are synced.
+        // `save()` fires the wake, which must drive a pass syncing both cards.
         let mut translations2: std::collections::BTreeMap<String, Vec<String>> =
             std::collections::BTreeMap::new();
         translations2.insert("verb".into(), vec!["есть".into()]);
@@ -346,9 +319,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Poll briefly for the card to become Active. 500 ms is well under
-        // the 1-hour interval; failure here means the wake didn't drive a
-        // pass.
+        // 500 ms is far under the 1-hour interval, so a miss means no wake.
         let deadline = std::time::Instant::now() + Duration::from_millis(500);
         loop {
             let loaded = library
@@ -476,8 +447,7 @@ mod tests {
     async fn anki_sync_task_emits_unreachable_when_version_fails() {
         let (_tmp, library) = seed_library_with_card("flts_anki_sync_unreachable").await;
         let mock = Arc::new(MockAnkiConnect::new());
-        // Pin every AnkiConnect call to fail — version() probe at the
-        // top of each tick is what we're testing here.
+        // Every call fails, so each tick stops at the version() probe.
         mock.fail_next_n_calls(usize::MAX);
         let client: Arc<dyn AnkiConnect> = mock;
         let (status_tx, status_rx) = tokio::sync::watch::channel(AnkiSyncStatus::default());
@@ -514,8 +484,7 @@ mod tests {
     async fn anki_sync_task_recovers_to_ok_after_version_succeeds() {
         let (_tmp, library) = seed_library_with_card("flts_anki_sync_recover").await;
         let mock = Arc::new(MockAnkiConnect::new());
-        // Only the first AnkiConnect call (first tick's version()) fails;
-        // subsequent ticks see version() succeed and sync_pass runs.
+        // Only the first tick's version() fails; later ticks reach sync_pass.
         mock.fail_next_n_calls(1);
         let client: Arc<dyn AnkiConnect> = mock;
         let (status_tx, status_rx) = tokio::sync::watch::channel(AnkiSyncStatus::default());
@@ -526,8 +495,7 @@ mod tests {
             Arc::new(status_tx),
         );
 
-        // Sleep long enough for several ticks to fire — first one fails,
-        // subsequent ones succeed.
+        // Long enough for several ticks.
         tokio::time::sleep(Duration::from_millis(200)).await;
         task.shutdown().await;
 

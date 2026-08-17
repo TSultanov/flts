@@ -132,9 +132,7 @@ impl Book {
         self.paragraphs.len()
     }
 
-    /// Linear scan over chapters to find which one contains the given
-    /// flat paragraph id. `None` if the id is out of range or not
-    /// assigned to any chapter.
+    /// The chapter containing a flat paragraph id, by linear scan.
     pub fn chapter_for_paragraph(&self, paragraph_id: usize) -> Option<usize> {
         for (chapter_idx, chapter) in self.chapters.iter().enumerate() {
             let indices = chapter.paragraphs.slice(&self.paragraph_map);
@@ -200,50 +198,40 @@ impl Serializable for Book {
         let mut hashing_stream_unbuffered = ChecksumedWriter::create(output_stream);
         let mut hashing_stream = BufWriter::new(hashing_stream_unbuffered);
 
-        // Magic + version
         let t_magic = Instant::now();
-        Magic::Book.write(&mut hashing_stream)?; // magic
-        Version::V1.write_version(&mut hashing_stream)?; // version
+        Magic::Book.write(&mut hashing_stream)?;
+        Version::V1.write_version(&mut hashing_stream)?;
         let d_magic = t_magic.elapsed();
 
-        // Build metadata buffer
         let t_meta_build = Instant::now();
         let mut metadata_buf = Vec::new();
         let mut metadata_buf_hasher = ChecksumedWriter::create(&mut metadata_buf);
         metadata_buf_hasher.write_all(self.id.as_bytes())?;
-        // Title
         write_var_u64(&mut metadata_buf_hasher, self.title.len() as u64)?;
         metadata_buf_hasher.write_all(self.title.as_bytes())?;
-        // Language
         write_var_u64(&mut metadata_buf_hasher, self.language.len() as u64)?;
         metadata_buf_hasher.write_all(self.language.as_bytes())?;
-        // chapters count
         let chapters_count = self.chapter_count();
         write_var_u64(&mut metadata_buf_hasher, chapters_count as u64)?;
-        // paragraphs count
         write_var_u64(&mut metadata_buf_hasher, self.paragraphs.len() as u64)?;
         let metadata_hash = metadata_buf_hasher.current_hash();
         let d_meta_build = t_meta_build.elapsed();
 
-        // Write metadata
         let t_meta_write = Instant::now();
         write_u64(&mut hashing_stream, metadata_hash)?;
         write_var_u64(&mut hashing_stream, metadata_buf.len() as u64)?;
         hashing_stream.write_all(&metadata_buf)?;
         let d_meta_write = t_meta_write.elapsed();
 
-        // Strings blob compress
         let t_compress = Instant::now();
         let encoded = zstd::stream::encode_all(self.strings.as_slice(), -7)?;
         let d_compress = t_compress.elapsed();
 
-        // Strings write
         let t_write_strings = Instant::now();
         write_var_u64(&mut hashing_stream, encoded.len() as u64)?;
         hashing_stream.write_all(&encoded)?;
         let d_write_strings = t_write_strings.elapsed();
 
-        // Paragraphs
         let t_paragraphs = Instant::now();
         write_var_u64(&mut hashing_stream, self.paragraphs.len() as u64)?;
         for p in &self.paragraphs {
@@ -259,7 +247,6 @@ impl Serializable for Book {
         }
         let d_paragraphs = t_paragraphs.elapsed();
 
-        // Paragraphs map
         let t_pmap = Instant::now();
         write_var_u64(&mut hashing_stream, self.paragraph_map.len() as u64)?;
         for p in &self.paragraph_map {
@@ -267,7 +254,6 @@ impl Serializable for Book {
         }
         let d_pmap = t_pmap.elapsed();
 
-        // Chapters
         let t_chapters = Instant::now();
         write_var_u64(&mut hashing_stream, self.chapters.len() as u64)?;
         for c in &self.chapters {
@@ -276,7 +262,6 @@ impl Serializable for Book {
         }
         let d_chapters = t_chapters.elapsed();
 
-        // Hash
         let t_finalize = Instant::now();
         hashing_stream_unbuffered = hashing_stream.into_inner()?;
         let hash = hashing_stream_unbuffered.current_hash();
@@ -316,7 +301,6 @@ impl Serializable for Book {
     {
         let total_start = Instant::now();
 
-        // Validate checksum
         let t_hash = Instant::now();
         let hash_valid = validate_hash(input_stream)?;
         if !hash_valid {
@@ -325,18 +309,16 @@ impl Serializable for Book {
         }
         let d_hash = t_hash.elapsed();
 
-        // Magic + version
         let t_magic = Instant::now();
         let magic = read_exact_array::<4>(input_stream)?;
         if &magic != Magic::Book.as_bytes() {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid magic"));
         }
-        Version::read_version(input_stream)?; // ensure supported
+        Version::read_version(input_stream)?;
         let d_magic = t_magic.elapsed();
 
-        // Metadata (skip hash/len, then read fields)
         let t_meta = Instant::now();
-        // Skip metadata hash - it's only for when read only metadata
+        // Skip the metadata hash; only a metadata-only read needs it.
         _ = read_u64(input_stream)?;
 
         // Skip metadata size
@@ -344,14 +326,12 @@ impl Serializable for Book {
 
         let id = Uuid::from_bytes(read_exact_array::<16>(input_stream)?);
 
-        // Title
         let title_len = read_var_u64(input_stream)? as usize;
         let mut title_buf = vec![0u8; title_len];
         input_stream.read_exact(&mut title_buf)?;
         let title = String::from_utf8(title_buf)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8 in title"))?;
 
-        // Language
         let language_len = read_var_u64(input_stream)? as usize;
         let mut language_buf = vec![0u8; language_len];
         input_stream.read_exact(&mut language_buf)?;
@@ -365,7 +345,6 @@ impl Serializable for Book {
         _ = read_var_u64(input_stream)?;
         let d_meta = t_meta.elapsed();
 
-        // Strings blob
         let t_strings_read = Instant::now();
         let encoded_data = read_len_prefixed_vec(input_stream)?;
         let d_strings_read = t_strings_read.elapsed();
@@ -373,7 +352,6 @@ impl Serializable for Book {
         let strings = zstd::stream::decode_all(encoded_data.as_slice())?;
         let d_strings_decompress = t_strings_decompress.elapsed();
 
-        // Paragraphs
         let t_paragraphs = Instant::now();
         let paragraphs_len = read_var_u64(input_stream)? as usize;
         let mut paragraphs = Vec::with_capacity(paragraphs_len);
@@ -395,7 +373,6 @@ impl Serializable for Book {
         }
         let d_paragraphs = t_paragraphs.elapsed();
 
-        // Paragraphs map
         let t_pmap = Instant::now();
         let paragraph_map_len = read_var_u64(input_stream)?;
         let mut paragraph_map = Vec::with_capacity(paragraph_map_len as usize);
@@ -405,7 +382,6 @@ impl Serializable for Book {
         }
         let d_pmap = t_pmap.elapsed();
 
-        // Chapters
         let t_chapters = Instant::now();
         let chapters_len = read_var_u64(input_stream)? as usize;
         let mut chapters = Vec::with_capacity(chapters_len);
@@ -524,7 +500,6 @@ mod book_tests {
         let mut buffer: Vec<u8> = vec![];
         book.serialize(&mut buffer).unwrap();
 
-        // Deserialize
         let mut cursor = Cursor::new(buffer);
         let book2 = Book::deserialize(&mut cursor).unwrap();
 
@@ -571,10 +546,8 @@ mod book_tests {
         let mut buffer: Vec<u8> = vec![];
         book.serialize(&mut buffer).unwrap();
 
-        // Corrupt data
         buffer[12] = 0xae;
 
-        // Deserialize
         let mut cursor = Cursor::new(buffer);
         let book2 = Book::deserialize(&mut cursor);
         assert!(book2.is_err());

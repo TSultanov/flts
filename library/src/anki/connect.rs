@@ -1,10 +1,6 @@
-//! AnkiConnect transport: trait, HTTP implementation, in-memory mock, and factory.
-//!
-//! The shape mirrors the [`Translator`](crate::translator::Translator) family:
-//! one async trait, typed methods, concrete impls behind a `Box<dyn _>` factory
-//! gated by an environment variable. Higher layers (Stage 6 sync orchestrator,
-//! Stage 5 [`bootstrap`](super::model::bootstrap)) program against the trait
-//! and switch between real HTTP and the mock without code changes.
+//! AnkiConnect transport: trait, HTTP implementation, in-memory mock, and
+//! factory. Callers program against the trait; `FLTS_MOCK_ANKICONNECT`
+//! swaps HTTP for the mock.
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -19,14 +15,10 @@ use serde::{Deserialize, Serialize};
 const ANKI_CONNECT_VERSION: u32 = 6;
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Total attempts (initial + retries) for a single AnkiConnect HTTP send.
-/// Only retries `.send()` failures — i.e. connection refused / reset before
-/// any response was received. Body-read failures and AnkiConnect-level errors
-/// return immediately, since the server has already side-effected (retrying a
-/// non-idempotent action like addNote would duplicate notes).
+/// Attempts per HTTP send. Only `.send()` failures retry; once a response
+/// starts, the server has side-effected and a retry could duplicate notes.
 const HTTP_RETRY_ATTEMPTS: u32 = 3;
-/// Sleep durations between retry attempts, in ms. Length must be
-/// `HTTP_RETRY_ATTEMPTS - 1`.
+/// Sleeps between retries; length must be `HTTP_RETRY_ATTEMPTS - 1`.
 const HTTP_RETRY_DELAYS_MS: [u64; 2] = [100, 300];
 
 #[async_trait]
@@ -87,8 +79,7 @@ pub struct NewNote {
 pub struct CardInfo {
     #[serde(rename = "cardId")]
     pub card_id: i64,
-    // AnkiConnect's cardsInfo returns the parent note id as `"note"` (not
-    // `"noteId"`). Real Anki responses fail to deserialize otherwise.
+    // cardsInfo names the parent note `"note"`, not `"noteId"`.
     #[serde(rename = "note")]
     pub note_id: i64,
     pub queue: i64,
@@ -164,9 +155,8 @@ pub(crate) fn decode_response<T: for<'de> Deserialize<'de>>(body: &str) -> Resul
         .ok_or_else(|| anyhow!("AnkiConnect: empty result with no error"))
 }
 
-/// Like `decode_response` but for AnkiConnect actions that return `null` as
-/// their success result (e.g. `updateNoteFields`, `addTags`). Only an explicit
-/// `error` is treated as failure; a null/missing result is success.
+/// For actions whose success result is `null` (`updateNoteFields`, `addTags`):
+/// only an explicit `error` is a failure.
 pub(crate) fn decode_void_response(body: &str) -> Result<()> {
     let parsed: Response<serde_json::Value> =
         serde_json::from_str(body).map_err(|e| anyhow!("AnkiConnect: malformed response: {e}"))?;
@@ -176,12 +166,9 @@ pub(crate) fn decode_void_response(body: &str) -> Result<()> {
     Ok(())
 }
 
-/// Decode one element of a `multi` response array. Real AnkiConnect packages
-/// a sub-action error as `{"result": null, "error": "msg"}` inside the array,
-/// rather than failing the whole `multi` call. This helper distinguishes
-/// per-sub-action success from per-sub-action error, and tolerates the legacy
-/// shape where a successful sub-result is the bare value (some older
-/// AnkiConnect builds emitted that for `findNotes`).
+/// Decode one element of a `multi` response array. A sub-action error arrives
+/// as `{"result": null, "error": "msg"}` inside the array instead of failing
+/// the whole call; a bare value is also accepted as success.
 pub(crate) fn decode_multi_sub<T: for<'de> Deserialize<'de>>(
     value: serde_json::Value,
 ) -> Result<T> {
@@ -204,8 +191,7 @@ pub(crate) fn decode_multi_sub<T: for<'de> Deserialize<'de>>(
         .map_err(|e| anyhow!("AnkiConnect: malformed multi sub-response: {e}"))
 }
 
-/// Like [`decode_multi_sub`] but for sub-actions that return `null` on success
-/// (`updateNoteFields`, etc.). Only a non-null `"error"` is treated as failure.
+/// [`decode_multi_sub`] for sub-actions returning `null` on success.
 pub(crate) fn decode_multi_sub_void(value: serde_json::Value) -> Result<()> {
     if value.is_null() {
         return Ok(());
@@ -250,7 +236,6 @@ impl HttpAnkiConnect {
         decode_response::<T>(&body)
     }
 
-    /// Like `call` but for AnkiConnect actions that return null on success.
     async fn call_void(&self, action: &str, params: Option<serde_json::Value>) -> Result<()> {
         let body = self
             .fetch_body(action, params, is_idempotent_action(action))
@@ -262,13 +247,8 @@ impl HttpAnkiConnect {
         &self,
         action: &str,
         params: Option<serde_json::Value>,
-        // A reqwest `.send()` error resolves *before* response headers arrive,
-        // but that does NOT guarantee the request never reached the server: the
-        // body may have been sent and executed (e.g. addNote created the note)
-        // before the connection dropped. Retrying a non-idempotent action would
-        // then create a duplicate. So only retry `.send()` failures for
-        // idempotent actions; for the rest, surface the error and let the next
-        // sync tick reconcile (findNotes → updateNoteFields).
+        // A `.send()` error doesn't prove the server never ran the request, so
+        // only idempotent actions may retry; the rest reconcile next tick.
         idempotent: bool,
     ) -> Result<String> {
         let envelope = build_envelope_json(action, self.api_key.as_deref(), params);
@@ -287,9 +267,6 @@ impl HttpAnkiConnect {
                     break;
                 }
                 Err(e) => {
-                    // Non-idempotent action (addNote / createModel / multi):
-                    // the server may already have executed it, so a retry risks
-                    // a duplicate. Treat the send error as terminal.
                     if !idempotent {
                         last_err = Some(e);
                         break;
@@ -391,10 +368,7 @@ impl AnkiConnect for HttpAnkiConnect {
     }
 
     async fn multi(&self, actions: Vec<MultiSubAction>) -> Result<Vec<serde_json::Value>> {
-        // A multi batch is as safe to retry as its least-safe sub-action:
-        // the lookup batches (all findNotes) are pure reads and must keep
-        // the transient-send retry, while addNote batches must not be
-        // re-sent.
+        // A batch is only as retry-safe as its least-safe sub-action.
         let idempotent = actions.iter().all(|a| is_idempotent_action(&a.action));
         let params = serde_json::json!({ "actions": actions });
         let body = self.fetch_body("multi", Some(params), idempotent).await?;
@@ -418,12 +392,8 @@ fn is_idempotent_action(action: &str) -> bool {
 
 // ---------- Serialized wrapper (single-flight worker task) ----------
 
-/// Wraps any `AnkiConnect` and serializes all method calls through a
-/// dedicated worker task. AnkiConnect handles concurrent requests poorly,
-/// so we guarantee at most one in-flight call by having the worker drain
-/// a request channel one task at a time. Callers see the normal async
-/// API; the serialization is structural (single consumer of a single
-/// channel), not lock-based.
+/// Serializes all calls through one worker task: AnkiConnect handles
+/// concurrent requests poorly, so at most one call is ever in flight.
 pub struct SerializedAnkiConnect {
     tx: tokio::sync::mpsc::UnboundedSender<AnkiTask>,
     worker: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -621,34 +591,28 @@ impl MockAnkiConnect {
         }
     }
 
-    /// Test-only instrumentation: number of times `multi` has been called.
     pub fn multi_call_count(&self) -> usize {
         self.multi_call_count
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// Test-only instrumentation: number of times `find_notes` has been called
-    /// directly (i.e., not through `multi`).
+    /// Direct `find_notes` calls, excluding those dispatched through `multi`.
     pub fn find_notes_direct_count(&self) -> usize {
         self.find_notes_direct_count
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// Test-only instrumentation: number of times `notes_info` has been called.
     pub fn notes_info_call_count(&self) -> usize {
         self.notes_info_call_count
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// Test-only instrumentation: number of times `cards_info` has been called.
     pub fn cards_info_call_count(&self) -> usize {
         self.cards_info_call_count
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// Test-only knob: any subsequent `add_note` call whose tag list contains
-    /// `tag` will fail with a transient-style error. Used to exercise
-    /// per-sub-action failure isolation inside `multi` batches.
+    /// Makes every later `add_note` carrying `tag` fail.
     pub fn fail_add_note_with_tag(&self, tag: &str) {
         self.fail_add_note_tags
             .lock()
@@ -666,30 +630,25 @@ impl MockAnkiConnect {
         }
     }
 
-    /// Test-only knob: simulate the user deleting a note in Anki. Removes the
-    /// note and all of its associated cards from mock state; subsequent
-    /// `find_notes(tag:...)` for the note's tag will return zero hits.
+    /// Simulates the user deleting a note in Anki, cards included.
     pub fn remove_note(&self, note_id: i64) {
         let mut state = self.inner.lock().unwrap();
         state.notes.remove(&note_id);
         state.cards.retain(|_, c| c.note_id != note_id);
     }
 
-    /// Test-only knob: simulate the user deleting a deck in Anki. Subsequent
-    /// `add_note` / `update_note_fields` against the deck will fail with the
-    /// same "deck was not found" string real AnkiConnect emits.
+    /// Simulates deck deletion; later writes fail with the real
+    /// "deck was not found" string.
     pub fn remove_deck(&self, name: &str) {
         self.inner.lock().unwrap().decks.remove(name);
     }
 
-    /// Test-only knob: cause the next `n` trait method invocations to return
-    /// an error before touching mock state. Decrements one per call.
+    /// Fails the next `n` calls before they touch mock state.
     pub fn fail_next_n_calls(&self, n: usize) {
         self.fail_quota
             .store(n, std::sync::atomic::Ordering::SeqCst);
     }
 
-    /// If a failure is queued, decrement the quota and return Err.
     fn check_fail_quota(&self) -> Result<()> {
         use std::sync::atomic::Ordering;
         let mut current = self.fail_quota.load(Ordering::SeqCst);
@@ -707,9 +666,8 @@ impl MockAnkiConnect {
         Ok(())
     }
 
-    /// Internal `findNotes` logic: shared by the direct trait method and by
-    /// `multi` dispatch. Does NOT touch the instrumentation counter — the
-    /// caller decides whether the call counts as "direct" or as part of a batch.
+    /// Shared by the trait method and `multi`; the caller owns the counter so
+    /// direct and batched calls stay distinguishable.
     fn find_notes_impl(&self, query: &str) -> Result<Vec<i64>> {
         let tag = query
             .strip_prefix("tag:")
@@ -725,7 +683,6 @@ impl MockAnkiConnect {
         Ok(hits)
     }
 
-    /// Test-only accessor: returns the (fields, tags) pair for a note, if present.
     pub fn peek_note(&self, note_id: i64) -> Option<(BTreeMap<String, String>, Vec<String>)> {
         self.inner
             .lock()
@@ -735,10 +692,7 @@ impl MockAnkiConnect {
             .map(|n| (n.fields.clone(), n.tags.clone()))
     }
 
-    /// Test-only accessor: returns the first note id whose tags contain `tag`,
-    /// if any. Matches the lookup `findNotes` performs internally; provided so
-    /// scenario tests can chain `tag → note id → peek_note` without re-running
-    /// `find_notes` through the trait surface.
+    /// First note id tagged `tag`, without going through `find_notes`.
     pub fn note_id_for_tag(&self, tag: &str) -> Option<i64> {
         let state = self.inner.lock().unwrap();
         let mut hits: Vec<i64> = state
@@ -809,9 +763,7 @@ impl AnkiConnect for MockAnkiConnect {
             }
         }
         let mut state = self.inner.lock().unwrap();
-        // Mirror real AnkiConnect: addNote against a missing deck fails with
-        // "deck was not found: <name>". Lets sync recovery tests exercise the
-        // out-of-band deck-deletion path.
+        // Mirror real AnkiConnect: a missing deck fails the add.
         if !state.decks.contains_key(&note.deck_name) {
             bail!("AnkiConnect: deck was not found: {}", note.deck_name);
         }
@@ -867,7 +819,6 @@ impl AnkiConnect for MockAnkiConnect {
             .ok_or_else(|| anyhow!("MockAnkiConnect: unknown note {note_id}"))?
             .deck
             .clone();
-        // Same out-of-band-deletion fidelity as `add_note` above.
         if !state.decks.contains_key(&deck) {
             bail!("AnkiConnect: deck was not found: {}", deck);
         }
@@ -930,11 +881,8 @@ impl AnkiConnect for MockAnkiConnect {
         self.check_fail_quota()?;
         self.multi_call_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        // Per-sub-action errors are packaged as `{"result": null, "error": "..."}`
-        // in the response array, mirroring real AnkiConnect. The whole call
-        // only fails if shape parsing fails (`bail!` for an unsupported action,
-        // top-level fail_quota) — i.e. things that can't happen sub-action-by-
-        // sub-action in real AnkiConnect either.
+        // Mirror real AnkiConnect: per-sub-action errors are packaged into the
+        // array; only shape failures fail the whole call.
         let mut out = Vec::with_capacity(actions.len());
         for sub in actions {
             let params = sub.params.unwrap_or(serde_json::Value::Null);
@@ -1085,9 +1033,7 @@ mod tests {
         }
     }
 
-    /// Mock seeded with the deck `sample_note` targets. The mock's add_note now
-    /// validates the deck (matching real AnkiConnect), so unit tests that push
-    /// a `sample_note` must create the deck first.
+    /// Mock seeded with the deck `sample_note` targets; `add_note` validates it.
     async fn mock_with_sample_deck() -> MockAnkiConnect {
         let mock = MockAnkiConnect::new();
         mock.create_deck("FLTS::spa-rus").await.unwrap();
@@ -1174,8 +1120,6 @@ mod tests {
     async fn mock_cards_info_returns_card_records_for_added_note() {
         let mock = mock_with_sample_deck().await;
         let _ = mock.add_note(sample_note("flts_test")).await.unwrap();
-        // We don't know the card ids without peeking, but cards_info on an empty
-        // slice should return empty; on a non-existent id, also empty.
         let info = mock.cards_info(&[]).await.unwrap();
         assert!(info.is_empty());
         let info = mock.cards_info(&[9999]).await.unwrap();
@@ -1186,7 +1130,6 @@ mod tests {
     async fn mock_cards_info_reflects_suspension() {
         let mock = mock_with_sample_deck().await;
         let note_id = mock.add_note(sample_note("flts_test")).await.unwrap();
-        // The note's two cards were assigned ids note_id+1 and note_id+2.
         let card_a = note_id + 1;
         mock.suspend_card(card_a);
         let info = mock.cards_info(&[card_a]).await.unwrap();
@@ -1237,10 +1180,8 @@ mod tests {
 
     #[tokio::test]
     async fn mock_multi_packages_sub_action_error_without_failing_whole_call() {
-        // Deck "FLTS::spa-rus" is NOT created, so the first addNote will fail
-        // with "deck was not found"; the second targets a deck we DO create.
-        // Real AnkiConnect packages this as a per-element error object inside
-        // the multi result array; the whole call must still return Ok.
+        // The first addNote targets an uncreated deck; the whole call must
+        // still return Ok with a per-element error.
         let mock = MockAnkiConnect::new();
         mock.create_deck("OtherDeck").await.unwrap();
         let mut good_fields = BTreeMap::new();
@@ -1265,7 +1206,6 @@ mod tests {
         ];
         let results = mock.multi(actions).await.expect("multi returns Ok");
         assert_eq!(results.len(), 2);
-        // First element is the wrapped error.
         let err_obj = results[0].as_object().expect("first element is an object");
         assert!(err_obj.get("result").map(|v| v.is_null()).unwrap_or(false));
         let err_msg = err_obj
@@ -1276,7 +1216,6 @@ mod tests {
             err_msg.contains("deck was not found"),
             "expected real AnkiConnect-style error, got {err_msg}"
         );
-        // Second element is the bare success value (the new note id).
         assert!(
             results[1].as_i64().is_some(),
             "second element must be a bare i64 success, got {}",
@@ -1293,7 +1232,6 @@ mod tests {
             .await
             .expect_err("flagged tag must fail");
         assert!(format!("{err}").contains("flts_spa_rus_poder_verb"));
-        // Non-matching tag still succeeds.
         mock.add_note(sample_note("other_tag")).await.unwrap();
     }
 
@@ -1311,7 +1249,6 @@ mod tests {
 
     #[test]
     fn decode_multi_sub_decodes_bare_success_value() {
-        // Legacy / current mock shape: success result is just the value.
         let v = serde_json::json!(42);
         let n: i64 = decode_multi_sub(v).unwrap();
         assert_eq!(n, 42);
@@ -1319,7 +1256,6 @@ mod tests {
 
     #[test]
     fn decode_multi_sub_decodes_response_envelope() {
-        // Some AnkiConnect builds wrap success values in the Response envelope.
         let v = serde_json::json!({ "result": 42, "error": null });
         let n: i64 = decode_multi_sub(v).unwrap();
         assert_eq!(n, 42);
@@ -1346,10 +1282,8 @@ mod tests {
 
     #[tokio::test]
     async fn http_anki_connect_retries_send_errors_with_backoff() {
-        // Bind to an ephemeral port, capture it, then drop the listener so
-        // subsequent connects to that port are refused. This exercises the
-        // real reqwest `.send()` error path against the production
-        // HttpAnkiConnect (no mocking).
+        // Dropping the listener makes connects to that port refuse, driving the
+        // real reqwest `.send()` error path.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         drop(listener);
@@ -1372,7 +1306,6 @@ mod tests {
             elapsed >= expected_min,
             "expected at least {expected_min:?} elapsed (one sleep per retry), got {elapsed:?}"
         );
-        // Sanity bound: must not have spent the full HTTP_TIMEOUT looping.
         assert!(
             elapsed < HTTP_TIMEOUT,
             "retries took {elapsed:?}, suspiciously close to HTTP_TIMEOUT — runaway loop?"
@@ -1381,15 +1314,11 @@ mod tests {
 
     #[tokio::test]
     async fn http_multi_lookup_batch_retries_but_mutation_batch_does_not() {
-        // Same dropped-listener trick as above: connects are refused, so
-        // every `.send()` fails before a response.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         drop(listener);
         let client = HttpAnkiConnect::new(format!("http://127.0.0.1:{port}/"), None);
 
-        // A lookup-only multi batch (pure reads) must keep the transient
-        // retry: one blip must not fail a whole findNotes chunk.
         let start = std::time::Instant::now();
         client
             .multi(vec![MultiSubAction {
@@ -1406,8 +1335,6 @@ mod tests {
             start.elapsed()
         );
 
-        // A batch containing addNote may already have side-effected on the
-        // server; it must fail terminally on the first send error.
         let start = std::time::Instant::now();
         client
             .multi(vec![
@@ -1481,8 +1408,6 @@ mod tests {
 
     #[test]
     fn http_void_response_accepts_null_result() {
-        // AnkiConnect's updateNoteFields returns `{"result":null,"error":null}`
-        // on success; decode_void_response must treat that as Ok.
         let body = r#"{"result":null,"error":null}"#;
         decode_void_response(body).unwrap();
     }
@@ -1511,9 +1436,7 @@ mod tests {
 
     // ---------- SerializedAnkiConnect ----------
 
-    /// Test-only `AnkiConnect` that sleeps on every call and panics if it
-    /// observes more than one concurrent invocation. Used to assert
-    /// `SerializedAnkiConnect`'s single-flight guarantee.
+    /// Sleeps on every call and panics on a second concurrent invocation.
     struct SerializationProbe {
         in_flight: std::sync::atomic::AtomicUsize,
         delay: Duration,
@@ -1604,9 +1527,7 @@ mod tests {
             assert_eq!(h.await.unwrap().unwrap(), 6);
         }
         let elapsed = start.elapsed();
-        // 5 × 50 ms = 250 ms; allow a generous lower bound to absorb
-        // scheduler jitter. If the wrapper failed to serialize, total
-        // wall-clock would collapse to ~50 ms.
+        // Serialized: 5 × 50 ms; unserialized would collapse to ~50 ms.
         assert!(
             elapsed >= Duration::from_millis(200),
             "expected serialized run ≥ 200 ms, got {elapsed:?}"

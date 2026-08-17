@@ -5,8 +5,7 @@ import {
   wordSegment,
 } from './helpers/paragraph';
 
-// Chromium-only — the regression is in Svelte reactivity / DOM measurement,
-// not in any browser-specific layout behaviour.
+// Chromium only: Svelte reactivity / DOM measurement, not layout behaviour.
 test.describe.configure({ mode: 'parallel' });
 
 test.describe('Chapter initial translation batch (chromium only)', () => {
@@ -15,18 +14,10 @@ test.describe('Chapter initial translation batch (chromium only)', () => {
   test('opening a chapter does not enqueue translations for the whole chapter on initial mount', async ({
     page,
   }) => {
-    // Large enough that "the whole chapter" is clearly different from
-    // "the visible window". The regression we're guarding against:
-    // #recomputeMountWindow running against empty paragraph wrappers
-    // (before any originals arrive) classifies ~every paragraph as
-    // mounted, which feeds the translations queue with the whole
-    // chapter — back-pressuring the originals queue on the shared
-    // book.lock() in the Rust backend.
-    //
-    // Each paragraph carries substantial text so a loaded wrapper has
-    // realistic height. Without this, every wrapper (loaded or not) is
-    // a single line and the geometric mount window catches almost all
-    // of them in both broken and fixed paths.
+    // Guards against #recomputeMountWindow running on empty wrappers and
+    // classifying the whole chapter as mounted, which floods the translations
+    // queue. Each paragraph needs real text, or every wrapper is one line tall
+    // and the mount window catches everything either way.
     const N = 80;
     const bodyText = (
       'Lorem ipsum dolor sit amet, consectetur adipiscing elit. ' +
@@ -53,9 +44,7 @@ test.describe('Chapter initial translation batch (chromium only)', () => {
 
     await expect(page.locator('.paragraphs-container.is-ready')).toBeVisible();
 
-    // Wait for at least one translations batch to land. The mount-window
-    // computation that triggers it runs inside a rAF after the originals
-    // batch resolves; allow a moment for that chain to flush.
+    // The triggering mount-window computation runs in a rAF after originals.
     await expect
       .poll(async () => (await getTranslationsBatchCalls(page)).length, {
         timeout: 5000,
@@ -64,11 +53,7 @@ test.describe('Chapter initial translation batch (chromium only)', () => {
 
     const calls = await getTranslationsBatchCalls(page);
     const totalQueued = new Set(calls.flatMap((c) => c.paragraphIds)).size;
-    // Healthy: the eager visible-window enqueue (sized to the container's
-    // clientHeight at open time, target ± ~paragraphsPerPage) plus the
-    // mount-window recompute. At default Playwright viewport that lands
-    // in the 15-25 range. 40 is comfortably above the healthy case and
-    // well below the broken case (whole-chapter enqueue ~N=80).
+    // Healthy is 15-25 at the default viewport; broken enqueues all ~80.
     expect(totalQueued).toBeLessThanOrEqual(40);
   });
 });

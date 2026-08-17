@@ -1,9 +1,8 @@
 import { type Page } from '@playwright/test';
 import { expect, test } from './helpers/test';
 
-// Public-behavior tests for the three library dialogs. Drives the real entry
-// points (Select All -> Move/Delete Selected) so the tests survive any
-// internal refactor of the dialog plumbing.
+// Library dialogs, driven through their real entry points (Select All ->
+// Move/Delete Selected) rather than the dialog plumbing.
 
 async function seedBook(page: Page, title: string): Promise<void> {
   await page.evaluate((t) => {
@@ -27,8 +26,6 @@ test.describe('Library dialogs', () => {
   test.beforeEach(async ({ page }) => {
     await setupLibraryWithTwoBooks(page);
   });
-
-  // -------- ConfirmDialog (via batch-delete) --------
 
   test('ConfirmDialog: opens with title and count in message', async ({ page }) => {
     await page.getByTestId('delete-selected-button').click();
@@ -59,8 +56,6 @@ test.describe('Library dialogs', () => {
     await expect(page.getByTestId('confirm-dialog')).toBeHidden();
     await expect(page.getByTestId('book-checkbox')).toHaveCount(2);
   });
-
-  // -------- MoveFolderDialog (via batch-move) --------
 
   test('MoveFolderDialog: opens with heading and renders root folder', async ({ page }) => {
     await page.getByTestId('move-selected-button').click();
@@ -105,12 +100,9 @@ test.describe('Library dialogs', () => {
     await page.getByTestId('move-folder-confirm').click();
     await expect(page.getByTestId('move-folder-dialog')).toBeHidden();
 
-    // After move, the library re-renders with books grouped under "Archive".
     await expect(page.locator('details > summary', { hasText: 'Archive' })).toBeVisible();
     await expect(page.getByTestId('book-checkbox')).toHaveCount(2);
   });
-
-  // -------- CreateFolderDialog (nested inside MoveFolderDialog) --------
 
   async function openCreateFolderDialog(page: Page) {
     await page.getByTestId('move-selected-button').click();

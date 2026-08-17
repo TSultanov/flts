@@ -53,39 +53,33 @@
         }
     })
 
-    // Only redirect if on root path, otherwise respect the current URL
     let initialRedirectDone = false;
     $effect(() => {
         if (initialRedirectDone) return;
-        if (configStore.current === undefined) return; // Wait for config to load
+        if (configStore.current === undefined) return;
 
         initialRedirectDone = true;
         const currentPath = window.location.pathname;
 
-        // Only redirect from root or if config is incomplete
         const apiKeyOk = configStore.current?.translationProvider === 'openai'
             ? !!configStore.current?.openaiApiKey
             : !!configStore.current?.geminiApiKey;
         const configComplete = apiKeyOk && configStore.current?.targetLanguageId;
 
         if (!configComplete) {
-            // Must go to config if not configured
             if (currentPath !== '/config') {
                 navigate("/config");
             }
         } else if (currentPath === '/' || currentPath === '') {
-            // Only redirect from root to library
             navigate("/library");
         }
-        // Otherwise, stay on the current page
     });
 
     const library = new Library();
     setContext("library", library);
 
-    // When the app returns to the foreground, nudge sync: on iOS the system
-    // tears down the embedded engine's sockets while suspended, so the backend
-    // restarts it if it became unreachable. No-op when sync is off/healthy.
+    // iOS tears down the embedded engine's sockets while suspended, so the
+    // backend restarts it on wake if unreachable.
     onMount(() => {
         let waking = false;
         const onVisible = async () => {
@@ -117,14 +111,11 @@
 </div>
 
 <style>
-    /* #app is a full-height flex column; .main takes whatever the nav
-       leaves, tracked by the browser itself. Measuring window.innerHeight
-       from JS (the previous approach) raced WKWebView's launch sizing and
-       the async application of safe-area insets — neither of which fires a
-       resize event — leaving a random stale height for the whole session.
-       The bottom margin keeps content clear of the mobile home indicator;
-       env() is 0 on desktop. The top inset is absorbed by the nav's own
-       safe-area padding (see Nav.svelte). */
+    /* Height must stay browser-tracked: measuring window.innerHeight from
+       JS races WKWebView's launch sizing and the async safe-area insets,
+       neither of which fires a resize event, stranding a stale height for
+       the session. The bottom margin clears the mobile home indicator; the
+       top inset is absorbed by the nav (see Nav.svelte). */
     .main {
         flex: 1 1 auto;
         min-height: 0;

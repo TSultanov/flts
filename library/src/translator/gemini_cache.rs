@@ -16,27 +16,18 @@ use uuid::Uuid;
 
 use crate::{cache::DiskCache, translator::TranslationModel};
 
-/// Refreshed on every cache use (in-memory hit and disk-hit
-/// reconstitution), so an active reading session keeps the cache warm no
-/// matter how long it runs — the TTL only determines the post-last-use
-/// billing tail. Explicit-cache storage is billed per token-hour, and each
-/// chapter caches the system prompt plus the full chapter text, so a long
-/// TTL pays for ~TTL hours of storage on every chapter after the reader
-/// moves on. 1h trades a rare cache rebuild (one chapter re-upload via the
-/// existing 403/404 evict-retry path) after a >1h pause for a 24x smaller
-/// tail than the previous 24h value.
+/// Refreshed on every use, so the TTL only sizes the post-last-use billing
+/// tail. Storage bills per token-hour on every chapter the reader leaves
+/// behind, so 1h trades a rare rebuild after a long pause for a small tail.
 const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(3600);
 
-/// Minimum spacing between TTL-refresh PATCHes for a single cache key. Half
-/// the TTL keeps the cache comfortably warm (each refresh sets expiry to
-/// now + TTL) while collapsing what used to be one refresh per paragraph into
-/// ~1 refresh per half-TTL window per chapter.
+/// Minimum spacing between TTL-refresh PATCHes per key. Half the TTL keeps the
+/// cache warm at ~1 refresh per window instead of one per paragraph.
 const REFRESH_MIN_INTERVAL_SECS: u64 = DEFAULT_CACHE_TTL.as_secs() / 2;
 
-/// Display-name prefix shared by every cache FLTS has ever created (all
-/// historical formats started with it). [`GeminiPromptCache::purge_all`]
-/// deletes exactly the server-side caches matching this prefix, so it must
-/// stay in sync with [`cache_display_name`].
+/// Display-name prefix on every FLTS-created cache.
+/// [`GeminiPromptCache::purge_all`] deletes exactly the matching server-side
+/// caches, so this must stay in sync with [`cache_display_name`].
 pub const FLTS_CACHE_DISPLAY_PREFIX: &str = "flts-";
 
 #[derive(Clone, Hash, Eq, PartialEq, Debug)]
@@ -48,10 +39,8 @@ pub struct CacheKey {
     pub chapter_id: usize,
 }
 
-/// Cached payload split into the immutable system instruction (always
-/// present) and the per-chapter reference material (summaries + chapter
-/// text). The reference material is `None` only for the `NoChapterContext`
-/// stub (CLI path), which has nothing chapter-scoped to send.
+/// Cached payload: the system instruction plus per-chapter reference material,
+/// which is `None` only when there is nothing chapter-scoped to send.
 pub struct CacheContent {
     pub system_instruction: String,
     pub user_reference_material: Option<String>,
@@ -69,25 +58,22 @@ pub struct PurgeReport {
 struct DiskEntry {
     /// Server-side resource name, e.g. `"cachedContents/abc-123"`.
     name: String,
-    /// FNV-1a of `(system_instruction || 0x1F || reference_material_or_empty)`.
-    /// Per-`disk_key`, so 64-bit collision risk is negligible. Covers the
-    /// system prompt so a FLTS prompt-text bump auto-invalidates entries.
+    /// FNV-1a of `(system_instruction || 0x1F || reference_material_or_empty)`,
+    /// scoped per-`disk_key`. Covering the prompt auto-invalidates entries when
+    /// its text changes.
     fingerprint: u64,
-    /// Unix seconds. Informational only — server-side TTL is authoritative;
-    /// we discover expiry via the existing 403/404 retry path.
+    /// Unix seconds, informational: the server-side TTL is authoritative and
+    /// expiry surfaces through the 403/404 retry path.
     created_at: u64,
 }
 
-/// Disk-persisted Gemini content-cache directory. Maps a chapter-scoped
-/// [`CacheKey`] to the server-side cache name so we don't re-upload the
-/// system prompt + reference material on every app launch. An in-memory
-/// single-flight layer ([`OnceCell`]-per-key) dedupes concurrent first-
-/// callers within a single session.
+/// Maps a chapter-scoped [`CacheKey`] to its server-side cache name, so a
+/// launch doesn't re-upload the prompt and reference material. A per-key
+/// [`OnceCell`] dedupes concurrent first-callers in one session.
 pub struct GeminiPromptCache {
     disk: Arc<DiskCache<DiskEntry>>,
     inflight: Mutex<HashMap<CacheKey, Arc<OnceCell<Arc<CachedContentHandle>>>>>,
-    /// Last time (unix seconds) a TTL-refresh PATCH was fired for each key,
-    /// used to throttle refreshes on repeated in-memory cache hits.
+    /// Last TTL-refresh time per key, throttling refreshes on repeat hits.
     last_refresh: Mutex<HashMap<CacheKey, u64>>,
 }
 
@@ -105,10 +91,8 @@ impl GeminiPromptCache {
         self.disk.close().await;
     }
 
-    /// Drops every in-memory slot and all persisted disk entries. Local
-    /// counterpart of [`purge_all`]: after the server-side caches are gone
-    /// the persisted names point at nothing, so keeping them would cost one
-    /// failing request per chapter before the 403/404 retry path recovers.
+    /// Local counterpart of [`purge_all`]: once the server-side caches are
+    /// gone, keeping their names costs a failing request per chapter.
     pub async fn clear_local(&self) {
         {
             let mut guard = self.inflight.lock().await;
@@ -118,16 +102,11 @@ impl GeminiPromptCache {
         self.disk.clear();
     }
 
-    /// Deletes every FLTS-created cache (display name prefix
-    /// [`FLTS_CACHE_DISPLAY_PREFIX`]) on the Gemini account behind
-    /// `api_key`, then clears the local pointers. The full list is
-    /// collected before any delete so a listing failure (offline, bad key)
-    /// aborts with `Err` while both server and local state are untouched.
-    /// Individual delete failures don't stop the sweep — they're reported
-    /// in [`PurgeReport::failures`]; the survivors expire via TTL or a
-    /// retry of the purge. Safe to run during active translation: tasks
-    /// holding a deleted cache recover via the existing 403/404
-    /// evict-and-retry path.
+    /// Deletes every FLTS-prefixed cache on the account behind `api_key`, then
+    /// clears the local pointers. Listing completes before any delete so a
+    /// listing failure leaves both sides untouched; individual delete failures
+    /// only land in [`PurgeReport::failures`]. Safe during translation — live
+    /// tasks recover through the 403/404 evict-and-retry path.
     pub async fn purge_all(&self, api_key: &str) -> anyhow::Result<PurgeReport> {
         let client = Gemini::new(api_key)?;
 
@@ -159,10 +138,8 @@ impl GeminiPromptCache {
         Ok(PurgeReport { deleted, failures })
     }
 
-    /// Drops the in-memory slot for `key` AND removes the persisted disk
-    /// entry. Used to recover from a server-side cache that has expired or
-    /// been deleted; the subsequent [`get_or_create`] runs `build_content`
-    /// again and persists a fresh entry.
+    /// Drops both the in-memory slot and the disk entry for `key`, so the next
+    /// [`get_or_create`] rebuilds. Recovers from an expired/deleted cache.
     pub async fn evict(&self, key: &CacheKey) {
         {
             let mut guard = self.inflight.lock().await;
@@ -172,13 +149,9 @@ impl GeminiPromptCache {
         self.disk.remove(&disk_key(key));
     }
 
-    /// Returns a Gemini cache handle for `key`. Disk-hit (with matching
-    /// fingerprint): reconstitute via [`Gemini::get_cached_content`] and
-    /// fire a TTL refresh. Otherwise: invoke `build_content`, create the
-    /// server-side cache, persist `(name, fingerprint, created_at)` to disk.
-    ///
-    /// Concurrent first-callers for the same `key` within one process
-    /// share a single init future via the in-memory `OnceCell`.
+    /// A cache handle for `key`: a fingerprint-matching disk entry is
+    /// reconstituted and TTL-refreshed, otherwise `build_content` runs and the
+    /// new cache is persisted. Concurrent first-callers share one init future.
     pub async fn get_or_create<F>(
         &self,
         client: &Gemini,
@@ -252,17 +225,14 @@ impl GeminiPromptCache {
 
         let handle = handle.clone();
         if existed_before_in_memory {
-            // Repeat in-memory hit (every paragraph after the first in a
-            // chapter). Throttle so we don't fire a fresh refresh PATCH per
-            // paragraph; ~1 per half-TTL window keeps the cache warm.
             self.maybe_refresh_ttl(&key, handle.clone()).await;
         }
 
         Ok(handle)
     }
 
-    /// Fire a TTL-refresh PATCH for `key` only when the previous one was more
-    /// than [`REFRESH_MIN_INTERVAL_SECS`] ago, recording the new time.
+    /// Refreshes only if the last one was over [`REFRESH_MIN_INTERVAL_SECS`]
+    /// ago, recording the new time.
     async fn maybe_refresh_ttl(&self, key: &CacheKey, handle: Arc<CachedContentHandle>) {
         let now = now_secs();
         let due = {
@@ -322,8 +292,7 @@ fn disk_key(key: &CacheKey) -> String {
 }
 
 fn cache_display_name(key: &CacheKey) -> String {
-    // Gemini's display name cap is 128 chars — book uuid is 36, the rest
-    // adds ~20, well within the limit.
+    // Gemini caps display names at 128 chars; this stays well under.
     format!(
         "{FLTS_CACHE_DISPLAY_PREFIX}{}-{}-{}-{}-c{}",
         usize::from(key.model),
@@ -334,16 +303,13 @@ fn cache_display_name(key: &CacheKey) -> String {
     )
 }
 
-/// True if a server-side cache was created by FLTS (any historical
-/// version), judged by its display-name prefix.
+/// Whether the display-name prefix marks a cache as FLTS-created.
 fn is_flts_cache(display_name: Option<&str>) -> bool {
     display_name.is_some_and(|d| d.starts_with(FLTS_CACHE_DISPLAY_PREFIX))
 }
 
-/// Compose the per-chapter reference-material payload that the cache
-/// holds. Returns `None` when both pieces are empty (e.g.,
-/// `NoChapterContext`), so the cache effectively reverts to system-prompt
-/// only.
+/// The per-chapter reference-material payload, or `None` when both pieces are
+/// empty so the cache holds the system prompt alone.
 pub fn build_reference_material(prior_summaries: &str, chapter_text: &str) -> Option<String> {
     if prior_summaries.is_empty() && chapter_text.is_empty() {
         return None;
@@ -361,9 +327,8 @@ pub fn build_reference_material(prior_summaries: &str, chapter_text: &str) -> Op
     Some(out)
 }
 
-/// True if `err` indicates the cached content reference was rejected by the
-/// server (expired, deleted, or wrong account). The caller should
-/// [`GeminiPromptCache::evict`] the key and retry once with a fresh cache.
+/// Whether the server rejected the cached-content reference (expired, deleted,
+/// wrong account). Callers [`GeminiPromptCache::evict`] and retry once.
 pub fn is_cache_missing_error(err: &anyhow::Error) -> bool {
     let Some(ce) = err.downcast_ref::<gemini_rust::ClientError>() else {
         return false;
@@ -371,15 +336,12 @@ pub fn is_cache_missing_error(err: &anyhow::Error) -> bool {
     let gemini_rust::ClientError::BadResponse { code, description } = ce else {
         return false;
     };
-    // A 404 on a request that references a cached content means the cache is
-    // gone (expired/deleted), regardless of the exact wording — treat any 404
-    // as missing so a future change to Google's error text can't silently
-    // disable the evict-and-rebuild path.
+    // Any 404 means the cache is gone; matching on wording would let an error
+    // text change silently disable the evict-and-rebuild path.
     if *code == 404 {
         return true;
     }
-    // A 403 is only a cache problem when the message says so; unrelated 403s
-    // (quota, auth) must not trigger a needless evict-and-rebuild.
+    // Unrelated 403s (quota, auth) must not trigger a rebuild.
     if *code == 403 {
         return description
             .as_deref()
@@ -418,9 +380,8 @@ mod tests {
     }
 
     fn fake_client() -> Gemini {
-        // `get_cached_content` constructs a handle locally without hitting
-        // the network. The spawned TTL refresh inside `get_or_create` will
-        // fail against this fake key, but it's detached and only logs.
+        // `get_cached_content` builds a handle without network; the detached
+        // TTL refresh fails harmlessly against this key.
         Gemini::with_model("fake-key-for-tests", gemini_rust::Model::Gemini25Flash).unwrap()
     }
 
@@ -456,8 +417,7 @@ mod tests {
                 },
             );
         }
-        // Close + reopen guarantees the writer flushed the seeded entries
-        // (insert is fire-and-forget through a channel).
+        // `insert` is fire-and-forget, so close+reopen to flush the writer.
         cache.close().await;
         GeminiPromptCache::open(dir, 1024 * 1024).await.unwrap()
     }
@@ -540,7 +500,6 @@ mod tests {
         let k = key(TranslationModel::Gemini25Flash, Language::Eng, Language::Rus, 0);
         let cache = seed_then_open(&dir, &[(k.clone(), &content, "cachedContents/seeded")]).await;
 
-        // First call: disk-hit, reconstitutes.
         let counter = StdArc::new(AtomicUsize::new(0));
         let client = fake_client();
         let h = {
@@ -559,7 +518,6 @@ mod tests {
         cache.evict(&k).await;
         cache.close().await;
 
-        // Reopen and confirm the disk entry is gone (no reuse possible).
         let cache = GeminiPromptCache::open(&dir, 1024 * 1024).await.unwrap();
         assert!(cache.disk.get(&disk_key(&k)).await.unwrap().is_none());
         cache.close().await;
@@ -622,7 +580,6 @@ mod tests {
         )
         .await;
 
-        // Populate the inflight map via a disk-hit (no network).
         let client = fake_client();
         cache
             .get_or_create(&client, k1.clone(), || make_content("a"))
@@ -700,22 +657,18 @@ mod tests {
 
     #[test]
     fn is_cache_missing_error_treats_any_404_and_broad_403_terms_as_missing() {
-        // Any 404 is a missing cache, independent of the exact wording (so a
-        // future change to Google's error text can't disable the rebuild path).
         let err = anyhow::Error::from(gemini_rust::ClientError::BadResponse {
             code: 404,
             description: Some("resource not found".into()),
         });
         assert!(is_cache_missing_error(&err));
 
-        // A 403 mentioning a cache term (wording variants).
         let err = anyhow::Error::from(gemini_rust::ClientError::BadResponse {
             code: 403,
             description: Some("the cache has expired".into()),
         });
         assert!(is_cache_missing_error(&err));
 
-        // A 403 with no cache term is still not a cache miss.
         let err = anyhow::Error::from(gemini_rust::ClientError::BadResponse {
             code: 403,
             description: Some("Permission denied on resource".into()),

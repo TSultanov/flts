@@ -73,8 +73,7 @@ fn resolve_compat_base(env_val: Option<String>, default: &str) -> String {
         .unwrap_or_else(|| default.to_string())
 }
 
-/// Returns the base URL override for OpenAI-compatible providers. `None`
-/// means use async_openai's default (api.openai.com).
+/// Base URL override for OpenAI-compatible providers; `None` uses the default.
 pub(crate) fn openai_compat_base_url(
     provider: crate::translator::TranslationProvider,
 ) -> Option<String> {
@@ -153,9 +152,8 @@ impl Translator for OpenAITranslator {
             "{}\n\nReturn ONLY a single JSON object that matches the requested schema. Do not wrap it in markdown.",
             Self::get_prompt(self.from.to_name(), self.to.to_name())
         );
-        // DeepSeek's JSON mode does not enforce a schema server-side — it only
-        // guarantees valid JSON — so we inline the schema in the prompt so the
-        // model has the target shape to fill in.
+        // DeepSeek's JSON mode guarantees valid JSON but enforces no schema,
+        // so the prompt must carry the target shape.
         if is_deepseek {
             if let Ok(schema_text) = serde_json::to_string_pretty(&*self.schema) {
                 system_prompt.push_str("\n\nJSON schema for the response:\n");
@@ -163,10 +161,8 @@ impl Translator for OpenAITranslator {
             }
         }
 
-        // Block until the prerequisite per-chapter summaries are ready.
-        // The UI gates translate buttons on the same predicate, so this
-        // is normally near-instant. Any actual error propagates — there
-        // is no "translate without summaries" fallback any more.
+        // The UI gates translate on the same predicate, so this is normally
+        // instant. Errors propagate; there is no summary-free fallback.
         self.context_provider
             .wait_ready(book_id, chapter_id)
             .await?;
@@ -219,7 +215,7 @@ impl Translator for OpenAITranslator {
         );
 
         let (full_content, finish_reason) = if is_zai {
-            // z.AI does not reliably support SSE streaming; use a single blocking call.
+            // z.AI's SSE streaming is unreliable, so make one blocking call.
             let request = CreateChatCompletionRequestArgs::default()
                 .model(self.model.as_ref())
                 .messages(messages)
@@ -285,11 +281,8 @@ impl Translator for OpenAITranslator {
             .map_err(|_| anyhow::anyhow!("OpenAI total stream timeout"))??
         };
 
-        // A truncated response (finish_reason == Length, i.e. the model hit
-        // max output tokens) yields invalid JSON. serde would then fail and be
-        // classified as a *permanent* error, killing the paragraph on the first
-        // attempt. Bail before parsing with a message the classifier treats as
-        // transient (mirrors the Gemini MAX_TOKENS path) so it is retried.
+        // finish_reason == Length truncates the JSON; bail with a message the
+        // classifier treats as transient, since serde's error is permanent.
         if finish_reason == Some(FinishReason::Length) {
             anyhow::bail!(
                 "OpenAI hit max output tokens ({} chars accumulated)",
@@ -300,12 +293,8 @@ impl Translator for OpenAITranslator {
         let mut translation: ParagraphTranslation = serde_json::from_str(&full_content)?;
         translation.normalize_html_entities();
 
-        // Note: Usage data might not be available in stream chunks easily or at all in some API versions for stream.
-        // We'll skip setting usage for now or check if the final chunk has usage?
-        // async-openai stream items might have usage in the last chunk?
-        // Checked docs: `ChatCompletionChunk` has `usage` field optionally?
-        // If not, we lose token count. That's acceptable for now.
-        // translation.total_tokens = ...;
+        // Streamed chunks carry no reliable usage data, so token counts are
+        // left unset.
 
         let now = SystemTime::now();
         let duration_since_epoch = now.duration_since(UNIX_EPOCH)?;
@@ -318,9 +307,8 @@ impl Translator for OpenAITranslator {
     }
 }
 
-/// Same composition as the Gemini reference material — kept byte-identical
-/// across consecutive paragraphs in the same chapter so OpenAI's implicit
-/// prefix caching can match.
+/// Composed like the Gemini reference material and byte-identical across a
+/// chapter's paragraphs, so OpenAI's implicit prefix caching matches.
 fn build_reference_material(prior_summaries: &str, chapter_text: &str) -> Option<String> {
     if prior_summaries.is_empty() && chapter_text.is_empty() {
         return None;

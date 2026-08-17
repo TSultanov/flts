@@ -38,11 +38,9 @@ export class BookSummaryStatusStore {
             (ev) => this.#apply(ev),
         );
 
-        // summary_generation_progress events lost while iOS suspends the
-        // WKWebView would otherwise leave translate buttons stuck on
-        // "waiting for chapter summaries" until the book is reopened —
-        // this store is per-book, so a chapter switch doesn't rebuild it.
-        // Re-sync from the backend snapshot on resume.
+        // A suspended iOS WKWebView drops progress events, and this store is
+        // per-book (a chapter switch won't rebuild it), so translate buttons
+        // would stick on "waiting for chapter summaries" until reopen.
         if (typeof document !== "undefined") {
             this.#onVisibilityChange = () => {
                 if (document.visibilityState === "visible") this.#refetch();
@@ -59,10 +57,8 @@ export class BookSummaryStatusStore {
             bookId: this.#bookId,
         })
             .then((res) => {
-                // Merge rather than replace: `generated` only ever goes
-                // false→true, so OR-ing with the current state means a
-                // snapshot captured just before a progress event landed
-                // can never regress the UI.
+                // `generated` only goes false→true, so OR-ing keeps a
+                // snapshot that predates a progress event from regressing.
                 const next = this.#generated.slice();
                 while (next.length < res.generated.length) next.push(false);
                 res.generated.forEach((g, i) => {
@@ -89,10 +85,9 @@ export class BookSummaryStatusStore {
             this.#totalChapters = ev.total;
         }
         if (ev.status === "in_progress") {
-            // The backend's post-save emit uses `current = idx + 1` for the
-            // just-finished chapter; the start-of-chapter emit uses
-            // `current = idx`. Marking everything strictly below `current`
-            // as generated handles both shapes without double-counting.
+            // The backend emits `current = idx` at chapter start and
+            // `idx + 1` after save; marking everything strictly below
+            // `current` handles both without double-counting.
             const next = this.#generated.slice();
             for (let i = 0; i < ev.current && i < next.length; i++) {
                 next[i] = true;

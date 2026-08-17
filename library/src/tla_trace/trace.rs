@@ -162,9 +162,8 @@ pub async fn emit_translation_event(
 /// Emits one roster-mesh trace event for the `spec/roster/` spec (Trace.tla).
 ///
 /// Envelope: `{tag:"trace", ts:<nanos>, event:{name, node, target?, src?,
-/// roster:{<id>:{add:<vclock>, rem:<vclock>}}, engine:[peer ids]}}`. `roster` is
-/// this node's POST-state — each device's add/remove vector clocks (the CRDT
-/// state, `vclock` = `{deviceId: counter}`); `engine` is its peer set.
+/// roster:{<id>:{add:<vclock>, rem:<vclock>}}, engine:[peer ids]}}`, where
+/// `roster` is this node's post-state and `engine` its peer set.
 pub fn emit_roster_event(
     name: &str,
     node: &str,

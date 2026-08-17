@@ -9,20 +9,17 @@ pub mod app;
 #[cfg(feature = "e2e-bridge")]
 pub mod bridge;
 
-/// Raises the process's open-file soft limit, returning a line describing the
-/// outcome (logged once the logger is up — this has to run before it is).
+/// Raises the open-file soft limit and returns a line for the caller to log once
+/// the logger exists; this must run before it does.
 ///
-/// iOS hands an app a 256-descriptor soft limit, which the whole process
-/// shares: WebKit, the embedded Syncthing engine (index DB files + a socket per
-/// peer), and the library's own I/O. Running out surfaces as EMFILE in whatever
-/// happens to open next — most visibly WebKit failing to load system fonts —
-/// rather than at the component that used the descriptors up. Upstream
-/// Syncthing raises the limit the same way in `cmd/syncthing`; the c-archive we
-/// embed never runs that code, so we do it here for the whole app.
+/// iOS gives the whole process 256 descriptors, shared by WebKit, the embedded
+/// Syncthing engine, and library I/O, and exhaustion surfaces as EMFILE far from
+/// the culprit. Upstream Syncthing raises it in `cmd/syncthing`, which the
+/// embedded c-archive never runs.
 ///
-/// Best-effort by design: descending targets, because Darwin refuses a soft
-/// limit above `OPEN_MAX` (and above `kern.maxfilesperproc`) even when the hard
-/// limit is unlimited. If none land, the inherited limit stays in place.
+/// Targets descend because Darwin refuses a soft limit above `OPEN_MAX` /
+/// `kern.maxfilesperproc` even under an unlimited hard limit; if none land, the
+/// inherited limit stands.
 #[cfg(unix)]
 fn raise_open_file_limit() -> String {
     const TARGETS: [libc::rlim_t; 3] = [10_240, 4_096, 1_024];
@@ -183,10 +180,8 @@ pub fn run() {
                 });
                 resume_state.publish_ready(outcome);
 
-                // Try to silently restore Spotify Web credentials from the
-                // OS keychain. Polling itself starts when the user opens the
-                // lyrics view (start_spotify_watcher); this just ensures we
-                // have a valid token in hand by then.
+                // Restore Spotify Web credentials from the keychain, so a token
+                // is in hand when start_spotify_watcher begins polling.
                 let client_id = resume_state.config_borrow_client_id();
                 resume_state.spotify_web.try_resume(client_id).await;
 

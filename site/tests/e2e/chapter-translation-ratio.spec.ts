@@ -7,11 +7,8 @@ import {
   setParagraphTranslation,
 } from './helpers/paragraph';
 
-// Covers the per-chapter translation percent rendered in the chapters panel:
-//  - 0% when no paragraph in the chapter is translated
-//  - rounded percent for partially-translated chapters
-//  - label hidden entirely when the chapter is 100% translated
-//  - reactive refresh when a paragraph finishes translating mid-session
+// Per-chapter translation percent in the chapters panel; the label is hidden
+// entirely at 100%.
 
 test.describe.configure({ mode: 'parallel' });
 
@@ -55,7 +52,6 @@ test.describe('Chapter translation ratio — initial render', () => {
     await page.locator(HANDLE).click();
 
     await expect(page.locator(`${rowSelector(0)} ${RATIO}`)).toHaveText('50%');
-    // 1/3 ≈ 33.333… → toFixed(0) → "33"
     await expect(page.locator(`${rowSelector(1)} ${RATIO}`)).toHaveText('33%');
   });
 
@@ -66,8 +62,7 @@ test.describe('Chapter translation ratio — initial render', () => {
 
     await page.locator(HANDLE).click();
 
-    // Sanity: the unrelated chapter still gets a ratio label — proves we hide
-    // only the 100% row, not the label globally.
+    // Only the 100% row loses its label, not every row.
     await expect(page.locator(`${rowSelector(1)} ${RATIO}`)).toHaveText('0%');
     await expect(page.locator(`${rowSelector(0)} ${RATIO}`)).toHaveCount(0);
   });
@@ -79,8 +74,7 @@ test.describe('Chapter translation ratio — reactivity', () => {
   test.skip(isRealMode(), 'mock-only setParagraphTranslation');
 
   test('ratio refreshes when a paragraph finishes translating', async ({ page }) => {
-    // Two chapters so the chapter-panel handle renders (single-chapter books
-    // skip the panel entirely — see chapters-panel.spec.ts).
+    // Single-chapter books render no panel handle at all.
     const { bookId } = await seedAndOpen(page, {
       chapters: [chapterSpec(4, 0), chapterSpec(1, 0)],
     });
@@ -89,8 +83,7 @@ test.describe('Chapter translation ratio — reactivity', () => {
     const ratio = page.locator(`${rowSelector(0)} ${RATIO}`);
     await expect(ratio).toHaveText('0%');
 
-    // Translate paragraph 0 (global id 0 — chapter 0's first paragraph).
-    // Mock emits book_updated, which the chapter list Resource subscribes to.
+    // book_updated is what the chapter list Resource subscribes to.
     await setParagraphTranslation(page, bookId, 0, fillerSegments(0));
 
     await expect(ratio).toHaveText('25%');

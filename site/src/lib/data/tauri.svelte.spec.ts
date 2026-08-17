@@ -1,8 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 
-// Mock the native Tauri event layer. Callbacks are captured synchronously so
-// tests can fire events "from the backend" at any point relative to the
-// (asynchronously resolving) listen() promise.
+// Callbacks captured synchronously, so tests can fire backend events at any
+// point relative to the async listen() promise.
 const { listenMock, nativeListeners } = vi.hoisted(() => {
     const nativeListeners = new Map<
         string,
@@ -27,19 +26,16 @@ vi.mock('@tauri-apps/api/core', () => ({
     invoke: vi.fn(() => Promise.resolve(undefined)),
 }));
 
-// Importing the module constructs the `eventHub` singleton, which must
-// eagerly install native listeners for the whole known-event catalog.
+// Importing constructs the `eventHub` singleton and its eager listeners.
 import { eventHub, TauriEventHub, KNOWN_EVENTS } from './tauri.svelte';
 
-/** Simulate the backend emitting an event to every registered native listener. */
 function fireNative(name: string, payload: unknown): void {
     for (const cb of nativeListeners.get(name) ?? []) {
         cb({ payload });
     }
 }
 
-// WeakRef stand-in whose targets can be "collected" on demand, so the
-// dispatch-time pruning path is exercised without relying on real GC.
+// Collect-on-demand WeakRef, so pruning is testable without real GC.
 class FakeWeakRef<T extends object> {
     static dead = new Set<object>();
     readonly #target: T;
@@ -58,8 +54,6 @@ afterEach(() => {
 
 describe('TauriEventHub eager catalog', () => {
     it('installs a native listener for every known event at construction', () => {
-        // The singleton was constructed at module import; each catalog name
-        // must already have a native listener registered.
         for (const name of KNOWN_EVENTS) {
             expect(
                 listenMock,
@@ -69,10 +63,7 @@ describe('TauriEventHub eager catalog', () => {
     });
 
     it('delivers an event that arrives immediately after subscribe (no listen round-trip gap)', () => {
-        // Because the native listener for a catalog event was installed at
-        // hub construction, an event emitted right after subscribe() — e.g. a
-        // background translation save landing while a chapter view mounts —
-        // is delivered without awaiting any per-name listen() registration.
+        // e.g. a background translation save landing mid-mount.
         const handler = vi.fn();
         const unsub = eventHub.subscribe<{ bookId: string }>(
             'paragraph_updated',
@@ -145,15 +136,12 @@ describe('weak subscribers', () => {
         fireNative('weak_evt', 'alive');
         expect(handler).toHaveBeenCalledTimes(1);
 
-        // Simulate the Resource (sole strong holder of the handler) being
-        // garbage-collected.
+        // The Resource holding the only strong ref is collected.
         FakeWeakRef.dead.add(handler);
         fireNative('weak_evt', 'after-gc');
         expect(handler).toHaveBeenCalledTimes(1);
 
-        // The dead entry must have been PRUNED by that dispatch, not merely
-        // skipped: even if the ref were to deref again, the subscription is
-        // gone from the hub.
+        // Pruned, not merely skipped: a re-deref must not resurrect it.
         FakeWeakRef.dead.delete(handler);
         fireNative('weak_evt', 'after-prune');
         expect(handler).toHaveBeenCalledTimes(1);

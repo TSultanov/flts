@@ -1,9 +1,7 @@
 //! Single-call generator for per-chapter source-language summaries.
 //!
-//! The summary fuels cross-paragraph context during translation (see
-//! `library/src/translator/gemini.rs` and `openai.rs`). One call per
-//! chapter; the prior chapter's summary is fed in as context so summaries
-//! form a chain that captures cumulative book state.
+//! Summaries feed cross-paragraph translation context. One call per chapter,
+//! each fed the prior summary, so the chain captures cumulative book state.
 
 use std::time::Duration;
 
@@ -23,10 +21,8 @@ use tokio::time::timeout;
 
 use crate::translator::{TranslationModel, TranslationProvider};
 
-/// Generous ceiling for a non-streaming summary call. Summaries are short
-/// outputs (~200 tokens) but a slow model on a long chapter input may take
-/// a while; we don't want to retry aggressively because the caller will
-/// just give up on the book.
+/// Generous ceiling: output is short but a slow model on a long chapter is
+/// not, and an aggressive retry just makes the caller abandon the book.
 const SUMMARY_REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
 
 enum SummaryBackend {
@@ -37,10 +33,8 @@ enum SummaryBackend {
     },
 }
 
-/// Pre-built LLM client for chapter summary generation.
-///
-/// Create once per queue worker (model/provider/key are invariant for the
-/// lifetime of the queue) and share via `Arc`. Call `generate` for each chapter.
+/// Pre-built LLM client for chapter summaries. Model, provider, and key are
+/// invariant for a queue's lifetime, so build one per worker and share it.
 pub struct ChapterSummarizer {
     pub model: TranslationModel,
     backend: SummaryBackend,
@@ -74,8 +68,7 @@ impl ChapterSummarizer {
         Ok(Self { model, backend })
     }
 
-    /// Run a single non-streaming summary call. Returns the plain-text summary
-    /// in the book's source language.
+    /// One non-streaming call, yielding a summary in the source language.
     pub async fn generate(
         &self,
         book_language: &Language,
@@ -250,12 +243,9 @@ fn user_message(
     out
 }
 
-/// Build a compact diagnostic string from a Gemini response whose `text()`
-/// was empty, surfacing the fields that explain *why* nothing came back:
-/// candidate count, finish_reason, the shape of `content.parts` (since
-/// `text()` only reads parts\[0\] when it's `Part::Text`), elevated safety
-/// ratings, prompt block reason, token usage (the thinking-budget smoking
-/// gun for Gemini 2.5/3), and ids for support repros.
+/// Why an empty Gemini `text()` came back: candidate count, finish_reason, the
+/// shape of `content.parts` (`text()` reads parts\[0\] only when it's
+/// `Part::Text`), safety ratings, block reason, token usage, and ids.
 fn describe_empty_gemini_response(resp: &GenerationResponse) -> String {
     let mut bits: Vec<String> = Vec::new();
     bits.push(format!("candidates={}", resp.candidates.len()));
@@ -323,9 +313,8 @@ fn part_variant_name(p: &gemini_rust::Part) -> &'static str {
     }
 }
 
-/// Same idea for OpenAI: when `choices[0].message.content` is empty/missing,
-/// surface choice count, finish_reason (`length`, `content_filter`, etc.),
-/// any explicit `refusal` string, token usage, and ids.
+/// The same for OpenAI: choice count, finish_reason, any `refusal` string,
+/// token usage, and ids.
 fn describe_empty_openai_response(resp: &CreateChatCompletionResponse) -> String {
     let mut bits: Vec<String> = Vec::new();
     bits.push(format!("choices={}", resp.choices.len()));

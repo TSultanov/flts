@@ -17,7 +17,6 @@ export type ThisDevice = { deviceId: string; name?: string };
 export type DeviceEntry = { deviceId: string; name: string; connected: boolean };
 export type PendingEntry = { deviceId: string; name: string };
 
-/// Live sync status, refreshed whenever the backend emits `sync_status_changed`.
 export const syncStatus = new Resource<SyncStatus>(
     "get_sync_status",
     {},
@@ -25,9 +24,8 @@ export const syncStatus = new Resource<SyncStatus>(
     { state: "disabled", deviceCount: 0, connectedCount: 0 },
 );
 
-// One-shot request to expand the Sync section in settings (set by the nav
-// status button, consumed by ConfigView). Reactive so it works whether the
-// config page is already open or navigated to.
+// One-shot request to expand the Sync section: set by the nav status button,
+// consumed by ConfigView. Reactive so it works on an already-open page too.
 let openSyncRequested = $state(false);
 
 export function requestOpenSyncSection(): void {
@@ -55,15 +53,14 @@ export async function syncGetThisDevice(): Promise<ThisDevice | null> {
     return await invoke<ThisDevice | null>("sync_get_this_device");
 }
 
-/// Loopback URL of Syncthing's own web dashboard. Non-null only in debug builds
-/// with the engine running (release ships without the web UI).
+/// Non-null only in debug builds with the engine running — release ships
+/// without Syncthing's web UI.
 export async function syncWebUiUrl(): Promise<string | null> {
     return await invoke<string | null>("sync_web_ui_url");
 }
 
-/// True on iOS. The dashboard URL is shown there for manual entry rather than
-/// opened: the engine serving it runs inside FLTS, so handing the URL to Safari
-/// backgrounds (and soon suspends) the very process that would answer it.
+/// On iOS the dashboard URL is shown for manual entry, never opened: Safari
+/// would background the FLTS process that serves it.
 export function isIos(): boolean {
     try {
         return platform() === "ios";
@@ -72,7 +69,7 @@ export function isIos(): boolean {
     }
 }
 
-/// Opens an http(s) URL in the system browser (validated backend-side).
+/// URL is validated backend-side.
 export async function openExternalUrl(url: string): Promise<void> {
     await invoke("open_external_url", { url });
 }
@@ -93,8 +90,7 @@ export async function syncRemoveDevice(deviceId: string): Promise<void> {
     await invoke("sync_remove_device", { deviceId });
 }
 
-/// Whether native camera QR scanning is available (mobile only; desktop pairs
-/// by paste).
+/// Mobile only; desktop pairs by paste.
 export function canScan(): boolean {
     try {
         const p = platform();
@@ -104,19 +100,15 @@ export function canScan(): boolean {
     }
 }
 
-/// Ensures the camera permission the QR scanner needs is granted, prompting the
-/// user once if it hasn't been decided yet. Returns whether scanning may
-/// proceed. `scan()` does NOT request the permission itself, so on a fresh
-/// install it fails outright unless this runs first.
+/// Must run before `scan()`: it does not request the camera permission
+/// itself and fails outright on a fresh install.
 export async function ensureCameraPermission(): Promise<boolean> {
     const { checkPermissions, requestPermissions } = await import(
         "@tauri-apps/plugin-barcode-scanner"
     );
-    // The plugin's index.d.ts re-exports PermissionState without importing
-    // it locally, so its declared return type accidentally resolves to the
-    // DOM-global PermissionState, which lacks 'prompt-with-rationale' — a
-    // value that does occur at runtime on Android. Cast to the Tauri union
-    // the plugin actually returns.
+    // The plugin's declared return type resolves to the DOM-global
+    // PermissionState, which lacks 'prompt-with-rationale' — a value that
+    // does occur at runtime on Android.
     type TauriPermissionState = import("@tauri-apps/api/core").PermissionState;
     let state = (await checkPermissions()) as TauriPermissionState;
     if (state === "prompt" || state === "prompt-with-rationale") {
@@ -125,26 +117,21 @@ export async function ensureCameraPermission(): Promise<boolean> {
     return state === "granted";
 }
 
-/// Opens the camera to scan a peer's pairing QR and returns its device ID +
-/// name, or null if cancelled. Mobile only.
-///
-/// The native scanner renders the camera *behind* the webview, so the caller is
-/// responsible for making the page transparent while this runs (see the
-/// `barcode-scanning` handling in SyncDevicesView).
+/// Mobile only. The native scanner renders the camera *behind* the webview,
+/// so the caller must make the page transparent while this runs (see
+/// `barcode-scanning` in SyncDevicesView).
 export async function scanDeviceId(): Promise<{ deviceId: string; name?: string } | null> {
     const { scan, Format } = await import("@tauri-apps/plugin-barcode-scanner");
     const result = await scan({ windowed: true, formats: [Format.QRCode] });
     return parsePairingPayload(result.content);
 }
 
-/// Cancels an in-progress scan (the overlay's Cancel button).
 export async function cancelScan(): Promise<void> {
     const { cancel } = await import("@tauri-apps/plugin-barcode-scanner");
     await cancel();
 }
 
-/// The QR encodes a `{deviceId,name}` JSON blob (or, for older codes, a bare
-/// device ID); accept either.
+/// Accepts either a `{deviceId,name}` JSON blob or a bare device ID.
 export function parsePairingPayload(
     content: string,
 ): { deviceId: string; name?: string } | null {
@@ -161,7 +148,6 @@ export function parsePairingPayload(
     return { deviceId: trimmed };
 }
 
-/// The pairing QR payload for this device (id + name).
 export function pairingPayload(deviceId: string, name?: string): string {
     return JSON.stringify({ deviceId, name: name ?? "" });
 }

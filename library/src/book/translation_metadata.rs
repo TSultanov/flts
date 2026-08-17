@@ -23,17 +23,14 @@ impl TranslationMetadata {
     where
         Self: Sized,
     {
-        // Magic
         let magic = read_exact_array::<4>(input_stream)?;
         if &magic != Magic::Translation.as_bytes() {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid magic"));
         }
-        Version::read_version(input_stream)?; // ensure supported
+        Version::read_version(input_stream)?;
 
-        // hash
         let metadata_hash = read_u64(input_stream)?;
 
-        // Read metadata
         let metadata_buf = read_len_prefixed_vec(input_stream)?;
 
         let mut hasher = fnv::FnvHasher::default();
@@ -108,7 +105,6 @@ mod translation_metadata_test {
             TranslationModel::Gemini25Flash,
         );
 
-        // another paragraph
         let paragraph_translation2 = translation_import::ParagraphTranslation {
             total_tokens: None,
             timestamp: 2,
@@ -199,7 +195,6 @@ mod translation_metadata_test {
             TranslationModel::Gemini25Flash,
         );
 
-        // another paragraph
         let paragraph_translation2 = translation_import::ParagraphTranslation {
             total_tokens: None,
             timestamp: 2,

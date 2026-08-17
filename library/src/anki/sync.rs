@@ -1,5 +1,3 @@
-// Stage 6: per-card push/pull. Stage 7 wraps this in a periodic loop.
-
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use anyhow::{Result, anyhow};
@@ -13,13 +11,11 @@ use crate::anki::model::{FLTS_MODEL_NAME, bootstrap, deck_name};
 use crate::card::{AnkiData, AnkiState, Card};
 use crate::library::Library;
 
-/// Per-spec batch-size cap for `multi` calls (§ Action set).
+/// Spec cap on sub-actions per `multi` call.
 const MULTI_BATCH_SIZE: usize = 50;
 
-/// In-session sync orchestration state: bootstrap flag, per-card backoff
-/// counters, and the persistent-failure set. Lives in the app crate for the
-/// app's lifetime; reset on restart by design.
-#[allow(dead_code)] // first non-test consumer is the Stage 9 AnkiSyncTask
+/// In-session sync orchestration state; reset on restart by design.
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct AnkiSyncState {
     bootstrapped: bool,
@@ -28,15 +24,15 @@ pub struct AnkiSyncState {
     persistent_threshold: u32,
 }
 
-#[allow(dead_code)] // first non-test consumer is the Stage 9 AnkiSyncTask
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct BackoffEntry {
     failure_count: u32,
     next_attempt: tokio::time::Instant,
 }
 
-/// Summary of a single `sync_pass` invocation. Caller decides what to surface.
-#[allow(dead_code)] // first non-test consumer is the Stage 9 AnkiSyncTask
+/// Summary of one `sync_pass`.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct SyncReport {
     pub total_cards: usize,
@@ -48,15 +44,13 @@ pub struct SyncReport {
 
 const DEFAULT_PERSISTENT_THRESHOLD: u32 = 5;
 
-/// Linear backoff schedule capped at ten minutes per spec § Failure modes.
-/// `n=0` yields zero delay (treated as "not in backoff").
-#[allow(dead_code)] // first non-test consumer is cycle 5
+/// Linear backoff capped at ten minutes; `n=0` means "not in backoff".
+#[allow(dead_code)]
 pub(crate) fn next_delay(n: u32) -> std::time::Duration {
     std::time::Duration::from_secs(60 * n.min(10) as u64)
 }
 
-/// One eligible card after Phase 1a's filtering. Carries the loaded card,
-/// its identifiers, and the owned per-card lock guard (dropped at end of pass).
+/// An eligible card plus its per-card lock guard, held until the pass ends.
 struct Eligible {
     card_id: String,
     src_str: String,
@@ -68,7 +62,7 @@ struct Eligible {
 }
 
 impl AnkiSyncState {
-    #[allow(dead_code)] // first non-test consumer is the Stage 9 AnkiSyncTask
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             bootstrapped: false,
@@ -78,28 +72,23 @@ impl AnkiSyncState {
         }
     }
 
-    /// Override the default persistent-failure threshold (5 by spec default).
-    #[allow(dead_code)] // first non-test consumer is the Stage 9 AnkiSyncTask
+    #[allow(dead_code)]
     pub fn with_threshold(mut self, threshold: u32) -> Self {
         self.persistent_threshold = threshold;
         self
     }
 
-    /// Returns true if the card is in cooldown and should be skipped this tick.
     fn in_cooldown(&self, card_id: &str, now: tokio::time::Instant) -> bool {
         self.backoff
             .get(card_id)
             .is_some_and(|e| e.next_attempt > now)
     }
 
-    /// Clears any backoff state for this card after a successful sync.
     fn record_success(&mut self, card_id: &str) {
         self.backoff.remove(card_id);
         self.persistent_set.remove(card_id);
     }
 
-    /// Increments the card's failure counter and schedules the next attempt.
-    /// Surfaces the card in `persistent_set` once it crosses the threshold.
     fn record_failure(&mut self, card_id: &str, now: tokio::time::Instant) {
         let entry = self
             .backoff
@@ -122,15 +111,10 @@ impl Default for AnkiSyncState {
     }
 }
 
-/// Run one orchestrated sync pass over every card on disk. Bootstraps the
-/// AnkiConnect-side model+decks on the first call (gated by
-/// `state.bootstrapped`). Two-phase:
-///   Phase 1: gather eligible cards (post opt-out + cooldown filters),
-///            holding per-card locks. Batch their `findNotes` lookups via
-///            `multi` (chunked at MULTI_BATCH_SIZE).
-///   Phase 2: per eligible card, run the inline state machine using its
-///            prefetched lookup result.
-#[allow(dead_code)] // first non-test consumer is the Stage 9 AnkiSyncTask
+/// Run one sync pass over every card on disk, bootstrapping model+decks on the
+/// first call. Phase 1 gathers eligible cards under their locks and batches
+/// their `findNotes`; phase 2 classifies and applies the batched writes.
+#[allow(dead_code)]
 pub async fn sync_pass(
     client: &dyn AnkiConnect,
     library: &Library,
@@ -172,14 +156,13 @@ pub async fn sync_pass(
                 continue;
             };
 
-            // Opt-out short-circuit: counted as total but not attempted.
+            // Opt-out: counted as total, not attempted.
             if matches!(
                 card.anki_data.as_ref().map(|a| a.state),
                 Some(AnkiState::Suspended) | Some(AnkiState::Deleted)
             ) {
                 continue;
             }
-            // Backoff cooldown: counted as total but not attempted.
             if state.in_cooldown(&card_id, now) {
                 continue;
             }
@@ -197,9 +180,7 @@ pub async fn sync_pass(
         }
     }
 
-    // Phase 1b: batched findNotes lookup via multi, chunked. Per-card lookup
-    // result is None for chunks whose multi call errored — those cards are
-    // attributed a failure in phase 2.
+    // Phase 1b: batched findNotes. None = lookup failed; phase 2 counts it.
     let mut lookups: Vec<Option<Vec<i64>>> = Vec::with_capacity(eligible.len());
     for chunk in eligible.chunks(MULTI_BATCH_SIZE) {
         let actions: Vec<MultiSubAction> = chunk
@@ -214,11 +195,8 @@ pub async fn sync_pass(
         match client.multi(actions).await {
             Ok(results) => {
                 if results.len() != chunk.len() {
-                    // A conforming AnkiConnect returns exactly one result per
-                    // sub-action. A short (or long) response would desync
-                    // `lookups` from `eligible` and later panic on
-                    // `actions[idx]` (out of bounds / unreachable!); treat the
-                    // whole chunk as a lookup failure instead.
+                    // A mismatched result count would desync `lookups` from
+                    // `eligible` and panic later; fail the whole chunk.
                     log::warn!(
                         "multi findNotes returned {} results for {} actions; treating batch as failed",
                         results.len(),
@@ -260,9 +238,7 @@ pub async fn sync_pass(
         }
     }
 
-    // Phase 2: classify each eligible card into one action kind, then run
-    // batched writes (Phase 2a), batched state pull (2b + 2c), and apply
-    // results per card (2d). Replaces the old per-card serial state machine.
+    // Phase 2: classify, then batch writes (2a), state pull (2b+2c), apply (2d).
     let actions: Vec<CardAction> = eligible
         .iter()
         .zip(lookups.iter())
@@ -274,15 +250,9 @@ pub async fn sync_pass(
         })
         .collect();
 
-    // Data-loss guard. A LocalDeleteOnly means findNotes returned 0 hits for a
-    // card that was previously synced. If EVERY eligible card reports 0 hits —
-    // as happens when AnkiConnect is pointed at the WRONG/empty collection
-    // (switched profile, opened a test profile, restored a backup missing the
-    // notes, or a freshly re-bootstrapped empty deck) — honoring those deletes
-    // would irreversibly flip every card to Deleted and wipe all local Anki
-    // state. Only trust a LocalDeleteOnly once at least one card in this pass
-    // matched an existing note (an UpdateNote): positive proof that the loaded
-    // collection really contains FLTS notes.
+    // Data-loss guard: a wrong/empty collection reports 0 hits for every card,
+    // which would irreversibly mark them all Deleted. Trust a LocalDeleteOnly
+    // only with positive proof the collection holds FLTS notes.
     let any_note_found = actions
         .iter()
         .any(|a| matches!(a, CardAction::UpdateNote(_)));
@@ -296,9 +266,6 @@ pub async fn sync_pass(
         let outcome: Result<()> = match &actions[idx] {
             CardAction::LookupFailed => Err(anyhow!("lookup batch failed for {}", e.card_id)),
             CardAction::LocalDeleteOnly => {
-                // Only honor the out-of-band deletion when this pass saw at
-                // least one real note; otherwise leave anki_data untouched (no
-                // disk write) so a wrong/empty collection can't mass-delete.
                 if any_note_found {
                     e.card.anki_data = Some(AnkiData {
                         state: AnkiState::Deleted,
@@ -311,8 +278,7 @@ pub async fn sync_pass(
                 Ok(())
             }
             CardAction::Add | CardAction::UpdateNote(_) => {
-                // Take ownership of the write outcome so we can move the Err
-                // out (anyhow::Error doesn't Clone).
+                // Move the outcome out; anyhow::Error isn't Clone.
                 let outcome =
                     std::mem::replace(&mut write_outcomes[idx], WriteOutcome::Skipped);
                 match outcome {
@@ -355,10 +321,8 @@ pub async fn sync_pass(
 
         match outcome {
             Ok(()) => {
-                // Skip the disk write — and the resulting watcher event —
-                // when nothing changed. Use the silent save: only `anki_data`
-                // was touched in response to our own AnkiConnect round-trip;
-                // waking ourselves would self-trigger a redundant pass.
+                // Silent save: only `anki_data` changed, from our own
+                // round-trip; waking the watcher would self-trigger a pass.
                 if e.card != pre_card {
                     card_store
                         .save_without_wake(&e.card, &e.src_str, &e.tgt_str)
@@ -381,54 +345,40 @@ pub async fn sync_pass(
         }
     }
 
-    // Sort so the serialized report is deterministic run-to-run (the source is
-    // a HashSet, whose iteration order varies).
+    // HashSet order varies; sort for a run-to-run deterministic report.
     let mut persistent_failures: Vec<String> = state.persistent_set.iter().cloned().collect();
     persistent_failures.sort();
     report.persistent_failures = persistent_failures;
     Ok(report)
 }
 
-/// Classification of one eligible card based on its Phase 1b lookup result
-/// and its prior `anki_data`. Drives the Phase 2 batched dispatch.
+/// What phase 2 should do with one eligible card.
 #[derive(Debug)]
 enum CardAction {
-    /// Fresh card (no prior anki_data, findNotes returned 0 hits): create
-    /// the note via addNote and pull its state.
+    /// No prior anki_data and no note found: create it.
     Add,
-    /// Existing note (findNotes returned ≥1 hit): push current fields via
-    /// updateNoteFields and pull its state. The carried i64 is the note id.
+    /// Note exists (the id): push fields, pull state.
     UpdateNote(i64),
-    /// Card had prior anki_data but findNotes returned 0 hits — user
-    /// deleted the note in Anki out-of-band. Marked Deleted locally (no HTTP),
-    /// but only when some other card in the pass matched a note; see the
-    /// `any_note_found` guard in `sync_pass`.
+    /// Had anki_data but the note is gone — deleted in Anki out-of-band.
+    /// Applied only under `sync_pass`'s `any_note_found` guard.
     LocalDeleteOnly,
-    /// Phase 1b's lookup batch failed for this card's chunk. Skip Phase 2a/b/c
-    /// and record a failure in Phase 2d.
+    /// Phase 1b's chunk failed; recorded as a failure without further calls.
     LookupFailed,
 }
 
 /// Result of one card's Phase 2a write attempt.
 #[derive(Debug)]
 enum WriteOutcome {
-    /// Card didn't enter the write batch (LocalDeleteOnly / LookupFailed) or
-    /// its outcome has already been consumed.
+    /// Never entered the write batch, or its outcome was already consumed.
     Skipped,
-    /// addNote succeeded; the new note id is carried for the state-pull phase.
     AddOk { note_id: i64 },
-    /// updateNoteFields succeeded; the existing note id is carried for the
-    /// state-pull phase.
     UpdateOk { note_id: i64 },
-    /// addNote or updateNoteFields errored (either a per-sub-action error
-    /// inside the multi response, or the whole multi HTTP call failed).
     Err(anyhow::Error),
 }
 
-/// Phase 2a: batched addNote / updateNoteFields via `multi`, chunked at
-/// `MULTI_BATCH_SIZE`. Returns one `WriteOutcome` per element of `eligible`.
-/// Flips `state.bootstrapped = false` on any error whose chain indicates a
-/// missing deck/model.
+/// Phase 2a: batched addNote / updateNoteFields. Returns one `WriteOutcome`
+/// per element of `eligible`, index-aligned. Clears `state.bootstrapped` when
+/// an error says the deck/model is missing.
 async fn batch_writes(
     client: &dyn AnkiConnect,
     eligible: &[Eligible],
@@ -541,11 +491,9 @@ async fn batch_writes(
     Ok(outcomes)
 }
 
-/// Phase 2b + 2c: single `notes_info` plural call followed by a single
-/// `cards_info` plural call. Returns lookup maps keyed by id. On either
-/// plural-call failure, downgrades the corresponding `write_outcomes[i]` from
-/// AddOk/UpdateOk to Err so Phase 2d records those cards as failed; next tick
-/// reconciles via findNotes → idempotent updateNoteFields → retry pull.
+/// Phase 2b + 2c: one `notes_info` then one `cards_info`, keyed by id. A
+/// failure downgrades the matching `write_outcomes[i]` to Err so phase 2d
+/// counts the card failed; the next tick reconciles it idempotently.
 async fn batch_pull_state(
     client: &dyn AnkiConnect,
     actions: &[CardAction],
@@ -561,7 +509,7 @@ async fn batch_pull_state(
             _ => None,
         })
         .collect();
-    let _ = actions; // reserved for future per-action diagnostics
+    let _ = actions;
 
     if pull_note_ids.is_empty() {
         return (HashMap::new(), HashMap::new());
@@ -618,11 +566,8 @@ async fn batch_pull_state(
     (notes_by_id, cards_by_id)
 }
 
-/// Detects AnkiConnect "…was not found" failures for the FLTS deck or note
-/// model — i.e. the user deleted the deck/model in Anki out-of-band. Walks the
-/// anyhow chain so wrapped errors are matched too. The next `sync_pass` will
-/// re-run `bootstrap()` (idempotent for both `create_model` and `create_deck`)
-/// and the failing cards retry via the existing backoff/cooldown.
+/// True when the deck or model was deleted in Anki out-of-band. Walks the
+/// whole chain so wrapped errors match; callers re-bootstrap on a hit.
 fn is_missing_resource_error(err: &anyhow::Error) -> bool {
     err.chain().any(|cause| {
         let s = cause.to_string().to_lowercase();
@@ -633,9 +578,9 @@ fn is_missing_resource_error(err: &anyhow::Error) -> bool {
     })
 }
 
-/// Render a card into the three Anki note fields (`Source`, `Target`, `Example`).
-/// See `.specs/ANKI_REFINED.md § Field contents pushed to Anki`.
-#[allow(dead_code)] // first non-test consumer is the Stage 7 sync orchestrator
+/// Render a card into the Anki note fields; see
+/// `.specs/ANKI_REFINED.md § Field contents pushed to Anki`.
+#[allow(dead_code)]
 pub(crate) fn render_fields(card: &Card) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     out.insert("Source".into(), card.lemma.clone());
@@ -652,18 +597,16 @@ pub(crate) fn render_fields(card: &Card) -> BTreeMap<String, String> {
     out
 }
 
-/// Push a single card to Anki and pull back its state, mutating
-/// `card.anki_data` in place. Caller (Stage 7 loop) owns load/lock/save.
-#[allow(dead_code)] // first non-test consumer is the Stage 7 sync orchestrator
+/// Push one card and pull back its state into `card.anki_data`. The caller
+/// owns load/lock/save.
+#[allow(dead_code)]
 pub async fn sync_card(
     client: &dyn AnkiConnect,
     card: &mut Card,
     src: Language,
     tgt: Language,
 ) -> Result<()> {
-    // The user opted out in Anki: never re-push, never overwrite the
-    // explicit state. Local accumulation (translations/examples) continues
-    // upstream of this call; only network sync is suppressed.
+    // Opted out in Anki: never re-push, never overwrite the explicit state.
     if matches!(
         card.anki_data.as_ref().map(|a| a.state),
         Some(AnkiState::Suspended) | Some(AnkiState::Deleted)
@@ -677,7 +620,6 @@ pub async fn sync_card(
     if hits.is_empty() {
         match card.anki_data.as_ref() {
             None => {
-                // Fresh card: create the note in Anki, then pull state.
                 let note = NewNote {
                     deck_name: deck_name(src, tgt)?,
                     model_name: FLTS_MODEL_NAME.to_owned(),
@@ -688,9 +630,7 @@ pub async fn sync_card(
                 card.anki_data = Some(pull_state(client, note_id).await?);
             }
             Some(_) => {
-                // Card was previously synced but the user deleted the note
-                // in Anki. Mark as deleted; do NOT re-add. Subsequent encounters
-                // of this lemma keep the local card but never re-push.
+                // Note deleted in Anki: mark deleted, never re-add.
                 card.anki_data = Some(AnkiData {
                     state: AnkiState::Deleted,
                     interval_days: None,
@@ -701,7 +641,6 @@ pub async fn sync_card(
             }
         }
     } else {
-        // Note already exists in Anki: push current fields, then pull state.
         let note_id = hits[0];
         client
             .update_note_fields(note_id, render_fields(card))
@@ -851,7 +790,6 @@ mod tests {
 
         sync_card(&mock, &mut card, spa(), rus()).await.unwrap();
 
-        // No note created, no AnkiConnect mutation visible to find_notes.
         let hits = mock.find_notes(&format!("tag:{}", card.id)).await.unwrap();
         assert!(hits.is_empty(), "suspended card must not be pushed");
         assert_eq!(
@@ -890,13 +828,11 @@ mod tests {
         let mock = bootstrap_mock().await;
         let mut card = make_card("poder", vec!["мочь"], vec![]);
 
-        // First push to create the note + cards, then suspend one of them.
         sync_card(&mock, &mut card, spa(), rus()).await.unwrap();
         let note_id = mock.find_notes(&format!("tag:{}", card.id)).await.unwrap()[0];
         let cards = mock.notes_info(&[note_id]).await.unwrap()[0].cards.clone();
-        mock.suspend_card(cards[0]); // suspend just one direction
+        mock.suspend_card(cards[0]);
 
-        // Force a re-sync; the existing-note branch should detect suspension.
         sync_card(&mock, &mut card, spa(), rus()).await.unwrap();
 
         let anki = card.anki_data.as_ref().expect("anki_data populated");
@@ -912,9 +848,6 @@ mod tests {
     async fn sync_card_flags_deletion_when_note_vanished_from_anki() {
         let mock = bootstrap_mock().await;
         let mut card = make_card("poder", vec!["мочь"], vec![]);
-        // Card was previously synced — anki_data carries prior Active state —
-        // but the user has since deleted the note in Anki (mock has zero
-        // matching notes).
         card.anki_data = Some(AnkiData {
             state: AnkiState::Active,
             interval_days: Some(30.0),
@@ -925,7 +858,6 @@ mod tests {
 
         sync_card(&mock, &mut card, spa(), rus()).await.unwrap();
 
-        // Mock note count must stay zero — we MUST NOT re-add.
         let all_hits = mock.find_notes(&format!("tag:{}", card.id)).await.unwrap();
         assert!(all_hits.is_empty(), "deleted card must not be re-added");
 
@@ -940,13 +872,11 @@ mod tests {
         let mock = bootstrap_mock().await;
         let mut card = make_card("poder", vec!["мочь"], vec![]);
 
-        // First push: creates the note.
         sync_card(&mock, &mut card, spa(), rus()).await.unwrap();
         let original_hits = mock.find_notes(&format!("tag:{}", card.id)).await.unwrap();
         assert_eq!(original_hits.len(), 1);
         let note_id = original_hits[0];
 
-        // Mutate translations locally, sync again — should update, not create.
         card.translations
             .entry("verb".into())
             .or_default()
@@ -1025,20 +955,17 @@ mod tests {
         assert_eq!(report.succeeded, 2);
         assert_eq!(report.failed, 0);
 
-        // Bootstrap occurred: model and deck must exist.
         let models = mock.model_names_and_ids().await.unwrap();
         assert!(models.contains_key(crate::anki::model::FLTS_MODEL_NAME));
         let decks = mock.deck_names_and_ids().await.unwrap();
         assert!(decks.contains_key("FLTS::Español-Русский"));
 
-        // Each card got a note tagged with its id.
         for lemma in ["poder", "comer"] {
             let id = format!("flts_spa_rus_{lemma}");
             let hits = mock.find_notes(&format!("tag:{id}")).await.unwrap();
             assert_eq!(hits.len(), 1, "expected one note for {id}");
         }
 
-        // Reloaded cards have Active anki_data.
         for lemma in ["poder", "comer"] {
             let card = library
                 .card_store()
@@ -1066,7 +993,6 @@ mod tests {
 
         let mut state = AnkiSyncState::new();
 
-        // Tick 1: happy path — bootstraps, deck created, card pushed.
         let r1 = sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
             .await
             .unwrap();
@@ -1079,12 +1005,9 @@ mod tests {
                 .contains_key("FLTS::Español-Русский")
         );
 
-        // User deletes the deck in Anki out-of-band.
         mock.remove_deck("FLTS::Español-Русский");
 
-        // Tick 2: card is Active locally, so sync_pass goes through the
-        // update_note_fields path — which now fails with the missing-deck
-        // string. sync_pass must record the failure AND clear bootstrapped.
+        // An Active card takes the update path, which hits the missing deck.
         tokio::time::advance(Duration::from_secs(1)).await;
         let r2 = sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
             .await
@@ -1096,8 +1019,6 @@ mod tests {
             "missing-deck error must invalidate the bootstrap gate"
         );
 
-        // Tick 3: after the backoff window, sync_pass re-runs bootstrap (deck
-        // reappears) and the card succeeds again.
         tokio::time::advance(Duration::from_secs(61)).await;
         let r3 = sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
             .await
@@ -1124,19 +1045,13 @@ mod tests {
         )
         .await;
 
-        // Bootstrap happens inside sync_pass; have the FIRST sync call fail.
-        // We need the failure to land on the per-card sync, not on bootstrap.
-        // Approach: pre-bootstrap explicitly so the next batch of failures
-        // applies to the sync_card phase.
         let mut state = AnkiSyncState::new();
         let now0 = tokio::time::Instant::now();
-        // First pass: succeeds, populates anki_data (Active).
         let report0 = sync_pass(&mock, &library, &mut state, now0).await.unwrap();
         assert_eq!(report0.succeeded, 1);
         assert_eq!(report0.failed, 0);
 
-        // Inject one failure for the next sync_card call. sync_card on an
-        // already-Active card hits find_notes first — that call will fail.
+        // An already-Active card hits find_notes first, so that call fails.
         mock.fail_next_n_calls(1);
 
         let now1 = tokio::time::Instant::now();
@@ -1145,12 +1060,10 @@ mod tests {
         assert_eq!(report1.failed, 1);
         assert_eq!(report1.succeeded, 0);
 
-        // Without advancing time, the card must be in cooldown.
         let report2 = sync_pass(&mock, &library, &mut state, now1).await.unwrap();
         assert_eq!(report2.attempted, 0, "card must be skipped during cooldown");
         assert_eq!(report2.total_cards, 1);
 
-        // Advance past the 60s delay; the card must be retried and succeed.
         tokio::time::advance(Duration::from_secs(61)).await;
         let now2 = tokio::time::Instant::now();
         let report3 = sync_pass(&mock, &library, &mut state, now2).await.unwrap();
@@ -1169,11 +1082,10 @@ mod tests {
         )
         .await;
 
-        // Threshold of 3 means card surfaces after the 3rd consecutive failure.
         let mut state = AnkiSyncState::new().with_threshold(3);
         let card_id = format!("flts_spa_rus_poder");
 
-        // Pre-bootstrap so failure-injection lands on sync_card, not bootstrap.
+        // Pre-bootstrap so the injected failures land on sync_card.
         crate::anki::model::bootstrap(
             &mock,
             &[(
@@ -1187,7 +1099,6 @@ mod tests {
 
         mock.fail_next_n_calls(100);
 
-        // Tick 1: first failure. Not yet persistent.
         let r1 = sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
             .await
             .unwrap();
@@ -1198,7 +1109,6 @@ mod tests {
         );
 
         tokio::time::advance(Duration::from_secs(61)).await;
-        // Tick 2: second failure. Still not persistent.
         let r2 = sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
             .await
             .unwrap();
@@ -1209,7 +1119,6 @@ mod tests {
         );
 
         tokio::time::advance(Duration::from_secs(121)).await;
-        // Tick 3: third failure — threshold hit.
         let r3 = sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
             .await
             .unwrap();
@@ -1220,7 +1129,6 @@ mod tests {
             "after threshold hit: surfaced"
         );
 
-        // Clear the failure injector; advance past 3-minute cooldown, retry succeeds.
         mock.fail_next_n_calls(0);
         tokio::time::advance(Duration::from_secs(181)).await;
         let r4 = sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
@@ -1252,8 +1160,8 @@ mod tests {
 
         let mut state = AnkiSyncState::new();
 
-        // Pre-bootstrap so failures land on per-card sync, not on bootstrap
-        // (which is unconditionally retried on failure inside sync_pass).
+        // Pre-bootstrap so failures land on per-card sync; bootstrap itself is
+        // retried unconditionally.
         crate::anki::model::bootstrap(
             &mock,
             &[(
@@ -1265,7 +1173,6 @@ mod tests {
         .unwrap();
         state.bootstrapped = true;
 
-        // 13 transient failures, sparse enough to never trip threshold=5 per card.
         mock.fail_next_n_calls(13);
 
         let mut consecutive_clean = 0;
@@ -1288,7 +1195,6 @@ mod tests {
             "expected two consecutive clean ticks within 30 ticks"
         );
 
-        // All 5 cards must end Active; persistent set must be empty.
         for lemma in ["poder", "comer", "ver", "ir", "ser"] {
             let card = library
                 .card_store()
@@ -1317,9 +1223,7 @@ mod tests {
         )
         .await;
 
-        // First sync_pass: creates notes (add_note path doesn't go through
-        // the find_notes lookup batch for fresh cards). Second pass exercises
-        // the multi-batched lookup against existing notes.
+        // Fresh cards skip the lookup batch; the second pass exercises it.
         let mut state = AnkiSyncState::new();
         sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
             .await
@@ -1334,9 +1238,6 @@ mod tests {
 
         let multi_after = mock.multi_call_count();
         let direct_after = mock.find_notes_direct_count();
-        // Second pass over 3 existing notes: one multi for Phase 1b findNotes,
-        // one multi for Phase 2a updateNoteFields. Both fit in a single 50-cap
-        // chunk.
         assert_eq!(
             multi_after - multi_before,
             2,
@@ -1357,8 +1258,6 @@ mod tests {
             .collect();
         let (_tmp, library) = seed_library_with_cards("flts_sync_chunk_50", &cards).await;
 
-        // Seed-and-sync once to create the notes, then re-sync to exercise
-        // the multi-batched lookup over all 75 existing notes.
         let mut state = AnkiSyncState::new();
         sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
             .await
@@ -1369,8 +1268,6 @@ mod tests {
             .await
             .unwrap();
         let multi_after = mock.multi_call_count();
-        // 2 for Phase 1b findNotes (50+25) + 2 for Phase 2a updateNoteFields
-        // (50+25). Both phases use the same MULTI_BATCH_SIZE=50 cap.
         assert_eq!(
             multi_after - multi_before,
             4,
@@ -1380,9 +1277,6 @@ mod tests {
 
     #[tokio::test]
     async fn sync_pass_phase_2a_batches_writes_via_multi() {
-        // Three fresh cards: Phase 1b runs one findNotes multi (all hits empty);
-        // Phase 2a runs one addNote multi (all in a single 50-cap chunk). No
-        // per-card add_note path should fire on its own.
         let mock = MockAnkiConnect::new();
         let (_tmp, library) = seed_library_with_cards(
             "flts_sync_phase_2a_batches",
@@ -1405,7 +1299,6 @@ mod tests {
             2,
             "first pass over 3 fresh cards: 1 findNotes batch + 1 addNote batch"
         );
-        // Three notes really did get created.
         for lemma in ["poder", "comer", "ver"] {
             let tag = format!("flts_spa_rus_{lemma}");
             assert!(
@@ -1425,7 +1318,6 @@ mod tests {
             seed_library_with_cards("flts_sync_state_pull_singletons", &cards).await;
 
         let mut state = AnkiSyncState::new();
-        // First pass: 5 fresh cards → addNote batch → state pull.
         let notes_before = mock.notes_info_call_count();
         let cards_before = mock.cards_info_call_count();
         sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
@@ -1442,7 +1334,6 @@ mod tests {
             "state pull must collapse to a single cards_info call across all 5 cards"
         );
 
-        // Second pass: 5 existing cards → updateNoteFields batch → state pull.
         let notes_before = mock.notes_info_call_count();
         let cards_before = mock.cards_info_call_count();
         sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
@@ -1473,16 +1364,13 @@ mod tests {
         )
         .await;
 
-        // Pre-bootstrap so the failure injection lands on Phase 2a, not on
-        // bootstrap's create_model/create_deck.
+        // Pre-bootstrap so the injected failure lands on phase 2a.
         let mut state = AnkiSyncState::new();
         crate::anki::model::bootstrap(&mock, &[(spa(), rus())])
             .await
             .unwrap();
         state.bootstrapped = true;
 
-        // Flag the middle card; its addNote sub-action will fail inside the
-        // multi response while the other two succeed.
         mock.fail_add_note_with_tag("flts_spa_rus_bad");
 
         let now = tokio::time::Instant::now();
@@ -1519,12 +1407,8 @@ mod tests {
 
     #[tokio::test]
     async fn sync_pass_local_delete_branch_skips_phase_2a_writes() {
-        // Card has prior anki_data (was Active), but the matching note in Anki
-        // has been removed out-of-band. findNotes returns 0 hits → LocalDeleteOnly.
-        // That path must NOT enter the Phase 2a multi batch; only Phase 1b's
-        // findNotes multi fires. Because this lone card is the only one in the
-        // pass, nothing corroborates the collection, so the data-loss guard must
-        // leave its state intact rather than flip it to Deleted.
+        // Lone LocalDeleteOnly card: nothing corroborates the collection, so
+        // the guard must leave its state intact and skip the phase 2a batch.
         let mock = MockAnkiConnect::new();
         let (_tmp, library) = seed_library_with_cards(
             "flts_sync_local_delete_only",
@@ -1533,7 +1417,6 @@ mod tests {
         .await;
 
         let mut state = AnkiSyncState::new();
-        // First pass: creates the note normally.
         sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
             .await
             .unwrap();
@@ -1541,7 +1424,6 @@ mod tests {
             .note_id_for_tag("flts_spa_rus_poder")
             .expect("note exists after first pass");
 
-        // User deletes the note in Anki out-of-band.
         mock.remove_note(note_id);
 
         let multi_before = mock.multi_call_count();
@@ -1557,7 +1439,6 @@ mod tests {
             1,
             "LocalDeleteOnly must skip Phase 2a; only the Phase 1b findNotes multi fires"
         );
-        // No notes_info / cards_info either — no notes to pull state for.
         assert_eq!(mock.notes_info_call_count() - notes_before, 0);
         assert_eq!(mock.cards_info_call_count() - cards_before, 0);
 
@@ -1577,11 +1458,8 @@ mod tests {
 
     #[tokio::test]
     async fn sync_pass_guard_leaves_all_states_intact_when_no_note_matches() {
-        // Simulates pointing AnkiConnect at the WRONG/empty collection (switched
-        // profile, opened a test profile, restored a backup missing the notes,
-        // re-bootstrapped empty deck): every previously-synced card reports 0
-        // findNotes hits. The guard must NOT mass-flip them to Deleted — doing so
-        // would irreversibly wipe all local Anki state.
+        // Wrong/empty collection: every synced card reports 0 hits. The guard
+        // must not mass-flip them to Deleted.
         let mock = MockAnkiConnect::new();
         let (_tmp, library) = seed_library_with_cards(
             "flts_sync_guard_all_zero",
@@ -1593,7 +1471,6 @@ mod tests {
         .await;
 
         let mut state = AnkiSyncState::new();
-        // First pass: both cards created and marked Active.
         sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
             .await
             .unwrap();
@@ -1611,8 +1488,6 @@ mod tests {
             );
         }
 
-        // The whole collection vanishes out-of-band (both notes removed) — the
-        // wrong/empty-profile scenario.
         for lemma in ["poder", "comer"] {
             let note_id = mock
                 .note_id_for_tag(&format!("flts_spa_rus_{lemma}"))
@@ -1620,9 +1495,6 @@ mod tests {
             mock.remove_note(note_id);
         }
 
-        // Second pass: every card is LocalDeleteOnly and no card is UpdateNote,
-        // so the guard leaves all states untouched (still Active, no Deleted
-        // flips, no disk writes).
         sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
             .await
             .unwrap();
@@ -1643,10 +1515,8 @@ mod tests {
 
     #[tokio::test]
     async fn sync_pass_guard_honors_single_delete_when_another_card_matches() {
-        // A genuine single-note out-of-band deletion: poder's note is removed,
-        // but comer still matches. comer's hit corroborates the collection, so
-        // the guard honors poder's deletion (flip to Deleted) while comer stays
-        // Active.
+        // comer's hit corroborates the collection, so the guard honors poder's
+        // genuine out-of-band deletion.
         let mock = MockAnkiConnect::new();
         let (_tmp, library) = seed_library_with_cards(
             "flts_sync_guard_mixed",
@@ -1662,7 +1532,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Delete only poder's note; comer's note survives.
         let poder_note = mock
             .note_id_for_tag("flts_spa_rus_poder")
             .expect("poder note exists");
@@ -1765,7 +1634,6 @@ mod tests {
         assert_eq!(report.succeeded, 4);
         assert_eq!(report.failed, 0);
 
-        // Spot-check the `poder` card end-to-end: tag lookup → note fields → on-disk state.
         let poder_tag = "flts_spa_rus_poder";
         let poder_note = mock
             .note_id_for_tag(poder_tag)
@@ -1795,7 +1663,6 @@ mod tests {
             "card state flips to Active after first sync"
         );
 
-        // Sanity: the noun gets its own note in the same deck.
         assert!(
             mock.note_id_for_tag("flts_spa_rus_casa").is_some(),
             "casa note exists in mock"
@@ -1827,7 +1694,6 @@ mod tests {
 
         let mock = MockAnkiConnect::new();
         let mut state = AnkiSyncState::new();
-        // Sync #1: create the note.
         sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
             .await
             .unwrap();
@@ -1837,12 +1703,10 @@ mod tests {
             .note_id_for_tag(poder_tag)
             .expect("note exists after first sync");
 
-        // User suspends one of the note's direction cards in Anki.
         let card_ids = mock.notes_info(&[note_id]).await.unwrap()[0].cards.clone();
         assert!(!card_ids.is_empty(), "note has at least one direction card");
         mock.suspend_card(card_ids[0]);
 
-        // Sync #2: detection branch flips state to Suspended.
         sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
             .await
             .unwrap();
@@ -1857,11 +1721,9 @@ mod tests {
             Some(AnkiState::Suspended)
         );
 
-        // Snapshot the note's fields before the re-encounter so we can detect mutation.
         let (fields_before, _) = mock.peek_note(note_id).unwrap();
 
-        // Re-encounter: apply the same paragraph again. The local merge path is
-        // idempotent (provenance dedup); state must not regress to Active.
+        // The local merge path is idempotent; state must not regress to Active.
         library
             .apply_paragraph_to_cards(book_id, 0, &paragraph, rus())
             .await
@@ -1878,12 +1740,10 @@ mod tests {
             "re-encountering the paragraph must not reset state to Active"
         );
 
-        // Sync #3: opt-out branch short-circuits — no addNote, no updateNoteFields.
         sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
             .await
             .unwrap();
 
-        // Same note id, same fields. No second note was created.
         assert_eq!(
             mock.note_id_for_tag(poder_tag),
             Some(note_id),
@@ -1950,9 +1810,8 @@ mod tests {
             .await
             .unwrap();
 
-        // A second, co-resident card that stays synced. Its findNotes hit in
-        // sync #2 corroborates that the loaded Anki collection is the real one,
-        // so the data-loss guard honors poder's genuine out-of-band deletion.
+        // A co-resident synced card corroborates the collection, so the guard
+        // honors poder's deletion.
         library
             .card_store()
             .save(&make_card("comer", vec!["есть"], vec![]), "spa", "rus")
@@ -1961,7 +1820,6 @@ mod tests {
 
         let mock = MockAnkiConnect::new();
         let mut state = AnkiSyncState::new();
-        // Sync #1: create the note.
         sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
             .await
             .unwrap();
@@ -1971,15 +1829,12 @@ mod tests {
             .note_id_for_tag(poder_tag)
             .expect("note exists after first sync");
 
-        // User deletes the note in Anki.
         mock.remove_note(note_id);
         assert!(
             mock.note_id_for_tag(poder_tag).is_none(),
             "post-removal there's no note for the tag"
         );
 
-        // Sync #2: detection branch flips state to Deleted (findNotes returns 0
-        // hits and the card previously had anki_data != None).
         sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
             .await
             .unwrap();
@@ -1994,7 +1849,6 @@ mod tests {
             Some(AnkiState::Deleted)
         );
 
-        // Re-encounter: applying the same paragraph must not regress state.
         library
             .apply_paragraph_to_cards(book_id, 0, &paragraph, rus())
             .await
@@ -2011,7 +1865,6 @@ mod tests {
             "re-encountering the paragraph must not reset state to Active"
         );
 
-        // Sync #3: opt-out branch short-circuits — no addNote (no resurrection).
         sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
             .await
             .unwrap();
@@ -2051,8 +1904,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Card files exist on disk regardless of AnkiConnect state — the
-        // translation pipeline writes through LibraryCardStore directly.
         for lemma in ["poder", "casa"] {
             let card = library
                 .card_store()
@@ -2066,10 +1917,7 @@ mod tests {
             );
         }
 
-        // A sync attempt against an unreachable Anki must leave the local
-        // card store intact. Bootstrap may bubble (the version() probe is the
-        // first call); per-card failures are recorded in backoff. Either way,
-        // the disk state is the contract.
+        // An unreachable Anki must leave the local card store intact.
         let mock = MockAnkiConnect::new();
         mock.fail_next_n_calls(usize::MAX);
         let mut state = AnkiSyncState::new();
@@ -2095,7 +1943,6 @@ mod tests {
         let (library, book_id) =
             library_with_one_paragraph_book(tmp.path.join("lib"), "Yo puedo.").await;
 
-        // Canonical card: one translation, one example.
         let paragraph = one_sentence_paragraph(
             "Я могу.",
             vec![full_word(
@@ -2112,9 +1959,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Drop a Syncthing-style conflict sibling carrying a divergent translation
-        // and a different example. Mirrors Stage 3's load_merges_single_sync_conflict_sibling
-        // layout in library_card.rs.
+        // Syncthing-style conflict sibling with a divergent translation.
         let deck = tmp.path.join("lib").join("cards").join("spa-rus");
         let conflict_path = deck.join("poder.sync-conflict-20260520-153912-XYZ.json");
         let mut conflict_translations: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -2136,7 +1981,6 @@ mod tests {
         let bytes = serde_json::to_vec_pretty(&conflict_card).unwrap();
         tokio::fs::write(&conflict_path, bytes).await.unwrap();
 
-        // Sync runs sync_pass; LibraryCardStore::load auto-merges the sibling.
         let mock = MockAnkiConnect::new();
         let mut state = AnkiSyncState::new();
         let report = sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
@@ -2144,7 +1988,6 @@ mod tests {
             .unwrap();
         assert_eq!(report.succeeded, 1);
 
-        // The conflict sibling is gone; the canonical file carries the union.
         assert!(
             !conflict_path.exists(),
             "conflict sibling consumed by merge during sync_pass"
@@ -2165,9 +2008,6 @@ mod tests {
             "both examples present after merge"
         );
 
-        // Anki receives the merged content: Target joins both translations with
-        // "; ", and Example carries both source/translation pairs sorted by
-        // source (alphabetic), joined by "<br>".
         let note_id = mock
             .note_id_for_tag("flts_spa_rus_poder")
             .expect("merged note pushed to Anki");
@@ -2176,11 +2016,7 @@ mod tests {
             fields.get("Target"),
             Some(&"мочь; иметь возможность".to_owned())
         );
-        // The canonical example's source is derived from the paragraph's
-        // words (`extract_card_updates` builds it via `render_example_source`),
-        // so it's just "puedo" here. The conflict sibling carries a hand-written
-        // source "Tu puedes." Uppercase 'T' (0x54) sorts before lowercase 'p'
-        // (0x70), so the conflict example renders first.
+        // Examples sort by source: uppercase 'T' precedes lowercase 'p'.
         assert_eq!(
             fields.get("Example"),
             Some(&"Tu puedes. \u{2014} Ты можешь.<br>puedo \u{2014} Я могу.".to_owned()),

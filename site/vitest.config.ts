@@ -16,7 +16,7 @@ export default defineConfig({
       '**/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,build}.config.*'
     ],
     coverage: {
-      provider: 'v8', // or 'istanbul'
+      provider: 'v8',
       reporter: ['text', 'json', 'html'],
       reportsDirectory: './coverage',
       exclude: [
@@ -37,13 +37,11 @@ export default defineConfig({
         '**/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,build}.config.*',
         '**/vitest.{workspace,projects}.[jt]s?(on)',
         '**/.{eslint,mocha,prettier}rc.{?(c|m)js,yml}',
-        // Project-specific excludes
         'src/main.ts',
         'src/vite-env.d.ts',
         'src/app.css',
         'stryker.conf.json',
         'reports/**',
-        // Exclude Playwright tests from coverage
         '**/tests/e2e/**',
         '**/e2e/**',
         '**/*.e2e.*'

@@ -9,8 +9,7 @@ use crate::translator::TranslationModel;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LyricsLine {
-    /// Start time of this line in milliseconds, when known (LRClib synced lyrics).
-    /// `None` for unsynced lyrics or stanza-break lines.
+    /// Start time in ms; `None` for unsynced lyrics and stanza breaks.
     pub time_ms: Option<u32>,
     pub text: String,
 }
@@ -19,7 +18,7 @@ pub struct LyricsLine {
 pub struct Gloss {
     pub fragment: String,
     pub gloss: String,
-    /// Short clause about register, idiom, or cultural context. Empty string when not applicable.
+    /// Register, idiom, or cultural context; empty when not applicable.
     pub note: String,
 }
 
@@ -33,8 +32,7 @@ pub struct LyricsLineTranslation {
 pub struct Lyrics {
     pub track_id: String,
     pub lines: Vec<LyricsLine>,
-    /// True if `time_ms` is populated on lines (LRClib `syncedLyrics`),
-    /// false for `plainLyrics`.
+    /// Whether lines carry `time_ms`.
     pub synced: bool,
 }
 

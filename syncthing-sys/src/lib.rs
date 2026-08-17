@@ -1,10 +1,7 @@
-//! Thin FFI bindings to the embedded Syncthing engine (the `syncthing-core` Go
-//! c-archive, targeting Syncthing v1.30.0). The Go side is linked statically by
-//! `build.rs`.
+//! FFI bindings to the embedded Syncthing engine (`syncthing-core`, v1.30.0).
 //!
-//! The surface is intentionally tiny — `start`/`stop`/`ping`. Everything else
-//! (devices, folders, status) is driven from higher layers over the engine's
-//! localhost REST API.
+//! Keep the surface at `start`/`stop`/`ping`; everything else is driven from
+//! higher layers over the engine's localhost REST API.
 
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
@@ -21,15 +18,12 @@ extern "C" {
     fn flts_st_stop() -> c_int;
 }
 
-/// Calls into the linked Go archive and returns its sentinel value (`4711`).
-/// A successful call proves the FFI link is live without starting the engine.
+/// Returns the Go archive's sentinel (`4711`), proving the FFI link is live.
 pub fn ping() -> i32 {
-    // SAFETY: no args, returns a plain int, no shared state. Always safe.
+    // SAFETY: no args, plain int return, no shared state.
     unsafe { flts_st_ping() }
 }
 
-/// Error from a start/stop transition: the small non-zero step code the Go
-/// wrapper returns, or an interior NUL in one of the path/address strings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EngineError {
     /// The Go wrapper returned a non-zero step code (see `wrapper.go`).
@@ -52,22 +46,16 @@ impl std::fmt::Display for EngineError {
 
 impl std::error::Error for EngineError {}
 
-/// Starts the embedded engine with its home directory (certs, `config.xml`,
-/// index DB) at `home`, the REST/GUI bound to `gui_addr` (e.g. `127.0.0.1:8384`)
-/// and authenticated by `api_key`.
+/// Starts the engine: state under `home`, REST/GUI on `gui_addr` keyed by
+/// `api_key`. `hermetic` disables discovery/relays/NAT (tests and the Docker
+/// harness); production passes `false` and configures discovery over REST.
 ///
-/// When `hermetic` is true the engine stays fully local — no public/LAN
-/// discovery, relays, or NAT — for tests and the Docker harness. Production
-/// callers pass `false` and configure discovery over REST afterwards.
-///
-/// Returns once the engine's REST API is listening. Idempotent: starting an
-/// already-running engine is a success. There is one engine per process.
+/// Returns once REST is listening. Idempotent; one engine per process.
 pub fn start(home: &Path, gui_addr: &str, api_key: &str, hermetic: bool) -> Result<(), EngineError> {
     let home = CString::new(home.to_string_lossy().as_bytes()).map_err(|_| EngineError::NulInArg)?;
     let addr = CString::new(gui_addr).map_err(|_| EngineError::NulInArg)?;
     let key = CString::new(api_key).map_err(|_| EngineError::NulInArg)?;
-    // SAFETY: all three pointers are valid, NUL-terminated, and outlive the
-    // call (the CStrings are dropped only after it returns).
+    // SAFETY: all three pointers are NUL-terminated and outlive the call.
     let rc = unsafe {
         flts_st_start(home.as_ptr(), addr.as_ptr(), key.as_ptr(), c_int::from(hermetic))
     };
@@ -80,7 +68,7 @@ pub fn start(home: &Path, gui_addr: &str, api_key: &str, hermetic: bool) -> Resu
 
 /// Stops the engine cleanly. Idempotent: a no-op success when nothing runs.
 pub fn stop() -> Result<(), EngineError> {
-    // SAFETY: no args; the Go side guards its own state under a mutex.
+    // SAFETY: the Go side guards its state under a mutex.
     let rc = unsafe { flts_st_stop() };
     if rc == 0 {
         Ok(())
@@ -101,9 +89,6 @@ mod tests {
         assert_eq!(ping(), 4711);
     }
 
-    /// Phase 0 gate: start the real engine on a temp home, read `myID` over the
-    /// REST API, and stop cleanly. This is the go/no-go proof that the embedded
-    /// Go Syncthing engine is controllable from Rust.
     #[test]
     fn engine_starts_reports_myid_and_stops() {
         let home = unique_temp_dir();
@@ -112,10 +97,8 @@ mod tests {
         let addr = format!("127.0.0.1:{port}");
         let api_key = "flts-phase0-test-key";
 
-        // Keep the test hermetic: no public discovery/relays, random local port.
         start(&home, &addr, api_key, true).expect("engine starts");
 
-        // Poll the status endpoint until myID is reported (or time out).
         let mut my_id: Option<String> = None;
         for _ in 0..100 {
             if let Some(body) = http_get(&addr, "/rest/system/status", api_key) {
@@ -129,8 +112,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(100));
         }
 
-        // Always attempt a clean stop before asserting, so a failure doesn't
-        // leak a running engine into the next test.
+        // Stop before asserting so a failure can't leak a running engine.
         let stop_result = stop();
         let _ = std::fs::remove_dir_all(&home);
 
@@ -142,7 +124,6 @@ mod tests {
         assert_eq!(stop_result, Ok(()), "engine stops cleanly");
     }
 
-    /// A unique, process- and time-scoped temp directory path (no tempfile dep).
     fn unique_temp_dir() -> std::path::PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -151,8 +132,7 @@ mod tests {
         std::env::temp_dir().join(format!("flts-st-test-{}-{}", std::process::id(), nanos))
     }
 
-    /// Reserve an ephemeral port, then release it for the engine to bind.
-    /// A small TOCTOU window exists but is acceptable for a localhost test.
+    /// Reserves an ephemeral port and releases it; TOCTOU-racy but localhost-only.
     fn free_port() -> u16 {
         TcpListener::bind("127.0.0.1:0")
             .expect("bind ephemeral port")
@@ -161,8 +141,7 @@ mod tests {
             .port()
     }
 
-    /// Minimal plain-HTTP/1.1 GET (the GUI is bound with TLS disabled). Returns
-    /// the response body on a `200`, else `None`.
+    /// Plain HTTP/1.1 GET (the GUI is bound with TLS disabled); body on `200`.
     fn http_get(addr: &str, path: &str, api_key: &str) -> Option<String> {
         let mut stream = TcpStream::connect(addr).ok()?;
         stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
@@ -180,8 +159,7 @@ mod tests {
         Some(body.to_string())
     }
 
-    /// Extracts a flat string field (`"name":"value"`) from a JSON blob without
-    /// pulling in a parser. Sufficient for the test's `myID` probe.
+    /// Extracts a flat `"name":"value"` field without pulling in a JSON parser.
     fn extract_field(json: &str, name: &str) -> Option<String> {
         let needle = format!("\"{name}\"");
         let start = json.find(&needle)? + needle.len();

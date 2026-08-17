@@ -24,7 +24,7 @@
         ) {
             return -1;
         }
-        // Lines are sorted by time_ms ascending; find the last entry with time_ms <= pos.
+        // Lines are sorted by time_ms ascending.
         const pos = livePositionMs;
         const lines = lyrics.lines;
         let lo = 0;
@@ -66,7 +66,7 @@
         if (!el || !listEl) return;
         const containerRect = listEl.getBoundingClientRect();
         const elRect = el.getBoundingClientRect();
-        // Center the line if it's outside the middle 50% of the container.
+        // Re-center only outside the middle 50%, to avoid constant scroll.
         const topZone = containerRect.top + containerRect.height * 0.25;
         const bottomZone = containerRect.top + containerRect.height * 0.75;
         if (elRect.top < topZone || elRect.bottom > bottomZone) {

@@ -27,11 +27,8 @@ pub struct TaskCtx {
 // TracedLock — implement on types to supply a descriptive lock name
 // ---------------------------------------------------------------------------
 
-/// Implement on types wrapped by `TracedMutex` to auto-derive a lock name.
-///
-/// The name should be a stable, human-readable identifier like
-/// `"book:abc-123"` or `"trans:eng_fra"`. It appears in trace events
-/// and the TLA+ spec maps it to a constant.
+/// Supplies a `TracedMutex`'s lock name: a stable identifier like
+/// `"book:abc-123"`, which the TLA+ spec maps to a constant.
 pub trait TracedLock {
     fn lock_name(&self) -> String;
 }
@@ -46,7 +43,7 @@ pub struct TracedMutex<T> {
 }
 
 impl<T: TracedLock> TracedMutex<T> {
-    /// Create a new TracedMutex, deriving the lock name from the inner value.
+    /// Derives the lock name from the inner value.
     pub fn new(value: T) -> Self {
         let name = value.lock_name();
         Self {
@@ -57,7 +54,7 @@ impl<T: TracedLock> TracedMutex<T> {
 }
 
 impl<T> TracedMutex<T> {
-    /// Create a TracedMutex with an explicit name (no TracedLock required).
+    /// Explicit name, so no `TracedLock` impl is required.
     pub fn named(value: T, name: impl Into<String>) -> Self {
         Self {
             inner: tokio::sync::Mutex::new(value),
@@ -65,12 +62,10 @@ impl<T> TracedMutex<T> {
         }
     }
 
-    /// Override the lock name after construction.
     pub fn set_name(&self, name: impl Into<String>) {
         *self.name.lock().unwrap() = name.into();
     }
 
-    /// Read the current lock name.
     pub fn name(&self) -> String {
         self.name.lock().unwrap().clone()
     }
@@ -153,7 +148,7 @@ struct TraceEvent {
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Initialize the trace collector. Call once at the start of each test run.
+/// Call once at the start of each test run.
 pub fn init() {
     COLLECTOR.get_or_init(|| TraceCollector {
         start: Instant::now(),
@@ -162,7 +157,7 @@ pub fn init() {
     });
 }
 
-/// Reset the collector (for running multiple test scenarios).
+/// Reset between scenarios.
 pub fn reset() {
     if let Some(c) = COLLECTOR.get() {
         c.events.lock().unwrap().clear();

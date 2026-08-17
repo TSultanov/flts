@@ -34,10 +34,9 @@ use super::{
     total_stream_timeout,
 };
 
-/// The cached-content POST runs before `TRANSLATION_REQUEST_TIMEOUT` wraps
-/// anything, and gemini-rust's reqwest client has no timeout of its own — an
-/// unbounded await here hangs every paragraph of the chapter (they share the
-/// cache init future) with no error and no requeue.
+/// The cached-content POST runs before `TRANSLATION_REQUEST_TIMEOUT` covers
+/// anything and gemini-rust's client has no timeout, so an unbounded await
+/// here would silently hang every paragraph sharing the cache init future.
 const CACHE_CREATE_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub(crate) fn gemini_model(m: TranslationModel) -> anyhow::Result<Model> {
@@ -76,11 +75,9 @@ pub(crate) fn gemini_client(api_key: String, model: Model) -> anyhow::Result<Gem
     }
 }
 
-/// Permissive safety_settings for every Gemini request the project
-/// makes. Book translation legitimately reproduces content (drugs,
-/// violence, prejudice, sexuality) from published source material; the
-/// chat-assistant-tuned defaults over-block on this workload. Does NOT
-/// affect Google's non-configurable prohibited-use-policy filters.
+/// Permissive safety settings: book translation reproduces published source
+/// material that the chat-tuned defaults over-block. Google's non-configurable
+/// prohibited-use filters are unaffected.
 pub(crate) fn permissive_safety_settings() -> Vec<SafetySetting> {
     [
         HarmCategory::Harassment,
@@ -97,14 +94,10 @@ pub(crate) fn permissive_safety_settings() -> Vec<SafetySetting> {
     .collect()
 }
 
-/// The shared paragraph schema is OpenAI-strict (uses `additionalProperties: false`).
-/// Gemini rejects that key with HTTP 400, so we hand it a stripped variant.
-///
-/// We also relax the `required` arrays for Gemini: unlike OpenAI strict mode,
-/// Gemini omits a non-required property when it has no content. Dropping the
-/// optional grammar/translation fields from `required` lets Gemini skip empty
-/// inflection slots, absent notes, and the entire grammar block for punctuation
-/// — which is where most of the per-word output scaffolding was being spent.
+/// Gemini rejects the shared schema's `additionalProperties` with HTTP 400, so
+/// it gets a stripped variant. The `required` arrays are relaxed too: Gemini
+/// omits non-required properties that have no content, which drops empty
+/// inflection slots, absent notes, and punctuation's whole grammar block.
 pub(crate) fn gemini_paragraph_schema() -> Value {
     let mut s = paragraph_translation_schema();
     strip_additional_properties(&mut s);
@@ -113,27 +106,21 @@ pub(crate) fn gemini_paragraph_schema() -> Value {
     s
 }
 
-/// Narrow the `required` arrays so Gemini emits only the fields it has content
-/// for. Keeps the always-present anchors (`o` per word, `lf`/`lt`/`pos` per
-/// grammar) required; everything else becomes optional and is omitted when
-/// empty. `p` is optional too: only punctuation tokens emit it (as `true`),
-/// so every normal word saves the `"p":false` scaffolding — the importer's
-/// serde `default` reads absence as false.
+/// Keep only the anchors (`o` per word, `lf`/`lt`/`pos` per grammar) required
+/// so Gemini omits empty fields. `p` is optional as well — only punctuation
+/// emits it, and the importer's serde `default` reads absence as false.
 fn relax_required_for_gemini(schema: &mut Value) {
     let word = &mut schema["properties"]["s"]["items"]["properties"]["wl"]["items"];
     word["required"] = serde_json::json!(["o"]);
     word["properties"]["g"]["required"] = serde_json::json!(["lf", "lt", "pos"]);
 }
 
-/// Pin the key order Gemini's constrained decoder emits. Without
-/// `propertyOrdering` the decoder follows the schema's own key order, and
-/// serde_json's `json!` maps are alphabetical — NOT the order the prompt
-/// legend teaches; Google documents `propertyOrdering` as the fix for the
-/// resulting structured-output unreliability (we see it as repetition
-/// loops that stream until a timeout). `o` goes first so every word item
-/// must open by anchoring to a fresh source token — the strongest
-/// anti-repetition anchor — and `p` second so punctuation items close
-/// after two keys. Gemini-only: OpenAI strict mode rejects the keyword.
+/// Pin the decoder's key order. Without it the decoder follows serde_json's
+/// alphabetical map order rather than the order the prompt legend teaches,
+/// which Google documents as a source of structured-output unreliability (here:
+/// repetition loops that stream until a timeout). `o` leads so every word item
+/// opens by anchoring to a fresh source token, and `p` follows so punctuation
+/// closes after two keys. OpenAI strict mode rejects the keyword.
 fn add_property_ordering_for_gemini(schema: &mut Value) {
     schema["propertyOrdering"] = serde_json::json!(["s"]);
     let sentence = &mut schema["properties"]["s"]["items"];
@@ -207,9 +194,8 @@ impl GeminiTranslator {
         }
     }
 
-    /// One full attempt: build (or reuse) the per-chapter cache, send the
-    /// per-paragraph request, drain the stream, decode. Callers wrap this
-    /// so a missing / expired server-side cache can be evicted and retried.
+    /// One full attempt: build or reuse the chapter cache, request, drain,
+    /// decode. Callers wrap it to evict and retry a dead server-side cache.
     async fn attempt_translation(
         &self,
         paragraph: &str,
@@ -253,10 +239,8 @@ impl GeminiTranslator {
         .await
         .map_err(|_| anyhow::anyhow!("Gemini request timed out"))??;
 
-        // The accumulator and stream metadata live OUTSIDE the timed future:
-        // when a timeout fires the future is dropped, but the diagnostics
-        // below still need to report how much arrived and what the server
-        // last said (finish reason / usage), otherwise aborts are opaque.
+        // Kept outside the timed future: a timeout drops the future, but the
+        // diagnostics below still need what arrived and what the server said.
         let mut accumulator = StreamChunkAccumulator::new("Gemini");
         let mut last_finish_reason: Option<FinishReason> = None;
         let mut last_usage: Option<UsageMetadata> = None;
@@ -312,10 +296,8 @@ impl GeminiTranslator {
 
         let full_content = accumulator.finish()?;
 
-        // A MAX_TOKENS finish means the JSON is truncated. Bail before the
-        // serde parse: a serde error is classified permanent and would kill
-        // the requeue path, but hitting the server's output cap is a
-        // constrained-decoding runaway worth retrying.
+        // MAX_TOKENS truncates the JSON. Bail before serde, whose error is
+        // classified permanent, since a decoding runaway is worth retrying.
         if last_finish_reason == Some(FinishReason::MaxTokens) {
             warn!(
                 "Gemini hit max output tokens after {:.1?} (paragraph {} chars, accumulated {} chars, usage {:?})",
@@ -375,10 +357,8 @@ impl Translator for GeminiTranslator {
         let chapter_id = ctx.chapter_id;
         let cb = ctx.callback.as_deref();
 
-        // Block until the prerequisite per-chapter summaries are ready.
-        // The UI gates translate buttons on the same predicate, so this
-        // is normally near-instant. Any actual error propagates — there
-        // is no "translate without summaries" fallback any more.
+        // The UI gates translate on the same predicate, so this is normally
+        // instant. Errors propagate; there is no summary-free fallback.
         self.context_provider
             .wait_ready(book_id, chapter_id)
             .await?;
@@ -466,7 +446,6 @@ mod tests {
     fn gemini_schema_relaxes_required_and_strips_additional_properties() {
         let schema = gemini_paragraph_schema();
 
-        // additionalProperties stripped recursively (Gemini rejects it).
         assert!(
             !serde_json::to_string(&schema)
                 .unwrap()
@@ -500,8 +479,7 @@ mod tests {
             serde_json::json!(["lf", "lt", "pos", "pl", "pe", "te", "ca", "ot"])
         );
 
-        // Every ordering array must list exactly the properties of its node,
-        // or Gemini rejects the schema.
+        // Gemini rejects an ordering array that isn't exactly its node's keys.
         for (node, ordering) in [
             (&schema, &schema["propertyOrdering"]),
             (
@@ -534,9 +512,8 @@ mod tests {
 
     #[test]
     fn openai_base_schema_keeps_everything_required() {
-        // The OpenAI-strict base must keep all keys required, retain
-        // additionalProperties:false, and stay free of the Gemini-only
-        // propertyOrdering keyword (OpenAI strict mode rejects it).
+        // The OpenAI-strict base must keep every key required and stay free of
+        // the Gemini-only propertyOrdering keyword.
         let schema = paragraph_translation_schema();
         let serialized = serde_json::to_string(&schema).unwrap();
         assert!(serialized.contains("additionalProperties"));

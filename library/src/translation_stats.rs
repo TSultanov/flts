@@ -5,16 +5,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::cache::DiskCache;
 
-/// Kalman filter state for estimating translation size ratio.
-///
-/// The ratio represents: output_json_size / input_source_length
+/// Kalman filter over `output_json_size / input_source_length`.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct TranslationSizeStats {
-    /// Estimated ratio (output_size / input_size)
     pub ratio: f64,
-    /// Kalman error covariance (uncertainty)
+    /// Error covariance (uncertainty).
     pub p: f64,
-    /// Number of observations
     pub n: u64,
 }
 
@@ -29,24 +25,17 @@ impl Default for TranslationSizeStats {
 }
 
 impl TranslationSizeStats {
-    /// Process noise (Q) - how much the true ratio can change between observations.
-    /// Low value since translation ratios are relatively stable for a language pair.
+    /// Process noise: low, since a pair's ratio is fairly stable.
     const PROCESS_NOISE: f64 = 0.01;
 
-    /// Measurement noise (R) - variance in individual translation ratios.
-    /// Higher value to handle natural variation and outliers.
+    /// Measurement noise: high, to absorb variation and outliers.
     const MEASUREMENT_NOISE: f64 = 0.1;
 
-    /// Get the estimated output size for a given source length.
     pub fn estimate(&self, source_len: usize) -> usize {
         (source_len as f64 * self.ratio).ceil() as usize
     }
 
-    /// Update the estimate with a new observation using Kalman filter.
-    ///
-    /// Arguments:
-    /// - `source_len`: Length of the source text
-    /// - `output_len`: Actual length of the translation JSON output
+    /// Fold one observed `(source_len, output_len)` pair into the estimate.
     pub fn update(&mut self, source_len: usize, output_len: usize) {
         if source_len == 0 {
             return;
@@ -54,11 +43,9 @@ impl TranslationSizeStats {
 
         let measured_ratio = output_len as f64 / source_len as f64;
 
-        // Kalman filter predict step
-        // State doesn't change (ratio is assumed constant), but uncertainty increases
+        // Predict: the ratio is assumed constant, uncertainty grows.
         let p_predicted = self.p + Self::PROCESS_NOISE;
 
-        // Kalman filter update step
         let kalman_gain = p_predicted / (p_predicted + Self::MEASUREMENT_NOISE);
         self.ratio = self.ratio + kalman_gain * (measured_ratio - self.ratio);
         self.p = (1.0 - kalman_gain) * p_predicted;
@@ -67,13 +54,12 @@ impl TranslationSizeStats {
     }
 }
 
-/// Cache for storing translation size statistics per language pair.
+/// Translation size statistics per language pair.
 pub struct TranslationSizeCache {
     cache: DiskCache<TranslationSizeStats>,
 }
 
 impl TranslationSizeCache {
-    /// Create a new translation size cache in the given directory.
     pub async fn create(cache_dir: &Path) -> anyhow::Result<Self> {
         let stats_dir = cache_dir.join("translation_stats");
         let cache = DiskCache::open(&stats_dir, 16 * 1024 * 1024).await?;
@@ -92,7 +78,6 @@ impl TranslationSizeCache {
         )
     }
 
-    /// Get statistics for a language pair, returning default if not found.
     pub async fn get(
         &self,
         source_language: &Language,
@@ -107,7 +92,6 @@ impl TranslationSizeCache {
             .unwrap_or_default()
     }
 
-    /// Update statistics for a language pair with a new observation.
     pub async fn record_observation(
         &self,
         source_language: &Language,
@@ -136,12 +120,10 @@ mod tests {
     fn test_update_moves_estimate() {
         let mut stats = TranslationSizeStats::default();
 
-        // Feed consistent observations with ratio ~30
         for _ in 0..20 {
             stats.update(100, 3000);
         }
 
-        // Estimate should move toward 30
         let estimate = stats.estimate(100);
         assert!(
             estimate < 5000,
@@ -157,19 +139,16 @@ mod tests {
     fn test_outlier_resistance() {
         let mut stats = TranslationSizeStats::default();
 
-        // Establish a baseline with consistent observations
         for _ in 0..10 {
             stats.update(100, 3000); // ratio = 30
         }
         let estimate_before = stats.ratio;
 
-        // Single extreme outlier
         stats.update(100, 50000); // ratio = 500 (extreme outlier)
 
         let estimate_after = stats.ratio;
 
-        // The estimate should change, but not jump to the outlier value
-        // If there were no filtering, it would jump by (500 - estimate_before)
+        // Unfiltered, the estimate would jump by (500 - estimate_before).
         let change = (estimate_after - estimate_before).abs();
         let unfiltered_change = (500.0 - estimate_before).abs();
         assert!(

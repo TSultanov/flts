@@ -1,15 +1,12 @@
 //! Trace-harness scenarios for the roster-mesh TLA+ spec (`spec/roster/`).
 //!
-//! Drives the REAL roster CRDT, reconcile, and engine glue (`SyncEngine` over a
-//! `MockSyncthing`, no live Go engine) across a small simulated mesh, emitting
-//! NDJSON trace events via the instrumented `engine.rs` paths. Syncthing's file
-//! delivery is stood in by copying one node's `devices.json` into another node's
-//! `.flts/` as a `.sync-conflict-*` sibling, exactly the input `RosterStore::load`
-//! union-merges in production.
+//! Drives the real roster CRDT, reconcile, and engine glue over a
+//! `MockSyncthing` across a simulated mesh. Syncthing's file delivery is stood
+//! in by copying one node's `devices.json` into another's `.flts/` as a
+//! `.sync-conflict-*` sibling — the input `RosterStore::load` union-merges.
 //!
-//! The trace sink is a process-global, so this is ONE `#[test]` (sequential), run
-//! in isolation by `harness/run.sh` (`--test-threads=1`, filtered) so no other
-//! test's `tla_trace` emits land in the file.
+//! The trace sink is process-global, so this stays ONE sequential `#[test]`,
+//! run in isolation by `harness/run.sh`, or other tests' emits land in the file.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -43,8 +40,8 @@ fn node(id: &str, root: &Path) -> SyncEngine {
     )
 }
 
-/// Stand in for Syncthing delivery: drop `src`'s current roster into `dst`'s
-/// `.flts/` as a conflict sibling named with `src`'s id as the `modifiedBy` field.
+/// Stands in for Syncthing delivery: `src`'s roster lands in `dst`'s `.flts/`
+/// as a conflict sibling carrying `src`'s id as `modifiedBy`.
 fn deliver_roster(src_root: &Path, dst_root: &Path, src_id: &str) {
     let content = std::fs::read(src_root.join(".flts").join("devices.json"))
         .expect("src has written a roster");
@@ -77,19 +74,17 @@ async fn mesh_forms(trace_file: &Path) {
     let n2 = node("n2", &r2);
     let n3 = node("n3", &r3);
 
-    // Each node names itself → seeds itself in its roster (EnsureSelf).
     n1.set_device_name("A").await.unwrap();
     n2.set_device_name("B").await.unwrap();
     n3.set_device_name("C").await.unwrap();
 
-    // Two-sided hub pairings (PairOn; the second side is the pending-approval).
     n1.pair_device("n2", "B").await.unwrap();
     n2.pair_device("n1", "A").await.unwrap();
     n1.pair_device("n3", "C").await.unwrap();
     n3.pair_device("n1", "A").await.unwrap();
 
-    // The hub's roster (now listing all three) reaches n2 and n3; each reconciles
-    // and learns the peer it never paired with → full mesh.
+    // The hub's roster reaches n2 and n3; each learns the peer it never paired
+    // with, completing the mesh.
     deliver_roster(&r1, &r2, "n1");
     n2.reconcile_once().await.unwrap(); // RosterSync(n1,n2) + ReconcileNode(n2)
     deliver_roster(&r1, &r3, "n1");
@@ -127,7 +122,6 @@ async fn unpair_propagates(trace_file: &Path) {
     deliver_roster(&r1, &r3, "n1");
     n3.reconcile_once().await.unwrap();
 
-    // n1 unpairs n2 (tombstone), and the tombstone propagates to n3.
     n1.unpair_device("n2").await.unwrap(); // UnpairOn(n1,n2)
     deliver_roster(&r1, &r3, "n1");
     n3.reconcile_once().await.unwrap(); // RosterSync(n1,n3) + ReconcileNode(n3) removes n2

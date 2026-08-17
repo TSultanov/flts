@@ -1,9 +1,7 @@
 import { type Page } from '@playwright/test';
 import { expect, test } from './helpers/test';
 
-// Public-behavior tests for the Anki sync UI surface. Exercises both the
-// nav button (visibility + click + status update) and the Config UI
-// (endpoint + api key fields persisted through update_config).
+// Anki sync UI surface: nav button and the Config endpoint/api-key fields.
 
 type AnkiSyncStatusState = 'idle' | 'syncing' | 'ok' | 'err' | 'unreachable';
 
@@ -25,12 +23,10 @@ async function getSyncAnkiNowCallCount(page: Page): Promise<number> {
 test.describe('Anki sync button', () => {
   test('hidden when AnkiConnect status is unreachable', async ({ page }) => {
     await page.addInitScript(() => {
-      // Seed before app boot so the very first get_anki_sync_status returns
-      // Unreachable. The Resource fetches once on construction.
+      // Must precede boot: the Resource fetches once on construction.
       (window as any).__pendingAnkiStatus = { state: 'unreachable' };
     });
     await page.goto('/library');
-    // Seed the status via the test surface once the mock is wired.
     await setAnkiStatus(page, { state: 'unreachable' });
     await expect(page.getByTestId('anki-sync-button')).toBeHidden();
   });
@@ -49,9 +45,7 @@ test.describe('Anki sync button', () => {
       .poll(async () => await getSyncAnkiNowCallCount(page))
       .toBeGreaterThan(0);
 
-    // Mock flips status syncing → ok with a short setTimeout; once the
-    // status_changed event lands the Resource refetches and the button
-    // reflects the new state.
+    // The mock flips syncing → ok on a timer; status_changed drives the refetch.
     await expect
       .poll(async () => await page.evaluate(
         () => ((window as any).__test.getAnkiSyncStatus()).state,
@@ -80,7 +74,6 @@ test.describe('Anki config UI', () => {
   }) => {
     await page.goto('/config');
 
-    // Expand the Anki <details> section to reveal the inputs.
     const summary = page.getByText('Anki (optional)');
     await summary.click();
 
@@ -90,8 +83,7 @@ test.describe('Anki config UI', () => {
     await apiKey.fill('secret-token');
     await page.locator('#save').click();
 
-    // Read back via the mock's __test surface to verify update_config
-    // persisted the new values.
+    // Read back through the mock to confirm update_config persisted.
     const persisted = await page.evaluate(() =>
       (window as any).__test.getConfig() as {
         ankiEndpoint?: string;

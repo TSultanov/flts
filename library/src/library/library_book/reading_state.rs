@@ -20,9 +20,8 @@ async fn reading_state_files(path: &Path) -> anyhow::Result<Vec<(PathBuf, System
             && filename.starts_with("state")
             && filename.ends_with(".json")
         {
-            // The entry can vanish between the directory scan and this stat if a
-            // concurrent, unlocked resolver already promoted/deleted it. Skip it
-            // rather than letting a NotFound `?`-fail the whole load.
+            // An unlocked concurrent resolver may have removed the entry since
+            // the scan; skipping beats failing the whole load.
             let modified = match entry.metadata().await {
                 Ok(metadata) => metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
                 Err(_) => continue,
@@ -33,12 +32,9 @@ async fn reading_state_files(path: &Path) -> anyhow::Result<Vec<(PathBuf, System
     Ok(files)
 }
 
-/// Parse the raw contents of a `state*.json` file into a [`BookUserState`],
-/// tolerating three encodings: an empty file, the current
-/// `{readingState, folderPath}` object, and the legacy bare [`BookReadingState`]
-/// (pre-`folderPath`). Returns `None` when the file cannot be parsed, so that a
-/// single corrupt Syncthing conflict sibling can never poison the field-wise
-/// merge of its healthy peers (nor brick the book by `?`-propagating).
+/// Parses a `state*.json`: empty file, `{readingState, folderPath}` object, or
+/// a bare [`BookReadingState`]. Unparseable content yields `None` so one
+/// corrupt conflict sibling can't poison the merge or brick the book.
 fn parse_user_state(contents: &str) -> Option<BookUserState> {
     if contents.trim().is_empty() {
         return Some(BookUserState::default());
@@ -56,24 +52,16 @@ fn parse_user_state(contents: &str) -> Option<BookUserState> {
     })
 }
 
-/// Field-wise merge of every `state*.json` candidate found in a book directory.
+/// Field-wise merge of every `state*.json` candidate in a book directory.
 ///
-/// `reading_state` and `folder_path` share one file but change independently:
-/// reading position auto-saves continuously while a folder move is a one-shot
-/// action. A Syncthing conflict that keeps only the newest-mtime file therefore
-/// almost always lets the auto-save file win and silently reverts a concurrent
-/// folder move (BUG B). Instead we union the fields across all candidates —
-/// taking the freshest non-null `reading_state` and the freshest non-empty
-/// `folder_path` — using mtime only to break ties within a single field.
+/// `reading_state` and `folder_path` share a file but change independently
+/// (position auto-saves, folder moves are one-shot), so keeping only the
+/// newest-mtime file would silently revert a concurrent folder move. Fields are
+/// unioned instead, mtime breaking ties within one field; `candidates` must be
+/// oldest-first so the last file carrying a field wins it.
 ///
-/// `candidates` must be ordered oldest-first, so the last candidate carrying a
-/// given field wins that field.
-///
-/// Limitation: without per-field update stamps we cannot distinguish "this file
-/// never set folder_path" from "folder_path was deliberately cleared to empty",
-/// so a genuine clear can be overridden by a stale non-empty sibling. Closing
-/// that gap needs per-field timestamps stamped by the writers — see the module
-/// note and the report accompanying this change.
+/// Without per-field stamps, a deliberate clear is indistinguishable from
+/// "never set", so a stale non-empty sibling can override it.
 fn merge_user_states(candidates: &[(BookUserState, SystemTime)]) -> BookUserState {
     let mut merged = BookUserState::default();
     for (state, _) in candidates {
@@ -87,12 +75,9 @@ fn merge_user_states(candidates: &[(BookUserState, SystemTime)]) -> BookUserStat
     merged
 }
 
-/// Write `state` to `state_path` durably and atomically: serialize into a
-/// uniquely named temp file, then `rename(2)` it into place. rename atomically
-/// replaces any existing canonical file (POSIX rename / Win32
-/// `MOVEFILE_REPLACE_EXISTING`) without ever unlinking it first, so a concurrent
-/// reader never observes a missing `state.json`. This is the primitive that
-/// fixes the remove-then-rename race (BUG A).
+/// Writes `state` via temp file + `rename(2)`. The rename replaces the
+/// canonical file without unlinking it, so a concurrent reader never observes a
+/// missing `state.json`.
 async fn write_state_file(state_path: &Path, state: &BookUserState) -> anyhow::Result<()> {
     let dir = state_path.parent().unwrap_or_else(|| Path::new("."));
     let temp_path = dir.join(format!("state.json~{}", create_random_string(8)));
@@ -107,23 +92,18 @@ async fn write_state_file(state_path: &Path, state: &BookUserState) -> anyhow::R
     Ok(())
 }
 
-/// Load the book's user state from `path`, merging any Syncthing conflict
-/// siblings field-wise and consolidating them back into a single canonical
-/// `state.json`.
+/// Merges conflict siblings field-wise back into a single `state.json`.
 ///
-/// Runs from `load_book_user_state` with **no book lock**, concurrently with the
-/// book-locked writers (`update_reading_state` / `persist_user_state`). Every
-/// filesystem step is therefore tolerant of a peer having removed or replaced a
-/// file out from under us: reads that hit NotFound skip the vanished sibling,
-/// the merged result is written with an atomic replace, and sibling deletion is
-/// best-effort. None of these races may `?`-fail the load (BUG A).
+/// Runs with **no book lock**, concurrently with the book-locked writers, so
+/// every filesystem step tolerates a peer removing or replacing a file:
+/// vanished siblings are skipped, the write is an atomic replace, deletion is
+/// best-effort. None of these races may fail the load.
 async fn resolve_reading_state_file(path: &Path) -> anyhow::Result<BookUserState> {
     let mut files = reading_state_files(path).await?;
     if files.is_empty() {
         return Ok(BookUserState::default());
     }
-    // Oldest-first, so `merge_user_states` lets the newest file carrying each
-    // field win that field.
+    // Oldest-first: the newest file carrying a field wins that field.
     files.sort_by(|a, b| a.1.cmp(&b.1));
 
     let canonical_path = path.join("state.json");
@@ -132,9 +112,8 @@ async fn resolve_reading_state_file(path: &Path) -> anyhow::Result<BookUserState
         .expect("state.json has a file name")
         .to_owned();
 
-    // Read + parse every candidate, tolerating a sibling that a concurrent
-    // resolver deleted between the directory scan and this read (NotFound), and
-    // skipping any that fail to parse so one corrupt file cannot poison the rest.
+    // Tolerate a concurrently deleted sibling, and skip unparseable ones so
+    // one corrupt file cannot poison the rest.
     let mut parsed: Vec<(BookUserState, SystemTime)> = Vec::with_capacity(files.len());
     for (candidate_path, modified) in &files {
         match tokio::fs::read_to_string(candidate_path).await {
@@ -148,32 +127,27 @@ async fn resolve_reading_state_file(path: &Path) -> anyhow::Result<BookUserState
         }
     }
 
-    // Nothing readable/parseable: leave the files untouched (they may be
-    // recoverable) and report an empty state rather than destroying data.
+    // Leave unreadable files untouched; they may still be recoverable.
     if parsed.is_empty() {
         return Ok(BookUserState::default());
     }
 
     let merged = merge_user_states(&parsed);
 
-    // Fast path: a single canonical file with no conflict siblings needs no
-    // rewrite or cleanup.
     let only_canonical =
         files.len() == 1 && files[0].0.file_name() == Some(canonical_name.as_os_str());
     if only_canonical {
         return Ok(merged);
     }
 
-    // Persist the merged result to the canonical file FIRST (atomic replace),
-    // and only then drop the now-consolidated siblings, so a crash or a racing
-    // reader never sees the merged fields disappear.
+    // Persist before dropping the siblings, so a crash or racing reader never
+    // sees the merged fields disappear.
     write_state_file(&canonical_path, &merged).await?;
 
     for (candidate_path, _) in &files {
         if candidate_path.file_name() != Some(canonical_name.as_os_str())
             && tokio::fs::try_exists(candidate_path).await?
         {
-            // Best-effort: a concurrent resolver may have removed it already.
             let _ = tokio::fs::remove_file(candidate_path).await;
         }
     }
@@ -200,9 +174,8 @@ pub(super) async fn persist_user_state(path: &Path, state: &BookUserState) -> an
         tokio::fs::create_dir_all(path).await?;
     }
 
-    // Atomic replace only — never remove-then-rename. The pre-remove opened a
-    // window during which a concurrent, unlocked resolver's `try_exists` on
-    // state.json returned false (BUG A); rename's atomic replace closes it.
+    // Atomic replace only: remove-then-rename opens a window where an unlocked
+    // concurrent resolver sees no state.json.
     write_state_file(&path.join("state.json"), state).await
 }
 
@@ -226,20 +199,16 @@ mod tests {
         (dir, book)
     }
 
-    // BUG B: reading position (auto-saved, so newer mtime) and a folder move
-    // (one-shot, so older mtime) end up in two different Syncthing conflict
-    // siblings. A "newest-mtime wins" resolve would drop whichever field the
-    // loser owned. The field-wise merge must keep BOTH — and consolidate.
+    // Reading position (newer mtime) and a folder move (older) land in
+    // different siblings; the merge must keep both and consolidate.
     #[tokio::test]
     async fn merge_keeps_folder_and_reading_from_different_siblings() {
         let (_guard, book) = book_dir("flts_rs_merge");
 
-        // Older canonical carries only the folder move.
         write_json(
             &book.join("state.json"),
             r#"{"readingState":null,"folderPath":["Shelf","Favorites"]}"#,
         );
-        // Distinct, newer mtime for the reading-position sibling.
         std::thread::sleep(std::time::Duration::from_millis(20));
         write_json(
             &book.join("state (conflict copy).json"),
@@ -261,8 +230,6 @@ mod tests {
         assert_eq!(rs.paragraph_id, 3);
         assert_eq!(rs.page_offset, 1);
 
-        // Siblings are consolidated into a single canonical file holding the
-        // merged result.
         assert!(book.join("state.json").exists());
         assert!(!book.join("state (conflict copy).json").exists());
         let reloaded = load_user_state_from_dir(&book).await.unwrap();
@@ -270,8 +237,7 @@ mod tests {
         assert_eq!(reloaded.reading_state, merged.reading_state);
     }
 
-    // BUG A tolerance: only a conflict sibling exists (no state.json). Resolve
-    // must promote it via atomic rename without erroring on the absent canonical.
+    // With no state.json, a lone sibling must be promoted, not error.
     #[tokio::test]
     async fn resolve_promotes_lone_sibling_without_canonical() {
         let (_guard, book) = book_dir("flts_rs_promote");
@@ -287,8 +253,7 @@ mod tests {
         assert!(!book.join("state (conflict copy).json").exists());
     }
 
-    // BUG A: an empty book directory and a missing canonical are tolerated
-    // (return default), never an error.
+    // An empty directory yields the default, never an error.
     #[tokio::test]
     async fn resolve_tolerates_missing_directory_contents() {
         let (_guard, book) = book_dir("flts_rs_empty");
@@ -298,9 +263,8 @@ mod tests {
         );
     }
 
-    // BUG A core: load runs with no book lock, concurrently with book-locked
-    // writers, over the same conflict siblings. Two resolvers racing to promote
-    // and delete the same files must both succeed — no fatal NotFound `?`.
+    // Two unlocked resolvers racing to promote and delete the same siblings
+    // must both succeed.
     #[tokio::test]
     async fn resolve_tolerates_concurrent_removal_of_siblings() {
         let (_guard, book) = book_dir("flts_rs_race");
@@ -310,8 +274,7 @@ mod tests {
         write_json(&book.join("state (conflict copy).json"), sibling);
 
         for _ in 0..25 {
-            // Re-create a sibling each round so there is always a file for the
-            // two resolvers to race over (promote + delete).
+            // Keep a sibling present for the resolvers to race over.
             let _ = std::fs::write(book.join("state (conflict copy).json"), sibling);
             let a = load_user_state_from_dir(&book);
             let b = load_user_state_from_dir(&book);
@@ -320,13 +283,11 @@ mod tests {
             rb.expect("resolver B must tolerate a concurrently removed sibling");
         }
 
-        // Whatever the interleaving, the folder move is never lost.
         let final_state = load_user_state_from_dir(&book).await.unwrap();
         assert_eq!(final_state.folder_path, vec!["Shelf".to_string()]);
     }
 
-    // Legacy bare-BookReadingState files (pre-folderPath) still load, and an
-    // empty state.json yields the default without error.
+    // Bare-BookReadingState files load; an empty state.json gives the default.
     #[tokio::test]
     async fn parse_handles_legacy_and_empty() {
         assert_eq!(parse_user_state(""), Some(BookUserState::default()));
@@ -340,7 +301,6 @@ mod tests {
         assert_eq!(legacy.reading_state.map(|s| s.chapter_id), Some(3));
         assert!(legacy.folder_path.is_empty());
 
-        // Corrupt content parses to None (skipped in the merge, never `?`-fatal).
         assert_eq!(parse_user_state("{not json"), None);
     }
 }

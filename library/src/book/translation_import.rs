@@ -12,13 +12,10 @@ pub struct ParagraphTranslation {
 }
 
 impl ParagraphTranslation {
-    /// Decode HTML entities in fields where they are not intentional.
-    ///
-    /// The prompt instructs the LLM to entity-encode punctuation only in
-    /// `Word.original`, but some providers (notably DeepSeek in loose JSON
-    /// mode) leak entities into other fields too. Left untreated, this
-    /// produces duplicate cards (e.g. `qu&eacute;` and `qué` slugify
-    /// differently). Run this once at the translator boundary.
+    /// Decode HTML entities outside `Word.original`, the only field the prompt
+    /// asks to encode. Providers leak them elsewhere, and untreated they
+    /// duplicate cards (`qu&eacute;` and `qué` slugify differently). Call once
+    /// at the translator boundary.
     pub fn normalize_html_entities(&mut self) {
         for sentence in &mut self.sentences {
             decode_in_place(&mut sentence.full_translation);
@@ -78,8 +75,8 @@ pub struct Word {
     pub contextual_translations: Vec<String>,
     #[serde(rename = "n", alias = "note", default)]
     pub note: Option<String>,
-    // `default`: Gemini's relaxed schema lets non-punctuation words omit
-    // `p` entirely (absent == false), saving ~4 output tokens per word.
+    // Gemini's relaxed schema omits `p` for non-punctuation, so absent
+    // must read as false.
     #[serde(
         rename = "p",
         alias = "isPunctuation",
@@ -153,9 +150,7 @@ mod tests {
         assert_eq!(w.grammar.target_initial_form, "what?");
         assert_eq!(w.contextual_translations, vec!["what?".to_owned()]);
         assert_eq!(w.note.as_deref(), Some("see §1"));
-        // `original` is intentionally left encoded; the prompt asks the LLM to
-        // entity-encode punctuation there and `render_example_source` decodes
-        // it at render time.
+        // `original` stays encoded; `render_example_source` decodes it.
         assert_eq!(w.original, "hello&comma;");
     }
 
@@ -177,14 +172,12 @@ mod tests {
         };
 
         let json = serde_json::to_string(&p).unwrap();
-        // Short keys present.
         for key in [
             "\"s\"", "\"wl\"", "\"ft\"", "\"o\"", "\"t\"", "\"n\"", "\"p\"", "\"g\"", "\"lf\"",
             "\"lt\"", "\"pos\"",
         ] {
             assert!(json.contains(key), "expected short key {key} in {json}");
         }
-        // Long names gone.
         for key in [
             "originalInitialForm",
             "targetInitialForm",
@@ -200,8 +193,7 @@ mod tests {
 
     #[test]
     fn deserializes_word_without_punctuation_flag() {
-        // Gemini's relaxed schema omits `p` for normal words; absence means
-        // "not punctuation". Punctuation tokens still emit `p: true`.
+        // Absent `p` means "not punctuation"; punctuation emits `p: true`.
         let json = r#"{
             "s": [{
                 "ft": "Hola.",
@@ -219,7 +211,7 @@ mod tests {
 
     #[test]
     fn deserializes_legacy_camel_case() {
-        // Output emitted by the LLM before the short-key migration.
+        // Long-key output.
         let legacy = r#"{
             "sentences": [{
                 "fullTranslation": "Hola",
@@ -246,7 +238,7 @@ mod tests {
 
     #[test]
     fn deserializes_legacy_snake_case_cache_entry() {
-        // Shape written to the on-disk cache before the migration.
+        // Long-key on-disk cache shape.
         let legacy = r#"{
             "sentences": [{
                 "full_translation": "Hola",
@@ -274,9 +266,8 @@ mod tests {
 
     #[test]
     fn deserializes_compact_payload_with_omitted_fields() {
-        // Gemini-style compact output: a content word carrying only the
-        // required fields, followed by a punctuation token that omits the
-        // whole grammar block, translations, and note.
+        // Compact output: a minimal content word, then a punctuation token
+        // omitting grammar, translations, and note.
         let compact = r#"{
             "s": [{
                 "ft": "Hola.",
@@ -289,11 +280,9 @@ mod tests {
         }"#;
         let p: ParagraphTranslation = serde_json::from_str(compact).unwrap();
         let words = &p.sentences[0].words;
-        // Content word: omitted grammar inflection fields default to None.
         assert_eq!(words[0].grammar.part_of_speech, "interjection");
         assert_eq!(words[0].grammar.plurality, None);
         assert_eq!(words[0].note, None);
-        // Punctuation token: grammar/translations/note all defaulted.
         assert!(words[1].is_punctuation);
         assert_eq!(words[1].original, "&period;");
         assert!(words[1].contextual_translations.is_empty());

@@ -31,8 +31,7 @@ type LyricsTranslationFixture = {
 };
 
 async function installPlatform(page: Page, platform: string) {
-    // addInitScript runs before any page script, so this is set before
-    // App.svelte's module-level `platform()` call.
+    // Must land before App.svelte's module-level `platform()` call.
     await page.addInitScript((p) => {
         (window as any).__mockPlatform = p;
     }, platform);
@@ -63,9 +62,8 @@ async function setCachedTranslation(page: Page, t: LyricsTranslationFixture) {
     }, t);
 }
 
-/// Manually fire `lyrics_translation_done` for a given trackId. The backend
-/// now keys translation events by trackId (not requestId) so the frontend
-/// filters by content match against whatever's currently playing.
+/// Fires `lyrics_translation_done`. Events are keyed by trackId, so the
+/// frontend filters by content match against whatever is playing.
 async function fireTranslationDone(
     page: Page,
     trackId: string,
@@ -234,7 +232,6 @@ test.describe('Spotify lyrics translation mode', () => {
                 page.getByText('Primera línea').locator('..'),
             ).toHaveClass(/active/);
 
-            // Bump position past the second line's timestamp (5000ms).
             await emitSpotifyState(
                 page,
                 playingState(SYNCED_LYRICS.track_id, 5_500),
@@ -259,9 +256,8 @@ test.describe('Spotify lyrics translation mode', () => {
                     { time_ms: null, text: 'Línea dos' },
                 ],
             });
-            // The plain-lyrics warning is gated behind the translation status
-            // reaching `idle`. Cache a translation so the status doesn't stick
-            // at `translating` and mask the warning.
+            // The warning is gated on status `idle`; a cached translation
+            // keeps it from sticking at `translating`.
             await setCachedTranslation(page, {
                 track_id: trackId,
                 target_lang: TARGET,
@@ -339,8 +335,7 @@ test.describe('Spotify lyrics translation mode', () => {
                 synced: true,
                 lines: [{ time_ms: 0, text: 'Adiós' }],
             });
-            // No cached translation and no pre-registered response → the mock's
-            // translate_lyrics emits nothing, leaving the UI in 'translating'.
+            // With neither cache nor scripted response the UI stays 'translating'.
 
             await emitSpotifyState(page, playingState(trackId, 0));
 
@@ -380,7 +375,6 @@ test.describe('Spotify lyrics translation mode', () => {
         test('track change clears stale translation and re-fetches', async ({
             page,
         }) => {
-            // Track A: cached translation.
             const trackA = 'spotify:track:A';
             await setMockLyrics(page, trackA, {
                 track_id: trackA,
@@ -397,7 +391,6 @@ test.describe('Spotify lyrics translation mode', () => {
             await emitSpotifyState(page, playingState(trackA, 0));
             await expect(page.getByText('One')).toBeVisible();
 
-            // Track B: lyrics registered, no cache → goes in-flight.
             const trackB = 'spotify:track:B';
             await setMockLyrics(page, trackB, {
                 track_id: trackB,
@@ -406,7 +399,6 @@ test.describe('Spotify lyrics translation mode', () => {
             });
             await emitSpotifyState(page, playingState(trackB, 0));
 
-            // Stale "One" disappears; track B's original line is shown.
             await expect(page.getByText('Dos')).toBeVisible();
             await expect(page.getByText('One')).toHaveCount(0);
             await expect(page.getByText(/Translating/)).toBeVisible();
@@ -434,7 +426,6 @@ test.describe('Spotify lyrics translation mode', () => {
             });
             await emitSpotifyState(page, playingState(trackId, 0));
 
-            // Wait for the translation to land via the cache path.
             await expect(page.getByText('Yes')).toBeVisible();
             await expect(page.locator('.status-bar')).toHaveCount(0);
         });

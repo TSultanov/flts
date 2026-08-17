@@ -1,9 +1,8 @@
 //! Sync task lifecycle — the embedded Syncthing engine's app-side owner.
 //!
-//! Mirrors [`AnkiSyncTask`](crate::app::anki_sync::AnkiSyncTask): spawned from
-//! `eval_config`, reports status through a stable `watch::Sender`, and is shut
-//! down gracefully on app exit. It owns the single [`SyncEngine`] and a poller
-//! that refreshes connection state.
+//! Owns the single [`SyncEngine`] plus its status poller. Spawned from
+//! `eval_config` and shut down on app exit, like
+//! [`AnkiSyncTask`](crate::app::anki_sync::AnkiSyncTask).
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
@@ -122,13 +121,11 @@ impl SyncTask {
         let my_id = engine.my_id().to_string();
         info!("Sync engine online; device id = {my_id}");
 
-        // Name this device (roster + Syncthing's own entry) so peers see a
-        // meaningful name, and so they add it back via the roster (mesh).
+        // Names the roster entry as well, which is how peers add this device back.
         if let Err(err) = engine.set_device_name(&device_name).await {
             warn!("Could not set this device's name: {err}");
         }
 
-        // Seed status and spawn the reconcile+status poller.
         push_status(engine.client().as_ref(), &status_tx, &my_id).await;
         let handle = {
             let engine = engine.clone();
@@ -138,8 +135,7 @@ impl SyncTask {
                 let mut ticker = tokio::time::interval(DEFAULT_POLL_INTERVAL);
                 loop {
                     ticker.tick().await;
-                    // Bring the engine in line with the roster (devices paired
-                    // on other nodes), then refresh status.
+                    // Picks up devices paired on other nodes.
                     if let Err(err) = engine.reconcile_once().await {
                         warn!("Sync reconcile failed: {err}");
                     }
@@ -173,16 +169,14 @@ impl SyncTask {
     }
 }
 
-/// Pure predicate for the `FLTS_DISABLE_SYNC` env gate (mirrors
-/// `anki_sync_disabled`): any non-empty value disables sync regardless of the
-/// `syncEnabled` config flag.
+/// `FLTS_DISABLE_SYNC` gate: any non-empty value overrides `syncEnabled`.
 pub fn sync_disabled(env_value: Option<&std::ffi::OsStr>) -> bool {
     env_value.is_some_and(|v| !v.is_empty())
 }
 
-/// Refreshes device/connection counts into the status sender. On a REST error
-/// keeps the device id but flips to `Error` so the UI can surface it. Takes the
-/// control client (not the engine) so it is unit-testable against a mock.
+/// Refreshes device/connection counts into the status sender; a REST error keeps
+/// the device id but flips to `Error`. Takes the control client, not the engine,
+/// so a mock can drive it.
 async fn push_status(
     client: &dyn library::sync::control::SyncthingApi,
     status_tx: &watch::Sender<SyncStatus>,
@@ -197,7 +191,6 @@ async fn push_status(
 
     match (devices, connections) {
         (Ok(devices), Ok(connections)) => {
-            // Peers = devices excluding self.
             let peers: Vec<_> = devices
                 .into_iter()
                 .filter(|d| d.device_id != my_id)
@@ -206,8 +199,7 @@ async fn push_status(
                 .iter()
                 .filter(|d| connections.get(&d.device_id).copied().unwrap_or(false))
                 .count();
-            // "Syncing" only when actually behind AND a peer is connected to
-            // catch up from — otherwise a stuck percentage would be misleading.
+            // Needs a connected peer too, else the percentage sticks and misleads.
             let syncing = connected > 0 && completion.is_some_and(|c| c < 99.99);
             status_tx.send_replace(SyncStatus {
                 state: if syncing {

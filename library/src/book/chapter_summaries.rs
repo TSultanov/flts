@@ -1,9 +1,8 @@
 //! Per-chapter source-language summary sidecar for a book.
 //!
-//! Stored as `chapter_summaries.dat` next to `book.dat`. Generated chapters
-//! provide context to per-paragraph translation requests (see
-//! `library/src/translator/gemini.rs`). Merging is "fullest wins" — see
-//! [`ChapterSummaries::merge`].
+//! Stored as `chapter_summaries.dat` next to `book.dat`; generated chapters
+//! give per-paragraph translation requests their context. Merging is
+//! "fullest wins" — see [`ChapterSummaries::merge`].
 
 use std::{
     io::{self, BufWriter, Cursor, Read, Seek, Write},
@@ -25,9 +24,8 @@ use crate::{
     translator::TranslationModel,
 };
 
-/// One row of the sidecar. `generated == false` means the LLM call hasn't
-/// successfully completed for this chapter yet; `model`/`timestamp` are
-/// meaningless in that case and `text` is empty.
+/// One row. When `generated` is false the LLM call hasn't completed, so
+/// `model`/`timestamp` are meaningless and `text` is empty.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChapterSummary {
     pub generated: bool,
@@ -51,9 +49,7 @@ impl ChapterSummary {
 pub struct ChapterSummaries {
     pub book_id: Uuid,
     pub entries: Vec<ChapterSummary>,
-    /// `mtime` of the on-disk file we last read. Used by the save retry
-    /// loop to detect concurrent writers (mirrors
-    /// `LibraryTranslation::last_modified`).
+    /// `mtime` last read, so the save loop can spot a concurrent writer.
     pub last_modified: Option<SystemTime>,
 }
 
@@ -62,7 +58,7 @@ pub fn chapter_summaries_path(book_path: &Path) -> PathBuf {
 }
 
 impl ChapterSummaries {
-    /// All-pending initial state. Used at first enqueue when no sidecar exists.
+    /// All-pending initial state, for when no sidecar exists yet.
     pub fn empty_for(book_id: Uuid, chapter_count: usize) -> Self {
         Self {
             book_id,
@@ -71,15 +67,12 @@ impl ChapterSummaries {
         }
     }
 
-    /// First index whose summary still needs generation, or `None` when
-    /// every chapter is already generated.
+    /// First index still needing generation.
     pub fn next_pending(&self) -> Option<usize> {
         self.entries.iter().position(|e| !e.generated)
     }
 
-    /// Highest `k` such that every chapter in `0..=k` is generated. `None`
-    /// if chapter 0 is still pending. Used to populate the per-book
-    /// `watch::Sender` in the summary generation queue.
+    /// Highest `k` with every chapter in `0..=k` generated.
     pub fn ready_through(&self) -> Option<usize> {
         let mut last = None;
         for (i, e) in self.entries.iter().enumerate() {
@@ -91,13 +84,9 @@ impl ChapterSummaries {
         last
     }
 
-    /// Per-chapter "fullest wins" union. Generated entries replace pending
-    /// ones; if both sides have a generated entry, the newer `timestamp`
-    /// wins (semantically equivalent on an immutable book, but newer is a
-    /// deterministic tiebreaker).
-    ///
-    /// Errors if the chapter counts disagree — the book on disk has
-    /// changed shape and we should refuse to silently corrupt.
+    /// Per-chapter "fullest wins" union: generated beats pending, and between
+    /// two generated entries the newer timestamp is the deterministic
+    /// tiebreaker. Disagreeing chapter counts error rather than corrupt.
     pub fn merge(&self, other: &Self) -> anyhow::Result<Self> {
         if self.book_id != other.book_id {
             anyhow::bail!(
@@ -144,8 +133,7 @@ impl ChapterSummaries {
         })
     }
 
-    /// Read one sidecar file. Doesn't deal with conflict files — see
-    /// [`load_from_metadata`].
+    /// One sidecar file; see [`load_from_metadata`] for conflict handling.
     pub async fn load(main_path: &Path) -> anyhow::Result<Self> {
         let last_modified = tokio::fs::metadata(main_path).await?.modified().ok();
         let mut buffer = Vec::new();
@@ -159,10 +147,8 @@ impl ChapterSummaries {
         Ok(s)
     }
 
-    /// Load the main sidecar plus any sibling conflict files
-    /// (`chapter_summaries~*.dat`), merge them, write the merged result
-    /// back to `main_path`, and delete the conflict files. Mirrors
-    /// `LibraryTranslation::load_from_metadata`.
+    /// Merges the main sidecar with any `chapter_summaries~*.dat` siblings,
+    /// writes the result back, and deletes the siblings.
     pub async fn load_from_metadata(
         main_path: &Path,
         conflicts: &[PathBuf],
@@ -175,8 +161,7 @@ impl ChapterSummaries {
             let other = Self::load(conflict).await?;
             merged = merged.merge(&other)?;
         }
-        // Write the merged result back as the new main, then delete the
-        // conflict files (only after the main write succeeds).
+        // Delete the conflict files only after the main write succeeds.
         let mut buf = Vec::new();
         merged.serialize(&mut buf)?;
         tokio::fs::write(main_path, &buf).await?;
@@ -192,9 +177,8 @@ impl ChapterSummaries {
         Ok(merged)
     }
 
-    /// Atomic write with a pre/post-modified-time check + merge-on-newer
-    /// retry loop, mirroring `LibraryTranslation::save` body. Writes via
-    /// `chapter_summaries~<random>.dat` temp file.
+    /// Atomic write through a `chapter_summaries~<random>.dat` temp, with a
+    /// pre/post-mtime check and a merge-on-newer retry loop.
     pub async fn save(&mut self, main_path: &Path) -> anyhow::Result<()> {
         let dir = main_path.parent().ok_or_else(|| {
             anyhow::anyhow!("chapter summaries path has no parent: {:?}", main_path)
@@ -210,8 +194,7 @@ impl ChapterSummaries {
                 None
             };
 
-            // If disk is newer than what we last saw, merge it into self
-            // before writing.
+            // Merge in a disk copy newer than what we last saw.
             if let Some(last_modified) = self.last_modified
                 && tokio::fs::try_exists(main_path).await?
             {
@@ -227,7 +210,6 @@ impl ChapterSummaries {
                 *self = self.merge(&on_disk)?;
             }
 
-            // Write to temp.
             let temp_path = dir.join(format!("{file_name}~{}", create_random_string(8)));
             let mut buf = Vec::new();
             self.serialize(&mut buf)?;
@@ -236,26 +218,21 @@ impl ChapterSummaries {
                 .write_all(&buf)
                 .await?;
 
-            // Re-check the main file's mtime; if it hasn't moved since
-            // pre_modified, our write is the canonical one.
+            // An unmoved mtime means our write is the canonical one.
             let post_modified = if tokio::fs::try_exists(main_path).await? {
                 tokio::fs::metadata(main_path).await?.modified().ok()
             } else {
                 None
             };
             if post_modified == pre_modified || pre_modified.is_none() {
-                // Atomic replace: rename over the destination without
-                // removing it first — remove+rename leaves a window with no
-                // file on disk, so a crash (or a concurrent temp sweep
-                // eating our temp) would take the main file with it.
+                // Rename over the destination: remove+rename leaves a window
+                // where a crash or temp sweep destroys the main file.
                 tokio::fs::rename(&temp_path, main_path).await?;
                 self.last_modified = tokio::fs::metadata(main_path).await?.modified().ok();
                 return Ok(());
             }
-            // Someone else wrote between our pre-check and now. Loop and
-            // re-merge. The temp file we created becomes a conflict file
-            // that will be picked up on next load if nobody removes it
-            // first; remove it preemptively.
+            // Someone wrote since the pre-check: re-merge. Drop our temp or
+            // the next load treats it as a conflict file.
             let _ = tokio::fs::remove_file(&temp_path).await;
         }
     }
@@ -285,7 +262,6 @@ impl Serializable for ChapterSummaries {
         w.write_all(self.book_id.as_bytes())?;
         write_var_u64(&mut w, self.entries.len() as u64)?;
 
-        // Build the concatenated strings blob + per-entry slices.
         let mut strings: Vec<u8> = Vec::new();
         let mut slices: Vec<VecSlice<u8>> = Vec::with_capacity(self.entries.len());
         for e in &self.entries {
@@ -361,7 +337,6 @@ impl Serializable for ChapterSummaries {
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "summary not utf-8"))?;
         }
 
-        // Skip the trailing 8-byte hash (validate_hash already saw it).
         let _ = read_u64(input_stream)?;
 
         Ok(Self {
@@ -413,7 +388,6 @@ mod tests {
         s.entries[1].text = "b".into();
         assert_eq!(s.ready_through(), Some(1));
 
-        // chapter 2 still pending; chapter 3 generated should not advance ready_through
         s.entries[3].generated = true;
         s.entries[3].text = "d".into();
         assert_eq!(s.ready_through(), Some(1));
@@ -486,7 +460,6 @@ mod tests {
 
         let merged = older.merge(&newer).unwrap();
         assert_eq!(merged.entries[0].text, "newer");
-        // Symmetric: order shouldn't matter for tiebreak.
         let merged2 = newer.merge(&older).unwrap();
         assert_eq!(merged2.entries[0].text, "newer");
     }

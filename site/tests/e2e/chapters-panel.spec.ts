@@ -1,12 +1,9 @@
 import { expect, test } from './helpers/test';
 import { fillerHtml, seedAndOpen } from './helpers/paragraph';
 
-// Covers the BookView chapters-panel redesign:
-//  - toggle via the edge handle and the `c` keyboard shortcut
-//  - opening the panel must NOT resize the book viewport (overlay, not flex column)
-//  - the resize grip persists the panel width across reloads
-//  - on narrow viewports, clicking a chapter auto-closes the panel
-//  - books with a single chapter render no handle at all
+// BookView chapters panel: it overlays rather than resizing the book viewport,
+// persists its width across reloads, auto-closes on narrow viewports, and is
+// absent entirely for single-chapter books.
 
 test.describe.configure({ mode: 'parallel' });
 
@@ -38,20 +35,16 @@ test.describe('ChaptersPanel — toggle behavior', () => {
 
   test('handle toggles the panel open and closed', async ({ page }) => {
 const { bookId } = await seedAndOpen(page, multiChapterSpec());
-    // Wait until ChapterView has fully mounted; the chapter-container's
-    // initial layout phase otherwise races Playwright's actionability check
-    // for the handle.
+    // The chapter-container's initial layout races the handle's actionability.
     await page.waitForSelector('.paragraphs-container.is-ready');
 
     await expect(page.locator(HANDLE)).toBeVisible();
-    // Default state is closed.
     await expect(page.locator(HANDLE)).toHaveAttribute('aria-expanded', 'false');
     await expect(page.locator(PANEL)).toHaveAttribute('aria-hidden', 'true');
 
     await page.locator(HANDLE).click();
     await expect(page.locator(HANDLE)).toHaveAttribute('aria-expanded', 'true');
     await expect(page.locator(PANEL)).toHaveAttribute('aria-hidden', 'false');
-    // Each chapter renders an anchor in the panel.
     await expect(
       page.locator(`${PANEL} a[href="/book/${bookId}/1"]`),
     ).toBeVisible();
@@ -89,7 +82,7 @@ await seedAndOpen(page, multiChapterSpec());
     await page.locator(HANDLE).click();
     await expect(page.locator(HANDLE)).toHaveAttribute('aria-expanded', 'true');
 
-    // Give the CSS transform transition time to settle (180ms) before measuring.
+    // Outlast the 180ms transform transition before measuring.
     await page.waitForTimeout(250);
 
     const afterWidth = await page.evaluate(() => {

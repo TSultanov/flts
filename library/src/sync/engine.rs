@@ -1,9 +1,8 @@
 //! Embedded Syncthing engine lifecycle.
 //!
 //! Brings the Go engine up via `syncthing-sys`, waits for its REST API, and
-//! configures the single FLTS folder + discovery options. One engine per
-//! process (the Go side holds global state), so this is created once by the
-//! sync daemon and torn down on shutdown.
+//! configures the FLTS folder + discovery options. The Go side holds global
+//! state, so there must be exactly one engine per process.
 
 use std::{
     collections::BTreeSet,
@@ -43,35 +42,28 @@ pub struct EngineConfig {
     /// The folder to sync — the app-managed library root.
     pub library_root: PathBuf,
     /// Discovery/relays/listen options applied over REST once the engine is up.
-    /// Production uses [`OptionsPatch::default`]; tests/Docker pass tailored
-    /// patches (e.g. [`OptionsPatch::loopback`] or a fixed LAN listen port).
     pub options: OptionsPatch,
-    /// Go startup flag: bind loopback only and skip boot-time discovery (unit
-    /// tests). Docker passes `false` so the node binds a routable address.
+    /// Bind loopback only and skip boot-time discovery; `false` binds a
+    /// routable address.
     pub loopback_only: bool,
 }
 
 /// A running engine plus a control client bound to it.
 pub struct SyncEngine {
-    /// Loopback origin of the engine's REST/GUI endpoint, e.g.
-    /// `http://127.0.0.1:54321`. In debug builds Syncthing's own web dashboard
-    /// is served here (see `syncthing-sys/build.rs`).
+    /// Loopback origin of the REST/GUI endpoint; debug builds serve
+    /// Syncthing's web dashboard here.
     gui_url: String,
     client: Arc<dyn SyncthingApi>,
     my_id: String,
-    /// The synced library path, kept so we can re-share the folder when the
-    /// peer set changes.
+    /// Kept so the folder can be re-shared when the peer set changes.
     library_root: String,
-    /// The shared device roster (`<library_root>/.flts/devices.json`); the
-    /// source of truth for the mesh.
+    /// `<library_root>/.flts/devices.json`: the mesh's source of truth.
     roster: RosterStore,
 }
 
 impl SyncEngine {
-    /// Starts the engine, waits for REST, and applies the FLTS configuration
-    /// (discovery options + the `flts-library` folder pointed at the library
-    /// root, shared with this device plus every peer already in the engine
-    /// config).
+    /// Starts the engine, waits for REST, then applies the discovery options
+    /// and shares `flts-library` with this device and every configured peer.
     pub async fn start(cfg: EngineConfig) -> Result<Self> {
         std::fs::create_dir_all(&cfg.home)
             .map_err(|e| anyhow!("creating syncthing home {:?} failed: {e}", cfg.home))?;
@@ -81,8 +73,8 @@ impl SyncEngine {
         let addr = format!("127.0.0.1:{port}");
 
         // Blocking pool: the boot must not pin a tokio worker, and callers'
-        // timeouts need an await point. Dropping this await detaches (not
-        // cancels) the boot — callers must run to completion.
+        // timeouts need an await point. Dropping the await detaches rather than
+        // cancels the boot, so callers must run it to completion.
         {
             let home = cfg.home.clone();
             let addr = addr.clone();
@@ -103,8 +95,7 @@ impl SyncEngine {
         let roster = RosterStore::new(&cfg.library_root, &my_id);
         let library_root = cfg.library_root.to_string_lossy().into_owned();
 
-        // Apply the caller's discovery/listen options over REST. (The Go startup
-        // flag above only governs the brief pre-REST boot window.)
+        // The Go startup flag only governs the pre-REST boot window.
         client.set_options(cfg.options).await?;
 
         let engine = Self {
@@ -115,25 +106,20 @@ impl SyncEngine {
             roster,
         };
 
-        // Create the library folder and share it with this device plus every
-        // peer already in the engine config. `ensure_folder` PUTs the full
-        // device list, so a self-only call here would un-share the folder from
-        // peers persisted in a previous session — and reconcile won't re-add
-        // them (they're already present), so sync would silently stall.
+        // `ensure_folder` PUTs the whole device list, so sharing with self
+        // alone would un-share persisted peers that reconcile won't re-add.
         engine.reshare_library().await?;
 
         Ok(engine)
     }
 
-    /// Loopback origin of the engine's REST/GUI endpoint (Syncthing's own web
-    /// dashboard, in debug builds).
+    /// Loopback origin of the engine's REST/GUI endpoint.
     pub fn gui_url(&self) -> &str {
         &self.gui_url
     }
 
-    /// Adds (or renames) a peer and shares the library folder with the full
-    /// peer set. The peer's `autoAcceptFolders` is set, so once they add us back
-    /// the folder is accepted on their side automatically.
+    /// Adds or renames a peer and re-shares the folder. The peer's
+    /// `autoAcceptFolders` is set so it accepts the folder once it adds us.
     pub async fn add_peer(&self, device_id: &str, name: &str) -> anyhow::Result<()> {
         self.client.add_device(device_id, name).await?;
         self.reshare_library().await
@@ -182,9 +168,8 @@ impl SyncEngine {
             .await
     }
 
-    /// Pair with a peer: record it in the shared roster (so it propagates to
-    /// every node) and add it to this engine immediately. The roster is the
-    /// mesh's source of truth; `add_peer` just makes the local effect instant.
+    /// Record the peer in the roster (which propagates it mesh-wide) and add it
+    /// locally so the effect is immediate.
     pub async fn pair_device(&self, device_id: &str, name: &str) -> anyhow::Result<()> {
         self.roster.add_device(device_id, name)?;
         self.add_peer(device_id, name).await?;
@@ -193,8 +178,7 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Unpair a peer: tombstone it in the roster (propagates the removal) and
-    /// drop it locally.
+    /// Tombstone the peer in the roster and drop it locally.
     pub async fn unpair_device(&self, device_id: &str) -> anyhow::Result<()> {
         self.roster.remove_device(device_id)?;
         self.remove_peer(device_id).await?;
@@ -203,10 +187,8 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Sets this device's display name everywhere it matters: the shared roster
-    /// (so peers that reconcile learn it) and Syncthing's own device entry (so
-    /// the name it *announces* — seen in a peer's pending/connection list — is
-    /// meaningful instead of the hostname).
+    /// Names this device in the roster (for reconciling peers) and in
+    /// Syncthing, so the announced name isn't the hostname.
     pub async fn set_device_name(&self, name: &str) -> anyhow::Result<()> {
         self.roster.ensure_self(&self.my_id, name)?;
         self.client.rename_device(&self.my_id, name).await?;
@@ -215,14 +197,11 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// One reconcile pass: load the shared roster (merging any conflict
-    /// siblings) and bring this engine's device set in line with it — adding
-    /// devices others paired and removing tombstoned ones. This is what turns a
-    /// single pairing into a full mesh.
+    /// Bring this engine's device set in line with the roster. This is what
+    /// turns a single pairing into a full mesh.
     pub async fn reconcile_once(&self) -> anyhow::Result<()> {
-        // Trace: peek the incoming conflict siblings BEFORE load clears them, and
-        // the pre-merge roster, so we can emit a RosterSync per sibling that
-        // actually changed our roster.
+        // Peek before `load` clears the siblings, so RosterSync can be emitted
+        // per sibling that actually changed the roster.
         #[cfg(feature = "tla_trace")]
         let sibling_srcs = self.roster.pending_sibling_sources();
         #[cfg(feature = "tla_trace")]
@@ -260,19 +239,16 @@ impl SyncEngine {
             }
         }
 
-        // Trace: the engine device set changed to match the roster.
         #[cfg(feature = "tla_trace")]
         self.trace_emit("ReconcileNode", None, None).await;
         Ok(())
     }
 
-    /// Trace hook: emit one roster-mesh event (`spec/roster/`) with this node's
-    /// POST-state — its roster (`active`/`tomb` maps) and engine peer set. No-op
-    /// unless a trace sink is installed; compiled out without `tla_trace`.
+    /// Emits one roster-mesh event (`spec/roster/`) carrying this node's
+    /// post-state. No-op unless a trace sink is installed.
     #[cfg(feature = "tla_trace")]
     async fn trace_emit(&self, name: &str, target: Option<&str>, src: Option<&str>) {
         let roster = self.roster.load().unwrap_or_default();
-        // Per device: its add and remove vector clocks (the CRDT state).
         let mut rj = serde_json::Map::new();
         let ids: std::collections::BTreeSet<&String> =
             roster.adds.keys().chain(roster.removes.keys()).collect();
@@ -300,8 +276,7 @@ impl SyncEngine {
         );
     }
 
-    /// Test-only constructor that injects a control client (e.g. a mock),
-    /// bypassing the real engine so peer/share logic is unit-testable without a
+    /// Injects a control client so peer/share logic is testable without a
     /// running Syncthing or valid device IDs.
     #[cfg(test)]
     pub(crate) fn for_test(client: Arc<dyn SyncthingApi>, my_id: String, library_root: String) -> Self {
@@ -325,8 +300,8 @@ impl SyncEngine {
         &self.my_id
     }
 
-    /// Stops the engine cleanly. Idempotent on the Go side. Runs on the
-    /// blocking pool so exit-path timeouts can preempt the teardown.
+    /// Idempotent on the Go side. Runs on the blocking pool so exit-path
+    /// timeouts can preempt the teardown.
     pub async fn stop(&self) -> Result<()> {
         tokio::task::spawn_blocking(syncthing_sys::stop)
             .await
@@ -335,9 +310,8 @@ impl SyncEngine {
     }
 }
 
-/// Polls `my_id()` until the REST API answers or the timeout elapses. `start`
-/// already returns once the API is listening; this guards against the brief
-/// window before the first successful request.
+/// Polls `my_id()` until the REST API answers: it is listening slightly before
+/// it serves the first request.
 async fn wait_until_up(client: &dyn SyncthingApi) -> Result<String> {
     let deadline = Instant::now() + REST_READY_TIMEOUT;
     let mut last_err = None;
@@ -368,8 +342,8 @@ fn generate_api_key() -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Reserve an ephemeral loopback port, then release it for the engine to bind.
-/// A small TOCTOU window exists; acceptable for localhost.
+/// Reserve an ephemeral loopback port, then release it for the engine. The
+/// TOCTOU window is acceptable on localhost.
 fn pick_free_port() -> Result<u16> {
     let listener = TcpListener::bind("127.0.0.1:0")
         .map_err(|e| anyhow!("could not reserve a local port for the GUI: {e}"))?;
@@ -389,20 +363,17 @@ mod tests {
 
         engine.add_peer("PEER1", "Laptop").await.unwrap();
 
-        // Folder is shared with this device plus the new peer.
         let folders = mock.folders();
         assert_eq!(folders.len(), 1);
         assert_eq!(folders[0].path, "/tmp/flts-lib");
         assert!(folders[0].device_ids.contains(&"SELF".to_string()));
         assert!(folders[0].device_ids.contains(&"PEER1".to_string()));
 
-        // list_peers excludes self.
         let peers = engine.list_peers().await.unwrap();
         assert_eq!(peers.len(), 1);
         assert_eq!(peers[0].device_id, "PEER1");
         assert!(!peers[0].connected);
 
-        // Removal drops the peer from both the device list and the folder.
         engine.remove_peer("PEER1").await.unwrap();
         assert!(engine.list_peers().await.unwrap().is_empty());
         let folders = mock.folders();
@@ -411,20 +382,16 @@ mod tests {
 
     #[tokio::test]
     async fn start_time_reshare_covers_persisted_peers() {
-        // Peers paired in a previous session are persisted in the engine's
-        // device list but the folder is not (yet) shared with them — exactly the
-        // state after a restart, before the start-time reshare runs.
+        // Post-restart state: peers persisted in the device list, folder not
+        // yet shared with them.
         let mock = Arc::new(MockSyncthing::new("SELF"));
         mock.add_device("PEER1", "Laptop").await.unwrap();
         mock.add_device("PEER2", "Phone").await.unwrap();
         let engine =
             SyncEngine::for_test(mock.clone(), "SELF".into(), "/tmp/flts-lib".into());
 
-        // The reshare `start` performs once the engine is up.
         engine.reshare_library().await.unwrap();
 
-        // Folder is shared with this device AND every persisted peer — not just
-        // self, which is the bug that left sync stalled across restarts.
         let folders = mock.folders();
         let shared = &folders.last().unwrap().device_ids;
         for id in ["SELF", "PEER1", "PEER2"] {
@@ -465,8 +432,7 @@ mod tests {
         let mock = Arc::new(MockSyncthing::new("SELF"));
         let engine = SyncEngine::for_test(mock.clone(), "SELF".into(), root.to_string_lossy().into());
 
-        // A peer paired this device on ANOTHER node: it lands in the synced
-        // roster, but our engine doesn't know it yet.
+        // Paired on another node: in the roster, unknown to this engine.
         RosterStore::new(&root, "PEERX").add_device("PEERX", "Other").unwrap();
         assert!(engine.list_peers().await.unwrap().is_empty());
 
@@ -475,7 +441,6 @@ mod tests {
         let peers = engine.list_peers().await.unwrap();
         assert_eq!(peers.len(), 1);
         assert_eq!(peers[0].device_id, "PEERX");
-        // And the library folder is now shared with the new peer.
         assert!(mock
             .folders()
             .last()
@@ -495,7 +460,6 @@ mod tests {
         engine.add_peer("PEER1", "x").await.unwrap();
         assert_eq!(engine.list_peers().await.unwrap().len(), 1);
 
-        // Removed on another node → tombstoned in the synced roster.
         RosterStore::new(&root, "OTHER").remove_device("PEER1").unwrap();
         engine.reconcile_once().await.unwrap();
 
@@ -503,10 +467,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Full Phase 2 engine path against the real Go engine (hermetic): start,
-    /// apply discovery options + ensure the library folder, expose `my_id`, and
-    /// stop cleanly. A successful `start` proves the REST config calls
-    /// (`defaults/folder`, `PUT folders/{id}`, `options`) all worked.
+    /// Hermetic run against the real Go engine; a successful `start` proves the
+    /// REST config calls all worked.
     #[tokio::test]
     async fn engine_starts_configures_and_stops() {
         let nanos = std::time::SystemTime::now()
@@ -530,7 +492,6 @@ mod tests {
         let id = engine.my_id().to_string();
         assert!(id.len() >= 50 && id.contains('-'), "looks like a device ID: {id:?}");
 
-        // The folder we ensured is readable back by ID.
         let devices_self = engine.client().my_id().await.unwrap();
         assert_eq!(devices_self, id, "client talks to the same engine");
 

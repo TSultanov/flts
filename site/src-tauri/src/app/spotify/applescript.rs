@@ -26,11 +26,9 @@ const POSITION_JUMP_THRESHOLD_MS: i64 = 1500;
 ///   "<state>|<id>|<name>|<artist>|<album>|<position_ms>|<duration_ms>"
 /// where `<state>` is one of `playing`/`paused`.
 ///
-/// Both position and duration are emitted as integer milliseconds. We do the
-/// `* 1000` and `as integer` coercion in AppleScript itself rather than parsing
-/// a real number, because `(player position as text)` formats with the user's
-/// macOS decimal separator (e.g. `125,357` in a Spanish locale), which Rust's
-/// `f64::parse` rejects.
+/// Position and duration must be coerced to integer ms inside AppleScript:
+/// `(player position as text)` uses the macOS decimal separator (`125,357` under
+/// a Spanish locale), which `f64::parse` rejects.
 const SPOTIFY_QUERY: &str = r#"
 if application "Spotify" is running then
   tell application "Spotify"
@@ -81,8 +79,8 @@ impl NowPlaying {
     }
 }
 
-/// Query Spotify.app once. Returns `Ok(None)` only on osascript failures so the
-/// caller can decide whether to surface the error or treat it as "no data this tick".
+/// Queries Spotify.app once; errors only when osascript itself fails, leaving
+/// the caller to surface or skip the tick.
 pub async fn query_once() -> anyhow::Result<NowPlaying> {
     let output = time::timeout(
         OSASCRIPT_TIMEOUT,
@@ -144,9 +142,8 @@ fn parse_line(raw: &str) -> NowPlaying {
     }
 }
 
-/// Returns true if the two states differ in a way the UI cares about:
-/// track change, play/pause, or position jump (>1.5s — beyond what natural
-/// playback between polls would produce).
+/// Track change, play/pause, or a position jump beyond what playback between
+/// polls could produce.
 fn is_significant_change(prev: &NowPlaying, next: &NowPlaying) -> bool {
     if prev.state != next.state {
         return true;
@@ -184,9 +181,8 @@ impl SpotifyWatcher {
         self.tx.borrow().clone()
     }
 
-    /// Subscribe to "significant change" notifications (track change, play/pause,
-    /// large position jump). Used by the Spotify Web poller to refresh the queue
-    /// immediately on track change instead of waiting for the next scheduled poll.
+    /// Significant-change notifications, which let the Spotify Web poller
+    /// refresh its queue on track change instead of on its own schedule.
     pub fn subscribe(&self) -> watch::Receiver<Option<NowPlaying>> {
         self.tx.subscribe()
     }
@@ -281,11 +277,7 @@ mod tests {
 
     #[test]
     fn parse_rejects_locale_specific_decimal_fragments() {
-        // Regression: earlier the script returned `player position as text`,
-        // which formats with the macOS decimal separator (e.g. "125,357" in a
-        // Spanish locale). We now expect a pure integer millisecond field; if
-        // anything decimal-looking sneaks through, it must parse to None
-        // rather than silently coerce to 0 on the JS side.
+        // A locale-formatted field must yield None, never a silent 0 in JS.
         let np = parse_line("playing|spotify:track:abc|N|A|Al|125,357|279760");
         assert_eq!(np.position_ms, None);
         assert_eq!(np.duration_ms, Some(279_760));
@@ -293,10 +285,9 @@ mod tests {
 
     #[test]
     fn parse_handles_pipe_in_title() {
-        // splitn(_, 7) collapses the rest into duration. Verifies we don't accidentally
-        // mis-parse when a Spotify track has '|' in its name (rare, but possible).
+        // splitn(_, 7) collapses a '|' in the title into the duration field,
+        // which then fails to parse.
         let np = parse_line("playing|id|some|weird|title|with|pipes");
-        // 7 fields produced, last is "pipes" which won't parse as u32 → duration None.
         assert_eq!(np.state, PlayerState::Playing);
         assert_eq!(np.duration_ms, None);
     }

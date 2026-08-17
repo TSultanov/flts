@@ -1,17 +1,13 @@
 import { defineConfig, devices } from '@playwright/test';
 
 // Real-backend tier: the frontend talks to a headless `app` binary over the WS
-// bridge instead of the mocks. Helpers branch on `PLAYWRIGHT_REAL`
-// (helpers/backend-mode.ts); set here so a bare `playwright test -c` run
-// behaves like the pnpm script.
+// bridge. Set here so a bare `playwright test -c` matches the pnpm script;
+// helpers branch on it (helpers/backend-mode.ts).
 process.env.PLAYWRIGHT_REAL ||= 'true';
 
 export default defineConfig({
   testDir: './tests/e2e',
-  // Enabled here: tests/e2e/real/** plus app, text-import, epub-import,
-  // chapters-panel, chapter-translate-all, chapter-translation-ratio —
-  // everything that only needs the shared helper contract. Each ignore below
-  // names what blocks it.
+  // Each ignore names what blocks it against a real backend.
   testIgnore: [
     // Mock-only `window.__test` surfaces with no real-backend equivalent.
     'anki-sync.spec.ts', // __test.setAnkiSyncStatus / getSyncAnkiNowCalls

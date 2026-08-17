@@ -52,8 +52,6 @@ export function lemmaSets(n: number, per = 3): string[][] {
 
 export const textOf = (lemmas: string[]) => lemmas.join(' ');
 
-// --- translation ---
-
 /** Gemini's compact translation schema (library/src/book/translation_import.rs). */
 export function translationJson(lemmas: string[]): unknown {
   return {
@@ -132,8 +130,6 @@ export async function storedIds(
 
 export const drained = (h: RealHarness) =>
   h.invoke<unknown[]>('list_paragraph_translation_activity');
-
-// --- anki ---
 
 export type Report = {
   totalCards: number;

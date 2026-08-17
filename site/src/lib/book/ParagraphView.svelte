@@ -45,8 +45,7 @@
     const store: ChapterParagraphsStore = getContext(CHAPTER_STORE_KEY);
     const summaryStatusHolder: { store: BookSummaryStatusStore | null } =
         getContext(SUMMARY_STATUS_KEY);
-    // Default to "ready" during the sub-frame window before the store
-    // is constructed in BookView's $effect.
+    // "ready" for the sub-frame before BookView's $effect builds the store.
     const canTranslate = $derived(
         summaryStatusHolder.store?.canTranslate(chapterId) ?? true,
     );

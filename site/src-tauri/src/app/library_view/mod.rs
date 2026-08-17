@@ -51,9 +51,8 @@ pub struct BookSummaryStatusView {
     pub total_chapters: usize,
     /// Per-chapter `generated` flag, indexed by chapter id.
     pub generated: Vec<bool>,
-    /// First not-yet-generated chapter index. By the chained-generation
-    /// invariant this is also the chapter the worker would process
-    /// next; the UI uses it to render the in-flight spinner.
+    /// First not-yet-generated chapter index. Chained generation makes this the
+    /// worker's next chapter too, so the UI spins on it.
     #[serde(rename = "activelyGenerating", skip_serializing_if = "Option::is_none")]
     pub actively_generating: Option<usize>,
 }
@@ -175,10 +174,9 @@ impl LibraryView {
             );
         }
 
-        // Read-only lookup: minting an empty translation here (the previous
-        // get_or_create_translation call) would cement a book whose
-        // translations failed to load as "untranslated" and create divergent
-        // translation ids across synced devices.
+        // Must stay read-only: minting a translation would cement a book whose
+        // translations failed to load as untranslated, and diverge translation
+        // ids across synced devices.
         let book_translation = book.get_translation(target_language).await;
 
         let paragraph = book.book.paragraph_view(paragraph_id);
@@ -224,9 +222,8 @@ impl LibraryView {
     ) -> anyhow::Result<Vec<ParagraphOriginal>> {
         let book = self.library.get_book(&book_id).await?;
         let book = book.lock().await;
-        // Silently skip ids past the end of the book (stale frontend state
-        // after a sync-triggered reload shrank it) instead of panicking the
-        // whole batch.
+        // Skip ids past the end: the frontend may hold state from before a
+        // sync-triggered reload shrank the book.
         Ok(paragraph_ids
             .into_iter()
             .filter(|id| *id < book.book.paragraphs_count())
@@ -247,9 +244,8 @@ impl LibraryView {
         let book = self.library.get_book(&book_id).await?;
         let book = book.lock().await;
 
-        // Read-only lookup — see get_paragraph_view for why this must not
-        // fall back to get_or_create_translation. A book with no matching
-        // translation yields `segments: None` for every row.
+        // Read-only; see get_paragraph_view. No matching translation yields
+        // `segments: None` for every row.
         let book_translation = book.get_translation(target_language).await;
         let bt = match &book_translation {
             Some(t) => Some(t.lock().await),
@@ -264,11 +260,8 @@ impl LibraryView {
         })?;
         let card_store = self.library.card_store();
 
-        // First pass: resolve each paragraph's original text + translation
-        // view, and accumulate the union of lemma slugs across the whole batch
-        // (deduped via a HashSet) so we hit the card store exactly once.
-        // Ids past the end of the book (stale frontend state after a
-        // sync-triggered reload) are skipped instead of panicking the batch.
+        // Union the batch's lemma slugs first so the card store is hit once.
+        // Ids past the end are skipped, as in get_paragraph_originals_batch.
         let mut prepared: Vec<(usize, String, Option<ParagraphTranslationView<'_>>)> =
             Vec::with_capacity(paragraph_ids.len());
         let mut slug_set: HashSet<String> = HashSet::new();
@@ -285,13 +278,11 @@ impl LibraryView {
             prepared.push((id, original, t_view));
         }
 
-        // One cache-backed familiarity lookup for the entire page.
         let slugs: Vec<String> = slug_set.into_iter().collect();
         let fam = card_store
             .familiarities(src_lang.to_639_3(), target_language.to_639_3(), &slugs)
             .await;
 
-        // Second pass: build segments against the shared familiarity map.
         let out = prepared
             .iter()
             .map(|(id, original, t_view)| {
@@ -390,8 +381,7 @@ impl LibraryView {
                 })
                 .collect()
         };
-        // User opened a book → resume / start summary generation in the
-        // background. Idempotent: no-op if all summaries already done.
+        // Opening a book resumes summary generation; idempotent once complete.
         if let Ok(queue) = self
             .state
             .get_or_init_summary_generation_queue()
@@ -409,11 +399,8 @@ impl LibraryView {
     ) -> anyhow::Result<Vec<usize>> {
         let book = self.library.get_book(&book_id).await?;
         let book = book.lock().await;
-        // Guard the raw (frontend/URL-supplied) chapter_id. An out-of-range
-        // index would panic on the Vec access inside chapter_view, and
-        // panic = "abort" takes the whole app down. A stale or deep-linked id
-        // just yields an empty paragraph list (matches the sibling batch
-        // commands, which silently skip out-of-range ids).
+        // chapter_id is frontend/URL-supplied: chapter_view indexes raw, and
+        // panic = abort would take the app down.
         if chapter_id >= book.book.chapter_count() {
             return Ok(Vec::new());
         }
@@ -437,9 +424,7 @@ impl LibraryView {
             let book = self.library.get_book(&book_id).await?;
             let book = book.lock().await;
             (
-                // Read-only lookup: minting an empty translation here would
-                // cement a failed-to-load book as untranslated and churn ids
-                // across synced devices (see get_paragraph_translations_batch).
+                // Read-only; see get_paragraph_view.
                 book.get_translation(target_language).await,
                 book.book.language.clone(),
             )
@@ -451,11 +436,9 @@ impl LibraryView {
 
         Ok(
             if let Some(paragraph) = book_translation.lock().await.paragraph_view(paragraph_id) {
-                // The frontend re-fetches word info on `book_updated` with the
-                // still-selected {sentence, word}; a re-translation can shrink
-                // the paragraph so those indices no longer exist. Guard before
-                // the direct-indexing views (they panic out of range, and
-                // panic=abort would take down the whole app).
+                // The frontend refetches on `book_updated` with its selected
+                // {sentence, word}, which a re-translation can shrink away. The
+                // views index raw, and panic = abort would take the app down.
                 if sentence_id >= paragraph.sentence_count() {
                     return Ok(None);
                 }
@@ -586,9 +569,8 @@ impl LibraryView {
     }
 }
 
-/// Accumulate the lemma slugs of every non-punctuation word in a paragraph
-/// translation into `out`. The dedup is the caller's `HashSet`, so a slug
-/// shared across paragraphs (or repeated within one) is loaded only once.
+/// Adds every non-punctuation lemma slug to `out`; the caller's `HashSet` dedups
+/// across paragraphs so each slug is loaded once.
 fn collect_paragraph_slugs(
     translation: &ParagraphTranslationView<'_>,
     src_lang: Language,
@@ -714,9 +696,8 @@ fn paragraph_to_segments(
                     if slug.is_empty() {
                         None
                     } else {
-                        // A missing map entry means the card is dormant
-                        // (Suspended/Deleted). A never-synced card is mapped
-                        // to Some(0.0) by `LibraryCardStore::familiarities`.
+                        // Missing = dormant card (Suspended/Deleted); never-synced
+                        // maps to Some(0.0) in `LibraryCardStore::familiarities`.
                         card_familiarity.get(&slug).copied()
                     }
                 };
@@ -754,8 +735,7 @@ fn sanitize_translation_text(value: &str) -> String {
         .join(" ")
 }
 
-/// Optimized check for levenshtein_distance(s1, s2) < 2.
-/// This is faster than computing the full distance for this specific threshold.
+/// `levenshtein_distance(str1, str2) < 2`, without computing the full distance.
 fn levenshtein_distance_lt_2(str1: &str, str2: &str) -> bool {
     if str1 == str2 {
         return true;
@@ -764,14 +744,9 @@ fn levenshtein_distance_lt_2(str1: &str, str2: &str) -> bool {
     let n = str1.chars().count();
     let m = str2.chars().count();
 
-    // If length difference >= 2, distance must be >= 2
     if n.abs_diff(m) >= 2 {
         return false;
     }
-
-    // For distance < 2, we only need to check for 0 or 1 edits
-    // Distance 0: already handled by equality check above
-    // Distance 1: strings differ by exactly one insertion, deletion, or substitution
 
     if n == 0 {
         return m == 1;
@@ -783,7 +758,6 @@ fn levenshtein_distance_lt_2(str1: &str, str2: &str) -> bool {
     let a: Vec<char> = str1.chars().collect();
     let b: Vec<char> = str2.chars().collect();
 
-    // Count mismatches - for distance < 2, we can have at most 1 edit
     let mut i = 0;
     let mut j = 0;
     let mut edits = 0;
@@ -791,20 +765,16 @@ fn levenshtein_distance_lt_2(str1: &str, str2: &str) -> bool {
     while i < n && j < m {
         if a[i] != b[j] {
             if edits == 1 {
-                return false; // Already had one edit, this is the second
+                return false;
             }
             edits += 1;
 
-            // Determine if this is insertion, deletion, or substitution
             if n > m && i + 1 < n && a[i + 1] == b[j] {
-                // Deletion from a (skip a[i])
-                i += 1;
+                i += 1; // deletion from a
             } else if m > n && j + 1 < m && a[i] == b[j + 1] {
-                // Insertion into a (skip b[j])
-                j += 1;
+                j += 1; // insertion into a
             } else {
-                // Substitution (advance both)
-                i += 1;
+                i += 1; // substitution
                 j += 1;
             }
         } else {
@@ -813,8 +783,7 @@ fn levenshtein_distance_lt_2(str1: &str, str2: &str) -> bool {
         }
     }
 
-    // If we've consumed all chars from both, check edit count
-    // If one string has remaining chars, that's another edit
+    // Leftover chars in either string cost one more edit.
     if i < n || j < m {
         edits += 1;
     }
@@ -928,8 +897,7 @@ mod tests {
             Language::from_639_3("eng").unwrap(),
         );
 
-        // Translation text is preserved raw (no HTML escaping on the backend);
-        // whitespace is still normalized via sanitize_translation_text.
+        // Raw translation text (no backend escaping), whitespace normalized.
         assert_eq!(
             segments,
             vec![
@@ -991,7 +959,6 @@ mod tests {
             Language::from_639_3("eng").unwrap(),
         );
 
-        // The &amp; entity is carried verbatim inside a gap segment between the two words.
         assert_eq!(
             segments,
             vec![
@@ -1088,7 +1055,7 @@ mod tests {
             full_translation: "ignored".to_owned(),
             words: vec![
                 word("A", &["A"], false),
-                // This is intentionally invalid / unterminated entity-like text.
+                // Unterminated entity, intentionally.
                 word("&bogus", &["and"], false),
                 word("B", &["B"], false),
             ],

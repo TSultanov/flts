@@ -2,22 +2,20 @@ import { defineConfig } from 'vite'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 import { resolve } from 'path'
 
-// https://vite.dev/config/
 export default defineConfig({
   plugins: [
     svelte(),
   ],
   resolve: {
     alias: {
-      // Mock Tauri APIs when running Playwright tests
       ...(process.env.PLAYWRIGHT && {
         '@tauri-apps/api/core': resolve(__dirname, 'tests/mocks/tauri-api.ts'),
         '@tauri-apps/api/event': resolve(__dirname, 'tests/mocks/tauri-event.ts'),
         '@tauri-apps/plugin-dialog': resolve(__dirname, 'tests/mocks/tauri-dialog.ts'),
         '@tauri-apps/plugin-os': resolve(__dirname, 'tests/mocks/tauri-os.ts'),
       }),
-      // Real-backend tier: core/event go over the WS bridge; dialog/os stay
-      // mocked (no headless equivalent for native pickers).
+      // Real tier: core/event go over the WS bridge; dialog/os stay mocked —
+      // native pickers have no headless equivalent.
       ...(process.env.PLAYWRIGHT_REAL && {
         '@tauri-apps/api/core': resolve(__dirname, 'tests/real/tauri-shim-core.ts'),
         '@tauri-apps/api/event': resolve(__dirname, 'tests/real/tauri-shim-event.ts'),
@@ -36,14 +34,9 @@ export default defineConfig({
   optimizeDeps: {
     exclude: [
       '@sqlite.org/sqlite-wasm',
-      // When running under Playwright, exclude every Tauri plugin from
-      // Vite's pre-bundling so that nested `import '@tauri-apps/api/...'`
-      // calls inside the plugins resolve through our alias instead of
-      // embedding a snapshot of the real (or stale-mock) module. Without
-      // this, listen/emit and mock state Maps end up split across two
-      // module instances and events get lost.
-      // Same hazard under PLAYWRIGHT_REAL: a pre-bundled plugin copy would
-      // bypass the alias and split the bridge socket across two instances.
+      // Pre-bundling would snapshot the plugins' nested `@tauri-apps/api/*`
+      // imports past the aliases above, splitting mock state / the bridge
+      // socket across two module instances.
       ...(process.env.PLAYWRIGHT || process.env.PLAYWRIGHT_REAL
         ? [
             '@tauri-apps/api',

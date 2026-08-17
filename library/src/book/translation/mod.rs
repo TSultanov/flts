@@ -373,12 +373,8 @@ impl Translation {
         self.paragraph_translations[new_index].sentences = sentences;
     }
 
-    /// Idempotent insert into `visible_words` for the legacy merge path —
-    /// preserves the union of clicks from two diverged stores when reconciling
-    /// historical book data. Live writes from the click path are no longer
-    /// wired up (reveal is ephemeral on the frontend), so this is also the
-    /// only handle the TLA+ trace harnesses use to simulate concurrent
-    /// translation-lock writes.
+    /// Idempotent insert; the merge path unions clicks from diverged stores,
+    /// and the TLA+ harnesses use it to simulate concurrent locked writes.
     pub fn add_visible_word(&mut self, paragraph: usize, word_index: usize) {
         if paragraph >= self.paragraphs.len() {
             return;
@@ -429,9 +425,8 @@ impl Translation {
 
                 loop {
                     let prev_paragraph = curr_paragraph.get_previous_version();
-                    // Check if a self version shares this timestamp AND has identical content.
-                    // Same timestamp + same content = true duplicate (merge visible_words only).
-                    // Same timestamp + different content = collision (keep both, bump later).
+                    // Same timestamp + same content is a true duplicate (union
+                    // visible_words); differing content is a collision, keep both.
                     let is_true_dup = versions
                         .iter()
                         .find(|(ts, _)| *ts == curr_paragraph.timestamp)
@@ -473,7 +468,6 @@ impl Translation {
             } else if let Some(paragarph) = self.paragraph_view(paragraph_idx)
                 && other.paragraph_view(paragraph_idx).is_none()
             {
-                // Copy entire history from self
                 let mut versions = Vec::new();
                 let mut curr = Some(paragarph);
                 while let Some(p) = curr {
@@ -492,7 +486,6 @@ impl Translation {
             } else if self.paragraph_view(paragraph_idx).is_none()
                 && let Some(other_paragraph) = other.paragraph_view(paragraph_idx)
             {
-                // Copy entire history from other
                 let mut versions = Vec::new();
                 let mut curr = Some(other_paragraph);
                 while let Some(p) = curr {
@@ -551,13 +544,11 @@ impl Translation {
         let mut hashing_stream_unbuffered = ChecksumedWriter::create(output_stream);
 
         let mut hashing_stream = BufWriter::new(hashing_stream_unbuffered);
-        // magic + version
         let t_magic = Instant::now();
         Magic::Translation.write(&mut hashing_stream)?;
         Version::V1.write_version(&mut hashing_stream)?;
         let d_magic = t_magic.elapsed();
 
-        // Build metadata and compute its hash
         let t_meta_build = Instant::now();
         let mut metadata_buf = Vec::new();
         let mut metadata_buf_hasher = ChecksumedWriter::create(&mut metadata_buf);
@@ -573,24 +564,20 @@ impl Translation {
         let metadata_hash = metadata_buf_hasher.current_hash();
         let d_meta_build = t_meta_build.elapsed();
 
-        // Write metadata
         let t_meta_write = Instant::now();
         write_u64(&mut hashing_stream, metadata_hash)?;
         write_len_prefixed_bytes(&mut hashing_stream, &metadata_buf)?;
         let d_meta_write = t_meta_write.elapsed();
 
-        // Compress strings blob
         let t_compress = Instant::now();
         let encoded = zstd::stream::encode_all(self.strings.as_slice(), -7)?;
         let d_compress = t_compress.elapsed();
 
-        // Write compressed strings
         let t_write_strings = Instant::now();
         write_var_u64(&mut hashing_stream, encoded.len() as u64)?;
         hashing_stream.write_all(&encoded)?;
         let d_write_strings = t_write_strings.elapsed();
 
-        // Contextual translations
         let t_ct = Instant::now();
         write_var_u64(
             &mut hashing_stream,
@@ -601,7 +588,6 @@ impl Translation {
         }
         let d_ct = t_ct.elapsed();
 
-        // Words
         let t_words = Instant::now();
         write_var_u64(&mut hashing_stream, self.words.len() as u64)?;
         for w in &self.words {
@@ -609,7 +595,6 @@ impl Translation {
             write_vec_slice(&mut hashing_stream, &w.note)?;
             hashing_stream.write_all(&[if w.is_punctuation { 1 } else { 0 }])?;
 
-            // Grammar required fields
             write_vec_slice(&mut hashing_stream, &w.grammar.original_initial_form)?;
             write_vec_slice(&mut hashing_stream, &w.grammar.target_initial_form)?;
             write_vec_slice(&mut hashing_stream, &w.grammar.part_of_speech)?;
@@ -624,7 +609,6 @@ impl Translation {
         }
         let d_words = t_words.elapsed();
 
-        // Sentences
         let t_sentences = Instant::now();
         write_var_u64(&mut hashing_stream, self.sentences.len() as u64)?;
         for s in &self.sentences {
@@ -633,7 +617,6 @@ impl Translation {
         }
         let d_sentences = t_sentences.elapsed();
 
-        // Paragraph translations
         let t_pt = Instant::now();
         write_var_u64(
             &mut hashing_stream,
@@ -652,7 +635,6 @@ impl Translation {
         }
         let d_pt = t_pt.elapsed();
 
-        // Paragraphs (Option indices)
         let t_paragraphs = Instant::now();
         write_var_u64(&mut hashing_stream, self.paragraphs.len() as u64)?;
         for p in &self.paragraphs {
@@ -666,7 +648,6 @@ impl Translation {
         }
         let d_paragraphs = t_paragraphs.elapsed();
 
-        // Finalize hash and flush
         let t_finalize = Instant::now();
         hashing_stream_unbuffered = hashing_stream.into_inner()?;
         let hash = hashing_stream_unbuffered.current_hash();
@@ -747,13 +728,11 @@ impl Translation {
         let mut hashing_stream_unbuffered = ChecksumedWriter::create(output_stream);
 
         let mut hashing_stream = BufWriter::new(hashing_stream_unbuffered);
-        // magic + version
         let t_magic = Instant::now();
         Magic::Translation.write(&mut hashing_stream)?;
         Version::V2.write_version(&mut hashing_stream)?;
         let d_magic = t_magic.elapsed();
 
-        // Build metadata and compute its hash
         let t_meta_build = Instant::now();
         let mut metadata_buf = Vec::new();
         let mut metadata_buf_hasher = ChecksumedWriter::create(&mut metadata_buf);
@@ -769,24 +748,20 @@ impl Translation {
         let metadata_hash = metadata_buf_hasher.current_hash();
         let d_meta_build = t_meta_build.elapsed();
 
-        // Write metadata
         let t_meta_write = Instant::now();
         write_u64(&mut hashing_stream, metadata_hash)?;
         write_len_prefixed_bytes(&mut hashing_stream, &metadata_buf)?;
         let d_meta_write = t_meta_write.elapsed();
 
-        // Compress strings blob
         let t_compress = Instant::now();
         let encoded = zstd::stream::encode_all(self.strings.as_slice(), -7)?;
         let d_compress = t_compress.elapsed();
 
-        // Write compressed strings
         let t_write_strings = Instant::now();
         write_var_u64(&mut hashing_stream, encoded.len() as u64)?;
         hashing_stream.write_all(&encoded)?;
         let d_write_strings = t_write_strings.elapsed();
 
-        // Contextual translations
         let t_ct = Instant::now();
         write_var_u64(
             &mut hashing_stream,
@@ -797,7 +772,6 @@ impl Translation {
         }
         let d_ct = t_ct.elapsed();
 
-        // Words
         let t_words = Instant::now();
         write_var_u64(&mut hashing_stream, self.words.len() as u64)?;
         for w in &self.words {
@@ -805,7 +779,6 @@ impl Translation {
             write_vec_slice(&mut hashing_stream, &w.note)?;
             hashing_stream.write_all(&[if w.is_punctuation { 1 } else { 0 }])?;
 
-            // Grammar required fields
             write_vec_slice(&mut hashing_stream, &w.grammar.original_initial_form)?;
             write_vec_slice(&mut hashing_stream, &w.grammar.target_initial_form)?;
             write_vec_slice(&mut hashing_stream, &w.grammar.part_of_speech)?;
@@ -820,7 +793,6 @@ impl Translation {
         }
         let d_words = t_words.elapsed();
 
-        // Sentences
         let t_sentences = Instant::now();
         write_var_u64(&mut hashing_stream, self.sentences.len() as u64)?;
         for s in &self.sentences {
@@ -829,7 +801,6 @@ impl Translation {
         }
         let d_sentences = t_sentences.elapsed();
 
-        // Paragraph translations
         let t_pt = Instant::now();
         write_var_u64(
             &mut hashing_stream,
@@ -846,15 +817,10 @@ impl Translation {
             };
             write_vec_slice(&mut hashing_stream, &pt.sentences)?;
 
-            // Write tagged fields
-            // v64 number of fields
-            // for each field: v64 lengths of a field
-            // for each field: v64 tag, data
             let translation_model_field = {
                 let buf = Vec::new();
                 let mut cursor = Cursor::new(buf);
 
-                // Translation model
                 write_var_u64(&mut cursor, FieldTag::TranslationModel as u64)?;
                 write_var_u64(&mut cursor, pt.model as u64)?;
                 cursor.into_inner()
@@ -864,7 +830,6 @@ impl Translation {
                 let buf = Vec::new();
                 let mut cursor = Cursor::new(buf);
 
-                // Tokens
                 write_var_u64(&mut cursor, FieldTag::TotalTokens as u64)?;
                 write_opt_var_u64(&mut cursor, pt.total_tokens)?;
                 cursor.into_inner()
@@ -874,7 +839,6 @@ impl Translation {
                 let buf = Vec::new();
                 let mut cursor = Cursor::new(buf);
 
-                // Visible words
                 write_var_u64(&mut cursor, FieldTag::VisibleWords as u64)?;
                 write_var_u64(&mut cursor, pt.visible_words.len() as u64)?;
                 // Sort for deterministic serialization
@@ -896,7 +860,6 @@ impl Translation {
         }
         let d_pt = t_pt.elapsed();
 
-        // Paragraphs (Option indices)
         let t_paragraphs = Instant::now();
         write_var_u64(&mut hashing_stream, self.paragraphs.len() as u64)?;
         for p in &self.paragraphs {
@@ -910,7 +873,6 @@ impl Translation {
         }
         let d_paragraphs = t_paragraphs.elapsed();
 
-        // Finalize hash and flush
         let t_finalize = Instant::now();
         hashing_stream_unbuffered = hashing_stream.into_inner()?;
         let hash = hashing_stream_unbuffered.current_hash();
@@ -952,14 +914,12 @@ impl Translation {
     where
         Self: Sized,
     {
-        // Validate checksum
         let hash_valid = validate_hash(input_stream)?;
         if !hash_valid {
             log::error!("Failed to read translation: Invalid hash");
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid hash"));
         }
 
-        // Read magic + version
         let mut magic = [0u8; 4];
         input_stream.read_exact(&mut magic)?;
         if &magic != Magic::Translation.as_bytes() {
@@ -1003,7 +963,6 @@ impl Translation {
         _ = read_var_u64(input_stream)?;
         let d_meta = t_meta.elapsed();
 
-        // Read and decompress strings
         let t_strings_read = Instant::now();
         let encoded_data = read_len_prefixed_vec(input_stream)?;
         let d_strings_read = t_strings_read.elapsed();
@@ -1014,7 +973,6 @@ impl Translation {
         let mut seen_slices = AHashSet::default();
 
         let mut cache_vec_slice = |slice: VecSlice<u8>| {
-            // insert returns true if newly inserted, false if already present
             if !seen_slices.insert(slice) {
                 return slice;
             }
@@ -1023,7 +981,6 @@ impl Translation {
             slice
         };
 
-        // Contextual translations
         let t_ct = Instant::now();
         let ct_len = read_var_u64(input_stream)? as usize;
         let mut word_contextual_translations = Vec::with_capacity(ct_len);
@@ -1033,7 +990,6 @@ impl Translation {
         }
         let d_ct = t_ct.elapsed();
 
-        // Words
         let t_words = Instant::now();
         let words_len = read_var_u64(input_stream)? as usize;
         let mut words = Vec::with_capacity(words_len);
@@ -1071,7 +1027,6 @@ impl Translation {
         }
         let d_words = t_words.elapsed();
 
-        // Sentences
         let t_sentences = Instant::now();
         let sentences_len = read_var_u64(input_stream)? as usize;
         let mut sentences = Vec::with_capacity(sentences_len);
@@ -1085,7 +1040,6 @@ impl Translation {
         }
         let d_sentences = t_sentences.elapsed();
 
-        // Paragraph translations
         let t_pt = Instant::now();
         let pt_len = read_var_u64(input_stream)? as usize;
         let mut paragraph_translations = Vec::with_capacity(pt_len);
@@ -1111,7 +1065,6 @@ impl Translation {
         }
         let d_pt = t_pt.elapsed();
 
-        // Paragraphs (Option indices)
         let t_paragraphs = Instant::now();
         let paragraphs_len = read_var_u64(input_stream)? as usize;
         let mut paragraphs = Vec::with_capacity(paragraphs_len);
@@ -1195,7 +1148,6 @@ impl Translation {
         _ = read_var_u64(input_stream)?;
         let d_meta = t_meta.elapsed();
 
-        // Read and decompress strings
         let t_strings_read = Instant::now();
         let encoded_data = read_len_prefixed_vec(input_stream)?;
         let d_strings_read = t_strings_read.elapsed();
@@ -1206,7 +1158,6 @@ impl Translation {
         let mut seen_slices = AHashSet::default();
 
         let mut cache_vec_slice = |slice: VecSlice<u8>| {
-            // insert returns true if newly inserted, false if already present
             if !seen_slices.insert(slice) {
                 return slice;
             }
@@ -1215,7 +1166,6 @@ impl Translation {
             slice
         };
 
-        // Contextual translations
         let t_ct = Instant::now();
         let ct_len = read_var_u64(input_stream)? as usize;
         let mut word_contextual_translations = Vec::with_capacity(ct_len);
@@ -1225,7 +1175,6 @@ impl Translation {
         }
         let d_ct = t_ct.elapsed();
 
-        // Words
         let t_words = Instant::now();
         let words_len = read_var_u64(input_stream)? as usize;
         let mut words = Vec::with_capacity(words_len);
@@ -1263,7 +1212,6 @@ impl Translation {
         }
         let d_words = t_words.elapsed();
 
-        // Sentences
         let t_sentences = Instant::now();
         let sentences_len = read_var_u64(input_stream)? as usize;
         let mut sentences = Vec::with_capacity(sentences_len);
@@ -1277,7 +1225,6 @@ impl Translation {
         }
         let d_sentences = t_sentences.elapsed();
 
-        // Paragraph translations
         let t_pt = Instant::now();
         let pt_len = read_var_u64(input_stream)? as usize;
         let mut paragraph_translations = Vec::with_capacity(pt_len);
@@ -1299,8 +1246,6 @@ impl Translation {
                 total_tokens: None,
                 visible_words: AHashSet::new(),
             };
-
-            // Tagged fields
 
             let tagged_fields_count = read_var_u64(input_stream)?;
             let mut fields_length = Vec::with_capacity(tagged_fields_count as usize);
@@ -1340,7 +1285,6 @@ impl Translation {
         }
         let d_pt = t_pt.elapsed();
 
-        // Paragraphs (Option indices)
         let t_paragraphs = Instant::now();
         let paragraphs_len = read_var_u64(input_stream)? as usize;
         let mut paragraphs = Vec::with_capacity(paragraphs_len);

@@ -6,15 +6,9 @@ export type UpdateEvent<TEvent = any> = {
     filter: (ev: TEvent) => boolean;
 };
 
-// Every event name the Rust backend emits that the frontend consumes through
-// the hub (verified against `emit(` call sites under site/src-tauri/src).
-// Native listeners for these are installed eagerly at hub construction, so an
-// event fired while a view is still mounting — after its subscribe() but
-// before an async native `listen()` registration would have completed — is
-// not silently lost. The lyrics_* / spotify_* events are consumed via direct
-// `listen()` in their stores and deliberately stay out of this catalog.
-// Any name not listed here still gets a lazy native listener on first
-// subscribe.
+// Listened for eagerly at hub construction, so an event fired while a view is
+// still mounting isn't lost to a pending async `listen()`. Unlisted names get
+// a lazy listener on first subscribe; lyrics_*/spotify_* bypass the hub.
 export const KNOWN_EVENTS: readonly string[] = [
     "paragraph_updated",
     "book_updated",
@@ -42,27 +36,22 @@ type Handler = (payload: any) => void;
 
 type Subscriber = {
     filter: (payload: any) => boolean;
-    // Exactly one of the two is set. Plain subscriptions hold their handler
-    // strongly (alive until unsubscribed). Weak subscriptions hold only a
-    // WeakRef, so the subscription lives exactly as long as the caller's own
-    // strong reference to the handler; dispatch prunes dead entries.
+    // Exactly one is set. A weak subscription lives only as long as the
+    // caller's own strong ref to the handler; dispatch prunes dead entries.
     handler?: Handler;
     weakHandler?: WeakRef<Handler>;
 };
 
-// Singleton router: at most one Tauri `listen()` per event name, with
-// in-process fan-out to subscribers. Each per-paragraph Resource subscribing
-// here costs an O(1) Set insert instead of a ~10 ms IPC round-trip to
-// register a native listener.
+// At most one Tauri `listen()` per event name, fanned out in-process: a
+// per-paragraph Resource costs a Set insert, not a ~10 ms IPC round-trip.
 export class TauriEventHub {
     #subs = new Map<string, Set<Subscriber>>();
     #ready = new Map<string, Promise<void>>();
     #installed = new Set<string>();
 
     constructor(eagerEvents: readonly string[] = KNOWN_EVENTS) {
-        // Best-effort: outside a Tauri webview (vitest, plain browser) the
-        // native `listen` fails; each name then degrades to the lazy
-        // install-on-first-subscribe path. Must never throw at import time.
+        // Outside a Tauri webview `listen` fails; degrade to lazy install
+        // rather than throwing at import time.
         for (const name of eagerEvents) {
             try {
                 this.#install(name);
@@ -83,10 +72,8 @@ export class TauriEventHub {
         });
     }
 
-    // Weakly-held subscription: the hub keeps only a WeakRef to `handler`,
-    // so the caller MUST hold the only strong reference to it (see Resource).
-    // Once the caller is collected, dispatch prunes the dead entry; the
-    // returned unsubscribe removes it eagerly (e.g. from a finalizer).
+    // The hub keeps only a WeakRef, so the caller MUST hold the only strong
+    // reference to `handler` (see Resource).
     subscribeWeak<T>(
         name: string,
         filter: (payload: T) => boolean,
@@ -94,8 +81,7 @@ export class TauriEventHub {
     ): () => void {
         const sub: Subscriber =
             typeof WeakRef === "undefined"
-                ? // No WeakRef in this environment: fall back to the strong
-                  // (pre-existing) behavior rather than dropping updates.
+                ? // No WeakRef here: hold strongly rather than drop updates.
                   {
                       filter: filter as (p: any) => boolean,
                       handler: handler as Handler,
@@ -142,8 +128,7 @@ export class TauriEventHub {
         this.#ready.set(
             name,
             p.catch(() => {
-                // Native registration failed (e.g. no Tauri webview). Forget
-                // the attempt so a later subscribe() retries lazily.
+                // Forget the failed attempt so a later subscribe() retries.
                 this.#installed.delete(name);
                 this.#ready.delete(name);
             }),
@@ -156,15 +141,14 @@ export class TauriEventHub {
         for (const sub of set) {
             const handler = sub.handler ?? sub.weakHandler?.deref();
             if (!handler) {
-                // The weakly-held subscriber (a Resource) was collected;
-                // drop its entry. Deleting during Set iteration is safe.
+                // Collected weak subscriber; deleting mid-iteration is safe.
                 set.delete(sub);
                 continue;
             }
             try {
                 if (sub.filter(payload)) handler(payload);
             } catch {
-                /* swallow — one bad subscriber must not break others */
+                /* one bad subscriber must not break others */
             }
         }
     }
@@ -174,11 +158,8 @@ export const eventHub = new TauriEventHub();
 
 export class Resource<T> {
     #current: T | undefined = $state(undefined);
-    // Sole strong reference to the refetch handler. The hub only holds a
-    // WeakRef to it (subscribeWeak), so the subscription — and therefore the
-    // backend re-fetch on each event — lives exactly as long as this
-    // Resource. Dropped Resources become GC-eligible; dispatch prunes their
-    // dead entries and the FinalizationRegistry unsubscribes them eagerly.
+    // Sole strong ref to the handler: the hub holds only a WeakRef, so the
+    // subscription lives exactly as long as this Resource.
     #refetch: () => void;
 
     constructor(
@@ -202,9 +183,8 @@ export class Resource<T> {
         }
         fetch();
 
-        // The held unsubscribers only capture the hub's Set and the
-        // Subscriber entry (which references `fetch` weakly), so the registry
-        // does not pin this Resource.
+        // The unsubscribers capture only the hub's Set and the (weak)
+        // Subscriber, so the registry does not pin this Resource.
         eventCleanupRegistry?.register(this, unsubscribers);
     }
 

@@ -20,12 +20,9 @@ const LRCLIB_RETRY: RetryConfig = RetryConfig {
     jitter_frac: 0.25,
 };
 
-/// Classifier for `retry()`. Returns `true` for errors that may resolve on a retry.
-///
-/// Notes:
-/// - HTTP 404 never reaches the classifier — `fetch` returns `Ok(None)` for it.
-/// - Status-based classification reads back the "LRClib HTTP <code>" message produced
-///   below; a typed error enum would be heavier without buying anything for one call site.
+/// True for errors a retry may resolve. 404 never arrives here — `fetch`
+/// returns `Ok(None)` — and status classification parses the numeric code back
+/// out of the "LRClib HTTP <code>" message this module produces.
 fn is_transient(err: &anyhow::Error) -> bool {
     if let Some(re) = err.downcast_ref::<reqwest::Error>() {
         return re.is_timeout() || re.is_connect() || re.is_request();
@@ -48,12 +45,8 @@ struct LrclibResponse {
     plain_lyrics: Option<String>,
 }
 
-/// Fetch lyrics for a track from LRClib.
-///
-/// Returns `Ok(None)` when the track is not in the LRClib database (HTTP 404).
-/// Returns `Err` for network / parse failures.
-///
-/// `duration_s` is optional but improves match quality on LRClib; pass `None` if unknown.
+/// Fetch lyrics for a track. `Ok(None)` means LRClib doesn't have the track.
+/// `duration_s` is optional but improves match quality.
 pub async fn fetch(
     track_id: &str,
     artist: &str,
@@ -106,8 +99,7 @@ async fn fetch_once(
         .send()
         .await?;
 
-    // 404 is "track not in DB" — returned as Ok(None) BEFORE the classifier sees anything,
-    // so the retry helper never treats it as transient.
+    // 404 means "not in DB"; resolve it before the classifier can retry it.
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         info!("LRClib: no lyrics for {artist} — {title}");
         return Ok(None);
@@ -146,10 +138,8 @@ async fn fetch_once(
     Ok(None)
 }
 
-/// Parse standard LRC tags: `[mm:ss.xx]text` or `[mm:ss.xxx]text`.
-/// Multiple time tags on one text line produce multiple `LyricsLine` entries.
-/// Lines with no time tag (or non-LRC metadata like `[ar:...]`, `[ti:...]`)
-/// are emitted with `time_ms: None`.
+/// Parse `[mm:ss.xx]text` tags. Several tags on one line yield several
+/// `LyricsLine`s; untagged lines and metadata get `time_ms: None`.
 fn parse_lrc(raw: &str) -> Vec<LyricsLine> {
     let time_tag = Regex::new(r"\[(\d{1,3}):(\d{1,2})(?:\.(\d{1,3}))?\]").unwrap();
     let mut out = Vec::new();
@@ -198,12 +188,9 @@ fn parse_lrc(raw: &str) -> Vec<LyricsLine> {
         }
     }
 
-    // Sort timed lines chronologically without collapsing untimed lines
-    // (blank stanza breaks, `[ar:]`/`[ti:]` headers) to the very end: give
-    // each untimed line the timestamp of the preceding timed line so a stable
-    // sort keeps it attached to its stanza. For an already-ordered file the
-    // keys are non-decreasing and the (stable) sort is a no-op, preserving the
-    // original structure exactly.
+    // Give each untimed line the preceding timed line's stamp so a stable sort
+    // keeps it with its stanza instead of dumping it at the end. An ordered
+    // file has non-decreasing keys, so the sort is a no-op.
     let mut last_time = 0u32;
     let mut keyed: Vec<(u32, LyricsLine)> = out
         .into_iter()

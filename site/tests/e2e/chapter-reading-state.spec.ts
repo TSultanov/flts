@@ -8,47 +8,30 @@ import {
   type SeedParagraph,
 } from './helpers/paragraph';
 
-// Regression suite for chapter reading-position restore.
+// Chapter reading-position restore, over both Chromium and WebKit (WKWebView
+// is production).
 //
-// Opening a book with a previously-saved `readingState` should scroll the
-// horizontal page-flip container so the saved paragraph lands in view. The
-// path runs: LibraryView -> /book/{id} -> BookView fetches readingState ->
-// navigates to /book/{id}/{savedChapter} -> ChapterView mounts with
-// `initialParagraphId` already set -> ChapterViewModel.startInitialSync
-// -> scrollIntoView on the matching wrapper.
-//
-// IMPORTANT: the regression only reproduces via the library->book flow. A
-// direct goto('/book/{id}/0') happens to work because ChapterView mounts
-// once with initialParagraphId=null, syncs to paragraph 0, then re-runs
-// the sync when readingState arrives — which lazy-mounts the world before
-// the scroll fires. Real users click the book from the library, which
-// mounts ChapterView a single time with initialParagraphId already
-// populated, and that timing is what the refactor broke.
-//
-// These run on both Chromium and WebKit because WKWebView is the
-// production engine.
+// Specs must enter via the library->book flow: a direct goto('/book/{id}/0')
+// mounts ChapterView with initialParagraphId=null and re-syncs later, which
+// lazy-mounts everything before the scroll and hides the behaviour under test.
 test.describe('Chapter reading-state restore (multipage)', () => {
   test.skip(({ browserName }) => browserName === 'firefox', 'chromium + webkit only');
 
   const COUNT = 80;
   const TARGET = 40;
-  // Restore goes through one tick() retry inside scrollParagraphIntoView and
-  // a subsequent recomputeMountWindow. 3s is comfortably above the worst
-  // observed end-to-end latency on either engine.
+  // Covers scrollParagraphIntoView's tick() retry plus a mount-window recompute.
   const POLL = { timeout: 3000, intervals: [50, 100, 200] } as const;
 
   async function openBookFromLibrary(
     page: import('@playwright/test').Page,
     bookId: string,
   ) {
-    // Same path a real user takes: BookView mounts at /book/{id} with no
-    // chapter, fetches readingState, then navigates to /book/{id}/{savedChapter}
-    // so ChapterView mounts ONCE with initialParagraphId already set.
+    // BookView must resolve the chapter, so ChapterView mounts once with
+    // initialParagraphId already set.
     await page.locator(`a[href="/book/${bookId}"]`).first().click();
     await page.waitForSelector('.paragraphs-container');
   }
 
-  // ----- R1 ---------------------------------------------------------------
   test('R1: saved paragraph is in view after opening the book from the library', async ({
     page,
   }) => {
@@ -84,7 +67,6 @@ test.describe('Chapter reading-state restore (multipage)', () => {
       .toBe(true);
   });
 
-  // ----- R2 ---------------------------------------------------------------
   test('R2: with no saved state the book opens on paragraph 0', async ({ page }) => {
     const { bookId } = await seedAndOpen(page, multipageSpec(COUNT), {
       path: '/library',
@@ -94,7 +76,6 @@ test.describe('Chapter reading-state restore (multipage)', () => {
     const first = paragraphLocator(page, 0);
     await expect(first).toBeAttached();
 
-    // Settle a beat in case anything async would scroll us off paragraph 0.
     await page.waitForTimeout(200);
 
     const scrollLeft = await page.evaluate(() => {
@@ -107,17 +88,9 @@ test.describe('Chapter reading-state restore (multipage)', () => {
     expect(scrollLeft).toBeLessThan(50);
   });
 
-  // ----- Diverse-paragraph-size round-trip -------------------------------
-  //
-  // Uniform fillers (every paragraph 15 sentences) hide layout asymmetry.
-  // Real books mix short dialog with long prose, and with column-fill: auto
-  // a short paragraph can land anywhere in its column. The restore path
-  // centers the wrapper horizontally; the save path hit-tests the top-left.
-  // If the restore lands the wrong column, the very next scroll save will
-  // overwrite the user's actual position with whatever paragraph happened
-  // to sit at (left+16, top+16). The round-trip check below is the
-  // strongest version of "restore correctly": after restore settles, the
-  // top-left hit-test must return the seeded target id.
+  // Mixed paragraph sizes: restore centers the wrapper while save hit-tests
+  // the top-left, so a restore into the wrong column silently overwrites the
+  // user's position on the next save. The round-trip is the real assertion.
   test.describe('round-trip with diverse paragraph sizes', () => {
     type Profile = 'bimodal' | 'short-with-spikes' | 'long-with-gaps';
     const PROFILES: Profile[] = ['bimodal', 'short-with-spikes', 'long-with-gaps'];
@@ -146,13 +119,8 @@ test.describe('Chapter reading-state restore (multipage)', () => {
       return out;
     }
 
-    // The restore puts the column containing the saved paragraph into
-    // view. Whether the saved paragraph appears at the column's top is
-    // determined by CSS multi-column content flow, not by scrollLeft —
-    // a mid-column target can't be moved to the top without putting a
-    // different column in view. So the invariant is "target's column is
-    // in view", checked by overlapping rect, identical in semantics to
-    // R1's check.
+    // The invariant is "the target's column is in view": multi-column flow,
+    // not scrollLeft, decides where inside the column the target sits.
     async function expectTargetColumnInView(page: Page, targetId: number) {
       await expect
         .poll(
@@ -193,12 +161,8 @@ test.describe('Chapter reading-state restore (multipage)', () => {
     }
   });
 
-  // ----- Multi-page paragraph restore -----------------------------------
-  //
-  // The saved state carries a `pageOffset` so restore lands on the same
-  // column within the paragraph the user was reading. `multipageSpec`
-  // wedges a 300-sentence paragraph at index HUGE so it spans multiple
-  // columns regardless of viewport size.
+  // `pageOffset` picks the column *within* a paragraph; `multipageSpec` wedges
+  // a 300-sentence paragraph at HUGE so it spans columns at any viewport.
   test('R3: restore lands on the saved page within a multi-page paragraph', async ({
     page,
   }) => {
@@ -223,9 +187,7 @@ test.describe('Chapter reading-state restore (multipage)', () => {
     await openBookFromLibrary(page, bookId);
     await expect(paragraphLocator(page, HUGE)).toBeAttached();
 
-    // Wait until the wrapper has finished growing (spans more than one
-    // column) AND scrollLeft sits within half a column-width of
-    // wrapperContentLeft + PAGE_OFFSET * columnWidth.
+    // Wrapper must have finished growing before scrollLeft means anything.
     await expect
       .poll(
         async () =>

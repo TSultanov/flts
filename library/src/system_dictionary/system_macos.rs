@@ -22,11 +22,9 @@ pub fn get_definition(
         ) -> CFStringRef;
     }
 
-    // Try to find a specific dictionary based on priorities
     let dictionary_ptr = find_best_dictionary(source_lang_code, target_lang_code);
 
-    // If no suitable dictionary was found (and we enforce source language match), return None.
-    // The user requested: "If there are no such, we should not show anything to the user."
+    // No source-language dictionary means showing the user nothing.
     if dictionary_ptr.is_null() {
         return None;
     }
@@ -37,7 +35,7 @@ pub fn get_definition(
         length: cf_word.char_len(),
     };
 
-    // Dynamically load DCSCopyDefinitionMarkup to avoid linker errors with private API
+    // Load DCSCopyDefinitionMarkup dynamically; linking the private API fails.
     let definition_ref = unsafe {
         let symbol = std::ffi::CString::new("DCSCopyDefinitionMarkup").unwrap();
         // RTLD_DEFAULT is -2 on macOS
@@ -52,7 +50,6 @@ pub fn get_definition(
         let mut func_ptr = dlsym(rtld_default, symbol.as_ptr());
 
         if func_ptr.is_null() {
-            // Try loading the framework explicitly
             let fw_path = std::ffi::CString::new("/System/Library/Frameworks/CoreServices.framework/Frameworks/DictionaryServices.framework/DictionaryServices").unwrap();
             let handle = dlopen(fw_path.as_ptr(), 1); // RTLD_LAZY
             if !handle.is_null() {
@@ -70,7 +67,6 @@ pub fn get_definition(
 
             func(dictionary_ptr, cf_word.as_concrete_TypeRef(), range)
         } else {
-            // Fallback to text if private API is missing
             DCSCopyTextDefinition(dictionary_ptr, cf_word.as_concrete_TypeRef(), range)
         }
     };
@@ -82,10 +78,8 @@ pub fn get_definition(
     let definition_cf: CFString = unsafe { TCFType::wrap_under_create_rule(definition_ref) };
     let definition_text = definition_cf.to_string();
 
-    // Fetch the text definition (Create Rule — the caller owns it) only after
-    // the early return above. Fetching it before leaked one CFString on every
-    // lookup miss: when definition_ref was null we returned without ever
-    // wrapping/releasing text_definition_ref.
+    // Create Rule: we own the result, so only fetch past the early return or a
+    // lookup miss leaks the CFString.
     let text_definition_ref =
         unsafe { DCSCopyTextDefinition(dictionary_ptr, cf_word.as_concrete_TypeRef(), range) };
 
@@ -108,7 +102,7 @@ fn find_best_dictionary(source_lang_code: &str, target_lang_code: &str) -> *cons
     use core_foundation::string::{CFString, CFStringRef};
     use std::ptr;
 
-    // DCSCopyAvailableDictionaries returns a CFSet, NOT a CFArray!
+    // DCSCopyAvailableDictionaries returns a CFSet, not a CFArray.
     type CFSetRef = *const std::ffi::c_void;
 
     #[link(name = "CoreServices", kind = "framework")]
@@ -124,7 +118,7 @@ fn find_best_dictionary(source_lang_code: &str, target_lang_code: &str) -> *cons
         fn CFRelease(cf: *const std::ffi::c_void);
     }
 
-    // Resolve languages to English names for matching (e.g. "de" -> "German")
+    // Dictionary names carry English language names, e.g. "de" -> "German".
     let source_lang_name = Language::from_639_1(source_lang_code)
         .or_else(|| Language::from_639_3(source_lang_code))
         .map(|l| l.to_name().to_lowercase());
@@ -159,11 +153,9 @@ fn find_best_dictionary(source_lang_code: &str, target_lang_code: &str) -> *cons
             return ptr::null();
         }
 
-        // Allocate buffer and get all values from the set
         let mut values: Vec<*const std::ffi::c_void> = vec![ptr::null(); count];
         CFSetGetValues(available_dicts_set, values.as_mut_ptr());
 
-        // Candidates
         let mut best_match: *const std::ffi::c_void = ptr::null();
         let mut english_match: *const std::ffi::c_void = ptr::null();
         let mut source_match: *const std::ffi::c_void = ptr::null();
@@ -178,13 +170,12 @@ fn find_best_dictionary(source_lang_code: &str, target_lang_code: &str) -> *cons
                 let name_cf: CFString = TCFType::wrap_under_get_rule(name_ref);
                 let name = name_cf.to_string().to_lowercase();
 
-                // Skip thesauruses and Wikipedia - they don't have proper definitions
+                // Thesauruses and Wikipedia carry no proper definitions.
                 if name.contains("thesaurus") || name.contains("wikipedia") {
                     continue;
                 }
 
-                // Check if dictionary contains source language
-                // Special case: 'oxford' prefix indicates English language presence
+                // An 'oxford' prefix implies English.
                 let has_source = if source_name == "english" {
                     name.contains("english")
                         || name.starts_with("oxford")
@@ -192,29 +183,25 @@ fn find_best_dictionary(source_lang_code: &str, target_lang_code: &str) -> *cons
                 } else {
                     name.contains(&source_name)
                 };
-                // Check if dictionary contains target language
                 let has_target = name.contains(&target_name);
-                // Check if dictionary contains English (for fallback)
                 let has_english = name.contains("english") || name.starts_with("oxford");
 
-                // Debug all candidates
                 if has_source && has_target {
                     debug!("Found Source->Target match: {}", name);
                 }
 
-                // For bilingual dictionaries, both languages should be in the name
-                // Priority 1: Source -> Target (bilingual dictionary with both languages)
+                // Priority 1: both languages named, i.e. source -> target.
                 if has_source && has_target && best_match.is_null() {
                     best_match = dict_ptr;
                 }
 
-                // Priority 2: Source -> English (for non-English sources)
+                // Priority 2: source -> English.
                 if has_source && has_english && source_name != "english" && english_match.is_null()
                 {
                     english_match = dict_ptr;
                 }
 
-                // Priority 3: Any dictionary with source language (monolingual or any bilingual)
+                // Priority 3: anything covering the source language.
                 if has_source && source_match.is_null() {
                     source_match = dict_ptr;
                 }
@@ -239,29 +226,25 @@ fn find_best_dictionary(source_lang_code: &str, target_lang_code: &str) -> *cons
 
 #[cfg(target_os = "macos")]
 fn extract_transcription(text: &str) -> Option<String> {
-    // Check for |...| style
     if let Some(start) = text.find('|')
         && let Some(end) = text[start + 1..].find('|')
     {
         let content = &text[start + 1..start + 1 + end];
-        // Filter out excessive whitespace or newlines just in case
         if !content.contains('\n') && content.len() < 50 {
             return Some(content.trim().to_string());
         }
     }
-    // Check for /.../ style (common in some dictionaries)
     if let Some(start) = text.find('/')
         && let Some(end) = text[start + 1..].find('/')
     {
         let content = &text[start + 1..start + 1 + end];
-        // heuristic to avoid matching random slashes in text: length and content
+        // Length and newline checks keep random slashes from matching.
         if !content.contains('\n') && content.len() < 50 {
             return Some(content.trim().to_string());
         }
     }
     None
 }
-// Stub for non-macos
 #[cfg(not(target_os = "macos"))]
 pub fn get_definition(
     _word: &str,
@@ -330,7 +313,6 @@ mod tests {
 
     #[test]
     fn test_find_best_dictionary_german_russian() {
-        // German -> Russian (should find German-English as fallback, or German monolingual)
         println!("\n=== Testing German -> Russian ===");
         let dict_ptr = find_best_dictionary("de", "ru");
         println!("Result: {:p}", dict_ptr);
@@ -350,7 +332,6 @@ mod tests {
 
     #[test]
     fn test_find_best_dictionary_german_english() {
-        // German -> English (should find Oxford German Dictionary)
         println!("\n=== Testing German -> English ===");
         let dict_ptr = find_best_dictionary("de", "en");
         println!("Result: {:p}", dict_ptr);
@@ -370,7 +351,6 @@ mod tests {
 
     #[test]
     fn test_find_best_dictionary_russian_english() {
-        // Russian -> English
         println!("\n=== Testing Russian -> English ===");
         let dict_ptr = find_best_dictionary("ru", "en");
         println!("Result: {:p}", dict_ptr);
@@ -390,7 +370,6 @@ mod tests {
 
     #[test]
     fn test_find_best_dictionary_english_russian() {
-        // English -> Russian (might not find English-Russian, but should find English mono)
         println!("\n=== Testing English -> Russian ===");
         let dict_ptr = find_best_dictionary("en", "ru");
         println!("Result: {:p}", dict_ptr);
@@ -435,7 +414,6 @@ mod tests {
             Some(def) => {
                 println!("Definition found!");
                 println!("Transcription: {:?}", def.transcription);
-                // Use char-safe truncation for multi-byte characters
                 let preview: String = def.definition.chars().take(200).collect();
                 println!("Definition (first 200 chars): {}", preview);
             }
@@ -464,11 +442,9 @@ mod tests {
         }
     }
 
-    // ==================== Additional Language Pair Tests ====================
 
     #[test]
     fn test_find_best_dictionary_georgian_english() {
-        // Georgian -> English (English-Georgian Dictionary exists)
         println!("\n=== Testing Georgian -> English ===");
         let dict_ptr = find_best_dictionary("ka", "en");
         print_selected_dictionary(dict_ptr);
@@ -480,16 +456,13 @@ mod tests {
 
     #[test]
     fn test_find_best_dictionary_english_georgian() {
-        // English -> Georgian (should find English-Georgian Dictionary)
         println!("\n=== Testing English -> Georgian ===");
         let dict_ptr = find_best_dictionary("en", "ka");
         print_selected_dictionary(dict_ptr);
-        // Note: "English-Georgian" contains "english" and "georgian"
     }
 
     #[test]
     fn test_find_best_dictionary_french_english() {
-        // French -> English (Oxford-Hachette French Dictionary exists)
         println!("\n=== Testing French -> English ===");
         let dict_ptr = find_best_dictionary("fr", "en");
         print_selected_dictionary(dict_ptr);
@@ -497,7 +470,6 @@ mod tests {
 
     #[test]
     fn test_find_best_dictionary_spanish_english() {
-        // Spanish -> English (Gran Diccionario Oxford - Español-Inglés exists)
         println!("\n=== Testing Spanish -> English ===");
         let dict_ptr = find_best_dictionary("es", "en");
         print_selected_dictionary(dict_ptr);
@@ -505,7 +477,6 @@ mod tests {
 
     #[test]
     fn test_find_best_dictionary_japanese_english() {
-        // Japanese -> English (ウィズダム英和辞典 exists)
         println!("\n=== Testing Japanese -> English ===");
         let dict_ptr = find_best_dictionary("ja", "en");
         print_selected_dictionary(dict_ptr);
@@ -513,16 +484,13 @@ mod tests {
 
     #[test]
     fn test_find_best_dictionary_nonexistent_pair() {
-        // Swahili -> Finnish (should not exist, return null)
         println!("\n=== Testing Swahili -> Finnish (should not exist) ===");
         let dict_ptr = find_best_dictionary("sw", "fi");
         print_selected_dictionary(dict_ptr);
-        // This might still find something via fallback
     }
 
     #[test]
     fn test_find_best_dictionary_unknown_language() {
-        // Unknown language code
         println!("\n=== Testing Unknown Language Code ===");
         let dict_ptr = find_best_dictionary("xyz", "en");
         print_selected_dictionary(dict_ptr);
@@ -531,7 +499,6 @@ mod tests {
 
     #[test]
     fn test_get_definition_english_to_russian_believed() {
-        // The user's original test case
         println!("\n=== Testing get_definition for English 'believed' -> Russian ===");
         let result = get_definition("believed", "en", "ru");
         match result {
@@ -542,7 +509,6 @@ mod tests {
                     "Definition:\n{}",
                     &def.definition[..std::cmp::min(500, def.definition.len())]
                 );
-                // Should contain Russian/Cyrillic text (checking for common Cyrillic letters)
                 let has_cyrillic = def
                     .definition
                     .chars()
@@ -596,7 +562,6 @@ mod tests {
         }
     }
 
-    // Helper function for printing dictionary selection results
     fn print_selected_dictionary(dict_ptr: *const std::ffi::c_void) {
         println!("Result: {:p}", dict_ptr);
         if !dict_ptr.is_null() {

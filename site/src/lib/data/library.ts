@@ -157,7 +157,6 @@ export class Library {
         );
     }
 
-    // Get system dictionary definition for a word (macOS Dictionary Services)
     getSystemDefinition(word: string, sourceLang: string, targetLang: string): Resource<SystemDefinition | null> {
         return new Resource<SystemDefinition | null>(
             "get_system_definition",

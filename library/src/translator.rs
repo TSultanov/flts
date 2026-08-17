@@ -19,10 +19,8 @@ pub const TRANSLATION_REQUEST_TIMEOUT: Duration = Duration::from_secs(1200);
 pub const TRANSLATION_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
 const TRANSLATION_TOTAL_TIMEOUT_BASE: Duration = Duration::from_secs(180);
 const TRANSLATION_TOTAL_TIMEOUT_PER_CHAR: Duration = Duration::from_millis(100);
-/// Upper bound on the whole-stream watchdog. Without it, the per-char term
-/// scales linearly with input length (a ~1 MB paragraph would yield a ~28-hour
-/// timeout, defeating the watchdog). One hour comfortably covers any real
-/// paragraph while still catching a genuinely stuck stream.
+/// Cap on the whole-stream watchdog; without it the per-char term scales with
+/// input length until the watchdog is useless.
 const TRANSLATION_TOTAL_TIMEOUT_MAX: Duration = Duration::from_secs(3600);
 
 pub type ProgressCallback = dyn Fn(usize) + Send + Sync;
@@ -33,10 +31,8 @@ pub fn total_stream_timeout(input_len: usize) -> Duration {
     (TRANSLATION_TOTAL_TIMEOUT_BASE + scaled).min(TRANSLATION_TOTAL_TIMEOUT_MAX)
 }
 
-/// Closed set of values the LLM may return in the grammar `pos` field.
-/// The schema's `enum` keyword is built from these tags, and the prompt
-/// renders each tag with its description so the LLM has guidance on
-/// which to pick.
+/// Closed set of grammar `pos` values. Drives the schema's `enum` keyword, and
+/// the prompt renders each tag with its description as guidance.
 pub(crate) const PART_OF_SPEECH_VOCABULARY: &[(&str, &str)] = &[
     (
         "common_noun",
@@ -201,12 +197,9 @@ impl StreamChunkAccumulator {
         result: anyhow::Result<Option<String>>,
         callback: Option<&ProgressCallback>,
     ) -> anyhow::Result<bool> {
-        // Receiving any chunk — even one with empty `content` — proves the
-        // server is still alive. DeepSeek's reasoning models stream large
-        // amounts of `reasoning_content` that async_openai's typed delta drops,
-        // so we see those as empty here; treating them as heartbeats lets the
-        // surrounding stream-idle timeout (which fires when no chunk arrives
-        // at all) handle stuck-stream detection.
+        // Any chunk, even an empty one, proves the server is alive: reasoning
+        // models stream content the typed delta drops, so those arrive empty
+        // and count as heartbeats for the stream-idle timeout.
         match result {
             Ok(Some(text)) => {
                 if !text.is_empty() {
@@ -230,8 +223,8 @@ impl StreamChunkAccumulator {
         }
     }
 
-    /// Bytes accumulated so far. Read by provider drain loops for
-    /// abort-path diagnostics (the accumulator outlives the timed future).
+    /// Bytes so far; the accumulator outlives the timed future, so drain loops
+    /// can read it for abort diagnostics.
     pub fn len(&self) -> usize {
         self.full_content.len()
     }
@@ -240,9 +233,8 @@ impl StreamChunkAccumulator {
         self.full_content.is_empty()
     }
 
-    /// Up to the last `n` bytes of the accumulated content, snapped forward
-    /// to a char boundary. Lets abort paths show what the model was sending
-    /// (e.g. a repetition loop) without dumping the whole response.
+    /// Last `n` bytes, snapped forward to a char boundary, so abort paths can
+    /// show what the model was sending without dumping the whole response.
     pub fn tail(&self, n: usize) -> &str {
         let mut start = self.full_content.len().saturating_sub(n);
         while !self.full_content.is_char_boundary(start) {
@@ -397,9 +389,8 @@ impl TranslationProvider {
     }
 }
 
-/// Per-paragraph translation request. Carries everything the translator
-/// needs to locate the paragraph in its surrounding chapter and call its
-/// `ChapterContextProvider`.
+/// Everything the translator needs to place a paragraph in its chapter and
+/// call its `ChapterContextProvider`.
 pub struct TranslationContext<'a> {
     pub paragraph_text: &'a str,
     pub book_id: Uuid,
@@ -408,19 +399,15 @@ pub struct TranslationContext<'a> {
     pub callback: Option<Box<ProgressCallback>>,
 }
 
-/// Translator-facing view onto book-level chapter context. Lives on the
-/// Tauri-side `SummaryGenerationQueue` for real translations; the CLI
-/// uses [`NoChapterContext`] which makes every query a no-op so
-/// translation behaves like the pre-summaries version.
+/// Translator-facing view onto book-level chapter context. Real translations
+/// go through the `SummaryGenerationQueue`; [`NoChapterContext`] no-ops it.
 #[async_trait]
 pub trait ChapterContextProvider: Send + Sync {
-    /// Returns when summaries `0..=chapter_index` are all generated. May
-    /// time out at the call site if the queue gets stuck.
+    /// Returns once summaries `0..=chapter_index` are generated; callers must
+    /// impose their own timeout in case the queue stalls.
     async fn wait_ready(&self, book_id: Uuid, chapter_index: usize) -> anyhow::Result<()>;
 
-    /// Concatenated source-language summaries for chapters
-    /// `0..chapter_index` with `Chapter X: <title>` headers. Empty when
-    /// `chapter_index == 0` or no summaries are available.
+    /// Summaries for `0..chapter_index` with `Chapter X: <title>` headers.
     async fn prior_summaries(
         &self,
         book_id: Uuid,
@@ -431,10 +418,8 @@ pub trait ChapterContextProvider: Send + Sync {
     async fn chapter_text(&self, book_id: Uuid, chapter_index: usize) -> anyhow::Result<String>;
 }
 
-/// Always-ready, always-empty provider. Used by the CLI (no
-/// summary infrastructure) and by tests; the per-(book, chapter) Gemini
-/// cache will degrade to "system prompt only" content under this
-/// provider, matching the pre-summaries behavior.
+/// Always-ready, always-empty provider for the CLI and tests; the Gemini cache
+/// degrades to system-prompt-only content under it.
 pub struct NoChapterContext;
 
 #[async_trait]
@@ -538,14 +523,11 @@ pub trait Translator: Send + Sync {
 
 /// Single source of truth for the paragraph-translation response schema.
 ///
-/// Written in OpenAI Structured Outputs strict form (every object is closed and
-/// every property is required) so OpenAI can use it with `strict: true`. Gemini
-/// reads the same shape via JSON Schema embedded in the system prompt and
-/// produces extra empty-string fields for the optional grammar slots; those
-/// deserialize cleanly into `Option<String>`.
-/// Gemini's `response_schema` accepts a subset of JSON Schema — `additionalProperties`
-/// is rejected with HTTP 400. Strip it recursively so the shared (OpenAI-strict)
-/// schemas can be reused for Gemini's native API.
+/// Written in OpenAI Structured Outputs strict form (closed objects, all
+/// properties required) so OpenAI accepts `strict: true`. Gemini reads the same
+/// shape from the system prompt and emits empty strings for optional grammar
+/// slots, which deserialize into `Option<String>`. Gemini's `response_schema`
+/// rejects `additionalProperties` with HTTP 400, so it is stripped recursively.
 pub(crate) fn strip_additional_properties(v: &mut serde_json::Value) {
     match v {
         serde_json::Value::Object(map) => {
@@ -668,14 +650,11 @@ fn is_reqwest_transient(re: &reqwest::Error) -> bool {
     re.is_timeout() || re.is_connect() || re.is_request()
 }
 
-/// Whether a translation error is worth restarting the request from scratch.
-/// Used both by the lyrics `retry()` loop and by the book paragraph queue's
-/// requeue-on-failure path.
+/// Whether an error is worth restarting the request from scratch.
 ///
-/// Hybrid: structured downcasts where the provider crates expose typed errors,
-/// substring match for messages that originate from our own `map_err` calls
-/// (e.g. "OpenAI request timed out", "Gemini total stream timeout") or that
-/// arrive without preserved sources.
+/// Downcasts where the provider crates expose typed errors, and falls back to
+/// substring matching for messages from our own `map_err` calls or those that
+/// arrive without a preserved source.
 pub fn is_transient_translation_error(err: &anyhow::Error) -> bool {
     use async_openai::error::OpenAIError;
 
@@ -741,9 +720,8 @@ pub fn is_transient_translation_error(err: &anyhow::Error) -> bool {
         " 529",
         "stream idle timeout",
         "total stream timeout",
-        // Server-side cap (finishReason MAX_TOKENS): a constrained-decoding
-        // repetition loop, not a deterministic property of the paragraph —
-        // worth a fresh attempt.
+        // MAX_TOKENS means a decoding repetition loop, not a property of the
+        // paragraph, so a fresh attempt is worth it.
         "max output tokens",
     ];
     TRANSIENT_SIGS.iter().any(|s| msg_lower.contains(s))
@@ -834,10 +812,8 @@ mod tests {
 
     #[test]
     fn empty_content_chunks_are_treated_as_heartbeats() {
-        // DeepSeek's reasoning models stream chunks whose `delta.content` is
-        // None (the reasoning payload sits in a field async_openai drops).
-        // The accumulator must keep going when it sees those, then accept
-        // real content afterwards.
+        // Reasoning models stream chunks with no `delta.content`; the
+        // accumulator must survive those and accept real content after.
         let mut accumulator = StreamChunkAccumulator::new("OpenAI");
         for _ in 0..20 {
             assert!(
@@ -861,7 +837,6 @@ mod tests {
         assert!(accumulator.is_empty());
         assert_eq!(accumulator.tail(10), "");
 
-        // "ё" is 2 bytes in UTF-8; a byte-based cut would land mid-char.
         assert!(
             accumulator
                 .handle_result(Ok(Some("приём".into())), None)
@@ -901,7 +876,6 @@ mod tests {
 
     #[test]
     fn classifier_treats_paragraph_timeouts_as_transient() {
-        // The exact strings the book paragraph translators emit on timeout.
         assert!(is_transient_translation_error(&anyhow::anyhow!(
             "OpenAI request timed out"
         )));
@@ -918,7 +892,6 @@ mod tests {
 
     #[test]
     fn classifier_rejects_permanent_errors() {
-        // Stale-paragraph guards from the queue must NOT be retried.
         assert!(!is_transient_translation_error(&anyhow::anyhow!(
             "Paragraph 3 content changed during translation — discarding stale translation"
         )));

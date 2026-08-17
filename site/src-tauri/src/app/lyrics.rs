@@ -22,8 +22,7 @@ use tokio::sync::Mutex;
 
 use crate::app::{AppState, config::Config, spotify::web::TrackMeta};
 
-/// Lyrics are cheap to re-fetch from the disk cache backing LyricsCache, so a
-/// modest in-memory pin is plenty even for long listening sessions.
+/// Small on purpose: misses fall through to LyricsCache's cheap disk read.
 const LYRICS_MEM_CACHE_CAPACITY: usize = 64;
 
 #[cfg(target_os = "macos")]
@@ -81,10 +80,8 @@ impl LyricsState {
     }
 }
 
-/// Translation events carry `trackId` so the frontend can match them against
-/// whatever it's currently displaying. We don't expose request_ids: the
-/// frontend doesn't need to know whether a given resolution came from cache,
-/// from a fresh in-flight task, or from work the backend started on its own.
+/// Translation events carry only `trackId`, which the frontend matches against
+/// what it displays; request ids stay internal so cache vs. network is opaque.
 #[derive(Clone, Serialize)]
 pub struct LyricsTranslationProgress {
     #[serde(rename = "trackId")]
@@ -106,9 +103,8 @@ pub struct LyricsTranslationError {
     pub error: String,
 }
 
-/// Fired by the backend resolver after deciding what the track's lyrics
-/// situation is — either fetched lyrics or "LRClib has no lyrics for this
-/// track". Frontend filters by track_id and updates its view.
+/// Resolver verdict for a track: lyrics fetched, or `None` for "LRClib has
+/// none".
 #[derive(Clone, Serialize)]
 pub struct LyricsResolved {
     #[serde(rename = "trackId")]
@@ -116,17 +112,13 @@ pub struct LyricsResolved {
     pub lyrics: Option<Lyrics>,
 }
 
-/// Read-only snapshot of what the backend currently has cached for a track.
-/// Used by the frontend at mount / track-change time to bootstrap; the same
-/// shape is otherwise delivered asynchronously through `lyrics_resolved` and
-/// `lyrics_translation_done` events.
+/// Bootstrap snapshot for mount / track change; later updates arrive as
+/// `lyrics_resolved` and `lyrics_translation_done` events.
 #[derive(Clone, Serialize)]
 pub struct TrackLyricsState {
     pub lyrics: Option<Lyrics>,
     pub translation: Option<LyricsTranslation>,
 }
-
-// ----- Tauri commands ----------------------------------------------------
 
 #[tauri::command]
 pub async fn start_spotify_watcher(
@@ -136,11 +128,9 @@ pub async fn start_spotify_watcher(
     #[cfg(target_os = "macos")]
     {
         state.lyrics_state.watcher.start(app.clone()).await;
-        // The resolver runs as long as the watcher does — it owns "resolve
-        // current track and any known next tracks" regardless of whether
-        // Spotify Web is connected. When Spotify Web isn't connected, the
-        // loop still services the current track from the AppleScript signal;
-        // the queue fetch just becomes a no-op until auth comes online.
+        // The resolver lives as long as the watcher: without Spotify Web auth it
+        // still serves the current track from AppleScript, only the queue fetch
+        // no-ops.
         let watcher = state.lyrics_state.watcher.clone();
         let app_state = state.inner().clone();
         state
@@ -172,7 +162,6 @@ pub async fn stop_spotify_watcher(
 pub async fn get_now_playing(
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<Option<NowPlaying>, String> {
-    // If watcher has cached state, return it; otherwise do a one-shot query.
     if let Some(np) = state.lyrics_state.watcher.current() {
         return Ok(Some(np));
     }
@@ -195,12 +184,10 @@ pub(crate) async fn fetch_lyrics_inner(
     track: &TrackMeta,
 ) -> anyhow::Result<Option<Lyrics>> {
     let track_id = track.id.as_str();
-    // In-memory cache: hottest path, session-local.
     if let Some(existing) = state.lyrics_state.lyrics.get(&track_id.to_string()).await {
         return Ok(Some((*existing).clone()));
     }
 
-    // Disk cache: skip the LRClib round-trip on songs we've fetched before.
     let cache = state.lyrics_state.lyrics_cache(Some(&state.app)).await?;
     if let Some(cached) = cache.get_raw(track_id).await {
         state
@@ -227,7 +214,7 @@ pub(crate) async fn fetch_lyrics_inner(
             .lyrics
             .insert(track_id.to_string(), Arc::new(l.clone()))
             .await;
-        // Cache-write failure must not fail the user's request — log and continue.
+        // A cache-write failure must not fail the user's request.
         if let Err(err) = cache.put_raw(l).await {
             warn!("LyricsCache: failed to persist raw lyrics for {track_id}: {err}");
         }
@@ -235,11 +222,8 @@ pub(crate) async fn fetch_lyrics_inner(
     Ok(fetched)
 }
 
-/// Read-only snapshot of what the backend has cached for `track_id`. Pure
-/// data fetch — never triggers an LRClib request or a translation. The
-/// frontend uses this at mount / track-change time to render whatever the
-/// resolver has already produced; further updates arrive via the
-/// `lyrics_resolved` and `lyrics_translation_done` events.
+/// Cached-only snapshot for `track_id`: never triggers an LRClib request or a
+/// translation.
 #[tauri::command]
 pub async fn get_track_lyrics_state(
     state: tauri::State<'_, Arc<AppState>>,
@@ -287,11 +271,8 @@ pub(crate) async fn dispatch_translation_inner(
         model,
     };
 
-    // Cache hit → emit the same `lyrics_translation_done` event a fresh
-    // translation would emit, so the frontend has a single code path that
-    // reacts to events keyed on track_id. The previous "return cached inline"
-    // shape leaked the cache distinction into the API; the frontend doesn't
-    // need to know whether the data came from disk or the network.
+    // A cache hit fires the same event a fresh translation would, keeping one
+    // frontend code path and hiding the disk/network distinction.
     let cache = state
         .lyrics_state
         .lyrics_cache(Some(&state.app))
@@ -308,9 +289,7 @@ pub(crate) async fn dispatch_translation_inner(
         return Ok(());
     }
 
-    // Dedup in-flight request for the same key. If we're already translating
-    // this exact track/lang/model, the existing task will emit its event when
-    // done; the frontend listener picks it up via track_id match.
+    // Dedup: an in-flight task for this key will emit the event itself.
     let mut inflight = state.lyrics_state.inflight.lock().await;
     if inflight.contains_key(&key) {
         return Ok(());
@@ -322,7 +301,6 @@ pub(crate) async fn dispatch_translation_inner(
     inflight.insert(key.clone(), request_id);
     drop(inflight);
 
-    // Get the lyrics for this track from in-memory cache; bail if not fetched yet.
     let lyrics = state.lyrics_state.lyrics.get(&track_id.to_string()).await;
     let lyrics = match lyrics {
         Some(l) => l,
@@ -407,11 +385,9 @@ pub(crate) async fn dispatch_translation_inner(
     Ok(())
 }
 
-/// Resolve one track from end to end: fetch lyrics, then translation if any.
-/// Emits `lyrics_resolved` with the final lyrics value (Some or None) and,
-/// when lyrics exist, `lyrics_translation_done` once translation completes.
-/// The frontend never calls this — it's the single entry point the backend
-/// resolver uses for every track in the playback list.
+/// Backend-only entry point for every track in the playback list: fetches
+/// lyrics, then translates. Emits `lyrics_resolved`, then
+/// `lyrics_translation_done` when lyrics exist.
 pub(crate) async fn resolve_track(
     state: &Arc<AppState>,
     app: &AppHandle,
@@ -421,8 +397,7 @@ pub(crate) async fn resolve_track(
 ) -> anyhow::Result<()> {
     let lyrics = fetch_lyrics_inner(state, track).await?;
 
-    // Tell the frontend our determination either way: lyrics found, or
-    // confirmed absent on LRClib. Either is information the UI uses.
+    // The UI acts on either verdict, so emit even when absent.
     let _ = app.emit(
         "lyrics_resolved",
         LyricsResolved {

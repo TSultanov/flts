@@ -1,9 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { UUID } from './uuid';
 
-// Shared fake event hub. The store subscribes at module load, so the mock
-// state must be hoisted; `reset()` runs in beforeEach so only the store
-// instance created by the current test's fresh import stays wired up.
+// Hoisted because the store subscribes at module load; `reset()` in
+// beforeEach leaves only the current test's store wired up.
 const hub = vi.hoisted(() => {
     type Handler = (payload: unknown) => void;
     type Filter = (payload: unknown) => boolean;
@@ -38,10 +37,9 @@ vi.mock('@tauri-apps/api/core', () => ({
     invoke: invokeMock,
 }));
 
-// Distinct book ids per test: stores from earlier imports keep their
-// visibilitychange listeners on the shared jsdom document and reconcile
-// against the same invoke mock; distinct books keep their (irrelevant)
-// state from colliding with the assertions of the current test.
+// One book id per test: stores from earlier imports keep their
+// visibilitychange listeners on the shared jsdom document, and distinct
+// books keep their state out of the current test's assertions.
 const BOOK_A = 'aaaaaaaa-0000-0000-0000-000000000001' as UUID;
 const BOOK_B = 'bbbbbbbb-0000-0000-0000-000000000002' as UUID;
 const BOOK_C = 'cccccccc-0000-0000-0000-000000000003' as UUID;
@@ -70,8 +68,7 @@ let store: Store;
 beforeEach(async () => {
     hub.reset();
     invokeMock.mockReset();
-    // Snapshot queries (including from stale stores of earlier tests)
-    // report "nothing active" by default.
+    // Snapshots report "nothing active" by default.
     invokeMock.mockResolvedValue([]);
     vi.resetModules();
     store = (await import('./translationActivity.svelte')).activeTranslations;
@@ -104,8 +101,7 @@ describe('activeTranslations lifecycle', () => {
         finished(BOOK_B, 2, 20);
         expect(store.get(BOOK_B, 2)).toBeNull();
 
-        // The Rust progress throttler is a detached task; a late tick can
-        // land after the saver task emitted finished. It must be dropped.
+        // The detached progress throttler can tick after finished.
         progress(BOOK_B, 2, 20, 950);
         expect(store.get(BOOK_B, 2)).toBeNull();
     });
@@ -126,9 +122,8 @@ describe('reconciliation on visibilitychange', () => {
         started(BOOK_D, 1, 40);
         started(BOOK_D, 2, 41);
 
-        // While backgrounded: paragraph 1 finished (finished event lost),
-        // paragraph 2 progressed (progress events lost), and paragraph 3
-        // started (started event lost — only a full snapshot can surface it).
+        // Backgrounded: p1 finished, p2 progressed, p3 started — all events
+        // lost, so only a snapshot can surface them.
         invokeMock.mockResolvedValue([
             { bookId: BOOK_D, paragraphId: 2, requestId: 41, progressChars: 640, expectedChars: 1000 },
             { bookId: BOOK_D, paragraphId: 3, requestId: 42, progressChars: 100, expectedChars: 900 },
@@ -171,10 +166,8 @@ describe('reconciliation on visibilitychange', () => {
     it('discards a stale snapshot when a newer reconcile has started', async () => {
         started(BOOK_E, 5, 50);
 
-        // Every live store (this test's plus stale ones from earlier
-        // imports) reconciles per becomeVisible; listeners fire in
-        // registration order, so the current store's resolver is the last
-        // of each batch.
+        // Every live store reconciles per becomeVisible, in registration
+        // order — so this test's resolver is the last of each batch.
         const pending: Array<(v: unknown) => void> = [];
         invokeMock.mockImplementation(
             () => new Promise((resolve) => pending.push(resolve)),
@@ -194,8 +187,7 @@ describe('reconciliation on visibilitychange', () => {
             expect(store.get(BOOK_E, 5)?.progressChars).toBe(720);
         });
 
-        // #1's stale answer says "nothing active"; it must be ignored, not
-        // delete the live entry.
+        // #1's stale "nothing active" must not delete the live entry.
         pending[batchSize - 1]([]);
         await Promise.resolve();
         await Promise.resolve();
@@ -231,9 +223,8 @@ describe('lifecycle vs reconcile races', () => {
         await vi.waitFor(() => expect(pending.length).toBeGreaterThan(0));
         const batchSize = pending.length;
 
-        // finished arrives while the snapshot is in flight; the snapshot
-        // (captured before it, still containing the entry) must not
-        // resurrect the spinner.
+        // The in-flight snapshot predates this finished and still holds the
+        // entry; it must not resurrect the spinner.
         finished(BOOK_C, 8, 70);
         expect(store.get(BOOK_C, 8)).toBeNull();
 

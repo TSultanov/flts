@@ -1,20 +1,12 @@
-// Package main is the FLTS Syncthing engine wrapper. It is compiled with
-// `go build -buildmode=c-archive` into a static library (.a + .h) that the
-// `syncthing-sys` Rust crate links and calls over a tiny C ABI.
+// Package main is the FLTS Syncthing engine wrapper, built with
+// `go build -buildmode=c-archive` and linked by the `syncthing-sys` Rust crate.
 //
-// The surface is deliberately minimal — start/stop/ping only. All real control
-// (devices, folders, status) happens from Rust over the engine's localhost REST
-// API, keeping this fragile Go↔native bridge as small as possible.
-//
-// API note: this targets Syncthing v1.30.0. The `lib/syncthing` startup API is
-// version-sensitive; the sequence below mirrors upstream `cmd/syncthing`
-// (earlyService serving evLogger + cfg wrapper, Modify the GUI binding, then
-// New + Start).
+// Keep the C ABI to start/stop/ping; all other control goes from Rust over the
+// engine's localhost REST API. Targets Syncthing v1.30.0, whose startup API is
+// version-sensitive: the sequence below mirrors upstream `cmd/syncthing`.
 package main
 
-// NOTE: a comment placed immediately above `import "C"` (no blank line) is
-// treated by cgo as the C preamble, so this note is intentionally separated
-// from the import by a blank line.
+// Never let a comment touch `import "C"` — cgo would read it as the C preamble.
 
 import "C"
 
@@ -44,28 +36,19 @@ var (
 
 //export flts_st_ping
 //
-// flts_st_ping returns a fixed sentinel so the Rust side can assert the FFI
-// chain is live without standing up the full engine.
+// Returns a fixed sentinel so Rust can assert the FFI chain is live.
 func flts_st_ping() C.int {
 	return 4711
 }
 
 //export flts_st_start
 //
-// flts_st_start brings up the embedded Syncthing engine with its home (certs,
-// config.xml, index DB) under `home`, the REST/GUI bound to `guiAddr`
-// (e.g. "127.0.0.1:0" or a fixed port) and authenticated by `apiKey`.
+// Starts the engine: state under `home`, REST/GUI on `guiAddr` keyed by
+// `apiKey`. Non-zero `hermetic` disables discovery/relays/NAT and uses a random
+// loopback BEP port; it must be a parameter, not an env var, because the Go
+// runtime snapshots the environment at c-archive init.
 //
-// When `hermetic` is non-zero the engine stays fully local: no public/LAN
-// discovery, no relays, no NAT, and a random loopback BEP port. Used by tests
-// and the Docker harness so they never announce throwaway devices to the public
-// network or collide on the default port 22000. (It is passed as a parameter
-// rather than read from an env var because the Go runtime snapshots the
-// environment at c-archive init, before the Rust caller could set it.)
-//
-// Returns 0 on success (engine started, REST listening) or a small non-zero
-// code identifying the failing step. Idempotent: a second call while running
-// is a no-op success.
+// Returns 0, or a non-zero code identifying the failing step. Idempotent.
 func flts_st_start(home, guiAddr, apiKey *C.char, hermetic C.int) C.int {
 	mu.Lock()
 	defer mu.Unlock()
@@ -77,11 +60,8 @@ func flts_st_start(home, guiAddr, apiKey *C.char, hermetic C.int) C.int {
 	addr := C.GoString(guiAddr)
 	key := C.GoString(apiKey)
 
-	// Keep ALL Syncthing files under our managed home. We pass the device
-	// cert/config/DB paths explicitly below, but a few locations (notably the
-	// GUI HTTPS cert at ${config}/https-cert.pem) are resolved through these
-	// global base dirs; without this they leak to the XDG default, which may
-	// not exist (e.g. a fresh container) and fails app startup.
+	// Some paths (e.g. the GUI cert) resolve through these global base dirs, not
+	// the explicit ones below; without this they leak to a possibly-absent XDG dir.
 	_ = locations.SetBaseDir(locations.ConfigBaseDir, homeDir)
 	_ = locations.SetBaseDir(locations.DataBaseDir, homeDir)
 
@@ -90,9 +70,8 @@ func flts_st_start(home, guiAddr, apiKey *C.char, hermetic C.int) C.int {
 	configPath := filepath.Join(homeDir, "config.xml")
 	dbPath := filepath.Join(homeDir, locations.LevelDBDir)
 
-	// earlyService runs the services that must be live before/around app
-	// startup: the event logger and the config wrapper (whose Serve loop is
-	// what makes Modify below actually apply). Mirrors upstream cmd/syncthing.
+	// The config wrapper's Serve loop is what makes Modify below apply, so it and
+	// the event logger must run before app startup.
 	earlyCtx, earlyCancel := context.WithCancel(context.Background())
 	earlyService := suture.New("flts-early", suture.Spec{})
 	earlyService.ServeBackground(earlyCtx)
@@ -106,9 +85,7 @@ func flts_st_start(home, guiAddr, apiKey *C.char, hermetic C.int) C.int {
 		return 2
 	}
 
-	// allowNewerConfig=true (don't refuse a config from a newer build),
-	// noDefaultFolder=true (FLTS manages its own folder), skipPortProbing=true
-	// (we set the GUI address explicitly; no need to probe).
+	// allowNewerConfig, noDefaultFolder (FLTS owns its folder), skipPortProbing.
 	cfg, err := syncthing.LoadConfigAtStartup(configPath, cert, evLogger, true, true, true)
 	if err != nil {
 		earlyCancel()
@@ -118,8 +95,7 @@ func flts_st_start(home, guiAddr, apiKey *C.char, hermetic C.int) C.int {
 
 	isHermetic := hermetic != 0
 
-	// Bind the REST/GUI to the requested localhost address + API key. This must
-	// happen before app.Start(), which stands up the GUI during startup.
+	// Must precede app.Start(), which stands up the GUI.
 	waiter, err := cfg.Modify(func(c *config.Configuration) {
 		c.GUI.Enabled = true
 		c.GUI.RawAddress = addr
@@ -161,8 +137,7 @@ func flts_st_start(home, guiAddr, apiKey *C.char, hermetic C.int) C.int {
 
 //export flts_st_stop
 //
-// flts_st_stop stops the engine cleanly and tears down the early services.
-// Idempotent: a no-op success when nothing is running.
+// Stops the engine and the early services. Idempotent.
 func flts_st_stop() C.int {
 	mu.Lock()
 	defer mu.Unlock()
@@ -175,5 +150,5 @@ func flts_st_stop() C.int {
 	return 0
 }
 
-// main is required by `package main` but is never invoked in c-archive mode.
+// Required by `package main`; never invoked in c-archive mode.
 func main() {}

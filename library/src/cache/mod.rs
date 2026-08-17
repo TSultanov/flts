@@ -16,9 +16,8 @@ const TRANSLATIONS_CACHE_STORAGE_CAPACITY: u64 = 128 * MIB;
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 const TRANSLATIONS_CACHE_STORAGE_CAPACITY: u64 = 1024 * MIB;
 
-/// Disk capacity for the Gemini prompt-cache name index. Each entry is on
-/// the order of 150 bytes (name + fingerprint + timestamp + key string,
-/// after zstd), so 4 MiB comfortably holds tens of thousands of entries.
+/// Disk capacity for the Gemini prompt-cache name index; entries run ~150
+/// bytes after zstd, so this holds tens of thousands.
 pub const GEMINI_PROMPT_CACHE_CAPACITY: u64 = 4 * MIB;
 
 pub struct TranslationsCache {
@@ -32,11 +31,9 @@ impl TranslationsCache {
         Ok(Self { cache })
     }
 
-    /// Bump whenever the translation prompt or output schema changes (the
-    /// `translator` prompt text, the part-of-speech vocabulary, the grammar
-    /// schema, etc.). It is part of the cache key, so bumping it makes every
-    /// previously-cached translation a miss and forces a re-translation with
-    /// the new prompt instead of serving the stale old result forever.
+    /// Bump whenever the prompt text, PoS vocabulary, or output schema
+    /// changes: it is part of the cache key, so bumping misses every stale
+    /// entry instead of serving it forever.
     const PROMPT_SCHEMA_VERSION: &'static str = "v1";
 
     fn make_key(source_language: &Language, target_language: &Language, paragraph: &str) -> String {

@@ -8,15 +8,12 @@ import {
   wordSpan,
 } from './helpers/paragraph';
 
-// All familiarity tests stay on chromium. Behaviours under test are Svelte
-// reactivity, inline CSS custom properties, and event-driven re-renders —
-// engine-invariant; running on three engines triples CI time for no signal.
+// Chromium only: Svelte reactivity and inline custom properties are
+// engine-invariant, so extra engines cost CI time for no signal.
 test.describe.configure({ mode: 'parallel' });
 
 test.describe('Anki familiarity (chromium only)', () => {
   test.skip(({ browserName }) => browserName !== 'chromium', 'chromium-only');
-
-  // ----- A: static familiarity rendering -----------------------------------
 
   test('A1: dormant word renders no familiarity opacity', async ({ page }) => {
     await seedAndOpen(page, {
@@ -141,8 +138,6 @@ test.describe('Anki familiarity (chromium only)', () => {
     await expect(span.locator('.translation-overlay')).toHaveCount(0);
   });
 
-  // ----- B: click reveals, never hides ------------------------------------
-
   test('B1: clicking an auto-shown word keeps the overlay visible', async ({ page }) => {
     await seedAndOpen(page, {
       chapters: [
@@ -209,8 +204,6 @@ test.describe('Anki familiarity (chromium only)', () => {
     await expect(span.locator('.translation-overlay')).toBeVisible();
   });
 
-  // ----- C: live refresh via cards_updated --------------------------------
-
   test('C1: cards_updated refreshes familiarity opacity in place', async ({ page }) => {
     const { bookId } = await seedAndOpen(page, {
       chapters: [
@@ -235,7 +228,6 @@ test.describe('Anki familiarity (chromium only)', () => {
     });
     const span = wordSpan(paragraphLocator(page, 0), 0);
     await expect(span.locator('.translation-overlay')).toBeVisible();
-    // Sanity: starting opacity is 1.
     const before = await span.evaluate((el) =>
       (el as HTMLElement).style.getPropertyValue('--familiarity-opacity'),
     );
@@ -300,11 +292,8 @@ test.describe('Anki familiarity (chromium only)', () => {
     ]);
     await emitCardsUpdated(page);
 
-    // Sample every 50ms for 800ms (covers the 500ms debounce + the
-    // refetch round-trip). Throughout the window the .word-span must
-    // stay mounted and the .original fallback must never appear —
-    // i.e. ParagraphView keeps rendering segments without a transient
-    // null-segments dip.
+    // Across the 500ms debounce + refetch, segments must never dip to null:
+    // .word-span stays mounted and the .original fallback never appears.
     const samples = await page.evaluate(async () => {
       const out: Array<{ spans: number; original: number }> = [];
       const start = performance.now();

@@ -112,10 +112,8 @@ where
         }
     }
 
-    /// Removes the entry for `key` from disk and from the in-memory index.
-    /// Routed through the writer channel so it serializes after any pending
-    /// `insert` for the same key. Fire-and-forget: if the writer has shut
-    /// down the call is a no-op.
+    /// Removes `key` from disk and the index, through the writer channel so it
+    /// orders after a pending `insert`. No-op once the writer is down.
     pub fn remove(&self, key: &str) {
         let hash = hash_key(key);
         let tx = self.writer_tx.lock().unwrap();
@@ -124,10 +122,8 @@ where
         }
     }
 
-    /// Removes every entry from disk and the in-memory index. Routed
-    /// through the writer channel so it serializes after pending `insert`s;
-    /// inserts enqueued after `clear` survive. Fire-and-forget: if the
-    /// writer has shut down the call is a no-op.
+    /// Removes every entry, through the writer channel so it orders after
+    /// pending `insert`s; later ones survive. No-op once the writer is down.
     pub fn clear(&self) {
         let tx = self.writer_tx.lock().unwrap();
         if let Some(tx) = tx.as_ref() {
@@ -289,9 +285,8 @@ fn write_entry<V: Serialize>(
     Ok(())
 }
 
-/// Wipes the in-memory index first (concurrent `get`s miss immediately),
-/// then deletes whole shard directories — which also sweeps any orphaned
-/// `.bin.tmp` files that a crashed write may have left behind.
+/// Wipes the index first so concurrent `get`s miss, then deletes whole shard
+/// directories, sweeping orphaned `.bin.tmp` files with them.
 fn clear_all(dir: &Path, index: &StdMutex<Index>) -> anyhow::Result<()> {
     {
         let mut idx = index.lock().unwrap();

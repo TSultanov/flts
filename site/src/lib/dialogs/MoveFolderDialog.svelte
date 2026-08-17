@@ -21,7 +21,6 @@
     let createFolderDialogOpen = $state(false);
     let pendingParentPath: string[] = $state([]);
 
-    // Initialize local copy of root folder when dialog opens
     $effect(() => {
         if (isOpen) {
             localRootFolder = structuredClone(rootFolder);
@@ -70,7 +69,6 @@
             const trimmedName = folderName.trim();
             const newFolderPath = [...pendingParentPath, trimmedName];
 
-            // Find or create the folder in the local structure
             const findOrCreateFolder = (folder: LibraryFolder, pathSegments: string[]): LibraryFolder => {
                 if (pathSegments.length === 0) {
                     return folder;
@@ -91,13 +89,10 @@
                 return findOrCreateFolder(targetFolder, remainingSegments);
             };
 
-            // Add the new folder to the local structure if it doesn't exist
             findOrCreateFolder(localRootFolder, newFolderPath);
 
-            // Select the newly created folder
             selectedPath = newFolderPath;
 
-            // Trigger reactivity
             localRootFolder = localRootFolder;
         }
     }
@@ -141,7 +136,6 @@
     onConfirm={handleCreateFolder}
 />
 
-<!-- Recursive folder tree component snippet -->
 {#snippet FolderTreeComponent(folder: LibraryFolder, currentPath: string[])}
     <div class="folder-option" class:selected={isSelected(currentPath)}>
         <button

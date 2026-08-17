@@ -1,9 +1,10 @@
 /**
- * Mock implementation of @tauri-apps/api/core for Playwright tests.
- * Provides stateful mocks that maintain data between operations.
+ * Stateful stand-in for @tauri-apps/api/core in Playwright tests: state
+ * persists across invokes within a test. Tests drive it through `window.__test`
+ * / `window.__mock*` (see the control surface below) and reset via
+ * `resetMockState()`.
  */
 
-// Types (matching the app's type definitions)
 type UUID = string;
 
 type Language = {
@@ -62,15 +63,13 @@ type MockBook = {
   translationRatio: number;
   path: string[];
   chapters: MockChapter[];
-  // Global paragraph storage keyed by global paragraph id. Matches the real
-  // backend, where paragraph ids are unique across the whole book — not
-  // per-chapter — so multi-chapter EPUB tests resolve to the right content.
+  // Keyed by global paragraph id: ids are book-wide, not per-chapter.
   paragraphsById: Map<number, MockParagraph>;
 };
 
 type MockChapter = {
   title: string;
-  // Global paragraph ids of the paragraphs in this chapter, in order.
+  // Global paragraph ids, in order.
   paragraphIds: number[];
 };
 
@@ -108,8 +107,6 @@ type BookReadingState = {
   paragraphId: number;
   pageOffset: number;
 };
-
-// ----- Translation simulation types --------------------------------------
 
 type ParagraphTranslationActivity = {
   requestId: number;
@@ -152,8 +149,6 @@ type WordInfo = {
   };
 };
 
-// ----- Lyrics mode types --------------------------------------------------
-
 type PlayerState = 'playing' | 'paused' | 'stopped' | 'notrunning';
 
 type NowPlaying = {
@@ -177,7 +172,6 @@ type LyricsTranslation = {
   lines: LyricsLineTranslation[];
 };
 
-// Mock state
 let mockLibrary: Map<UUID, MockBook> = new Map();
 let mockConfig: Config = {
   model: 0,
@@ -193,11 +187,7 @@ let mockReadingStates: Map<UUID, BookReadingState> = new Map();
 let bookIdCounter = 0;
 let requestIdCounter = 0;
 
-// ----- Translation simulation state --------------------------------------
-
 const DEFAULT_TRANSLATE_CONFIG: TranslateConfig = { kind: 'immediate' };
-
-// ----- Chapter-summary status simulation ---------------------------------
 
 type SummaryStatusState = {
   totalChapters: number;
@@ -289,9 +279,7 @@ function applyTranslationCompletion(
   if (!p) return;
   p.segments = segments;
   emit('paragraph_updated', { bookId, paragraphId });
-  // Mirror production: app.rs emits book_updated after a translation change
-  // (via the file-watcher TranslationChanged path). The chapter list Resource
-  // subscribes to book_updated, so without this it never refreshes in e2e.
+  // The chapter list Resource only refreshes on book_updated, as in production.
   emit('book_updated', bookId);
 }
 
@@ -339,12 +327,8 @@ function emitFinished(
   });
 }
 
-// Mirror the real backend's single-worker queue. Translation requests get an
-// activity record + a "started" event synchronously at translate-time so the
-// UI can flip the button into spinner state for every clicked paragraph, even
-// the ones that won't actually begin running until the worker drains earlier
-// items. The actual progress/finished events fire serially as the worker
-// pulls each item off this queue.
+// Mirrors the backend's single worker: requests announce themselves at enqueue
+// but their progress/finished events fire serially off this queue.
 const translationWorkQueue: Array<() => Promise<void>> = [];
 let translationWorkerBusy = false;
 
@@ -358,7 +342,7 @@ async function drainTranslationWorkQueue(): Promise<void> {
         try {
           await work();
         } catch {
-          // Swallow — mock-side bookkeeping errors shouldn't stall the queue.
+          // Bookkeeping errors must not stall the queue.
         }
       }
     }
@@ -384,9 +368,8 @@ function runTranslateRequest(
 ): void {
   const key = paragraphKey(bookId, paragraphId);
 
-  // The fix for the multi-click bug: announce activity at enqueue, not when
-  // the worker picks up the request. The first progress event later carries
-  // the real expectedChars.
+  // Announce at enqueue, not at pickup, so multi-click shows every spinner;
+  // the first progress event carries the real expectedChars.
   activeActivities.set(key, {
     requestId,
     progressChars: 0,
@@ -399,11 +382,9 @@ function runTranslateRequest(
   );
 }
 
-// Seeded in-flight requests whose step timers haven't started yet, keyed by
-// paragraph. The timers start on the app's first activity query for that
-// paragraph, not at seed time: seeding happens at page-init, and a countdown
-// racing app boot means the request can finish before the test's first
-// assertion ever sees the spinner.
+// Seeded in-flight requests, keyed by paragraph. Timers start on the app's
+// first activity query, not at seed time — a countdown racing app boot could
+// finish before the test ever sees the spinner.
 const pendingInFlightWork = new Map<string, () => void>();
 
 function seedInFlightRequest(
@@ -466,8 +447,7 @@ async function runTranslationWork(
     return;
   }
 
-  // progress: emit each step in order, with the step's delay following the
-  // emit. The final step's delay precedes completion + finished.
+  // Each step's delay follows its emit, so the last one precedes completion.
   for (const step of cfg.steps) {
     activeActivities.set(key, {
       requestId,
@@ -483,8 +463,6 @@ async function runTranslationWork(
   emitFinished(bookId, paragraphId, requestId, null);
 }
 
-// ----- Lyrics mode state --------------------------------------------------
-
 let mockNowPlaying: NowPlaying | null = null;
 let mockLyricsByTrack: Map<string, Lyrics | null> = new Map();
 let mockTranslationCache: Map<string, LyricsTranslation> = new Map();
@@ -493,11 +471,7 @@ function translationKey(trackId: string, target: string, model: number): string 
   return `${trackId}|${target}|${model}`;
 }
 
-/**
- * Build a MockBook whose paragraphs are stored under globally unique ids, so
- * `get_paragraph_view(paragraph_id)` and `get_book_chapter_paragraph_ids` use
- * the same id space as the real backend.
- */
+/** Assigns book-wide paragraph ids, matching the real backend's id space. */
 function buildBookFromChapters(
   id: UUID,
   title: string,
@@ -535,10 +509,8 @@ function buildBookFromChapters(
   };
 }
 
-// Dispatch a mock event through the shared `tauri-event.ts` bus so that the
-// app's `listen(...)` subscribers actually receive it. Without this, emits
-// from mock command handlers would land in a private map that the app never
-// touches — the test infra was previously two disconnected event buses.
+// Must go through the shared `tauri-event.ts` bus, or the app's `listen(...)`
+// subscribers never see it.
 function emit(event: string, payload: unknown) {
   const dispatch = (window as any).__tauriEmit as
     | ((e: string, p?: unknown) => void)
@@ -546,7 +518,6 @@ function emit(event: string, payload: unknown) {
   dispatch?.(event, payload);
 }
 
-// Reset state between tests
 export function resetMockState() {
   mockLibrary.clear();
   mockConfig = {
@@ -648,22 +619,18 @@ function applyPendingSeed(seed: PendingSeed): void {
   }
 }
 
-// Expose reset function globally for tests
 if (typeof window !== 'undefined') {
   (window as any).__resetTauriMock = resetMockState;
 
-  // Apply any seed that Playwright stashed via addInitScript before the app
-  // booted. This runs synchronously during mock module init, before any
-  // invoke() call resolves, so Library.* Resources see populated data on
-  // their very first fetch.
+  // Must run during module init, before any invoke() resolves, so Library.*
+  // Resources see the addInitScript seed on their first fetch.
   const pending = (window as any).__pendingSeed as PendingSeed | undefined;
   if (pending) {
     applyPendingSeed(pending);
     (window as any).__pendingSeed = undefined;
   }
 
-  // ----- ParagraphView test control surface ----------------------------
-  // Mounted as `window.__test` for use from Playwright via page.evaluate.
+  // Test control surface, driven from Playwright via page.evaluate.
   (window as any).__test = {
     seedBook(opts: {
       id?: UUID;
@@ -721,11 +688,8 @@ if (typeof window !== 'undefined') {
       emit('paragraph_updated', { bookId, paragraphId });
       emit('book_updated', bookId);
     },
-    // Like setParagraphTranslation but does not emit paragraph_updated.
-    // Used to stage post-card-update backend state before triggering
-    // the cards_updated path explicitly, so the refresh test exercises
-    // the soft-refetch code rather than the regular paragraph_updated
-    // invalidation.
+    // No paragraph_updated emit: stages state so a later cards_updated
+    // exercises the soft-refetch path instead of invalidation.
     setParagraphTranslationSilent(
       bookId: UUID,
       paragraphId: number,
@@ -808,7 +772,6 @@ if (typeof window !== 'undefined') {
       if (!status) return;
       const nextIdx = status.generated.findIndex((g) => !g);
       if (nextIdx === -1) {
-        // Already done — re-emit a "done" event for idempotency.
         emitSummaryProgress(
           bookId,
           'done',
@@ -829,8 +792,7 @@ if (typeof window !== 'undefined') {
         );
       } else {
         status.activelyGenerating = afterIdx;
-        // The backend's post-save emit is `current = idx + 1`, which is
-        // exactly `afterIdx` (the next pending chapter index).
+        // Backend emits `current = idx + 1`, i.e. the next pending index.
         emitSummaryProgress(
           bookId,
           'in_progress',
@@ -844,8 +806,6 @@ if (typeof window !== 'undefined') {
     },
   };
 
-  // ----- Lyrics mode test helpers --------------------------------------
-  // Tests call these from `page.evaluate(...)` to set up backend state.
   (window as any).__mockSpotifyState = (np: NowPlaying | null) => {
     mockNowPlaying = np;
     const dispatch = (window as any).__tauriEmit as
@@ -861,7 +821,6 @@ if (typeof window !== 'undefined') {
   };
 }
 
-// Mock languages (subset for testing)
 const mockLanguages: Language[] = [
   { id: 'eng', name: 'English' },
   { id: 'spa', name: 'Spanish', localName: 'Español' },
@@ -875,7 +834,6 @@ const mockLanguages: Language[] = [
   { id: 'kor', name: 'Korean', localName: '한국어' },
 ];
 
-// Mock models
 const mockModels: Model[] = [
   { id: 0, name: 'Not set' },
   { id: 1, name: 'Gemini 2.5 Flash', provider: 'google' },
@@ -892,7 +850,6 @@ const mockProviders: ProviderMeta[] = [
   { id: 'openai', name: 'OpenAI', defaultModelId: 4, apiKeyField: 'openaiApiKey' },
 ];
 
-// InvokeArgs type for compatibility
 export type InvokeArgs = Record<string, unknown>;
 
 /** Playwright stand-in for Rust `parse_language_id`. Isolang is not imported. */
@@ -915,15 +872,10 @@ function mockParseLanguageId(code: unknown): string | null {
   return map[primary] ?? null;
 }
 
-/**
- * Mock implementation of Tauri's invoke function.
- * Handles all commands used by the application.
- */
 export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
   console.log(`[Tauri Mock] invoke: ${cmd}`, args);
 
   switch (cmd) {
-    // Config commands
     case 'get_languages':
       return Promise.resolve(mockLanguages as T);
 
@@ -948,7 +900,6 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
       return Promise.resolve(undefined as T);
     }
 
-    // Library commands
     case 'list_books': {
       const books = Array.from(mockLibrary.values()).map(book => ({
         id: book.id,
@@ -963,8 +914,6 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
 
     case 'import_epub': {
       const id = `mock-book-${++bookIdCounter}`;
-      // Frontend ships `{ title, chapters: [{ title, paragraphs: [{ html }] }] }`.
-      // We re-key paragraphs into a global-id map to match the real backend.
       const bookData = args?.book as {
         title: string;
         chapters: Array<{ title: string; paragraphs: Array<{ html: string }> }>;
@@ -994,7 +943,6 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
         return Promise.reject(new Error('Title and text are required'));
       }
 
-      // Split text into paragraphs
       const paragraphs = text.split(/\n\n+/).filter(p => p.trim());
 
       const newBook = buildBookFromChapters(id, title, [
@@ -1148,8 +1096,7 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
       if (book && chapter) {
         for (const paragraphId of chapter.paragraphIds) {
           const p = book.paragraphsById.get(paragraphId);
-          // Filter already-translated paragraphs server-side, mirroring
-          // AppState::translate_chapter.
+          // AppState::translate_chapter skips already-translated paragraphs.
           if (!p || p.segments) continue;
           const requestId = ++requestIdCounter;
           const cfg =
@@ -1174,8 +1121,7 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
       const paragraphId = args?.paragraphId as number;
       const key = paragraphKey(bookId, paragraphId);
       const activity = activeActivities.get(key) ?? null;
-      // The app has now observed the seeded in-flight activity; start its
-      // progress timers.
+      // First observation starts the seeded request's timers.
       startPendingInFlightWork(key);
       return Promise.resolve(activity as T);
     }
@@ -1190,8 +1136,6 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
           ...activity,
         };
       });
-      // The snapshot observes every seeded in-flight activity; start their
-      // progress timers.
       for (const key of [...pendingInFlightWork.keys()]) {
         startPendingInFlightWork(key);
       }
@@ -1235,8 +1179,7 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
       return Promise.resolve(undefined as T);
     }
 
-    // ----- Lyrics mode commands ----------------------------------------
-
+    // Lyrics mode
     case 'start_spotify_watcher':
     case 'stop_spotify_watcher':
       return Promise.resolve(undefined as T);
@@ -1245,10 +1188,8 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
       return Promise.resolve((mockNowPlaying ?? null) as T);
 
     case 'get_track_lyrics_state': {
-      // Read-only bootstrap snapshot — mirrors the real backend, which moved
-      // all orchestration server-side. Tests prime state via __mockLyrics
-      // (sets the per-track lyrics) and __mockTranslationCache (sets the
-      // cached translation for a target lang/model).
+      // Read-only bootstrap snapshot; tests prime it via __mockLyrics and
+      // __mockTranslationCache.
       const trackId = args?.trackId as string;
       const target = args?.targetLang as string;
       const model = args?.model as number;
@@ -1257,11 +1198,8 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
         : null;
       const translation =
         mockTranslationCache.get(translationKey(trackId, target, model)) ?? null;
-      // If the track has been explicitly mocked as "no lyrics", fire a
-      // lyrics_resolved event after the bootstrap promise resolves so the
-      // frontend transitions from `fetching` to `unsupported-track`. We
-      // schedule it on the microtask queue + setTimeout(0) so the resolved
-      // promise lands first.
+      // A mocked "no lyrics" track needs lyrics_resolved *after* the bootstrap
+      // promise settles, or the view never leaves `fetching`.
       if (mockLyricsByTrack.has(trackId) && lyrics === null) {
         setTimeout(() => {
           emit('lyrics_resolved', { trackId, lyrics: null });
@@ -1270,18 +1208,11 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
       return Promise.resolve({ lyrics, translation } as T);
     }
 
-    // ----- Spotify Web (queue/preload) commands ------------------------
-    // The lyrics view's queue store hits these on mount; without handlers the
-    // mock logs `Unhandled command` warnings and the store sits in its
-    // disconnected default forever (which is fine, just noisy).
-
     case 'get_anki_sync_status':
       return Promise.resolve({ ...mockAnkiSyncStatus } as T);
 
     case 'sync_anki_now': {
       syncAnkiNowCalls.push({ at: Date.now() });
-      // Mirror the backend state machine: flip to syncing immediately,
-      // then resolve with a synthetic report and flip to ok.
       mockAnkiSyncStatus = { state: 'syncing' };
       emit('anki_sync_status_changed', undefined);
       const report: SyncReportDto = {
@@ -1291,8 +1222,7 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
         failed: 0,
         persistentFailures: [],
       };
-      // Use a microtask delay so the syncing → ok transition is observable
-      // when the test cares about it.
+      // Delayed so the syncing → ok transition is observable.
       setTimeout(() => {
         mockAnkiSyncStatus = {
           state: 'ok',
@@ -1325,5 +1255,4 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
   }
 }
 
-// Re-export for compatibility with @tauri-apps/api/core
 export { invoke as default };

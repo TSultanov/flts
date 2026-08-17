@@ -80,13 +80,11 @@ function makeBookId(): string {
 }
 
 /**
- * Seed the backend and open the chapter at index 0. In real mode this goes
- * through real-seed.ts (real import + scripted LLM sim); same signature and
- * return value in both tiers.
+ * Seeds the backend and opens chapter 0; identical signature in both tiers
+ * (real mode routes through real-seed.ts).
  *
- * page.goto triggers a hard reload that wipes the mock module's in-memory
- * state. We install an init script that re-applies the seed on every page
- * load so the backend is populated by the time the chapter view mounts.
+ * The seed is re-applied via an init script on every load, since page.goto
+ * wipes the mock module's in-memory state.
  */
 export async function seedAndOpen(
   page: Page,
@@ -98,9 +96,6 @@ export async function seedAndOpen(
   const bookId = spec.bookId ?? makeBookId();
   const fullSpec = { ...spec, bookId };
 
-  // Stash the seed for the mock module to pick up synchronously on init.
-  // The mock applies this before any invoke resolves, so Library Resources
-  // see populated data on their first fetch.
   await page.addInitScript((s) => {
     const wordInfoDefaults = (info: any) => ({
       original: info.original,
@@ -138,10 +133,7 @@ export async function seedAndOpen(
   return { bookId };
 }
 
-/**
- * Set a translate-config dynamically (post-navigation). Useful when the
- * test wants to configure the translation behavior after mount.
- */
+/** Sets a translate-config after mount. */
 export async function setTranslateConfig(
   page: Page,
   bookId: string,
@@ -215,10 +207,8 @@ export function wordSpan(paragraph: Locator, flatIndex: number): Locator {
 }
 
 /**
- * Scroll the chapter's horizontal page-flip container to the given paragraph.
- * Mirrors ChapterView.scrollParagraphIntoView (inline 'center', behavior 'auto')
- * so the snap settles synchronously in chromium. The trailing wait lets the
- * IntersectionObserver callback fire on the new viewport.
+ * Mirrors ChapterView.scrollParagraphIntoView (inline 'center', 'auto') so the
+ * snap settles synchronously; the trailing wait lets the IO callback fire.
  */
 export async function scrollToParagraph(page: Page, paragraphId: number): Promise<void> {
   await page.evaluate((id) => {
@@ -230,11 +220,7 @@ export async function scrollToParagraph(page: Page, paragraphId: number): Promis
   await page.waitForTimeout(50);
 }
 
-/**
- * Per-idx-stable sentence shape so wrapped widths stay deterministic across
- * runs. Used directly by `fillerHtml` and exposed for tests that need
- * heterogeneous paragraph sizes (mix short and long paragraphs).
- */
+/** Per-idx-stable sentence shape, so wrapped widths stay deterministic. */
 export function htmlOfSize(idx: number, sentences: number): string {
   const sentence =
     `Paragraph ${idx} sentence about subject ${idx} doing thing ${idx} in place ${idx}.`;
@@ -242,19 +228,14 @@ export function htmlOfSize(idx: number, sentences: number): string {
 }
 
 /**
- * Deterministic ~15-sentence filler so each paragraph contributes meaningful
- * height and the columnar layout produces real horizontal scroll distance.
- * At 80 paragraphs this puts the chapter's scrollWidth / clientWidth well
- * over 50, matching a realistic long chapter.
+ * ~15 sentences per paragraph, enough that the columnar layout yields real
+ * horizontal scroll distance (>50 pages at 80 paragraphs).
  */
 export function fillerHtml(idx: number): string {
   return htmlOfSize(idx, 15);
 }
 
-/**
- * Build a SeedSpec with N filler paragraphs. Per-paragraph overrides
- * (translation, segments) merge in via `overrides`.
- */
+/** SeedSpec with N filler paragraphs; `overrides` merge in per paragraph. */
 export function multipageSpec(
   count: number,
   overrides: Partial<Record<number, Partial<SeedParagraph>>> = {},
@@ -267,18 +248,12 @@ export function multipageSpec(
   return { chapters: [{ paragraphs }], ...extras };
 }
 
-/**
- * Wait until the paragraph shows translated content (the {:else} branch is
- * rendered — translate button has been removed and replaced by an empty div).
- */
+/** Waits for the translated branch (translate button replaced by an empty div). */
 export async function expectTranslated(paragraph: Locator): Promise<void> {
   await expect(paragraph.locator('button.translate')).toHaveCount(0);
 }
 
-/**
- * Assert the paragraph currently renders WordSpans (i.e. lazy-mount window
- * includes it).
- */
+/** Asserts the paragraph is inside the lazy-mount window. */
 export async function expectWordSpansMounted(
   page: Page,
   paragraphId: number,
@@ -288,11 +263,7 @@ export async function expectWordSpansMounted(
   ).toBeAttached();
 }
 
-/**
- * Assert the paragraph is in the unmounted fallback (no WordSpan descendants).
- * The wrapper itself is still in DOM — only the segment-based inner render is
- * gone.
- */
+/** Asserts the unmounted fallback: wrapper in DOM, no WordSpans inside. */
 export async function expectWordSpansUnmounted(
   page: Page,
   paragraphId: number,
@@ -302,10 +273,7 @@ export async function expectWordSpansUnmounted(
   ).toHaveCount(0);
 }
 
-/**
- * Build a single word segment matching what the real Rust paragraph_to_segments
- * helper emits, for use inside a SeedParagraph.segments array.
- */
+/** One word segment shaped as the Rust `paragraph_to_segments` emits. */
 export function wordSegment(opts: {
   flatIndex: number;
   sentence: number;
@@ -372,12 +340,9 @@ export async function setParagraphTranslation(
 }
 
 /**
- * Build a segments array that tiles the entire fillerHtml(idx) source text,
- * one word-segment per whitespace-delimited token. This mirrors production,
- * where the backend's paragraph_to_segments emits a segment for every word
- * in the original, so the rendered widths of the translated and untranslated
- * branches stay roughly the same — a precondition for lazy-mount tests that
- * exercise scroll stability across mount/unmount transitions.
+ * Tiles all of `fillerHtml(idx)`, one segment per token, as the backend does.
+ * Keeps translated and untranslated widths comparable, which the lazy-mount
+ * scroll-stability tests depend on.
  */
 export function fillerSegments(idx: number): ParagraphSegment[] {
   const html = fillerHtml(idx);

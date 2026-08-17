@@ -12,10 +12,8 @@ export const CHAPTER_STORE_KEY = Symbol("ChapterParagraphsStore");
 const BATCH_SIZE = 20;
 const MAX_INFLIGHT_PER_KIND = 5;
 const CARDS_REFRESH_DEBOUNCE_MS = 500;
-// A batch that hasn't settled after this long is presumed hung: its
-// in-flight slot is released so later paragraphs keep flowing, and its
-// ids leave the dedup set so a future enqueue can retry them. If the
-// response eventually arrives it is still applied — data is data.
+// Past this a batch is presumed hung: its slot is released and its ids
+// become retryable. A late response still applies.
 const BATCH_WATCHDOG_MS = 30_000;
 
 export class ChapterParagraphsStore {
@@ -32,18 +30,14 @@ export class ChapterParagraphsStore {
     #translationsQueue: number[] = [];
     #translationsEnqueued = new Set<number>();
     #translationsInflight = 0;
-    // Ref-count of dispatched-but-unsettled batches per id (overlapping
-    // soft-refresh batches can carry the same id), decremented when the
-    // RESPONSE arrives — not when the watchdog fires. The watchdog removes
-    // a timed-out chunk's ids from #translationsEnqueued while the fetch is
-    // still pending; without this map, a paragraph_updated arriving in that
-    // window would find the id in no collection and be dropped, letting the
-    // late stale null row cache the paragraph as untranslated forever.
+    // Per-id ref-count of unsettled batches, decremented on RESPONSE, not
+    // on watchdog. Without it, a paragraph_updated arriving after a timeout
+    // but before the response would find the id in no collection and be
+    // dropped, caching the paragraph as untranslated forever.
     #translationsInflightIds = new Map<number, number>();
-    // Per-paragraph staleness counter, bumped on `paragraph_updated`.
-    // Batch responses only apply rows whose dispatch-time epoch is still
-    // current, so an older in-flight response can never overwrite fresher
-    // data, and an update racing an in-flight fetch always wins.
+    // Staleness counter bumped on `paragraph_updated`; responses apply only
+    // rows whose dispatch-time epoch is still current, so an update racing
+    // an in-flight fetch always wins.
     #translationsEpoch = new Map<number, number>();
 
     #cardsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -59,15 +53,8 @@ export class ChapterParagraphsStore {
                 "paragraph_updated",
                 (p) => p.bookId === bookId,
                 (p) => {
-                    // Originals never mutate after import, so we don't
-                    // refetch them. A translation update matters only for
-                    // paragraphs we've cached, queued, or have in flight
-                    // (i.e. ever been in the mount window); paragraphs
-                    // never visited stay un-enqueued. Bump the epoch so
-                    // any in-flight response for this id is discarded on
-                    // arrival, then soft-enqueue a refetch — the cached
-                    // entry stays visible until the replacement lands, so
-                    // there's no segments→original-text flicker.
+                    // Originals never mutate after import. Only paragraphs
+                    // that entered the mount window are worth refetching.
                     const id = p.paragraphId;
                     if (
                         this.#translations.has(id) ||
@@ -84,9 +71,8 @@ export class ChapterParagraphsStore {
             ),
         );
 
-        // Card-file changes (Anki sync writes or Syncthing pushes) require a
-        // backend re-read to update per-word familiarity. Debounced so a long
-        // sync_pass burst coalesces into a single refresh.
+        // Card-file changes shift per-word familiarity. Debounced so a long
+        // sync_pass burst coalesces into one refresh.
         this.#unsubscribers.push(
             eventHub.subscribe<null>(
                 "cards_updated",
@@ -130,13 +116,9 @@ export class ChapterParagraphsStore {
         }, CARDS_REFRESH_DEBOUNCE_MS);
     }
 
-    // Re-fetch cached translations without dropping them first. Overwrites
-    // entries in place as the batch resolves, so the user sees no
-    // segments→original-text flicker. Bypasses `#translationsEnqueued`
-    // entirely — that set is the regular-enqueue dedup and never clears
-    // for successfully-fetched ids, so checking it would block every
-    // refresh. Dedup against the current queue contents only so a burst
-    // of `cards_updated` events doesn't push the same ids multiple times.
+    // Refetch in place, so no segments→original-text flicker. Must bypass
+    // `#translationsEnqueued` (it never clears for fetched ids, and would
+    // block every refresh); dedup against the live queue instead.
     #softEnqueueTranslations(ids: readonly number[]): void {
         const alreadyQueued = new Set(this.#translationsQueue);
         for (const id of ids) {
@@ -179,11 +161,8 @@ export class ChapterParagraphsStore {
         this.#pumpTranslations();
     }
 
-    // Returns a settle function releasing the batch's in-flight slot
-    // exactly once — whichever of response or watchdog fires first wins.
-    // On timeout the chunk ids leave `enqueued` so a future enqueue can
-    // retry them; a late response settling afterwards must not touch the
-    // counter again (its rows still apply in the caller's `.then`).
+    // Returns a settle fn that releases the batch's slot exactly once —
+    // response or watchdog, whichever fires first.
     #armBatchWatchdog(
         chunk: readonly number[],
         enqueued: Set<number>,
@@ -230,7 +209,7 @@ export class ChapterParagraphsStore {
                 })
                 .catch((err) => {
                     console.error("Failed to fetch paragraph originals batch", err);
-                    // Allow a future enqueue to retry these ids.
+                    // Make these ids retryable.
                     for (const id of chunk) this.#originalsEnqueued.delete(id);
                 })
                 .finally(settle);
@@ -245,9 +224,8 @@ export class ChapterParagraphsStore {
         ) {
             const chunk = this.#translationsQueue.splice(0, BATCH_SIZE);
             this.#translationsInflight++;
-            // Snapshot each id's epoch at dispatch; a row whose epoch has
-            // advanced by resolve time is stale and must not apply — its
-            // refetch is already queued or in flight.
+            // A row whose epoch advanced by resolve time is stale; its
+            // refetch is already queued.
             const dispatchEpochs = new Map<number, number>();
             for (const id of chunk) {
                 dispatchEpochs.set(id, this.#translationsEpoch.get(id) ?? 0);
@@ -284,8 +262,8 @@ export class ChapterParagraphsStore {
                     for (const id of chunk) this.#translationsEnqueued.delete(id);
                 })
                 .finally(() => {
-                    // Response side (never the watchdog): drop this batch's
-                    // in-flight claim on its ids, then release the slot.
+                    // Response side only — the watchdog must not drop the
+                    // in-flight claim on these ids.
                     for (const id of chunk) {
                         const n = (this.#translationsInflightIds.get(id) ?? 1) - 1;
                         if (n <= 0) this.#translationsInflightIds.delete(id);
@@ -296,10 +274,8 @@ export class ChapterParagraphsStore {
         }
     }
 
-    // Single write path into `#translations`. Translations are only ever
-    // added in this app, never removed, so a null-segments row for a
-    // paragraph we already hold segments for is a transient backend state
-    // and must never clobber the cache.
+    // Sole write path. Translations are never removed, so a null-segments
+    // row over held segments is transient backend state, not a deletion.
     #applyTranslationRow(id: number, segments: ParagraphSegment[] | null): void {
         if (segments === null && this.#translations.get(id)?.segments != null) {
             return;

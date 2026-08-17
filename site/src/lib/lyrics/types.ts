@@ -56,7 +56,7 @@ export type LyricsTranslationError = {
 
 export type LyricsResolved = {
     trackId: string;
-    /// null means the backend confirmed LRClib has no lyrics for this track.
+    /// null = LRClib confirmed it has no lyrics for this track.
     lyrics: Lyrics | null;
 };
 

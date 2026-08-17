@@ -6,13 +6,8 @@ import {
   wordSpan,
 } from './helpers/paragraph';
 
-// Covers the WordView bottom-overlay redesign:
-//   - hint text when no selection
-//   - peek populates word + translation on selection
-//   - expand via button + `w` shortcut
-//   - overlay does not resize the book viewport
-//   - drag-resize persists across reloads
-//   - collapse via button + `w` shortcut
+// WordView bottom overlay: peek/expand/collapse (button and `w`), overlaying
+// rather than resizing the book viewport, with a drag size that survives reload.
 
 test.describe.configure({ mode: 'parallel' });
 
@@ -32,8 +27,7 @@ async function seedClickableBook(page: import('@playwright/test').Page) {
       translation: 'hello',
     }),
   ];
-  // Embed the wordInfo in the seed so it survives page reloads (the init
-  // script re-applies the seed on every navigation).
+  // In the seed, so the init script re-applies it on every navigation.
   const { bookId } = await seedAndOpen(page, {
     chapters: [{ paragraphs: [{ html: 'hola', segments }] }],
     wordInfos: [
@@ -78,7 +72,6 @@ test.describe('WordView panel — selection populates peek', () => {
     await expect(peek.locator('.peek-word')).toHaveText('hello');
     await expect(peek.locator('.peek-translations')).toHaveText('hola, hi');
     await expect(page.locator(EXPAND)).toBeVisible();
-    // Stays collapsed by default — expanded body is absent.
     await expect(page.locator(EXPANDED)).toHaveCount(0);
   });
 });
@@ -94,9 +87,7 @@ test.describe('WordView panel — expand and collapse', () => {
     await page.locator(EXPAND).click();
     await expect(page.locator(EXPANDED)).toBeVisible();
     await expect(page.locator(EXPANDED).locator('.word-original')).toHaveText('hello');
-    // The Note details block is open by default.
     await expect(page.locator(EXPANDED)).toContainText('a greeting');
-    // Peek body is replaced by the expanded body while expanded.
     await expect(page.locator(PEEK)).toHaveCount(0);
 
     await page.locator(COLLAPSE).click();
@@ -171,7 +162,6 @@ test.describe('WordView panel — drag resize', () => {
         )?.clientHeight ?? -1,
     );
 
-    // Drag upward to make the panel taller.
     const startX = startBox.x + startBox.width / 2;
     const startY = startBox.y + startBox.height / 2;
     await page.mouse.move(startX, startY);

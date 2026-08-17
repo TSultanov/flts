@@ -30,16 +30,12 @@ impl EpubBook {
 
         let mut chapters = Vec::new();
 
-        // Clone spine to avoid borrow issues
         let spine_items = epub.spine.clone();
         let toc_items = epub.toc.clone();
 
-        // Process spine contents
         for spine_item in &spine_items {
-            // Get TOC elements that match this spine item
-            // Compute c_href_doc once per spine item, not for every TOC element
-            // Skip malformed spine items whose manifest resource is missing or
-            // has a non-UTF-8 path, so a bad EPUB doesn't panic the whole import.
+            // Skip spine items whose manifest resource is missing or has a
+            // non-UTF-8 path, so a bad EPUB can't panic the import.
             let Some(resource) = epub.resources.get(&spine_item.idref) else {
                 continue;
             };
@@ -62,13 +58,11 @@ impl EpubBook {
                 })
                 .collect();
 
-            // Get chapter content
             if let Some((content, _)) = epub.get_resource_str(&spine_item.idref) {
                 chapters.extend(parse_chapter(&content, &toc_elements)?);
             }
         }
 
-        // Build title
         let mut title_parts = Vec::new();
         if let Some(creator) = epub.mdata("creator")
             && !creator.value.is_empty()
@@ -179,7 +173,7 @@ fn all_children_are_inline(element: ElementRef) -> bool {
 }
 
 fn is_inline_element(tag_name: &str) -> bool {
-    // Common inline elements - use eq_ignore_ascii_case to avoid allocation
+    // eq_ignore_ascii_case avoids allocating a lowercased copy.
     matches!(
         tag_name,
         "a" | "A"
@@ -239,14 +233,12 @@ fn text_between(start: ElementRef, end: Option<ElementRef>) -> Vec<EpubParagraph
     let mut current = Some(start);
 
     while let Some(elem) = current {
-        // Check if we've reached the end
         if let Some(end_elem) = end
             && elem.id() == end_elem.id()
         {
             break;
         }
 
-        // Check if this is a paragraph-like element
         let has_text = elem.text().any(|t| !t.trim().is_empty());
         if has_text && (elem.children().count() == 0 || all_children_are_inline(elem)) {
             let text = elem.text().collect::<String>().trim().to_string();
@@ -256,7 +248,7 @@ fn text_between(start: ElementRef, end: Option<ElementRef>) -> Vec<EpubParagraph
             }
         }
 
-        // Traverse: children first, then siblings, then up to parent's sibling
+        // Children first, then siblings, then up to the parent's sibling.
         if !all_children_are_inline(elem)
             && let Some(first_child) = elem.children().find_map(ElementRef::wrap)
         {
@@ -264,9 +256,7 @@ fn text_between(start: ElementRef, end: Option<ElementRef>) -> Vec<EpubParagraph
             continue;
         }
 
-        // Try next sibling
         current = find_next_sibling(elem).or_else(|| {
-            // Go up and find next sibling of parent
             let mut parent = elem.parent();
             while let Some(p_node) = parent {
                 if let Some(p) = ElementRef::wrap(p_node) {

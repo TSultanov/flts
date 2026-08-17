@@ -44,7 +44,7 @@
                 (languages.current ?? []).map((l) => l.id),
             );
         } catch {
-            // Book parse failed; {:catch} on `book` shows the error.
+            // {:catch} on `book` shows the parse error.
             return "eng";
         }
     });

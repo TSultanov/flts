@@ -178,14 +178,12 @@ pub struct Config {
     #[serde(rename = "zaiApiKey", default)]
     pub zai_api_key: Option<String>,
     pub model: TranslationModel,
-    /// LEGACY / migration-read-only. The library location is now app-managed
-    /// (`resolve_library_root`); this is only read once to migrate an existing
-    /// user-picked library, then cleared. Never written by new code.
+    /// Migration-read-only: read once to relocate a user-picked library into
+    /// `resolve_library_root`, then cleared. Never write it.
     #[serde(rename = "libraryPath", default)]
     pub library_path: Option<String>,
-    /// Spotify Developer Dashboard client_id. Required for the Web API to work;
-    /// users register their own dev app (PKCE flow, no client secret needed)
-    /// and paste the id here. Empty/missing = Web API integration disabled.
+    /// Client id from the user's own Spotify dev app (PKCE, no secret).
+    /// Empty/missing disables the Web API integration.
     #[serde(rename = "spotifyClientId", default)]
     pub spotify_client_id: Option<String>,
     /// How many upcoming tracks to preload lyrics+translation for. 0 disables.
@@ -200,12 +198,10 @@ pub struct Config {
     /// Optional AnkiConnect API key. Unset for default Anki desktop installs.
     #[serde(rename = "ankiApiKey", default)]
     pub anki_api_key: Option<String>,
-    /// Native Syncthing device sync. Off by default; the user opts in from the
-    /// sync UI (which then starts the embedded engine).
+    /// Opt-in from the sync UI; enabling it starts the embedded engine.
     #[serde(rename = "syncEnabled", default)]
     pub sync_enabled: bool,
-    /// This device's display name in the sync roster. Defaults to the hostname
-    /// (which is also Syncthing's own default), so `None` is fine.
+    /// Display name in the sync roster; `None` falls back to the hostname.
     #[serde(rename = "syncDeviceName", default)]
     pub sync_device_name: Option<String>,
     /// Max paragraph translations run concurrently. 1 = serial.
@@ -214,8 +210,7 @@ pub struct Config {
         default = "default_translation_concurrency"
     )]
     pub translation_concurrency: u32,
-    /// When true, the reader hides familiarity underlines and does not
-    /// auto-show translation overlays. Translations appear only after a tap.
+    /// Hides familiarity underlines and overlays until the reader taps a word.
     #[serde(rename = "tapToRevealTranslations", default)]
     pub tap_to_reveal_translations: bool,
 }
@@ -272,8 +267,7 @@ impl Config {
             Ok(json) => json,
             Err(err) => {
                 warn!("Failed to parse config: {}. Loading default values.", err);
-                // Preserve the unparseable file for diagnosis instead of
-                // letting the next save silently overwrite the only copy.
+                // Preserve the unparseable file; the next save would overwrite it.
                 let corrupt = path.with_extension("json.corrupt");
                 if let Err(copy_err) = std::fs::rename(path, &corrupt) {
                     warn!("Could not preserve corrupt config at {corrupt:?}: {copy_err}");
@@ -284,14 +278,10 @@ impl Config {
     }
 
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
-        // Atomic write: serialize to a sibling temp, fsync, then rename over
-        // the target. A truncate-in-place (the previous approach) leaves an
-        // empty/partial config.json if the process is killed mid-write — on
-        // iOS/Android the OS terminating a backgrounded app during a save is
-        // routine — and load() then silently resets every setting to default.
-        // The temp name carries a per-save sequence number: save() callers
-        // are unserialized async commands, and a shared temp path would let
-        // one save truncate the file another is about to rename into place.
+        // Atomic (temp + fsync + rename): mobile OSes routinely kill a
+        // backgrounded app mid-write, and a partial config.json would make
+        // load() reset every setting. The sequence number keeps unserialized
+        // concurrent saves off a shared temp path.
         static SAVE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let seq = SAVE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir = path.parent().unwrap_or_else(|| Path::new("."));
@@ -346,7 +336,6 @@ mod tests {
 
     #[test]
     fn config_loads_legacy_file_without_anki_fields() {
-        // Simulate a config persisted before the Anki fields existed.
         let legacy = serde_json::json!({
             "targetLanguageId": "eng",
             "translationProvider": "google",
@@ -370,8 +359,6 @@ mod tests {
 
     #[test]
     fn config_loads_legacy_file_without_translation_concurrency() {
-        // A config persisted before translation_concurrency existed must fall
-        // back to the default rather than failing to parse.
         let legacy = serde_json::json!({
             "targetLanguageId": "eng",
             "translationProvider": "google",

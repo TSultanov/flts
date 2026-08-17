@@ -12,34 +12,26 @@ use uuid::Uuid;
 
 /// The `notify` backend the library watch runs on.
 ///
-/// Everywhere except iOS this is the platform-recommended one (FSEvents,
-/// inotify, ReadDirectoryChanges). On iOS "recommended" resolves to kqueue,
-/// which needs an **open file descriptor per watched path** — and a recursive
-/// watch opens one for every file in the tree. A real library is mostly card
-/// JSON (one file per lemma, thousands of them), so the watch alone blows past
-/// the 256-descriptor soft limit iOS gives an app; from then on every `open` in
-/// the process fails with EMFILE, including WebKit loading system fonts
-/// ("FontParser could not open ... TimesNewRoman.ttf: [24: Too many open
-/// files]"). Polling costs a periodic stat sweep instead and holds no
-/// descriptors.
+/// Platform-recommended everywhere but iOS, where it resolves to kqueue: one
+/// open descriptor per watched path, and a library of thousands of card JSONs
+/// blows past the 256-descriptor soft limit, after which every `open` in the
+/// process fails with EMFILE. Polling costs a stat sweep and no descriptors.
 #[cfg(target_os = "ios")]
 type WatchBackend = notify::PollWatcher;
 #[cfg(not(target_os = "ios"))]
 type WatchBackend = notify::RecommendedWatcher;
 
-/// How often the iOS polling backend re-stats the library tree. Long enough
-/// that a few thousand stats stay negligible, short enough that a book arriving
-/// over sync shows up while the reader is still looking at the shelf.
+/// Poll period: long enough that thousands of stats stay negligible, short
+/// enough that a synced book appears while the reader is on the shelf.
 #[cfg(target_os = "ios")]
 const POLL_INTERVAL: Duration = Duration::from_secs(10);
 
-/// Backend configuration. Only the polling watcher reads any of this; the
-/// event-driven backends ignore it.
+/// Read only by the polling watcher; event-driven backends ignore it.
 fn watch_config() -> notify::Config {
     #[cfg(target_os = "ios")]
     {
-        // `compare_contents` would hash every file on every sweep — mtime+size
-        // is what the event-driven backends effectively report anyway.
+        // `compare_contents` hashes every file per sweep; mtime+size is what
+        // the event-driven backends effectively report anyway.
         notify::Config::default()
             .with_poll_interval(POLL_INTERVAL)
             .with_compare_contents(false)
@@ -76,9 +68,8 @@ pub struct LibraryWatcher {
     change_rx: Option<UnboundedReceiver<LibraryFileChange>>,
 }
 
-/// Builds the debounced-event handler: classify every event, log it, forward
-/// the distinct library changes. Shared with the test that drives the polling
-/// backend (iOS's) directly, so both backends run the same classification.
+/// The debounced-event handler: classify, log, forward distinct changes.
+/// Shared with the polling-backend test so both backends classify identically.
 fn change_handler(
     tx: UnboundedSender<LibraryFileChange>,
 ) -> impl FnMut(DebounceEventResult) + Send + 'static {
@@ -170,7 +161,6 @@ impl LibraryWatcher {
         for path in &event.paths {
             let filename = path.file_name()?.to_str()?;
 
-            // Skip temp files
             if filename.contains('~') {
                 continue;
             }
@@ -186,8 +176,8 @@ impl LibraryWatcher {
             }
             let metadata = metadata.unwrap();
 
-            // Book file: {uuid}/book{some junk from conflicts}.dat
-            // Translation file: {uuid}/translation_{src}_{tgt}{some junk from conflicts}.dat
+            // {uuid}/book<conflict junk>.dat
+            // {uuid}/translation_{src}_{tgt}<conflict junk>.dat
             if filename.starts_with("book") && filename.ends_with(".dat") {
                 let uuid = path.parent()?.file_name()?.to_str()?;
                 return Some(LibraryFileChange::BookChanged {
@@ -216,10 +206,8 @@ impl LibraryWatcher {
                 }
             }
 
-            // Card file: <lib>/cards/<src>-<tgt>/<lemma>_<pos>.json
-            // Syncthing conflict siblings (.sync-conflict-) are merged in
-            // by LibraryCardStore::load and must not surface as a separate
-            // change event.
+            // <lib>/cards/<src>-<tgt>/<lemma>_<pos>.json. Conflict siblings
+            // are merged by LibraryCardStore::load, so they raise no event.
             if filename.ends_with(".json") && !filename.contains(".sync-conflict-") {
                 let parent = path.parent()?;
                 let deck_dir = parent.file_name()?.to_str()?;
@@ -258,13 +246,13 @@ mod tests {
         let mut rx = watcher.take_recv().expect("receiver available");
         watcher.set_path(&tmp.path).expect("set_path ok");
 
-        // Let the recursive watch fully install before writing.
+        // Let the recursive watch install before writing.
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         let deck = tmp.path.join("cards").join("spa-rus");
         tokio::fs::create_dir_all(&deck).await.unwrap();
 
-        // Mirror LibraryCardStore::save: write to temp~, then rename.
+        // Mirror LibraryCardStore::save: temp~, then rename.
         let canonical = deck.join("hola_noun.json");
         let temp = deck.join("hola_noun.json~TEST1234");
         tokio::fs::write(&temp, br#"{"version":1}"#).await.unwrap();
@@ -305,7 +293,7 @@ mod tests {
             .await
             .unwrap();
 
-        // 1500 ms > 500 ms debounce + safety. No event should fire.
+        // Well past the 500 ms debounce; no event should fire.
         let result = timeout(Duration::from_millis(1500), rx.recv()).await;
         assert!(
             result.is_err(),
@@ -313,10 +301,9 @@ mod tests {
         );
     }
 
-    /// iOS runs the polling backend (see [`WatchBackend`]), which no dev or CI
-    /// host selects by default — so drive it explicitly here: a card saved the
-    /// way `LibraryCardStore` saves one must still classify when the events
-    /// come from a stat sweep rather than the kernel.
+    /// No dev or CI host selects the polling backend, so drive it explicitly:
+    /// a saved card must classify the same from a stat sweep as from the
+    /// kernel.
     #[tokio::test(flavor = "multi_thread")]
     async fn poll_backend_classifies_card_writes() {
         let tmp = TempDir::new("flts_watcher_poll");
@@ -343,7 +330,7 @@ mod tests {
         tokio::fs::write(&temp, br#"{"version":1}"#).await.unwrap();
         tokio::fs::rename(&temp, &canonical).await.unwrap();
 
-        // Generous: detection is bounded by the poll interval, not the kernel.
+        // Detection is bounded by the poll interval, not the kernel.
         let event = timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("poll watcher fired in time")

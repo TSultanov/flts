@@ -23,7 +23,6 @@ pub fn write_u64(w: &mut dyn io::Write, v: u64) -> io::Result<()> {
 #[inline(always)]
 pub fn write_var_u64(w: &mut dyn io::Write, mut v: u64) -> io::Result<()> {
     while v >= 0x80 {
-        // Set continuation bit
         let b = ((v as u8) & 0x7F) | 0x80;
         w.write_all(&[b])?;
         v >>= 7;
@@ -156,7 +155,7 @@ pub enum Magic {
 impl Magic {
     pub fn as_bytes(&self) -> &'static [u8; 4] {
         match self {
-            Magic::Book => b"BK01", // includes version indicator but still treat version separately
+            Magic::Book => b"BK01", // version is read separately
             Magic::Translation => b"TR01",
             Magic::ChapterSummaries => b"CS01",
         }
@@ -232,9 +231,8 @@ impl<'a> io::Write for ChecksumedWriter<'a> {
     }
 }
 
-/// Reads the trailing 8-byte FNV content hash without rehashing the body.
-/// Returns the stored hash and the byte offset where it begins (= body length).
-/// Leaves the reader seeked to the start of the stream.
+/// The trailing 8-byte FNV hash and the offset it starts at (= body length),
+/// without rehashing. Leaves the reader at the start of the stream.
 pub fn read_stored_hash<T: io::Seek + io::Read>(reader: &mut T) -> io::Result<(u64, u64)> {
     reader.seek(io::SeekFrom::End(-8))?;
     let end = reader.stream_position()?;
@@ -247,8 +245,8 @@ pub fn read_stored_hash<T: io::Seek + io::Read>(reader: &mut T) -> io::Result<(u
     Ok((read_hash, end))
 }
 
-/// Opens `path` and returns its trailing 8-byte FNV content hash, without
-/// deserializing the body. Used to detect "same content" file-watcher echoes.
+/// The trailing FNV hash of `path`, without deserializing the body. Detects
+/// same-content file-watcher echoes.
 pub fn read_stored_hash_from_path(path: &std::path::Path) -> io::Result<u64> {
     let mut file = std::fs::File::open(path)?;
     Ok(read_stored_hash(&mut file)?.0)
@@ -259,7 +257,6 @@ pub fn validate_hash<T: io::Seek + io::Read>(reader: &mut T) -> io::Result<bool>
 
     let mut hasher = fnv::FnvHasher::default();
 
-    // Read in chunks up to the position of the stored hash (end)
     let mut remaining: u64 = end;
     let mut buf = [0u8; 8192];
     while remaining > 0 {
@@ -300,7 +297,6 @@ mod serialization_tests {
 
     #[test]
     fn test_known_encodings() {
-        // (value, expected_bytes)
         let cases: &[(u64, &[u8])] = &[
             (0, &[0x00]),
             (1, &[0x01]),
@@ -330,9 +326,7 @@ mod serialization_tests {
     #[test]
     fn test_roundtrip_powers_of_two_and_boundaries() {
         let mut values = vec![0u64, 1, 2, 3, 127, 128, 129];
-        // Add powers of two around 7-bit boundaries
         for shift in (7..=63).step_by(7) {
-            // 7,14,21,...,63
             let base = 1u64 << shift;
             values.push(base - 1);
             values.push(base);
@@ -358,7 +352,6 @@ mod serialization_tests {
             let v = read_var_u64(&mut cursor).unwrap();
             assert_eq!(&v, expected);
         }
-        // Ensure EOF afterwards
         let eof = read_var_u64(&mut cursor);
         assert!(eof.is_err());
         assert_eq!(eof.err().unwrap().kind(), io::ErrorKind::UnexpectedEof);
@@ -366,7 +359,6 @@ mod serialization_tests {
 
     #[test]
     fn test_incomplete_varint() {
-        // 0x80 indicates continuation but stream ends
         let bytes = [0x80u8];
         let mut cur = Cursor::new(bytes);
         let r = read_var_u64(&mut cur);
@@ -376,10 +368,8 @@ mod serialization_tests {
 
     #[test]
     fn test_varint_too_long() {
-        // Construct 11 bytes where the first 10 have continuation bit set; for valid u64 max is 10 bytes
-        // This will create shift >= 64 and should error with InvalidData
+        // 11 continuation bytes push shift past 64; u64 max needs only 10.
         let bytes = vec![0x80u8; 11];
-        // Last byte also has continuation bit to force loop past 64 bits
         let mut cur = Cursor::new(bytes);
         let r = read_var_u64(&mut cur);
         assert!(r.is_err());
@@ -390,10 +380,9 @@ mod serialization_tests {
     fn test_max_u64_encoding() {
         let v = u64::MAX; // 0xFFFF_FFFF_FFFF_FFFF
         let enc = encode(v);
-        // Ensure no panic and decode back
         let dec = decode(&enc);
         assert_eq!(dec, v);
-        // Length should be 10 bytes per standard LEB128 for 64-bit max
+        // LEB128 needs 10 bytes for a 64-bit max.
         assert_eq!(enc.len(), 10);
     }
 
@@ -402,7 +391,6 @@ mod serialization_tests {
         let mut buf: Vec<u8> = Vec::new();
         let none: Option<VecSlice<u8>> = None;
         write_opt(&mut buf, &none).unwrap();
-        // Expect a single 0 marker
         assert_eq!(buf, vec![0u8]);
 
         let mut cur = Cursor::new(buf);
@@ -412,11 +400,9 @@ mod serialization_tests {
 
     #[test]
     fn test_write_read_opt_some_small_literals() {
-        // Small values fit in one varint byte each
         let slice = Some(VecSlice::<u8>::new(5, 3));
         let mut buf: Vec<u8> = Vec::new();
         write_opt(&mut buf, &slice).unwrap();
-        // 1 (present), then start=5, len=3
         assert_eq!(buf, vec![1u8, 5u8, 3u8]);
 
         let mut cur = Cursor::new(buf);
@@ -426,11 +412,9 @@ mod serialization_tests {
 
     #[test]
     fn test_write_read_opt_some_multibyte_literals() {
-        // Use values that require multi-byte varints
         let slice = Some(VecSlice::<u8>::new(128, 300));
         let mut buf: Vec<u8> = Vec::new();
         write_opt(&mut buf, &slice).unwrap();
-        // 1 (present), start=128 -> 0x80 0x01, len=300 -> 0xAC 0x02
         assert_eq!(buf, vec![1u8, 0x80, 0x01, 0xAC, 0x02]);
 
         let mut cur = Cursor::new(buf);
@@ -440,7 +424,7 @@ mod serialization_tests {
 
     #[test]
     fn read_stored_hash_extracts_trailing_u64_and_body_len() {
-        // Build a "file": arbitrary body followed by an 8-byte LE hash.
+        // A "file": arbitrary body followed by an 8-byte LE hash.
         let body: &[u8] = b"the quick brown fox";
         let hash: u64 = 0x0102_0304_0506_0708;
         let mut bytes = body.to_vec();
@@ -450,13 +434,11 @@ mod serialization_tests {
         let (read_hash, end) = read_stored_hash(&mut cur).unwrap();
         assert_eq!(read_hash, hash);
         assert_eq!(end, body.len() as u64);
-        // Cursor is rewound to the start for the caller.
         assert_eq!(cur.position(), 0);
     }
 
     #[test]
     fn read_stored_hash_agrees_with_validate_hash() {
-        // A genuinely valid container: body + FNV(body) as the trailing hash.
         let body: &[u8] = b"content that will be checksummed";
         let mut hasher = fnv::FnvHasher::default();
         hasher.write(body);

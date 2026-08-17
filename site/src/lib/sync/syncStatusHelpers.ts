@@ -6,8 +6,7 @@ import {
 } from "@fortawesome/free-solid-svg-icons";
 import type { SyncState, SyncStatus } from "./store.svelte";
 
-/// Icon for a sync state; null = hide the button (sync off). Pure so it's
-/// unit-testable without rendering.
+/// Null means hide the button (sync off).
 export function iconForState(state: SyncState | undefined): IconDefinition | null {
     switch (state) {
         case "starting":
@@ -18,7 +17,7 @@ export function iconForState(state: SyncState | undefined): IconDefinition | nul
         case "error":
             return faExclamationCircle;
         default:
-            return null; // disabled / undefined
+            return null;
     }
 }
 
@@ -30,7 +29,6 @@ export function isSpinning(state: SyncState | undefined): boolean {
     return state === "starting" || state === "syncing";
 }
 
-/// Short tooltip describing the current state.
 export function tooltipFor(status: SyncStatus | undefined): string {
     switch (status?.state) {
         case "starting":

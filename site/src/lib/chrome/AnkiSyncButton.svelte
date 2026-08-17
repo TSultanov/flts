@@ -23,9 +23,7 @@
         try {
             await triggerSyncNow();
         } catch {
-            // Backend pushes Err / Unreachable status through the watch
-            // sender; UI updates via the anki_sync_status_changed event.
-            // Nothing to do here.
+            // Failures surface via anki_sync_status_changed.
         }
     }
 </script>

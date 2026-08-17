@@ -22,17 +22,14 @@ impl BookMetadata {
     where
         Self: Sized,
     {
-        // Magic
         let magic = read_exact_array::<4>(input_stream)?;
         if &magic != Magic::Book.as_bytes() {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid magic"));
         }
-        Version::read_version(input_stream)?; // ensure supported
+        Version::read_version(input_stream)?;
 
-        // hash
         let metadata_hash = read_u64(input_stream)?;
 
-        // Read metadata
         let metadata_buf = read_len_prefixed_vec(input_stream)?;
 
         let mut hasher = fnv::FnvHasher::default();
@@ -48,14 +45,12 @@ impl BookMetadata {
 
         let id = Uuid::from_bytes(read_exact_array(&mut cursor)?);
 
-        // Title
         let title_len = read_var_u64(&mut cursor)? as usize;
         let mut title_buf = vec![0u8; title_len];
         cursor.read_exact(&mut title_buf)?;
         let title = String::from_utf8(title_buf)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8 in title"))?;
 
-        // Language
         let language_len = read_var_u64(&mut cursor)? as usize;
         let mut language_buf = vec![0u8; language_len];
         cursor.read_exact(&mut language_buf)?;

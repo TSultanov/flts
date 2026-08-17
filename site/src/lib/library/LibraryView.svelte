@@ -10,21 +10,19 @@
     const books = library.getLibraryBooksMetadata();
     const rootFolder = $derived(buildLibraryFolder(books.current ?? []));
 
-    // Batch selection state
     let selectedBookUids = $state(new Set<UUID>());
     let showBatchDeleteDialog = $state(false);
     let showBatchMoveDialog = $state(false);
     let booksToDelete: BookMeta[] = $state([]);
     let booksToMove: BookMeta[] = $state([]);
 
-    // Batch selection functions
     function toggleBookSelection(bookUid: UUID) {
         if (selectedBookUids.has(bookUid)) {
             selectedBookUids.delete(bookUid);
         } else {
             selectedBookUids.add(bookUid);
         }
-        selectedBookUids = new Set(selectedBookUids); // Trigger reactivity
+        selectedBookUids = new Set(selectedBookUids);
     }
 
     function selectAllBooks() {
@@ -35,16 +33,14 @@
 
     function clearSelection() {
         selectedBookUids.clear();
-        selectedBookUids = new Set(selectedBookUids); // Trigger reactivity
+        selectedBookUids = new Set(selectedBookUids);
     }
 
     function getAllBookUids(folder: LibraryFolder): UUID[] {
         const bookUids: UUID[] = [];
 
-        // Add books from current folder
         bookUids.push(...folder.books.map((book) => book.uid));
 
-        // Recursively add books from subfolders
         for (const subfolder of folder.folders) {
             bookUids.push(...getAllBookUids(subfolder));
         }
@@ -67,12 +63,10 @@
     function getSelectedBooks(folder: LibraryFolder): BookMeta[] {
         const books: BookMeta[] = [];
 
-        // Add selected books from current folder
         books.push(
             ...folder.books.filter((book) => selectedBookUids.has(book.uid)),
         );
 
-        // Recursively add selected books from subfolders
         for (const subfolder of folder.folders) {
             books.push(...getSelectedBooks(subfolder));
         }
@@ -162,7 +156,6 @@
     onCancel={cancelBatchMove}
 />
 
-<!-- Batch delete confirmation dialog -->
 <ConfirmDialog
     bind:isOpen={showBatchDeleteDialog}
     title="Delete Books"
@@ -173,7 +166,6 @@
     onCancel={cancelBatchDelete}
 />
 
-<!-- Recursive folder component snippet -->
 {#snippet FolderComponent(folder: LibraryFolder)}
     {#if folder.name}
         <details>
@@ -186,7 +178,6 @@
 {/snippet}
 
 {#snippet FolderComponentInternal(folder: LibraryFolder)}
-    <!-- Subfolders -->
     <div class="subfolders">
         {#if folder.folders.length > 0}
             {#each folder.folders as subfolder}
@@ -195,7 +186,6 @@
         {/if}
     </div>
     <div class="subfolder-books">
-        <!-- Books in this folder -->
         {#if folder.books.length > 0}
             <ul>
                 {#each folder.books as book}
@@ -227,7 +217,6 @@
 {/snippet}
 
 <style>
-    /* Hide the chevron for root folder (empty summary) */
     summary:empty {
         list-style: none;
     }

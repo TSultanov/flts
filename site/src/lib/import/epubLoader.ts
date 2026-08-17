@@ -134,7 +134,6 @@ function textBetween(start: Element, end: Element | null): Paragraph[] {
                 });
             }
         }
-        // Traverse into children first, then siblings, then up to parent
         if (current.firstChild && (current.nodeType === Node.ELEMENT_NODE && !allChildrenAreInline(current as Element))) {
             current = current.firstChild;
         } else {

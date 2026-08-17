@@ -11,16 +11,12 @@ import {
   wordSpan,
 } from './helpers/paragraph';
 
-// All paragraph-view tests stay on chromium. The behaviors we're testing
-// (Svelte reactivity, DOM events, CSS class toggles via JS) don't vary by
-// browser engine; running them on three engines triples CI time for the
-// same signal. Existing import specs continue to cross-browser.
+// Chromium only: Svelte reactivity, DOM events and JS class toggles do not
+// vary by engine, so extra engines cost CI time for no signal.
 test.describe.configure({ mode: 'parallel' });
 
 test.describe('ParagraphView (chromium only)', () => {
   test.skip(({ browserName }) => browserName !== 'chromium', 'chromium-only');
-
-  // ----- Group A: render ---------------------------------------------------
 
   test('A1: untranslated paragraph renders original text with enabled translate button', async ({
     page,
@@ -33,7 +29,6 @@ test.describe('ParagraphView (chromium only)', () => {
     await expect(p).toBeVisible();
     await expect(p.locator('.original')).toHaveText('Hello world!');
     await expect(translateButton(p)).toBeEnabled();
-    // No spinner yet
     await expect(p.locator('.circular-progress')).toHaveCount(0);
   });
 
@@ -59,8 +54,6 @@ test.describe('ParagraphView (chromium only)', () => {
     await expect(p.locator('.word-span')).toHaveCount(1);
     await expect(p.locator('.word-span')).toHaveText('hola');
   });
-
-  // ----- Group B: translation flow ----------------------------------------
 
   test('B1: click translate disables button and shows spinner; original still visible during the in-flight window', async ({
     page,
@@ -92,15 +85,13 @@ test.describe('ParagraphView (chromium only)', () => {
 
     await expect(btn).toBeDisabled();
     await expect(p.locator('.circular-progress')).toBeVisible();
-    // Original text is still rendered during the translating window
     await expect(p.locator('.original')).toHaveText('Hello world!');
   });
 
   test('B2: progress drives the spinner — non-zero progress observed during translation', async ({
     page,
   }) => {
-    // Polling interval is 500ms; per-step delays must be long enough that
-    // polls can land between transitions. Three steps of 600ms each ≈ 1.8s.
+    // Steps must outlast the 500ms poll interval, or transitions are missed.
     const { bookId } = await seedAndOpen(page, {
       chapters: [{ paragraphs: [{ html: 'Hello!' }] }],
     });
@@ -128,10 +119,8 @@ test.describe('ParagraphView (chromium only)', () => {
     const circle = p.locator('.circular-progress svg circle').nth(1);
     await expect(circle).toBeVisible();
 
-    // Wait until stroke-dashoffset reflects a non-zero progress (poll @500ms
-    // will pick up the 25/100 snapshot once the in-progress index is in place).
-    // Circumference = 2π·10 ≈ 62.83. At progress=25, dashoffset ≈ 47.12;
-    // at progress=0, dashoffset == 62.83. We just want "less than max".
+    // Circumference 2π·10 ≈ 62.83 is the progress=0 dashoffset; any progress
+    // must come in under it.
     await expect
       .poll(async () => {
         const v = await circle.getAttribute('stroke-dashoffset');
@@ -168,7 +157,6 @@ test.describe('ParagraphView (chromium only)', () => {
     await translateButton(p).click();
     await expectTranslated(p);
     await expect(p.locator('.word-span')).toHaveText('hola');
-    // Translation-side <p> rendered; left column is the empty placeholder <div>.
     await expect(p.locator('.circular-progress')).toHaveCount(0);
   });
 
@@ -194,16 +182,12 @@ test.describe('ParagraphView (chromium only)', () => {
     await btn.click();
     await expect(btn).toBeDisabled();
 
-    // After error completes, spinner clears and button is enabled again.
     await expect(p.locator('.circular-progress')).toHaveCount(0);
     await expect(btn).toBeEnabled();
-    // Original text still rendered (no translation HTML).
     await expect(p.locator('.original')).toHaveText('fails');
 
     await expect.poll(() => warnings.some((w) => w.includes('rate limited'))).toBe(true);
   });
-
-  // ----- Group C: cache bypass --------------------------------------------
 
   test('C1: plain click sends useCache=true', async ({ page }) => {
     const { bookId } = await seedAndOpen(page, {
@@ -246,13 +230,8 @@ test.describe('ParagraphView (chromium only)', () => {
     expect(calls[0].useCache).toBe(false);
   });
 
-  // Note: ctrl+click on macOS chromium is intercepted as a contextmenu event
-  // by the browser layer (Playwright's `modifiers: ['Control']` doesn't bypass
-  // this), so we don't separately test ctrl+click. The handler is
-  // `!(e.metaKey || e.ctrlKey)` — C2 covers metaKey; the ctrlKey branch is the
-  // same expression.
-
-  // ----- Group D: in-flight reconciliation --------------------------------
+  // ctrl+click is untestable on macOS chromium (the browser turns it into a
+  // contextmenu); C2's metaKey case covers the same handler expression.
 
   test('D1: pre-existing in-flight request shows spinner on mount without click', async ({
     page,
@@ -265,9 +244,7 @@ test.describe('ParagraphView (chromium only)', () => {
           requestId: 42,
           cfg: {
             kind: 'progress',
-            // The mock starts ticking at page-init, BEFORE the app mounts, so
-            // these delays must comfortably outlive app boot or the spinner is
-            // already gone when the first assertion runs on a fast machine.
+            // The mock ticks from page-init, so these must outlive app boot.
             steps: [
               { progress: 30, total: 100, delayMs: 800 },
               { progress: 100, total: 100, delayMs: 800 },
@@ -287,14 +264,10 @@ test.describe('ParagraphView (chromium only)', () => {
     });
 
     const p = paragraphLocator(page, 0);
-    // Spinner appears without any user click — VM picked up the in-flight id.
     await expect(p.locator('.circular-progress')).toBeVisible();
-    // After translation finishes, the translated HTML lands.
     await expectTranslated(p);
     await expect(p.getByText('finally done')).toBeVisible();
   });
-
-  // ----- Group E: word translations ---------------------------------------
 
   test('E1: translated paragraph word-spans render without a translation overlay by default', async ({
     page,
@@ -342,21 +315,16 @@ test.describe('ParagraphView (chromium only)', () => {
     const p = paragraphLocator(page, 0);
     await wordSpan(p, 0).click();
     await expect(wordSpan(p, 0)).toHaveClass(/\bselected\b/);
-    // WordView now lives in a bottom overlay panel that opens collapsed
-    // (peek state) on selection. The peek shows the original word and the
-    // comma-joined contextual translations.
+    // Selection opens WordView's peek: original word + comma-joined translations.
     const peek = page.locator('[data-testid="word-view-peek"]');
     await expect(peek.locator('.peek-word')).toHaveText('hello');
     await expect(peek.locator('.peek-translations')).toHaveText('hola');
   });
 
-  // ----- Group F: reveal-on-click annotation ------------------------------
-
   test('F1: a familiarity-0 word renders the translation overlay automatically', async ({
     page,
   }) => {
-    // Words at familiarity 0 (e.g. never-synced cards) auto-show their
-    // overlay without any user click. Words at familiarity 1 stay hidden.
+    // Familiarity 0 auto-shows the overlay; familiarity 1 stays hidden.
     const segments = [
       wordSegment({
         flatIndex: 0,
@@ -392,15 +360,13 @@ test.describe('ParagraphView (chromium only)', () => {
     const p = paragraphLocator(page, 0);
     await expect(wordSpan(p, 0).locator('.translation-overlay')).toHaveCount(1);
     await expect(wordSpan(p, 2).locator('.translation-overlay')).toHaveCount(1);
-    // Familiar word (familiarity 1) stays hidden until the user clicks it.
     await expect(wordSpan(p, 1).locator('.translation-overlay')).toHaveCount(0);
   });
 
   test('F3: clicking a word paints its overlay and the overlay persists after deselect', async ({
     page,
   }) => {
-    // No familiarity seeded — no auto-show; the only path to the overlay
-    // is the user clicking the word.
+    // No familiarity seeded, so only a click can reveal the overlay.
     const segments = [0, 1, 2].flatMap((i) => [
       ...(i > 0 ? [{ kind: 'gap' as const, html: ' ' }] : []),
       wordSegment({
@@ -416,7 +382,6 @@ test.describe('ParagraphView (chromium only)', () => {
     });
 
     const p = paragraphLocator(page, 0);
-    // Sanity: no overlay anywhere before the click.
     await expect(p.locator('.translation-overlay')).toHaveCount(0);
 
     const isOverlayPainted = async (flatIndex: number) => {
@@ -440,18 +405,15 @@ test.describe('ParagraphView (chromium only)', () => {
       }, flatIndex);
     };
 
-    // Click word 1: overlay paints, peers stay hidden.
     await wordSpan(p, 1).click();
     await expect.poll(() => isOverlayPainted(1)).toBe(true);
     await expect.poll(() => isOverlayPainted(0)).toBe(false);
     await expect.poll(() => isOverlayPainted(2)).toBe(false);
 
-    // Click outside any word to clear the selection. Word 1's overlay must
-    // STILL be painted — the click marked it visible for the session.
+    // Clearing the selection must not un-reveal: the click marks it for the session.
     await p.click({ position: { x: 1, y: 1 } });
     await expect(wordSpan(p, 1)).not.toHaveClass(/\bselected\b/);
     await expect.poll(() => isOverlayPainted(1)).toBe(true);
-    // And peers still don't paint.
     await expect.poll(() => isOverlayPainted(0)).toBe(false);
     await expect.poll(() => isOverlayPainted(2)).toBe(false);
   });
@@ -459,8 +421,7 @@ test.describe('ParagraphView (chromium only)', () => {
   test('F2: auto-shown translation overlays are actually painted (opacity > 0)', async ({
     page,
   }) => {
-    // Seed words 0 and 2 at familiarity 0 (auto-show); word 1 at familiarity
-    // 1 (stays hidden).
+    // Words 0 and 2 auto-show; word 1 stays hidden.
     const segments = [0, 1, 2].flatMap((i) => [
       ...(i > 0 ? [{ kind: 'gap' as const, html: ' ' }] : []),
       wordSegment({
@@ -476,11 +437,8 @@ test.describe('ParagraphView (chromium only)', () => {
       chapters: [{ paragraphs: [{ html: 'orig', segments }] }],
     });
 
-    // Implementation-agnostic visibility probe. The "translation overlay" can
-    // be either a ::before pseudo-element (HTML-blob implementation) or a real
-    // .translation-overlay child (structured-segments implementation). In
-    // both cases we require the painted result: display != none, opacity > 0,
-    // and (for ::before) content actually set.
+    // The overlay is a ::before pseudo-element or a .translation-overlay child
+    // depending on the render branch; either way require it painted.
     const visibility = await page.evaluate(() => {
       const probe = (flatIndex: number) => {
         const span = document.querySelector(
@@ -511,8 +469,6 @@ test.describe('ParagraphView (chromium only)', () => {
     expect(visibility[1].visible).toBe(false);
   });
 
-  // ----- Group G: no-flicker regressions ----------------------------------
-
   test('G1: word click on one paragraph does not blank peers (regression of 901e6a7)', async ({
     page,
   }) => {
@@ -538,8 +494,7 @@ test.describe('ParagraphView (chromium only)', () => {
     });
     await setWordInfo(page, bookId, 0, 0, 0, { original: 'a1' });
 
-    // Install a MutationObserver on peer paragraphs that flags any moment
-    // where the rendered translation text becomes empty.
+    // Flags any moment a peer's rendered translation text goes empty.
     await page.evaluate(() => {
       (window as any).__peerFlickered = false;
       const peers = [1, 2];
@@ -568,12 +523,8 @@ test.describe('ParagraphView (chromium only)', () => {
   test('G3: clicking translate on multiple paragraphs in succession flips every clicked button into a spinner immediately (regression of 955b7d3)', async ({
     page,
   }) => {
-    // The translation queue runs serially: only one paragraph is in
-    // active progress at a time. The bug: the "started" event was emitted
-    // when the worker picked the request up, so paragraphs sitting in the
-    // queue showed no UI feedback. The fix is to emit "started" at enqueue
-    // time so every clicked button immediately flips into a spinner. This
-    // test enforces that contract end-to-end.
+    // The queue is serial, but "started" fires at enqueue, so every clicked
+    // button must spin immediately — not only the active one.
     const { bookId } = await seedAndOpen(page, {
       chapters: [
         {
@@ -586,9 +537,7 @@ test.describe('ParagraphView (chromium only)', () => {
       ],
     });
 
-    // Each paragraph's worker stage takes ~600ms — long enough that
-    // paragraphs 1 and 2 are still queued (not yet picked up by the
-    // single worker) when we sample the buttons below.
+    // ~600ms per stage keeps paragraphs 1 and 2 queued while we sample.
     const slowCfg = (text: string) => ({
       kind: 'progress' as const,
       steps: [
@@ -613,16 +562,11 @@ test.describe('ParagraphView (chromium only)', () => {
     const p1 = paragraphLocator(page, 1);
     const p2 = paragraphLocator(page, 2);
 
-    // Click all three in rapid succession.
     await translateButton(p0).click();
     await translateButton(p1).click();
     await translateButton(p2).click();
 
-    // Every clicked button must flip to spinner state straight away, even
-    // though the queue is single-threaded and only one paragraph is
-    // actively translating at a time. Use a tight timeout: if the bug
-    // recurs, the queued buttons won't ever show a spinner until they
-    // become the active item.
+    // Tight timeout: queued buttons must spin now, not on becoming active.
     await expect(translateButton(p0)).toBeDisabled({ timeout: 500 });
     await expect(translateButton(p1)).toBeDisabled({ timeout: 500 });
     await expect(translateButton(p2)).toBeDisabled({ timeout: 500 });
@@ -630,7 +574,6 @@ test.describe('ParagraphView (chromium only)', () => {
     await expect(p1.locator('.circular-progress')).toBeVisible({ timeout: 500 });
     await expect(p2.locator('.circular-progress')).toBeVisible({ timeout: 500 });
 
-    // Sanity: as the queue drains, each paragraph eventually completes.
     await expectTranslated(p0);
     await expectTranslated(p1);
     await expectTranslated(p2);

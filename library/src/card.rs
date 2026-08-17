@@ -55,16 +55,9 @@ pub enum AnkiState {
 
 pub const MATURE_DAYS: f32 = 90.0;
 
-/// Map a card's Anki retention state into a `[0.0, 1.0]` familiarity scalar
-/// for the reader-side UI.
-///
-/// A missing `anki_data` (card not yet synced to Anki) collapses to `Some(0.0)`
-/// — the reader treats a never-studied word as the lowest knowledge level, so
-/// the underline renders at full opacity and the translation auto-overlays.
-/// Suspended/Deleted return `None` (dormant) — the user actively retired the
-/// card from study, so no underline and no overlay.
-///
-/// See `.specs/ANKI_UI.md` § Familiarity scalar for the contract.
+/// Anki retention state as a `[0.0, 1.0]` familiarity scalar for the reader.
+/// Unsynced means `Some(0.0)` (never studied); Suspended/Deleted mean `None`
+/// (retired, so no underline or overlay). See `.specs/ANKI_UI.md`.
 pub fn familiarity_from(anki_data: Option<&AnkiData>) -> Option<f32> {
     let Some(data) = anki_data else {
         return Some(0.0);
@@ -93,13 +86,9 @@ impl CardKey {
     }
 }
 
-// Card identity is the on-disk identity: same language pair, same lemma
-// slug => same card. PoS is no longer part of identity — a single lemma
-// card holds translations across all its grammatical roles, grouped by
-// PoS inside the translations map. The `lemma` display string is
-// first-write-wins metadata and does not participate in equality, since
-// different surface variants slug identically and would otherwise
-// collide on disk.
+// Identity is the on-disk identity: same language pair + lemma slug = same
+// card, PoS excluded. `lemma` is display metadata outside equality, since
+// surface variants slug identically and would collide on disk.
 impl PartialEq for CardKey {
     fn eq(&self, other: &Self) -> bool {
         self.source_language == other.source_language
@@ -109,11 +98,9 @@ impl PartialEq for CardKey {
 }
 impl Eq for CardKey {}
 
-/// Display-form normalization: NFC + apostrophe + whitespace collapse,
-/// preserving the LLM-emitted casing. Use for the lemma stored on
-/// CardKey / Card (rendered to the user, sent to Anki Source field).
-/// Pair with [`canonicalize_lemma`] + [`lemma_slug`] for the lowercased
-/// filesystem/id side.
+/// NFC + apostrophe + whitespace collapse, keeping the emitted casing. Use for
+/// the user-visible lemma; pair with [`canonicalize_lemma`] + [`lemma_slug`]
+/// for the lowercased filesystem/id side.
 pub fn canonicalize_lemma_display(raw: &str) -> String {
     let nfc: String = raw.nfc().collect();
     let apostrophe_normalized: String = nfc
@@ -130,8 +117,7 @@ pub fn canonicalize_lemma_display(raw: &str) -> String {
 }
 
 pub fn canonicalize_lemma(raw: &str, _src_lang: Language) -> String {
-    // _src_lang is reserved for locale-aware lowercase (Turkish dotted/dotless `i`).
-    // Stage 2 uses Unicode default. See .specs/ANKI_PLAN.md "Known follow-ups".
+    // _src_lang is reserved for locale-aware lowercase (Turkish dotless `i`).
     canonicalize_lemma_display(raw).to_lowercase()
 }
 
@@ -141,15 +127,9 @@ pub fn canonicalize_part_of_speech(raw: &str) -> String {
     lowered.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Convert a canonicalized lemma or PoS string into a filesystem-safe
-/// fragment. Lemmas and PoS values both flow into filenames and IDs and
-/// both can carry surprises (multi-word lemmas like "darse cuenta", LLM
-/// PoS noise like "noun (gerund/participle)"), so they share the same
-/// rules: replace every whitespace and every separator-ish or
-/// filesystem-unsafe character with `_`, collapse consecutive `_`, trim
-/// leading/trailing `_`. Replacement (not removal) prevents two distinct
-/// inputs from collapsing into the same slug (`a/b` and `ab` stay
-/// distinct as `a_b` and `ab`).
+/// Filesystem-safe fragment for a lemma or PoS: unsafe and separator-ish
+/// characters become `_`, runs collapse, edges trim. Replacing rather than
+/// removing keeps `a/b` and `ab` distinct slugs.
 fn fs_safe_slug(canonical: &str) -> String {
     let mapped: String = canonical
         .chars()
@@ -212,19 +192,10 @@ pub fn card_id(source_language: &str, target_language: &str, lemma_slug: &str) -
     format!("flts_{source_language}_{target_language}_{lemma_slug}")
 }
 
-/// Stitch a sentence's word list back into a human-readable source string.
-///
-/// Two transforms run together:
-/// 1. **HTML entity decoding.** The translator prompt asks the LLM to encode
-///    punctuation as entities (`comma` → `&comma;`, etc., see
-///    [`crate::translator`]). Decode them back to literal characters so the
-///    stored example matches what a learner reads in the book.
-/// 2. **Punctuation-aware spacing.** Words come in as separate tokens; a
-///    naive `join(" ")` produces `"towns , cities ."`. We suppress the
-///    leading space when a token starts with closing/sentence punctuation,
-///    and suppress the trailing space after a token that ends with opening
-///    punctuation. Heuristic, not a full typographic engine — handles the
-///    common Western-script cases.
+/// Stitch a sentence's words back into a readable source string: HTML entities
+/// (the prompt asks for them, see [`crate::translator`]) decode back to
+/// literals, and spacing is suppressed around punctuation. The spacing rule is
+/// a Western-script heuristic, not a typographic engine.
 pub fn render_example_source(words: &[translation_import::Word]) -> String {
     fn decode_entities(input: &str) -> String {
         decode(input.as_bytes())
@@ -300,9 +271,7 @@ pub const EXAMPLES_CAP: usize = 10;
 #[derive(Debug, Clone, PartialEq)]
 pub struct CardUpdate {
     pub key: CardKey,
-    /// The grammatical-role bucket this update lands in. Multiple updates
-    /// with the same `key` but different `part_of_speech` accumulate into
-    /// the card's `translations` map as separate POS buckets.
+    /// Updates sharing a `key` but differing here land in separate buckets.
     pub part_of_speech: String,
     pub translations: Vec<String>,
     pub example: Option<Example>,
@@ -355,9 +324,7 @@ impl Card {
         }
     }
 
-    /// Flatten the per-PoS translation buckets into a single ordered, deduped
-    /// list. Iteration order is the BTreeMap's PoS-key order; within each
-    /// bucket, insertion order is preserved.
+    /// Per-PoS buckets flattened and deduped, in PoS-key then insertion order.
     pub fn translations_flat(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         for bucket in self.translations.values() {
@@ -370,11 +337,9 @@ impl Card {
         out
     }
 
-    /// Merge `other` into `self` for cross-instance conflict reconciliation.
-    /// Caller has already verified that `self.id == other.id` (i.e. both files
-    /// address the same `(src, tgt, slug)` key). `self.anki_data` is kept;
-    /// `other.anki_data` is discarded — it's a local cache, not authoritative
-    /// across instances.
+    /// Merge `other` into `self`; the caller must have checked `self.id ==
+    /// other.id`. `other.anki_data` is dropped: it's a local cache, not
+    /// authoritative across instances.
     pub fn merge(&mut self, other: Card) {
         for (pos, translations) in other.translations {
             let bucket = self.translations.entry(pos).or_default();
@@ -399,11 +364,8 @@ impl Card {
         }
 
         if combined.len() > EXAMPLES_CAP {
-            // Order deterministically by provenance first (keeps merge
-            // commutative and, for a single book, retains the lowest
-            // chapter/paragraph examples). Then round-robin across books so a
-            // lemma spanning several books keeps a spread of examples instead
-            // of filling the cap entirely from whichever book_id sorts first.
+            // Provenance order keeps the merge commutative; the round-robin
+            // spreads the cap across books instead of draining the first.
             combined.sort_by(|a, b| {
                 a.book_id
                     .cmp(&b.book_id)
@@ -463,10 +425,8 @@ pub fn extract_card_updates(
             if !is_eligible(word) {
                 continue;
             }
-            // Display form preserves the LLM-emitted casing (e.g. "Harry",
-            // "Haus", "I") so the rendered card matches the citation form.
-            // Slug uses the lowercased pipeline so the filesystem identity
-            // and across-occurrence dedup stay stable.
+            // Display form keeps the citation casing; the slug lowercases so
+            // filesystem identity and cross-occurrence dedup stay stable.
             let lemma = canonicalize_lemma_display(&word.grammar.original_initial_form);
             if lemma.is_empty() {
                 continue;
@@ -554,16 +514,12 @@ mod tests {
 
     #[test]
     fn canonicalize_lemma_display_preserves_case() {
-        // Display normalization keeps the LLM-emitted casing while still
-        // applying NFC, apostrophe normalization, and whitespace collapse.
         assert_eq!(canonicalize_lemma_display("Harry"), "Harry");
         assert_eq!(canonicalize_lemma_display("España"), "España");
         assert_eq!(canonicalize_lemma_display("Haus"), "Haus");
         assert_eq!(canonicalize_lemma_display("I"), "I");
         assert_eq!(canonicalize_lemma_display("  HARRY jr  "), "HARRY jr");
-        // NFC composition still runs.
         assert_eq!(canonicalize_lemma_display("Espan\u{0303}a"), "España");
-        // Curly apostrophe still normalized.
         assert_eq!(canonicalize_lemma_display("L\u{2019}Amour"), "L'Amour");
     }
 
@@ -596,16 +552,11 @@ mod tests {
 
     #[test]
     fn slug_replaces_unsafe_chars_with_underscore() {
-        // Unsafe chars become `_` (not dropped) so distinct inputs stay
-        // distinct on disk and the resulting filename is readable.
         assert_eq!(lemma_slug("a/b\\c:d*e?f\"g<h>i|j"), "a_b_c_d_e_f_g_h_i_j");
     }
 
     #[test]
     fn lemma_slug_handles_noisy_input_like_pos_slug() {
-        // Lemma and PoS share the same fs-safety helper, so the same noisy
-        // inputs slug identically — no surprising filesystem failures on
-        // either field.
         assert_eq!(lemma_slug("(foo)"), "foo");
         assert_eq!(lemma_slug("a / b"), "a_b");
         assert_eq!(lemma_slug("  spaced  out  "), "spaced_out");
@@ -633,7 +584,6 @@ mod tests {
 
     #[test]
     fn canonicalize_pos_nfc_roundtrip() {
-        // "é" composed vs decomposed
         let composed = "verbe\u{00E9}";
         let decomposed = "verbe\u{0065}\u{0301}";
         assert_eq!(
@@ -651,7 +601,6 @@ mod tests {
 
     #[test]
     fn pos_slug_replaces_slashes_and_parens() {
-        // The exact noisy values the LLM emitted on the user's library.
         assert_eq!(
             part_of_speech_slug("существительное / прилагательное"),
             "существительное_прилагательное"
@@ -687,9 +636,7 @@ mod tests {
 
     #[test]
     fn extract_card_updates_canonicalizes_noisy_pos() {
-        // Two words with the same lemma but PoS strings that differ only
-        // in noise: one canonicalizes the same as the other. The extract
-        // pass dedups them under the same key.
+        // PoS strings differing only in noise canonicalize to one key.
         let paragraph = one_sentence_paragraph(
             "Хорошо.",
             vec![
@@ -723,8 +670,6 @@ mod tests {
         let update = &updates[0];
         assert_eq!(update.part_of_speech, "существительное / прилагательное");
         assert_eq!(update.key.id(), "flts_spa_rus_good");
-        // Both source words share the same target_initial_form ("хорошо"),
-        // so the deduped CardUpdate carries that single dictionary translation.
         assert_eq!(update.translations, vec!["хорошо"]);
     }
 
@@ -843,8 +788,6 @@ mod tests {
 
     #[test]
     fn apply_update_groups_translations_by_pos() {
-        // Same lemma surfacing under two PoS values lands in two map
-        // buckets and translations_flat() returns the deduped union.
         let mut card = Card::new_from_update(&verb_update(vec!["мочь"], None));
         card.apply_update(&CardUpdate {
             key: poder_key(),
@@ -858,7 +801,6 @@ mod tests {
             card.translations.get("verb_auxiliary").unwrap().as_slice(),
             ["мочь"]
         );
-        // Dedup across buckets in the flat view.
         assert_eq!(card.translations_flat(), vec!["мочь"]);
     }
 
@@ -886,7 +828,6 @@ mod tests {
             card.apply_update(&verb_update(vec![], Some(example_at(book, 0, i))));
         }
         assert_eq!(card.examples.len(), EXAMPLES_CAP);
-        // earliest-by-insertion retained
         assert_eq!(card.examples[0].paragraph, 0);
         assert_eq!(card.examples[9].paragraph, 9);
     }
@@ -978,17 +919,13 @@ mod tests {
             0,
         );
         assert_eq!(updates.len(), 1);
-        // Display lemma keeps the LLM-emitted casing.
         assert_eq!(updates[0].key.lemma, "España");
-        // Slug is lowercased so the filesystem identity is stable.
         assert_eq!(updates[0].key.slug, "españa");
         assert_eq!(updates[0].key.id(), "flts_spa_rus_españa");
     }
 
     #[test]
     fn walk_preserves_proper_noun_casing_into_card_lemma() {
-        // Round-trip: a `proper_noun` like "Harry" lands on Card.lemma as
-        // "Harry" but the on-disk identity (slug, id) lowercases.
         let p = one_sentence_paragraph(
             "Harry caught the Snitch.",
             vec![full_word(
@@ -1019,9 +956,7 @@ mod tests {
 
     #[test]
     fn walk_preserves_german_common_noun_casing() {
-        // German common nouns are capitalized by orthographic rule; the
-        // LLM emits them that way and we must preserve it in the display
-        // lemma. Slug still lowercases.
+        // German nouns arrive capitalized; the display lemma must keep that.
         let p = one_sentence_paragraph(
             "Das Haus ist groß.",
             vec![
@@ -1047,10 +982,7 @@ mod tests {
 
     #[test]
     fn render_example_source_decodes_entities_and_strips_pre_punctuation_space() {
-        // Reproduces the bug reported on cards/eng-rus/across_preposition.json
-        // where the LLM's "&comma;" / "&period;" punctuation tokens got joined
-        // naively with spaces, producing "towns &comma; cities &comma; ... Midlands ."
-        // instead of "towns, cities, ... Midlands."
+        // Entity punctuation tokens must not join naively with spaces.
         let words = vec![
             full_word("Militia", "Militia", "", "proper_noun", &[], false),
             full_word("and", "and", "", "coordinating_conjunction", &[], false),
@@ -1157,10 +1089,7 @@ mod tests {
             0,
         );
         assert_eq!(updates.len(), 1);
-        // Both encounters share the same target_initial_form ("мочь"), so
-        // the dedup keeps a single dictionary-form translation.
         assert_eq!(updates[0].translations, vec!["мочь"]);
-        // example is from the first sentence the lemma appeared in
         assert_eq!(updates[0].example.as_ref().unwrap().translation, "Я могу.");
     }
 
@@ -1191,9 +1120,8 @@ mod tests {
 
     #[test]
     fn extract_card_updates_ignores_contextual_translations() {
-        // contextualTranslations are kept for in-text reader annotations
-        // but must not bleed into card translations — those are
-        // target_initial_form only.
+        // Contextual translations serve reader annotations only; cards carry
+        // target_initial_form.
         let p = one_sentence_paragraph(
             "Я могу.",
             vec![full_word(
@@ -1219,8 +1147,6 @@ mod tests {
 
     #[test]
     fn extract_card_updates_skips_word_with_empty_target_initial_form() {
-        // No targetInitialForm → no useful dictionary translation, so no
-        // card is emitted even if contextual_translations are present.
         let mut word = full_word("puedo", "poder", "", "verb", &["могу"], false);
         word.grammar.target_initial_form = "   ".into();
         let p = one_sentence_paragraph("Я могу.", vec![word]);
@@ -1338,10 +1264,7 @@ mod tests {
 
     #[test]
     fn merge_spreads_retained_examples_across_books() {
-        // A lemma appearing in two books, each with more than half the cap of
-        // examples. The retained set must draw from BOTH books (round-robin)
-        // rather than filling the cap entirely from whichever book_id sorts
-        // first (the pre-fix behavior).
+        // The retained set must draw from both books, not just the first.
         let book_a = Uuid::new_v4();
         let book_b = Uuid::new_v4();
         let a_examples: Vec<Example> = (0..8)
@@ -1356,7 +1279,6 @@ mod tests {
         assert_eq!(base.examples.len(), EXAMPLES_CAP);
         let from_a = base.examples.iter().filter(|e| e.book_id == book_a).count();
         let from_b = base.examples.iter().filter(|e| e.book_id == book_b).count();
-        // Round-robin across two books fills the 10-slot cap 5 from each.
         assert_eq!(from_a, 5, "expected an even spread across books, got {from_a} from A");
         assert_eq!(from_b, 5, "expected an even spread across books, got {from_b} from B");
     }
@@ -1377,12 +1299,10 @@ mod tests {
         let mut ba = make_card_with(vec!["y", "z"], b_examples, None);
         ba.merge(make_card_with(vec!["x", "y"], a_examples, None));
 
-        // Translations differ in order (base-first), so compare as sets.
         let ab_t: std::collections::HashSet<_> = ab.translations_flat().into_iter().collect();
         let ba_t: std::collections::HashSet<_> = ba.translations_flat().into_iter().collect();
         assert_eq!(ab_t, ba_t);
 
-        // Examples are sort-and-truncated when over cap, so order is deterministic.
         assert_eq!(ab.examples, ba.examples);
     }
 
@@ -1457,8 +1377,6 @@ mod tests {
 
     #[test]
     fn familiarity_zero_when_no_anki_data() {
-        // Never-synced cards collapse to the lowest knowledge level so the
-        // reader shows the underline + auto-overlay by default.
         approx(familiarity_from(None).unwrap(), 0.0);
     }
 

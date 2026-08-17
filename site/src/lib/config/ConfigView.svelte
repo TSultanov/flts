@@ -22,7 +22,6 @@
     import SyncDevicesView from "../sync/SyncDevicesView.svelte";
     import { takeOpenSyncRequest } from "../sync/store.svelte";
 
-    // Expand (and scroll to) the Sync section when arriving via the nav button.
     let syncOpen = $state(false);
     let syncDetails = $state<HTMLDetailsElement>();
     $effect(() => {
@@ -37,17 +36,15 @@
     const SPOTIFY_DASHBOARD_URL = 'https://developer.spotify.com/dashboard';
     const SPOTIFY_REDIRECT_URI = 'http://127.0.0.1:53682/callback';
 
-    // Editable form fields. Seeded ONCE from configStore by the guarded $effect
-    // below — deliberately NOT $derived, so a background config_updated refetch
-    // (e.g. triggered by the embedded sync controls) cannot clobber the user's
-    // typed-but-unsaved edits.
+    // Deliberately not $derived: a background config_updated refetch would
+    // clobber typed-but-unsaved edits. Seeded once by the $effect below.
     let translationProvider: TranslationProvider = $state('google');
     let geminiApiKey: string | undefined = $state(undefined);
     let openaiApiKey: string | undefined = $state(undefined);
     let deepseekApiKey: string | undefined = $state(undefined);
     let zaiApiKey: string | undefined = $state(undefined);
     let targetLanguage: string | undefined = $state(undefined);
-    // App-managed, read-only storage location (no folder picker anymore).
+    // App-managed storage location; read-only, no folder picker.
     let storageLocation: string = $state("");
     let model: number = $state(0);
     let translationConcurrency: number = $state(8);
@@ -61,10 +58,9 @@
     let ankiApiKey: string = $state('');
     let tapToRevealTranslations: boolean = $state(false);
 
-    // Seed the editable fields exactly once, when config first loads. `seeded`
-    // is a plain (non-reactive) flag: later config_updated refetches re-run this
-    // effect but bail out, so unsaved edits survive. sync settings stay
-    // authoritative in configStore (save() re-reads them from there).
+    // `seeded` is deliberately non-reactive: later config_updated refetches
+    // re-run this effect but bail, so unsaved edits survive. Sync settings
+    // stay authoritative in configStore (save() re-reads them there).
     let seeded = false;
     $effect(() => {
         const cfg = configStore.current;
@@ -96,7 +92,7 @@
     let purgeError: string | null = $state(null);
     let purgeDeleted: number | null = $state(null);
     let saveError: string | null = $state(null);
-    // Spotify integration is macOS-only — same constraint as LyricsView.
+    // Spotify integration is macOS-only, as in LyricsView.
     let isMac: boolean = $state(false);
     let redirectCopied: boolean = $state(false);
     let redirectCopyTimer: ReturnType<typeof setTimeout> | undefined;
@@ -173,8 +169,8 @@
                 zaiApiKey,
                 targetLanguageId: targetLanguage,
                 model,
-                // Emptying a number input binds null; serde #[serde(default)]
-                // rejects an explicit null, so coerce back to the default.
+                // Emptying a number input binds null, which serde's
+                // #[serde(default)] rejects.
                 translationConcurrency: Number.isFinite(translationConcurrency)
                     ? translationConcurrency
                     : 8,
@@ -185,14 +181,13 @@
                 spotifyShowNextTrack,
                 ankiEndpoint: ankiEndpoint.trim() || undefined,
                 ankiApiKey: ankiApiKey.trim() || undefined,
-                // Preserve sync settings (managed by the sync UI, not this form).
+                // Sync settings are owned by the sync UI, not this form.
                 syncEnabled: configStore.current?.syncEnabled,
                 syncDeviceName: configStore.current?.syncDeviceName,
                 tapToRevealTranslations,
             });
         } catch (e) {
-            // Never let a rejected save be silent. Surface it, and re-throw so
-            // callers that chain off save() (e.g. connectSpotify) still abort.
+            // Re-throw so callers chaining off save() (connectSpotify) abort.
             saveError = String(e);
             throw e;
         }
@@ -206,8 +201,8 @@
         }
         spotifyBusy = true;
         try {
-            // Persist the client_id before the auth flow so a successful resume
-            // on next launch picks it up. The backend won't poll without it.
+            // Persist client_id before the auth flow: the backend won't poll
+            // without it, so a resume on next launch would stall.
             await save();
             await spotifyWebConnect(spotifyClientId.trim());
             spotifyStatus = await spotifyWebStatus();
@@ -242,7 +237,6 @@
     }
 
     $effect(() => {
-        // Keep model selection consistent with provider.
         const providerMeta = providers.find((p) => p.id === translationProvider);
         if (!providerMeta) return;
 

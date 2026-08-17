@@ -22,7 +22,6 @@
     import NowPlayingCard from './NowPlayingCard.svelte';
     import LyricsList from './LyricsList.svelte';
 
-    // Detect macOS — on other platforms, render an explanation and bail.
     let isMac = $state(false);
     onMount(() => {
         try {
@@ -40,9 +39,8 @@
     let queueCleanup: (() => void) | null = null;
     let queueUnsub: (() => void) | null = null;
 
-    // Hide "Up next" if the snapshot is older than 30s — the AppleScript
-    // watcher might still report Playing while polling has fallen behind, and
-    // an outdated next track is worse than no next track.
+    // A stale snapshot still reports Playing, and a wrong next track is
+    // worse than none.
     const QUEUE_STALE_MS = 30_000;
     let nowTickMs: number = $state(Date.now());
     const nextTrack = $derived.by<TrackMeta | null>(() => {
@@ -78,21 +76,16 @@
         return null;
     });
 
-    // Spotify's AppleScript position is sampled every ~500ms and the Rust
-    // watcher suppresses sub-second deltas to avoid emit storms, so the raw
-    // `nowPlaying.positionMs` would stay frozen between events. We extrapolate
-    // locally: anchor on the last emitted value + perf clock, advance while
-    // state is `playing`. One source of truth → consistent display and sync.
+    // `nowPlaying.positionMs` is frozen between emits (sub-second deltas are
+    // suppressed), so extrapolate from the last anchor + perf clock.
     let livePositionMs: number = $state(0);
     let anchorPositionMs: number = 0;
     let anchorPerfMs: number = 0;
     let positionTicker: ReturnType<typeof setInterval> | undefined;
 
     $effect(() => {
-        // Re-anchor on every Spotify emit (track change, play/pause, seek).
-        // Use `== null` to catch both undefined and JSON-null (which the Rust
-        // side emits when AppleScript parsing fails) — letting null through
-        // would silently coerce to 0 in `null + elapsed` later.
+        // `== null` catches JSON-null (emitted on AppleScript parse failure)
+        // as well as undefined; null would coerce to 0 in `null + elapsed`.
         if (!nowPlaying || nowPlaying.positionMs == null) {
             anchorPositionMs = 0;
             anchorPerfMs = performance.now();
@@ -130,11 +123,8 @@
         if (dispatchKey === lastDispatchKey) return;
         lastDispatchKey = dispatchKey;
 
-        // Reset view state for the new track and ask the backend for whatever
-        // it currently has resolved. This is read-only — the backend's
-        // resolver runs continuously based on what's playing and what's in
-        // the queue; we never tell it to fetch. Anything not in the bootstrap
-        // arrives via lyrics_resolved / lyrics_translation_done events.
+        // Read-only: the backend resolver runs off what's playing and queued,
+        // so we never ask it to fetch. The rest arrives via events.
         lyrics = null;
         translation = null;
         errorMessage = null;
@@ -157,10 +147,8 @@
                     translationStatus = 'translating';
                 }
             }
-            // If state.lyrics is null we stay in 'fetching' — the backend
-            // may still be resolving the track; the lyrics_resolved event
-            // will land soon with either Some lyrics or an explicit null
-            // (which we map to 'unsupported-track').
+            // Null lyrics keeps us 'fetching': the backend may still be
+            // resolving, and lyrics_resolved settles it either way.
         } catch (e) {
             errorMessage = String(e);
             translationStatus = 'error';
@@ -168,7 +156,6 @@
     }
 
     $effect(() => {
-        // Drive on changes to nowPlaying.
         if (!isMac) return;
         if (!nowPlaying) return;
         void onTrackChange(nowPlaying);
@@ -180,8 +167,7 @@
         positionTicker = setInterval(() => {
             nowTickMs = Date.now();
             if (nowPlaying?.state !== 'playing') {
-                // Keep livePositionMs in sync with the anchor when paused so
-                // pausing freezes the display cleanly.
+                // Re-sync to the anchor so pausing freezes cleanly.
                 if (livePositionMs !== anchorPositionMs) {
                     livePositionMs = anchorPositionMs;
                 }
@@ -204,9 +190,7 @@
         });
 
         translationCleanup = await listenLyricsState({
-            // Match events to the currently-displayed track by id. Events
-            // for any other track (background resolution of the queue) are
-            // naturally filtered out here.
+            // Drop events from background resolution of queued tracks.
             onLyricsResolved: (e) => {
                 if (e.trackId !== nowPlaying?.trackId) return;
                 if (e.lyrics) {

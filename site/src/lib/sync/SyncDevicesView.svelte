@@ -39,9 +39,8 @@
 
     let newId = $state("");
     let newName = $state("");
-    // Syncthing's own web dashboard URL — only ever set in debug builds.
+    // Only ever set in debug builds.
     let webUiUrl = $state<string | null>(null);
-    // Editable name for this device (seeded from the backend, edited locally).
     let deviceName = $state("");
 
     function statusLabel(s: SyncStatus | undefined): string {
@@ -69,7 +68,7 @@
             webUiUrl = await syncWebUiUrl();
             devices = await syncListDevices();
             pending = await syncListPending();
-            // Seed the editable name once (don't clobber an in-progress edit).
+            // Seed once — never clobber an in-progress edit.
             if (!deviceName && thisDevice?.name) deviceName = thisDevice.name;
             qrDataUrl = thisDevice?.deviceId
                 ? await QRCode.toDataURL(
@@ -77,9 +76,8 @@
                       { margin: 1, width: 220 },
                   )
                 : "";
-            // A fully successful refresh clears a prior transient error. Not
-            // cleared at entry: that would flicker, and would wipe a message a
-            // mutating handler just set before it kicks off its own refresh.
+            // Cleared here, not at entry: that would flicker and would wipe a
+            // message a mutating handler set just before its own refresh.
             error = "";
         } catch (e) {
             error = errMessage(e);
@@ -100,17 +98,15 @@
         busy = false;
     }
 
-    // Re-fetch identity + device list whenever sync state / device count moves
-    // (the backend poller drives `sync_status_changed`). Memoized: no refetch
-    // on unchanged polls.
+    // Keyed so unchanged `sync_status_changed` polls don't refetch.
     let refreshKey = $derived(`${status?.state}:${status?.deviceCount}`);
     $effect(() => {
         void refreshKey;
         refresh();
     });
 
-    // While sync is on, poll for pending devices + connection changes (these
-    // don't move deviceCount, so the key above won't catch them).
+    // Pending devices and connection changes don't move deviceCount, so the
+    // key above can't catch them.
     $effect(() => {
         if (!enabled) return;
         const id = setInterval(refresh, 4000);
@@ -156,8 +152,8 @@
         busy = false;
     }
 
-    // Tauri/plugin errors reject with structured objects, not strings, so
-    // `String(e)` renders "[object Object]". Pull out something human-readable.
+    // Tauri/plugin errors reject with objects, so `String(e)` would render
+    // "[object Object]".
     function errMessage(e: unknown): string {
         if (typeof e === "string") return e;
         if (e instanceof Error) return e.message;
@@ -175,9 +171,8 @@
 
     async function scanToAdd() {
         error = "";
-        // The scanner won't open without the camera permission, and `scan()`
-        // doesn't request it — so ask first (the OS shows its prompt). Do this
-        // before going transparent so a denial leaves the UI intact.
+        // `scan()` won't request the camera permission itself. Ask before
+        // going transparent, so a denial leaves the UI intact.
         let allowed: boolean;
         try {
             allowed = await ensureCameraPermission();
@@ -193,8 +188,7 @@
 
         busy = true;
         scanning = true;
-        // Make the page transparent so the camera (rendered behind the webview)
-        // shows through; the overlay below provides the Cancel control.
+        // The camera renders behind the webview.
         document.documentElement.classList.add("barcode-scanning");
         try {
             const scanned = await scanDeviceId();
@@ -203,17 +197,15 @@
                 if (scanned.name) newName = scanned.name;
             }
         } catch (e) {
-            // Cancelling (stopScan) tears the scan down and flips `scanning`
-            // off; the plugin may then reject the now-stale scan() — don't
-            // surface that as an error.
+            // stopScan already flipped `scanning` off; the plugin's rejection
+            // of the stale scan() is not a real error.
             if (scanning) error = errMessage(e);
         } finally {
             endScan();
         }
     }
 
-    // Restore the UI after a scan ends — success, error, or cancel. Idempotent,
-    // so it's safe for both scanToAdd's finally and stopScan to call it.
+    // Idempotent: both scanToAdd's finally and stopScan call it.
     function endScan() {
         document.documentElement.classList.remove("barcode-scanning");
         scanning = false;
@@ -221,9 +213,9 @@
     }
 
     async function stopScan() {
-        // Restore the UI immediately. Cancelling does NOT reliably settle the
-        // pending scan() promise, so scanToAdd's finally may never run — relying
-        // on it leaves the page transparent with content hidden (apparent hang).
+        // Cancelling doesn't reliably settle the pending scan(), so
+        // scanToAdd's finally may never run — the page would stay transparent
+        // and look hung.
         endScan();
         try {
             await cancelScan();
@@ -256,8 +248,7 @@
 </script>
 
 {#if scanning}
-    <!-- Transparent overlay so the camera (behind the webview) shows through;
-         provides the scan frame + Cancel control. -->
+    <!-- Transparent so the camera behind the webview shows through. -->
     <div class="scan-overlay">
         <div class="scan-frame"></div>
         <p class="scan-hint">Point at the other device's QR code</p>
@@ -287,8 +278,7 @@
         {#if webUiUrl}
             {#if onIos}
                 <!-- No "open" button: leaving FLTS suspends the engine that
-                     serves the dashboard. Show the (per-run, ephemeral) URL so
-                     it can be typed or pasted into a browser alongside the app. -->
+                     serves the dashboard. The URL is per-run. -->
                 <div class="dashboard">
                     <p class="label">Syncthing dashboard</p>
                     <code class="id">{webUiUrl}</code>
@@ -519,9 +509,8 @@
         font-size: 0.85em;
     }
 
-    /* While scanning, make the whole page transparent so the camera (rendered
-       behind the webview by the OS scanner) is visible, and hide the app so its
-       opaque backgrounds don't cover it. The overlay re-shows itself. */
+    /* The OS scanner renders the camera behind the webview, so the page must
+       go transparent and its opaque backgrounds must be hidden. */
     :global(html.barcode-scanning),
     :global(html.barcode-scanning body) {
         background: transparent !important;

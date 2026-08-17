@@ -49,9 +49,8 @@
     let dragStartSize = 0;
 
     function maxAllowedSize(): number {
-        // In slot mode the panel-host itself is sized at `collapsedSize`;
-        // for the max bound we want the container the user *would* be
-        // resizing into — the chapter-view (panelEl's parent).
+        // The max bound is the container being resized into (panelEl's
+        // parent), not the host — in slot mode that is only `collapsedSize`.
         const parent = panelEl?.parentElement;
         const dim = parent
             ? horizontal
@@ -80,8 +79,7 @@
         if (!target.hasPointerCapture(event.pointerId)) return;
         const coord = horizontal ? event.clientX : event.clientY;
         const rawDelta = coord - dragStartCoord;
-        // For panels anchored to right / bottom, dragging "into" the
-        // viewport (smaller coord) grows the panel — sign flips.
+        // Anchored right/bottom, a smaller coord grows the panel.
         const directionSign =
             side === "left" || side === "top" ? 1 : -1;
         size = clamp(
@@ -107,9 +105,8 @@
         toggle();
     }
 
-    // In overlay mode the panel always takes its `size` (transform hides
-    // it when collapsed). In slot mode the host reserves `collapsedSize`
-    // and the body overflows up to `size` when expanded.
+    // Overlay mode always takes `size` (a transform hides it when
+    // collapsed); slot mode reserves `collapsedSize` and overflows.
     const overlaySize = $derived(size);
     const showsContent = $derived(expanded || hasPeek);
 </script>
@@ -117,10 +114,9 @@
 <svelte:window onkeydown={handleKeydown} />
 
 {#if hasPeek}
-    <!-- Slot mode: host is in flex flow (takes `collapsedSize`), inner
-         body absolute-overflows up to `size` when expanded so opening
-         the panel doesn't resize the chapter viewport. The visible
-         panel UI is the body — that's where `testId` goes. -->
+    <!-- Slot mode: the host stays in flex flow and the body overflows
+         absolutely, so expanding never resizes the chapter viewport.
+         `testId` goes on the body — that is the visible panel. -->
     <aside
         class="panel-host slot side-{side}"
         class:expanded
@@ -150,9 +146,8 @@
         </div>
     </aside>
 {:else}
-    <!-- Overlay mode: panel is absolute-positioned and slides in/out
-         entirely via transform. Children always render so DOM is stable
-         for selectors. -->
+    <!-- Overlay mode slides entirely via transform; children always
+         render so selectors have stable DOM. -->
     <aside
         class="panel-host overlay side-{side}"
         class:expanded
@@ -258,7 +253,6 @@
         transform: translateY(0);
     }
 
-    /* Overlay-mode resize-grip lives directly inside the panel-host. */
     .panel-host.overlay > .resize-grip {
         position: absolute;
         touch-action: none;
@@ -297,9 +291,8 @@
     .panel-host.slot {
         position: relative;
         flex: 0 0 auto;
-        /* Establish a stacking context above the overlay panels (z:10) so
-           the expanded body, which overflows upward into the chapter
-           viewport, paints on top of the chapters panel where they meet. */
+        /* Above the overlay panels (z:10), so the upward-overflowing body
+           paints on top of the chapters panel where they meet. */
         z-index: 20;
     }
     .panel-host.slot.side-top,

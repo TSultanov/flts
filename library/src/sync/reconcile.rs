@@ -1,7 +1,7 @@
 //! Pure reconciliation: diff the roster against the engine's device set.
 //!
-//! Kept side-effect-free so it is exhaustively unit-testable; the engine applies
-//! the resulting plan ([`super::engine::SyncEngine::reconcile_once`]).
+//! Side-effect-free so it is exhaustively unit-testable; the engine applies the
+//! plan ([`super::engine::SyncEngine::reconcile_once`]).
 
 use std::collections::BTreeSet;
 
@@ -24,10 +24,9 @@ impl ReconcilePlan {
 
 /// Diffs `roster` against the engine's current `engine_ids`.
 ///
-/// - **add**: active roster devices missing from the engine (never self).
-/// - **remove**: engine devices the roster *tombstones* and does not re-list
-///   (opt-in removal; never self). A device merely absent from the roster is
-///   left alone, so a peer that hasn't yet learned of it isn't torn down.
+/// Adds active roster devices the engine lacks; removes only devices the roster
+/// tombstones. Never touches self, and leaves devices merely absent from the
+/// roster alone so a peer that hasn't learned of one isn't torn down.
 pub fn reconcile(roster: &Roster, engine_ids: &BTreeSet<String>, my_id: &str) -> ReconcilePlan {
     let mut to_add = Vec::new();
     for (id, rec) in &roster.devices {

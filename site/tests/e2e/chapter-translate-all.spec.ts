@@ -7,18 +7,9 @@ import {
   seedAndOpen,
 } from './helpers/paragraph';
 
-// Covers the floating "Translate chapter" button rendered on the dark
-// frame of ChapterView. The button schedules translation of every
-// untranslated paragraph in the open chapter via a single
-// `translate_chapter` IPC call:
-//  - hidden when the chapter is already 100% translated
-//  - visible when the chapter has at least one untranslated paragraph
-//  - clicking enqueues every untranslated paragraph; already-translated
-//    paragraphs are not re-enqueued
-//  - disabled while `canTranslate(chapterId)` is false (waiting on prior
-//    chapter summaries); reactivates once summaries advance
-//  - hides reactively when the last paragraph lands and the chapter
-//    becomes 100% translated
+// The floating "Translate chapter" button: one `translate_chapter` IPC call
+// fans out to every untranslated paragraph. Visible only below 100%, disabled
+// while `canTranslate(chapterId)` is false.
 
 test.describe.configure({ mode: 'parallel' });
 
@@ -58,7 +49,6 @@ test.describe('translate-chapter button — visibility', () => {
   test.skip(({ browserName }) => browserName === 'firefox', 'chromium + webkit only');
 
   test('hidden when the open chapter is 100% translated', async ({ page }) => {
-    // Two chapters so single-chapter shortcuts don't kick in.
     await seedAndOpen(page, {
       chapters: [chapterSpec(3, 3), chapterSpec(2, 0, 10)],
     });
@@ -82,13 +72,11 @@ test.describe('translate-chapter button — click behaviour', () => {
   test('clicking schedules every untranslated paragraph via one translate_chapter call', async ({
     page,
   }) => {
-    // Asserts on the mock's translate_chapter call log; no real-tier equivalent.
     test.skip(isRealMode(), 'mock-only __test.getTranslateChapterCalls');
     const { bookId } = await seedAndOpen(page, {
       chapters: [chapterSpec(3, 1), chapterSpec(2, 0, 10)],
-      // Provide explicit segments for the untranslated paragraphs so the
-      // mock translator actually fills them in (the default 'immediate'
-      // config emits paragraph_updated but doesn't set segments).
+      // The default 'immediate' config emits paragraph_updated without setting
+      // segments, so they must be explicit.
       translateConfigs: [
         { paragraphId: 1, cfg: { kind: 'immediate', segments: fillerSegments(1) } },
         { paragraphId: 2, cfg: { kind: 'immediate', segments: fillerSegments(2) } },
@@ -98,8 +86,7 @@ test.describe('translate-chapter button — click behaviour', () => {
     await expect(page.locator(BUTTON)).toBeVisible();
     await page.locator(BUTTON).click();
 
-    // Exactly one server-side fan-out call, scoped to the open chapter,
-    // with the count of untranslated paragraphs (3 - 1 = 2).
+    // One fan-out call, scoped to the open chapter, counting 3 - 1 = 2.
     await expect
       .poll(async () => (await getTranslateChapterCalls(page)).length)
       .toBe(1);
@@ -108,12 +95,10 @@ test.describe('translate-chapter button — click behaviour', () => {
     expect(calls[0].chapterId).toBe(0);
     expect(calls[0].enqueuedCount).toBe(2);
 
-    // Per-paragraph translate_paragraph is NOT how this flow works —
-    // the fan-out happens on the backend.
+    // The fan-out is server-side; no per-paragraph calls.
     expect(await getTranslateCalls(page)).toHaveLength(0);
 
-    // The two previously-untranslated paragraphs land. The original
-    // paragraph 0 was seeded translated and never re-enqueued.
+    // Paragraph 0 was seeded translated and must not be re-enqueued.
     await expect(page.locator('.paragraph-wrapper button.translate')).toHaveCount(0);
   });
 
@@ -128,7 +113,6 @@ test.describe('translate-chapter button — click behaviour', () => {
     await expect(page.locator(BUTTON)).toBeVisible();
     await page.locator(BUTTON).click();
 
-    // book_updated → chapter ratio flips to 1 → button unmounts.
     await expect(page.locator(BUTTON)).toHaveCount(0);
   });
 });
@@ -137,11 +121,9 @@ test.describe('translate-chapter button — summary gating', () => {
   test.skip(({ browserName }) => browserName === 'firefox', 'chromium + webkit only');
 
   test('disabled when prior-chapter summary is not yet generated', async ({ page }) => {
-    // Needs a half-generated summaryStatus, which the real backend generates
-    // eagerly on import and the seed helper cannot forge.
+    // Needs a half-generated summaryStatus, which the real backend never has.
     test.skip(isRealMode(), 'summaryStatus seeding is mock-only');
-    // Open chapter 1; canTranslate(1) requires chapter 0's summary,
-    // which is not yet generated.
+    // canTranslate(1) requires chapter 0's summary, still ungenerated.
     const bookId = `test-book-summary-gating-${Date.now()}`;
     await seedAndOpen(
       page,
@@ -161,8 +143,7 @@ test.describe('translate-chapter button — summary gating', () => {
     await expect(page.locator(BUTTON)).toBeVisible();
     await expect(page.locator(BUTTON)).toBeDisabled();
 
-    // Advance the summary worker → chapter 0 summary done →
-    // canTranslate(1) flips true → button enables.
+    // Advancing the worker completes chapter 0's summary.
     await page.evaluate(
       (id) => (window as any).__test.advanceSummaryGeneration(id),
       bookId,
