@@ -202,7 +202,8 @@ export async function syncNow(h: RealHarness): Promise<Report> {
     try {
       return await h.invoke<Report>('sync_anki_now');
     } catch (err) {
-      if (!String(err).includes('in progress') || Date.now() > deadline) throw err;
+      const transient = String(err).includes('anki sync already in progress');
+      if (!transient || Date.now() > deadline) throw err;
       await sleep(100);
     }
   }

@@ -6,10 +6,14 @@
 //! reachable only through accessors that await the startup outcome first.
 //!
 //! Its own module on purpose: Rust privacy is per-module *and its descendants*,
-//! so command code elsewhere in the `app` tree cannot touch these fields — the
-//! gate is a compile-time property, not a convention new commands must follow.
-//! The `*_unchecked` / install / take methods are the startup and shutdown
-//! plumbing, which by definition runs before or after readiness.
+//! so the fields themselves are unreachable from the rest of the `app` tree —
+//! a new command written the obvious way (`state.library().await?`) is gated by
+//! construction, not by a convention someone has to remember. The escape
+//! hatches below (`library_unchecked`, the install/take pair) are `pub` and any
+//! `app` descendant *can* call them; they exist for the startup and shutdown
+//! plumbing, which by definition runs before or after readiness. The guarantee
+//! is that gated state cannot be reached *accidentally*, not that it cannot be
+//! reached at all.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -60,7 +64,14 @@ impl GatedState {
     /// Waits for startup to settle. Startup's own error is propagated; a
     /// startup that never settles is bounded by [`READY_TIMEOUT`].
     pub async fn await_ready(&self) -> Result<(), String> {
-        await_ready_on(self.ready.subscribe(), READY_TIMEOUT).await
+        settle_on(self.ready.subscribe(), READY_TIMEOUT).await.unwrap_or_else(Err)
+    }
+
+    /// Waits only while startup is still *running*: a failed startup settles
+    /// as Ok here. For the repair path (`update_config`), which must run
+    /// precisely when startup failed and then republish its own outcome.
+    pub async fn await_settled(&self) -> Result<(), String> {
+        settle_on(self.ready.subscribe(), READY_TIMEOUT).await.map(|_| ())
     }
 
     // --- gated accessors: the only way in for commands ---
@@ -92,6 +103,7 @@ impl GatedState {
         self.library.send_replace(Some(library));
     }
 
+    /// Ungated — do not call from a command; use [`GatedState::library`].
     /// For paths that must not block on readiness: shutdown flushes, and the
     /// file-watcher loop, which is a no-op until the library exists anyway.
     /// Owned clone, so no watch read-guard can cross a caller's await.
@@ -132,13 +144,14 @@ impl GatedState {
     }
 }
 
-/// Free fn so the wait's semantics are testable without a `GatedState`.
-async fn await_ready_on(
+/// Resolves to the stored startup outcome once it settles, or `Err` if it never
+/// does. Free fn so the wait's semantics are testable without a `GatedState`.
+async fn settle_on(
     mut rx: watch::Receiver<Option<Result<(), String>>>,
     timeout: Duration,
-) -> Result<(), String> {
+) -> Result<Result<(), String>, String> {
     if let Some(outcome) = rx.borrow_and_update().clone() {
-        return outcome;
+        return Ok(outcome);
     }
     let wait = async {
         loop {
@@ -146,7 +159,7 @@ async fn await_ready_on(
                 return Err("startup state was dropped".to_string());
             }
             if let Some(outcome) = rx.borrow_and_update().clone() {
-                return outcome;
+                return Ok(outcome);
             }
         }
     };
@@ -193,12 +206,36 @@ mod tests {
         assert_eq!(waiter.await.unwrap(), Ok(()));
     }
 
+    #[tokio::test]
+    async fn sync_anki_now_reports_the_startup_error() {
+        let state = GatedState::new();
+        state.publish_ready(Err("library open failed".to_string()));
+        assert_eq!(
+            state.sync_anki_now().await.unwrap_err().to_string(),
+            "library open failed"
+        );
+    }
+
+    /// A failed startup must not latch the app shut: `update_config` runs on it
+    /// (`await_settled`) and republishes, which brings the accessors back.
+    #[tokio::test]
+    async fn republishing_a_success_clears_a_failed_startup() {
+        let state = GatedState::new();
+        state.publish_ready(Err("library open failed".to_string()));
+        assert!(state.library().await.is_err());
+        assert_eq!(state.await_settled().await, Ok(()));
+
+        state.publish_ready(Ok(()));
+        assert_eq!(state.await_ready().await, Ok(()));
+        assert!(matches!(state.sync_engine().await, Ok(None)));
+    }
+
     /// Must expire, so the short timeout races nothing.
     #[tokio::test]
     async fn await_ready_gives_up_instead_of_hanging() {
         let never = watch::channel(None).0;
         assert_eq!(
-            await_ready_on(never.subscribe(), Duration::from_millis(10)).await,
+            settle_on(never.subscribe(), Duration::from_millis(10)).await,
             Err("startup did not complete within 10ms".to_string())
         );
     }

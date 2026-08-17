@@ -468,16 +468,25 @@ impl AppState {
             });
     }
 
+    /// Persist and apply a new config. Rebuilds the gated state rather than
+    /// reading it, so the accessors don't cover this path: it waits out a
+    /// startup still in flight, but deliberately runs on a *failed* one — this
+    /// is how a user repairs it — and republishes its own outcome, so a
+    /// successful change unlatches the app without a restart.
     pub async fn update_config(&self, config: Config) -> anyhow::Result<()> {
-        // Rebuilds the gated state rather than reading it, so the accessors
-        // don't cover this path: wait for the startup evaluation explicitly
-        // instead of tearing down queues it is still installing.
         self.gated
-            .await_ready()
+            .await_settled()
             .await
             .map_err(|err| anyhow::anyhow!(err))?;
         let _eval = self.eval_lock.lock().await;
+        let outcome = self.apply_config(config).await;
+        self.gated
+            .publish_ready(outcome.as_ref().map(|_| ()).map_err(|err| err.to_string()));
+        outcome
+    }
 
+    /// Caller must hold `eval_lock`.
+    async fn apply_config(&self, config: Config) -> anyhow::Result<()> {
         // Hold the init locks across stop → library swap so no queue is built
         // against the outgoing Library; drop them before the slow eval_sync
         // tail so translates don't wait on an engine restart.
@@ -821,6 +830,13 @@ impl AppState {
             return Ok(queue);
         }
 
+        // Before the lock: waiting for startup while holding an init lock would
+        // invert the lock order against anything startup may come to need.
+        self.gated
+            .await_ready()
+            .await
+            .map_err(|err| anyhow::anyhow!(err))?;
+
         let _guard = self.translation_queue_init_lock.lock().await;
 
         // Another caller may have populated the queue while we were waiting.
@@ -830,7 +846,10 @@ impl AppState {
 
         // Read under the init lock: update_config holds it across the Library
         // swap, so this can never be the outgoing instance.
-        let library = self.library().await.map_err(|err| anyhow::anyhow!(err))?;
+        let library = self
+            .gated
+            .library_unchecked()
+            .ok_or_else(|| anyhow::anyhow!("library is not configured"))?;
 
         let config = self.config.borrow().clone();
         let cache = self.get_translations_cache().await?;
