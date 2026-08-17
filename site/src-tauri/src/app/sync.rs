@@ -48,7 +48,7 @@ pub async fn get_sync_status(
 pub async fn sync_get_this_device(
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<Option<ThisDevice>, String> {
-    let Some(engine) = state.sync_engine().await else {
+    let Some(engine) = state.sync_engine().await? else {
         return Ok(None);
     };
     let my_id = engine.my_id().to_string();
@@ -79,7 +79,7 @@ pub async fn sync_web_ui_url(
     if !cfg!(debug_assertions) {
         return Ok(None);
     }
-    Ok(state.sync_engine().await.map(|e| e.gui_url().to_string()))
+    Ok(state.sync_engine().await?.map(|e| e.gui_url().to_string()))
 }
 
 /// Called when the app returns to the foreground (mobile): restarts the engine
@@ -121,7 +121,7 @@ pub async fn sync_set_enabled(
 pub async fn sync_list_devices(
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<Vec<DeviceEntry>, String> {
-    let Some(engine) = state.sync_engine().await else {
+    let Some(engine) = state.sync_engine().await? else {
         return Ok(Vec::new());
     };
     let peers = engine.list_peers().await.map_err(|err| err.to_string())?;
@@ -146,7 +146,7 @@ pub async fn sync_add_device(
 ) -> Result<(), String> {
     let engine = state
         .sync_engine()
-        .await
+        .await?
         .ok_or_else(|| "sync is not running; enable it first".to_string())?;
     engine
         .pair_device(device_id.trim(), name.trim())
@@ -161,7 +161,7 @@ pub async fn sync_add_device(
 pub async fn sync_list_pending(
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<Vec<PendingEntry>, String> {
-    let Some(engine) = state.sync_engine().await else {
+    let Some(engine) = state.sync_engine().await? else {
         return Ok(Vec::new());
     };
     let pending = engine
@@ -186,7 +186,7 @@ pub async fn sync_remove_device(
 ) -> Result<(), String> {
     let engine = state
         .sync_engine()
-        .await
+        .await?
         .ok_or_else(|| "sync is not running".to_string())?;
     engine
         .unpair_device(&device_id)

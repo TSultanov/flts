@@ -14,11 +14,7 @@ pub async fn save_book_reading_state(
     paragraph_id: usize,
     page_offset: usize,
 ) -> Result<(), String> {
-    let library = state
-        .library
-        .borrow()
-        .clone()
-        .ok_or("Library is not configured")?;
+    let library = state.library().await?;
 
     LibraryView::create(state.inner().clone(), library)
         .save_book_reading_state(book_id, chapter_id, paragraph_id, page_offset)
@@ -32,11 +28,7 @@ pub async fn move_book(
     book_id: Uuid,
     path: Vec<String>,
 ) -> Result<(), String> {
-    let library = state
-        .library
-        .borrow()
-        .clone()
-        .ok_or("Library is not configured")?;
+    let library = state.library().await?;
 
     LibraryView::create(state.inner().clone(), library)
         .move_book(book_id, path)
@@ -49,11 +41,7 @@ pub async fn delete_book(
     state: tauri::State<'_, Arc<AppState>>,
     book_id: Uuid,
 ) -> Result<(), String> {
-    let library = state
-        .library
-        .borrow()
-        .clone()
-        .ok_or("Library is not configured")?;
+    let library = state.library().await?;
 
     LibraryView::create(state.inner().clone(), library)
         .delete_book(book_id)

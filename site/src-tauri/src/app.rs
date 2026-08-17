@@ -39,6 +39,7 @@ const DEFAULT_ANKI_SYNC_INTERVAL_SECS: u64 = 300;
 pub mod anki_sync;
 pub mod chapter_context;
 pub mod config;
+pub mod gated_state;
 pub mod library_view;
 pub mod lyrics;
 pub mod spotify;
@@ -51,7 +52,6 @@ pub enum AppError {
     StatePoisonError,
     ProjectDirsError,
     NoTranslationQueueError,
-    NoLibraryError,
     TestError,
 }
 
@@ -66,9 +66,6 @@ impl Display for AppError {
                 f,
                 "Failed to translate paragraph: no translation queue initialized"
             ),
-            AppError::NoLibraryError => {
-                write!(f, "Failed to translate paragraph: no library configured")
-            }
             AppError::TestError => write!(f, "Test error"),
         }
     }
@@ -242,7 +239,8 @@ pub struct AppState {
     app: tauri::AppHandle,
     config_path: PathBuf,
     config: watch::Sender<Config>,
-    library: Arc<watch::Sender<Option<Arc<Library>>>>,
+    /// Everything `eval_config` installs; see `gated_state`.
+    gated: crate::app::gated_state::GatedState,
     translation_queue: watch::Sender<Option<Arc<TranslationQueue>>>,
     translation_queue_init_lock: Mutex<()>,
     summary_generation_queue: watch::Sender<Option<Arc<SummaryGenerationQueue>>>,
@@ -253,11 +251,9 @@ pub struct AppState {
     /// Lock order: eval_lock → translation_queue_init_lock →
     /// summary_generation_queue_init_lock. Task-slot mutexes are leaves.
     eval_lock: Mutex<()>,
-    anki_sync_task: Mutex<Option<Arc<AnkiSyncTask>>>,
     /// Stable across `eval_config` re-spawns. The transient `AnkiSyncTask`
     /// holds a clone and pushes status into it on every tick.
     anki_sync_status: Arc<watch::Sender<crate::app::anki_sync::AnkiSyncStatus>>,
-    sync_task: Mutex<Option<Arc<crate::app::sync_daemon::SyncTask>>>,
     /// Stable across re-spawns, like `anki_sync_status`.
     sync_status: Arc<watch::Sender<crate::app::sync_daemon::SyncStatus>>,
     translations_cache: tokio::sync::OnceCell<Arc<TranslationsCache>>,
@@ -298,7 +294,7 @@ impl AppState {
             app,
             config_path,
             config: watch::channel(config).0,
-            library: Arc::new(watch::channel::<Option<Arc<Library>>>(None).0),
+            gated: crate::app::gated_state::GatedState::new(),
             translation_queue: watch::channel(None).0,
             translation_queue_init_lock: Mutex::new(()),
             summary_generation_queue: watch::channel(None).0,
@@ -306,9 +302,7 @@ impl AppState {
             watcher,
             backfill_lock: Arc::new(Mutex::new(())),
             eval_lock: Mutex::new(()),
-            anki_sync_task: Mutex::new(None),
             anki_sync_status: Arc::new(watch::channel(initial_anki_status).0),
-            sync_task: Mutex::new(None),
             sync_status: Arc::new(
                 watch::channel(crate::app::sync_daemon::SyncStatus::default()).0,
             ),
@@ -318,6 +312,10 @@ impl AppState {
             lyrics_state: crate::app::lyrics::LyricsState::new(),
             spotify_web: Arc::new(crate::app::spotify::web::SpotifyWebState::new()),
         })
+    }
+
+    pub fn publish_ready(&self, outcome: Result<(), String>) {
+        self.gated.publish_ready(outcome);
     }
 
     pub fn subscribe_config(&self) -> watch::Receiver<Config> {
@@ -357,7 +355,13 @@ impl AppState {
         if !self.config.borrow().sync_enabled {
             return;
         }
-        let healthy = match self.sync_engine().await {
+        // Not an accessor call, so gate explicitly: a wake must not race the
+        // startup evaluation into a second engine start.
+        if let Err(err) = self.gated.await_ready().await {
+            warn!("wake_sync: startup did not complete: {err}");
+            return;
+        }
+        let healthy = match self.sync_engine().await.ok().flatten() {
             Some(engine) => {
                 crate::app::sync_daemon::probe_healthy(
                     engine.client().as_ref(),
@@ -373,7 +377,7 @@ impl AppState {
         info!("Sync engine unreachable after wake; restarting");
         let _eval = self.eval_lock.lock().await;
         // Don't bounce an engine another evaluation just restarted.
-        if let Some(engine) = self.sync_engine().await
+        if let Some(engine) = self.sync_engine().await.ok().flatten()
             && crate::app::sync_daemon::probe_healthy(
                 engine.client().as_ref(),
                 crate::app::sync_daemon::WAKE_PROBE_TIMEOUT,
@@ -399,7 +403,7 @@ impl AppState {
         self.config.send_replace(config);
 
         if !trimmed.is_empty() {
-            if let Some(engine) = self.sync_engine().await {
+            if let Some(engine) = self.sync_engine().await.map_err(|e| anyhow::anyhow!(e))? {
                 engine.set_device_name(&trimmed).await?;
             }
         }
@@ -407,15 +411,20 @@ impl AppState {
     }
 
     pub fn subscribe_library(&self) -> watch::Receiver<Option<Arc<Library>>> {
-        self.library.subscribe()
+        self.gated.subscribe_library()
     }
 
     pub fn notify_library_changed(&self) {
-        self.library.send_modify(|_| {});
+        self.gated.notify_library_changed();
+    }
+
+    /// The gated library handle: every command reaches the library through here.
+    pub async fn library(&self) -> Result<Arc<Library>, String> {
+        self.gated.library().await
     }
 
     pub fn library_sender(&self) -> Arc<watch::Sender<Option<Arc<Library>>>> {
-        Arc::clone(&self.library)
+        self.gated.library_sender()
     }
 
     pub fn subscribe_anki_sync_status(
@@ -429,7 +438,7 @@ impl AppState {
     }
 
     pub async fn sync_anki_now(&self) -> anyhow::Result<crate::app::anki_sync::SyncReportDto> {
-        crate::app::anki_sync::sync_now_or_err(&self.anki_sync_task).await
+        self.gated.sync_anki_now().await
     }
 
     pub fn subscribe_sync_status(
@@ -445,12 +454,8 @@ impl AppState {
     /// The running sync engine, if a task is installed (for sync Tauri commands).
     pub async fn sync_engine(
         &self,
-    ) -> Option<Arc<library::sync::engine::SyncEngine>> {
-        self.sync_task
-            .lock()
-            .await
-            .as_ref()
-            .map(|task| task.engine())
+    ) -> Result<Option<Arc<library::sync::engine::SyncEngine>>, String> {
+        self.gated.sync_engine().await
     }
 
     fn set_anki_sync_unreachable(&self, reason: &str) {
@@ -464,6 +469,13 @@ impl AppState {
     }
 
     pub async fn update_config(&self, config: Config) -> anyhow::Result<()> {
+        // Rebuilds the gated state rather than reading it, so the accessors
+        // don't cover this path: wait for the startup evaluation explicitly
+        // instead of tearing down queues it is still installing.
+        self.gated
+            .await_ready()
+            .await
+            .map_err(|err| anyhow::anyhow!(err))?;
         let _eval = self.eval_lock.lock().await;
 
         // Hold the init locks across stop → library swap so no queue is built
@@ -509,7 +521,7 @@ impl AppState {
         self.migrate_legacy_library(&config, &library_root).await?;
 
         let library = Arc::new(Library::open(library_root.clone()).await?);
-        self.library.send_replace(Some(library.clone()));
+        self.gated.install_library(library.clone());
 
         if std::env::var_os("FLTS_ENABLE_CARD_BACKFILL").is_some_and(|v| !v.is_empty()) {
             let backfill_lock = self.backfill_lock.clone();
@@ -527,8 +539,7 @@ impl AppState {
             info!("Card backfill disabled: set FLTS_ENABLE_CARD_BACKFILL=1 to enable");
         }
 
-        // Take standalone: the slot mutex must not span the shutdown await.
-        let prior = self.anki_sync_task.lock().await.take();
+        let prior = self.gated.take_anki_task().await;
         if let Some(task) = prior {
             info!("Stopping prior Anki sync task before re-spawn");
             task.shutdown().await;
@@ -559,7 +570,7 @@ impl AppState {
                 Duration::from_secs(interval_secs),
                 self.anki_sync_status.clone(),
             );
-            *self.anki_sync_task.lock().await = Some(task);
+            self.gated.install_anki_task(task).await;
             info!("Anki sync task spawned (interval = {interval_secs}s)");
         }
 
@@ -582,9 +593,7 @@ impl AppState {
     async fn eval_sync(&self, config: &Config, library_root: &Path) {
         use crate::app::sync_daemon::{SyncStatus, SyncTask, sync_disabled};
 
-        // Take standalone: the slot mutex must not span the slow shutdown —
-        // sync commands read this slot.
-        let prior = self.sync_task.lock().await.take();
+        let prior = self.gated.take_sync_task().await;
         if let Some(task) = prior {
             info!("Stopping prior sync task before re-spawn");
             task.shutdown().await;
@@ -632,7 +641,7 @@ impl AppState {
         .await
         {
             Ok(task) => {
-                *self.sync_task.lock().await = Some(task);
+                self.gated.install_sync_task(task).await;
                 info!("Sync task spawned");
             }
             Err(err) => {
@@ -698,10 +707,7 @@ impl AppState {
     }
 
     pub async fn save_all(&self) {
-        // Bind before awaiting: an `if let` on the borrow() temporary keeps
-        // the watch read-guard alive across the await, making every caller's
-        // future !Send.
-        let library = self.library.borrow().clone();
+        let library = self.gated.library_unchecked();
         if let Some(library) = library {
             info!("Saving all dirty books before shutdown");
             library.save_all().await;
@@ -751,11 +757,11 @@ impl AppState {
         // No final sync_pass here: the task already syncs on every card-store
         // change and the next launch syncs immediately, while a flush against
         // a slow/unreachable AnkiConnect made app exit hang for many seconds.
-        let anki_task = self.anki_sync_task.lock().await.take();
+        let anki_task = self.gated.take_anki_task().await;
         if let Some(task) = anki_task {
             run_exit_step("anki sync shutdown", EXIT_STOP_QUEUE_TIMEOUT, task.shutdown()).await;
         }
-        let sync_task = self.sync_task.lock().await.take();
+        let sync_task = self.gated.take_sync_task().await;
         if let Some(task) = sync_task {
             run_exit_step("sync engine shutdown", EXIT_STOP_QUEUE_TIMEOUT, task.shutdown()).await;
         }
@@ -764,7 +770,7 @@ impl AppState {
     }
 
     pub async fn handle_file_change_event(&self, event: &LibraryFileChange) -> anyhow::Result<()> {
-        let library = self.library.borrow().clone();
+        let library = self.gated.library_unchecked();
         let Some(library) = library else {
             return Ok(());
         };
@@ -824,11 +830,7 @@ impl AppState {
 
         // Read under the init lock: update_config holds it across the Library
         // swap, so this can never be the outgoing instance.
-        let library = self
-            .library
-            .borrow()
-            .clone()
-            .ok_or(AppError::NoLibraryError)?;
+        let library = self.library().await.map_err(|err| anyhow::anyhow!(err))?;
 
         let config = self.config.borrow().clone();
         let cache = self.get_translations_cache().await?;
@@ -898,11 +900,7 @@ impl AppState {
         model: TranslationModel,
         use_cache: bool,
     ) -> anyhow::Result<usize> {
-        let library = self
-            .library
-            .borrow()
-            .clone()
-            .ok_or(AppError::NoLibraryError)?;
+        let library = self.library().await.map_err(|err| anyhow::anyhow!(err))?;
 
         let target_language_id = { self.config.borrow().target_language_id.clone() };
         let target_language = Language::from_639_3(&target_language_id)

@@ -15,11 +15,7 @@ pub async fn import_plain_text(
     text: String,
     source_language_id: String,
 ) -> Result<Uuid, String> {
-    let library = state
-        .library
-        .borrow()
-        .clone()
-        .ok_or("Library is not configured")?;
+    let library = state.library().await?;
 
     let source_language = Language::from_639_3(&source_language_id)
         .ok_or_else(|| format!("Failed to resolve source language: {}", source_language_id))?;
@@ -37,11 +33,7 @@ pub async fn import_epub(
     book: EpubBook,
     source_language_id: String,
 ) -> Result<Uuid, String> {
-    let library = state
-        .library
-        .borrow()
-        .clone()
-        .ok_or("Library is not configured")?;
+    let library = state.library().await?;
 
     let source_language = Language::from_639_3(&source_language_id)
         .ok_or_else(|| format!("Failed to resolve source language: {}", source_language_id))?;

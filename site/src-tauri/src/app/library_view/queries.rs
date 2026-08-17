@@ -16,11 +16,7 @@ pub async fn list_books(
 ) -> Result<Vec<LibraryBookMetadataView>, String> {
     let target_language_id = { state.config.borrow().target_language_id.clone() };
     let target_language = Language::from_639_3(&target_language_id);
-    let library = state.library.borrow().clone();
-
-    let Some(library) = library else {
-        return Ok(vec![]);
-    };
+    let library = state.library().await?;
 
     LibraryView::create(state.inner().clone(), library)
         .list_books(target_language.as_ref())
@@ -35,10 +31,7 @@ pub async fn list_book_chapters(
 ) -> Result<Vec<ChapterView>, String> {
     let target_language_id = { state.config.borrow().target_language_id.clone() };
     let target_language = Language::from_639_3(&target_language_id);
-    let library = state.library.borrow().clone();
-    let Some(library) = library else {
-        return Ok(vec![]);
-    };
+    let library = state.library().await?;
 
     let mut library_view = LibraryView::create(state.inner().clone(), library);
     library_view
@@ -53,10 +46,7 @@ pub async fn get_book_chapter_paragraph_ids(
     book_id: Uuid,
     chapter_id: usize,
 ) -> Result<Vec<usize>, String> {
-    let library = state.library.borrow().clone();
-    let Some(library) = library else {
-        return Ok(vec![]);
-    };
+    let library = state.library().await?;
 
     LibraryView::create(state.inner().clone(), library)
         .list_book_chapter_paragraph_ids(book_id, chapter_id)
@@ -72,10 +62,7 @@ pub async fn get_word_info(
     sentence_id: usize,
     word_id: usize,
 ) -> Result<Option<WordView>, String> {
-    let library = state.library.borrow().clone();
-    let Some(library) = library else {
-        return Ok(None);
-    };
+    let library = state.library().await?;
 
     let target_language_id = { state.config.borrow().target_language_id.clone() };
     let Some(target_language) = Language::from_639_3(&target_language_id) else {
@@ -101,10 +88,7 @@ pub async fn get_paragraph_view(
     book_id: Uuid,
     paragraph_id: usize,
 ) -> Result<ParagraphView, String> {
-    let library = state.library.borrow().clone();
-    let Some(library) = library else {
-        return Err("Library is not configured".into());
-    };
+    let library = state.library().await?;
 
     let target_language_id = { state.config.borrow().target_language_id.clone() };
     let Some(target_language) = Language::from_639_3(&target_language_id) else {
@@ -124,10 +108,7 @@ pub async fn get_paragraph_originals_batch(
     book_id: Uuid,
     paragraph_ids: Vec<usize>,
 ) -> Result<Vec<ParagraphOriginal>, String> {
-    let library = state.library.borrow().clone();
-    let Some(library) = library else {
-        return Err("Library is not configured".into());
-    };
+    let library = state.library().await?;
 
     let library_view = LibraryView::create(state.inner().clone(), library);
     library_view
@@ -142,10 +123,7 @@ pub async fn get_paragraph_translations_batch(
     book_id: Uuid,
     paragraph_ids: Vec<usize>,
 ) -> Result<Vec<ParagraphTranslationSlice>, String> {
-    let library = state.library.borrow().clone();
-    let Some(library) = library else {
-        return Err("Library is not configured".into());
-    };
+    let library = state.library().await?;
 
     let target_language_id = { state.config.borrow().target_language_id.clone() };
     let Some(target_language) = Language::from_639_3(&target_language_id) else {
@@ -164,10 +142,7 @@ pub async fn get_book_summary_status(
     state: tauri::State<'_, Arc<AppState>>,
     book_id: Uuid,
 ) -> Result<BookSummaryStatusView, String> {
-    let library = state.library.borrow().clone();
-    let Some(library) = library else {
-        return Err("Library is not configured".into());
-    };
+    let library = state.library().await?;
 
     let queue = state
         .get_or_init_summary_generation_queue()
@@ -191,10 +166,7 @@ pub async fn get_book_reading_state(
     state: tauri::State<'_, Arc<AppState>>,
     book_id: Uuid,
 ) -> Result<Option<BookReadingStateView>, String> {
-    let library = state.library.borrow().clone();
-    let Some(library) = library else {
-        return Ok(None);
-    };
+    let library = state.library().await?;
 
     LibraryView::create(state.inner().clone(), library)
         .get_book_reading_state(book_id)
