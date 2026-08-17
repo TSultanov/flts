@@ -1262,6 +1262,11 @@ pub async fn reveal_library_root(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 fn reveal_in_file_manager(path: &Path) -> anyhow::Result<()> {
+    // Harness runs must not open a file manager window.
+    if std::env::var_os("FLTS_E2E_BRIDGE_PORT").is_some() {
+        info!("reveal suppressed under e2e bridge: {}", path.display());
+        return Ok(());
+    }
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open").arg(path).spawn()?;

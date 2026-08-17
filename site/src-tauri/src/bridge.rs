@@ -113,6 +113,8 @@ pub fn spawn(app: AppHandle, port: u16) {
         let listener = match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
             Ok(l) => l,
             Err(err) => {
+                // Also stderr: the harness only sees a missing stdout line otherwise.
+                eprintln!("FLTS_E2E_BRIDGE_ERROR bind failed: {err}");
                 warn!("e2e bridge: bind failed: {err}");
                 return;
             }
@@ -120,6 +122,7 @@ pub fn spawn(app: AppHandle, port: u16) {
         let actual = match listener.local_addr() {
             Ok(addr) => addr.port(),
             Err(err) => {
+                eprintln!("FLTS_E2E_BRIDGE_ERROR local_addr failed: {err}");
                 warn!("e2e bridge: local_addr failed: {err}");
                 return;
             }

@@ -1105,6 +1105,12 @@ fn keyring_service() -> &'static str {
     })
 }
 
+/// Escape hatch for test harnesses: any keychain touch can raise an OS
+/// access prompt, and per-run service names make every run a fresh one.
+fn keyring_disabled() -> bool {
+    std::env::var("FLTS_DISABLE_KEYRING").as_deref() == Ok("1")
+}
+
 /// The keychain blocks indefinitely on its access-confirmation dialog, so
 /// calls run off-runtime under a hard bound. The token is a convenience
 /// cache: a lost call just costs a manual reconnect.
@@ -1120,6 +1126,9 @@ async fn keyring_op<T: Send + 'static>(
 }
 
 async fn load_refresh_token() -> Option<String> {
+    if keyring_disabled() {
+        return None;
+    }
     keyring_op(|| {
         let entry = keyring::Entry::new(keyring_service(), KEYRING_ACCOUNT).ok()?;
         entry.get_password().ok()
@@ -1132,6 +1141,9 @@ async fn load_refresh_token() -> Option<String> {
 }
 
 async fn save_refresh_token(token: String) -> anyhow::Result<()> {
+    if keyring_disabled() {
+        return Ok(());
+    }
     keyring_op(move || -> anyhow::Result<()> {
         let entry = keyring::Entry::new(keyring_service(), KEYRING_ACCOUNT)?;
         entry.set_password(&token)?;
@@ -1141,6 +1153,9 @@ async fn save_refresh_token(token: String) -> anyhow::Result<()> {
 }
 
 async fn delete_refresh_token() -> anyhow::Result<()> {
+    if keyring_disabled() {
+        return Ok(());
+    }
     keyring_op(|| -> anyhow::Result<()> {
         let entry = keyring::Entry::new(keyring_service(), KEYRING_ACCOUNT)?;
         entry.delete_credential()?;
@@ -1197,6 +1212,17 @@ pub async fn open_external_url(url: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn disable_keyring_short_circuits_every_token_op() {
+        unsafe { std::env::set_var("FLTS_DISABLE_KEYRING", "1") };
+        assert!(keyring_disabled());
+        assert_eq!(load_refresh_token().await, None);
+        assert!(save_refresh_token("t".into()).await.is_ok());
+        assert!(delete_refresh_token().await.is_ok());
+        unsafe { std::env::remove_var("FLTS_DISABLE_KEYRING") };
+        assert!(!keyring_disabled());
+    }
 
     #[test]
     fn pkce_challenge_matches_rfc7636_example() {

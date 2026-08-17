@@ -38,6 +38,17 @@ export type RealHarness = {
 
 type SimPorts = { llm: number; lrclib: number; anki: number };
 
+/**
+ * Inherited FLTS_* would leak the developer's setup into children — notably an
+ * exported FLTS_LIBRARY_DIR outranks the FLTS_CONFIG_DIR library root, pointing
+ * the harness at the real library that autoReset then deletes book by book.
+ */
+function cleanEnv(): NodeJS.ProcessEnv {
+  return Object.fromEntries(
+    Object.entries(process.env).filter(([k]) => !k.startsWith('FLTS_')),
+  );
+}
+
 /** Resolves on the first stdout line matching `match`; rejects on timeout/exit. */
 function awaitStdoutLine(
   child: ChildProcessWithoutNullStreams,
@@ -216,7 +227,7 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
         sims = spawn(path.join(repoRoot, 'target/debug/flts-e2e-sims'), {
           // stdin stays piped and open: the sims exit on EOF.
           stdio: ['pipe', 'pipe', 'pipe'],
-          env: process.env,
+          env: cleanEnv(),
         }) as ChildProcessWithoutNullStreams;
         sims.on('error', () => {}); // surfaced via awaitStdoutLine
         sims.stdin.on('error', () => {}); // EPIPE on kill is expected
@@ -266,7 +277,7 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
           app = spawn(path.join(repoRoot, 'target/debug/app'), {
             stdio: ['pipe', 'pipe', 'pipe'],
             env: {
-              ...process.env,
+              ...cleanEnv(),
               FLTS_E2E_BRIDGE_PORT: '0',
               FLTS_CONFIG_DIR: dir,
               FLTS_GEMINI_BASE_URL: `http://127.0.0.1:${ports.llm}/v1beta/`,
@@ -275,8 +286,10 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
               FLTS_ZAI_BASE_URL: `http://127.0.0.1:${ports.llm}`,
               FLTS_LRCLIB_BASE_URL: `http://127.0.0.1:${ports.lrclib}`,
               FLTS_DISABLE_SYNC: '1',
-              // Never the developer's real "FLTS-Spotify" keychain entry.
+              // Never the developer's real "FLTS-Spotify" keychain entry; the
+              // disable flag stops the OS access prompt a fresh name provokes.
               FLTS_KEYRING_SERVICE: `FLTS-E2E-${path.basename(dir)}`,
+              FLTS_DISABLE_KEYRING: '1',
               FLTS_ANKI_SYNC_INTERVAL_SECS: '3600',
             },
           }) as ChildProcessWithoutNullStreams;
