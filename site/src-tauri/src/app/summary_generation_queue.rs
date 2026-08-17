@@ -42,8 +42,22 @@ pub struct BookSummaryState {
 }
 
 impl BookSummaryState {
+    fn new(summaries: ChapterSummaries) -> Self {
+        let (ready_tx, _) = watch::channel(summaries.ready_through());
+        Self {
+            summaries: Mutex::new(summaries),
+            ready_tx,
+        }
+    }
+
     pub fn subscribe_ready(&self) -> watch::Receiver<Option<usize>> {
         self.ready_tx.subscribe()
+    }
+
+    /// `send_replace`, not `send`: with zero live receivers `send` errors and
+    /// leaves the stored value untouched, so later subscribers read a stale one.
+    fn publish_ready(&self, ready: Option<usize>) {
+        self.ready_tx.send_replace(ready);
     }
 }
 
@@ -216,12 +230,7 @@ async fn load_or_init(
     } else {
         ChapterSummaries::empty_for(book_id, chapter_count)
     };
-    let initial_ready = loaded.ready_through();
-    let (ready_tx, _) = watch::channel(initial_ready);
-    let state = Arc::new(BookSummaryState {
-        summaries: Mutex::new(loaded),
-        ready_tx,
-    });
+    let state = Arc::new(BookSummaryState::new(loaded));
 
     // Race-safe insert: another caller may have inserted (or the library
     // may have been swapped) while we were doing I/O. If a state for this
@@ -355,10 +364,7 @@ async fn process_book(
                 text: summary_text,
             };
             summaries.save(&sidecar_path).await?;
-            let ready = summaries.ready_through();
-            // It's fine if there are no current subscribers — the watch
-            // channel holds the latest value for anyone who subscribes later.
-            let _ = state.ready_tx.send(ready);
+            state.publish_ready(summaries.ready_through());
             emit_progress(app, book_id, idx + 1, total, "in_progress", None);
         }
     }
@@ -434,6 +440,27 @@ mod tests {
         assert!(prior.contains("Chapter 3:"));
         assert!(prior.contains("third"));
         assert!(!prior.contains("Chapter 2:"));
+    }
+
+    /// Production shape: the state is built with no receivers, the worker
+    /// finishes chapters, and the first waiter subscribes only afterwards.
+    #[test]
+    fn ready_published_without_subscribers_is_visible_to_later_subscribers() {
+        let mut s = ChapterSummaries::empty_for(Uuid::nil(), 3);
+        let state = BookSummaryState::new(s.clone());
+        assert_eq!(*state.subscribe_ready().borrow(), None);
+
+        for i in 0..2 {
+            s.entries[i] = ChapterSummary {
+                generated: true,
+                model: TranslationModel::Gemini25Flash,
+                timestamp: 1,
+                text: "x".into(),
+            };
+            state.publish_ready(s.ready_through());
+        }
+
+        assert_eq!(*state.subscribe_ready().borrow(), Some(1));
     }
 
     #[test]
