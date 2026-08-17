@@ -1,4 +1,4 @@
-import { test as base, expect } from '@playwright/test';
+import { test as base, expect, type Page } from '@playwright/test';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -20,11 +20,20 @@ export type RealHarness = {
   llm: SimClient;
   lrclib: SimClient;
   anki: SimClient;
+  /** Mutable: `restartApp` moves it, and the port is ephemeral every launch. */
   bridgePort: number;
   configDir: string;
   appStderr: () => string;
   /** Direct bridge invoke from Node (no page needed). */
   invoke: <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
+  /**
+   * SIGTERM the app and relaunch it on the same configDir/env. Node-side
+   * invokes keep working; open pages pick up the new port on their next
+   * navigation, so a `page.goto` must follow.
+   */
+  restartApp: () => Promise<void>;
+  /** Re-inject the bridge port into `page` after a restart. */
+  trackPage: (page: Page) => void;
 };
 
 type SimPorts = { llm: number; lrclib: number; anki: number };
@@ -145,6 +154,36 @@ class BridgeClient {
   }
 }
 
+/** The app must answer on the bridge before the harness is handed out. */
+async function healthCheck(
+  harness: RealHarness,
+  stderr: () => string,
+): Promise<void> {
+  try {
+    await harness.invoke('get_config');
+  } catch (err) {
+    throw new Error(
+      `bridge health check (get_config) failed: ${(err as Error).message}\napp stderr:\n${stderr()}`,
+    );
+  }
+}
+
+/**
+ * Init scripts accumulate and run in order, so a later injection wins on the
+ * next navigation — which is when the page rebuilds its bridge socket.
+ */
+async function injectPort(harness: RealHarness, pages: Page[]): Promise<void> {
+  for (const page of pages) {
+    if (page.isClosed()) continue;
+    await page
+      .addInitScript(
+        (port) => ((window as any).__FLTS_BRIDGE_PORT = port),
+        harness.bridgePort,
+      )
+      .catch(() => {});
+  }
+}
+
 /** Per-worker-process flag: a failure keeps the config dir for post-mortem. */
 let workerHadFailure = false;
 
@@ -212,44 +251,50 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
           ),
         );
 
-        app = spawn(path.join(repoRoot, 'target/debug/app'), {
-          stdio: ['pipe', 'pipe', 'pipe'],
-          env: {
-            ...process.env,
-            FLTS_E2E_BRIDGE_PORT: '0',
-            FLTS_CONFIG_DIR: configDir,
-            FLTS_GEMINI_BASE_URL: `http://127.0.0.1:${ports.llm}/v1beta/`,
-            OPENAI_BASE_URL: `http://127.0.0.1:${ports.llm}/v1`,
-            FLTS_DEEPSEEK_BASE_URL: `http://127.0.0.1:${ports.llm}`,
-            FLTS_ZAI_BASE_URL: `http://127.0.0.1:${ports.llm}`,
-            FLTS_LRCLIB_BASE_URL: `http://127.0.0.1:${ports.lrclib}`,
-            FLTS_DISABLE_SYNC: '1',
-            // Never the developer's real "FLTS-Spotify" keychain entry.
-            FLTS_KEYRING_SERVICE: `FLTS-E2E-${path.basename(configDir)}`,
-            FLTS_ANKI_SYNC_INTERVAL_SECS: '3600',
-          },
-        }) as ChildProcessWithoutNullStreams;
-        app.on('error', () => {});
-        app.stdin.on('error', () => {});
-        app.stderr.on('data', (c) => (stderrBuf = (stderrBuf + c).slice(-64_000)));
-        app.stdout.on('data', () => {});
+        const dir = configDir;
+        const launchApp = async (): Promise<number> => {
+          app = spawn(path.join(repoRoot, 'target/debug/app'), {
+            stdio: ['pipe', 'pipe', 'pipe'],
+            env: {
+              ...process.env,
+              FLTS_E2E_BRIDGE_PORT: '0',
+              FLTS_CONFIG_DIR: dir,
+              FLTS_GEMINI_BASE_URL: `http://127.0.0.1:${ports.llm}/v1beta/`,
+              OPENAI_BASE_URL: `http://127.0.0.1:${ports.llm}/v1`,
+              FLTS_DEEPSEEK_BASE_URL: `http://127.0.0.1:${ports.llm}`,
+              FLTS_ZAI_BASE_URL: `http://127.0.0.1:${ports.llm}`,
+              FLTS_LRCLIB_BASE_URL: `http://127.0.0.1:${ports.lrclib}`,
+              FLTS_DISABLE_SYNC: '1',
+              // Never the developer's real "FLTS-Spotify" keychain entry.
+              FLTS_KEYRING_SERVICE: `FLTS-E2E-${path.basename(dir)}`,
+              FLTS_ANKI_SYNC_INTERVAL_SECS: '3600',
+            },
+          }) as ChildProcessWithoutNullStreams;
+          app.on('error', () => {});
+          app.stdin.on('error', () => {});
+          app.stderr.on('data', (c) => (stderrBuf = (stderrBuf + c).slice(-64_000)));
+          app.stdout.on('data', () => {});
 
-        let bridgePort: number;
-        try {
-          const line = await awaitStdoutLine(
-            app,
-            'app bridge line',
-            (l) => l.startsWith('FLTS_E2E_BRIDGE_LISTENING'),
-            30_000,
-          );
-          bridgePort = JSON.parse(
-            line.slice('FLTS_E2E_BRIDGE_LISTENING'.length).trim(),
-          ).port;
-        } catch (err) {
-          throw new Error(`${(err as Error).message}\napp stderr:\n${stderrBuf}`);
-        }
+          try {
+            const line = await awaitStdoutLine(
+              app,
+              'app bridge line',
+              (l) => l.startsWith('FLTS_E2E_BRIDGE_LISTENING'),
+              30_000,
+            );
+            return JSON.parse(
+              line.slice('FLTS_E2E_BRIDGE_LISTENING'.length).trim(),
+            ).port;
+          } catch (err) {
+            throw new Error(`${(err as Error).message}\napp stderr:\n${stderrBuf}`);
+          }
+        };
+
+        const bridgePort = await launchApp();
 
         bridge = new BridgeClient(bridgePort);
+        // Pages hold a WS to a specific port, so a restart has to re-inject.
+        const pages = new Set<Page>();
         const harness: RealHarness = {
           llm: new SimClient(`http://127.0.0.1:${ports.llm}`),
           lrclib: new SimClient(`http://127.0.0.1:${ports.lrclib}`),
@@ -258,15 +303,21 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
           configDir,
           appStderr: () => stderrBuf,
           invoke: (cmd, args) => bridge!.invoke(cmd, args),
+          trackPage: (page) => {
+            pages.add(page);
+            page.once('close', () => pages.delete(page));
+          },
+          restartApp: async () => {
+            bridge?.close();
+            bridge = undefined;
+            if (app) await killTree(app);
+            harness.bridgePort = await launchApp();
+            bridge = new BridgeClient(harness.bridgePort);
+            await injectPort(harness, [...pages]);
+            await healthCheck(harness, () => stderrBuf);
+          },
         };
-        try {
-          // The app answers on the bridge before any test runs.
-          await harness.invoke('get_config');
-        } catch (err) {
-          throw new Error(
-            `bridge health check (get_config) failed: ${(err as Error).message}\napp stderr:\n${stderrBuf}`,
-          );
-        }
+        await healthCheck(harness, () => stderrBuf);
 
         setHarness(harness);
         await use(harness);
@@ -339,10 +390,9 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
   ],
 
   page: async ({ page, harness }, use) => {
-    await page.addInitScript(
-      (port) => ((window as any).__FLTS_BRIDGE_PORT = port),
-      harness.bridgePort,
-    );
+    // Reads the live port: a restart in an earlier test moved it.
+    await injectPort(harness, [page]);
+    harness.trackPage(page);
     await use(page);
   },
 });
