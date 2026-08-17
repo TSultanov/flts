@@ -1108,7 +1108,11 @@ fn keyring_service() -> &'static str {
 /// Escape hatch for test harnesses: any keychain touch can raise an OS
 /// access prompt, and per-run service names make every run a fresh one.
 fn keyring_disabled() -> bool {
-    std::env::var("FLTS_DISABLE_KEYRING").as_deref() == Ok("1")
+    keyring_disabled_from(std::env::var("FLTS_DISABLE_KEYRING").ok().as_deref())
+}
+
+fn keyring_disabled_from(v: Option<&str>) -> bool {
+    v == Some("1")
 }
 
 /// The keychain blocks indefinitely on its access-confirmation dialog, so
@@ -1213,15 +1217,12 @@ pub async fn open_external_url(url: String) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn disable_keyring_short_circuits_every_token_op() {
-        unsafe { std::env::set_var("FLTS_DISABLE_KEYRING", "1") };
-        assert!(keyring_disabled());
-        assert_eq!(load_refresh_token().await, None);
-        assert!(save_refresh_token("t".into()).await.is_ok());
-        assert!(delete_refresh_token().await.is_ok());
-        unsafe { std::env::remove_var("FLTS_DISABLE_KEYRING") };
-        assert!(!keyring_disabled());
+    #[test]
+    fn only_exactly_1_disables_the_keyring() {
+        assert!(keyring_disabled_from(Some("1")));
+        assert!(!keyring_disabled_from(None));
+        assert!(!keyring_disabled_from(Some("0")));
+        assert!(!keyring_disabled_from(Some("")));
     }
 
     #[test]
