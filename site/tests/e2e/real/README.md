@@ -184,12 +184,18 @@ deliberately diverges from the original).
   lyrics UI needs a `spotify_state` event — so lyrics specs drive the bridge-only
   `e2e_resolve_track` command and assert on `get_track_lyrics_state` plus LRClib
   traffic.
-- **A relaunched app answers before it is configured.** `eval_config` (library
-  open + anki sync task) is spawned *after* the bridge starts listening, so
-  right after `restartApp()` library queries return empty lists and
-  `sync_anki_now` errors with "no anki sync task installed". Poll for the state
-  you expect (see `restart-under-load.spec.ts`'s `awaitLibrary`). `restartApp`
-  takes `{ signal: 'SIGKILL' }` to skip the graceful shutdown entirely.
+- **A relaunched app answers only once it is configured.** `eval_config`
+  (library open + anki sync task) is still spawned *after* the bridge starts
+  listening, but everything it installs now lives behind a readiness gate
+  (`site/src-tauri/src/app/gated_state.rs`): commands that touch it await the
+  startup outcome, up to 30s, and then answer for real — or return startup's own
+  error. So the *first* call after `restartApp()` is authoritative; don't poll
+  for state to appear (see `restart-under-load.spec.ts`'s `expectLibraryHas`).
+  What the gate does *not* cover is the pass the relaunched app fires on its
+  own: `sync_anki_now` can still lose the race with it ("anki sync already in
+  progress" — one pass at a time, by design), which is the single transient
+  `spec-helpers`' `syncNow` retries. `restartApp` takes `{ signal: 'SIGKILL' }`
+  to skip the graceful shutdown entirely.
 - **Anki has no UI here** either; `sync_anki_now` / `get_anki_sync_status` over
   the bridge, cards on disk under `<configDir>/library/cards/<pair>/`.
 

@@ -49,19 +49,12 @@ async function simNoteIds(h: RealHarness, lemma: string): Promise<number[]> {
 }
 
 /**
- * Library-backed queries answer with an empty list rather than an error before
- * the `eval_config` a relaunch spawns — after the bridge starts listening — has
- * opened the library. So a restart must wait for the book to reappear before
- * asserting anything about it.
+ * First call after a relaunch, deliberately unpolled: library-backed commands
+ * await the readiness gate, so an answer is a *configured* answer.
  */
-async function awaitLibrary(h: RealHarness, bookId: string): Promise<void> {
-  await expect
-    .poll(
-      async () =>
-        (await h.invoke<Array<{ id: string }>>('list_books')).map((b) => b.id),
-      { timeout: 30_000, intervals: [100] },
-    )
-    .toContain(bookId);
+async function expectLibraryHas(h: RealHarness, bookId: string): Promise<void> {
+  const ids = (await h.invoke<Array<{ id: string }>>('list_books')).map((b) => b.id);
+  expect(ids).toContain(bookId);
 }
 
 /** Serialize the queue and pace it, so "mid-batch" is a real, wide window. */
@@ -107,7 +100,7 @@ async function finishChapter(
   bookId: string,
   before: number[],
 ): Promise<void> {
-  await awaitLibrary(h, bookId);
+  await expectLibraryHas(h, bookId);
   // Nothing that was already on disk was lost with the process.
   expect(await storedIds(h, bookId, 6)).toEqual(expect.arrayContaining(before));
   const chapters = await h.invoke<unknown[]>('list_book_chapters', { bookId });
@@ -233,9 +226,8 @@ test.describe('restart under load', () => {
     expect(storedCards(harness).map((c) => c.anki_data)).toEqual(
       lemmas.map(() => null),
     );
-    await awaitLibrary(harness, bookId);
+    await expectLibraryHas(harness, bookId);
     await harness.anki.clearRules();
-
     const report = await syncNow(harness);
     expect(report.totalCards).toBe(lemmas.length);
     expect(report.failed).toBe(0);

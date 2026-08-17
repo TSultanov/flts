@@ -191,20 +191,18 @@ export const blockAnki = (h: RealHarness) =>
   h.anki.addRule({ action: { type: 'status', code: 503 } });
 
 /**
- * Two bounded transients: `run_pass` refuses to queue behind an in-flight pass,
- * and a just-relaunched app has no sync task until the `eval_config` it spawns
- * *after* the bridge starts listening has run.
+ * One tolerated transient, and it is a real backend invariant rather than a
+ * startup gap: `run_pass` refuses to queue behind an in-flight pass, and every
+ * card save (and every anki-task re-spawn) wakes one. "No sync task installed"
+ * is *not* tolerated — the readiness gate makes it impossible.
  */
-const SYNC_TRANSIENTS = ['in progress', 'no anki sync task installed'];
-
 export async function syncNow(h: RealHarness): Promise<Report> {
   const deadline = Date.now() + 60_000;
   for (;;) {
     try {
       return await h.invoke<Report>('sync_anki_now');
     } catch (err) {
-      const transient = SYNC_TRANSIENTS.some((m) => String(err).includes(m));
-      if (!transient || Date.now() > deadline) throw err;
+      if (!String(err).includes('in progress') || Date.now() > deadline) throw err;
       await sleep(100);
     }
   }
