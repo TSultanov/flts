@@ -1105,8 +1105,8 @@ fn keyring_service() -> &'static str {
     })
 }
 
-/// Escape hatch for test harnesses: any keychain touch can raise an OS
-/// access prompt, and per-run service names make every run a fresh one.
+/// Test harnesses set this: any keychain touch can raise an OS access prompt,
+/// and a per-run service name makes every run a freshly prompting one.
 fn keyring_disabled() -> bool {
     keyring_disabled_from(std::env::var("FLTS_DISABLE_KEYRING").ok().as_deref())
 }
@@ -1115,9 +1115,8 @@ fn keyring_disabled_from(v: Option<&str>) -> bool {
     v == Some("1")
 }
 
-/// The keychain blocks indefinitely on its access-confirmation dialog, so
-/// calls run off-runtime under a hard bound. The token is a convenience
-/// cache: a lost call just costs a manual reconnect.
+/// The keychain blocks indefinitely on its access-confirmation dialog, so calls
+/// run off-runtime under a hard bound; a lost call costs a manual reconnect.
 async fn keyring_op<T: Send + 'static>(
     f: impl FnOnce() -> T + Send + 'static,
 ) -> anyhow::Result<T> {

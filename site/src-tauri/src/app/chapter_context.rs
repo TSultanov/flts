@@ -63,8 +63,7 @@ impl ChapterContextProvider for SummaryBackedChapterContext {
             .get_or_init_book_state(&library, book_id)
             .await?;
         let mut rx = state.subscribe_ready();
-        // Quick check against the sidecar itself, not the watch: the summaries
-        // map is authoritative, the watch only carries change notifications.
+        // The summaries map is authoritative; the watch only signals changes.
         if let Some(ready_through) = state.summaries.lock().await.ready_through()
             && ready_through >= needed
         {

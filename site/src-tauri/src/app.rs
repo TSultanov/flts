@@ -126,8 +126,8 @@ fn cache_dir_override(env: Option<String>) -> Option<PathBuf> {
 /// Resolves the per-platform cache directory (transient, OS-evictable). Honors
 /// `FLTS_CONFIG_DIR` (as `<dir>/cache`) so E2E runs don't share the real cache.
 /// Otherwise mirrors [`resolve_config_dir`]'s Android handling; non-Android
-/// keeps the historical `ProjectDirs::from("", "TS", "FLTS").cache_dir()` (empty
-/// qualifier) so existing installs' cache locations don't move.
+/// uses `ProjectDirs::from("", "TS", "FLTS").cache_dir()` (empty qualifier) so
+/// existing installs' cache locations don't move.
 fn resolve_cache_dir(app: Option<&tauri::AppHandle>) -> anyhow::Result<PathBuf> {
     if let Some(dir) = cache_dir_override(std::env::var("FLTS_CONFIG_DIR").ok()) {
         return Ok(dir);
@@ -468,11 +468,10 @@ impl AppState {
             });
     }
 
-    /// Persist and apply a new config. Rebuilds the gated state rather than
-    /// reading it, so the accessors don't cover this path: it waits out a
-    /// startup still in flight, but deliberately runs on a *failed* one — this
-    /// is how a user repairs it — and republishes its own outcome, so a
-    /// successful change unlatches the app without a restart.
+    /// Persist and apply a new config. Rebuilds gated state rather than reading
+    /// it, so it waits out a startup in flight but still runs on a *failed*
+    /// one — the repair path — and republishes its own outcome, unlatching the
+    /// app without a restart.
     pub async fn update_config(&self, config: Config) -> anyhow::Result<()> {
         self.gated
             .await_settled()

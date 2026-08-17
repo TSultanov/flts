@@ -1,6 +1,5 @@
 // Shared real-tier spec helpers: seeding books through the real pipeline,
-// reading what the backend stored, and driving/observing the Anki sync. Every
-// one of these was copy-pasted across the real specs before it landed here.
+// reading what the backend stored, and driving/observing the Anki sync.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -10,11 +9,9 @@ export const MODEL = 1; // Gemini25Flash
 export const SRC = 'deu';
 export const TGT = 'eng'; // fixtures' config.targetLanguageId
 /**
- * `deck_name(deu, eng)`. Seeded rather than left to `bootstrap`: the sync task
- * lives for the worker's whole session, so an earlier spec's card write may
- * already have flipped its `bootstrapped` flag — and the per-test `anki.reset()`
- * wipes the deck it created. Without the deck, every addNote fails with
- * "deck was not found" and the cards land in the 60s backoff.
+ * `deck_name(deu, eng)`. Specs must seed it: the sync task's `bootstrapped`
+ * flag lives for the worker's whole session, while the per-test `anki.reset()`
+ * wipes the deck. Without it every addNote fails into the 60s backoff.
  */
 export const DECK = 'FLTS::Deutsch-English';
 export const CARD_DIR = ['library', 'cards', `${SRC}-${TGT}`];
@@ -182,19 +179,17 @@ export const clearCards = (h: RealHarness) =>
   fs.rmSync(cardsDir(h), { recursive: true, force: true });
 
 /**
- * Cards are saved one by one and every save wakes the sync task, so seeding
- * would otherwise race the test's own syncs. A blanket 503 makes each woken
- * pass die on the `version()` probe — before `sync_pass`, so nothing is pushed
- * and no card enters backoff.
+ * Every card save wakes the sync task, so seeding would race the test's own
+ * syncs. A blanket 503 kills each woken pass on the `version()` probe, before
+ * `sync_pass`, so nothing is pushed and no card enters backoff.
  */
 export const blockAnki = (h: RealHarness) =>
   h.anki.addRule({ action: { type: 'status', code: 503 } });
 
 /**
- * One tolerated transient, and it is a real backend invariant rather than a
- * startup gap: `run_pass` refuses to queue behind an in-flight pass, and every
- * card save (and every anki-task re-spawn) wakes one. "No sync task installed"
- * is *not* tolerated — the readiness gate makes it impossible.
+ * Retries only "already in progress": `run_pass` refuses to queue behind an
+ * in-flight pass, and every card save wakes one. "No sync task installed" must
+ * still fail — the readiness gate makes it impossible.
  */
 export async function syncNow(h: RealHarness): Promise<Report> {
   const deadline = Date.now() + 60_000;
@@ -210,11 +205,10 @@ export async function syncNow(h: RealHarness): Promise<Report> {
 }
 
 /**
- * Waits out the woken passes. A stable request log is not enough on its own: a
- * pass that has entered `run_pass` but not yet issued its `version()` probe
- * looks identical to no pass at all, and would then be unblocked by the
- * caller's `clearRules()` and steal the sync the test means to own. `syncing`
- * is set at the top of `run_pass`, before the probe, so it closes that window.
+ * Waits out the woken passes. A stable request log alone is not enough: a pass
+ * inside `run_pass` but not yet at its `version()` probe looks identical to no
+ * pass, and the caller's `clearRules()` would release it into the sync the test
+ * means to own. `syncing` is set before the probe, so it closes that window.
  */
 export async function quiesceAnki(h: RealHarness, intervalMs = 1500): Promise<void> {
   const deadline = Date.now() + 30_000;

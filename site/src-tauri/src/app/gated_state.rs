@@ -1,19 +1,15 @@
 //! The state `eval_config` installs, behind a startup gate.
 //!
-//! The command surface (webview IPC, and the E2E bridge) starts serving before
-//! the spawned startup task has opened the library or spawned the sync tasks.
-//! Everything a command could see half-built lives here with private fields,
-//! reachable only through accessors that await the startup outcome first.
+//! The command surface starts serving before the spawned startup task has
+//! opened the library or spawned the sync tasks. Everything a command could
+//! see half-built lives here with private fields, reachable only through
+//! accessors that await the startup outcome first.
 //!
-//! Its own module on purpose: Rust privacy is per-module *and its descendants*,
-//! so the fields themselves are unreachable from the rest of the `app` tree —
-//! a new command written the obvious way (`state.library().await?`) is gated by
-//! construction, not by a convention someone has to remember. The escape
-//! hatches below (`library_unchecked`, the install/take pair) are `pub` and any
-//! `app` descendant *can* call them; they exist for the startup and shutdown
-//! plumbing, which by definition runs before or after readiness. The guarantee
-//! is that gated state cannot be reached *accidentally*, not that it cannot be
-//! reached at all.
+//! Its own module because Rust privacy is per-module *and its descendants*:
+//! the fields are unreachable from the rest of the `app` tree, so a command
+//! written the obvious way (`state.library().await?`) is gated by construction.
+//! The `pub` escape hatches (`library_unchecked`, the install/take pair) are
+//! for startup and shutdown plumbing, which runs before or after readiness.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -67,9 +63,8 @@ impl GatedState {
         settle_on(self.ready.subscribe(), READY_TIMEOUT).await.unwrap_or_else(Err)
     }
 
-    /// Waits only while startup is still *running*: a failed startup settles
-    /// as Ok here. For the repair path (`update_config`), which must run
-    /// precisely when startup failed and then republish its own outcome.
+    /// Waits only while startup is still *running*: a failed startup settles as
+    /// Ok here, for the repair path (`update_config`) that republishes it.
     pub async fn await_settled(&self) -> Result<(), String> {
         settle_on(self.ready.subscribe(), READY_TIMEOUT).await.map(|_| ())
     }
@@ -103,9 +98,8 @@ impl GatedState {
         self.library.send_replace(Some(library));
     }
 
-    /// Ungated — do not call from a command; use [`GatedState::library`].
-    /// For paths that must not block on readiness: shutdown flushes, and the
-    /// file-watcher loop, which is a no-op until the library exists anyway.
+    /// Ungated — commands must use [`GatedState::library`]. For paths that must
+    /// not block on readiness: shutdown flushes and the file-watcher loop.
     /// Owned clone, so no watch read-guard can cross a caller's await.
     pub fn library_unchecked(&self) -> Option<Arc<Library>> {
         self.library.borrow().clone()
@@ -119,8 +113,7 @@ impl GatedState {
         self.library.send_modify(|_| {});
     }
 
-    /// The raw handle `TranslationQueue` writes book updates through. The one
-    /// ungated reference out of here; queue construction needs the sender.
+    /// Ungated: `TranslationQueue` construction needs the raw sender.
     pub fn library_sender(&self) -> Arc<watch::Sender<Option<Arc<Library>>>> {
         Arc::clone(&self.library)
     }

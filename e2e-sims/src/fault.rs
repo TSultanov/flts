@@ -77,8 +77,7 @@ pub async fn fault_layer(State(state): State<Arc<SimState>>, req: Request, next:
         Action::Truncate { fraction } => {
             let (parts, body) = split(next.run(req).await).await;
             let n = ((body.len() as f32 * fraction.clamp(0.0, 1.0)) as usize).min(body.len());
-            // Streamed so hyper keeps the full body's Content-Length: the client
-            // sees a message that ends short of what the headers promised.
+            // Streamed so hyper keeps the full body's Content-Length.
             Response::from_parts(parts, truncated_body(body.slice(..n), body.len()))
         }
         Action::Corrupt { mode } => {

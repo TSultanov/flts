@@ -68,8 +68,8 @@ impl LyricsState {
         }
     }
 
-    /// Must go through `resolve_cache_dir` — resolving ProjectDirs inline here
-    /// escaped the `FLTS_CONFIG_DIR` isolation E2E runs depend on.
+    /// The dir must come from `resolve_cache_dir`; resolving ProjectDirs inline
+    /// would escape the `FLTS_CONFIG_DIR` isolation E2E runs depend on.
     async fn lyrics_cache(&self, app: Option<&AppHandle>) -> anyhow::Result<Arc<LyricsCache>> {
         self.cache
             .get_or_try_init(|| async {

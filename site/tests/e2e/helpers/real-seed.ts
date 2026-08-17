@@ -267,12 +267,10 @@ function applyConfig(
 }
 
 /**
- * Reconstructed from the LLM sim's request log. Paragraph translation is the
- * only caller that streams (`:streamGenerateContent`); chapter summaries use
- * the unary `:generateContent` on the same host and quote paragraph text, so
- * the path is what separates them. Requests the seed itself issued are sliced
- * off, matching the mock's log which only records post-seed commands.
- * `paragraphId` is recovered from the prompt text; `model` is not on the wire.
+ * Reconstructed from the LLM sim's request log. Only paragraph translation
+ * streams (`:streamGenerateContent`); chapter summaries quote paragraph text
+ * too, so the path is what separates them. Seed requests are sliced off to
+ * match the mock's post-seed-only log. `model` is not on the wire.
  */
 export async function realTranslateCalls(): Promise<
   Array<{ bookId: string; paragraphId: number; useCache: boolean; model: unknown }>

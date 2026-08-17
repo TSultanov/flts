@@ -1,9 +1,8 @@
 //! Headless WS replacement for the webview IPC channel (E2E only).
 //!
-//! Frames are JSON text: client sends `{"id":n,"cmd":"...","args":{...}}`,
-//! server replies `{"id":n,"ok":...}` or `{"id":n,"err":...}`. `args` keys are
-//! camelCase because that is what Tauri's IPC produces from snake_case Rust
-//! params; the per-command structs below replicate that mapping.
+//! Frames are JSON text: `{"id":n,"cmd":"...","args":{...}}` in,
+//! `{"id":n,"ok":...}` / `{"id":n,"err":...}` out. `args` keys are camelCase
+//! because Tauri's IPC produces that from snake_case Rust params.
 
 use std::io::Write;
 use std::sync::Arc;
@@ -23,8 +22,7 @@ use library::translator::TranslationModel;
 
 use crate::app::config::Config;
 
-/// Every command in `lib.rs`'s `generate_handler!`. Kept honest by
-/// `bridge_covers_all_registered_commands`.
+/// Every command in `lib.rs`'s `generate_handler!`.
 pub const COMMANDS: &[&str] = &[
     "get_models",
     "get_languages",
@@ -79,13 +77,12 @@ pub const COMMANDS: &[&str] = &[
 ];
 
 /// Bridge-only commands with no `generate_handler!` counterpart: entry points
-/// the production frontend reaches through a driver the harness cannot run
-/// headlessly (here, the Spotify poller). They call the same backend functions
-/// production does — no test-only logic behind them.
+/// production reaches only through a driver the harness cannot run headlessly
+/// (the Spotify poller). They call the same backend functions production does.
 pub const E2E_ONLY_COMMANDS: &[&str] = &["e2e_resolve_track"];
 
-/// Backend events mirrored to every connected client. Must track the emit call
-/// sites; `forwarded_events_track_emit_sites` enforces it.
+/// Backend events mirrored to every connected client; must track the emit
+/// call sites.
 pub const FORWARDED_EVENTS: &[&str] = &[
     "anki_sync_status_changed",
     "book_updated",
@@ -106,14 +103,13 @@ pub const FORWARDED_EVENTS: &[&str] = &[
     "sync_status_changed",
 ];
 
-/// Binds `127.0.0.1:port` (0 = ephemeral) and announces the real port on
-/// stdout so a harness can read it back.
+/// Binds `127.0.0.1:port` (0 = ephemeral) and announces the real port on stdout.
 pub fn spawn(app: AppHandle, port: u16) {
     tauri::async_runtime::spawn(async move {
         let listener = match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
             Ok(l) => l,
             Err(err) => {
-                // Also stderr: the harness only sees a missing stdout line otherwise.
+                // stderr too: otherwise the harness sees only a missing stdout line.
                 eprintln!("FLTS_E2E_BRIDGE_ERROR bind failed: {err}");
                 warn!("e2e bridge: bind failed: {err}");
                 return;
@@ -481,7 +477,6 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: Value) -> Result<Value, Valu
         }
 
         // --- bridge-only (see E2E_ONLY_COMMANDS) ---
-        // Production reaches resolve_track only from the Spotify poll loop.
         "e2e_resolve_track" => {
             let (track_id, name, artist, album, duration_ms, target_lang, model) = args!(args, {
                 track_id: String, name: String, artist: String, album: Option<String>,
@@ -549,10 +544,9 @@ mod tests {
         }
     }
 
-    /// Arm literals of `dispatch`'s match, read out of this file's own source.
-    /// Anchored on the first `match cmd {` (the dispatch one — this module's
-    /// copy of the marker comes later) and stopped at the `other =>` fallback,
-    /// so no other literal in the file can leak in.
+    /// Arm literals of `dispatch`'s match, read out of this file's own source:
+    /// anchored on the first `match cmd {`, stopped at the `other =>` fallback.
+    /// Any earlier occurrence of either marker breaks the parse.
     fn dispatch_arms() -> Vec<&'static str> {
         let src = include_str!("bridge.rs");
         let block = src
@@ -600,8 +594,8 @@ mod tests {
         }
     }
 
-    /// Every emitted name in the crate; comments stripped, and the literal may
-    /// sit lines below its emit call.
+    /// Every emitted name in the crate. Comments are stripped, and the name
+    /// literal may sit lines below its emit call.
     fn emitted_event_names() -> Vec<String> {
         fn walk(dir: &std::path::Path, out: &mut Vec<String>) {
             for entry in std::fs::read_dir(dir).expect("read_dir") {

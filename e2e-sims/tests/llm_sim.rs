@@ -344,7 +344,7 @@ async fn fallback_also_serves_openai_and_survives_reset() {
     let r = c.post(format!("{base}/_sim/reset")).send().await.unwrap();
     assert_eq!(r.status(), 200);
 
-    // Scripts are gone, but the scripted text now gets the fallback, not an error.
+    // Scripts are gone, so the scripted text takes the fallback, not an error.
     let (status, body) = gemini_generate(&c, &base, user_request("El sol salió")).await;
     assert_eq!(status, 200, "{body}");
     let parsed: GenerationResponse = serde_json::from_str(&body).unwrap();

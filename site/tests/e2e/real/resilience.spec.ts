@@ -11,8 +11,7 @@ import {
 /**
  * Cross-cutting resilience: the three sims programmed together (total outage,
  * mixed health) and the app process itself restarted. Everything is chapter 0 —
- * translated paragraphs in chapter >0 hit the stale summary-ready watch
- * (task-13-report.md).
+ * translated paragraphs in chapter >0 pay for the preceding chapters' summaries.
  */
 
 const TARGET = 'eng'; // fixtures' config.targetLanguageId

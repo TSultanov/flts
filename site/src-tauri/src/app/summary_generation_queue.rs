@@ -442,8 +442,7 @@ mod tests {
         assert!(!prior.contains("Chapter 2:"));
     }
 
-    /// Production shape: the state is built with no receivers, the worker
-    /// finishes chapters, and the first waiter subscribes only afterwards.
+    /// Production shape: published with no receivers, first waiter subscribes after.
     #[test]
     fn ready_published_without_subscribers_is_visible_to_later_subscribers() {
         let mut s = ChapterSummaries::empty_for(Uuid::nil(), 3);

@@ -80,9 +80,9 @@ function makeBookId(): string {
 }
 
 /**
- * Seed the backend and open the chapter at index 0. In real mode the work is
- * delegated to real-seed.ts (real import + scripted LLM sim); the signature
- * and return value are identical in both tiers.
+ * Seed the backend and open the chapter at index 0. In real mode this goes
+ * through real-seed.ts (real import + scripted LLM sim); same signature and
+ * return value in both tiers.
  *
  * page.goto triggers a hard reload that wipes the mock module's in-memory
  * state. We install an init script that re-applies the seed on every page

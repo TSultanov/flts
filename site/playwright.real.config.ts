@@ -1,9 +1,9 @@
 import { defineConfig, devices } from '@playwright/test';
 
 // Real-backend tier: the frontend talks to a headless `app` binary over the WS
-// bridge instead of the mocks. The mock tier (playwright.config.ts) is untouched.
-// Helpers branch on this (helpers/backend-mode.ts); set here so a bare
-// `playwright test -c playwright.real.config.ts` behaves like the pnpm script.
+// bridge instead of the mocks. Helpers branch on `PLAYWRIGHT_REAL`
+// (helpers/backend-mode.ts); set here so a bare `playwright test -c` run
+// behaves like the pnpm script.
 process.env.PLAYWRIGHT_REAL ||= 'true';
 
 export default defineConfig({

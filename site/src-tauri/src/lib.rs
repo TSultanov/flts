@@ -175,8 +175,8 @@ pub fn run() {
             info!("Spawning async init");
             let resume_state = app_state.clone();
             tauri::async_runtime::spawn(async move {
-                // Publish before anything else in this task: commands gate on
-                // it, and the steps below must not be able to withhold it.
+                // Publish first: commands gate on it, and the steps below must
+                // not be able to withhold it.
                 let outcome = resume_state.eval_config().await.map_err(|err| {
                     warn!("Failed to evaluate config at startup: {err}");
                     err.to_string()
