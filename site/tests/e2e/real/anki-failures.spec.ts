@@ -1,8 +1,23 @@
-import fs from 'node:fs';
 import net from 'node:net';
-import path from 'node:path';
 import { test, expect } from '../../real/fixtures';
 import type { RealHarness } from '../../real/fixtures';
+import {
+  DECK,
+  MODEL,
+  SRC,
+  addsOf,
+  blockAnki,
+  cardIdOf,
+  clearCards,
+  countIn,
+  nonceSeed,
+  quiesceAnki,
+  sleep,
+  storedCards,
+  syncNow,
+  translationJson,
+  type Status,
+} from '../../real/spec-helpers';
 
 /**
  * Anki export is driven entirely over the bridge: `sync_anki_now` runs the same
@@ -16,97 +31,10 @@ import type { RealHarness } from '../../real/fixtures';
  * one-paragraph book is what makes notes exist to push.
  */
 
-const CARD_DIR = ['library', 'cards', 'deu-eng'];
-/**
- * `deck_name(deu, eng)`. Seeded rather than left to `bootstrap`: the sync task
- * lives for the worker's whole session, so an earlier spec's card write may
- * already have flipped its `bootstrapped` flag — and the per-test `anki.reset()`
- * wipes the deck it created. Without the deck, every addNote fails with
- * "deck was not found" and the cards land in the 60s backoff.
- */
-const DECK = 'FLTS::Deutsch-English';
-const SRC = 'deu';
-const TGT = 'eng'; // fixtures' config.targetLanguageId
-const MODEL = 1; // Gemini25Flash
-
-type Report = {
-  totalCards: number;
-  attempted: number;
-  succeeded: number;
-  failed: number;
-  persistentFailures: string[];
-};
-
-type Status = {
-  state: 'idle' | 'syncing' | 'ok' | 'err' | 'unreachable';
-  lastFinishedAtMs: number | null;
-  lastError: string | null;
-  lastReport: Report | null;
-};
-
-type StoredCard = { id: string; anki_data: { state: string } | null };
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
 /** Lowercase ASCII only: lemma slug == lemma, so the card id is predictable. */
 function nonceLemmas(n: number): string[] {
-  const seed = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
-    .replace(/[^a-z]/g, 'x');
+  const seed = nonceSeed();
   return Array.from({ length: n }, (_, i) => `w${seed}${'abcdefgh'[i]}`);
-}
-
-const cardIdOf = (lemma: string) => `flts_${SRC}_${TGT}_${lemma}`;
-
-function cardsDir(h: RealHarness): string {
-  return path.join(h.configDir, ...CARD_DIR);
-}
-
-function storedCards(h: RealHarness): StoredCard[] {
-  let files: string[];
-  try {
-    files = fs.readdirSync(cardsDir(h)).filter((f) => f.endsWith('.json'));
-  } catch {
-    return [];
-  }
-  return files.map(
-    (f) => JSON.parse(fs.readFileSync(path.join(cardsDir(h), f), 'utf8')) as StoredCard,
-  );
-}
-
-/**
- * Cards outlive the per-test book cleanup and `sync_pass` walks every card on
- * disk, so leftovers from earlier tests in this worker would land in the same
- * batches and skew every report count.
- */
-function clearCards(h: RealHarness): void {
-  fs.rmSync(cardsDir(h), { recursive: true, force: true });
-}
-
-/** Gemini's compact translation schema (library/src/book/translation_import.rs). */
-function translationJson(lemmas: string[]): unknown {
-  return {
-    s: [
-      {
-        ft: 'full-0',
-        wl: lemmas.map((w) => ({
-          o: w,
-          t: [`t-${w}`],
-          n: null,
-          p: false,
-          g: {
-            lf: w,
-            lt: `t-${w}`,
-            pos: 'common_noun',
-            pl: null,
-            pe: null,
-            te: null,
-            ca: null,
-            ot: null,
-          },
-        })),
-      },
-    ],
-  };
 }
 
 /** Import a one-paragraph book, translate it, and wait for the cards on disk. */
@@ -131,70 +59,6 @@ async function seedCards(h: RealHarness, lemmas: string[]): Promise<void> {
     .toEqual(lemmas.map(cardIdOf).sort());
 }
 
-/**
- * Cards are saved one by one and every save wakes the sync task, so seeding
- * would otherwise race the test's own syncs. A blanket 503 makes each woken
- * pass die on the `version()` probe — before `sync_pass`, so nothing is pushed
- * and no card enters backoff.
- */
-async function blockAnki(h: RealHarness): Promise<void> {
-  await h.anki.addRule({ action: { type: 'status', code: 503 } });
-}
-
-/**
- * Waits out the woken passes. A stable request log is not enough on its own: a
- * pass that has entered `run_pass` but not yet issued its `version()` probe
- * looks identical to no pass at all, and would then be unblocked by the
- * caller's `clearRules()` and steal the sync the test means to own. `syncing`
- * is set at the top of `run_pass`, before the probe, so it closes that window.
- */
-async function quiesce(h: RealHarness): Promise<void> {
-  const deadline = Date.now() + 30_000;
-  let last = -1;
-  for (;;) {
-    const n = (await h.anki.requests()).length;
-    const { state } = await h.invoke<Status>('get_anki_sync_status');
-    if (n === last && state !== 'syncing') return;
-    last = n;
-    if (Date.now() > deadline) throw new Error('anki sim never went quiet');
-    await sleep(1500);
-  }
-}
-
-/** `run_pass` refuses to queue behind an in-flight pass; that is not a failure. */
-async function syncNow(h: RealHarness): Promise<Report> {
-  const deadline = Date.now() + 30_000;
-  for (;;) {
-    try {
-      return await h.invoke<Report>('sync_anki_now');
-    } catch (err) {
-      if (!String(err).includes('in progress') || Date.now() > deadline) throw err;
-      await sleep(100);
-    }
-  }
-}
-
-function occurrences(hay: string, needle: string): number {
-  let count = 0;
-  for (let i = hay.indexOf(needle); i !== -1; i = hay.indexOf(needle, i + needle.length)) {
-    count++;
-  }
-  return count;
-}
-
-/**
- * Sub-actions are wrapped in `multi` batches, so a request count says nothing —
- * only occurrences inside the bodies do.
- */
-async function countIn(h: RealHarness, needle: string, from = 0): Promise<number> {
-  const reqs = (await h.anki.requests()).slice(from);
-  return reqs.reduce((acc, r) => acc + occurrences(r.body, needle), 0);
-}
-
-/** `tags` is only ever sent by addNote, and carries exactly the card id. */
-const addsOf = (h: RealHarness, lemma: string, from = 0) =>
-  countIn(h, `"tags":["${cardIdOf(lemma)}"]`, from);
-
 async function deadPort(): Promise<number> {
   const srv = net.createServer();
   await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r));
@@ -209,7 +73,7 @@ async function seedWhileBlocked(h: RealHarness, lemmas: string[]): Promise<void>
   await blockAnki(h);
   await h.anki.seed({ decks: [DECK] });
   await seedCards(h, lemmas);
-  await quiesce(h);
+  await quiesceAnki(h);
   await h.anki.clearRules();
 }
 

@@ -1,7 +1,24 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import { test, expect } from '../../real/fixtures';
 import type { RealHarness } from '../../real/fixtures';
+import {
+  DECK,
+  MODEL,
+  STREAM_GLOB,
+  addsOf,
+  blockAnki,
+  clearCards,
+  drained,
+  lemmaSets,
+  quiesceAnki,
+  seedBook,
+  storedCards,
+  storedIds,
+  storedSegments,
+  syncNow,
+  textOf,
+  translationJson,
+  type Status,
+} from '../../real/spec-helpers';
 
 /**
  * Concurrency: several paragraph translations in flight at once, and other
@@ -11,112 +28,14 @@ import type { RealHarness } from '../../real/fixtures';
  * Everything runs over the bridge; there is no UI for the queue's parallelism.
  */
 
-const MODEL = 1; // Gemini25Flash
-const STREAM_GLOB = '*streamGenerateContent*';
-const DECK = 'FLTS::Deutsch-English'; // deck_name(deu, eng)
-const CARD_DIR = ['library', 'cards', 'deu-eng'];
-const LETTERS = 'abcdefgh';
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-/**
- * Lowercase ASCII only: the lemma slug is then the lemma itself, so card ids
- * are predictable. The disk translation cache outlives the config dir, so the
- * seed also has to be unique per test.
- */
-function nonceSeed(): string {
-  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`.replace(
-    /[^a-z]/g,
-    'x',
-  );
-}
-
-/** `n` paragraphs of `per` pairwise-distinct nonce lemmas. */
-function lemmaSets(n: number, per = 3): string[][] {
-  const seed = nonceSeed();
-  return Array.from({ length: n }, (_, i) =>
-    Array.from({ length: per }, (_, j) => `w${seed}${LETTERS[i]}${LETTERS[j]}`),
-  );
-}
-
-const textOf = (lemmas: string[]) => lemmas.join(' ');
-const cardIdOf = (lemma: string) => `flts_deu_eng_${lemma}`;
-
-/** Gemini's compact translation schema (library/src/book/translation_import.rs). */
-function translationJson(lemmas: string[]): unknown {
-  return {
-    s: [
-      {
-        ft: 'full-0',
-        wl: lemmas.map((w) => ({
-          o: w,
-          t: [`t-${w}`],
-          n: null,
-          p: false,
-          g: {
-            lf: w,
-            lt: `t-${w}`,
-            pos: 'common_noun',
-            pl: null,
-            pe: null,
-            te: null,
-            ca: null,
-            ot: null,
-          },
-        })),
-      },
-    ],
-  };
-}
-
 const scriptsFor = (sets: string[][]) =>
   sets.map((lemmas) => ({
     matchSubstring: textOf(lemmas),
     translation: translationJson(lemmas),
   }));
 
-/** One chapter-0 paragraph per lemma set, each with its own scripted answer. */
-async function seedBook(h: RealHarness, sets: string[][]): Promise<string> {
-  await h.llm.seed({ scripts: scriptsFor(sets) });
-  return h.invoke<string>('import_plain_text', {
-    title: 'concurrency',
-    text: sets.map(textOf).join('\n'),
-    sourceLanguageId: 'deu',
-  });
-}
+const seed = (h: RealHarness, sets: string[][]) => seedBook(h, sets, 'concurrency');
 
-type WordSegment = { kind: string; text: string; translation: string | null };
-
-async function storedSegments(
-  h: RealHarness,
-  bookId: string,
-  paragraphId: number,
-): Promise<WordSegment[] | null> {
-  const rows = await h.invoke<Array<{ id: number; segments?: WordSegment[] | null }>>(
-    'get_paragraph_translations_batch',
-    { bookId, paragraphIds: [paragraphId] },
-  );
-  return rows.find((r) => r.id === paragraphId)?.segments ?? null;
-}
-
-/** Ids whose translation is on disk, ascending. */
-async function storedIds(
-  h: RealHarness,
-  bookId: string,
-  count: number,
-): Promise<number[]> {
-  const ids = [...Array(count).keys()];
-  const rows = await h.invoke<Array<{ id: number; segments?: unknown }>>(
-    'get_paragraph_translations_batch',
-    { bookId, paragraphIds: ids },
-  );
-  return rows
-    .filter((r) => r.segments)
-    .map((r) => r.id)
-    .sort((a, b) => a - b);
-}
-
-/** Streaming translation traffic only; summaries are unary `:generateContent`. */
 async function streamCallsFor(h: RealHarness, text: string): Promise<number> {
   const reqs = await h.llm.requests();
   return reqs.filter(
@@ -126,81 +45,6 @@ async function streamCallsFor(h: RealHarness, text: string): Promise<number> {
 
 const activityOf = (h: RealHarness, bookId: string, paragraphId: number) =>
   h.invoke<unknown>('get_paragraph_translation_activity', { bookId, paragraphId });
-
-const drained = (h: RealHarness) =>
-  h.invoke<unknown[]>('list_paragraph_translation_activity');
-
-// --- anki (spec: sync racing translation writes) ---
-
-type Report = { totalCards: number; attempted: number; succeeded: number; failed: number };
-type Status = { state: string };
-type StoredCard = { id: string; anki_data: { state: string } | null };
-
-const cardsDir = (h: RealHarness) => path.join(h.configDir, ...CARD_DIR);
-
-function storedCards(h: RealHarness): StoredCard[] {
-  let files: string[];
-  try {
-    files = fs.readdirSync(cardsDir(h)).filter((f) => f.endsWith('.json'));
-  } catch {
-    return [];
-  }
-  return files.map(
-    (f) => JSON.parse(fs.readFileSync(path.join(cardsDir(h), f), 'utf8')) as StoredCard,
-  );
-}
-
-/** `sync_pass` walks every card on disk, so leftovers would skew every count. */
-const clearCards = (h: RealHarness) =>
-  fs.rmSync(cardsDir(h), { recursive: true, force: true });
-
-/** `run_pass` refuses to queue behind an in-flight pass; that is not a failure. */
-async function syncNow(h: RealHarness): Promise<Report> {
-  const deadline = Date.now() + 60_000;
-  for (;;) {
-    try {
-      return await h.invoke<Report>('sync_anki_now');
-    } catch (err) {
-      if (!String(err).includes('in progress') || Date.now() > deadline) throw err;
-      await sleep(100);
-    }
-  }
-}
-
-/**
- * Every card save wakes the sync task, so a test's own syncs would otherwise
- * race the seeding. See anki-failures.spec.ts for the full argument.
- */
-async function quiesceAnki(h: RealHarness): Promise<void> {
-  const deadline = Date.now() + 30_000;
-  let last = -1;
-  for (;;) {
-    const n = (await h.anki.requests()).length;
-    const { state } = await h.invoke<Status>('get_anki_sync_status');
-    if (n === last && state !== 'syncing') return;
-    last = n;
-    if (Date.now() > deadline) throw new Error('anki sim never went quiet');
-    await sleep(400);
-  }
-}
-
-function occurrences(hay: string, needle: string): number {
-  let count = 0;
-  for (let i = hay.indexOf(needle); i !== -1; i = hay.indexOf(needle, i + needle.length)) {
-    count++;
-  }
-  return count;
-}
-
-/** Sub-actions ride inside `multi` envelopes, so only body occurrences count. */
-async function countIn(h: RealHarness, needle: string, from = 0): Promise<number> {
-  const reqs = (await h.anki.requests()).slice(from);
-  return reqs.reduce((acc, r) => acc + occurrences(r.body, needle), 0);
-}
-
-/** `tags` is only ever sent by addNote, and carries exactly the card id. */
-const addsOf = (h: RealHarness, lemma: string, from = 0) =>
-  countIn(h, `"tags":["${cardIdOf(lemma)}"]`, from);
 
 test.describe('translation queue concurrency', () => {
   test('a stalled lane does not block the rest of the chapter', async ({ harness }) => {
@@ -216,7 +60,7 @@ test.describe('translation queue concurrency', () => {
       await harness.invoke('update_config', {
         config: { ...original, translationConcurrency: 3 },
       });
-      const bookId = await seedBook(harness, sets);
+      const bookId = await seed(harness, sets);
 
       // Path-scoped as well as body-scoped: the chapter summary is a unary call
       // that quotes every paragraph, and stalling it would block everything.
@@ -274,7 +118,7 @@ test.describe('translation queue concurrency', () => {
     const sets = lemmaSets(6);
     const texts = sets.map(textOf);
     const failing = 2;
-    const bookId = await seedBook(harness, sets);
+    const bookId = await seed(harness, sets);
 
     await harness.llm.addRule({
       matcher: { pathGlob: STREAM_GLOB, bodyContains: texts[failing] },
@@ -320,11 +164,11 @@ test.describe('translation queue concurrency', () => {
 
     clearCards(harness);
     await harness.anki.seed({ decks: [DECK] });
-    const bookId = await seedBook(harness, sets);
+    const bookId = await seed(harness, sets);
 
-    // Seed the early cards with anki blocked, so the version() probe fails
-    // before sync_pass and nothing is pushed or put in backoff.
-    await harness.anki.addRule({ action: { type: 'status', code: 503 } });
+    // Seed the early cards with anki blocked, so nothing is pushed or put in
+    // backoff behind the test's back.
+    await blockAnki(harness);
     for (const id of early) {
       await harness.invoke('translate_paragraph', {
         bookId,
@@ -336,7 +180,7 @@ test.describe('translation queue concurrency', () => {
     await expect
       .poll(() => storedCards(harness).length, { timeout: 60_000 })
       .toBe(early.length * 3);
-    await quiesceAnki(harness);
+    await quiesceAnki(harness, 400);
     await harness.anki.clearRules();
 
     // Held at the version() probe, which run_pass reaches after flipping the
@@ -383,7 +227,7 @@ test.describe('translation queue concurrency', () => {
     await harness.anki.clearRules();
     // A card save during a pass leaves a pending wake, so a follow-up pass
     // fires on its own; let it finish before taking the mark.
-    await quiesceAnki(harness);
+    await quiesceAnki(harness, 400);
 
     const mark = (await harness.anki.requests()).length;
     const second = await syncNow(harness);
@@ -406,7 +250,7 @@ test.describe('translation queue concurrency', () => {
   }) => {
     test.setTimeout(120_000);
     const sets = lemmaSets(6);
-    const bookId = await seedBook(harness, sets);
+    const bookId = await seed(harness, sets);
 
     // Keeps the translations in flight across the reading-state writes.
     await harness.llm.addRule({
