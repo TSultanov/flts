@@ -27,11 +27,12 @@ export type RealHarness = {
   /** Direct bridge invoke from Node (no page needed). */
   invoke: <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
   /**
-   * SIGTERM the app and relaunch it on the same configDir/env. Node-side
+   * Kill the app and relaunch it on the same configDir/env. Node-side
    * invokes keep working; open pages pick up the new port on their next
-   * navigation, so a `page.goto` must follow.
+   * navigation, so a `page.goto` must follow. `SIGKILL` skips the graceful
+   * wait, so nothing the app was mid-write on gets a chance to finish.
    */
-  restartApp: () => Promise<void>;
+  restartApp: (opts?: { signal?: 'SIGTERM' | 'SIGKILL' }) => Promise<void>;
   /** Re-inject the bridge port into `page` after a restart. */
   trackPage: (page: Page) => void;
 };
@@ -98,7 +99,10 @@ function awaitStdoutLine(
   });
 }
 
-async function killTree(child: ChildProcessWithoutNullStreams): Promise<void> {
+async function killTree(
+  child: ChildProcessWithoutNullStreams,
+  signal: 'SIGTERM' | 'SIGKILL' = 'SIGTERM',
+): Promise<void> {
   // No pid = spawn itself failed; there is nothing to reap and no 'exit' coming.
   if (child.pid === undefined) return;
   if (child.exitCode !== null || child.signalCode !== null) return;
@@ -106,6 +110,11 @@ async function killTree(child: ChildProcessWithoutNullStreams): Promise<void> {
     child.once('exit', () => r());
     child.once('close', () => r());
   });
+  if (signal === 'SIGKILL') {
+    child.kill('SIGKILL');
+    await exited;
+    return;
+  }
   child.kill('SIGTERM');
   const killer = setTimeout(() => child.kill('SIGKILL'), 3000);
   await exited;
@@ -330,10 +339,10 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
             pages.add(page);
             page.once('close', () => pages.delete(page));
           },
-          restartApp: async () => {
+          restartApp: async (opts) => {
             bridge?.close();
             bridge = undefined;
-            if (app) await killTree(app);
+            if (app) await killTree(app, opts?.signal ?? 'SIGTERM');
             harness.bridgePort = await launchApp();
             bridge = new BridgeClient(harness.bridgePort);
             await injectPort(harness, [...pages], true);

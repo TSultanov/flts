@@ -184,6 +184,12 @@ deliberately diverges from the original).
   lyrics UI needs a `spotify_state` event — so lyrics specs drive the bridge-only
   `e2e_resolve_track` command and assert on `get_track_lyrics_state` plus LRClib
   traffic.
+- **A relaunched app answers before it is configured.** `eval_config` (library
+  open + anki sync task) is spawned *after* the bridge starts listening, so
+  right after `restartApp()` library queries return empty lists and
+  `sync_anki_now` errors with "no anki sync task installed". Poll for the state
+  you expect (see `restart-under-load.spec.ts`'s `awaitLibrary`). `restartApp`
+  takes `{ signal: 'SIGKILL' }` to skip the graceful shutdown entirely.
 - **Anki has no UI here** either; `sync_anki_now` / `get_anki_sync_status` over
   the bridge, cards on disk under `<configDir>/library/cards/<pair>/`.
 
