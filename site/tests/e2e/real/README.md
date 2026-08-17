@@ -3,7 +3,7 @@
 Specs here drive the **real Rust backend** (the Tauri `app` binary, real HTTP
 clients, real library/translation/Anki code) against stateful simulators of the
 three external services FLTS depends on. The mock tier
-(`site/tests/e2e/*.spec.ts` under `playwright.config.ts`) stays the fast inner
+(`site/tests/e2e/*.spec.ts` under `site/playwright.config.ts`) stays the fast inner
 loop; this tier is the integration truth.
 
 ## Architecture
@@ -13,7 +13,7 @@ Four processes per Playwright worker:
 ```
 Playwright + Chromium            Vite dev server :5181  (PLAYWRIGHT_REAL=true)
   │  real Svelte frontend    ────┤  aliases @tauri-apps/api/core|event →
-  │                              │  tests/real/tauri-shim-core.ts|-event.ts
+  │                              │  site/tests/real/tauri-shim-core.ts|-event.ts
   │  window.__FLTS_BRIDGE_PORT   │
   ▼
 WebSocket  ws://127.0.0.1:<port>/bridge
@@ -27,11 +27,11 @@ flts-e2e-sims (one binary, three sims on three ephemeral ports)
 
 - The shim turns every `invoke()` into a `{id, cmd, args}` frame on the bridge
   socket; the app answers `{id, ok}` / `{id, err}` and pushes `event` frames
-  that `tauri-shim-event.ts` fans out to `listen()` subscribers.
-- `tests/real/fixtures.ts` owns the whole tree: it spawns the sims, reads their
+  that `site/tests/real/tauri-shim-event.ts` fans out to `listen()` subscribers.
+- `site/tests/real/fixtures.ts` owns the whole tree: it spawns the sims, reads their
   port JSON from stdout, writes a `config.json`, spawns the app, waits for its
   `FLTS_E2E_BRIDGE_LISTENING {...}` line, and hands specs a `harness`.
-- `tests/real/global-setup.ts` builds both binaries before the run.
+- `site/tests/real/global-setup.ts` builds both binaries before the run.
 
 ### Env-var seams
 
@@ -78,7 +78,7 @@ and the config dir path.
 ## Adding a failure rule
 
 Rules are pushed at runtime to a sim's `/_sim/rules` via
-`harness.llm | .lrclib | .anki`. Shape (`SimRule` in `tests/real/sim-client.ts`,
+`harness.llm | .lrclib | .anki`. Shape (`SimRule` in `site/tests/real/sim-client.ts`,
 `Rule` in `e2e-sims/src/rules.rs`, camelCase on the wire):
 
 ```ts
@@ -90,7 +90,9 @@ Rules are pushed at runtime to a sim's `/_sim/rules` via
     nthCall?: number;   // 1-based, against the sim's total request count
   },
   action: { type: 'status' | 'delay' | 'stall' | 'drop' | 'truncate' | 'corrupt' | 'passthrough',
-            code?, body?, ms?, afterBytes?, fraction?, mode? },
+            code?, body?, ms?, afterBytes?, fraction?,
+            // corrupt only; its values are snake_case, the wire's one exception:
+            mode?: 'malformed_json' | 'wrong_content_type' | 'garbage' },
   times?: number,       // omitted = forever; n = fires n times then expires
 }
 ```
@@ -123,11 +125,15 @@ await harness.llm.reset();                 // the only stall release — also wi
 await harness.llm.seed({ scripts: [{ matchSubstring: text, translation: json }] });
 ```
 
-Seed shapes (`POST /_sim/seed`, replaces prior state):
+Seed shapes (`POST /_sim/seed`):
 
 - LLM — `{ scripts: [{ matchSubstring, translation, stream?, chunks? }], fallback?: "minimal" }`
 - LRClib — `[{ artist, title, album?, syncedLyrics?, plainLyrics? }]`
 - Anki — `{ decks: [name], notes: [{ deck, model, fields, tags }] }`
+
+The LLM seed **replaces** the script list; the LRClib and Anki seeds **merge**
+into existing state (catalog `extend`, decks/notes appended). Use `reset()` to
+clear.
 
 Other control endpoints: `DELETE /_sim/rules`, `POST /_sim/reset`,
 `GET /_sim/requests` (the request log used for traffic assertions). Control
@@ -135,18 +141,18 @@ routes are never faulted and never logged.
 
 ## Two tiers
 
-- **Mock tier** (`playwright.config.ts`): the frontend against
-  `tests/mocks/tauri-api.ts`, a TypeScript fake backend. No Rust, no network,
+- **Mock tier** (`site/playwright.config.ts`): the frontend against
+  `site/tests/mocks/tauri-api.ts`, a TypeScript fake backend. No Rust, no network,
   seconds to run, `window.__test` hooks for arbitrary state. Inner loop.
-- **Real tier** (`playwright.real.config.ts`): everything above. Catches what a
+- **Real tier** (`site/playwright.real.config.ts`): everything above. Catches what a
   fake backend cannot — wire formats, retry/timeout behavior, persistence,
   partial failure, restart recovery.
 
 Legacy specs run in both tiers where the shared helper contract suffices
 (`app`, `text-import`, `epub-import`, `chapters-panel`,
-`chapter-translate-all`); `helpers/test.ts` picks the right `test` and
-`helpers/real-seed.ts` re-implements seeding by importing a real book and
-scripting the LLM sim. The rest are listed in `playwright.real.config.ts`'s
+`chapter-translate-all`); `site/tests/e2e/helpers/test.ts` picks the right `test` and
+`site/tests/e2e/helpers/real-seed.ts` re-implements seeding by importing a real book and
+scripting the LLM sim. The rest are listed in `site/playwright.real.config.ts`'s
 `testIgnore`, each with the reason it cannot run here (mock-only `window.__test`
 surfaces, seed fields the real pipeline cannot forge, segment text that
 deliberately diverges from the original).
@@ -158,15 +164,20 @@ deliberately diverges from the original).
   or re-translation needs textually unique paragraphs (and unique track
   name/artist for lyrics).
 - **Chapter 0 only.** Translated paragraphs in chapter >0 hit a stale
-  summary-ready watch (see `task-13-report.md`); `real-seed.ts` throws on them.
+  summary-ready watch (see
+  `.superpowers/sdd/2026-08-16-e2e-real-backend-harness/task-13-report.md`);
+  `site/tests/e2e/helpers/real-seed.ts` throws on them.
 - **No failure UI for translations.** The contract is a `console.warn`
-  (`Translation failed for paragraph N`) plus the paragraph reverting to
-  untranslated — assert on those, not on a toast.
+  (`` `Translation failed for paragraph ${paragraphId}:` `` — the paragraph id
+  with a trailing colon, not an index) plus the paragraph reverting to
+  untranslated. Assert on those, not on a toast.
 - **The Node-side `harness.invoke` does not observe events.** `BridgeClient`
   only correlates command replies. Anything event-driven must be asserted in
   the page, or polled through a state-reading command.
-- **`sim.reset()` clears seeds and rules** (and releases stalls). Re-seed after
-  any reset. The per-test `autoReset` fixture already resets all three sims and
+- **`sim.reset()` clears everything**: seeds, rules, the request log and the
+  `nthCall` counter, and it releases stalls. So re-seed after any reset, and
+  don't expect pre-reset traffic to still be in `requests()` or to count toward
+  `nthCall`. The per-test `autoReset` fixture already resets all three sims and
   deletes every book before each test.
 - **Lyrics run through `e2e_resolve_track`.** There is no Spotify sim, and the
   lyrics UI needs a `spotify_state` event — so lyrics specs drive the bridge-only
