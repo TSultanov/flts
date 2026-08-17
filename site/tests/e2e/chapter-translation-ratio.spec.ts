@@ -1,3 +1,4 @@
+import { isRealMode } from './helpers/backend-mode';
 import { expect, test } from './helpers/test';
 import {
   fillerHtml,
@@ -74,6 +75,8 @@ test.describe('Chapter translation ratio — initial render', () => {
 
 test.describe('Chapter translation ratio — reactivity', () => {
   test.skip(({ browserName }) => browserName === 'firefox', 'chromium + webkit only');
+
+  test.skip(isRealMode(), 'mock-only setParagraphTranslation');
 
   test('ratio refreshes when a paragraph finishes translating', async ({ page }) => {
     // Two chapters so the chapter-panel handle renders (single-chapter books

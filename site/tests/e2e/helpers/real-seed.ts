@@ -172,7 +172,7 @@ async function waitForTranslations(
       throw new Error(
         `real seed: translations never landed for ${paragraphIds.filter(
           (id) => !done.has(id),
-        )} (chapter >0 paragraphs hit the stale summary-ready watch — see task-13-report.md)`,
+        )}`,
       );
     }
     await new Promise((r) => setTimeout(r, 50));
