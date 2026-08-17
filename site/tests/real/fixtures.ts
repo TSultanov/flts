@@ -151,6 +151,10 @@ class BridgeClient {
 
   close(): void {
     this.ws?.close();
+    // A restart closes the socket under in-flight invokes; without this they
+    // never settle and the caller hangs to its test timeout.
+    for (const [, p] of [...this.pending]) p.reject(new Error('bridge closed'));
+    this.pending.clear();
   }
 }
 
@@ -171,16 +175,22 @@ async function healthCheck(
 /**
  * Init scripts accumulate and run in order, so a later injection wins on the
  * next navigation — which is when the page rebuilds its bridge socket.
+ * `tolerant` is for the restart path only, where a page may be tearing down
+ * concurrently; on the setup path a failed injection must fail the test.
  */
-async function injectPort(harness: RealHarness, pages: Page[]): Promise<void> {
+async function injectPort(
+  harness: RealHarness,
+  pages: Page[],
+  tolerant = false,
+): Promise<void> {
   for (const page of pages) {
     if (page.isClosed()) continue;
-    await page
-      .addInitScript(
-        (port) => ((window as any).__FLTS_BRIDGE_PORT = port),
-        harness.bridgePort,
-      )
-      .catch(() => {});
+    const inject = page.addInitScript(
+      (port) => ((window as any).__FLTS_BRIDGE_PORT = port),
+      harness.bridgePort,
+    );
+    if (tolerant) await inject.catch(() => {});
+    else await inject;
   }
 }
 
@@ -313,7 +323,7 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
             if (app) await killTree(app);
             harness.bridgePort = await launchApp();
             bridge = new BridgeClient(harness.bridgePort);
-            await injectPort(harness, [...pages]);
+            await injectPort(harness, [...pages], true);
             await healthCheck(harness, () => stderrBuf);
           },
         };

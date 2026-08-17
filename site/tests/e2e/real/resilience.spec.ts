@@ -1,5 +1,6 @@
 import { test, expect } from '../../real/fixtures';
 import type { RealHarness } from '../../real/fixtures';
+import type { Page } from '@playwright/test';
 import {
   paragraphLocator,
   seedAndOpen,
@@ -19,6 +20,8 @@ const MODEL = 1; // Gemini25Flash
 const DECK = 'FLTS::Deutsch-English'; // deck_name(deu, eng)
 const STREAM_GLOB = '*streamGenerateContent*';
 const LRC = '[00:01.00]Erste Zeile\n[00:05.00]Zweite Zeile';
+/** reqwest's transport failure, distinct from a 4xx/decode error or bad args. */
+const LYRICS_TRANSPORT_ERR = /error sending request for url .*\/api\/get/;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -43,14 +46,20 @@ function segmentsOf(text: string): ParagraphSegment[] {
   );
 }
 
-/** Import one already-translated chapter-0 paragraph and open it. */
-async function seedTranslated(page: import('@playwright/test').Page, text: string) {
+/** Import already-translated chapter-0 paragraphs and open the chapter. */
+async function seedTranslated(page: Page, texts: string[]) {
   const { bookId } = await seedAndOpen(page, {
-    chapters: [{ paragraphs: [{ html: text, segments: segmentsOf(text) }] }],
+    chapters: [
+      { paragraphs: texts.map((t) => ({ html: t, segments: segmentsOf(t) })) },
+    ],
   });
-  const p = paragraphLocator(page, 0);
-  await expect(p.locator('.word-span').first()).toBeAttached({ timeout: 30_000 });
-  return { bookId, p, words: await p.locator('.word-span').count() };
+  const words: number[] = [];
+  for (const id of texts.keys()) {
+    const p = paragraphLocator(page, id);
+    await expect(p.locator('.word-span').first()).toBeAttached({ timeout: 30_000 });
+    words.push(await p.locator('.word-span').count());
+  }
+  return { bookId, words };
 }
 
 function nonceTrack() {
@@ -82,19 +91,23 @@ async function syncNow(h: RealHarness): Promise<{ failed: number }> {
   }
 }
 
-async function storedSegments(h: RealHarness, bookId: string): Promise<unknown> {
+async function storedSegments(
+  h: RealHarness,
+  bookId: string,
+  paragraphId = 0,
+): Promise<unknown> {
   const rows = await h.invoke<Array<{ id: number; segments?: unknown }>>(
     'get_paragraph_translations_batch',
-    { bookId, paragraphIds: [0] },
+    { bookId, paragraphIds: [paragraphId] },
   );
-  return rows.find((r) => r.id === 0)?.segments ?? null;
+  return rows.find((r) => r.id === paragraphId)?.segments ?? null;
 }
 
 test.describe('cross-cutting resilience', () => {
   test('no data loss across a total three-service outage', async ({ page, harness }) => {
-    const text = nonceText();
-    const { bookId, words } = await seedTranslated(page, text);
-    expect(words).toBeGreaterThan(0);
+    const texts = [nonceText(), nonceText()];
+    const { bookId, words } = await seedTranslated(page, texts);
+    expect(words.every((n) => n > 0)).toBe(true);
 
     // Everything the app talks to goes dark at once.
     for (const sim of [harness.llm, harness.lrclib, harness.anki]) {
@@ -110,6 +123,18 @@ test.describe('cross-cutting resilience', () => {
       timeout: 30_000,
     });
 
+    // The one write with no network dependency at all, so it separates "the
+    // save path still works" from "the network call failed". Familiarity is
+    // not it: it is derived from Anki card data and has no write command.
+    // The open reader saves its own position, so leave it first.
+    await page.goto('/');
+    await harness.invoke('save_book_reading_state', {
+      bookId,
+      chapterId: 0,
+      paragraphId: 1,
+      pageOffset: 3,
+    });
+
     await harness.invoke('translate_paragraph', {
       bookId,
       paragraphId: 0,
@@ -117,29 +142,49 @@ test.describe('cross-cutting resilience', () => {
       useCache: false,
     });
     await expect(syncNow(harness)).rejects.toThrow(/AnkiConnect/);
-    await expect(harness.invoke('e2e_resolve_track', nonceTrack())).rejects.toThrow();
-    // translate_paragraph only enqueues; let the doomed pass reach its save path.
+    await expect(harness.invoke('e2e_resolve_track', nonceTrack())).rejects.toThrow(
+      LYRICS_TRANSPORT_ERR,
+    );
+    // translate_paragraph only enqueues and the save path runs on the terminal
+    // failure, so wait for the pass to actually start and then leave the queue.
     await expect
       .poll(
         async () =>
-          (await harness.llm.requests()).filter(
-            (r) => r.path.endsWith(':streamGenerateContent') && r.body.includes(text),
-          ).length,
+          (await harness.llm.requests()).some(
+            (r) => r.path.endsWith(':streamGenerateContent') && r.body.includes(texts[0]),
+          ),
         { timeout: 60_000 },
       )
-      .toBeGreaterThan(0);
-    await sleep(2000);
+      .toBe(true);
+    await expect
+      .poll(
+        () =>
+          harness.invoke('get_paragraph_translation_activity', {
+            bookId,
+            paragraphId: 0,
+          }),
+        { timeout: 60_000 },
+      )
+      .toBeNull();
 
     for (const sim of [harness.llm, harness.lrclib, harness.anki]) {
       await sim.clearRules();
     }
 
-    // Nothing the outage touched was lost: the translation is still on disk...
-    await page.reload();
-    const p = paragraphLocator(page, 0);
-    await expect(p.locator('.word-span')).toHaveCount(words, { timeout: 30_000 });
-    await expect(p.locator('button.translate')).toHaveCount(0);
-    expect(await storedSegments(harness, bookId)).not.toBeNull();
+    // The local-only write landed, unaffected by the outage around it. Read
+    // before re-opening the book: the reader would overwrite it on mount.
+    expect(
+      await harness.invoke('get_book_reading_state', { bookId }),
+    ).toMatchObject({ chapterId: 0, paragraphId: 1, pageOffset: 3 });
+
+    // Nothing the outage touched was lost: both translations are still on disk...
+    await page.goto(`/book/${bookId}/0`);
+    for (const [id, count] of words.entries()) {
+      const p = paragraphLocator(page, id);
+      await expect(p.locator('.word-span')).toHaveCount(count, { timeout: 30_000 });
+      await expect(p.locator('button.translate')).toHaveCount(0);
+      expect(await storedSegments(harness, bookId, id)).not.toBeNull();
+    }
     // ...and so is the book.
     const books = await harness.invoke<Array<{ id: string }>>('list_books');
     expect(books.map((b) => b.id)).toContain(bookId);
@@ -195,7 +240,8 @@ test.describe('cross-cutting resilience', () => {
         syncNow(harness),
       ]);
       // Both finished promptly — no head-of-line blocking behind the stall.
-      expect(Date.now() - started).toBeLessThan(30_000);
+      // Both are single local-sim round trips; the slack is for a loaded box.
+      expect(Date.now() - started).toBeLessThan(5000);
       expect(state.lyrics).not.toBeNull();
       expect(state.lyrics!.lines.length).toBe(2);
       expect((await harness.invoke<Status>('get_anki_sync_status')).state).toBe('ok');
@@ -232,7 +278,7 @@ test.describe('cross-cutting resilience', () => {
 
   test('translations survive an app restart', async ({ page, harness }) => {
     const text = nonceText();
-    const { bookId, words } = await seedTranslated(page, text);
+    const { bookId, words } = await seedTranslated(page, [text]);
 
     const oldPort = harness.bridgePort;
     await harness.restartApp();
@@ -242,7 +288,7 @@ test.describe('cross-cutting resilience', () => {
     // Fresh bridge, fresh page: the init script re-injects the new port.
     await page.goto(`/book/${bookId}/0`);
     const p = paragraphLocator(page, 0);
-    await expect(p.locator('.word-span')).toHaveCount(words, { timeout: 30_000 });
+    await expect(p.locator('.word-span')).toHaveCount(words[0], { timeout: 30_000 });
     await expect(p.locator('button.translate')).toHaveCount(0);
     // The span carries the overlay translation too, hence containsText.
     await expect(p.locator('.word-span').first()).toContainText(text.split(' ')[0]);
