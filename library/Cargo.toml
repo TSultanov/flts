@@ -57,6 +57,7 @@ criterion = "0.8.2"
 proptest = "1"
 tempfile = "3.10"
 tokio = { workspace = true, features = ["test-util"] }
+zip = { version = "3.0.0", default-features = false, features = ["deflate"] }
 
 [[bench]]
 name = "translation_bench"

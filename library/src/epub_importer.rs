@@ -10,6 +10,8 @@ const ALLOWED_TAGS: &[&str] = &["em", "i", "b", "br"];
 pub struct EpubBook {
     pub title: String,
     pub chapters: Vec<EpubChapter>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,8 +28,16 @@ pub struct EpubParagraph {
 
 impl EpubBook {
     pub fn load(path: &Path) -> anyhow::Result<EpubBook> {
-        let mut epub = EpubDoc::new(path)?;
+        Self::from_doc(&mut EpubDoc::new(path)?)
+    }
 
+    pub fn from_bytes(bytes: Vec<u8>) -> anyhow::Result<EpubBook> {
+        Self::from_doc(&mut EpubDoc::from_reader(std::io::Cursor::new(bytes))?)
+    }
+
+    fn from_doc<R: std::io::Read + std::io::Seek>(
+        epub: &mut EpubDoc<R>,
+    ) -> anyhow::Result<EpubBook> {
         let mut chapters = Vec::new();
 
         let spine_items = epub.spine.clone();
@@ -75,9 +85,15 @@ impl EpubBook {
             title_parts.push(title.value.clone());
         }
 
+        let language = epub
+            .mdata("language")
+            .map(|m| m.value.trim().to_string())
+            .filter(|s| !s.is_empty());
+
         Ok(EpubBook {
             title: title_parts.join(" - "),
             chapters,
+            language,
         })
     }
 }
@@ -328,4 +344,233 @@ fn get_sanitized_html(element: ElementRef, keep_bounding_tag: bool) -> String {
     }
 
     html
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Cursor, Write};
+    use zip::write::SimpleFileOptions;
+    use zip::{CompressionMethod, ZipWriter};
+
+    fn escape_xml(s: &str) -> String {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+            .replace('\'', "&#39;")
+    }
+
+    /// Minimal EPUB matching `site/tests/fixtures/epub-generator.ts`.
+    fn build_epub(
+        title: &str,
+        author: &str,
+        language: Option<&str>,
+        chapters: &[(&str, &str)],
+    ) -> Vec<u8> {
+        let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+        let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+
+        zip.start_file("mimetype", stored).unwrap();
+        zip.write_all(b"application/epub+zip").unwrap();
+
+        let container = r#"<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>"#;
+        zip.start_file("META-INF/container.xml", deflated).unwrap();
+        zip.write_all(container.as_bytes()).unwrap();
+
+        let language_xml = match language {
+            Some(lang) => format!("<dc:language>{}</dc:language>", escape_xml(lang)),
+            None => String::new(),
+        };
+
+        let manifest_chapters = chapters
+            .iter()
+            .enumerate()
+            .map(|(i, _)| {
+                format!(
+                    r#"<item id="chapter{n}" href="chapter{n}.xhtml" media-type="application/xhtml+xml"/>"#,
+                    n = i + 1
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n    ");
+        let spine_chapters = chapters
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!(r#"<itemref idref="chapter{}"/>"#, i + 1))
+            .collect::<Vec<_>>()
+            .join("\n    ");
+
+        let content_opf = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid" version="2.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
+    <dc:title>{title}</dc:title>
+    <dc:creator>{author}</dc:creator>
+    <dc:identifier id="bookid">test-book</dc:identifier>
+    {language_xml}
+  </metadata>
+  <manifest>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+    <item id="toc" href="toc.xhtml" media-type="application/xhtml+xml"/>
+    {manifest_chapters}
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="toc"/>
+    {spine_chapters}
+  </spine>
+</package>"#,
+            title = escape_xml(title),
+            author = escape_xml(author),
+        );
+        zip.start_file("OEBPS/content.opf", deflated).unwrap();
+        zip.write_all(content_opf.as_bytes()).unwrap();
+
+        let nav_points = chapters
+            .iter()
+            .enumerate()
+            .map(|(i, (ch_title, _))| {
+                format!(
+                    r#"
+    <navPoint id="navpoint-{n}" playOrder="{order}">
+      <navLabel>
+        <text>{label}</text>
+      </navLabel>
+      <content src="chapter{n}.xhtml"/>
+    </navPoint>"#,
+                    n = i + 1,
+                    order = i + 2,
+                    label = escape_xml(ch_title),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("");
+
+        let toc_ncx = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE ncx PUBLIC "-//NISO//DTD ncx 2005-1//EN" "http://www.daisy.org/z3986/2005/ncx-2005-1.dtd">
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+  <head>
+    <meta name="dtb:uid" content="test-book"/>
+    <meta name="dtb:depth" content="1"/>
+    <meta name="dtb:totalPageCount" content="0"/>
+    <meta name="dtb:maxPageNumber" content="0"/>
+  </head>
+  <docTitle>
+    <text>{title}</text>
+  </docTitle>
+  <navMap>
+    <navPoint id="navpoint-toc" playOrder="1">
+      <navLabel>
+        <text>Table of Contents</text>
+      </navLabel>
+      <content src="toc.xhtml"/>
+    </navPoint>
+    {nav_points}
+  </navMap>
+</ncx>"#,
+            title = escape_xml(title),
+        );
+        zip.start_file("OEBPS/toc.ncx", deflated).unwrap();
+        zip.write_all(toc_ncx.as_bytes()).unwrap();
+
+        let toc_links = chapters
+            .iter()
+            .enumerate()
+            .map(|(i, (ch_title, _))| {
+                format!(
+                    r#"<li><a href="chapter{}.xhtml">{}</a></li>"#,
+                    i + 1,
+                    escape_xml(ch_title)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n    ");
+        let toc_xhtml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <title>Table of Contents</title>
+</head>
+<body>
+  <h1>Table of Contents</h1>
+  <ul>
+    {toc_links}
+  </ul>
+</body>
+</html>"#
+        );
+        zip.start_file("OEBPS/toc.xhtml", deflated).unwrap();
+        zip.write_all(toc_xhtml.as_bytes()).unwrap();
+
+        for (i, (ch_title, content)) in chapters.iter().enumerate() {
+            let chapter_xhtml = format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <title>{title}</title>
+</head>
+<body>
+  <h1>{title}</h1>
+    {content}
+</body>
+</html>"#,
+                title = escape_xml(ch_title),
+            );
+            zip.start_file(format!("OEBPS/chapter{}.xhtml", i + 1), deflated)
+                .unwrap();
+            zip.write_all(chapter_xhtml.as_bytes()).unwrap();
+        }
+
+        zip.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn from_bytes_reads_language() {
+        let bytes = build_epub("Lang Book", "A", Some("es"), &[("Ch", "<p>Hello.</p>")]);
+        let book = EpubBook::from_bytes(bytes).unwrap();
+        assert_eq!(book.language.as_deref(), Some("es"));
+        assert_eq!(book.title, "A - Lang Book");
+    }
+
+    #[test]
+    fn from_bytes_keeps_bcp47_language_verbatim() {
+        let bytes = build_epub("Lang Book", "A", Some("en-US"), &[("Ch", "<p>Hello.</p>")]);
+        assert_eq!(
+            EpubBook::from_bytes(bytes).unwrap().language.as_deref(),
+            Some("en-US")
+        );
+    }
+
+    #[test]
+    fn from_bytes_omits_language_when_dc_language_missing() {
+        let bytes = build_epub("Lang Book", "A", None, &[("Ch", "<p>Hello.</p>")]);
+        assert_eq!(EpubBook::from_bytes(bytes).unwrap().language, None);
+    }
+
+    #[test]
+    fn from_bytes_rejects_garbage() {
+        assert!(EpubBook::from_bytes(b"not an epub".to_vec()).is_err());
+    }
+
+    #[test]
+    fn load_matches_from_bytes() {
+        let bytes = build_epub("T", "C", Some("de"), &[("One", "<p>Hi.</p>")]);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.epub");
+        std::fs::write(&path, &bytes).unwrap();
+        let from_path = EpubBook::load(&path).unwrap();
+        let from_mem = EpubBook::from_bytes(bytes).unwrap();
+        assert_eq!(from_path.title, from_mem.title);
+        assert_eq!(from_path.language, from_mem.language);
+        assert_eq!(from_path.chapters.len(), from_mem.chapters.len());
+    }
 }

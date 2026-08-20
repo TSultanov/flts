@@ -3008,6 +3008,7 @@ dependencies = [
  "trash",
  "unicode-normalization",
  "uuid",
+ "zip",
  "zstd",
 ]
 
