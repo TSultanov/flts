@@ -57,6 +57,7 @@ pub const COMMANDS: &[&str] = &[
     "get_translation_providers",
     "get_word_info",
     "import_plain_text",
+    "parse_epub",
     "import_epub",
     "get_book_reading_state",
     "get_book_summary_status",
@@ -400,6 +401,10 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: Value) -> Result<Value, Valu
                 crate::app::library_view::import_plain_text(state, title, text, source_language_id)
                     .await,
             )
+        }
+        "parse_epub" => {
+            let epub_base64 = args!(args, { epub_base64: String });
+            wrap(crate::app::library_view::parse_epub(epub_base64).await)
         }
         "import_epub" => {
             let (book, source_language_id) =

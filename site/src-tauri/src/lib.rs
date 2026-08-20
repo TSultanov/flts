@@ -242,6 +242,7 @@ pub fn run() {
             app::config::get_translation_providers,
             app::library_view::get_word_info,
             app::library_view::import_plain_text,
+            app::library_view::parse_epub,
             app::library_view::import_epub,
             app::library_view::get_book_reading_state,
             app::library_view::get_book_summary_status,

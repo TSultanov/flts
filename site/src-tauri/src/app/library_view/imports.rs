@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use base64::Engine;
 use isolang::Language;
 use library::epub_importer::EpubBook;
 use uuid::Uuid;
@@ -24,6 +25,17 @@ pub async fn import_plain_text(
     library_view
         .import_plain_text(&title, &text, &source_language)
         .await
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub async fn parse_epub(epub_base64: String) -> Result<EpubBook, String> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(epub_base64.as_bytes())
+        .map_err(|err| err.to_string())?;
+    tokio::task::spawn_blocking(move || EpubBook::from_bytes(bytes))
+        .await
+        .map_err(|err| err.to_string())?
         .map_err(|err| err.to_string())
 }
 

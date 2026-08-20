@@ -45,6 +45,7 @@ const ALL_COMMANDS = [
   'get_translation_providers',
   'get_word_info',
   'import_plain_text',
+  'parse_epub',
   'import_epub',
   'get_book_reading_state',
   'get_book_summary_status',
@@ -282,6 +283,7 @@ test.describe('bridge conformance', () => {
       ['sync_set_enabled', { enabled: false }],
       ['sync_add_device', { deviceId: 'AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD', name: 'peer' }],
       ['sync_remove_device', { deviceId: 'AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD' }],
+      ['parse_epub', { epubBase64: 'bm90IGFuIGVwdWI=' }], // "not an epub"
       ['move_book', { bookId, path: ['conformance'] }],
       ['delete_book', { bookId }],
       // Identity round-trip, last: it re-evaluates the whole app config.
