@@ -3,6 +3,7 @@ import { Resource } from "./tauri.svelte";
 import { ParagraphTranslationActivityResource } from "./translationActivity.svelte";
 import { invoke } from "@tauri-apps/api/core";
 import { getConfig } from "../config/store";
+import { uint8ToBase64 } from "./uint8ToBase64";
 
 export type EpubParagraph = { text: string; html: string };
 export type EpubChapter = { title: string; paragraphs: EpubParagraph[] };
@@ -122,15 +123,6 @@ export function buildLibraryFolder(books: LibraryBookMetadataView[]): LibraryFol
     }
 
     return root;
-}
-
-function uint8ToBase64(bytes: Uint8Array): string {
-    let binary = "";
-    const step = 0x8000;
-    for (let i = 0; i < bytes.length; i += step) {
-        binary += String.fromCharCode(...bytes.subarray(i, i + step));
-    }
-    return btoa(binary);
 }
 
 export class Library {
