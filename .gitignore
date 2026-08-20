@@ -7,3 +7,5 @@ states/
 MC_TTrace_*
 *.bin
 .specs/
+/docs/superpowers/
+
