@@ -573,4 +573,108 @@ mod tests {
         assert_eq!(from_path.language, from_mem.language);
         assert_eq!(from_path.chapters.len(), from_mem.chapters.len());
     }
+
+    fn el(html: &str) -> scraper::Html {
+        Html::parse_fragment(html)
+    }
+
+    fn root_child(doc: &Html) -> ElementRef<'_> {
+        // Fragment trees wrap under html without a selectable body.
+        for child in doc.root_element().children() {
+            if let Some(elem) = ElementRef::wrap(child) {
+                if elem.value().name() != "html" {
+                    return elem;
+                }
+            }
+        }
+        panic!("fragment root");
+    }
+
+    #[test]
+    fn sanitizer_allows_b() {
+        let doc = el("<b>bold</b>");
+        assert_eq!(get_sanitized_html(root_child(&doc), true), "<b>bold</b>");
+    }
+
+    #[test]
+    fn sanitizer_strips_span_to_text() {
+        let doc = el("<span>forbidden</span>");
+        assert_eq!(get_sanitized_html(root_child(&doc), true), "forbidden");
+    }
+
+    #[test]
+    fn sanitizer_nests_allowed_tags() {
+        let doc = el("<b>bold <i>italic</i></b>");
+        assert_eq!(
+            get_sanitized_html(root_child(&doc), true),
+            "<b>bold <i>italic</i></b>"
+        );
+    }
+
+    #[test]
+    fn sanitizer_flattens_span_inside_b() {
+        let doc = el("<b>bold <span>forbidden</span></b>");
+        assert_eq!(
+            get_sanitized_html(root_child(&doc), true),
+            "<b>bold forbidden</b>"
+        );
+    }
+
+    #[test]
+    fn sanitizer_keeps_br() {
+        let doc = el("<b>foo<br>bar</b>");
+        assert_eq!(
+            get_sanitized_html(root_child(&doc), true),
+            "<b>foo<br>bar</b>"
+        );
+    }
+
+    #[test]
+    fn sanitizer_drops_bounding_tag() {
+        let doc = el("<p>foo <br> bar</p>");
+        assert_eq!(
+            get_sanitized_html(root_child(&doc), false),
+            "foo <br> bar"
+        );
+    }
+
+    #[test]
+    fn sanitizer_escapes_text_nodes() {
+        let doc = el("<b>&lt;script&gt;alert(1)&lt;/script&gt;</b>");
+        assert_eq!(
+            get_sanitized_html(root_child(&doc), true),
+            "<b>&lt;script&gt;alert(1)&lt;/script&gt;</b>"
+        );
+    }
+
+    #[test]
+    fn sanitizer_escapes_ampersand() {
+        let doc = el("<b>Tom &amp; Jerry</b>");
+        assert_eq!(
+            get_sanitized_html(root_child(&doc), true),
+            "<b>Tom &amp; Jerry</b>"
+        );
+    }
+
+    #[test]
+    fn from_bytes_extracts_italic_and_bold() {
+        let bytes = build_epub(
+            "Test Book",
+            "Test Author",
+            Some("en"),
+            &[(
+                "Chapter One",
+                "<p>second paragraph with some <em>italic</em> and <b>bold</b> text.</p>",
+            )],
+        );
+        let book = EpubBook::from_bytes(bytes).unwrap();
+        let html: String = book
+            .chapters
+            .iter()
+            .flat_map(|c| c.paragraphs.iter())
+            .map(|p| p.html.as_str())
+            .collect();
+        assert!(html.contains("<em>italic</em>"), "{html}");
+        assert!(html.contains("<b>bold</b>"), "{html}");
+    }
 }
