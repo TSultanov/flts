@@ -1,9 +1,12 @@
-import type { EpubBook } from "../import/epubLoader";
 import type { UUID } from "./uuid";
 import { Resource } from "./tauri.svelte";
 import { ParagraphTranslationActivityResource } from "./translationActivity.svelte";
 import { invoke } from "@tauri-apps/api/core";
 import { getConfig } from "../config/store";
+
+export type EpubParagraph = { text: string; html: string };
+export type EpubChapter = { title: string; paragraphs: EpubParagraph[] };
+export type EpubBook = { title: string; chapters: EpubChapter[]; language?: string };
 
 type Grammar = {
     originalInitialForm: string,
@@ -121,6 +124,15 @@ export function buildLibraryFolder(books: LibraryBookMetadataView[]): LibraryFol
     return root;
 }
 
+function uint8ToBase64(bytes: Uint8Array): string {
+    let binary = "";
+    const step = 0x8000;
+    for (let i = 0; i < bytes.length; i += step) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + step));
+    }
+    return btoa(binary);
+}
+
 export class Library {
     getLibraryBooksMetadata(): Resource<LibraryBookMetadataView[]> {
         return new Resource<LibraryBookMetadataView[]>(
@@ -164,6 +176,12 @@ export class Library {
             [],
             null,
         );
+    }
+
+    async parseEpub(bytes: Uint8Array): Promise<EpubBook> {
+        return invoke<EpubBook>("parse_epub", {
+            epubBase64: uint8ToBase64(bytes),
+        });
     }
 
     async importEpub(book: EpubBook, sourceLanguageId: string) {

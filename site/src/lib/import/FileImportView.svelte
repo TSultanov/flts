@@ -1,11 +1,13 @@
 <script lang="ts">
     import { getContext } from "svelte";
-    import { parseEpub, type EpubBook } from "./epubLoader";
     import type { Library } from "../data/library";
+    import type { EpubBook } from "../data/library";
     import { parseLanguageId, type Language } from "../config/store";
     import { Resource } from "../data/tauri.svelte";
     import { suggestSourceLanguage } from "./suggestSourceLanguage";
     import { navigate } from "../../router";
+
+    const library: Library = getContext("library");
 
     let files: FileList | null | undefined = $state();
     const fileKey = $derived(
@@ -16,9 +18,8 @@
 
     const book = $derived.by(async () => {
         if (files && files.length > 0) {
-            const file = files[0];
-            const parsed = await parseEpub(file);
-            return parsed;
+            const buf = new Uint8Array(await files[0].arrayBuffer());
+            return await library.parseEpub(buf);
         }
         return null;
     });
@@ -83,8 +84,6 @@
         }
         chapterOverride = { key: fileKey, selected: next };
     }
-
-    const library: Library = getContext("library");
 
     async function importBook() {
         const epubBook = await book;

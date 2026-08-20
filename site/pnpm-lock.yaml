@@ -35,9 +35,6 @@ importers:
       dexie:
         specifier: ^4.4.2
         version: 4.4.2
-      epubts:
-        specifier: ^0.2.0
-        version: 0.2.0
       qrcode:
         specifier: ^1.5.4
         version: 1.5.4
@@ -78,6 +75,9 @@ importers:
       '@vitest/ui':
         specifier: ^4.1.6
         version: 4.1.6(vitest@4.1.6)
+      epubts:
+        specifier: ^0.2.0
+        version: 0.2.0
       fake-indexeddb:
         specifier: ^6.2.5
         version: 6.2.5

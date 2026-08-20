@@ -5,6 +5,8 @@
  * `resetMockState()`.
  */
 
+import { parseEpub } from './parse-epub';
+
 type UUID = string;
 
 type Language = {
@@ -910,6 +912,18 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
         path: book.path,
       }));
       return Promise.resolve(books as T);
+    }
+
+    case 'parse_epub': {
+      const epubBase64 = args?.epubBase64 as string | undefined;
+      if (!epubBase64) {
+        return Promise.reject(new Error('No EPUB data provided'));
+      }
+      const binary = atob(epubBase64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const file = new File([bytes], 'book.epub', { type: 'application/epub+zip' });
+      return parseEpub(file);
     }
 
     case 'import_epub': {

@@ -33,6 +33,7 @@
     "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "^4.1.6",
     "@vitest/ui": "^4.1.6",
+    "epubts": "^0.2.0",
     "fake-indexeddb": "^6.2.5",
     "fast-check": "^4.8.0",
     "jsdom": "^29.1.1",
@@ -54,7 +55,6 @@
     "@tauri-apps/plugin-window-state": "~2.4.1",
     "@types/jsdom": "^28.0.2",
     "dexie": "^4.4.2",
-    "epubts": "^0.2.0",
     "qrcode": "^1.5.4",
     "sv-router": "^0.16.1",
     "svelte-fa": "^4.0.4"
