@@ -2,7 +2,7 @@ import { type Page } from '@playwright/test';
 import { test, expect } from './helpers/test';
 
 const TARGET = 'spa'; // mock config default targetLanguageId
-const MODEL = 0; // mock config default model
+const MODEL = 'models/gemini-2.5-flash'; // mock config default model
 
 type NowPlayingFixture = {
     state: 'playing' | 'paused' | 'stopped' | 'notrunning';
@@ -23,7 +23,7 @@ type LyricsFixture = {
 type LyricsTranslationFixture = {
     track_id: string;
     target_lang: string;
-    model: number;
+    model: string;
     lines: Array<{
         translation: string;
         glosses: Array<{ fragment: string; gloss: string; note: string }>;
