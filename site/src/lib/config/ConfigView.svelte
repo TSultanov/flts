@@ -8,6 +8,7 @@
         purgeGeminiCaches,
         setConfig,
         modelsForDropdown,
+        resolveModelSelection,
         type Model,
         type ProviderMeta,
         type TranslationProvider,
@@ -63,6 +64,7 @@
     // re-run this effect but bail, so unsaved edits survive. Sync settings
     // stay authoritative in configStore (save() re-reads them there).
     let seeded = false;
+    let lastProvider: TranslationProvider | undefined;
     $effect(() => {
         const cfg = configStore.current;
         if (seeded || !cfg) return;
@@ -73,6 +75,7 @@
         zaiApiKey = cfg.zaiApiKey;
         targetLanguage = cfg.targetLanguageId;
         model = cfg.model ?? '';
+        lastProvider = translationProvider;
         translationConcurrency = cfg.translationConcurrency ?? 8;
         spotifyClientId = cfg.spotifyClientId ?? '';
         spotifyPreloadCount = cfg.spotifyPreloadCount ?? 1;
@@ -238,10 +241,15 @@
     $effect(() => {
         const providerMeta = providers.find((p) => p.id === translationProvider);
         if (!providerMeta) return;
-        const selected = models.find((m) => m.id === model);
-        const providerMismatch = !!selected && selected.provider !== translationProvider;
-        if (!model || providerMismatch) {
-            model = providerMeta.defaultModel;
+        const next = resolveModelSelection(
+            lastProvider,
+            translationProvider,
+            model,
+            providerMeta.defaultModel,
+        );
+        lastProvider = translationProvider;
+        if (next !== model) {
+            model = next;
         }
     });
 

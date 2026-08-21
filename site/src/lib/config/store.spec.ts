@@ -9,7 +9,7 @@ vi.mock('@tauri-apps/api/core', () => ({
     invoke: vi.fn(() => Promise.resolve(undefined)),
 }));
 
-import { modelsForDropdown, type Config } from './store';
+import { modelsForDropdown, resolveModelSelection, type Config } from './store';
 
 describe('Config type', () => {
     it('accepts ankiEndpoint and ankiApiKey as optional strings', () => {
@@ -61,5 +61,31 @@ describe('modelsForDropdown', () => {
         const { list, orphan } = modelsForDropdown([], 'google', '');
         expect(orphan).toBe(false);
         expect(list).toEqual([]);
+    });
+});
+
+describe('resolveModelSelection', () => {
+    it('resets to default on provider change even if the selected id is missing from models', () => {
+        // Catalog membership is not consulted: a Gemini id that is not in the
+        // OpenAI list must still reset when the provider changes.
+        expect(
+            resolveModelSelection(
+                'google',
+                'openai',
+                'models/gemini-2.5-flash',
+                'gpt-5-mini',
+            ),
+        ).toBe('gpt-5-mini');
+    });
+
+    it('keeps a same-provider orphan id', () => {
+        expect(
+            resolveModelSelection(
+                'google',
+                'google',
+                'models/gemini-2.5-flash',
+                'models/gemini-3.7-flash',
+            ),
+        ).toBe('models/gemini-2.5-flash');
     });
 });

@@ -56,6 +56,21 @@ export function modelsForDropdown(
     return { list, orphan: false };
 }
 
+/** Provider change or empty selection → defaultModel. Same-provider orphans stay. */
+export function resolveModelSelection(
+    previousProvider: TranslationProvider | undefined,
+    provider: TranslationProvider,
+    selectedId: string,
+    defaultModel: string,
+): string {
+    const providerChanged =
+        previousProvider !== undefined && previousProvider !== provider;
+    if (!selectedId || providerChanged) {
+        return defaultModel;
+    }
+    return selectedId;
+}
+
 export async function getModels(): Promise<Model[]> {
     let models = await invoke<Model[]>("get_models");
     return models;
