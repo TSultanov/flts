@@ -27,7 +27,7 @@ export type SentenceWordTranslation = {
     readonly contextualTranslations: string[],
     readonly grammar: Grammar,
     readonly fullSentenceTranslation: string,
-    readonly translationModel: number,
+    readonly translationModel: string,
     readonly sourceLanguage: string,
 }
 
@@ -184,12 +184,12 @@ export class Library {
         await invoke<UUID>("import_plain_text", { title, text, sourceLanguageId });
     }
 
-    async translateParagraph(bookId: UUID, paragraphId: number, model: number | undefined = undefined, useCache: boolean = true) {
+    async translateParagraph(bookId: UUID, paragraphId: number, model: string | undefined = undefined, useCache: boolean = true) {
         let config = await getConfig();
         return await invoke<number>("translate_paragraph", { bookId, paragraphId, model: model ?? config.model, useCache });
     }
 
-    async translateChapter(bookId: UUID, chapterId: number, model: number | undefined = undefined, useCache: boolean = true) {
+    async translateChapter(bookId: UUID, chapterId: number, model: string | undefined = undefined, useCache: boolean = true) {
         let config = await getConfig();
         return await invoke<number>("translate_chapter", { bookId, chapterId, model: model ?? config.model, useCache });
     }

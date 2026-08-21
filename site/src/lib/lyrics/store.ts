@@ -28,7 +28,7 @@ export async function getNowPlaying(): Promise<NowPlaying | null> {
 export async function getTrackLyricsState(args: {
     trackId: string;
     targetLang: string;
-    model: number;
+    model: string;
 }): Promise<TrackLyricsState> {
     return await invoke<TrackLyricsState>('get_track_lyrics_state', {
         trackId: args.trackId,

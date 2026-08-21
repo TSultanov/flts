@@ -1,11 +1,21 @@
-import { describe, it, expectTypeOf } from 'vitest';
-import type { Config } from './store';
+import { describe, it, expect, expectTypeOf, vi } from 'vitest';
+
+// Value-importing `./store` constructs Resource stores; they need $state and
+// a Tauri webview. Stub the dep so modelsForDropdown can be unit-tested.
+vi.mock('../data/tauri.svelte', () => ({
+    Resource: class Resource {},
+}));
+vi.mock('@tauri-apps/api/core', () => ({
+    invoke: vi.fn(() => Promise.resolve(undefined)),
+}));
+
+import { modelsForDropdown, type Config } from './store';
 
 describe('Config type', () => {
     it('accepts ankiEndpoint and ankiApiKey as optional strings', () => {
         const withAnki: Config = {
             translationProvider: 'google',
-            model: 0,
+            model: '',
             ankiEndpoint: 'http://127.0.0.1:8765',
             ankiApiKey: 'secret',
         };
@@ -15,7 +25,7 @@ describe('Config type', () => {
         // Must stay omittable: config files written without them are valid.
         const withoutAnki: Config = {
             translationProvider: 'google',
-            model: 0,
+            model: '',
         };
         void withoutAnki;
     });
@@ -23,15 +33,33 @@ describe('Config type', () => {
     it('accepts tapToRevealTranslations as an optional boolean', () => {
         const withFlag: Config = {
             translationProvider: 'google',
-            model: 0,
+            model: '',
             tapToRevealTranslations: true,
         };
         expectTypeOf(withFlag.tapToRevealTranslations).toEqualTypeOf<boolean | undefined>();
 
         const withoutFlag: Config = {
             translationProvider: 'google',
-            model: 0,
+            model: '',
         };
         void withoutFlag;
+    });
+});
+
+describe('modelsForDropdown', () => {
+    it('keeps a saved id missing from the catalog', () => {
+        const models = [
+            { id: 'models/gemini-3.7-flash', name: 'Gemini 3.7 Flash', provider: 'google' as const },
+        ];
+        const { list, orphan } = modelsForDropdown(models, 'google', 'models/gemini-2.5-flash');
+        expect(orphan).toBe(true);
+        expect(list[0].id).toBe('models/gemini-2.5-flash');
+        expect(list.map(m => m.id)).toContain('models/gemini-3.7-flash');
+    });
+
+    it('does not treat empty selection as orphan', () => {
+        const { list, orphan } = modelsForDropdown([], 'google', '');
+        expect(orphan).toBe(false);
+        expect(list).toEqual([]);
     });
 });

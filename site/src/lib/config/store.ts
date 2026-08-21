@@ -4,7 +4,7 @@ import { Resource } from '../data/tauri.svelte';
 export type TranslationProvider = 'google' | 'openai' | 'deepseek' | 'zai';
 
 export type Model = {
-    id: number,
+    id: string,
     name: string,
     provider?: TranslationProvider,
 }
@@ -12,7 +12,7 @@ export type Model = {
 export type ProviderMeta = {
     id: TranslationProvider,
     name: string,
-    defaultModelId: number,
+    defaultModel: string,
     apiKeyField: 'geminiApiKey' | 'openaiApiKey' | 'deepseekApiKey' | 'zaiApiKey',
 };
 
@@ -29,7 +29,7 @@ export type Config = {
     openaiApiKey?: string,
     deepseekApiKey?: string,
     zaiApiKey?: string,
-    model: number,
+    model: string,
     translationConcurrency?: number,
     spotifyClientId?: string,
     spotifyPreloadCount?: number,
@@ -39,6 +39,21 @@ export type Config = {
     syncEnabled?: boolean,
     syncDeviceName?: string,
     tapToRevealTranslations?: boolean,
+}
+
+export function modelsForDropdown(
+    models: Model[],
+    provider: TranslationProvider,
+    selectedId: string,
+): { list: Model[]; orphan: boolean } {
+    const list = models.filter((m) => m.provider === provider);
+    if (selectedId !== '' && !list.some((m) => m.id === selectedId)) {
+        return {
+            list: [{ id: selectedId, name: selectedId, provider }, ...list],
+            orphan: true,
+        };
+    }
+    return { list, orphan: false };
 }
 
 export async function getModels(): Promise<Model[]> {

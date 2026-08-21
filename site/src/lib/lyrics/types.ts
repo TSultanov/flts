@@ -35,7 +35,7 @@ export type LyricsLineTranslation = {
 export type LyricsTranslation = {
     track_id: string;
     target_lang: string;
-    model: number;
+    model: string;
     lines: LyricsLineTranslation[];
 };
 

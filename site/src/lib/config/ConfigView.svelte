@@ -7,6 +7,7 @@
         getTranslationProviders,
         purgeGeminiCaches,
         setConfig,
+        modelsForDropdown,
         type Model,
         type ProviderMeta,
         type TranslationProvider,
@@ -46,7 +47,7 @@
     let targetLanguage: string | undefined = $state(undefined);
     // App-managed storage location; read-only, no folder picker.
     let storageLocation: string = $state("");
-    let model: number = $state(0);
+    let model: string = $state('');
     let translationConcurrency: number = $state(8);
     let models: Model[] = $state([]);
     let providers: ProviderMeta[] = $state([]);
@@ -71,7 +72,7 @@
         deepseekApiKey = cfg.deepseekApiKey;
         zaiApiKey = cfg.zaiApiKey;
         targetLanguage = cfg.targetLanguageId;
-        model = cfg.model ?? 0;
+        model = cfg.model ?? '';
         translationConcurrency = cfg.translationConcurrency ?? 8;
         spotifyClientId = cfg.spotifyClientId ?? '';
         spotifyPreloadCount = cfg.spotifyPreloadCount ?? 1;
@@ -119,12 +120,9 @@
         }
     }
 
-    let filteredModels: Model[] = $derived.by(() => {
-        return models.filter((m) => {
-            if (m.id === 0) return true;
-            return m.provider === translationProvider;
-        });
-    });
+    const filtered = $derived(modelsForDropdown(models, translationProvider, model));
+    const filteredModels = $derived(filtered.list);
+    const modelOrphan = $derived(filtered.orphan);
 
     let languages = getLanguages();
 
@@ -186,6 +184,7 @@
                 syncDeviceName: configStore.current?.syncDeviceName,
                 tapToRevealTranslations,
             });
+            models = await getModels();
         } catch (e) {
             // Re-throw so callers chaining off save() (connectSpotify) abort.
             saveError = String(e);
@@ -239,11 +238,10 @@
     $effect(() => {
         const providerMeta = providers.find((p) => p.id === translationProvider);
         if (!providerMeta) return;
-
-        const selectedModel = models.find((m) => m.id === model);
-        const providerMismatch = selectedModel && selectedModel.id !== 0 && selectedModel.provider !== translationProvider;
-        if (model === 0 || !selectedModel || providerMismatch) {
-            model = providerMeta.defaultModelId;
+        const selected = models.find((m) => m.id === model);
+        const providerMismatch = !!selected && selected.provider !== translationProvider;
+        if (!model || providerMismatch) {
+            model = providerMeta.defaultModel;
         }
     });
 
@@ -315,6 +313,7 @@
                     <option value={model.id}>{model.name}</option>
                 {/each}
             </select>
+            {#if modelOrphan}<div class="spotify-notice">Not in the current catalog</div>{/if}
 
             <label for="translationConcurrency">Parallel translations</label>
             <input

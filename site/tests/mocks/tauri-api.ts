@@ -20,12 +20,12 @@ type TranslationProvider = 'google' | 'openai';
 type ProviderMeta = {
   id: TranslationProvider;
   name: string;
-  defaultModelId: number;
+  defaultModel: string;
   apiKeyField: 'geminiApiKey' | 'openaiApiKey';
 };
 
 type Model = {
-  id: number;
+  id: string;
   name: string;
   provider?: TranslationProvider;
 };
@@ -35,7 +35,7 @@ type Config = {
   translationProvider: TranslationProvider;
   geminiApiKey?: string;
   openaiApiKey?: string;
-  model: number;
+  model: string;
   libraryPath?: string;
   ankiEndpoint?: string;
   ankiApiKey?: string;
@@ -170,13 +170,13 @@ type LyricsLineTranslation = { translation: string; glosses: Gloss[] };
 type LyricsTranslation = {
   track_id: string;
   target_lang: string;
-  model: number;
+  model: string;
   lines: LyricsLineTranslation[];
 };
 
 let mockLibrary: Map<UUID, MockBook> = new Map();
 let mockConfig: Config = {
-  model: 0,
+  model: 'models/gemini-2.5-flash',
   translationProvider: 'google',
   geminiApiKey: 'mock-api-key-for-testing',
   openaiApiKey: 'mock-openai-key-for-testing',
@@ -469,7 +469,7 @@ let mockNowPlaying: NowPlaying | null = null;
 let mockLyricsByTrack: Map<string, Lyrics | null> = new Map();
 let mockTranslationCache: Map<string, LyricsTranslation> = new Map();
 
-function translationKey(trackId: string, target: string, model: number): string {
+function translationKey(trackId: string, target: string, model: string): string {
   return `${trackId}|${target}|${model}`;
 }
 
@@ -523,7 +523,7 @@ function emit(event: string, payload: unknown) {
 export function resetMockState() {
   mockLibrary.clear();
   mockConfig = {
-    model: 0,
+    model: 'models/gemini-2.5-flash',
     translationProvider: 'google',
     geminiApiKey: 'mock-api-key-for-testing',
     openaiApiKey: 'mock-openai-key-for-testing',
@@ -837,19 +837,13 @@ const mockLanguages: Language[] = [
 ];
 
 const mockModels: Model[] = [
-  { id: 0, name: 'Not set' },
-  { id: 1, name: 'Gemini 2.5 Flash', provider: 'google' },
-  { id: 2, name: 'Gemini 2.5 Pro', provider: 'google' },
-  { id: 3, name: 'Gemini 2.5 Flash Light', provider: 'google' },
-  { id: 4, name: 'OpenAI GPT-5 mini', provider: 'openai' },
-  { id: 5, name: 'OpenAI GPT-5.2', provider: 'openai' },
-  { id: 6, name: 'OpenAI GPT-5.2 Pro', provider: 'openai' },
-  { id: 7, name: 'OpenAI GPT-5 nano', provider: 'openai' },
+  { id: 'models/gemini-2.5-flash', name: 'Gemini 2.5 Flash', provider: 'google' },
+  { id: 'models/gemini-2.5-pro', name: 'Gemini 2.5 Pro', provider: 'google' },
+  { id: 'gpt-5-mini', name: 'OpenAI GPT-5 mini', provider: 'openai' },
 ];
-
 const mockProviders: ProviderMeta[] = [
-  { id: 'google', name: 'Google', defaultModelId: 1, apiKeyField: 'geminiApiKey' },
-  { id: 'openai', name: 'OpenAI', defaultModelId: 4, apiKeyField: 'openaiApiKey' },
+  { id: 'google', name: 'Google', defaultModel: 'models/gemini-2.5-flash', apiKeyField: 'geminiApiKey' },
+  { id: 'openai', name: 'OpenAI', defaultModel: 'gpt-5-mini', apiKeyField: 'openaiApiKey' },
 ];
 
 export type InvokeArgs = Record<string, unknown>;
@@ -1206,7 +1200,7 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
       // __mockTranslationCache.
       const trackId = args?.trackId as string;
       const target = args?.targetLang as string;
-      const model = args?.model as number;
+      const model = args?.model as string;
       const lyrics = mockLyricsByTrack.has(trackId)
         ? mockLyricsByTrack.get(trackId)!
         : null;

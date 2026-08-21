@@ -79,7 +79,7 @@
     }
 
     async function translateParagraph() {
-        if (selection && model !== undefined && model !== 0) {
+        if (selection && model) {
             await library.translateParagraph(
                 bookId,
                 selection.paragraphId,
