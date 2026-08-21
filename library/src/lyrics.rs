@@ -5,8 +5,6 @@ pub mod translation;
 use isolang::Language;
 use serde::{Deserialize, Serialize};
 
-use crate::translator::TranslationModel;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LyricsLine {
     /// Start time in ms; `None` for unsynced lyrics and stanza breaks.
@@ -41,7 +39,7 @@ pub struct LyricsTranslation {
     pub track_id: String,
     #[serde(with = "lang_639_3")]
     pub target_lang: Language,
-    pub model: TranslationModel,
+    pub model: String,
     pub lines: Vec<LyricsLineTranslation>,
 }
 

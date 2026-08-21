@@ -2,17 +2,14 @@ use ahash::{AHashMap, AHashSet};
 use log::info;
 use uuid::Uuid;
 
-use crate::{
-    book::{
-        serialization::{
-            ChecksumedWriter, Magic, Serializable, Version, read_exact_array,
-            read_len_prefixed_string, read_len_prefixed_vec, read_opt, read_opt_var_u64, read_u8,
-            read_u64, read_var_u64, read_vec_slice, validate_hash, write_len_prefixed_bytes,
-            write_opt, write_opt_var_u64, write_u64, write_var_u64, write_vec_slice,
-        },
-        translation_import,
+use crate::book::{
+    serialization::{
+        ChecksumedWriter, Magic, Serializable, Version, read_exact_array, read_len_prefixed_string,
+        read_len_prefixed_vec, read_opt, read_opt_var_u64, read_u8, read_u64, read_var_u64,
+        read_vec_slice, validate_hash, write_len_prefixed_bytes, write_opt, write_opt_var_u64,
+        write_u64, write_var_u64, write_vec_slice,
     },
-    translator::TranslationModel,
+    translation_import,
 };
 use std::io::{self, Write};
 use std::{
@@ -79,7 +76,7 @@ struct ParagraphTranslation {
     timestamp: u64,
     previous_version: Option<usize>,
     sentences: VecSlice<Sentence>,
-    model: TranslationModel,
+    model: String,
     total_tokens: Option<u64>,
     visible_words: AHashSet<usize>,
 }
@@ -89,7 +86,7 @@ pub struct ParagraphTranslationView<'a> {
     pub timestamp: u64,
     previous_version: Option<usize>,
     sentences: &'a [Sentence],
-    pub model: TranslationModel,
+    pub model: String,
     pub total_tokens: Option<u64>,
     visible_words: &'a AHashSet<usize>,
 }
@@ -183,7 +180,7 @@ impl Translation {
             timestamp: p.timestamp,
             previous_version: p.previous_version,
             sentences: p.sentences.slice(&self.sentences),
-            model: p.model,
+            model: p.model.clone(),
             total_tokens: p.total_tokens,
             visible_words: &p.visible_words,
         })
@@ -211,7 +208,7 @@ impl Translation {
         &mut self,
         paragraph_index: usize,
         translation: &translation_import::ParagraphTranslation,
-        model: TranslationModel,
+        model: &str,
     ) {
         if paragraph_index >= self.paragraphs.len() {
             self.paragraphs.extend(iter::repeat_n(
@@ -226,7 +223,7 @@ impl Translation {
             timestamp: translation.timestamp,
             previous_version: new_prev_version,
             sentences: VecSlice::empty(),
-            model,
+            model: model.to_string(),
             total_tokens: translation.total_tokens,
             visible_words: AHashSet::new(),
         };
@@ -307,7 +304,7 @@ impl Translation {
             timestamp,
             previous_version: new_prev_version,
             sentences: VecSlice::empty(),
-            model: translation.model,
+            model: translation.model.clone(),
             total_tokens: translation.total_tokens,
             visible_words: translation.visible_words().clone(),
         };
@@ -717,7 +714,7 @@ impl Translation {
         //     v64 number_of_fields
         //     for each field: v64 field_data_length
         //     for each field: v64 tag, data
-        //       Tag 1 (TranslationModel): v64 model enum variant
+        //       Tag 1 (TranslationModel): v64 legacy model id via catalog
         //       Tag 2 (TotalTokens): v64 has_value, if 1 then v64 token_count
         //       Tag 3 (VisibleWords): v64 count, then v64[] word_indexes
         // u64 paragraphs_count, then each: u8 has_translation (if 1 then u64 paragraph_translation_index)
@@ -822,7 +819,10 @@ impl Translation {
                 let mut cursor = Cursor::new(buf);
 
                 write_var_u64(&mut cursor, FieldTag::TranslationModel as u64)?;
-                write_var_u64(&mut cursor, pt.model as u64)?;
+                write_var_u64(
+                    &mut cursor,
+                    crate::translator::catalog::legacy_id_from_api(&pt.model),
+                )?;
                 cursor.into_inner()
             };
 
@@ -1057,7 +1057,7 @@ impl Translation {
                 timestamp,
                 previous_version,
                 sentences: sentences_slice,
-                model: TranslationModel::Unknown,
+                model: String::new(),
                 total_tokens: None,
                 visible_words: AHashSet::new(),
             };
@@ -1242,7 +1242,7 @@ impl Translation {
                 timestamp,
                 previous_version,
                 sentences: sentences_slice,
-                model: TranslationModel::Unknown,
+                model: String::new(),
                 total_tokens: None,
                 visible_words: AHashSet::new(),
             };
@@ -1263,8 +1263,8 @@ impl Translation {
 
                 match tag {
                     FieldTag::TranslationModel => {
-                        let model: TranslationModel = (read_var_u64(&mut cursor)? as usize).into();
-                        translation.model = model;
+                        let n = read_var_u64(&mut cursor)?;
+                        translation.model = crate::translator::catalog::api_id_from_legacy(n);
                     }
                     FieldTag::TotalTokens => {
                         let tokens = read_opt_var_u64(&mut cursor)?;
@@ -1365,7 +1365,7 @@ impl<'a> ParagraphTranslationView<'a> {
             timestamp: p.timestamp,
             previous_version: p.previous_version,
             sentences: p.sentences.slice(&self.translation.sentences),
-            model: p.model,
+            model: p.model.clone(),
             total_tokens: p.total_tokens,
             visible_words: &p.visible_words,
         })

@@ -8,7 +8,6 @@ use std::{fmt::Display, sync::Arc, time::Duration};
 use async_trait::async_trait;
 use isolang::Language;
 use serde::{Deserialize, Serialize};
-use strum::EnumIter;
 use uuid::Uuid;
 
 use crate::{
@@ -27,8 +26,8 @@ const TRANSLATION_TOTAL_TIMEOUT_MAX: Duration = Duration::from_secs(3600);
 pub type ProgressCallback = dyn Fn(usize) + Send + Sync;
 
 pub fn total_stream_timeout(input_len: usize) -> Duration {
-    let scaled = TRANSLATION_TOTAL_TIMEOUT_PER_CHAR
-        .saturating_mul(input_len.min(u32::MAX as usize) as u32);
+    let scaled =
+        TRANSLATION_TOTAL_TIMEOUT_PER_CHAR.saturating_mul(input_len.min(u32::MAX as usize) as u32);
     (TRANSLATION_TOTAL_TIMEOUT_BASE + scaled).min(TRANSLATION_TOTAL_TIMEOUT_MAX)
 }
 
@@ -266,109 +265,6 @@ impl Display for TranslationErrors {
     }
 }
 
-#[derive(Debug, Clone, Copy, EnumIter, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(from = "usize", into = "usize")]
-pub enum TranslationModel {
-    Unknown = 0,
-    Gemini25Flash = 1,
-    Gemini25Pro = 2,
-    Gemini25FlashLight = 3,
-
-    // IMPORTANT: do not reorder or renumber existing variants.
-    OpenAIGpt5Mini = 4,
-    OpenAIGpt52 = 5,
-    OpenAIGpt52Pro = 6,
-    OpenAIGpt5Nano = 7,
-
-    Gemini3Pro = 8,
-    Gemini3Flash = 9,
-
-    OpenAIGpt54 = 10,
-    OpenAIGpt54Mini = 11,
-    Gemini31Pro = 12,
-    Gemini31FlashLite = 13,
-    Gemini35Flash = 14,
-
-    DeepSeekV4Flash = 15,
-    DeepSeekV4Pro = 16,
-
-    ZaiGlm52 = 17,
-
-    Gemini36Flash = 18,
-    Gemini37Flash = 19,
-}
-
-impl TranslationModel {
-    pub fn provider(&self) -> Option<TranslationProvider> {
-        match self {
-            TranslationModel::Gemini25Flash
-            | TranslationModel::Gemini25Pro
-            | TranslationModel::Gemini25FlashLight
-            | TranslationModel::Gemini3Pro
-            | TranslationModel::Gemini3Flash
-            | TranslationModel::Gemini31Pro
-            | TranslationModel::Gemini31FlashLite
-            | TranslationModel::Gemini35Flash
-            | TranslationModel::Gemini36Flash
-            | TranslationModel::Gemini37Flash => Some(TranslationProvider::Google),
-
-            TranslationModel::OpenAIGpt52
-            | TranslationModel::OpenAIGpt52Pro
-            | TranslationModel::OpenAIGpt5Mini
-            | TranslationModel::OpenAIGpt5Nano
-            | TranslationModel::OpenAIGpt54
-            | TranslationModel::OpenAIGpt54Mini => Some(TranslationProvider::Openai),
-
-            TranslationModel::DeepSeekV4Flash | TranslationModel::DeepSeekV4Pro => {
-                Some(TranslationProvider::Deepseek)
-            }
-
-            TranslationModel::ZaiGlm52 => Some(TranslationProvider::Zai),
-
-            TranslationModel::Unknown => None,
-        }
-    }
-}
-
-impl From<usize> for TranslationModel {
-    fn from(value: usize) -> Self {
-        match value {
-            1 => TranslationModel::Gemini25Flash,
-            2 => TranslationModel::Gemini25Pro,
-            3 => TranslationModel::Gemini25FlashLight,
-            4 => TranslationModel::OpenAIGpt5Mini,
-            5 => TranslationModel::OpenAIGpt52,
-            6 => TranslationModel::OpenAIGpt52Pro,
-            7 => TranslationModel::OpenAIGpt5Nano,
-            8 => TranslationModel::Gemini3Pro,
-            9 => TranslationModel::Gemini3Flash,
-            10 => TranslationModel::OpenAIGpt54,
-            11 => TranslationModel::OpenAIGpt54Mini,
-            12 => TranslationModel::Gemini31Pro,
-            13 => TranslationModel::Gemini31FlashLite,
-            14 => TranslationModel::Gemini35Flash,
-            15 => TranslationModel::DeepSeekV4Flash,
-            16 => TranslationModel::DeepSeekV4Pro,
-            17 => TranslationModel::ZaiGlm52,
-            18 => TranslationModel::Gemini36Flash,
-            19 => TranslationModel::Gemini37Flash,
-            _ => TranslationModel::Unknown,
-        }
-    }
-}
-
-impl From<TranslationModel> for usize {
-    fn from(model: TranslationModel) -> Self {
-        model as usize
-    }
-}
-
-impl Display for TranslationModel {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", *self as usize)
-    }
-}
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum TranslationProvider {
@@ -409,11 +305,7 @@ pub trait ChapterContextProvider: Send + Sync {
     async fn wait_ready(&self, book_id: Uuid, chapter_index: usize) -> anyhow::Result<()>;
 
     /// Summaries for `0..chapter_index` with `Chapter X: <title>` headers.
-    async fn prior_summaries(
-        &self,
-        book_id: Uuid,
-        chapter_index: usize,
-    ) -> anyhow::Result<String>;
+    async fn prior_summaries(&self, book_id: Uuid, chapter_index: usize) -> anyhow::Result<String>;
 
     /// Full source text of `chapter_index` with paragraph separators.
     async fn chapter_text(&self, book_id: Uuid, chapter_index: usize) -> anyhow::Result<String>;
@@ -438,7 +330,7 @@ impl ChapterContextProvider for NoChapterContext {
 
 #[async_trait]
 pub trait Translator: Send + Sync {
-    fn get_model(&self) -> TranslationModel;
+    fn get_model(&self) -> String;
 
     async fn get_translation(
         &self,
@@ -619,7 +511,7 @@ pub fn get_translator(
     context_provider: Arc<dyn ChapterContextProvider>,
     gemini_prompt_cache: Arc<gemini_cache::GeminiPromptCache>,
     provider: TranslationProvider,
-    translation_model: TranslationModel,
+    model: &str,
     api_key: String,
     from: Language,
     to: Language,
@@ -629,7 +521,7 @@ pub fn get_translator(
             cache,
             context_provider,
             gemini_prompt_cache,
-            translation_model,
+            model,
             api_key,
             &from,
             &to,
@@ -638,7 +530,8 @@ pub fn get_translator(
             Ok(Box::new(OpenAITranslator::create(
                 cache,
                 context_provider,
-                translation_model,
+                provider,
+                model,
                 api_key,
                 &from,
                 &to,

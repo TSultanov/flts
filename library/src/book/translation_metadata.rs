@@ -6,8 +6,8 @@ use std::{
 use uuid::Uuid;
 
 use crate::book::serialization::{
-    Magic, Version, read_exact_array, read_len_prefixed_string, read_len_prefixed_vec, read_u64,
-    read_var_u64,
+    read_exact_array, read_len_prefixed_string, read_len_prefixed_vec, read_u64, read_var_u64,
+    Magic, Version,
 };
 
 #[derive(Debug)]
@@ -64,12 +64,9 @@ impl TranslationMetadata {
 mod translation_metadata_test {
     use std::io::Cursor;
 
-    use crate::{
-        book::{
-            serialization::Serializable, translation::Translation, translation_import,
-            translation_metadata::TranslationMetadata,
-        },
-        translator::TranslationModel,
+    use crate::book::{
+        serialization::Serializable, translation::Translation, translation_import,
+        translation_metadata::TranslationMetadata,
     };
 
     #[test]
@@ -99,11 +96,7 @@ mod translation_metadata_test {
             }],
         };
 
-        translation.add_paragraph_translation(
-            0,
-            &paragraph_translation,
-            TranslationModel::Gemini25Flash,
-        );
+        translation.add_paragraph_translation(0, &paragraph_translation, "models/gemini-2.5-flash");
 
         let paragraph_translation2 = translation_import::ParagraphTranslation {
             total_tokens: None,
@@ -149,7 +142,7 @@ mod translation_metadata_test {
         translation.add_paragraph_translation(
             3,
             &paragraph_translation2,
-            TranslationModel::Gemini25Flash,
+            "models/gemini-2.5-flash",
         );
 
         let mut buf: Vec<u8> = vec![];
@@ -189,11 +182,7 @@ mod translation_metadata_test {
                 }],
             }],
         };
-        translation.add_paragraph_translation(
-            0,
-            &paragraph_translation,
-            TranslationModel::Gemini25Flash,
-        );
+        translation.add_paragraph_translation(0, &paragraph_translation, "models/gemini-2.5-flash");
 
         let paragraph_translation2 = translation_import::ParagraphTranslation {
             total_tokens: None,
@@ -239,7 +228,7 @@ mod translation_metadata_test {
         translation.add_paragraph_translation(
             3,
             &paragraph_translation2,
-            TranslationModel::Gemini25Flash,
+            "models/gemini-2.5-flash",
         );
 
         let mut buf: Vec<u8> = vec![];

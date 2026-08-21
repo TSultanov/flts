@@ -13,15 +13,12 @@ use std::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use uuid::Uuid;
 
-use crate::{
-    book::{
-        serialization::{
-            ChecksumedWriter, Magic, Serializable, Version, create_random_string, read_exact_array,
-            read_u8, read_u64, read_var_u64, validate_hash, write_u64, write_u8, write_var_u64,
-        },
-        soa_helpers::VecSlice,
+use crate::book::{
+    serialization::{
+        ChecksumedWriter, Magic, Serializable, Version, create_random_string, read_exact_array,
+        read_u8, read_u64, read_var_u64, validate_hash, write_u8, write_u64, write_var_u64,
     },
-    translator::TranslationModel,
+    soa_helpers::VecSlice,
 };
 
 /// One row. When `generated` is false the LLM call hasn't completed, so
@@ -29,7 +26,7 @@ use crate::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChapterSummary {
     pub generated: bool,
-    pub model: TranslationModel,
+    pub model: String,
     pub timestamp: u64,
     pub text: String,
 }
@@ -38,7 +35,7 @@ impl ChapterSummary {
     fn pending() -> Self {
         Self {
             generated: false,
-            model: TranslationModel::Unknown,
+            model: String::new(),
             timestamp: 0,
             text: String::new(),
         }
@@ -62,7 +59,9 @@ impl ChapterSummaries {
     pub fn empty_for(book_id: Uuid, chapter_count: usize) -> Self {
         Self {
             book_id,
-            entries: (0..chapter_count).map(|_| ChapterSummary::pending()).collect(),
+            entries: (0..chapter_count)
+                .map(|_| ChapterSummary::pending())
+                .collect(),
             last_modified: None,
         }
     }
@@ -272,7 +271,10 @@ impl Serializable for ChapterSummaries {
 
         for (e, slice) in self.entries.iter().zip(slices.iter()) {
             write_u8(&mut w, if e.generated { 1 } else { 0 })?;
-            write_var_u64(&mut w, usize::from(e.model) as u64)?;
+            write_var_u64(
+                &mut w,
+                crate::translator::catalog::legacy_id_from_api(&e.model),
+            )?;
             write_var_u64(&mut w, e.timestamp)?;
             write_var_u64(&mut w, slice.start as u64)?;
             write_var_u64(&mut w, slice.len as u64)?;
@@ -305,7 +307,8 @@ impl Serializable for ChapterSummaries {
         let mut slices = Vec::with_capacity(chapter_count);
         for _ in 0..chapter_count {
             let generated = read_u8(input_stream)? == 1;
-            let model = TranslationModel::from(read_var_u64(input_stream)? as usize);
+            let n = read_var_u64(input_stream)?;
+            let model = crate::translator::catalog::api_id_from_legacy(n);
             let timestamp = read_var_u64(input_stream)?;
             let start = read_var_u64(input_stream)? as usize;
             let len = read_var_u64(input_stream)? as usize;
@@ -324,9 +327,10 @@ impl Serializable for ChapterSummaries {
         let strings = zstd::stream::decode_all(encoded.as_slice())?;
 
         for (entry, slice) in entries.iter_mut().zip(slices.iter()) {
-            let end = slice.start.checked_add(slice.len).ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidData, "slice end overflow")
-            })?;
+            let end = slice
+                .start
+                .checked_add(slice.len)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "slice end overflow"))?;
             if end > strings.len() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -355,13 +359,13 @@ mod tests {
         let mut s = ChapterSummaries::empty_for(book_id, 4);
         s.entries[0] = ChapterSummary {
             generated: true,
-            model: TranslationModel::Gemini25Flash,
+            model: "models/gemini-2.5-flash".to_string(),
             timestamp: 100,
             text: "Chapter 0 summary: characters Alice and Bob.".into(),
         };
         s.entries[2] = ChapterSummary {
             generated: true,
-            model: TranslationModel::Gemini25Flash,
+            model: "models/gemini-2.5-flash".to_string(),
             timestamp: 300,
             text: "Chapter 2 summary: Bob travels.".into(),
         };
@@ -420,14 +424,14 @@ mod tests {
         let mut a = ChapterSummaries::empty_for(book_id, 3);
         a.entries[0] = ChapterSummary {
             generated: true,
-            model: TranslationModel::Gemini25Flash,
+            model: "models/gemini-2.5-flash".to_string(),
             timestamp: 100,
             text: "a0".into(),
         };
         let mut b = ChapterSummaries::empty_for(book_id, 3);
         b.entries[1] = ChapterSummary {
             generated: true,
-            model: TranslationModel::Gemini25Flash,
+            model: "models/gemini-2.5-flash".to_string(),
             timestamp: 200,
             text: "b1".into(),
         };
@@ -446,14 +450,14 @@ mod tests {
         let mut older = ChapterSummaries::empty_for(book_id, 2);
         older.entries[0] = ChapterSummary {
             generated: true,
-            model: TranslationModel::Gemini25Flash,
+            model: "models/gemini-2.5-flash".to_string(),
             timestamp: 100,
             text: "older".into(),
         };
         let mut newer = ChapterSummaries::empty_for(book_id, 2);
         newer.entries[0] = ChapterSummary {
             generated: true,
-            model: TranslationModel::Gemini25Flash,
+            model: "models/gemini-2.5-flash".to_string(),
             timestamp: 200,
             text: "newer".into(),
         };
@@ -504,7 +508,7 @@ mod tests {
 
         s.entries[0] = ChapterSummary {
             generated: true,
-            model: TranslationModel::Gemini25Flash,
+            model: "models/gemini-2.5-flash".to_string(),
             timestamp: 1,
             text: "ch0".into(),
         };
@@ -525,7 +529,7 @@ mod tests {
         let mut a = ChapterSummaries::empty_for(book_id, 3);
         a.entries[0] = ChapterSummary {
             generated: true,
-            model: TranslationModel::Gemini25Flash,
+            model: "models/gemini-2.5-flash".to_string(),
             timestamp: 10,
             text: "from_main".into(),
         };
@@ -534,7 +538,7 @@ mod tests {
         let mut b = ChapterSummaries::empty_for(book_id, 3);
         b.entries[1] = ChapterSummary {
             generated: true,
-            model: TranslationModel::Gemini25Flash,
+            model: "models/gemini-2.5-flash".to_string(),
             timestamp: 20,
             text: "from_conflict".into(),
         };

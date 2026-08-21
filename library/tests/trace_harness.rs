@@ -12,7 +12,6 @@ use library::{
     book::{book::Book, serialization::Serializable, translation::Translation, translation_import},
     library::{Library, library_book::BookReadingState},
     tla_trace,
-    translator::TranslationModel,
 };
 
 struct TempDir {
@@ -198,11 +197,14 @@ async fn trace_translation_merge_and_save() {
         let mut book = book.lock().await;
         book.book.push_chapter(Some("Intro"));
         book.book.push_paragraph(0, "hello", None);
-        let translation = book.get_or_create_translation(&target_language).await.unwrap();
+        let translation = book
+            .get_or_create_translation(&target_language)
+            .await
+            .unwrap();
         translation.lock().await.add_paragraph_translation(
             0,
             &make_paragraph(1, "v1"),
-            TranslationModel::Gemini25Flash,
+            "models/gemini-2.5-flash",
         );
         book.save().await.unwrap();
         book.book.id
@@ -219,11 +221,14 @@ async fn trace_translation_merge_and_save() {
     let library = Library::open(library_root.clone()).await.unwrap();
     let book = library.get_book(&book_id).await.unwrap();
     let mut book = book.lock().await;
-    let translation = book.get_or_create_translation(&target_language).await.unwrap();
+    let translation = book
+        .get_or_create_translation(&target_language)
+        .await
+        .unwrap();
     translation.lock().await.add_paragraph_translation(
         0,
         &make_paragraph(2, "mem"),
-        TranslationModel::Gemini25Flash,
+        "models/gemini-2.5-flash",
     );
 
     sleep_for_mtime_tick();
@@ -231,11 +236,7 @@ async fn trace_translation_merge_and_save() {
         let file = std::fs::File::open(&translation_file).unwrap();
         let mut reader = BufReader::new(file);
         let mut on_disk = Translation::deserialize(&mut reader).unwrap();
-        on_disk.add_paragraph_translation(
-            0,
-            &make_paragraph(3, "disk"),
-            TranslationModel::Gemini25Flash,
-        );
+        on_disk.add_paragraph_translation(0, &make_paragraph(3, "disk"), "models/gemini-2.5-flash");
         let file = std::fs::File::create(&translation_file).unwrap();
         let mut writer = BufWriter::new(file);
         on_disk.serialize(&mut writer).unwrap();

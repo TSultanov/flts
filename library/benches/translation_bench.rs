@@ -1,8 +1,7 @@
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{criterion_group, criterion_main, Criterion};
 use library::book::serialization::Serializable;
 use library::book::translation::Translation;
 use library::book::translation_import::{Grammar, ParagraphTranslation, Sentence, Word};
-use library::translator::TranslationModel;
 use rand::distr::Alphanumeric;
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -85,11 +84,7 @@ fn generate_translation(paragraphs_count: usize) -> Translation {
             total_tokens: Some(rng.random_range(50..200)),
         };
 
-        translation.add_paragraph_translation(
-            i,
-            &paragraph_translation,
-            TranslationModel::Gemini25Flash,
-        );
+        translation.add_paragraph_translation(i, &paragraph_translation, "models/gemini-2.5-flash");
     }
     translation
 }

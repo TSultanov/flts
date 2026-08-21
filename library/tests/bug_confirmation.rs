@@ -9,7 +9,6 @@ use isolang::Language;
 use library::{
     book::{book::Book, serialization::Serializable, translation::Translation, translation_import},
     library::Library,
-    translator::TranslationModel,
 };
 
 struct TempDir {
@@ -213,11 +212,14 @@ async fn repro_translation_same_timestamp_conflict_collapses_distinct_version() 
         book.book.push_chapter(Some("Intro"));
         book.book.push_paragraph(0, "source paragraph", None);
 
-        let translation = book.get_or_create_translation(&target_language).await.unwrap();
+        let translation = book
+            .get_or_create_translation(&target_language)
+            .await
+            .unwrap();
         translation.lock().await.add_paragraph_translation(
             0,
             &make_paragraph(1, "main version"),
-            TranslationModel::Gemini25Flash,
+            "models/gemini-2.5-flash",
         );
         book.save().await.unwrap();
         book.book.id
@@ -242,7 +244,7 @@ async fn repro_translation_same_timestamp_conflict_collapses_distinct_version() 
     conflict_translation.add_paragraph_translation(
         0,
         &make_paragraph(1, "conflict version"),
-        TranslationModel::Gemini25Flash,
+        "models/gemini-2.5-flash",
     );
     write_translation(&conflict_path, &conflict_translation);
 
@@ -251,7 +253,10 @@ async fn repro_translation_same_timestamp_conflict_collapses_distinct_version() 
     let library = Library::open(library_root).await.unwrap();
     let loaded = library.get_book(&book_id).await.unwrap();
     let mut loaded = loaded.lock().await;
-    let translation = loaded.get_or_create_translation(&target_language).await.unwrap();
+    let translation = loaded
+        .get_or_create_translation(&target_language)
+        .await
+        .unwrap();
     let translation = translation.lock().await;
     let latest = translation.paragraph_view(0).unwrap();
     let latest_text = latest.sentence_view(0).full_translation.to_string();

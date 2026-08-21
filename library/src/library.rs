@@ -499,16 +499,14 @@ impl Library {
 
                 let collected: Vec<(usize, translation_import::ParagraphTranslation)> = {
                     let mut book = book_arc.lock().await;
-                    let translation_arc = match book
-                        .get_or_create_translation(&target_language)
-                        .await
-                    {
-                        Ok(arc) => arc,
-                        Err(err) => {
-                            log::warn!("Backfill: {err} on book {}", book_meta.id);
-                            continue;
-                        }
-                    };
+                    let translation_arc =
+                        match book.get_or_create_translation(&target_language).await {
+                            Ok(arc) => arc,
+                            Err(err) => {
+                                log::warn!("Backfill: {err} on book {}", book_meta.id);
+                                continue;
+                            }
+                        };
                     let translation = translation_arc.lock().await;
                     let mut out = Vec::new();
                     for chapter in book.book.chapter_views() {
@@ -1222,10 +1220,7 @@ mod library_tests {
         let judge: Card =
             serde_json::from_slice(&std::fs::read(deck.join("judge.json")).unwrap()).unwrap();
         assert!(
-            judge
-                .translations
-                .keys()
-                .any(|k| k.contains("глагол")),
+            judge.translations.keys().any(|k| k.contains("глагол")),
             "expected noisy PoS as a key inside translations, got {:?}",
             judge.translations.keys().collect::<Vec<_>>()
         );
@@ -1281,7 +1276,6 @@ mod library_tests {
         paragraph: &translation_import::ParagraphTranslation,
         target_language: Language,
     ) {
-        use crate::translator::TranslationModel;
         let book_arc = library.get_book(&book_id).await.unwrap();
         let mut book = book_arc.lock().await;
         let translation_arc = book
@@ -1291,7 +1285,7 @@ mod library_tests {
         translation_arc.lock().await.add_paragraph_translation(
             paragraph_id,
             paragraph,
-            TranslationModel::Gemini25Flash,
+            "models/gemini-2.5-flash",
         );
         book.save().await.unwrap();
     }

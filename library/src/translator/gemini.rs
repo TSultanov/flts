@@ -18,8 +18,7 @@ use crate::{
     book::translation_import::ParagraphTranslation,
     cache::TranslationsCache,
     translator::{
-        ChapterContextProvider, ProgressCallback, TranslationContext, TranslationErrors,
-        TranslationModel, Translator,
+        ChapterContextProvider, ProgressCallback, TranslationContext, Translator,
         gemini_cache::{
             CacheContent, CacheKey, GeminiPromptCache, build_reference_material,
             is_cache_missing_error,
@@ -39,28 +38,8 @@ use super::{
 /// here would silently hang every paragraph sharing the cache init future.
 const CACHE_CREATE_TIMEOUT: Duration = Duration::from_secs(120);
 
-pub(crate) fn gemini_model(m: TranslationModel) -> anyhow::Result<Model> {
-    Ok(match m {
-        TranslationModel::Gemini25Flash => Model::Gemini25Flash,
-        TranslationModel::Gemini25Pro => Model::Gemini25Pro,
-        TranslationModel::Gemini25FlashLight => Model::Gemini25FlashLite,
-        TranslationModel::Gemini3Pro => Model::Gemini3Pro,
-        TranslationModel::Gemini3Flash => Model::Gemini3Flash,
-        TranslationModel::Gemini31Pro => Model::Custom("models/gemini-3.1-pro-preview".to_string()),
-        TranslationModel::Gemini31FlashLite => {
-            Model::Custom("models/gemini-3.1-flash-lite-preview".to_string())
-        },
-        TranslationModel::Gemini35Flash => {
-            Model::Custom("models/gemini-3.5-flash".to_string())
-        },
-        TranslationModel::Gemini36Flash => {
-            Model::Custom("models/gemini-3.6-flash".to_string())
-        },
-        TranslationModel::Gemini37Flash => {
-            Model::Custom("models/gemini-3.7-flash".to_string())
-        },
-        _ => Err(TranslationErrors::UnknownModel)?,
-    })
+fn is_gemini_25_flash(id: &str) -> bool {
+    id == "models/gemini-2.5-flash" || id == "gemini-2.5-flash"
 }
 
 /// Empty is treated as unset so an exported-but-blank var doesn't break the client.
@@ -137,8 +116,7 @@ pub struct GeminiTranslator {
     prompt_cache: Arc<GeminiPromptCache>,
     client: Gemini,
     schema: Arc<Value>,
-    model: Model,
-    translation_model: TranslationModel,
+    translation_model: String,
     from: Language,
     to: Language,
 }
@@ -148,13 +126,13 @@ impl GeminiTranslator {
         cache: Arc<TranslationsCache>,
         context_provider: Arc<dyn ChapterContextProvider>,
         prompt_cache: Arc<GeminiPromptCache>,
-        translation_model: TranslationModel,
+        translation_model: &str,
         api_key: String,
         from: &Language,
         to: &Language,
     ) -> anyhow::Result<GeminiTranslator> {
-        let model = gemini_model(translation_model)?;
-        let client = gemini_client(api_key, model.clone())?;
+        let model = Model::Custom(translation_model.to_string());
+        let client = gemini_client(api_key, model)?;
 
         Ok(Self {
             cache,
@@ -162,8 +140,7 @@ impl GeminiTranslator {
             prompt_cache,
             client,
             schema: Arc::new(gemini_paragraph_schema()),
-            model,
-            translation_model,
+            translation_model: translation_model.to_string(),
             from: *from,
             to: *to,
         })
@@ -171,7 +148,7 @@ impl GeminiTranslator {
 
     fn cache_key(&self, book_id: Uuid, chapter_id: usize) -> CacheKey {
         CacheKey {
-            model: self.translation_model,
+            model: self.translation_model.clone(),
             from: self.from,
             to: self.to,
             book_id,
@@ -180,17 +157,18 @@ impl GeminiTranslator {
     }
 
     fn thinking_config(&self) -> ThinkingConfig {
-        match &self.model {
-            Model::Gemini25Flash => ThinkingConfig {
+        if is_gemini_25_flash(&self.translation_model) {
+            ThinkingConfig {
                 thinking_budget: Some(0),
                 include_thoughts: Some(false),
                 thinking_level: None,
-            },
-            _ => ThinkingConfig {
+            }
+        } else {
+            ThinkingConfig {
                 thinking_budget: None,
                 include_thoughts: Some(false),
                 thinking_level: None,
-            },
+            }
         }
     }
 
@@ -333,8 +311,8 @@ impl GeminiTranslator {
 
 #[async_trait]
 impl Translator for GeminiTranslator {
-    fn get_model(&self) -> super::TranslationModel {
-        self.translation_model
+    fn get_model(&self) -> String {
+        self.translation_model.clone()
     }
 
     async fn get_translation(
@@ -386,9 +364,7 @@ impl Translator for GeminiTranslator {
         let mut translation = match first {
             Ok(t) => t,
             Err(err) if is_cache_missing_error(&err) => {
-                warn!(
-                    "Gemini cache appears expired/missing; evicting and retrying. ({err})"
-                );
+                warn!("Gemini cache appears expired/missing; evicting and retrying. ({err})");
                 self.prompt_cache
                     .evict(&self.cache_key(book_id, chapter_id))
                     .await;

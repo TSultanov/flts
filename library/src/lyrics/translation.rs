@@ -20,8 +20,8 @@ use crate::{
     retry::{RetryConfig, retry},
     translator::{
         ProgressCallback, StreamChunkAccumulator, TRANSLATION_REQUEST_TIMEOUT,
-        TRANSLATION_STREAM_IDLE_TIMEOUT, TranslationErrors, TranslationModel, TranslationProvider,
-        is_transient_translation_error, strip_additional_properties, total_stream_timeout,
+        TRANSLATION_STREAM_IDLE_TIMEOUT, TranslationProvider, is_transient_translation_error,
+        strip_additional_properties, total_stream_timeout,
     },
 };
 
@@ -52,7 +52,7 @@ pub trait LyricsTranslator: Send + Sync {
 
 pub fn get_lyrics_translator(
     provider: TranslationProvider,
-    model: TranslationModel,
+    model: &str,
     api_key: String,
     to: Language,
 ) -> anyhow::Result<Box<dyn LyricsTranslator>> {
@@ -61,9 +61,15 @@ pub fn get_lyrics_translator(
             model, api_key, to,
         )?)),
         TranslationProvider::Openai | TranslationProvider::Deepseek | TranslationProvider::Zai => {
-            Ok(Box::new(LyricsOpenAITranslator::create(model, api_key, to)?))
+            Ok(Box::new(LyricsOpenAITranslator::create(
+                provider, model, api_key, to,
+            )?))
         }
     }
+}
+
+fn is_gemini_25_flash(id: &str) -> bool {
+    id == "models/gemini-2.5-flash" || id == "gemini-2.5-flash"
 }
 
 fn lyrics_schema() -> Value {
@@ -162,41 +168,28 @@ pub struct LyricsOpenAITranslator {
 
 impl LyricsOpenAITranslator {
     pub fn create(
-        translation_model: TranslationModel,
+        provider: TranslationProvider,
+        model: &str,
         api_key: String,
         to: Language,
     ) -> anyhow::Result<Self> {
-        let model_name = openai_model_name(translation_model)?;
-        let provider = translation_model.provider();
         let mut config = OpenAIConfig::new().with_api_key(api_key);
-        if let Some(url) = provider.and_then(crate::translator::openai::openai_compat_base_url) {
+        if let Some(url) = crate::translator::openai::openai_compat_base_url(provider) {
             config = config.with_api_base(&url);
         }
         let client = Client::with_config(config);
         Ok(Self {
             client,
             schema: Arc::new(lyrics_schema()),
-            model_name: Arc::from(model_name),
-            is_deepseek: matches!(provider, Some(TranslationProvider::Deepseek) | Some(TranslationProvider::Zai)),
-            is_zai: matches!(provider, Some(TranslationProvider::Zai)),
+            model_name: Arc::from(model),
+            is_deepseek: matches!(
+                provider,
+                TranslationProvider::Deepseek | TranslationProvider::Zai
+            ),
+            is_zai: matches!(provider, TranslationProvider::Zai),
             to,
         })
     }
-}
-
-fn openai_model_name(m: TranslationModel) -> anyhow::Result<&'static str> {
-    Ok(match m {
-        TranslationModel::OpenAIGpt52 => "gpt-5.2",
-        TranslationModel::OpenAIGpt52Pro => "gpt-5.2-pro",
-        TranslationModel::OpenAIGpt5Mini => "gpt-5-mini",
-        TranslationModel::OpenAIGpt5Nano => "gpt-5-nano",
-        TranslationModel::OpenAIGpt54 => "gpt-5.4",
-        TranslationModel::OpenAIGpt54Mini => "gpt-5.4-mini",
-        TranslationModel::DeepSeekV4Flash => "deepseek-v4-flash",
-        TranslationModel::DeepSeekV4Pro => "deepseek-v4-pro",
-        TranslationModel::ZaiGlm52 => "glm-5.2",
-        _ => Err(TranslationErrors::UnknownModel)?,
-    })
 }
 
 #[async_trait]
@@ -347,22 +340,18 @@ fn gemini_lyrics_schema() -> Value {
 pub struct LyricsGeminiTranslator {
     client: Gemini,
     schema: Arc<Value>,
-    model: Model,
+    model_id: String,
     to: Language,
 }
 
 impl LyricsGeminiTranslator {
-    pub fn create(
-        translation_model: TranslationModel,
-        api_key: String,
-        to: Language,
-    ) -> anyhow::Result<Self> {
-        let model = crate::translator::gemini::gemini_model(translation_model)?;
-        let client = crate::translator::gemini::gemini_client(api_key, model.clone())?;
+    pub fn create(model: &str, api_key: String, to: Language) -> anyhow::Result<Self> {
+        let gemini_model = Model::Custom(model.to_string());
+        let client = crate::translator::gemini::gemini_client(api_key, gemini_model)?;
         Ok(Self {
             client,
             schema: Arc::new(gemini_lyrics_schema()),
-            model,
+            model_id: model.to_string(),
             to,
         })
     }
@@ -386,23 +375,24 @@ impl LyricsTranslator for LyricsGeminiTranslator {
                 let user = user_message(lines);
 
                 info!(
-                    "Gemini lyrics: model={:?} to={} lines={}",
-                    self.model,
+                    "Gemini lyrics: model={} to={} lines={}",
+                    self.model_id,
                     self.to.to_639_3(),
                     lines.len()
                 );
 
-                let thinking_config = match &self.model {
-                    Model::Gemini25Flash => ThinkingConfig {
+                let thinking_config = if is_gemini_25_flash(&self.model_id) {
+                    ThinkingConfig {
                         thinking_budget: Some(0),
                         include_thoughts: Some(false),
                         thinking_level: None,
-                    },
-                    _ => ThinkingConfig {
+                    }
+                } else {
+                    ThinkingConfig {
                         thinking_budget: None,
                         include_thoughts: Some(false),
                         thinking_level: None,
-                    },
+                    }
                 };
 
                 let mut stream = timeout(

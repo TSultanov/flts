@@ -14,7 +14,6 @@ use std::sync::Arc;
 use isolang::Language;
 use library::book::translation_import;
 use library::library::Library;
-use library::translator::TranslationModel;
 
 struct TempDir {
     path: PathBuf,
@@ -81,7 +80,7 @@ async fn setup_dirty_library(lib_path: &Path) -> (Arc<Library>, uuid::Uuid) {
         t.add_paragraph_translation(
             0,
             &make_translation("Это тестовый абзац."),
-            TranslationModel::Gemini25Flash,
+            "models/gemini-2.5-flash",
         );
 
         let pv = t.paragraph_view(0);

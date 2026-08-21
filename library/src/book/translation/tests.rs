@@ -108,12 +108,12 @@ fn test_translation_add_paragraph_translation() {
             ],
         }],
     };
-    translation.add_paragraph_translation(0, &paragraph_translation, TranslationModel::Gemini25Pro);
+    translation.add_paragraph_translation(0, &paragraph_translation, "models/gemini-2.5-pro");
     let paragraph_view = translation.paragraph_view(0).unwrap();
     assert_eq!(paragraph_view.timestamp, 1234567890);
     assert_eq!(paragraph_view.previous_version, None);
     assert_eq!(paragraph_view.sentence_count(), 1);
-    assert_eq!(paragraph_view.model, TranslationModel::Gemini25Pro);
+    assert_eq!(paragraph_view.model, "models/gemini-2.5-pro");
     let sentence_view = paragraph_view.sentence_view(0);
     assert_eq!(sentence_view.full_translation, "Hello, world!");
     assert_eq!(sentence_view.word_count(), 4);
@@ -160,11 +160,7 @@ fn translation_serialize_deserialize_round_trip() {
             }],
         }],
     };
-    translation.add_paragraph_translation(
-        0,
-        &paragraph_translation,
-        TranslationModel::Gemini25Flash,
-    );
+    translation.add_paragraph_translation(0, &paragraph_translation, "models/gemini-2.5-flash");
 
     let paragraph_translation2 = translation_import::ParagraphTranslation {
         total_tokens: Some(4321),
@@ -210,7 +206,7 @@ fn translation_serialize_deserialize_round_trip() {
     translation.add_paragraph_translation(
         0,
         &paragraph_translation2,
-        TranslationModel::Gemini25FlashLight,
+        "models/gemini-2.5-flash-lite",
     );
 
     let mut buf: Vec<u8> = vec![];
@@ -222,7 +218,7 @@ fn translation_serialize_deserialize_round_trip() {
     assert_eq!(translation2.target_language, "ru");
     let latest = translation2.paragraph_view(0).unwrap();
     assert_eq!(latest.sentence_count(), 1);
-    assert_eq!(latest.model, TranslationModel::Gemini25FlashLight);
+    assert_eq!(latest.model, "models/gemini-2.5-flash-lite");
     assert_eq!(latest.total_tokens, Some(4321));
     let sentence = latest.sentence_view(0);
     assert_eq!(sentence.full_translation, "Hi there");
@@ -263,11 +259,7 @@ fn translation_serialize_v1_deserialize_round_trip() {
             }],
         }],
     };
-    translation.add_paragraph_translation(
-        0,
-        &paragraph_translation,
-        TranslationModel::Gemini25Flash,
-    );
+    translation.add_paragraph_translation(0, &paragraph_translation, "models/gemini-2.5-flash");
 
     let paragraph_translation2 = translation_import::ParagraphTranslation {
         total_tokens: None,
@@ -313,7 +305,7 @@ fn translation_serialize_v1_deserialize_round_trip() {
     translation.add_paragraph_translation(
         0,
         &paragraph_translation2,
-        TranslationModel::Gemini25FlashLight,
+        "models/gemini-2.5-flash-lite",
     );
 
     let mut buf: Vec<u8> = vec![];
@@ -325,7 +317,7 @@ fn translation_serialize_v1_deserialize_round_trip() {
     assert_eq!(translation2.target_language, "ru");
     let latest = translation2.paragraph_view(0).unwrap();
     assert_eq!(latest.sentence_count(), 1);
-    assert_eq!(latest.model, TranslationModel::Unknown);
+    assert_eq!(latest.model, "");
     let sentence = latest.sentence_view(0);
     assert_eq!(sentence.full_translation, "Hi there");
     assert_eq!(sentence.word_count(), 2);
@@ -365,11 +357,7 @@ fn translation_serialize_deserialize_corruption() {
             }],
         }],
     };
-    translation.add_paragraph_translation(
-        0,
-        &paragraph_translation,
-        TranslationModel::Gemini25Flash,
-    );
+    translation.add_paragraph_translation(0, &paragraph_translation, "models/gemini-2.5-flash");
 
     let paragraph_translation2 = translation_import::ParagraphTranslation {
         total_tokens: None,
@@ -412,11 +400,7 @@ fn translation_serialize_deserialize_corruption() {
             ],
         }],
     };
-    translation.add_paragraph_translation(
-        0,
-        &paragraph_translation2,
-        TranslationModel::Gemini25Flash,
-    );
+    translation.add_paragraph_translation(0, &paragraph_translation2, "models/gemini-2.5-flash");
 
     let mut buf: Vec<u8> = vec![];
     translation.serialize(&mut buf).unwrap();
@@ -431,12 +415,12 @@ fn translation_serialize_deserialize_corruption() {
 #[test]
 fn merge_same_history() {
     let mut a = Translation::create("en", "ru");
-    a.add_paragraph_translation(0, &make_paragraph(1, "v1"), TranslationModel::Gemini25Flash);
-    a.add_paragraph_translation(0, &make_paragraph(2, "v2"), TranslationModel::Gemini25Flash);
+    a.add_paragraph_translation(0, &make_paragraph(1, "v1"), "models/gemini-2.5-flash");
+    a.add_paragraph_translation(0, &make_paragraph(2, "v2"), "models/gemini-2.5-flash");
 
     let mut b = Translation::create("en", "ru");
-    b.add_paragraph_translation(0, &make_paragraph(1, "v1"), TranslationModel::Gemini25Flash);
-    b.add_paragraph_translation(0, &make_paragraph(2, "v2"), TranslationModel::Gemini25Flash);
+    b.add_paragraph_translation(0, &make_paragraph(1, "v1"), "models/gemini-2.5-flash");
+    b.add_paragraph_translation(0, &make_paragraph(2, "v2"), "models/gemini-2.5-flash");
 
     let merged = a.merge(&b);
 
@@ -453,15 +437,15 @@ fn merge_same_history() {
 fn merge_diverged_common_root() {
     // a: 1 -> 2 -> 4
     let mut a = Translation::create("en", "ru");
-    a.add_paragraph_translation(0, &make_paragraph(1, "a1"), TranslationModel::Gemini25Flash);
-    a.add_paragraph_translation(0, &make_paragraph(2, "a2"), TranslationModel::Gemini25Flash);
-    a.add_paragraph_translation(0, &make_paragraph(4, "a4"), TranslationModel::Gemini25Flash);
+    a.add_paragraph_translation(0, &make_paragraph(1, "a1"), "models/gemini-2.5-flash");
+    a.add_paragraph_translation(0, &make_paragraph(2, "a2"), "models/gemini-2.5-flash");
+    a.add_paragraph_translation(0, &make_paragraph(4, "a4"), "models/gemini-2.5-flash");
 
     // b: 1 -> 3 -> 5
     let mut b = Translation::create("en", "ru");
-    b.add_paragraph_translation(0, &make_paragraph(1, "a1"), TranslationModel::Gemini25Flash); // same ts as a1
-    b.add_paragraph_translation(0, &make_paragraph(3, "a3"), TranslationModel::Gemini25Flash);
-    b.add_paragraph_translation(0, &make_paragraph(5, "a5"), TranslationModel::Gemini25Flash);
+    b.add_paragraph_translation(0, &make_paragraph(1, "a1"), "models/gemini-2.5-flash"); // same ts as a1
+    b.add_paragraph_translation(0, &make_paragraph(3, "a3"), "models/gemini-2.5-flash");
+    b.add_paragraph_translation(0, &make_paragraph(5, "a5"), "models/gemini-2.5-flash");
 
     let merged = a.merge(&b);
 
@@ -493,30 +477,14 @@ fn merge_diverged_common_root() {
 fn merge_no_common_root() {
     // a: 10 -> 20
     let mut a = Translation::create("en", "ru");
-    a.add_paragraph_translation(
-        0,
-        &make_paragraph(10, "a10"),
-        TranslationModel::Gemini25Flash,
-    );
-    a.add_paragraph_translation(
-        0,
-        &make_paragraph(20, "a20"),
-        TranslationModel::Gemini25Flash,
-    );
+    a.add_paragraph_translation(0, &make_paragraph(10, "a10"), "models/gemini-2.5-flash");
+    a.add_paragraph_translation(0, &make_paragraph(20, "a20"), "models/gemini-2.5-flash");
 
     // b: 5 -> 15 -> 25
     let mut b = Translation::create("en", "ru");
-    b.add_paragraph_translation(0, &make_paragraph(5, "b5"), TranslationModel::Gemini25Flash);
-    b.add_paragraph_translation(
-        0,
-        &make_paragraph(15, "b15"),
-        TranslationModel::Gemini25Flash,
-    );
-    b.add_paragraph_translation(
-        0,
-        &make_paragraph(25, "b25"),
-        TranslationModel::Gemini25Flash,
-    );
+    b.add_paragraph_translation(0, &make_paragraph(5, "b5"), "models/gemini-2.5-flash");
+    b.add_paragraph_translation(0, &make_paragraph(15, "b15"), "models/gemini-2.5-flash");
+    b.add_paragraph_translation(0, &make_paragraph(25, "b25"), "models/gemini-2.5-flash");
 
     let merged = a.merge(&b);
     let mut ts = Vec::new();
@@ -533,12 +501,12 @@ fn merge_no_common_root() {
 fn merge_present_only_in_one_side() {
     // Paragraph 0 only in left, with history 1 -> 2
     let mut a = Translation::create("en", "ru");
-    a.add_paragraph_translation(0, &make_paragraph(1, "a1"), TranslationModel::Gemini25Flash);
-    a.add_paragraph_translation(0, &make_paragraph(2, "a2"), TranslationModel::Gemini25Flash);
+    a.add_paragraph_translation(0, &make_paragraph(1, "a1"), "models/gemini-2.5-flash");
+    a.add_paragraph_translation(0, &make_paragraph(2, "a2"), "models/gemini-2.5-flash");
     // Paragraph 1 only in right, with single version 3
     let b = {
         let mut t = Translation::create("en", "ru");
-        t.add_paragraph_translation(1, &make_paragraph(3, "b3"), TranslationModel::Gemini25Flash);
+        t.add_paragraph_translation(1, &make_paragraph(3, "b3"), "models/gemini-2.5-flash");
         t
     };
 
@@ -563,20 +531,12 @@ fn merge_visible_words_union() {
     // Same timestamp, disjoint `visible_words`: the on-disk merge must union
     // them for books that carry the field.
     let mut a = Translation::create("en", "ru");
-    a.add_paragraph_translation(
-        0,
-        &make_paragraph(1, "shared"),
-        TranslationModel::Gemini25Flash,
-    );
+    a.add_paragraph_translation(0, &make_paragraph(1, "shared"), "models/gemini-2.5-flash");
     a.add_visible_word(0, 1);
     a.add_visible_word(0, 3);
 
     let mut b = Translation::create("en", "ru");
-    b.add_paragraph_translation(
-        0,
-        &make_paragraph(1, "shared"),
-        TranslationModel::Gemini25Flash,
-    );
+    b.add_paragraph_translation(0, &make_paragraph(1, "shared"), "models/gemini-2.5-flash");
     b.add_visible_word(0, 2);
     b.add_visible_word(0, 3); // Overlaps with a
 
@@ -596,7 +556,7 @@ fn to_import_empty_paragraph() {
         total_tokens: Some(17),
         sentences: vec![],
     };
-    translation.add_paragraph_translation(0, &input, TranslationModel::Gemini25Flash);
+    translation.add_paragraph_translation(0, &input, "models/gemini-2.5-flash");
 
     let view = translation.paragraph_view(0).unwrap();
     let out = view.to_import();
@@ -650,7 +610,7 @@ fn to_import_word_grammar_and_punctuation() {
             ],
         }],
     };
-    translation.add_paragraph_translation(0, &input, TranslationModel::Gemini25Flash);
+    translation.add_paragraph_translation(0, &input, "models/gemini-2.5-flash");
 
     let view = translation.paragraph_view(0).unwrap();
     let out = view.to_import();
@@ -765,7 +725,7 @@ fn to_import_round_trip_via_add_paragraph_translation() {
     };
 
     let mut translation = Translation::create("spa", "rus");
-    translation.add_paragraph_translation(0, &input, TranslationModel::Gemini25Flash);
+    translation.add_paragraph_translation(0, &input, "models/gemini-2.5-flash");
 
     let view = translation.paragraph_view(0).unwrap();
     let out = view.to_import();

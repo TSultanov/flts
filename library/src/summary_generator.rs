@@ -14,12 +14,12 @@ use async_openai::{
         CreateChatCompletionResponse,
     },
 };
-use gemini_rust::{Gemini, GenerationResponse};
+use gemini_rust::{Gemini, GenerationResponse, Model};
 use isolang::Language;
 use log::{debug, info};
 use tokio::time::timeout;
 
-use crate::translator::{TranslationModel, TranslationProvider};
+use crate::translator::TranslationProvider;
 
 /// Generous ceiling: output is short but a slow model on a long chapter is
 /// not, and an aggressive retry just makes the caller abandon the book.
@@ -36,19 +36,19 @@ enum SummaryBackend {
 /// Pre-built LLM client for chapter summaries. Model, provider, and key are
 /// invariant for a queue's lifetime, so build one per worker and share it.
 pub struct ChapterSummarizer {
-    pub model: TranslationModel,
+    pub model: String,
     backend: SummaryBackend,
 }
 
 impl ChapterSummarizer {
     pub fn create(
         provider: TranslationProvider,
-        model: TranslationModel,
+        model: &str,
         api_key: &str,
     ) -> anyhow::Result<Self> {
         let backend = match provider {
             TranslationProvider::Google => {
-                let gemini_model = crate::translator::gemini::gemini_model(model)?;
+                let gemini_model = Model::Custom(model.to_string());
                 let client =
                     crate::translator::gemini::gemini_client(api_key.to_string(), gemini_model)?;
                 SummaryBackend::Gemini(client)
@@ -56,7 +56,7 @@ impl ChapterSummarizer {
             TranslationProvider::Openai
             | TranslationProvider::Deepseek
             | TranslationProvider::Zai => {
-                let model_name = crate::translator::openai::openai_model_name(model)?.to_owned();
+                let model_name = model.to_string();
                 let base_url = crate::translator::openai::openai_compat_base_url(provider);
                 let client = crate::translator::openai::openai_client(
                     api_key.to_string(),
@@ -65,7 +65,10 @@ impl ChapterSummarizer {
                 SummaryBackend::OpenAi { client, model_name }
             }
         };
-        Ok(Self { model, backend })
+        Ok(Self {
+            model: model.to_string(),
+            backend,
+        })
     }
 
     /// One non-streaming call, yielding a summary in the source language.
@@ -115,10 +118,22 @@ impl ChapterSummarizer {
                      tokens(prompt/cand/thoughts/total)={:?}/{:?}/{:?}/{:?}",
                     response.response_id.as_deref(),
                     response.model_version.as_deref(),
-                    response.usage_metadata.as_ref().and_then(|u| u.prompt_token_count),
-                    response.usage_metadata.as_ref().and_then(|u| u.candidates_token_count),
-                    response.usage_metadata.as_ref().and_then(|u| u.thoughts_token_count),
-                    response.usage_metadata.as_ref().and_then(|u| u.total_token_count),
+                    response
+                        .usage_metadata
+                        .as_ref()
+                        .and_then(|u| u.prompt_token_count),
+                    response
+                        .usage_metadata
+                        .as_ref()
+                        .and_then(|u| u.candidates_token_count),
+                    response
+                        .usage_metadata
+                        .as_ref()
+                        .and_then(|u| u.thoughts_token_count),
+                    response
+                        .usage_metadata
+                        .as_ref()
+                        .and_then(|u| u.total_token_count),
                 );
                 Ok(text)
             }
@@ -139,12 +154,9 @@ impl ChapterSummarizer {
                     ])
                     .build()?;
 
-                let response = timeout(
-                    SUMMARY_REQUEST_TIMEOUT,
-                    client.chat().create(request),
-                )
-                .await
-                .map_err(|_| anyhow::anyhow!("OpenAI summary request timed out"))??;
+                let response = timeout(SUMMARY_REQUEST_TIMEOUT, client.chat().create(request))
+                    .await
+                    .map_err(|_| anyhow::anyhow!("OpenAI summary request timed out"))??;
 
                 let text = response
                     .choices
@@ -302,7 +314,10 @@ fn describe_empty_gemini_response(resp: &GenerationResponse) -> String {
 fn part_variant_name(p: &gemini_rust::Part) -> &'static str {
     use gemini_rust::Part;
     match p {
-        Part::Text { thought: Some(true), .. } => "Text(thought)",
+        Part::Text {
+            thought: Some(true),
+            ..
+        } => "Text(thought)",
         Part::Text { .. } => "Text",
         Part::InlineData { .. } => "InlineData",
         Part::FunctionCall { .. } => "FunctionCall",

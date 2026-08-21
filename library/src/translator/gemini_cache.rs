@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, OnceCell};
 use uuid::Uuid;
 
-use crate::{cache::DiskCache, translator::TranslationModel};
+use crate::cache::DiskCache;
 
 /// Refreshed on every use, so the TTL only sizes the post-last-use billing
 /// tail. Storage bills per token-hour on every chapter the reader leaves
@@ -32,7 +32,7 @@ pub const FLTS_CACHE_DISPLAY_PREFIX: &str = "flts-";
 
 #[derive(Clone, Hash, Eq, PartialEq, Debug)]
 pub struct CacheKey {
-    pub model: TranslationModel,
+    pub model: String,
     pub from: Language,
     pub to: Language,
     pub book_id: Uuid,
@@ -280,10 +280,16 @@ fn fingerprint_of(content: &CacheContent) -> u64 {
     h.finish()
 }
 
+fn sanitize_model(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
+}
+
 fn disk_key(key: &CacheKey) -> String {
     format!(
         "flts-gemini-{}-{}-{}-{}-c{}",
-        usize::from(key.model),
+        sanitize_model(&key.model),
         key.from.to_639_3(),
         key.to.to_639_3(),
         key.book_id,
@@ -295,7 +301,7 @@ fn cache_display_name(key: &CacheKey) -> String {
     // Gemini caps display names at 128 chars; this stays well under.
     format!(
         "{FLTS_CACHE_DISPLAY_PREFIX}{}-{}-{}-{}-c{}",
-        usize::from(key.model),
+        sanitize_model(&key.model),
         key.from.to_639_3(),
         key.to.to_639_3(),
         key.book_id,
@@ -367,11 +373,10 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
-    use crate::translator::TranslationModel;
 
-    fn key(model: TranslationModel, from: Language, to: Language, chapter: usize) -> CacheKey {
+    fn key(model: &str, from: Language, to: Language, chapter: usize) -> CacheKey {
         CacheKey {
-            model,
+            model: model.to_string(),
             from,
             to,
             book_id: Uuid::nil(),
@@ -426,7 +431,7 @@ mod tests {
     async fn single_concurrent_create_for_same_key() {
         let dir = tmpdir("dedup");
         let content = make_content("a");
-        let k = key(TranslationModel::Gemini25Flash, Language::Eng, Language::Rus, 0);
+        let k = key("models/gemini-2.5-flash", Language::Eng, Language::Rus, 0);
         let cache = seed_then_open(&dir, &[(k.clone(), &content, "cachedContents/seeded")]).await;
 
         let counter = StdArc::new(AtomicUsize::new(0));
@@ -463,9 +468,9 @@ mod tests {
         let c_a = make_content("a");
         let c_b = make_content("b");
         let c_c = make_content("c");
-        let k1 = key(TranslationModel::Gemini25Flash, Language::Eng, Language::Rus, 0);
-        let k2 = key(TranslationModel::Gemini25Pro, Language::Eng, Language::Rus, 0);
-        let k3 = key(TranslationModel::Gemini25Flash, Language::Eng, Language::Spa, 0);
+        let k1 = key("models/gemini-2.5-flash", Language::Eng, Language::Rus, 0);
+        let k2 = key("models/gemini-2.5-pro", Language::Eng, Language::Rus, 0);
+        let k3 = key("models/gemini-2.5-flash", Language::Eng, Language::Spa, 0);
         let cache = seed_then_open(
             &dir,
             &[
@@ -497,7 +502,7 @@ mod tests {
     async fn evict_clears_inflight_and_disk() {
         let dir = tmpdir("evict");
         let content = make_content("a");
-        let k = key(TranslationModel::Gemini25Flash, Language::Eng, Language::Rus, 0);
+        let k = key("models/gemini-2.5-flash", Language::Eng, Language::Rus, 0);
         let cache = seed_then_open(&dir, &[(k.clone(), &content, "cachedContents/seeded")]).await;
 
         let counter = StdArc::new(AtomicUsize::new(0));
@@ -528,8 +533,9 @@ mod tests {
     async fn persisted_entry_survives_close_reopen() {
         let dir = tmpdir("reopen");
         let content = make_content("a");
-        let k = key(TranslationModel::Gemini25Flash, Language::Eng, Language::Rus, 0);
-        let cache = seed_then_open(&dir, &[(k.clone(), &content, "cachedContents/persisted")]).await;
+        let k = key("models/gemini-2.5-flash", Language::Eng, Language::Rus, 0);
+        let cache =
+            seed_then_open(&dir, &[(k.clone(), &content, "cachedContents/persisted")]).await;
 
         let counter = StdArc::new(AtomicUsize::new(0));
         let client = fake_client();
@@ -560,7 +566,7 @@ mod tests {
 
     #[test]
     fn cache_display_name_starts_with_purge_prefix() {
-        let k = key(TranslationModel::Gemini25Flash, Language::Eng, Language::Rus, 3);
+        let k = key("models/gemini-2.5-flash", Language::Eng, Language::Rus, 3);
         assert!(cache_display_name(&k).starts_with(FLTS_CACHE_DISPLAY_PREFIX));
     }
 
@@ -569,8 +575,8 @@ mod tests {
         let dir = tmpdir("clear-local");
         let c_a = make_content("a");
         let c_b = make_content("b");
-        let k1 = key(TranslationModel::Gemini25Flash, Language::Eng, Language::Rus, 0);
-        let k2 = key(TranslationModel::Gemini25Flash, Language::Eng, Language::Rus, 1);
+        let k1 = key("models/gemini-2.5-flash", Language::Eng, Language::Rus, 0);
+        let k2 = key("models/gemini-2.5-flash", Language::Eng, Language::Rus, 1);
         let cache = seed_then_open(
             &dir,
             &[

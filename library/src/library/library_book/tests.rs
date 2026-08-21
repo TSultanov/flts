@@ -12,7 +12,6 @@ use crate::{
     book::{book::Book, serialization::Serializable, translation::Translation, translation_import},
     library::{Library, LibraryTranslationMetadata, library_book::BookReadingState},
     test_utils::TempDir,
-    translator::TranslationModel,
 };
 
 #[tokio::test]
@@ -65,7 +64,8 @@ async fn list_books_conflicting_translation_versions() {
         .lock()
         .await
         .get_or_create_translation(&Language::from_str("en").unwrap())
-        .await.unwrap();
+        .await
+        .unwrap();
     book1.lock().await.save().await.unwrap();
 
     let translation_file = book1.lock().await.path.join(format!(
@@ -169,7 +169,7 @@ async fn save_after_load_book_and_translation_changed() {
                 }],
             }],
         };
-        tr.add_paragraph_translation(0, &initial_pt, TranslationModel::Gemini25Flash);
+        tr.add_paragraph_translation(0, &initial_pt, "models/gemini-2.5-flash");
         book.translations
             .push(Arc::new(TracedMutex::new(super::LibraryTranslation {
                 translation: tr,
@@ -213,10 +213,11 @@ async fn save_after_load_book_and_translation_changed() {
         };
         // Go through the wrapper so the dirty flag is set; the inner
         // Translation has no dirty tracking of its own.
-        book.translations[0]
-            .lock()
-            .await
-            .add_paragraph_translation(0, &new_pt, TranslationModel::Gemini25Flash);
+        book.translations[0].lock().await.add_paragraph_translation(
+            0,
+            &new_pt,
+            "models/gemini-2.5-flash",
+        );
 
         book.save().await.unwrap();
         book.path.clone()
@@ -280,7 +281,7 @@ async fn save_merges_translation_with_concurrent_on_disk_change() {
             }],
         }],
     };
-    tr.add_paragraph_translation(0, &pt1, TranslationModel::Gemini25Flash);
+    tr.add_paragraph_translation(0, &pt1, "models/gemini-2.5-flash");
     book.translations
         .push(Arc::new(TracedMutex::new(super::LibraryTranslation {
             translation: tr,
@@ -331,7 +332,7 @@ async fn save_merges_translation_with_concurrent_on_disk_change() {
         .lock()
         .await
         .translation
-        .add_paragraph_translation(0, &mem_pt, TranslationModel::Gemini25Flash);
+        .add_paragraph_translation(0, &mem_pt, "models/gemini-2.5-flash");
 
     {
         let mut on_disk = {
@@ -362,7 +363,7 @@ async fn save_merges_translation_with_concurrent_on_disk_change() {
                 }],
             }],
         };
-        on_disk.add_paragraph_translation(0, &disk_pt, TranslationModel::Gemini25Flash);
+        on_disk.add_paragraph_translation(0, &disk_pt, "models/gemini-2.5-flash");
         let wf = std::fs::File::create(&tr_path).unwrap();
         let mut writer = std::io::BufWriter::new(wf);
         on_disk.serialize(&mut writer).unwrap();
@@ -546,7 +547,7 @@ async fn load_from_metadata_no_conflicts() {
             }],
         }],
     };
-    t_main.add_paragraph_translation(0, &pt2, TranslationModel::Gemini25Flash);
+    t_main.add_paragraph_translation(0, &pt2, "models/gemini-2.5-flash");
     {
         let f = std::fs::File::create(&main_path).unwrap();
         let mut writer = std::io::BufWriter::new(f);
@@ -616,7 +617,7 @@ async fn load_from_metadata_merges_conflicts_and_persists() {
             }],
         }],
     };
-    t_main.add_paragraph_translation(0, &pt2, TranslationModel::Gemini25Flash);
+    t_main.add_paragraph_translation(0, &pt2, "models/gemini-2.5-flash");
     {
         let f = std::fs::File::create(&main_path).unwrap();
         let mut writer = std::io::BufWriter::new(f);
@@ -647,7 +648,7 @@ async fn load_from_metadata_merges_conflicts_and_persists() {
             }],
         }],
     };
-    t_c1.add_paragraph_translation(0, &pt1, TranslationModel::Gemini25Flash);
+    t_c1.add_paragraph_translation(0, &pt1, "models/gemini-2.5-flash");
     {
         let f = std::fs::File::create(&conflict1).unwrap();
         let mut writer = std::io::BufWriter::new(f);
@@ -678,7 +679,7 @@ async fn load_from_metadata_merges_conflicts_and_persists() {
             }],
         }],
     };
-    t_c2.add_paragraph_translation(0, &pt3, TranslationModel::Gemini25Flash);
+    t_c2.add_paragraph_translation(0, &pt3, "models/gemini-2.5-flash");
     {
         let f = std::fs::File::create(&conflict2).unwrap();
         let mut writer = std::io::BufWriter::new(f);
@@ -919,11 +920,7 @@ async fn book_with_saved_translation(
     {
         let mut book = book.lock().await;
         let mut tr = Translation::create(source_language.to_639_3(), target_language.to_639_3());
-        tr.add_paragraph_translation(
-            0,
-            &simple_paragraph("v1", 1),
-            TranslationModel::Gemini25Flash,
-        );
+        tr.add_paragraph_translation(0, &simple_paragraph("v1", 1), "models/gemini-2.5-flash");
         book.translations
             .push(Arc::new(TracedMutex::new(super::LibraryTranslation {
                 translation: tr,
@@ -952,8 +949,8 @@ async fn serialize_is_deterministic() {
     let source_language = Language::from_str("en").unwrap();
     let target_language = Language::from_str("ru").unwrap();
     let mut tr = Translation::create(source_language.to_639_3(), target_language.to_639_3());
-    tr.add_paragraph_translation(0, &simple_paragraph("hello", 1), TranslationModel::Gemini25Flash);
-    tr.add_paragraph_translation(1, &simple_paragraph("world", 2), TranslationModel::Gemini25Flash);
+    tr.add_paragraph_translation(0, &simple_paragraph("hello", 1), "models/gemini-2.5-flash");
+    tr.add_paragraph_translation(1, &simple_paragraph("world", 2), "models/gemini-2.5-flash");
 
     let mut a = Vec::new();
     let mut b = Vec::new();
@@ -1025,7 +1022,7 @@ async fn reload_translations_saves_on_external_change() {
         on_disk.add_paragraph_translation(
             0,
             &simple_paragraph("external", 5),
-            TranslationModel::Gemini25Flash,
+            "models/gemini-2.5-flash",
         );
         let wf = std::fs::File::create(&tr_path).unwrap();
         let mut writer = std::io::BufWriter::new(wf);
@@ -1042,7 +1039,10 @@ async fn reload_translations_saves_on_external_change() {
         .await
         .unwrap();
 
-    assert!(saved, "a genuine external content change must trigger a save");
+    assert!(
+        saved,
+        "a genuine external content change must trigger a save"
+    );
 }
 
 #[tokio::test]
@@ -1094,14 +1094,11 @@ async fn failed_save_keeps_in_memory_translations() {
     std::fs::write(&garbage, b"not a translation file").unwrap();
 
     // Dirty it so the failing save exercises the write path, not just rescan.
-    book.translations[0]
-        .lock()
-        .await
-        .add_paragraph_translation(
-            1,
-            &simple_paragraph("v2", 2),
-            TranslationModel::Gemini25Flash,
-        );
+    book.translations[0].lock().await.add_paragraph_translation(
+        1,
+        &simple_paragraph("v2", 2),
+        "models/gemini-2.5-flash",
+    );
 
     let result = book.save().await;
     assert!(
@@ -1150,7 +1147,7 @@ async fn save_repairs_corrupt_translation_file() {
     book.translations[0].lock().await.add_paragraph_translation(
         1,
         &simple_paragraph("v2", 2),
-        TranslationModel::Gemini25Flash,
+        "models/gemini-2.5-flash",
     );
     book.save()
         .await
@@ -1198,12 +1195,9 @@ async fn reload_translations_absorbs_older_mtime_remote_change() {
     let target_language = Language::from_str("ru").unwrap();
 
     // A remote edit: same translation plus a paragraph, mtime an hour back.
-    let mut remote = Translation::create(
-        source_language.to_639_3(),
-        target_language.to_639_3(),
-    );
-    remote.add_paragraph_translation(0, &simple_paragraph("v1", 1), TranslationModel::Gemini25Flash);
-    remote.add_paragraph_translation(1, &simple_paragraph("remote", 2), TranslationModel::Gemini25Flash);
+    let mut remote = Translation::create(source_language.to_639_3(), target_language.to_639_3());
+    remote.add_paragraph_translation(0, &simple_paragraph("v1", 1), "models/gemini-2.5-flash");
+    remote.add_paragraph_translation(1, &simple_paragraph("remote", 2), "models/gemini-2.5-flash");
     let mut buf = Vec::new();
     remote.serialize(&mut buf).unwrap();
     std::fs::write(&tr_path, &buf).unwrap();
@@ -1221,7 +1215,10 @@ async fn reload_translations_absorbs_older_mtime_remote_change() {
         .reload_translations(past, source_language, target_language)
         .await
         .unwrap();
-    assert!(had_effect, "an older-mtime remote change must not be dropped");
+    assert!(
+        had_effect,
+        "an older-mtime remote change must not be dropped"
+    );
 
     let translation = book
         .lock()

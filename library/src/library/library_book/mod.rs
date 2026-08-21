@@ -23,7 +23,6 @@ use crate::{
     },
     library::{Library, LibraryBookMetadata, LibraryError, LibraryTranslationMetadata},
     tla_trace,
-    translator::TranslationModel,
 };
 
 mod reading_state;
@@ -193,7 +192,7 @@ impl LibraryTranslation {
         &mut self,
         paragraph_index: usize,
         translation: &translation_import::ParagraphTranslation,
-        model: TranslationModel,
+        model: &str,
     ) {
         self.translation
             .add_paragraph_translation(paragraph_index, translation, model);

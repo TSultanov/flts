@@ -16,7 +16,6 @@ use library::{
     book::translation_import,
     library::Library,
     tla_trace::interaction::{InteractionTraceGuard, TraceSpan},
-    translator::TranslationModel,
 };
 use tokio::sync::Barrier;
 
@@ -136,7 +135,7 @@ async fn trace_interaction_baseline() {
     translation.lock().await.add_paragraph_translation(
         0,
         &make_paragraph(100, "Привет мир"),
-        TranslationModel::Gemini25Flash,
+        "models/gemini-2.5-flash",
     );
     span.end();
 
@@ -316,7 +315,7 @@ async fn trace_interaction_concurrent() {
         tr.lock().await.add_paragraph_translation(
             0,
             &make_paragraph(200, "Первый абзац"),
-            TranslationModel::Gemini25Flash,
+            "models/gemini-2.5-flash",
         );
         span.end();
 

@@ -19,8 +19,8 @@ use crate::{
     book::translation_import::ParagraphTranslation,
     cache::TranslationsCache,
     translator::{
-        ChapterContextProvider, TranslationContext, TranslationErrors, TranslationModel,
-        TranslationProvider, Translator, paragraph_translation_schema,
+        ChapterContextProvider, TranslationContext, TranslationProvider, Translator,
+        paragraph_translation_schema,
     },
 };
 
@@ -35,28 +35,13 @@ pub struct OpenAITranslator {
     client: Client<OpenAIConfig>,
     schema: Arc<Value>,
     model: Arc<str>,
-    translation_model: TranslationModel,
+    provider: TranslationProvider,
     from: Language,
     to: Language,
 }
 
 pub(crate) const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
 pub(crate) const ZAI_BASE_URL: &str = "https://api.z.ai/api/paas/v4/";
-
-pub(crate) fn openai_model_name(m: TranslationModel) -> anyhow::Result<&'static str> {
-    Ok(match m {
-        TranslationModel::OpenAIGpt52 => "gpt-5.2",
-        TranslationModel::OpenAIGpt52Pro => "gpt-5.2-pro",
-        TranslationModel::OpenAIGpt5Mini => "gpt-5-mini",
-        TranslationModel::OpenAIGpt5Nano => "gpt-5-nano",
-        TranslationModel::OpenAIGpt54 => "gpt-5.4",
-        TranslationModel::OpenAIGpt54Mini => "gpt-5.4-mini",
-        TranslationModel::DeepSeekV4Flash => "deepseek-v4-flash",
-        TranslationModel::DeepSeekV4Pro => "deepseek-v4-pro",
-        TranslationModel::ZaiGlm52 => "glm-5.2",
-        _ => Err(TranslationErrors::UnknownModel)?,
-    })
-}
 
 pub(crate) fn openai_client(api_key: String, base_url: Option<&str>) -> Client<OpenAIConfig> {
     let mut config = OpenAIConfig::new().with_api_key(api_key);
@@ -94,16 +79,14 @@ impl OpenAITranslator {
     pub fn create(
         cache: Arc<TranslationsCache>,
         context_provider: Arc<dyn ChapterContextProvider>,
-        translation_model: TranslationModel,
+        provider: TranslationProvider,
+        model: &str,
         api_key: String,
         from: &Language,
         to: &Language,
     ) -> anyhow::Result<Self> {
         let schema = paragraph_translation_schema();
-        let model = openai_model_name(translation_model)?;
-        let base_url = translation_model
-            .provider()
-            .and_then(openai_compat_base_url);
+        let base_url = openai_compat_base_url(provider);
         let client = openai_client(api_key, base_url.as_deref());
 
         Ok(Self {
@@ -112,7 +95,7 @@ impl OpenAITranslator {
             client,
             schema: Arc::new(schema),
             model: Arc::from(model),
-            translation_model,
+            provider,
             from: *from,
             to: *to,
         })
@@ -121,8 +104,8 @@ impl OpenAITranslator {
 
 #[async_trait]
 impl Translator for OpenAITranslator {
-    fn get_model(&self) -> TranslationModel {
-        self.translation_model
+    fn get_model(&self) -> String {
+        self.model.to_string()
     }
 
     async fn get_translation(
@@ -145,8 +128,8 @@ impl Translator for OpenAITranslator {
         let chapter_id = ctx.chapter_id;
         let callback = ctx.callback;
         let is_deepseek = matches!(
-            self.translation_model.provider(),
-            Some(TranslationProvider::Deepseek) | Some(TranslationProvider::Zai)
+            self.provider,
+            TranslationProvider::Deepseek | TranslationProvider::Zai
         );
         let mut system_prompt = format!(
             "{}\n\nReturn ONLY a single JSON object that matches the requested schema. Do not wrap it in markdown.",
@@ -209,10 +192,7 @@ impl Translator for OpenAITranslator {
             }
         };
 
-        let is_zai = matches!(
-            self.translation_model.provider(),
-            Some(TranslationProvider::Zai)
-        );
+        let is_zai = matches!(self.provider, TranslationProvider::Zai);
 
         let (full_content, finish_reason) = if is_zai {
             // z.AI's SSE streaming is unreliable, so make one blocking call.
@@ -221,10 +201,12 @@ impl Translator for OpenAITranslator {
                 .messages(messages)
                 .response_format(response_format)
                 .build()?;
-            let response =
-                timeout(TRANSLATION_REQUEST_TIMEOUT, self.client.chat().create(request))
-                    .await
-                    .map_err(|_| anyhow::anyhow!("OpenAI request timed out"))??;
+            let response = timeout(
+                TRANSLATION_REQUEST_TIMEOUT,
+                self.client.chat().create(request),
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("OpenAI request timed out"))??;
             let choice = response.choices.first();
             let content = choice
                 .and_then(|c| c.message.content.clone())

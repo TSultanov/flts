@@ -18,7 +18,6 @@ use std::sync::Arc;
 use isolang::Language;
 use library::book::translation_import;
 use library::library::Library;
-use library::translator::TranslationModel;
 
 struct TempDir {
     path: PathBuf,
@@ -122,7 +121,7 @@ async fn test_bug4_stale_translation_stored() {
         let mut t = translation.lock().await;
 
         let stale_translation = make_translation("Кот сидел на коврике.");
-        t.add_paragraph_translation(0, &stale_translation, TranslationModel::Gemini25Flash);
+        t.add_paragraph_translation(0, &stale_translation, "models/gemini-2.5-flash");
 
         let pv = t.paragraph_view(0).unwrap();
         let sentence = pv.sentences().next().unwrap();

@@ -5,7 +5,6 @@ use log::{info, warn};
 use tokio::{fs, io::AsyncWriteExt};
 
 use crate::lyrics::{Lyrics, LyricsTranslation};
-use crate::translator::TranslationModel;
 
 const CACHE_SUBDIR: &str = "lyrics";
 const RAW_SUBDIR: &str = "raw";
@@ -27,7 +26,7 @@ impl LyricsCache {
         &self,
         track_id: &str,
         target: &Language,
-        model: TranslationModel,
+        model: &str,
     ) -> Option<LyricsTranslation> {
         let path = self.path_for(track_id, target, model);
         match fs::read(&path).await {
@@ -51,7 +50,7 @@ impl LyricsCache {
 
     pub async fn put(&self, t: &LyricsTranslation) -> anyhow::Result<()> {
         fs::create_dir_all(&self.root).await?;
-        let path = self.path_for(&t.track_id, &t.target_lang, t.model);
+        let path = self.path_for(&t.track_id, &t.target_lang, &t.model);
         let bytes = serde_json::to_vec(t)?;
 
         // Same-dir temp then rename, so the replace is atomic.
@@ -69,13 +68,10 @@ impl LyricsCache {
         Ok(())
     }
 
-    fn path_for(&self, track_id: &str, target: &Language, model: TranslationModel) -> PathBuf {
+    fn path_for(&self, track_id: &str, target: &Language, model: &str) -> PathBuf {
         let safe_track = sanitize(track_id);
-        let filename = format!(
-            "{safe_track}__{}_{}.json",
-            target.to_639_3(),
-            model as usize
-        );
+        let safe_model = sanitize(model);
+        let filename = format!("{safe_track}__{}_{safe_model}.json", target.to_639_3());
         self.root.join(filename)
     }
 
@@ -146,7 +142,7 @@ mod tests {
         LyricsTranslation {
             track_id: track_id.to_string(),
             target_lang: Language::from_639_3("eng").unwrap(),
-            model: TranslationModel::OpenAIGpt5Mini,
+            model: "gpt-5-mini".to_string(),
             lines: vec![LyricsLineTranslation {
                 translation: "hello".into(),
                 glosses: vec![Gloss {
@@ -165,7 +161,7 @@ mod tests {
         let t = sample("spotify:track:abc123");
         cache.put(&t).await.unwrap();
         let got = cache
-            .get("spotify:track:abc123", &t.target_lang, t.model)
+            .get("spotify:track:abc123", &t.target_lang, &t.model)
             .await
             .expect("cache hit");
         assert_eq!(got.lines.len(), 1);
@@ -180,7 +176,7 @@ mod tests {
             .get(
                 "spotify:track:nope",
                 &Language::from_639_3("eng").unwrap(),
-                TranslationModel::OpenAIGpt5Mini,
+                "gpt-5-mini",
             )
             .await;
         assert!(got.is_none());
@@ -237,7 +233,7 @@ mod tests {
         cache.put_raw(&r).await.unwrap();
 
         let got_t = cache
-            .get("spotify:track:abc", &t.target_lang, t.model)
+            .get("spotify:track:abc", &t.target_lang, &t.model)
             .await
             .expect("translation hit");
         let got_r = cache.get_raw("spotify:track:abc").await.expect("raw hit");
