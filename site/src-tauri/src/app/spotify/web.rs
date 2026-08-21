@@ -935,6 +935,7 @@ async fn resolve_playback_list(
         let track = (*track).clone();
         let target_lang = target_lang.clone();
         let resolved = resolved.clone();
+        let model = model.clone();
         tokio::spawn(async move {
             if let Err(err) =
                 crate::app::lyrics::resolve_track(&state, &app, &track, &target_lang, model).await

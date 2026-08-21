@@ -6,7 +6,6 @@ use isolang::Language;
 use library::card;
 use library::epub_importer::EpubBook;
 use library::library::file_watcher::LibraryFileChange;
-use library::translator::TranslationModel;
 use library::{
     book::translation::ParagraphTranslationView,
     library::{Library, library_book::BookReadingState},
@@ -106,7 +105,7 @@ pub struct WordView {
     #[serde(rename = "fullSentenceTranslation")]
     full_sentence_translation: String,
     #[serde(rename = "translationModel")]
-    translation_model: TranslationModel,
+    translation_model: String,
     #[serde(rename = "sourceLanguage")]
     source_language: String,
 }
@@ -289,10 +288,7 @@ impl LibraryView {
                 let segments = t_view
                     .as_ref()
                     .map(|t| paragraph_to_segments(original, t, &fam, src_lang));
-                ParagraphTranslationSlice {
-                    id: *id,
-                    segments,
-                }
+                ParagraphTranslationSlice { id: *id, segments }
             })
             .collect();
         Ok(out)
@@ -382,11 +378,7 @@ impl LibraryView {
                 .collect()
         };
         // Opening a book resumes summary generation; idempotent once complete.
-        if let Ok(queue) = self
-            .state
-            .get_or_init_summary_generation_queue()
-            .await
-        {
+        if let Ok(queue) = self.state.get_or_init_summary_generation_queue().await {
             queue.enqueue(book_id);
         }
         Ok(chapters)
@@ -506,15 +498,11 @@ impl LibraryView {
     }
 
     async fn enqueue_summary_generation(&self, book_id: Uuid) {
-        match self
-            .state
-            .get_or_init_summary_generation_queue()
-            .await
-        {
+        match self.state.get_or_init_summary_generation_queue().await {
             Ok(queue) => queue.enqueue(book_id),
-            Err(err) => log::warn!(
-                "Failed to init summary generation queue for book {book_id}: {err}"
-            ),
+            Err(err) => {
+                log::warn!("Failed to init summary generation queue for book {book_id}: {err}")
+            }
         }
     }
 
@@ -796,8 +784,8 @@ mod tests {
     use super::{ParagraphSegment, paragraph_to_segments};
 
     use isolang::Language;
+    use library::book::translation::ParagraphTranslationView;
     use library::book::translation_import;
-    use library::{book::translation::ParagraphTranslationView, translator::TranslationModel};
     use std::collections::HashMap;
 
     fn grammar_stub(original: &str) -> translation_import::Grammar {
@@ -845,7 +833,7 @@ mod tests {
         paragraph_index: usize,
         pt: &translation_import::ParagraphTranslation,
     ) -> ParagraphTranslationView<'a> {
-        translation.add_paragraph_translation(paragraph_index, pt, TranslationModel::OpenAIGpt52);
+        translation.add_paragraph_translation(paragraph_index, pt, "gpt-5.2");
         translation
             .paragraph_view(paragraph_index)
             .expect("paragraph view")

@@ -15,9 +15,7 @@ use std::{
 };
 
 use library::{
-    book::chapter_summaries::{
-        ChapterSummaries, ChapterSummary, chapter_summaries_path,
-    },
+    book::chapter_summaries::{ChapterSummaries, ChapterSummary, chapter_summaries_path},
     library::Library,
     summary_generator::ChapterSummarizer,
 };
@@ -110,7 +108,8 @@ impl SummaryGenerationQueue {
         config: &Config,
         app: tauri::AppHandle,
     ) -> Arc<Self> {
-        let model = config.model;
+        let provider = config.translation_provider;
+        let model = library::translator::catalog::effective_model_id(provider, &config.model);
         let api_keys = config.api_keys();
 
         let (enqueue_tx, mut enqueue_rx) = unbounded_channel::<Uuid>();
@@ -121,13 +120,6 @@ impl SummaryGenerationQueue {
 
         let book_state_for_worker = book_state.clone();
         let task = tokio::spawn(async move {
-            let provider = match model.provider() {
-                Some(p) => p,
-                None => {
-                    warn!("Summary generation disabled: model has no provider");
-                    return;
-                }
-            };
             let api_key = match api_keys.for_provider(provider) {
                 Some(k) => k.to_owned(),
                 None => {
@@ -135,7 +127,7 @@ impl SummaryGenerationQueue {
                     return;
                 }
             };
-            let summarizer = match ChapterSummarizer::create(provider, model, &api_key) {
+            let summarizer = match ChapterSummarizer::create(provider, &model, &api_key) {
                 Ok(s) => Arc::new(s),
                 Err(err) => {
                     warn!("Summary generation disabled: {err}");
@@ -271,11 +263,7 @@ async fn process_book(
             let book = book.lock().await;
             let lang = isolang::Language::from_639_3(&book.book.language)
                 .ok_or_else(|| anyhow::anyhow!("unknown book language: {}", book.book.language))?;
-            (
-                book.path().to_path_buf(),
-                book.book.title.clone(),
-                lang,
-            )
+            (book.path().to_path_buf(), book.book.title.clone(), lang)
         };
         let sidecar_path = chapter_summaries_path(&book_path);
 
@@ -356,7 +344,7 @@ async fn process_book(
             let mut summaries = state.summaries.lock().await;
             summaries.entries[idx] = ChapterSummary {
                 generated: true,
-                model: summarizer.model,
+                model: summarizer.model.clone(),
                 timestamp: SystemTime::now()
                     .duration_since(SystemTime::UNIX_EPOCH)
                     .map(|d| d.as_secs())
@@ -373,10 +361,7 @@ async fn process_book(
 /// Concatenate generated summaries for chapters `0..chapter_index`, each
 /// prefixed with a `Chapter X[: title]` header. Empty string for
 /// `chapter_index == 0` or when no earlier chapters are generated yet.
-pub fn concat_prior_summaries(
-    summaries: &ChapterSummaries,
-    chapter_index: usize,
-) -> String {
+pub fn concat_prior_summaries(summaries: &ChapterSummaries, chapter_index: usize) -> String {
     let mut out = String::new();
     for i in 0..chapter_index.min(summaries.entries.len()) {
         let entry = &summaries.entries[i];
@@ -416,21 +401,19 @@ fn emit_progress(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use library::translator::TranslationModel;
-
     #[test]
     fn concat_prior_summaries_handles_gaps() {
         let mut s = ChapterSummaries::empty_for(Uuid::nil(), 4);
         s.entries[0] = ChapterSummary {
             generated: true,
-            model: TranslationModel::Gemini25Flash,
+            model: "models/gemini-2.5-flash".into(),
             timestamp: 1,
             text: "first".into(),
         };
         // entry 1 is pending — should be skipped, not blank-included
         s.entries[2] = ChapterSummary {
             generated: true,
-            model: TranslationModel::Gemini25Flash,
+            model: "models/gemini-2.5-flash".into(),
             timestamp: 2,
             text: "third".into(),
         };
@@ -452,7 +435,7 @@ mod tests {
         for i in 0..2 {
             s.entries[i] = ChapterSummary {
                 generated: true,
-                model: TranslationModel::Gemini25Flash,
+                model: "models/gemini-2.5-flash".into(),
                 timestamp: 1,
                 text: "x".into(),
             };

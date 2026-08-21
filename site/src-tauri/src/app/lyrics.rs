@@ -13,7 +13,7 @@ use library::{
     lyrics::{
         Lyrics, LyricsTranslation, cache::LyricsCache, lrclib, translation::get_lyrics_translator,
     },
-    translator::TranslationModel,
+    translator::TranslationProvider,
 };
 use log::{info, warn};
 use serde::Serialize;
@@ -45,7 +45,8 @@ pub struct LyricsState {
 struct TranslationKey {
     track_id: String,
     tgt: Language,
-    model: TranslationModel,
+    model: String,
+    provider: TranslationProvider,
 }
 
 impl Default for LyricsState {
@@ -229,10 +230,11 @@ pub async fn get_track_lyrics_state(
     state: tauri::State<'_, Arc<AppState>>,
     track_id: String,
     target_lang: String,
-    model: TranslationModel,
+    model: String,
 ) -> Result<TrackLyricsState, String> {
     let tgt = Language::from_639_3(&target_lang)
         .ok_or_else(|| format!("unknown target lang: {target_lang}"))?;
+    let model = state.config.borrow().resolved_model_id(&model);
     let cache = state
         .lyrics_state
         .lyrics_cache(Some(&state.app))
@@ -244,7 +246,7 @@ pub async fn get_track_lyrics_state(
     } else {
         cache.get_raw(&track_id).await
     };
-    let translation = cache.get(&track_id, &tgt, model).await;
+    let translation = cache.get(&track_id, &tgt, &model).await;
 
     Ok(TrackLyricsState {
         lyrics,
@@ -257,18 +259,19 @@ pub(crate) async fn dispatch_translation_inner(
     app: &AppHandle,
     track_id: &str,
     target_lang: &str,
-    model: TranslationModel,
+    model: String,
 ) -> Result<(), String> {
     let tgt = Language::from_639_3(target_lang)
         .ok_or_else(|| format!("unknown target lang: {target_lang}"))?;
-    if matches!(model, TranslationModel::Unknown) {
-        return Err("unknown model id".to_string());
-    }
+    let cfg: Config = state.config.borrow().clone();
+    let model = cfg.resolved_model_id(&model);
+    let provider = cfg.translation_provider;
 
     let key = TranslationKey {
         track_id: track_id.to_string(),
         tgt,
         model,
+        provider,
     };
 
     // A cache hit fires the same event a fresh translation would, keeping one
@@ -278,7 +281,7 @@ pub(crate) async fn dispatch_translation_inner(
         .lyrics_cache(Some(&state.app))
         .await
         .map_err(|e| e.to_string())?;
-    if let Some(cached) = cache.get(track_id, &tgt, model).await {
+    if let Some(cached) = cache.get(track_id, &tgt, &key.model).await {
         let _ = app.emit(
             "lyrics_translation_done",
             LyricsTranslationDone {
@@ -312,15 +315,11 @@ pub(crate) async fn dispatch_translation_inner(
         }
     };
 
-    let provider = model
-        .provider()
-        .ok_or_else(|| "unknown model provider".to_string())?;
-    let cfg: Config = state.config.borrow().clone();
     let api_key = match provider {
-        library::translator::TranslationProvider::Google => cfg.gemini_api_key,
-        library::translator::TranslationProvider::Openai => cfg.openai_api_key,
-        library::translator::TranslationProvider::Deepseek => cfg.deepseek_api_key,
-        library::translator::TranslationProvider::Zai => cfg.zai_api_key,
+        TranslationProvider::Google => cfg.gemini_api_key,
+        TranslationProvider::Openai => cfg.openai_api_key,
+        TranslationProvider::Deepseek => cfg.deepseek_api_key,
+        TranslationProvider::Zai => cfg.zai_api_key,
     }
     .ok_or_else(|| "no API key configured for selected provider".to_string())?;
 
@@ -393,7 +392,7 @@ pub(crate) async fn resolve_track(
     app: &AppHandle,
     track: &TrackMeta,
     target_lang: &str,
-    model: TranslationModel,
+    model: String,
 ) -> anyhow::Result<()> {
     let lyrics = fetch_lyrics_inner(state, track).await?;
 
@@ -430,11 +429,7 @@ async fn run_translation(
     cache: Arc<LyricsCache>,
     progress: Box<dyn Fn(usize) + Send + Sync>,
 ) -> anyhow::Result<LyricsTranslation> {
-    let provider = key
-        .model
-        .provider()
-        .expect("provider validated by translate_lyrics");
-    let translator = get_lyrics_translator(provider, key.model, api_key, key.tgt)?;
+    let translator = get_lyrics_translator(key.provider, &key.model, api_key, key.tgt)?;
 
     let lines = translator
         .translate_song(&lyrics.lines, Some(progress))
@@ -443,7 +438,7 @@ async fn run_translation(
     let translation = LyricsTranslation {
         track_id: key.track_id.clone(),
         target_lang: key.tgt,
-        model: key.model,
+        model: key.model.clone(),
         lines,
     };
 

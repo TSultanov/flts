@@ -1,67 +1,87 @@
-use std::{fs::File, path::Path, str::FromStr};
+use std::{fs::File, path::Path, str::FromStr, sync::Arc};
 
-use library::translator::{TranslationModel, TranslationProvider};
+use library::translator::{
+    TranslationProvider,
+    catalog::{
+        FALLBACK_DEEPSEEK, FALLBACK_GOOGLE, FALLBACK_OPENAI, FALLBACK_ZAI, ListedModel,
+        api_id_from_legacy, effective_model_id, list_base_url_from_env,
+    },
+};
 use log::warn;
 use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
-use strum::IntoEnumIterator;
+
+use super::AppState;
 
 #[derive(Serialize)]
 pub struct Model {
-    id: i32,
-    name: &'static str,
+    pub id: String,
+    pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    provider: Option<TranslationProvider>,
+    pub provider: Option<TranslationProvider>,
+}
+
+impl From<ListedModel> for Model {
+    fn from(value: ListedModel) -> Self {
+        Self {
+            id: value.id,
+            name: value.name,
+            provider: Some(value.provider),
+        }
+    }
 }
 
 #[derive(Serialize)]
 pub struct ProviderMeta {
     pub id: TranslationProvider,
     pub name: &'static str,
-    #[serde(rename = "defaultModelId")]
-    pub default_model_id: i32,
+    #[serde(rename = "defaultModel")]
+    pub default_model: String,
     #[serde(rename = "apiKeyField")]
     pub api_key_field: &'static str,
 }
 
-fn model_pretty_name(model: TranslationModel) -> &'static str {
-    match model {
-        TranslationModel::Gemini25FlashLight => "Gemini 2.5 Flash Light",
-        TranslationModel::Gemini25Flash => "Gemini 2.5 Flash",
-        TranslationModel::Gemini25Pro => "Gemini 2.5 Pro",
-        TranslationModel::OpenAIGpt52 => "OpenAI GPT-5.2",
-        TranslationModel::OpenAIGpt52Pro => "OpenAI GPT-5.2 Pro",
-        TranslationModel::OpenAIGpt5Mini => "OpenAI GPT-5 mini",
-        TranslationModel::OpenAIGpt5Nano => "OpenAI GPT-5 nano",
-        TranslationModel::Gemini3Pro => "Gemini 3 Pro (Preview)",
-        TranslationModel::Gemini3Flash => "Gemini 3 Flash (Preview)",
-        TranslationModel::OpenAIGpt54 => "OpenAI GPT-5.4",
-        TranslationModel::OpenAIGpt54Mini => "OpenAI GPT-5.4 mini",
-        TranslationModel::Gemini31Pro => "Gemini 3.1 Pro (Preview)",
-        TranslationModel::Gemini31FlashLite => "Gemini 3.1 Flash-Lite (Preview)",
-        TranslationModel::Gemini35Flash => "Gemini 3.5 Flash",
-        TranslationModel::Gemini36Flash => "Gemini 3.6 Flash",
-        TranslationModel::Gemini37Flash => "Gemini 3.7 Flash",
-        TranslationModel::DeepSeekV4Flash => "DeepSeek V4 Flash",
-        TranslationModel::DeepSeekV4Pro => "DeepSeek V4 Pro",
-        TranslationModel::ZaiGlm52 => "z.AI GLM-5.2",
-        TranslationModel::Unknown => "Not set",
-    }
-}
-
-impl From<TranslationModel> for Model {
-    fn from(value: TranslationModel) -> Self {
-        Self {
-            id: value as i32,
-            name: model_pretty_name(value),
-            provider: value.provider(),
-        }
-    }
-}
-
 #[tauri::command]
-pub fn get_models() -> Vec<Model> {
-    TranslationModel::iter().map(|m| m.into()).collect()
+pub async fn get_models(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<Model>, String> {
+    let config = state.config.borrow().clone();
+    let keys = config.api_keys();
+    let catalog = state.model_catalog.clone();
+
+    let google_base = list_base_url_from_env(TranslationProvider::Google);
+    let openai_base = list_base_url_from_env(TranslationProvider::Openai);
+    let deepseek_base = list_base_url_from_env(TranslationProvider::Deepseek);
+    let zai_base = list_base_url_from_env(TranslationProvider::Zai);
+
+    let (google, openai, deepseek, zai) = tokio::join!(
+        catalog.models_for(
+            TranslationProvider::Google,
+            keys.for_provider(TranslationProvider::Google),
+            &google_base
+        ),
+        catalog.models_for(
+            TranslationProvider::Openai,
+            keys.for_provider(TranslationProvider::Openai),
+            &openai_base
+        ),
+        catalog.models_for(
+            TranslationProvider::Deepseek,
+            keys.for_provider(TranslationProvider::Deepseek),
+            &deepseek_base
+        ),
+        catalog.models_for(
+            TranslationProvider::Zai,
+            keys.for_provider(TranslationProvider::Zai),
+            &zai_base
+        ),
+    );
+
+    Ok(google
+        .into_iter()
+        .chain(openai)
+        .chain(deepseek)
+        .chain(zai)
+        .map(Model::from)
+        .collect())
 }
 
 #[tauri::command]
@@ -70,25 +90,25 @@ pub fn get_translation_providers() -> Vec<ProviderMeta> {
         ProviderMeta {
             id: TranslationProvider::Google,
             name: TranslationProvider::Google.display_name(),
-            default_model_id: TranslationModel::Gemini37Flash as i32,
+            default_model: FALLBACK_GOOGLE.to_string(),
             api_key_field: "geminiApiKey",
         },
         ProviderMeta {
             id: TranslationProvider::Openai,
             name: TranslationProvider::Openai.display_name(),
-            default_model_id: TranslationModel::OpenAIGpt5Mini as i32,
+            default_model: FALLBACK_OPENAI.to_string(),
             api_key_field: "openaiApiKey",
         },
         ProviderMeta {
             id: TranslationProvider::Deepseek,
             name: TranslationProvider::Deepseek.display_name(),
-            default_model_id: TranslationModel::DeepSeekV4Flash as i32,
+            default_model: FALLBACK_DEEPSEEK.to_string(),
             api_key_field: "deepseekApiKey",
         },
         ProviderMeta {
             id: TranslationProvider::Zai,
             name: TranslationProvider::Zai.display_name(),
-            default_model_id: TranslationModel::ZaiGlm52 as i32,
+            default_model: FALLBACK_ZAI.to_string(),
             api_key_field: "zaiApiKey",
         },
     ]
@@ -177,7 +197,8 @@ pub struct Config {
     pub deepseek_api_key: Option<String>,
     #[serde(rename = "zaiApiKey", default)]
     pub zai_api_key: Option<String>,
-    pub model: TranslationModel,
+    #[serde(deserialize_with = "deserialize_model")]
+    pub model: String,
     /// Migration-read-only: read once to relocate a user-picked library into
     /// `resolve_library_root`, then cleared. Never write it.
     #[serde(rename = "libraryPath", default)]
@@ -236,7 +257,7 @@ impl Default for Config {
             openai_api_key: None,
             deepseek_api_key: None,
             zai_api_key: None,
-            model: TranslationModel::Gemini37Flash,
+            model: FALLBACK_GOOGLE.to_string(),
             library_path: None,
             spotify_client_id: None,
             spotify_preload_count: default_preload_count(),
@@ -251,7 +272,51 @@ impl Default for Config {
     }
 }
 
+fn deserialize_model<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct ModelVisitor;
+    impl<'de> serde::de::Visitor<'de> for ModelVisitor {
+        type Value = String;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a model id string or legacy numeric id")
+        }
+
+        fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<String, E> {
+            Ok(v.to_string())
+        }
+
+        fn visit_string<E: serde::de::Error>(self, v: String) -> Result<String, E> {
+            Ok(v)
+        }
+
+        fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<String, E> {
+            Ok(api_id_from_legacy(v))
+        }
+
+        fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<String, E> {
+            if v < 0 {
+                Ok(String::new())
+            } else {
+                Ok(api_id_from_legacy(v as u64))
+            }
+        }
+    }
+    deserializer.deserialize_any(ModelVisitor)
+}
+
 impl Config {
+    pub fn resolved_model_id(&self, model: &str) -> String {
+        let chosen = if model.trim().is_empty() {
+            self.model.as_str()
+        } else {
+            model
+        };
+        effective_model_id(self.translation_provider, chosen)
+    }
+
     pub fn api_keys(&self) -> ApiKeys {
         ApiKeys {
             gemini: self.gemini_api_key.clone(),
@@ -317,6 +382,7 @@ mod tests {
         let c = Config::default();
         assert_eq!(c.anki_endpoint.as_deref(), Some("http://127.0.0.1:8765"));
         assert!(c.anki_api_key.is_none());
+        assert_eq!(c.model, FALLBACK_GOOGLE);
     }
 
     #[test]
@@ -403,6 +469,43 @@ mod tests {
             !parsed.tap_to_reveal_translations,
             "legacy config must keep today's auto-underline / auto-overlay behaviour"
         );
+    }
+
+    #[test]
+    fn config_model_number_migrates_without_corrupt_path() {
+        let legacy = serde_json::json!({
+            "targetLanguageId": "eng",
+            "translationProvider": "google",
+            "model": 1
+        });
+        let parsed: Config = serde_json::from_value(legacy).unwrap();
+        assert_eq!(parsed.model, "models/gemini-2.5-flash");
+    }
+
+    #[test]
+    fn config_model_string_passthrough() {
+        let v = serde_json::json!({
+            "targetLanguageId": "eng",
+            "translationProvider": "openai",
+            "model": "gpt-9-ultra"
+        });
+        let parsed: Config = serde_json::from_value(v).unwrap();
+        assert_eq!(parsed.model, "gpt-9-ultra");
+        let dumped = serde_json::to_value(&parsed).unwrap();
+        assert_eq!(dumped["model"], "gpt-9-ultra");
+    }
+
+    #[test]
+    fn config_model_zero_and_unknown_become_empty() {
+        for n in [0, 99] {
+            let v = serde_json::json!({
+                "targetLanguageId": "eng",
+                "translationProvider": "google",
+                "model": n
+            });
+            let parsed: Config = serde_json::from_value(v).unwrap();
+            assert_eq!(parsed.model, "");
+        }
     }
 
     #[test]

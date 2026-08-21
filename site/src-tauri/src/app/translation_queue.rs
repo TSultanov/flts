@@ -14,8 +14,8 @@ use library::{
     tla_trace::mutex::TracedMutex,
     translation_stats::TranslationSizeCache,
     translator::{
-        ChapterContextProvider, TranslationContext, TranslationModel,
-        gemini_cache::GeminiPromptCache, get_translator, is_transient_translation_error,
+        ChapterContextProvider, TranslationContext, gemini_cache::GeminiPromptCache,
+        get_translator, is_transient_translation_error,
     },
 };
 use log::{info, warn};
@@ -38,7 +38,7 @@ struct TranslationRequest {
     request_id: usize,
     book_id: Uuid,
     paragraph_id: usize,
-    model: TranslationModel,
+    model: String,
     use_cache: bool,
     /// 0 on first enqueue, bumped per transient-failure requeue.
     attempt: u32,
@@ -88,7 +88,7 @@ async fn handle_translation_failure(
             request_id: request.request_id,
             book_id: request.book_id,
             paragraph_id: request.paragraph_id,
-            model: request.model,
+            model: request.model.clone(),
             use_cache: request.use_cache,
             attempt: next_attempt,
         });
@@ -257,6 +257,7 @@ impl TranslationQueue {
         library_tx: Arc<watch::Sender<Option<Arc<Library>>>>,
     ) -> Option<Arc<Self>> {
         let api_keys = config.api_keys();
+        let provider = config.translation_provider;
         let target_language = Language::from_639_3(&config.target_language_id)?;
         // Clamp so a stray 0 can never deadlock the semaphore.
         let concurrency = config.translation_concurrency.max(1) as usize;
@@ -267,18 +268,14 @@ impl TranslationQueue {
             active_translations: HashMap::new(),
         }));
 
-        let saver_task = tokio::spawn(run_saver(
-            app.clone(),
-            library_tx,
-            state.clone(),
-            rx_save,
-        ));
+        let saver_task = tokio::spawn(run_saver(app.clone(), library_tx, state.clone(), rx_save));
 
         let (tx_translate, mut rx_translate) = unbounded_channel::<TranslationRequest>();
 
         let translate_task = {
             let state = state.clone();
             let app = app.clone();
+            let provider = provider;
             // Restarts get their own channel so the select can prioritize them
             // over queued fresh requests. The loop owns a sender, so it never
             // closes while the loop lives.
@@ -323,22 +320,20 @@ impl TranslationQueue {
                     join_set.spawn(async move {
                         let _permit = permit;
                         let outcome = async {
-                            let provider = request
-                                .model
-                                .provider()
-                                .ok_or_else(|| anyhow::anyhow!("Unknown model provider"))?;
                             let api_key = api_keys
                                 .for_provider(provider)
-                                .ok_or_else(|| anyhow::anyhow!("no api key for provider {provider:?}"))?
+                                .ok_or_else(|| {
+                                    anyhow::anyhow!("no api key for provider {provider:?}")
+                                })?
                                 .to_owned();
-                            let model = request.model;
+                            let model = request.model.clone();
                             let make_translator = move |source_language: Language| {
                                 get_translator(
                                     cache,
                                     context_provider,
                                     gemini_prompt_cache,
                                     provider,
-                                    model,
+                                    &model,
                                     api_key,
                                     source_language,
                                     target_language,
@@ -434,7 +429,7 @@ impl TranslationQueue {
         &self,
         book_id: Uuid,
         paragraph_id: usize,
-        model: TranslationModel,
+        model: String,
         use_cache: bool,
     ) -> anyhow::Result<usize> {
         // One lock across check + insert, or two callers both pass the dedup.
@@ -723,7 +718,7 @@ async fn handle_request(
         translation.lock().await.add_paragraph_translation(
             request.paragraph_id,
             &p_translation,
-            request.model,
+            &request.model,
         );
     }
 
@@ -906,7 +901,6 @@ fn emit_finished(
     );
 }
 
-
 async fn wait_for_shutdown_task(task_name: &str, task: tokio::task::JoinHandle<()>) {
     match task.await {
         Ok(()) => {}
@@ -965,7 +959,7 @@ mod tests {
             request_id: 7,
             book_id,
             paragraph_id,
-            model: TranslationModel::Gemini25Flash,
+            model: "models/gemini-2.5-flash".to_string(),
             use_cache: true,
             attempt,
         }

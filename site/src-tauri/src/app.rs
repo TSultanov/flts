@@ -18,7 +18,11 @@ use library::{
         file_watcher::{LibraryFileChange, LibraryWatcher},
     },
     translation_stats::TranslationSizeCache,
-    translator::{TranslationModel, gemini_cache::GeminiPromptCache},
+    translator::{
+        TranslationProvider,
+        catalog::{ModelCatalog, ReqwestListTransport, list_base_url_from_env},
+        gemini_cache::GeminiPromptCache,
+    },
 };
 use log::{info, warn};
 use tokio::sync::{Mutex, watch};
@@ -99,7 +103,9 @@ fn resolve_config_dir(app: Option<&tauri::AppHandle>) -> anyhow::Result<PathBuf>
     #[cfg(target_os = "android")]
     {
         use tauri::Manager;
-        let app = app.ok_or_else(|| anyhow::anyhow!("AppHandle required to resolve config dir on Android"))?;
+        let app = app.ok_or_else(|| {
+            anyhow::anyhow!("AppHandle required to resolve config dir on Android")
+        })?;
         return Ok(app.path().app_config_dir()?);
     }
     #[cfg(not(target_os = "android"))]
@@ -127,7 +133,8 @@ fn resolve_cache_dir(app: Option<&tauri::AppHandle>) -> anyhow::Result<PathBuf> 
     #[cfg(target_os = "android")]
     {
         use tauri::Manager;
-        let app = app.ok_or_else(|| anyhow::anyhow!("AppHandle required to resolve cache dir on Android"))?;
+        let app = app
+            .ok_or_else(|| anyhow::anyhow!("AppHandle required to resolve cache dir on Android"))?;
         return Ok(app.path().app_cache_dir()?);
     }
     #[cfg(not(target_os = "android"))]
@@ -153,7 +160,9 @@ fn resolve_library_root(app: Option<&tauri::AppHandle>) -> anyhow::Result<PathBu
     #[cfg(target_os = "android")]
     {
         use tauri::Manager;
-        let app = app.ok_or_else(|| anyhow::anyhow!("AppHandle required to resolve library root on Android"))?;
+        let app = app.ok_or_else(|| {
+            anyhow::anyhow!("AppHandle required to resolve library root on Android")
+        })?;
         return Ok(app.path().app_data_dir()?.join("library"));
     }
     #[cfg(not(target_os = "android"))]
@@ -213,6 +222,59 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn spawn_catalog_prefetch(catalog: Arc<ModelCatalog>, config: &Config) {
+    let keys = config.api_keys();
+    tauri::async_runtime::spawn(async move {
+        for provider in [
+            TranslationProvider::Google,
+            TranslationProvider::Openai,
+            TranslationProvider::Deepseek,
+            TranslationProvider::Zai,
+        ] {
+            let Some(key) = keys.for_provider(provider).filter(|k| !k.is_empty()) else {
+                continue;
+            };
+            let key = key.to_string();
+            let base = list_base_url_from_env(provider);
+            catalog.models_for(provider, Some(&key), &base).await;
+        }
+    });
+}
+
+fn api_key_changed(old: Option<&str>, new: Option<&str>) -> bool {
+    old.unwrap_or("") != new.unwrap_or("")
+}
+
+fn invalidate_changed_api_keys(catalog: &ModelCatalog, old: &Config, new: &Config) {
+    let pairs = [
+        (
+            TranslationProvider::Google,
+            old.gemini_api_key.as_deref(),
+            new.gemini_api_key.as_deref(),
+        ),
+        (
+            TranslationProvider::Openai,
+            old.openai_api_key.as_deref(),
+            new.openai_api_key.as_deref(),
+        ),
+        (
+            TranslationProvider::Deepseek,
+            old.deepseek_api_key.as_deref(),
+            new.deepseek_api_key.as_deref(),
+        ),
+        (
+            TranslationProvider::Zai,
+            old.zai_api_key.as_deref(),
+            new.zai_api_key.as_deref(),
+        ),
+    ];
+    for (provider, old_key, new_key) in pairs {
+        if api_key_changed(old_key, new_key) {
+            catalog.invalidate(provider);
+        }
+    }
+}
+
 pub struct AppState {
     app: tauri::AppHandle,
     config_path: PathBuf,
@@ -237,6 +299,7 @@ pub struct AppState {
     translations_cache: tokio::sync::OnceCell<Arc<TranslationsCache>>,
     stats_cache: tokio::sync::OnceCell<Arc<TranslationSizeCache>>,
     gemini_prompt_cache: tokio::sync::OnceCell<Arc<GeminiPromptCache>>,
+    model_catalog: Arc<ModelCatalog>,
     pub lyrics_state: crate::app::lyrics::LyricsState,
     pub spotify_web: Arc<crate::app::spotify::web::SpotifyWebState>,
 }
@@ -260,6 +323,12 @@ impl AppState {
             Config::default()
         };
 
+        let model_catalog = Arc::new(ModelCatalog::new(
+            resolve_cache_dir(Some(&app))?,
+            Arc::new(ReqwestListTransport::new()),
+        ));
+        spawn_catalog_prefetch(model_catalog.clone(), &config);
+
         // Unreachable until a tick proves otherwise: the UI hides the sync
         // button in that state, so it stays hidden until we know.
         let initial_anki_status = crate::app::anki_sync::AnkiSyncStatus {
@@ -280,12 +349,11 @@ impl AppState {
             backfill_lock: Arc::new(Mutex::new(())),
             eval_lock: Mutex::new(()),
             anki_sync_status: Arc::new(watch::channel(initial_anki_status).0),
-            sync_status: Arc::new(
-                watch::channel(crate::app::sync_daemon::SyncStatus::default()).0,
-            ),
+            sync_status: Arc::new(watch::channel(crate::app::sync_daemon::SyncStatus::default()).0),
             translations_cache: tokio::sync::OnceCell::new(),
             stats_cache: tokio::sync::OnceCell::new(),
             gemini_prompt_cache: tokio::sync::OnceCell::new(),
+            model_catalog,
             lyrics_state: crate::app::lyrics::LyricsState::new(),
             spotify_web: Arc::new(crate::app::spotify::web::SpotifyWebState::new()),
         })
@@ -414,9 +482,7 @@ impl AppState {
         self.gated.sync_anki_now().await
     }
 
-    pub fn subscribe_sync_status(
-        &self,
-    ) -> watch::Receiver<crate::app::sync_daemon::SyncStatus> {
+    pub fn subscribe_sync_status(&self) -> watch::Receiver<crate::app::sync_daemon::SyncStatus> {
         self.sync_status.subscribe()
     }
 
@@ -471,6 +537,11 @@ impl AppState {
 
             // Flush unsaved books before the Library swap.
             self.save_all().await;
+
+            {
+                let old = self.config.borrow();
+                invalidate_changed_api_keys(&self.model_catalog, &old, &config);
+            }
 
             info!("config = {:?}", config);
             config.save(&self.config_path)?;
@@ -554,7 +625,11 @@ impl AppState {
             .await
             .set_path(&library_root)
             .unwrap_or_else(|err| {
-                warn!("Failed to set watcher path to {}: {}", library_root.display(), err)
+                warn!(
+                    "Failed to set watcher path to {}: {}",
+                    library_root.display(),
+                    err
+                )
             });
 
         Ok((config, library_root))
@@ -592,7 +667,8 @@ impl AppState {
             Ok(dir) => dir.join("syncthing"),
             Err(err) => {
                 warn!("Cannot resolve syncthing home: {err}");
-                self.sync_status.send_replace(SyncStatus::error(err.to_string()));
+                self.sync_status
+                    .send_replace(SyncStatus::error(err.to_string()));
                 return;
             }
         };
@@ -618,7 +694,8 @@ impl AppState {
             }
             Err(err) => {
                 warn!("Sync engine failed to start: {err}");
-                self.sync_status.send_replace(SyncStatus::error(err.to_string()));
+                self.sync_status
+                    .send_replace(SyncStatus::error(err.to_string()));
             }
         }
     }
@@ -726,11 +803,21 @@ impl AppState {
         // AnkiConnect would stall exit, and the next launch syncs immediately.
         let anki_task = self.gated.take_anki_task().await;
         if let Some(task) = anki_task {
-            run_exit_step("anki sync shutdown", EXIT_STOP_QUEUE_TIMEOUT, task.shutdown()).await;
+            run_exit_step(
+                "anki sync shutdown",
+                EXIT_STOP_QUEUE_TIMEOUT,
+                task.shutdown(),
+            )
+            .await;
         }
         let sync_task = self.gated.take_sync_task().await;
         if let Some(task) = sync_task {
-            run_exit_step("sync engine shutdown", EXIT_STOP_QUEUE_TIMEOUT, task.shutdown()).await;
+            run_exit_step(
+                "sync engine shutdown",
+                EXIT_STOP_QUEUE_TIMEOUT,
+                task.shutdown(),
+            )
+            .await;
         }
         run_exit_step("save all", EXIT_SAVE_ALL_TIMEOUT, self.save_all()).await;
         self.close_caches_for_exit().await;
@@ -856,9 +943,10 @@ impl AppState {
         &self,
         book_id: Uuid,
         paragraph_id: usize,
-        model: TranslationModel,
+        model: String,
         use_cache: bool,
     ) -> anyhow::Result<usize> {
+        let model = self.config.borrow().resolved_model_id(&model);
         let queue = self.get_or_init_translation_queue().await?;
         queue
             .translate(book_id, paragraph_id, model, use_cache)
@@ -869,7 +957,7 @@ impl AppState {
         &self,
         book_id: Uuid,
         chapter_id: usize,
-        model: TranslationModel,
+        model: String,
         use_cache: bool,
     ) -> anyhow::Result<usize> {
         let library = self.library().await.map_err(|err| anyhow::anyhow!(err))?;
@@ -900,11 +988,12 @@ impl AppState {
                 .collect()
         };
 
+        let model = self.config.borrow().resolved_model_id(&model);
         let queue = self.get_or_init_translation_queue().await?;
         for paragraph_id in &untranslated {
             // Swallow per-item errors so one bad paragraph doesn't abandon the rest.
             if let Err(err) = queue
-                .translate(book_id, *paragraph_id, model, use_cache)
+                .translate(book_id, *paragraph_id, model.clone(), use_cache)
                 .await
             {
                 warn!("translate_chapter: failed to enqueue paragraph {paragraph_id}: {err}");
@@ -1257,7 +1346,7 @@ pub async fn translate_paragraph(
     state: tauri::State<'_, Arc<AppState>>,
     book_id: Uuid,
     paragraph_id: usize,
-    model: TranslationModel,
+    model: String,
     use_cache: bool,
 ) -> Result<usize, String> {
     state
@@ -1271,7 +1360,7 @@ pub async fn translate_chapter(
     state: tauri::State<'_, Arc<AppState>>,
     book_id: Uuid,
     chapter_id: usize,
-    model: TranslationModel,
+    model: String,
     use_cache: bool,
 ) -> Result<usize, String> {
     state

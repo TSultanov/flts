@@ -18,7 +18,6 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use library::epub_importer::EpubBook;
-use library::translator::TranslationModel;
 
 use crate::app::config::Config;
 
@@ -251,7 +250,7 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: Value) -> Result<Value, Valu
 
     match cmd {
         // --- config ---
-        "get_models" => plain(crate::app::config::get_models()),
+        "get_models" => wrap(crate::app::config::get_models(state).await),
         "get_languages" => plain(crate::app::config::get_languages()),
         "get_translation_providers" => plain(crate::app::config::get_translation_providers()),
         "parse_language_id" => {
@@ -304,7 +303,7 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: Value) -> Result<Value, Valu
         // --- translation ---
         "translate_paragraph" => {
             let (book_id, paragraph_id, model, use_cache) = args!(args, {
-                book_id: Uuid, paragraph_id: usize, model: TranslationModel, use_cache: bool
+                book_id: Uuid, paragraph_id: usize, model: String, use_cache: bool
             });
             wrap(
                 crate::app::translate_paragraph(state, book_id, paragraph_id, model, use_cache)
@@ -313,7 +312,7 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: Value) -> Result<Value, Valu
         }
         "translate_chapter" => {
             let (book_id, chapter_id, model, use_cache) = args!(args, {
-                book_id: Uuid, chapter_id: usize, model: TranslationModel, use_cache: bool
+                book_id: Uuid, chapter_id: usize, model: String, use_cache: bool
             });
             wrap(crate::app::translate_chapter(state, book_id, chapter_id, model, use_cache).await)
         }
@@ -458,7 +457,7 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: Value) -> Result<Value, Valu
         "get_now_playing" => wrap(crate::app::lyrics::get_now_playing(state).await),
         "get_track_lyrics_state" => {
             let (track_id, target_lang, model) = args!(args, {
-                track_id: String, target_lang: String, model: TranslationModel
+                track_id: String, target_lang: String, model: String
             });
             wrap(
                 crate::app::lyrics::get_track_lyrics_state(state, track_id, target_lang, model)
@@ -485,7 +484,7 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: Value) -> Result<Value, Valu
         "e2e_resolve_track" => {
             let (track_id, name, artist, album, duration_ms, target_lang, model) = args!(args, {
                 track_id: String, name: String, artist: String, album: Option<String>,
-                duration_ms: u32, target_lang: String, model: TranslationModel
+                duration_ms: u32, target_lang: String, model: String
             });
             let track = crate::app::spotify::web::TrackMeta {
                 id: track_id,

@@ -20,6 +20,36 @@ pub trait ModelListTransport: Send + Sync {
     ) -> anyhow::Result<serde_json::Value>;
 }
 
+pub struct ReqwestListTransport {
+    client: reqwest::Client,
+}
+
+impl ReqwestListTransport {
+    pub fn new() -> Self {
+        Self {
+            client: reqwest::Client::builder()
+                .timeout(LIST_TIMEOUT)
+                .build()
+                .expect("reqwest client"),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ModelListTransport for ReqwestListTransport {
+    async fn get_json(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+    ) -> anyhow::Result<serde_json::Value> {
+        let mut req = self.client.get(url);
+        for (name, value) in headers {
+            req = req.header(*name, *value);
+        }
+        Ok(req.send().await?.error_for_status()?.json().await?)
+    }
+}
+
 type InflightCell = Arc<tokio::sync::OnceCell<Vec<ListedModel>>>;
 
 pub struct ModelCatalog {
@@ -216,6 +246,43 @@ pub fn join_models_url(base: &str) -> String {
     format!("{}/models", base.trim_end_matches('/'))
 }
 
+const DEFAULT_GEMINI_LIST_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/";
+const DEFAULT_OPENAI_LIST_BASE: &str = "https://api.openai.com/v1";
+
+fn nonempty_or(env_val: Option<String>, default: &str) -> String {
+    env_val
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| default.to_string())
+}
+
+/// List origin for `models_for`. Empty env values are treated as unset.
+pub fn list_base_url(
+    provider: TranslationProvider,
+    gemini_env: Option<String>,
+    openai_env: Option<String>,
+    deepseek_env: Option<String>,
+    zai_env: Option<String>,
+) -> String {
+    match provider {
+        TranslationProvider::Google => nonempty_or(gemini_env, DEFAULT_GEMINI_LIST_BASE),
+        TranslationProvider::Openai => nonempty_or(openai_env, DEFAULT_OPENAI_LIST_BASE),
+        TranslationProvider::Deepseek => {
+            nonempty_or(deepseek_env, crate::translator::openai::DEEPSEEK_BASE_URL)
+        }
+        TranslationProvider::Zai => nonempty_or(zai_env, crate::translator::openai::ZAI_BASE_URL),
+    }
+}
+
+pub fn list_base_url_from_env(provider: TranslationProvider) -> String {
+    list_base_url(
+        provider,
+        std::env::var("FLTS_GEMINI_BASE_URL").ok(),
+        std::env::var("OPENAI_BASE_URL").ok(),
+        std::env::var("FLTS_DEEPSEEK_BASE_URL").ok(),
+        std::env::var("FLTS_ZAI_BASE_URL").ok(),
+    )
+}
+
 // Serde lowercase (`google`/`zai`), not display_name() (`Google`/`z.AI`).
 fn provider_file_stem(provider: TranslationProvider) -> &'static str {
     match provider {
@@ -226,18 +293,42 @@ fn provider_file_stem(provider: TranslationProvider) -> &'static str {
     }
 }
 
+fn encode_query_component(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for &b in s.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => {
+                use std::fmt::Write;
+                let _ = write!(out, "%{b:02X}");
+            }
+        }
+    }
+    out
+}
+
 fn gemini_list_url(base: &str, api_key: &str, page_token: Option<&str>) -> String {
-    let mut url = format!("{}?key={api_key}", join_models_url(base));
+    let mut url = format!(
+        "{}?key={}",
+        join_models_url(base),
+        encode_query_component(api_key)
+    );
     if let Some(token) = page_token {
         url.push_str("&pageToken=");
-        url.push_str(token);
+        url.push_str(&encode_query_component(token));
     }
     url
 }
 
 fn openai_list_url(base: &str, after: Option<&str>) -> String {
     match after {
-        Some(id) => format!("{}?after={id}", join_models_url(base)),
+        Some(id) => format!(
+            "{}?after={}",
+            join_models_url(base),
+            encode_query_component(id)
+        ),
         None => join_models_url(base),
     }
 }
@@ -916,5 +1007,75 @@ mod tests {
         let got_ids = ids(&got);
         assert!(got_ids.contains(&FALLBACK_OPENAI), "{got_ids:?}");
         assert!(got_ids.contains(&"gpt-9-ultra"), "{got_ids:?}");
+    }
+
+    #[test]
+    fn list_base_url_uses_env_or_defaults() {
+        assert_eq!(
+            list_base_url(TranslationProvider::Google, None, None, None, None),
+            "https://generativelanguage.googleapis.com/v1beta/"
+        );
+        assert_eq!(
+            list_base_url(
+                TranslationProvider::Google,
+                Some(String::new()),
+                None,
+                None,
+                None
+            ),
+            "https://generativelanguage.googleapis.com/v1beta/"
+        );
+        assert_eq!(
+            list_base_url(
+                TranslationProvider::Google,
+                Some("https://proxy/v1beta/".into()),
+                None,
+                None,
+                None
+            ),
+            "https://proxy/v1beta/"
+        );
+        assert_eq!(
+            list_base_url(
+                TranslationProvider::Openai,
+                None,
+                Some("http://127.0.0.1:8080/v1".into()),
+                None,
+                None
+            ),
+            "http://127.0.0.1:8080/v1"
+        );
+        assert_eq!(
+            list_base_url(TranslationProvider::Openai, None, None, None, None),
+            "https://api.openai.com/v1"
+        );
+        assert_eq!(
+            list_base_url(TranslationProvider::Deepseek, None, None, None, None),
+            crate::translator::openai::DEEPSEEK_BASE_URL
+        );
+        assert_eq!(
+            list_base_url(
+                TranslationProvider::Deepseek,
+                None,
+                None,
+                Some("http://ds".into()),
+                None
+            ),
+            "http://ds"
+        );
+        assert_eq!(
+            list_base_url(TranslationProvider::Zai, None, None, None, None),
+            crate::translator::openai::ZAI_BASE_URL
+        );
+    }
+
+    #[test]
+    fn list_urls_percent_encode_query_values() {
+        let url = gemini_list_url("https://example/v1beta", "k/&=", Some("t/2"));
+        assert!(url.contains("key=k%2F%26%3D"), "{url}");
+        assert!(url.contains("pageToken=t%2F2"), "{url}");
+
+        let url = openai_list_url("https://api.openai.com/v1", Some("id&x"));
+        assert!(url.contains("after=id%26x"), "{url}");
     }
 }
