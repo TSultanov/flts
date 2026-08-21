@@ -1,3 +1,4 @@
+pub mod catalog;
 pub(crate) mod gemini;
 pub mod gemini_cache;
 pub(crate) mod openai;
