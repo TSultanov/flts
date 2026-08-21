@@ -230,7 +230,7 @@ export async function realSeedAndOpen(
     await harness.invoke('translate_paragraph', {
       bookId,
       paragraphId,
-      model: 1,
+      model: 'models/gemini-2.5-flash',
       useCache: false,
     });
   }

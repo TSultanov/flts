@@ -169,7 +169,7 @@ test.describe('bridge conformance', () => {
       ['sync_wake'],
       // No credentials: rejections are the expected shape.
       ['get_now_playing'],
-      ['get_track_lyrics_state', { trackId: 'sim:track', targetLang: 'eng', model: 1 }],
+      ['get_track_lyrics_state', { trackId: 'sim:track', targetLang: 'eng', model: 'models/gemini-2.5-flash' }],
       ['spotify_web_status'],
       ['spotify_web_get_queue'],
       // Touches the keychain, whose own bound is 30s.
@@ -238,8 +238,8 @@ test.describe('bridge conformance', () => {
       ['get_paragraph_translation_activity', { bookId, paragraphId }],
       ['save_book_reading_state', { bookId, chapterId, paragraphId, pageOffset: 0 }],
       // Hits the LLM sim; its fallback answers unscripted requests.
-      ['translate_paragraph', { bookId, paragraphId, model: 1, useCache: false }],
-      ['translate_chapter', { bookId, chapterId, model: 1, useCache: false }],
+      ['translate_paragraph', { bookId, paragraphId, model: 'models/gemini-2.5-flash', useCache: false }],
+      ['translate_chapter', { bookId, chapterId, model: 'models/gemini-2.5-flash', useCache: false }],
       [
         'import_epub',
         {

@@ -218,7 +218,7 @@ test.describe('LLM failure injection', () => {
     await harness.invoke('translate_paragraph', {
       bookId,
       paragraphId: 0,
-      model: 1,
+      model: 'models/gemini-2.5-flash',
       useCache: false,
     });
     // translate_paragraph returns on enqueue and 500 is transient (4 attempts),
