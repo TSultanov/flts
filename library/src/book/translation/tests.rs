@@ -732,3 +732,24 @@ fn to_import_round_trip_via_add_paragraph_translation() {
 
     assert_eq!(out, input);
 }
+
+#[test]
+fn translation_model_field_round_trips_discovered_id() {
+    let mut t = Translation::create("en", "ru");
+    t.add_paragraph_translation(0, &make_paragraph(1, "hi"), "models/gemini-9-ultra");
+    let mut buf = Vec::new();
+    t.serialize(&mut buf).unwrap();
+    let back = Translation::deserialize(&mut std::io::Cursor::new(&buf)).unwrap();
+    assert_eq!(
+        back.paragraph_view(0).unwrap().model,
+        "models/gemini-9-ultra"
+    );
+}
+
+#[test]
+fn read_model_field_accepts_varint_only_legacy_blob() {
+    let mut blob = Vec::new();
+    crate::book::serialization::write_var_u64(&mut blob, 1).unwrap(); // tag
+    crate::book::serialization::write_var_u64(&mut blob, 2).unwrap(); // Gemini 2.5 Pro
+    assert_eq!(read_model_field(&blob).unwrap(), "models/gemini-2.5-pro");
+}

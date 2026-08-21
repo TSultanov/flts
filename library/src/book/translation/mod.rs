@@ -6,8 +6,8 @@ use crate::book::{
     serialization::{
         ChecksumedWriter, Magic, Serializable, Version, read_exact_array, read_len_prefixed_string,
         read_len_prefixed_vec, read_opt, read_opt_var_u64, read_u8, read_u64, read_var_u64,
-        read_vec_slice, validate_hash, write_len_prefixed_bytes, write_opt, write_opt_var_u64,
-        write_u64, write_var_u64, write_vec_slice,
+        read_vec_slice, validate_hash, write_len_prefixed_bytes, write_len_prefixed_str, write_opt,
+        write_opt_var_u64, write_u64, write_var_u64, write_vec_slice,
     },
     translation_import,
 };
@@ -69,6 +69,30 @@ impl TryFrom<u64> for FieldTag {
             3 => Ok(FieldTag::VisibleWords),
             _ => Err(FieldTagError::InvalidValue(value)),
         }
+    }
+}
+
+// Old peers consume the legacy varint and ignore trailing bytes in this field.
+pub(crate) fn write_model_field(model: &str) -> Vec<u8> {
+    let mut buf = Vec::new();
+    write_var_u64(&mut buf, FieldTag::TranslationModel as u64).unwrap();
+    write_var_u64(
+        &mut buf,
+        crate::translator::catalog::legacy_id_from_api(model),
+    )
+    .unwrap();
+    write_len_prefixed_str(&mut buf, model).unwrap();
+    buf
+}
+
+pub(crate) fn read_model_field(buf: &[u8]) -> io::Result<String> {
+    let mut cursor = Cursor::new(buf);
+    read_var_u64(&mut cursor)?;
+    let n = read_var_u64(&mut cursor)?;
+    if cursor.position() < buf.len() as u64 {
+        read_len_prefixed_string(&mut cursor)
+    } else {
+        Ok(crate::translator::catalog::api_id_from_legacy(n))
     }
 }
 
@@ -714,7 +738,7 @@ impl Translation {
         //     v64 number_of_fields
         //     for each field: v64 field_data_length
         //     for each field: v64 tag, data
-        //       Tag 1 (TranslationModel): v64 legacy model id via catalog
+        //       Tag 1 (TranslationModel): v64 legacy id, then len-prefixed API id
         //       Tag 2 (TotalTokens): v64 has_value, if 1 then v64 token_count
         //       Tag 3 (VisibleWords): v64 count, then v64[] word_indexes
         // u64 paragraphs_count, then each: u8 has_translation (if 1 then u64 paragraph_translation_index)
@@ -814,17 +838,7 @@ impl Translation {
             };
             write_vec_slice(&mut hashing_stream, &pt.sentences)?;
 
-            let translation_model_field = {
-                let buf = Vec::new();
-                let mut cursor = Cursor::new(buf);
-
-                write_var_u64(&mut cursor, FieldTag::TranslationModel as u64)?;
-                write_var_u64(
-                    &mut cursor,
-                    crate::translator::catalog::legacy_id_from_api(&pt.model),
-                )?;
-                cursor.into_inner()
-            };
+            let translation_model_field = write_model_field(&pt.model);
 
             let tokens_count_field = {
                 let buf = Vec::new();
@@ -1255,7 +1269,7 @@ impl Translation {
             for fl in fields_length {
                 let mut buf = vec![0; fl as usize];
                 input_stream.read_exact(&mut buf)?;
-                let mut cursor = Cursor::new(buf);
+                let mut cursor = Cursor::new(&buf);
 
                 let tag: FieldTag = read_var_u64(&mut cursor)?
                     .try_into()
@@ -1263,8 +1277,7 @@ impl Translation {
 
                 match tag {
                     FieldTag::TranslationModel => {
-                        let n = read_var_u64(&mut cursor)?;
-                        translation.model = crate::translator::catalog::api_id_from_legacy(n);
+                        translation.model = read_model_field(&buf)?;
                     }
                     FieldTag::TotalTokens => {
                         let tokens = read_opt_var_u64(&mut cursor)?;
