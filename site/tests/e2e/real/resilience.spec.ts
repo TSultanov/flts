@@ -15,7 +15,7 @@ import {
  */
 
 const TARGET = 'eng'; // fixtures' config.targetLanguageId
-const MODEL = 1; // Gemini25Flash
+const MODEL = 'models/gemini-2.5-flash';
 const DECK = 'FLTS::Deutsch-English'; // deck_name(deu, eng)
 const STREAM_GLOB = '*streamGenerateContent*';
 const LRC = '[00:01.00]Erste Zeile\n[00:05.00]Zweite Zeile';

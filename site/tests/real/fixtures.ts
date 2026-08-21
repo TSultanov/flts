@@ -271,8 +271,7 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
               openaiApiKey: 'sim-key',
               deepseekApiKey: 'sim-key',
               zaiApiKey: 'sim-key',
-              // TranslationModel serializes as usize; 1 = Gemini25Flash.
-              model: 1,
+              model: 'models/gemini-2.5-flash',
               ankiEndpoint: `http://127.0.0.1:${ports.anki}`,
               syncEnabled: false,
             },

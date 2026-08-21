@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { RealHarness } from './fixtures';
 
-export const MODEL = 1; // Gemini25Flash
+export const MODEL = 'models/gemini-2.5-flash';
 export const SRC = 'deu';
 export const TGT = 'eng'; // fixtures' config.targetLanguageId
 /**

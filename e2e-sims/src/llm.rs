@@ -385,6 +385,36 @@ fn openai_handle(sim: &LlmSimState, body: String) -> Response {
     sse(events)
 }
 
+/// Include an embedding id so the catalog filter has something to drop.
+fn gemini_models_list() -> Value {
+    json!({
+        "models": [
+            {
+                "name": "models/gemini-2.5-flash",
+                "displayName": "Gemini 2.5 Flash",
+                "supportedGenerationMethods": ["generateContent", "countTokens"]
+            },
+            {
+                "name": "models/text-embedding-004",
+                "displayName": "Embeddings",
+                "supportedGenerationMethods": ["embedContent"]
+            }
+        ]
+    })
+}
+
+fn openai_models_list() -> Value {
+    json!({
+        "object": "list",
+        "data": [
+            { "id": "gpt-5.2", "object": "model" },
+            { "id": "text-embedding-3-large", "object": "model" },
+            { "id": "glm-5.2", "object": "model" },
+            { "id": "deepseek-v4-flash", "object": "model" }
+        ]
+    })
+}
+
 pub fn llm_router() -> (Router, Arc<LlmSimState>) {
     let sim = Arc::new(LlmSimState::default());
 
@@ -426,7 +456,15 @@ pub fn llm_router() -> (Router, Arc<LlmSimState>) {
         post(move |body: String| async move { openai_handle(&sim, body) })
     };
 
+    // Exact GET list paths before POST /models/{*model_action} so listing is not stolen.
+    // GET /models is OpenAI-compat (DeepSeek/z.AI unprefixed bases); Gemini list is /v1beta/models.
     let router = Router::new()
+        .route(
+            "/v1beta/models",
+            get(|| async { Json(gemini_models_list()) }),
+        )
+        .route("/v1/models", get(|| async { Json(openai_models_list()) }))
+        .route("/models", get(|| async { Json(openai_models_list()) }))
         .route("/v1beta/models/{*model_action}", gemini.clone())
         .route("/models/{*model_action}", gemini)
         .route(

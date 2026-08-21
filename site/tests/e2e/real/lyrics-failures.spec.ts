@@ -11,7 +11,7 @@ import { test, expect } from '../../real/fixtures';
  */
 
 const TARGET = 'eng'; // fixtures' config.targetLanguageId
-const MODEL = 1; // Gemini25Flash — the provider key the fixtures configure
+const MODEL = 'models/gemini-2.5-flash'; // fixtures' config.model
 
 type Track = {
   /** Appears verbatim in the LRClib query — the request-log filter keys on it. */

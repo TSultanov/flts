@@ -100,6 +100,39 @@ fn user_request(text: &str) -> Value {
 }
 
 #[tokio::test]
+async fn lists_gemini_and_openai_models() {
+    let (base, client) = start().await;
+    let resp = client
+        .get(format!("{base}/v1beta/models"))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+    let v: serde_json::Value = resp.json().await.unwrap();
+    assert!(
+        v["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["name"] == "models/gemini-2.5-flash")
+    );
+
+    let resp = client
+        .get(format!("{base}/v1/models"))
+        .send()
+        .await
+        .unwrap();
+    let v: serde_json::Value = resp.json().await.unwrap();
+    assert!(
+        v["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["id"] == "gpt-5.2")
+    );
+}
+
+#[tokio::test]
 async fn gemini_non_stream_returns_scripted_translation() {
     let (base, c) = start().await;
     seed(&c, &base, script_seed(5)).await;
