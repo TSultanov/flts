@@ -22,8 +22,11 @@ use library::{
     epub_importer::EpubBook,
     library::Library,
     translator::{
-        ChapterContextProvider, NoChapterContext, TranslationContext, TranslationModel,
-        TranslationProvider, Translator, gemini_cache::GeminiPromptCache, get_translator,
+        ChapterContextProvider, NoChapterContext, TranslationContext, TranslationProvider,
+        Translator,
+        catalog::{FALLBACK_GOOGLE, effective_model_id},
+        gemini_cache::GeminiPromptCache,
+        get_translator,
     },
 };
 use tokio::time::{Duration, sleep};
@@ -87,6 +90,9 @@ enum Commands {
         /// Number of parallel LLM requests
         #[arg(short, long, value_name = "NUM")]
         n_parallel: Option<usize>,
+        /// Translation model API id (default: Gemini 3.7 Flash)
+        #[arg(long, value_name = "MODEL")]
+        model: Option<String>,
     },
 }
 
@@ -165,13 +171,20 @@ async fn dump_summaries(
     };
 
     let summaries =
-        ChapterSummaries::load_from_metadata(main, &meta.chapter_summaries_conflicting_paths).await?;
+        ChapterSummaries::load_from_metadata(main, &meta.chapter_summaries_conflicting_paths)
+            .await?;
 
     let titles: Vec<Option<String>> = {
         let book = library.get_book(&book_id).await?;
         let book = book.lock().await;
         (0..summaries.entries.len())
-            .map(|i| book.book.chapter_view(i).title.as_ref().map(|t| t.to_string()))
+            .map(|i| {
+                book.book
+                    .chapter_view(i)
+                    .title
+                    .as_ref()
+                    .map(|t| t.to_string())
+            })
             .collect()
     };
 
@@ -258,11 +271,7 @@ async fn translate_paragraph(
         let translation = book.get_or_create_translation(tgt_lang).await?;
         let paragraph = book.book.paragraph_view(paragraph_id);
         let chapter_id = book.book.chapter_for_paragraph(paragraph_id).unwrap_or(0);
-        (
-            translation,
-            paragraph.original_text.to_string(),
-            chapter_id,
-        )
+        (translation, paragraph.original_text.to_string(), chapter_id)
     };
     println!(
         "Worker {worker_id}: Translating paragraph {}: \"{}...\"",
@@ -283,7 +292,7 @@ async fn translate_paragraph(
     translation.lock().await.add_paragraph_translation(
         paragraph_id,
         &p_translation,
-        translator.get_model(),
+        &translator.get_model(),
     );
 
     library
@@ -329,6 +338,7 @@ async fn translate_book(
     book_id: Uuid,
     tgt_lang: &str,
     n_workers: usize,
+    model: &str,
 ) -> anyhow::Result<()> {
     let target_lang = isolang::Language::from_str(tgt_lang)?;
 
@@ -377,6 +387,8 @@ async fn translate_book(
         source_lang
     };
 
+    let model = effective_model_id(TranslationProvider::Google, model);
+
     let start_time = Instant::now();
 
     let (tx, rx) = flume::unbounded();
@@ -398,7 +410,7 @@ async fn translate_book(
             context_provider,
             gemini_prompt_cache.clone(),
             TranslationProvider::Google,
-            TranslationModel::Gemini25Flash,
+            &model,
             api_key.to_owned(),
             source_lang,
             target_lang,
@@ -530,9 +542,11 @@ async fn do_main() -> anyhow::Result<()> {
                 api_key,
                 translation_language,
                 n_parallel,
+                model,
             } => {
                 let cache = Arc::new(get_cache().await?);
                 let gemini_prompt_cache = get_gemini_prompt_cache().await?;
+                let model = model.as_deref().unwrap_or(FALLBACK_GOOGLE);
                 translate_book(
                     library,
                     cache,
@@ -541,6 +555,7 @@ async fn do_main() -> anyhow::Result<()> {
                     *id,
                     translation_language,
                     n_parallel.unwrap_or(5),
+                    model,
                 )
                 .await?;
             }
