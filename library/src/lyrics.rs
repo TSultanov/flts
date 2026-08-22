@@ -1,5 +1,6 @@
 pub mod cache;
 pub mod lrclib;
+pub mod select;
 pub mod translation;
 
 use isolang::Language;

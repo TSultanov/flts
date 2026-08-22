@@ -5,11 +5,14 @@ use regex_lite::Regex;
 use serde::Deserialize;
 
 use crate::{
-    lyrics::{Lyrics, LyricsLine},
+    lyrics::{
+        Lyrics, LyricsLine,
+        select::{LrclibRecord, LyricsQuery, pick_best},
+    },
     retry::{RetryConfig, retry},
 };
 
-const LRCLIB_BASE: &str = "https://lrclib.net/api/get";
+const LRCLIB_ORIGIN: &str = "https://lrclib.net";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const USER_AGENT: &str = concat!("FLTS/", env!("CARGO_PKG_VERSION"), " (https://lrclib.net)");
 
@@ -38,37 +41,49 @@ fn is_transient(err: &anyhow::Error) -> bool {
 }
 
 #[derive(Debug, Deserialize)]
-struct LrclibResponse {
+struct LrclibApiRecord {
+    #[serde(rename = "trackName", default)]
+    track_name: Option<String>,
+    #[serde(rename = "artistName", default)]
+    artist_name: Option<String>,
+    #[serde(rename = "albumName", default)]
+    album_name: Option<String>,
+    duration: Option<f64>,
+    #[serde(default)]
+    instrumental: bool,
     #[serde(rename = "syncedLyrics")]
     synced_lyrics: Option<String>,
     #[serde(rename = "plainLyrics")]
     plain_lyrics: Option<String>,
 }
 
-/// Fetch lyrics for a track. `Ok(None)` means LRClib doesn't have the track.
-/// `duration_s` is optional but improves match quality.
-pub async fn fetch(
-    track_id: &str,
-    artist: &str,
-    title: &str,
-    album: Option<&str>,
-    duration_s: Option<u32>,
-) -> anyhow::Result<Option<Lyrics>> {
-    retry(LRCLIB_RETRY, is_transient, "LRClib fetch", || {
-        fetch_once(track_id, artist, title, album, duration_s)
-    })
-    .await
-}
-
-/// The env var carries an origin, not a full endpoint; empty is treated as unset.
-fn resolve_get_url(env_origin: Option<String>) -> String {
-    match env_origin.filter(|s| !s.is_empty()) {
-        Some(origin) => format!("{}/api/get", origin.trim_end_matches('/')),
-        None => LRCLIB_BASE.to_string(),
+impl LrclibApiRecord {
+    fn into_record(self, fallback_artist: &str, fallback_title: &str) -> LrclibRecord {
+        LrclibRecord {
+            artist: nonempty_owned(self.artist_name, fallback_artist),
+            title: nonempty_owned(self.track_name, fallback_title),
+            album: self.album_name.filter(|s| !s.is_empty()),
+            // 0 is the sim's "unset" and is not a real track length.
+            duration: self.duration.filter(|d| *d > 0.0),
+            instrumental: self.instrumental,
+            synced: self.synced_lyrics,
+            plain: self.plain_lyrics,
+        }
     }
 }
 
-async fn fetch_once(
+fn nonempty_owned(value: Option<String>, fallback: &str) -> String {
+    value
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+/// Fetch lyrics for a track. `Ok(None)` means LRClib doesn't have the track.
+/// `duration_s` is optional but improves match quality.
+///
+/// Tries `GET /api/get` first. A synced hit is used as-is. A miss or plain-only
+/// hit falls through to `GET /api/search`, then [`pick_best`].
+pub async fn fetch(
     track_id: &str,
     artist: &str,
     title: &str,
@@ -79,7 +94,70 @@ async fn fetch_once(
         .timeout(REQUEST_TIMEOUT)
         .user_agent(USER_AGENT)
         .build()?;
+    let origin = std::env::var("FLTS_LRCLIB_BASE_URL").ok();
+    let query = LyricsQuery {
+        artist,
+        title,
+        album,
+        duration_s,
+    };
 
+    let got = retry(LRCLIB_RETRY, is_transient, "LRClib GET", || {
+        get_record(&client, origin.as_deref(), artist, title, album, duration_s)
+    })
+    .await?;
+
+    if let Some(rec) = &got
+        && rec.has_synced()
+    {
+        return Ok(record_to_lyrics(track_id, rec));
+    }
+
+    let searched = match retry(LRCLIB_RETRY, is_transient, "LRClib search", || {
+        search_records(&client, origin.as_deref(), artist, title)
+    })
+    .await
+    {
+        Ok(hits) => hits,
+        Err(err) => {
+            if let Some(rec) = &got {
+                warn!("LRClib search failed after GET, keeping GET result: {err}");
+                return Ok(record_to_lyrics(track_id, rec));
+            }
+            return Err(err);
+        }
+    };
+
+    let mut candidates = Vec::with_capacity(searched.len() + usize::from(got.is_some()));
+    if let Some(rec) = got
+        && rec.has_lyrics()
+    {
+        candidates.push(rec);
+    }
+    candidates.extend(searched);
+
+    let best = pick_best(&candidates, &query);
+    if best.is_none() {
+        info!("LRClib: no lyrics for {artist} — {title}");
+    }
+    Ok(best.and_then(|rec| record_to_lyrics(track_id, rec)))
+}
+
+fn resolve_api_url(env_origin: Option<&str>, endpoint: &str) -> String {
+    match env_origin.filter(|s| !s.is_empty()) {
+        Some(origin) => format!("{}/api/{endpoint}", origin.trim_end_matches('/')),
+        None => format!("{LRCLIB_ORIGIN}/api/{endpoint}"),
+    }
+}
+
+async fn get_record(
+    client: &reqwest::Client,
+    origin: Option<&str>,
+    artist: &str,
+    title: &str,
+    album: Option<&str>,
+    duration_s: Option<u32>,
+) -> anyhow::Result<Option<LrclibRecord>> {
     let mut query: Vec<(&str, String)> = vec![
         ("artist_name", artist.to_string()),
         ("track_name", title.to_string()),
@@ -94,32 +172,63 @@ async fn fetch_once(
     }
 
     let resp = client
-        .get(resolve_get_url(std::env::var("FLTS_LRCLIB_BASE_URL").ok()))
+        .get(resolve_api_url(origin, "get"))
         .query(&query)
         .send()
         .await?;
 
     // 404 means "not in DB"; resolve it before the classifier can retry it.
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
-        info!("LRClib: no lyrics for {artist} — {title}");
         return Ok(None);
     }
     if !resp.status().is_success() {
-        // Status encoded numerically so `is_transient` can parse it back.
         anyhow::bail!("LRClib HTTP {}", resp.status().as_u16());
     }
 
-    let body: LrclibResponse = resp.json().await?;
+    let body: LrclibApiRecord = resp.json().await?;
+    let rec = body.into_record(artist, title);
+    if !rec.has_lyrics() {
+        warn!("LRClib GET returned 200 with neither syncedLyrics nor plainLyrics");
+        return Ok(None);
+    }
+    Ok(Some(rec))
+}
 
-    if let Some(synced) = body.synced_lyrics.as_deref().filter(|s| !s.is_empty()) {
-        return Ok(Some(Lyrics {
+async fn search_records(
+    client: &reqwest::Client,
+    origin: Option<&str>,
+    artist: &str,
+    title: &str,
+) -> anyhow::Result<Vec<LrclibRecord>> {
+    let resp = client
+        .get(resolve_api_url(origin, "search"))
+        .query(&[("artist_name", artist), ("track_name", title)])
+        .send()
+        .await?;
+
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(Vec::new());
+    }
+    if !resp.status().is_success() {
+        anyhow::bail!("LRClib HTTP {}", resp.status().as_u16());
+    }
+
+    let body: Vec<LrclibApiRecord> = resp.json().await?;
+    Ok(body
+        .into_iter()
+        .map(|r| r.into_record(artist, title))
+        .collect())
+}
+
+fn record_to_lyrics(track_id: &str, rec: &LrclibRecord) -> Option<Lyrics> {
+    if let Some(synced) = rec.synced.as_deref().filter(|s| !s.is_empty()) {
+        return Some(Lyrics {
             track_id: track_id.to_string(),
             lines: parse_lrc(synced),
             synced: true,
-        }));
+        });
     }
-
-    if let Some(plain) = body.plain_lyrics.as_deref().filter(|s| !s.is_empty()) {
+    if let Some(plain) = rec.plain.as_deref().filter(|s| !s.is_empty()) {
         let lines = plain
             .lines()
             .map(|t| LyricsLine {
@@ -127,15 +236,13 @@ async fn fetch_once(
                 text: t.to_string(),
             })
             .collect();
-        return Ok(Some(Lyrics {
+        return Some(Lyrics {
             track_id: track_id.to_string(),
             lines,
             synced: false,
-        }));
+        });
     }
-
-    warn!("LRClib returned 200 with neither syncedLyrics nor plainLyrics");
-    Ok(None)
+    None
 }
 
 /// Parse `[mm:ss.xx]text` tags. Several tags on one line yield several
@@ -214,13 +321,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn get_url_env_resolution() {
-        assert_eq!(resolve_get_url(None), LRCLIB_BASE);
+    fn api_url_env_resolution() {
+        assert_eq!(resolve_api_url(None, "get"), "https://lrclib.net/api/get");
         assert_eq!(
-            resolve_get_url(Some("http://127.0.0.1:4002/".into())),
+            resolve_api_url(Some("http://127.0.0.1:4002/"), "get"),
             "http://127.0.0.1:4002/api/get"
         );
-        assert_eq!(resolve_get_url(Some(String::new())), LRCLIB_BASE);
+        assert_eq!(
+            resolve_api_url(Some(""), "search"),
+            "https://lrclib.net/api/search"
+        );
+        assert_eq!(
+            resolve_api_url(Some("http://127.0.0.1:4002"), "search"),
+            "http://127.0.0.1:4002/api/search"
+        );
     }
 
     #[test]

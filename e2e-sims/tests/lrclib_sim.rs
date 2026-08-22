@@ -38,6 +38,20 @@ async fn get(
     (r.status(), r.json().await.unwrap())
 }
 
+async fn search(
+    c: &reqwest::Client,
+    base: &str,
+    query: &[(&str, &str)],
+) -> (reqwest::StatusCode, Value) {
+    let r = c
+        .get(format!("{base}/api/search"))
+        .query(query)
+        .send()
+        .await
+        .unwrap();
+    (r.status(), r.json().await.unwrap())
+}
+
 fn catalog() -> Value {
     json!([{
         "artist": "Mecano",
@@ -184,4 +198,106 @@ async fn seed_rejects_malformed_input() {
         .await
         .unwrap();
     assert_eq!(r.status(), 400);
+}
+
+#[tokio::test]
+async fn search_returns_matching_records() {
+    let (base, c) = start().await;
+    seed(&c, &base, catalog()).await;
+
+    let (status, body) = search(
+        &c,
+        &base,
+        &[("artist_name", "Mecano"), ("track_name", "Hijo de la Luna")],
+    )
+    .await;
+    assert_eq!(status, 200);
+    let hits = body.as_array().expect("search returns an array");
+    assert_eq!(hits.len(), 1);
+    assert_eq!(
+        hits[0]["syncedLyrics"],
+        "[00:01.00] Tonto el que no entienda"
+    );
+    assert_eq!(hits[0]["trackName"], "Hijo de la Luna");
+    assert_eq!(hits[0]["artistName"], "Mecano");
+}
+
+#[tokio::test]
+async fn search_is_case_insensitive_contains() {
+    let (base, c) = start().await;
+    seed(&c, &base, catalog()).await;
+
+    let (status, body) = search(
+        &c,
+        &base,
+        &[("artist_name", "mecano"), ("track_name", "hijo")],
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(body.as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn search_returns_both_records_for_same_artist_title() {
+    let (base, c) = start().await;
+    seed(
+        &c,
+        &base,
+        json!([
+            {
+                "artist": "Mecano",
+                "title": "Hijo de la Luna",
+                "album": "Studio",
+                "plainLyrics": "plain",
+                "duration": 210
+            },
+            {
+                "artist": "Mecano",
+                "title": "Hijo de la Luna",
+                "album": "Greatest Hits",
+                "syncedLyrics": "[00:01.00] timed",
+                "duration": 210
+            }
+        ]),
+    )
+    .await;
+
+    let (get_status, get_body) = get(
+        &c,
+        &base,
+        &[("artist_name", "Mecano"), ("track_name", "Hijo de la Luna")],
+    )
+    .await;
+    assert_eq!(get_status, 200);
+    assert!(get_body["syncedLyrics"].is_null());
+    assert_eq!(get_body["plainLyrics"], "plain");
+    assert_eq!(get_body["duration"], 210);
+
+    let (status, body) = search(
+        &c,
+        &base,
+        &[("artist_name", "Mecano"), ("track_name", "Hijo de la Luna")],
+    )
+    .await;
+    assert_eq!(status, 200);
+    let hits = body.as_array().unwrap();
+    assert_eq!(hits.len(), 2);
+    assert_eq!(hits[0]["plainLyrics"], "plain");
+    assert_eq!(hits[1]["syncedLyrics"], "[00:01.00] timed");
+    assert_eq!(hits[1]["duration"], 210);
+}
+
+#[tokio::test]
+async fn search_unmatched_returns_empty_array() {
+    let (base, c) = start().await;
+    seed(&c, &base, catalog()).await;
+
+    let (status, body) = search(
+        &c,
+        &base,
+        &[("artist_name", "Mecano"), ("track_name", "Nowhere")],
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(body, json!([]));
 }

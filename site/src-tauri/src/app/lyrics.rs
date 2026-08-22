@@ -190,13 +190,16 @@ pub(crate) async fn fetch_lyrics_inner(
     }
 
     let cache = state.lyrics_state.lyrics_cache(Some(&state.app)).await?;
-    if let Some(cached) = cache.get_raw(track_id).await {
+    let disk = cache.get_raw(track_id).await;
+    if let Some(cached) = &disk
+        && cached.synced
+    {
         state
             .lyrics_state
             .lyrics
             .insert(track_id.to_string(), Arc::new(cached.clone()))
             .await;
-        return Ok(Some(cached));
+        return Ok(Some(cached.clone()));
     }
 
     let duration_s = (track.duration_ms + 500) / 1000;
@@ -209,18 +212,27 @@ pub(crate) async fn fetch_lyrics_inner(
     )
     .await?;
 
-    if let Some(l) = &fetched {
+    // Synced network wins (including an upgrade over unsynced disk). Unsynced
+    // disk is kept when the network is no better, but still enters memory so
+    // this session does not search again. Misses stay uncached.
+    let (chosen, persist) = match (disk, fetched) {
+        (_, Some(l)) if l.synced => (Some(l), true),
+        (Some(cached), _) => (Some(cached), false),
+        (None, Some(l)) => (Some(l), true),
+        (None, None) => (None, false),
+    };
+
+    if let Some(l) = &chosen {
         state
             .lyrics_state
             .lyrics
             .insert(track_id.to_string(), Arc::new(l.clone()))
             .await;
-        // A cache-write failure must not fail the user's request.
-        if let Err(err) = cache.put_raw(l).await {
+        if persist && let Err(err) = cache.put_raw(l).await {
             warn!("LyricsCache: failed to persist raw lyrics for {track_id}: {err}");
         }
     }
-    Ok(fetched)
+    Ok(chosen)
 }
 
 /// Cached-only snapshot for `track_id`: never triggers an LRClib request or a

@@ -24,7 +24,7 @@ type Track = {
 };
 
 type LyricsState = {
-  lyrics: { trackId?: string; lines: Array<{ text: string }> } | null;
+  lyrics: { trackId?: string; lines: Array<{ text: string }>; synced?: boolean } | null;
   translation: unknown | null;
 };
 
@@ -56,10 +56,11 @@ function lyricsStateArgs(track: Track) {
 async function hitsFor(
   lrclib: { requests: () => Promise<Array<{ path: string; query?: string | null }>> },
   track: Track,
+  path = '/api/get',
 ): Promise<number> {
   const reqs = await lrclib.requests();
   return reqs.filter(
-    (r) => r.path === '/api/get' && (r.query ?? '').includes(track.nonce),
+    (r) => r.path === path && (r.query ?? '').includes(track.nonce),
   ).length;
 }
 
@@ -84,7 +85,9 @@ test.describe('LRClib failure injection', () => {
       'Zweite Zeile',
       'Dritte Zeile',
     ]);
+    expect(state.lyrics!.synced).toBe(true);
     expect(await hitsFor(harness.lrclib, track)).toBe(1);
+    expect(await hitsFor(harness.lrclib, track, '/api/search')).toBe(0);
   });
 
   test('404 resolves to no-lyrics without retrying', async ({ harness }) => {
@@ -98,8 +101,10 @@ test.describe('LRClib failure injection', () => {
       lyricsStateArgs(track),
     );
     expect(state.lyrics).toBeNull();
-    // 404 is terminal (Ok(None)) — it must never reach the retry classifier.
+    // 404 is terminal for GET (Ok(None)) — it must never reach the retry classifier.
+    // Search still runs once and returns [].
     expect(await hitsFor(harness.lrclib, track)).toBe(1);
+    expect(await hitsFor(harness.lrclib, track, '/api/search')).toBe(1);
   });
 
   test('two 503s then success: the retry budget covers it', async ({ harness }) => {
@@ -187,7 +192,46 @@ test.describe('LRClib failure injection', () => {
     );
     expect(state.lyrics).not.toBeNull();
     expect(state.lyrics!.lines.length).toBe(3);
-    // The delayed attempt was the only one — no timeout, no retry.
     expect(await hitsFor(harness.lrclib, track)).toBe(1);
+  });
+});
+
+test.describe('LRClib search ranking', () => {
+  test('prefers a same-track synced search hit over GET plain', async ({
+    harness,
+  }) => {
+    const track = nonceTrack();
+    await harness.lrclib.seed([
+      {
+        artist: track.artist,
+        title: track.name,
+        album: track.album,
+        plainLyrics: 'plain line',
+        duration: 210,
+      },
+      {
+        artist: track.artist,
+        title: track.name,
+        album: 'Greatest Hits',
+        syncedLyrics: LRC,
+        duration: 210,
+      },
+    ]);
+
+    await harness.invoke('e2e_resolve_track', resolve(track));
+
+    const state = await harness.invoke<LyricsState>(
+      'get_track_lyrics_state',
+      lyricsStateArgs(track),
+    );
+    expect(state.lyrics).not.toBeNull();
+    expect(state.lyrics!.synced).toBe(true);
+    expect(state.lyrics!.lines.map((l) => l.text)).toEqual([
+      'Erste Zeile',
+      'Zweite Zeile',
+      'Dritte Zeile',
+    ]);
+    expect(await hitsFor(harness.lrclib, track)).toBe(1);
+    expect(await hitsFor(harness.lrclib, track, '/api/search')).toBe(1);
   });
 });
