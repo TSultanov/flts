@@ -105,6 +105,9 @@
             {#if word?.current}
                 {@const w = word.current}
                 <span class="peek-word">{@html w.original}</span>
+                {#if w.grammar.originalInitialForm}
+                        <span class="peek-original-initial-form">({w.grammar.originalInitialForm})</span>
+                {/if}
                 {#if w.contextualTranslations && w.contextualTranslations.length > 0}
                     <span class="peek-translations"
                         >{w.contextualTranslations.join(", ")}</span
@@ -274,13 +277,17 @@
         gap: 0.6em;
         padding: 0 12px;
         height: 100%;
-        overflow: hidden;
         white-space: nowrap;
         color: var(--dialog-text);
     }
 
     .peek-word {
         font-weight: 600;
+    }
+
+    .peek-original-initial-form {
+        color: var(--dialog-text-secondary);
+        font-style: italic;
     }
 
     .peek-translations {
