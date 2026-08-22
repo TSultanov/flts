@@ -27,7 +27,7 @@ IOS_IPA := $(TAURI_DIR)/gen/apple/build/arm64/$(PRODUCT).ipa
 
 .DEFAULT_GOAL := build
 
-.PHONY: all build dev deps \
+.PHONY: all build dev deps hooks \
 	build-macos build-ios build-android \
 	install-macos install-ios install-android \
 	install\ macos install\ ios install\ android \
@@ -40,6 +40,9 @@ help: ## show available targets
 
 deps: ## install frontend dependencies (pnpm, when missing)
 	@if [ ! -d "$(SITE)/node_modules" ]; then cd "$(SITE)" && pnpm install; fi
+
+hooks: ## install git pre-commit formatters (requires pre-commit on PATH)
+	"$(ROOT)scripts/install-git-hooks.sh"
 
 dev: deps ## run Tauri in development mode (hot reload)
 	cd "$(SITE)" && cargo tauri dev

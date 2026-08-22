@@ -1,0 +1,7 @@
+syncthing-core/webui-vendor/
+site/src-tauri/gen/
+site/node_modules/
+site/dist/
+site/coverage/
+site/pnpm-lock.yaml
+target/

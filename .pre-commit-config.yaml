@@ -1,0 +1,57 @@
+# Run `scripts/install-git-hooks.sh` once after cloning to enable hooks.
+#
+# Formatters run on staged files before each commit. Vendored and generated
+# paths are excluded via `exclude` and `.prettierignore`.
+
+default_language_version:
+  node: "22.14.0"
+
+exclude: |
+  (?x)^(
+    syncthing-core/webui-vendor/|
+    site/src-tauri/gen/|
+    site/pnpm-lock\.yaml
+  )
+
+repos:
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --all --
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+  - repo: local
+    hooks:
+      - id: prettier
+        name: prettier
+        entry: prettier --write --ignore-unknown
+        language: node
+        additional_dependencies:
+          - prettier@3.4.2
+          - prettier-plugin-svelte@3.3.3
+          - svelte@5.55.5
+        files: \.(css|html?|json|md|ya?ml|jsx?|tsx?|svelte)$
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.11.2
+    hooks:
+      - id: ruff-format
+
+  - repo: https://github.com/scop/pre-commit-shfmt
+    rev: v3.10.0-1
+    hooks:
+      - id: shfmt
+        args: [-i, "4", -ci, -bn]
+
+  - repo: https://github.com/dnephin/pre-commit-golang
+    rev: v0.5.1
+    hooks:
+      - id: go-fmt
+
+  - repo: https://github.com/ComPWA/taplo-pre-commit
+    rev: v0.9.3
+    hooks:
+      - id: taplo-format
