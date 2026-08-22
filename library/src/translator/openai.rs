@@ -42,6 +42,7 @@ pub struct OpenAITranslator {
 
 pub(crate) const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
 pub(crate) const ZAI_BASE_URL: &str = "https://api.z.ai/api/paas/v4/";
+pub(crate) const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 
 pub(crate) fn openai_client(api_key: String, base_url: Option<&str>) -> Client<OpenAIConfig> {
     let mut config = OpenAIConfig::new().with_api_key(api_key);
@@ -70,6 +71,10 @@ pub(crate) fn openai_compat_base_url(
         crate::translator::TranslationProvider::Zai => Some(resolve_compat_base(
             std::env::var("FLTS_ZAI_BASE_URL").ok(),
             ZAI_BASE_URL,
+        )),
+        crate::translator::TranslationProvider::Openrouter => Some(resolve_compat_base(
+            std::env::var("FLTS_OPENROUTER_BASE_URL").ok(),
+            OPENROUTER_BASE_URL,
         )),
         _ => None,
     }
@@ -129,7 +134,9 @@ impl Translator for OpenAITranslator {
         let callback = ctx.callback;
         let is_deepseek = matches!(
             self.provider,
-            TranslationProvider::Deepseek | TranslationProvider::Zai
+            TranslationProvider::Deepseek
+                | TranslationProvider::Zai
+                | TranslationProvider::Openrouter
         );
         let mut system_prompt = format!(
             "{}\n\nReturn ONLY a single JSON object that matches the requested schema. Do not wrap it in markdown.",

@@ -320,6 +320,7 @@ pub(crate) async fn dispatch_translation_inner(
         TranslationProvider::Openai => cfg.openai_api_key,
         TranslationProvider::Deepseek => cfg.deepseek_api_key,
         TranslationProvider::Zai => cfg.zai_api_key,
+        TranslationProvider::Openrouter => cfg.openrouter_api_key,
     }
     .ok_or_else(|| "no API key configured for selected provider".to_string())?;
 

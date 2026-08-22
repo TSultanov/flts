@@ -3,8 +3,8 @@ use std::{fs::File, path::Path, str::FromStr, sync::Arc};
 use library::translator::{
     TranslationProvider,
     catalog::{
-        FALLBACK_DEEPSEEK, FALLBACK_GOOGLE, FALLBACK_OPENAI, FALLBACK_ZAI, ListedModel,
-        api_id_from_legacy, effective_model_id, list_base_url_from_env,
+        FALLBACK_DEEPSEEK, FALLBACK_GOOGLE, FALLBACK_OPENAI, FALLBACK_OPENROUTER, FALLBACK_ZAI,
+        ListedModel, api_id_from_legacy, effective_model_id, list_base_url_from_env,
     },
 };
 use log::warn;
@@ -39,6 +39,8 @@ pub struct ProviderMeta {
     pub default_model: String,
     #[serde(rename = "apiKeyField")]
     pub api_key_field: &'static str,
+    #[serde(rename = "modelSelection", skip_serializing_if = "Option::is_none")]
+    pub model_selection: Option<&'static str>,
 }
 
 #[tauri::command]
@@ -51,8 +53,9 @@ pub async fn get_models(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<Mo
     let openai_base = list_base_url_from_env(TranslationProvider::Openai);
     let deepseek_base = list_base_url_from_env(TranslationProvider::Deepseek);
     let zai_base = list_base_url_from_env(TranslationProvider::Zai);
+    let openrouter_base = list_base_url_from_env(TranslationProvider::Openrouter);
 
-    let (google, openai, deepseek, zai) = tokio::join!(
+    let (google, openai, deepseek, zai, openrouter) = tokio::join!(
         catalog.models_for(
             TranslationProvider::Google,
             keys.for_provider(TranslationProvider::Google),
@@ -73,6 +76,11 @@ pub async fn get_models(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<Mo
             keys.for_provider(TranslationProvider::Zai),
             &zai_base
         ),
+        catalog.models_for(
+            TranslationProvider::Openrouter,
+            keys.for_provider(TranslationProvider::Openrouter),
+            &openrouter_base
+        ),
     );
 
     Ok(google
@@ -80,6 +88,7 @@ pub async fn get_models(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<Mo
         .chain(openai)
         .chain(deepseek)
         .chain(zai)
+        .chain(openrouter)
         .map(Model::from)
         .collect())
 }
@@ -92,24 +101,35 @@ pub fn get_translation_providers() -> Vec<ProviderMeta> {
             name: TranslationProvider::Google.display_name(),
             default_model: FALLBACK_GOOGLE.to_string(),
             api_key_field: "geminiApiKey",
+            model_selection: None,
         },
         ProviderMeta {
             id: TranslationProvider::Openai,
             name: TranslationProvider::Openai.display_name(),
             default_model: FALLBACK_OPENAI.to_string(),
             api_key_field: "openaiApiKey",
+            model_selection: None,
         },
         ProviderMeta {
             id: TranslationProvider::Deepseek,
             name: TranslationProvider::Deepseek.display_name(),
             default_model: FALLBACK_DEEPSEEK.to_string(),
             api_key_field: "deepseekApiKey",
+            model_selection: None,
         },
         ProviderMeta {
             id: TranslationProvider::Zai,
             name: TranslationProvider::Zai.display_name(),
             default_model: FALLBACK_ZAI.to_string(),
             api_key_field: "zaiApiKey",
+            model_selection: None,
+        },
+        ProviderMeta {
+            id: TranslationProvider::Openrouter,
+            name: TranslationProvider::Openrouter.display_name(),
+            default_model: FALLBACK_OPENROUTER.to_string(),
+            api_key_field: "openrouterApiKey",
+            model_selection: Some("family"),
         },
     ]
 }
@@ -169,6 +189,7 @@ pub struct ApiKeys {
     pub openai: Option<String>,
     pub deepseek: Option<String>,
     pub zai: Option<String>,
+    pub openrouter: Option<String>,
 }
 
 impl ApiKeys {
@@ -178,6 +199,7 @@ impl ApiKeys {
             TranslationProvider::Openai => self.openai.as_deref(),
             TranslationProvider::Deepseek => self.deepseek.as_deref(),
             TranslationProvider::Zai => self.zai.as_deref(),
+            TranslationProvider::Openrouter => self.openrouter.as_deref(),
         }
     }
 }
@@ -197,6 +219,8 @@ pub struct Config {
     pub deepseek_api_key: Option<String>,
     #[serde(rename = "zaiApiKey", default)]
     pub zai_api_key: Option<String>,
+    #[serde(rename = "openrouterApiKey", default)]
+    pub openrouter_api_key: Option<String>,
     #[serde(deserialize_with = "deserialize_model")]
     pub model: String,
     /// Migration-read-only: read once to relocate a user-picked library into
@@ -257,6 +281,7 @@ impl Default for Config {
             openai_api_key: None,
             deepseek_api_key: None,
             zai_api_key: None,
+            openrouter_api_key: None,
             model: FALLBACK_GOOGLE.to_string(),
             library_path: None,
             spotify_client_id: None,
@@ -323,6 +348,7 @@ impl Config {
             openai: self.openai_api_key.clone(),
             deepseek: self.deepseek_api_key.clone(),
             zai: self.zai_api_key.clone(),
+            openrouter: self.openrouter_api_key.clone(),
         }
     }
 

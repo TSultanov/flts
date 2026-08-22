@@ -60,7 +60,10 @@ pub fn get_lyrics_translator(
         TranslationProvider::Google => Ok(Box::new(LyricsGeminiTranslator::create(
             model, api_key, to,
         )?)),
-        TranslationProvider::Openai | TranslationProvider::Deepseek | TranslationProvider::Zai => {
+        TranslationProvider::Openai
+        | TranslationProvider::Deepseek
+        | TranslationProvider::Zai
+        | TranslationProvider::Openrouter => {
             Ok(Box::new(LyricsOpenAITranslator::create(
                 provider, model, api_key, to,
             )?))
@@ -184,7 +187,9 @@ impl LyricsOpenAITranslator {
             model_name: Arc::from(model),
             is_deepseek: matches!(
                 provider,
-                TranslationProvider::Deepseek | TranslationProvider::Zai
+                TranslationProvider::Deepseek
+                    | TranslationProvider::Zai
+                    | TranslationProvider::Openrouter
             ),
             is_zai: matches!(provider, TranslationProvider::Zai),
             to,

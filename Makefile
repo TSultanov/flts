@@ -2,6 +2,7 @@
 #
 # Usage:
 #   make                  # build macOS desktop app (default)
+#   make dev              # run Tauri dev server (hot reload)
 #   make build-ios        # build iOS IPA
 #   make build-android    # build signed Android APK
 #   make install-macos    # build + copy to /Applications
@@ -26,7 +27,7 @@ IOS_IPA := $(TAURI_DIR)/gen/apple/build/arm64/$(PRODUCT).ipa
 
 .DEFAULT_GOAL := build
 
-.PHONY: all build deps \
+.PHONY: all build dev deps \
 	build-macos build-ios build-android \
 	install-macos install-ios install-android \
 	install\ macos install\ ios install\ android \
@@ -39,6 +40,9 @@ help: ## show available targets
 
 deps: ## install frontend dependencies (pnpm, when missing)
 	@if [ ! -d "$(SITE)/node_modules" ]; then cd "$(SITE)" && pnpm install; fi
+
+dev: deps ## run Tauri in development mode (hot reload)
+	cd "$(SITE)" && cargo tauri dev
 
 build: build-macos ## build the Tauri app for the current dev platform (macOS)
 

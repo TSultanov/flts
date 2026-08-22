@@ -273,6 +273,7 @@ pub enum TranslationProvider {
     Openai,
     Deepseek,
     Zai,
+    Openrouter,
 }
 
 impl TranslationProvider {
@@ -282,6 +283,7 @@ impl TranslationProvider {
             TranslationProvider::Openai => "OpenAI",
             TranslationProvider::Deepseek => "DeepSeek",
             TranslationProvider::Zai => "z.AI",
+            TranslationProvider::Openrouter => "OpenRouter",
         }
     }
 }
@@ -526,7 +528,10 @@ pub fn get_translator(
             &from,
             &to,
         )?)),
-        TranslationProvider::Openai | TranslationProvider::Deepseek | TranslationProvider::Zai => {
+        TranslationProvider::Openai
+        | TranslationProvider::Deepseek
+        | TranslationProvider::Zai
+        | TranslationProvider::Openrouter => {
             Ok(Box::new(OpenAITranslator::create(
                 cache,
                 context_provider,

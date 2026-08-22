@@ -271,6 +271,7 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
               openaiApiKey: 'sim-key',
               deepseekApiKey: 'sim-key',
               zaiApiKey: 'sim-key',
+              openrouterApiKey: 'sim-key',
               model: 'models/gemini-2.5-flash',
               ankiEndpoint: `http://127.0.0.1:${ports.anki}`,
               syncEnabled: false,
@@ -292,6 +293,7 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
               OPENAI_BASE_URL: `http://127.0.0.1:${ports.llm}/v1`,
               FLTS_DEEPSEEK_BASE_URL: `http://127.0.0.1:${ports.llm}`,
               FLTS_ZAI_BASE_URL: `http://127.0.0.1:${ports.llm}`,
+              FLTS_OPENROUTER_BASE_URL: `http://127.0.0.1:${ports.llm}/v1`,
               FLTS_LRCLIB_BASE_URL: `http://127.0.0.1:${ports.lrclib}`,
               FLTS_DISABLE_SYNC: '1',
               // Never the developer's real "FLTS-Spotify" keychain entry; the

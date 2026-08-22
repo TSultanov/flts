@@ -6,7 +6,7 @@
     import SyncStatusButton from "./lib/sync/SyncStatusButton.svelte";
     import { onMount, setContext } from "svelte";
     import { Library } from "./lib/data/library";
-    import { configStore } from "./lib/config/store";
+    import { configStore, getTranslationProviders, hasApiKeyForProvider, type ProviderMeta } from "./lib/config/store";
     import { navigate } from './router';
     import { platform } from '@tauri-apps/plugin-os';
     import { invoke } from '@tauri-apps/api/core';
@@ -41,10 +41,35 @@
         },
     ];
 
+    let providerMeta: ProviderMeta[] = $state([]);
+
+    onMount(() => {
+        void getTranslationProviders()
+            .then((providers) => {
+                providerMeta = providers;
+            })
+            .catch((e) => {
+                console.warn("get_translation_providers failed", e);
+            });
+
+        let waking = false;
+        const onVisible = async () => {
+            if (document.visibilityState !== "visible" || waking) return;
+            waking = true;
+            try {
+                await invoke("sync_wake");
+            } catch (e) {
+                console.warn("sync_wake failed", e);
+            } finally {
+                waking = false;
+            }
+        };
+        document.addEventListener("visibilitychange", onVisible);
+        return () => document.removeEventListener("visibilitychange", onVisible);
+    });
+
     const links = $derived.by(() => {
-        const apiKeyOk = configStore.current?.translationProvider === 'openai'
-            ? !!configStore.current?.openaiApiKey
-            : !!configStore.current?.geminiApiKey;
+        const apiKeyOk = hasApiKeyForProvider(configStore.current, providerMeta);
 
         if (!apiKeyOk || !configStore.current?.targetLanguageId) {
             return configOnlyLinks;
@@ -61,9 +86,7 @@
         initialRedirectDone = true;
         const currentPath = window.location.pathname;
 
-        const apiKeyOk = configStore.current?.translationProvider === 'openai'
-            ? !!configStore.current?.openaiApiKey
-            : !!configStore.current?.geminiApiKey;
+        const apiKeyOk = hasApiKeyForProvider(configStore.current, providerMeta);
         const configComplete = apiKeyOk && configStore.current?.targetLanguageId;
 
         if (!configComplete) {
@@ -77,25 +100,6 @@
 
     const library = new Library();
     setContext("library", library);
-
-    // iOS tears down the embedded engine's sockets while suspended, so the
-    // backend restarts it on wake if unreachable.
-    onMount(() => {
-        let waking = false;
-        const onVisible = async () => {
-            if (document.visibilityState !== "visible" || waking) return;
-            waking = true;
-            try {
-                await invoke("sync_wake");
-            } catch (e) {
-                console.warn("sync_wake failed", e);
-            } finally {
-                waking = false;
-            }
-        };
-        document.addEventListener("visibilitychange", onVisible);
-        return () => document.removeEventListener("visibilitychange", onVisible);
-    });
 </script>
 
 <Nav {links}>

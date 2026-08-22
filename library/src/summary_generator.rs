@@ -55,7 +55,8 @@ impl ChapterSummarizer {
             }
             TranslationProvider::Openai
             | TranslationProvider::Deepseek
-            | TranslationProvider::Zai => {
+            | TranslationProvider::Zai
+            | TranslationProvider::Openrouter => {
                 let model_name = model.to_string();
                 let base_url = crate::translator::openai::openai_compat_base_url(provider);
                 let client = crate::translator::openai::openai_client(

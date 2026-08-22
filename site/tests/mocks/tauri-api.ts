@@ -15,13 +15,19 @@ type Language = {
   localName?: string;
 };
 
-type TranslationProvider = 'google' | 'openai';
+type TranslationProvider = 'google' | 'openai' | 'deepseek' | 'zai' | 'openrouter';
 
 type ProviderMeta = {
   id: TranslationProvider;
   name: string;
   defaultModel: string;
-  apiKeyField: 'geminiApiKey' | 'openaiApiKey';
+  apiKeyField:
+    | 'geminiApiKey'
+    | 'openaiApiKey'
+    | 'deepseekApiKey'
+    | 'zaiApiKey'
+    | 'openrouterApiKey';
+  modelSelection?: 'flat' | 'family';
 };
 
 type Model = {
@@ -35,6 +41,9 @@ type Config = {
   translationProvider: TranslationProvider;
   geminiApiKey?: string;
   openaiApiKey?: string;
+  deepseekApiKey?: string;
+  zaiApiKey?: string;
+  openrouterApiKey?: string;
   model: string;
   libraryPath?: string;
   ankiEndpoint?: string;
@@ -840,10 +849,20 @@ const mockModels: Model[] = [
   { id: 'models/gemini-2.5-flash', name: 'Gemini 2.5 Flash', provider: 'google' },
   { id: 'models/gemini-2.5-pro', name: 'Gemini 2.5 Pro', provider: 'google' },
   { id: 'gpt-5-mini', name: 'OpenAI GPT-5 mini', provider: 'openai' },
+  { id: '~deepseek/deepseek-v4-flash-latest', name: 'DeepSeek V4 Flash Latest', provider: 'openrouter' },
 ];
 const mockProviders: ProviderMeta[] = [
   { id: 'google', name: 'Google', defaultModel: 'models/gemini-2.5-flash', apiKeyField: 'geminiApiKey' },
   { id: 'openai', name: 'OpenAI', defaultModel: 'gpt-5-mini', apiKeyField: 'openaiApiKey' },
+  { id: 'deepseek', name: 'DeepSeek', defaultModel: 'deepseek-v4-flash', apiKeyField: 'deepseekApiKey' },
+  { id: 'zai', name: 'z.AI', defaultModel: 'glm-5.2', apiKeyField: 'zaiApiKey' },
+  {
+    id: 'openrouter',
+    name: 'OpenRouter',
+    defaultModel: '~deepseek/deepseek-v4-flash-latest',
+    apiKeyField: 'openrouterApiKey',
+    modelSelection: 'family',
+  },
 ];
 
 export type InvokeArgs = Record<string, unknown>;

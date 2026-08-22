@@ -9,6 +9,10 @@
         setConfig,
         modelsForDropdown,
         resolveModelSelection,
+        openRouterFamilies,
+        openRouterModelsInFamily,
+        resolveOpenRouterFamily,
+        formatOpenRouterFamilyLabel,
         type Model,
         type ProviderMeta,
         type TranslationProvider,
@@ -45,10 +49,12 @@
     let openaiApiKey: string | undefined = $state(undefined);
     let deepseekApiKey: string | undefined = $state(undefined);
     let zaiApiKey: string | undefined = $state(undefined);
+    let openrouterApiKey: string | undefined = $state(undefined);
     let targetLanguage: string | undefined = $state(undefined);
     // App-managed storage location; read-only, no folder picker.
     let storageLocation: string = $state("");
     let model: string = $state('');
+    let modelFamily: string = $state('other');
     let translationConcurrency: number = $state(8);
     let models: Model[] = $state([]);
     let providers: ProviderMeta[] = $state([]);
@@ -73,6 +79,7 @@
         openaiApiKey = cfg.openaiApiKey;
         deepseekApiKey = cfg.deepseekApiKey;
         zaiApiKey = cfg.zaiApiKey;
+        openrouterApiKey = cfg.openrouterApiKey;
         targetLanguage = cfg.targetLanguageId;
         model = cfg.model ?? '';
         lastProvider = translationProvider;
@@ -126,6 +133,14 @@
     const filtered = $derived(modelsForDropdown(models, translationProvider, model));
     const filteredModels = $derived(filtered.list);
     const modelOrphan = $derived(filtered.orphan);
+    const providerMeta = $derived(providers.find((p) => p.id === translationProvider));
+    const useFamilyModelPicker = $derived(
+        translationProvider === 'openrouter' || providerMeta?.modelSelection === 'family',
+    );
+    const openRouterFamilyList = $derived(openRouterFamilies(filteredModels));
+    const openRouterModelsForFamily = $derived(
+        openRouterModelsInFamily(filteredModels, modelFamily),
+    );
 
     let languages = getLanguages();
 
@@ -168,6 +183,7 @@
                 openaiApiKey,
                 deepseekApiKey,
                 zaiApiKey,
+                openrouterApiKey,
                 targetLanguageId: targetLanguage,
                 model,
                 // Emptying a number input binds null, which serde's
@@ -253,6 +269,31 @@
         }
     });
 
+    $effect(() => {
+        if (!useFamilyModelPicker) return;
+        const families = openRouterFamilyList;
+        const nextFamily = resolveOpenRouterFamily(modelFamily, model, families);
+        if (nextFamily !== modelFamily) {
+            modelFamily = nextFamily;
+        }
+    });
+
+    $effect(() => {
+        if (!useFamilyModelPicker) return;
+        const inFamily = openRouterModelsForFamily;
+        if (inFamily.length === 0) return;
+        if (!inFamily.some((m) => m.id === model)) {
+            model = inFamily[0].id;
+        }
+    });
+
+    function onModelFamilyChange() {
+        const inFamily = openRouterModelsInFamily(filteredModels, modelFamily);
+        if (inFamily.length > 0) {
+            model = inFamily[0].id;
+        }
+    }
+
 </script>
 
 {#await languages}
@@ -313,14 +354,37 @@
             {:else if translationProvider === 'deepseek'}
                 <label for="deepseek">DeepSeek API KEY</label>
                 <input id="deepseek" type="text" bind:value={deepseekApiKey} />
+            {:else if translationProvider === 'openrouter'}
+                <label for="openrouter">OpenRouter API KEY</label>
+                <input id="openrouter" type="text" bind:value={openrouterApiKey} />
             {/if}
 
-            <label for="model">Model</label>
-            <select id="model" bind:value={model}>
-                {#each filteredModels as model}
-                    <option value={model.id}>{model.name}</option>
-                {/each}
-            </select>
+            {#if useFamilyModelPicker}
+                <label for="modelFamily">Model family</label>
+                <select
+                    id="modelFamily"
+                    bind:value={modelFamily}
+                    onchange={onModelFamilyChange}
+                >
+                    {#each openRouterFamilyList as family}
+                        <option value={family}>{formatOpenRouterFamilyLabel(family)}</option>
+                    {/each}
+                </select>
+
+                <label for="model">Model</label>
+                <select id="model" bind:value={model}>
+                    {#each openRouterModelsForFamily as modelOption}
+                        <option value={modelOption.id}>{modelOption.name}</option>
+                    {/each}
+                </select>
+            {:else}
+                <label for="model">Model</label>
+                <select id="model" bind:value={model}>
+                    {#each filteredModels as model}
+                        <option value={model.id}>{model.name}</option>
+                    {/each}
+                </select>
+            {/if}
             {#if modelOrphan}<div class="spotify-notice">Not in the current catalog</div>{/if}
 
             <label for="translationConcurrency">Parallel translations</label>

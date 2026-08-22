@@ -230,6 +230,7 @@ fn spawn_catalog_prefetch(catalog: Arc<ModelCatalog>, config: &Config) {
             TranslationProvider::Openai,
             TranslationProvider::Deepseek,
             TranslationProvider::Zai,
+            TranslationProvider::Openrouter,
         ] {
             let Some(key) = keys.for_provider(provider).filter(|k| !k.is_empty()) else {
                 continue;
@@ -266,6 +267,11 @@ fn invalidate_changed_api_keys(catalog: &ModelCatalog, old: &Config, new: &Confi
             TranslationProvider::Zai,
             old.zai_api_key.as_deref(),
             new.zai_api_key.as_deref(),
+        ),
+        (
+            TranslationProvider::Openrouter,
+            old.openrouter_api_key.as_deref(),
+            new.openrouter_api_key.as_deref(),
         ),
     ];
     for (provider, old_key, new_key) in pairs {

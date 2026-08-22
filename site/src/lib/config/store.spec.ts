@@ -9,7 +9,20 @@ vi.mock('@tauri-apps/api/core', () => ({
     invoke: vi.fn(() => Promise.resolve(undefined)),
 }));
 
-import { modelsForDropdown, resolveModelSelection, type Config } from './store';
+import {
+    modelsForDropdown,
+    resolveModelSelection,
+    openRouterFamilyFromModelId,
+    openRouterFamilies,
+    openRouterModelsInFamily,
+    resolveOpenRouterFamily,
+    formatOpenRouterFamilyLabel,
+    apiKeyForProvider,
+    hasApiKeyForProvider,
+    type Config,
+    type Model,
+    type ProviderMeta,
+} from './store';
 
 describe('Config type', () => {
     it('accepts ankiEndpoint and ankiApiKey as optional strings', () => {
@@ -87,5 +100,69 @@ describe('resolveModelSelection', () => {
                 'models/gemini-3.7-flash',
             ),
         ).toBe('models/gemini-2.5-flash');
+    });
+});
+
+describe('OpenRouter family helpers', () => {
+    const models: Model[] = [
+        { id: '~deepseek/deepseek-v4-flash-latest', name: 'DeepSeek V4 Flash Latest', provider: 'openrouter' },
+        { id: 'deepseek/deepseek-v4-pro', name: 'DeepSeek V4 Pro', provider: 'openrouter' },
+        { id: 'meta-llama/llama-3.1-8b', name: 'Llama 3.1 8B', provider: 'openrouter' },
+        { id: 'orphan-model', name: 'Orphan', provider: 'openrouter' },
+    ];
+
+    it('extracts family prefix before slash', () => {
+        expect(openRouterFamilyFromModelId('~deepseek/deepseek-v4-flash-latest')).toBe('deepseek');
+        expect(openRouterFamilyFromModelId('deepseek/deepseek-v4-pro')).toBe('deepseek');
+        expect(openRouterFamilyFromModelId('orphan-model')).toBe('other');
+    });
+
+    it('lists sorted unique families', () => {
+        expect(openRouterFamilies(models)).toEqual(['deepseek', 'meta-llama', 'other']);
+    });
+
+    it('filters models by family', () => {
+        const deepseek = openRouterModelsInFamily(models, 'deepseek');
+        expect(deepseek.map((m) => m.id)).toEqual([
+            '~deepseek/deepseek-v4-flash-latest',
+            'deepseek/deepseek-v4-pro',
+        ]);
+    });
+
+    it('resolves family from saved model id on load', () => {
+        expect(resolveOpenRouterFamily('missing', 'meta-llama/llama-3.1-8b', openRouterFamilies(models)))
+            .toBe('meta-llama');
+    });
+
+    it('falls back to model family when saved family is invalid', () => {
+        expect(resolveOpenRouterFamily('missing', 'orphan-model', openRouterFamilies(models)))
+            .toBe('other');
+    });
+
+    it('falls back to first family when nothing matches', () => {
+        expect(resolveOpenRouterFamily('missing', 'unknown', ['deepseek', 'meta-llama']))
+            .toBe('deepseek');
+    });
+
+    it('humanizes family labels', () => {
+        expect(formatOpenRouterFamilyLabel('meta-llama')).toBe('Meta Llama');
+        expect(formatOpenRouterFamilyLabel('other')).toBe('Other');
+    });
+});
+
+describe('apiKeyForProvider', () => {
+    const providers: ProviderMeta[] = [
+        { id: 'google', name: 'Google', defaultModel: 'x', apiKeyField: 'geminiApiKey' },
+        { id: 'openrouter', name: 'OpenRouter', defaultModel: 'y', apiKeyField: 'openrouterApiKey' },
+    ];
+
+    it('reads the configured provider key field', () => {
+        const config: Config = {
+            translationProvider: 'openrouter',
+            openrouterApiKey: 'or-key',
+            model: '~deepseek/deepseek-v4-flash-latest',
+        };
+        expect(apiKeyForProvider(config, providers)).toBe('or-key');
+        expect(hasApiKeyForProvider(config, providers)).toBe(true);
     });
 });

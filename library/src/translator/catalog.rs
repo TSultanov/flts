@@ -262,6 +262,7 @@ pub fn list_base_url(
     openai_env: Option<String>,
     deepseek_env: Option<String>,
     zai_env: Option<String>,
+    openrouter_env: Option<String>,
 ) -> String {
     match provider {
         TranslationProvider::Google => nonempty_or(gemini_env, DEFAULT_GEMINI_LIST_BASE),
@@ -270,6 +271,9 @@ pub fn list_base_url(
             nonempty_or(deepseek_env, crate::translator::openai::DEEPSEEK_BASE_URL)
         }
         TranslationProvider::Zai => nonempty_or(zai_env, crate::translator::openai::ZAI_BASE_URL),
+        TranslationProvider::Openrouter => {
+            nonempty_or(openrouter_env, crate::translator::openai::OPENROUTER_BASE_URL)
+        }
     }
 }
 
@@ -280,6 +284,7 @@ pub fn list_base_url_from_env(provider: TranslationProvider) -> String {
         std::env::var("OPENAI_BASE_URL").ok(),
         std::env::var("FLTS_DEEPSEEK_BASE_URL").ok(),
         std::env::var("FLTS_ZAI_BASE_URL").ok(),
+        std::env::var("FLTS_OPENROUTER_BASE_URL").ok(),
     )
 }
 
@@ -290,6 +295,7 @@ fn provider_file_stem(provider: TranslationProvider) -> &'static str {
         TranslationProvider::Openai => "openai",
         TranslationProvider::Deepseek => "deepseek",
         TranslationProvider::Zai => "zai",
+        TranslationProvider::Openrouter => "openrouter",
     }
 }
 
@@ -372,6 +378,9 @@ pub const FALLBACK_GOOGLE: &str = "models/gemini-3.7-flash";
 pub const FALLBACK_OPENAI: &str = "gpt-5-mini";
 pub const FALLBACK_DEEPSEEK: &str = "deepseek-v4-flash";
 pub const FALLBACK_ZAI: &str = "glm-5.2";
+pub const FALLBACK_OPENROUTER: &str = "~deepseek/deepseek-v4-flash-latest";
+/// OpenRouter alias IDs use a leading `~`; this unprefixed form was never valid.
+const DEPRECATED_OPENROUTER_FLASH_LATEST: &str = "deepseek/deepseek-v4-flash-latest";
 
 const LEGACY_API_IDS: &[&str] = &[
     "", // 0 / unknown
@@ -433,6 +442,7 @@ pub fn fallback_for(provider: TranslationProvider) -> ListedModel {
         TranslationProvider::Openai => FALLBACK_OPENAI,
         TranslationProvider::Deepseek => FALLBACK_DEEPSEEK,
         TranslationProvider::Zai => FALLBACK_ZAI,
+        TranslationProvider::Openrouter => FALLBACK_OPENROUTER,
     };
     ListedModel {
         id: id.to_string(),
@@ -447,6 +457,7 @@ pub fn all_fallbacks() -> Vec<ListedModel> {
         fallback_for(TranslationProvider::Openai),
         fallback_for(TranslationProvider::Deepseek),
         fallback_for(TranslationProvider::Zai),
+        fallback_for(TranslationProvider::Openrouter),
     ]
 }
 
@@ -472,10 +483,14 @@ pub fn legacy_id_from_api(id: &str) -> u64 {
 
 pub fn effective_model_id(provider: TranslationProvider, config_model: &str) -> String {
     if config_model.trim().is_empty() {
-        fallback_for(provider).id
-    } else {
-        config_model.to_string()
+        return fallback_for(provider).id;
     }
+    if provider == TranslationProvider::Openrouter
+        && config_model == DEPRECATED_OPENROUTER_FLASH_LATEST
+    {
+        return FALLBACK_OPENROUTER.to_string();
+    }
+    config_model.to_string()
 }
 
 pub fn filter_gemini_models(body: &serde_json::Value) -> Vec<ListedModel> {
@@ -628,6 +643,7 @@ mod tests {
             TranslationProvider::Openai => "openai",
             TranslationProvider::Deepseek => "deepseek",
             TranslationProvider::Zai => "zai",
+            TranslationProvider::Openrouter => "openrouter",
         };
         dir.join("model_catalog").join(format!("{stem}.json"))
     }
@@ -682,6 +698,24 @@ mod tests {
         assert_eq!(
             effective_model_id(TranslationProvider::Openai, "gpt-5.2"),
             "gpt-5.2"
+        );
+    }
+
+    #[test]
+    fn effective_id_migrates_deprecated_openrouter_flash_latest_alias() {
+        assert_eq!(
+            effective_model_id(
+                TranslationProvider::Openrouter,
+                DEPRECATED_OPENROUTER_FLASH_LATEST,
+            ),
+            FALLBACK_OPENROUTER
+        );
+        assert_eq!(
+            effective_model_id(
+                TranslationProvider::Openrouter,
+                FALLBACK_OPENROUTER,
+            ),
+            FALLBACK_OPENROUTER
         );
     }
 
@@ -1012,13 +1046,14 @@ mod tests {
     #[test]
     fn list_base_url_uses_env_or_defaults() {
         assert_eq!(
-            list_base_url(TranslationProvider::Google, None, None, None, None),
+            list_base_url(TranslationProvider::Google, None, None, None, None, None),
             "https://generativelanguage.googleapis.com/v1beta/"
         );
         assert_eq!(
             list_base_url(
                 TranslationProvider::Google,
                 Some(String::new()),
+                None,
                 None,
                 None,
                 None
@@ -1031,6 +1066,7 @@ mod tests {
                 Some("https://proxy/v1beta/".into()),
                 None,
                 None,
+                None,
                 None
             ),
             "https://proxy/v1beta/"
@@ -1041,16 +1077,17 @@ mod tests {
                 None,
                 Some("http://127.0.0.1:8080/v1".into()),
                 None,
+                None,
                 None
             ),
             "http://127.0.0.1:8080/v1"
         );
         assert_eq!(
-            list_base_url(TranslationProvider::Openai, None, None, None, None),
+            list_base_url(TranslationProvider::Openai, None, None, None, None, None),
             "https://api.openai.com/v1"
         );
         assert_eq!(
-            list_base_url(TranslationProvider::Deepseek, None, None, None, None),
+            list_base_url(TranslationProvider::Deepseek, None, None, None, None, None),
             crate::translator::openai::DEEPSEEK_BASE_URL
         );
         assert_eq!(
@@ -1059,13 +1096,33 @@ mod tests {
                 None,
                 None,
                 Some("http://ds".into()),
+                None,
                 None
             ),
             "http://ds"
         );
         assert_eq!(
-            list_base_url(TranslationProvider::Zai, None, None, None, None),
+            list_base_url(TranslationProvider::Zai, None, None, None, None, None),
             crate::translator::openai::ZAI_BASE_URL
+        );
+        assert_eq!(
+            list_base_url(TranslationProvider::Openrouter, None, None, None, None, None),
+            crate::translator::openai::OPENROUTER_BASE_URL
+        );
+        assert_eq!(
+            list_base_url(
+                TranslationProvider::Openrouter,
+                None,
+                None,
+                None,
+                None,
+                Some("http://or".into())
+            ),
+            "http://or"
+        );
+        assert_eq!(
+            fallback_for(TranslationProvider::Openrouter).id,
+            FALLBACK_OPENROUTER
         );
     }
 
