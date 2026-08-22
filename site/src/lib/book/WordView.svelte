@@ -105,7 +105,7 @@
             {#if word?.current}
                 {@const w = word.current}
                 <span class="peek-word">{@html w.original}</span>
-                {#if w.grammar.originalInitialForm}
+                {#if w.grammar.originalInitialForm && w.grammar.originalInitialForm !== w.original.toLowerCase()}
                         <span class="peek-original-initial-form">({w.grammar.originalInitialForm})</span>
                 {/if}
                 {#if w.contextualTranslations && w.contextualTranslations.length > 0}
