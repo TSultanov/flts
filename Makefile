@@ -27,7 +27,7 @@ IOS_IPA := $(TAURI_DIR)/gen/apple/build/arm64/$(PRODUCT).ipa
 
 .DEFAULT_GOAL := build
 
-.PHONY: all build dev deps hooks \
+.PHONY: all build dev deps hooks format \
 	build-macos build-ios build-android \
 	install-macos install-ios install-android \
 	install\ macos install\ ios install\ android \
@@ -43,6 +43,10 @@ deps: ## install frontend dependencies (pnpm, when missing)
 
 hooks: ## install git pre-commit formatters (requires pre-commit on PATH)
 	"$(ROOT)scripts/install-git-hooks.sh"
+
+format: ## apply all repo formatters (same as the pre-commit hook)
+	@command -v pre-commit >/dev/null 2>&1 || { echo "pre-commit is required. Run: brew install pre-commit && make hooks" >&2; exit 1; }
+	cd "$(ROOT)" && pre-commit run --all-files
 
 dev: deps ## run Tauri in development mode (hot reload)
 	cd "$(SITE)" && cargo tauri dev

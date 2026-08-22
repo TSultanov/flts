@@ -89,8 +89,7 @@ impl SyncEngine {
         }
 
         let gui_url = format!("http://{addr}");
-        let client: Arc<dyn SyncthingApi> =
-            Arc::new(HttpSyncthing::new(gui_url.clone(), api_key));
+        let client: Arc<dyn SyncthingApi> = Arc::new(HttpSyncthing::new(gui_url.clone(), api_key));
         let my_id = wait_until_up(client.as_ref()).await?;
         let roster = RosterStore::new(&cfg.library_root, &my_id);
         let library_root = cfg.library_root.to_string_lossy().into_owned();
@@ -253,8 +252,18 @@ impl SyncEngine {
         let ids: std::collections::BTreeSet<&String> =
             roster.adds.keys().chain(roster.removes.keys()).collect();
         for id in ids {
-            let add = roster.adds.get(id).map(|a| &a.vc).cloned().unwrap_or_default();
-            let rem = roster.removes.get(id).map(|r| &r.vc).cloned().unwrap_or_default();
+            let add = roster
+                .adds
+                .get(id)
+                .map(|a| &a.vc)
+                .cloned()
+                .unwrap_or_default();
+            let rem = roster
+                .removes
+                .get(id)
+                .map(|r| &r.vc)
+                .cloned()
+                .unwrap_or_default();
             rj.insert(id.clone(), serde_json::json!({ "add": add, "rem": rem }));
         }
         let engine: Vec<String> = self
@@ -279,7 +288,11 @@ impl SyncEngine {
     /// Injects a control client so peer/share logic is testable without a
     /// running Syncthing or valid device IDs.
     #[cfg(test)]
-    pub(crate) fn for_test(client: Arc<dyn SyncthingApi>, my_id: String, library_root: String) -> Self {
+    pub(crate) fn for_test(
+        client: Arc<dyn SyncthingApi>,
+        my_id: String,
+        library_root: String,
+    ) -> Self {
         let roster = RosterStore::new(std::path::Path::new(&library_root), &my_id);
         Self {
             gui_url: "http://127.0.0.1:0".to_string(),
@@ -325,9 +338,7 @@ async fn wait_until_up(client: &dyn SyncthingApi) -> Result<String> {
             return Err(anyhow!(
                 "syncthing REST API not ready within {:?}{}",
                 REST_READY_TIMEOUT,
-                last_err
-                    .map(|e| format!(": {e}"))
-                    .unwrap_or_default()
+                last_err.map(|e| format!(": {e}")).unwrap_or_default()
             ));
         }
         tokio::time::sleep(REST_POLL_INTERVAL).await;
@@ -358,8 +369,7 @@ mod tests {
     #[tokio::test]
     async fn add_remove_peer_reshares_library_folder() {
         let mock = Arc::new(MockSyncthing::new("SELF"));
-        let engine =
-            SyncEngine::for_test(mock.clone(), "SELF".into(), "/tmp/flts-lib".into());
+        let engine = SyncEngine::for_test(mock.clone(), "SELF".into(), "/tmp/flts-lib".into());
 
         engine.add_peer("PEER1", "Laptop").await.unwrap();
 
@@ -377,7 +387,13 @@ mod tests {
         engine.remove_peer("PEER1").await.unwrap();
         assert!(engine.list_peers().await.unwrap().is_empty());
         let folders = mock.folders();
-        assert!(!folders.last().unwrap().device_ids.contains(&"PEER1".to_string()));
+        assert!(
+            !folders
+                .last()
+                .unwrap()
+                .device_ids
+                .contains(&"PEER1".to_string())
+        );
     }
 
     #[tokio::test]
@@ -387,15 +403,17 @@ mod tests {
         let mock = Arc::new(MockSyncthing::new("SELF"));
         mock.add_device("PEER1", "Laptop").await.unwrap();
         mock.add_device("PEER2", "Phone").await.unwrap();
-        let engine =
-            SyncEngine::for_test(mock.clone(), "SELF".into(), "/tmp/flts-lib".into());
+        let engine = SyncEngine::for_test(mock.clone(), "SELF".into(), "/tmp/flts-lib".into());
 
         engine.reshare_library().await.unwrap();
 
         let folders = mock.folders();
         let shared = &folders.last().unwrap().device_ids;
         for id in ["SELF", "PEER1", "PEER2"] {
-            assert!(shared.contains(&id.to_string()), "folder must be shared with {id}");
+            assert!(
+                shared.contains(&id.to_string()),
+                "folder must be shared with {id}"
+            );
         }
     }
 
@@ -418,7 +436,10 @@ mod tests {
 
         let roster = RosterStore::new(&root, "SELF").load().unwrap();
         assert_eq!(roster.devices.get("SELF").unwrap().name, "My Mac");
-        assert!(roster.devices.contains_key("PEER1"), "peer recorded in roster");
+        assert!(
+            roster.devices.contains_key("PEER1"),
+            "peer recorded in roster"
+        );
         let peers = engine.list_peers().await.unwrap();
         assert_eq!(peers.len(), 1);
         assert_eq!(peers[0].device_id, "PEER1");
@@ -430,10 +451,13 @@ mod tests {
     async fn reconcile_adds_devices_paired_on_another_node() {
         let root = scratch_root("recadd");
         let mock = Arc::new(MockSyncthing::new("SELF"));
-        let engine = SyncEngine::for_test(mock.clone(), "SELF".into(), root.to_string_lossy().into());
+        let engine =
+            SyncEngine::for_test(mock.clone(), "SELF".into(), root.to_string_lossy().into());
 
         // Paired on another node: in the roster, unknown to this engine.
-        RosterStore::new(&root, "PEERX").add_device("PEERX", "Other").unwrap();
+        RosterStore::new(&root, "PEERX")
+            .add_device("PEERX", "Other")
+            .unwrap();
         assert!(engine.list_peers().await.unwrap().is_empty());
 
         engine.reconcile_once().await.unwrap();
@@ -441,12 +465,13 @@ mod tests {
         let peers = engine.list_peers().await.unwrap();
         assert_eq!(peers.len(), 1);
         assert_eq!(peers[0].device_id, "PEERX");
-        assert!(mock
-            .folders()
-            .last()
-            .unwrap()
-            .device_ids
-            .contains(&"PEERX".to_string()));
+        assert!(
+            mock.folders()
+                .last()
+                .unwrap()
+                .device_ids
+                .contains(&"PEERX".to_string())
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -460,7 +485,9 @@ mod tests {
         engine.add_peer("PEER1", "x").await.unwrap();
         assert_eq!(engine.list_peers().await.unwrap().len(), 1);
 
-        RosterStore::new(&root, "OTHER").remove_device("PEER1").unwrap();
+        RosterStore::new(&root, "OTHER")
+            .remove_device("PEER1")
+            .unwrap();
         engine.reconcile_once().await.unwrap();
 
         assert!(engine.list_peers().await.unwrap().is_empty());
@@ -490,7 +517,10 @@ mod tests {
         .expect("engine starts and configures");
 
         let id = engine.my_id().to_string();
-        assert!(id.len() >= 50 && id.contains('-'), "looks like a device ID: {id:?}");
+        assert!(
+            id.len() >= 50 && id.contains('-'),
+            "looks like a device ID: {id:?}"
+        );
 
         let devices_self = engine.client().my_id().await.unwrap();
         assert_eq!(devices_self, id, "client talks to the same engine");

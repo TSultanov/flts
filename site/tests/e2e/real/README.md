@@ -38,18 +38,18 @@ flts-e2e-sims (one binary, three sims on three ephemeral ports)
 The app is redirected at the process boundary — no code branches on "test mode"
 beyond the `e2e-bridge` feature.
 
-| Var | Effect |
-| --- | --- |
-| `FLTS_GEMINI_BASE_URL` | Gemini client base (`…/v1beta/`) |
-| `OPENAI_BASE_URL` | plain-OpenAI client base |
-| `FLTS_DEEPSEEK_BASE_URL`, `FLTS_ZAI_BASE_URL` | OpenAI-compatible providers |
-| `FLTS_LRCLIB_BASE_URL` | lyrics provider |
-| `ankiEndpoint` in `config.json` | AnkiConnect (config, not env) |
-| `FLTS_CONFIG_DIR` | per-worker temp dir: config, library **and** `<dir>/cache` (translation + lyrics caches) |
-| `FLTS_KEYRING_SERVICE` | per-worker keychain service — never the developer's real `FLTS-Spotify` entry |
-| `FLTS_DISABLE_SYNC=1` | sync has its own Docker harness; off here |
-| `FLTS_ANKI_SYNC_INTERVAL_SECS` | pinned high so only explicit `sync_anki_now` passes run |
-| `FLTS_E2E_BRIDGE_PORT=0` | ephemeral bridge port, printed on stdout |
+| Var                                           | Effect                                                                                   |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `FLTS_GEMINI_BASE_URL`                        | Gemini client base (`…/v1beta/`)                                                         |
+| `OPENAI_BASE_URL`                             | plain-OpenAI client base                                                                 |
+| `FLTS_DEEPSEEK_BASE_URL`, `FLTS_ZAI_BASE_URL` | OpenAI-compatible providers                                                              |
+| `FLTS_LRCLIB_BASE_URL`                        | lyrics provider                                                                          |
+| `ankiEndpoint` in `config.json`               | AnkiConnect (config, not env)                                                            |
+| `FLTS_CONFIG_DIR`                             | per-worker temp dir: config, library **and** `<dir>/cache` (translation + lyrics caches) |
+| `FLTS_KEYRING_SERVICE`                        | per-worker keychain service — never the developer's real `FLTS-Spotify` entry            |
+| `FLTS_DISABLE_SYNC=1`                         | sync has its own Docker harness; off here                                                |
+| `FLTS_ANKI_SYNC_INTERVAL_SECS`                | pinned high so only explicit `sync_anki_now` passes run                                  |
+| `FLTS_E2E_BRIDGE_PORT=0`                      | ephemeral bridge port, printed on stdout                                                 |
 
 ## Running
 
@@ -67,7 +67,7 @@ cargo build -p app -p e2e-sims --features app/e2e-bridge
 ```
 
 **Gotcha:** a plain `cargo build -p app` (or `cargo tauri dev`) overwrites
-`target/debug/app` with a *bridge-less* binary. The next
+`target/debug/app` with a _bridge-less_ binary. The next
 `FLTS_E2E_SKIP_BUILD=1` run then hangs until the "app bridge line" timeout.
 Rebuild with the feature, or drop `FLTS_E2E_SKIP_BUILD`.
 
@@ -103,8 +103,8 @@ Example — transient 5xx, then recovery (the retry path):
 
 ```ts
 await harness.llm.addRule({
-  matcher: { pathGlob: '*streamGenerateContent*' },
-  action: { type: 'status', code: 503, body: { error: 'sim overloaded' } },
+  matcher: { pathGlob: "*streamGenerateContent*" },
+  action: { type: "status", code: 503, body: { error: "sim overloaded" } },
   times: 2,
 });
 await btn.click();
@@ -115,14 +115,16 @@ Example — a hung connection, released by a reset:
 
 ```ts
 await harness.llm.addRule({
-  matcher: { pathGlob: '*streamGenerateContent*' },
-  action: { type: 'stall' },
+  matcher: { pathGlob: "*streamGenerateContent*" },
+  action: { type: "stall" },
 });
 await btn.click();
-await expect(btn).toBeDisabled();          // UI holds in-progress, does not fall over
+await expect(btn).toBeDisabled(); // UI holds in-progress, does not fall over
 
-await harness.llm.reset();                 // the only stall release — also wipes scripts
-await harness.llm.seed({ scripts: [{ matchSubstring: text, translation: json }] });
+await harness.llm.reset(); // the only stall release — also wipes scripts
+await harness.llm.seed({
+  scripts: [{ matchSubstring: text, translation: json }],
+});
 ```
 
 Seed shapes (`POST /_sim/seed`):
@@ -185,13 +187,13 @@ deliberately diverges from the original).
   `e2e_resolve_track` command and assert on `get_track_lyrics_state` plus LRClib
   traffic.
 - **A relaunched app answers only once it is configured.** `eval_config`
-  (library open + anki sync task) is still spawned *after* the bridge starts
+  (library open + anki sync task) is still spawned _after_ the bridge starts
   listening, but everything it installs now lives behind a readiness gate
   (`site/src-tauri/src/app/gated_state.rs`): commands that touch it await the
   startup outcome, up to 30s, and then answer for real — or return startup's own
-  error. So the *first* call after `restartApp()` is authoritative; don't poll
+  error. So the _first_ call after `restartApp()` is authoritative; don't poll
   for state to appear (see `restart-under-load.spec.ts`'s `expectLibraryHas`).
-  What the gate does *not* cover is the pass the relaunched app fires on its
+  What the gate does _not_ cover is the pass the relaunched app fires on its
   own: `sync_anki_now` can still lose the race with it ("anki sync already in
   progress" — one pass at a time, by design), which is the single transient
   `spec-helpers`' `syncNow` retries. `restartApp` takes `{ signal: 'SIGKILL' }`

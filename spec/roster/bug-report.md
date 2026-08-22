@@ -10,8 +10,7 @@
 ## Bug 1: A removed device silently resurrects mesh-wide under clock skew / equal-ms
 
 > **STATUS: FIXED.** Membership is now a vector-clock CRDT (remove-wins): merge
-> orders add vs remove by causal context, not wall clock (`roster.rs`
-> `is_present` = add context strictly dominates remove context). After the fix,
+> orders add vs remove by causal context, not wall clock (`roster.rs` > `is_present` = add context strictly dominates remove context). After the fix,
 > `MC_hunt_f1.cfg` reports **no violation** (`NoSpuriousResurrection` re-stated
 > causally; exhaustive, 10,463 states, `spec/roster/output/MC_hunt_f1.out`), and
 > the Rust convergence proptest + causal unit tests pass. See `changelog.md`.
@@ -24,18 +23,18 @@
 
 ### Trace Summary
 
-Ground truth: device **n2**'s globally-latest operation is a *removal* (`seq=4`),
+Ground truth: device **n2**'s globally-latest operation is a _removal_ (`seq=4`),
 so a converged, fully-connected mesh must show n2 as removed. It does not.
 
-| State | Action | Effect |
-|---|---|---|
-| 2 | `PairOn(n2, n1, ts=1)` | n2 adds n1 |
-| 3 | `PairOn(n3, n1, ts=0)` | n3 adds n1 |
-| 4 | `PairOn(n1, n2, ts=0)` | n1 adds **n2** → `active[n2] = {ts:0, seq:3}` |
-| 5 | `UnpairOn(n3, n2, ts=0)` | n3 removes **n2** → tombstone `{ts:0, seq:4}` (causally LATER) |
-| 6 | `ApprovePending(n1, n3, ts=0)` | second side of the n1–n3 pairing |
-| 7–9 | `RosterSync ×3` | rosters replicate and union-merge |
-| 10–11 | `ReconcileNode(n2), ReconcileNode(n3)` | engines converge → full mesh |
+| State | Action                                 | Effect                                                         |
+| ----- | -------------------------------------- | -------------------------------------------------------------- |
+| 2     | `PairOn(n2, n1, ts=1)`                 | n2 adds n1                                                     |
+| 3     | `PairOn(n3, n1, ts=0)`                 | n3 adds n1                                                     |
+| 4     | `PairOn(n1, n2, ts=0)`                 | n1 adds **n2** → `active[n2] = {ts:0, seq:3}`                  |
+| 5     | `UnpairOn(n3, n2, ts=0)`               | n3 removes **n2** → tombstone `{ts:0, seq:4}` (causally LATER) |
+| 6     | `ApprovePending(n1, n3, ts=0)`         | second side of the n1–n3 pairing                               |
+| 7–9   | `RosterSync ×3`                        | rosters replicate and union-merge                              |
+| 10–11 | `ReconcileNode(n2), ReconcileNode(n3)` | engines converge → full mesh                                   |
 
 **Final state**: all three rosters are identical and `engine = (n1↦{n2,n3}, n2↦{n1,n3}, n3↦{n1,n2})` — a fully-closed mesh — with `active[n2] = {ts:0, seq:3}` and **`tomb[n2] = nil` on every node**. The removal at `seq=4` has vanished: n2 is fully, silently re-paired everywhere.
 
@@ -47,7 +46,7 @@ a tombstone wins **only if strictly newer** than the add:
 - `library/src/sync/roster.rs:70` — `(Some(rec), Some(rts)) if rts > rec.added_at_ms => removed`. At equal timestamps (`rts == added_at_ms`) this arm is skipped and the next arm (`(Some(rec), _) => active`) keeps the device **active**.
 - `library/src/sync/roster.rs:209` (`now_ms`) — both the add (`added_at_ms`) and the removal tombstone are stamped from each device's **independent wall clock**. There is no logical/causal clock, so a causally-later removal can carry a timestamp `≤` the add it is meant to supersede — via either an exact millisecond collision (this trace, `ts=0==0`) or ordinary cross-device clock skew (a removal on a behind-clock node).
 
-The merge is convergent (all nodes agree) but **not causal**: agreement on the *wrong* value. Once the add wins, the tombstone is dropped entirely, so nothing on any node records that a removal ever happened — the device looks legitimately paired.
+The merge is convergent (all nodes agree) but **not causal**: agreement on the _wrong_ value. Once the add wins, the tombstone is dropped entirely, so nothing on any node records that a removal ever happened — the device looks legitimately paired.
 
 ### Affected Code
 
@@ -71,10 +70,10 @@ A re-add must still be able to beat an older tombstone (the intended `add_device
 
 ## Not Reproduced
 
-| Bug Family | Config | States Explored | Result |
-|---|---|---|---|
-| F2 — reconcile never drops an active device | `MC_hunt_f2.cfg` | 20,876,727 distinct (depth 17, **exhaustive**, 0 left on queue) | No violation — `ReconcileNeverDropsActive` holds |
-| F3 — mesh closure | `MC_hunt_f3.cfg` | 5,405 distinct (depth 11, **exhaustive**, 0 left on queue) | No violation — `MeshClosesWhenSettled` holds (a single hub pairing fans out to a full mesh) |
+| Bug Family                                  | Config           | States Explored                                                 | Result                                                                                      |
+| ------------------------------------------- | ---------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| F2 — reconcile never drops an active device | `MC_hunt_f2.cfg` | 20,876,727 distinct (depth 17, **exhaustive**, 0 left on queue) | No violation — `ReconcileNeverDropsActive` holds                                            |
+| F3 — mesh closure                           | `MC_hunt_f3.cfg` | 5,405 distinct (depth 11, **exhaustive**, 0 left on queue)      | No violation — `MeshClosesWhenSettled` holds (a single hub pairing fans out to a full mesh) |
 
 Both ran exhaustive BFS to completion (0 states left on queue), so simulation
 follow-up is unnecessary (the depth-≤25 simulation rule applies to runs that hit

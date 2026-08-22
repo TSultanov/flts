@@ -531,17 +531,15 @@ pub fn get_translator(
         TranslationProvider::Openai
         | TranslationProvider::Deepseek
         | TranslationProvider::Zai
-        | TranslationProvider::Openrouter => {
-            Ok(Box::new(OpenAITranslator::create(
-                cache,
-                context_provider,
-                provider,
-                model,
-                api_key,
-                &from,
-                &to,
-            )?))
-        }
+        | TranslationProvider::Openrouter => Ok(Box::new(OpenAITranslator::create(
+            cache,
+            context_provider,
+            provider,
+            model,
+            api_key,
+            &from,
+            &to,
+        )?)),
     }
 }
 

@@ -27,14 +27,14 @@ real lock acquisition patterns respect mutual exclusion and the lock hierarchy.
 
 ## Files
 
-| File | Purpose |
-|------|---------|
-| `library/src/tla_trace_mutex.rs` | `TracedMutex<T>` wrapper — auto-traces on lock/unlock |
-| `library/tests/trace_mutex_harness.rs` | Test scenarios exercising lock patterns |
-| `harness/mutex/preprocess.py` | Maps lock names to TLA+ constants, merges per-task NDJSON |
-| `harness/mutex/run.sh` | End-to-end: test → preprocess → TLC validate |
-| `spec/mutex/Trace.tla` | TLA+ trace validation spec (standalone, named locks) |
-| `spec/mutex/Trace.cfg` | TLC config (constants, invariants, properties) |
+| File                                   | Purpose                                                   |
+| -------------------------------------- | --------------------------------------------------------- |
+| `library/src/tla_trace_mutex.rs`       | `TracedMutex<T>` wrapper — auto-traces on lock/unlock     |
+| `library/tests/trace_mutex_harness.rs` | Test scenarios exercising lock patterns                   |
+| `harness/mutex/preprocess.py`          | Maps lock names to TLA+ constants, merges per-task NDJSON |
+| `harness/mutex/run.sh`                 | End-to-end: test → preprocess → TLC validate              |
+| `spec/mutex/Trace.tla`                 | TLA+ trace validation spec (standalone, named locks)      |
+| `spec/mutex/Trace.cfg`                 | TLC config (constants, invariants, properties)            |
 
 ## Quick Start
 
@@ -54,11 +54,11 @@ real lock acquisition patterns respect mutual exclusion and the lock hierarchy.
 `TracedMutex<T>` is a drop-in replacement for `tokio::sync::Mutex<T>` that automatically
 emits trace events. Each lock instance has a **name** derived from the inner value:
 
-| Type | Lock name | Example |
-|------|-----------|---------|
-| `LibraryBook` | `book:<uuid>` | `book:abc-123` |
+| Type                 | Lock name           | Example         |
+| -------------------- | ------------------- | --------------- |
+| `LibraryBook`        | `book:<uuid>`       | `book:abc-123`  |
 | `LibraryTranslation` | `trans:<src>_<tgt>` | `trans:eng_fra` |
-| `LibraryDictionary` | `dict:<src>_<tgt>` | `dict:eng_fra` |
+| `LibraryDictionary`  | `dict:<src>_<tgt>`  | `dict:eng_fra`  |
 
 The `TracedLock` trait provides `lock_name()`. For explicit naming, use
 `TracedMutex::named(value, "my_lock")`.
@@ -70,19 +70,23 @@ the current tokio task.
 ## Scenarios
 
 ### 1. `concurrent_save_list` (3 tasks)
+
 - **t1 (saver)**: acquires bookLock, iterates transLock + dictLock (nested), saves
 - **t2, t3 (tauri_list)**: wait for bookLock, then exercise double-lock pattern
 
 ### 2. `watcher_and_mark` (2 tasks)
+
 - **t1 (watcher)**: bookLock → transLock → dictLock (full hierarchy traversal)
 - **t2 (tauri_mark)**: bookLock → transLock → save
 
 ### 3. `double_lock` (1 task)
+
 - **t1 (tauri_list)**: isolated `get_or_create_translation` double-lock
 
 ## Trace Format
 
 Each NDJSON line (raw from TracedMutex):
+
 ```json
 {
   "tag": "trace",
@@ -95,6 +99,7 @@ Each NDJSON line (raw from TracedMutex):
 ```
 
 After preprocessing (lock names mapped, timestamps compressed):
+
 ```json
 {
   "t1": [ { "event": "Acq", "lock": "b1", "start": 0, "end": 55 }, ... ],
@@ -103,6 +108,7 @@ After preprocessing (lock names mapped, timestamps compressed):
 ```
 
 The preprocessor maps lock names to TLA+ model values:
+
 - `book:abc-123` → `b1` (BookLock)
 - `trans:eng_fra` → `tr1` (TransLock)
 - `dict:eng_fra` → `d1` (DictLock)
@@ -116,6 +122,7 @@ The Trace.tla spec is **standalone** (doesn't extend base.tla) and validates:
 - **TraceFullyConsumed**: all events consumed (fails if hierarchy or exclusion violated)
 
 Uses **Category B timebox** with:
+
 - **Per-task cursors**: each task replays its own event sequence
 - **ViablePIDs**: partial-order constraint (completed-before-started ordering)
 - **Weak fairness**: ensures eventual progress

@@ -17,24 +17,24 @@ feature (zero-cost no-op when off). There is no patch/apply step.
 
 ## Files
 
-| File | Purpose |
-|------|---------|
-| `library/src/tla_trace/trace.rs` | `emit_roster_event(...)` — writes the NDJSON envelope (real impl, `tla_trace` on) |
-| `library/src/tla_trace/noop.rs` | zero-cost stand-in (`tla_trace` off) |
-| `library/src/sync/engine.rs` | emit call sites + `trace_emit` helper (gathers post-state) |
-| `library/src/sync/roster.rs` | `pending_sibling_sources` / `snapshot_for_trace` (trace-only peeks) |
-| `library/src/sync/trace_harness.rs` | the two scenarios (`#[cfg(all(test, tla_trace, sync-engine))]`) |
-| `harness/roster/run.sh` | build with the feature, run scenarios, check coverage |
+| File                                | Purpose                                                                           |
+| ----------------------------------- | --------------------------------------------------------------------------------- |
+| `library/src/tla_trace/trace.rs`    | `emit_roster_event(...)` — writes the NDJSON envelope (real impl, `tla_trace` on) |
+| `library/src/tla_trace/noop.rs`     | zero-cost stand-in (`tla_trace` off)                                              |
+| `library/src/sync/engine.rs`        | emit call sites + `trace_emit` helper (gathers post-state)                        |
+| `library/src/sync/roster.rs`        | `pending_sibling_sources` / `snapshot_for_trace` (trace-only peeks)               |
+| `library/src/sync/trace_harness.rs` | the two scenarios (`#[cfg(all(test, tla_trace, sync-engine))]`)                   |
+| `harness/roster/run.sh`             | build with the feature, run scenarios, check coverage                             |
 
 ## Event → emit site (post-`apply` = current source)
 
-| Event | File:fn | Trigger | Notes |
-|---|---|---|---|
-| `EnsureSelf` | `engine.rs` `set_device_name` | after `ensure_self` + `rename_device` | self's add vc |
-| `PairOn` | `engine.rs` `pair_device` | after `add_device` + `add_peer` | target's add vc. **ApprovePending is folded in here** (identical effect) |
-| `UnpairOn` | `engine.rs` `unpair_device` | after `remove_device` + `remove_peer` | target's rem vc |
-| `RosterSync` | `engine.rs` `reconcile_once` | after `load`, IFF it changed the roster | one per merged sibling; `src` = sibling `modifiedBy`; emitted only when `snapshot_for_trace() != load()` |
-| `ReconcileNode` | `engine.rs` `reconcile_once` | after the add/remove apply loop | only when the plan was non-empty (engine changed) |
+| Event           | File:fn                       | Trigger                                 | Notes                                                                                                    |
+| --------------- | ----------------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `EnsureSelf`    | `engine.rs` `set_device_name` | after `ensure_self` + `rename_device`   | self's add vc                                                                                            |
+| `PairOn`        | `engine.rs` `pair_device`     | after `add_device` + `add_peer`         | target's add vc. **ApprovePending is folded in here** (identical effect)                                 |
+| `UnpairOn`      | `engine.rs` `unpair_device`   | after `remove_device` + `remove_peer`   | target's rem vc                                                                                          |
+| `RosterSync`    | `engine.rs` `reconcile_once`  | after `load`, IFF it changed the roster | one per merged sibling; `src` = sibling `modifiedBy`; emitted only when `snapshot_for_trace() != load()` |
+| `ReconcileNode` | `engine.rs` `reconcile_once`  | after the add/remove apply loop         | only when the plan was non-empty (engine changed)                                                        |
 
 Every event carries the emitting node's POST-state: `node`, `roster`
 (`{id: {add: <vclock>, rem: <vclock>}}`, a vclock = `{deviceId: counter}`),

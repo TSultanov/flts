@@ -6,12 +6,12 @@ reproduction tests (Phase 2).
 
 ## Summary
 
-| Bug | Name | Reproduction Level | Test Result |
-|-----|------|-------------------|-------------|
-| F1 | Stale Library Reference | Level 0 (black-box) | ✅ PASS |
-| F2 | Stale Snapshot Overwrites | Level 0 (black-box) | ✅ PASS |
-| F3 | No Shutdown Persistence | Level 0 (black-box) | ✅ PASS |
-| F4 | Translation Lifecycle Atomicity | Level 2 (state injection) | ✅ PASS |
+| Bug | Name                            | Reproduction Level        | Test Result |
+| --- | ------------------------------- | ------------------------- | ----------- |
+| F1  | Stale Library Reference         | Level 0 (black-box)       | ✅ PASS     |
+| F2  | Stale Snapshot Overwrites       | Level 0 (black-box)       | ✅ PASS     |
+| F3  | No Shutdown Persistence         | Level 0 (black-box)       | ✅ PASS     |
+| F4  | Translation Lifecycle Atomicity | Level 2 (state injection) | ✅ PASS     |
 
 ---
 
@@ -32,6 +32,7 @@ capture, but no cancellation mechanism exists. Commit `ea80c0c` fixed deadlocks
 but not stale references.
 
 **Test output:**
+
 ```
 BUG F1 REPRODUCED:
   Queue library root: ".../lib_a" (stale — library A)
@@ -58,6 +59,7 @@ the timing, then simulates the frontend's blind application to show the
 event handler. No TODO/FIXME about stale events.
 
 **Test output:**
+
 ```
 BUG F2 REPRODUCED:
   Event delivery order: [2, 1]
@@ -84,6 +86,7 @@ re-opens it, and confirms the translation is gone.
 `run_saver` task has a delay loop, creating a window where data can be lost.
 
 **Test output:**
+
 ```
 BUG F3 REPRODUCED:
   Translation added in memory before shutdown: YES
@@ -113,6 +116,7 @@ holding the lock, showing awareness of race conditions. But the read-modify-
 write window in `handle_request` was not addressed.
 
 **Test output:**
+
 ```
 BUG F4 REPRODUCED:
   Worker read paragraph at Step 1: "The cat sat on the mat."
@@ -126,12 +130,12 @@ BUG F4 REPRODUCED:
 
 ## Severity Assessment
 
-| Bug | Impact | Trigger Probability | Severity |
-|-----|--------|-------------------|----------|
-| F1 | Data written to wrong library | Low (requires config change during active translation) | Medium |
-| F2 | UI shows stale data until refresh | Medium (any concurrent operation + event) | Medium |
-| F3 | Translation work lost on close | High (normal user closes app) | **High** |
-| F4 | Translation mismatched to paragraph | Low (requires sync during translation) | Low-Medium |
+| Bug | Impact                              | Trigger Probability                                    | Severity   |
+| --- | ----------------------------------- | ------------------------------------------------------ | ---------- |
+| F1  | Data written to wrong library       | Low (requires config change during active translation) | Medium     |
+| F2  | UI shows stale data until refresh   | Medium (any concurrent operation + event)              | Medium     |
+| F3  | Translation work lost on close      | High (normal user closes app)                          | **High**   |
+| F4  | Translation mismatched to paragraph | Low (requires sync during translation)                 | Low-Medium |
 
 **F3 is the most impactful** — it can be triggered by normal user behavior
 (closing the app while translations are in progress) and results in silent
@@ -139,7 +143,7 @@ data loss.
 
 ## Recommended Fixes
 
-1. **F1:** Replace captured `Arc<Library>` with `Arc<RwLock<Option<Arc<Library>>>>` 
+1. **F1:** Replace captured `Arc<Library>` with `Arc<RwLock<Option<Arc<Library>>>>`
    (shared reference to AppState's field), or cancel/restart tasks on config change.
 
 2. **F2:** Add version stamping to emitted events; frontend discards events

@@ -90,9 +90,17 @@ pub struct Word {
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub struct Grammar {
-    #[serde(rename = "lf", alias = "originalInitialForm", alias = "original_initial_form")]
+    #[serde(
+        rename = "lf",
+        alias = "originalInitialForm",
+        alias = "original_initial_form"
+    )]
     pub original_initial_form: String,
-    #[serde(rename = "lt", alias = "targetInitialForm", alias = "target_initial_form")]
+    #[serde(
+        rename = "lt",
+        alias = "targetInitialForm",
+        alias = "target_initial_form"
+    )]
     pub target_initial_form: String,
     #[serde(rename = "pos", alias = "partOfSpeech", alias = "part_of_speech")]
     pub part_of_speech: String,
@@ -258,10 +266,7 @@ mod tests {
         }"#;
         let p: ParagraphTranslation = serde_json::from_str(legacy).unwrap();
         assert_eq!(p.sentences[0].full_translation, "Hola");
-        assert_eq!(
-            p.sentences[0].words[0].grammar.original_initial_form,
-            "hi"
-        );
+        assert_eq!(p.sentences[0].words[0].grammar.original_initial_form, "hi");
     }
 
     #[test]

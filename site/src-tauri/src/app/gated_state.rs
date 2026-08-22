@@ -60,13 +60,17 @@ impl GatedState {
     /// Waits for startup to settle. Startup's own error is propagated; a
     /// startup that never settles is bounded by [`READY_TIMEOUT`].
     pub async fn await_ready(&self) -> Result<(), String> {
-        settle_on(self.ready.subscribe(), READY_TIMEOUT).await.unwrap_or_else(Err)
+        settle_on(self.ready.subscribe(), READY_TIMEOUT)
+            .await
+            .unwrap_or_else(Err)
     }
 
     /// Waits only while startup is still *running*: a failed startup settles as
     /// Ok here, for the repair path (`update_config`) that republishes it.
     pub async fn await_settled(&self) -> Result<(), String> {
-        settle_on(self.ready.subscribe(), READY_TIMEOUT).await.map(|_| ())
+        settle_on(self.ready.subscribe(), READY_TIMEOUT)
+            .await
+            .map(|_| ())
     }
 
     // --- gated accessors: the only way in for commands ---
@@ -84,11 +88,18 @@ impl GatedState {
     /// unlike "not started yet", which the gate absorbs.
     pub async fn sync_engine(&self) -> Result<Option<Arc<SyncEngine>>, String> {
         self.await_ready().await?;
-        Ok(self.sync_task.lock().await.as_ref().map(|task| task.engine()))
+        Ok(self
+            .sync_task
+            .lock()
+            .await
+            .as_ref()
+            .map(|task| task.engine()))
     }
 
     pub async fn sync_anki_now(&self) -> anyhow::Result<SyncReportDto> {
-        self.await_ready().await.map_err(|err| anyhow::anyhow!(err))?;
+        self.await_ready()
+            .await
+            .map_err(|err| anyhow::anyhow!(err))?;
         sync_now_or_err(&self.anki_sync_task).await
     }
 

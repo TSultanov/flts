@@ -35,13 +35,13 @@ in `library/tests/trace_interaction_harness.rs`, wrapping real Library API calls
 
 ## Files
 
-| File | Purpose |
-|------|---------|
-| `library/src/tla_trace_interaction.rs` | Trace emission (global writer, TraceSpan) |
-| `library/tests/trace_interaction_harness.rs` | Test scenarios |
-| `harness/interaction/preprocess.py` | NDJSON → Trace.tla JSON |
-| `harness/interaction/run.sh` | End-to-end runner |
-| `spec/interaction/instrumentation-spec.md` | Event-to-source mapping |
+| File                                         | Purpose                                   |
+| -------------------------------------------- | ----------------------------------------- |
+| `library/src/tla_trace_interaction.rs`       | Trace emission (global writer, TraceSpan) |
+| `library/tests/trace_interaction_harness.rs` | Test scenarios                            |
+| `harness/interaction/preprocess.py`          | NDJSON → Trace.tla JSON                   |
+| `harness/interaction/run.sh`                 | End-to-end runner                         |
+| `spec/interaction/instrumentation-spec.md`   | Event-to-source mapping                   |
 
 ## NDJSON Event Schema
 
@@ -112,24 +112,24 @@ Update `Trace.tla`'s corresponding `Trace*` action to read the new field.
 
 All 19 TLA+ actions are covered by the baseline scenario:
 
-| # | Event | Actor | Real Operation |
-|---|-------|-------|----------------|
-| 1 | ConfigChange | t1 | `Library::open` (new instance) |
-| 2 | BeginWorker | t1 | `library.get_book(&id)` |
-| 3 | WorkerReadParagraph | t1 | `get_or_create_translation` + `paragraph_view` |
-| 4 | WorkerCallAPI | t1 | `tokio::time::sleep` (simulated) |
-| 5 | WorkerStoreResult | t1 | `add_paragraph_translation` |
-| 6 | WorkerSave | t1 | `book.save()` |
-| 7 | WorkerComputeSnapshot | t1 | `library.list_books()` |
-| 8 | WorkerEmit | t1 | protocol event only |
-| 9 | BeginTauri | t2 | protocol routing |
-| 10 | TauriModify | t2 | `create_book_plain` |
-| 11 | TauriComputeSnapshot | t2 | `library.list_books()` |
-| 12 | TauriEmit | t2 | protocol event only |
-| 13 | BeginWatcher | t1 | `library.get_book(&id)` |
-| 14 | WatcherReload | t1 | fs write + reload |
-| 15 | WatcherComputeSnapshot | t1 | `library.list_books()` |
-| 16 | WatcherEmit | t1 | protocol event only |
-| 17 | DeliverEvent | ui | protocol event only |
-| 18 | MarkWordVisible | t2 | `mark_word_visible` + `save` |
-| 19 | AppClose | t1 | protocol event only |
+| #   | Event                  | Actor | Real Operation                                 |
+| --- | ---------------------- | ----- | ---------------------------------------------- |
+| 1   | ConfigChange           | t1    | `Library::open` (new instance)                 |
+| 2   | BeginWorker            | t1    | `library.get_book(&id)`                        |
+| 3   | WorkerReadParagraph    | t1    | `get_or_create_translation` + `paragraph_view` |
+| 4   | WorkerCallAPI          | t1    | `tokio::time::sleep` (simulated)               |
+| 5   | WorkerStoreResult      | t1    | `add_paragraph_translation`                    |
+| 6   | WorkerSave             | t1    | `book.save()`                                  |
+| 7   | WorkerComputeSnapshot  | t1    | `library.list_books()`                         |
+| 8   | WorkerEmit             | t1    | protocol event only                            |
+| 9   | BeginTauri             | t2    | protocol routing                               |
+| 10  | TauriModify            | t2    | `create_book_plain`                            |
+| 11  | TauriComputeSnapshot   | t2    | `library.list_books()`                         |
+| 12  | TauriEmit              | t2    | protocol event only                            |
+| 13  | BeginWatcher           | t1    | `library.get_book(&id)`                        |
+| 14  | WatcherReload          | t1    | fs write + reload                              |
+| 15  | WatcherComputeSnapshot | t1    | `library.list_books()`                         |
+| 16  | WatcherEmit            | t1    | protocol event only                            |
+| 17  | DeliverEvent           | ui    | protocol event only                            |
+| 18  | MarkWordVisible        | t2    | `mark_word_visible` + `save`                   |
+| 19  | AppClose               | t1    | protocol event only                            |

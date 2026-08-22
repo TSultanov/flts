@@ -9,13 +9,13 @@ export type SimRule = {
   };
   action: {
     type:
-      | 'status'
-      | 'delay'
-      | 'stall'
-      | 'drop'
-      | 'truncate'
-      | 'corrupt'
-      | 'passthrough';
+      | "status"
+      | "delay"
+      | "stall"
+      | "drop"
+      | "truncate"
+      | "corrupt"
+      | "passthrough";
     code?: number;
     body?: unknown;
     ms?: number;
@@ -54,7 +54,7 @@ export class SimClient {
       ...(body === undefined
         ? {}
         : {
-            headers: { 'content-type': 'application/json' },
+            headers: { "content-type": "application/json" },
             body: JSON.stringify(body),
           }),
     });
@@ -67,25 +67,25 @@ export class SimClient {
   }
 
   async addRule(rule: SimRule | SimRule[]): Promise<void> {
-    await this.call('POST', '/_sim/rules', rule);
+    await this.call("POST", "/_sim/rules", rule);
     this.active.push(...(Array.isArray(rule) ? rule : [rule]));
   }
 
   async clearRules(): Promise<void> {
-    await this.call('DELETE', '/_sim/rules');
+    await this.call("DELETE", "/_sim/rules");
     this.active = [];
   }
 
   async reset(): Promise<void> {
-    await this.call('POST', '/_sim/reset');
+    await this.call("POST", "/_sim/reset");
     this.active = [];
   }
 
   async seed(data: unknown): Promise<void> {
-    await this.call('POST', '/_sim/seed', data);
+    await this.call("POST", "/_sim/seed", data);
   }
 
   async requests(): Promise<SimRequest[]> {
-    return (await this.call('GET', '/_sim/requests')).json();
+    return (await this.call("GET", "/_sim/requests")).json();
   }
 }

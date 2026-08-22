@@ -1,17 +1,17 @@
-import { expect, test } from './helpers/test';
+import { expect, test } from "./helpers/test";
 import {
   getTranslationsBatchCalls,
   seedAndOpen,
   wordSegment,
-} from './helpers/paragraph';
+} from "./helpers/paragraph";
 
 // Chromium only: Svelte reactivity / DOM measurement, not layout behaviour.
-test.describe.configure({ mode: 'parallel' });
+test.describe.configure({ mode: "parallel" });
 
-test.describe('Chapter initial translation batch (chromium only)', () => {
-  test.skip(({ browserName }) => browserName !== 'chromium', 'chromium-only');
+test.describe("Chapter initial translation batch (chromium only)", () => {
+  test.skip(({ browserName }) => browserName !== "chromium", "chromium-only");
 
-  test('opening a chapter does not enqueue translations for the whole chapter on initial mount', async ({
+  test("opening a chapter does not enqueue translations for the whole chapter on initial mount", async ({
     page,
   }) => {
     // Guards against #recomputeMountWindow running on empty wrappers and
@@ -20,12 +20,12 @@ test.describe('Chapter initial translation batch (chromium only)', () => {
     // and the mount window catches everything either way.
     const N = 80;
     const bodyText = (
-      'Lorem ipsum dolor sit amet, consectetur adipiscing elit. ' +
-      'Sed do eiusmod tempor incididunt ut labore et dolore magna ' +
-      'aliqua. Ut enim ad minim veniam, quis nostrud exercitation ' +
-      'ullamco laboris nisi ut aliquip ex ea commodo consequat. ' +
-      'Duis aute irure dolor in reprehenderit in voluptate velit ' +
-      'esse cillum dolore eu fugiat nulla pariatur.'
+      "Lorem ipsum dolor sit amet, consectetur adipiscing elit. " +
+      "Sed do eiusmod tempor incididunt ut labore et dolore magna " +
+      "aliqua. Ut enim ad minim veniam, quis nostrud exercitation " +
+      "ullamco laboris nisi ut aliquip ex ea commodo consequat. " +
+      "Duis aute irure dolor in reprehenderit in voluptate velit " +
+      "esse cillum dolore eu fugiat nulla pariatur."
     ).repeat(2);
     const paragraphs = Array.from({ length: N }, (_, i) => ({
       html: `<p>${bodyText} (paragraph ${i})</p>`,
@@ -42,7 +42,7 @@ test.describe('Chapter initial translation batch (chromium only)', () => {
 
     await seedAndOpen(page, { chapters: [{ paragraphs }] });
 
-    await expect(page.locator('.paragraphs-container.is-ready')).toBeVisible();
+    await expect(page.locator(".paragraphs-container.is-ready")).toBeVisible();
 
     // The triggering mount-window computation runs in a rAF after originals.
     await expect

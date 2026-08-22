@@ -51,13 +51,24 @@ impl std::error::Error for EngineError {}
 /// harness); production passes `false` and configures discovery over REST.
 ///
 /// Returns once REST is listening. Idempotent; one engine per process.
-pub fn start(home: &Path, gui_addr: &str, api_key: &str, hermetic: bool) -> Result<(), EngineError> {
-    let home = CString::new(home.to_string_lossy().as_bytes()).map_err(|_| EngineError::NulInArg)?;
+pub fn start(
+    home: &Path,
+    gui_addr: &str,
+    api_key: &str,
+    hermetic: bool,
+) -> Result<(), EngineError> {
+    let home =
+        CString::new(home.to_string_lossy().as_bytes()).map_err(|_| EngineError::NulInArg)?;
     let addr = CString::new(gui_addr).map_err(|_| EngineError::NulInArg)?;
     let key = CString::new(api_key).map_err(|_| EngineError::NulInArg)?;
     // SAFETY: all three pointers are NUL-terminated and outlive the call.
     let rc = unsafe {
-        flts_st_start(home.as_ptr(), addr.as_ptr(), key.as_ptr(), c_int::from(hermetic))
+        flts_st_start(
+            home.as_ptr(),
+            addr.as_ptr(),
+            key.as_ptr(),
+            c_int::from(hermetic),
+        )
     };
     if rc == 0 {
         Ok(())
@@ -145,7 +156,9 @@ mod tests {
     fn http_get(addr: &str, path: &str, api_key: &str) -> Option<String> {
         let mut stream = TcpStream::connect(addr).ok()?;
         stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
-        stream.set_write_timeout(Some(Duration::from_secs(5))).ok()?;
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .ok()?;
         let req = format!(
             "GET {path} HTTP/1.1\r\nHost: {addr}\r\nX-API-Key: {api_key}\r\nConnection: close\r\n\r\n"
         );

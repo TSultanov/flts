@@ -271,9 +271,10 @@ pub fn list_base_url(
             nonempty_or(deepseek_env, crate::translator::openai::DEEPSEEK_BASE_URL)
         }
         TranslationProvider::Zai => nonempty_or(zai_env, crate::translator::openai::ZAI_BASE_URL),
-        TranslationProvider::Openrouter => {
-            nonempty_or(openrouter_env, crate::translator::openai::OPENROUTER_BASE_URL)
-        }
+        TranslationProvider::Openrouter => nonempty_or(
+            openrouter_env,
+            crate::translator::openai::OPENROUTER_BASE_URL,
+        ),
     }
 }
 
@@ -711,10 +712,7 @@ mod tests {
             FALLBACK_OPENROUTER
         );
         assert_eq!(
-            effective_model_id(
-                TranslationProvider::Openrouter,
-                FALLBACK_OPENROUTER,
-            ),
+            effective_model_id(TranslationProvider::Openrouter, FALLBACK_OPENROUTER,),
             FALLBACK_OPENROUTER
         );
     }
@@ -1106,7 +1104,14 @@ mod tests {
             crate::translator::openai::ZAI_BASE_URL
         );
         assert_eq!(
-            list_base_url(TranslationProvider::Openrouter, None, None, None, None, None),
+            list_base_url(
+                TranslationProvider::Openrouter,
+                None,
+                None,
+                None,
+                None,
+                None
+            ),
             crate::translator::openai::OPENROUTER_BASE_URL
         );
         assert_eq!(

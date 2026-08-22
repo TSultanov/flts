@@ -279,8 +279,7 @@ pub async fn sync_pass(
             }
             CardAction::Add | CardAction::UpdateNote(_) => {
                 // Move the outcome out; anyhow::Error isn't Clone.
-                let outcome =
-                    std::mem::replace(&mut write_outcomes[idx], WriteOutcome::Skipped);
+                let outcome = std::mem::replace(&mut write_outcomes[idx], WriteOutcome::Skipped);
                 match outcome {
                     WriteOutcome::Err(err) => Err(err),
                     WriteOutcome::Skipped => {
@@ -288,9 +287,7 @@ pub async fn sync_pass(
                     }
                     WriteOutcome::AddOk { note_id } | WriteOutcome::UpdateOk { note_id } => {
                         match notes_by_id.get(&note_id) {
-                            None => {
-                                Err(anyhow!("notes_info returned no entry for note {note_id}"))
-                            }
+                            None => Err(anyhow!("notes_info returned no entry for note {note_id}")),
                             Some(note) => {
                                 let cards: Vec<CardInfo> = note
                                     .cards
@@ -371,8 +368,12 @@ enum CardAction {
 enum WriteOutcome {
     /// Never entered the write batch, or its outcome was already consumed.
     Skipped,
-    AddOk { note_id: i64 },
-    UpdateOk { note_id: i64 },
+    AddOk {
+        note_id: i64,
+    },
+    UpdateOk {
+        note_id: i64,
+    },
     Err(anyhow::Error),
 }
 
@@ -481,8 +482,7 @@ async fn batch_writes(
                 }
                 let msg = err.to_string();
                 for p in chunk {
-                    outcomes[p.idx] =
-                        WriteOutcome::Err(anyhow!("multi write batch failed: {msg}"));
+                    outcomes[p.idx] = WriteOutcome::Err(anyhow!("multi write batch failed: {msg}"));
                 }
             }
         }
@@ -503,9 +503,7 @@ async fn batch_pull_state(
     let pull_note_ids: Vec<i64> = write_outcomes
         .iter()
         .filter_map(|outcome| match outcome {
-            WriteOutcome::AddOk { note_id } | WriteOutcome::UpdateOk { note_id } => {
-                Some(*note_id)
-            }
+            WriteOutcome::AddOk { note_id } | WriteOutcome::UpdateOk { note_id } => Some(*note_id),
             _ => None,
         })
         .collect();

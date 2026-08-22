@@ -1,9 +1,9 @@
-import { type Page } from '@playwright/test';
-import { expect, test } from './helpers/test';
+import { type Page } from "@playwright/test";
+import { expect, test } from "./helpers/test";
 
 // Anki sync UI surface: nav button and the Config endpoint/api-key fields.
 
-type AnkiSyncStatusState = 'idle' | 'syncing' | 'ok' | 'err' | 'unreachable';
+type AnkiSyncStatusState = "idle" | "syncing" | "ok" | "err" | "unreachable";
 
 async function setAnkiStatus(
   page: Page,
@@ -20,24 +20,24 @@ async function getSyncAnkiNowCallCount(page: Page): Promise<number> {
   );
 }
 
-test.describe('Anki sync button', () => {
-  test('hidden when AnkiConnect status is unreachable', async ({ page }) => {
+test.describe("Anki sync button", () => {
+  test("hidden when AnkiConnect status is unreachable", async ({ page }) => {
     await page.addInitScript(() => {
       // Must precede boot: the Resource fetches once on construction.
-      (window as any).__pendingAnkiStatus = { state: 'unreachable' };
+      (window as any).__pendingAnkiStatus = { state: "unreachable" };
     });
-    await page.goto('/library');
-    await setAnkiStatus(page, { state: 'unreachable' });
-    await expect(page.getByTestId('anki-sync-button')).toBeHidden();
+    await page.goto("/library");
+    await setAnkiStatus(page, { state: "unreachable" });
+    await expect(page.getByTestId("anki-sync-button")).toBeHidden();
   });
 
-  test('visible when status is idle and clicking triggers sync_anki_now', async ({
+  test("visible when status is idle and clicking triggers sync_anki_now", async ({
     page,
   }) => {
-    await page.goto('/library');
-    await setAnkiStatus(page, { state: 'idle' });
+    await page.goto("/library");
+    await setAnkiStatus(page, { state: "idle" });
 
-    const button = page.getByTestId('anki-sync-button');
+    const button = page.getByTestId("anki-sync-button");
     await expect(button).toBeVisible();
 
     await button.click();
@@ -47,50 +47,54 @@ test.describe('Anki sync button', () => {
 
     // The mock flips syncing → ok on a timer; status_changed drives the refetch.
     await expect
-      .poll(async () => await page.evaluate(
-        () => ((window as any).__test.getAnkiSyncStatus()).state,
-      ))
-      .toBe('ok');
+      .poll(
+        async () =>
+          await page.evaluate(
+            () => (window as any).__test.getAnkiSyncStatus().state,
+          ),
+      )
+      .toBe("ok");
   });
 
-  test('hides itself if status transitions to unreachable mid-session', async ({
+  test("hides itself if status transitions to unreachable mid-session", async ({
     page,
   }) => {
-    await page.goto('/library');
-    await setAnkiStatus(page, { state: 'idle' });
-    await expect(page.getByTestId('anki-sync-button')).toBeVisible();
+    await page.goto("/library");
+    await setAnkiStatus(page, { state: "idle" });
+    await expect(page.getByTestId("anki-sync-button")).toBeVisible();
 
     await setAnkiStatus(page, {
-      state: 'unreachable',
-      lastError: 'connection refused',
+      state: "unreachable",
+      lastError: "connection refused",
     });
-    await expect(page.getByTestId('anki-sync-button')).toBeHidden();
+    await expect(page.getByTestId("anki-sync-button")).toBeHidden();
   });
 });
 
-test.describe('Anki config UI', () => {
-  test('endpoint and api key fields are persisted via update_config', async ({
+test.describe("Anki config UI", () => {
+  test("endpoint and api key fields are persisted via update_config", async ({
     page,
   }) => {
-    await page.goto('/config');
+    await page.goto("/config");
 
-    const summary = page.getByText('Anki (optional)');
+    const summary = page.getByText("Anki (optional)");
     await summary.click();
 
-    const endpoint = page.getByTestId('anki-endpoint');
-    const apiKey = page.getByTestId('anki-api-key');
-    await endpoint.fill('http://anki.example.com:9999');
-    await apiKey.fill('secret-token');
-    await page.locator('#save').click();
+    const endpoint = page.getByTestId("anki-endpoint");
+    const apiKey = page.getByTestId("anki-api-key");
+    await endpoint.fill("http://anki.example.com:9999");
+    await apiKey.fill("secret-token");
+    await page.locator("#save").click();
 
     // Read back through the mock to confirm update_config persisted.
-    const persisted = await page.evaluate(() =>
-      (window as any).__test.getConfig() as {
-        ankiEndpoint?: string;
-        ankiApiKey?: string;
-      },
+    const persisted = await page.evaluate(
+      () =>
+        (window as any).__test.getConfig() as {
+          ankiEndpoint?: string;
+          ankiApiKey?: string;
+        },
     );
-    expect(persisted.ankiEndpoint).toBe('http://anki.example.com:9999');
-    expect(persisted.ankiApiKey).toBe('secret-token');
+    expect(persisted.ankiEndpoint).toBe("http://anki.example.com:9999");
+    expect(persisted.ankiApiKey).toBe("secret-token");
   });
 });

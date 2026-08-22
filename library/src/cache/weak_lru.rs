@@ -171,7 +171,10 @@ mod tests {
         cache.insert(3, Arc::new("three".to_string())).await;
 
         assert!(cache.get(&1).await.is_some(), "touched key 1 must survive");
-        assert!(cache.get(&2).await.is_none(), "untouched key 2 must be evicted");
+        assert!(
+            cache.get(&2).await.is_none(),
+            "untouched key 2 must be evicted"
+        );
         assert!(cache.get(&3).await.is_some());
     }
 

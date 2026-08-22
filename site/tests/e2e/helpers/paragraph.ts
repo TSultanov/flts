@@ -1,11 +1,11 @@
-import { expect, type Locator, type Page } from '@playwright/test';
-import { isRealMode, realModeUnsupported } from './backend-mode';
-import { realSeedAndOpen, realTranslateCalls } from './real-seed';
+import { expect, type Locator, type Page } from "@playwright/test";
+import { isRealMode, realModeUnsupported } from "./backend-mode";
+import { realSeedAndOpen, realTranslateCalls } from "./real-seed";
 
 export type ParagraphSegment =
-  | { kind: 'gap'; html: string }
+  | { kind: "gap"; html: string }
   | {
-      kind: 'word';
+      kind: "word";
       text: string;
       sentence: number;
       word: number;
@@ -20,13 +20,13 @@ export type SeedParagraph = {
 };
 
 export type TranslateConfig =
-  | { kind: 'immediate'; segments?: ParagraphSegment[] }
+  | { kind: "immediate"; segments?: ParagraphSegment[] }
   | {
-      kind: 'progress';
+      kind: "progress";
       steps: Array<{ progress: number; total: number; delayMs: number }>;
       segments: ParagraphSegment[];
     }
-  | { kind: 'error'; errorMessage: string; delayMs: number };
+  | { kind: "error"; errorMessage: string; delayMs: number };
 
 export type WordInfoSeed = {
   original: string;
@@ -65,7 +65,11 @@ export type SeedSpec = {
     wordId: number;
     info: WordInfoSeed;
   }>;
-  readingState?: { chapterId: number; paragraphId: number; pageOffset?: number };
+  readingState?: {
+    chapterId: number;
+    paragraphId: number;
+    pageOffset?: number;
+  };
   summaryStatus?: {
     generated: boolean[];
     activelyGenerating?: number | null;
@@ -91,7 +95,7 @@ export async function seedAndOpen(
   spec: SeedSpec,
   opts: { path?: string } = {},
 ): Promise<{ bookId: string }> {
-  page.on('pageerror', (err) => console.log('PAGE ERROR:', err.message));
+  page.on("pageerror", (err) => console.log("PAGE ERROR:", err.message));
   if (isRealMode()) return realSeedAndOpen(page, spec, opts);
   const bookId = spec.bookId ?? makeBookId();
   const fullSpec = { ...spec, bookId };
@@ -99,16 +103,16 @@ export async function seedAndOpen(
   await page.addInitScript((s) => {
     const wordInfoDefaults = (info: any) => ({
       original: info.original,
-      note: info.note ?? '',
+      note: info.note ?? "",
       isPunctuation: info.isPunctuation ?? false,
       contextualTranslations: info.contextualTranslations ?? [],
-      fullSentenceTranslation: info.fullSentenceTranslation ?? '',
+      fullSentenceTranslation: info.fullSentenceTranslation ?? "",
       translationModel: info.translationModel ?? 1,
-      sourceLanguage: info.sourceLanguage ?? 'eng',
+      sourceLanguage: info.sourceLanguage ?? "eng",
       grammar: {
         originalInitialForm: info.grammar?.originalInitialForm ?? info.original,
-        targetInitialForm: info.grammar?.targetInitialForm ?? '',
-        partOfSpeech: info.grammar?.partOfSpeech ?? 'noun',
+        targetInitialForm: info.grammar?.targetInitialForm ?? "",
+        partOfSpeech: info.grammar?.partOfSpeech ?? "noun",
       },
     });
     (window as any).__pendingSeed = {
@@ -140,7 +144,7 @@ export async function setTranslateConfig(
   paragraphId: number,
   cfg: TranslateConfig,
 ): Promise<void> {
-  if (isRealMode()) realModeUnsupported('setTranslateConfig');
+  if (isRealMode()) realModeUnsupported("setTranslateConfig");
   await page.evaluate(
     ({ bookId, paragraphId, cfg }) => {
       (window as any).__test.setTranslateConfig(bookId, paragraphId, cfg);
@@ -157,32 +161,43 @@ export async function setWordInfo(
   wordId: number,
   info: WordInfoSeed,
 ): Promise<void> {
-  if (isRealMode()) realModeUnsupported('setWordInfo');
+  if (isRealMode()) realModeUnsupported("setWordInfo");
   const full = {
     original: info.original,
-    note: info.note ?? '',
+    note: info.note ?? "",
     isPunctuation: info.isPunctuation ?? false,
     contextualTranslations: info.contextualTranslations ?? [],
-    fullSentenceTranslation: info.fullSentenceTranslation ?? '',
+    fullSentenceTranslation: info.fullSentenceTranslation ?? "",
     translationModel: info.translationModel ?? 1,
-    sourceLanguage: info.sourceLanguage ?? 'eng',
+    sourceLanguage: info.sourceLanguage ?? "eng",
     grammar: {
       originalInitialForm: info.grammar?.originalInitialForm ?? info.original,
-      targetInitialForm: info.grammar?.targetInitialForm ?? '',
-      partOfSpeech: info.grammar?.partOfSpeech ?? 'noun',
+      targetInitialForm: info.grammar?.targetInitialForm ?? "",
+      partOfSpeech: info.grammar?.partOfSpeech ?? "noun",
     },
   };
   await page.evaluate(
     ({ bookId, paragraphId, sentenceId, wordId, info }) => {
-      (window as any).__test.setWordInfo(bookId, paragraphId, sentenceId, wordId, info);
+      (window as any).__test.setWordInfo(
+        bookId,
+        paragraphId,
+        sentenceId,
+        wordId,
+        info,
+      );
     },
     { bookId, paragraphId, sentenceId, wordId, info: full },
   );
 }
 
-export async function getTranslateCalls(
-  page: Page,
-): Promise<Array<{ bookId: string; paragraphId: number; useCache: boolean; model: unknown }>> {
+export async function getTranslateCalls(page: Page): Promise<
+  Array<{
+    bookId: string;
+    paragraphId: number;
+    useCache: boolean;
+    model: unknown;
+  }>
+> {
   if (isRealMode()) return realTranslateCalls();
   return page.evaluate(() => (window as any).__test.getTranslateCalls());
 }
@@ -190,8 +205,10 @@ export async function getTranslateCalls(
 export async function getTranslationsBatchCalls(
   page: Page,
 ): Promise<Array<{ bookId: string; paragraphIds: number[]; at: number }>> {
-  if (isRealMode()) realModeUnsupported('getTranslationsBatchCalls');
-  return page.evaluate(() => (window as any).__test.getTranslationsBatchCalls());
+  if (isRealMode()) realModeUnsupported("getTranslationsBatchCalls");
+  return page.evaluate(() =>
+    (window as any).__test.getTranslationsBatchCalls(),
+  );
 }
 
 export function paragraphLocator(page: Page, paragraphId: number): Locator {
@@ -199,7 +216,7 @@ export function paragraphLocator(page: Page, paragraphId: number): Locator {
 }
 
 export function translateButton(paragraph: Locator): Locator {
-  return paragraph.locator('button.translate');
+  return paragraph.locator("button.translate");
 }
 
 export function wordSpan(paragraph: Locator, flatIndex: number): Locator {
@@ -210,21 +227,27 @@ export function wordSpan(paragraph: Locator, flatIndex: number): Locator {
  * Mirrors ChapterView.scrollParagraphIntoView (inline 'center', 'auto') so the
  * snap settles synchronously; the trailing wait lets the IO callback fire.
  */
-export async function scrollToParagraph(page: Page, paragraphId: number): Promise<void> {
+export async function scrollToParagraph(
+  page: Page,
+  paragraphId: number,
+): Promise<void> {
   await page.evaluate((id) => {
     const el = document.querySelector(
       `.paragraph-wrapper[data-paragraph-id="${id}"]`,
     );
-    el?.scrollIntoView({ behavior: 'auto', block: 'nearest', inline: 'center' });
+    el?.scrollIntoView({
+      behavior: "auto",
+      block: "nearest",
+      inline: "center",
+    });
   }, paragraphId);
   await page.waitForTimeout(50);
 }
 
 /** Per-idx-stable sentence shape, so wrapped widths stay deterministic. */
 export function htmlOfSize(idx: number, sentences: number): string {
-  const sentence =
-    `Paragraph ${idx} sentence about subject ${idx} doing thing ${idx} in place ${idx}.`;
-  return Array.from({ length: sentences }, () => sentence).join(' ');
+  const sentence = `Paragraph ${idx} sentence about subject ${idx} doing thing ${idx} in place ${idx}.`;
+  return Array.from({ length: sentences }, () => sentence).join(" ");
 }
 
 /**
@@ -239,7 +262,7 @@ export function fillerHtml(idx: number): string {
 export function multipageSpec(
   count: number,
   overrides: Partial<Record<number, Partial<SeedParagraph>>> = {},
-  extras: Omit<SeedSpec, 'chapters'> = {},
+  extras: Omit<SeedSpec, "chapters"> = {},
 ): SeedSpec {
   const paragraphs: SeedParagraph[] = Array.from({ length: count }, (_, i) => ({
     html: fillerHtml(i),
@@ -250,7 +273,7 @@ export function multipageSpec(
 
 /** Waits for the translated branch (translate button replaced by an empty div). */
 export async function expectTranslated(paragraph: Locator): Promise<void> {
-  await expect(paragraph.locator('button.translate')).toHaveCount(0);
+  await expect(paragraph.locator("button.translate")).toHaveCount(0);
 }
 
 /** Asserts the paragraph is inside the lazy-mount window. */
@@ -259,7 +282,7 @@ export async function expectWordSpansMounted(
   paragraphId: number,
 ): Promise<void> {
   await expect(
-    paragraphLocator(page, paragraphId).locator('.word-span').first(),
+    paragraphLocator(page, paragraphId).locator(".word-span").first(),
   ).toBeAttached();
 }
 
@@ -269,7 +292,7 @@ export async function expectWordSpansUnmounted(
   paragraphId: number,
 ): Promise<void> {
   await expect(
-    paragraphLocator(page, paragraphId).locator('.word-span'),
+    paragraphLocator(page, paragraphId).locator(".word-span"),
   ).toHaveCount(0);
 }
 
@@ -283,7 +306,7 @@ export function wordSegment(opts: {
   familiarity?: number;
 }): ParagraphSegment {
   const seg: ParagraphSegment = {
-    kind: 'word',
+    kind: "word",
     text: opts.text,
     sentence: opts.sentence,
     word: opts.word,
@@ -297,7 +320,7 @@ export function wordSegment(opts: {
 }
 
 export async function emitCardsUpdated(page: Page): Promise<void> {
-  if (isRealMode()) realModeUnsupported('emitCardsUpdated');
+  if (isRealMode()) realModeUnsupported("emitCardsUpdated");
   await page.evaluate(() => (window as any).__test.emitCardsUpdated());
 }
 
@@ -307,7 +330,7 @@ export async function setParagraphTranslationSilent(
   paragraphId: number,
   segments: ParagraphSegment[] | undefined,
 ): Promise<void> {
-  if (isRealMode()) realModeUnsupported('setParagraphTranslationSilent');
+  if (isRealMode()) realModeUnsupported("setParagraphTranslationSilent");
   await page.evaluate(
     ({ bookId, paragraphId, segments }) => {
       (window as any).__test.setParagraphTranslationSilent(
@@ -326,7 +349,7 @@ export async function setParagraphTranslation(
   paragraphId: number,
   segments: ParagraphSegment[],
 ): Promise<void> {
-  if (isRealMode()) realModeUnsupported('setParagraphTranslation');
+  if (isRealMode()) realModeUnsupported("setParagraphTranslation");
   await page.evaluate(
     ({ bookId, paragraphId, segments }) => {
       (window as any).__test.setParagraphTranslation(
@@ -352,9 +375,9 @@ export function fillerSegments(idx: number): ParagraphSegment[] {
   let wordIdx = 0;
   const tokens = html.split(/(\s+)/);
   for (const token of tokens) {
-    if (token === '') continue;
+    if (token === "") continue;
     if (/^\s+$/.test(token)) {
-      segments.push({ kind: 'gap', html: token });
+      segments.push({ kind: "gap", html: token });
     } else {
       segments.push(
         wordSegment({

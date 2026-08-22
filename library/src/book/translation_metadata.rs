@@ -6,8 +6,8 @@ use std::{
 use uuid::Uuid;
 
 use crate::book::serialization::{
-    read_exact_array, read_len_prefixed_string, read_len_prefixed_vec, read_u64, read_var_u64,
-    Magic, Version,
+    Magic, Version, read_exact_array, read_len_prefixed_string, read_len_prefixed_vec, read_u64,
+    read_var_u64,
 };
 
 #[derive(Debug)]

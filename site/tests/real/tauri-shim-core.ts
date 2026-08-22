@@ -1,6 +1,6 @@
 // Real-backend stand-in for @tauri-apps/api/core: every invoke goes over the
 // WS bridge. Export surface mirrors tests/mocks/tauri-api.ts.
-import { bridgeInvoke } from './bridge-transport';
+import { bridgeInvoke } from "./bridge-transport";
 
 export type InvokeArgs = Record<string, unknown>;
 

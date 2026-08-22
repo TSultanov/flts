@@ -399,10 +399,8 @@ pub struct SerializedAnkiConnect {
     worker: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
-type AnkiTask = Box<
-    dyn FnOnce(Arc<dyn AnkiConnect>) -> futures_util::future::BoxFuture<'static, ()>
-        + Send,
->;
+type AnkiTask =
+    Box<dyn FnOnce(Arc<dyn AnkiConnect>) -> futures_util::future::BoxFuture<'static, ()> + Send>;
 
 impl SerializedAnkiConnect {
     pub fn new(inner: Arc<dyn AnkiConnect>) -> Self {
@@ -498,11 +496,9 @@ impl AnkiConnect for SerializedAnkiConnect {
         note_id: i64,
         fields: BTreeMap<String, String>,
     ) -> Result<()> {
-        self.dispatch(move |inner| async move {
-            inner.update_note_fields(note_id, fields).await
-        })?
-        .await
-        .map_err(|_| anyhow!("SerializedAnkiConnect reply dropped"))?
+        self.dispatch(move |inner| async move { inner.update_note_fields(note_id, fields).await })?
+            .await
+            .map_err(|_| anyhow!("SerializedAnkiConnect reply dropped"))?
     }
 
     async fn cards_info(&self, card_ids: &[i64]) -> Result<Vec<CardInfo>> {
@@ -614,10 +610,7 @@ impl MockAnkiConnect {
 
     /// Makes every later `add_note` carrying `tag` fail.
     pub fn fail_add_note_with_tag(&self, tag: &str) {
-        self.fail_add_note_tags
-            .lock()
-            .unwrap()
-            .push(tag.to_owned());
+        self.fail_add_note_tags.lock().unwrap().push(tag.to_owned());
     }
 
     pub fn set_version(&self, version: u32) {
@@ -758,7 +751,10 @@ impl AnkiConnect for MockAnkiConnect {
         self.check_fail_quota()?;
         {
             let fail_tags = self.fail_add_note_tags.lock().unwrap();
-            if let Some(hit) = fail_tags.iter().find(|t| note.tags.iter().any(|nt| nt == *t)) {
+            if let Some(hit) = fail_tags
+                .iter()
+                .find(|t| note.tags.iter().any(|nt| nt == *t))
+            {
                 bail!("MockAnkiConnect: forced add_note failure for tag {hit}");
             }
         }
@@ -940,11 +936,10 @@ impl AnkiConnect for MockAnkiConnect {
                             .get("id")
                             .and_then(|v| v.as_i64())
                             .ok_or_else(|| anyhow!("multi updateNoteFields: missing id"))?;
-                        let fields: BTreeMap<String, String> = serde_json::from_value(
-                            note.get("fields")
-                                .cloned()
-                                .ok_or_else(|| anyhow!("multi updateNoteFields: missing fields"))?,
-                        )?;
+                        let fields: BTreeMap<String, String> =
+                            serde_json::from_value(note.get("fields").cloned().ok_or_else(
+                                || anyhow!("multi updateNoteFields: missing fields"),
+                            )?)?;
                         Ok((note_id, fields))
                     })();
                     match parsed {
@@ -1299,9 +1294,8 @@ mod tests {
             "expected the canonical send-failure message, got: {err}"
         );
 
-        let expected_min = std::time::Duration::from_millis(
-            HTTP_RETRY_DELAYS_MS.iter().sum::<u64>(),
-        );
+        let expected_min =
+            std::time::Duration::from_millis(HTTP_RETRY_DELAYS_MS.iter().sum::<u64>());
         assert!(
             elapsed >= expected_min,
             "expected at least {expected_min:?} elapsed (one sleep per retry), got {elapsed:?}"
@@ -1454,7 +1448,8 @@ mod tests {
             use std::sync::atomic::Ordering;
             let before = self.in_flight.fetch_add(1, Ordering::SeqCst);
             assert_eq!(
-                before, 0,
+                before,
+                0,
                 "SerializedAnkiConnect must serialize: observed {} in-flight",
                 before + 1
             );
@@ -1501,19 +1496,15 @@ mod tests {
         async fn notes_info(&self, _note_ids: &[i64]) -> Result<Vec<NoteInfo>> {
             Ok(self.guarded(vec![]).await)
         }
-        async fn multi(
-            &self,
-            _actions: Vec<MultiSubAction>,
-        ) -> Result<Vec<serde_json::Value>> {
+        async fn multi(&self, _actions: Vec<MultiSubAction>) -> Result<Vec<serde_json::Value>> {
             Ok(self.guarded(vec![]).await)
         }
     }
 
     #[tokio::test]
     async fn serialized_anki_connect_serializes_concurrent_version_calls() {
-        let probe: Arc<dyn AnkiConnect> = Arc::new(SerializationProbe::new(
-            Duration::from_millis(50),
-        ));
+        let probe: Arc<dyn AnkiConnect> =
+            Arc::new(SerializationProbe::new(Duration::from_millis(50)));
         let serialized = Arc::new(SerializedAnkiConnect::new(probe));
 
         let n = 5;
@@ -1536,9 +1527,8 @@ mod tests {
 
     #[tokio::test]
     async fn serialized_anki_connect_propagates_results_through_worker() {
-        let probe: Arc<dyn AnkiConnect> = Arc::new(SerializationProbe::new(
-            Duration::from_millis(1),
-        ));
+        let probe: Arc<dyn AnkiConnect> =
+            Arc::new(SerializationProbe::new(Duration::from_millis(1)));
         let serialized = SerializedAnkiConnect::new(probe);
         assert_eq!(serialized.version().await.unwrap(), 6);
         assert_eq!(serialized.create_deck("FLTS::spa-rus").await.unwrap(), 1);

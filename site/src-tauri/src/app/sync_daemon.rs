@@ -301,7 +301,9 @@ mod tests {
             async fn my_id(&self) -> anyhow::Result<String> {
                 std::future::pending().await
             }
-            async fn list_devices(&self) -> anyhow::Result<Vec<library::sync::control::DeviceInfo>> {
+            async fn list_devices(
+                &self,
+            ) -> anyhow::Result<Vec<library::sync::control::DeviceInfo>> {
                 unreachable!()
             }
             async fn add_device(&self, _: &str, _: &str) -> anyhow::Result<()> {
@@ -319,13 +321,21 @@ mod tests {
             async fn connections(&self) -> anyhow::Result<std::collections::HashMap<String, bool>> {
                 unreachable!()
             }
-            async fn ensure_folder(&self, _: library::sync::control::FolderSpec) -> anyhow::Result<()> {
+            async fn ensure_folder(
+                &self,
+                _: library::sync::control::FolderSpec,
+            ) -> anyhow::Result<()> {
                 unreachable!()
             }
-            async fn set_options(&self, _: library::sync::control::OptionsPatch) -> anyhow::Result<()> {
+            async fn set_options(
+                &self,
+                _: library::sync::control::OptionsPatch,
+            ) -> anyhow::Result<()> {
                 unreachable!()
             }
-            async fn pending_devices(&self) -> anyhow::Result<Vec<library::sync::control::PendingDevice>> {
+            async fn pending_devices(
+                &self,
+            ) -> anyhow::Result<Vec<library::sync::control::PendingDevice>> {
                 unreachable!()
             }
             async fn folder_completion(&self, _: &str) -> anyhow::Result<f64> {

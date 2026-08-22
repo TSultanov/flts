@@ -1,12 +1,12 @@
-import { type Page } from '@playwright/test';
-import { expect, test } from './helpers/test';
+import { type Page } from "@playwright/test";
+import { expect, test } from "./helpers/test";
 import {
   htmlOfSize,
   multipageSpec,
   paragraphLocator,
   seedAndOpen,
   type SeedParagraph,
-} from './helpers/paragraph';
+} from "./helpers/paragraph";
 
 // Chapter reading-position restore, over both Chromium and WebKit (WKWebView
 // is production).
@@ -14,8 +14,11 @@ import {
 // Specs must enter via the library->book flow: a direct goto('/book/{id}/0')
 // mounts ChapterView with initialParagraphId=null and re-syncs later, which
 // lazy-mounts everything before the scroll and hides the behaviour under test.
-test.describe('Chapter reading-state restore (multipage)', () => {
-  test.skip(({ browserName }) => browserName === 'firefox', 'chromium + webkit only');
+test.describe("Chapter reading-state restore (multipage)", () => {
+  test.skip(
+    ({ browserName }) => browserName === "firefox",
+    "chromium + webkit only",
+  );
 
   const COUNT = 80;
   const TARGET = 40;
@@ -23,24 +26,28 @@ test.describe('Chapter reading-state restore (multipage)', () => {
   const POLL = { timeout: 3000, intervals: [50, 100, 200] } as const;
 
   async function openBookFromLibrary(
-    page: import('@playwright/test').Page,
+    page: import("@playwright/test").Page,
     bookId: string,
   ) {
     // BookView must resolve the chapter, so ChapterView mounts once with
     // initialParagraphId already set.
     await page.locator(`a[href="/book/${bookId}"]`).first().click();
-    await page.waitForSelector('.paragraphs-container');
+    await page.waitForSelector(".paragraphs-container");
   }
 
-  test('R1: saved paragraph is in view after opening the book from the library', async ({
+  test("R1: saved paragraph is in view after opening the book from the library", async ({
     page,
   }) => {
     const { bookId } = await seedAndOpen(
       page,
-      multipageSpec(COUNT, {}, {
-        readingState: { chapterId: 0, paragraphId: TARGET },
-      }),
-      { path: '/library' },
+      multipageSpec(
+        COUNT,
+        {},
+        {
+          readingState: { chapterId: 0, paragraphId: TARGET },
+        },
+      ),
+      { path: "/library" },
     );
     await openBookFromLibrary(page, bookId);
 
@@ -52,7 +59,7 @@ test.describe('Chapter reading-state restore (multipage)', () => {
         async () =>
           page.evaluate((id) => {
             const container = document.querySelector(
-              '.paragraphs-container',
+              ".paragraphs-container",
             ) as HTMLElement | null;
             const el = document.querySelector(
               `.paragraph-wrapper[data-paragraph-id="${id}"]`,
@@ -67,9 +74,11 @@ test.describe('Chapter reading-state restore (multipage)', () => {
       .toBe(true);
   });
 
-  test('R2: with no saved state the book opens on paragraph 0', async ({ page }) => {
+  test("R2: with no saved state the book opens on paragraph 0", async ({
+    page,
+  }) => {
     const { bookId } = await seedAndOpen(page, multipageSpec(COUNT), {
-      path: '/library',
+      path: "/library",
     });
     await openBookFromLibrary(page, bookId);
 
@@ -80,7 +89,7 @@ test.describe('Chapter reading-state restore (multipage)', () => {
 
     const scrollLeft = await page.evaluate(() => {
       const c = document.querySelector(
-        '.paragraphs-container',
+        ".paragraphs-container",
       ) as HTMLElement | null;
       return c ? c.scrollLeft : -1;
     });
@@ -91,9 +100,13 @@ test.describe('Chapter reading-state restore (multipage)', () => {
   // Mixed paragraph sizes: restore centers the wrapper while save hit-tests
   // the top-left, so a restore into the wrong column silently overwrites the
   // user's position on the next save. The round-trip is the real assertion.
-  test.describe('round-trip with diverse paragraph sizes', () => {
-    type Profile = 'bimodal' | 'short-with-spikes' | 'long-with-gaps';
-    const PROFILES: Profile[] = ['bimodal', 'short-with-spikes', 'long-with-gaps'];
+  test.describe("round-trip with diverse paragraph sizes", () => {
+    type Profile = "bimodal" | "short-with-spikes" | "long-with-gaps";
+    const PROFILES: Profile[] = [
+      "bimodal",
+      "short-with-spikes",
+      "long-with-gaps",
+    ];
     const TARGETS = [5, 20, 40, 60, 78];
 
     function buildOverrides(
@@ -104,13 +117,13 @@ test.describe('Chapter reading-state restore (multipage)', () => {
       for (let i = 0; i < count; i++) {
         let sentences: number;
         switch (profile) {
-          case 'bimodal':
+          case "bimodal":
             sentences = i % 2 === 0 ? 1 : 30;
             break;
-          case 'short-with-spikes':
+          case "short-with-spikes":
             sentences = i % 10 === 0 ? 25 : 1;
             break;
-          case 'long-with-gaps':
+          case "long-with-gaps":
             sentences = i % 5 === 0 ? 1 : 15;
             break;
         }
@@ -127,7 +140,7 @@ test.describe('Chapter reading-state restore (multipage)', () => {
           async () =>
             page.evaluate((id) => {
               const c = document.querySelector(
-                '.paragraphs-container',
+                ".paragraphs-container",
               ) as HTMLElement | null;
               const el = document.querySelector(
                 `.paragraph-wrapper[data-paragraph-id="${id}"]`,
@@ -150,7 +163,7 @@ test.describe('Chapter reading-state restore (multipage)', () => {
             multipageSpec(COUNT, buildOverrides(profile, COUNT), {
               readingState: { chapterId: 0, paragraphId: target },
             }),
-            { path: '/library' },
+            { path: "/library" },
           );
           await openBookFromLibrary(page, bookId);
           await expect(paragraphLocator(page, target)).toBeAttached();
@@ -163,7 +176,7 @@ test.describe('Chapter reading-state restore (multipage)', () => {
 
   // `pageOffset` picks the column *within* a paragraph; `multipageSpec` wedges
   // a 300-sentence paragraph at HUGE so it spans columns at any viewport.
-  test('R3: restore lands on the saved page within a multi-page paragraph', async ({
+  test("R3: restore lands on the saved page within a multi-page paragraph", async ({
     page,
   }) => {
     const HUGE = 40;
@@ -182,7 +195,7 @@ test.describe('Chapter reading-state restore (multipage)', () => {
           },
         },
       ),
-      { path: '/library' },
+      { path: "/library" },
     );
     await openBookFromLibrary(page, bookId);
     await expect(paragraphLocator(page, HUGE)).toBeAttached();
@@ -194,24 +207,26 @@ test.describe('Chapter reading-state restore (multipage)', () => {
           page.evaluate(
             ({ id, offset }) => {
               const c = document.querySelector(
-                '.paragraphs-container',
+                ".paragraphs-container",
               ) as HTMLElement | null;
               const el = document.querySelector(
                 `.paragraph-wrapper[data-paragraph-id="${id}"]`,
               ) as HTMLElement | null;
-              if (!c || !el) return 'not-ready';
+              if (!c || !el) return "not-ready";
               const cr = c.getBoundingClientRect();
               const er = el.getBoundingClientRect();
-              if (er.width <= cr.width * 1.5) return 'not-multi-column';
+              if (er.width <= cr.width * 1.5) return "not-multi-column";
               const wrapperContentLeft = c.scrollLeft + (er.left - cr.left);
               const expected = wrapperContentLeft + offset * cr.width;
               const delta = Math.abs(c.scrollLeft - expected);
-              return delta < cr.width / 2 ? 'ok' : `off-by-${Math.round(delta / cr.width)}`;
+              return delta < cr.width / 2
+                ? "ok"
+                : `off-by-${Math.round(delta / cr.width)}`;
             },
             { id: HUGE, offset: PAGE_OFFSET },
           ),
         POLL,
       )
-      .toBe('ok');
+      .toBe("ok");
   });
 });

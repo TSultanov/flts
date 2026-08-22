@@ -6,8 +6,8 @@ use uuid::Uuid;
 use crate::app::AppState;
 
 use super::{
-    BookReadingStateView, BookSummaryStatusView, ChapterView, LibraryBookMetadataView,
-    LibraryView, ParagraphOriginal, ParagraphTranslationSlice, ParagraphView, WordView,
+    BookReadingStateView, BookSummaryStatusView, ChapterView, LibraryBookMetadataView, LibraryView,
+    ParagraphOriginal, ParagraphTranslationSlice, ParagraphView, WordView,
 };
 
 #[tauri::command]

@@ -19,13 +19,13 @@ and the persisted Syncthing config); the dominant adversaries are message delay/
 
 Architecture (three layers):
 
-| Layer | Files | Role |
-|---|---|---|
-| FFI | `syncthing-sys/src/lib.rs`, `syncthing-core/wrapper.go` | `start`/`stop`/`ping` into the Go c-archive (Syncthing v1.30.0), static-linked |
-| Transport control | `library/src/sync/control.rs` | `SyncthingApi` trait (HTTP + mock); devices/folders/options/pending/completion over REST |
-| Engine + mesh | `library/src/sync/engine.rs`, `roster.rs`, `reconcile.rs` | one engine/process; roster CRDT + reconcile-to-mesh |
-| Daemon | `site/src-tauri/src/app/sync_daemon.rs`, `sync.rs` | owns the engine; 10 s reconcile+status poller; Tauri pairing commands |
-| Merge (re-grounded) | `library/src/library.rs`, `library/src/library/library_book/`, `book/translation.rs`, `library_card.rs`, `book/serialization.rs` | resolves Syncthing `.sync-conflict-*` siblings |
+| Layer               | Files                                                                                                                            | Role                                                                                     |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| FFI                 | `syncthing-sys/src/lib.rs`, `syncthing-core/wrapper.go`                                                                          | `start`/`stop`/`ping` into the Go c-archive (Syncthing v1.30.0), static-linked           |
+| Transport control   | `library/src/sync/control.rs`                                                                                                    | `SyncthingApi` trait (HTTP + mock); devices/folders/options/pending/completion over REST |
+| Engine + mesh       | `library/src/sync/engine.rs`, `roster.rs`, `reconcile.rs`                                                                        | one engine/process; roster CRDT + reconcile-to-mesh                                      |
+| Daemon              | `site/src-tauri/src/app/sync_daemon.rs`, `sync.rs`                                                                               | owns the engine; 10 s reconcile+status poller; Tauri pairing commands                    |
+| Merge (re-grounded) | `library/src/library.rs`, `library/src/library/library_book/`, `book/translation.rs`, `library_card.rs`, `book/serialization.rs` | resolves Syncthing `.sync-conflict-*` siblings                                           |
 
 Independent control loops (no shared clock): Syncthing replication · the 10 s
 reconcile/status poller (`sync_daemon.rs:122-133`) · the library file watcher
@@ -58,7 +58,7 @@ reconcile/status poller (`sync_daemon.rs:122-133`) · the library file watcher
 1. **Roster LWW (`roster.rs:48-84`).** Per-id newest-add vs newest-tombstone; tombstone
    wins iff `rts > rec.added_at_ms`. Commutative/idempotent **given the timestamps**, but
    timestamps are independent wall clocks (`now_ms`, `roster.rs:209`). Convergence to a
-   single value is guaranteed; convergence to the *causally correct* value is not under
+   single value is guaranteed; convergence to the _causally correct_ value is not under
    skew. → Family 1; M1, M3, C1.
 2. **Reconcile asymmetry (`reconcile.rs:31-53`).** Adds active-roster∖engine; removes only
    `engine ∩ removed ∖ devices`; never self. Absent≠remove is a deliberate guard against
@@ -75,11 +75,11 @@ reconcile/status poller (`sync_daemon.rs:122-133`) · the library file watcher
    in brief numbering), T3, C1.
    - **Latent discovery bug:** translation siblings are grouped with `chunk_by(id)` over
      **unsorted** `read_dir` order (`library.rs:166-171`); `chunk_by` only groups
-     *consecutive* equal keys, so non-adjacent same-id siblings split into separate groups
+     _consecutive_ equal keys, so non-adjacent same-id siblings split into separate groups
      and skip the merge. → T1, C2.
 5. **Echo gate (`6e5e4f4`, `library_book/mod.rs:441-459`, `serialization.rs`).** Trailing
    8-byte FNV content hash; reload skips re-save when on-disk hash == `last_saved_hash`.
-   Breaks the equal-content echo. **Open:** under concurrent *divergent* two-device edits,
+   Breaks the equal-content echo. **Open:** under concurrent _divergent_ two-device edits,
    each merge produces new bytes/hash, so the equal-hash break may not fire — does the
    system still quiesce? → Family 5; M4.
 

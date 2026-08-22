@@ -1,15 +1,15 @@
-import { expect, test } from './helpers/test';
+import { expect, test } from "./helpers/test";
 import {
   paragraphLocator,
   seedAndOpen,
   wordSegment,
   wordSpan,
-} from './helpers/paragraph';
+} from "./helpers/paragraph";
 
 // WordView bottom overlay: peek/expand/collapse (button and `w`), overlaying
 // rather than resizing the book viewport, with a drag size that survives reload.
 
-test.describe.configure({ mode: 'parallel' });
+test.describe.configure({ mode: "parallel" });
 
 const PANEL = '[data-testid="word-view"]';
 const PEEK = '[data-testid="word-view-peek"]';
@@ -17,29 +17,29 @@ const EXPAND = '[data-testid="word-view-expand"]';
 const COLLAPSE = '[data-testid="word-view-collapse"]';
 const EXPANDED = '[data-testid="word-view-expanded"]';
 
-async function seedClickableBook(page: import('@playwright/test').Page) {
+async function seedClickableBook(page: import("@playwright/test").Page) {
   const segments = [
     wordSegment({
       flatIndex: 0,
       sentence: 0,
       word: 0,
-      text: 'hola',
-      translation: 'hello',
+      text: "hola",
+      translation: "hello",
     }),
   ];
   // In the seed, so the init script re-applies it on every navigation.
   const { bookId } = await seedAndOpen(page, {
-    chapters: [{ paragraphs: [{ html: 'hola', segments }] }],
+    chapters: [{ paragraphs: [{ html: "hola", segments }] }],
     wordInfos: [
       {
         paragraphId: 0,
         sentenceId: 0,
         wordId: 0,
         info: {
-          original: 'hello',
-          contextualTranslations: ['hola', 'hi'],
-          fullSentenceTranslation: 'hola',
-          note: 'a greeting',
+          original: "hello",
+          contextualTranslations: ["hola", "hi"],
+          fullSentenceTranslation: "hola",
+          note: "a greeting",
         },
       },
     ],
@@ -47,47 +47,58 @@ async function seedClickableBook(page: import('@playwright/test').Page) {
   return { bookId };
 }
 
-test.describe('WordView panel — hint state', () => {
-  test.skip(({ browserName }) => browserName === 'firefox', 'chromium + webkit only');
+test.describe("WordView panel — hint state", () => {
+  test.skip(
+    ({ browserName }) => browserName === "firefox",
+    "chromium + webkit only",
+  );
 
-  test('peek shows hint text when no word is selected', async ({ page }) => {
+  test("peek shows hint text when no word is selected", async ({ page }) => {
     await seedClickableBook(page);
-    await page.waitForSelector('.paragraphs-container.is-ready');
+    await page.waitForSelector(".paragraphs-container.is-ready");
 
     await expect(page.locator(PEEK)).toBeVisible();
-    await expect(page.locator(PEEK)).toContainText('Select a word');
+    await expect(page.locator(PEEK)).toContainText("Select a word");
     await expect(page.locator(EXPAND)).toHaveCount(0);
   });
 });
 
-test.describe('WordView panel — selection populates peek', () => {
-  test.skip(({ browserName }) => browserName === 'firefox', 'chromium + webkit only');
+test.describe("WordView panel — selection populates peek", () => {
+  test.skip(
+    ({ browserName }) => browserName === "firefox",
+    "chromium + webkit only",
+  );
 
-  test('clicking a word fills the peek bar', async ({ page }) => {
+  test("clicking a word fills the peek bar", async ({ page }) => {
     await seedClickableBook(page);
     const p = paragraphLocator(page, 0);
     await wordSpan(p, 0).click();
 
     const peek = page.locator(PEEK);
-    await expect(peek.locator('.peek-word')).toHaveText('hello');
-    await expect(peek.locator('.peek-translations')).toHaveText('hola, hi');
+    await expect(peek.locator(".peek-word")).toHaveText("hello");
+    await expect(peek.locator(".peek-translations")).toHaveText("hola, hi");
     await expect(page.locator(EXPAND)).toBeVisible();
     await expect(page.locator(EXPANDED)).toHaveCount(0);
   });
 });
 
-test.describe('WordView panel — expand and collapse', () => {
-  test.skip(({ browserName }) => browserName === 'firefox', 'chromium + webkit only');
+test.describe("WordView panel — expand and collapse", () => {
+  test.skip(
+    ({ browserName }) => browserName === "firefox",
+    "chromium + webkit only",
+  );
 
-  test('expand button opens the full form', async ({ page }) => {
+  test("expand button opens the full form", async ({ page }) => {
     await seedClickableBook(page);
     const p = paragraphLocator(page, 0);
     await wordSpan(p, 0).click();
 
     await page.locator(EXPAND).click();
     await expect(page.locator(EXPANDED)).toBeVisible();
-    await expect(page.locator(EXPANDED).locator('.word-original')).toHaveText('hello');
-    await expect(page.locator(EXPANDED)).toContainText('a greeting');
+    await expect(page.locator(EXPANDED).locator(".word-original")).toHaveText(
+      "hello",
+    );
+    await expect(page.locator(EXPANDED)).toContainText("a greeting");
     await expect(page.locator(PEEK)).toHaveCount(0);
 
     await page.locator(COLLAPSE).click();
@@ -95,29 +106,34 @@ test.describe('WordView panel — expand and collapse', () => {
     await expect(page.locator(PEEK)).toBeVisible();
   });
 
-  test('`w` shortcut toggles expand', async ({ page }) => {
+  test("`w` shortcut toggles expand", async ({ page }) => {
     await seedClickableBook(page);
     const p = paragraphLocator(page, 0);
     await wordSpan(p, 0).click();
 
-    await page.keyboard.press('w');
+    await page.keyboard.press("w");
     await expect(page.locator(EXPANDED)).toBeVisible();
-    await page.keyboard.press('w');
+    await page.keyboard.press("w");
     await expect(page.locator(EXPANDED)).toHaveCount(0);
   });
 });
 
-test.describe('WordView panel — overlay does not resize book viewport', () => {
-  test.skip(({ browserName }) => browserName === 'firefox', 'chromium + webkit only');
+test.describe("WordView panel — overlay does not resize book viewport", () => {
+  test.skip(
+    ({ browserName }) => browserName === "firefox",
+    "chromium + webkit only",
+  );
 
-  test('expanding the panel leaves the chapter container width unchanged', async ({
+  test("expanding the panel leaves the chapter container width unchanged", async ({
     page,
   }) => {
     await seedClickableBook(page);
-    await page.waitForSelector('.paragraphs-container.is-ready');
+    await page.waitForSelector(".paragraphs-container.is-ready");
 
     const beforeWidth = await page.evaluate(() => {
-      const c = document.querySelector('.paragraphs-container') as HTMLElement | null;
+      const c = document.querySelector(
+        ".paragraphs-container",
+      ) as HTMLElement | null;
       return c ? c.clientWidth : -1;
     });
     expect(beforeWidth).toBeGreaterThan(0);
@@ -129,17 +145,22 @@ test.describe('WordView panel — overlay does not resize book viewport', () => 
     await page.waitForTimeout(250);
 
     const afterWidth = await page.evaluate(() => {
-      const c = document.querySelector('.paragraphs-container') as HTMLElement | null;
+      const c = document.querySelector(
+        ".paragraphs-container",
+      ) as HTMLElement | null;
       return c ? c.clientWidth : -1;
     });
     expect(afterWidth).toBe(beforeWidth);
   });
 });
 
-test.describe('WordView panel — drag resize', () => {
-  test.skip(({ browserName }) => browserName !== 'chromium', 'chromium-only — mouse drag');
+test.describe("WordView panel — drag resize", () => {
+  test.skip(
+    ({ browserName }) => browserName !== "chromium",
+    "chromium-only — mouse drag",
+  );
 
-  test('dragging the top grip changes the height within the session', async ({
+  test("dragging the top grip changes the height within the session", async ({
     page,
   }) => {
     await seedClickableBook(page);
@@ -151,7 +172,7 @@ test.describe('WordView panel — drag resize', () => {
 
     const grip = page.locator('[data-testid="word-view-resize"]');
     const startBox = await grip.boundingBox();
-    if (!startBox) throw new Error('resize grip not visible');
+    if (!startBox) throw new Error("resize grip not visible");
 
     const heightBefore = await page.evaluate(
       () =>

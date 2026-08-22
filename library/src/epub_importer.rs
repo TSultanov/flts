@@ -632,10 +632,7 @@ mod tests {
     #[test]
     fn sanitizer_drops_bounding_tag() {
         let doc = el("<p>foo <br> bar</p>");
-        assert_eq!(
-            get_sanitized_html(root_child(&doc), false),
-            "foo <br> bar"
-        );
+        assert_eq!(get_sanitized_html(root_child(&doc), false), "foo <br> bar");
     }
 
     #[test]

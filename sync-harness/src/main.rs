@@ -66,11 +66,9 @@ fn main() -> Result<()> {
         let _ = req.as_reader().read_to_string(&mut body);
 
         let result = rt.block_on(handle(&node, &method, &url, &body));
-        let json = result.unwrap_or_else(|e| {
-            format!("{{\"error\":\"{}\"}}", e.to_string().replace('"', "'"))
-        });
-        let header: tiny_http::Header =
-            "Content-Type: application/json".parse().unwrap();
+        let json = result
+            .unwrap_or_else(|e| format!("{{\"error\":\"{}\"}}", e.to_string().replace('"', "'")));
+        let header: tiny_http::Header = "Content-Type: application/json".parse().unwrap();
         let _ = req.respond(tiny_http::Response::from_string(json).with_header(header));
     }
     Ok(())
@@ -115,7 +113,9 @@ async fn pin_addresses(node: &Node) -> Result<()> {
             continue;
         }
         let addr = format!("tcp://{}:{}", d.name, node.bep_port);
-        client.set_device_addresses(&d.device_id, vec![addr]).await?;
+        client
+            .set_device_addresses(&d.device_id, vec![addr])
+            .await?;
     }
     Ok(())
 }
@@ -147,7 +147,9 @@ async fn handle(node: &Node, method: &str, url: &str, body: &str) -> Result<Stri
 
         ("POST", "/book") => {
             let v: serde_json::Value = serde_json::from_str(body)?;
-            let title = v["title"].as_str().ok_or_else(|| anyhow!("title required"))?;
+            let title = v["title"]
+                .as_str()
+                .ok_or_else(|| anyhow!("title required"))?;
             let text = v["text"].as_str().unwrap_or("hello from the harness");
             let eng = Language::from_639_3("eng").expect("eng is a valid ISO 639-3 code");
             node.library.create_book_plain(title, text, &eng).await?;

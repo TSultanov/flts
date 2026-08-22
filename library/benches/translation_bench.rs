@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use library::book::serialization::Serializable;
 use library::book::translation::Translation;
 use library::book::translation_import::{Grammar, ParagraphTranslation, Sentence, Word};

@@ -91,10 +91,10 @@ This does **not** mean the current implementation already behaves this way; it o
 
 ## Coverage summary
 
-| Config | Mode | Result | Evidence |
-|---|---|---|---|
-| `MC.cfg` | BFS | No violation | `output/MC_round1.out` |
-| `MC_hunt_f1.cfg` | BFS | **Bug found** (`F1`) | `output/MC_hunt_f1_bfs.out` |
-| `MC_hunt_f2.cfg` | BFS | **Bug found** (`F2`) | `output/MC_hunt_f2_bfs.out` |
-| `MC_hunt_f3.cfg` | BFS | No violation | `output/MC_hunt_f3_bfs.out` |
+| Config           | Mode       | Result                | Evidence                    |
+| ---------------- | ---------- | --------------------- | --------------------------- |
+| `MC.cfg`         | BFS        | No violation          | `output/MC_round1.out`      |
+| `MC_hunt_f1.cfg` | BFS        | **Bug found** (`F1`)  | `output/MC_hunt_f1_bfs.out` |
+| `MC_hunt_f2.cfg` | BFS        | **Bug found** (`F2`)  | `output/MC_hunt_f2_bfs.out` |
+| `MC_hunt_f3.cfg` | BFS        | No violation          | `output/MC_hunt_f3_bfs.out` |
 | `MC_hunt_f3.cfg` | Simulation | No violation observed | `output/MC_hunt_f3_sim.out` |

@@ -262,11 +262,7 @@ impl LibraryCardStore {
                     continue;
                 }
             };
-            let sibling_id = card_id(
-                source_language,
-                target_language,
-                &lemma_slug(&card.lemma),
-            );
+            let sibling_id = card_id(source_language, target_language, &lemma_slug(&card.lemma));
             if sibling_id != expected_id {
                 log::warn!(
                     "Conflict sibling {path:?} has derived id {sibling_id}, expected {expected_id}; skipping"
@@ -428,11 +424,7 @@ mod tests {
         let tmp = TempDir::new("flts_card_save");
         let store = LibraryCardStore::new(&tmp.path);
         store.save(&sample_card(), "spa", "rus").await.unwrap();
-        let expected = tmp
-            .path
-            .join("cards")
-            .join("spa-rus")
-            .join("poder.json");
+        let expected = tmp.path.join("cards").join("spa-rus").join("poder.json");
         assert!(expected.exists(), "expected card at {expected:?}");
     }
 
@@ -441,11 +433,7 @@ mod tests {
         let tmp = TempDir::new("flts_card_pretty");
         let store = LibraryCardStore::new(&tmp.path);
         store.save(&sample_card(), "spa", "rus").await.unwrap();
-        let path = tmp
-            .path
-            .join("cards")
-            .join("spa-rus")
-            .join("poder.json");
+        let path = tmp.path.join("cards").join("spa-rus").join("poder.json");
         let body = std::fs::read_to_string(&path).unwrap();
         assert!(body.starts_with("{\n"), "expected pretty JSON, got: {body}");
         assert!(body.contains("\"version\": 2"));
@@ -476,11 +464,8 @@ mod tests {
             .await
             .unwrap();
         // A queued permit would make notified() return immediately.
-        let pending = tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            notify.notified(),
-        )
-        .await;
+        let pending =
+            tokio::time::timeout(std::time::Duration::from_millis(100), notify.notified()).await;
         assert!(
             pending.is_err(),
             "save_without_wake must not fire change_notify"
@@ -1123,7 +1108,12 @@ mod tests {
         let book = Uuid::new_v4();
         store
             .save(
-                &card_with("poder", "verb", vec!["мочь"], vec![example(book, 0, 0, "a", "1")]),
+                &card_with(
+                    "poder",
+                    "verb",
+                    vec!["мочь"],
+                    vec![example(book, 0, 0, "a", "1")],
+                ),
                 "spa",
                 "rus",
             )
@@ -1134,7 +1124,12 @@ mod tests {
         let conflict_path = deck.join("poder.sync-conflict-20260520-XYZ.json");
         write_pretty(
             &conflict_path,
-            &card_with("poder", "verb", vec!["уметь"], vec![example(book, 1, 5, "b", "2")]),
+            &card_with(
+                "poder",
+                "verb",
+                vec!["уметь"],
+                vec![example(book, 1, 5, "b", "2")],
+            ),
         )
         .await;
 

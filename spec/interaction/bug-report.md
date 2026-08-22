@@ -40,6 +40,7 @@ The translation queue spawns long-lived tokio tasks that capture `library.clone(
 ### Recommendation
 
 Add a cancellation mechanism: when `update_config()` replaces the library, it should either:
+
 1. Send a cancellation token to all translation queue workers, or
 2. Have workers re-read the library from `AppState` before each request (instead of using the captured clone)
 
@@ -80,12 +81,13 @@ This is fundamental to the FIFO event delivery model: events are delivered in **
 ### Recommendation
 
 Add a monotonic version counter to all event payloads. The frontend listener should compare the incoming version against the last-applied version and discard stale events:
+
 ```typescript
-listen<T & {version: number}>(eventName, (event) => {
-    if (event.payload.version > lastVersion) {
-        lastVersion = event.payload.version;
-        setter(event.payload);
-    }
+listen<T & { version: number }>(eventName, (event) => {
+  if (event.payload.version > lastVersion) {
+    lastVersion = event.payload.version;
+    setter(event.payload);
+  }
 });
 ```
 
@@ -122,6 +124,7 @@ This is particularly dangerous for translation work: if a user has been translat
 ### Recommendation
 
 Add a shutdown handler that iterates all books and saves any with `changed=true`:
+
 ```rust
 .on_window_event(|window, event| {
     if let tauri::WindowEvent::CloseRequested { .. } = event {
@@ -167,6 +170,7 @@ There is no version check between the paragraph read and translation store in th
 ### Recommendation
 
 Add optimistic concurrency control: record the book version at read time, and check it at store time:
+
 ```rust
 // At read time (line 231):
 let read_version = book.version();
@@ -186,20 +190,20 @@ if book.version() != read_version {
 
 All 4 bug families were reproduced. No untestable families.
 
-| Bug Family | Config | Mode | States Explored | Result |
-|------------|--------|------|-----------------|--------|
-| F1 | MC_hunt_f1.cfg | Simulation | 295 | **Violated** (4 states) |
-| F2 | MC_hunt_f2.cfg | Simulation | 2,156 | **Violated** (confirmed) |
-| F2 | MC.cfg | BFS | 2,308,015,144 | **Violated** during convergence (8 states) |
-| F3 | MC_hunt_f3.cfg | BFS | 388 | **Violated** (4 states, exhaustive at depth 10) |
-| F4 | MC_hunt_f4.cfg | Simulation | 1,456 | **Violated** (31 states) |
+| Bug Family | Config         | Mode       | States Explored | Result                                          |
+| ---------- | -------------- | ---------- | --------------- | ----------------------------------------------- |
+| F1         | MC_hunt_f1.cfg | Simulation | 295             | **Violated** (4 states)                         |
+| F2         | MC_hunt_f2.cfg | Simulation | 2,156           | **Violated** (confirmed)                        |
+| F2         | MC.cfg         | BFS        | 2,308,015,144   | **Violated** during convergence (8 states)      |
+| F3         | MC_hunt_f3.cfg | BFS        | 388             | **Violated** (4 states, exhaustive at depth 10) |
+| F4         | MC_hunt_f4.cfg | Simulation | 1,456           | **Violated** (31 states)                        |
 
 ## Structural Invariants
 
-| Invariant | Config | States Explored | Depth | Result |
-|-----------|--------|-----------------|-------|--------|
-| PCConsistency | MC.cfg | 2,308,015,144 | 126 | ✅ No violation (stopped by user) |
-| TaskLibraryValidity | MC.cfg | 2,308,015,144 | 126 | ✅ No violation (stopped by user) |
+| Invariant           | Config | States Explored | Depth | Result                            |
+| ------------------- | ------ | --------------- | ----- | --------------------------------- |
+| PCConsistency       | MC.cfg | 2,308,015,144   | 126   | ✅ No violation (stopped by user) |
+| TaskLibraryValidity | MC.cfg | 2,308,015,144   | 126   | ✅ No violation (stopped by user) |
 
 ## Spec Fixes During Hunting
 

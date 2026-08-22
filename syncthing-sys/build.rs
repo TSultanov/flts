@@ -30,7 +30,10 @@ fn main() {
     });
 
     println!("cargo:rerun-if-changed={}", go_dir.join("go.mod").display());
-    println!("cargo:rerun-if-changed={}", go_dir.join("webui-vendor").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        go_dir.join("webui-vendor").display()
+    );
     for entry in std::fs::read_dir(&go_dir).expect("read syncthing-core dir") {
         let path = entry.expect("dir entry").path();
         if path.extension().is_some_and(|e| e == "go") {
@@ -75,9 +78,9 @@ fn build_archive(go_dir: &Path, lib: &Path, target_os: &str) {
     } else {
         "-buildmode=c-archive"
     })
-        .arg("-o")
-        .arg(lib)
-        .env("CGO_ENABLED", "1");
+    .arg("-o")
+    .arg(lib)
+    .env("CGO_ENABLED", "1");
 
     // Bare SONAME so the DT_NEEDED is resolved from the app's lib dir, not OUT_DIR.
     if android {
@@ -109,7 +112,13 @@ fn embed_web_ui_modfile(go: &str, go_dir: &Path) -> PathBuf {
 
     let out = Command::new(go)
         .current_dir(go_dir)
-        .args(["list", "-m", "-f", "{{.Dir}}", "github.com/syncthing/syncthing"])
+        .args([
+            "list",
+            "-m",
+            "-f",
+            "{{.Dir}}",
+            "github.com/syncthing/syncthing",
+        ])
         .output()
         .expect("failed to run `go list -m`");
     assert!(
@@ -124,7 +133,10 @@ fn embed_web_ui_modfile(go: &str, go_dir: &Path) -> PathBuf {
     run(Command::new("rm").arg("-rf").arg(&st_copy));
     std::fs::create_dir_all(&st_copy)
         .unwrap_or_else(|e| panic!("creating {}: {e}", st_copy.display()));
-    run(Command::new("cp").arg("-R").arg(format!("{}/.", st_src.display())).arg(&st_copy));
+    run(Command::new("cp")
+        .arg("-R")
+        .arg(format!("{}/.", st_src.display()))
+        .arg(&st_copy));
     run(Command::new("chmod").arg("-R").arg("u+w").arg(&st_copy));
 
     // Go's zip packaging strips nested `vendor/` dirs, so supply our own copy.
@@ -132,7 +144,10 @@ fn embed_web_ui_modfile(go: &str, go_dir: &Path) -> PathBuf {
     let vendor_dst = st_copy.join("gui/default/vendor");
     std::fs::create_dir_all(&vendor_dst)
         .unwrap_or_else(|e| panic!("creating {}: {e}", vendor_dst.display()));
-    run(Command::new("cp").arg("-R").arg(format!("{}/.", vendor_src.display())).arg(&vendor_dst));
+    run(Command::new("cp")
+        .arg("-R")
+        .arg(format!("{}/.", vendor_src.display()))
+        .arg(&vendor_dst));
 
     run(Command::new(go)
         .current_dir(go_dir)
@@ -143,8 +158,8 @@ fn embed_web_ui_modfile(go: &str, go_dir: &Path) -> PathBuf {
         .arg(st_copy.join("gui")));
 
     // `-modfile` derives its sum file by swapping the extension, hence go.webui.sum.
-    let go_mod = std::fs::read_to_string(go_dir.join("go.mod"))
-        .expect("reading syncthing-core/go.mod");
+    let go_mod =
+        std::fs::read_to_string(go_dir.join("go.mod")).expect("reading syncthing-core/go.mod");
     let alt_mod = out_dir.join("go.webui.mod");
     std::fs::write(
         &alt_mod,
@@ -162,7 +177,9 @@ fn embed_web_ui_modfile(go: &str, go_dir: &Path) -> PathBuf {
 
 /// Runs a command, panicking with its stderr on failure.
 fn run(cmd: &mut Command) {
-    let out = cmd.output().unwrap_or_else(|e| panic!("failed to spawn {cmd:?}: {e}"));
+    let out = cmd
+        .output()
+        .unwrap_or_else(|e| panic!("failed to spawn {cmd:?}: {e}"));
     assert!(
         out.status.success(),
         "{cmd:?} failed ({}): {}",
@@ -240,9 +257,7 @@ fn ndk_llvm_bin() -> PathBuf {
             env::var(var).ok().filter(|p| !p.is_empty())
         })
         .map(PathBuf::from)
-        .expect(
-            "Android build needs the NDK: set NDK_HOME (or ANDROID_NDK_HOME) to an NDK r23+",
-        );
+        .expect("Android build needs the NDK: set NDK_HOME (or ANDROID_NDK_HOME) to an NDK r23+");
 
     let prebuilt = ndk.join("toolchains/llvm/prebuilt");
     let host_tag = std::fs::read_dir(&prebuilt)

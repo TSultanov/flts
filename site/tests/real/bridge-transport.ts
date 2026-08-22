@@ -19,14 +19,14 @@ function dispatch(raw: string): void {
   } catch {
     return;
   }
-  if (frame == null || typeof frame !== 'object') return;
+  if (frame == null || typeof frame !== "object") return;
   if (frame.id !== undefined && frame.id !== null) {
     const p = pending.get(frame.id);
     if (!p) return;
     pending.delete(frame.id);
-    if ('err' in frame) p.reject(frame.err);
+    if ("err" in frame) p.reject(frame.err);
     else p.resolve(frame.ok);
-  } else if (typeof frame.event === 'string') {
+  } else if (typeof frame.event === "string") {
     for (const h of [...(handlers.get(frame.event) ?? [])]) h(frame.payload);
   }
 }
@@ -41,16 +41,16 @@ function ensureConnected(): Promise<void> {
   ready = new Promise<void>((resolve, reject) => {
     const port = (globalThis as any).__FLTS_BRIDGE_PORT;
     if (!port) {
-      reject(new Error('bridge port not injected (__FLTS_BRIDGE_PORT)'));
+      reject(new Error("bridge port not injected (__FLTS_BRIDGE_PORT)"));
       return;
     }
     const ws = new WebSocket(`ws://127.0.0.1:${port}/bridge`);
     socket = ws;
     ws.onopen = () => resolve();
-    ws.onerror = () => reject(new Error('bridge socket error'));
+    ws.onerror = () => reject(new Error("bridge socket error"));
     ws.onclose = () => {
       // Callers hang forever otherwise; a dropped bridge is unrecoverable.
-      failAllPending(new Error('bridge socket closed'));
+      failAllPending(new Error("bridge socket closed"));
       if (socket === ws) {
         socket = null;
         ready = null;
@@ -99,6 +99,6 @@ export async function bridgeListen<T>(
 }
 
 // Escape hatch for Playwright page.evaluate in the real-backend tier.
-if (typeof window !== 'undefined') {
+if (typeof window !== "undefined") {
   (window as any).__bridgeDebugInvoke = bridgeInvoke;
 }

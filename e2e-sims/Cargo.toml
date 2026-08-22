@@ -11,7 +11,14 @@ path = "src/main.rs"
 axum = "0.8"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 http-body = "1"
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "io-util", "io-std"] }
+tokio = { workspace = true, features = [
+  "rt-multi-thread",
+  "macros",
+  "net",
+  "time",
+  "io-util",
+  "io-std",
+] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
@@ -22,5 +29,9 @@ env_logger = "0.11"
 reqwest = { workspace = true }
 # Same crates (and versions) the app decodes these protocols with: the tests
 # pin the sim's response shapes against the real deserializers.
-async-openai = { version = "0.34.0", features = ["_api", "chat-completion", "chat-completion-types"] }
+async-openai = { version = "0.34.0", features = [
+  "_api",
+  "chat-completion",
+  "chat-completion-types",
+] }
 gemini-rust = "1.7.1"

@@ -1,12 +1,12 @@
-import { type Page } from '@playwright/test';
-import { expect, test } from './helpers/test';
-import { fillerHtml, seedAndOpen } from './helpers/paragraph';
+import { type Page } from "@playwright/test";
+import { expect, test } from "./helpers/test";
+import { fillerHtml, seedAndOpen } from "./helpers/paragraph";
 
 // Chapter-summary status surface: dimming, the in-progress spinner, and the
 // rule that a chapter is translatable only once every PRIOR summary is ready
 // (chapter 0 always is). Summary worker is mocked; no Tauri binary.
 
-test.describe.configure({ mode: 'parallel' });
+test.describe.configure({ mode: "parallel" });
 
 const PANEL = '[data-testid="chapters-panel"]';
 const HANDLE = '[data-testid="chapters-panel-handle"]';
@@ -20,16 +20,22 @@ function multiChapterSpec(summaryStatus?: {
   return {
     chapters: [
       {
-        title: 'Chapter 0',
-        paragraphs: Array.from({ length: 3 }, (_, i) => ({ html: fillerHtml(i) })),
+        title: "Chapter 0",
+        paragraphs: Array.from({ length: 3 }, (_, i) => ({
+          html: fillerHtml(i),
+        })),
       },
       {
-        title: 'Chapter 1',
-        paragraphs: Array.from({ length: 3 }, (_, i) => ({ html: fillerHtml(i + 3) })),
+        title: "Chapter 1",
+        paragraphs: Array.from({ length: 3 }, (_, i) => ({
+          html: fillerHtml(i + 3),
+        })),
       },
       {
-        title: 'Chapter 2',
-        paragraphs: Array.from({ length: 3 }, (_, i) => ({ html: fillerHtml(i + 6) })),
+        title: "Chapter 2",
+        paragraphs: Array.from({ length: 3 }, (_, i) => ({
+          html: fillerHtml(i + 6),
+        })),
       },
     ],
     summaryStatus,
@@ -45,21 +51,28 @@ function spinnerInRow(page: Page, chapterId: number) {
 }
 
 async function openPanel(page: Page) {
-  await page.waitForSelector('.paragraphs-container.is-ready');
+  await page.waitForSelector(".paragraphs-container.is-ready");
   await page.locator(HANDLE).click();
-  await expect(page.locator(HANDLE)).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.locator(HANDLE)).toHaveAttribute("aria-expanded", "true");
 }
 
-async function navigateToChapter(page: Page, bookId: string, chapterId: number) {
+async function navigateToChapter(
+  page: Page,
+  bookId: string,
+  chapterId: number,
+) {
   await page.locator(`${PANEL} a[href="/book/${bookId}/${chapterId}"]`).click();
   await page.waitForURL(new RegExp(`/book/${bookId}/${chapterId}$`));
-  await page.waitForSelector('.paragraphs-container.is-ready');
+  await page.waitForSelector(".paragraphs-container.is-ready");
 }
 
-test.describe('chapter-summary status — visual + gating', () => {
-  test.skip(({ browserName }) => browserName === 'firefox', 'chromium + webkit only');
+test.describe("chapter-summary status — visual + gating", () => {
+  test.skip(
+    ({ browserName }) => browserName === "firefox",
+    "chromium + webkit only",
+  );
 
-  test('all summaries ready: no dim, no spinner, buttons enabled', async ({
+  test("all summaries ready: no dim, no spinner, buttons enabled", async ({
     page,
   }) => {
     const { bookId } = await seedAndOpen(
@@ -78,11 +91,11 @@ test.describe('chapter-summary status — visual + gating', () => {
 
     await navigateToChapter(page, bookId, 0);
     await expect(
-      page.locator('.paragraph-wrapper button.translate').first(),
+      page.locator(".paragraph-wrapper button.translate").first(),
     ).toBeEnabled();
   });
 
-  test('no summaries yet: all dim, spinner on chapter 0, only ch0 translatable', async ({
+  test("no summaries yet: all dim, spinner on chapter 0, only ch0 translatable", async ({
     page,
   }) => {
     const { bookId } = await seedAndOpen(
@@ -104,17 +117,17 @@ test.describe('chapter-summary status — visual + gating', () => {
     // Chapter 0 has no prior, so its own summary is irrelevant.
     await navigateToChapter(page, bookId, 0);
     await expect(
-      page.locator('.paragraph-wrapper button.translate').first(),
+      page.locator(".paragraph-wrapper button.translate").first(),
     ).toBeEnabled();
 
     await page.locator(HANDLE).click();
     await navigateToChapter(page, bookId, 1);
     await expect(
-      page.locator('.paragraph-wrapper button.translate').first(),
+      page.locator(".paragraph-wrapper button.translate").first(),
     ).toBeDisabled();
   });
 
-  test('advance event un-dims and moves spinner, re-gates translate', async ({
+  test("advance event un-dims and moves spinner, re-gates translate", async ({
     page,
   }) => {
     const { bookId } = await seedAndOpen(
@@ -142,13 +155,13 @@ test.describe('chapter-summary status — visual + gating', () => {
 
     await navigateToChapter(page, bookId, 1);
     await expect(
-      page.locator('.paragraph-wrapper button.translate').first(),
+      page.locator(".paragraph-wrapper button.translate").first(),
     ).toBeEnabled();
 
     await page.locator(HANDLE).click();
     await navigateToChapter(page, bookId, 2);
     await expect(
-      page.locator('.paragraph-wrapper button.translate').first(),
+      page.locator(".paragraph-wrapper button.translate").first(),
     ).toBeDisabled();
   });
 
@@ -179,11 +192,11 @@ test.describe('chapter-summary status — visual + gating', () => {
 
     await navigateToChapter(page, bookId, 2);
     await expect(
-      page.locator('.paragraph-wrapper button.translate').first(),
+      page.locator(".paragraph-wrapper button.translate").first(),
     ).toBeEnabled();
   });
 
-  test('spinner is visually rendered (non-zero, non-white pixels)', async ({
+  test("spinner is visually rendered (non-zero, non-white pixels)", async ({
     page,
   }) => {
     await seedAndOpen(
@@ -205,7 +218,7 @@ test.describe('chapter-summary status — visual + gating', () => {
     // The stroke must actually be painted, not white-on-white.
     const png = await spinner.screenshot();
     await page.screenshot({
-      path: 'test-results/chapters-panel-spinner.png',
+      path: "test-results/chapters-panel-spinner.png",
       fullPage: false,
     });
     // Heuristic: any byte < 200 past the 8-byte PNG signature.
@@ -254,13 +267,13 @@ test.describe('chapter-summary status — visual + gating', () => {
     // Chapter 1's prior is generated, so only chapter 2 is blocked.
     await navigateToChapter(page, bookId, 1);
     await expect(
-      page.locator('.paragraph-wrapper button.translate').first(),
+      page.locator(".paragraph-wrapper button.translate").first(),
     ).toBeEnabled();
 
     await page.locator(HANDLE).click();
     await navigateToChapter(page, bookId, 2);
     await expect(
-      page.locator('.paragraph-wrapper button.translate').first(),
+      page.locator(".paragraph-wrapper button.translate").first(),
     ).toBeDisabled();
   });
 });

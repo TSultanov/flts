@@ -5,6 +5,6 @@
  */
 
 export function platform(): string {
-  if (typeof window === 'undefined') return 'macos';
-  return ((window as any).__mockPlatform as string | undefined) ?? 'macos';
+  if (typeof window === "undefined") return "macos";
+  return ((window as any).__mockPlatform as string | undefined) ?? "macos";
 }

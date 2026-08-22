@@ -1,10 +1,10 @@
 // Real-tier implementation of the seed helpers: instead of stuffing a mock
 // store, import the book through the real backend and script the LLM sim so
 // the app's own translation pipeline produces the expected segments.
-import type { Page } from '@playwright/test';
-import { realModeUnsupported } from './backend-mode';
-import { getHarness } from '../../real/harness-registry';
-import type { ParagraphSegment, SeedSpec, TranslateConfig } from './paragraph';
+import type { Page } from "@playwright/test";
+import { realModeUnsupported } from "./backend-mode";
+import { getHarness } from "../../real/harness-registry";
+import type { ParagraphSegment, SeedSpec, TranslateConfig } from "./paragraph";
 
 /** Gemini's compact translation schema (library/src/book/translation_import.rs). */
 type SimWord = {
@@ -38,18 +38,21 @@ let lastSeed: SeedIndex | undefined;
 /** Paragraphs are one-per-line for the importer, so newlines cannot survive. */
 function toPlainText(html: string): string {
   return html
-    .replace(/<[^>]*>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/\s+/g, ' ')
+    .replace(/<[^>]*>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/\s+/g, " ")
     .trim();
 }
 
 function wordsOf(segments: ParagraphSegment[]): SimWord[] {
   return segments
-    .filter((s): s is Extract<ParagraphSegment, { kind: 'word' }> => s.kind === 'word')
+    .filter(
+      (s): s is Extract<ParagraphSegment, { kind: "word" }> =>
+        s.kind === "word",
+    )
     .map((s) => ({
       o: s.text,
       t: s.translation ? [s.translation] : [],
@@ -57,8 +60,8 @@ function wordsOf(segments: ParagraphSegment[]): SimWord[] {
       p: false,
       g: {
         lf: s.text,
-        lt: s.translation ?? '',
-        pos: 'common_noun',
+        lt: s.translation ?? "",
+        pos: "common_noun",
         pl: null,
         pe: null,
         te: null,
@@ -75,7 +78,7 @@ function defaultSegments(text: string): ParagraphSegment[] {
     .split(/\s+/)
     .filter(Boolean)
     .map((token) => ({
-      kind: 'word' as const,
+      kind: "word" as const,
       text: token,
       sentence: 0,
       word: flatIndex,
@@ -87,7 +90,7 @@ function defaultSegments(text: string): ParagraphSegment[] {
 function translationJson(segments: ParagraphSegment[]): unknown {
   const bySentence = new Map<number, ParagraphSegment[]>();
   for (const s of segments) {
-    if (s.kind !== 'word') continue;
+    if (s.kind !== "word") continue;
     const bucket = bySentence.get(s.sentence);
     if (bucket) bucket.push(s);
     else bySentence.set(s.sentence, [s]);
@@ -115,11 +118,11 @@ function assertMatchable(text: string): string {
 
 function rejectUnsupported(spec: SeedSpec): void {
   const fields = [
-    'inFlight',
-    'wordInfos',
-    'readingState',
-    'summaryStatus',
-    'config',
+    "inFlight",
+    "wordInfos",
+    "readingState",
+    "summaryStatus",
+    "config",
   ] as const;
   for (const field of fields) {
     if (spec[field] !== undefined) realModeUnsupported(field);
@@ -131,19 +134,18 @@ async function importBook(
   chapters: Array<{ title?: string; paragraphs: string[] }>,
 ): Promise<string> {
   const harness = getHarness();
-  const title = spec.title ?? 'E2E Book';
+  const title = spec.title ?? "E2E Book";
   // create_book_plain makes exactly one untitled chapter; anything richer has
   // to go through the epub importer.
-  const plain =
-    chapters.length === 1 && chapters[0].title === undefined;
+  const plain = chapters.length === 1 && chapters[0].title === undefined;
   if (plain) {
-    return harness.invoke<string>('import_plain_text', {
+    return harness.invoke<string>("import_plain_text", {
       title,
-      text: chapters[0].paragraphs.join('\n'),
-      sourceLanguageId: 'deu',
+      text: chapters[0].paragraphs.join("\n"),
+      sourceLanguageId: "deu",
     });
   }
-  return harness.invoke<string>('import_epub', {
+  return harness.invoke<string>("import_epub", {
     book: {
       title,
       chapters: chapters.map((c, i) => ({
@@ -151,7 +153,7 @@ async function importBook(
         paragraphs: c.paragraphs.map((p) => ({ text: p, html: p })),
       })),
     },
-    sourceLanguageId: 'deu',
+    sourceLanguageId: "deu",
   });
 }
 
@@ -162,10 +164,9 @@ async function waitForTranslations(
   const harness = getHarness();
   const deadline = Date.now() + 30_000;
   for (;;) {
-    const rows = await harness.invoke<Array<{ id: number; segments?: unknown }>>(
-      'get_paragraph_translations_batch',
-      { bookId, paragraphIds },
-    );
+    const rows = await harness.invoke<
+      Array<{ id: number; segments?: unknown }>
+    >("get_paragraph_translations_batch", { bookId, paragraphIds });
     const done = new Set(rows.filter((r) => r.segments).map((r) => r.id));
     if (paragraphIds.every((id) => done.has(id))) return;
     if (Date.now() > deadline) {
@@ -204,7 +205,6 @@ export async function realSeedAndOpen(
 
   const bookId = await importBook(spec, chapters);
 
-
   // Pre-translated paragraphs: run them through the real translate pipeline
   // before the page opens, so the view loads with segments already stored.
   const preTranslated: number[] = [];
@@ -212,7 +212,10 @@ export async function realSeedAndOpen(
   for (const [id, segments] of flatSegments.entries()) {
     if (!segments) continue;
     const text = texts.get(id)!;
-    scripts.push({ matchSubstring: text, translation: translationJson(segments) });
+    scripts.push({
+      matchSubstring: text,
+      translation: translationJson(segments),
+    });
     preTranslated.push(id);
   }
 
@@ -227,10 +230,10 @@ export async function realSeedAndOpen(
   // translate_paragraph only enqueues; the page must not open until the
   // segments are actually stored, or the view races the seed.
   for (const paragraphId of preTranslated) {
-    await harness.invoke('translate_paragraph', {
+    await harness.invoke("translate_paragraph", {
       bookId,
       paragraphId,
-      model: 'models/gemini-2.5-flash',
+      model: "models/gemini-2.5-flash",
       useCache: false,
     });
   }
@@ -238,7 +241,7 @@ export async function realSeedAndOpen(
   for (const { text } of errorRules) {
     await harness.llm.addRule({
       matcher: { bodyContains: text },
-      action: { type: 'status', code: 500, body: { error: 'sim failure' } },
+      action: { type: "status", code: 500, body: { error: "sim failure" } },
     });
   }
 
@@ -258,12 +261,15 @@ function applyConfig(
   text: string,
   cfg: TranslateConfig,
 ): void {
-  if (cfg.kind === 'error') {
+  if (cfg.kind === "error") {
     errorRules.push({ text });
     return;
   }
   const segments = cfg.segments ?? defaultSegments(text);
-  scripts.push({ matchSubstring: text, translation: translationJson(segments) });
+  scripts.push({
+    matchSubstring: text,
+    translation: translationJson(segments),
+  });
 }
 
 /**
@@ -273,18 +279,23 @@ function applyConfig(
  * match the mock's post-seed-only log. `model` is not on the wire.
  */
 export async function realTranslateCalls(): Promise<
-  Array<{ bookId: string; paragraphId: number; useCache: boolean; model: unknown }>
+  Array<{
+    bookId: string;
+    paragraphId: number;
+    useCache: boolean;
+    model: unknown;
+  }>
 > {
   const harness = getHarness();
   const seed = lastSeed;
   const reqs = (await harness.llm.requests()).slice(seed?.seedRequests ?? 0);
   return reqs
-    .filter((r) => r.path.endsWith(':streamGenerateContent'))
+    .filter((r) => r.path.endsWith(":streamGenerateContent"))
     .map((r) => ({
-      bookId: seed?.bookId ?? '',
+      bookId: seed?.bookId ?? "",
       paragraphId:
         seed?.texts.find(([, text]) => r.body.includes(text))?.[0] ?? -1,
-      useCache: r.body.includes('cachedContent'),
+      useCache: r.body.includes("cachedContent"),
       model: null,
     }));
 }

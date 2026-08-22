@@ -1,4 +1,4 @@
-import { expect, test } from '../helpers/test';
+import { expect, test } from "../helpers/test";
 import {
   expectTranslated,
   getTranslateCalls,
@@ -7,8 +7,8 @@ import {
   translateButton,
   wordSegment,
   type ParagraphSegment,
-} from '../helpers/paragraph';
-import { getHarness } from '../../real/harness-registry';
+} from "../helpers/paragraph";
+import { getHarness } from "../../real/harness-registry";
 
 /**
  * The app caches translation results by source text across runs (its cache dir
@@ -27,7 +27,7 @@ function texts(): { short: string; long: string; seeded: string } {
 }
 
 function segmentsOf(text: string): ParagraphSegment[] {
-  return text.split(' ').map((token, i) =>
+  return text.split(" ").map((token, i) =>
     wordSegment({
       flatIndex: i,
       sentence: 0,
@@ -38,8 +38,8 @@ function segmentsOf(text: string): ParagraphSegment[] {
   );
 }
 
-test.describe('real-tier helper contract', () => {
-  test('getTranslateCalls reports only post-seed paragraph translations', async ({
+test.describe("real-tier helper contract", () => {
+  test("getTranslateCalls reports only post-seed paragraph translations", async ({
     page,
   }) => {
     const t = texts();
@@ -56,7 +56,10 @@ test.describe('real-tier helper contract', () => {
         },
       ],
       translateConfigs: [
-        { paragraphId: 1, cfg: { kind: 'immediate', segments: segmentsOf(t.long) } },
+        {
+          paragraphId: 1,
+          cfg: { kind: "immediate", segments: segmentsOf(t.long) },
+        },
       ],
     });
 
@@ -71,18 +74,24 @@ test.describe('real-tier helper contract', () => {
     expect(calls[0]).toMatchObject({ bookId, paragraphId: 1, useCache: true });
   });
 
-  test('summary requests are unary and paragraph translations stream', async ({
+  test("summary requests are unary and paragraph translations stream", async ({
     page,
   }) => {
     // The discriminator getTranslateCalls relies on. Summary generation runs at
     // import and quotes every paragraph, so a path-blind filter would count it.
     const t = texts();
     await seedAndOpen(page, {
-      chapters: [{ paragraphs: [{ html: t.seeded, segments: segmentsOf(t.seeded) }] }],
+      chapters: [
+        { paragraphs: [{ html: t.seeded, segments: segmentsOf(t.seeded) }] },
+      ],
     });
 
-    const paths = new Set((await getHarness().llm.requests()).map((r) => r.path));
-    expect([...paths].some((p) => p.endsWith(':generateContent'))).toBe(true);
-    expect([...paths].some((p) => p.endsWith(':streamGenerateContent'))).toBe(true);
+    const paths = new Set(
+      (await getHarness().llm.requests()).map((r) => r.path),
+    );
+    expect([...paths].some((p) => p.endsWith(":generateContent"))).toBe(true);
+    expect([...paths].some((p) => p.endsWith(":streamGenerateContent"))).toBe(
+      true,
+    );
   });
 });

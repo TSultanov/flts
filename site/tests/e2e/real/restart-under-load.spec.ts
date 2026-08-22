@@ -1,7 +1,7 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import { test, expect } from '../../real/fixtures';
-import type { RealHarness } from '../../real/fixtures';
+import fs from "node:fs";
+import path from "node:path";
+import { test, expect } from "../../real/fixtures";
+import type { RealHarness } from "../../real/fixtures";
 import {
   DECK,
   MODEL,
@@ -17,7 +17,7 @@ import {
   storedCards,
   storedIds,
   syncNow,
-} from '../../real/spec-helpers';
+} from "../../real/spec-helpers";
 
 /**
  * The app process dies mid-work. SIGTERM gets the graceful shutdown path;
@@ -27,7 +27,7 @@ import {
  */
 
 /** `Config::default()`; a restart that lost the config dir would show this. */
-const DEFAULT_ANKI_ENDPOINT = 'http://127.0.0.1:8765';
+const DEFAULT_ANKI_ENDPOINT = "http://127.0.0.1:8765";
 
 /**
  * Asks the sim over the AnkiConnect wire instead of reading its request log:
@@ -36,10 +36,10 @@ const DEFAULT_ANKI_ENDPOINT = 'http://127.0.0.1:8765';
  */
 async function simNoteIds(h: RealHarness, lemma: string): Promise<number[]> {
   const res = await fetch(h.anki.baseUrl, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    method: "POST",
+    headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      action: 'findNotes',
+      action: "findNotes",
       version: 6,
       params: { query: `tag:${cardIdOf(lemma)}` },
     }),
@@ -53,7 +53,9 @@ async function simNoteIds(h: RealHarness, lemma: string): Promise<number[]> {
  * await the readiness gate, so an answer is a *configured* answer.
  */
 async function expectLibraryHas(h: RealHarness, bookId: string): Promise<void> {
-  const ids = (await h.invoke<Array<{ id: string }>>('list_books')).map((b) => b.id);
+  const ids = (await h.invoke<Array<{ id: string }>>("list_books")).map(
+    (b) => b.id,
+  );
   expect(ids).toContain(bookId);
 }
 
@@ -63,13 +65,15 @@ async function startPacedChapter(
   original: Record<string, unknown>,
   sets: string[][],
 ): Promise<string> {
-  await h.invoke('update_config', { config: { ...original, translationConcurrency: 1 } });
-  const bookId = await seedBook(h, sets, 'restart-under-load');
+  await h.invoke("update_config", {
+    config: { ...original, translationConcurrency: 1 },
+  });
+  const bookId = await seedBook(h, sets, "restart-under-load");
   await h.llm.addRule({
     matcher: { pathGlob: STREAM_GLOB },
-    action: { type: 'delay', ms: 1200 },
+    action: { type: "delay", ms: 1200 },
   });
-  await h.invoke('translate_chapter', {
+  await h.invoke("translate_chapter", {
     bookId,
     chapterId: 0,
     model: MODEL,
@@ -103,11 +107,11 @@ async function finishChapter(
   await expectLibraryHas(h, bookId);
   // Nothing that was already on disk was lost with the process.
   expect(await storedIds(h, bookId, 6)).toEqual(expect.arrayContaining(before));
-  const chapters = await h.invoke<unknown[]>('list_book_chapters', { bookId });
+  const chapters = await h.invoke<unknown[]>("list_book_chapters", { bookId });
   expect(chapters.length).toBe(1);
 
   await h.llm.clearRules();
-  await h.invoke('translate_chapter', {
+  await h.invoke("translate_chapter", {
     bookId,
     chapterId: 0,
     model: MODEL,
@@ -119,12 +123,13 @@ async function finishChapter(
   await expect.poll(() => drained(h), { timeout: 30_000 }).toEqual([]);
 }
 
-test.describe('restart under load', () => {
-  test('SIGTERM mid-batch loses nothing and the chapter finishes after relaunch', async ({
+test.describe("restart under load", () => {
+  test("SIGTERM mid-batch loses nothing and the chapter finishes after relaunch", async ({
     harness,
   }) => {
     test.setTimeout(120_000);
-    const original = await harness.invoke<Record<string, unknown>>('get_config');
+    const original =
+      await harness.invoke<Record<string, unknown>>("get_config");
     try {
       const bookId = await startPacedChapter(harness, original, lemmaSets(6));
       const before = await partwayIds(harness, bookId);
@@ -135,39 +140,40 @@ test.describe('restart under load', () => {
 
       await finishChapter(harness, bookId, before);
     } finally {
-      await harness.invoke('update_config', { config: original });
+      await harness.invoke("update_config", { config: original });
     }
   });
 
-  test('SIGKILL mid-batch leaves the config intact and the chapter finishable', async ({
+  test("SIGKILL mid-batch leaves the config intact and the chapter finishable", async ({
     harness,
   }) => {
     test.setTimeout(120_000);
-    const original = await harness.invoke<Record<string, unknown>>('get_config');
+    const original =
+      await harness.invoke<Record<string, unknown>>("get_config");
     try {
       const bookId = await startPacedChapter(harness, original, lemmaSets(6));
       const before = await partwayIds(harness, bookId);
 
-      await harness.restartApp({ signal: 'SIGKILL' });
+      await harness.restartApp({ signal: "SIGKILL" });
 
       // The atomic config save survived an un-graceful death: nothing was
       // quarantined as unparseable...
-      expect(fs.existsSync(path.join(harness.configDir, 'config.json.corrupt'))).toBe(
-        false,
-      );
+      expect(
+        fs.existsSync(path.join(harness.configDir, "config.json.corrupt")),
+      ).toBe(false);
       // ...and the harness config is still the live one, not Config::default().
-      const live = await harness.invoke<Record<string, unknown>>('get_config');
+      const live = await harness.invoke<Record<string, unknown>>("get_config");
       expect(live.ankiEndpoint).toBe(original.ankiEndpoint);
       expect(live.ankiEndpoint).not.toBe(DEFAULT_ANKI_ENDPOINT);
       expect(live.translationConcurrency).toBe(1);
 
       await finishChapter(harness, bookId, before);
     } finally {
-      await harness.invoke('update_config', { config: original });
+      await harness.invoke("update_config", { config: original });
     }
   });
 
-  test('SIGKILL between addNote and its state pull never re-adds the note', async ({
+  test("SIGKILL between addNote and its state pull never re-adds the note", async ({
     harness,
   }) => {
     test.setTimeout(120_000);
@@ -176,13 +182,13 @@ test.describe('restart under load', () => {
 
     clearCards(harness);
     await harness.anki.seed({ decks: [DECK] });
-    const bookId = await seedBook(harness, sets, 'restart-under-load');
+    const bookId = await seedBook(harness, sets, "restart-under-load");
 
     // Translate with anki blocked: every woken pass dies on the version()
     // probe, so no card is pushed and none enters backoff.
     await blockAnki(harness);
     for (const paragraphId of sets.keys()) {
-      await harness.invoke('translate_paragraph', {
+      await harness.invoke("translate_paragraph", {
         bookId,
         paragraphId,
         model: MODEL,
@@ -200,11 +206,11 @@ test.describe('restart under load', () => {
     // keeps it off the pass the relaunched app fires on its own.
     await harness.anki.addRule({
       matcher: { bodyContains: '"action":"notesInfo"' },
-      action: { type: 'delay', ms: 5000 },
+      action: { type: "delay", ms: 5000 },
       times: 1,
     });
     // The bridge socket dies with the app, so this invoke can never settle.
-    const dying = harness.invoke('sync_anki_now').catch(() => undefined);
+    const dying = harness.invoke("sync_anki_now").catch(() => undefined);
 
     // Acceptance, not arrival: ask the sim what it actually holds. The pass
     // pushes every addNote before it pulls state, so all six land before the
@@ -212,14 +218,16 @@ test.describe('restart under load', () => {
     await expect
       .poll(
         async () => {
-          const found = await Promise.all(lemmas.map((l) => simNoteIds(harness, l)));
+          const found = await Promise.all(
+            lemmas.map((l) => simNoteIds(harness, l)),
+          );
           return found.filter((ids) => ids.length === 1).length;
         },
         { timeout: 30_000, intervals: [100] },
       )
       .toBe(lemmas.length);
 
-    await harness.restartApp({ signal: 'SIGKILL' });
+    await harness.restartApp({ signal: "SIGKILL" });
     await dying;
     // The kill really did land before the state pull: notes in Anki, nothing
     // on disk that could tell the next pass so.
@@ -232,7 +240,7 @@ test.describe('restart under load', () => {
     expect(report.totalCards).toBe(lemmas.length);
     expect(report.failed).toBe(0);
     expect(storedCards(harness).map((c) => c.anki_data?.state ?? null)).toEqual(
-      lemmas.map(() => 'active'),
+      lemmas.map(() => "active"),
     );
     // The pre-kill note was found, not duplicated: dedup goes through findNotes,
     // not through card state the kill never got to write.

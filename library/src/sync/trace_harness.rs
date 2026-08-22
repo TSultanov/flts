@@ -48,7 +48,9 @@ fn deliver_roster(src_root: &Path, dst_root: &Path, src_id: &str) {
     let dst_dir = dst_root.join(".flts");
     std::fs::create_dir_all(&dst_dir).unwrap();
     std::fs::write(
-        dst_dir.join(format!("devices.sync-conflict-20260531-120000-{src_id}.json")),
+        dst_dir.join(format!(
+            "devices.sync-conflict-20260531-120000-{src_id}.json"
+        )),
         content,
     )
     .unwrap();

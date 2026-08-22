@@ -10,12 +10,13 @@ export type UnlistenFn = () => void;
 
 // On `globalThis` because Vite's optimizeDeps gives some plugins their own
 // copy of this module; separate handler Maps would never see each other's emits.
-const eventHandlers: Map<string, Set<EventCallback<unknown>>> =
-  ((globalThis as any).__tauriMockEventHandlers ??= new Map());
+const eventHandlers: Map<string, Set<EventCallback<unknown>>> = ((
+  globalThis as any
+).__tauriMockEventHandlers ??= new Map());
 
 export async function listen<T>(
   event: string,
-  handler: EventCallback<T>
+  handler: EventCallback<T>,
 ): Promise<UnlistenFn> {
   if (!eventHandlers.has(event)) {
     eventHandlers.set(event, new Set());
@@ -31,7 +32,7 @@ export async function listen<T>(
 
 export async function once<T>(
   event: string,
-  handler: EventCallback<T>
+  handler: EventCallback<T>,
 ): Promise<UnlistenFn> {
   const unlisten = await listen<T>(event, (e) => {
     handler(e);
@@ -43,18 +44,18 @@ export async function once<T>(
 export function emit(event: string, payload?: unknown): void {
   const handlers = eventHandlers.get(event);
   if (handlers) {
-    handlers.forEach(handler => handler({ payload }));
+    handlers.forEach((handler) => handler({ payload }));
   }
 }
 
 export async function emitTo(
   target: string,
   event: string,
-  payload?: unknown
+  payload?: unknown,
 ): Promise<void> {
   console.log(`[Tauri Event Mock] emitTo: ${target}/${event}`, payload);
 }
 
-if (typeof window !== 'undefined') {
+if (typeof window !== "undefined") {
   (window as any).__tauriEmit = emit;
 }

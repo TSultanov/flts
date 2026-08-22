@@ -63,11 +63,9 @@ pub fn get_lyrics_translator(
         TranslationProvider::Openai
         | TranslationProvider::Deepseek
         | TranslationProvider::Zai
-        | TranslationProvider::Openrouter => {
-            Ok(Box::new(LyricsOpenAITranslator::create(
-                provider, model, api_key, to,
-            )?))
-        }
+        | TranslationProvider::Openrouter => Ok(Box::new(LyricsOpenAITranslator::create(
+            provider, model, api_key, to,
+        )?)),
     }
 }
 

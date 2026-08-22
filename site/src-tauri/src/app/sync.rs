@@ -32,9 +32,7 @@ pub struct PendingEntry {
 }
 
 #[tauri::command]
-pub async fn get_sync_status(
-    state: tauri::State<'_, Arc<AppState>>,
-) -> Result<SyncStatus, String> {
+pub async fn get_sync_status(state: tauri::State<'_, Arc<AppState>>) -> Result<SyncStatus, String> {
     Ok(state.sync_status())
 }
 
@@ -53,7 +51,11 @@ pub async fn sync_get_this_device(
         .list_devices()
         .await
         .ok()
-        .and_then(|devs| devs.into_iter().find(|d| d.device_id == my_id).map(|d| d.name))
+        .and_then(|devs| {
+            devs.into_iter()
+                .find(|d| d.device_id == my_id)
+                .map(|d| d.name)
+        })
         .filter(|n| !n.trim().is_empty())
         .or_else(|| state.config_borrow_sync_device_name());
     Ok(Some(ThisDevice {

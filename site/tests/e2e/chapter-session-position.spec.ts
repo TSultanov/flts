@@ -1,17 +1,17 @@
-import { expect, test } from './helpers/test';
+import { expect, test } from "./helpers/test";
 import {
   fillerHtml,
   paragraphLocator,
   scrollToParagraph,
   seedAndOpen,
-} from './helpers/paragraph';
+} from "./helpers/paragraph";
 
-test.describe.configure({ mode: 'parallel' });
+test.describe.configure({ mode: "parallel" });
 
-test.describe('Chapter session position (chromium only)', () => {
-  test.skip(({ browserName }) => browserName !== 'chromium', 'chromium-only');
+test.describe("Chapter session position (chromium only)", () => {
+  test.skip(({ browserName }) => browserName !== "chromium", "chromium-only");
 
-  test('navigating away from a chapter and back lands on the in-session position, not the original saved one', async ({
+  test("navigating away from a chapter and back lands on the in-session position, not the original saved one", async ({
     page,
   }) => {
     // Paragraphs 0..39 in ch0, 40..79 in ch1; saved state points deep into ch0.
@@ -27,15 +27,15 @@ test.describe('Chapter session position (chromium only)', () => {
       page,
       {
         chapters: [
-          { title: 'Chapter 0', paragraphs: ch0Paragraphs },
-          { title: 'Chapter 1', paragraphs: ch1Paragraphs },
+          { title: "Chapter 0", paragraphs: ch0Paragraphs },
+          { title: "Chapter 1", paragraphs: ch1Paragraphs },
         ],
         readingState: { chapterId: 0, paragraphId: SAVED_PARAGRAPH },
       },
-      { path: '/library' },
+      { path: "/library" },
     );
     await page.locator(`a[href="/book/${bookId}"]`).first().click();
-    await page.waitForSelector('.paragraphs-container');
+    await page.waitForSelector(".paragraphs-container");
 
     await expect(paragraphLocator(page, SAVED_PARAGRAPH)).toBeAttached();
     const POLL = { timeout: 3000, intervals: [50, 100, 200] } as const;
@@ -44,7 +44,7 @@ test.describe('Chapter session position (chromium only)', () => {
         async () =>
           page.evaluate((id) => {
             const container = document.querySelector(
-              '.paragraphs-container',
+              ".paragraphs-container",
             ) as HTMLElement | null;
             const el = document.querySelector(
               `.paragraph-wrapper[data-paragraph-id="${id}"]`,
@@ -78,7 +78,7 @@ test.describe('Chapter session position (chromium only)', () => {
         async () =>
           page.evaluate(() => {
             const container = document.querySelector(
-              '.paragraphs-container',
+              ".paragraphs-container",
             ) as HTMLElement | null;
             const el0 = document.querySelector(
               `.paragraph-wrapper[data-paragraph-id="0"]`,
@@ -94,7 +94,7 @@ test.describe('Chapter session position (chromium only)', () => {
 
     const p30Visible = await page.evaluate(() => {
       const container = document.querySelector(
-        '.paragraphs-container',
+        ".paragraphs-container",
       ) as HTMLElement | null;
       const el = document.querySelector(
         `.paragraph-wrapper[data-paragraph-id="30"]`,

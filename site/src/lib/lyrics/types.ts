@@ -1,66 +1,66 @@
-export type PlayerState = 'playing' | 'paused' | 'stopped' | 'notrunning';
+export type PlayerState = "playing" | "paused" | "stopped" | "notrunning";
 
 export type NowPlaying = {
-    state: PlayerState;
-    trackId?: string;
-    name?: string;
-    artist?: string;
-    album?: string;
-    positionMs?: number;
-    durationMs?: number;
+  state: PlayerState;
+  trackId?: string;
+  name?: string;
+  artist?: string;
+  album?: string;
+  positionMs?: number;
+  durationMs?: number;
 };
 
 export type LyricsLine = {
-    time_ms: number | null;
-    text: string;
+  time_ms: number | null;
+  text: string;
 };
 
 export type Lyrics = {
-    track_id: string;
-    lines: LyricsLine[];
-    synced: boolean;
+  track_id: string;
+  lines: LyricsLine[];
+  synced: boolean;
 };
 
 export type Gloss = {
-    fragment: string;
-    gloss: string;
-    note: string;
+  fragment: string;
+  gloss: string;
+  note: string;
 };
 
 export type LyricsLineTranslation = {
-    translation: string;
-    glosses: Gloss[];
+  translation: string;
+  glosses: Gloss[];
 };
 
 export type LyricsTranslation = {
-    track_id: string;
-    target_lang: string;
-    model: string;
-    lines: LyricsLineTranslation[];
+  track_id: string;
+  target_lang: string;
+  model: string;
+  lines: LyricsLineTranslation[];
 };
 
 export type LyricsTranslationProgress = {
-    trackId: string;
-    bytes: number;
+  trackId: string;
+  bytes: number;
 };
 
 export type LyricsTranslationDone = {
-    trackId: string;
-    translation: LyricsTranslation;
+  trackId: string;
+  translation: LyricsTranslation;
 };
 
 export type LyricsTranslationError = {
-    trackId: string;
-    error: string;
+  trackId: string;
+  error: string;
 };
 
 export type LyricsResolved = {
-    trackId: string;
-    /// null = LRClib confirmed it has no lyrics for this track.
-    lyrics: Lyrics | null;
+  trackId: string;
+  /// null = LRClib confirmed it has no lyrics for this track.
+  lyrics: Lyrics | null;
 };
 
 export type TrackLyricsState = {
-    lyrics: Lyrics | null;
-    translation: LyricsTranslation | null;
+  lyrics: Lyrics | null;
+  translation: LyricsTranslation | null;
 };

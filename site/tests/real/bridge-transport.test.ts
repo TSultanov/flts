@@ -1,7 +1,7 @@
 // @vitest-environment node
 // jsdom has no WebSocket; `ws` provides both server and client here.
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { WebSocket, WebSocketServer, type WebSocket as WsSocket } from 'ws';
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { WebSocket, WebSocketServer, type WebSocket as WsSocket } from "ws";
 
 type ServerFrame = Record<string, unknown>;
 
@@ -10,12 +10,12 @@ let sockets: WsSocket[] = [];
 let onFrame: (frame: any, send: (f: ServerFrame) => void) => void;
 
 async function startServer(): Promise<number> {
-  server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
-  await new Promise<void>((resolve) => server.once('listening', resolve));
-  server.on('connection', (sock) => {
+  server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  await new Promise<void>((resolve) => server.once("listening", resolve));
+  server.on("connection", (sock) => {
     sockets.push(sock);
     const send = (f: ServerFrame) => sock.send(JSON.stringify(f));
-    sock.on('message', (data) => onFrame(JSON.parse(String(data)), send));
+    sock.on("message", (data) => onFrame(JSON.parse(String(data)), send));
   });
   return (server.address() as { port: number }).port;
 }
@@ -23,7 +23,7 @@ async function startServer(): Promise<number> {
 /** Fresh module instance — the transport keeps a module-level socket. */
 async function loadTransport() {
   vi.resetModules();
-  return import('./bridge-transport');
+  return import("./bridge-transport");
 }
 
 beforeEach(async () => {
@@ -39,23 +39,23 @@ afterEach(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
 });
 
-describe('bridgeInvoke', () => {
-  it('resolves with the ok payload', async () => {
+describe("bridgeInvoke", () => {
+  it("resolves with the ok payload", async () => {
     const { bridgeInvoke } = await loadTransport();
-    await expect(bridgeInvoke('list_books', { a: 1 })).resolves.toEqual({
+    await expect(bridgeInvoke("list_books", { a: 1 })).resolves.toEqual({
       echo: { a: 1 },
     });
   });
 
-  it('rejects with the err value verbatim', async () => {
-    onFrame = (frame, send) => send({ id: frame.id, err: 'book not found' });
+  it("rejects with the err value verbatim", async () => {
+    onFrame = (frame, send) => send({ id: frame.id, err: "book not found" });
     const { bridgeInvoke } = await loadTransport();
-    await expect(bridgeInvoke('get_paragraph_view')).rejects.toBe(
-      'book not found',
+    await expect(bridgeInvoke("get_paragraph_view")).rejects.toBe(
+      "book not found",
     );
   });
 
-  it('routes concurrent replies to the right callers', async () => {
+  it("routes concurrent replies to the right callers", async () => {
     // Reply out of order to prove id-keyed demux, not FIFO.
     const queued: Array<{ frame: any; send: (f: ServerFrame) => void }> = [];
     onFrame = (frame, send) => {
@@ -67,79 +67,79 @@ describe('bridgeInvoke', () => {
     };
     const { bridgeInvoke } = await loadTransport();
     const results = await Promise.all([
-      bridgeInvoke('c', { n: 'first' }),
-      bridgeInvoke('c', { n: 'second' }),
-      bridgeInvoke('c', { n: 'third' }),
+      bridgeInvoke("c", { n: "first" }),
+      bridgeInvoke("c", { n: "second" }),
+      bridgeInvoke("c", { n: "third" }),
     ]);
-    expect(results).toEqual(['first', 'second', 'third']);
+    expect(results).toEqual(["first", "second", "third"]);
   });
 
-  it('ignores event frames while a reply is outstanding', async () => {
+  it("ignores event frames while a reply is outstanding", async () => {
     onFrame = (frame, send) => {
-      send({ event: 'book_updated', payload: 'noise' });
-      send({ id: frame.id, ok: 'done' });
+      send({ event: "book_updated", payload: "noise" });
+      send({ id: frame.id, ok: "done" });
     };
     const { bridgeInvoke } = await loadTransport();
-    await expect(bridgeInvoke('c')).resolves.toBe('done');
+    await expect(bridgeInvoke("c")).resolves.toBe("done");
   });
 
-  it('rejects in-flight calls when the socket drops, then reconnects', async () => {
+  it("rejects in-flight calls when the socket drops, then reconnects", async () => {
     let seen = 0;
     onFrame = (frame, send) => {
       // Strand the first call, then kill the connection under it.
       if (++seen === 1) return void sockets[0].terminate();
-      send({ id: frame.id, ok: 'after-reconnect' });
+      send({ id: frame.id, ok: "after-reconnect" });
     };
     const { bridgeInvoke } = await loadTransport();
 
-    await expect(bridgeInvoke('c')).rejects.toThrow(/bridge socket closed/);
+    await expect(bridgeInvoke("c")).rejects.toThrow(/bridge socket closed/);
     expect(server.clients.size).toBe(0);
 
-    await expect(bridgeInvoke('c')).resolves.toBe('after-reconnect');
+    await expect(bridgeInvoke("c")).resolves.toBe("after-reconnect");
     expect(sockets).toHaveLength(2);
   });
 
-  it('rejects when no bridge port was injected', async () => {
+  it("rejects when no bridge port was injected", async () => {
     delete (globalThis as any).__FLTS_BRIDGE_PORT;
     const { bridgeInvoke } = await loadTransport();
-    await expect(bridgeInvoke('c')).rejects.toThrow(/bridge port/);
+    await expect(bridgeInvoke("c")).rejects.toThrow(/bridge port/);
   });
 });
 
-describe('bridgeListen', () => {
-  it('delivers event frames to listeners and stops after unlisten', async () => {
+describe("bridgeListen", () => {
+  it("delivers event frames to listeners and stops after unlisten", async () => {
     onFrame = (frame, send) => {
-      send({ event: 'book_updated', payload: { id: frame.args.id } });
+      send({ event: "book_updated", payload: { id: frame.args.id } });
       send({ id: frame.id, ok: null });
     };
     const { bridgeInvoke, bridgeListen } = await loadTransport();
     const seen: unknown[] = [];
-    const unlisten = await bridgeListen('book_updated', (e) => {
-      expect(e.event).toBe('book_updated');
+    const unlisten = await bridgeListen("book_updated", (e) => {
+      expect(e.event).toBe("book_updated");
       seen.push(e.payload);
     });
 
-    await bridgeInvoke('c', { id: 1 });
+    await bridgeInvoke("c", { id: 1 });
     await vi.waitFor(() => expect(seen).toEqual([{ id: 1 }]));
 
     unlisten();
-    await bridgeInvoke('c', { id: 2 });
+    await bridgeInvoke("c", { id: 2 });
     await new Promise((r) => setTimeout(r, 20));
     expect(seen).toEqual([{ id: 1 }]);
   });
 
-  it('keeps other listeners alive when one unlistens', async () => {
+  it("keeps other listeners alive when one unlistens", async () => {
     onFrame = (frame, send) => {
-      send({ event: 'cards_updated', payload: null });
+      send({ event: "cards_updated", payload: null });
       send({ id: frame.id, ok: null });
     };
     const { bridgeInvoke, bridgeListen } = await loadTransport();
     let a = 0;
     let b = 0;
-    const unA = await bridgeListen('cards_updated', () => a++);
-    await bridgeListen('cards_updated', () => b++);
+    const unA = await bridgeListen("cards_updated", () => a++);
+    await bridgeListen("cards_updated", () => b++);
     unA();
-    await bridgeInvoke('c');
+    await bridgeInvoke("c");
     await vi.waitFor(() => expect(b).toBe(1));
     expect(a).toBe(0);
   });

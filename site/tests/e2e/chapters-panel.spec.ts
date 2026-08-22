@@ -1,11 +1,11 @@
-import { expect, test } from './helpers/test';
-import { fillerHtml, seedAndOpen } from './helpers/paragraph';
+import { expect, test } from "./helpers/test";
+import { fillerHtml, seedAndOpen } from "./helpers/paragraph";
 
 // BookView chapters panel: it overlays rather than resizing the book viewport,
 // persists its width across reloads, auto-closes on narrow viewports, and is
 // absent entirely for single-chapter books.
 
-test.describe.configure({ mode: 'parallel' });
+test.describe.configure({ mode: "parallel" });
 
 const PANEL = '[data-testid="chapters-panel"]';
 const HANDLE = '[data-testid="chapters-panel-handle"]';
@@ -15,104 +15,137 @@ function multiChapterSpec() {
   return {
     chapters: [
       {
-        title: 'Chapter 0',
-        paragraphs: Array.from({ length: 5 }, (_, i) => ({ html: fillerHtml(i) })),
+        title: "Chapter 0",
+        paragraphs: Array.from({ length: 5 }, (_, i) => ({
+          html: fillerHtml(i),
+        })),
       },
       {
-        title: 'Chapter 1',
-        paragraphs: Array.from({ length: 5 }, (_, i) => ({ html: fillerHtml(i + 5) })),
+        title: "Chapter 1",
+        paragraphs: Array.from({ length: 5 }, (_, i) => ({
+          html: fillerHtml(i + 5),
+        })),
       },
       {
-        title: 'Chapter 2',
-        paragraphs: Array.from({ length: 5 }, (_, i) => ({ html: fillerHtml(i + 10) })),
+        title: "Chapter 2",
+        paragraphs: Array.from({ length: 5 }, (_, i) => ({
+          html: fillerHtml(i + 10),
+        })),
       },
     ],
   };
 }
 
-test.describe('ChaptersPanel — toggle behavior', () => {
-  test.skip(({ browserName }) => browserName === 'firefox', 'chromium + webkit only');
+test.describe("ChaptersPanel — toggle behavior", () => {
+  test.skip(
+    ({ browserName }) => browserName === "firefox",
+    "chromium + webkit only",
+  );
 
-  test('handle toggles the panel open and closed', async ({ page }) => {
-const { bookId } = await seedAndOpen(page, multiChapterSpec());
+  test("handle toggles the panel open and closed", async ({ page }) => {
+    const { bookId } = await seedAndOpen(page, multiChapterSpec());
     // The chapter-container's initial layout races the handle's actionability.
-    await page.waitForSelector('.paragraphs-container.is-ready');
+    await page.waitForSelector(".paragraphs-container.is-ready");
 
     await expect(page.locator(HANDLE)).toBeVisible();
-    await expect(page.locator(HANDLE)).toHaveAttribute('aria-expanded', 'false');
-    await expect(page.locator(PANEL)).toHaveAttribute('aria-hidden', 'true');
+    await expect(page.locator(HANDLE)).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    await expect(page.locator(PANEL)).toHaveAttribute("aria-hidden", "true");
 
     await page.locator(HANDLE).click();
-    await expect(page.locator(HANDLE)).toHaveAttribute('aria-expanded', 'true');
-    await expect(page.locator(PANEL)).toHaveAttribute('aria-hidden', 'false');
+    await expect(page.locator(HANDLE)).toHaveAttribute("aria-expanded", "true");
+    await expect(page.locator(PANEL)).toHaveAttribute("aria-hidden", "false");
     await expect(
       page.locator(`${PANEL} a[href="/book/${bookId}/1"]`),
     ).toBeVisible();
 
     await page.locator(HANDLE).click();
-    await expect(page.locator(HANDLE)).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.locator(HANDLE)).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
   });
 
-  test('pressing `c` toggles the panel', async ({ page }) => {
-await seedAndOpen(page, multiChapterSpec());
+  test("pressing `c` toggles the panel", async ({ page }) => {
+    await seedAndOpen(page, multiChapterSpec());
 
-    await expect(page.locator(HANDLE)).toHaveAttribute('aria-expanded', 'false');
-    await page.keyboard.press('c');
-    await expect(page.locator(HANDLE)).toHaveAttribute('aria-expanded', 'true');
-    await page.keyboard.press('c');
-    await expect(page.locator(HANDLE)).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.locator(HANDLE)).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    await page.keyboard.press("c");
+    await expect(page.locator(HANDLE)).toHaveAttribute("aria-expanded", "true");
+    await page.keyboard.press("c");
+    await expect(page.locator(HANDLE)).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
   });
 });
 
-test.describe('ChaptersPanel — overlay does not resize book viewport', () => {
-  test.skip(({ browserName }) => browserName === 'firefox', 'chromium + webkit only');
+test.describe("ChaptersPanel — overlay does not resize book viewport", () => {
+  test.skip(
+    ({ browserName }) => browserName === "firefox",
+    "chromium + webkit only",
+  );
 
-  test('opening the panel leaves .paragraphs-container width unchanged', async ({
+  test("opening the panel leaves .paragraphs-container width unchanged", async ({
     page,
   }) => {
-await seedAndOpen(page, multiChapterSpec());
-    await page.waitForSelector('.paragraphs-container');
+    await seedAndOpen(page, multiChapterSpec());
+    await page.waitForSelector(".paragraphs-container");
 
     const beforeWidth = await page.evaluate(() => {
-      const c = document.querySelector('.paragraphs-container') as HTMLElement | null;
+      const c = document.querySelector(
+        ".paragraphs-container",
+      ) as HTMLElement | null;
       return c ? c.clientWidth : -1;
     });
     expect(beforeWidth).toBeGreaterThan(0);
 
     await page.locator(HANDLE).click();
-    await expect(page.locator(HANDLE)).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.locator(HANDLE)).toHaveAttribute("aria-expanded", "true");
 
     // Outlast the 180ms transform transition before measuring.
     await page.waitForTimeout(250);
 
     const afterWidth = await page.evaluate(() => {
-      const c = document.querySelector('.paragraphs-container') as HTMLElement | null;
+      const c = document.querySelector(
+        ".paragraphs-container",
+      ) as HTMLElement | null;
       return c ? c.clientWidth : -1;
     });
     expect(afterWidth).toBe(beforeWidth);
   });
 });
 
-test.describe('ChaptersPanel — drag resize', () => {
-  test.skip(({ browserName }) => browserName !== 'chromium', 'chromium-only — mouse drag');
+test.describe("ChaptersPanel — drag resize", () => {
+  test.skip(
+    ({ browserName }) => browserName !== "chromium",
+    "chromium-only — mouse drag",
+  );
 
-  test('dragging the grip changes the width within the session', async ({
+  test("dragging the grip changes the width within the session", async ({
     page,
   }) => {
     await seedAndOpen(page, multiChapterSpec());
     await page.locator(HANDLE).click();
-    await expect(page.locator(HANDLE)).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.locator(HANDLE)).toHaveAttribute("aria-expanded", "true");
     await page.waitForTimeout(250);
 
     const grip = page.locator(GRIP);
     const startBox = await grip.boundingBox();
-    if (!startBox) throw new Error('resize grip not visible');
+    if (!startBox) throw new Error("resize grip not visible");
 
     const widthBefore = await page.evaluate(
       () =>
-        (document.querySelector(
-          '[data-testid="chapters-panel"]',
-        ) as HTMLElement | null)?.clientWidth ?? -1,
+        (
+          document.querySelector(
+            '[data-testid="chapters-panel"]',
+          ) as HTMLElement | null
+        )?.clientWidth ?? -1,
     );
 
     const startX = startBox.x + startBox.width / 2;
@@ -125,42 +158,52 @@ test.describe('ChaptersPanel — drag resize', () => {
 
     const widthAfter = await page.evaluate(
       () =>
-        (document.querySelector(
-          '[data-testid="chapters-panel"]',
-        ) as HTMLElement | null)?.clientWidth ?? -1,
+        (
+          document.querySelector(
+            '[data-testid="chapters-panel"]',
+          ) as HTMLElement | null
+        )?.clientWidth ?? -1,
     );
     expect(widthAfter).toBeGreaterThan(widthBefore + 60);
   });
 });
 
-test.describe('ChaptersPanel — auto-close on chapter selection', () => {
-  test.skip(({ browserName }) => browserName !== 'chromium', 'chromium-only');
+test.describe("ChaptersPanel — auto-close on chapter selection", () => {
+  test.skip(({ browserName }) => browserName !== "chromium", "chromium-only");
 
-  test('clicking a chapter closes the panel', async ({ page }) => {
+  test("clicking a chapter closes the panel", async ({ page }) => {
     const { bookId } = await seedAndOpen(page, multiChapterSpec());
 
     await page.locator(HANDLE).click();
-    await expect(page.locator(HANDLE)).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.locator(HANDLE)).toHaveAttribute("aria-expanded", "true");
 
     await page.locator(`${PANEL} a[href="/book/${bookId}/1"]`).click();
     await expect(page).toHaveURL(new RegExp(`/book/${bookId}/1$`));
-    await expect(page.locator(HANDLE)).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.locator(HANDLE)).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
   });
 });
 
-test.describe('ChaptersPanel — single-chapter books render no panel', () => {
-  test.skip(({ browserName }) => browserName === 'firefox', 'chromium + webkit only');
+test.describe("ChaptersPanel — single-chapter books render no panel", () => {
+  test.skip(
+    ({ browserName }) => browserName === "firefox",
+    "chromium + webkit only",
+  );
 
-  test('handle is absent when there is only one chapter', async ({ page }) => {
-await seedAndOpen(page, {
+  test("handle is absent when there is only one chapter", async ({ page }) => {
+    await seedAndOpen(page, {
       chapters: [
         {
-          title: 'Only Chapter',
-          paragraphs: Array.from({ length: 5 }, (_, i) => ({ html: fillerHtml(i) })),
+          title: "Only Chapter",
+          paragraphs: Array.from({ length: 5 }, (_, i) => ({
+            html: fillerHtml(i),
+          })),
         },
       ],
     });
-    await page.waitForSelector('.paragraphs-container');
+    await page.waitForSelector(".paragraphs-container");
     await expect(page.locator(HANDLE)).toHaveCount(0);
     await expect(page.locator(PANEL)).toHaveCount(0);
   });

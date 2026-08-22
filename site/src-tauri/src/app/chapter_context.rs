@@ -5,17 +5,12 @@
 use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use library::{
-    library::Library,
-    translator::ChapterContextProvider,
-};
+use library::{library::Library, translator::ChapterContextProvider};
 use tokio::sync::watch;
 use tokio::time::timeout;
 use uuid::Uuid;
 
-use crate::app::summary_generation_queue::{
-    SummaryGenerationQueue, concat_prior_summaries,
-};
+use crate::app::summary_generation_queue::{SummaryGenerationQueue, concat_prior_summaries};
 
 /// Covers a few Flash-Lite summary calls (~1–3s each) while still bounding a
 /// stuck book.
@@ -50,10 +45,7 @@ impl ChapterContextProvider for SummaryBackedChapterContext {
         self.queue.enqueue(book_id);
 
         let library = self.current_library()?;
-        let state = self
-            .queue
-            .get_or_init_book_state(&library, book_id)
-            .await?;
+        let state = self.queue.get_or_init_book_state(&library, book_id).await?;
         let mut rx = state.subscribe_ready();
         // The summaries map is authoritative; the watch only signals changes.
         if let Some(ready_through) = state.summaries.lock().await.ready_through()
@@ -84,31 +76,18 @@ impl ChapterContextProvider for SummaryBackedChapterContext {
         Ok(())
     }
 
-    async fn prior_summaries(
-        &self,
-        book_id: Uuid,
-        chapter_index: usize,
-    ) -> anyhow::Result<String> {
+    async fn prior_summaries(&self, book_id: Uuid, chapter_index: usize) -> anyhow::Result<String> {
         let library = self.current_library()?;
-        let state = self
-            .queue
-            .get_or_init_book_state(&library, book_id)
-            .await?;
+        let state = self.queue.get_or_init_book_state(&library, book_id).await?;
         let summaries = state.summaries.lock().await;
         Ok(concat_prior_summaries(&summaries, chapter_index))
     }
 
-    async fn chapter_text(
-        &self,
-        book_id: Uuid,
-        chapter_index: usize,
-    ) -> anyhow::Result<String> {
+    async fn chapter_text(&self, book_id: Uuid, chapter_index: usize) -> anyhow::Result<String> {
         let book = self.current_library()?.get_book(&book_id).await?;
         let book = book.lock().await;
         if chapter_index >= book.book.chapter_count() {
-            anyhow::bail!(
-                "chapter index {chapter_index} out of range for book {book_id}"
-            );
+            anyhow::bail!("chapter index {chapter_index} out of range for book {book_id}");
         }
         let chapter = book.book.chapter_view(chapter_index);
         let mut text = String::new();

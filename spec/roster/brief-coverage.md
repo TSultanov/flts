@@ -7,38 +7,38 @@ distributed protocol** — brief Families 1-3. Family 4 (file-merge) is the exis
 
 ## §2 Families → hunting cfg
 
-| Family | Mechanism | Hunt cfg | Targeting invariant/property | Status |
-|---|---|---|---|---|
-| F1 Roster CRDT LWW under per-device clocks | `roster.rs:48-84` merge | `MC_hunt_f1.cfg` | `ConvergenceAgreement`, `NoSpuriousResurrection` | **Counterexample found** (see §6.1 M1/M3) |
-| F2 Reconcile add/remove asymmetry | `reconcile.rs:31-53` | `MC_hunt_f2.cfg` | `ReconcileNeverDropsActive` | Holds (20.9M states, no error) |
-| F3 Mesh propagation / closure | `engine.rs:187-212`, `sync_daemon.rs:122-133` | `MC_hunt_f3.cfg` | `MeshClosesWhenSettled` | Holds (mesh closes from one hub) |
-| F4 Syncthing-fed file merge | `library_book/`, `translation.rs` | `../MC_hunt_*.cfg` (existing) | `TranslationDistinctVersionsPreserved`, `DictionaryEntriesMonotonic` | Existing spec (`../base.tla`) |
-| F5 Save/watch echo-gate quiescence | `6e5e4f4`, `library_book/mod.rs:441-459` | **none** | `EchoQuiescence` | **Gap — not modeled (see below)** |
+| Family                                     | Mechanism                                     | Hunt cfg                      | Targeting invariant/property                                         | Status                                    |
+| ------------------------------------------ | --------------------------------------------- | ----------------------------- | -------------------------------------------------------------------- | ----------------------------------------- |
+| F1 Roster CRDT LWW under per-device clocks | `roster.rs:48-84` merge                       | `MC_hunt_f1.cfg`              | `ConvergenceAgreement`, `NoSpuriousResurrection`                     | **Counterexample found** (see §6.1 M1/M3) |
+| F2 Reconcile add/remove asymmetry          | `reconcile.rs:31-53`                          | `MC_hunt_f2.cfg`              | `ReconcileNeverDropsActive`                                          | Holds (20.9M states, no error)            |
+| F3 Mesh propagation / closure              | `engine.rs:187-212`, `sync_daemon.rs:122-133` | `MC_hunt_f3.cfg`              | `MeshClosesWhenSettled`                                              | Holds (mesh closes from one hub)          |
+| F4 Syncthing-fed file merge                | `library_book/`, `translation.rs`             | `../MC_hunt_*.cfg` (existing) | `TranslationDistinctVersionsPreserved`, `DictionaryEntriesMonotonic` | Existing spec (`../base.tla`)             |
+| F5 Save/watch echo-gate quiescence         | `6e5e4f4`, `library_book/mod.rs:441-459`      | **none**                      | `EchoQuiescence`                                                     | **Gap — not modeled (see below)**         |
 
 ## §5 Invariants → enabled in ≥1 cfg
 
-| Brief invariant | Spec operator | Enabled in | Result |
-|---|---|---|---|
-| `RosterConvergence` | `ConvergenceAgreement` | `MC_hunt_f1.cfg` | reachable, holds when causality respected |
-| `NoSpuriousResurrection` | `NoSpuriousResurrection` | `MC_hunt_f1.cfg` | **violated** under ts collision/skew |
-| `ReconcileNeverDropsActive` | `ReconcileNeverDropsActive` | `MC_hunt_f2.cfg` | holds |
-| `MeshClosure` | `MeshClosesWhenSettled` (safety surrogate) + `MeshConverges` (temporal, in `MC.tla`) | `MC_hunt_f3.cfg` | holds |
-| `TranslationDistinctVersionsPreserved` | — | `../MC.cfg` (existing) | existing spec |
-| `DictionaryEntriesMonotonic` | — | `../MC.cfg` (existing) | existing spec |
-| `EchoQuiescence` | — | none | **gap** |
+| Brief invariant                        | Spec operator                                                                        | Enabled in             | Result                                    |
+| -------------------------------------- | ------------------------------------------------------------------------------------ | ---------------------- | ----------------------------------------- |
+| `RosterConvergence`                    | `ConvergenceAgreement`                                                               | `MC_hunt_f1.cfg`       | reachable, holds when causality respected |
+| `NoSpuriousResurrection`               | `NoSpuriousResurrection`                                                             | `MC_hunt_f1.cfg`       | **violated** under ts collision/skew      |
+| `ReconcileNeverDropsActive`            | `ReconcileNeverDropsActive`                                                          | `MC_hunt_f2.cfg`       | holds                                     |
+| `MeshClosure`                          | `MeshClosesWhenSettled` (safety surrogate) + `MeshConverges` (temporal, in `MC.tla`) | `MC_hunt_f3.cfg`       | holds                                     |
+| `TranslationDistinctVersionsPreserved` | —                                                                                    | `../MC.cfg` (existing) | existing spec                             |
+| `DictionaryEntriesMonotonic`           | —                                                                                    | `../MC.cfg` (existing) | existing spec                             |
+| `EchoQuiescence`                       | —                                                                                    | none                   | **gap**                                   |
 
 Structural (always on): `TypeOK`, `RosterDisjoint`, `NoSelfPeer` — in `MC.cfg`
 convergence run (clean, ~1.08M distinct states).
 
 ## §6.1 Model-checkable findings → reachability
 
-| ID | Description | Hunt cfg makes it reachable? | Outcome |
-|---|---|---|---|
-| M1 | Remove on a behind-clock node loses to a causally-earlier add (skew) → resurrection | `MC_hunt_f1.cfg` (`MaxClock=2` allows ts inversion) | **Confirmed reachable** — `NoSpuriousResurrection` counterexample |
-| M2 | Third node isolated despite hub pairing? | `MC_hunt_f3.cfg` | Refuted in scope — mesh always closes when settled; no isolation found |
-| M3 | Equal-`now_ms()` add+remove resolve to "active" (`rts > added` false at equality) | `MC_hunt_f1.cfg` (the found trace uses `ts=0` on both) | **Confirmed reachable** — same counterexample, equal-ts form |
-| M4 | Echo-gate quiescence under concurrent divergent edits | none (Family 5 not modeled) | **gap** |
-| M5 | Translation siblings, distinct ids, equal timestamps collapse | `../MC.cfg` (existing) | existing spec |
+| ID  | Description                                                                         | Hunt cfg makes it reachable?                           | Outcome                                                                |
+| --- | ----------------------------------------------------------------------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------- |
+| M1  | Remove on a behind-clock node loses to a causally-earlier add (skew) → resurrection | `MC_hunt_f1.cfg` (`MaxClock=2` allows ts inversion)    | **Confirmed reachable** — `NoSpuriousResurrection` counterexample      |
+| M2  | Third node isolated despite hub pairing?                                            | `MC_hunt_f3.cfg`                                       | Refuted in scope — mesh always closes when settled; no isolation found |
+| M3  | Equal-`now_ms()` add+remove resolve to "active" (`rts > added` false at equality)   | `MC_hunt_f1.cfg` (the found trace uses `ts=0` on both) | **Confirmed reachable** — same counterexample, equal-ts form           |
+| M4  | Echo-gate quiescence under concurrent divergent edits                               | none (Family 5 not modeled)                            | **gap**                                                                |
+| M5  | Translation siblings, distinct ids, equal timestamps collapse                       | `../MC.cfg` (existing)                                 | existing spec                                                          |
 
 ### F1 counterexample (M1/M3) — what TLC found
 

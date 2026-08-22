@@ -1,5 +1,5 @@
-import { test, expect } from '../../real/fixtures';
-import type { Locator, Page } from '@playwright/test';
+import { test, expect } from "../../real/fixtures";
+import type { Locator, Page } from "@playwright/test";
 import {
   expectTranslated,
   paragraphLocator,
@@ -7,8 +7,8 @@ import {
   translateButton,
   wordSegment,
   type ParagraphSegment,
-} from '../helpers/paragraph';
-import { getHarness } from '../../real/harness-registry';
+} from "../helpers/paragraph";
+import { getHarness } from "../../real/harness-registry";
 
 /**
  * Translation results are cached on disk by source text, and that cache dir
@@ -21,7 +21,7 @@ function nonceText(): string {
 }
 
 function segmentsOf(text: string): ParagraphSegment[] {
-  return text.split(' ').map((token, i) =>
+  return text.split(" ").map((token, i) =>
     wordSegment({
       flatIndex: i,
       sentence: 0,
@@ -33,12 +33,12 @@ function segmentsOf(text: string): ParagraphSegment[] {
 }
 
 /** Streaming translation traffic only; summaries are unary `:generateContent`. */
-const STREAM_GLOB = '*streamGenerateContent*';
+const STREAM_GLOB = "*streamGenerateContent*";
 
 async function streamCallsFor(text: string): Promise<number> {
   const reqs = await getHarness().llm.requests();
   return reqs.filter(
-    (r) => r.path.endsWith(':streamGenerateContent') && r.body.includes(text),
+    (r) => r.path.endsWith(":streamGenerateContent") && r.body.includes(text),
   ).length;
 }
 
@@ -47,7 +47,10 @@ async function seedOneParagraph(page: Page, text: string) {
   const seeded = await seedAndOpen(page, {
     chapters: [{ paragraphs: [{ html: text }] }],
     translateConfigs: [
-      { paragraphId: 0, cfg: { kind: 'immediate', segments: segmentsOf(text) } },
+      {
+        paragraphId: 0,
+        cfg: { kind: "immediate", segments: segmentsOf(text) },
+      },
     ],
   });
   const p = paragraphLocator(page, 0);
@@ -59,8 +62,8 @@ async function seedOneParagraph(page: Page, text: string) {
 
 function collectWarnings(page: Page): string[] {
   const warnings: string[] = [];
-  page.on('console', (msg) => {
-    if (msg.type() === 'warning') warnings.push(msg.text());
+  page.on("console", (msg) => {
+    if (msg.type() === "warning") warnings.push(msg.text());
   });
   return warnings;
 }
@@ -69,13 +72,13 @@ function collectWarnings(page: Page): string[] {
 async function expectFailedBack(p: Locator, text: string) {
   const btn = translateButton(p);
   await expect(btn).toBeEnabled({ timeout: 60_000 });
-  await expect(p.locator('.circular-progress')).toHaveCount(0);
-  await expect(p.locator('.word-span')).toHaveCount(0);
-  await expect(p.locator('.original')).toHaveText(text);
+  await expect(p.locator(".circular-progress")).toHaveCount(0);
+  await expect(p.locator(".word-span")).toHaveCount(0);
+  await expect(p.locator(".original")).toHaveText(text);
 }
 
-test.describe('LLM failure injection', () => {
-  test('5xx twice then success: the queue retries and the paragraph translates', async ({
+test.describe("LLM failure injection", () => {
+  test("5xx twice then success: the queue retries and the paragraph translates", async ({
     page,
     harness,
   }) => {
@@ -84,19 +87,19 @@ test.describe('LLM failure injection', () => {
 
     await harness.llm.addRule({
       matcher: { pathGlob: STREAM_GLOB },
-      action: { type: 'status', code: 503, body: { error: 'sim overloaded' } },
+      action: { type: "status", code: 503, body: { error: "sim overloaded" } },
       times: 2,
     });
 
     await btn.click();
     await expectTranslated(p);
-    await expect(p.locator('.word-span').first()).toBeAttached();
+    await expect(p.locator(".word-span").first()).toBeAttached();
 
     // Two rejected attempts plus the one that stuck.
     expect(await streamCallsFor(text)).toBeGreaterThanOrEqual(3);
   });
 
-  test('malformed JSON surfaces a failure and leaves the app usable', async ({
+  test("malformed JSON surfaces a failure and leaves the app usable", async ({
     page,
     harness,
   }) => {
@@ -106,26 +109,32 @@ test.describe('LLM failure injection', () => {
 
     await harness.llm.addRule({
       matcher: { pathGlob: STREAM_GLOB },
-      action: { type: 'corrupt', mode: 'malformed_json' },
+      action: { type: "corrupt", mode: "malformed_json" },
     });
 
     await btn.click();
     await expectFailedBack(p, text);
     await expect
-      .poll(() => warnings.some((w) => w.includes('Translation failed for paragraph 0')), {
-        timeout: 30_000,
-      })
+      .poll(
+        () =>
+          warnings.some((w) =>
+            w.includes("Translation failed for paragraph 0"),
+          ),
+        {
+          timeout: 30_000,
+        },
+      )
       .toBe(true);
 
     // Still responsive: away and back re-renders the chapter.
-    await page.goto('/');
+    await page.goto("/");
     await page.goto(`/book/${bookId}/0`);
     const p2 = paragraphLocator(page, 0);
-    await expect(p2.locator('.original')).toHaveText(text);
+    await expect(p2.locator(".original")).toHaveText(text);
     await expect(translateButton(p2)).toBeEnabled({ timeout: 30_000 });
   });
 
-  test('a stalled stream holds the in-progress state and recovers after reset', async ({
+  test("a stalled stream holds the in-progress state and recovers after reset", async ({
     page,
     harness,
   }) => {
@@ -134,18 +143,18 @@ test.describe('LLM failure injection', () => {
 
     await harness.llm.addRule({
       matcher: { pathGlob: STREAM_GLOB },
-      action: { type: 'stall' },
+      action: { type: "stall" },
     });
 
     await btn.click();
     await expect(btn).toBeDisabled();
-    await expect(p.locator('.circular-progress')).toHaveCount(1);
+    await expect(p.locator(".circular-progress")).toHaveCount(1);
 
     // Backend request/idle timeouts are 1200s/180s, so nothing can resolve
     // this on its own — 5s is purely "the UI does not fall over".
     await page.waitForTimeout(5000);
     await expect(btn).toBeDisabled();
-    await expect(p.locator('.circular-progress')).toHaveCount(1);
+    await expect(p.locator(".circular-progress")).toHaveCount(1);
     expect(await page.evaluate(() => document.title)).toBeTruthy();
 
     // reset is the only stall release; it also wipes scripts, so re-seed.
@@ -161,7 +170,9 @@ test.describe('LLM failure injection', () => {
         async () => {
           if ((await translateButton(p).count()) === 0) return true;
           if (await translateButton(p).isEnabled()) {
-            await translateButton(p).click().catch(() => {});
+            await translateButton(p)
+              .click()
+              .catch(() => {});
           }
           return false;
         },
@@ -169,10 +180,10 @@ test.describe('LLM failure injection', () => {
       )
       .toBe(true);
     await expectTranslated(p);
-    await expect(p.locator('.word-span').first()).toBeAttached();
+    await expect(p.locator(".word-span").first()).toBeAttached();
   });
 
-  test('a truncated stream fails without rendering partial words', async ({
+  test("a truncated stream fails without rendering partial words", async ({
     page,
     harness,
   }) => {
@@ -182,19 +193,25 @@ test.describe('LLM failure injection', () => {
 
     await harness.llm.addRule({
       matcher: { pathGlob: STREAM_GLOB },
-      action: { type: 'truncate', fraction: 0.5 },
+      action: { type: "truncate", fraction: 0.5 },
     });
 
     await btn.click();
     await expectFailedBack(p, text);
     await expect
-      .poll(() => warnings.some((w) => w.includes('Translation failed for paragraph 0')), {
-        timeout: 30_000,
-      })
+      .poll(
+        () =>
+          warnings.some((w) =>
+            w.includes("Translation failed for paragraph 0"),
+          ),
+        {
+          timeout: 30_000,
+        },
+      )
       .toBe(true);
   });
 
-  test('a failing re-translate never drops the stored translation', async ({
+  test("a failing re-translate never drops the stored translation", async ({
     page,
     harness,
   }) => {
@@ -204,40 +221,46 @@ test.describe('LLM failure injection', () => {
 
     await btn.click();
     await expectTranslated(p);
-    const wordCount = await p.locator('.word-span').count();
+    const wordCount = await p.locator(".word-span").count();
     expect(wordCount).toBeGreaterThan(0);
 
     await harness.llm.addRule({
       matcher: { pathGlob: STREAM_GLOB },
-      action: { type: 'status', code: 500, body: { error: 'sim down' } },
+      action: { type: "status", code: 500, body: { error: "sim down" } },
     });
 
     // No UI affordance re-translates an already-translated paragraph (the
     // button is gone once segments exist), so drive the command directly.
     const before = await streamCallsFor(text);
-    await harness.invoke('translate_paragraph', {
+    await harness.invoke("translate_paragraph", {
       bookId,
       paragraphId: 0,
-      model: 'models/gemini-2.5-flash',
+      model: "models/gemini-2.5-flash",
       useCache: false,
     });
     // translate_paragraph returns on enqueue and 500 is transient (4 attempts),
     // so the terminal failure — which is what the save path runs on — is only
     // reached at the finished-with-error warning. Asserting earlier would race it.
     await expect
-      .poll(() => warnings.some((w) => w.includes('Translation failed for paragraph 0')), {
-        timeout: 60_000,
-      })
+      .poll(
+        () =>
+          warnings.some((w) =>
+            w.includes("Translation failed for paragraph 0"),
+          ),
+        {
+          timeout: 60_000,
+        },
+      )
       .toBe(true);
     expect(await streamCallsFor(text)).toBeGreaterThan(before);
 
     // The old translation survives the failed pass, in the live view...
-    await expect(p.locator('.word-span')).toHaveCount(wordCount);
+    await expect(p.locator(".word-span")).toHaveCount(wordCount);
     // ...and on disk.
     await page.reload();
     const p2 = paragraphLocator(page, 0);
     await expectTranslated(p2);
-    await expect(p2.locator('.word-span')).toHaveCount(wordCount);
+    await expect(p2.locator(".word-span")).toHaveCount(wordCount);
   });
 });
 
@@ -246,8 +269,8 @@ function translationJson(text: string): unknown {
   return {
     s: [
       {
-        ft: 'full-0',
-        wl: text.split(' ').map((token, i) => ({
+        ft: "full-0",
+        wl: text.split(" ").map((token, i) => ({
           o: token,
           t: [`t${i}`],
           n: null,
@@ -255,7 +278,7 @@ function translationJson(text: string): unknown {
           g: {
             lf: token,
             lt: `t${i}`,
-            pos: 'common_noun',
+            pos: "common_noun",
             pl: null,
             pe: null,
             te: null,

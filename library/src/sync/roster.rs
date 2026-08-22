@@ -40,7 +40,8 @@ pub type VClock = BTreeMap<String, u64>;
 
 /// `a` dominates `b`: `a[k] >= b[k]` for every component (missing = 0).
 fn vc_dominates(a: &VClock, b: &VClock) -> bool {
-    b.iter().all(|(k, vb)| a.get(k).copied().unwrap_or(0) >= *vb)
+    b.iter()
+        .all(|(k, vb)| a.get(k).copied().unwrap_or(0) >= *vb)
 }
 
 /// `a` strictly dominates `b`: dominates and is not equal.
@@ -309,7 +310,8 @@ impl RosterStore {
         let tmp = self.dir.join(format!("{ROSTER_FILENAME}~{}", now_ms()));
         let json = serde_json::to_vec_pretty(roster)?;
         fs::write(&tmp, json).with_context(|| format!("writing roster temp {tmp:?}"))?;
-        fs::rename(&tmp, &self.path).with_context(|| format!("renaming roster into {:?}", self.path))?;
+        fs::rename(&tmp, &self.path)
+            .with_context(|| format!("renaming roster into {:?}", self.path))?;
         Ok(())
     }
 
@@ -460,10 +462,16 @@ mod tests {
 
     #[test]
     fn merge_unions_present_devices() {
-        let a = one("A", Some(add("a", 1, vc(&[("A", 1)]))), None)
-            .merge(&one("B", Some(add("b", 1, vc(&[("B", 1)]))), None));
+        let a = one("A", Some(add("a", 1, vc(&[("A", 1)]))), None).merge(&one(
+            "B",
+            Some(add("b", 1, vc(&[("B", 1)]))),
+            None,
+        ));
         let merged = a.merge(&one("C", Some(add("c", 1, vc(&[("C", 1)]))), None));
-        assert_eq!(merged.devices.keys().collect::<Vec<_>>(), vec!["A", "B", "C"]);
+        assert_eq!(
+            merged.devices.keys().collect::<Vec<_>>(),
+            vec!["A", "B", "C"]
+        );
         assert!(merged.removed.is_empty());
     }
 
@@ -476,7 +484,10 @@ mod tests {
         let ab = added.merge(&removed);
         let ba = removed.merge(&added);
         assert_eq!(ab, ba, "merge is commutative");
-        assert!(!ab.is_present("X"), "causally-later removal wins under skew");
+        assert!(
+            !ab.is_present("X"),
+            "causally-later removal wins under skew"
+        );
         assert!(ab.removed.contains_key("X"));
     }
 
@@ -490,7 +501,11 @@ mod tests {
 
     #[test]
     fn re_add_after_remove_resurrects() {
-        let removed = one("X", Some(add("x", 1, vc(&[("A", 1)]))), Some(rem(2, vc(&[("A", 1), ("B", 1)]))));
+        let removed = one(
+            "X",
+            Some(add("x", 1, vc(&[("A", 1)]))),
+            Some(rem(2, vc(&[("A", 1), ("B", 1)]))),
+        );
         assert!(!removed.is_present("X"));
         let readd = one("X", Some(add("x", 3, vc(&[("A", 1), ("B", 2)]))), None);
         let m = removed.merge(&readd);
@@ -514,7 +529,10 @@ mod tests {
         assert!(merged.devices.contains_key("A"));
         assert!(merged.devices.contains_key("B"), "sibling merged in");
         assert!(!sibling.exists(), "sibling cleaned up");
-        assert!(store.load().unwrap().devices.contains_key("B"), "merge persisted");
+        assert!(
+            store.load().unwrap().devices.contains_key("B"),
+            "merge persisted"
+        );
 
         let _ = fs::remove_dir_all(&tmp);
     }
@@ -547,7 +565,10 @@ mod tests {
         roster.normalize();
         assert!(roster.is_present("A"), "legacy active device stays present");
         assert!(!roster.is_present("B"), "legacy tombstone stays removed");
-        assert!(roster.adds["A"].vc.is_empty(), "seeded with empty (legacy) vc");
+        assert!(
+            roster.adds["A"].vc.is_empty(),
+            "seeded with empty (legacy) vc"
+        );
     }
 
     #[test]
@@ -572,7 +593,10 @@ mod tests {
         store.remove_device("P").unwrap();
         let r = store.load().unwrap();
         assert!(!r.is_present("P"));
-        assert!(!r.removes["P"].vc.is_empty(), "removal carries a real vc now");
+        assert!(
+            !r.removes["P"].vc.is_empty(),
+            "removal carries a real vc now"
+        );
         let _ = fs::remove_dir_all(&tmp);
     }
 
@@ -587,7 +611,11 @@ mod tests {
             (0u64..3, arb_vc()).prop_map(|(ts, v)| add("n", ts, v)),
             0..3,
         );
-        let removes = prop::collection::btree_map("[X-Z]", (0u64..3, arb_vc()).prop_map(|(ts, v)| rem(ts, v)), 0..3);
+        let removes = prop::collection::btree_map(
+            "[X-Z]",
+            (0u64..3, arb_vc()).prop_map(|(ts, v)| rem(ts, v)),
+            0..3,
+        );
         (adds, removes).prop_map(|(adds, removes)| {
             let mut r = Roster {
                 adds,

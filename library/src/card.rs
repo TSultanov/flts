@@ -1279,8 +1279,14 @@ mod tests {
         assert_eq!(base.examples.len(), EXAMPLES_CAP);
         let from_a = base.examples.iter().filter(|e| e.book_id == book_a).count();
         let from_b = base.examples.iter().filter(|e| e.book_id == book_b).count();
-        assert_eq!(from_a, 5, "expected an even spread across books, got {from_a} from A");
-        assert_eq!(from_b, 5, "expected an even spread across books, got {from_b} from B");
+        assert_eq!(
+            from_a, 5,
+            "expected an even spread across books, got {from_a} from A"
+        );
+        assert_eq!(
+            from_b, 5,
+            "expected an even spread across books, got {from_b} from B"
+        );
     }
 
     #[test]

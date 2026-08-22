@@ -228,8 +228,9 @@ impl HttpSyncthing {
 #[async_trait]
 impl SyncthingApi for HttpSyncthing {
     async fn my_id(&self) -> Result<String> {
-        let status: SystemStatus = serde_json::from_value(self.get("/rest/system/status").await?)
-            .map_err(|e| anyhow!("syncthing: decoding system status failed: {e}"))?;
+        let status: SystemStatus =
+            serde_json::from_value(self.get("/rest/system/status").await?)
+                .map_err(|e| anyhow!("syncthing: decoding system status failed: {e}"))?;
         Ok(status.my_id)
     }
 
@@ -255,14 +256,18 @@ impl SyncthingApi for HttpSyncthing {
     }
 
     async fn rename_device(&self, device_id: &str, name: &str) -> Result<()> {
-        let mut device = self.get(&format!("/rest/config/devices/{device_id}")).await?;
+        let mut device = self
+            .get(&format!("/rest/config/devices/{device_id}"))
+            .await?;
         device["name"] = serde_json::Value::String(name.to_string());
         self.put(&format!("/rest/config/devices/{device_id}"), &device)
             .await
     }
 
     async fn set_device_addresses(&self, device_id: &str, addresses: Vec<String>) -> Result<()> {
-        let mut device = self.get(&format!("/rest/config/devices/{device_id}")).await?;
+        let mut device = self
+            .get(&format!("/rest/config/devices/{device_id}"))
+            .await?;
         device["addresses"] = serde_json::Value::Array(
             addresses
                 .into_iter()

@@ -35,29 +35,29 @@ Maps the generated TLA+ actions to Rust instrumentation points for trace generat
 
 ### State fields
 
-| Implementation field / derived value | TLA+ field | Access notes |
-|---|---|---|
-| Canonical `book.dat` mtime | `state.bookMainMTime` | Read metadata for `<book>/book.dat` after the action |
-| Count of sibling `book*.dat` conflicts | `state.bookConflictCount` | Count non-canonical `book*.dat` files in the book directory |
-| Canonical `state.json.readingState` | `state.stateMainReading` | Emit `"nil"` when absent |
-| Canonical `state.json.folderPath` | `state.stateMainFolder` | Encode as stable label or joined path string; emit `"nil"` when absent |
-| Count of sibling `state*.json` conflicts | `state.stateConflictCount` | Count non-canonical `state*.json` files |
-| Canonical translation file mtime | `state.translationMainMTime` | Read metadata for `translation_<src>_<tgt>.dat` |
-| Number of versions in canonical translation history | `state.translationVersionCount` | Count paragraph-version nodes after merge/load |
-| Count of sibling `translation_*.dat` conflicts | `state.translationConflictCount` | Count non-canonical translation files for the same pair |
-| Number of entries in canonical dictionary | `state.dictionaryEntryCount` | Count dictionary pairs after load/merge |
-| Save-stage marker for `book.dat` save path | `state.bookSaveStage` | `"idle"` before/after save, `"ready"` after the reconciliation branch inside save |
-| Save-stage marker for translation save path | `state.translationSaveStage` | `"idle"` before/after save, `"ready"` after merge-before-write |
-| User-state operation stage | `state.stateOpKind` | `"idle"`, `"reading"`, or `"folder"` |
+| Implementation field / derived value                | TLA+ field                       | Access notes                                                                      |
+| --------------------------------------------------- | -------------------------------- | --------------------------------------------------------------------------------- |
+| Canonical `book.dat` mtime                          | `state.bookMainMTime`            | Read metadata for `<book>/book.dat` after the action                              |
+| Count of sibling `book*.dat` conflicts              | `state.bookConflictCount`        | Count non-canonical `book*.dat` files in the book directory                       |
+| Canonical `state.json.readingState`                 | `state.stateMainReading`         | Emit `"nil"` when absent                                                          |
+| Canonical `state.json.folderPath`                   | `state.stateMainFolder`          | Encode as stable label or joined path string; emit `"nil"` when absent            |
+| Count of sibling `state*.json` conflicts            | `state.stateConflictCount`       | Count non-canonical `state*.json` files                                           |
+| Canonical translation file mtime                    | `state.translationMainMTime`     | Read metadata for `translation_<src>_<tgt>.dat`                                   |
+| Number of versions in canonical translation history | `state.translationVersionCount`  | Count paragraph-version nodes after merge/load                                    |
+| Count of sibling `translation_*.dat` conflicts      | `state.translationConflictCount` | Count non-canonical translation files for the same pair                           |
+| Number of entries in canonical dictionary           | `state.dictionaryEntryCount`     | Count dictionary pairs after load/merge                                           |
+| Save-stage marker for `book.dat` save path          | `state.bookSaveStage`            | `"idle"` before/after save, `"ready"` after the reconciliation branch inside save |
+| Save-stage marker for translation save path         | `state.translationSaveStage`     | `"idle"` before/after save, `"ready"` after merge-before-write                    |
+| User-state operation stage                          | `state.stateOpKind`              | `"idle"`, `"reading"`, or `"folder"`                                              |
 
 ### Message / argument fields
 
 Only two actions require explicit arguments in the trace:
 
-| Trace field | TLA+ usage | Source |
-|---|---|---|
+| Trace field         | TLA+ usage                          | Source                                      |
+| ------------------- | ----------------------------------- | ------------------------------------------- |
 | `event.arg.reading` | `UpdateReadingStateReload(reading)` | Function argument to `update_reading_state` |
-| `event.arg.folder` | `UpdateFolderPathReload(folder)` | Function argument to `update_folder_path` |
+| `event.arg.folder`  | `UpdateFolderPathReload(folder)`    | Function argument to `update_folder_path`   |
 
 ## 2. Action-to-code mapping
 

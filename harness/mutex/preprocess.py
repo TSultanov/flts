@@ -82,7 +82,9 @@ def discover_locks(merged: dict[str, list[dict]]) -> dict[str, str]:
     return mapping
 
 
-def apply_lock_mapping(merged: dict[str, list[dict]], mapping: dict[str, str]) -> dict[str, list[dict]]:
+def apply_lock_mapping(
+    merged: dict[str, list[dict]], mapping: dict[str, str]
+) -> dict[str, list[dict]]:
     """Replace raw lock names with TLA+ constants in all events."""
     for events in merged.values():
         for e in events:
@@ -149,7 +151,7 @@ def validate_events(merged: dict[str, list[dict]]) -> list[str]:
         for i in range(1, len(events)):
             if events[i]["start"] < events[i - 1]["start"]:
                 warnings.append(
-                    f"{task_id}[{i}]: out-of-order (start {events[i]['start']} < prev start {events[i-1]['start']})"
+                    f"{task_id}[{i}]: out-of-order (start {events[i]['start']} < prev start {events[i - 1]['start']})"
                 )
 
     return warnings
@@ -172,7 +174,9 @@ def generate_cfg_snippet(task_ids: list[str], mapping: dict[str, str]) -> str:
 
 def main():
     parser = argparse.ArgumentParser(description="Preprocess mutex trace NDJSON files")
-    parser.add_argument("trace_dir", help="Directory containing trace-task-*.ndjson files")
+    parser.add_argument(
+        "trace_dir", help="Directory containing trace-task-*.ndjson files"
+    )
     parser.add_argument(
         "--output",
         "-o",
@@ -190,7 +194,9 @@ def main():
     pattern = os.path.join(trace_dir, "trace-task-*.ndjson")
     files = sorted(glob.glob(pattern))
     if not files:
-        print(f"ERROR: no trace-task-*.ndjson files found in {trace_dir}", file=sys.stderr)
+        print(
+            f"ERROR: no trace-task-*.ndjson files found in {trace_dir}", file=sys.stderr
+        )
         sys.exit(1)
 
     print(f"Found {len(files)} trace file(s):")

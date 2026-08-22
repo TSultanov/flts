@@ -1,19 +1,19 @@
-import { test as base, expect, type Page } from '@playwright/test';
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { WebSocket } from 'ws';
-import { setHarness } from './harness-registry';
-import { SimClient } from './sim-client';
+import { test as base, expect, type Page } from "@playwright/test";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { WebSocket } from "ws";
+import { setHarness } from "./harness-registry";
+import { SimClient } from "./sim-client";
 
 export { expect };
-export type { SimRule, SimRequest } from './sim-client';
+export type { SimRule, SimRequest } from "./sim-client";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
-  '../../..',
+  "../../..",
 );
 
 export type RealHarness = {
@@ -32,7 +32,7 @@ export type RealHarness = {
    * navigation, so a `page.goto` must follow. `SIGKILL` skips the graceful
    * wait, so nothing the app was mid-write on gets a chance to finish.
    */
-  restartApp: (opts?: { signal?: 'SIGTERM' | 'SIGKILL' }) => Promise<void>;
+  restartApp: (opts?: { signal?: "SIGTERM" | "SIGKILL" }) => Promise<void>;
   /** Re-inject the bridge port into `page` after a restart. */
   trackPage: (page: Page) => void;
 };
@@ -46,7 +46,7 @@ type SimPorts = { llm: number; lrclib: number; anki: number };
  */
 function cleanEnv(): NodeJS.ProcessEnv {
   return Object.fromEntries(
-    Object.entries(process.env).filter(([k]) => !k.startsWith('FLTS_')),
+    Object.entries(process.env).filter(([k]) => !k.startsWith("FLTS_")),
   );
 }
 
@@ -59,26 +59,28 @@ function awaitStdoutLine(
   onOtherLine?: (line: string) => void,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
-    let buf = '';
+    let buf = "";
     let done = false;
     const finish = (fn: () => void) => {
       if (done) return;
       done = true;
       clearTimeout(timer);
-      child.stdout.off('data', onData);
+      child.stdout.off("data", onData);
       fn();
     };
     const timer = setTimeout(
       () =>
         finish(() =>
-          reject(new Error(`${what}: timed out after ${timeoutMs}ms; saw: ${buf}`)),
+          reject(
+            new Error(`${what}: timed out after ${timeoutMs}ms; saw: ${buf}`),
+          ),
         ),
       timeoutMs,
     );
     const onData = (chunk: Buffer) => {
       buf += chunk.toString();
       let nl: number;
-      while ((nl = buf.indexOf('\n')) !== -1) {
+      while ((nl = buf.indexOf("\n")) !== -1) {
         const line = buf.slice(0, nl);
         buf = buf.slice(nl + 1);
         if (match(line)) {
@@ -88,12 +90,14 @@ function awaitStdoutLine(
         onOtherLine?.(line);
       }
     };
-    child.stdout.on('data', onData);
-    child.once('exit', (code) =>
-      finish(() => reject(new Error(`${what}: process exited early (${code})`))),
+    child.stdout.on("data", onData);
+    child.once("exit", (code) =>
+      finish(() =>
+        reject(new Error(`${what}: process exited early (${code})`)),
+      ),
     );
     // Without this, spawn ENOENT is an uncaught exception, not a fixture failure.
-    child.once('error', (err) =>
+    child.once("error", (err) =>
       finish(() => reject(new Error(`${what}: spawn failed: ${err.message}`))),
     );
   });
@@ -101,22 +105,22 @@ function awaitStdoutLine(
 
 async function killTree(
   child: ChildProcessWithoutNullStreams,
-  signal: 'SIGTERM' | 'SIGKILL' = 'SIGTERM',
+  signal: "SIGTERM" | "SIGKILL" = "SIGTERM",
 ): Promise<void> {
   // No pid = spawn itself failed; there is nothing to reap and no 'exit' coming.
   if (child.pid === undefined) return;
   if (child.exitCode !== null || child.signalCode !== null) return;
   const exited = new Promise<void>((r) => {
-    child.once('exit', () => r());
-    child.once('close', () => r());
+    child.once("exit", () => r());
+    child.once("close", () => r());
   });
-  if (signal === 'SIGKILL') {
-    child.kill('SIGKILL');
+  if (signal === "SIGKILL") {
+    child.kill("SIGKILL");
     await exited;
     return;
   }
-  child.kill('SIGTERM');
-  const killer = setTimeout(() => child.kill('SIGKILL'), 3000);
+  child.kill("SIGTERM");
+  const killer = setTimeout(() => child.kill("SIGKILL"), 3000);
   await exited;
   clearTimeout(killer);
 }
@@ -137,10 +141,10 @@ class BridgeClient {
     const ws = new WebSocket(`ws://127.0.0.1:${this.port}/bridge`);
     this.ws = ws;
     await new Promise<void>((resolve, reject) => {
-      ws.once('open', () => resolve());
-      ws.once('error', reject);
+      ws.once("open", () => resolve());
+      ws.once("error", reject);
     });
-    ws.on('message', (data) => {
+    ws.on("message", (data) => {
       let frame: any;
       try {
         frame = JSON.parse(String(data));
@@ -151,7 +155,7 @@ class BridgeClient {
       const p = this.pending.get(frame.id);
       if (!p) return;
       this.pending.delete(frame.id);
-      if ('err' in frame) p.reject(new Error(JSON.stringify(frame.err)));
+      if ("err" in frame) p.reject(new Error(JSON.stringify(frame.err)));
       else p.resolve(frame.ok);
     });
     return ws;
@@ -173,7 +177,7 @@ class BridgeClient {
     this.ws?.close();
     // A restart closes the socket under in-flight invokes; without this they
     // never settle and the caller hangs to its test timeout.
-    for (const [, p] of [...this.pending]) p.reject(new Error('bridge closed'));
+    for (const [, p] of [...this.pending]) p.reject(new Error("bridge closed"));
     this.pending.clear();
   }
 }
@@ -184,7 +188,7 @@ async function healthCheck(
   stderr: () => string,
 ): Promise<void> {
   try {
-    await harness.invoke('get_config');
+    await harness.invoke("get_config");
   } catch (err) {
     throw new Error(
       `bridge health check (get_config) failed: ${(err as Error).message}\napp stderr:\n${stderr()}`,
@@ -229,19 +233,19 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
       let app: ChildProcessWithoutNullStreams | undefined;
       let bridge: BridgeClient | undefined;
       let configDir: string | undefined;
-      let simsStderr = '';
-      let stderrBuf = '';
+      let simsStderr = "";
+      let stderrBuf = "";
 
       try {
-        sims = spawn(path.join(repoRoot, 'target/debug/flts-e2e-sims'), {
+        sims = spawn(path.join(repoRoot, "target/debug/flts-e2e-sims"), {
           // stdin stays piped and open: the sims exit on EOF.
-          stdio: ['pipe', 'pipe', 'pipe'],
+          stdio: ["pipe", "pipe", "pipe"],
           env: cleanEnv(),
         }) as ChildProcessWithoutNullStreams;
-        sims.on('error', () => {}); // surfaced via awaitStdoutLine
-        sims.stdin.on('error', () => {}); // EPIPE on kill is expected
+        sims.on("error", () => {}); // surfaced via awaitStdoutLine
+        sims.stdin.on("error", () => {}); // EPIPE on kill is expected
         sims.stderr.on(
-          'data',
+          "data",
           (c) => (simsStderr = (simsStderr + c).slice(-8000)),
         );
 
@@ -249,8 +253,8 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
         try {
           const line = await awaitStdoutLine(
             sims,
-            'flts-e2e-sims port line',
-            (l) => l.trim().startsWith('{'),
+            "flts-e2e-sims port line",
+            (l) => l.trim().startsWith("{"),
             10_000,
           );
           ports = JSON.parse(line);
@@ -260,19 +264,19 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
           );
         }
 
-        configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'flts-e2e-'));
+        configDir = fs.mkdtempSync(path.join(os.tmpdir(), "flts-e2e-"));
         fs.writeFileSync(
-          path.join(configDir, 'config.json'),
+          path.join(configDir, "config.json"),
           JSON.stringify(
             {
-              targetLanguageId: 'eng',
-              translationProvider: 'google',
-              geminiApiKey: 'sim-key',
-              openaiApiKey: 'sim-key',
-              deepseekApiKey: 'sim-key',
-              zaiApiKey: 'sim-key',
-              openrouterApiKey: 'sim-key',
-              model: 'models/gemini-2.5-flash',
+              targetLanguageId: "eng",
+              translationProvider: "google",
+              geminiApiKey: "sim-key",
+              openaiApiKey: "sim-key",
+              deepseekApiKey: "sim-key",
+              zaiApiKey: "sim-key",
+              openrouterApiKey: "sim-key",
+              model: "models/gemini-2.5-flash",
               ankiEndpoint: `http://127.0.0.1:${ports.anki}`,
               syncEnabled: false,
             },
@@ -283,11 +287,11 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
 
         const dir = configDir;
         const launchApp = async (): Promise<number> => {
-          app = spawn(path.join(repoRoot, 'target/debug/app'), {
-            stdio: ['pipe', 'pipe', 'pipe'],
+          app = spawn(path.join(repoRoot, "target/debug/app"), {
+            stdio: ["pipe", "pipe", "pipe"],
             env: {
               ...cleanEnv(),
-              FLTS_E2E_BRIDGE_PORT: '0',
+              FLTS_E2E_BRIDGE_PORT: "0",
               FLTS_CONFIG_DIR: dir,
               FLTS_GEMINI_BASE_URL: `http://127.0.0.1:${ports.llm}/v1beta/`,
               OPENAI_BASE_URL: `http://127.0.0.1:${ports.llm}/v1`,
@@ -295,31 +299,36 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
               FLTS_ZAI_BASE_URL: `http://127.0.0.1:${ports.llm}`,
               FLTS_OPENROUTER_BASE_URL: `http://127.0.0.1:${ports.llm}/v1`,
               FLTS_LRCLIB_BASE_URL: `http://127.0.0.1:${ports.lrclib}`,
-              FLTS_DISABLE_SYNC: '1',
+              FLTS_DISABLE_SYNC: "1",
               // Never the developer's real "FLTS-Spotify" keychain entry; the
               // disable flag stops the OS access prompt a fresh name provokes.
               FLTS_KEYRING_SERVICE: `FLTS-E2E-${path.basename(dir)}`,
-              FLTS_DISABLE_KEYRING: '1',
-              FLTS_ANKI_SYNC_INTERVAL_SECS: '3600',
+              FLTS_DISABLE_KEYRING: "1",
+              FLTS_ANKI_SYNC_INTERVAL_SECS: "3600",
             },
           }) as ChildProcessWithoutNullStreams;
-          app.on('error', () => {});
-          app.stdin.on('error', () => {});
-          app.stderr.on('data', (c) => (stderrBuf = (stderrBuf + c).slice(-64_000)));
-          app.stdout.on('data', () => {});
+          app.on("error", () => {});
+          app.stdin.on("error", () => {});
+          app.stderr.on(
+            "data",
+            (c) => (stderrBuf = (stderrBuf + c).slice(-64_000)),
+          );
+          app.stdout.on("data", () => {});
 
           try {
             const line = await awaitStdoutLine(
               app,
-              'app bridge line',
-              (l) => l.startsWith('FLTS_E2E_BRIDGE_LISTENING'),
+              "app bridge line",
+              (l) => l.startsWith("FLTS_E2E_BRIDGE_LISTENING"),
               30_000,
             );
             return JSON.parse(
-              line.slice('FLTS_E2E_BRIDGE_LISTENING'.length).trim(),
+              line.slice("FLTS_E2E_BRIDGE_LISTENING".length).trim(),
             ).port;
           } catch (err) {
-            throw new Error(`${(err as Error).message}\napp stderr:\n${stderrBuf}`);
+            throw new Error(
+              `${(err as Error).message}\napp stderr:\n${stderrBuf}`,
+            );
           }
         };
 
@@ -338,12 +347,12 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
           invoke: (cmd, args) => bridge!.invoke(cmd, args),
           trackPage: (page) => {
             pages.add(page);
-            page.once('close', () => pages.delete(page));
+            page.once("close", () => pages.delete(page));
           },
           restartApp: async (opts) => {
             bridge?.close();
             bridge = undefined;
-            if (app) await killTree(app, opts?.signal ?? 'SIGTERM');
+            if (app) await killTree(app, opts?.signal ?? "SIGTERM");
             harness.bridgePort = await launchApp();
             bridge = new BridgeClient(harness.bridgePort);
             await injectPort(harness, [...pages], true);
@@ -373,7 +382,7 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
         }
       }
     },
-    { scope: 'worker', auto: true, timeout: 120_000 },
+    { scope: "worker", auto: true, timeout: 120_000 },
   ],
 
   autoReset: [
@@ -383,24 +392,23 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
         harness.lrclib.reset(),
         harness.anki.reset(),
       ]);
-      const books =
-        await harness.invoke<Array<{ id: string }>>('list_books');
+      const books = await harness.invoke<Array<{ id: string }>>("list_books");
       for (const b of books) {
-        await harness.invoke('delete_book', { bookId: b.id });
+        await harness.invoke("delete_book", { bookId: b.id });
       }
 
       await use();
 
       if (testInfo.status !== testInfo.expectedStatus) {
         workerHadFailure = true;
-        await testInfo.attach('app-stderr', {
+        await testInfo.attach("app-stderr", {
           body: harness.appStderr(),
-          contentType: 'text/plain',
+          contentType: "text/plain",
         });
         for (const [name, sim] of [
-          ['llm', harness.llm],
-          ['lrclib', harness.lrclib],
-          ['anki', harness.anki],
+          ["llm", harness.llm],
+          ["lrclib", harness.lrclib],
+          ["anki", harness.anki],
         ] as const) {
           await testInfo
             .attach(`sim-${name}`, {
@@ -409,13 +417,13 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
                 null,
                 2,
               ),
-              contentType: 'application/json',
+              contentType: "application/json",
             })
             .catch(() => {});
         }
-        await testInfo.attach('config-dir', {
+        await testInfo.attach("config-dir", {
           body: harness.configDir,
-          contentType: 'text/plain',
+          contentType: "text/plain",
         });
       }
     },

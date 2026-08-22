@@ -1,76 +1,76 @@
-import { invoke } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { writable, type Readable } from 'svelte/store';
+import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { writable, type Readable } from "svelte/store";
 
 export type TrackMeta = {
-    id: string;
-    name: string;
-    artist: string;
-    album?: string;
-    durationMs: number;
+  id: string;
+  name: string;
+  artist: string;
+  album?: string;
+  durationMs: number;
 };
 
 export type QueueSnapshot = {
-    /// Preload only for "playlist"/"album"; elsewhere the next track is
-    /// either autoplay-undefined or not a song.
-    contextType: string | null;
-    currentlyPlayingId: string | null;
-    upcoming: TrackMeta[];
+  /// Preload only for "playlist"/"album"; elsewhere the next track is
+  /// either autoplay-undefined or not a song.
+  contextType: string | null;
+  currentlyPlayingId: string | null;
+  upcoming: TrackMeta[];
 };
 
 export type SpotifyWebStatus = {
-    connected: boolean;
-    premiumRequired: boolean;
-    lastError: string | null;
+  connected: boolean;
+  premiumRequired: boolean;
+  lastError: string | null;
 };
 
 export async function spotifyWebConnect(clientId: string): Promise<void> {
-    await invoke('spotify_web_connect', { clientId });
+  await invoke("spotify_web_connect", { clientId });
 }
 
 export async function spotifyWebDisconnect(): Promise<void> {
-    await invoke('spotify_web_disconnect');
+  await invoke("spotify_web_disconnect");
 }
 
 export async function spotifyWebStatus(): Promise<SpotifyWebStatus> {
-    return await invoke<SpotifyWebStatus>('spotify_web_status');
+  return await invoke<SpotifyWebStatus>("spotify_web_status");
 }
 
 export async function spotifyWebGetQueue(): Promise<QueueSnapshot | null> {
-    return (await invoke<QueueSnapshot | null>('spotify_web_get_queue')) ?? null;
+  return (await invoke<QueueSnapshot | null>("spotify_web_get_queue")) ?? null;
 }
 
 /// `receivedAt` lets consumers drop stale snapshots — a watcher that fell
 /// behind still reports the old queue.
 export type QueueStoreValue = {
-    snapshot: QueueSnapshot | null;
-    receivedAt: number;
+  snapshot: QueueSnapshot | null;
+  receivedAt: number;
 };
 
 export function spotifyQueueStore(): {
-    store: Readable<QueueStoreValue>;
-    cleanup: () => void;
+  store: Readable<QueueStoreValue>;
+  cleanup: () => void;
 } {
-    const inner = writable<QueueStoreValue>({ snapshot: null, receivedAt: 0 });
-    let unlisten: UnlistenFn | null = null;
+  const inner = writable<QueueStoreValue>({ snapshot: null, receivedAt: 0 });
+  let unlisten: UnlistenFn | null = null;
 
-    listen<QueueSnapshot | null>('spotify_queue', (e) => {
-        inner.set({ snapshot: e.payload ?? null, receivedAt: Date.now() });
-    }).then((fn) => {
-        unlisten = fn;
-    });
+  listen<QueueSnapshot | null>("spotify_queue", (e) => {
+    inner.set({ snapshot: e.payload ?? null, receivedAt: Date.now() });
+  }).then((fn) => {
+    unlisten = fn;
+  });
 
-    void spotifyWebGetQueue().then((snapshot) =>
-        inner.set({ snapshot, receivedAt: snapshot ? Date.now() : 0 }),
-    );
+  void spotifyWebGetQueue().then((snapshot) =>
+    inner.set({ snapshot, receivedAt: snapshot ? Date.now() : 0 }),
+  );
 
-    return {
-        store: { subscribe: inner.subscribe },
-        cleanup: () => {
-            if (unlisten) {
-                unlisten();
-                unlisten = null;
-            }
-        },
-    };
+  return {
+    store: { subscribe: inner.subscribe },
+    cleanup: () => {
+      if (unlisten) {
+        unlisten();
+        unlisten = null;
+      }
+    },
+  };
 }

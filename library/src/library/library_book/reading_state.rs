@@ -268,7 +268,8 @@ mod tests {
     #[tokio::test]
     async fn resolve_tolerates_concurrent_removal_of_siblings() {
         let (_guard, book) = book_dir("flts_rs_race");
-        let canonical = r#"{"readingState":{"chapter_id":1,"paragraph_id":1,"page_offset":0},"folderPath":[]}"#;
+        let canonical =
+            r#"{"readingState":{"chapter_id":1,"paragraph_id":1,"page_offset":0},"folderPath":[]}"#;
         let sibling = r#"{"readingState":{"chapter_id":5,"paragraph_id":9,"page_offset":0},"folderPath":["Shelf"]}"#;
         write_json(&book.join("state.json"), canonical);
         write_json(&book.join("state (conflict copy).json"), sibling);
@@ -291,10 +292,7 @@ mod tests {
     #[tokio::test]
     async fn parse_handles_legacy_and_empty() {
         assert_eq!(parse_user_state(""), Some(BookUserState::default()));
-        assert_eq!(
-            parse_user_state("   \n"),
-            Some(BookUserState::default())
-        );
+        assert_eq!(parse_user_state("   \n"), Some(BookUserState::default()));
 
         let legacy = parse_user_state(r#"{"chapterId":3,"paragraphId":9}"#)
             .expect("legacy reading state parses");

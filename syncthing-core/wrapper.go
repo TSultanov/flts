@@ -25,8 +25,8 @@ import (
 
 // engine holds the live process state. Guarded by mu; nil when stopped.
 type engine struct {
-	app          *syncthing.App
-	earlyCancel  context.CancelFunc
+	app         *syncthing.App
+	earlyCancel context.CancelFunc
 }
 
 var (
@@ -34,21 +34,21 @@ var (
 	running *engine
 )
 
-//export flts_st_ping
-//
 // Returns a fixed sentinel so Rust can assert the FFI chain is live.
+//
+//export flts_st_ping
 func flts_st_ping() C.int {
 	return 4711
 }
 
-//export flts_st_start
-//
 // Starts the engine: state under `home`, REST/GUI on `guiAddr` keyed by
 // `apiKey`. Non-zero `hermetic` disables discovery/relays/NAT and uses a random
 // loopback BEP port; it must be a parameter, not an env var, because the Go
 // runtime snapshots the environment at c-archive init.
 //
 // Returns 0, or a non-zero code identifying the failing step. Idempotent.
+//
+//export flts_st_start
 func flts_st_start(home, guiAddr, apiKey *C.char, hermetic C.int) C.int {
 	mu.Lock()
 	defer mu.Unlock()
@@ -135,9 +135,9 @@ func flts_st_start(home, guiAddr, apiKey *C.char, hermetic C.int) C.int {
 	return 0
 }
 
-//export flts_st_stop
-//
 // Stops the engine and the early services. Idempotent.
+//
+//export flts_st_stop
 func flts_st_stop() C.int {
 	mu.Lock()
 	defer mu.Unlock()

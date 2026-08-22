@@ -1,4 +1,4 @@
-import { test, expect } from '../../real/fixtures';
+import { test, expect } from "../../real/fixtures";
 
 /**
  * Lyrics resolution is Spotify-driven in production: the AppleScript watcher /
@@ -10,8 +10,8 @@ import { test, expect } from '../../real/fixtures';
  * lyrics UI is unreachable without a `spotify_state` event, so no UI here.
  */
 
-const TARGET = 'eng'; // fixtures' config.targetLanguageId
-const MODEL = 'models/gemini-2.5-flash'; // fixtures' config.model
+const TARGET = "eng"; // fixtures' config.targetLanguageId
+const MODEL = "models/gemini-2.5-flash"; // fixtures' config.model
 
 type Track = {
   /** Appears verbatim in the LRClib query — the request-log filter keys on it. */
@@ -24,7 +24,11 @@ type Track = {
 };
 
 type LyricsState = {
-  lyrics: { trackId?: string; lines: Array<{ text: string }>; synced?: boolean } | null;
+  lyrics: {
+    trackId?: string;
+    lines: Array<{ text: string }>;
+    synced?: boolean;
+  } | null;
   translation: unknown | null;
 };
 
@@ -36,12 +40,13 @@ function nonceTrack(): Track {
     trackId: `trk-${n}`,
     name: `Song-${n}`,
     artist: `Artist-${n}`,
-    album: 'Album',
+    album: "Album",
     durationMs: 210_000,
   };
 }
 
-const LRC = '[00:01.00]Erste Zeile\n[00:05.00]Zweite Zeile\n[00:09.00]Dritte Zeile';
+const LRC =
+  "[00:01.00]Erste Zeile\n[00:05.00]Zweite Zeile\n[00:09.00]Dritte Zeile";
 
 function resolve(track: Track) {
   const { nonce: _nonce, ...meta } = track;
@@ -54,74 +59,88 @@ function lyricsStateArgs(track: Track) {
 
 /** LRClib hits for this track only — the sim logs the query string. */
 async function hitsFor(
-  lrclib: { requests: () => Promise<Array<{ path: string; query?: string | null }>> },
+  lrclib: {
+    requests: () => Promise<Array<{ path: string; query?: string | null }>>;
+  },
   track: Track,
-  path = '/api/get',
+  path = "/api/get",
 ): Promise<number> {
   const reqs = await lrclib.requests();
   return reqs.filter(
-    (r) => r.path === path && (r.query ?? '').includes(track.nonce),
+    (r) => r.path === path && (r.query ?? "").includes(track.nonce),
   ).length;
 }
 
-const GET_GLOB = '/api/get';
+const GET_GLOB = "/api/get";
 
-test.describe('LRClib failure injection', () => {
-  test('seeded track resolves to synced lyrics', async ({ harness }) => {
+test.describe("LRClib failure injection", () => {
+  test("seeded track resolves to synced lyrics", async ({ harness }) => {
     const track = nonceTrack();
     await harness.lrclib.seed([
-      { artist: track.artist, title: track.name, album: track.album, syncedLyrics: LRC },
+      {
+        artist: track.artist,
+        title: track.name,
+        album: track.album,
+        syncedLyrics: LRC,
+      },
     ]);
 
-    await harness.invoke('e2e_resolve_track', resolve(track));
+    await harness.invoke("e2e_resolve_track", resolve(track));
 
     const state = await harness.invoke<LyricsState>(
-      'get_track_lyrics_state',
+      "get_track_lyrics_state",
       lyricsStateArgs(track),
     );
     expect(state.lyrics).not.toBeNull();
     expect(state.lyrics!.lines.map((l) => l.text)).toEqual([
-      'Erste Zeile',
-      'Zweite Zeile',
-      'Dritte Zeile',
+      "Erste Zeile",
+      "Zweite Zeile",
+      "Dritte Zeile",
     ]);
     expect(state.lyrics!.synced).toBe(true);
     expect(await hitsFor(harness.lrclib, track)).toBe(1);
-    expect(await hitsFor(harness.lrclib, track, '/api/search')).toBe(0);
+    expect(await hitsFor(harness.lrclib, track, "/api/search")).toBe(0);
   });
 
-  test('404 resolves to no-lyrics without retrying', async ({ harness }) => {
+  test("404 resolves to no-lyrics without retrying", async ({ harness }) => {
     const track = nonceTrack();
     // Catalog left empty: the sim answers LRClib's real 404 body.
 
-    await harness.invoke('e2e_resolve_track', resolve(track));
+    await harness.invoke("e2e_resolve_track", resolve(track));
 
     const state = await harness.invoke<LyricsState>(
-      'get_track_lyrics_state',
+      "get_track_lyrics_state",
       lyricsStateArgs(track),
     );
     expect(state.lyrics).toBeNull();
     // 404 is terminal for GET (Ok(None)) — it must never reach the retry classifier.
     // Search still runs once and returns [].
     expect(await hitsFor(harness.lrclib, track)).toBe(1);
-    expect(await hitsFor(harness.lrclib, track, '/api/search')).toBe(1);
+    expect(await hitsFor(harness.lrclib, track, "/api/search")).toBe(1);
   });
 
-  test('two 503s then success: the retry budget covers it', async ({ harness }) => {
+  test("two 503s then success: the retry budget covers it", async ({
+    harness,
+  }) => {
     const track = nonceTrack();
     await harness.lrclib.seed([
-      { artist: track.artist, title: track.name, album: track.album, syncedLyrics: LRC },
+      {
+        artist: track.artist,
+        title: track.name,
+        album: track.album,
+        syncedLyrics: LRC,
+      },
     ]);
     await harness.lrclib.addRule({
       matcher: { pathGlob: GET_GLOB },
-      action: { type: 'status', code: 503, body: { error: 'sim overloaded' } },
+      action: { type: "status", code: 503, body: { error: "sim overloaded" } },
       times: 2,
     });
 
-    await harness.invoke('e2e_resolve_track', resolve(track));
+    await harness.invoke("e2e_resolve_track", resolve(track));
 
     const state = await harness.invoke<LyricsState>(
-      'get_track_lyrics_state',
+      "get_track_lyrics_state",
       lyricsStateArgs(track),
     );
     expect(state.lyrics).not.toBeNull();
@@ -130,26 +149,31 @@ test.describe('LRClib failure injection', () => {
     expect(await hitsFor(harness.lrclib, track)).toBeGreaterThanOrEqual(3);
   });
 
-  test('malformed JSON fails terminally and leaves the app usable', async ({
+  test("malformed JSON fails terminally and leaves the app usable", async ({
     harness,
   }) => {
     const track = nonceTrack();
     await harness.lrclib.seed([
-      { artist: track.artist, title: track.name, album: track.album, syncedLyrics: LRC },
+      {
+        artist: track.artist,
+        title: track.name,
+        album: track.album,
+        syncedLyrics: LRC,
+      },
     ]);
     await harness.lrclib.addRule({
       matcher: { pathGlob: GET_GLOB },
-      action: { type: 'corrupt', mode: 'malformed_json' },
+      action: { type: "corrupt", mode: "malformed_json" },
     });
 
     // Pinned contract: a decode error is NOT transient, so resolve_track
     // surfaces it to its caller instead of retrying or silently swallowing it.
-    await expect(harness.invoke('e2e_resolve_track', resolve(track))).rejects.toThrow(
-      /error decoding response body|expected|EOF/i,
-    );
+    await expect(
+      harness.invoke("e2e_resolve_track", resolve(track)),
+    ).rejects.toThrow(/error decoding response body|expected|EOF/i);
 
     const state = await harness.invoke<LyricsState>(
-      'get_track_lyrics_state',
+      "get_track_lyrics_state",
       lyricsStateArgs(track),
     );
     expect(state.lyrics).toBeNull();
@@ -161,43 +185,15 @@ test.describe('LRClib failure injection', () => {
     await harness.lrclib.seed([
       { artist: ok.artist, title: ok.name, album: ok.album, syncedLyrics: LRC },
     ]);
-    await harness.invoke('e2e_resolve_track', resolve(ok));
+    await harness.invoke("e2e_resolve_track", resolve(ok));
     const okState = await harness.invoke<LyricsState>(
-      'get_track_lyrics_state',
+      "get_track_lyrics_state",
       lyricsStateArgs(ok),
     );
     expect(okState.lyrics).not.toBeNull();
   });
 
-  test('a slow response still resolves inside the 10s client timeout', async ({
-    harness,
-  }) => {
-    const track = nonceTrack();
-    await harness.lrclib.seed([
-      { artist: track.artist, title: track.name, album: track.album, syncedLyrics: LRC },
-    ]);
-    await harness.lrclib.addRule({
-      matcher: { pathGlob: GET_GLOB },
-      action: { type: 'delay', ms: 2000 },
-      times: 1,
-    });
-
-    const started = Date.now();
-    await harness.invoke('e2e_resolve_track', resolve(track));
-    expect(Date.now() - started).toBeGreaterThanOrEqual(1500);
-
-    const state = await harness.invoke<LyricsState>(
-      'get_track_lyrics_state',
-      lyricsStateArgs(track),
-    );
-    expect(state.lyrics).not.toBeNull();
-    expect(state.lyrics!.lines.length).toBe(3);
-    expect(await hitsFor(harness.lrclib, track)).toBe(1);
-  });
-});
-
-test.describe('LRClib search ranking', () => {
-  test('prefers a same-track synced search hit over GET plain', async ({
+  test("a slow response still resolves inside the 10s client timeout", async ({
     harness,
   }) => {
     const track = nonceTrack();
@@ -206,32 +202,65 @@ test.describe('LRClib search ranking', () => {
         artist: track.artist,
         title: track.name,
         album: track.album,
-        plainLyrics: 'plain line',
+        syncedLyrics: LRC,
+      },
+    ]);
+    await harness.lrclib.addRule({
+      matcher: { pathGlob: GET_GLOB },
+      action: { type: "delay", ms: 2000 },
+      times: 1,
+    });
+
+    const started = Date.now();
+    await harness.invoke("e2e_resolve_track", resolve(track));
+    expect(Date.now() - started).toBeGreaterThanOrEqual(1500);
+
+    const state = await harness.invoke<LyricsState>(
+      "get_track_lyrics_state",
+      lyricsStateArgs(track),
+    );
+    expect(state.lyrics).not.toBeNull();
+    expect(state.lyrics!.lines.length).toBe(3);
+    expect(await hitsFor(harness.lrclib, track)).toBe(1);
+  });
+});
+
+test.describe("LRClib search ranking", () => {
+  test("prefers a same-track synced search hit over GET plain", async ({
+    harness,
+  }) => {
+    const track = nonceTrack();
+    await harness.lrclib.seed([
+      {
+        artist: track.artist,
+        title: track.name,
+        album: track.album,
+        plainLyrics: "plain line",
         duration: 210,
       },
       {
         artist: track.artist,
         title: track.name,
-        album: 'Greatest Hits',
+        album: "Greatest Hits",
         syncedLyrics: LRC,
         duration: 210,
       },
     ]);
 
-    await harness.invoke('e2e_resolve_track', resolve(track));
+    await harness.invoke("e2e_resolve_track", resolve(track));
 
     const state = await harness.invoke<LyricsState>(
-      'get_track_lyrics_state',
+      "get_track_lyrics_state",
       lyricsStateArgs(track),
     );
     expect(state.lyrics).not.toBeNull();
     expect(state.lyrics!.synced).toBe(true);
     expect(state.lyrics!.lines.map((l) => l.text)).toEqual([
-      'Erste Zeile',
-      'Zweite Zeile',
-      'Dritte Zeile',
+      "Erste Zeile",
+      "Zweite Zeile",
+      "Dritte Zeile",
     ]);
     expect(await hitsFor(harness.lrclib, track)).toBe(1);
-    expect(await hitsFor(harness.lrclib, track, '/api/search')).toBe(1);
+    expect(await hitsFor(harness.lrclib, track, "/api/search")).toBe(1);
   });
 });

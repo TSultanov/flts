@@ -1,6 +1,6 @@
 // Real-backend stand-in for @tauri-apps/api/event: subscriptions are fed by
 // bridge event frames. Export surface mirrors tests/mocks/tauri-event.ts.
-import { bridgeListen } from './bridge-transport';
+import { bridgeListen } from "./bridge-transport";
 
 export type Event<T> = { event: string; id: number; payload: T };
 
