@@ -23,7 +23,10 @@
         spotifyWebConnect,
         spotifyWebDisconnect,
         spotifyWebStatus,
+        spotifyCdpStatus,
+        spotifyRestartWithDevtools,
         type SpotifyWebStatus,
+        type SpotifyCdpStatus,
     } from "../spotify/queueStore";
     import SyncDevicesView from "../sync/SyncDevicesView.svelte";
     import { takeOpenSyncRequest } from "../sync/store.svelte";
@@ -163,6 +166,7 @@
         }
         if (isMac) {
             spotifyStatus = await spotifyWebStatus();
+            await refreshCdpStatus();
         }
     });
 
@@ -238,6 +242,38 @@
             spotifyStatus = await spotifyWebStatus();
         } finally {
             spotifyBusy = false;
+        }
+    }
+
+    // First-party lyrics ride on the running Spotify desktop app: we evaluate
+    // the lyrics request inside its webview over a DevTools bridge, so Spotify
+    // itself makes the call with its own session. The bridge needs Spotify
+    // launched with --remote-debugging-port; the button restarts it with the
+    // flag (session and playback position are restored).
+    let cdpStatus = $state<SpotifyCdpStatus | null>(null);
+    let cdpBusy = $state(false);
+    let cdpError = $state('');
+    let cdpRestarted = $state(false);
+
+    async function refreshCdpStatus() {
+        try {
+            cdpStatus = await spotifyCdpStatus();
+        } catch {
+            cdpStatus = null;
+        }
+    }
+
+    async function restartWithBridge() {
+        cdpBusy = true;
+        cdpError = '';
+        try {
+            cdpStatus = await spotifyRestartWithDevtools();
+            cdpRestarted = cdpStatus.available;
+        } catch (e) {
+            cdpError = String(e);
+        } finally {
+            cdpBusy = false;
+            setTimeout(() => (cdpRestarted = false), 3000);
         }
     }
 
@@ -472,6 +508,32 @@
                             >
                                 {spotifyBusy ? 'Connecting...' : 'Connect'}
                             </button>
+                        {/if}
+
+                        {#if cdpStatus?.available}
+                            <p class="hint" data-testid="cdp-status">
+                                ✅ First-party lyrics bridge active (port
+                                {cdpStatus.port})
+                            </p>
+                        {:else}
+                            <button
+                                id="spotifyRestartBridge"
+                                onclick={restartWithBridge}
+                                disabled={cdpBusy}
+                            >
+                                {cdpBusy
+                                    ? 'Restarting Spotify…'
+                                    : cdpRestarted
+                                      ? '✅ Bridge enabled'
+                                      : 'Enable first-party lyrics'}
+                            </button>
+                            <p class="hint">
+                                {cdpStatus?.hint ??
+                                'Restarts Spotify with a local debug bridge so lyrics come straight from the desktop app (no account risk).'}
+                            </p>
+                        {/if}
+                        {#if cdpError}
+                            <p class="hint">{cdpError}</p>
                         {/if}
 
                         <label for="spotifyPreload">Preload tracks ahead</label>

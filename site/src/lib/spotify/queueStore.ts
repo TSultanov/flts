@@ -36,6 +36,26 @@ export async function spotifyWebStatus(): Promise<SpotifyWebStatus> {
   return await invoke<SpotifyWebStatus>("spotify_web_status");
 }
 
+/**
+ * Status of the Spotify DevTools bridge: the desktop app must run with
+ * `--remote-debugging-port` for first-party lyrics (fetched inside Spotify's
+ * own webview, so no credentials of ours are involved).
+ */
+export type SpotifyCdpStatus = {
+  available: boolean;
+  port: number;
+  hint: string | null;
+};
+
+export async function spotifyCdpStatus(): Promise<SpotifyCdpStatus> {
+  return await invoke<SpotifyCdpStatus>("spotify_cdp_status");
+}
+
+/** Relaunch Spotify with the DevTools flag (user-initiated, restores session). */
+export async function spotifyRestartWithDevtools(): Promise<SpotifyCdpStatus> {
+  return await invoke<SpotifyCdpStatus>("spotify_restart_with_devtools");
+}
+
 export async function spotifyWebGetQueue(): Promise<QueueSnapshot | null> {
   return (await invoke<QueueSnapshot | null>("spotify_web_get_queue")) ?? null;
 }

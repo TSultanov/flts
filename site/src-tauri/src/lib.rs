@@ -259,6 +259,8 @@ pub fn run() {
             app::spotify::web::spotify_web_disconnect,
             app::spotify::web::spotify_web_status,
             app::spotify::web::spotify_web_get_queue,
+            app::spotify::cdp::spotify_cdp_status,
+            app::spotify::cdp::spotify_restart_with_devtools,
             app::spotify::web::open_external_url,
         ])
         .build(context)

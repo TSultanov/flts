@@ -203,7 +203,7 @@ pub(crate) async fn fetch_lyrics_inner(
     }
 
     let duration_s = (track.duration_ms + 500) / 1000;
-    let fetched = lrclib::fetch(
+    let mut fetched = lrclib::fetch(
         track_id,
         &track.artist,
         &track.name,
@@ -211,6 +211,27 @@ pub(crate) async fn fetch_lyrics_inner(
         Some(duration_s),
     )
     .await?;
+
+    // Spotify's own lyrics are the second opinion: tried only when LRClib has
+    // nothing, so LRClib-first behavior (and its tests) are unchanged. The
+    // fetch runs inside the running Spotify desktop app's webview over its
+    // DevTools bridge (`spotify::cdp`), so it needs no credentials of our own
+    // and is invisible to Spotify's bot defenses. `Ok(None)` covers
+    // "bridge off" and "Spotify has no lyrics for this track".
+    #[cfg(target_os = "macos")]
+    if fetched.is_none() {
+        match crate::app::spotify::cdp::lyrics_for_track(track_id).await {
+            Ok(Some(l)) => {
+                info!(
+                    "Spotify lyrics fallback hit for {track_id} (synced={})",
+                    l.synced
+                );
+                fetched = Some(l);
+            }
+            Ok(None) => {}
+            Err(err) => warn!("Spotify lyrics fallback failed for {track_id}: {err}"),
+        }
+    }
 
     // Synced network wins (including an upgrade over unsynced disk). Unsynced
     // disk is kept when the network is no better, but still enters memory so

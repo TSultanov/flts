@@ -16,7 +16,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [features]
 # Opt-in only. Never enable by default or in ship builds: it exposes the whole
 # invoke surface over a local socket.
-e2e-bridge = ["dep:axum", "dep:futures-util", "tokio/net"]
+e2e-bridge = ["dep:axum", "tokio/net"]
 
 [build-dependencies]
 tauri-build = { version = "2.5.6", features = [] }
@@ -62,7 +62,9 @@ keyring = { version = "3", features = [
 webbrowser = "1"
 rand = { workspace = true }
 axum = { version = "0.8", features = ["ws"], optional = true }
-futures-util = { version = "0.3", optional = true }
+# CDP WebSocket client for the Spotify lyrics bridge (app/spotify/cdp.rs).
+tokio-tungstenite = "0.29"
+futures-util = "0.3"
 
 [target.'cfg(unix)'.dependencies]
 # Only for raising RLIMIT_NOFILE at startup (see `raise_open_file_limit`).
