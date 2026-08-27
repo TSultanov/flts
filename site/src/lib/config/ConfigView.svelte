@@ -26,7 +26,11 @@
         spotifyCdpStatus,
         spotifyRestartWithDevtools,
         type SpotifyWebStatus,
+        spotifyLoginAgentStatus,
+        spotifyInstallLoginAgent,
+        spotifyRemoveLoginAgent,
         type SpotifyCdpStatus,
+        type SpotifyLoginAgentStatus,
     } from "../spotify/queueStore";
     import SyncDevicesView from "../sync/SyncDevicesView.svelte";
     import { takeOpenSyncRequest } from "../sync/store.svelte";
@@ -167,6 +171,7 @@
         if (isMac) {
             spotifyStatus = await spotifyWebStatus();
             await refreshCdpStatus();
+            await refreshLoginAgent();
         }
     });
 
@@ -274,6 +279,36 @@
         } finally {
             cdpBusy = false;
             setTimeout(() => (cdpRestarted = false), 3000);
+        }
+    }
+
+    // The bridge only survives a relaunch, so offer a login agent that opens
+    // Spotify with the flag every session. Spotify's own autostart helper is
+    // inside its signed bundle and can't carry the flag — the user turns that
+    // one off so the two don't race.
+    let loginAgent = $state<SpotifyLoginAgentStatus | null>(null);
+    let loginAgentBusy = $state(false);
+    let loginAgentError = $state('');
+
+    async function refreshLoginAgent() {
+        try {
+            loginAgent = await spotifyLoginAgentStatus();
+        } catch {
+            loginAgent = null;
+        }
+    }
+
+    async function toggleLoginAgent() {
+        loginAgentBusy = true;
+        loginAgentError = '';
+        try {
+            loginAgent = loginAgent?.installed
+                ? await spotifyRemoveLoginAgent()
+                : await spotifyInstallLoginAgent();
+        } catch (e) {
+            loginAgentError = String(e);
+        } finally {
+            loginAgentBusy = false;
         }
     }
 
@@ -534,6 +569,34 @@
                         {/if}
                         {#if cdpError}
                             <p class="hint">{cdpError}</p>
+                        {/if}
+
+                        <button
+                            id="spotifyLoginAgent"
+                            onclick={toggleLoginAgent}
+                            disabled={loginAgentBusy}
+                            data-testid="spotify-login-agent"
+                        >
+                            {loginAgentBusy
+                                ? '...'
+                                : loginAgent?.installed
+                                  ? 'Disable bridge at login'
+                                  : 'Enable bridge at login'}
+                        </button>
+                        <p class="hint">
+                            {#if loginAgent?.installed}
+                                ✅ Spotify starts with the lyrics bridge at
+                                login. Turn off Spotify's own “Open
+                                automatically after you log in” setting so the
+                                two don't race.
+                            {:else}
+                                Installs a login item that starts Spotify with
+                                the bridge every session, so you don't have to
+                                restart it.
+                            {/if}
+                        </p>
+                        {#if loginAgentError}
+                            <p class="hint">{loginAgentError}</p>
                         {/if}
 
                         <label for="spotifyPreload">Preload tracks ahead</label>

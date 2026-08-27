@@ -261,6 +261,9 @@ pub fn run() {
             app::spotify::web::spotify_web_get_queue,
             app::spotify::cdp::spotify_cdp_status,
             app::spotify::cdp::spotify_restart_with_devtools,
+            app::spotify::cdp::spotify_login_agent_status,
+            app::spotify::cdp::spotify_install_login_agent,
+            app::spotify::cdp::spotify_remove_login_agent,
             app::spotify::web::open_external_url,
         ])
         .build(context)

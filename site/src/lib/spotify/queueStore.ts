@@ -56,6 +56,28 @@ export async function spotifyRestartWithDevtools(): Promise<SpotifyCdpStatus> {
   return await invoke<SpotifyCdpStatus>("spotify_restart_with_devtools");
 }
 
+/**
+ * A per-user LaunchAgent that opens Spotify with the DevTools flag at login.
+ * Spotify's own login helper is inside its signed bundle and can't carry the
+ * flag, so the user must disable that one to avoid two launches racing.
+ */
+export type SpotifyLoginAgentStatus = {
+  installed: boolean;
+  path: string;
+};
+
+export async function spotifyLoginAgentStatus(): Promise<SpotifyLoginAgentStatus> {
+  return await invoke<SpotifyLoginAgentStatus>("spotify_login_agent_status");
+}
+
+export async function spotifyInstallLoginAgent(): Promise<SpotifyLoginAgentStatus> {
+  return await invoke<SpotifyLoginAgentStatus>("spotify_install_login_agent");
+}
+
+export async function spotifyRemoveLoginAgent(): Promise<SpotifyLoginAgentStatus> {
+  return await invoke<SpotifyLoginAgentStatus>("spotify_remove_login_agent");
+}
+
 export async function spotifyWebGetQueue(): Promise<QueueSnapshot | null> {
   return (await invoke<QueueSnapshot | null>("spotify_web_get_queue")) ?? null;
 }

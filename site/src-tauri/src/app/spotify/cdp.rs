@@ -427,6 +427,133 @@ pub async fn spotify_restart_with_devtools() -> Result<SpotifyCdpStatus, String>
     })
 }
 
+// ----- login agent ----------------------------------------------------------
+
+/// Reverse-DNS label of the LaunchAgent that starts Spotify with the flag.
+const LOGIN_AGENT_LABEL: &str = "com.flts.spotify-devtools";
+
+/// Whether a login agent that relaunches Spotify with the bridge is installed.
+#[derive(Debug, Clone, Serialize)]
+pub struct SpotifyLoginAgentStatus {
+    pub installed: bool,
+    pub path: String,
+}
+
+fn login_agent_path() -> Result<std::path::PathBuf, String> {
+    let base = directories::BaseDirs::new().ok_or("no home directory")?;
+    Ok(base
+        .home_dir()
+        .join("Library/LaunchAgents")
+        .join(format!("{LOGIN_AGENT_LABEL}.plist")))
+}
+
+fn login_agent_status_at(path: &std::path::Path) -> SpotifyLoginAgentStatus {
+    SpotifyLoginAgentStatus {
+        installed: path.exists(),
+        path: path.display().to_string(),
+    }
+}
+
+#[tauri::command]
+pub async fn spotify_login_agent_status() -> Result<SpotifyLoginAgentStatus, String> {
+    let path = login_agent_path()?;
+    Ok(login_agent_status_at(&path))
+}
+
+/// Installs a per-user LaunchAgent that opens Spotify with the DevTools flag at
+/// login. Spotify's own "open at login" helper lives inside its signed bundle
+/// and can't carry the flag, so the user must turn that one off to avoid two
+/// launches racing.
+#[tauri::command]
+pub async fn spotify_install_login_agent() -> Result<SpotifyLoginAgentStatus, String> {
+    let port = cdp_port();
+    let path = login_agent_path()?;
+    if let Some(dir) = path.parent() {
+        tokio::fs::create_dir_all(dir)
+            .await
+            .map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
+    }
+    tokio::fs::write(&path, login_agent_plist(port))
+        .await
+        .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+
+    // Replace any earlier revision; a first install has nothing to bootout.
+    let _ = launchctl(&["bootout", &domain_target()]).await;
+    let out = launchctl(&["bootstrap", &gui_domain(), &path.display().to_string()]).await?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(format!("launchctl bootstrap failed: {err}"));
+    }
+    info!("installed Spotify login agent at {}", path.display());
+    Ok(login_agent_status_at(&path))
+}
+
+#[tauri::command]
+pub async fn spotify_remove_login_agent() -> Result<SpotifyLoginAgentStatus, String> {
+    let path = login_agent_path()?;
+    let _ = launchctl(&["bootout", &domain_target()]).await;
+    match tokio::fs::remove_file(&path).await {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("failed to remove {}: {e}", path.display())),
+    }
+    Ok(login_agent_status_at(&path))
+}
+
+/// launchctl addresses per-user domains by numeric uid; `id -u` avoids a
+/// unix-only dependency in this otherwise platform-agnostic module.
+fn gui_domain() -> String {
+    static UID: OnceLock<String> = OnceLock::new();
+    let uid = UID.get_or_init(|| {
+        std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default()
+    });
+    format!("gui/{uid}")
+}
+
+fn domain_target() -> String {
+    format!("{}/{LOGIN_AGENT_LABEL}", gui_domain())
+}
+
+async fn launchctl(args: &[&str]) -> Result<std::process::Output, String> {
+    tokio::process::Command::new("launchctl")
+        .args(args)
+        .output()
+        .await
+        .map_err(|e| format!("launchctl failed: {e}"))
+}
+
+fn login_agent_plist(port: u16) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{LOGIN_AGENT_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/open</string>
+        <string>-a</string>
+        <string>Spotify</string>
+        <string>--args</string>
+        <string>--remote-debugging-port={port}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+</dict>
+</plist>
+"#
+    )
+}
+
 async fn spotify_running() -> bool {
     tokio::process::Command::new("pgrep")
         .args(["-x", "Spotify"])
