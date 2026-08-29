@@ -3,6 +3,8 @@ options:
   bundleIdPrefix: com.TS.FLTS
   deploymentTarget:
     iOS: 14.0
+  # Default xcodebuild configuration when none is passed (and Xcode's project default).
+  defaultConfig: release
 fileGroups: [../../src]
 configs:
   debug: debug
@@ -55,10 +57,6 @@ targets:
         CFBundleVersion: "100"
     entitlements:
       path: app_iOS/app_iOS.entitlements
-    scheme:
-      environmentVariables:
-        RUST_BACKTRACE: full
-        RUST_LOG: info
     settings:
       base:
         ENABLE_BITCODE: false
@@ -86,3 +84,29 @@ targets:
         outputFiles:
           - $(SRCROOT)/Externals/x86_64/${CONFIGURATION}/libapp.a
           - $(SRCROOT)/Externals/arm64/${CONFIGURATION}/libapp.a
+
+# Explicit scheme so Run/Test/Analyze default to Release (target schemes use debug).
+schemes:
+  app_iOS:
+    build:
+      targets:
+        app_iOS: all
+    run:
+      config: release
+      environmentVariables:
+        RUST_BACKTRACE: full
+        RUST_LOG: info
+    test:
+      config: release
+      environmentVariables:
+        RUST_BACKTRACE: full
+        RUST_LOG: info
+    profile:
+      config: release
+      environmentVariables:
+        RUST_BACKTRACE: full
+        RUST_LOG: info
+    analyze:
+      config: release
+    archive:
+      config: release

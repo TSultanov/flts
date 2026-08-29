@@ -482,7 +482,7 @@
 				3C6497CF9EADFA373F12EF5C /* release */,
 			);
 			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = debug;
+			defaultConfigurationName = release;
 		};
 		CDCB6DFA1AEBFEE3F608BA27 /* Build configuration list for PBXNativeTarget "app_iOS" */ = {
 			isa = XCConfigurationList;
@@ -491,7 +491,7 @@
 				1B9D5B8D34E6E0C88D0207F2 /* release */,
 			);
 			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = debug;
+			defaultConfigurationName = release;
 		};
 /* End XCConfigurationList section */
 	};

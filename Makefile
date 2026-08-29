@@ -3,10 +3,10 @@
 # Usage:
 #   make                  # build macOS desktop app (default)
 #   make dev              # run Tauri dev server (hot reload)
-#   make build-ios        # build iOS IPA
+#   make build-ios        # build iOS IPA (Release)
 #   make build-android    # build signed Android APK
 #   make install-macos    # build + copy to /Applications
-#   make install-ios      # build + install on connected iPhone/iPad
+#   make install-ios      # build Release + install on connected iPhone/iPad
 #   make install-android  # build + adb install on connected device
 #
 # Spaced aliases (quoted on the shell): make "install macos" | "install ios" | "install android"
@@ -56,7 +56,7 @@ build: build-macos ## build the Tauri app for the current dev platform (macOS)
 build-macos: deps ## build macOS .app bundle (release-ship profile)
 	cd "$(SITE)" && cargo tauri build -- --profile $(MACOS_PROFILE)
 
-build-ios: deps ## build iOS IPA (debugging / device install)
+build-ios: deps ## build iOS IPA (Release; development export for device install)
 	cd "$(SITE)" && cargo tauri ios build --export-method debugging --ci
 
 build-android: deps ## build signed universal Android APK
