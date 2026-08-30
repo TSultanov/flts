@@ -243,6 +243,10 @@ pub struct Config {
     /// Optional AnkiConnect API key. Unset for default Anki desktop installs.
     #[serde(rename = "ankiApiKey", default)]
     pub anki_api_key: Option<String>,
+    /// Automatic AnkiConnect sync. Defaults on: configs written before this
+    /// field existed synced, and must keep syncing.
+    #[serde(rename = "ankiSyncEnabled", default = "default_anki_sync_enabled")]
+    pub anki_sync_enabled: bool,
     /// Opt-in from the sync UI; enabling it starts the embedded engine.
     #[serde(rename = "syncEnabled", default)]
     pub sync_enabled: bool,
@@ -272,6 +276,10 @@ fn default_show_next_track() -> bool {
     true
 }
 
+fn default_anki_sync_enabled() -> bool {
+    true
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -289,6 +297,7 @@ impl Default for Config {
             spotify_show_next_track: default_show_next_track(),
             anki_endpoint: Some("http://127.0.0.1:8765".to_owned()),
             anki_api_key: None,
+            anki_sync_enabled: default_anki_sync_enabled(),
             sync_enabled: false,
             sync_device_name: None,
             translation_concurrency: default_translation_concurrency(),
@@ -494,6 +503,40 @@ mod tests {
         assert!(
             !parsed.tap_to_reveal_translations,
             "legacy config must keep today's auto-underline / auto-overlay behaviour"
+        );
+    }
+
+    #[test]
+    fn config_default_anki_sync_enabled_is_true() {
+        assert!(Config::default().anki_sync_enabled);
+    }
+
+    #[test]
+    fn config_round_trips_anki_sync_enabled() {
+        let original = Config {
+            anki_sync_enabled: false,
+            ..Config::default()
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        assert!(json.contains("\"ankiSyncEnabled\":false"));
+        let parsed: Config = serde_json::from_str(&json).unwrap();
+        assert!(!parsed.anki_sync_enabled);
+    }
+
+    #[test]
+    fn config_loads_legacy_file_without_anki_sync_enabled() {
+        let legacy = serde_json::json!({
+            "targetLanguageId": "eng",
+            "translationProvider": "google",
+            "geminiApiKey": null,
+            "openaiApiKey": null,
+            "model": 0,
+            "libraryPath": null,
+        });
+        let parsed: Config = serde_json::from_value(legacy).unwrap();
+        assert!(
+            parsed.anki_sync_enabled,
+            "existing installs synced to Anki and must keep doing so"
         );
     }
 

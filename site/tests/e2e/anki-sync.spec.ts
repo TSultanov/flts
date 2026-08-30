@@ -97,4 +97,26 @@ test.describe("Anki config UI", () => {
     expect(persisted.ankiEndpoint).toBe("http://anki.example.com:9999");
     expect(persisted.ankiApiKey).toBe("secret-token");
   });
+
+  test("sync is ticked when the config omits ankiSyncEnabled", async ({
+    page,
+  }) => {
+    await page.goto("/config");
+    await page.getByText("Anki (optional)").click();
+
+    await expect(page.getByTestId("anki-sync-enabled")).toBeChecked();
+  });
+
+  test("unticking sync persists ankiSyncEnabled false", async ({ page }) => {
+    await page.goto("/config");
+    await page.getByText("Anki (optional)").click();
+
+    await page.getByTestId("anki-sync-enabled").uncheck();
+    await page.locator("#save").click();
+
+    const persisted = await page.evaluate(
+      () => (window as any).__test.getConfig() as { ankiSyncEnabled?: boolean },
+    );
+    expect(persisted.ankiSyncEnabled).toBe(false);
+  });
 });

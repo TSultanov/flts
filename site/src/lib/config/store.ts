@@ -48,6 +48,7 @@ export type Config = {
   spotifyShowNextTrack?: boolean;
   ankiEndpoint?: string;
   ankiApiKey?: string;
+  ankiSyncEnabled?: boolean;
   syncEnabled?: boolean;
   syncDeviceName?: string;
   tapToRevealTranslations?: boolean;

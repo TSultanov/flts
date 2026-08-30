@@ -599,11 +599,9 @@ impl AppState {
             task.shutdown().await;
         }
 
-        // FLTS_DISABLE_ANKI_SYNC=1 suppresses the spawn (CI has no AnkiConnect).
-        let disable_env = std::env::var_os("FLTS_DISABLE_ANKI_SYNC");
-        if crate::app::anki_sync::anki_sync_disabled(disable_env.as_deref()) {
-            info!("Anki sync disabled by FLTS_DISABLE_ANKI_SYNC env var");
-            self.set_anki_sync_unreachable("Anki sync disabled by FLTS_DISABLE_ANKI_SYNC env var");
+        if !config.anki_sync_enabled {
+            info!("Anki sync disabled (ankiSyncEnabled = false)");
+            self.set_anki_sync_unreachable("Anki sync is turned off in settings");
         } else {
             let endpoint = config
                 .anki_endpoint

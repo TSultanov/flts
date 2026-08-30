@@ -74,6 +74,7 @@
     let spotifyShowNextTrack: boolean = $state(true);
     let ankiEndpoint: string = $state("");
     let ankiApiKey: string = $state("");
+    let ankiSyncEnabled: boolean = $state(true);
     let tapToRevealTranslations: boolean = $state(false);
 
     // `seeded` is deliberately non-reactive: later config_updated refetches
@@ -99,6 +100,7 @@
         spotifyShowNextTrack = cfg.spotifyShowNextTrack ?? true;
         ankiEndpoint = cfg.ankiEndpoint ?? "";
         ankiApiKey = cfg.ankiApiKey ?? "";
+        ankiSyncEnabled = cfg.ankiSyncEnabled ?? true;
         tapToRevealTranslations = cfg.tapToRevealTranslations ?? false;
         seeded = true;
     });
@@ -215,6 +217,7 @@
                 spotifyShowNextTrack,
                 ankiEndpoint: ankiEndpoint.trim() || undefined,
                 ankiApiKey: ankiApiKey.trim() || undefined,
+                ankiSyncEnabled,
                 // Sync settings are owned by the sync UI, not this form.
                 syncEnabled: configStore.current?.syncEnabled,
                 syncDeviceName: configStore.current?.syncDeviceName,
@@ -673,10 +676,16 @@
                         >
                         installed in Anki desktop. The toolbar button shows current
                         sync status; cards flow to Anki automatically on a 5-minute
-                        cadence. Set
-                        <code>FLTS_DISABLE_ANKI_SYNC=1</code>
-                        in the environment to opt out entirely.
+                        cadence. Untick below to opt out entirely.
                     </p>
+
+                    <label for="ankiSyncEnabled">Sync cards to Anki</label>
+                    <input
+                        id="ankiSyncEnabled"
+                        type="checkbox"
+                        bind:checked={ankiSyncEnabled}
+                        data-testid="anki-sync-enabled"
+                    />
 
                     <label for="ankiEndpoint">Endpoint</label>
                     <input
@@ -895,6 +904,9 @@
     }
     .anki-grid input {
         grid-column: 2/3;
+    }
+    .anki-grid input#ankiSyncEnabled {
+        justify-self: start;
     }
 
     details.sync-section {

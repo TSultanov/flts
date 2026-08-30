@@ -53,6 +53,7 @@ type Config = {
   libraryPath?: string;
   ankiEndpoint?: string;
   ankiApiKey?: string;
+  ankiSyncEnabled?: boolean;
   tapToRevealTranslations?: boolean;
 };
 

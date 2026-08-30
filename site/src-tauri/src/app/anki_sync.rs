@@ -2,8 +2,8 @@
 //! `library::anki::sync::sync_pass`, with `sync_now` serving the UI button
 //! through the same path.
 //!
-//! Spawned from `AppState::eval_config`, opted out of with
-//! `FLTS_DISABLE_ANKI_SYNC=1`. Status goes out on an `AppState`-owned
+//! Spawned from `AppState::eval_config`, opted out of with the
+//! `ankiSyncEnabled` config setting. Status goes out on an `AppState`-owned
 //! `watch::Sender<AnkiSyncStatus>`, forwarded as `anki_sync_status_changed`.
 
 use std::sync::Arc;
@@ -143,12 +143,6 @@ impl AnkiSyncTask {
         )
         .await
     }
-}
-
-/// `FLTS_DISABLE_ANKI_SYNC` gate: sync is on unless the value is non-empty.
-/// Pure, so tests need no process env.
-pub fn anki_sync_disabled(env_value: Option<&std::ffi::OsStr>) -> bool {
-    env_value.is_some_and(|v| !v.is_empty())
 }
 
 /// `sync_anki_now`'s body, taken out of `AppState` so tests can drive it with
@@ -584,22 +578,6 @@ mod tests {
         assert!(status.last_error.is_some());
 
         task.shutdown().await;
-    }
-
-    #[test]
-    fn anki_sync_disabled_predicate_handles_unset_empty_and_set_values() {
-        assert!(
-            !anki_sync_disabled(None),
-            "unset env must NOT disable sync (Stage 8 default is ON)"
-        );
-        assert!(
-            !anki_sync_disabled(Some(std::ffi::OsStr::new(""))),
-            "empty env value must NOT disable sync"
-        );
-        assert!(
-            anki_sync_disabled(Some(std::ffi::OsStr::new("1"))),
-            "non-empty env value disables sync"
-        );
     }
 
     #[tokio::test]
