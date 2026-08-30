@@ -121,21 +121,19 @@ function measureTextWidthPx(
   return width;
 }
 
-export function sizeOverlay(
+function applyFit(
   span: HTMLElement,
   overlay: HTMLElement,
-  wordText: string,
+  wordWidthPx: number,
   translationText: string,
 ): void {
   const overlayMetrics = getOverlayMetrics(overlay);
-  const wordMetrics = getWordMetrics(span);
-  if (!overlayMetrics || !wordMetrics) {
+  if (!overlayMetrics) {
     return;
   }
 
-  const parentWidthPx = measureTextWidthPx(wordText, wordMetrics);
   const availableWidthPx =
-    parentWidthPx - overlayMetrics.horizontalChromePx - 0.5;
+    wordWidthPx - overlayMetrics.horizontalChromePx - 0.5;
   if (availableWidthPx <= 0) {
     return;
   }
@@ -149,4 +147,106 @@ export function sizeOverlay(
   const scaledPx =
     overlayMetrics.baseFontSizePx * (availableWidthPx / textWidthPx);
   span.style.setProperty(TRANSLATION_FONT_SIZE_VAR, `${scaledPx}px`);
+}
+
+export function sizeOverlay(
+  span: HTMLElement,
+  overlay: HTMLElement,
+  wordText: string,
+  translationText: string,
+): void {
+  const wordMetrics = getWordMetrics(span);
+  if (!wordMetrics) {
+    return;
+  }
+  applyFit(
+    span,
+    overlay,
+    measureTextWidthPx(wordText, wordMetrics),
+    translationText,
+  );
+}
+
+type Anchor = {
+  span: HTMLElement;
+  overlay: HTMLElement;
+  wordText: string;
+  translationText: string;
+};
+
+const anchors = new Set<Anchor>();
+let anchorFrame: number | null = null;
+let resizeBound = false;
+
+function scheduleAnchorPass(): void {
+  if (anchorFrame !== null || typeof requestAnimationFrame === "undefined") {
+    return;
+  }
+  anchorFrame = requestAnimationFrame(runAnchorPass);
+}
+
+/** Reads all fragment boxes before it writes a style: one layout per pass. */
+function runAnchorPass(): void {
+  anchorFrame = null;
+  const writes: Array<[Anchor, DOMRect[] | null]> = [];
+  for (const anchor of anchors) {
+    const rects = Array.from(anchor.span.getClientRects());
+    writes.push([anchor, rects.length > 1 ? rects : null]);
+  }
+  for (const [anchor, rects] of writes) {
+    if (!rects) {
+      releaseAnchor(anchor);
+      continue;
+    }
+    // The containing block of a fragmented inline runs from the first
+    // fragment's start to the last one's end. That is backwards across a line
+    // break, so `width: 100%` gives nothing. Pin the widest fragment instead.
+    const widest = rects.reduce((a, b) => (b.width > a.width ? b : a));
+    const origin = rects[0];
+    anchor.overlay.style.left = `${widest.left - origin.left}px`;
+    anchor.overlay.style.top = `${widest.top - origin.top}px`;
+    anchor.overlay.style.right = "auto";
+    anchor.overlay.style.width = `${widest.width}px`;
+    applyFit(anchor.span, anchor.overlay, widest.width, anchor.translationText);
+  }
+}
+
+function releaseAnchor(anchor: Anchor): void {
+  const { style } = anchor.overlay;
+  if (style.width === "") {
+    return;
+  }
+  style.removeProperty("left");
+  style.removeProperty("top");
+  style.removeProperty("right");
+  style.removeProperty("width");
+  sizeOverlay(
+    anchor.span,
+    anchor.overlay,
+    anchor.wordText,
+    anchor.translationText,
+  );
+}
+
+function onResize(): void {
+  scheduleAnchorPass();
+}
+
+/** Keeps the overlay over a word that hyphenates. Call the result to release. */
+export function anchorOverlay(
+  span: HTMLElement,
+  overlay: HTMLElement,
+  wordText: string,
+  translationText: string,
+): () => void {
+  const anchor: Anchor = { span, overlay, wordText, translationText };
+  anchors.add(anchor);
+  if (!resizeBound && typeof window !== "undefined") {
+    window.addEventListener("resize", onResize);
+    resizeBound = true;
+  }
+  scheduleAnchorPass();
+  return () => {
+    anchors.delete(anchor);
+  };
 }

@@ -1,6 +1,6 @@
 <script lang="ts">
     import { fade } from "svelte/transition";
-    import { sizeOverlay } from "./translationOverlay";
+    import { anchorOverlay, sizeOverlay } from "./translationOverlay";
     import { configStore } from "../config/store";
 
     let {
@@ -46,7 +46,9 @@
     $effect(() => {
         if (!spanEl || !overlayEl || !translation) return;
         sizeOverlay(spanEl, overlayEl, text, translation);
+        const release = anchorOverlay(spanEl, overlayEl, text, translation);
         return () => {
+            release();
             spanEl?.style.removeProperty("--word-translation-font-size");
         };
     });
