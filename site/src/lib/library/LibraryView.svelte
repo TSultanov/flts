@@ -1,6 +1,10 @@
 <script lang="ts">
     import { getContext } from "svelte";
-    import { buildLibraryFolder, Library, type LibraryFolder } from "../data/library";
+    import {
+        buildLibraryFolder,
+        Library,
+        type LibraryFolder,
+    } from "../data/library";
     import ConfirmDialog from "../dialogs/ConfirmDialog.svelte";
     import MoveFolderDialog from "../dialogs/MoveFolderDialog.svelte";
     import type { UUID } from "../data/uuid";

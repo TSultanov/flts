@@ -2,8 +2,6 @@
     import SimpleImportView from "./SimpleImportView.svelte";
     import TabGroup from "../widgets/TabGroup.svelte";
     import FileImportView from "./FileImportView.svelte";
-
-
 </script>
 
 {#snippet simpleImport()}
@@ -14,13 +12,15 @@
     <FileImportView />
 {/snippet}
 
-<TabGroup tabs={[
-    {
-        header: "Plain text import",
-        content: simpleImport,
-    },
-    {
-        header: "File import",
-        content: fileImport
-    }
-]}/>
+<TabGroup
+    tabs={[
+        {
+            header: "Plain text import",
+            content: simpleImport,
+        },
+        {
+            header: "File import",
+            content: fileImport,
+        },
+    ]}
+/>

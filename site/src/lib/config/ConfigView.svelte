@@ -41,17 +41,20 @@
         if (takeOpenSyncRequest()) {
             syncOpen = true;
             requestAnimationFrame(() =>
-                syncDetails?.scrollIntoView({ behavior: "smooth", block: "start" }),
+                syncDetails?.scrollIntoView({
+                    behavior: "smooth",
+                    block: "start",
+                }),
             );
         }
     });
 
-    const SPOTIFY_DASHBOARD_URL = 'https://developer.spotify.com/dashboard';
-    const SPOTIFY_REDIRECT_URI = 'http://127.0.0.1:53682/callback';
+    const SPOTIFY_DASHBOARD_URL = "https://developer.spotify.com/dashboard";
+    const SPOTIFY_REDIRECT_URI = "http://127.0.0.1:53682/callback";
 
     // Deliberately not $derived: a background config_updated refetch would
     // clobber typed-but-unsaved edits. Seeded once by the $effect below.
-    let translationProvider: TranslationProvider = $state('google');
+    let translationProvider: TranslationProvider = $state("google");
     let geminiApiKey: string | undefined = $state(undefined);
     let openaiApiKey: string | undefined = $state(undefined);
     let deepseekApiKey: string | undefined = $state(undefined);
@@ -60,17 +63,17 @@
     let targetLanguage: string | undefined = $state(undefined);
     // App-managed storage location; read-only, no folder picker.
     let storageLocation: string = $state("");
-    let model: string = $state('');
-    let modelFamily: string = $state('other');
+    let model: string = $state("");
+    let modelFamily: string = $state("other");
     let translationConcurrency: number = $state(8);
     let models: Model[] = $state([]);
     let providers: ProviderMeta[] = $state([]);
 
-    let spotifyClientId: string = $state('');
+    let spotifyClientId: string = $state("");
     let spotifyPreloadCount: number = $state(1);
     let spotifyShowNextTrack: boolean = $state(true);
-    let ankiEndpoint: string = $state('');
-    let ankiApiKey: string = $state('');
+    let ankiEndpoint: string = $state("");
+    let ankiApiKey: string = $state("");
     let tapToRevealTranslations: boolean = $state(false);
 
     // `seeded` is deliberately non-reactive: later config_updated refetches
@@ -81,21 +84,21 @@
     $effect(() => {
         const cfg = configStore.current;
         if (seeded || !cfg) return;
-        translationProvider = cfg.translationProvider ?? 'google';
+        translationProvider = cfg.translationProvider ?? "google";
         geminiApiKey = cfg.geminiApiKey;
         openaiApiKey = cfg.openaiApiKey;
         deepseekApiKey = cfg.deepseekApiKey;
         zaiApiKey = cfg.zaiApiKey;
         openrouterApiKey = cfg.openrouterApiKey;
         targetLanguage = cfg.targetLanguageId;
-        model = cfg.model ?? '';
+        model = cfg.model ?? "";
         lastProvider = translationProvider;
         translationConcurrency = cfg.translationConcurrency ?? 8;
-        spotifyClientId = cfg.spotifyClientId ?? '';
+        spotifyClientId = cfg.spotifyClientId ?? "";
         spotifyPreloadCount = cfg.spotifyPreloadCount ?? 1;
         spotifyShowNextTrack = cfg.spotifyShowNextTrack ?? true;
-        ankiEndpoint = cfg.ankiEndpoint ?? '';
-        ankiApiKey = cfg.ankiApiKey ?? '';
+        ankiEndpoint = cfg.ankiEndpoint ?? "";
+        ankiApiKey = cfg.ankiApiKey ?? "";
         tapToRevealTranslations = cfg.tapToRevealTranslations ?? false;
         seeded = true;
     });
@@ -118,7 +121,7 @@
     async function openDashboard(e: MouseEvent) {
         e.preventDefault();
         try {
-            await invoke('open_external_url', { url: SPOTIFY_DASHBOARD_URL });
+            await invoke("open_external_url", { url: SPOTIFY_DASHBOARD_URL });
         } catch (err) {
             spotifyError = `Could not open browser: ${err}`;
         }
@@ -137,12 +140,17 @@
         }
     }
 
-    const filtered = $derived(modelsForDropdown(models, translationProvider, model));
+    const filtered = $derived(
+        modelsForDropdown(models, translationProvider, model),
+    );
     const filteredModels = $derived(filtered.list);
     const modelOrphan = $derived(filtered.orphan);
-    const providerMeta = $derived(providers.find((p) => p.id === translationProvider));
+    const providerMeta = $derived(
+        providers.find((p) => p.id === translationProvider),
+    );
     const useFamilyModelPicker = $derived(
-        translationProvider === 'openrouter' || providerMeta?.modelSelection === 'family',
+        translationProvider === "openrouter" ||
+            providerMeta?.modelSelection === "family",
     );
     const openRouterFamilyList = $derived(openRouterFamilies(filteredModels));
     const openRouterModelsForFamily = $derived(
@@ -153,7 +161,7 @@
 
     onMount(async () => {
         try {
-            isMac = platform() === 'macos';
+            isMac = platform() === "macos";
         } catch {
             isMac = false;
         }
@@ -223,7 +231,7 @@
     async function connectSpotify() {
         spotifyError = null;
         if (!spotifyClientId.trim()) {
-            spotifyError = 'Set your Spotify client_id first, then click Save.';
+            spotifyError = "Set your Spotify client_id first, then click Save.";
             return;
         }
         spotifyBusy = true;
@@ -257,7 +265,7 @@
     // flag (session and playback position are restored).
     let cdpStatus = $state<SpotifyCdpStatus | null>(null);
     let cdpBusy = $state(false);
-    let cdpError = $state('');
+    let cdpError = $state("");
     let cdpRestarted = $state(false);
 
     async function refreshCdpStatus() {
@@ -270,7 +278,7 @@
 
     async function restartWithBridge() {
         cdpBusy = true;
-        cdpError = '';
+        cdpError = "";
         try {
             cdpStatus = await spotifyRestartWithDevtools();
             cdpRestarted = cdpStatus.available;
@@ -288,7 +296,7 @@
     // one off so the two don't race.
     let loginAgent = $state<SpotifyLoginAgentStatus | null>(null);
     let loginAgentBusy = $state(false);
-    let loginAgentError = $state('');
+    let loginAgentError = $state("");
 
     async function refreshLoginAgent() {
         try {
@@ -300,7 +308,7 @@
 
     async function toggleLoginAgent() {
         loginAgentBusy = true;
-        loginAgentError = '';
+        loginAgentError = "";
         try {
             loginAgent = loginAgent?.installed
                 ? await spotifyRemoveLoginAgent()
@@ -326,7 +334,9 @@
     }
 
     $effect(() => {
-        const providerMeta = providers.find((p) => p.id === translationProvider);
+        const providerMeta = providers.find(
+            (p) => p.id === translationProvider,
+        );
         if (!providerMeta) return;
         const next = resolveModelSelection(
             lastProvider,
@@ -343,7 +353,11 @@
     $effect(() => {
         if (!useFamilyModelPicker) return;
         const families = openRouterFamilyList;
-        const nextFamily = resolveOpenRouterFamily(modelFamily, model, families);
+        const nextFamily = resolveOpenRouterFamily(
+            modelFamily,
+            model,
+            families,
+        );
         if (nextFamily !== modelFamily) {
             modelFamily = nextFamily;
         }
@@ -364,7 +378,6 @@
             model = inFamily[0].id;
         }
     }
-
 </script>
 
 {#await languages}
@@ -398,10 +411,10 @@
                 {/if}
             </select>
 
-            {#if translationProvider === 'zai'}
+            {#if translationProvider === "zai"}
                 <label for="zai">z.AI API KEY</label>
                 <input id="zai" type="text" bind:value={zaiApiKey} />
-            {:else if translationProvider === 'google'}
+            {:else if translationProvider === "google"}
                 <label for="apikey">Gemini API KEY</label>
                 <input id="apikey" type="text" bind:value={geminiApiKey} />
                 <button
@@ -410,24 +423,30 @@
                     disabled={purgeBusy || !configStore.current?.geminiApiKey}
                     title="Deletes all FLTS-created Gemini context caches from Google's servers (they cost money while they exist)"
                 >
-                    {purgeBusy ? 'Removing...' : 'Remove server caches'}
+                    {purgeBusy ? "Removing..." : "Remove server caches"}
                 </button>
                 {#if purgeError}
                     <div class="spotify-notice err">{purgeError}</div>
                 {:else if purgeDeleted !== null}
                     <div class="spotify-notice">
-                        Removed {purgeDeleted} cached item{purgeDeleted === 1 ? '' : 's'}
+                        Removed {purgeDeleted} cached item{purgeDeleted === 1
+                            ? ""
+                            : "s"}
                     </div>
                 {/if}
-            {:else if translationProvider === 'openai'}
+            {:else if translationProvider === "openai"}
                 <label for="openai">OpenAI API KEY</label>
                 <input id="openai" type="text" bind:value={openaiApiKey} />
-            {:else if translationProvider === 'deepseek'}
+            {:else if translationProvider === "deepseek"}
                 <label for="deepseek">DeepSeek API KEY</label>
                 <input id="deepseek" type="text" bind:value={deepseekApiKey} />
-            {:else if translationProvider === 'openrouter'}
+            {:else if translationProvider === "openrouter"}
                 <label for="openrouter">OpenRouter API KEY</label>
-                <input id="openrouter" type="text" bind:value={openrouterApiKey} />
+                <input
+                    id="openrouter"
+                    type="text"
+                    bind:value={openrouterApiKey}
+                />
             {/if}
 
             {#if useFamilyModelPicker}
@@ -438,14 +457,18 @@
                     onchange={onModelFamilyChange}
                 >
                     {#each openRouterFamilyList as family}
-                        <option value={family}>{formatOpenRouterFamilyLabel(family)}</option>
+                        <option value={family}
+                            >{formatOpenRouterFamilyLabel(family)}</option
+                        >
                     {/each}
                 </select>
 
                 <label for="model">Model</label>
                 <select id="model" bind:value={model}>
                     {#each openRouterModelsForFamily as modelOption}
-                        <option value={modelOption.id}>{modelOption.name}</option>
+                        <option value={modelOption.id}
+                            >{modelOption.name}</option
+                        >
                     {/each}
                 </select>
             {:else}
@@ -456,7 +479,9 @@
                     {/each}
                 </select>
             {/if}
-            {#if modelOrphan}<div class="spotify-notice">Not in the current catalog</div>{/if}
+            {#if modelOrphan}<div class="spotify-notice">
+                    Not in the current catalog
+                </div>{/if}
 
             <label for="translationConcurrency">Parallel translations</label>
             <input
@@ -467,7 +492,9 @@
                 bind:value={translationConcurrency}
             />
 
-            <label for="tapToRevealTranslations">Tap to reveal translations</label>
+            <label for="tapToRevealTranslations"
+                >Tap to reveal translations</label
+            >
             <input
                 id="tapToRevealTranslations"
                 type="checkbox"
@@ -475,8 +502,8 @@
                 data-testid="tap-to-reveal"
             />
             <p class="hint tap-to-reveal-hint">
-                Hides unknown-word underlines and automatic translation previews.
-                Translations appear only after you tap a word.
+                Hides unknown-word underlines and automatic translation
+                previews. Translations appear only after you tap a word.
             </p>
 
             <label for="storage">Storage</label>
@@ -489,7 +516,9 @@
                 value={storageLocation}
             />
             {#if isMac}
-                <button id="revealStorage" onclick={revealStorage}>Reveal</button>
+                <button id="revealStorage" onclick={revealStorage}
+                    >Reveal</button
+                >
             {/if}
 
             {#if isMac}
@@ -503,8 +532,7 @@
                             <a
                                 href={SPOTIFY_DASHBOARD_URL}
                                 onclick={openDashboard}
-                                class="external"
-                                >{SPOTIFY_DASHBOARD_URL}</a
+                                class="external">{SPOTIFY_DASHBOARD_URL}</a
                             >, add
                             <span class="copyable">
                                 <code>{SPOTIFY_REDIRECT_URI}</code><button
@@ -512,13 +540,12 @@
                                     class="copy-btn"
                                     onclick={copyRedirectUri}
                                     title="Copy to clipboard"
-                                    aria-label="Copy redirect URI">{redirectCopied
-                                        ? '✓'
-                                        : '⧉'}</button
+                                    aria-label="Copy redirect URI"
+                                    >{redirectCopied ? "✓" : "⧉"}</button
                                 >
                             </span>
-                            as a redirect URI, and paste the client ID below.
-                            Premium is required for queue access.
+                            as a redirect URI, and paste the client ID below. Premium
+                            is required for queue access.
                         </p>
 
                         <label for="spotifyClientId">Spotify client_id</label>
@@ -533,15 +560,16 @@
                                 onclick={disconnectSpotify}
                                 disabled={spotifyBusy}
                             >
-                                {spotifyBusy ? '...' : 'Disconnect'}
+                                {spotifyBusy ? "..." : "Disconnect"}
                             </button>
                         {:else}
                             <button
                                 id="spotifyAction"
                                 onclick={connectSpotify}
-                                disabled={spotifyBusy || !spotifyClientId.trim()}
+                                disabled={spotifyBusy ||
+                                    !spotifyClientId.trim()}
                             >
-                                {spotifyBusy ? 'Connecting...' : 'Connect'}
+                                {spotifyBusy ? "Connecting..." : "Connect"}
                             </button>
                         {/if}
 
@@ -557,14 +585,14 @@
                                 disabled={cdpBusy}
                             >
                                 {cdpBusy
-                                    ? 'Restarting Spotify…'
+                                    ? "Restarting Spotify…"
                                     : cdpRestarted
-                                      ? '✅ Bridge enabled'
-                                      : 'Enable first-party lyrics'}
+                                      ? "✅ Bridge enabled"
+                                      : "Enable first-party lyrics"}
                             </button>
                             <p class="hint">
                                 {cdpStatus?.hint ??
-                                'Restarts Spotify with a local debug bridge so lyrics come straight from the desktop app (no account risk).'}
+                                    "Restarts Spotify with a local debug bridge so lyrics come straight from the desktop app (no account risk)."}
                             </p>
                         {/if}
                         {#if cdpError}
@@ -578,10 +606,10 @@
                             data-testid="spotify-login-agent"
                         >
                             {loginAgentBusy
-                                ? '...'
+                                ? "..."
                                 : loginAgent?.installed
-                                  ? 'Disable bridge at login'
-                                  : 'Enable bridge at login'}
+                                  ? "Disable bridge at login"
+                                  : "Enable bridge at login"}
                         </button>
                         <p class="hint">
                             {#if loginAgent?.installed}
@@ -642,9 +670,11 @@
                             class="external"
                             target="_blank"
                             rel="noopener">AnkiConnect</a
-                        > installed in Anki desktop. The toolbar button shows
-                        current sync status; cards flow to Anki automatically
-                        on a 5-minute cadence. Set <code>FLTS_DISABLE_ANKI_SYNC=1</code>
+                        >
+                        installed in Anki desktop. The toolbar button shows current
+                        sync status; cards flow to Anki automatically on a 5-minute
+                        cadence. Set
+                        <code>FLTS_DISABLE_ANKI_SYNC=1</code>
                         in the environment to opt out entirely.
                     </p>
 
@@ -679,7 +709,9 @@
             </details>
 
             {#if saveError}
-                <div class="spotify-notice err">Could not save: {saveError}</div>
+                <div class="spotify-notice err">
+                    Could not save: {saveError}
+                </div>
             {/if}
             <button
                 id="save"

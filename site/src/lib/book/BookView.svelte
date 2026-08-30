@@ -70,7 +70,9 @@
                         }
                     }
                 })
-                .catch((err) => console.error("Failed to load reading state", err));
+                .catch((err) =>
+                    console.error("Failed to load reading state", err),
+                );
         }
     });
 
@@ -151,9 +153,13 @@
                     <ChapterView
                         {bookId}
                         {chapterId}
-                        translationRatio={chapters.current?.find((c) => c.id === chapterId)?.translationRatio ?? 0}
-                        initialParagraphId={positionByChapter.get(chapterId)?.paragraphId ?? null}
-                        initialPageOffset={positionByChapter.get(chapterId)?.pageOffset ?? 0}
+                        translationRatio={chapters.current?.find(
+                            (c) => c.id === chapterId,
+                        )?.translationRatio ?? 0}
+                        initialParagraphId={positionByChapter.get(chapterId)
+                            ?.paragraphId ?? null}
+                        initialPageOffset={positionByChapter.get(chapterId)
+                            ?.pageOffset ?? 0}
                         onPositionChange={handlePositionChange}
                         bind:selection
                     />

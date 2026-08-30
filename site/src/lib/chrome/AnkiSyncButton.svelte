@@ -1,22 +1,22 @@
 <script lang="ts">
-    import Fa from 'svelte-fa';
+    import Fa from "svelte-fa";
     import {
         iconForState,
         isVisible,
         isSpinning,
         isClickDisabled,
         triggerSyncNow,
-    } from './ankiSyncHelpers';
-    import { ankiSyncStatus } from './ankiSyncStore.svelte';
+    } from "./ankiSyncHelpers";
+    import { ankiSyncStatus } from "./ankiSyncStore.svelte";
 
     let status = $derived(ankiSyncStatus.current);
-    let state = $derived(status?.state ?? 'unreachable');
+    let state = $derived(status?.state ?? "unreachable");
     let icon = $derived(iconForState(state));
     let visible = $derived(isVisible(state));
     let spinning = $derived(isSpinning(state));
     let disabled = $derived(isClickDisabled(state));
     let tooltip = $derived(
-        state === 'err' && status?.lastError ? status.lastError : '',
+        state === "err" && status?.lastError ? status.lastError : "",
     );
 
     async function onClick() {

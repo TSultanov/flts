@@ -1,7 +1,5 @@
 <div class="chapter-container">
-    <div class="chapter">
-        Select a chapter on the left.
-    </div>
+    <div class="chapter">Select a chapter on the left.</div>
 </div>
 
 <style>

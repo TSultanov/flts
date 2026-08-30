@@ -1,31 +1,27 @@
 <script lang="ts">
-    import { onMount, onDestroy } from 'svelte';
-    import { platform } from '@tauri-apps/plugin-os';
-    import { configStore } from '../config/store';
+    import { onMount, onDestroy } from "svelte";
+    import { platform } from "@tauri-apps/plugin-os";
+    import { configStore } from "../config/store";
     import {
         getTrackLyricsState,
         listenLyricsState,
         spotifyStateStore,
         startSpotifyWatcher,
         stopSpotifyWatcher,
-    } from './store';
+    } from "./store";
     import {
         spotifyQueueStore,
         type QueueStoreValue,
         type TrackMeta,
-    } from '../spotify/queueStore';
-    import type {
-        Lyrics,
-        LyricsTranslation,
-        NowPlaying,
-    } from './types';
-    import NowPlayingCard from './NowPlayingCard.svelte';
-    import LyricsList from './LyricsList.svelte';
+    } from "../spotify/queueStore";
+    import type { Lyrics, LyricsTranslation, NowPlaying } from "./types";
+    import NowPlayingCard from "./NowPlayingCard.svelte";
+    import LyricsList from "./LyricsList.svelte";
 
     let isMac = $state(false);
     onMount(() => {
         try {
-            isMac = platform() === 'macos';
+            isMac = platform() === "macos";
         } catch {
             isMac = false;
         }
@@ -53,25 +49,36 @@
 
     let lyrics: Lyrics | null = $state(null);
     let translation: LyricsTranslation | null = $state(null);
-    let translationStatus: 'idle' | 'fetching' | 'translating' | 'error' | 'unsupported-track' = $state('idle');
+    let translationStatus:
+        | "idle"
+        | "fetching"
+        | "translating"
+        | "error"
+        | "unsupported-track" = $state("idle");
     let translationBytes: number = $state(0);
     let errorMessage: string | null = $state(null);
     let lastDispatchKey: string | null = null;
 
-    type StatusMessage = { text: string; level: 'info' | 'warn' | 'err' };
+    type StatusMessage = { text: string; level: "info" | "warn" | "err" };
     const statusMessage = $derived.by<StatusMessage | null>(() => {
-        if (translationStatus === 'fetching')
-            return { text: 'Fetching lyrics…', level: 'info' };
-        if (translationStatus === 'translating')
-            return { text: `Translating (${translationBytes} bytes)…`, level: 'info' };
-        if (translationStatus === 'unsupported-track')
-            return { text: 'No lyrics found for this track on LRClib.', level: 'warn' };
-        if (translationStatus === 'error')
-            return { text: `Error: ${errorMessage}`, level: 'err' };
+        if (translationStatus === "fetching")
+            return { text: "Fetching lyrics…", level: "info" };
+        if (translationStatus === "translating")
+            return {
+                text: `Translating (${translationBytes} bytes)…`,
+                level: "info",
+            };
+        if (translationStatus === "unsupported-track")
+            return {
+                text: "No lyrics found for this track on LRClib.",
+                level: "warn",
+            };
+        if (translationStatus === "error")
+            return { text: `Error: ${errorMessage}`, level: "err" };
         if (lyrics && !lyrics.synced)
             return {
-                text: 'Plain lyrics only — karaoke sync unavailable for this track.',
-                level: 'warn',
+                text: "Plain lyrics only — karaoke sync unavailable for this track.",
+                level: "warn",
             };
         return null;
     });
@@ -99,15 +106,15 @@
 
     async function onTrackChange(np: NowPlaying) {
         if (
-            np.state === 'notrunning' ||
-            np.state === 'stopped' ||
+            np.state === "notrunning" ||
+            np.state === "stopped" ||
             !np.trackId ||
             !np.name ||
             !np.artist
         ) {
             lyrics = null;
             translation = null;
-            translationStatus = 'idle';
+            translationStatus = "idle";
             errorMessage = null;
             lastDispatchKey = null;
             return;
@@ -115,7 +122,7 @@
 
         const cfg = configStore.current;
         if (!cfg || !cfg.targetLanguageId) {
-            translationStatus = 'idle';
+            translationStatus = "idle";
             return;
         }
 
@@ -128,7 +135,7 @@
         lyrics = null;
         translation = null;
         errorMessage = null;
-        translationStatus = 'fetching';
+        translationStatus = "fetching";
         translationBytes = 0;
 
         try {
@@ -142,16 +149,16 @@
                 lyrics = state.lyrics;
                 if (state.translation) {
                     translation = state.translation;
-                    translationStatus = 'idle';
+                    translationStatus = "idle";
                 } else {
-                    translationStatus = 'translating';
+                    translationStatus = "translating";
                 }
             }
             // Null lyrics keeps us 'fetching': the backend may still be
             // resolving, and lyrics_resolved settles it either way.
         } catch (e) {
             errorMessage = String(e);
-            translationStatus = 'error';
+            translationStatus = "error";
         }
     }
 
@@ -166,14 +173,15 @@
 
         positionTicker = setInterval(() => {
             nowTickMs = Date.now();
-            if (nowPlaying?.state !== 'playing') {
+            if (nowPlaying?.state !== "playing") {
                 // Re-sync to the anchor so pausing freezes cleanly.
                 if (livePositionMs !== anchorPositionMs) {
                     livePositionMs = anchorPositionMs;
                 }
                 return;
             }
-            livePositionMs = anchorPositionMs + (performance.now() - anchorPerfMs);
+            livePositionMs =
+                anchorPositionMs + (performance.now() - anchorPerfMs);
         }, 100);
 
         await startSpotifyWatcher();
@@ -195,11 +203,11 @@
                 if (e.trackId !== nowPlaying?.trackId) return;
                 if (e.lyrics) {
                     lyrics = e.lyrics;
-                    if (translationStatus === 'fetching') {
-                        translationStatus = 'translating';
+                    if (translationStatus === "fetching") {
+                        translationStatus = "translating";
                     }
                 } else {
-                    translationStatus = 'unsupported-track';
+                    translationStatus = "unsupported-track";
                 }
             },
             onProgress: (e) => {
@@ -210,13 +218,13 @@
             onDone: (e) => {
                 if (e.trackId === nowPlaying?.trackId) {
                     translation = e.translation;
-                    translationStatus = 'idle';
+                    translationStatus = "idle";
                 }
             },
             onError: (e) => {
                 if (e.trackId === nowPlaying?.trackId) {
                     errorMessage = e.error;
-                    translationStatus = 'error';
+                    translationStatus = "error";
                 }
             },
         });
@@ -239,9 +247,8 @@
     <div class="unsupported">
         <h2>Spotify lyrics translation is macOS only</h2>
         <p>
-            This mode reads the currently-playing track from the local
-            Spotify desktop client via AppleScript, which is only available
-            on macOS.
+            This mode reads the currently-playing track from the local Spotify
+            desktop client via AppleScript, which is only available on macOS.
         </p>
     </div>
 {:else}

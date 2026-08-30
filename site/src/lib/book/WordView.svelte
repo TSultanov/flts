@@ -72,9 +72,9 @@
 
     function showSystemDictionary() {
         if (word?.current?.original) {
-            invoke("show_system_dictionary", { word: word.current.original }).catch(
-                console.error,
-            );
+            invoke("show_system_dictionary", {
+                word: word.current.original,
+            }).catch(console.error);
         }
     }
 
@@ -106,7 +106,9 @@
                 {@const w = word.current}
                 <span class="peek-word">{@html w.original}</span>
                 {#if w.grammar.originalInitialForm && w.grammar.originalInitialForm !== w.original.toLowerCase()}
-                        <span class="peek-original-initial-form">({w.grammar.originalInitialForm})</span>
+                    <span class="peek-original-initial-form"
+                        >({w.grammar.originalInitialForm})</span
+                    >
                 {/if}
                 {#if w.contextualTranslations && w.contextualTranslations.length > 0}
                     <span class="peek-translations"
@@ -233,7 +235,10 @@
                     </details>
                 {/if}
                 {#if isIos}
-                    <button class="ios-dictionary-btn" onclick={showSystemDictionary}>
+                    <button
+                        class="ios-dictionary-btn"
+                        onclick={showSystemDictionary}
+                    >
                         Show System Dictionary
                     </button>
                 {/if}

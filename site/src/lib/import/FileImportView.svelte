@@ -72,7 +72,9 @@
     }
 
     function sourceLanguageId(suggested: string): string {
-        return languageOverride?.key === fileKey ? languageOverride.id : suggested;
+        return languageOverride?.key === fileKey
+            ? languageOverride.id
+            : suggested;
     }
 
     function checkboxChanged(epubBook: EpubBook, idx: number, value: boolean) {
@@ -90,12 +92,15 @@
         if (epubBook) {
             const suggested = await suggestedLanguageId;
             const chapters = selectedChapters(epubBook);
-            await library.importEpub({
-                title: epubBook.title,
-                chapters: epubBook.chapters.filter((_, idx) =>
-                    chapters.has(idx),
-                ),
-            }, sourceLanguageId(suggested));
+            await library.importEpub(
+                {
+                    title: epubBook.title,
+                    chapters: epubBook.chapters.filter((_, idx) =>
+                        chapters.has(idx),
+                    ),
+                },
+                sourceLanguageId(suggested),
+            );
             navigate("/library");
         }
     }
@@ -120,7 +125,11 @@
                     }}
                 >
                     {#each languages.current ?? [] as l}
-                        <option value={l.id}>{l.name}{l.localName ? ` (${l.localName})` : ""}</option>
+                        <option value={l.id}
+                            >{l.name}{l.localName
+                                ? ` (${l.localName})`
+                                : ""}</option
+                        >
                     {/each}
                 </select>
             {/await}

@@ -22,7 +22,11 @@
         manualShown: boolean;
         familiarity?: number;
         selected: boolean;
-        onClick: (info: { sentence: number; word: number; flatIndex: number }) => void;
+        onClick: (info: {
+            sentence: number;
+            word: number;
+            flatIndex: number;
+        }) => void;
     } = $props();
 
     const tapToReveal = $derived(
@@ -58,12 +62,13 @@
     style:--familiarity-opacity={underlineOpacity}
     bind:this={spanEl}
     onclick={() => onClick({ sentence, word, flatIndex })}
->{#if visible && translation}<span
-        class="translation-overlay"
-        aria-hidden="true"
-        bind:this={overlayEl}
-        transition:fade={{ duration: 150 }}
-    >{translation}</span>{/if}{text}</span>
+    >{#if visible && translation}<span
+            class="translation-overlay"
+            aria-hidden="true"
+            bind:this={overlayEl}
+            transition:fade={{ duration: 150 }}>{translation}</span
+        >{/if}{text}</span
+>
 
 <style>
     .word-span {
@@ -76,7 +81,12 @@
            gives the tap target and the overlay anchor without moving text. */
         padding: calc(var(--font-size) * 0.375) 0;
         text-decoration: underline;
-        text-decoration-color: rgba(214, 175, 54, var(--familiarity-opacity, 0));
+        text-decoration-color: rgba(
+            214,
+            175,
+            54,
+            var(--familiarity-opacity, 0)
+        );
         text-decoration-thickness: 2px;
         text-underline-offset: 2px;
         transition: text-decoration-color 200ms ease-out;

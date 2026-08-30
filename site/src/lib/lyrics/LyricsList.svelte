@@ -1,10 +1,6 @@
 <script lang="ts">
-    import LyricsLine from './LyricsLine.svelte';
-    import type {
-        Lyrics,
-        LyricsTranslation,
-        NowPlaying,
-    } from './types';
+    import LyricsLine from "./LyricsLine.svelte";
+    import type { Lyrics, LyricsTranslation, NowPlaying } from "./types";
 
     type Props = {
         lyrics: Lyrics | null;
@@ -19,8 +15,8 @@
         if (!lyrics || !lyrics.synced) return -1;
         if (
             !nowPlaying ||
-            nowPlaying.state === 'notrunning' ||
-            nowPlaying.state === 'stopped'
+            nowPlaying.state === "notrunning" ||
+            nowPlaying.state === "stopped"
         ) {
             return -1;
         }
@@ -70,7 +66,7 @@
         const topZone = containerRect.top + containerRect.height * 0.25;
         const bottomZone = containerRect.top + containerRect.height * 0.75;
         if (elRect.top < topZone || elRect.bottom > bottomZone) {
-            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            el.scrollIntoView({ behavior: "smooth", block: "center" });
         }
     });
 </script>

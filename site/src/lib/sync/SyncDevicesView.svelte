@@ -268,7 +268,9 @@
         <div class="status-line">
             <span class="dot {status?.state}"></span>
             <span>{statusLabel(status)}</span>
-            <button class="link" onclick={toggle} disabled={busy}>Disable</button>
+            <button class="link" onclick={toggle} disabled={busy}
+                >Disable</button
+            >
         </div>
 
         {#if status?.state === "error" && status?.lastError}
@@ -292,7 +294,10 @@
                 </div>
             {:else}
                 <div class="status-line">
-                    <button class="link" onclick={() => openExternalUrl(webUiUrl!)}>
+                    <button
+                        class="link"
+                        onclick={() => openExternalUrl(webUiUrl!)}
+                    >
                         Open Syncthing dashboard
                     </button>
                 </div>
@@ -316,7 +321,8 @@
                             onclick={rename}
                             disabled={busy ||
                                 !deviceName.trim() ||
-                                deviceName.trim() === thisDevice.name}>Rename</button
+                                deviceName.trim() === thisDevice.name}
+                            >Rename</button
                         >
                     </div>
                     <code class="id">{thisDevice.deviceId}</code>
@@ -331,8 +337,12 @@
                 {#each pending as p (p.deviceId)}
                     <li>
                         <span class="dot starting"></span>
-                        <span class="name">{p.name || p.deviceId.slice(0, 7)}</span>
-                        <button onclick={() => accept(p)} disabled={busy}>Accept</button>
+                        <span class="name"
+                            >{p.name || p.deviceId.slice(0, 7)}</span
+                        >
+                        <button onclick={() => accept(p)} disabled={busy}
+                            >Accept</button
+                        >
                     </li>
                 {/each}
             </ul>
@@ -350,7 +360,9 @@
             {#if scanAvailable}
                 <button onclick={scanToAdd} disabled={busy}>Scan QR</button>
             {/if}
-            <button onclick={add} disabled={busy || !newId.trim()}>Add device</button>
+            <button onclick={add} disabled={busy || !newId.trim()}
+                >Add device</button
+            >
         </div>
 
         {#if devices.length > 0}
@@ -358,8 +370,11 @@
             <ul class="devices">
                 {#each devices as d (d.deviceId)}
                     <li>
-                        <span class="dot {d.connected ? 'online' : 'offline'}"></span>
-                        <span class="name">{d.name || d.deviceId.slice(0, 7)}</span>
+                        <span class="dot {d.connected ? 'online' : 'offline'}"
+                        ></span>
+                        <span class="name"
+                            >{d.name || d.deviceId.slice(0, 7)}</span
+                        >
                         <button
                             class="link"
                             onclick={() => remove(d.deviceId)}

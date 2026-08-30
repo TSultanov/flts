@@ -1,6 +1,9 @@
 <script lang="ts">
     import Fa from "svelte-fa";
-    import { faChevronLeft, faChevronRight } from "@fortawesome/free-solid-svg-icons";
+    import {
+        faChevronLeft,
+        faChevronRight,
+    } from "@fortawesome/free-solid-svg-icons";
     import { getContext } from "svelte";
     import type { ChapterMetaView } from "../data/library";
     import type { UUID } from "../data/uuid";

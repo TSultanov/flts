@@ -6,7 +6,10 @@
     import ParagraphView from "./ParagraphView.svelte";
     import type { Library } from "../data/library";
     import type { WordSelection } from "./ParagraphViewModel.svelte";
-    import { ChapterViewModel, type WordClickInfo } from "./ChapterViewModel.svelte";
+    import {
+        ChapterViewModel,
+        type WordClickInfo,
+    } from "./ChapterViewModel.svelte";
     import { CHAPTER_STORE_KEY } from "./ChapterParagraphsStore.svelte";
     import {
         SUMMARY_STATUS_KEY,
@@ -58,12 +61,24 @@
     let containerVisibleWidth = $state(800);
 
     const vm = new ChapterViewModel(library, {
-        get bookId() { return bookId; },
-        get chapterId() { return chapterId; },
-        get initialParagraphId() { return initialParagraphId; },
-        get initialPageOffset() { return initialPageOffset; },
-        get container() { return paragraphsContainer; },
-        get onPositionChange() { return onPositionChange; },
+        get bookId() {
+            return bookId;
+        },
+        get chapterId() {
+            return chapterId;
+        },
+        get initialParagraphId() {
+            return initialParagraphId;
+        },
+        get initialPageOffset() {
+            return initialPageOffset;
+        },
+        get container() {
+            return paragraphsContainer;
+        },
+        get onPositionChange() {
+            return onPositionChange;
+        },
     });
 
     setContext(CHAPTER_STORE_KEY, vm.store);

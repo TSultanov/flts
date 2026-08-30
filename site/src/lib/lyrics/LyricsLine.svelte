@@ -1,5 +1,5 @@
 <script lang="ts">
-    import type { LyricsLine, LyricsLineTranslation } from './types';
+    import type { LyricsLine, LyricsLineTranslation } from "./types";
 
     type Props = {
         line: LyricsLine;
@@ -40,7 +40,9 @@
 <style>
     .lyric-line {
         padding: 12px 16px;
-        transition: background-color 0.2s ease, border-color 0.2s ease;
+        transition:
+            background-color 0.2s ease,
+            border-color 0.2s ease;
     }
     .lyric-line.active {
         background-color: var(--selected-color);

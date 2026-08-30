@@ -7,8 +7,7 @@
     let { href, label }: RouteLinkProps = $props();
 </script>
 
-<a {href}>{label}</a
->
+<a {href}>{label}</a>
 
 <style>
     a {

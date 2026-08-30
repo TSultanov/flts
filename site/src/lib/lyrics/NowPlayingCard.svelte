@@ -1,6 +1,6 @@
 <script lang="ts">
-    import type { NowPlaying } from './types';
-    import type { TrackMeta } from '../spotify/queueStore';
+    import type { NowPlaying } from "./types";
+    import type { TrackMeta } from "../spotify/queueStore";
 
     type Props = {
         nowPlaying: NowPlaying | null;
@@ -11,24 +11,24 @@
     let { nowPlaying, livePositionMs, nextTrack = null }: Props = $props();
 
     function fmtMs(ms?: number): string {
-        if (ms === undefined || ms === null) return '–:––';
+        if (ms === undefined || ms === null) return "–:––";
         const total = Math.max(0, Math.floor(ms / 1000));
         const m = Math.floor(total / 60);
         const s = total % 60;
-        return `${m}:${s.toString().padStart(2, '0')}`;
+        return `${m}:${s.toString().padStart(2, "0")}`;
     }
 </script>
 
 <div class="card">
-    {#if !nowPlaying || nowPlaying.state === 'notrunning'}
+    {#if !nowPlaying || nowPlaying.state === "notrunning"}
         <div class="status">Spotify is not running</div>
-    {:else if nowPlaying.state === 'stopped'}
+    {:else if nowPlaying.state === "stopped"}
         <div class="status">Spotify is stopped</div>
     {:else}
         <div class="track">
-            <div class="title">{nowPlaying.name ?? ''}</div>
+            <div class="title">{nowPlaying.name ?? ""}</div>
             <div class="meta">
-                <span class="artist">{nowPlaying.artist ?? ''}</span>
+                <span class="artist">{nowPlaying.artist ?? ""}</span>
                 {#if nowPlaying.album}
                     <span class="dot">·</span>
                     <span class="album">{nowPlaying.album}</span>
@@ -36,7 +36,7 @@
             </div>
             <div class="state">
                 <span class="state-indicator">
-                    {nowPlaying.state === 'playing' ? '▶' : '⏸'}
+                    {nowPlaying.state === "playing" ? "▶" : "⏸"}
                 </span>
                 <span class="time">
                     {fmtMs(livePositionMs)} / {fmtMs(nowPlaying.durationMs)}

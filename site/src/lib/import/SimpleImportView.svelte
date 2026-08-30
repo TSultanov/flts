@@ -29,11 +29,15 @@
     <label for="src-lang">Source language:</label>
     <select id="src-lang" bind:value={sourceLanguageId}>
         {#each languages.current ?? [] as l}
-            <option value={l.id}>{l.name}{l.localName ? ` (${l.localName})` : ""}</option>
+            <option value={l.id}
+                >{l.name}{l.localName ? ` (${l.localName})` : ""}</option
+            >
         {/each}
     </select>
     <div class="button">
-        <button disabled={!canImport} onclick={save} class="primary">Import</button>
+        <button disabled={!canImport} onclick={save} class="primary"
+            >Import</button
+        >
     </div>
 </div>
 

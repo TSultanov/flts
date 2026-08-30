@@ -1,19 +1,24 @@
 <script lang="ts">
-    import { Router } from 'sv-router';
-	import './router';
+    import { Router } from "sv-router";
+    import "./router";
     import Nav from "./lib/chrome/Nav.svelte";
     import AnkiSyncButton from "./lib/chrome/AnkiSyncButton.svelte";
     import SyncStatusButton from "./lib/sync/SyncStatusButton.svelte";
     import { onMount, setContext } from "svelte";
     import { Library } from "./lib/data/library";
-    import { configStore, getTranslationProviders, hasApiKeyForProvider, type ProviderMeta } from "./lib/config/store";
-    import { navigate } from './router';
-    import { platform } from '@tauri-apps/plugin-os';
-    import { invoke } from '@tauri-apps/api/core';
+    import {
+        configStore,
+        getTranslationProviders,
+        hasApiKeyForProvider,
+        type ProviderMeta,
+    } from "./lib/config/store";
+    import { navigate } from "./router";
+    import { platform } from "@tauri-apps/plugin-os";
+    import { invoke } from "@tauri-apps/api/core";
 
     let isMac = false;
     try {
-        isMac = platform() === 'macos';
+        isMac = platform() === "macos";
     } catch {
         isMac = false;
     }
@@ -65,18 +70,22 @@
             }
         };
         document.addEventListener("visibilitychange", onVisible);
-        return () => document.removeEventListener("visibilitychange", onVisible);
+        return () =>
+            document.removeEventListener("visibilitychange", onVisible);
     });
 
     const links = $derived.by(() => {
-        const apiKeyOk = hasApiKeyForProvider(configStore.current, providerMeta);
+        const apiKeyOk = hasApiKeyForProvider(
+            configStore.current,
+            providerMeta,
+        );
 
         if (!apiKeyOk || !configStore.current?.targetLanguageId) {
             return configOnlyLinks;
         } else {
             return fullLinks;
         }
-    })
+    });
 
     let initialRedirectDone = false;
     $effect(() => {
@@ -86,14 +95,18 @@
         initialRedirectDone = true;
         const currentPath = window.location.pathname;
 
-        const apiKeyOk = hasApiKeyForProvider(configStore.current, providerMeta);
-        const configComplete = apiKeyOk && configStore.current?.targetLanguageId;
+        const apiKeyOk = hasApiKeyForProvider(
+            configStore.current,
+            providerMeta,
+        );
+        const configComplete =
+            apiKeyOk && configStore.current?.targetLanguageId;
 
         if (!configComplete) {
-            if (currentPath !== '/config') {
+            if (currentPath !== "/config") {
                 navigate("/config");
             }
-        } else if (currentPath === '/' || currentPath === '') {
+        } else if (currentPath === "/" || currentPath === "") {
             navigate("/library");
         }
     });

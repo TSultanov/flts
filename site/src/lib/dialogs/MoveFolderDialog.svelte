@@ -55,7 +55,10 @@
         return selectedPath.every((segment, index) => segment === path[index]);
     }
 
-    function getPathArray(folder: LibraryFolder, currentPath: string[] = []): string[] {
+    function getPathArray(
+        folder: LibraryFolder,
+        currentPath: string[] = [],
+    ): string[] {
         return folder.name ? [...currentPath, folder.name] : currentPath;
     }
 
@@ -69,19 +72,24 @@
             const trimmedName = folderName.trim();
             const newFolderPath = [...pendingParentPath, trimmedName];
 
-            const findOrCreateFolder = (folder: LibraryFolder, pathSegments: string[]): LibraryFolder => {
+            const findOrCreateFolder = (
+                folder: LibraryFolder,
+                pathSegments: string[],
+            ): LibraryFolder => {
                 if (pathSegments.length === 0) {
                     return folder;
                 }
 
                 const [currentSegment, ...remainingSegments] = pathSegments;
-                let targetFolder = folder.folders.find(f => f.name === currentSegment);
+                let targetFolder = folder.folders.find(
+                    (f) => f.name === currentSegment,
+                );
 
                 if (!targetFolder) {
                     targetFolder = {
                         name: currentSegment,
                         folders: [],
-                        books: []
+                        books: [],
                     };
                     folder.folders.push(targetFolder);
                 }

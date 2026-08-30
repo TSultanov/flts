@@ -80,8 +80,7 @@
         const coord = horizontal ? event.clientX : event.clientY;
         const rawDelta = coord - dragStartCoord;
         // Anchored right/bottom, a smaller coord grows the panel.
-        const directionSign =
-            side === "left" || side === "top" ? 1 : -1;
+        const directionSign = side === "left" || side === "top" ? 1 : -1;
         size = clamp(
             dragStartSize + rawDelta * directionSign,
             minSize,
