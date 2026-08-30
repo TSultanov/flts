@@ -76,7 +76,7 @@ install-ios: build-ios ## install on a connected iPhone/iPad
 		EXTRACT="$$(mktemp -d)"; \
 		trap 'rm -rf "$$EXTRACT"' EXIT; \
 		unzip -q "$(IOS_IPA)" -d "$$EXTRACT"; \
-		APP="$$EXTRACT"/Payload/*.app; \
+		APP="$$(ls -d "$$EXTRACT"/Payload/*.app | head -1)"; \
 	else \
 		echo "missing iOS artifact (expected $(IOS_IPA))"; exit 1; \
 	fi; \
