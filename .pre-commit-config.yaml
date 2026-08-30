@@ -26,13 +26,13 @@ repos:
   - repo: local
     hooks:
       - id: prettier
+        # The workspace's own prettier, not a pre-commit-managed copy: Prettier
+        # resolves plugins from the CWD, so `prettier-plugin-svelte` is only
+        # findable via site/node_modules (see .prettierrc.json). Needs
+        # `pnpm install` in site/ first, which anyone editing these files has.
         name: prettier
-        entry: prettier --write --ignore-unknown
-        language: node
-        additional_dependencies:
-          - prettier@3.4.2
-          - prettier-plugin-svelte@3.3.3
-          - svelte@5.55.5
+        entry: site/node_modules/.bin/prettier --write --ignore-unknown
+        language: system
         files: \.(css|html?|json|md|ya?ml|jsx?|tsx?|svelte)$
 
   - repo: https://github.com/astral-sh/ruff-pre-commit

@@ -38,6 +38,8 @@
     "fast-check": "^4.8.0",
     "jsdom": "^29.1.1",
     "jszip": "^3.10.1",
+    "prettier": "3.4.2",
+    "prettier-plugin-svelte": "3.3.3",
     "svelte": "^5.55.5",
     "svelte-check": "^4.4.8",
     "typescript": "~6.0.3",
