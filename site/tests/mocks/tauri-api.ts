@@ -89,11 +89,15 @@ type MockChapter = {
   paragraphIds: number[];
 };
 
+type Mark = "emphasis" | "strong";
+
 type ParagraphSegment =
-  | { kind: "gap"; html: string }
+  | { kind: "gap"; text: string; marks?: Mark[] }
+  | { kind: "break"; marks?: Mark[] }
   | {
       kind: "word";
       text: string;
+      marks?: Mark[];
       sentence: number;
       word: number;
       flatIndex: number;

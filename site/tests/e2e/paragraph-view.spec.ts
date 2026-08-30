@@ -291,7 +291,7 @@ test.describe("ParagraphView (chromium only)", () => {
     page,
   }) => {
     const segments = [0, 1, 2].flatMap((i) => [
-      ...(i > 0 ? [{ kind: "gap" as const, html: " " }] : []),
+      ...(i > 0 ? [{ kind: "gap" as const, text: " " }] : []),
       wordSegment({
         flatIndex: i,
         sentence: 0,
@@ -356,7 +356,7 @@ test.describe("ParagraphView (chromium only)", () => {
         translation: "t0",
         familiarity: 0,
       }),
-      { kind: "gap" as const, html: " " },
+      { kind: "gap" as const, text: " " },
       wordSegment({
         flatIndex: 1,
         sentence: 0,
@@ -365,7 +365,7 @@ test.describe("ParagraphView (chromium only)", () => {
         translation: "t1",
         familiarity: 1,
       }),
-      { kind: "gap" as const, html: " " },
+      { kind: "gap" as const, text: " " },
       wordSegment({
         flatIndex: 2,
         sentence: 0,
@@ -390,7 +390,7 @@ test.describe("ParagraphView (chromium only)", () => {
   }) => {
     // No familiarity seeded, so only a click can reveal the overlay.
     const segments = [0, 1, 2].flatMap((i) => [
-      ...(i > 0 ? [{ kind: "gap" as const, html: " " }] : []),
+      ...(i > 0 ? [{ kind: "gap" as const, text: " " }] : []),
       wordSegment({
         flatIndex: i,
         sentence: 0,
@@ -445,7 +445,7 @@ test.describe("ParagraphView (chromium only)", () => {
   }) => {
     // Words 0 and 2 auto-show; word 1 stays hidden.
     const segments = [0, 1, 2].flatMap((i) => [
-      ...(i > 0 ? [{ kind: "gap" as const, html: " " }] : []),
+      ...(i > 0 ? [{ kind: "gap" as const, text: " " }] : []),
       wordSegment({
         flatIndex: i,
         sentence: 0,

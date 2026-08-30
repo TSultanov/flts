@@ -75,14 +75,35 @@ pub struct ParagraphTranslationSlice {
     segments: Option<Vec<ParagraphSegment>>,
 }
 
+/// Inline emphasis carried by a segment. The EPUB sanitizer allows only
+/// `em, i, b, br`, so `i`/`em` normalize to `Emphasis` and `b` to `Strong`.
+#[derive(Clone, Copy, serde::Serialize, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub enum Mark {
+    Emphasis,
+    Strong,
+}
+
+/// The single source of truth for the mounted and the virtualized rendering.
+/// A segment carries decoded text and structured marks, not raw HTML: a tag
+/// that spans several segments cannot survive parsing as independent
+/// `{@html}` fragments.
 #[derive(Clone, serde::Serialize, Debug, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ParagraphSegment {
     Gap {
-        html: String,
+        text: String,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        marks: Vec<Mark>,
+    },
+    Break {
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        marks: Vec<Mark>,
     },
     Word {
         text: String,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        marks: Vec<Mark>,
         sentence: usize,
         word: usize,
         #[serde(rename = "flatIndex")]
@@ -583,6 +604,127 @@ fn collect_paragraph_slugs(
     }
 }
 
+/// One decoded character with the emphasis active at that point. `<br>` becomes
+/// a `\n` flagged as a break so it neither matches word text nor is lost.
+struct ProjChar {
+    ch: char,
+    marks: Vec<Mark>,
+    is_break: bool,
+}
+
+/// Longest `&…;` an entity is worth scanning for before treating `&` as text.
+const MAX_ENTITY_CHARS: usize = 32;
+
+fn toggle_mark(marks: &mut Vec<Mark>, mark: Mark, closing: bool) {
+    if closing {
+        marks.retain(|m| *m != mark);
+    } else if !marks.contains(&mark) {
+        marks.push(mark);
+        // Canonical order, so `<b><i>` and `<i><b>` compare equal.
+        marks.sort();
+    }
+}
+
+fn flatten_original(original: &[char]) -> Vec<ProjChar> {
+    let mut out: Vec<ProjChar> = Vec::with_capacity(original.len());
+    let mut marks: Vec<Mark> = Vec::new();
+    let mut i = 0;
+    while i < original.len() {
+        if original[i] == '<'
+            && let Some(gt) = (i + 1..original.len()).find(|&j| original[j] == '>')
+        {
+            let raw: String = original[i + 1..gt].iter().collect();
+            let trimmed = raw.trim();
+            let closing = trimmed.starts_with('/');
+            let name = trimmed
+                .trim_start_matches('/')
+                .trim_end_matches('/')
+                .trim()
+                .to_ascii_lowercase();
+            match name.as_str() {
+                "br" => out.push(ProjChar {
+                    ch: '\n',
+                    marks: marks.clone(),
+                    is_break: true,
+                }),
+                "b" | "strong" => toggle_mark(&mut marks, Mark::Strong, closing),
+                "i" | "em" => toggle_mark(&mut marks, Mark::Emphasis, closing),
+                // Anything else is stripped by the importer; drop it rather
+                // than leak tag text into a word.
+                _ => {}
+            }
+            i = gt + 1;
+            continue;
+        }
+
+        if original[i] == '&' {
+            let limit = original.len().min(i + MAX_ENTITY_CHARS);
+            if let Some(semi) = (i + 1..limit).find(|&j| original[j] == ';') {
+                let raw: String = original[i..=semi].iter().collect();
+                let decoded = decode(raw.as_bytes()).to_string().unwrap_or_default();
+                if !decoded.is_empty() && decoded != raw {
+                    for ch in decoded.chars() {
+                        out.push(ProjChar {
+                            ch,
+                            marks: marks.clone(),
+                            is_break: false,
+                        });
+                    }
+                    i = semi + 1;
+                    continue;
+                }
+            }
+        }
+
+        out.push(ProjChar {
+            ch: original[i],
+            marks: marks.clone(),
+            is_break: false,
+        });
+        i += 1;
+    }
+    out
+}
+
+/// Appends gap text, merging into the previous gap only when the marks match.
+fn push_gap(segments: &mut Vec<ParagraphSegment>, text: String, marks: Vec<Mark>) {
+    if text.is_empty() {
+        return;
+    }
+    if let Some(ParagraphSegment::Gap {
+        text: existing,
+        marks: existing_marks,
+    }) = segments.last_mut()
+        && *existing_marks == marks
+    {
+        existing.push_str(&text);
+        return;
+    }
+    segments.push(ParagraphSegment::Gap { text, marks });
+}
+
+/// Emits everything between two words, split wherever the marks change or a
+/// break occurs, so every segment has one uniform mark set.
+fn push_run(segments: &mut Vec<ParagraphSegment>, run: &[ProjChar]) {
+    let mut idx = 0;
+    while idx < run.len() {
+        if run[idx].is_break {
+            segments.push(ParagraphSegment::Break {
+                marks: run[idx].marks.clone(),
+            });
+            idx += 1;
+            continue;
+        }
+        let start = idx;
+        let marks = run[idx].marks.clone();
+        while idx < run.len() && !run[idx].is_break && run[idx].marks == marks {
+            idx += 1;
+        }
+        let text: String = run[start..idx].iter().map(|c| c.ch).collect();
+        push_gap(segments, text, marks);
+    }
+}
+
 fn paragraph_to_segments(
     original: &str,
     translation: &ParagraphTranslationView,
@@ -591,17 +733,6 @@ fn paragraph_to_segments(
 ) -> Vec<ParagraphSegment> {
     let mut segments: Vec<ParagraphSegment> = Vec::new();
 
-    let push_gap = |segments: &mut Vec<ParagraphSegment>, html: String| {
-        if html.is_empty() {
-            return;
-        }
-        if let Some(ParagraphSegment::Gap { html: existing }) = segments.last_mut() {
-            existing.push_str(&html);
-        } else {
-            segments.push(ParagraphSegment::Gap { html });
-        }
-    };
-
     let decode_lossy = |value: &str| -> String {
         decode(value.as_bytes())
             .to_string()
@@ -609,6 +740,9 @@ fn paragraph_to_segments(
     };
 
     let original: Vec<char> = original.chars().collect();
+    // Matching runs in decoded space, so a word's char count lines up with
+    // the text it names. Entities and tags do not shift the count.
+    let proj = flatten_original(&original);
 
     let mut p_idx = 0_usize;
     let mut sentence_idx = 0_usize;
@@ -629,19 +763,15 @@ fn paragraph_to_segments(
             let w = decode_lossy(&w_raw);
             let len = w.chars().count();
             let mut offset = 0_usize;
-            while p_idx + offset < original.len() {
+            while p_idx + offset < proj.len() {
                 let start = p_idx + offset;
-                let mut clamped_end = p_idx + offset + len;
-                if clamped_end >= original.len() {
-                    clamped_end = original.len();
-                }
+                let clamped_end = (start + len).min(proj.len());
 
                 if start >= clamped_end {
                     break;
                 }
 
-                let p_word_raw = String::from_iter(original[start..clamped_end].iter());
-                let p_word = decode_lossy(&p_word_raw);
+                let p_word: String = proj[start..clamped_end].iter().map(|c| c.ch).collect();
 
                 if w.len() <= 2 {
                     if w.to_lowercase() == p_word.to_lowercase() {
@@ -654,21 +784,20 @@ fn paragraph_to_segments(
                 offset += 1;
             }
 
-            if offset > 0 {
-                let end = (p_idx + offset).min(original.len());
-                let gap = String::from_iter(original[p_idx..end].iter());
-                push_gap(&mut segments, gap);
+            let match_start = (p_idx + offset).min(proj.len());
+            if match_start > p_idx {
+                push_run(&mut segments, &proj[p_idx..match_start]);
             }
 
-            p_idx += offset;
+            p_idx = match_start;
 
-            let mut clamped_end = p_idx + len;
-            if clamped_end >= original.len() {
-                clamped_end = original.len();
-            }
+            let clamped_end = (p_idx + len).min(proj.len());
 
             if p_idx < clamped_end {
-                let text = String::from_iter(original[p_idx..clamped_end].iter());
+                let text: String = proj[p_idx..clamped_end].iter().map(|c| c.ch).collect();
+                // A word whose interior changes emphasis takes the marks of its
+                // first character; one span per word cannot represent a split.
+                let word_marks = proj[p_idx].marks.clone();
                 let translation_text = word
                     .contextual_translations()
                     .next()
@@ -692,6 +821,7 @@ fn paragraph_to_segments(
 
                 segments.push(ParagraphSegment::Word {
                     text,
+                    marks: word_marks,
                     sentence: sentence_idx,
                     word: word_idx,
                     flat_index: current_flat_index,
@@ -707,9 +837,8 @@ fn paragraph_to_segments(
         sentence_idx += 1;
     }
 
-    if p_idx < original.len() {
-        let gap = String::from_iter(original[p_idx..(original.len())].iter());
-        push_gap(&mut segments, gap);
+    if p_idx < proj.len() {
+        push_run(&mut segments, &proj[p_idx..]);
     }
 
     segments
@@ -781,7 +910,7 @@ fn levenshtein_distance_lt_2(str1: &str, str2: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{ParagraphSegment, paragraph_to_segments};
+    use super::{Mark, ParagraphSegment, paragraph_to_segments};
 
     use isolang::Language;
     use library::book::translation::ParagraphTranslationView;
@@ -848,6 +977,7 @@ mod tests {
     ) -> ParagraphSegment {
         ParagraphSegment::Word {
             text: text.to_owned(),
+            marks: Vec::new(),
             sentence,
             word,
             flat_index,
@@ -858,8 +988,118 @@ mod tests {
 
     fn gap_seg(html: &str) -> ParagraphSegment {
         ParagraphSegment::Gap {
-            html: html.to_owned(),
+            text: html.to_owned(),
+            marks: Vec::new(),
         }
+    }
+
+    fn marked_word_seg(
+        text: &str,
+        sentence: usize,
+        word: usize,
+        flat_index: usize,
+        translation: Option<&str>,
+        marks: Vec<Mark>,
+    ) -> ParagraphSegment {
+        ParagraphSegment::Word {
+            text: text.to_owned(),
+            marks,
+            sentence,
+            word,
+            flat_index,
+            translation: translation.map(str::to_owned),
+            familiarity: None,
+        }
+    }
+
+    #[test]
+    fn bold_word_carries_strong_mark() {
+        let original = "<b>Test</b>";
+
+        let pt = make_paragraph_translation(vec![translation_import::Sentence {
+            full_translation: "ignored".to_owned(),
+            words: vec![word("Test", &["Prueba"], false)],
+        }]);
+
+        let mut t = library::book::translation::Translation::create("spa", "eng");
+        let view = view_from_import(&mut t, 0, &pt);
+        let segments = paragraph_to_segments(
+            original,
+            &view,
+            &HashMap::new(),
+            Language::from_639_3("spa").unwrap(),
+        );
+
+        assert_eq!(
+            segments,
+            vec![marked_word_seg(
+                "Test",
+                0,
+                0,
+                0,
+                Some("Prueba"),
+                vec![Mark::Strong]
+            )]
+        );
+    }
+
+    #[test]
+    fn italic_word_carries_emphasis_mark() {
+        let original = "<i>Another</i> one";
+
+        let pt = make_paragraph_translation(vec![translation_import::Sentence {
+            full_translation: "ignored".to_owned(),
+            words: vec![
+                word("Another", &["Otro"], false),
+                word("one", &["uno"], false),
+            ],
+        }]);
+
+        let mut t = library::book::translation::Translation::create("spa", "eng");
+        let view = view_from_import(&mut t, 0, &pt);
+        let segments = paragraph_to_segments(
+            original,
+            &view,
+            &HashMap::new(),
+            Language::from_639_3("spa").unwrap(),
+        );
+
+        assert_eq!(
+            segments,
+            vec![
+                marked_word_seg("Another", 0, 0, 0, Some("Otro"), vec![Mark::Emphasis]),
+                gap_seg(" "),
+                word_seg("one", 0, 1, 1, Some("uno")),
+            ]
+        );
+    }
+
+    #[test]
+    fn br_becomes_break_segment() {
+        let original = "a<br>b";
+
+        let pt = make_paragraph_translation(vec![translation_import::Sentence {
+            full_translation: "ignored".to_owned(),
+            words: vec![word("a", &["a"], false), word("b", &["b"], false)],
+        }]);
+
+        let mut t = library::book::translation::Translation::create("spa", "eng");
+        let view = view_from_import(&mut t, 0, &pt);
+        let segments = paragraph_to_segments(
+            original,
+            &view,
+            &HashMap::new(),
+            Language::from_639_3("spa").unwrap(),
+        );
+
+        assert_eq!(
+            segments,
+            vec![
+                word_seg("a", 0, 0, 0, Some("a")),
+                ParagraphSegment::Break { marks: Vec::new() },
+                word_seg("b", 0, 1, 1, Some("b")),
+            ]
+        );
     }
 
     #[test]
@@ -926,7 +1166,7 @@ mod tests {
     }
 
     #[test]
-    fn preserves_original_html_entities_inside_gaps() {
+    fn decodes_html_entities_inside_gaps() {
         let original = "Tom &amp; Jerry";
 
         let pt = make_paragraph_translation(vec![translation_import::Sentence {
@@ -951,7 +1191,7 @@ mod tests {
             segments,
             vec![
                 word_seg("Tom", 0, 0, 0, Some("Tom")),
-                gap_seg(" &amp; "),
+                gap_seg(" & "),
                 word_seg("Jerry", 0, 2, 1, Some("Jerry")),
             ]
         );
@@ -1120,5 +1360,90 @@ mod tests {
             .collect();
 
         assert_eq!(familiarities, vec![Some(0.5), None]);
+    }
+
+    /// Every character of the paragraph must survive segmentation exactly once:
+    /// decoded gaps plus word texts reconstruct the decoded original. This is
+    /// what lets the mounted and virtualized renderings show the same text.
+    #[test]
+    fn segments_reconstruct_the_paragraph() {
+        let corpus: Vec<(&str, Vec<&str>)> = vec![
+            ("Hello, world!", vec!["Hello", "world"]),
+            ("Tom &amp; Jerry", vec!["Tom", "Jerry"]),
+            ("caf&eacute; noir", vec!["café", "noir"]),
+            ("<b>Test</b>", vec!["Test"]),
+            ("naïve café", vec!["naïve", "café"]),
+            ("a &hellip; b", vec!["a", "b"]),
+            ("x&amp;y z", vec!["x&y", "z"]),
+            // Word longer than what is left: the matcher must consume the tail
+            // as a gap without rewinding and re-emitting it.
+            ("ab", vec!["abcdef"]),
+            // No word matches anything.
+            ("zzz qqq", vec!["alpha", "beta"]),
+            ("", vec!["ghost"]),
+        ];
+
+        for (original, words) in corpus {
+            let pt = make_paragraph_translation(vec![translation_import::Sentence {
+                full_translation: "ignored".to_owned(),
+                words: words.iter().map(|w| word(w, &[], false)).collect(),
+            }]);
+            let mut t = library::book::translation::Translation::create("fra", "eng");
+            let view = view_from_import(&mut t, 0, &pt);
+            let segments = paragraph_to_segments(
+                original,
+                &view,
+                &HashMap::new(),
+                Language::from_639_3("fra").unwrap(),
+            );
+
+            let chars: Vec<char> = original.chars().collect();
+            let projection: String = super::flatten_original(&chars)
+                .iter()
+                .map(|c| c.ch)
+                .collect();
+
+            let rebuilt: String = segments
+                .iter()
+                .map(|s| match s {
+                    ParagraphSegment::Gap { text, .. } => text.clone(),
+                    ParagraphSegment::Break { .. } => "\n".to_owned(),
+                    ParagraphSegment::Word { text, .. } => text.clone(),
+                })
+                .collect();
+
+            assert_eq!(rebuilt, projection, "reconstructing {original:?}");
+        }
+    }
+
+    #[test]
+    fn entity_inside_word_stays_one_word() {
+        let original = "caf&eacute; noir";
+
+        let pt = make_paragraph_translation(vec![translation_import::Sentence {
+            full_translation: "ignored".to_owned(),
+            words: vec![
+                word("café", &["coffee"], false),
+                word("noir", &["black"], false),
+            ],
+        }]);
+
+        let mut t = library::book::translation::Translation::create("fra", "eng");
+        let view = view_from_import(&mut t, 0, &pt);
+        let segments = paragraph_to_segments(
+            original,
+            &view,
+            &HashMap::new(),
+            Language::from_639_3("fra").unwrap(),
+        );
+
+        assert_eq!(
+            segments,
+            vec![
+                word_seg("café", 0, 0, 0, Some("coffee")),
+                gap_seg(" "),
+                word_seg("noir", 0, 1, 1, Some("black")),
+            ]
+        );
     }
 }

@@ -196,7 +196,7 @@ test.describe("ParagraphView (multipage, chromium only)", () => {
   }) => {
     const segmentsFor = (prefix: string, autoShow: number[]) =>
       [0, 1, 2].flatMap((i) => [
-        ...(i > 0 ? [{ kind: "gap" as const, html: " " }] : []),
+        ...(i > 0 ? [{ kind: "gap" as const, text: " " }] : []),
         wordSegment({
           flatIndex: i,
           sentence: 0,
@@ -325,16 +325,14 @@ test.describe("ParagraphView (multipage, chromium only)", () => {
     ]);
   });
 
-  // The shared fixture tiles every paragraph with segments, as the backend
-  // does, so mounted and unmounted layouts match and the mount window is
-  // decided by viewport distance rather than a size delta between branches.
-
+  // Deliberately mixed: even paragraphs translated, odd ones not, so the mount
+  // window is exercised against both render branches at once.
   function allTranslatedSpec() {
     const overrides: Record<
       number,
       { segments: ReturnType<typeof fillerSegments> }
     > = {};
-    for (let i = 0; i < COUNT; i++) {
+    for (let i = 0; i < COUNT; i += 2) {
       overrides[i] = { segments: fillerSegments(i) };
     }
     return multipageSpec(COUNT, overrides);

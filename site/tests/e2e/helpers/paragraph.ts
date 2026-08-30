@@ -2,11 +2,15 @@ import { expect, type Locator, type Page } from "@playwright/test";
 import { isRealMode, realModeUnsupported } from "./backend-mode";
 import { realSeedAndOpen, realTranslateCalls } from "./real-seed";
 
+export type Mark = "emphasis" | "strong";
+
 export type ParagraphSegment =
-  | { kind: "gap"; html: string }
+  | { kind: "gap"; text: string; marks?: Mark[] }
+  | { kind: "break"; marks?: Mark[] }
   | {
       kind: "word";
       text: string;
+      marks?: Mark[];
       sentence: number;
       word: number;
       flatIndex: number;
@@ -363,36 +367,48 @@ export async function setParagraphTranslation(
 }
 
 /**
- * Tiles all of `fillerHtml(idx)`, one segment per token, as the backend does.
- * Keeps translated and untranslated widths comparable, which the lazy-mount
- * scroll-stability tests depend on.
+ * Tokenizes `html` into segments the way the backend does, one per token.
+ * The text is the same either way, so a paragraph's mounted and unmounted
+ * renderings are comparable.
  */
-export function fillerSegments(idx: number): ParagraphSegment[] {
-  const html = fillerHtml(idx);
+export function segmentsOfHtml(
+  html: string,
+  translationOf: (token: string) => string | null = () => null,
+  familiarity?: number,
+): ParagraphSegment[] {
   const segments: ParagraphSegment[] = [];
   let flatIdx = 0;
   let sentenceIdx = 0;
   let wordIdx = 0;
-  const tokens = html.split(/(\s+)/);
-  for (const token of tokens) {
+  for (const token of html.split(/(\s+)/)) {
     if (token === "") continue;
     if (/^\s+$/.test(token)) {
-      segments.push({ kind: "gap", html: token });
-    } else {
-      segments.push(
-        wordSegment({
-          flatIndex: flatIdx++,
-          sentence: sentenceIdx,
-          word: wordIdx++,
-          text: token,
-          translation: null,
-        }),
-      );
-      if (/[.!?]$/.test(token)) {
-        sentenceIdx++;
-        wordIdx = 0;
-      }
+      segments.push({ kind: "gap", text: token });
+      continue;
+    }
+    segments.push(
+      wordSegment({
+        flatIndex: flatIdx++,
+        sentence: sentenceIdx,
+        word: wordIdx++,
+        text: token,
+        translation: translationOf(token),
+        ...(familiarity !== undefined ? { familiarity } : {}),
+      }),
+    );
+    if (/[.!?]$/.test(token)) {
+      sentenceIdx++;
+      wordIdx = 0;
     }
   }
   return segments;
+}
+
+/**
+ * Tiles all of `fillerHtml(idx)`, one segment per token, as the backend does.
+ * Keeps translated and untranslated widths comparable, which the lazy-mount
+ * scroll-stability tests need.
+ */
+export function fillerSegments(idx: number): ParagraphSegment[] {
+  return segmentsOfHtml(fillerHtml(idx));
 }

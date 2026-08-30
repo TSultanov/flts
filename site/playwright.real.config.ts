@@ -25,6 +25,9 @@ export default defineConfig({
     // real segments are sliced out of the original, so it cannot diverge.
     "paragraph-view.spec.ts", // + setTranslateConfig/inFlight in most cases
     "paragraph-view-multipage.spec.ts", // same, plus familiarity overlays
+    "paragraph-marks.spec.ts", // seeds marks a real translation would derive
+    "chapter-page-shift.spec.ts", // 220 seeded paragraphs paired html/segments
+    "word-overlay-geometry.spec.ts", // per-word familiarity + translation
   ],
   fullyParallel: true,
   forbidOnly: !!process.env.CI,

@@ -87,7 +87,7 @@ function makeLibraryStub() {
 
 const bookId = "test-book" as UUID;
 
-const seg = (html: string): ParagraphSegment[] => [{ kind: "gap", html }];
+const seg = (text: string): ParagraphSegment[] => [{ kind: "gap", text }];
 
 const range = (start: number, end: number): number[] =>
   Array.from({ length: end - start }, (_, i) => start + i);

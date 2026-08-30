@@ -68,7 +68,13 @@
 <style>
     .word-span {
         position: relative;
-        display: inline-block;
+        /* Not inline-block: an atomic per-word box breaks lines differently
+           from the same characters as one run, which makes a mounted
+           paragraph taller than a virtualized one. */
+        display: inline;
+        /* Vertical padding on an inline box does not affect line height. It
+           gives the tap target and the overlay anchor without moving text. */
+        padding: calc(var(--font-size) * 0.375) 0;
         text-decoration: underline;
         text-decoration-color: rgba(214, 175, 54, var(--familiarity-opacity, 0));
         text-decoration-thickness: 2px;
@@ -85,6 +91,7 @@
         position: absolute;
         left: 0;
         right: 0;
+        /* Top of the span's padding box: the half-leading above the glyphs. */
         top: 0;
         width: 100%;
         font-size: var(--word-translation-font-size, 0.55em);

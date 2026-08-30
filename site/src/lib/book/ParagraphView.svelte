@@ -1,9 +1,9 @@
 <script lang="ts">
     import Fa from "svelte-fa";
     import { faLanguage } from "@fortawesome/free-solid-svg-icons";
-    import { getContext } from "svelte";
+    import { getContext, type Snippet } from "svelte";
     import CircularProgress from "../widgets/CircularProgress.svelte";
-    import type { Library } from "../data/library";
+    import type { Library, Mark } from "../data/library";
     import type { UUID } from "../data/uuid";
     import { ParagraphViewModel, type WordSelection } from "./ParagraphViewModel.svelte";
     import WordSpan from "./WordSpan.svelte";
@@ -65,6 +65,10 @@
     });
 </script>
 
+<!-- Wraps a segment in its emphasis. Marks arrive canonically ordered and are
+     empty for almost every segment, so the nesting stays flat. -->
+{#snippet marked(marks: Mark[] | undefined, kids: Snippet)}{#if marks?.includes("strong")}<strong>{#if marks.includes("emphasis")}<em>{@render kids()}</em>{:else}{@render kids()}{/if}</strong>{:else if marks?.includes("emphasis")}<em>{@render kids()}</em>{:else}{@render kids()}{/if}{/snippet}
+
 <div
     class="paragraph-wrapper"
     data-paragraph-id={paragraphId}
@@ -93,22 +97,26 @@
     {:else}
         <div></div>
     {/if}
-    {#if mounted && vm.segments}
+    {#if vm.segments}
+        <!-- Both branches render the same segments under the same wrappers,
+             so a paragraph's height cannot change when it virtualizes. Write
+             the tags without gaps: whitespace here becomes text. -->
         <p>
+            {#if !mounted}{#each vm.runs ?? [] as run, i (i)}{#snippet runBody()}{run.kind === "text" ? run.text : ""}{/snippet}{#if run.kind === "break"}<br />{:else}{@render marked(run.marks, runBody)}{/if}{/each}{:else}
             {#each vm.segments as seg, i (i)}
-                {#if seg.kind === "gap"}{@html seg.html}{:else}<WordSpan
-                        text={seg.text}
-                        sentence={seg.sentence}
-                        word={seg.word}
-                        flatIndex={seg.flatIndex}
-                        translation={seg.translation}
-                        manualShown={isWordRevealed(seg.flatIndex)}
-                        familiarity={seg.familiarity}
-                        selected={vm.isSelected(seg.sentence, seg.word)}
-                        onClick={(w) =>
-                            onWordClick({ paragraphId, ...w })}
-                    />{/if}
-            {/each}
+                {#snippet body()}{#if seg.kind === "gap"}{seg.text}{:else if seg.kind === "word"}<WordSpan
+                            text={seg.text}
+                            sentence={seg.sentence}
+                            word={seg.word}
+                            flatIndex={seg.flatIndex}
+                            translation={seg.translation}
+                            manualShown={isWordRevealed(seg.flatIndex)}
+                            familiarity={seg.familiarity}
+                            selected={vm.isSelected(seg.sentence, seg.word)}
+                            onClick={(w) =>
+                                onWordClick({ paragraphId, ...w })}
+                        />{/if}{/snippet}{#if seg.kind === "break"}<br />{:else}{@render marked(seg.marks, body)}{/if}
+            {/each}{/if}
         </p>
     {:else}
         <p class="original">

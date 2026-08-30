@@ -35,11 +35,22 @@ export type SentenceWordTranslation = {
   readonly sourceLanguage: string;
 };
 
+/** Inline emphasis, normalized backend-side from the sanitizer's `em, i, b`. */
+export type Mark = "emphasis" | "strong";
+
+/**
+ * The single source of truth for the mounted and the virtualized rendering,
+ * so the two show the same characters under the same wrappers. Marks are
+ * structured, not raw tags: a tag that spans segments cannot survive parsing
+ * as independent `{@html}` fragments.
+ */
 export type ParagraphSegment =
-  | { kind: "gap"; html: string }
+  | { kind: "gap"; text: string; marks?: Mark[] }
+  | { kind: "break"; marks?: Mark[] }
   | {
       kind: "word";
       text: string;
+      marks?: Mark[];
       sentence: number;
       word: number;
       flatIndex: number;
