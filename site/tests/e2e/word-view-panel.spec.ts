@@ -106,6 +106,24 @@ test.describe("WordView panel — expand and collapse", () => {
     await expect(page.locator(PEEK)).toBeVisible();
   });
 
+  test("deselecting the word collapses the expanded panel", async ({
+    page,
+  }) => {
+    await seedClickableBook(page);
+    await page.waitForSelector(".paragraphs-container.is-ready");
+    const p = paragraphLocator(page, 0);
+    await wordSpan(p, 0).click();
+
+    await page.locator(EXPAND).click();
+    await expect(page.locator(EXPANDED)).toBeVisible();
+
+    await page.locator(".chapter").click({ position: { x: 5, y: 5 } });
+
+    await expect(page.locator(EXPANDED)).toHaveCount(0);
+    await expect(page.locator(PEEK)).toBeVisible();
+    await expect(page.locator(PEEK)).toContainText("Select a word");
+  });
+
   test("`w` shortcut toggles expand", async ({ page }) => {
     await seedClickableBook(page);
     const p = paragraphLocator(page, 0);

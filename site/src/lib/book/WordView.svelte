@@ -36,6 +36,11 @@
             : null,
     );
 
+    // Losing word focus returns the panel to its peek bar.
+    $effect(() => {
+        if (!selection) expanded = false;
+    });
+
     let model = $derived(word?.current?.translationModel);
 
     const activity = $derived(
