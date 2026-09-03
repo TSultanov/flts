@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::TranslationProvider;
 
-pub const LIST_TTL_SECS: u64 = 24 * 3600;
+pub const LIST_TTL_SECS: u64 = 6 * 3600;
 pub const LIST_TIMEOUT: Duration = Duration::from_secs(10);
 pub const LIST_MAX_PAGES: usize = 50;
 
