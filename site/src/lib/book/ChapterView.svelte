@@ -159,7 +159,7 @@
 <style>
     .chapter-container {
         position: relative;
-        background-color: var(--hover-color);
+        background-color: var(--well-background);
         padding: 10px 25px;
         justify-content: center;
         height: 100%;
@@ -211,7 +211,7 @@
         max-width: 800px;
         margin: 0 auto;
         border: 1px solid var(--background-color);
-        background-color: white;
+        background-color: var(--dialog-background);
         box-shadow: 2px 2px var(--background-color);
         text-align: justify;
         line-height: 2;

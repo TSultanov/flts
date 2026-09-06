@@ -508,7 +508,7 @@
     button.link {
         background: none;
         border: none;
-        color: #4493f8;
+        color: var(--link-color);
         cursor: pointer;
         padding: 0;
         font: inherit;
@@ -520,7 +520,7 @@
 
     .err {
         margin: 0;
-        color: #f85149;
+        color: var(--error-color);
         font-size: 0.85em;
     }
 

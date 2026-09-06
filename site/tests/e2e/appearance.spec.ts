@@ -21,6 +21,18 @@ async function fg(page: import("@playwright/test").Page, selector: string) {
   return page.locator(selector).evaluate((el) => getComputedStyle(el).color);
 }
 
+async function seedAndOpenChapter(page: import("@playwright/test").Page) {
+  await page.goto("/library");
+  await page.evaluate(() => {
+    (window as any).__test.seedBook({
+      title: "Theme Book",
+      chapters: [{ paragraphs: [{ html: "<p>hello</p>" }] }],
+    });
+  });
+  await page.locator('a[href^="/book/"]').first().click();
+  await expect(page.locator(".chapter")).toBeVisible();
+}
+
 test.describe("appearance (light)", () => {
   test.use({ colorScheme: "light" });
 
@@ -33,6 +45,28 @@ test.describe("appearance (light)", () => {
       /light\s+dark|dark\s+light/,
     );
   });
+
+  test("chapter paper is light", async ({ page }) => {
+    await seedAndOpenChapter(page);
+    expect(rgbLuminance(await bg(page, ".chapter"))).toBeGreaterThan(0.7);
+  });
+
+  test("confirm dialog is a light surface", async ({ page }) => {
+    await page.goto("/library");
+    await page.evaluate(() => {
+      (window as any).__test.seedBook({
+        title: "Theme Book",
+        chapters: [{ paragraphs: [{ html: "<p>hello</p>" }] }],
+      });
+    });
+    await page.getByTestId("select-all-button").click();
+    await page.getByTestId("delete-selected-button").click();
+    const dialog = page.getByTestId("confirm-dialog");
+    await expect(dialog).toBeVisible();
+    expect(
+      rgbLuminance(await bg(page, "[data-testid=confirm-dialog]")),
+    ).toBeGreaterThan(0.7);
+  });
 });
 
 test.describe("appearance (dark)", () => {
@@ -42,5 +76,31 @@ test.describe("appearance (dark)", () => {
     await page.goto("/library");
     expect(rgbLuminance(await bg(page, "body"))).toBeLessThan(0.15);
     expect(rgbLuminance(await fg(page, "body"))).toBeGreaterThan(0.7);
+  });
+
+  test("chapter paper is dark", async ({ page }) => {
+    await seedAndOpenChapter(page);
+    expect(rgbLuminance(await bg(page, ".chapter"))).toBeLessThan(0.2);
+    expect(rgbLuminance(await fg(page, ".chapter"))).toBeGreaterThan(0.7);
+  });
+
+  test("confirm dialog is a dark surface", async ({ page }) => {
+    await page.goto("/library");
+    await page.evaluate(() => {
+      (window as any).__test.seedBook({
+        title: "Theme Book",
+        chapters: [{ paragraphs: [{ html: "<p>hello</p>" }] }],
+      });
+    });
+    await page.getByTestId("select-all-button").click();
+    await page.getByTestId("delete-selected-button").click();
+    const dialog = page.getByTestId("confirm-dialog");
+    await expect(dialog).toBeVisible();
+    expect(
+      rgbLuminance(await bg(page, "[data-testid=confirm-dialog]")),
+    ).toBeLessThan(0.2);
+    expect(
+      rgbLuminance(await fg(page, "[data-testid=confirm-dialog] h3")),
+    ).toBeGreaterThan(0.7);
   });
 });

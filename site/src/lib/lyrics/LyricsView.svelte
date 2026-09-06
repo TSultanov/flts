@@ -278,10 +278,10 @@
         line-height: 1.4;
     }
     .status-bar.warn {
-        color: #c08000;
+        color: var(--warn-color);
     }
     .status-bar.err {
-        color: var(--error-color, #b00020);
+        color: var(--error-color);
     }
     .lyrics-area {
         flex: 1 1 auto;

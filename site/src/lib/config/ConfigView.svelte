@@ -873,10 +873,10 @@
         background: color-mix(in srgb, currentColor 8%, transparent);
     }
     .spotify-notice.warn {
-        color: #c08000;
+        color: var(--warn-color);
     }
     .spotify-notice.err {
-        color: var(--error-color, #b00020);
+        color: var(--error-color);
     }
 
     details.anki-section {

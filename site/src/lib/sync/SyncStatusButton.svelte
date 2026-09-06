@@ -55,7 +55,7 @@
         font-size: 0.9em;
     }
     .sync-status-button.error {
-        color: #f85149;
+        color: var(--error-color);
     }
     .sync-status-button.spin :global(svg) {
         animation: sync-status-spin 0.9s linear infinite;
