@@ -212,7 +212,7 @@
     }
 
     .folder-option.selected .folder-button {
-        color: var(--background-color);
+        color: var(--dialog-text);
         background: var(--button-cancel-hover);
     }
 

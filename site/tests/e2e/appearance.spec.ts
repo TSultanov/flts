@@ -103,4 +103,28 @@ test.describe("appearance (dark)", () => {
       rgbLuminance(await fg(page, "[data-testid=confirm-dialog] h3")),
     ).toBeGreaterThan(0.7);
   });
+
+  test("move folder selected row is readable", async ({ page }) => {
+    await page.goto("/library");
+    await page.evaluate(() => {
+      (window as any).__test.seedBook({
+        title: "Theme Book",
+        chapters: [{ paragraphs: [{ html: "<p>hello</p>" }] }],
+      });
+    });
+    await page.getByTestId("select-all-button").click();
+    await page.getByTestId("move-selected-button").click();
+    const dialog = page.getByTestId("move-folder-dialog");
+    await expect(dialog).toBeVisible();
+    const selected = dialog.locator(
+      '[data-testid="folder-button"][data-folder-path=""]',
+    );
+    await expect(selected).toBeVisible();
+    const color = await selected.evaluate((el) => getComputedStyle(el).color);
+    const background = await selected.evaluate(
+      (el) => getComputedStyle(el).backgroundColor,
+    );
+    expect(rgbLuminance(color)).toBeGreaterThan(0.7);
+    expect(rgbLuminance(background)).toBeLessThan(0.3);
+  });
 });
