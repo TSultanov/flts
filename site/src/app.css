@@ -6,6 +6,10 @@
   --ui-font-size: calc(var(--font-size) - 2px);
 
   font-size: var(--font-size);
+}
+
+:root {
+  color-scheme: light dark;
 
   --background-color: #333333;
   --hover-color: #444444;
@@ -17,6 +21,11 @@
   --text-inactive: #aaaaaa;
   --accent-color: #007acc;
   --accent-color-transparent: rgba(0, 122, 204, 0.2);
+  --page-background: #ffffff;
+  --well-background: #444444;
+  --link-color: #2a6cd6;
+  --error-color: #b00020;
+  --warn-color: #c08000;
 
   /* Dialog colors */
   --dialog-background: #ffffff;
@@ -33,8 +42,34 @@
   --button-cancel-text: #495057;
 }
 
+@media (prefers-color-scheme: dark) {
+  :root {
+    --text-color: #e8e8e8;
+    --text-color-muted: #b0b0b0;
+    --text-untranslated: #e8e8e8;
+    --text-inactive: #888888;
+    --page-background: #121212;
+    --well-background: #0d0d0d;
+    --dialog-background: #1e1e1e;
+    --dialog-text: #e8e8e8;
+    --dialog-text-secondary: #b0b0b0;
+    --dialog-border: #4a4a4a;
+    --dialog-backdrop: rgba(0, 0, 0, 0.65);
+    --button-cancel: #2a2a2a;
+    --button-cancel-hover: #3a3a3a;
+    --button-cancel-text: #e8e8e8;
+    --link-color: #6db3f2;
+    --error-color: #ff6b6b;
+    --warn-color: #e0a020;
+    --accent-color-transparent: rgba(0, 122, 204, 0.35);
+  }
+}
+
+html,
 body {
   margin: 0;
+  background-color: var(--page-background);
+  color: var(--text-color);
 }
 
 button {
