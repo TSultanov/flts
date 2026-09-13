@@ -49,16 +49,21 @@
   },
   "dependencies": {
     "@fortawesome/free-solid-svg-icons": "^7.2.0",
-    "@tauri-apps/api": "^2.11.0",
-    "@tauri-apps/plugin-barcode-scanner": "^2.4.5",
-    "@tauri-apps/plugin-dialog": "^2.7.1",
-    "@tauri-apps/plugin-log": "^2.8.0",
-    "@tauri-apps/plugin-os": "^2.3.2",
+    "@tauri-apps/api": "~2.10.1",
+    "@tauri-apps/plugin-barcode-scanner": "~2.4.5",
+    "@tauri-apps/plugin-dialog": "~2.7.1",
+    "@tauri-apps/plugin-log": "~2.8.0",
+    "@tauri-apps/plugin-os": "~2.3.2",
     "@tauri-apps/plugin-window-state": "~2.4.1",
     "@types/jsdom": "^28.0.2",
     "dexie": "^4.4.2",
     "qrcode": "^1.5.4",
     "sv-router": "^0.16.1",
     "svelte-fa": "^4.0.4"
+  },
+  "pnpm": {
+    "overrides": {
+      "@tauri-apps/api": "~2.10.1"
+    }
   }
 }

@@ -27,7 +27,7 @@ IOS_IPA := $(TAURI_DIR)/gen/apple/build/arm64/$(PRODUCT).ipa
 
 .DEFAULT_GOAL := build
 
-.PHONY: all build dev deps hooks format \
+.PHONY: all build dev deps check-deps hooks format \
 	build-macos build-ios build-android \
 	install-macos install-ios install-android \
 	install\ macos install\ ios install\ android \
@@ -40,6 +40,10 @@ help: ## show available targets
 
 deps: ## install frontend dependencies (pnpm, when missing)
 	@if [ ! -d "$(SITE)/node_modules" ]; then cd "$(SITE)" && pnpm install; fi
+	@$(MAKE) --no-print-directory check-deps
+
+check-deps: ## verify Tauri crate and npm versions are on the same major/minor
+	@"$(ROOT)scripts/check-tauri-versions.sh"
 
 hooks: ## install git pre-commit formatters (requires pre-commit on PATH)
 	"$(ROOT)scripts/install-git-hooks.sh"
