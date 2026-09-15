@@ -100,13 +100,7 @@ impl AnkiSyncTask {
         let (commands, rx) = mpsc::unbounded_channel();
         let wake = library.card_store().change_notify();
         tokio::spawn(run_sync_loop(
-            AnkiSyncState::new(),
-            client,
-            library,
-            status_tx,
-            interval,
-            wake,
-            rx,
+            client, library, status_tx, interval, wake, rx,
         ));
         Arc::new(Self { commands })
     }
@@ -141,7 +135,6 @@ pub async fn sync_now_or_err(task: Option<Arc<AnkiSyncTask>>) -> anyhow::Result<
 }
 
 async fn run_sync_loop(
-    mut state: AnkiSyncState,
     client: Arc<dyn AnkiConnect>,
     library: Arc<Library>,
     status_tx: Arc<watch::Sender<AnkiSyncStatus>>,
@@ -149,6 +142,7 @@ async fn run_sync_loop(
     wake: Arc<Notify>,
     mut commands: mpsc::UnboundedReceiver<SyncCommand>,
 ) {
+    let mut state = AnkiSyncState::new();
     let mut ticker = tokio::time::interval(interval);
     loop {
         let requester = tokio::select! {
