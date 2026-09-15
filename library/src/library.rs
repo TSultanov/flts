@@ -313,35 +313,18 @@ impl Library {
 
         for update in updates {
             let id = update.key.id();
-            let lock = self.card_store.lock_for(&id).await;
-            let _guard = lock.lock().await;
-
-            let result = async {
-                let existing = self
-                    .card_store
-                    .load(
-                        &update.key.source_language,
-                        &update.key.target_language,
-                        &update.key.slug,
-                    )
-                    .await?;
-                let card = match existing {
-                    Some(mut card) => {
-                        card.apply_update(&update);
-                        card
-                    }
-                    None => Card::new_from_update(&update),
-                };
-                self.card_store
-                    .save(
-                        &card,
-                        &update.key.source_language,
-                        &update.key.target_language,
-                    )
-                    .await?;
-                anyhow::Ok(())
-            }
-            .await;
+            let (src, tgt, slug) = (
+                update.key.source_language.clone(),
+                update.key.target_language.clone(),
+                update.key.slug.clone(),
+            );
+            let result = self
+                .card_store
+                .modify(&src, &tgt, &slug, move |slot| match slot {
+                    Some(card) => card.apply_update(&update),
+                    None => *slot = Some(Card::new_from_update(&update)),
+                })
+                .await;
 
             if let Err(err) = result {
                 log::warn!("Failed to persist card {id}: {err}");
@@ -990,6 +973,52 @@ mod library_tests {
         let card: Card = serde_json::from_str(&body).unwrap();
         assert_eq!(card.translations_flat(), vec!["мочь"]);
         assert_eq!(card.examples.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn integration_repeat_apply_neither_rewrites_nor_wakes() {
+        let tmp = TempDir::new("flts_card_repeat_silent");
+        let (library, book_id) =
+            library_with_one_paragraph_book(tmp.path.join("lib"), "No puedo más.").await;
+        let paragraph = paragraph_with(
+            "Я больше не могу.",
+            vec![full_word(
+                "puedo",
+                "poder",
+                "мочь",
+                "verb",
+                &["могу"],
+                false,
+            )],
+        );
+        let tgt = Language::from_639_3("rus").unwrap();
+        let notify = library.card_store().change_notify();
+
+        library
+            .apply_paragraph_to_cards(book_id, 0, &paragraph, tgt)
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), notify.notified())
+            .await
+            .expect("first apply wakes anki sync");
+
+        let card_path = library.card_store().card_path("spa", "rus", "poder");
+        let card: Card = serde_json::from_slice(&std::fs::read(&card_path).unwrap()).unwrap();
+        let compact = serde_json::to_vec(&card).unwrap();
+        std::fs::write(&card_path, &compact).unwrap();
+
+        library
+            .apply_paragraph_to_cards(book_id, 0, &paragraph, tgt)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(&card_path).unwrap(),
+            compact,
+            "unchanged card was rewritten"
+        );
+        let pending =
+            tokio::time::timeout(std::time::Duration::from_millis(100), notify.notified()).await;
+        assert!(pending.is_err(), "unchanged card must not wake anki sync");
     }
 
     #[tokio::test]

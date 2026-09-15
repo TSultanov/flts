@@ -50,15 +50,15 @@ pub(crate) fn next_delay(n: u32) -> std::time::Duration {
     std::time::Duration::from_secs(60 * n.min(10) as u64)
 }
 
-/// An eligible card plus its per-card lock guard, held until the pass ends.
+/// An eligible card as loaded in phase 1a.
 struct Eligible {
     card_id: String,
     src_str: String,
     tgt_str: String,
+    slug: String,
     src: Language,
     tgt: Language,
     card: Card,
-    _guard: tokio::sync::OwnedMutexGuard<()>,
 }
 
 impl AnkiSyncState {
@@ -112,8 +112,8 @@ impl Default for AnkiSyncState {
 }
 
 /// Run one sync pass over every card on disk, bootstrapping model+decks on the
-/// first call. Phase 1 gathers eligible cards under their locks and batches
-/// their `findNotes`; phase 2 classifies and applies the batched writes.
+/// first call. Phase 1 loads eligible cards and batches their `findNotes`;
+/// phase 2 classifies and applies the batched writes.
 #[allow(dead_code)]
 pub async fn sync_pass(
     client: &dyn AnkiConnect,
@@ -135,7 +135,7 @@ pub async fn sync_pass(
 
     let mut report = SyncReport::default();
 
-    // Phase 1a: walk disk, acquire locks, load, filter.
+    // Phase 1a: walk disk, load, filter.
     let mut eligible: Vec<Eligible> = Vec::new();
 
     for (src_str, tgt_str) in &pairs {
@@ -149,9 +149,6 @@ pub async fn sync_pass(
             report.total_cards += 1;
 
             let card_id = crate::card::card_id(src_str, tgt_str, &lemma_slug);
-            let lock_arc = card_store.lock_for(&card_id).await;
-            let guard = lock_arc.lock_owned().await;
-
             let Some(card) = card_store.load(src_str, tgt_str, &lemma_slug).await? else {
                 continue;
             };
@@ -172,10 +169,10 @@ pub async fn sync_pass(
                 card_id,
                 src_str: src_str.clone(),
                 tgt_str: tgt_str.clone(),
+                slug: lemma_slug,
                 src,
                 tgt,
                 card,
-                _guard: guard,
             });
         }
     }
@@ -261,13 +258,13 @@ pub async fn sync_pass(
     let (notes_by_id, cards_by_id) =
         batch_pull_state(client, &actions, &mut write_outcomes, state).await;
 
-    for (idx, mut e) in eligible.into_iter().enumerate() {
-        let pre_card = e.card.clone();
+    for (idx, e) in eligible.into_iter().enumerate() {
+        let mut new_anki: Option<AnkiData> = None;
         let outcome: Result<()> = match &actions[idx] {
             CardAction::LookupFailed => Err(anyhow!("lookup batch failed for {}", e.card_id)),
             CardAction::LocalDeleteOnly => {
                 if any_note_found {
-                    e.card.anki_data = Some(AnkiData {
+                    new_anki = Some(AnkiData {
                         state: AnkiState::Deleted,
                         interval_days: None,
                         ease_factor: None,
@@ -297,7 +294,7 @@ pub async fn sync_pass(
                                 if cards.is_empty() {
                                     Err(anyhow!("no cards returned for note {note_id}"))
                                 } else if cards.iter().any(|c| c.is_suspended()) {
-                                    e.card.anki_data = Some(AnkiData {
+                                    new_anki = Some(AnkiData {
                                         state: AnkiState::Suspended,
                                         interval_days: None,
                                         ease_factor: None,
@@ -306,7 +303,7 @@ pub async fn sync_pass(
                                     });
                                     Ok(())
                                 } else {
-                                    e.card.anki_data = Some(active_data_from(&cards));
+                                    new_anki = Some(active_data_from(&cards));
                                     Ok(())
                                 }
                             }
@@ -320,9 +317,13 @@ pub async fn sync_pass(
             Ok(()) => {
                 // Silent save: only `anki_data` changed, from our own
                 // round-trip; waking the watcher would self-trigger a pass.
-                if e.card != pre_card {
+                if let Some(data) = new_anki {
                     card_store
-                        .save_without_wake(&e.card, &e.src_str, &e.tgt_str)
+                        .modify_without_wake(&e.src_str, &e.tgt_str, &e.slug, move |slot| {
+                            if let Some(card) = slot {
+                                card.anki_data = Some(data);
+                            }
+                        })
                         .await?;
                 }
                 state.record_success(&e.card_id);
