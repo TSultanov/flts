@@ -93,7 +93,7 @@ pub struct AnkiSyncTask {
 impl AnkiSyncTask {
     pub fn init(
         library: Arc<Library>,
-        client: Arc<dyn AnkiConnect>,
+        client: Box<dyn AnkiConnect>,
         interval: Duration,
         status_tx: Arc<watch::Sender<AnkiSyncStatus>>,
     ) -> Arc<Self> {
@@ -135,7 +135,7 @@ pub async fn sync_now_or_err(task: Option<Arc<AnkiSyncTask>>) -> anyhow::Result<
 }
 
 async fn run_sync_loop(
-    client: Arc<dyn AnkiConnect>,
+    client: Box<dyn AnkiConnect>,
     library: Arc<Library>,
     status_tx: Arc<watch::Sender<AnkiSyncStatus>>,
     interval: Duration,
@@ -313,7 +313,7 @@ mod tests {
     #[tokio::test]
     async fn anki_sync_task_init_and_shutdown_does_not_panic() {
         let (_tmp, library) = seed_library_with_card("flts_anki_sync_smoke").await;
-        let mock: Arc<dyn AnkiConnect> = Arc::new(MockAnkiConnect::new());
+        let mock: Box<dyn AnkiConnect> = Box::new(MockAnkiConnect::new());
         let task = AnkiSyncTask::init(library, mock, Duration::from_millis(50), make_status_tx());
         task.shutdown().await;
     }
@@ -323,7 +323,7 @@ mod tests {
         // Long interval so the periodic ticker can't be what triggers the
         // pass — only the card-store wake from `save()` should drive it.
         let (_tmp, library) = seed_library_with_card("flts_anki_sync_wake").await;
-        let mock_for_task: Arc<dyn AnkiConnect> = Arc::new(MockAnkiConnect::new());
+        let mock_for_task: Box<dyn AnkiConnect> = Box::new(MockAnkiConnect::new());
         let task = AnkiSyncTask::init(
             library.clone(),
             mock_for_task,
@@ -375,7 +375,7 @@ mod tests {
     #[tokio::test]
     async fn anki_sync_task_runs_first_pass_within_interval() {
         let (_tmp, library) = seed_library_with_card("flts_anki_sync_first_tick").await;
-        let mock_for_task: Arc<dyn AnkiConnect> = Arc::new(MockAnkiConnect::new());
+        let mock_for_task: Box<dyn AnkiConnect> = Box::new(MockAnkiConnect::new());
         let task = AnkiSyncTask::init(
             library.clone(),
             mock_for_task,
@@ -447,7 +447,7 @@ mod tests {
     #[tokio::test]
     async fn anki_sync_task_emits_ok_status_after_first_tick() {
         let (_tmp, library) = seed_library_with_card("flts_anki_sync_status_ok").await;
-        let mock: Arc<dyn AnkiConnect> = Arc::new(MockAnkiConnect::new());
+        let mock: Box<dyn AnkiConnect> = Box::new(MockAnkiConnect::new());
         let (status_tx, mut status_rx) = tokio::sync::watch::channel(AnkiSyncStatus::default());
         let task = AnkiSyncTask::init(
             library,
@@ -472,10 +472,10 @@ mod tests {
     #[tokio::test]
     async fn anki_sync_task_emits_unreachable_when_version_fails() {
         let (_tmp, library) = seed_library_with_card("flts_anki_sync_unreachable").await;
-        let mock = Arc::new(MockAnkiConnect::new());
+        let mock = MockAnkiConnect::new();
         // Every call fails, so each tick stops at the version() probe.
         mock.fail_next_n_calls(usize::MAX);
-        let client: Arc<dyn AnkiConnect> = mock;
+        let client: Box<dyn AnkiConnect> = Box::new(mock);
         let (status_tx, mut status_rx) = tokio::sync::watch::channel(AnkiSyncStatus::default());
         let task = AnkiSyncTask::init(
             library.clone(),
@@ -506,10 +506,10 @@ mod tests {
     #[tokio::test]
     async fn anki_sync_task_recovers_to_ok_after_version_succeeds() {
         let (_tmp, library) = seed_library_with_card("flts_anki_sync_recover").await;
-        let mock = Arc::new(MockAnkiConnect::new());
+        let mock = MockAnkiConnect::new();
         // Only the first tick's version() fails; later ticks reach sync_pass.
         mock.fail_next_n_calls(1);
-        let client: Arc<dyn AnkiConnect> = mock;
+        let client: Box<dyn AnkiConnect> = Box::new(mock);
         let (status_tx, mut status_rx) = tokio::sync::watch::channel(AnkiSyncStatus::default());
         let task = AnkiSyncTask::init(
             library.clone(),
@@ -526,7 +526,7 @@ mod tests {
     #[tokio::test]
     async fn anki_sync_task_sync_now_runs_a_pass_and_returns_report() {
         let (_tmp, library) = seed_library_with_card("flts_anki_sync_now_ok").await;
-        let mock: Arc<dyn AnkiConnect> = Arc::new(MockAnkiConnect::new());
+        let mock: Box<dyn AnkiConnect> = Box::new(MockAnkiConnect::new());
         let (status_tx, status_rx) = tokio::sync::watch::channel(AnkiSyncStatus::default());
         // Long interval so the periodic loop doesn't race the explicit
         // sync_now call.
@@ -553,7 +553,7 @@ mod tests {
     #[tokio::test]
     async fn sync_now_reports_in_progress_instead_of_waiting() {
         let (_tmp, library) = seed_library_with_card("flts_anki_sync_busy").await;
-        let mock: Arc<dyn AnkiConnect> = Arc::new(MockAnkiConnect::new());
+        let mock: Box<dyn AnkiConnect> = Box::new(MockAnkiConnect::new());
         // Long interval so the periodic loop can't interfere mid-test.
         let task = AnkiSyncTask::init(library, mock, Duration::from_secs(3600), make_status_tx());
 
@@ -568,7 +568,7 @@ mod tests {
     #[tokio::test]
     async fn shutdown_twice_is_idempotent() {
         let (_tmp, library) = seed_library_with_card("flts_anki_sync_shutdown_twice").await;
-        let mock: Arc<dyn AnkiConnect> = Arc::new(MockAnkiConnect::new());
+        let mock: Box<dyn AnkiConnect> = Box::new(MockAnkiConnect::new());
         let task = AnkiSyncTask::init(library, mock, Duration::from_secs(3600), make_status_tx());
         task.shutdown().await;
         tokio::time::timeout(Duration::from_secs(1), task.shutdown())
@@ -579,7 +579,7 @@ mod tests {
     #[tokio::test]
     async fn sync_now_after_shutdown_returns_stopped_error() {
         let (_tmp, library) = seed_library_with_card("flts_anki_sync_after_shutdown").await;
-        let mock: Arc<dyn AnkiConnect> = Arc::new(MockAnkiConnect::new());
+        let mock: Box<dyn AnkiConnect> = Box::new(MockAnkiConnect::new());
         let task = AnkiSyncTask::init(library, mock, Duration::from_secs(3600), make_status_tx());
         task.shutdown().await;
         let err = task.sync_now().await.expect_err("stopped task must refuse");
@@ -592,7 +592,7 @@ mod tests {
         tokio::task::yield_now().await;
         let metrics = tokio::runtime::Handle::current().metrics();
         let baseline = metrics.num_alive_tasks();
-        let mock: Arc<dyn AnkiConnect> = Arc::new(MockAnkiConnect::new());
+        let mock: Box<dyn AnkiConnect> = Box::new(MockAnkiConnect::new());
         let task = AnkiSyncTask::init(
             library.clone(),
             mock,
@@ -661,7 +661,7 @@ mod tests {
     #[tokio::test]
     async fn shutdown_cancels_an_in_flight_pass_and_fails_its_requester() {
         let (_tmp, library) = seed_library_with_card("flts_anki_sync_cancel").await;
-        let stalled: Arc<dyn AnkiConnect> = Arc::new(StalledAnki);
+        let stalled: Box<dyn AnkiConnect> = Box::new(StalledAnki);
         let task = AnkiSyncTask::init(
             library,
             stalled,
@@ -687,9 +687,9 @@ mod tests {
     #[tokio::test]
     async fn anki_sync_task_sync_now_returns_err_when_version_fails() {
         let (_tmp, library) = seed_library_with_card("flts_anki_sync_now_unreachable").await;
-        let mock = Arc::new(MockAnkiConnect::new());
+        let mock = MockAnkiConnect::new();
         mock.fail_next_n_calls(usize::MAX);
-        let client: Arc<dyn AnkiConnect> = mock;
+        let client: Box<dyn AnkiConnect> = Box::new(mock);
         let (status_tx, status_rx) = tokio::sync::watch::channel(AnkiSyncStatus::default());
         let task = AnkiSyncTask::init(
             library,
@@ -722,7 +722,7 @@ mod tests {
     #[tokio::test]
     async fn sync_now_or_err_returns_report_when_task_present() {
         let (_tmp, library) = seed_library_with_card("flts_anki_sync_slot_present").await;
-        let mock: Arc<dyn AnkiConnect> = Arc::new(MockAnkiConnect::new());
+        let mock: Box<dyn AnkiConnect> = Box::new(MockAnkiConnect::new());
         let task = AnkiSyncTask::init(library, mock, Duration::from_secs(3600), make_status_tx());
         let report = sync_now_or_err(Some(task.clone()))
             .await

@@ -607,8 +607,7 @@ impl AppState {
                 .clone()
                 .unwrap_or_else(|| "http://127.0.0.1:8765".to_owned());
             let api_key = config.anki_api_key.clone();
-            let client: Arc<dyn library::anki::connect::AnkiConnect> =
-                library::anki::connect::get_anki_connect(endpoint, api_key).into();
+            let client = library::anki::connect::get_anki_connect(endpoint, api_key);
             let interval_secs = std::env::var("FLTS_ANKI_SYNC_INTERVAL_SECS")
                 .ok()
                 .and_then(|s| s.parse::<u64>().ok())
