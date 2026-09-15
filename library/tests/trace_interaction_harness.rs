@@ -117,12 +117,11 @@ async fn trace_interaction_baseline() {
 
     // WorkerReadParagraph: get_or_create_translation + paragraph_view
     let span = TraceSpan::begin("t1", "WorkerReadParagraph").field("task", "t1");
-    let translation = {
+    {
         let mut b = book_handle.lock().await;
-        let tr = b.get_or_create_translation(&ru()).await.unwrap();
+        b.get_or_create_translation(&ru()).unwrap();
         let _pv = b.book.paragraph_view(0);
-        tr
-    };
+    }
     span.end();
 
     // WorkerCallAPI: simulated external call
@@ -132,11 +131,16 @@ async fn trace_interaction_baseline() {
 
     // WorkerStoreResult: add_paragraph_translation
     let span = TraceSpan::begin("t1", "WorkerStoreResult").field("task", "t1");
-    translation.lock().await.add_paragraph_translation(
-        0,
-        &make_paragraph(100, "Привет мир"),
-        "models/gemini-2.5-flash",
-    );
+    book_handle
+        .lock()
+        .await
+        .get_or_create_translation(&ru())
+        .unwrap()
+        .add_paragraph_translation(
+            0,
+            &make_paragraph(100, "Привет мир"),
+            "models/gemini-2.5-flash",
+        );
     span.end();
 
     // WorkerSave: book.save()
@@ -238,16 +242,20 @@ async fn trace_interaction_baseline() {
 
     // === MarkWordVisible ===
     // Live writes from the click path are gone, but the trace spec still
-    // models a fast translation-lock mutation under this name. The legacy
-    // merge-path helper `add_visible_word` is the surviving handle that
-    // performs an equivalent under-lock write.
+    // models a fast translation mutation under the book lock under this name;
+    // any small in-memory translation write stands in for it.
     let span = TraceSpan::begin("t2", "MarkWordVisible")
         .field("task", "t2")
         .field("book", "b1");
     {
         let mut b = book_handle.lock().await;
-        let tr = b.get_or_create_translation(&ru()).await.unwrap();
-        tr.lock().await.add_visible_word(0, 0);
+        b.get_or_create_translation(&ru())
+            .unwrap()
+            .add_paragraph_translation(
+                0,
+                &make_paragraph(101, "Привет мир"),
+                "models/gemini-2.5-flash",
+            );
         b.save().await.unwrap();
     }
     span.end();
@@ -297,12 +305,11 @@ async fn trace_interaction_concurrent() {
 
         // WorkerReadParagraph
         let span = TraceSpan::begin("t1", "WorkerReadParagraph").field("task", "t1");
-        let tr = {
+        {
             let mut b = bh.lock().await;
-            let tr = b.get_or_create_translation(&ru()).await.unwrap();
+            b.get_or_create_translation(&ru()).unwrap();
             let _pv = b.book.paragraph_view(0);
-            tr
-        };
+        }
         span.end();
 
         // WorkerCallAPI — long async call, other tasks interleave here
@@ -312,11 +319,15 @@ async fn trace_interaction_concurrent() {
 
         // WorkerStoreResult
         let span = TraceSpan::begin("t1", "WorkerStoreResult").field("task", "t1");
-        tr.lock().await.add_paragraph_translation(
-            0,
-            &make_paragraph(200, "Первый абзац"),
-            "models/gemini-2.5-flash",
-        );
+        bh.lock()
+            .await
+            .get_or_create_translation(&ru())
+            .unwrap()
+            .add_paragraph_translation(
+                0,
+                &make_paragraph(200, "Первый абзац"),
+                "models/gemini-2.5-flash",
+            );
         span.end();
 
         // WorkerSave

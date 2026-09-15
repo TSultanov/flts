@@ -17,14 +17,73 @@ use tokio::sync::RwLock;
 /// `warm_lru` is the only strong pin. Bounded by `capacity`; oldest pin falls
 /// out when capacity is exceeded. When the pin is the only strong ref, the
 /// value unloads at that moment; otherwise it lives until external holders drop.
-pub struct WeakLruCache<K, V> {
-    inner: RwLock<Inner<K, V>>,
-}
-
-struct Inner<K, V> {
+pub struct WeakLru<K, V> {
     weak_by_id: HashMap<K, Weak<V>>,
     warm_lru: VecDeque<(K, Arc<V>)>,
     capacity: usize,
+}
+
+impl<K, V> WeakLru<K, V>
+where
+    K: Eq + Hash + Clone,
+{
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            weak_by_id: HashMap::new(),
+            warm_lru: VecDeque::with_capacity(capacity),
+            capacity,
+        }
+    }
+
+    pub fn get(&mut self, key: &K) -> Option<Arc<V>> {
+        let value = self.weak_by_id.get(key).and_then(Weak::upgrade)?;
+
+        // Refresh recency so an actively-read value isn't evicted underneath
+        // its reader; re-pin a live value that already fell out of the warm set.
+        if let Some(pos) = self.warm_lru.iter().position(|(k, _)| k == key) {
+            if let Some(entry) = self.warm_lru.remove(pos) {
+                self.warm_lru.push_back(entry);
+            }
+        } else {
+            if self.warm_lru.len() >= self.capacity {
+                self.warm_lru.pop_front();
+            }
+            self.warm_lru.push_back((key.clone(), value.clone()));
+        }
+
+        Some(value)
+    }
+
+    /// Insert a freshly-loaded value, or return the live `Arc` a concurrent
+    /// task already registered for `key` (dropping the caller's `value`).
+    pub fn insert(&mut self, key: K, value: Arc<V>) -> Arc<V> {
+        if let Some(existing) = self.weak_by_id.get(&key).and_then(Weak::upgrade) {
+            return existing;
+        }
+
+        self.weak_by_id.retain(|_, w| w.strong_count() > 0);
+
+        if self.warm_lru.len() >= self.capacity {
+            self.warm_lru.pop_front();
+        }
+        self.warm_lru.push_back((key.clone(), value.clone()));
+        self.weak_by_id.insert(key, Arc::downgrade(&value));
+        value
+    }
+
+    pub fn remove(&mut self, key: &K) {
+        self.weak_by_id.remove(key);
+        self.warm_lru.retain(|(k, _)| k != key);
+    }
+
+    pub fn live_values(&self) -> Vec<Arc<V>> {
+        self.weak_by_id.values().filter_map(Weak::upgrade).collect()
+    }
+}
+
+/// [`WeakLru`] behind a lock, for callers that share it across tasks.
+pub struct WeakLruCache<K, V> {
+    inner: RwLock<WeakLru<K, V>>,
 }
 
 impl<K, V> WeakLruCache<K, V>
@@ -33,67 +92,24 @@ where
 {
     pub fn new(capacity: usize) -> Self {
         Self {
-            inner: RwLock::new(Inner {
-                weak_by_id: HashMap::new(),
-                warm_lru: VecDeque::with_capacity(capacity),
-                capacity,
-            }),
+            inner: RwLock::new(WeakLru::new(capacity)),
         }
     }
 
     pub async fn get(&self, key: &K) -> Option<Arc<V>> {
-        let mut inner = self.inner.write().await;
-        let value = inner.weak_by_id.get(key).and_then(Weak::upgrade)?;
-
-        // Refresh recency so an actively-read value isn't evicted underneath
-        // its reader; re-pin a live value that already fell out of the warm set.
-        if let Some(pos) = inner.warm_lru.iter().position(|(k, _)| k == key) {
-            if let Some(entry) = inner.warm_lru.remove(pos) {
-                inner.warm_lru.push_back(entry);
-            }
-        } else {
-            if inner.warm_lru.len() >= inner.capacity {
-                inner.warm_lru.pop_front();
-            }
-            inner.warm_lru.push_back((key.clone(), value.clone()));
-        }
-
-        Some(value)
+        self.inner.write().await.get(key)
     }
 
-    /// Insert a freshly-loaded value, or return the live `Arc` a concurrent
-    /// task already registered for `key` (dropping the caller's `value`).
     pub async fn insert(&self, key: K, value: Arc<V>) -> Arc<V> {
-        let mut inner = self.inner.write().await;
-
-        if let Some(existing) = inner.weak_by_id.get(&key).and_then(Weak::upgrade) {
-            return existing;
-        }
-
-        inner.weak_by_id.retain(|_, w| w.strong_count() > 0);
-
-        if inner.warm_lru.len() >= inner.capacity {
-            inner.warm_lru.pop_front();
-        }
-        inner.warm_lru.push_back((key.clone(), value.clone()));
-        inner.weak_by_id.insert(key, Arc::downgrade(&value));
-        value
+        self.inner.write().await.insert(key, value)
     }
 
     pub async fn remove(&self, key: &K) {
-        let mut inner = self.inner.write().await;
-        inner.weak_by_id.remove(key);
-        inner.warm_lru.retain(|(k, _)| k != key);
+        self.inner.write().await.remove(key)
     }
 
     pub async fn live_values(&self) -> Vec<Arc<V>> {
-        self.inner
-            .read()
-            .await
-            .weak_by_id
-            .values()
-            .filter_map(Weak::upgrade)
-            .collect()
+        self.inner.read().await.live_values()
     }
 }
 

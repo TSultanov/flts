@@ -75,8 +75,7 @@ async fn setup_dirty_library(lib_path: &Path) -> (Arc<Library>, uuid::Uuid) {
     {
         let book_handle = library.get_book(&book_id).await.unwrap();
         let mut book = book_handle.lock().await;
-        let translation = book.get_or_create_translation(&ru).await.unwrap();
-        let mut t = translation.lock().await;
+        let t = book.get_or_create_translation(&ru).unwrap();
         t.add_paragraph_translation(
             0,
             &make_translation("Это тестовый абзац."),
@@ -112,8 +111,7 @@ async fn test_bug3_no_shutdown_persistence() {
         let library = Arc::new(Library::open(lib_path.clone()).await.unwrap());
         let book_handle = library.get_book(&book_id).await.unwrap();
         let mut book = book_handle.lock().await;
-        let translation = book.get_or_create_translation(&ru).await.unwrap();
-        let t = translation.lock().await;
+        let t = book.get_or_create_translation(&ru).unwrap();
         let pv = t.paragraph_view(0);
 
         assert!(
@@ -137,8 +135,7 @@ async fn test_bug3_no_shutdown_persistence() {
         let library = Arc::new(Library::open(lib_path2).await.unwrap());
         let book_handle = library.get_book(&book_id2).await.unwrap();
         let mut book = book_handle.lock().await;
-        let translation = book.get_or_create_translation(&ru).await.unwrap();
-        let t = translation.lock().await;
+        let t = book.get_or_create_translation(&ru).unwrap();
         let pv = t.paragraph_view(0);
 
         assert!(

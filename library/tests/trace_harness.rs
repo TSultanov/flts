@@ -197,11 +197,8 @@ async fn trace_translation_merge_and_save() {
         let mut book = book.lock().await;
         book.book.push_chapter(Some("Intro"));
         book.book.push_paragraph(0, "hello", None);
-        let translation = book
-            .get_or_create_translation(&target_language)
-            .await
-            .unwrap();
-        translation.lock().await.add_paragraph_translation(
+        let translation = book.get_or_create_translation(&target_language).unwrap();
+        translation.add_paragraph_translation(
             0,
             &make_paragraph(1, "v1"),
             "models/gemini-2.5-flash",
@@ -221,15 +218,8 @@ async fn trace_translation_merge_and_save() {
     let library = Library::open(library_root.clone()).await.unwrap();
     let book = library.get_book(&book_id).await.unwrap();
     let mut book = book.lock().await;
-    let translation = book
-        .get_or_create_translation(&target_language)
-        .await
-        .unwrap();
-    translation.lock().await.add_paragraph_translation(
-        0,
-        &make_paragraph(2, "mem"),
-        "models/gemini-2.5-flash",
-    );
+    let translation = book.get_or_create_translation(&target_language).unwrap();
+    translation.add_paragraph_translation(0, &make_paragraph(2, "mem"), "models/gemini-2.5-flash");
 
     sleep_for_mtime_tick();
     {

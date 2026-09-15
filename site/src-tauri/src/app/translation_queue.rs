@@ -10,8 +10,7 @@ use std::{
 use isolang::Language;
 use library::{
     cache::TranslationsCache,
-    library::{Library, library_book::LibraryBook},
-    tla_trace::mutex::TracedMutex,
+    library::{BookHandle, Library},
     translation_stats::TranslationSizeCache,
     translator::{
         ChapterContextProvider, TranslationContext, gemini_cache::GeminiPromptCache,
@@ -113,8 +112,6 @@ async fn handle_translation_failure(
         .remove(&(request.book_id, request.paragraph_id));
     FailureDisposition::Terminal
 }
-
-type BookHandle = Arc<TracedMutex<LibraryBook>>;
 
 #[derive(Clone)]
 struct SaveNotify {
@@ -714,12 +711,8 @@ async fn handle_request(
         // as the staleness checks: an Arc captured before the minutes-long LLM
         // call may be detached, and writes into a detached instance are invisible
         // and never saved.
-        let translation = book.get_or_create_translation(&target_language).await?;
-        translation.lock().await.add_paragraph_translation(
-            request.paragraph_id,
-            &p_translation,
-            &request.model,
-        );
+        let translation = book.get_or_create_translation(&target_language)?;
+        translation.add_paragraph_translation(request.paragraph_id, &p_translation, &request.model);
     }
 
     library

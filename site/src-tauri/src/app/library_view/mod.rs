@@ -197,7 +197,7 @@ impl LibraryView {
         // Must stay read-only: minting a translation would cement a book whose
         // translations failed to load as untranslated, and diverge translation
         // ids across synced devices.
-        let book_translation = book.get_translation(target_language).await;
+        let book_translation = book.get_translation(target_language);
 
         let paragraph = book.book.paragraph_view(paragraph_id);
         let original = paragraph.original_html.unwrap_or(paragraph.original_text);
@@ -210,11 +210,7 @@ impl LibraryView {
         })?;
         let card_store = self.library.card_store();
 
-        let bt = match &book_translation {
-            Some(t) => Some(t.lock().await),
-            None => None,
-        };
-        let t_view = bt.as_ref().and_then(|bt| bt.paragraph_view(paragraph_id));
+        let t_view = book_translation.and_then(|bt| bt.paragraph_view(paragraph_id));
 
         let segments = if let Some(t) = t_view.as_ref() {
             let mut slug_set: HashSet<String> = HashSet::new();
@@ -266,11 +262,7 @@ impl LibraryView {
 
         // Read-only; see get_paragraph_view. No matching translation yields
         // `segments: None` for every row.
-        let book_translation = book.get_translation(target_language).await;
-        let bt = match &book_translation {
-            Some(t) => Some(t.lock().await),
-            None => None,
-        };
+        let bt = book.get_translation(target_language);
 
         let src_lang = Language::from_639_3(&book.book.language).ok_or_else(|| {
             anyhow::anyhow!(
@@ -359,14 +351,7 @@ impl LibraryView {
         let book = self.library.get_book(&book_id).await?;
         let chapters: Vec<ChapterView> = {
             let book_guard = book.lock().await;
-            let translation_arc = match target_language {
-                Some(tl) => book_guard.get_translation(tl).await,
-                None => None,
-            };
-            let translation_guard = match &translation_arc {
-                Some(arc) => Some(arc.lock().await),
-                None => None,
-            };
+            let translation_guard = target_language.and_then(|tl| book_guard.get_translation(tl));
             book_guard
                 .book
                 .chapter_views()
@@ -433,22 +418,16 @@ impl LibraryView {
         word_id: usize,
         target_language: &Language,
     ) -> anyhow::Result<Option<WordView>> {
-        let (book_translation, source_language_code) = {
-            let book = self.library.get_book(&book_id).await?;
-            let book = book.lock().await;
-            (
-                // Read-only; see get_paragraph_view.
-                book.get_translation(target_language).await,
-                book.book.language.clone(),
-            )
-        };
-
-        let Some(book_translation) = book_translation else {
+        let book = self.library.get_book(&book_id).await?;
+        let book = book.lock().await;
+        let source_language_code = book.book.language.clone();
+        // Read-only; see get_paragraph_view.
+        let Some(book_translation) = book.get_translation(target_language) else {
             return Ok(None);
         };
 
         Ok(
-            if let Some(paragraph) = book_translation.lock().await.paragraph_view(paragraph_id) {
+            if let Some(paragraph) = book_translation.paragraph_view(paragraph_id) {
                 // The frontend refetches on `book_updated` with its selected
                 // {sentence, word}, which a re-translation can shrink away. The
                 // views index raw, and panic = abort would take the app down.

@@ -265,13 +265,12 @@ async fn translate_paragraph(
     paragraph_id: usize,
     worker_id: usize,
 ) -> anyhow::Result<()> {
-    let (translation, paragraph_text, chapter_id) = {
+    let (paragraph_text, chapter_id) = {
         let book = library.get_book(&book_id).await?;
-        let mut book = book.lock().await;
-        let translation = book.get_or_create_translation(tgt_lang).await?;
+        let book = book.lock().await;
         let paragraph = book.book.paragraph_view(paragraph_id);
         let chapter_id = book.book.chapter_for_paragraph(paragraph_id).unwrap_or(0);
-        (translation, paragraph.original_text.to_string(), chapter_id)
+        (paragraph.original_text.to_string(), chapter_id)
     };
     println!(
         "Worker {worker_id}: Translating paragraph {}: \"{}...\"",
@@ -289,11 +288,12 @@ async fn translate_paragraph(
         .await?;
     println!("Worker {worker_id}: Translated paragraph {}", paragraph_id);
 
-    translation.lock().await.add_paragraph_translation(
-        paragraph_id,
-        &p_translation,
-        &translator.get_model(),
-    );
+    {
+        let book = library.get_book(&book_id).await?;
+        let mut book = book.lock().await;
+        book.get_or_create_translation(tgt_lang)?
+            .add_paragraph_translation(paragraph_id, &p_translation, &translator.get_model());
+    }
 
     library
         .apply_paragraph_to_cards(book_id, paragraph_id, &p_translation, *tgt_lang)
@@ -351,9 +351,10 @@ async fn translate_book(
 
         let paragraph_count = book.book.paragraphs_count();
 
-        let translation = book.get_or_create_translation(&target_lang).await?;
-        let untranslated_paragraphs_count =
-            paragraph_count.saturating_sub(translation.lock().await.translated_paragraphs_count());
+        let untranslated_paragraphs_count = paragraph_count.saturating_sub(
+            book.get_or_create_translation(&target_lang)?
+                .translated_paragraphs_count(),
+        );
         println!(
             "Translating book {} from {} to {}",
             book.book.title,
@@ -366,7 +367,9 @@ async fn translate_book(
         );
 
         let untranslated_ids: Vec<usize> = {
-            let t = translation.lock().await;
+            let t = book
+                .get_translation(&target_lang)
+                .ok_or_else(|| anyhow::anyhow!("translation missing right after creation"))?;
             let mut ids = Vec::new();
             for chapter in book.book.chapter_views() {
                 for paragraph in chapter.paragraphs() {

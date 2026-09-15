@@ -974,11 +974,7 @@ impl AppState {
         let untranslated: Vec<usize> = {
             let book = library.get_book(&book_id).await?;
             let book = book.lock().await;
-            let translation_arc = book.get_translation(&target_language).await;
-            let translation_guard = match &translation_arc {
-                Some(arc) => Some(arc.lock().await),
-                None => None,
-            };
+            let translation_guard = book.get_translation(&target_language);
             let chapter = book.book.chapter_view(chapter_id);
             chapter
                 .paragraphs()

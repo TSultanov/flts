@@ -1,11 +1,9 @@
 use std::{
     io::Write,
     str::FromStr,
-    sync::Arc,
     time::{Duration, SystemTime},
 };
 
-use crate::tla_trace::mutex::TracedMutex;
 use isolang::Language;
 
 use crate::{
@@ -60,11 +58,10 @@ async fn list_books_conflicting_translation_versions() {
         .create_book("First Book", &Language::from_639_3("spa").unwrap())
         .await
         .unwrap();
-    let _translation = book1
+    book1
         .lock()
         .await
         .get_or_create_translation(&Language::from_str("en").unwrap())
-        .await
         .unwrap();
     book1.lock().await.save().await.unwrap();
 
@@ -170,15 +167,14 @@ async fn save_after_load_book_and_translation_changed() {
             }],
         };
         tr.add_paragraph_translation(0, &initial_pt, "models/gemini-2.5-flash");
-        book.translations
-            .push(Arc::new(TracedMutex::new(super::LibraryTranslation {
-                translation: tr,
-                source_language,
-                target_language,
-                last_modified: None,
-                last_saved_hash: None,
-                changed: true,
-            })));
+        book.translations.push(super::LibraryTranslation {
+            translation: tr,
+            source_language,
+            target_language,
+            last_modified: None,
+            last_saved_hash: None,
+            changed: true,
+        });
         book.save().await.unwrap();
         book.book.id
     };
@@ -213,11 +209,7 @@ async fn save_after_load_book_and_translation_changed() {
         };
         // Go through the wrapper so the dirty flag is set; the inner
         // Translation has no dirty tracking of its own.
-        book.translations[0].lock().await.add_paragraph_translation(
-            0,
-            &new_pt,
-            "models/gemini-2.5-flash",
-        );
+        book.translations[0].add_paragraph_translation(0, &new_pt, "models/gemini-2.5-flash");
 
         book.save().await.unwrap();
         book.path.clone()
@@ -282,15 +274,14 @@ async fn save_merges_translation_with_concurrent_on_disk_change() {
         }],
     };
     tr.add_paragraph_translation(0, &pt1, "models/gemini-2.5-flash");
-    book.translations
-        .push(Arc::new(TracedMutex::new(super::LibraryTranslation {
-            translation: tr,
-            source_language,
-            target_language,
-            last_modified: None,
-            last_saved_hash: None,
-            changed: true,
-        })));
+    book.translations.push(super::LibraryTranslation {
+        translation: tr,
+        source_language,
+        target_language,
+        last_modified: None,
+        last_saved_hash: None,
+        changed: true,
+    });
     book.save().await.unwrap();
 
     let book_file = book.path.join("book.dat");
@@ -302,8 +293,7 @@ async fn save_merges_translation_with_concurrent_on_disk_change() {
     book.last_modified = std::fs::metadata(&book_file).unwrap().modified().ok();
     book.translations.clear();
     let loaded_tr = super::LibraryTranslation::load(&tr_path).await.unwrap();
-    book.translations
-        .push(Arc::new(TracedMutex::new(loaded_tr)));
+    book.translations.push(loaded_tr);
 
     let mem_pt = translation_import::ParagraphTranslation {
         total_tokens: None,
@@ -328,11 +318,11 @@ async fn save_merges_translation_with_concurrent_on_disk_change() {
             }],
         }],
     };
-    book.translations[0]
-        .lock()
-        .await
-        .translation
-        .add_paragraph_translation(0, &mem_pt, "models/gemini-2.5-flash");
+    book.translations[0].translation.add_paragraph_translation(
+        0,
+        &mem_pt,
+        "models/gemini-2.5-flash",
+    );
 
     {
         let mut on_disk = {
@@ -910,7 +900,7 @@ fn bump_mtime_future(path: &std::path::Path) -> SystemTime {
 async fn book_with_saved_translation(
     library: &Library,
     title: &str,
-) -> (Arc<TracedMutex<super::LibraryBook>>, std::path::PathBuf) {
+) -> (crate::library::BookHandle, std::path::PathBuf) {
     let source_language = Language::from_str("en").unwrap();
     let target_language = Language::from_str("ru").unwrap();
     let book = library
@@ -921,15 +911,14 @@ async fn book_with_saved_translation(
         let mut book = book.lock().await;
         let mut tr = Translation::create(source_language.to_639_3(), target_language.to_639_3());
         tr.add_paragraph_translation(0, &simple_paragraph("v1", 1), "models/gemini-2.5-flash");
-        book.translations
-            .push(Arc::new(TracedMutex::new(super::LibraryTranslation {
-                translation: tr,
-                source_language,
-                target_language,
-                last_modified: None,
-                last_saved_hash: None,
-                changed: true,
-            })));
+        book.translations.push(super::LibraryTranslation {
+            translation: tr,
+            source_language,
+            target_language,
+            last_modified: None,
+            last_saved_hash: None,
+            changed: true,
+        });
         book.save().await.unwrap();
     }
     let tr_path = {
@@ -978,7 +967,7 @@ async fn save_clears_changed_flag() {
 
     let book = book.lock().await;
     assert!(
-        !book.has_unsaved_changes().await,
+        !book.has_unsaved_changes(),
         "translation should be clean after a successful save"
     );
 }
@@ -1094,7 +1083,7 @@ async fn failed_save_keeps_in_memory_translations() {
     std::fs::write(&garbage, b"not a translation file").unwrap();
 
     // Dirty it so the failing save exercises the write path, not just rescan.
-    book.translations[0].lock().await.add_paragraph_translation(
+    book.translations[0].add_paragraph_translation(
         1,
         &simple_paragraph("v2", 2),
         "models/gemini-2.5-flash",
@@ -1110,10 +1099,9 @@ async fn failed_save_keeps_in_memory_translations() {
     let target_language = Language::from_str("ru").unwrap();
     let translation = book
         .get_translation(&target_language)
-        .await
         .expect("translation must survive a failed save");
     assert_eq!(
-        translation.lock().await.translated_paragraphs_count(),
+        translation.translated_paragraphs_count(),
         2,
         "paragraph translations must survive a failed save"
     );
@@ -1123,10 +1111,7 @@ async fn failed_save_keeps_in_memory_translations() {
     assert_eq!(book.translations.len(), 1);
     assert_eq!(
         book.get_translation(&target_language)
-            .await
             .unwrap()
-            .lock()
-            .await
             .translated_paragraphs_count(),
         2
     );
@@ -1144,7 +1129,7 @@ async fn save_repairs_corrupt_translation_file() {
     std::fs::write(&tr_path, &bytes[..bytes.len() / 2]).unwrap();
 
     let mut book = book.lock().await;
-    book.translations[0].lock().await.add_paragraph_translation(
+    book.translations[0].add_paragraph_translation(
         1,
         &simple_paragraph("v2", 2),
         "models/gemini-2.5-flash",
@@ -1220,14 +1205,10 @@ async fn reload_translations_absorbs_older_mtime_remote_change() {
         "an older-mtime remote change must not be dropped"
     );
 
-    let translation = book
-        .lock()
-        .await
-        .get_translation(&target_language)
-        .await
-        .unwrap();
+    let book = book.lock().await;
+    let translation = book.get_translation(&target_language).unwrap();
     assert_eq!(
-        translation.lock().await.translated_paragraphs_count(),
+        translation.translated_paragraphs_count(),
         2,
         "the remote paragraph must be merged into the in-memory translation"
     );
