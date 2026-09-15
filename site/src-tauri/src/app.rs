@@ -329,10 +329,14 @@ impl AppState {
             Config::default()
         };
 
-        let model_catalog = Arc::new(ModelCatalog::new(
-            resolve_cache_dir(Some(&app))?,
-            Arc::new(ReqwestListTransport::new()),
-        ));
+        let model_catalog = {
+            let runtime = tauri::async_runtime::handle();
+            let _enter = runtime.inner().enter();
+            Arc::new(ModelCatalog::new(
+                resolve_cache_dir(Some(&app))?,
+                Arc::new(ReqwestListTransport::new()),
+            ))
+        };
         spawn_catalog_prefetch(model_catalog.clone(), &config);
 
         // Unreachable until a tick proves otherwise: the UI hides the sync
