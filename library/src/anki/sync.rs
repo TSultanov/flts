@@ -1591,14 +1591,17 @@ mod tests {
         paragraph_text: &str,
     ) -> (Library, Uuid) {
         let library = Library::open(library_path).await.unwrap();
-        let book = library.create_book("Test Book", &spa()).await.unwrap();
-        let book_id = {
-            let mut b = book.lock().await;
-            b.book.push_chapter(Some("Intro"));
-            b.book.push_paragraph(0, paragraph_text, None);
-            b.save().await.unwrap();
-            b.book.id
-        };
+        let mut book = crate::book::book::Book::create(Uuid::new_v4(), "Test Book", &spa());
+        book.push_chapter(Some("Intro"));
+        book.push_paragraph(0, paragraph_text, None);
+        let book_id = book.id;
+        library
+            .create_book(book)
+            .await
+            .unwrap()
+            .save()
+            .await
+            .unwrap();
         (library, book_id)
     }
 

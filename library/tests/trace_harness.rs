@@ -109,17 +109,21 @@ async fn trace_book_conflict_and_save() {
     let library_root = temp_dir.path.join("lib");
     let library = Library::open(library_root.clone()).await.unwrap();
 
-    let book = library
-        .create_book("Trace Book", &Language::from_639_3("eng").unwrap())
+    let mut new_book = Book::create(
+        uuid::Uuid::new_v4(),
+        "Trace Book",
+        &Language::from_639_3("eng").unwrap(),
+    );
+    new_book.push_chapter(Some("Intro"));
+    new_book.push_paragraph(0, "hello", None);
+    let book_id = new_book.id;
+    library
+        .create_book(new_book)
+        .await
+        .unwrap()
+        .save()
         .await
         .unwrap();
-    let book_id = {
-        let mut book = book.lock().await;
-        book.book.push_chapter(Some("Intro"));
-        book.book.push_paragraph(0, "hello", None);
-        book.save().await.unwrap();
-        book.book.id
-    };
 
     let book_dir = library_root.join(book_id.to_string());
     let book_file = book_dir.join("book.dat");
@@ -133,9 +137,11 @@ async fn trace_book_conflict_and_save() {
     let _trace = TraceGuard::start("book-conflict-and-save.ndjson");
     let library = Library::open(library_root.clone()).await.unwrap();
     let book = library.get_book(&book_id).await.unwrap();
-    let mut book = book.lock().await;
-
-    book.book.title = "Memory Edit".into();
+    book.modify(|book| {
+        std::sync::Arc::make_mut(&mut book.book).title = "Memory Edit".into();
+    })
+    .await
+    .unwrap();
     sleep_for_mtime_tick();
     write_book(&book_file, "Disk Edit");
     book.save().await.unwrap();
@@ -147,19 +153,22 @@ async fn trace_state_updates() {
     let library_root = temp_dir.path.join("lib");
     let library = Library::open(library_root.clone()).await.unwrap();
 
-    let book = library
-        .create_book("Stateful", &Language::from_639_3("eng").unwrap())
+    let new_book = Book::create(
+        uuid::Uuid::new_v4(),
+        "Stateful",
+        &Language::from_639_3("eng").unwrap(),
+    );
+    let book_id = new_book.id;
+    library
+        .create_book(new_book)
+        .await
+        .unwrap()
+        .save()
         .await
         .unwrap();
-    let book_id = {
-        let mut book = book.lock().await;
-        book.save().await.unwrap();
-        book.book.id
-    };
 
     let _trace = TraceGuard::start("state-updates.ndjson");
     let book = library.get_book(&book_id).await.unwrap();
-    let mut book = book.lock().await;
     book.update_reading_state(BookReadingState {
         chapter_id: 1,
         paragraph_id: 1,
@@ -189,23 +198,19 @@ async fn trace_translation_merge_and_save() {
     let target_language = Language::from_str("ru").unwrap();
 
     let library = Library::open(library_root.clone()).await.unwrap();
-    let book = library
-        .create_book("Translate Me", &source_language)
-        .await
-        .unwrap();
-    let book_id = {
-        let mut book = book.lock().await;
-        book.book.push_chapter(Some("Intro"));
-        book.book.push_paragraph(0, "hello", None);
-        let translation = book.get_or_create_translation(&target_language).unwrap();
-        translation.add_paragraph_translation(
-            0,
-            &make_paragraph(1, "v1"),
-            "models/gemini-2.5-flash",
-        );
-        book.save().await.unwrap();
-        book.book.id
-    };
+    let mut new_book = Book::create(uuid::Uuid::new_v4(), "Translate Me", &source_language);
+    new_book.push_chapter(Some("Intro"));
+    new_book.push_paragraph(0, "hello", None);
+    let book_id = new_book.id;
+    let book = library.create_book(new_book).await.unwrap();
+    book.modify(move |book| {
+        book.get_or_create_translation(&target_language)
+            .unwrap()
+            .add_paragraph_translation(0, &make_paragraph(1, "v1"), "models/gemini-2.5-flash");
+    })
+    .await
+    .unwrap();
+    book.save().await.unwrap();
 
     let book_dir = library_root.join(book_id.to_string());
     let translation_file = book_dir.join("translation_eng_rus.dat");
@@ -217,9 +222,13 @@ async fn trace_translation_merge_and_save() {
     let _trace = TraceGuard::start("translation-merge-and-save.ndjson");
     let library = Library::open(library_root.clone()).await.unwrap();
     let book = library.get_book(&book_id).await.unwrap();
-    let mut book = book.lock().await;
-    let translation = book.get_or_create_translation(&target_language).unwrap();
-    translation.add_paragraph_translation(0, &make_paragraph(2, "mem"), "models/gemini-2.5-flash");
+    book.modify(move |book| {
+        book.get_or_create_translation(&target_language)
+            .unwrap()
+            .add_paragraph_translation(0, &make_paragraph(2, "mem"), "models/gemini-2.5-flash");
+    })
+    .await
+    .unwrap();
 
     sleep_for_mtime_tick();
     {

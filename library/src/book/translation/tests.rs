@@ -753,3 +753,40 @@ fn read_model_field_accepts_varint_only_legacy_blob() {
     crate::book::serialization::write_var_u64(&mut blob, 2).unwrap(); // Gemini 2.5 Pro
     assert_eq!(read_model_field(&blob).unwrap(), "models/gemini-2.5-pro");
 }
+
+#[test]
+fn clone_shares_chunks_and_write_isolates() {
+    let mut translation = Translation::create("en", "ru");
+    translation.add_paragraph_translation(0, &make_paragraph(1, "first"), "m");
+    let snapshot = translation.clone();
+    let mut snapshot_bytes = Vec::new();
+    snapshot.serialize(&mut snapshot_bytes).unwrap();
+
+    translation.add_paragraph_translation(1, &make_paragraph(2, "second"), "m");
+    translation.add_paragraph_translation(0, &make_paragraph(3, "first again"), "m");
+
+    assert_eq!(snapshot.translated_paragraphs_count(), 1);
+    assert_eq!(
+        snapshot
+            .paragraph_view(0)
+            .unwrap()
+            .sentence_view(0)
+            .full_translation,
+        "first"
+    );
+    assert!(snapshot.paragraph_view(1).is_none());
+    let mut snapshot_bytes_after = Vec::new();
+    snapshot.serialize(&mut snapshot_bytes_after).unwrap();
+    assert_eq!(snapshot_bytes, snapshot_bytes_after);
+
+    let mut fresh = Translation::create("en", "ru");
+    fresh.id = translation.id;
+    fresh.add_paragraph_translation(0, &make_paragraph(1, "first"), "m");
+    fresh.add_paragraph_translation(1, &make_paragraph(2, "second"), "m");
+    fresh.add_paragraph_translation(0, &make_paragraph(3, "first again"), "m");
+    let mut fresh_bytes = Vec::new();
+    fresh.serialize(&mut fresh_bytes).unwrap();
+    let mut written_bytes = Vec::new();
+    translation.serialize(&mut written_bytes).unwrap();
+    assert_eq!(fresh_bytes, written_bytes);
+}

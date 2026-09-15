@@ -531,8 +531,7 @@ async fn handle_request(
     request: &TranslationRequest,
 ) -> anyhow::Result<()> {
     let (paragraph_text, source_language, chapter_id) = {
-        let book = library.get_book(&request.book_id).await?;
-        let book = book.lock().await;
+        let book = library.get_book(&request.book_id).await?.snapshot();
         if request.paragraph_id >= book.book.paragraphs_count() {
             anyhow::bail!(
                 "Paragraph {} out of range (book has {} paragraphs)",
@@ -686,34 +685,37 @@ async fn handle_request(
     // The book may have been reloaded during the call (file watcher, sync), which
     // would make this translation stale.
     let book_handle = library.get_book(&request.book_id).await?;
-    {
-        let mut book = book_handle.lock().await;
-        if request.paragraph_id >= book.book.paragraphs_count() {
-            return Err(anyhow::anyhow!(
-                "Paragraph {} no longer exists (book now has {} paragraphs) — discarding stale translation",
-                request.paragraph_id,
-                book.book.paragraphs_count()
-            ));
-        }
-        let current_text = book
-            .book
-            .paragraph_view(request.paragraph_id)
-            .original_text
-            .to_string();
-        if current_text != paragraph_text {
-            return Err(anyhow::anyhow!(
-                "Paragraph {} content changed during translation — discarding stale translation",
-                request.paragraph_id
-            ));
-        }
-
-        // Must come from the instance current at write time, under the same lock
-        // as the staleness checks: an Arc captured before the minutes-long LLM
-        // call may be detached, and writes into a detached instance are invisible
-        // and never saved.
-        let translation = book.get_or_create_translation(&target_language)?;
-        translation.add_paragraph_translation(request.paragraph_id, &p_translation, &request.model);
-    }
+    let paragraph_id = request.paragraph_id;
+    let model = request.model.clone();
+    // The staleness checks and the write run as one step on the instance
+    // current at write time: a handle captured before the minutes-long LLM
+    // call may be detached, and writes into a detached instance are invisible
+    // and never saved.
+    let p_translation = book_handle
+        .modify(move |book| {
+            if paragraph_id >= book.book.paragraphs_count() {
+                anyhow::bail!(
+                    "Paragraph {} no longer exists (book now has {} paragraphs) — discarding stale translation",
+                    paragraph_id,
+                    book.book.paragraphs_count()
+                );
+            }
+            let current_text = book
+                .book
+                .paragraph_view(paragraph_id)
+                .original_text
+                .to_string();
+            if current_text != paragraph_text {
+                anyhow::bail!(
+                    "Paragraph {} content changed during translation — discarding stale translation",
+                    paragraph_id
+                );
+            }
+            book.get_or_create_translation(&target_language)?
+                .add_paragraph_translation(paragraph_id, &p_translation, &model);
+            Ok(p_translation)
+        })
+        .await??;
 
     library
         .apply_paragraph_to_cards(
@@ -783,8 +785,7 @@ async fn save_pinned(batch: &[SaveNotify], unsaved: &[BookHandle]) -> anyhow::Re
         }
     }
     for handle in distinct {
-        let mut book = handle.lock().await;
-        book.save().await?;
+        handle.save().await?;
     }
     Ok(())
 }
@@ -869,8 +870,7 @@ async fn book_saver(
 
     // Graceful drain: flush what failures left dirty before the pins drop.
     for handle in &unsaved {
-        let mut book = handle.lock().await;
-        if let Err(err) = book.save().await {
+        if let Err(err) = handle.save().await {
             warn!("Final flush of dirty book failed during saver drain: {err}");
         }
     }

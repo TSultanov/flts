@@ -20,13 +20,16 @@ use crate::{
         translation::{ParagraphTranslationView, Translation},
         translation_import,
     },
-    library::{BookHandle, Library, LibraryBookMetadata, LibraryError, LibraryTranslationMetadata},
+    library::{Library, LibraryBookMetadata, LibraryError, LibraryTranslationMetadata},
     tla_trace,
 };
 
+mod handle;
 mod reading_state;
 #[cfg(test)]
 mod tests;
+
+pub use handle::{BookHandle, BookRef, BookSnapshot};
 
 pub use reading_state::load_book_user_state;
 use reading_state::{load_user_state_from_dir, persist_user_state};
@@ -63,7 +66,7 @@ pub struct LibraryBook {
     /// Trailing FNV hash of the last `book.dat` read or written; drops
     /// file-watcher echoes of our own writes.
     last_saved_hash: Option<u64>,
-    pub book: Book,
+    pub book: Arc<Book>,
     translations: Vec<LibraryTranslation>,
     user_state: BookUserState,
 }
@@ -77,6 +80,9 @@ pub struct LibraryTranslation {
     /// file-watcher echoes of our own writes.
     last_saved_hash: Option<u64>,
     changed: bool,
+    /// The translation as last handed to a snapshot; dropped by every
+    /// mutation so the next snapshot clones again.
+    published: Option<Arc<Translation>>,
 }
 
 /// The trailing 8-byte FNV hash the `.dat` format appends, if present.
@@ -89,8 +95,36 @@ fn trailing_hash(buffer: &[u8]) -> Option<u64> {
 }
 
 impl LibraryBook {
+    pub(crate) fn create(path: PathBuf, book: Book) -> Self {
+        Self {
+            path,
+            last_modified: None,
+            last_saved_hash: None,
+            book: Arc::new(book),
+            translations: vec![],
+            user_state: BookUserState::default(),
+        }
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub(crate) fn snapshot(&mut self) -> Arc<BookSnapshot> {
+        let translations = self
+            .translations
+            .iter_mut()
+            .map(|t| {
+                t.published
+                    .get_or_insert_with(|| Arc::new(t.translation.clone()))
+                    .clone()
+            })
+            .collect();
+        Arc::new(BookSnapshot {
+            path: self.path.clone(),
+            book: self.book.clone(),
+            translations,
+        })
     }
 }
 
@@ -107,6 +141,7 @@ impl LibraryTranslation {
         self.translation = merged_translation;
         self.last_modified = self.last_modified.max(other.last_modified);
         self.changed = true;
+        self.published = None;
     }
 
     async fn load(path: &Path) -> anyhow::Result<Self> {
@@ -128,6 +163,7 @@ impl LibraryTranslation {
             last_modified,
             last_saved_hash,
             changed: false,
+            published: None,
         })
     }
 
@@ -180,6 +216,7 @@ impl LibraryTranslation {
         self.translation
             .add_paragraph_translation(paragraph_index, translation, model);
         self.changed = true;
+        self.published = None;
     }
 
     pub fn translated_paragraphs_count(&self) -> usize {
@@ -302,6 +339,7 @@ impl LibraryBook {
                     last_modified: None,
                     last_saved_hash: None,
                     changed: true,
+                    published: None,
                 });
                 self.translations.len() - 1
             }
@@ -382,7 +420,7 @@ impl LibraryBook {
         file.read_to_end(&mut buffer).await?;
         let last_saved_hash = trailing_hash(&buffer);
         let mut cursor = std::io::Cursor::new(buffer);
-        let book = Book::deserialize(&mut cursor)?;
+        let book = Arc::new(Book::deserialize(&mut cursor)?);
 
         Ok(Self {
             path: path.parent().unwrap().to_path_buf(),
@@ -457,8 +495,8 @@ impl LibraryBook {
         }
 
         // Sweep temps leaked by failed saves. Only the names this function
-        // creates: the book mutex makes a match a leftover, while other
-        // writers share the `~` convention without holding that lock.
+        // creates: the owning task runs one save at a time, so a match is a
+        // leftover, while other writers share the `~` convention.
         if let Ok(mut entries) = tokio::fs::read_dir(&self.path).await {
             while let Ok(Some(entry)) = entries.next_entry().await {
                 let name = entry.file_name();
@@ -515,6 +553,7 @@ impl LibraryBook {
                                 translation_path.display()
                             );
                             translation.changed = true;
+                            translation.published = None;
                         }
                     }
                 }
@@ -734,29 +773,15 @@ fn try_move_to_trash(_path: &std::path::Path) -> anyhow::Result<bool> {
 }
 
 impl Library {
-    pub async fn create_book(
-        &self,
-        title: &str,
-        language: &Language,
-    ) -> anyhow::Result<BookHandle> {
+    pub async fn create_book(&self, book: Book) -> anyhow::Result<BookHandle> {
         let books = self.list_books().await?;
-        if books.iter().any(|b| b.title == title) {
-            Err(LibraryError::DuplicateTitle(title.to_owned()))?
+        if books.iter().any(|b| b.title == book.title) {
+            Err(LibraryError::DuplicateTitle(book.title.clone()))?
         }
 
-        let guid = Uuid::new_v4();
-        let book_root = self.library_root.join(guid.to_string());
-
-        let book = Arc::new(tokio::sync::Mutex::new(LibraryBook {
-            path: book_root,
-            last_modified: None,
-            last_saved_hash: None,
-            book: Book::create(guid, title, language),
-            translations: vec![],
-            user_state: BookUserState::default(),
-        }));
-
-        self.insert_book(guid, book).await
+        let id = book.id;
+        let handle = LibraryBook::create(self.library_root.join(id.to_string()), book).spawn();
+        self.insert_book(id, handle).await
     }
 
     pub async fn delete_book(&self, uuid: &Uuid) -> anyhow::Result<()> {

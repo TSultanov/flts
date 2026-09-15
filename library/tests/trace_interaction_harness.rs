@@ -12,6 +12,7 @@
 use std::{path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 
 use isolang::Language;
+use library::book::book::Book;
 use library::{
     book::translation_import,
     library::Library,
@@ -95,15 +96,18 @@ async fn trace_interaction_baseline() {
 
     // === Setup: create library + book + paragraph ===
     let library = Library::open(lib_root.clone()).await.unwrap();
-    let book = library.create_book("Baseline Book", &en()).await.unwrap();
-    let book_id = {
-        let mut b = book.lock().await;
-        b.book.push_chapter(Some("Intro"));
-        b.book
-            .push_paragraph(0, "Hello world, this is a test.", None);
-        b.save().await.unwrap();
-        b.book.id
-    };
+    let mut new_book = Book::create(uuid::Uuid::new_v4(), "Baseline Book", &en());
+    new_book.push_chapter(Some("Intro"));
+    new_book.push_paragraph(0, "Hello world, this is a test.", None);
+
+    let book_id = new_book.id;
+    library
+        .create_book(new_book)
+        .await
+        .unwrap()
+        .save()
+        .await
+        .unwrap();
 
     // === Worker lifecycle (t1) ===
 
@@ -118,9 +122,13 @@ async fn trace_interaction_baseline() {
     // WorkerReadParagraph: get_or_create_translation + paragraph_view
     let span = TraceSpan::begin("t1", "WorkerReadParagraph").field("task", "t1");
     {
-        let mut b = book_handle.lock().await;
-        b.get_or_create_translation(&ru()).unwrap();
-        let _pv = b.book.paragraph_view(0);
+        book_handle
+            .modify(|b| {
+                b.get_or_create_translation(&ru()).unwrap();
+                let _pv = b.book.paragraph_view(0);
+            })
+            .await
+            .unwrap();
     }
     span.end();
 
@@ -132,15 +140,17 @@ async fn trace_interaction_baseline() {
     // WorkerStoreResult: add_paragraph_translation
     let span = TraceSpan::begin("t1", "WorkerStoreResult").field("task", "t1");
     book_handle
-        .lock()
+        .modify(|b| {
+            b.get_or_create_translation(&ru())
+                .unwrap()
+                .add_paragraph_translation(
+                    0,
+                    &make_paragraph(100, "Привет мир"),
+                    "models/gemini-2.5-flash",
+                );
+        })
         .await
-        .get_or_create_translation(&ru())
-        .unwrap()
-        .add_paragraph_translation(
-            0,
-            &make_paragraph(100, "Привет мир"),
-            "models/gemini-2.5-flash",
-        );
+        .unwrap();
     span.end();
 
     // WorkerSave: book.save()
@@ -148,8 +158,7 @@ async fn trace_interaction_baseline() {
         .field("task", "t1")
         .field("lib", 2);
     {
-        let mut b = book_handle.lock().await;
-        b.save().await.unwrap();
+        book_handle.save().await.unwrap();
     }
     span.end();
 
@@ -248,15 +257,19 @@ async fn trace_interaction_baseline() {
         .field("task", "t2")
         .field("book", "b1");
     {
-        let mut b = book_handle.lock().await;
-        b.get_or_create_translation(&ru())
-            .unwrap()
-            .add_paragraph_translation(
-                0,
-                &make_paragraph(101, "Привет мир"),
-                "models/gemini-2.5-flash",
-            );
-        b.save().await.unwrap();
+        book_handle
+            .modify(|b| {
+                b.get_or_create_translation(&ru())
+                    .unwrap()
+                    .add_paragraph_translation(
+                        0,
+                        &make_paragraph(101, "Привет мир"),
+                        "models/gemini-2.5-flash",
+                    );
+            })
+            .await
+            .unwrap();
+        book_handle.save().await.unwrap();
     }
     span.end();
 
@@ -276,15 +289,19 @@ async fn trace_interaction_concurrent() {
 
     // === Setup ===
     let library = Arc::new(Library::open(lib_root.clone()).await.unwrap());
-    let book = library.create_book("Concurrent Book", &en()).await.unwrap();
-    let book_id = {
-        let mut b = book.lock().await;
-        b.book.push_chapter(Some("Ch1"));
-        b.book.push_paragraph(0, "First paragraph.", None);
-        b.book.push_paragraph(0, "Second paragraph.", None);
-        b.save().await.unwrap();
-        b.book.id
-    };
+    let mut new_book = Book::create(uuid::Uuid::new_v4(), "Concurrent Book", &en());
+    new_book.push_chapter(Some("Ch1"));
+    new_book.push_paragraph(0, "First paragraph.", None);
+    new_book.push_paragraph(0, "Second paragraph.", None);
+
+    let book_id = new_book.id;
+    library
+        .create_book(new_book)
+        .await
+        .unwrap()
+        .save()
+        .await
+        .unwrap();
 
     let barrier = Arc::new(Barrier::new(3));
 
@@ -306,9 +323,12 @@ async fn trace_interaction_concurrent() {
         // WorkerReadParagraph
         let span = TraceSpan::begin("t1", "WorkerReadParagraph").field("task", "t1");
         {
-            let mut b = bh.lock().await;
-            b.get_or_create_translation(&ru()).unwrap();
-            let _pv = b.book.paragraph_view(0);
+            bh.modify(|b| {
+                b.get_or_create_translation(&ru()).unwrap();
+                let _pv = b.book.paragraph_view(0);
+            })
+            .await
+            .unwrap();
         }
         span.end();
 
@@ -319,22 +339,24 @@ async fn trace_interaction_concurrent() {
 
         // WorkerStoreResult
         let span = TraceSpan::begin("t1", "WorkerStoreResult").field("task", "t1");
-        bh.lock()
-            .await
-            .get_or_create_translation(&ru())
-            .unwrap()
-            .add_paragraph_translation(
-                0,
-                &make_paragraph(200, "Первый абзац"),
-                "models/gemini-2.5-flash",
-            );
+        bh.modify(|b| {
+            b.get_or_create_translation(&ru())
+                .unwrap()
+                .add_paragraph_translation(
+                    0,
+                    &make_paragraph(200, "Первый абзац"),
+                    "models/gemini-2.5-flash",
+                );
+        })
+        .await
+        .unwrap();
         span.end();
 
         // WorkerSave
         let span = TraceSpan::begin("t1", "WorkerSave")
             .field("task", "t1")
             .field("lib", 1);
-        bh.lock().await.save().await.unwrap();
+        bh.save().await.unwrap();
         span.end();
 
         // WorkerComputeSnapshot

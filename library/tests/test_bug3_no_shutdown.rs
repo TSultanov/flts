@@ -73,16 +73,21 @@ async fn setup_dirty_library(lib_path: &Path) -> (Arc<Library>, uuid::Uuid) {
     // Add translation IN MEMORY ONLY — mirrors the window between
     // add_paragraph_translation and run_saver processing
     {
-        let book_handle = library.get_book(&book_id).await.unwrap();
-        let mut book = book_handle.lock().await;
-        let t = book.get_or_create_translation(&ru).unwrap();
-        t.add_paragraph_translation(
-            0,
-            &make_translation("Это тестовый абзац."),
-            "models/gemini-2.5-flash",
-        );
+        let book = library.get_book(&book_id).await.unwrap();
+        book.modify(move |book| {
+            book.get_or_create_translation(&ru)
+                .unwrap()
+                .add_paragraph_translation(
+                    0,
+                    &make_translation("Это тестовый абзац."),
+                    "models/gemini-2.5-flash",
+                );
+        })
+        .await
+        .unwrap();
 
-        let pv = t.paragraph_view(0);
+        let book = book.snapshot();
+        let pv = book.translation(&ru).and_then(|t| t.paragraph_view(0));
         assert!(
             pv.is_some(),
             "Translation should exist in memory before 'shutdown'"
@@ -109,10 +114,8 @@ async fn test_bug3_no_shutdown_persistence() {
 
     {
         let library = Arc::new(Library::open(lib_path.clone()).await.unwrap());
-        let book_handle = library.get_book(&book_id).await.unwrap();
-        let mut book = book_handle.lock().await;
-        let t = book.get_or_create_translation(&ru).unwrap();
-        let pv = t.paragraph_view(0);
+        let book = library.get_book(&book_id).await.unwrap().snapshot();
+        let pv = book.translation(&ru).and_then(|t| t.paragraph_view(0));
 
         assert!(
             pv.is_none(),
@@ -133,10 +136,8 @@ async fn test_bug3_no_shutdown_persistence() {
 
     {
         let library = Arc::new(Library::open(lib_path2).await.unwrap());
-        let book_handle = library.get_book(&book_id2).await.unwrap();
-        let mut book = book_handle.lock().await;
-        let t = book.get_or_create_translation(&ru).unwrap();
-        let pv = t.paragraph_view(0);
+        let book = library.get_book(&book_id2).await.unwrap().snapshot();
+        let pv = book.translation(&ru).and_then(|t| t.paragraph_view(0));
 
         assert!(
             pv.is_some(),

@@ -972,9 +972,8 @@ impl AppState {
 
         // Drop the book lock before enqueueing: queue.translate re-acquires it.
         let untranslated: Vec<usize> = {
-            let book = library.get_book(&book_id).await?;
-            let book = book.lock().await;
-            let translation_guard = book.get_translation(&target_language);
+            let book = library.get_book(&book_id).await?.snapshot();
+            let translation_guard = book.translation(&target_language);
             let chapter = book.book.chapter_view(chapter_id);
             chapter
                 .paragraphs()

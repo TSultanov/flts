@@ -80,8 +80,7 @@ async fn test_bug4_stale_translation_stored() {
     // Step 1: Worker reads paragraph (translation_queue.rs L244-254)
     // Lock acquired, paragraph read, lock released — this is the critical window.
     let original_text = {
-        let book_handle = library.get_book(&book_id).await.unwrap();
-        let book = book_handle.lock().await;
+        let book = library.get_book(&book_id).await.unwrap().snapshot();
         let paragraph = book.book.paragraph_view(0);
         let text = paragraph.original_text.to_string();
         println!("Step 1 - Worker reads paragraph: \"{}\"", text);
@@ -93,14 +92,20 @@ async fn test_bug4_stale_translation_stored() {
     // Step 2: File watcher reloads book with different content
     // (simulated by modifying the book directly — Level 2 state injection)
     {
-        let book_handle = library.get_book(&book_id).await.unwrap();
-        let mut book = book_handle.lock().await;
-        book.book
-            .push_paragraph(0, "A new paragraph appeared after sync.", None);
+        let book = library.get_book(&book_id).await.unwrap();
+        book.modify(|book| {
+            std::sync::Arc::make_mut(&mut book.book).push_paragraph(
+                0,
+                "A new paragraph appeared after sync.",
+                None,
+            );
+        })
+        .await
+        .unwrap();
         book.save().await.unwrap();
         println!(
             "Step 2 - Book modified (new paragraph added, {} total)",
-            book.book.paragraphs_count()
+            book.snapshot().book.paragraphs_count()
         );
     }
 
@@ -108,20 +113,24 @@ async fn test_bug4_stale_translation_stored() {
     // This demonstrates the bug: add_paragraph_translation itself doesn't check
     // paragraph content — it blindly stores the translation at the given index.
     {
-        let book_handle = library.get_book(&book_id).await.unwrap();
-        let mut book = book_handle.lock().await;
-
+        let book = library.get_book(&book_id).await.unwrap();
         assert_eq!(
-            book.book.paragraphs_count(),
+            book.snapshot().book.paragraphs_count(),
             2,
             "Book should have 2 paragraphs after reload"
         );
 
-        let t = book.get_or_create_translation(&ru).unwrap();
-
         let stale_translation = make_translation("Кот сидел на коврике.");
-        t.add_paragraph_translation(0, &stale_translation, "models/gemini-2.5-flash");
+        book.modify(move |book| {
+            book.get_or_create_translation(&ru)
+                .unwrap()
+                .add_paragraph_translation(0, &stale_translation, "models/gemini-2.5-flash");
+        })
+        .await
+        .unwrap();
 
+        let book = book.snapshot();
+        let t = book.translation(&ru).unwrap();
         let pv = t.paragraph_view(0).unwrap();
         let sentence = pv.sentences().next().unwrap();
         println!(
@@ -132,10 +141,8 @@ async fn test_bug4_stale_translation_stored() {
 
     // Verify: translation was accepted despite book modification
     {
-        let book_handle = library.get_book(&book_id).await.unwrap();
-        let mut book = book_handle.lock().await;
-        let t = book.get_or_create_translation(&ru).unwrap();
-        let pv = t.paragraph_view(0);
+        let book = library.get_book(&book_id).await.unwrap().snapshot();
+        let pv = book.translation(&ru).and_then(|t| t.paragraph_view(0));
 
         assert!(
             pv.is_some(),
@@ -168,8 +175,7 @@ async fn test_bug4_fix_detects_changed_paragraph() {
 
     // Simulate the worker's initial read (before translation API call)
     let snapshot_text = {
-        let book_handle = library.get_book(&book_id).await.unwrap();
-        let book = book_handle.lock().await;
+        let book = library.get_book(&book_id).await.unwrap().snapshot();
         let text = book.book.paragraph_view(0).original_text.to_string();
         println!("Worker snapshot: \"{}\"", text);
         text
@@ -177,19 +183,24 @@ async fn test_bug4_fix_detects_changed_paragraph() {
 
     // Simulate book modification during translation (file watcher reload)
     {
-        let book_handle = library.get_book(&book_id).await.unwrap();
-        let mut book = book_handle.lock().await;
+        let book = library.get_book(&book_id).await.unwrap();
         // Replace book content by adding a paragraph that shifts meaning
-        book.book
-            .push_paragraph(0, "Inserted paragraph changes context.", None);
+        book.modify(|book| {
+            std::sync::Arc::make_mut(&mut book.book).push_paragraph(
+                0,
+                "Inserted paragraph changes context.",
+                None,
+            );
+        })
+        .await
+        .unwrap();
         book.save().await.unwrap();
         println!("Book modified during translation");
     }
 
     // Simulate the F4 fix: re-read and compare before storing
     let paragraph_changed = {
-        let book_handle = library.get_book(&book_id).await.unwrap();
-        let book = book_handle.lock().await;
+        let book = library.get_book(&book_id).await.unwrap().snapshot();
         let current_text = book.book.paragraph_view(0).original_text.to_string();
         println!("Current text at index 0: \"{}\"", current_text);
         current_text != snapshot_text
@@ -211,8 +222,7 @@ async fn test_bug4_fix_detects_changed_paragraph() {
         .unwrap();
 
     let snapshot_text2 = {
-        let book_handle = library.get_book(&book_id2).await.unwrap();
-        let book = book_handle.lock().await;
+        let book = library.get_book(&book_id2).await.unwrap().snapshot();
         book.book.paragraph_view(0).original_text.to_string()
     };
     assert_eq!(snapshot_text2, "Version one text.");
@@ -235,8 +245,7 @@ async fn test_bug4_fix_detects_changed_paragraph() {
     // but let's pretend the snapshot was "Version one text." (the old content)
     let stale_snapshot = "Version one text.";
     let current_text = {
-        let book_handle = library.get_book(&book_id3).await.unwrap();
-        let book = book_handle.lock().await;
+        let book = library.get_book(&book_id3).await.unwrap().snapshot();
         book.book.paragraph_view(0).original_text.to_string()
     };
 
@@ -255,8 +264,7 @@ async fn test_bug4_fix_detects_changed_paragraph() {
         .create_book_plain("F4 Fix Test Empty", "", &en)
         .await
         .unwrap();
-    let book_handle = library.get_book(&empty_book_id).await.unwrap();
-    let book = book_handle.lock().await;
+    let book = library.get_book(&empty_book_id).await.unwrap().snapshot();
     let para_count = book.book.paragraphs_count();
     assert!(
         5 >= para_count,

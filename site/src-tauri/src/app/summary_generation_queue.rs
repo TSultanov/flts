@@ -200,9 +200,8 @@ async fn load_or_init(
     // Need to materialize. We do the I/O without holding the map lock so
     // a slow load doesn't block other books.
     let (book_path, chapter_count) = {
-        let book = library.get_book(&book_id).await?;
-        let book = book.lock().await;
-        (book.path().to_path_buf(), book.book.chapter_count())
+        let book = library.get_book(&book_id).await?.snapshot();
+        (book.path.clone(), book.book.chapter_count())
     };
     let path = chapter_summaries_path(&book_path);
     let loaded = if tokio::fs::try_exists(&path).await? {
@@ -259,11 +258,10 @@ async fn process_book(
         let state = load_or_init(&book_state, &library, book_id).await?;
 
         let (book_path, book_title, book_language) = {
-            let book = library.get_book(&book_id).await?;
-            let book = book.lock().await;
+            let book = library.get_book(&book_id).await?.snapshot();
             let lang = isolang::Language::from_639_3(&book.book.language)
                 .ok_or_else(|| anyhow::anyhow!("unknown book language: {}", book.book.language))?;
-            (book.path().to_path_buf(), book.book.title.clone(), lang)
+            (book.path.clone(), book.book.title.clone(), lang)
         };
         let sidecar_path = chapter_summaries_path(&book_path);
 
@@ -291,8 +289,7 @@ async fn process_book(
 
         // Pull this chapter's title + text snapshot.
         let (chapter_title, chapter_text) = {
-            let book = library.get_book(&book_id).await?;
-            let book = book.lock().await;
+            let book = library.get_book(&book_id).await?.snapshot();
             // `idx` comes from the sidecar entry count, which can outlive a
             // book whose chapter count shrank (re-import / reshaped book.dat).
             // An out-of-range index would panic in chapter_view, and

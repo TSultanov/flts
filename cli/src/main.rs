@@ -127,8 +127,7 @@ async fn add_book(
         let book_id = library
             .create_book_plain(title, &text, &Language::from_str(lang)?)
             .await?;
-        let book = library.get_book(&book_id).await?;
-        let book = book.lock().await;
+        let book = library.get_book(&book_id).await?.snapshot();
         println!("Created book {} (id: {})", book.book.title, book.book.id);
     } else {
         Err(CliError::UnsupportedFormat(fmt.media_type().to_owned()))?
@@ -143,8 +142,7 @@ async fn add_epub(library: &Arc<Library>, path: &Path, lang: &str) -> anyhow::Re
     let book_id = library
         .create_book_epub(&epub, &Language::from_str(lang)?)
         .await?;
-    let book = library.get_book(&book_id).await?;
-    let book = book.lock().await;
+    let book = library.get_book(&book_id).await?.snapshot();
     println!("Created book {} (id: {})", book.book.title, book.book.id);
 
     Ok(())
@@ -175,8 +173,7 @@ async fn dump_summaries(
             .await?;
 
     let titles: Vec<Option<String>> = {
-        let book = library.get_book(&book_id).await?;
-        let book = book.lock().await;
+        let book = library.get_book(&book_id).await?.snapshot();
         (0..summaries.entries.len())
             .map(|i| {
                 book.book
@@ -266,8 +263,7 @@ async fn translate_paragraph(
     worker_id: usize,
 ) -> anyhow::Result<()> {
     let (paragraph_text, chapter_id) = {
-        let book = library.get_book(&book_id).await?;
-        let book = book.lock().await;
+        let book = library.get_book(&book_id).await?.snapshot();
         let paragraph = book.book.paragraph_view(paragraph_id);
         let chapter_id = book.book.chapter_for_paragraph(paragraph_id).unwrap_or(0);
         (paragraph.original_text.to_string(), chapter_id)
@@ -288,24 +284,27 @@ async fn translate_paragraph(
         .await?;
     println!("Worker {worker_id}: Translated paragraph {}", paragraph_id);
 
-    {
-        let book = library.get_book(&book_id).await?;
-        let mut book = book.lock().await;
-        book.get_or_create_translation(tgt_lang)?
-            .add_paragraph_translation(paragraph_id, &p_translation, &translator.get_model());
-    }
+    let tgt_lang = *tgt_lang;
+    let model = translator.get_model();
+    let p_translation = library
+        .get_book(&book_id)
+        .await?
+        .modify(move |book| {
+            book.get_or_create_translation(&tgt_lang)?
+                .add_paragraph_translation(paragraph_id, &p_translation, &model);
+            anyhow::Ok(p_translation)
+        })
+        .await??;
 
     library
-        .apply_paragraph_to_cards(book_id, paragraph_id, &p_translation, *tgt_lang)
+        .apply_paragraph_to_cards(book_id, paragraph_id, &p_translation, tgt_lang)
         .await?;
 
     Ok(())
 }
 
 async fn save_book(library: &Arc<Library>, book_id: Uuid) -> anyhow::Result<()> {
-    let book = library.get_book(&book_id).await?;
-    let mut book = book.lock().await;
-    book.save().await?;
+    library.get_book(&book_id).await?.save().await?;
     Ok(())
 }
 
@@ -345,16 +344,14 @@ async fn translate_book(
     let queue = Arc::new(Mutex::new(VecDeque::new()));
 
     let source_lang = {
-        let book = library.get_book(&book_id).await?;
-        let mut book = book.lock().await;
+        let book = library.get_book(&book_id).await?.snapshot();
         let source_lang = Language::from_639_3(&book.book.language).unwrap();
 
         let paragraph_count = book.book.paragraphs_count();
 
-        let untranslated_paragraphs_count = paragraph_count.saturating_sub(
-            book.get_or_create_translation(&target_lang)?
-                .translated_paragraphs_count(),
-        );
+        let translation = book.translation(&target_lang);
+        let untranslated_paragraphs_count = paragraph_count
+            .saturating_sub(translation.map_or(0, |t| t.translated_paragraphs_count()));
         println!(
             "Translating book {} from {} to {}",
             book.book.title,
@@ -367,13 +364,10 @@ async fn translate_book(
         );
 
         let untranslated_ids: Vec<usize> = {
-            let t = book
-                .get_translation(&target_lang)
-                .ok_or_else(|| anyhow::anyhow!("translation missing right after creation"))?;
             let mut ids = Vec::new();
             for chapter in book.book.chapter_views() {
                 for paragraph in chapter.paragraphs() {
-                    if t.paragraph_view(paragraph.id).is_none() {
+                    if translation.is_none_or(|t| t.paragraph_view(paragraph.id).is_none()) {
                         ids.push(paragraph.id);
                     }
                 }

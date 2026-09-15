@@ -21,7 +21,11 @@ use std::{
 };
 
 use super::soa_helpers::*;
+use std::sync::Arc;
 
+/// Struct-of-arrays translation store. The arenas are copy-on-write, so a
+/// clone shares every chunk and costs a few refcount bumps; the string
+/// dedup cache is write-side scratch and is not carried into clones.
 pub struct Translation {
     strings_cache: AHashMap<String, VecSlice<u8>>,
 
@@ -29,13 +33,30 @@ pub struct Translation {
     pub source_language: String,
     pub target_language: String,
 
-    strings: Vec<u8>,
+    strings: Arena<u8>,
 
-    paragraphs: Vec<Option<usize>>,
-    paragraph_translations: Vec<ParagraphTranslation>,
-    sentences: Vec<Sentence>,
-    words: Vec<Word>,
-    word_contextual_translations: Vec<WordContextualTranslation>,
+    paragraphs: Arena<Option<usize>>,
+    paragraph_translations: Arena<ParagraphTranslation>,
+    sentences: Arena<Sentence>,
+    words: Arena<Word>,
+    word_contextual_translations: Arena<WordContextualTranslation>,
+}
+
+impl Clone for Translation {
+    fn clone(&self) -> Self {
+        Self {
+            strings_cache: AHashMap::new(),
+            id: self.id,
+            source_language: self.source_language.clone(),
+            target_language: self.target_language.clone(),
+            strings: self.strings.clone(),
+            paragraphs: self.paragraphs.clone(),
+            paragraph_translations: self.paragraph_translations.clone(),
+            sentences: self.sentences.clone(),
+            words: self.words.clone(),
+            word_contextual_translations: self.word_contextual_translations.clone(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -96,11 +117,12 @@ pub(crate) fn read_model_field(buf: &[u8]) -> io::Result<String> {
     }
 }
 
+#[derive(Clone)]
 struct ParagraphTranslation {
     timestamp: u64,
     previous_version: Option<usize>,
     sentences: VecSlice<Sentence>,
-    model: String,
+    model: Arc<str>,
     total_tokens: Option<u64>,
     visible_words: AHashSet<usize>,
 }
@@ -109,7 +131,7 @@ pub struct ParagraphTranslationView<'a> {
     translation: &'a Translation,
     pub timestamp: u64,
     previous_version: Option<usize>,
-    sentences: &'a [Sentence],
+    sentences: Cow<'a, [Sentence]>,
     pub model: String,
     pub total_tokens: Option<u64>,
     visible_words: &'a AHashSet<usize>,
@@ -124,7 +146,7 @@ struct Sentence {
 pub struct SentenceView<'a> {
     translation: &'a Translation,
     pub full_translation: Cow<'a, str>,
-    words: &'a [Word],
+    words: Cow<'a, [Word]>,
 }
 
 #[derive(Clone)]
@@ -154,7 +176,7 @@ pub struct WordView<'a> {
     pub note: Cow<'a, str>,
     pub is_punctuation: bool,
     pub grammar: GrammarView<'a>,
-    contextual_translations: &'a [WordContextualTranslation],
+    contextual_translations: Cow<'a, [WordContextualTranslation]>,
 }
 
 pub struct GrammarView<'a> {
@@ -184,12 +206,12 @@ impl Translation {
             id: Uuid::new_v4(),
             source_language: source_language.to_owned(),
             target_language: target_language.to_owned(),
-            strings: vec![],
-            paragraphs: vec![],
-            paragraph_translations: vec![],
-            sentences: vec![],
-            words: vec![],
-            word_contextual_translations: vec![],
+            strings: Arena::new(),
+            paragraphs: Arena::new(),
+            paragraph_translations: Arena::new(),
+            sentences: Arena::new(),
+            words: Arena::new(),
+            word_contextual_translations: Arena::new(),
         }
     }
 
@@ -203,8 +225,8 @@ impl Translation {
             translation: self,
             timestamp: p.timestamp,
             previous_version: p.previous_version,
-            sentences: p.sentences.slice(&self.sentences),
-            model: p.model.clone(),
+            sentences: self.sentences.slice(p.sentences),
+            model: p.model.to_string(),
             total_tokens: p.total_tokens,
             visible_words: &p.visible_words,
         })
@@ -223,7 +245,7 @@ impl Translation {
             return *cached;
         }
 
-        let vs = push_string(&mut self.strings, string);
+        let vs = self.strings.push_str(string);
         self.strings_cache.insert(string.to_owned(), vs);
         vs
     }
@@ -247,13 +269,13 @@ impl Translation {
             timestamp: translation.timestamp,
             previous_version: new_prev_version,
             sentences: VecSlice::empty(),
-            model: model.to_string(),
+            model: Arc::from(model),
             total_tokens: translation.total_tokens,
             visible_words: AHashSet::new(),
         };
         let new_index = self.paragraph_translations.len();
         self.paragraph_translations.push(new_paragraph);
-        self.paragraphs[paragraph_index] = Some(new_index);
+        self.paragraphs.set(paragraph_index, Some(new_index));
 
         let mut sentences = VecSlice::empty();
         for sentence in &translation.sentences {
@@ -263,14 +285,10 @@ impl Translation {
                 let original = self.push_string(&word.original);
                 let note = self.push_string(&word.note.clone().unwrap_or("".to_string()));
                 let grammar = Grammar {
-                    original_initial_form: push_string(
-                        &mut self.strings,
-                        &word.grammar.original_initial_form,
-                    ),
-                    target_initial_form: push_string(
-                        &mut self.strings,
-                        &word.grammar.target_initial_form,
-                    ),
+                    original_initial_form: self
+                        .strings
+                        .push_str(&word.grammar.original_initial_form),
+                    target_initial_form: self.strings.push_str(&word.grammar.target_initial_form),
                     part_of_speech: self.push_string(&word.grammar.part_of_speech),
                     plurality: word.grammar.plurality.as_ref().map(|s| self.push_string(s)),
                     person: word.grammar.person.as_ref().map(|s| self.push_string(s)),
@@ -283,12 +301,10 @@ impl Translation {
                     let contextual_translation = WordContextualTranslation {
                         translation: self.push_string(contextual_translation),
                     };
-                    contextual_translations = push(
-                        &mut self.word_contextual_translations,
-                        &contextual_translations,
-                        contextual_translation,
-                    )
-                    .unwrap();
+                    contextual_translations = self
+                        .word_contextual_translations
+                        .push_to_slice(&contextual_translations, contextual_translation)
+                        .unwrap();
                 }
                 let new_word = Word {
                     original,
@@ -297,16 +313,22 @@ impl Translation {
                     note,
                     grammar,
                 };
-                words = push(&mut self.words, &words, new_word).unwrap();
+                words = self.words.push_to_slice(&words, new_word).unwrap();
             }
             let new_sentence = Sentence {
                 full_translation,
                 words,
             };
-            sentences = push(&mut self.sentences, &sentences, new_sentence).unwrap();
+            sentences = self
+                .sentences
+                .push_to_slice(&sentences, new_sentence)
+                .unwrap();
         }
 
-        self.paragraph_translations[new_index].sentences = sentences;
+        self.paragraph_translations
+            .get_mut(new_index)
+            .unwrap()
+            .sentences = sentences;
     }
 
     fn add_paragraph_translation_from_view(
@@ -328,14 +350,14 @@ impl Translation {
             timestamp,
             previous_version: new_prev_version,
             sentences: VecSlice::empty(),
-            model: translation.model.clone(),
+            model: Arc::from(translation.model.as_str()),
             total_tokens: translation.total_tokens,
             visible_words: translation.visible_words().clone(),
         };
 
         let new_index = self.paragraph_translations.len();
         self.paragraph_translations.push(new_paragraph);
-        self.paragraphs[paragraph_index] = Some(new_index);
+        self.paragraphs.set(paragraph_index, Some(new_index));
 
         let mut sentences = VecSlice::empty();
         for sentence in translation.sentences() {
@@ -345,14 +367,10 @@ impl Translation {
                 let original = self.push_string(&word.original);
                 let note = self.push_string(&word.note);
                 let grammar = Grammar {
-                    original_initial_form: push_string(
-                        &mut self.strings,
-                        &word.grammar.original_initial_form,
-                    ),
-                    target_initial_form: push_string(
-                        &mut self.strings,
-                        &word.grammar.target_initial_form,
-                    ),
+                    original_initial_form: self
+                        .strings
+                        .push_str(&word.grammar.original_initial_form),
+                    target_initial_form: self.strings.push_str(&word.grammar.target_initial_form),
                     part_of_speech: self.push_string(&word.grammar.part_of_speech),
                     plurality: word.grammar.plurality.as_ref().map(|s| self.push_string(s)),
                     person: word.grammar.person.as_ref().map(|s| self.push_string(s)),
@@ -363,17 +381,12 @@ impl Translation {
                 let mut contextual_translations = VecSlice::empty();
                 for contextual_translation in word.contextual_translations() {
                     let contextual_translation = WordContextualTranslation {
-                        translation: push_string(
-                            &mut self.strings,
-                            &contextual_translation.translation,
-                        ),
+                        translation: self.strings.push_str(&contextual_translation.translation),
                     };
-                    contextual_translations = push(
-                        &mut self.word_contextual_translations,
-                        &contextual_translations,
-                        contextual_translation,
-                    )
-                    .unwrap();
+                    contextual_translations = self
+                        .word_contextual_translations
+                        .push_to_slice(&contextual_translations, contextual_translation)
+                        .unwrap();
                 }
                 let new_word = Word {
                     original,
@@ -382,16 +395,22 @@ impl Translation {
                     note,
                     grammar,
                 };
-                words = push(&mut self.words, &words, new_word).unwrap();
+                words = self.words.push_to_slice(&words, new_word).unwrap();
             }
             let new_sentence = Sentence {
                 full_translation,
                 words,
             };
-            sentences = push(&mut self.sentences, &sentences, new_sentence).unwrap();
+            sentences = self
+                .sentences
+                .push_to_slice(&sentences, new_sentence)
+                .unwrap();
         }
 
-        self.paragraph_translations[new_index].sentences = sentences;
+        self.paragraph_translations
+            .get_mut(new_index)
+            .unwrap()
+            .sentences = sentences;
     }
 
     /// Idempotent insert; the merge path unions clicks from diverged stores,
@@ -403,7 +422,9 @@ impl Translation {
         let Some(idx) = self.paragraphs[paragraph] else {
             return;
         };
-        self.paragraph_translations[idx]
+        self.paragraph_translations
+            .get_mut(idx)
+            .unwrap()
             .visible_words
             .insert(word_index);
     }
@@ -591,7 +612,7 @@ impl Translation {
         let d_meta_write = t_meta_write.elapsed();
 
         let t_compress = Instant::now();
-        let encoded = zstd::stream::encode_all(self.strings.as_slice(), -7)?;
+        let encoded = zstd::stream::encode_all(&*self.strings.contiguous(), -7)?;
         let d_compress = t_compress.elapsed();
 
         let t_write_strings = Instant::now();
@@ -604,14 +625,14 @@ impl Translation {
             &mut hashing_stream,
             self.word_contextual_translations.len() as u64,
         )?;
-        for ct in &self.word_contextual_translations {
+        for ct in self.word_contextual_translations.iter() {
             write_vec_slice(&mut hashing_stream, &ct.translation)?;
         }
         let d_ct = t_ct.elapsed();
 
         let t_words = Instant::now();
         write_var_u64(&mut hashing_stream, self.words.len() as u64)?;
-        for w in &self.words {
+        for w in self.words.iter() {
             write_vec_slice(&mut hashing_stream, &w.original)?;
             write_vec_slice(&mut hashing_stream, &w.note)?;
             hashing_stream.write_all(&[if w.is_punctuation { 1 } else { 0 }])?;
@@ -632,7 +653,7 @@ impl Translation {
 
         let t_sentences = Instant::now();
         write_var_u64(&mut hashing_stream, self.sentences.len() as u64)?;
-        for s in &self.sentences {
+        for s in self.sentences.iter() {
             write_vec_slice(&mut hashing_stream, &s.full_translation)?;
             write_vec_slice(&mut hashing_stream, &s.words)?;
         }
@@ -643,7 +664,7 @@ impl Translation {
             &mut hashing_stream,
             self.paragraph_translations.len() as u64,
         )?;
-        for pt in &self.paragraph_translations {
+        for pt in self.paragraph_translations.iter() {
             write_var_u64(&mut hashing_stream, pt.timestamp)?;
             match pt.previous_version {
                 Some(idx) => {
@@ -658,7 +679,7 @@ impl Translation {
 
         let t_paragraphs = Instant::now();
         write_var_u64(&mut hashing_stream, self.paragraphs.len() as u64)?;
-        for p in &self.paragraphs {
+        for p in self.paragraphs.iter() {
             match p {
                 Some(idx) => {
                     hashing_stream.write_all(&[1])?;
@@ -775,7 +796,7 @@ impl Translation {
         let d_meta_write = t_meta_write.elapsed();
 
         let t_compress = Instant::now();
-        let encoded = zstd::stream::encode_all(self.strings.as_slice(), -7)?;
+        let encoded = zstd::stream::encode_all(&*self.strings.contiguous(), -7)?;
         let d_compress = t_compress.elapsed();
 
         let t_write_strings = Instant::now();
@@ -788,14 +809,14 @@ impl Translation {
             &mut hashing_stream,
             self.word_contextual_translations.len() as u64,
         )?;
-        for ct in &self.word_contextual_translations {
+        for ct in self.word_contextual_translations.iter() {
             write_vec_slice(&mut hashing_stream, &ct.translation)?;
         }
         let d_ct = t_ct.elapsed();
 
         let t_words = Instant::now();
         write_var_u64(&mut hashing_stream, self.words.len() as u64)?;
-        for w in &self.words {
+        for w in self.words.iter() {
             write_vec_slice(&mut hashing_stream, &w.original)?;
             write_vec_slice(&mut hashing_stream, &w.note)?;
             hashing_stream.write_all(&[if w.is_punctuation { 1 } else { 0 }])?;
@@ -816,7 +837,7 @@ impl Translation {
 
         let t_sentences = Instant::now();
         write_var_u64(&mut hashing_stream, self.sentences.len() as u64)?;
-        for s in &self.sentences {
+        for s in self.sentences.iter() {
             write_vec_slice(&mut hashing_stream, &s.full_translation)?;
             write_vec_slice(&mut hashing_stream, &s.words)?;
         }
@@ -827,7 +848,7 @@ impl Translation {
             &mut hashing_stream,
             self.paragraph_translations.len() as u64,
         )?;
-        for pt in &self.paragraph_translations {
+        for pt in self.paragraph_translations.iter() {
             write_var_u64(&mut hashing_stream, pt.timestamp)?;
             match pt.previous_version {
                 Some(idx) => {
@@ -876,7 +897,7 @@ impl Translation {
 
         let t_paragraphs = Instant::now();
         write_var_u64(&mut hashing_stream, self.paragraphs.len() as u64)?;
-        for p in &self.paragraphs {
+        for p in self.paragraphs.iter() {
             match p {
                 Some(idx) => {
                     hashing_stream.write_all(&[1])?;
@@ -1071,7 +1092,7 @@ impl Translation {
                 timestamp,
                 previous_version,
                 sentences: sentences_slice,
-                model: String::new(),
+                model: Arc::from(""),
                 total_tokens: None,
                 visible_words: AHashSet::new(),
             };
@@ -1120,12 +1141,12 @@ impl Translation {
             id,
             source_language,
             target_language,
-            strings,
-            paragraphs,
-            paragraph_translations,
-            sentences,
-            words,
-            word_contextual_translations,
+            strings: strings.into(),
+            paragraphs: paragraphs.into(),
+            paragraph_translations: paragraph_translations.into(),
+            sentences: sentences.into(),
+            words: words.into(),
+            word_contextual_translations: word_contextual_translations.into(),
         })
     }
 
@@ -1256,7 +1277,7 @@ impl Translation {
                 timestamp,
                 previous_version,
                 sentences: sentences_slice,
-                model: String::new(),
+                model: Arc::from(""),
                 total_tokens: None,
                 visible_words: AHashSet::new(),
             };
@@ -1277,7 +1298,7 @@ impl Translation {
 
                 match tag {
                     FieldTag::TranslationModel => {
-                        translation.model = read_model_field(&buf)?;
+                        translation.model = Arc::from(read_model_field(&buf)?);
                     }
                     FieldTag::TotalTokens => {
                         let tokens = read_opt_var_u64(&mut cursor)?;
@@ -1339,12 +1360,12 @@ impl Translation {
             id,
             source_language,
             target_language,
-            strings,
-            paragraphs,
-            paragraph_translations,
-            sentences,
-            words,
-            word_contextual_translations,
+            strings: strings.into(),
+            paragraphs: paragraphs.into(),
+            paragraph_translations: paragraph_translations.into(),
+            sentences: sentences.into(),
+            words: words.into(),
+            word_contextual_translations: word_contextual_translations.into(),
         })
     }
 }
@@ -1377,8 +1398,8 @@ impl<'a> ParagraphTranslationView<'a> {
             translation: self.translation,
             timestamp: p.timestamp,
             previous_version: p.previous_version,
-            sentences: p.sentences.slice(&self.translation.sentences),
-            model: p.model.clone(),
+            sentences: self.translation.sentences.slice(p.sentences),
+            model: p.model.to_string(),
             total_tokens: p.total_tokens,
             visible_words: &p.visible_words,
         })
@@ -1396,10 +1417,8 @@ impl<'a> ParagraphTranslationView<'a> {
         let sentence = &self.sentences[sentence];
         SentenceView {
             translation: self.translation,
-            full_translation: String::from_utf8_lossy(
-                sentence.full_translation.slice(&self.translation.strings),
-            ),
-            words: sentence.words.slice(&self.translation.words),
+            full_translation: self.translation.strings.str_at(sentence.full_translation),
+            words: self.translation.words.slice(sentence.words),
         }
     }
 
@@ -1459,47 +1478,44 @@ impl<'a> SentenceView<'a> {
         let word = &self.words[word];
         WordView {
             translation: self.translation,
-            original: String::from_utf8_lossy(word.original.slice(&self.translation.strings)),
-            note: String::from_utf8_lossy(word.note.slice(&self.translation.strings)),
+            original: self.translation.strings.str_at(word.original),
+            note: self.translation.strings.str_at(word.note),
             grammar: GrammarView {
-                original_initial_form: String::from_utf8_lossy(
-                    word.grammar
-                        .original_initial_form
-                        .slice(&self.translation.strings),
-                ),
-                target_initial_form: String::from_utf8_lossy(
-                    word.grammar
-                        .target_initial_form
-                        .slice(&self.translation.strings),
-                ),
-                part_of_speech: String::from_utf8_lossy(
-                    word.grammar.part_of_speech.slice(&self.translation.strings),
-                ),
+                original_initial_form: self
+                    .translation
+                    .strings
+                    .str_at(word.grammar.original_initial_form),
+                target_initial_form: self
+                    .translation
+                    .strings
+                    .str_at(word.grammar.target_initial_form),
+                part_of_speech: self.translation.strings.str_at(word.grammar.part_of_speech),
                 plurality: word
                     .grammar
                     .plurality
-                    .map(|s| String::from_utf8_lossy(s.slice(&self.translation.strings))),
+                    .map(|s| self.translation.strings.str_at(s)),
                 person: word
                     .grammar
                     .person
-                    .map(|s| String::from_utf8_lossy(s.slice(&self.translation.strings))),
+                    .map(|s| self.translation.strings.str_at(s)),
                 tense: word
                     .grammar
                     .tense
-                    .map(|s| String::from_utf8_lossy(s.slice(&self.translation.strings))),
+                    .map(|s| self.translation.strings.str_at(s)),
                 case: word
                     .grammar
                     .case
-                    .map(|s| String::from_utf8_lossy(s.slice(&self.translation.strings))),
+                    .map(|s| self.translation.strings.str_at(s)),
                 other: word
                     .grammar
                     .other
-                    .map(|s| String::from_utf8_lossy(s.slice(&self.translation.strings))),
+                    .map(|s| self.translation.strings.str_at(s)),
             },
             is_punctuation: word.is_punctuation,
-            contextual_translations: word
-                .contextual_translations
-                .slice(&self.translation.word_contextual_translations),
+            contextual_translations: self
+                .translation
+                .word_contextual_translations
+                .slice(word.contextual_translations),
         }
     }
 
@@ -1516,11 +1532,10 @@ impl<'a> WordView<'a> {
     pub fn contextual_translations_view(&self, index: usize) -> WordContextualTranslationView<'a> {
         let contextual_translation = &self.contextual_translations[index];
         WordContextualTranslationView {
-            translation: String::from_utf8_lossy(
-                contextual_translation
-                    .translation
-                    .slice(&self.translation.strings),
-            ),
+            translation: self
+                .translation
+                .strings
+                .str_at(contextual_translation.translation),
         }
     }
 

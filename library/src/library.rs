@@ -12,14 +12,15 @@ use itertools::Itertools;
 use log::{info, trace, warn};
 use tokio::{
     io::AsyncReadExt,
-    sync::{Mutex, mpsc, oneshot},
+    sync::{mpsc, oneshot},
     task::JoinSet,
 };
 use uuid::Uuid;
 
 use crate::{
     book::{
-        book_metadata::BookMetadata, translation_import, translation_metadata::TranslationMetadata,
+        book::Book, book_metadata::BookMetadata, translation_import,
+        translation_metadata::TranslationMetadata,
     },
     cache::WeakLru,
     card::{Card, extract_card_updates},
@@ -30,6 +31,8 @@ use crate::{
         library_card::LibraryCardStore,
     },
 };
+
+pub use library_book::{BookHandle, BookRef, BookSnapshot};
 
 pub mod file_watcher;
 pub mod library_book;
@@ -239,8 +242,6 @@ impl LibraryBookMetadata {
     }
 }
 
-pub type BookHandle = Arc<Mutex<LibraryBook>>;
-
 type BookReply = oneshot::Sender<anyhow::Result<BookHandle>>;
 
 enum BookRequest {
@@ -287,8 +288,8 @@ async fn serve_books(
     capacity: usize,
     mut requests: mpsc::UnboundedReceiver<BookRequest>,
 ) {
-    let mut cache: WeakLru<Uuid, Mutex<LibraryBook>> = WeakLru::new(capacity);
-    let mut loads: JoinSet<(Uuid, anyhow::Result<LibraryBook>)> = JoinSet::new();
+    let mut cache: WeakLru<Uuid, BookRef> = WeakLru::new(capacity);
+    let mut loads: JoinSet<(Uuid, anyhow::Result<BookHandle>)> = JoinSet::new();
     let mut flights: HashMap<Uuid, Flight> = HashMap::new();
     let mut flight_ids: HashMap<tokio::task::Id, Uuid> = HashMap::new();
     let mut open = true;
@@ -298,7 +299,9 @@ async fn serve_books(
             request = requests.recv(), if open => match request {
                 None => open = false,
                 Some(BookRequest::Get { id, reply }) => {
-                    if let Some(book) = cache.get(&id) {
+                    if let Some(book) = cache.get(&id)
+                        && book.is_alive()
+                    {
                         let _ = reply.send(Ok(book));
                         continue;
                     }
@@ -308,7 +311,9 @@ async fn serve_books(
                         let handle = loads.spawn(async move {
                             let loaded = async {
                                 let metadata = LibraryBookMetadata::load(&path).await?;
-                                LibraryBook::load_from_metadata(metadata).await
+                                LibraryBook::load_from_metadata(metadata)
+                                    .await
+                                    .map(LibraryBook::spawn)
                             }
                             .await;
                             (id, loaded)
@@ -358,7 +363,7 @@ async fn serve_books(
                     Ok(_) if !removed.is_empty() => {
                         Err(anyhow::anyhow!("book {id} was deleted while loading"))
                     }
-                    Ok(book) => Ok(cache.insert(id, Arc::new(Mutex::new(book)))),
+                    Ok(book) => Ok(cache.insert(id, book)),
                     Err(err) => Err(err),
                 };
                 let mut waiters = waiters.into_iter();
@@ -480,9 +485,8 @@ impl Library {
         paragraph: &translation_import::ParagraphTranslation,
         target_language: Language,
     ) -> anyhow::Result<()> {
-        let book_arc = self.get_book(&book_id).await?;
+        let book = self.get_book(&book_id).await?.snapshot();
         let (source_language, chapter_index) = {
-            let book = book_arc.lock().await;
             let source_language = Language::from_639_3(&book.book.language).ok_or_else(|| {
                 anyhow::anyhow!(
                     "unknown source language code on book {book_id}: {}",
@@ -563,18 +567,15 @@ impl Library {
         text: &str,
         language: &Language,
     ) -> anyhow::Result<Uuid> {
-        let book = self.create_book(title, language).await?;
-        let mut book = book.lock().await;
-        let chapter_index = book.book.push_chapter(None);
-        let paragraphs = split_paragraphs(text);
-
-        for paragraph in paragraphs {
-            book.book.push_paragraph(chapter_index, paragraph, None);
+        let mut book = Book::create(Uuid::new_v4(), title, language);
+        let chapter_index = book.push_chapter(None);
+        for paragraph in split_paragraphs(text) {
+            book.push_paragraph(chapter_index, paragraph, None);
         }
 
-        book.save().await?;
-
-        Ok(book.book.id)
+        let id = book.id;
+        self.create_book(book).await?.save().await?;
+        Ok(id)
     }
 
     pub async fn create_book_epub(
@@ -582,19 +583,17 @@ impl Library {
         epub: &EpubBook,
         language: &Language,
     ) -> anyhow::Result<Uuid> {
-        let book = self.create_book(&epub.title, language).await?;
-        let mut book = book.lock().await;
-
+        let mut book = Book::create(Uuid::new_v4(), &epub.title, language);
         for ch in &epub.chapters {
-            let ch_idx = book.book.push_chapter(Some(&ch.title));
+            let ch_idx = book.push_chapter(Some(&ch.title));
             for p in &ch.paragraphs {
-                book.book.push_paragraph(ch_idx, &p.text, Some(&p.html));
+                book.push_paragraph(ch_idx, &p.text, Some(&p.html));
             }
         }
 
-        book.save().await?;
-
-        Ok(book.book.id)
+        let id = book.id;
+        self.create_book(book).await?.save().await?;
+        Ok(id)
     }
 
     pub async fn backfill_cards_from_translations(&self) -> anyhow::Result<()> {
@@ -602,8 +601,8 @@ impl Library {
         info!("Card backfill starting: {} book(s)", books.len());
 
         for book_meta in books {
-            let book_arc = match self.get_book(&book_meta.id).await {
-                Ok(arc) => arc,
+            let book_handle = match self.get_book(&book_meta.id).await {
+                Ok(handle) => handle,
                 Err(err) => {
                     log::warn!("Backfill: failed to load book {}: {err}", book_meta.id);
                     continue;
@@ -632,8 +631,8 @@ impl Library {
                 };
 
                 let collected: Vec<(usize, translation_import::ParagraphTranslation)> = {
-                    let book = book_arc.lock().await;
-                    let Some(translation) = book.get_translation(&target_language) else {
+                    let book = book_handle.snapshot();
+                    let Some(translation) = book.translation(&target_language) else {
                         log::warn!(
                             "Backfill: translation to {} listed on disk but not loaded for book {}",
                             translation_meta.target_language,
@@ -676,11 +675,8 @@ impl Library {
     }
 
     pub async fn save_all(&self) {
-        for book_arc in self.cached_books().await {
-            let mut book = book_arc.lock().await;
-            if book.has_unsaved_changes()
-                && let Err(err) = book.save().await
-            {
+        for book in self.cached_books().await {
+            if let Err(err) = book.save_if_dirty().await {
                 log::warn!("Failed to save book on shutdown: {err}");
             }
         }
@@ -694,7 +690,7 @@ impl Library {
         let result = Ok(match event {
             LibraryFileChange::BookChanged { modified, uuid } => {
                 match self.cached_book(*uuid).await {
-                    Some(book) => book.lock().await.reload_book(*modified).await?,
+                    Some(book) => book.reload_book(*modified).await?,
                     None => false,
                 }
             }
@@ -704,12 +700,7 @@ impl Library {
                 to,
                 uuid,
             } => match self.cached_book(*uuid).await {
-                Some(book) => {
-                    book.lock()
-                        .await
-                        .reload_translations(*modified, *from, *to)
-                        .await?
-                }
+                Some(book) => book.reload_translations(*modified, *from, *to).await?,
                 None => false,
             },
             // Invalidate so the next read repopulates from disk. False: there
@@ -788,18 +779,36 @@ mod library_tests {
         paragraph_text: &str,
     ) -> (Library, Uuid) {
         let library = Library::open(library_path).await.unwrap();
-        let book = library
-            .create_book("Test Book", &Language::from_639_3("spa").unwrap())
+        let book_id = create_saved_book(&library, "Test Book", "spa", &[paragraph_text]).await;
+        (library, book_id)
+    }
+
+    async fn create_saved_book(
+        library: &Library,
+        title: &str,
+        language: &str,
+        paragraphs: &[&str],
+    ) -> Uuid {
+        let mut book = Book::create(
+            Uuid::new_v4(),
+            title,
+            &Language::from_639_3(language).unwrap(),
+        );
+        if !paragraphs.is_empty() {
+            let chapter = book.push_chapter(Some("Intro"));
+            for paragraph in paragraphs {
+                book.push_paragraph(chapter, paragraph, None);
+            }
+        }
+        let id = book.id;
+        library
+            .create_book(book)
+            .await
+            .unwrap()
+            .save()
             .await
             .unwrap();
-        let book_id = {
-            let mut b = book.lock().await;
-            b.book.push_chapter(Some("Intro"));
-            b.book.push_paragraph(0, paragraph_text, None);
-            b.save().await.unwrap();
-            b.book.id
-        };
-        (library, book_id)
+        id
     }
 
     #[tokio::test]
@@ -828,16 +837,8 @@ mod library_tests {
         let library_path = temp_dir.path.join("lib");
         let library = Library::open(library_path.clone()).await.unwrap();
 
-        let book1 = library
-            .create_book("First Book", &Language::from_639_3("eng").unwrap())
-            .await
-            .unwrap();
-        book1.lock().await.save().await.unwrap();
-        let book2 = library
-            .create_book("Second Book", &Language::from_639_3("eng").unwrap())
-            .await
-            .unwrap();
-        book2.lock().await.save().await.unwrap();
+        create_saved_book(&library, "First Book", "eng", &[]).await;
+        create_saved_book(&library, "Second Book", "eng", &[]).await;
 
         let mut books = library.list_books().await.unwrap();
         assert_eq!(books.len(), 2);
@@ -856,17 +857,14 @@ mod library_tests {
         let library_path = temp_dir.path.join("lib");
         let library = Library::open(library_path.clone()).await.unwrap();
 
-        let book = library
-            .create_book("Categorized", &Language::from_639_3("eng").unwrap())
+        let id = create_saved_book(&library, "Categorized", "eng", &[]).await;
+        library
+            .get_book(&id)
+            .await
+            .unwrap()
+            .update_folder_path(vec!["Shelf".into(), "Modern".into()])
             .await
             .unwrap();
-        {
-            let mut book = book.lock().await;
-            book.save().await.unwrap();
-            book.update_folder_path(vec!["Shelf".into(), "Modern".into()])
-                .await
-                .unwrap();
-        }
 
         let books = library.list_books().await.unwrap();
         assert_eq!(books.len(), 1);
@@ -891,16 +889,7 @@ mod library_tests {
     }
 
     async fn make_saved_book(library: &Library, title: &str) -> Uuid {
-        let book = library
-            .create_book(title, &Language::from_639_3("eng").unwrap())
-            .await
-            .unwrap();
-        let id = {
-            let mut guard = book.lock().await;
-            guard.save().await.unwrap();
-            guard.book.id
-        };
-        id
+        create_saved_book(library, title, "eng", &[]).await
     }
 
     #[tokio::test]
@@ -1286,18 +1275,13 @@ mod library_tests {
     async fn integration_new_paragraph_appends_example() {
         let tmp = TempDir::new("flts_card_append");
         let library = Library::open(tmp.path.join("lib")).await.unwrap();
-        let book = library
-            .create_book("Two-Paragraph Book", &Language::from_639_3("spa").unwrap())
-            .await
-            .unwrap();
-        let book_id = {
-            let mut b = book.lock().await;
-            b.book.push_chapter(Some("Intro"));
-            b.book.push_paragraph(0, "No puedo más.", None);
-            b.book.push_paragraph(0, "Pueden venir mañana.", None);
-            b.save().await.unwrap();
-            b.book.id
-        };
+        let book_id = create_saved_book(
+            &library,
+            "Two-Paragraph Book",
+            "spa",
+            &["No puedo más.", "Pueden venir mañana."],
+        )
+        .await;
 
         let tgt = Language::from_639_3("rus").unwrap();
         let p_a = paragraph_with(
@@ -1566,10 +1550,15 @@ mod library_tests {
         paragraph: &translation_import::ParagraphTranslation,
         target_language: Language,
     ) {
-        let book_arc = library.get_book(&book_id).await.unwrap();
-        let mut book = book_arc.lock().await;
-        let translation = book.get_or_create_translation(&target_language).unwrap();
-        translation.add_paragraph_translation(paragraph_id, paragraph, "models/gemini-2.5-flash");
+        let book = library.get_book(&book_id).await.unwrap();
+        let paragraph = paragraph.clone();
+        book.modify(move |book| {
+            book.get_or_create_translation(&target_language)
+                .unwrap()
+                .add_paragraph_translation(paragraph_id, &paragraph, "models/gemini-2.5-flash");
+        })
+        .await
+        .unwrap();
         book.save().await.unwrap();
     }
 
@@ -1692,17 +1681,9 @@ mod library_tests {
         let tmp = TempDir::new("flts_backfill_multi");
         let library_path = tmp.path.join("lib");
         let library = Library::open(library_path.clone()).await.unwrap();
-        let spa = Language::from_639_3("spa").unwrap();
         let rus = Language::from_639_3("rus").unwrap();
 
-        let book_a_arc = library.create_book("Book A", &spa).await.unwrap();
-        let book_a_id = {
-            let mut b = book_a_arc.lock().await;
-            b.book.push_chapter(Some("Intro"));
-            b.book.push_paragraph(0, "No puedo más.", None);
-            b.save().await.unwrap();
-            b.book.id
-        };
+        let book_a_id = create_saved_book(&library, "Book A", "spa", &["No puedo más."]).await;
         let paragraph_a = paragraph_with(
             "Я больше не могу.",
             vec![full_word(
@@ -1716,14 +1697,7 @@ mod library_tests {
         );
         seed_translation(&library, book_a_id, 0, &paragraph_a, rus).await;
 
-        let book_b_arc = library.create_book("Book B", &spa).await.unwrap();
-        let book_b_id = {
-            let mut b = book_b_arc.lock().await;
-            b.book.push_chapter(Some("Intro"));
-            b.book.push_paragraph(0, "Quiero comer.", None);
-            b.save().await.unwrap();
-            b.book.id
-        };
+        let book_b_id = create_saved_book(&library, "Book B", "spa", &["Quiero comer."]).await;
         let paragraph_b = paragraph_with(
             "Я хочу есть.",
             vec![full_word(

@@ -12,6 +12,7 @@ use std::time::Instant;
 
 use super::soa_helpers::*;
 
+#[derive(Clone)]
 pub struct Book {
     pub id: Uuid,
     pub title: String,
@@ -22,6 +23,7 @@ pub struct Book {
     strings: Vec<u8>,
 }
 
+#[derive(Clone)]
 struct Chapter {
     pub title: Option<VecSlice<u8>>,
     pub paragraphs: VecSlice<usize>,

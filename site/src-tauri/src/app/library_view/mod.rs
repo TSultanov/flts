@@ -182,8 +182,7 @@ impl LibraryView {
         paragraph_id: usize,
         target_language: &Language,
     ) -> anyhow::Result<ParagraphView> {
-        let book = self.library.get_book(&book_id).await?;
-        let book = book.lock().await;
+        let book = self.library.get_book(&book_id).await?.snapshot();
 
         // The frontend can hold paragraph ids from before a sync-triggered
         // book reload; indexing past the end would panic the command.
@@ -197,7 +196,7 @@ impl LibraryView {
         // Must stay read-only: minting a translation would cement a book whose
         // translations failed to load as untranslated, and diverge translation
         // ids across synced devices.
-        let book_translation = book.get_translation(target_language);
+        let book_translation = book.translation(target_language);
 
         let paragraph = book.book.paragraph_view(paragraph_id);
         let original = paragraph.original_html.unwrap_or(paragraph.original_text);
@@ -236,8 +235,7 @@ impl LibraryView {
         book_id: Uuid,
         paragraph_ids: Vec<usize>,
     ) -> anyhow::Result<Vec<ParagraphOriginal>> {
-        let book = self.library.get_book(&book_id).await?;
-        let book = book.lock().await;
+        let book = self.library.get_book(&book_id).await?.snapshot();
         // Skip ids past the end: the frontend may hold state from before a
         // sync-triggered reload shrank the book.
         Ok(paragraph_ids
@@ -257,12 +255,11 @@ impl LibraryView {
         paragraph_ids: Vec<usize>,
         target_language: &Language,
     ) -> anyhow::Result<Vec<ParagraphTranslationSlice>> {
-        let book = self.library.get_book(&book_id).await?;
-        let book = book.lock().await;
+        let book = self.library.get_book(&book_id).await?.snapshot();
 
         // Read-only; see get_paragraph_view. No matching translation yields
         // `segments: None` for every row.
-        let bt = book.get_translation(target_language);
+        let bt = book.translation(target_language);
 
         let src_lang = Language::from_639_3(&book.book.language).ok_or_else(|| {
             anyhow::anyhow!(
@@ -348,10 +345,9 @@ impl LibraryView {
         book_id: Uuid,
         target_language: Option<&Language>,
     ) -> anyhow::Result<Vec<ChapterView>> {
-        let book = self.library.get_book(&book_id).await?;
+        let book_guard = self.library.get_book(&book_id).await?.snapshot();
         let chapters: Vec<ChapterView> = {
-            let book_guard = book.lock().await;
-            let translation_guard = target_language.and_then(|tl| book_guard.get_translation(tl));
+            let translation_guard = target_language.and_then(|tl| book_guard.translation(tl));
             book_guard
                 .book
                 .chapter_views()
@@ -395,8 +391,7 @@ impl LibraryView {
         book_id: Uuid,
         chapter_id: usize,
     ) -> anyhow::Result<Vec<usize>> {
-        let book = self.library.get_book(&book_id).await?;
-        let book = book.lock().await;
+        let book = self.library.get_book(&book_id).await?.snapshot();
         // chapter_id is frontend/URL-supplied: chapter_view indexes raw, and
         // panic = abort would take the app down.
         if chapter_id >= book.book.chapter_count() {
@@ -418,11 +413,10 @@ impl LibraryView {
         word_id: usize,
         target_language: &Language,
     ) -> anyhow::Result<Option<WordView>> {
-        let book = self.library.get_book(&book_id).await?;
-        let book = book.lock().await;
+        let book = self.library.get_book(&book_id).await?.snapshot();
         let source_language_code = book.book.language.clone();
         // Read-only; see get_paragraph_view.
-        let Some(book_translation) = book.get_translation(target_language) else {
+        let Some(book_translation) = book.translation(target_language) else {
             return Ok(None);
         };
 
@@ -511,7 +505,6 @@ impl LibraryView {
         book_id: Uuid,
     ) -> anyhow::Result<Option<BookReadingStateView>> {
         let book = self.library.get_book(&book_id).await?;
-        let mut book = book.lock().await;
         Ok(book.reading_state().await?.map(BookReadingStateView::from))
     }
 
@@ -523,7 +516,6 @@ impl LibraryView {
         page_offset: usize,
     ) -> anyhow::Result<()> {
         let book = self.library.get_book(&book_id).await?;
-        let mut book = book.lock().await;
         book.update_reading_state(BookReadingState {
             chapter_id,
             paragraph_id,
@@ -534,10 +526,7 @@ impl LibraryView {
 
     pub async fn move_book(&self, book_id: Uuid, new_path: Vec<String>) -> anyhow::Result<()> {
         let book = self.library.get_book(&book_id).await?;
-        {
-            let mut book = book.lock().await;
-            book.update_folder_path(new_path).await?;
-        }
+        book.update_folder_path(new_path).await?;
 
         self.state.notify_library_changed();
         Ok(())

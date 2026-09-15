@@ -116,28 +116,29 @@ async fn book_save_loads_newer_disk_version_by_design() {
     let library_root = temp_dir.path.join("lib");
     let library = Library::open(library_root.clone()).await.unwrap();
 
-    let book = library
-        .create_book("Original", &Language::from_639_3("eng").unwrap())
-        .await
-        .unwrap();
-
-    let book_id = {
-        let mut book = book.lock().await;
-        book.book.push_chapter(Some("Intro"));
-        book.book.push_paragraph(0, "base paragraph", None);
-        book.save().await.unwrap();
-        book.book.title = "Memory Edit".into();
-        book.book.id
-    };
+    let mut new_book = Book::create(
+        uuid::Uuid::new_v4(),
+        "Original",
+        &Language::from_639_3("eng").unwrap(),
+    );
+    new_book.push_chapter(Some("Intro"));
+    new_book.push_paragraph(0, "base paragraph", None);
+    let book_id = new_book.id;
+    let book = library.create_book(new_book).await.unwrap();
+    book.save().await.unwrap();
+    book.modify(|book| {
+        std::sync::Arc::make_mut(&mut book.book).title = "Memory Edit".into();
+    })
+    .await
+    .unwrap();
 
     let book_path = library_root.join(book_id.to_string()).join("book.dat");
     sleep_for_mtime_tick();
     overwrite_book_title(&book_path, "Disk Edit");
 
     let in_memory_after_save = {
-        let mut book = book.lock().await;
         book.save().await.unwrap();
-        book.book.title.clone()
+        book.snapshot().book.title.clone()
     };
     let on_disk_after_save = read_book(&book_path).title;
 
@@ -155,18 +156,21 @@ async fn book_conflict_newest_wins_is_by_design() {
     let library_root = temp_dir.path.join("lib");
     let library = Library::open(library_root.clone()).await.unwrap();
 
-    let book = library
-        .create_book("Conflict Base", &Language::from_639_3("eng").unwrap())
+    let mut new_book = Book::create(
+        uuid::Uuid::new_v4(),
+        "Conflict Base",
+        &Language::from_639_3("eng").unwrap(),
+    );
+    new_book.push_chapter(Some("Intro"));
+    new_book.push_paragraph(0, "base paragraph", None);
+    let book_id = new_book.id;
+    library
+        .create_book(new_book)
+        .await
+        .unwrap()
+        .save()
         .await
         .unwrap();
-
-    let book_id = {
-        let mut book = book.lock().await;
-        book.book.push_chapter(Some("Intro"));
-        book.book.push_paragraph(0, "base paragraph", None);
-        book.save().await.unwrap();
-        book.book.id
-    };
 
     let book_dir = library_root.join(book_id.to_string());
     let book_path = book_dir.join("book.dat");
@@ -180,8 +184,7 @@ async fn book_conflict_newest_wins_is_by_design() {
     drop(library);
 
     let library = Library::open(library_root).await.unwrap();
-    let loaded = library.get_book(&book_id).await.unwrap();
-    let loaded = loaded.lock().await;
+    let loaded = library.get_book(&book_id).await.unwrap().snapshot();
     let paragraphs = read_book_paragraphs(&loaded.book);
 
     // By design: books have no paragraph-level timestamps, so conflict
@@ -202,25 +205,23 @@ async fn repro_translation_same_timestamp_conflict_collapses_distinct_version() 
     let source_language = Language::from_str("en").unwrap();
     let target_language = Language::from_str("ru").unwrap();
 
-    let book = library
-        .create_book("Translation Base", &source_language)
-        .await
-        .unwrap();
-
-    let book_id = {
-        let mut book = book.lock().await;
-        book.book.push_chapter(Some("Intro"));
-        book.book.push_paragraph(0, "source paragraph", None);
-
-        let translation = book.get_or_create_translation(&target_language).unwrap();
-        translation.add_paragraph_translation(
-            0,
-            &make_paragraph(1, "main version"),
-            "models/gemini-2.5-flash",
-        );
-        book.save().await.unwrap();
-        book.book.id
-    };
+    let mut new_book = Book::create(uuid::Uuid::new_v4(), "Translation Base", &source_language);
+    new_book.push_chapter(Some("Intro"));
+    new_book.push_paragraph(0, "source paragraph", None);
+    let book_id = new_book.id;
+    let book = library.create_book(new_book).await.unwrap();
+    book.modify(move |book| {
+        book.get_or_create_translation(&target_language)
+            .unwrap()
+            .add_paragraph_translation(
+                0,
+                &make_paragraph(1, "main version"),
+                "models/gemini-2.5-flash",
+            );
+    })
+    .await
+    .unwrap();
+    book.save().await.unwrap();
 
     let book_dir = library_root.join(book_id.to_string());
     let main_path = book_dir.join(format!(
@@ -248,9 +249,8 @@ async fn repro_translation_same_timestamp_conflict_collapses_distinct_version() 
     drop(library);
 
     let library = Library::open(library_root).await.unwrap();
-    let loaded = library.get_book(&book_id).await.unwrap();
-    let mut loaded = loaded.lock().await;
-    let translation = loaded.get_or_create_translation(&target_language).unwrap();
+    let loaded = library.get_book(&book_id).await.unwrap().snapshot();
+    let translation = loaded.translation(&target_language).unwrap();
     let latest = translation.paragraph_view(0).unwrap();
     let latest_text = latest.sentence_view(0).full_translation.to_string();
     let previous = latest.get_previous_version();
