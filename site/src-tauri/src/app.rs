@@ -593,8 +593,7 @@ impl AppState {
             info!("Card backfill disabled: set FLTS_ENABLE_CARD_BACKFILL=1 to enable");
         }
 
-        let prior = self.gated.take_anki_task().await;
-        if let Some(task) = prior {
+        if let Some(task) = self.gated.take_anki_task() {
             info!("Stopping prior Anki sync task before re-spawn");
             task.shutdown().await;
         }
@@ -620,7 +619,7 @@ impl AppState {
                 Duration::from_secs(interval_secs),
                 self.anki_sync_status.clone(),
             );
-            self.gated.install_anki_task(task).await;
+            self.gated.install_anki_task(task);
             info!("Anki sync task spawned (interval = {interval_secs}s)");
         }
 
@@ -802,11 +801,9 @@ impl AppState {
             self.stop_translation_queue(),
         )
         .await;
-        // Take the task out of its slot before awaiting, so a long tick can't
-        // block inside the mutex. No final sync_pass: a flush against a slow
-        // AnkiConnect would stall exit, and the next launch syncs immediately.
-        let anki_task = self.gated.take_anki_task().await;
-        if let Some(task) = anki_task {
+        // No final sync_pass: a flush against a slow AnkiConnect would stall
+        // exit, and the next launch syncs immediately.
+        if let Some(task) = self.gated.take_anki_task() {
             run_exit_step(
                 "anki sync shutdown",
                 EXIT_STOP_QUEUE_TIMEOUT,
