@@ -30,51 +30,58 @@ pub trait ChunkSource: Send + Sync {
     fn read_chunk(&self, loc: ChunkLoc) -> io::Result<Vec<u8>>;
 }
 
-struct ChunkCell<T> {
-    data: OnceLock<Vec<T>>,
-    loc: Option<ChunkLoc>,
+enum ChunkCell<T> {
+    Lazy {
+        loc: ChunkLoc,
+        rows: OnceLock<Vec<T>>,
+    },
+    Owned(Vec<T>),
 }
 
 impl<T> ChunkCell<T> {
-    fn resident(rows: Vec<T>) -> Self {
-        let data = OnceLock::new();
-        let _ = data.set(rows);
-        Self { data, loc: None }
+    fn on_disk(loc: ChunkLoc) -> Self {
+        Self::Lazy {
+            loc,
+            rows: OnceLock::new(),
+        }
     }
 
-    fn on_disk(loc: ChunkLoc) -> Self {
-        Self {
-            data: OnceLock::new(),
-            loc: Some(loc),
+    fn resident_rows(&self) -> Option<&[T]> {
+        match self {
+            Self::Lazy { rows, .. } => rows.get().map(Vec::as_slice),
+            Self::Owned(rows) => Some(rows),
         }
     }
 
     fn still_on_disk(&self) -> Option<ChunkLoc> {
-        match (self.loc, self.data.get()) {
-            (Some(loc), None) => Some(loc),
+        match self {
+            Self::Lazy { loc, rows } if rows.get().is_none() => Some(*loc),
             _ => None,
         }
     }
 
-    fn fill_once(&self, rows: Vec<T>) -> &[T] {
-        let _ = self.data.set(rows);
-        self.data.get().expect("filled")
-    }
-
-    fn detach_from_disk(&mut self) {
-        self.loc = None;
+    fn owned_rows(&mut self) -> &mut Vec<T> {
+        if let Self::Lazy { rows, .. } = self {
+            let taken = rows
+                .take()
+                .expect("chunk must be resident before it is owned");
+            *self = Self::Owned(taken);
+        }
+        let Self::Owned(rows) = self else {
+            unreachable!("just converted to Owned")
+        };
+        rows
     }
 }
 
 impl<T: Clone> Clone for ChunkCell<T> {
     fn clone(&self) -> Self {
-        let data = OnceLock::new();
-        if let Some(rows) = self.data.get() {
-            let _ = data.set(rows.clone());
-        }
-        Self {
-            data,
-            loc: self.loc,
+        match self {
+            Self::Lazy { loc, rows } => Self::Lazy {
+                loc: *loc,
+                rows: rows.get().cloned().map(OnceLock::from).unwrap_or_default(),
+            },
+            Self::Owned(rows) => Self::Owned(rows.clone()),
         }
     }
 }
@@ -117,7 +124,7 @@ impl<T> Arena<T> {
     pub fn resident_chunks(&self) -> usize {
         self.chunks
             .iter()
-            .filter(|cell| cell.data.get().is_some())
+            .filter(|cell| cell.resident_rows().is_some())
             .count()
     }
 }
@@ -199,20 +206,21 @@ impl<T: Record> Arena<T> {
             .get(index)
             .ok_or_else(|| invalid(format!("chunk {index} out of range")))?;
 
-        if let Some(rows) = cell.data.get() {
-            return Ok(rows);
+        let (loc, rows) = match &**cell {
+            ChunkCell::Owned(rows) => return Ok(rows),
+            ChunkCell::Lazy { loc, rows } => (loc, rows),
+        };
+        if let Some(loaded) = rows.get() {
+            return Ok(loaded);
         }
 
-        let loc = cell
-            .loc
-            .expect("a chunk with no location is always resident");
-        let bytes = self.read_verified(loc, index)?;
-        Ok(cell.fill_once(decode_rows::<T>(&bytes)))
+        let bytes = self.read_verified(*loc, index)?;
+        Ok(rows.get_or_init(|| decode_rows::<T>(&bytes)))
     }
 
-    fn make_resident(&self, index: usize) -> io::Result<()> {
+    fn owned_chunk(&mut self, index: usize) -> io::Result<&mut Vec<T>> {
         self.chunk(index)?;
-        Ok(())
+        Ok(Arc::make_mut(&mut self.chunks[index]).owned_rows())
     }
 
     fn read_verified(&self, loc: ChunkLoc, index: usize) -> io::Result<Vec<u8>> {
@@ -302,16 +310,11 @@ impl<T: Record> Arena<T> {
     fn tail_mut(&mut self) -> io::Result<&mut Vec<T>> {
         if self.len.is_multiple_of(self.chunk_rows) {
             self.chunks
-                .push(Arc::new(ChunkCell::resident(Vec::with_capacity(
+                .push(Arc::new(ChunkCell::Owned(Vec::with_capacity(
                     self.chunk_rows,
                 ))));
-        } else {
-            self.make_resident(self.chunks.len() - 1)?;
         }
-
-        let cell = Arc::make_mut(self.chunks.last_mut().expect("chunk just ensured"));
-        cell.detach_from_disk();
-        Ok(cell.data.get_mut().expect("resident"))
+        self.owned_chunk(self.chunks.len() - 1)
     }
 
     pub fn try_push(&mut self, item: T) -> io::Result<usize> {
@@ -346,10 +349,8 @@ impl<T: Record> Arena<T> {
             return Err(invalid(format!("index {index} past end {}", self.len)));
         }
         let chunk_index = index / self.chunk_rows;
-        self.make_resident(chunk_index)?;
-        let cell = Arc::make_mut(&mut self.chunks[chunk_index]);
-        cell.detach_from_disk();
-        cell.data.get_mut().expect("resident")[index % self.chunk_rows] = item;
+        let offset = index % self.chunk_rows;
+        self.owned_chunk(chunk_index)?[offset] = item;
         Ok(())
     }
 

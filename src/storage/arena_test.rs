@@ -338,16 +338,21 @@ fn a_corrupt_chunk_is_not_laundered_into_a_new_file() {
 }
 
 #[test]
-fn a_mutated_chunk_forgets_its_disk_location() {
+fn a_mutated_chunk_stops_reporting_a_disk_location() {
     let (mut arena, _) = lazy_u32(10, 4);
-    assert!(arena.chunks.iter().all(|cell| cell.loc.is_some()));
+    assert!(
+        arena
+            .chunks
+            .iter()
+            .all(|cell| cell.still_on_disk().is_some())
+    );
 
     arena.try_set(0, 5).unwrap();
-    assert!(arena.chunks[0].loc.is_none());
-    assert!(arena.chunks[1].loc.is_some());
+    assert!(arena.chunks[0].still_on_disk().is_none());
+    assert!(arena.chunks[1].still_on_disk().is_some());
 
     arena.try_push(42).unwrap();
-    assert!(arena.chunks[2].loc.is_none());
+    assert!(arena.chunks[2].still_on_disk().is_none());
 }
 
 #[test]
@@ -359,4 +364,19 @@ fn writing_out_a_resident_chunk_does_not_read_it_again() {
     arena.chunk_bytes(0).unwrap();
     assert_eq!(source.reads.load(Ordering::SeqCst), 1);
     assert_eq!(arena.resident_chunks(), 1);
+}
+
+#[test]
+fn taking_owned_rows_twice_is_idempotent() {
+    let (mut arena, source) = lazy_u32(10, 4);
+    arena.try_set(0, 111).unwrap();
+    assert_eq!(source.reads.load(Ordering::SeqCst), 1);
+
+    arena.try_set(1, 222).unwrap();
+    arena.try_set(2, 333).unwrap();
+    assert_eq!(source.reads.load(Ordering::SeqCst), 1);
+
+    let cell = Arc::make_mut(&mut arena.chunks[0]);
+    assert_eq!(cell.owned_rows().as_slice(), &[111, 222, 333, 3]);
+    assert_eq!(cell.owned_rows().as_slice(), &[111, 222, 333, 3]);
 }
