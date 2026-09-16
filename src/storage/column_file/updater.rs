@@ -8,6 +8,7 @@ use super::append_mark::{AppendMark, read_append_mark};
 use super::codec::Codec;
 use super::column_meta::{ColumnMeta, content_id, write_directory};
 use super::commit_slot::{CommitSlot, newest_slot};
+use super::commit_token::CommitToken;
 use super::file_source::write_all_at;
 use super::reader::ColumnFile;
 use super::writer_id::WriterId;
@@ -51,8 +52,8 @@ impl ColumnFileUpdater {
 
         let (newest_at, newest) = newest_slot(&file, reader.file_uuid())?
             .ok_or_else(|| invalid("column file has no valid commit slot"))?;
-        if newest.generation != reader.generation() {
-            return Err(conflict(reader.generation(), newest.generation));
+        if newest.token() != reader.commit_token() {
+            return Err(conflict(reader.commit_token(), newest.token()));
         }
         let target_slot = if newest_at == SLOT_A { SLOT_B } else { SLOT_A };
 
@@ -173,10 +174,13 @@ impl ColumnFileUpdater {
     }
 }
 
-fn conflict(expected: u64, found: u64) -> io::Error {
+fn conflict(expected: CommitToken, found: CommitToken) -> io::Error {
     io::Error::new(
         io::ErrorKind::ResourceBusy,
-        format!("column file moved to generation {found} while holding {expected}"),
+        format!(
+            "column file moved to generation {} ({:#018x}) while holding generation {} ({:#018x})",
+            found.generation, found.content_id, expected.generation, expected.content_id
+        ),
     )
 }
 

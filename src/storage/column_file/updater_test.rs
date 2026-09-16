@@ -425,3 +425,41 @@ fn losing_the_mark_and_the_slot_together_still_cannot_clobber_a_reader() {
         "the file length floored the cursor above generation 2"
     );
 }
+
+#[test]
+fn a_reused_generation_number_is_still_a_conflict() {
+    let dir = TempDir::new("reused_generation");
+    let path = dir.join("values.dbs");
+    seed(&path, &(0..10).collect::<Vec<u32>>());
+
+    let first = ColumnFile::open(&path).unwrap();
+    let mut column = first.column::<u32>("values").unwrap();
+    column.try_set(5, 555).unwrap();
+    let mut updater = first.update(this_device()).unwrap();
+    updater.column("values", &column).unwrap();
+    assert_eq!(updater.commit().unwrap(), 2);
+
+    let held = ColumnFile::open(&path).unwrap();
+    assert_eq!(held.generation(), 2);
+
+    flip_byte(&path, SLOT_B);
+
+    let rival = ColumnFile::open(&path).unwrap();
+    assert_eq!(rival.generation(), 1);
+    let mut column = rival.column::<u32>("values").unwrap();
+    column.try_set(0, 111).unwrap();
+    let mut updater = rival.update(this_device()).unwrap();
+    updater.column("values", &column).unwrap();
+    assert_eq!(updater.commit().unwrap(), 2, "the number gets reused");
+
+    let current = ColumnFile::open(&path).unwrap();
+    assert_eq!(current.generation(), held.generation());
+    assert_ne!(
+        current.content_id(),
+        held.content_id(),
+        "same number, different commit"
+    );
+
+    let err = held.update(this_device()).unwrap_err();
+    assert!(err.to_string().contains("moved to generation 2"), "{err}");
+}
