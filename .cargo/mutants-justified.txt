@@ -31,3 +31,14 @@ src/storage/column_file/file_source.rs:85:5: replace read_exact_at -> Result<()>
 src/storage/column_file/file_source.rs:90:11: delete ! in read_exact_at
 src/storage/column_file/file_source.rs:98:20: replace += with *= in read_exact_at
 src/storage/column_file/file_source.rs:98:20: replace += with -= in read_exact_at
+
+# Provably equivalent, not untested. new_file_uuid is
+#     ((entropy() as u128) << 64) | entropy() as u128
+# and the left operand has all sixty-four low bits clear while the right fits in
+# sixty-four bits, so OR and XOR agree on every input. No test can distinguish
+# them because no input distinguishes them.
+#
+# Rewriting the expression to make the mutant non-equivalent would mean picking
+# a worse way to say "high half, low half" purely to give a tool something to
+# kill, so it stays and this entry explains why.
+src/storage/column_file/header.rs:45:33: replace | with ^ in new_file_uuid

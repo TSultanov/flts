@@ -62,7 +62,7 @@ impl CommitSlot {
     }
 
     pub(super) fn dir_end(self) -> u64 {
-        self.dir_offset + self.dir_len
+        self.dir_offset.saturating_add(self.dir_len)
     }
 
     pub(super) fn token(self) -> CommitToken {

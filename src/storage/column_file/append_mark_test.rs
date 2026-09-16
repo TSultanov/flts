@@ -1,5 +1,6 @@
 use super::*;
 use crate::storage::column_file::{MAGIC, SLOT_MAGIC};
+use proptest::prelude::*;
 
 fn sample() -> AppendMark {
     AppendMark::new(0xfeed, 20_000, 5)
@@ -55,4 +56,44 @@ fn generation_zero_is_never_valid() {
 fn the_mark_does_not_share_a_magic_with_the_other_records() {
     assert_ne!(MARK_MAGIC, MAGIC);
     assert_ne!(MARK_MAGIC, SLOT_MAGIC);
+}
+
+proptest! {
+    #[test]
+    fn flipping_any_bit_of_a_mark_invalidates_it(
+        file_uuid: u128,
+        append_from: u64,
+        generation in 1u64..=u64::MAX,
+        at in any::<prop::sample::Index>(),
+        mask in 1u8..=u8::MAX,
+    ) {
+        let mut bytes = AppendMark::new(file_uuid, append_from, generation).to_bytes();
+        bytes[at.index(AppendMark::SIZE)] ^= mask;
+        prop_assert!(AppendMark::from_bytes(&bytes, file_uuid).is_none());
+    }
+
+    #[test]
+    fn a_mark_round_trips_every_field_it_carries(
+        file_uuid: u128,
+        append_from: u64,
+        generation in 1u64..=u64::MAX,
+    ) {
+        let bytes = AppendMark::new(file_uuid, append_from, generation).to_bytes();
+        let read = AppendMark::from_bytes(&bytes, file_uuid).unwrap();
+
+        let fields = (read.append_from, read.generation);
+        prop_assert_eq!(fields, (append_from, generation));
+    }
+
+    #[test]
+    fn a_mark_is_rejected_unless_it_carries_this_file_uuid_and_a_real_generation(
+        file_uuid: u128,
+        asked: u128,
+        append_from: u64,
+        generation: u64,
+    ) {
+        let bytes = AppendMark::new(file_uuid, append_from, generation).to_bytes();
+        let accepted = AppendMark::from_bytes(&bytes, asked).is_some();
+        prop_assert_eq!(accepted, generation != 0 && file_uuid == asked);
+    }
 }

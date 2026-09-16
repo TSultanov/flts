@@ -1,4 +1,5 @@
 use super::*;
+use proptest::prelude::*;
 
 #[test]
 fn the_header_is_packed_to_its_wire_size() {
@@ -44,4 +45,40 @@ fn file_uuids_differ_between_files() {
     assert_ne!(a, b);
     assert_ne!(a, 0);
     assert_ne!(a >> 64, 0);
+}
+
+proptest! {
+    #[test]
+    fn the_header_accepts_exactly_its_own_magic_and_version(bytes: [u8; 24]) {
+        let carries_magic = bytes[..4] == MAGIC;
+        let version = u16::from_le_bytes([bytes[4], bytes[5]]);
+
+        match Header::decode(&bytes).validate() {
+            Ok(()) => {
+                prop_assert!(carries_magic);
+                prop_assert_eq!(version, FORMAT_VERSION);
+            }
+            Err(err) if err.is_unsupported() => {
+                prop_assert!(carries_magic);
+                prop_assert_ne!(version, FORMAT_VERSION);
+            }
+            Err(err) => {
+                prop_assert!(!carries_magic);
+                prop_assert!(
+                    !err.is_corrupt(),
+                    "a file that is not ours is the wrong path, not a damaged file"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_header_round_trips_the_body_it_names(file_uuid: u128) {
+        let mut bytes = [0u8; Header::SIZE];
+        Header::new(file_uuid).encode(&mut bytes);
+
+        let read = Header::decode(&bytes);
+        read.validate().unwrap();
+        prop_assert_eq!(read.file_uuid(), file_uuid);
+    }
 }
