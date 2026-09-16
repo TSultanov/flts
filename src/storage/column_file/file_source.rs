@@ -24,6 +24,10 @@ impl FileSource {
         &self.path
     }
 
+    pub(super) fn file(&self) -> &File {
+        &self.file
+    }
+
     pub(super) fn len(&self) -> io::Result<u64> {
         Ok(self.file.metadata()?.len())
     }

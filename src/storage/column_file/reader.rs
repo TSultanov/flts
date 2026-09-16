@@ -4,13 +4,14 @@ use std::io;
 use std::path::Path;
 use std::sync::Arc;
 
+use super::HEAD_LEN;
 use super::codec::Codec;
 use super::column_meta::{ColumnMeta, read_directory};
-use super::commit_slot::CommitSlot;
+use super::commit_slot::{CommitSlot, newest_slot};
+use super::commit_token::CommitToken;
 use super::file_source::FileSource;
 use super::header::Header;
 use super::writer_id::WriterId;
-use super::{HEAD_LEN, SLOT_A, SLOT_B};
 use crate::record::Record;
 use crate::storage::arena::{Arena, ChunkSource, Provenance, invalid};
 use crate::storage::hash::fnv1a;
@@ -31,6 +32,21 @@ impl std::fmt::Debug for ColumnFile {
 }
 
 impl ColumnFile {
+    pub fn read_commit_token(path: impl AsRef<Path>) -> io::Result<CommitToken> {
+        let source = FileSource::open(path)?;
+        if source.len()? < HEAD_LEN {
+            return Err(invalid("file is too short to be a column file"));
+        }
+        let header = read_header(&source)?;
+        let (_, slot) = newest_slot(source.file(), header.file_uuid())?
+            .ok_or_else(|| invalid("column file has no valid commit slot"))?;
+        Ok(slot.token())
+    }
+
+    pub fn commit_token(&self) -> CommitToken {
+        self.slot.token()
+    }
+
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
         let source = FileSource::open(path)?;
         let total = source.len()?;
@@ -38,23 +54,10 @@ impl ColumnFile {
             return Err(invalid("file is too short to be a column file"));
         }
 
-        let mut head = [0u8; Header::SIZE];
-        source.read_at(&mut head, 0)?;
-        let header = Header::decode(&head);
-        header.validate()?;
-        let file_uuid = header.file_uuid();
+        let file_uuid = read_header(&source)?.file_uuid();
 
-        let mut newest: Option<CommitSlot> = None;
-        for at in [SLOT_A, SLOT_B] {
-            let mut bytes = [0u8; CommitSlot::SIZE];
-            source.read_at(&mut bytes, at)?;
-            if let Some(slot) = CommitSlot::from_bytes(&bytes, file_uuid)
-                && newest.is_none_or(|current| slot.generation > current.generation)
-            {
-                newest = Some(slot);
-            }
-        }
-        let slot = newest.ok_or_else(|| invalid("column file has no valid commit slot"))?;
+        let (_, slot) = newest_slot(source.file(), file_uuid)?
+            .ok_or_else(|| invalid("column file has no valid commit slot"))?;
 
         let (dir_offset, dir_len, dir_fnv) = (slot.dir_offset, slot.dir_len, slot.dir_fnv);
         let dir_end = dir_offset
@@ -159,6 +162,14 @@ impl ColumnFile {
         }
         Ok(())
     }
+}
+
+fn read_header(source: &FileSource) -> io::Result<Header> {
+    let mut bytes = [0u8; Header::SIZE];
+    source.read_at(&mut bytes, 0)?;
+    let header = Header::decode(&bytes);
+    header.validate()?;
+    Ok(header)
 }
 
 #[cfg(test)]

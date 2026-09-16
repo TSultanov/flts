@@ -11,5 +11,5 @@ pub use id::Id;
 pub use record::Record;
 pub use storage::{
     Arena, Blob, ChunkLoc, ChunkSource, ColumnFile, ColumnFileUpdater, ColumnFileWriter,
-    ColumnMeta, WriterId, default_chunk_rows, fnv1a,
+    ColumnMeta, CommitToken, WriterId, default_chunk_rows, fnv1a,
 };

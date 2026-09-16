@@ -1,7 +1,12 @@
 //! The record that publishes a generation, written to one of two slots.
 
-use super::SLOT_MAGIC;
+use std::fs::File;
+use std::io;
+
+use super::commit_token::CommitToken;
+use super::file_source::read_exact_at;
 use super::writer_id::WriterId;
+use super::{SLOT_A, SLOT_B, SLOT_MAGIC};
 use crate::record::Record;
 use crate::storage::hash::fnv1a;
 
@@ -17,16 +22,14 @@ pub(super) struct CommitSlot {
     pub(super) dir_offset: u64,
     pub(super) dir_len: u64,
     pub(super) dir_fnv: u64,
-    pub(super) high_water: u64,
     slot_fnv: u64,
 }
 
-const _: () = assert!(CommitSlot::SIZE == 88);
+const _: () = assert!(CommitSlot::SIZE == 80);
 
 const SIGNED_LEN: usize = CommitSlot::SIZE - 8;
 
 impl CommitSlot {
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         generation: u64,
         content_id: u64,
@@ -35,7 +38,6 @@ impl CommitSlot {
         dir_offset: u64,
         dir_len: u64,
         dir_fnv: u64,
-        high_water: u64,
     ) -> Self {
         Self {
             magic: SLOT_MAGIC,
@@ -47,7 +49,6 @@ impl CommitSlot {
             dir_offset,
             dir_len,
             dir_fnv,
-            high_water,
             slot_fnv: 0,
         }
     }
@@ -58,6 +59,19 @@ impl CommitSlot {
         let signature = fnv1a(&bytes[..SIGNED_LEN]);
         bytes[SIGNED_LEN..].copy_from_slice(&signature.to_le_bytes());
         bytes
+    }
+
+    pub(super) fn dir_end(self) -> u64 {
+        self.dir_offset + self.dir_len
+    }
+
+    pub(super) fn token(self) -> CommitToken {
+        CommitToken {
+            generation: self.generation,
+            content_id: self.content_id,
+            writer_id: WriterId::from_raw(self.writer_id),
+            file_uuid: self.file_uuid,
+        }
     }
 
     pub(super) fn from_bytes(bytes: &[u8], file_uuid: u128) -> Option<Self> {
@@ -75,6 +89,22 @@ impl CommitSlot {
     }
 }
 
+pub(super) type FoundSlot = Option<(u64, CommitSlot)>;
+
+pub(super) fn newest_slot(file: &File, file_uuid: u128) -> io::Result<FoundSlot> {
+    let mut newest: FoundSlot = None;
+    for at in [SLOT_A, SLOT_B] {
+        let mut bytes = [0u8; CommitSlot::SIZE];
+        read_exact_at(file, &mut bytes, at)?;
+        if let Some(slot) = CommitSlot::from_bytes(&bytes, file_uuid)
+            && newest.is_none_or(|(_, current)| slot.generation > current.generation)
+        {
+            newest = Some((at, slot));
+        }
+    }
+    Ok(newest)
+}
+
 impl Record for CommitSlot {
     const SIZE: usize = size_of::<Self>();
 
@@ -89,8 +119,7 @@ impl Record for CommitSlot {
         out[48..56].copy_from_slice(&{ self.dir_offset }.to_le_bytes());
         out[56..64].copy_from_slice(&{ self.dir_len }.to_le_bytes());
         out[64..72].copy_from_slice(&{ self.dir_fnv }.to_le_bytes());
-        out[72..80].copy_from_slice(&{ self.high_water }.to_le_bytes());
-        out[80..].copy_from_slice(&{ self.slot_fnv }.to_le_bytes());
+        out[72..].copy_from_slice(&{ self.slot_fnv }.to_le_bytes());
     }
 
     fn decode(src: &[u8]) -> Self {
@@ -104,8 +133,7 @@ impl Record for CommitSlot {
             dir_offset: u64::from_le_bytes(src[48..56].try_into().expect("8 bytes")),
             dir_len: u64::from_le_bytes(src[56..64].try_into().expect("8 bytes")),
             dir_fnv: u64::from_le_bytes(src[64..72].try_into().expect("8 bytes")),
-            high_water: u64::from_le_bytes(src[72..80].try_into().expect("8 bytes")),
-            slot_fnv: u64::from_le_bytes(src[80..].try_into().expect("8 bytes")),
+            slot_fnv: u64::from_le_bytes(src[72..].try_into().expect("8 bytes")),
         }
     }
 }

@@ -11,6 +11,7 @@ use header::Header;
 mod codec;
 mod column_meta;
 mod commit_slot;
+mod commit_token;
 mod cursor;
 mod file_source;
 mod header;
@@ -21,6 +22,7 @@ mod writer_id;
 
 pub use codec::Codec;
 pub use column_meta::ColumnMeta;
+pub use commit_token::CommitToken;
 pub use reader::ColumnFile;
 pub use updater::ColumnFileUpdater;
 pub use writer::ColumnFileWriter;

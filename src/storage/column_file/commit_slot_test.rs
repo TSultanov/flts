@@ -9,13 +9,12 @@ fn sample(generation: u64) -> CommitSlot {
         12288,
         64,
         0xdd,
-        12352,
     )
 }
 
 #[test]
 fn the_slot_is_packed_to_its_wire_size() {
-    assert_eq!(CommitSlot::SIZE, 88);
+    assert_eq!(CommitSlot::SIZE, 80);
     assert_eq!(size_of::<CommitSlot>(), CommitSlot::SIZE);
     assert_eq!(align_of::<CommitSlot>(), 1);
 }
@@ -36,7 +35,7 @@ fn a_slot_round_trips_and_carries_its_own_checksum() {
 fn a_torn_slot_is_rejected_rather_than_trusted() {
     let bytes = sample(5).to_bytes();
 
-    for at in [0, 8, 40, 72, 87] {
+    for at in [0, 8, 40, 71, 79] {
         let mut torn = bytes;
         torn[at] ^= 0xff;
         assert!(

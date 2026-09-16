@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use super::codec::Codec;
 use super::column_meta::{ColumnMeta, content_id, write_directory};
-use super::commit_slot::CommitSlot;
-use super::file_source::{read_exact_at, write_all_at};
+use super::commit_slot::{CommitSlot, newest_slot};
+use super::file_source::write_all_at;
 use super::reader::ColumnFile;
 use super::writer_id::WriterId;
 use super::{SLOT_A, SLOT_B};
@@ -48,9 +48,8 @@ impl ColumnFileUpdater {
             .open(file_source.path())?;
         file.lock()?;
 
-        let (newest, high_water) = newest_slot(&file, reader.file_uuid())?;
-        let (newest_at, newest) =
-            newest.ok_or_else(|| invalid("column file has no valid commit slot"))?;
+        let (newest_at, newest) = newest_slot(&file, reader.file_uuid())?
+            .ok_or_else(|| invalid("column file has no valid commit slot"))?;
         if newest.generation != reader.generation() {
             return Err(conflict(reader.generation(), newest.generation));
         }
@@ -63,7 +62,7 @@ impl ColumnFileUpdater {
             writer_id,
             expected_generation: newest.generation,
             target_slot,
-            cursor: high_water,
+            cursor: newest.dir_end(),
             previous: reader.columns().to_vec(),
             previous_content_id: newest.content_id,
             columns: Vec::new(),
@@ -158,31 +157,11 @@ impl ColumnFileUpdater {
             dir_offset,
             dir_len,
             fnv1a(&directory),
-            dir_offset + dir_len,
         );
         write_all_at(&self.file, &slot.to_bytes(), self.target_slot)?;
         self.file.sync_data()?;
         Ok(generation)
     }
-}
-
-type FoundSlot = Option<(u64, CommitSlot)>;
-
-fn newest_slot(file: &File, file_uuid: u128) -> io::Result<(FoundSlot, u64)> {
-    let mut newest: FoundSlot = None;
-    let mut high_water = 0u64;
-    for at in [SLOT_A, SLOT_B] {
-        let mut bytes = [0u8; CommitSlot::SIZE];
-        read_exact_at(file, &mut bytes, at)?;
-        let Some(slot) = CommitSlot::from_bytes(&bytes, file_uuid) else {
-            continue;
-        };
-        high_water = high_water.max(slot.high_water);
-        if newest.is_none_or(|(_, current)| slot.generation > current.generation) {
-            newest = Some((at, slot));
-        }
-    }
-    Ok((newest, high_water))
 }
 
 fn conflict(expected: u64, found: u64) -> io::Error {

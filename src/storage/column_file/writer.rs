@@ -87,7 +87,6 @@ impl<W: Write + Seek> ColumnFileWriter<W> {
             dir_offset,
             dir_len,
             fnv1a(&directory),
-            dir_offset + dir_len,
         );
         self.out.seek(SeekFrom::Start(SLOT_A))?;
         self.out.write_all(&slot.to_bytes())?;

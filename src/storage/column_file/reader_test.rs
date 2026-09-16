@@ -4,6 +4,7 @@ use std::path::Path;
 use super::*;
 use crate::storage::ColumnFileWriter;
 use crate::storage::arena::Arena;
+use crate::storage::column_file::HEAD_LEN;
 use crate::test_utils::{TempDir, flip_byte};
 
 #[test]
@@ -146,4 +147,80 @@ fn a_column_cannot_be_read_at_the_wrong_width() {
             .to_string()
             .contains("no column")
     );
+}
+
+#[test]
+fn a_commit_token_reads_without_touching_the_directory() {
+    let dir = TempDir::new("token");
+    let path = dir.join("values.dbs");
+
+    let device = WriterId::from_device_id("KRZH3XY-7PH4NJK-2WQ5LMC");
+    let mut values = Arena::<u32>::with_chunk_rows(4);
+    values.extend_from_slice(&(0..10).collect::<Vec<u32>>());
+    let mut writer = ColumnFileWriter::create(&path, device).unwrap();
+    writer.column("values", &values).unwrap();
+    writer.finish().unwrap();
+
+    let file = ColumnFile::open(&path).unwrap();
+    let token = ColumnFile::read_commit_token(&path).unwrap();
+    assert_eq!(token, file.commit_token());
+    assert_eq!(token.writer_id, device);
+    assert_eq!(token.generation, 1);
+    assert_eq!(token.file_uuid, file.file_uuid());
+
+    let dir_offset = file.column_meta("values").unwrap().byte_len() + HEAD_LEN;
+    flip_byte(&path, dir_offset);
+    assert!(
+        ColumnFile::open(&path).is_err(),
+        "the directory is unreadable"
+    );
+    assert_eq!(
+        ColumnFile::read_commit_token(&path).unwrap(),
+        token,
+        "but the token never read it"
+    );
+}
+
+#[test]
+fn a_token_tells_our_own_write_from_a_peers() {
+    let dir = TempDir::new("echo");
+    let path = dir.join("values.dbs");
+
+    let mine = WriterId::from_device_id("mine");
+    let peer = WriterId::from_device_id("peer");
+    let mut values = Arena::<u32>::with_chunk_rows(4);
+    values.extend_from_slice(&[1, 2, 3]);
+    let mut writer = ColumnFileWriter::create(&path, mine).unwrap();
+    writer.column("values", &values).unwrap();
+    writer.finish().unwrap();
+
+    let token = ColumnFile::read_commit_token(&path).unwrap();
+    assert!(token.is_echo_of(mine, 1));
+    assert!(!token.is_echo_of(peer, 1));
+
+    let file = ColumnFile::open(&path).unwrap();
+    let mut column = file.column::<u32>("values").unwrap();
+    column.try_set(0, 9).unwrap();
+    let mut updater = file.update(peer).unwrap();
+    updater.column("values", &column).unwrap();
+    updater.commit().unwrap();
+
+    let token = ColumnFile::read_commit_token(&path).unwrap();
+    assert!(!token.is_echo_of(mine, 1), "the peer moved it on");
+    assert_eq!(token.writer_id, peer);
+    assert_eq!(token.generation, 2);
+}
+
+#[test]
+fn a_token_needs_a_valid_slot() {
+    let dir = TempDir::new("token_empty");
+    let path = dir.join("bare.dbs");
+    std::fs::write(&path, vec![0u8; HEAD_LEN as usize]).unwrap();
+
+    let err = ColumnFile::read_commit_token(&path).unwrap_err();
+    assert!(err.to_string().contains("bad column file magic"), "{err}");
+
+    std::fs::write(&path, b"short").unwrap();
+    let err = ColumnFile::read_commit_token(&path).unwrap_err();
+    assert!(err.to_string().contains("too short"), "{err}");
 }
