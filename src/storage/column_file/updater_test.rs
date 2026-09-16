@@ -6,6 +6,7 @@ use crate::storage::ColumnFileWriter;
 use crate::storage::arena::Arena;
 use crate::storage::column_file::HEAD_LEN;
 use crate::test_utils::{TempDir, flip_byte};
+use proptest::prelude::*;
 
 fn this_device() -> WriterId {
     WriterId::from_device_id("KRZH3XY-7PH4NJK-2WQ5LMC")
@@ -603,5 +604,204 @@ fn the_debug_of_an_updater_names_its_generation_and_cursor() {
     let shown = format!("{:?}", file.update(this_device()).unwrap());
     for part in ["generation", "cursor", "columns"] {
         assert!(shown.contains(part), "{shown} is missing {part}");
+    }
+}
+
+struct Commit {
+    before: Vec<u8>,
+    after: Vec<u8>,
+    payload_and_directory: (usize, usize),
+    slot: (usize, usize),
+    mark: (usize, usize),
+}
+
+fn slot_at(image: &[u8], at: u64, file_uuid: u128) -> Option<CommitSlot> {
+    CommitSlot::from_bytes(&image[at as usize..][..CommitSlot::SIZE], file_uuid)
+}
+
+fn commit_over(path: &Path, values: &[u32]) -> Commit {
+    let before = std::fs::read(path).unwrap();
+    let file = ColumnFile::open(path).unwrap();
+    let file_uuid = file.file_uuid();
+
+    let was = slot_at(&before, SLOT_A, file_uuid)
+        .into_iter()
+        .chain(slot_at(&before, SLOT_B, file_uuid))
+        .max_by_key(|slot| slot.generation)
+        .unwrap();
+    let cursor0 = was.dir_end() as usize;
+
+    let mut column = Arena::<u32>::with_chunk_rows(4);
+    column.extend_from_slice(values).unwrap();
+    let mut updater = file.update(this_device()).unwrap();
+    updater.column("values", &column).unwrap();
+    let generation = updater.commit().unwrap();
+    assert!(
+        generation > was.generation,
+        "the commit changed nothing to replay"
+    );
+
+    let after = std::fs::read(path).unwrap();
+    let published = if slot_at(&before, SLOT_A, file_uuid).map(|slot| slot.generation)
+        == slot_at(&after, SLOT_A, file_uuid).map(|slot| slot.generation)
+    {
+        SLOT_B
+    } else {
+        SLOT_A
+    };
+    let now = slot_at(&after, published, file_uuid).unwrap();
+
+    Commit {
+        payload_and_directory: (cursor0, now.dir_end() as usize),
+        slot: (published as usize, published as usize + CommitSlot::SIZE),
+        mark: (
+            APPEND_MARK as usize,
+            APPEND_MARK as usize + AppendMark::SIZE,
+        ),
+        before,
+        after,
+    }
+}
+
+impl Commit {
+    fn groups(&self) -> [(usize, usize); 3] {
+        [self.payload_and_directory, self.slot, self.mark]
+    }
+
+    fn crashed(&self, reached: usize, durable: usize, fill: u8) -> Vec<u8> {
+        let groups = self.groups();
+        let mut image = self.before.clone();
+        image.resize(self.after.len(), fill);
+
+        for (group, (from, to)) in groups.iter().enumerate() {
+            let to = match group.cmp(&reached) {
+                std::cmp::Ordering::Less => *to,
+                std::cmp::Ordering::Equal => (*from + durable.min(to - from)).min(*to),
+                std::cmp::Ordering::Greater => *from,
+            };
+            image[*from..to].copy_from_slice(&self.after[*from..to]);
+        }
+
+        if reached == 0 {
+            let kept = self.payload_and_directory.0 + durable;
+            image.truncate(kept.max(self.before.len()).min(self.after.len()));
+        }
+        image
+    }
+}
+
+proptest! {
+    #[test]
+    fn a_commit_touches_only_the_payload_the_directory_its_slot_and_the_mark(
+        first in prop::collection::vec(0u32..100, 1..12),
+        second in prop::collection::vec(0u32..100, 1..12),
+    ) {
+        prop_assume!(first != second);
+
+        let dir = TempDir::new("commit_regions");
+        let path = dir.join("regions.dbs");
+        seed(&path, &first);
+
+        let commit = commit_over(&path, &second);
+        let groups = commit.groups();
+
+        for at in 0..commit.before.len() {
+            if commit.after[at] == commit.before[at] {
+                continue;
+            }
+            prop_assert!(
+                groups.iter().any(|(from, to)| at >= *from && at < *to),
+                "a commit changed byte {at}, which it never declared"
+            );
+        }
+    }
+
+    #[test]
+    fn a_reader_survives_every_prefix_of_a_commit(
+        first in prop::collection::vec(0u32..100, 1..10),
+        second in prop::collection::vec(0u32..100, 1..10),
+        reached in 0usize..3,
+        durable in 0usize..400,
+        fill in prop::sample::select(vec![0u8, 0xff]),
+    ) {
+        prop_assume!(first != second);
+
+        let dir = TempDir::new("crash_prefix");
+        let path = dir.join("live.dbs");
+        seed(&path, &first);
+        let commit = commit_over(&path, &second);
+
+        let crashed = dir.join("crashed.dbs");
+        std::fs::write(&crashed, commit.crashed(reached, durable, fill)).unwrap();
+
+        let Ok(file) = ColumnFile::open(&crashed) else {
+            return Ok(());
+        };
+        prop_assert!(
+            file.verify().is_ok(),
+            "a generation published across a crash must still check out"
+        );
+        prop_assert_eq!(
+            ColumnFile::read_commit_token(&crashed).unwrap(),
+            file.commit_token()
+        );
+
+        let column = file.column::<u32>("values").unwrap();
+        let seen: Vec<u32> = column
+            .iter()
+            .map(|row| row.map(|value| *value))
+            .collect::<Result<Vec<u32>>>()
+            .unwrap();
+
+        prop_assert!(
+            seen == first || seen == second,
+            "a crash left a blend: {seen:?} is neither {first:?} nor {second:?}"
+        );
+    }
+
+    #[test]
+    fn a_writer_that_follows_a_crash_never_overwrites_a_surviving_reader(
+        first in prop::collection::vec(0u32..100, 1..10),
+        second in prop::collection::vec(0u32..100, 1..10),
+        reached in 0usize..3,
+        durable in 0usize..400,
+    ) {
+        prop_assume!(first != second);
+
+        let dir = TempDir::new("crash_recover");
+        let path = dir.join("live.dbs");
+        seed(&path, &first);
+        let commit = commit_over(&path, &second);
+
+        let crashed = dir.join("crashed.dbs");
+        std::fs::write(&crashed, commit.crashed(reached, durable, 0)).unwrap();
+
+        let Ok(file) = ColumnFile::open(&crashed) else {
+            return Ok(());
+        };
+        let held = file.column::<u32>("values").unwrap();
+        let was: Vec<u32> = held
+            .iter()
+            .map(|row| row.map(|value| *value))
+            .collect::<Result<Vec<u32>>>()
+            .unwrap();
+
+        let mut next = Arena::<u32>::with_chunk_rows(4);
+        next.extend_from_slice(&[7, 7, 7, 7]).unwrap();
+        if let Ok(mut updater) = file.update(this_device()) {
+            updater.column("values", &next).unwrap();
+            let _ = updater.commit();
+        }
+
+        let still = held
+            .iter()
+            .map(|row| row.map(|value| *value))
+            .collect::<Result<Vec<u32>>>();
+
+        prop_assert_eq!(
+            still.as_deref().ok(),
+            Some(was.as_slice()),
+            "a commit after recovery moved bytes a live reader still points at"
+        );
     }
 }
