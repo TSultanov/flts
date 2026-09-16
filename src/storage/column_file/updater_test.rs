@@ -805,3 +805,106 @@ proptest! {
         );
     }
 }
+
+#[test]
+fn two_writers_cannot_hold_the_same_file_at_once() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier};
+
+    let dir = TempDir::new("flock");
+    let path = dir.join("locked.dbs");
+    seed(&path, &[1, 2, 3]);
+
+    let held = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let start = Arc::new(Barrier::new(4));
+
+    let mut writers = Vec::new();
+    for _ in 0..4 {
+        let path = path.clone();
+        let held = held.clone();
+        let peak = peak.clone();
+        let start = start.clone();
+
+        writers.push(std::thread::spawn(move || {
+            start.wait();
+            for _ in 0..25 {
+                let file = ColumnFile::open(&path).unwrap();
+                let updater = file.update(this_device()).unwrap();
+
+                let now = held.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                std::thread::yield_now();
+                held.fetch_sub(1, Ordering::SeqCst);
+
+                drop(updater);
+            }
+        }));
+    }
+    for writer in writers {
+        writer.join().unwrap();
+    }
+
+    assert_eq!(
+        peak.load(Ordering::SeqCst),
+        1,
+        "two updaters held the same file at once"
+    );
+}
+
+#[test]
+fn a_generation_at_its_ceiling_refuses_to_wrap() {
+    use crate::test_utils::column_file_bytes as model;
+
+    let dir = TempDir::new("generation_ceiling");
+    let path = dir.join("last.dbs");
+
+    let mut image = model::FileModel::of(vec![model::Column::of("values", 4, 4, &[4, 2])]);
+    image.generation = u64::MAX;
+    std::fs::write(&path, image.bytes()).unwrap();
+
+    let file = ColumnFile::open(&path).unwrap();
+    assert_eq!(file.generation(), u64::MAX);
+
+    let mut values = file.column::<u32>("values").unwrap();
+    values.set(0, 77).unwrap();
+
+    let mut updater = file.update(this_device()).unwrap();
+    updater.column("values", &values).unwrap();
+    let err = updater.commit().unwrap_err();
+
+    assert!(
+        err.to_string().contains("generation counter exhausted"),
+        "{err}"
+    );
+    assert_eq!(
+        ColumnFile::open(&path).unwrap().generation(),
+        u64::MAX,
+        "a refused commit must not publish anything"
+    );
+}
+
+#[test]
+fn a_column_added_in_an_update_is_readable_in_the_next_generation() {
+    let dir = TempDir::new("new_column");
+    let path = dir.join("grow.dbs");
+    seed(&path, &[1, 2, 3]);
+
+    let file = ColumnFile::open(&path).unwrap();
+    let values = file.column::<u32>("values").unwrap();
+    let mut labels = Arena::<u8>::with_chunk_rows(8);
+    let hello = labels.push_str("hello").unwrap();
+
+    let mut updater = file.update(this_device()).unwrap();
+    updater.column("values", &values).unwrap();
+    updater.column("labels", &labels).unwrap();
+    assert_eq!(updater.commit().unwrap(), 2);
+
+    let grown = ColumnFile::open(&path).unwrap();
+    grown.verify().unwrap();
+    assert_eq!(read_all(&path), vec![1, 2, 3]);
+    assert_eq!(
+        grown.column::<u8>("labels").unwrap().text(hello).unwrap(),
+        "hello"
+    );
+}

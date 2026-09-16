@@ -741,3 +741,38 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn a_column_read_from_many_threads_gives_every_thread_the_same_rows() {
+    use std::sync::Barrier;
+
+    for _ in 0..25 {
+        let (arena, source) = lazy_u32(40, 4);
+        let arena = Arc::new(arena);
+        let start = Arc::new(Barrier::new(8));
+
+        let mut readers = Vec::new();
+        for turn in 0..8 {
+            let arena = arena.clone();
+            let start = start.clone();
+
+            readers.push(std::thread::spawn(move || {
+                start.wait();
+                for at in 0..40usize {
+                    let at = (at + turn * 5) % 40;
+                    assert_eq!(arena.get(at).unwrap(), Some(&(at as u32)));
+                }
+            }));
+        }
+        for reader in readers {
+            reader.join().unwrap();
+        }
+
+        let reads = source.reads.load(Ordering::SeqCst);
+        assert!(
+            (10..=80).contains(&reads),
+            "10 chunks and 8 readers cannot account for {reads} source reads"
+        );
+        assert_eq!(arena.resident_chunks(), 10);
+    }
+}
