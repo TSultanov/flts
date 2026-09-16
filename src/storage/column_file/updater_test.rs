@@ -629,7 +629,7 @@ fn commit_over(path: &Path, values: &[u32]) -> Commit {
         .chain(slot_at(&before, SLOT_B, file_uuid))
         .max_by_key(|slot| slot.generation)
         .unwrap();
-    let cursor0 = was.dir_end() as usize;
+    let cursor0 = was.dir_end().unwrap() as usize;
 
     let mut column = Arena::<u32>::with_chunk_rows(4);
     column.extend_from_slice(values).unwrap();
@@ -652,7 +652,7 @@ fn commit_over(path: &Path, values: &[u32]) -> Commit {
     let now = slot_at(&after, published, file_uuid).unwrap();
 
     Commit {
-        payload_and_directory: (cursor0, now.dir_end() as usize),
+        payload_and_directory: (cursor0, now.dir_end().unwrap() as usize),
         slot: (published as usize, published as usize + CommitSlot::SIZE),
         mark: (
             APPEND_MARK as usize,
@@ -907,4 +907,32 @@ fn a_column_added_in_an_update_is_readable_in_the_next_generation() {
         grown.column::<u8>("labels").unwrap().text(hello).unwrap(),
         "hello"
     );
+}
+
+#[test]
+fn a_slot_whose_directory_cannot_fit_the_offsets_is_damage_not_a_failed_write() {
+    let dir = TempDir::new("overflowing_slot");
+    let path = dir.join("overflow.dbs");
+    seed(&path, &[1, 2, 3]);
+
+    let file = ColumnFile::open(&path).unwrap();
+    let lying = CommitSlot::new(
+        file.generation(),
+        file.content_id(),
+        file.file_uuid(),
+        file.writer_id(),
+        u64::MAX - 4,
+        100,
+        0,
+    );
+    let handle = File::options().write(true).open(&path).unwrap();
+    write_all_at(&handle, &lying.to_bytes(), SLOT_A).unwrap();
+    drop(handle);
+
+    let err = file.update(this_device()).unwrap_err();
+    assert!(
+        err.is_corrupt(),
+        "a caller cannot retry its way out of this: {err}"
+    );
+    assert!(err.to_string().contains("directory ends past"), "{err}");
 }

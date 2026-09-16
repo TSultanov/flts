@@ -61,8 +61,8 @@ impl CommitSlot {
         bytes
     }
 
-    pub(super) fn dir_end(self) -> u64 {
-        self.dir_offset.saturating_add(self.dir_len)
+    pub(super) fn dir_end(self) -> Option<u64> {
+        self.dir_offset.checked_add(self.dir_len)
     }
 
     pub(super) fn token(self) -> CommitToken {

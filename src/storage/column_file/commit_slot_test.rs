@@ -215,7 +215,7 @@ proptest! {
 
 proptest! {
     #[test]
-    fn a_directory_never_ends_before_it_starts(dir_offset: u64, dir_len: u64) {
+    fn a_directory_that_cannot_fit_the_offsets_has_no_end(dir_offset: u64, dir_len: u64) {
         let slot = CommitSlot::new(
             1,
             0,
@@ -226,10 +226,7 @@ proptest! {
             0,
         );
 
-        match dir_offset.checked_add(dir_len) {
-            Some(end) => prop_assert_eq!(slot.dir_end(), end),
-            None => prop_assert_eq!(slot.dir_end(), u64::MAX),
-        }
-        prop_assert!(slot.dir_end() >= dir_offset);
+        prop_assert_eq!(slot.dir_end(), dir_offset.checked_add(dir_len));
+        prop_assert!(slot.dir_end().is_none_or(|end| end >= dir_offset));
     }
 }

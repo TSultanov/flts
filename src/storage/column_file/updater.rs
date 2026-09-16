@@ -57,9 +57,15 @@ impl ColumnFileUpdater {
         }
         let target_slot = if newest_at == SLOT_A { SLOT_B } else { SLOT_A };
 
+        let dir_end = newest.dir_end().ok_or_else(|| {
+            Error::corrupt(
+                "commit slot",
+                "directory ends past the end of the file offsets",
+            )
+        })?;
         let cursor = match read_append_mark(&file, reader.file_uuid())? {
-            Some(mark) => newest.dir_end().max(mark.append_from),
-            None => newest.dir_end().max(file.metadata()?.len()),
+            Some(mark) => dir_end.max(mark.append_from),
+            None => dir_end.max(file.metadata()?.len()),
         }
         .max(HEAD_LEN);
 
