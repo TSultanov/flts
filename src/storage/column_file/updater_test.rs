@@ -749,7 +749,7 @@ proptest! {
         let column = file.column::<u32>("values").unwrap();
         let seen: Vec<u32> = column
             .iter()
-            .map(|row| row.map(|value| *value))
+            .map(|row| row.copied())
             .collect::<Result<Vec<u32>>>()
             .unwrap();
 
@@ -782,7 +782,7 @@ proptest! {
         let held = file.column::<u32>("values").unwrap();
         let was: Vec<u32> = held
             .iter()
-            .map(|row| row.map(|value| *value))
+            .map(|row| row.copied())
             .collect::<Result<Vec<u32>>>()
             .unwrap();
 
@@ -795,7 +795,7 @@ proptest! {
 
         let still = held
             .iter()
-            .map(|row| row.map(|value| *value))
+            .map(|row| row.copied())
             .collect::<Result<Vec<u32>>>();
 
         prop_assert_eq!(
