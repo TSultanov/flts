@@ -1,6 +1,9 @@
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use crate::test_utils::props;
+use proptest::prelude::*;
+
 use crate::error::Result;
 struct CountingSource {
     chunks: Vec<Vec<u8>>,
@@ -43,6 +46,7 @@ fn lazy_u32(rows: u32, chunk_rows: usize) -> (Arena<u32>, Arc<CountingSource>) {
 
 #[test]
 fn chunk_rows_target_a_fixed_byte_budget() {
+    assert_eq!(TARGET_CHUNK_BYTES, 65_536);
     assert_eq!(default_chunk_rows(1), TARGET_CHUNK_BYTES);
     assert_eq!(default_chunk_rows(8), TARGET_CHUNK_BYTES / 8);
     assert_eq!(default_chunk_rows(TARGET_CHUNK_BYTES * 2), 1);
@@ -429,6 +433,7 @@ fn provenance_identifies_the_source_and_generation() {
 
     let provenance = arena.provenance().unwrap();
     assert_eq!(provenance.generation(), 1);
+    assert_eq!(Provenance::new(source.clone(), 7).generation(), 7);
     assert!(provenance.is_from(&same, 1));
     assert!(
         !provenance.is_from(&same, 2),
@@ -457,4 +462,282 @@ fn setting_past_the_end_is_a_caller_bug() {
         .extend_from_slice(&(0..9).collect::<Vec<u32>>())
         .unwrap();
     let _ = arena.set(99, 0);
+}
+
+#[test]
+fn an_arena_is_empty_only_before_anything_is_pushed() {
+    let mut arena = Arena::<u32>::new();
+    assert!(arena.is_empty());
+    arena.push(1).unwrap();
+    assert!(!arena.is_empty());
+}
+
+#[test]
+fn the_debug_of_an_arena_names_its_shape_and_residency() {
+    let (arena, _) = lazy_u32(10, 4);
+    let shown = format!("{arena:?}");
+    for part in ["rows", "10", "chunk_rows", "chunks", "resident", "lazy"] {
+        assert!(shown.contains(part), "{shown} is missing {part}");
+    }
+}
+
+#[derive(Clone, Debug)]
+enum ArenaStep {
+    Push(u32),
+    Extend(Vec<u32>),
+    Set(prop::sample::Index, u32),
+    FreezeClone,
+}
+
+fn arena_step() -> impl Strategy<Value = ArenaStep> {
+    prop_oneof![
+        4 => any::<u32>().prop_map(ArenaStep::Push),
+        3 => prop::collection::vec(any::<u32>(), 0..12).prop_map(ArenaStep::Extend),
+        3 => (any::<prop::sample::Index>(), any::<u32>())
+                .prop_map(|(at, value)| ArenaStep::Set(at, value)),
+        1 => Just(ArenaStep::FreezeClone),
+    ]
+}
+
+proptest! {
+    #[test]
+    fn an_arena_behaves_like_the_vector_it_models(
+        chunk_rows in props::chunk_rows(),
+        steps in prop::collection::vec(arena_step(), 0..40),
+    ) {
+        let mut arena = Arena::<u32>::with_chunk_rows(chunk_rows);
+        let mut model: Vec<u32> = Vec::new();
+        let mut frozen: Vec<(Arena<u32>, Vec<u32>)> = Vec::new();
+
+        for step in steps {
+            match step {
+                ArenaStep::Push(value) => {
+                    prop_assert_eq!(arena.push(value).unwrap(), model.len());
+                    model.push(value);
+                }
+                ArenaStep::Extend(values) => {
+                    arena.extend_from_slice(&values).unwrap();
+                    model.extend_from_slice(&values);
+                }
+                ArenaStep::Set(at, value) => {
+                    if model.is_empty() {
+                        continue;
+                    }
+                    let at = at.index(model.len());
+                    arena.set(at, value).unwrap();
+                    model[at] = value;
+                }
+                ArenaStep::FreezeClone => frozen.push((arena.clone(), model.clone())),
+            }
+
+            prop_assert_eq!(arena.len(), model.len());
+            prop_assert_eq!(arena.is_empty(), model.is_empty());
+            prop_assert_eq!(arena.chunk_count(), model.len().div_ceil(chunk_rows));
+            prop_assert_eq!(arena.get(model.len()).unwrap(), None);
+            for (at, want) in model.iter().enumerate() {
+                prop_assert_eq!(arena.get(at).unwrap(), Some(want));
+            }
+        }
+
+        for (snapshot, want) in frozen {
+            prop_assert_eq!(snapshot.len(), want.len());
+            for (at, value) in want.iter().enumerate() {
+                prop_assert_eq!(snapshot.get(at).unwrap(), Some(value));
+            }
+        }
+    }
+
+    #[test]
+    fn every_range_agrees_with_the_rows_it_spans(
+        chunk_rows in props::chunk_rows(),
+        values in prop::collection::vec(any::<u32>(), 0..80),
+        from in any::<prop::sample::Index>(),
+        span in any::<prop::sample::Index>(),
+    ) {
+        let mut arena = Arena::<u32>::with_chunk_rows(chunk_rows);
+        arena.extend_from_slice(&values).unwrap();
+
+        let start = from.index(values.len() + 1);
+        let len = span.index(values.len() - start + 1);
+        let got = arena.range(start, len).unwrap();
+
+        prop_assert_eq!(got.as_ref(), &values[start..start + len]);
+
+        let within_one_chunk = len == 0 || start / chunk_rows == (start + len - 1) / chunk_rows;
+        prop_assert_eq!(matches!(got, Cow::Borrowed(_)), within_one_chunk);
+    }
+}
+
+fn lazy_from_rows(rows: &[u32], chunk_rows: usize, corrupt: Option<usize>) -> Result<Arena<u32>> {
+    let mut chunks = Vec::new();
+    let mut locations = Vec::new();
+    for &count in rows {
+        let bytes = vec![0u8; count as usize * size_of::<u32>()];
+        locations.push(ChunkLoc {
+            offset: chunks.len() as u64,
+            byte_len: bytes.len() as u32,
+            rows: count,
+            fnv: fnv1a(&bytes),
+        });
+        chunks.push(bytes);
+    }
+
+    if let Some(at) = corrupt {
+        locations[at].fnv ^= 0xffff;
+    }
+
+    let source = Arc::new(CountingSource {
+        chunks,
+        reads: AtomicUsize::new(0),
+    });
+    Arena::from_locations(locations, chunk_rows, Provenance::new(source, 1))
+}
+
+proptest! {
+    #[test]
+    fn a_lazy_arena_refuses_a_geometry_its_own_reader_could_not_index(
+        chunk_rows in 1usize..8,
+        rows in prop::collection::vec(0u32..12, 0..5),
+    ) {
+        let last = rows.len().saturating_sub(1);
+        let indexable = rows.iter().enumerate().all(|(at, &count)| {
+            let count = count as usize;
+            if at == last { count <= chunk_rows } else { count == chunk_rows }
+        });
+
+        match lazy_from_rows(&rows, chunk_rows, None) {
+            Ok(arena) => {
+                prop_assert!(indexable);
+                for at in 0..arena.len() {
+                    prop_assert!(arena.get(at).unwrap().is_some());
+                }
+            }
+            Err(err) => {
+                prop_assert!(!indexable);
+                prop_assert!(err.is_corrupt());
+            }
+        }
+    }
+
+    #[test]
+    fn a_blob_that_points_outside_the_arena_is_an_error_not_a_panic(
+        text in prop::collection::vec(any::<u8>(), 0..40),
+        start in props::interesting_u64(),
+        len in props::interesting_u32(),
+    ) {
+        let mut arena = Arena::<u8>::with_chunk_rows(8);
+        arena.extend_from_slice(&text).unwrap();
+
+        let blob = Blob::new(start, len);
+        let inside = start
+            .checked_add(u64::from(len))
+            .is_some_and(|end| end <= text.len() as u64);
+
+        match arena.bytes(blob) {
+            Ok(bytes) => {
+                prop_assert!(inside);
+                let at = start as usize;
+                prop_assert_eq!(bytes.as_ref(), &text[at..at + len as usize]);
+            }
+            Err(err) => prop_assert!(!inside && err.is_corrupt()),
+        }
+    }
+}
+
+proptest! {
+    #[test]
+    fn text_pushed_into_a_byte_arena_reads_back_whole_across_chunk_boundaries(
+        chunk_rows in 1usize..12,
+        texts in prop::collection::vec(".{0,20}", 0..8),
+    ) {
+        let mut arena = Arena::<u8>::with_chunk_rows(chunk_rows);
+        let blobs: Vec<Blob> = texts
+            .iter()
+            .map(|text| arena.push_str(text).unwrap())
+            .collect();
+
+        for (blob, want) in blobs.iter().zip(&texts) {
+            let text = arena.text(*blob).unwrap();
+            let bytes = arena.bytes(*blob).unwrap();
+            prop_assert_eq!(text.as_ref(), want.as_str());
+            prop_assert_eq!(bytes.as_ref(), want.as_bytes());
+        }
+    }
+
+    #[test]
+    fn default_chunk_rows_keeps_every_chunk_inside_the_byte_budget(
+        elem_size in 0usize..=TARGET_CHUNK_BYTES * 2,
+    ) {
+        let rows = default_chunk_rows(elem_size);
+        prop_assert!(rows >= 1);
+        if elem_size > 0 && rows > 1 {
+            prop_assert!(rows * elem_size <= TARGET_CHUNK_BYTES);
+        }
+    }
+
+    #[test]
+    fn reading_a_chunk_costs_exactly_one_source_read_no_matter_how_many_views_share_it(
+        rows in 1u32..40,
+        chunk_rows in 1usize..8,
+        touches in prop::collection::vec(any::<prop::sample::Index>(), 1..12),
+    ) {
+        let (arena, source) = lazy_u32(rows, chunk_rows);
+        let shared = arena.clone();
+        let mut faulted = std::collections::HashSet::new();
+
+        for (turn, at) in touches.iter().enumerate() {
+            let at = at.index(rows as usize);
+            let view = if turn.is_multiple_of(2) { &arena } else { &shared };
+            prop_assert_eq!(view.get(at).unwrap(), Some(&(at as u32)));
+            faulted.insert(at / chunk_rows);
+        }
+
+        prop_assert_eq!(source.reads.load(Ordering::SeqCst), faulted.len());
+    }
+
+    #[test]
+    fn a_chunk_that_fails_its_checksum_is_never_decoded(
+        chunk_rows in 1usize..8,
+        chunks in 1usize..5,
+        bad in any::<prop::sample::Index>(),
+    ) {
+        let rows = vec![chunk_rows as u32; chunks];
+        let bad = bad.index(chunks);
+        let arena = lazy_from_rows(&rows, chunk_rows, Some(bad)).unwrap();
+
+        for at in 0..arena.len() {
+            let read = arena.get(at);
+            if at / chunk_rows == bad {
+                prop_assert!(read.unwrap_err().is_corrupt());
+            } else {
+                prop_assert!(read.is_ok());
+            }
+        }
+
+        prop_assert!(arena.prefetch().is_err());
+        prop_assert!(arena.chunk_bytes(bad).unwrap_err().is_corrupt());
+    }
+
+    #[test]
+    fn chunk_bytes_round_trips_every_chunk_whether_it_is_resident_or_not(
+        rows in 0u32..40,
+        chunk_rows in 1usize..8,
+        read_first in any::<bool>(),
+    ) {
+        let (arena, _) = lazy_u32(rows, chunk_rows);
+        if read_first {
+            arena.prefetch().unwrap();
+        }
+
+        for at in 0..arena.chunk_count() {
+            let bytes = arena.chunk_bytes(at).unwrap();
+            let decoded: Vec<u32> = bytes
+                .as_chunks::<{ size_of::<u32>() }>()
+                .0
+                .iter()
+                .map(|four| u32::from_le_bytes(*four))
+                .collect();
+            prop_assert_eq!(decoded.as_slice(), arena.chunk(at).unwrap());
+        }
+    }
 }

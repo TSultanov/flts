@@ -206,13 +206,18 @@ impl<T: Record> Arena<T> {
         let mut len = 0usize;
         for (index, loc) in locations.iter().enumerate() {
             let last = index + 1 == locations.len();
-            if !last && loc.rows as usize != chunk_rows {
+            let rows = loc.rows as usize;
+            let fits = if last {
+                rows <= chunk_rows
+            } else {
+                rows == chunk_rows
+            };
+            if !fits {
                 return Err(Error::corrupt(
                     "chunk",
                     format!(
-                        "chunk {index} holds {} rows, expected {chunk_rows}; \
-                         only the last chunk may be short",
-                        loc.rows
+                        "chunk {index} holds {rows} rows, expected {chunk_rows}; \
+                         only the last chunk may be short"
                     ),
                 ));
             }
@@ -412,6 +417,21 @@ impl Arena<u8> {
     }
 
     pub fn bytes(&self, blob: Blob) -> Result<Cow<'_, [u8]>> {
+        let within = blob
+            .start
+            .checked_add(u64::from(blob.len))
+            .is_some_and(|end| end <= self.len() as u64);
+        if !within {
+            return Err(Error::corrupt(
+                "blob",
+                format!(
+                    "blob at {} for {} bytes runs past the {} the column holds",
+                    blob.start,
+                    blob.len,
+                    self.len()
+                ),
+            ));
+        }
         self.range(blob.start as usize, blob.len as usize)
     }
 

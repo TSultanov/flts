@@ -11,6 +11,14 @@ pub fn scaled(divisor: u32) -> Config {
     }
 }
 
+pub fn chunk_rows() -> impl Strategy<Value = usize> {
+    prop_oneof![
+        3 => 1usize..=4,
+        3 => 5usize..=16,
+        1 => Just(64usize),
+    ]
+}
+
 pub fn interesting_u64() -> impl Strategy<Value = u64> {
     prop_oneof![
         6 => any::<u64>(),
