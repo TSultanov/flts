@@ -1,14 +1,15 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! Disk-backed columnar storage with copy-on-write frozen views.
+
+pub mod id;
+pub mod record;
+pub mod storage;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+mod test_utils;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use id::Id;
+pub use record::Record;
+pub use storage::{
+    Arena, Blob, ChunkLoc, ChunkSource, ColumnFile, ColumnFileWriter, ColumnMeta,
+    default_chunk_rows, fnv1a,
+};

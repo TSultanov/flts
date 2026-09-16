@@ -1,0 +1,70 @@
+//! A `ChunkSource` backed by a file, read by offset.
+
+use std::fs::File;
+use std::io;
+use std::path::Path;
+
+use crate::storage::arena::{ChunkLoc, ChunkSource};
+
+pub(super) struct FileSource {
+    file: File,
+}
+
+impl FileSource {
+    pub(super) fn open(path: impl AsRef<Path>) -> io::Result<Self> {
+        Ok(Self {
+            file: File::open(path)?,
+        })
+    }
+
+    pub(super) fn len(&self) -> io::Result<u64> {
+        Ok(self.file.metadata()?.len())
+    }
+
+    pub(super) fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<()> {
+        read_exact_at(&self.file, buf, offset)
+    }
+}
+
+impl ChunkSource for FileSource {
+    fn read_chunk(&self, loc: ChunkLoc) -> io::Result<Vec<u8>> {
+        let mut buf = vec![0u8; loc.byte_len as usize];
+        self.read_at(&mut buf, loc.offset)?;
+        Ok(buf)
+    }
+}
+
+#[cfg(unix)]
+fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    file.read_exact_at(buf, offset)
+}
+
+#[cfg(windows)]
+fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+    use std::os::windows::fs::FileExt;
+    let mut rest = buf;
+    let mut at = offset;
+    while !rest.is_empty() {
+        match file.seek_read(rest, at) {
+            Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "short chunk read",
+                ));
+            }
+            Ok(read) => {
+                let tail = rest;
+                rest = &mut tail[read..];
+                at += read as u64;
+            }
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "file_source_test.rs"]
+mod file_source_test;
