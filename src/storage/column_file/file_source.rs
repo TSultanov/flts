@@ -53,23 +53,22 @@ pub(super) fn write_all_at(file: &File, buf: &[u8], offset: u64) -> Result<()> {
 
 #[cfg(windows)]
 pub(super) fn write_all_at(file: &File, buf: &[u8], offset: u64) -> Result<()> {
+    use std::io::{Error, ErrorKind};
     use std::os::windows::fs::FileExt;
+
     let mut rest = buf;
     let mut at = offset;
     while !rest.is_empty() {
         match file.seek_write(rest, at) {
             Ok(0) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::WriteZero,
-                    "short positioned write",
-                ));
+                return Err(Error::new(ErrorKind::WriteZero, "short positioned write").into());
             }
             Ok(written) => {
                 rest = &rest[written..];
                 at += written as u64;
             }
-            Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
-            Err(err) => return Err(err),
+            Err(err) if err.kind() == ErrorKind::Interrupted => {}
+            Err(err) => return Err(err.into()),
         }
     }
     Ok(())
@@ -83,24 +82,23 @@ pub(super) fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> Result<
 
 #[cfg(windows)]
 pub(super) fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> Result<()> {
+    use std::io::{Error, ErrorKind};
     use std::os::windows::fs::FileExt;
+
     let mut rest = buf;
     let mut at = offset;
     while !rest.is_empty() {
         match file.seek_read(rest, at) {
             Ok(0) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "short chunk read",
-                ));
+                return Err(Error::new(ErrorKind::UnexpectedEof, "short chunk read").into());
             }
             Ok(read) => {
-                let tail = rest;
-                rest = &mut tail[read..];
+                let (_, tail) = std::mem::take(&mut rest).split_at_mut(read);
+                rest = tail;
                 at += read as u64;
             }
-            Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
-            Err(err) => return Err(err),
+            Err(err) if err.kind() == ErrorKind::Interrupted => {}
+            Err(err) => return Err(err.into()),
         }
     }
     Ok(())

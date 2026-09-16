@@ -17,7 +17,18 @@ set -uo pipefail
 
 cd "$(dirname "$0")/.."
 
-PROPTEST_CASES="${PROPTEST_CASES:-64}" cargo mutants -j 6 "$@"
+# A mutant can make a test allocate without bound. One in the arena's byte path
+# reached 18 GB resident and tripped the kernel OOM killer, which took the whole
+# sweep down with it -- three times, because a cgroup cap kills the sweep rather
+# than the runaway.
+#
+# ulimit -v is inherited by every child, so the test binary dies on its own
+# failed allocation and cargo-mutants records the mutant as caught, which is the
+# honest outcome: a mutation that exhausts memory is one the suite detected.
+# rustc builds comfortably inside the same cap.
+ulimit -v "${DBSYNC_MUTANTS_VMAX:-16000000}"
+
+PROPTEST_CASES="${PROPTEST_CASES:-64}" cargo mutants -j "${DBSYNC_MUTANTS_JOBS:-4}" "$@"
 swept=$?
 
 case "$swept" in

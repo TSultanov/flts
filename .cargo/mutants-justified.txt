@@ -1,0 +1,33 @@
+# Mutants that survive for a reason, one description per line.
+#
+# scripts/mutants.sh fails on a survivor missing from this list AND on an entry
+# here that no longer survives, so a reason that has gone stale is caught rather
+# than quietly kept.
+
+# The cfg(windows) positioned-read and positioned-write loops. Mutating them
+# changes nothing on this platform because they are never compiled here, so no
+# test can reach them -- they are unkillable by construction, not untested.
+#
+# They do now compile: cargo check --target x86_64-pc-windows-msvc passes, which
+# it did not before this list existed (8 errors -- a missing io import, two
+# io::Error values returned where crate::Result was expected, and a borrow the
+# reader could not have satisfied). Verify it that way before trusting them.
+#
+# A Windows CI job would make every one of these killable, and the staleness
+# check would then say so.
+src/storage/column_file/file_source.rs:100:25: replace match guard err.kind() == ErrorKind::Interrupted with false in read_exact_at
+src/storage/column_file/file_source.rs:100:25: replace match guard err.kind() == ErrorKind::Interrupted with true in read_exact_at
+src/storage/column_file/file_source.rs:100:36: replace == with != in read_exact_at
+src/storage/column_file/file_source.rs:56:5: replace write_all_at -> Result<()> with Err(crate::error::Error::invalid("mutant"))
+src/storage/column_file/file_source.rs:56:5: replace write_all_at -> Result<()> with Ok(())
+src/storage/column_file/file_source.rs:61:11: delete ! in write_all_at
+src/storage/column_file/file_source.rs:68:20: replace += with *= in write_all_at
+src/storage/column_file/file_source.rs:68:20: replace += with -= in write_all_at
+src/storage/column_file/file_source.rs:70:25: replace match guard err.kind() == ErrorKind::Interrupted with false in write_all_at
+src/storage/column_file/file_source.rs:70:25: replace match guard err.kind() == ErrorKind::Interrupted with true in write_all_at
+src/storage/column_file/file_source.rs:70:36: replace == with != in write_all_at
+src/storage/column_file/file_source.rs:85:5: replace read_exact_at -> Result<()> with Err(crate::error::Error::invalid("mutant"))
+src/storage/column_file/file_source.rs:85:5: replace read_exact_at -> Result<()> with Ok(())
+src/storage/column_file/file_source.rs:90:11: delete ! in read_exact_at
+src/storage/column_file/file_source.rs:98:20: replace += with *= in read_exact_at
+src/storage/column_file/file_source.rs:98:20: replace += with -= in read_exact_at
