@@ -2,10 +2,11 @@
 
 use std::io;
 
-use super::HEADER_LEN;
+use super::HEAD_LEN;
 use super::codec::Codec;
 use super::cursor::Cursor;
 use crate::storage::arena::{ChunkLoc, invalid};
+use crate::storage::hash::fnv1a;
 
 #[derive(Clone, Debug)]
 pub struct ColumnMeta {
@@ -21,6 +22,24 @@ impl ColumnMeta {
     pub fn byte_len(&self) -> u64 {
         self.chunks.iter().map(|chunk| chunk.byte_len as u64).sum()
     }
+}
+
+pub(super) fn content_id(columns: &[ColumnMeta]) -> u64 {
+    let mut bytes = Vec::new();
+    for column in columns {
+        bytes.extend_from_slice(&(column.name.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(column.name.as_bytes());
+        bytes.extend_from_slice(&column.elem_size.to_le_bytes());
+        bytes.extend_from_slice(&column.chunk_rows.to_le_bytes());
+        bytes.extend_from_slice(&column.rows.to_le_bytes());
+        bytes.push(column.codec as u8);
+        bytes.extend_from_slice(&(column.chunks.len() as u32).to_le_bytes());
+        for chunk in &column.chunks {
+            bytes.extend_from_slice(&chunk.rows.to_le_bytes());
+            bytes.extend_from_slice(&chunk.fnv.to_le_bytes());
+        }
+    }
+    fnv1a(&bytes)
 }
 
 pub(super) fn write_directory(columns: &[ColumnMeta]) -> Vec<u8> {
@@ -65,7 +84,10 @@ pub(super) fn read_directory(bytes: &[u8], dir_offset: u64) -> io::Result<Vec<Co
                 rows: cursor.u32()?,
                 fnv: cursor.u64()?,
             };
-            if loc.offset < HEADER_LEN || loc.offset + loc.byte_len as u64 > dir_offset {
+            let end = loc.offset.checked_add(loc.byte_len as u64).ok_or_else(|| {
+                invalid(format!("column {name:?} has a chunk range that overflows"))
+            })?;
+            if loc.offset < HEAD_LEN || end > dir_offset {
                 return Err(invalid(format!(
                     "column {name:?} points a chunk outside the payload region"
                 )));
@@ -81,7 +103,32 @@ pub(super) fn read_directory(bytes: &[u8], dir_offset: u64) -> io::Result<Vec<Co
             chunks,
         });
     }
+    check_disjoint(&columns)?;
     Ok(columns)
+}
+
+fn check_disjoint(columns: &[ColumnMeta]) -> io::Result<()> {
+    let mut ranges: Vec<(u64, u64, &str)> = Vec::new();
+    for column in columns {
+        for chunk in &column.chunks {
+            if chunk.byte_len > 0 {
+                let end = chunk.offset + chunk.byte_len as u64;
+                ranges.push((chunk.offset, end, column.name.as_str()));
+            }
+        }
+    }
+    ranges.sort_by_key(|(start, _, _)| *start);
+
+    for pair in ranges.windows(2) {
+        let (_, previous_end, previous) = pair[0];
+        let (start, _, current) = pair[1];
+        if start < previous_end {
+            return Err(invalid(format!(
+                "chunks of {previous:?} and {current:?} overlap at offset {start}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

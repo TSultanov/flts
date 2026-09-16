@@ -35,7 +35,8 @@ fn lazy_u32(rows: u32, chunk_rows: usize) -> (Arena<u32>, Arc<CountingSource>) {
         chunks,
         reads: AtomicUsize::new(0),
     });
-    let arena = Arena::from_locations(locations, chunk_rows, source.clone()).unwrap();
+    let arena =
+        Arena::from_locations(locations, chunk_rows, Provenance::new(source.clone(), 1)).unwrap();
     (arena, source)
 }
 
@@ -205,7 +206,7 @@ fn a_corrupt_chunk_is_rejected_rather_than_decoded() {
             .collect(),
         reads: AtomicUsize::new(0),
     });
-    let tampered = Arena::<u32>::from_locations(locations, 4, source).unwrap();
+    let tampered = Arena::<u32>::from_locations(locations, 4, Provenance::new(source, 1)).unwrap();
 
     let err = tampered.try_get(0).unwrap_err();
     assert_eq!(err.kind(), io::ErrorKind::InvalidData);
@@ -232,7 +233,9 @@ fn chunk_geometry_is_validated_when_a_lazy_arena_is_built() {
             fnv: 0,
         },
     ];
-    let err = Arena::<u32>::from_locations(short_in_the_middle, 4, source.clone()).unwrap_err();
+    let err =
+        Arena::<u32>::from_locations(short_in_the_middle, 4, Provenance::new(source.clone(), 1))
+            .unwrap_err();
     assert!(
         err.to_string().contains("only the last chunk may be short"),
         "{err}"
@@ -244,7 +247,7 @@ fn chunk_geometry_is_validated_when_a_lazy_arena_is_built() {
         rows: 2,
         fnv: 0,
     }];
-    let err = Arena::<u32>::from_locations(wrong_width, 4, source).unwrap_err();
+    let err = Arena::<u32>::from_locations(wrong_width, 4, Provenance::new(source, 1)).unwrap_err();
     assert!(err.to_string().contains("bytes for"), "{err}");
 }
 
@@ -330,7 +333,7 @@ fn a_corrupt_chunk_is_not_laundered_into_a_new_file() {
         chunks,
         reads: AtomicUsize::new(0),
     });
-    let arena = Arena::<u32>::from_locations(locations, 4, source).unwrap();
+    let arena = Arena::<u32>::from_locations(locations, 4, Provenance::new(source, 1)).unwrap();
 
     let err = arena.chunk_bytes(0).unwrap_err();
     assert!(err.to_string().contains("failed checksum"), "{err}");
@@ -379,4 +382,54 @@ fn taking_owned_rows_twice_is_idempotent() {
     let cell = Arc::make_mut(&mut arena.chunks[0]);
     assert_eq!(cell.owned_rows().as_slice(), &[111, 222, 333, 3]);
     assert_eq!(cell.owned_rows().as_slice(), &[111, 222, 333, 3]);
+}
+
+#[test]
+fn reading_a_chunk_does_not_cost_it_its_reusable_location() {
+    let (arena, _) = lazy_u32(10, 4);
+    assert!(arena.reusable_loc(0).is_some());
+
+    arena.try_get(0).unwrap();
+    assert_eq!(arena.resident_chunks(), 1);
+    assert!(
+        arena.reusable_loc(0).is_some(),
+        "a chunk that was only read is unchanged on disk"
+    );
+    assert!(
+        arena.chunks[0].still_on_disk().is_none(),
+        "but disk is no longer the cheapest way to get its bytes"
+    );
+}
+
+#[test]
+fn a_mutated_chunk_has_no_reusable_location() {
+    let (mut arena, _) = lazy_u32(10, 4);
+    arena.prefetch().unwrap();
+    assert!(arena.reusable_loc(0).is_some());
+
+    arena.try_set(0, 5).unwrap();
+    assert!(arena.reusable_loc(0).is_none());
+    assert!(arena.reusable_loc(1).is_some());
+    assert!(arena.reusable_loc(99).is_none());
+}
+
+#[test]
+fn provenance_identifies_the_source_and_generation() {
+    let (arena, source) = lazy_u32(10, 4);
+    let same: Arc<dyn ChunkSource> = source.clone();
+    let other: Arc<dyn ChunkSource> = Arc::new(CountingSource {
+        chunks: Vec::new(),
+        reads: AtomicUsize::new(0),
+    });
+
+    let provenance = arena.provenance().unwrap();
+    assert_eq!(provenance.generation(), 1);
+    assert!(provenance.is_from(&same, 1));
+    assert!(
+        !provenance.is_from(&same, 2),
+        "a later generation is not ours"
+    );
+    assert!(!provenance.is_from(&other, 1), "another file is not ours");
+
+    assert!(Arena::<u32>::new().provenance().is_none());
 }

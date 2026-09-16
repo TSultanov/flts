@@ -10,6 +10,6 @@ mod test_utils;
 pub use id::Id;
 pub use record::Record;
 pub use storage::{
-    Arena, Blob, ChunkLoc, ChunkSource, ColumnFile, ColumnFileWriter, ColumnMeta,
-    default_chunk_rows, fnv1a,
+    Arena, Blob, ChunkLoc, ChunkSource, ColumnFile, ColumnFileUpdater, ColumnFileWriter,
+    ColumnMeta, WriterId, default_chunk_rows, fnv1a,
 };

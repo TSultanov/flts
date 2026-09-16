@@ -13,7 +13,7 @@ fn a_column_read_from_disk_can_be_appended_to_without_reading_the_rest() {
 
     let mut values = Arena::<u32>::with_chunk_rows(4);
     values.extend_from_slice(&(0..10).collect::<Vec<u32>>());
-    let mut writer = ColumnFileWriter::create(&path).unwrap();
+    let mut writer = ColumnFileWriter::create(&path, WriterId::ANONYMOUS).unwrap();
     writer.column("values", &values).unwrap();
     writer.finish().unwrap();
 
@@ -44,7 +44,7 @@ fn a_flipped_byte_in_a_chunk_is_caught_on_read_not_on_open() {
 
     let mut values = Arena::<u32>::with_chunk_rows(4);
     values.extend_from_slice(&(0..10).collect::<Vec<u32>>());
-    let mut writer = ColumnFileWriter::create(&path).unwrap();
+    let mut writer = ColumnFileWriter::create(&path, WriterId::ANONYMOUS).unwrap();
     writer.column("values", &values).unwrap();
     writer.finish().unwrap();
 
@@ -74,13 +74,13 @@ fn a_flipped_byte_in_a_chunk_is_caught_on_read_not_on_open() {
 }
 
 #[test]
-fn a_damaged_directory_or_footer_is_caught_on_open() {
+fn a_damaged_directory_or_slot_is_caught_on_open() {
     let dir = TempDir::new("directory");
 
     let build = |path: &Path| {
         let mut values = Arena::<u32>::new();
         values.extend_from_slice(&[1, 2, 3]);
-        let mut writer = ColumnFileWriter::create(path).unwrap();
+        let mut writer = ColumnFileWriter::create(path, WriterId::ANONYMOUS).unwrap();
         writer.column("values", &values).unwrap();
         writer.finish().unwrap();
     };
@@ -92,7 +92,7 @@ fn a_damaged_directory_or_footer_is_caught_on_open() {
         .column_meta("values")
         .unwrap()
         .byte_len()
-        + 8;
+        + HEAD_LEN;
     flip_byte(&damaged, dir_offset);
     let err = ColumnFile::open(&damaged).unwrap_err();
     assert!(
@@ -110,7 +110,11 @@ fn a_damaged_directory_or_footer_is_caught_on_open() {
         .set_len(len - 4)
         .unwrap();
     let err = ColumnFile::open(&truncated).unwrap_err();
-    assert!(err.to_string().contains("truncated"), "{err}");
+    assert!(
+        err.to_string()
+            .contains("directory extends outside the file"),
+        "{err}"
+    );
 
     let empty = dir.join("empty.dbs");
     std::fs::write(&empty, b"").unwrap();
@@ -129,7 +133,7 @@ fn a_column_cannot_be_read_at_the_wrong_width() {
 
     let mut values = Arena::<u32>::new();
     values.extend_from_slice(&[1, 2, 3]);
-    let mut writer = ColumnFileWriter::create(&path).unwrap();
+    let mut writer = ColumnFileWriter::create(&path, WriterId::ANONYMOUS).unwrap();
     writer.column("values", &values).unwrap();
     writer.finish().unwrap();
 

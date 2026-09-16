@@ -6,22 +6,25 @@ use std::sync::Arc;
 
 use super::codec::Codec;
 use super::column_meta::{ColumnMeta, read_directory};
+use super::commit_slot::CommitSlot;
 use super::file_source::FileSource;
-use super::footer::Footer;
 use super::header::Header;
-use super::{FOOTER_LEN, HEADER_LEN};
+use super::writer_id::WriterId;
+use super::{HEAD_LEN, SLOT_A, SLOT_B};
 use crate::record::Record;
-use crate::storage::arena::{Arena, ChunkSource, invalid};
+use crate::storage::arena::{Arena, ChunkSource, Provenance, invalid};
 use crate::storage::hash::fnv1a;
 
 pub struct ColumnFile {
     source: Arc<FileSource>,
     columns: Vec<ColumnMeta>,
+    slot: CommitSlot,
 }
 
 impl std::fmt::Debug for ColumnFile {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ColumnFile")
+            .field("generation", &self.generation())
             .field("columns", &self.columns)
             .finish()
     }
@@ -31,24 +34,33 @@ impl ColumnFile {
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
         let source = FileSource::open(path)?;
         let total = source.len()?;
-        if total < HEADER_LEN + FOOTER_LEN {
+        if total < HEAD_LEN {
             return Err(invalid("file is too short to be a column file"));
         }
 
-        let mut header = [0u8; Header::SIZE];
-        source.read_at(&mut header, 0)?;
-        Header::decode(&header).validate()?;
+        let mut head = [0u8; Header::SIZE];
+        source.read_at(&mut head, 0)?;
+        let header = Header::decode(&head);
+        header.validate()?;
+        let file_uuid = header.file_uuid();
 
-        let mut bytes = [0u8; Footer::SIZE];
-        source.read_at(&mut bytes, total - FOOTER_LEN)?;
-        let footer = Footer::decode(&bytes);
-        footer.validate()?;
-        let (dir_offset, dir_len, dir_fnv) = (footer.dir_offset, footer.dir_len, footer.dir_fnv);
+        let mut newest: Option<CommitSlot> = None;
+        for at in [SLOT_A, SLOT_B] {
+            let mut bytes = [0u8; CommitSlot::SIZE];
+            source.read_at(&mut bytes, at)?;
+            if let Some(slot) = CommitSlot::from_bytes(&bytes, file_uuid)
+                && newest.is_none_or(|current| slot.generation > current.generation)
+            {
+                newest = Some(slot);
+            }
+        }
+        let slot = newest.ok_or_else(|| invalid("column file has no valid commit slot"))?;
 
+        let (dir_offset, dir_len, dir_fnv) = (slot.dir_offset, slot.dir_len, slot.dir_fnv);
         let dir_end = dir_offset
             .checked_add(dir_len)
             .ok_or_else(|| invalid("directory extends outside the file"))?;
-        if dir_offset < HEADER_LEN || dir_end > total - FOOTER_LEN {
+        if dir_offset < HEAD_LEN || dir_end > total {
             return Err(invalid("directory extends outside the file"));
         }
         let mut directory = vec![0u8; dir_len as usize];
@@ -61,7 +73,36 @@ impl ColumnFile {
         Ok(Self {
             source: Arc::new(source),
             columns,
+            slot,
         })
+    }
+
+    pub fn update(&self, writer_id: WriterId) -> io::Result<super::ColumnFileUpdater> {
+        super::ColumnFileUpdater::open(self, writer_id)
+    }
+
+    pub(super) fn file_source(&self) -> &Arc<FileSource> {
+        &self.source
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.slot.generation
+    }
+
+    pub fn content_id(&self) -> u64 {
+        self.slot.content_id
+    }
+
+    pub fn writer_id(&self) -> WriterId {
+        WriterId::from_raw(self.slot.writer_id)
+    }
+
+    pub fn file_uuid(&self) -> u128 {
+        self.slot.file_uuid
+    }
+
+    pub fn live_bytes(&self) -> u64 {
+        self.columns.iter().map(ColumnMeta::byte_len).sum()
     }
 
     pub fn columns(&self) -> &[ColumnMeta] {
@@ -92,7 +133,7 @@ impl ColumnFile {
         let arena = Arena::from_locations(
             meta.chunks.clone(),
             meta.chunk_rows as usize,
-            self.source.clone(),
+            Provenance::new(self.source.clone(), self.slot.generation),
         )?;
         if arena.len() as u64 != meta.rows {
             return Err(invalid(format!(

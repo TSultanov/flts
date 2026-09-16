@@ -14,7 +14,7 @@ fn round_trips_columns_and_reads_them_lazily() {
     let mut values = Arena::<u32>::with_chunk_rows(4);
     values.extend_from_slice(&(0..10).collect::<Vec<u32>>());
 
-    let mut writer = ColumnFileWriter::create(&path).unwrap();
+    let mut writer = ColumnFileWriter::create(&path, WriterId::ANONYMOUS).unwrap();
     writer.column("values", &values).unwrap();
     writer.finish().unwrap();
 
@@ -106,7 +106,7 @@ impl Doc {
     }
 
     fn write(&self, path: &Path) {
-        let mut writer = ColumnFileWriter::create(path).unwrap();
+        let mut writer = ColumnFileWriter::create(path, WriterId::ANONYMOUS).unwrap();
         writer.column("bytes", &self.bytes).unwrap();
         writer.column("chapter.title", &self.chapter_title).unwrap();
         writer
@@ -205,7 +205,7 @@ fn an_empty_column_round_trips() {
     let mut one = Arena::<u32>::new();
     one.push(7);
 
-    let mut writer = ColumnFileWriter::create(&path).unwrap();
+    let mut writer = ColumnFileWriter::create(&path, WriterId::ANONYMOUS).unwrap();
     writer.column("empty", &empty).unwrap();
     writer.column("one", &one).unwrap();
     writer.finish().unwrap();
@@ -234,7 +234,7 @@ fn rewriting_a_file_streams_chunks_without_making_them_resident() {
     let mut blob_bytes = Arena::<u8>::with_chunk_rows(16);
     blob_bytes.push_str("text long enough to spread across several small chunks");
 
-    let mut writer = ColumnFileWriter::create(&original).unwrap();
+    let mut writer = ColumnFileWriter::create(&original, WriterId::ANONYMOUS).unwrap();
     writer.column("values", &values).unwrap();
     writer.column("bytes", &blob_bytes).unwrap();
     writer.finish().unwrap();
@@ -244,16 +244,29 @@ fn rewriting_a_file_streams_chunks_without_making_them_resident() {
     let blob_bytes = file.column::<u8>("bytes").unwrap();
     assert!(values.chunk_count() > 1 && blob_bytes.chunk_count() > 1);
 
-    let mut writer = ColumnFileWriter::create(&rewritten).unwrap();
+    let mut writer = ColumnFileWriter::create(&rewritten, WriterId::ANONYMOUS).unwrap();
     writer.column("values", &values).unwrap();
     writer.column("bytes", &blob_bytes).unwrap();
     writer.finish().unwrap();
 
     assert_eq!(values.resident_chunks(), 0);
     assert_eq!(blob_bytes.resident_chunks(), 0);
+
+    let before = std::fs::read(&original).unwrap();
+    let after = std::fs::read(&rewritten).unwrap();
     assert_eq!(
-        std::fs::read(&original).unwrap(),
-        std::fs::read(&rewritten).unwrap(),
-        "a rewrite of an untouched file is a fixpoint"
+        &before[HEAD_LEN as usize..],
+        &after[HEAD_LEN as usize..],
+        "a rewrite of an untouched file reproduces its payload byte for byte"
+    );
+    assert_eq!(
+        ColumnFile::open(&original).unwrap().content_id(),
+        ColumnFile::open(&rewritten).unwrap().content_id(),
+        "and its content id, which is what identifies the data"
+    );
+    assert_ne!(
+        ColumnFile::open(&original).unwrap().file_uuid(),
+        ColumnFile::open(&rewritten).unwrap().file_uuid(),
+        "but they are distinct file bodies"
     );
 }

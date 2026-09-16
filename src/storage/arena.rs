@@ -31,16 +31,16 @@ pub trait ChunkSource: Send + Sync {
 }
 
 enum ChunkCell<T> {
-    Lazy {
+    Clean {
         loc: ChunkLoc,
         rows: OnceLock<Vec<T>>,
     },
-    Owned(Vec<T>),
+    Dirty(Vec<T>),
 }
 
 impl<T> ChunkCell<T> {
     fn on_disk(loc: ChunkLoc) -> Self {
-        Self::Lazy {
+        Self::Clean {
             loc,
             rows: OnceLock::new(),
         }
@@ -48,27 +48,34 @@ impl<T> ChunkCell<T> {
 
     fn resident_rows(&self) -> Option<&[T]> {
         match self {
-            Self::Lazy { rows, .. } => rows.get().map(Vec::as_slice),
-            Self::Owned(rows) => Some(rows),
+            Self::Clean { rows, .. } => rows.get().map(Vec::as_slice),
+            Self::Dirty(rows) => Some(rows),
+        }
+    }
+
+    fn reusable_loc(&self) -> Option<ChunkLoc> {
+        match self {
+            Self::Clean { loc, .. } => Some(*loc),
+            Self::Dirty(_) => None,
         }
     }
 
     fn still_on_disk(&self) -> Option<ChunkLoc> {
         match self {
-            Self::Lazy { loc, rows } if rows.get().is_none() => Some(*loc),
+            Self::Clean { loc, rows } if rows.get().is_none() => Some(*loc),
             _ => None,
         }
     }
 
     fn owned_rows(&mut self) -> &mut Vec<T> {
-        if let Self::Lazy { rows, .. } = self {
+        if let Self::Clean { rows, .. } = self {
             let taken = rows
                 .take()
                 .expect("chunk must be resident before it is owned");
-            *self = Self::Owned(taken);
+            *self = Self::Dirty(taken);
         }
-        let Self::Owned(rows) = self else {
-            unreachable!("just converted to Owned")
+        let Self::Dirty(rows) = self else {
+            unreachable!("just converted to Dirty")
         };
         rows
     }
@@ -77,12 +84,32 @@ impl<T> ChunkCell<T> {
 impl<T: Clone> Clone for ChunkCell<T> {
     fn clone(&self) -> Self {
         match self {
-            Self::Lazy { loc, rows } => Self::Lazy {
+            Self::Clean { loc, rows } => Self::Clean {
                 loc: *loc,
                 rows: rows.get().cloned().map(OnceLock::from).unwrap_or_default(),
             },
-            Self::Owned(rows) => Self::Owned(rows.clone()),
+            Self::Dirty(rows) => Self::Dirty(rows.clone()),
         }
+    }
+}
+
+#[derive(Clone)]
+pub struct Provenance {
+    source: Arc<dyn ChunkSource>,
+    generation: u64,
+}
+
+impl Provenance {
+    pub fn new(source: Arc<dyn ChunkSource>, generation: u64) -> Self {
+        Self { source, generation }
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn is_from(&self, source: &Arc<dyn ChunkSource>, generation: u64) -> bool {
+        self.generation == generation && Arc::ptr_eq(&self.source, source)
     }
 }
 
@@ -90,7 +117,7 @@ pub struct Arena<T> {
     chunks: Vec<Arc<ChunkCell<T>>>,
     chunk_rows: usize,
     len: usize,
-    source: Option<Arc<dyn ChunkSource>>,
+    source: Option<Provenance>,
 }
 
 impl<T> Clone for Arena<T> {
@@ -126,6 +153,14 @@ impl<T> Arena<T> {
             .iter()
             .filter(|cell| cell.resident_rows().is_some())
             .count()
+    }
+
+    pub fn provenance(&self) -> Option<&Provenance> {
+        self.source.as_ref()
+    }
+
+    pub fn reusable_loc(&self, index: usize) -> Option<ChunkLoc> {
+        self.chunks.get(index).and_then(|cell| cell.reusable_loc())
     }
 }
 
@@ -165,7 +200,7 @@ impl<T: Record> Arena<T> {
     pub fn from_locations(
         locations: Vec<ChunkLoc>,
         chunk_rows: usize,
-        source: Arc<dyn ChunkSource>,
+        source: Provenance,
     ) -> io::Result<Self> {
         assert!(chunk_rows > 0, "chunk_rows must be positive");
         let mut len = 0usize;
@@ -207,8 +242,8 @@ impl<T: Record> Arena<T> {
             .ok_or_else(|| invalid(format!("chunk {index} out of range")))?;
 
         let (loc, rows) = match &**cell {
-            ChunkCell::Owned(rows) => return Ok(rows),
-            ChunkCell::Lazy { loc, rows } => (loc, rows),
+            ChunkCell::Dirty(rows) => return Ok(rows),
+            ChunkCell::Clean { loc, rows } => (loc, rows),
         };
         if let Some(loaded) = rows.get() {
             return Ok(loaded);
@@ -228,7 +263,7 @@ impl<T: Record> Arena<T> {
             .source
             .as_ref()
             .ok_or_else(|| invalid("arena has an on-disk chunk but no source"))?;
-        let bytes = source.read_chunk(loc)?;
+        let bytes = source.source.read_chunk(loc)?;
 
         let actual = fnv1a(&bytes);
         if actual != loc.fnv {
@@ -310,7 +345,7 @@ impl<T: Record> Arena<T> {
     fn tail_mut(&mut self) -> io::Result<&mut Vec<T>> {
         if self.len.is_multiple_of(self.chunk_rows) {
             self.chunks
-                .push(Arc::new(ChunkCell::Owned(Vec::with_capacity(
+                .push(Arc::new(ChunkCell::Dirty(Vec::with_capacity(
                     self.chunk_rows,
                 ))));
         }

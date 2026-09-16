@@ -1,39 +1,45 @@
 //! Writes columns sequentially into a new column file.
 
 use std::fs::File;
-use std::io::{self, Write};
+use std::io::{self, Seek, SeekFrom, Write};
 use std::path::Path;
 
-use super::HEADER_LEN;
 use super::codec::Codec;
-use super::column_meta::{ColumnMeta, write_directory};
-use super::footer::Footer;
-use super::header::Header;
+use super::column_meta::{ColumnMeta, content_id, write_directory};
+use super::commit_slot::CommitSlot;
+use super::header::{Header, new_file_uuid};
+use super::writer_id::WriterId;
+use super::{HEAD_LEN, SLOT_A};
 use crate::record::Record;
 use crate::storage::arena::{Arena, ChunkLoc, invalid};
 use crate::storage::hash::fnv1a;
 
-pub struct ColumnFileWriter<W: Write> {
+pub struct ColumnFileWriter<W: Write + Seek> {
     out: W,
     offset: u64,
     columns: Vec<ColumnMeta>,
+    file_uuid: u128,
+    writer_id: WriterId,
 }
 
 impl ColumnFileWriter<io::BufWriter<File>> {
-    pub fn create(path: impl AsRef<Path>) -> io::Result<Self> {
-        Self::new(io::BufWriter::new(File::create(path)?))
+    pub fn create(path: impl AsRef<Path>, writer_id: WriterId) -> io::Result<Self> {
+        Self::new(io::BufWriter::new(File::create(path)?), writer_id)
     }
 }
 
-impl<W: Write> ColumnFileWriter<W> {
-    pub fn new(mut out: W) -> io::Result<Self> {
-        let mut header = [0u8; Header::SIZE];
-        Header::current().encode(&mut header);
-        out.write_all(&header)?;
+impl<W: Write + Seek> ColumnFileWriter<W> {
+    pub fn new(mut out: W, writer_id: WriterId) -> io::Result<Self> {
+        let file_uuid = new_file_uuid();
+        let mut head = vec![0u8; HEAD_LEN as usize];
+        Header::new(file_uuid).encode(&mut head[..Header::SIZE]);
+        out.write_all(&head)?;
         Ok(Self {
             out,
-            offset: HEADER_LEN,
+            offset: HEAD_LEN,
             columns: Vec::new(),
+            file_uuid,
+            writer_id,
         })
     }
 
@@ -69,12 +75,22 @@ impl<W: Write> ColumnFileWriter<W> {
 
     pub fn finish(mut self) -> io::Result<W> {
         let directory = write_directory(&self.columns);
-        let footer = Footer::new(self.offset, directory.len() as u64, fnv1a(&directory));
+        let dir_offset = self.offset;
+        let dir_len = directory.len() as u64;
         self.out.write_all(&directory)?;
 
-        let mut bytes = [0u8; Footer::SIZE];
-        footer.encode(&mut bytes);
-        self.out.write_all(&bytes)?;
+        let slot = CommitSlot::new(
+            1,
+            content_id(&self.columns),
+            self.file_uuid,
+            self.writer_id,
+            dir_offset,
+            dir_len,
+            fnv1a(&directory),
+            dir_offset + dir_len,
+        );
+        self.out.seek(SeekFrom::Start(SLOT_A))?;
+        self.out.write_all(&slot.to_bytes())?;
         self.out.flush()?;
         Ok(self.out)
     }

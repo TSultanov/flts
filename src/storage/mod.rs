@@ -7,5 +7,5 @@ pub mod hash;
 
 pub use arena::{Arena, ChunkLoc, ChunkSource, default_chunk_rows};
 pub use blob::Blob;
-pub use column_file::{ColumnFile, ColumnFileWriter, ColumnMeta};
+pub use column_file::{ColumnFile, ColumnFileUpdater, ColumnFileWriter, ColumnMeta, WriterId};
 pub use hash::fnv1a;
