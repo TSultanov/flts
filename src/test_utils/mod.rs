@@ -1,5 +1,6 @@
 //! Helpers shared by test modules.
 
+pub mod column_file_bytes;
 mod flip_byte;
 pub mod props;
 mod temp_dir;

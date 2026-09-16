@@ -4,8 +4,10 @@ use std::path::Path;
 use super::*;
 use crate::storage::ColumnFileWriter;
 use crate::storage::arena::Arena;
-use crate::storage::column_file::HEAD_LEN;
+use crate::storage::column_file::{FORMAT_VERSION, HEAD_LEN, MAGIC};
+use crate::test_utils::column_file_bytes as model;
 use crate::test_utils::{TempDir, flip_byte};
+use proptest::prelude::*;
 
 #[test]
 fn a_column_read_from_disk_can_be_appended_to_without_reading_the_rest() {
@@ -284,4 +286,74 @@ fn appending_to_a_damaged_byte_column_errors_rather_than_aborting() {
     let mut column = file.column::<u8>("bytes").unwrap();
     let err = column.push_str("more").unwrap_err();
     assert!(err.is_corrupt(), "{err}");
+}
+
+#[test]
+fn the_debug_of_a_column_file_names_its_generation_and_columns() {
+    let dir = TempDir::new("reader_debug");
+    let path = dir.join("debug.dbs");
+    let image = model::FileModel::of(vec![model::Column::of("values", 4, 4, &[4, 2])]).bytes();
+    std::fs::write(&path, &image).unwrap();
+
+    let shown = format!("{:?}", ColumnFile::open(&path).unwrap());
+    for part in ["generation", "columns", "values"] {
+        assert!(shown.contains(part), "{shown} is missing {part}");
+    }
+}
+
+proptest! {
+    #[test]
+    fn live_bytes_counts_the_bytes_its_columns_hold(
+        chunk_rows in 1u64..6,
+        chunks in 1usize..5,
+    ) {
+        let dir = TempDir::new("live_bytes");
+        let path = dir.join("live.dbs");
+        let counts = vec![chunk_rows as u32; chunks];
+        let image = model::FileModel::of(vec![model::Column::of(
+            "values",
+            4,
+            chunk_rows,
+            &counts,
+        )])
+        .bytes();
+        std::fs::write(&path, &image).unwrap();
+
+        let file = ColumnFile::open(&path).unwrap();
+        let held = 4 * chunk_rows * chunks as u64;
+
+        prop_assert_eq!(file.live_bytes(), held);
+        prop_assert!(file.live_bytes() <= image.len() as u64 - HEAD_LEN);
+    }
+}
+
+#[test]
+fn a_file_that_is_only_a_head_has_no_commit_rather_than_being_too_short() {
+    let dir = TempDir::new("head_only");
+    let path = dir.join("head.dbs");
+
+    let mut image = vec![0u8; HEAD_LEN as usize];
+    image[..4].copy_from_slice(&MAGIC);
+    image[4..6].copy_from_slice(&FORMAT_VERSION.to_le_bytes());
+    image[8..24].copy_from_slice(&1u128.to_le_bytes());
+    std::fs::write(&path, &image).unwrap();
+
+    let err = ColumnFile::open(&path).unwrap_err();
+    assert!(err.to_string().contains("no valid commit slot"), "{err}");
+    assert!(err.is_corrupt());
+}
+
+#[test]
+fn a_file_whose_directory_starts_where_the_payload_would_is_readable() {
+    let dir = TempDir::new("no_payload");
+    let path = dir.join("empty.dbs");
+
+    let image = model::FileModel::of(vec![model::Column::of("empty", 4, 4, &[])]).bytes();
+    std::fs::write(&path, &image).unwrap();
+
+    let file = ColumnFile::open(&path).unwrap();
+    assert_eq!(file.live_bytes(), 0);
+    assert_eq!(file.column_meta("empty").unwrap().chunks.len(), 0);
+    assert!(file.column::<u32>("empty").unwrap().is_empty());
+    file.verify().unwrap();
 }
