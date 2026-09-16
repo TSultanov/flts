@@ -182,6 +182,38 @@ fn a_column_chunked_zero_rows_at_a_time_is_rejected() {
     assert!(err.is_corrupt());
 }
 
+fn laid_out(specs: Vec<(String, u32, Vec<u32>)>) -> (Vec<ColumnMeta>, u64) {
+    let mut at = HEAD_LEN;
+    let mut columns = Vec::new();
+
+    for (index, (name, elem_size, counts)) in specs.into_iter().enumerate() {
+        let mut chunks = Vec::new();
+        let mut rows = 0u64;
+        for count in counts {
+            let byte_len = count * elem_size;
+            chunks.push(ChunkLoc {
+                offset: at,
+                byte_len,
+                rows: count,
+                fnv: u64::from(count) * 0x11,
+            });
+            at += u64::from(byte_len);
+            rows += u64::from(count);
+        }
+
+        columns.push(ColumnMeta {
+            name: format!("{index}{name}"),
+            elem_size,
+            chunk_rows: 8,
+            rows,
+            codec: Codec::Raw,
+            chunks,
+        });
+    }
+
+    (columns, at)
+}
+
 fn a_directory() -> impl Strategy<Value = (Vec<ColumnMeta>, u64)> {
     prop::collection::vec(
         (
@@ -191,37 +223,19 @@ fn a_directory() -> impl Strategy<Value = (Vec<ColumnMeta>, u64)> {
         ),
         0..4,
     )
-    .prop_map(|specs| {
-        let mut at = HEAD_LEN;
-        let mut columns = Vec::new();
+    .prop_map(laid_out)
+}
 
-        for (index, (name, elem_size, counts)) in specs.into_iter().enumerate() {
-            let mut chunks = Vec::new();
-            let mut rows = 0u64;
-            for count in counts {
-                let byte_len = count * elem_size;
-                chunks.push(ChunkLoc {
-                    offset: at,
-                    byte_len,
-                    rows: count,
-                    fnv: u64::from(count) * 0x11,
-                });
-                at += u64::from(byte_len);
-                rows += u64::from(count);
-            }
-
-            columns.push(ColumnMeta {
-                name: format!("{index}{name}"),
-                elem_size,
-                chunk_rows: 8,
-                rows,
-                codec: Codec::Raw,
-                chunks,
-            });
-        }
-
-        (columns, at)
-    })
+fn a_directory_with_data() -> impl Strategy<Value = (Vec<ColumnMeta>, u64)> {
+    prop::collection::vec(
+        (
+            "[a-z.]{0,10}",
+            1u32..=8,
+            prop::collection::vec(1u32..6, 2..4),
+        ),
+        1..3,
+    )
+    .prop_map(laid_out)
 }
 
 proptest! {
@@ -241,11 +255,9 @@ proptest! {
 
     #[test]
     fn content_id_does_not_depend_on_the_order_columns_were_offered(
-        (columns, _) in a_directory(),
+        (columns, _) in a_directory_with_data(),
         rotation in any::<prop::sample::Index>(),
     ) {
-        prop_assume!(!columns.is_empty());
-
         let mut shuffled = columns.clone();
         shuffled.rotate_left(rotation.index(columns.len()));
 
@@ -254,10 +266,9 @@ proptest! {
 
     #[test]
     fn content_id_ignores_where_chunks_live_but_not_what_they_hold(
-        (columns, _) in a_directory(),
+        (columns, _) in a_directory_with_data(),
         shift in 1u64..4096,
     ) {
-        prop_assume!(columns.iter().any(|column| !column.chunks.is_empty()));
         let was = content_id(&columns);
 
         let mut moved = columns.clone();
@@ -283,7 +294,7 @@ proptest! {
 
     #[test]
     fn two_columns_can_never_claim_the_same_byte(
-        (columns, dir_offset) in a_directory(),
+        (columns, dir_offset) in a_directory_with_data(),
         overlap in 1u64..32,
     ) {
         prop_assert!(read_directory(&write_directory(&columns), dir_offset).is_ok());
@@ -299,7 +310,6 @@ proptest! {
                     .map(move |(chunk, _)| (column, chunk))
             })
             .collect();
-        prop_assume!(occupied.len() >= 2);
 
         let (column, chunk) = occupied[occupied.len() - 1];
         let mut clashing = columns.clone();
