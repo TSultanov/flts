@@ -1,10 +1,8 @@
 //! Fixed-size head record identifying the format and the file body.
 
-use std::io;
-
 use super::{FORMAT_VERSION, MAGIC};
+use crate::error::{Error, Result};
 use crate::record::Record;
-use crate::storage::arena::invalid;
 
 #[derive(Clone, Copy)]
 #[repr(C, packed)]
@@ -31,15 +29,13 @@ impl Header {
         self.file_uuid
     }
 
-    pub(super) fn validate(self) -> io::Result<()> {
+    pub(super) fn validate(self) -> Result<()> {
         if self.magic != MAGIC {
-            return Err(invalid("bad column file magic"));
+            return Err(Error::invalid("bad column file magic"));
         }
         let version = self.version;
         if version != FORMAT_VERSION {
-            return Err(invalid(format!(
-                "unsupported column file version {version}"
-            )));
+            return Err(Error::unsupported(format!("column file version {version}")));
         }
         Ok(())
     }

@@ -1,10 +1,10 @@
 //! Where the next commit may start writing, kept out of reach of a lost slot.
 
 use std::fs::File;
-use std::io;
 
 use super::file_source::read_exact_at;
 use super::{APPEND_MARK, MARK_MAGIC};
+use crate::error::Result;
 use crate::record::Record;
 use crate::storage::hash::fnv1a;
 
@@ -58,7 +58,7 @@ impl AppendMark {
     }
 }
 
-pub(super) fn read_append_mark(file: &File, file_uuid: u128) -> io::Result<Option<AppendMark>> {
+pub(super) fn read_append_mark(file: &File, file_uuid: u128) -> Result<Option<AppendMark>> {
     let mut bytes = [0u8; AppendMark::SIZE];
     read_exact_at(file, &mut bytes, APPEND_MARK)?;
     Ok(AppendMark::from_bytes(&bytes, file_uuid))

@@ -9,6 +9,6 @@ fn known_codecs_round_trip_through_their_byte() {
 #[test]
 fn an_unknown_codec_is_rejected() {
     let err = Codec::from_u8(7).unwrap_err();
-    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    assert!(err.is_unsupported(), "{err}");
     assert!(err.to_string().contains("unknown codec 7"), "{err}");
 }

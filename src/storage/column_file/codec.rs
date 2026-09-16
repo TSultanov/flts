@@ -1,8 +1,6 @@
 //! How a chunk's bytes are encoded.
 
-use std::io;
-
-use crate::storage::arena::invalid;
+use crate::error::{Error, Result};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
@@ -11,10 +9,10 @@ pub enum Codec {
 }
 
 impl Codec {
-    pub(super) fn from_u8(value: u8) -> io::Result<Self> {
+    pub(super) fn from_u8(value: u8) -> Result<Self> {
         match value {
             0 => Ok(Codec::Raw),
-            other => Err(invalid(format!("unknown codec {other}"))),
+            other => Err(Error::unsupported(format!("unknown codec {other}"))),
         }
     }
 }

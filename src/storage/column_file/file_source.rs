@@ -1,9 +1,9 @@
 //! A `ChunkSource` backed by a file, read by offset.
 
 use std::fs::File;
-use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::error::Result;
 use crate::storage::arena::{ChunkLoc, ChunkSource};
 
 pub(super) struct FileSource {
@@ -12,7 +12,7 @@ pub(super) struct FileSource {
 }
 
 impl FileSource {
-    pub(super) fn open(path: impl AsRef<Path>) -> io::Result<Self> {
+    pub(super) fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         Ok(Self {
             file: File::open(&path)?,
@@ -28,17 +28,17 @@ impl FileSource {
         &self.file
     }
 
-    pub(super) fn len(&self) -> io::Result<u64> {
+    pub(super) fn len(&self) -> Result<u64> {
         Ok(self.file.metadata()?.len())
     }
 
-    pub(super) fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<()> {
+    pub(super) fn read_at(&self, buf: &mut [u8], offset: u64) -> Result<()> {
         read_exact_at(&self.file, buf, offset)
     }
 }
 
 impl ChunkSource for FileSource {
-    fn read_chunk(&self, loc: ChunkLoc) -> io::Result<Vec<u8>> {
+    fn read_chunk(&self, loc: ChunkLoc) -> Result<Vec<u8>> {
         let mut buf = vec![0u8; loc.byte_len as usize];
         self.read_at(&mut buf, loc.offset)?;
         Ok(buf)
@@ -46,13 +46,13 @@ impl ChunkSource for FileSource {
 }
 
 #[cfg(unix)]
-pub(super) fn write_all_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
+pub(super) fn write_all_at(file: &File, buf: &[u8], offset: u64) -> Result<()> {
     use std::os::unix::fs::FileExt;
-    file.write_all_at(buf, offset)
+    Ok(file.write_all_at(buf, offset)?)
 }
 
 #[cfg(windows)]
-pub(super) fn write_all_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
+pub(super) fn write_all_at(file: &File, buf: &[u8], offset: u64) -> Result<()> {
     use std::os::windows::fs::FileExt;
     let mut rest = buf;
     let mut at = offset;
@@ -76,13 +76,13 @@ pub(super) fn write_all_at(file: &File, buf: &[u8], offset: u64) -> io::Result<(
 }
 
 #[cfg(unix)]
-pub(super) fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+pub(super) fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> Result<()> {
     use std::os::unix::fs::FileExt;
-    file.read_exact_at(buf, offset)
+    Ok(file.read_exact_at(buf, offset)?)
 }
 
 #[cfg(windows)]
-pub(super) fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+pub(super) fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> Result<()> {
     use std::os::windows::fs::FileExt;
     let mut rest = buf;
     let mut at = offset;

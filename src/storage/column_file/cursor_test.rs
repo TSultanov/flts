@@ -24,7 +24,7 @@ fn running_past_the_end_is_an_error_not_a_panic() {
     let bytes = [1u8, 2, 3];
     let mut cursor = Cursor::new(&bytes);
     let err = cursor.take(4).unwrap_err();
-    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    assert!(err.is_corrupt(), "{err}");
     assert!(err.to_string().contains("ends mid-record"), "{err}");
 
     let err = Cursor::new(&bytes).take(usize::MAX).unwrap_err();

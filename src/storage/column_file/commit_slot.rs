@@ -1,12 +1,12 @@
 //! The record that publishes a generation, written to one of two slots.
 
 use std::fs::File;
-use std::io;
 
 use super::commit_token::CommitToken;
 use super::file_source::read_exact_at;
 use super::writer_id::WriterId;
 use super::{SLOT_A, SLOT_B, SLOT_MAGIC};
+use crate::error::Result;
 use crate::record::Record;
 use crate::storage::hash::fnv1a;
 
@@ -91,7 +91,7 @@ impl CommitSlot {
 
 pub(super) type FoundSlot = Option<(u64, CommitSlot)>;
 
-pub(super) fn newest_slot(file: &File, file_uuid: u128) -> io::Result<FoundSlot> {
+pub(super) fn newest_slot(file: &File, file_uuid: u128) -> Result<FoundSlot> {
     let mut newest: FoundSlot = None;
     for at in [SLOT_A, SLOT_B] {
         let mut bytes = [0u8; CommitSlot::SIZE];

@@ -1,11 +1,10 @@
 //! Per-column directory entry, and the directory's encoding.
 
-use std::io;
-
 use super::HEAD_LEN;
 use super::codec::Codec;
 use super::cursor::Cursor;
-use crate::storage::arena::{ChunkLoc, invalid};
+use crate::error::{Error, Result};
+use crate::storage::arena::ChunkLoc;
 use crate::storage::hash::fnv1a;
 
 #[derive(Clone, Debug)]
@@ -63,14 +62,14 @@ pub(super) fn write_directory(columns: &[ColumnMeta]) -> Vec<u8> {
     out
 }
 
-pub(super) fn read_directory(bytes: &[u8], dir_offset: u64) -> io::Result<Vec<ColumnMeta>> {
+pub(super) fn read_directory(bytes: &[u8], dir_offset: u64) -> Result<Vec<ColumnMeta>> {
     let mut cursor = Cursor::new(bytes);
     let count = cursor.u32()? as usize;
     let mut columns = Vec::with_capacity(count);
     for _ in 0..count {
         let name_len = cursor.u32()? as usize;
         let name = String::from_utf8(cursor.take(name_len)?.to_vec())
-            .map_err(|_| invalid("column name is not utf-8"))?;
+            .map_err(|_| Error::corrupt("directory", "column name is not utf-8"))?;
         let elem_size = cursor.u32()?;
         let chunk_rows = cursor.u64()?;
         let rows = cursor.u64()?;
@@ -85,12 +84,16 @@ pub(super) fn read_directory(bytes: &[u8], dir_offset: u64) -> io::Result<Vec<Co
                 fnv: cursor.u64()?,
             };
             let end = loc.offset.checked_add(loc.byte_len as u64).ok_or_else(|| {
-                invalid(format!("column {name:?} has a chunk range that overflows"))
+                Error::corrupt(
+                    "directory",
+                    format!("column {name:?} has a chunk range that overflows"),
+                )
             })?;
             if loc.offset < HEAD_LEN || end > dir_offset {
-                return Err(invalid(format!(
-                    "column {name:?} points a chunk outside the payload region"
-                )));
+                return Err(Error::corrupt(
+                    "directory",
+                    format!("column {name:?} points a chunk outside the payload region"),
+                ));
             }
             chunks.push(loc);
         }
@@ -107,7 +110,7 @@ pub(super) fn read_directory(bytes: &[u8], dir_offset: u64) -> io::Result<Vec<Co
     Ok(columns)
 }
 
-fn check_disjoint(columns: &[ColumnMeta]) -> io::Result<()> {
+fn check_disjoint(columns: &[ColumnMeta]) -> Result<()> {
     let mut ranges: Vec<(u64, u64, &str)> = Vec::new();
     for column in columns {
         for chunk in &column.chunks {
@@ -123,9 +126,10 @@ fn check_disjoint(columns: &[ColumnMeta]) -> io::Result<()> {
         let (_, previous_end, previous) = pair[0];
         let (start, _, current) = pair[1];
         if start < previous_end {
-            return Err(invalid(format!(
-                "chunks of {previous:?} and {current:?} overlap at offset {start}"
-            )));
+            return Err(Error::corrupt(
+                "directory",
+                format!("chunks of {previous:?} and {current:?} overlap at offset {start}"),
+            ));
         }
     }
     Ok(())

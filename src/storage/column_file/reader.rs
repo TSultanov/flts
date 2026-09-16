@@ -1,6 +1,5 @@
 //! An open column file, serving lazy arenas over its chunks.
 
-use std::io;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -12,8 +11,9 @@ use super::commit_token::CommitToken;
 use super::file_source::FileSource;
 use super::header::Header;
 use super::writer_id::WriterId;
+use crate::error::{Error, Result};
 use crate::record::Record;
-use crate::storage::arena::{Arena, ChunkSource, Provenance, invalid};
+use crate::storage::arena::{Arena, ChunkSource, Provenance};
 use crate::storage::hash::fnv1a;
 
 pub struct ColumnFile {
@@ -32,14 +32,14 @@ impl std::fmt::Debug for ColumnFile {
 }
 
 impl ColumnFile {
-    pub fn read_commit_token(path: impl AsRef<Path>) -> io::Result<CommitToken> {
+    pub fn read_commit_token(path: impl AsRef<Path>) -> Result<CommitToken> {
         let source = FileSource::open(path)?;
         if source.len()? < HEAD_LEN {
-            return Err(invalid("file is too short to be a column file"));
+            return Err(Error::corrupt("file", "too short to be a column file"));
         }
         let header = read_header(&source)?;
         let (_, slot) = newest_slot(source.file(), header.file_uuid())?
-            .ok_or_else(|| invalid("column file has no valid commit slot"))?;
+            .ok_or_else(|| Error::corrupt("commit slot", "no valid commit slot"))?;
         Ok(slot.token())
     }
 
@@ -47,29 +47,29 @@ impl ColumnFile {
         self.slot.token()
     }
 
-    pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let source = FileSource::open(path)?;
         let total = source.len()?;
         if total < HEAD_LEN {
-            return Err(invalid("file is too short to be a column file"));
+            return Err(Error::corrupt("file", "too short to be a column file"));
         }
 
         let file_uuid = read_header(&source)?.file_uuid();
 
         let (_, slot) = newest_slot(source.file(), file_uuid)?
-            .ok_or_else(|| invalid("column file has no valid commit slot"))?;
+            .ok_or_else(|| Error::corrupt("commit slot", "no valid commit slot"))?;
 
         let (dir_offset, dir_len, dir_fnv) = (slot.dir_offset, slot.dir_len, slot.dir_fnv);
         let dir_end = dir_offset
             .checked_add(dir_len)
-            .ok_or_else(|| invalid("directory extends outside the file"))?;
+            .ok_or_else(|| Error::corrupt("directory", "extends outside the file"))?;
         if dir_offset < HEAD_LEN || dir_end > total {
-            return Err(invalid("directory extends outside the file"));
+            return Err(Error::corrupt("directory", "extends outside the file"));
         }
         let mut directory = vec![0u8; dir_len as usize];
         source.read_at(&mut directory, dir_offset)?;
         if fnv1a(&directory) != dir_fnv {
-            return Err(invalid("column file directory failed checksum"));
+            return Err(Error::corrupt("directory", "failed checksum"));
         }
 
         let columns = read_directory(&directory, dir_offset)?;
@@ -80,7 +80,7 @@ impl ColumnFile {
         })
     }
 
-    pub fn update(&self, writer_id: WriterId) -> io::Result<super::ColumnFileUpdater> {
+    pub fn update(&self, writer_id: WriterId) -> Result<super::ColumnFileUpdater> {
         super::ColumnFileUpdater::open(self, writer_id)
     }
 
@@ -116,19 +116,19 @@ impl ColumnFile {
         self.columns.iter().find(|column| column.name == name)
     }
 
-    pub fn column<T: Record>(&self, name: &str) -> io::Result<Arena<T>> {
+    pub fn column<T: Record>(&self, name: &str) -> Result<Arena<T>> {
         let meta = self
             .column_meta(name)
-            .ok_or_else(|| invalid(format!("no column named {name:?}")))?;
+            .ok_or_else(|| Error::invalid(format!("no column named {name:?}")))?;
         if meta.elem_size as usize != T::SIZE {
-            return Err(invalid(format!(
+            return Err(Error::invalid(format!(
                 "column {name:?} holds {}-byte rows, requested type is {} bytes",
                 meta.elem_size,
                 T::SIZE
             )));
         }
         if meta.codec != Codec::Raw {
-            return Err(invalid(format!(
+            return Err(Error::unsupported(format!(
                 "column {name:?} uses an unsupported codec"
             )));
         }
@@ -139,24 +139,27 @@ impl ColumnFile {
             Provenance::new(self.source.clone(), self.slot.generation),
         )?;
         if arena.len() as u64 != meta.rows {
-            return Err(invalid(format!(
-                "column {name:?} declares {} rows but its chunks hold {}",
-                meta.rows,
-                arena.len()
-            )));
+            return Err(Error::corrupt(
+                "directory",
+                format!(
+                    "column {name:?} declares {} rows but its chunks hold {}",
+                    meta.rows,
+                    arena.len()
+                ),
+            ));
         }
         Ok(arena)
     }
 
-    pub fn verify(&self) -> io::Result<()> {
+    pub fn verify(&self) -> Result<()> {
         for meta in &self.columns {
             for (index, loc) in meta.chunks.iter().enumerate() {
                 let bytes = self.source.read_chunk(*loc)?;
                 if fnv1a(&bytes) != loc.fnv {
-                    return Err(invalid(format!(
-                        "column {:?} chunk {index} failed checksum",
-                        meta.name
-                    )));
+                    return Err(Error::corrupt(
+                        "chunk",
+                        format!("column {:?} chunk {index} failed checksum", meta.name),
+                    ));
                 }
             }
         }
@@ -164,7 +167,7 @@ impl ColumnFile {
     }
 }
 
-fn read_header(source: &FileSource) -> io::Result<Header> {
+fn read_header(source: &FileSource) -> Result<Header> {
     let mut bytes = [0u8; Header::SIZE];
     source.read_at(&mut bytes, 0)?;
     let header = Header::decode(&bytes);

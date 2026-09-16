@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use super::*;
+use crate::error::Result;
 use crate::storage::ColumnFileWriter;
 use crate::storage::arena::Arena;
 use crate::storage::column_file::HEAD_LEN;
@@ -12,7 +13,7 @@ fn this_device() -> WriterId {
 
 fn seed(path: &Path, values: &[u32]) {
     let mut column = Arena::<u32>::with_chunk_rows(4);
-    column.extend_from_slice(values);
+    column.extend_from_slice(values).unwrap();
     let mut writer = ColumnFileWriter::create(path, this_device()).unwrap();
     writer.column("values", &column).unwrap();
     writer.finish().unwrap();
@@ -26,9 +27,9 @@ fn read_all(path: &Path) -> Vec<u32> {
     let file = ColumnFile::open(path).unwrap();
     let column = file.column::<u32>("values").unwrap();
     column
-        .try_iter()
+        .iter()
         .map(|row| row.copied())
-        .collect::<io::Result<Vec<_>>>()
+        .collect::<Result<Vec<_>>>()
         .unwrap()
 }
 
@@ -46,7 +47,7 @@ fn editing_one_row_appends_one_chunk_even_after_the_column_was_read() {
     column.prefetch().unwrap();
     assert_eq!(column.resident_chunks(), 3, "the whole column was read");
 
-    column.try_set(5, 555).unwrap();
+    column.set(5, 555).unwrap();
     let before = len_of(&path);
     let mut updater = file.update(this_device()).unwrap();
     updater.column("values", &column).unwrap();
@@ -74,7 +75,7 @@ fn a_reader_keeps_its_generation_after_later_commits() {
     for (generation, value) in [(2u64, 111u32), (3, 222)] {
         let live = ColumnFile::open(&path).unwrap();
         let mut column = live.column::<u32>("values").unwrap();
-        column.try_set(5, value).unwrap();
+        column.set(5, value).unwrap();
         let mut updater = live.update(this_device()).unwrap();
         updater.column("values", &column).unwrap();
         assert_eq!(updater.commit().unwrap(), generation);
@@ -83,9 +84,9 @@ fn a_reader_keeps_its_generation_after_later_commits() {
     snapshot.prefetch().unwrap();
     assert_eq!(
         snapshot
-            .try_iter()
+            .iter()
             .map(|row| row.copied())
-            .collect::<io::Result<Vec<_>>>()
+            .collect::<Result<Vec<_>>>()
             .unwrap(),
         (0..10).collect::<Vec<u32>>(),
         "the snapshot still serves generation 1"
@@ -101,7 +102,7 @@ fn a_torn_newest_slot_falls_back_to_the_previous_generation() {
 
     let file = ColumnFile::open(&path).unwrap();
     let mut column = file.column::<u32>("values").unwrap();
-    column.try_set(0, 999).unwrap();
+    column.set(0, 999).unwrap();
     let mut updater = file.update(this_device()).unwrap();
     updater.column("values", &column).unwrap();
     assert_eq!(updater.commit().unwrap(), 2);
@@ -126,7 +127,7 @@ fn a_stale_handle_cannot_commit_over_a_newer_generation() {
 
     let live = ColumnFile::open(&path).unwrap();
     let mut column = live.column::<u32>("values").unwrap();
-    column.try_set(1, 111).unwrap();
+    column.set(1, 111).unwrap();
     let mut updater = live.update(this_device()).unwrap();
     updater.column("values", &column).unwrap();
     updater.commit().unwrap();
@@ -179,9 +180,9 @@ fn a_commit_that_would_drop_a_column_is_refused() {
     let path = dir.join("values.dbs");
 
     let mut values = Arena::<u32>::with_chunk_rows(4);
-    values.extend_from_slice(&[1, 2, 3]);
+    values.extend_from_slice(&[1, 2, 3]).unwrap();
     let mut spare = Arena::<u32>::with_chunk_rows(4);
-    spare.extend_from_slice(&[9]);
+    spare.extend_from_slice(&[9]).unwrap();
     let mut writer = ColumnFileWriter::create(&path, this_device()).unwrap();
     writer.column("values", &values).unwrap();
     writer.column("spare", &spare).unwrap();
@@ -215,7 +216,9 @@ fn a_column_cannot_change_its_chunking() {
     seed(&path, &(0..10).collect::<Vec<u32>>());
 
     let mut rechunked = Arena::<u32>::with_chunk_rows(8);
-    rechunked.extend_from_slice(&(0..10).collect::<Vec<u32>>());
+    rechunked
+        .extend_from_slice(&(0..10).collect::<Vec<u32>>())
+        .unwrap();
 
     let file = ColumnFile::open(&path).unwrap();
     let mut updater = file.update(this_device()).unwrap();
@@ -240,7 +243,7 @@ fn content_id_identifies_the_data_not_its_layout() {
 
     let file = ColumnFile::open(&detoured).unwrap();
     let mut column = file.column::<u32>("values").unwrap();
-    column.try_set(5, 5).unwrap();
+    column.set(5, 5).unwrap();
     let mut updater = file.update(this_device()).unwrap();
     updater.column("values", &column).unwrap();
     updater.commit().unwrap();
@@ -273,7 +276,7 @@ fn a_commit_leaves_every_earlier_chunk_byte_untouched() {
 
     let file = ColumnFile::open(&path).unwrap();
     let mut column = file.column::<u32>("values").unwrap();
-    column.try_set(9, 999).unwrap();
+    column.set(9, 999).unwrap();
     let mut updater = file.update(this_device()).unwrap();
     updater.column("values", &column).unwrap();
     updater.commit().unwrap();
@@ -296,7 +299,7 @@ fn every_commit_records_who_wrote_it() {
     let peer = WriterId::from_device_id("PEERDEV-7PH4NJK-2WQ5LMC");
     let file = ColumnFile::open(&path).unwrap();
     let mut column = file.column::<u32>("values").unwrap();
-    column.try_set(0, 1).unwrap();
+    column.set(0, 1).unwrap();
     let mut updater = file.update(peer).unwrap();
     updater.column("values", &column).unwrap();
     updater.commit().unwrap();
@@ -314,7 +317,7 @@ fn a_lost_slot_cannot_make_a_writer_overwrite_a_live_reader() {
 
     let file = ColumnFile::open(&path).unwrap();
     let mut column = file.column::<u32>("values").unwrap();
-    column.try_set(5, 555).unwrap();
+    column.set(5, 555).unwrap();
     let mut updater = file.update(this_device()).unwrap();
     updater.column("values", &column).unwrap();
     assert_eq!(updater.commit().unwrap(), 2);
@@ -329,7 +332,7 @@ fn a_lost_slot_cannot_make_a_writer_overwrite_a_live_reader() {
     assert_eq!(fallen_back.generation(), 1, "the newest commit is gone");
 
     let mut column = fallen_back.column::<u32>("values").unwrap();
-    column.try_set(0, 111).unwrap();
+    column.set(0, 111).unwrap();
     let mut updater = fallen_back.update(this_device()).unwrap();
     updater.column("values", &column).unwrap();
     updater.commit().unwrap();
@@ -337,9 +340,9 @@ fn a_lost_slot_cannot_make_a_writer_overwrite_a_live_reader() {
     snapshot.prefetch().unwrap();
     assert_eq!(
         snapshot
-            .try_iter()
+            .iter()
             .map(|row| row.copied())
-            .collect::<io::Result<Vec<_>>>()
+            .collect::<Result<Vec<_>>>()
             .unwrap(),
         vec![0, 1, 2, 3, 4, 555, 6, 7, 8, 9],
         "generation 2's chunks were not written over"
@@ -358,7 +361,7 @@ fn an_abandoned_commit_does_not_permanently_waste_space() {
     {
         let file = ColumnFile::open(&abandoned).unwrap();
         let mut column = file.column::<u32>("values").unwrap();
-        column.try_set(0, 111).unwrap();
+        column.set(0, 111).unwrap();
         let mut updater = file.update(this_device()).unwrap();
         updater.column("values", &column).unwrap();
     }
@@ -371,7 +374,7 @@ fn an_abandoned_commit_does_not_permanently_waste_space() {
     for path in [&clean, &abandoned] {
         let file = ColumnFile::open(path).unwrap();
         let mut column = file.column::<u32>("values").unwrap();
-        column.try_set(0, 222).unwrap();
+        column.set(0, 222).unwrap();
         let mut updater = file.update(this_device()).unwrap();
         updater.column("values", &column).unwrap();
         updater.commit().unwrap();
@@ -392,7 +395,7 @@ fn losing_the_mark_and_the_slot_together_still_cannot_clobber_a_reader() {
 
     let file = ColumnFile::open(&path).unwrap();
     let mut column = file.column::<u32>("values").unwrap();
-    column.try_set(5, 555).unwrap();
+    column.set(5, 555).unwrap();
     let mut updater = file.update(this_device()).unwrap();
     updater.column("values", &column).unwrap();
     assert_eq!(updater.commit().unwrap(), 2);
@@ -409,7 +412,7 @@ fn losing_the_mark_and_the_slot_together_still_cannot_clobber_a_reader() {
     assert_eq!(fallen_back.generation(), 1);
 
     let mut column = fallen_back.column::<u32>("values").unwrap();
-    column.try_set(0, 111).unwrap();
+    column.set(0, 111).unwrap();
     let mut updater = fallen_back.update(this_device()).unwrap();
     updater.column("values", &column).unwrap();
     updater.commit().unwrap();
@@ -417,9 +420,9 @@ fn losing_the_mark_and_the_slot_together_still_cannot_clobber_a_reader() {
     snapshot.prefetch().unwrap();
     assert_eq!(
         snapshot
-            .try_iter()
+            .iter()
             .map(|row| row.copied())
-            .collect::<io::Result<Vec<_>>>()
+            .collect::<Result<Vec<_>>>()
             .unwrap(),
         vec![0, 1, 2, 3, 4, 555, 6, 7, 8, 9],
         "the file length floored the cursor above generation 2"
@@ -434,7 +437,7 @@ fn a_reused_generation_number_is_still_a_conflict() {
 
     let first = ColumnFile::open(&path).unwrap();
     let mut column = first.column::<u32>("values").unwrap();
-    column.try_set(5, 555).unwrap();
+    column.set(5, 555).unwrap();
     let mut updater = first.update(this_device()).unwrap();
     updater.column("values", &column).unwrap();
     assert_eq!(updater.commit().unwrap(), 2);
@@ -447,7 +450,7 @@ fn a_reused_generation_number_is_still_a_conflict() {
     let rival = ColumnFile::open(&path).unwrap();
     assert_eq!(rival.generation(), 1);
     let mut column = rival.column::<u32>("values").unwrap();
-    column.try_set(0, 111).unwrap();
+    column.set(0, 111).unwrap();
     let mut updater = rival.update(this_device()).unwrap();
     updater.column("values", &column).unwrap();
     assert_eq!(updater.commit().unwrap(), 2, "the number gets reused");

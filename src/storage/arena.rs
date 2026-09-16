@@ -1,11 +1,11 @@
 //! Chunked, copy-on-write, lazily-loaded column storage.
 
 use std::borrow::Cow;
-use std::io;
 use std::sync::{Arc, OnceLock};
 
 use super::blob::Blob;
 use super::hash::fnv1a;
+use crate::error::{Error, Result};
 use crate::record::Record;
 
 pub const TARGET_CHUNK_BYTES: usize = 64 * 1024;
@@ -27,7 +27,7 @@ pub struct ChunkLoc {
 }
 
 pub trait ChunkSource: Send + Sync {
-    fn read_chunk(&self, loc: ChunkLoc) -> io::Result<Vec<u8>>;
+    fn read_chunk(&self, loc: ChunkLoc) -> Result<Vec<u8>>;
 }
 
 enum ChunkCell<T> {
@@ -201,25 +201,31 @@ impl<T: Record> Arena<T> {
         locations: Vec<ChunkLoc>,
         chunk_rows: usize,
         source: Provenance,
-    ) -> io::Result<Self> {
+    ) -> Result<Self> {
         assert!(chunk_rows > 0, "chunk_rows must be positive");
         let mut len = 0usize;
         for (index, loc) in locations.iter().enumerate() {
             let last = index + 1 == locations.len();
             if !last && loc.rows as usize != chunk_rows {
-                return Err(invalid(format!(
-                    "chunk {index} holds {} rows, expected {chunk_rows}; \
-                     only the last chunk may be short",
-                    loc.rows
-                )));
+                return Err(Error::corrupt(
+                    "chunk",
+                    format!(
+                        "chunk {index} holds {} rows, expected {chunk_rows}; \
+                         only the last chunk may be short",
+                        loc.rows
+                    ),
+                ));
             }
             if loc.byte_len as usize != loc.rows as usize * T::SIZE {
-                return Err(invalid(format!(
-                    "chunk {index} is {} bytes for {} rows of {} bytes",
-                    loc.byte_len,
-                    loc.rows,
-                    T::SIZE
-                )));
+                return Err(Error::corrupt(
+                    "chunk",
+                    format!(
+                        "chunk {index} is {} bytes for {} rows of {} bytes",
+                        loc.byte_len,
+                        loc.rows,
+                        T::SIZE
+                    ),
+                ));
             }
             len += loc.rows as usize;
         }
@@ -235,11 +241,8 @@ impl<T: Record> Arena<T> {
         })
     }
 
-    pub fn chunk(&self, index: usize) -> io::Result<&[T]> {
-        let cell = self
-            .chunks
-            .get(index)
-            .ok_or_else(|| invalid(format!("chunk {index} out of range")))?;
+    pub fn chunk(&self, index: usize) -> Result<&[T]> {
+        let cell = &self.chunks[index];
 
         let (loc, rows) = match &**cell {
             ChunkCell::Dirty(rows) => return Ok(rows),
@@ -253,69 +256,68 @@ impl<T: Record> Arena<T> {
         Ok(rows.get_or_init(|| decode_rows::<T>(&bytes)))
     }
 
-    fn owned_chunk(&mut self, index: usize) -> io::Result<&mut Vec<T>> {
+    fn owned_chunk(&mut self, index: usize) -> Result<&mut Vec<T>> {
         self.chunk(index)?;
         Ok(Arc::make_mut(&mut self.chunks[index]).owned_rows())
     }
 
-    fn read_verified(&self, loc: ChunkLoc, index: usize) -> io::Result<Vec<u8>> {
+    fn read_verified(&self, loc: ChunkLoc, index: usize) -> Result<Vec<u8>> {
         let source = self
             .source
             .as_ref()
-            .ok_or_else(|| invalid("arena has an on-disk chunk but no source"))?;
+            .expect("a chunk with a location has a source");
         let bytes = source.source.read_chunk(loc)?;
 
         let actual = fnv1a(&bytes);
         if actual != loc.fnv {
-            return Err(invalid(format!(
-                "chunk {index} at offset {} failed checksum: stored {:#018x}, computed {actual:#018x}",
-                loc.offset, loc.fnv
-            )));
+            return Err(Error::corrupt(
+                "chunk",
+                format!(
+                    "chunk {index} at offset {} failed checksum: stored {:#018x}, computed {actual:#018x}",
+                    loc.offset, loc.fnv
+                ),
+            ));
         }
         if bytes.len() != loc.rows as usize * T::SIZE {
-            return Err(invalid(format!(
-                "chunk {index} read {} bytes for {} rows of {}",
-                bytes.len(),
-                loc.rows,
-                T::SIZE
-            )));
+            return Err(Error::corrupt(
+                "chunk",
+                format!(
+                    "chunk {index} read {} bytes for {} rows of {}",
+                    bytes.len(),
+                    loc.rows,
+                    T::SIZE
+                ),
+            ));
         }
         Ok(bytes)
     }
 
-    pub fn prefetch(&self) -> io::Result<()> {
+    pub fn prefetch(&self) -> Result<()> {
         for index in 0..self.chunks.len() {
             self.chunk(index)?;
         }
         Ok(())
     }
 
-    fn row(&self, index: usize) -> io::Result<&T> {
+    pub fn row(&self, index: usize) -> Result<&T> {
         let chunk = self.chunk(index / self.chunk_rows)?;
         Ok(&chunk[index % self.chunk_rows])
     }
 
-    pub fn try_get(&self, index: usize) -> io::Result<Option<&T>> {
+    pub fn get(&self, index: usize) -> Result<Option<&T>> {
         if index >= self.len {
             return Ok(None);
         }
         self.row(index).map(Some)
     }
 
-    pub fn get(&self, index: usize) -> Option<&T> {
-        self.try_get(index).expect("chunk read failed")
-    }
-
-    pub fn try_range(&self, start: usize, len: usize) -> io::Result<Cow<'_, [T]>> {
-        let end = start
-            .checked_add(len)
-            .ok_or_else(|| invalid("range overflows"))?;
-        if end > self.len {
-            return Err(invalid(format!(
-                "range {start}..{end} past end {}",
-                self.len
-            )));
-        }
+    pub fn range(&self, start: usize, len: usize) -> Result<Cow<'_, [T]>> {
+        let end = start.checked_add(len).expect("range overflows");
+        assert!(
+            end <= self.len,
+            "range {start}..{end} past end {}",
+            self.len
+        );
         if len == 0 {
             return Ok(Cow::Borrowed(&[]));
         }
@@ -338,11 +340,11 @@ impl<T: Record> Arena<T> {
         Ok(Cow::Owned(out))
     }
 
-    pub fn try_iter(&self) -> impl Iterator<Item = io::Result<&T>> + '_ {
+    pub fn iter(&self) -> impl Iterator<Item = Result<&T>> + '_ {
         (0..self.len).map(move |index| self.row(index))
     }
 
-    fn tail_mut(&mut self) -> io::Result<&mut Vec<T>> {
+    fn tail_mut(&mut self) -> Result<&mut Vec<T>> {
         if self.len.is_multiple_of(self.chunk_rows) {
             self.chunks
                 .push(Arc::new(ChunkCell::Dirty(Vec::with_capacity(
@@ -352,17 +354,13 @@ impl<T: Record> Arena<T> {
         self.owned_chunk(self.chunks.len() - 1)
     }
 
-    pub fn try_push(&mut self, item: T) -> io::Result<usize> {
+    pub fn push(&mut self, item: T) -> Result<usize> {
         self.tail_mut()?.push(item);
         self.len += 1;
         Ok(self.len - 1)
     }
 
-    pub fn push(&mut self, item: T) -> usize {
-        self.try_push(item).expect("chunk read failed")
-    }
-
-    pub fn try_extend_from_slice(&mut self, mut items: &[T]) -> io::Result<()> {
+    pub fn extend_from_slice(&mut self, mut items: &[T]) -> Result<()> {
         while !items.is_empty() {
             let room = self.chunk_rows - (self.len % self.chunk_rows);
             let take = room.min(items.len());
@@ -374,15 +372,8 @@ impl<T: Record> Arena<T> {
         Ok(())
     }
 
-    pub fn extend_from_slice(&mut self, items: &[T]) {
-        self.try_extend_from_slice(items)
-            .expect("chunk read failed")
-    }
-
-    pub fn try_set(&mut self, index: usize, item: T) -> io::Result<()> {
-        if index >= self.len {
-            return Err(invalid(format!("index {index} past end {}", self.len)));
-        }
+    pub fn set(&mut self, index: usize, item: T) -> Result<()> {
+        assert!(index < self.len, "index {index} past end {}", self.len);
         let chunk_index = index / self.chunk_rows;
         let offset = index % self.chunk_rows;
         self.owned_chunk(chunk_index)?[offset] = item;
@@ -390,11 +381,8 @@ impl<T: Record> Arena<T> {
     }
 
     #[allow(clippy::chunks_exact_to_as_chunks)]
-    pub fn chunk_bytes(&self, index: usize) -> io::Result<Vec<u8>> {
-        let cell = self
-            .chunks
-            .get(index)
-            .ok_or_else(|| invalid(format!("chunk {index} out of range")))?;
+    pub fn chunk_bytes(&self, index: usize) -> Result<Vec<u8>> {
+        let cell = &self.chunks[index];
 
         if let Some(loc) = cell.still_on_disk() {
             return self.read_verified(loc, index);
@@ -410,25 +398,25 @@ impl<T: Record> Arena<T> {
 }
 
 impl Arena<u8> {
-    pub fn push_bytes(&mut self, bytes: &[u8]) -> Blob {
+    pub fn push_bytes(&mut self, bytes: &[u8]) -> Result<Blob> {
         let start = self.len() as u64;
-        self.extend_from_slice(bytes);
-        Blob {
+        self.extend_from_slice(bytes)?;
+        Ok(Blob {
             start,
             len: bytes.len() as u32,
-        }
+        })
     }
 
-    pub fn push_str(&mut self, text: &str) -> Blob {
+    pub fn push_str(&mut self, text: &str) -> Result<Blob> {
         self.push_bytes(text.as_bytes())
     }
 
-    pub fn try_bytes(&self, blob: Blob) -> io::Result<Cow<'_, [u8]>> {
-        self.try_range(blob.start as usize, blob.len as usize)
+    pub fn bytes(&self, blob: Blob) -> Result<Cow<'_, [u8]>> {
+        self.range(blob.start as usize, blob.len as usize)
     }
 
-    pub fn try_str(&self, blob: Blob) -> io::Result<Cow<'_, str>> {
-        Ok(match self.try_bytes(blob)? {
+    pub fn text(&self, blob: Blob) -> Result<Cow<'_, str>> {
+        Ok(match self.bytes(blob)? {
             Cow::Borrowed(bytes) => String::from_utf8_lossy(bytes),
             Cow::Owned(bytes) => Cow::Owned(String::from_utf8_lossy(&bytes).into_owned()),
         })
@@ -438,10 +426,6 @@ impl Arena<u8> {
 #[allow(clippy::chunks_exact_to_as_chunks)]
 fn decode_rows<T: Record>(bytes: &[u8]) -> Vec<T> {
     bytes.chunks_exact(T::SIZE).map(T::decode).collect()
-}
-
-pub(crate) fn invalid(message: impl Into<String>) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
 #[cfg(test)]

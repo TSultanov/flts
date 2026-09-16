@@ -11,8 +11,9 @@ use super::commit_slot::CommitSlot;
 use super::header::{Header, new_file_uuid};
 use super::writer_id::WriterId;
 use super::{APPEND_MARK, HEAD_LEN, SLOT_A};
+use crate::error::{Error, Result};
 use crate::record::Record;
-use crate::storage::arena::{Arena, ChunkLoc, invalid};
+use crate::storage::arena::{Arena, ChunkLoc};
 use crate::storage::hash::fnv1a;
 
 pub struct ColumnFileWriter<W: Write + Seek> {
@@ -24,13 +25,13 @@ pub struct ColumnFileWriter<W: Write + Seek> {
 }
 
 impl ColumnFileWriter<io::BufWriter<File>> {
-    pub fn create(path: impl AsRef<Path>, writer_id: WriterId) -> io::Result<Self> {
+    pub fn create(path: impl AsRef<Path>, writer_id: WriterId) -> Result<Self> {
         Self::new(io::BufWriter::new(File::create(path)?), writer_id)
     }
 }
 
 impl<W: Write + Seek> ColumnFileWriter<W> {
-    pub fn new(mut out: W, writer_id: WriterId) -> io::Result<Self> {
+    pub fn new(mut out: W, writer_id: WriterId) -> Result<Self> {
         let file_uuid = new_file_uuid();
         let mut head = vec![0u8; HEAD_LEN as usize];
         Header::new(file_uuid).encode(&mut head[..Header::SIZE]);
@@ -44,9 +45,9 @@ impl<W: Write + Seek> ColumnFileWriter<W> {
         })
     }
 
-    pub fn column<T: Record>(&mut self, name: &str, arena: &Arena<T>) -> io::Result<()> {
+    pub fn column<T: Record>(&mut self, name: &str, arena: &Arena<T>) -> Result<()> {
         if self.columns.iter().any(|column| column.name == name) {
-            return Err(invalid(format!("duplicate column {name:?}")));
+            return Err(Error::invalid(format!("duplicate column {name:?}")));
         }
 
         let mut chunks = Vec::with_capacity(arena.chunk_count());
@@ -74,7 +75,7 @@ impl<W: Write + Seek> ColumnFileWriter<W> {
         Ok(())
     }
 
-    pub fn finish(mut self) -> io::Result<W> {
+    pub fn finish(mut self) -> Result<W> {
         let directory = write_directory(&self.columns);
         let dir_offset = self.offset;
         let dir_len = directory.len() as u64;

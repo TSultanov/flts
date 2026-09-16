@@ -8,7 +8,7 @@ fn a_column_cannot_be_written_twice_into_one_file() {
     let path = dir.join("dup.dbs");
 
     let mut values = Arena::<u32>::new();
-    values.push(1);
+    values.push(1).unwrap();
 
     let mut writer = ColumnFileWriter::create(&path, WriterId::ANONYMOUS).unwrap();
     writer.column("values", &values).unwrap();

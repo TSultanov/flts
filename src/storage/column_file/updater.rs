@@ -1,7 +1,6 @@
 //! Appends changed chunks to an existing file and publishes them as a generation.
 
 use std::fs::{File, OpenOptions};
-use std::io;
 use std::sync::Arc;
 
 use super::append_mark::{AppendMark, read_append_mark};
@@ -13,8 +12,9 @@ use super::file_source::write_all_at;
 use super::reader::ColumnFile;
 use super::writer_id::WriterId;
 use super::{APPEND_MARK, SLOT_A, SLOT_B};
+use crate::error::{Error, Result};
 use crate::record::Record;
-use crate::storage::arena::{Arena, ChunkLoc, ChunkSource, invalid};
+use crate::storage::arena::{Arena, ChunkLoc, ChunkSource};
 use crate::storage::hash::fnv1a;
 
 impl std::fmt::Debug for ColumnFileUpdater {
@@ -41,7 +41,7 @@ pub struct ColumnFileUpdater {
 }
 
 impl ColumnFileUpdater {
-    pub(super) fn open(reader: &ColumnFile, writer_id: WriterId) -> io::Result<Self> {
+    pub(super) fn open(reader: &ColumnFile, writer_id: WriterId) -> Result<Self> {
         let file_source = reader.file_source();
         let source: Arc<dyn ChunkSource> = file_source.clone();
         let file = OpenOptions::new()
@@ -51,7 +51,7 @@ impl ColumnFileUpdater {
         file.lock()?;
 
         let (newest_at, newest) = newest_slot(&file, reader.file_uuid())?
-            .ok_or_else(|| invalid("column file has no valid commit slot"))?;
+            .ok_or_else(|| Error::corrupt("commit slot", "no valid commit slot"))?;
         if newest.token() != reader.commit_token() {
             return Err(conflict(reader.commit_token(), newest.token()));
         }
@@ -76,14 +76,14 @@ impl ColumnFileUpdater {
         })
     }
 
-    pub fn column<T: Record>(&mut self, name: &str, arena: &Arena<T>) -> io::Result<()> {
+    pub fn column<T: Record>(&mut self, name: &str, arena: &Arena<T>) -> Result<()> {
         if self.columns.iter().any(|column| column.name == name) {
-            return Err(invalid(format!("duplicate column {name:?}")));
+            return Err(Error::invalid(format!("duplicate column {name:?}")));
         }
         if let Some(previous) = self.previous.iter().find(|column| column.name == name)
             && previous.chunk_rows != arena.chunk_rows() as u64
         {
-            return Err(invalid(format!(
+            return Err(Error::invalid(format!(
                 "column {name:?} is chunked {} rows at a time on disk, not {}",
                 previous.chunk_rows,
                 arena.chunk_rows()
@@ -128,7 +128,7 @@ impl ColumnFileUpdater {
         self.previous.retain(|column| column.name != name);
     }
 
-    pub fn commit(self) -> io::Result<u64> {
+    pub fn commit(self) -> Result<u64> {
         let missing: Vec<&str> = self
             .previous
             .iter()
@@ -136,7 +136,7 @@ impl ColumnFileUpdater {
             .filter(|name| !self.columns.iter().any(|column| column.name == *name))
             .collect();
         if !missing.is_empty() {
-            return Err(invalid(format!(
+            return Err(Error::invalid(format!(
                 "commit would drop columns {missing:?}; supply them or call remove_column"
             )));
         }
@@ -155,7 +155,7 @@ impl ColumnFileUpdater {
         let generation = self
             .expected_generation
             .checked_add(1)
-            .ok_or_else(|| invalid("generation counter exhausted"))?;
+            .ok_or_else(|| Error::invalid("generation counter exhausted"))?;
         let slot = CommitSlot::new(
             generation,
             content,
@@ -174,14 +174,8 @@ impl ColumnFileUpdater {
     }
 }
 
-fn conflict(expected: CommitToken, found: CommitToken) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::ResourceBusy,
-        format!(
-            "column file moved to generation {} ({:#018x}) while holding generation {} ({:#018x})",
-            found.generation, found.content_id, expected.generation, expected.content_id
-        ),
-    )
+fn conflict(expected: CommitToken, found: CommitToken) -> Error {
+    Error::Conflict { expected, found }
 }
 
 #[cfg(test)]

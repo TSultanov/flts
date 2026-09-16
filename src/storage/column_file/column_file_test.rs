@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use super::*;
+use crate::error::Result;
 use crate::id::Id;
 use crate::storage::arena::Arena;
 use crate::storage::blob::Blob;
@@ -12,7 +13,9 @@ fn round_trips_columns_and_reads_them_lazily() {
     let path = dir.join("numbers.dbs");
 
     let mut values = Arena::<u32>::with_chunk_rows(4);
-    values.extend_from_slice(&(0..10).collect::<Vec<u32>>());
+    values
+        .extend_from_slice(&(0..10).collect::<Vec<u32>>())
+        .unwrap();
 
     let mut writer = ColumnFileWriter::create(&path, WriterId::ANONYMOUS).unwrap();
     writer.column("values", &values).unwrap();
@@ -33,7 +36,7 @@ fn round_trips_columns_and_reads_them_lazily() {
         "opening a column reads no payload"
     );
 
-    assert_eq!(loaded.try_get(9).unwrap(), Some(&9));
+    assert_eq!(loaded.get(9).unwrap(), Some(&9));
     assert_eq!(
         loaded.resident_chunks(),
         1,
@@ -42,10 +45,7 @@ fn round_trips_columns_and_reads_them_lazily() {
 
     loaded.prefetch().unwrap();
     assert_eq!(
-        loaded
-            .try_iter()
-            .collect::<std::io::Result<Vec<_>>>()
-            .unwrap(),
+        loaded.iter().collect::<Result<Vec<_>>>().unwrap(),
         (0..10u32).collect::<Vec<_>>().iter().collect::<Vec<_>>()
     );
 }
@@ -73,8 +73,8 @@ impl Doc {
     }
 
     fn push_chapter(&mut self, title: &str) -> Id<Chapter> {
-        let title = self.bytes.push_str(title);
-        Id::from_index(self.chapter_title.push(title))
+        let title = self.bytes.push_str(title).unwrap();
+        Id::from_index(self.chapter_title.push(title).unwrap())
     }
 
     fn push_paragraph(
@@ -83,16 +83,16 @@ impl Doc {
         text: &str,
         note_on: Option<Id<Paragraph>>,
     ) -> Id<Paragraph> {
-        let text = self.bytes.push_str(text);
-        let index = self.paragraph_chapter.push(chapter);
-        self.paragraph_text.push(text);
-        self.paragraph_note.push(note_on);
+        let text = self.bytes.push_str(text).unwrap();
+        let index = self.paragraph_chapter.push(chapter).unwrap();
+        self.paragraph_text.push(text).unwrap();
+        self.paragraph_note.push(note_on).unwrap();
         Id::from_index(index)
     }
 
     fn paragraphs_of(&self, chapter: Id<Chapter>) -> Vec<Id<Paragraph>> {
         self.paragraph_chapter
-            .try_iter()
+            .iter()
             .enumerate()
             .filter_map(|(index, owner)| {
                 (*owner.unwrap() == chapter).then(|| Id::from_index(index))
@@ -101,8 +101,8 @@ impl Doc {
     }
 
     fn text_of(&self, paragraph: Id<Paragraph>) -> String {
-        let blob = *self.paragraph_text.get(paragraph.index()).unwrap();
-        self.bytes.try_str(blob).unwrap().into_owned()
+        let blob = *self.paragraph_text.get(paragraph.index()).unwrap().unwrap();
+        self.bytes.text(blob).unwrap().into_owned()
     }
 
     fn write(&self, path: &Path) {
@@ -184,8 +184,8 @@ fn a_document_round_trips_through_a_column_file() {
         "chapter two, paragraph 4"
     );
 
-    assert_eq!(*loaded.paragraph_note.get(0).unwrap(), None);
-    assert_eq!(*loaded.paragraph_note.get(1).unwrap(), Some(anchor));
+    assert_eq!(loaded.paragraph_note.get(0).unwrap(), Some(&None));
+    assert_eq!(loaded.paragraph_note.get(1).unwrap(), Some(&Some(anchor)));
     assert_eq!(
         file.column_meta("paragraph.note").unwrap().elem_size,
         file.column_meta("paragraph.chapter").unwrap().elem_size
@@ -203,7 +203,7 @@ fn an_empty_column_round_trips() {
 
     let empty = Arena::<u32>::new();
     let mut one = Arena::<u32>::new();
-    one.push(7);
+    one.push(7).unwrap();
 
     let mut writer = ColumnFileWriter::create(&path, WriterId::ANONYMOUS).unwrap();
     writer.column("empty", &empty).unwrap();
@@ -216,11 +216,8 @@ fn an_empty_column_round_trips() {
     let empty = file.column::<u32>("empty").unwrap();
     assert!(empty.is_empty());
     assert_eq!(empty.chunk_count(), 0);
-    assert_eq!(empty.try_get(0).unwrap(), None);
-    assert_eq!(
-        file.column::<u32>("one").unwrap().try_get(0).unwrap(),
-        Some(&7)
-    );
+    assert_eq!(empty.get(0).unwrap(), None);
+    assert_eq!(file.column::<u32>("one").unwrap().get(0).unwrap(), Some(&7));
 }
 
 #[test]
@@ -230,9 +227,13 @@ fn rewriting_a_file_streams_chunks_without_making_them_resident() {
     let rewritten = dir.join("rewritten.dbs");
 
     let mut values = Arena::<u32>::with_chunk_rows(4);
-    values.extend_from_slice(&(0..10).collect::<Vec<u32>>());
+    values
+        .extend_from_slice(&(0..10).collect::<Vec<u32>>())
+        .unwrap();
     let mut blob_bytes = Arena::<u8>::with_chunk_rows(16);
-    blob_bytes.push_str("text long enough to spread across several small chunks");
+    blob_bytes
+        .push_str("text long enough to spread across several small chunks")
+        .unwrap();
 
     let mut writer = ColumnFileWriter::create(&original, WriterId::ANONYMOUS).unwrap();
     writer.column("values", &values).unwrap();
