@@ -17,18 +17,24 @@ set -uo pipefail
 
 cd "$(dirname "$0")/.."
 
-# A mutant can make a test allocate without bound. One in the arena's byte path
-# reached 18 GB resident and tripped the kernel OOM killer, which took the whole
-# sweep down with it -- three times, because a cgroup cap kills the sweep rather
-# than the runaway.
+# A mutant can make a test allocate without bound: one in the arena reached
+# 18 GB resident and tripped the kernel OOM killer, taking the sweep with it.
 #
+# The cap has to be per process, because a cgroup cap over the whole sweep kills
+# the sweep rather than the runaway. But per process only helps if JOBS * VMAX
+# stays under the RAM actually free -- a 16 GB cap across 4 jobs is a 64 GB
+# ceiling on a 30 GB machine, which is not a cap at all. That mistake is what
+# the two defaults below exist to prevent, so change them together.
+#
+# rustc builds this crate inside 2 GB of address space and the suite needs far
+# less, so 2 GB is generous for the honest work and quick to reject a runaway.
 # ulimit -v is inherited by every child, so the test binary dies on its own
-# failed allocation and cargo-mutants records the mutant as caught, which is the
-# honest outcome: a mutation that exhausts memory is one the suite detected.
-# rustc builds comfortably inside the same cap.
-ulimit -v "${DBSYNC_MUTANTS_VMAX:-16000000}"
+# failed allocation and cargo-mutants records the mutant as caught -- the right
+# answer, since a mutation that exhausts memory is one the suite detected.
+jobs="${DBSYNC_MUTANTS_JOBS:-4}"
+ulimit -v "${DBSYNC_MUTANTS_VMAX:-2000000}"
 
-PROPTEST_CASES="${PROPTEST_CASES:-64}" cargo mutants -j "${DBSYNC_MUTANTS_JOBS:-4}" "$@"
+PROPTEST_CASES="${PROPTEST_CASES:-64}" cargo mutants -j "$jobs" "$@"
 swept=$?
 
 case "$swept" in
@@ -43,9 +49,16 @@ missed=mutants.out/missed.txt
 [ -f "$missed" ] || { echo "no $missed; the sweep did not finish" >&2; exit 70; }
 
 listed=$(mktemp) && survived=$(mktemp) || exit 70
-trap 'rm -f "$listed" "$survived"' EXIT
 
-grep -vE '^[[:space:]]*(#|$)' "$justified" | sort -u > "$listed"
+# Scope the comparison to the files this sweep actually covered, or a targeted
+# run (cargo mutants -f ...) would call every justification for an untouched
+# file stale, having never generated the mutant to begin with.
+swept=$(mktemp) || exit 70
+trap 'rm -f "$listed" "$survived" "$swept"' EXIT
+cat mutants.out/caught.txt "$missed" mutants.out/unviable.txt mutants.out/timeout.txt \
+    2>/dev/null | sed 's/:.*//' | sort -u > "$swept"
+
+grep -vE '^[[:space:]]*(#|$)' "$justified" | grep -Ff "$swept" | sort -u > "$listed"
 sort -u "$missed" > "$survived"
 
 status=0
