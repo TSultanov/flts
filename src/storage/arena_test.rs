@@ -271,3 +271,92 @@ fn invalid_utf8_is_replaced_rather_than_failing_the_read() {
     let blob = bytes.push_bytes(&[0xff, 0xfe]);
     assert_eq!(&*bytes.try_str(blob).unwrap(), "\u{fffd}\u{fffd}");
 }
+
+#[test]
+fn writing_out_an_untouched_chunk_does_not_make_it_resident() {
+    let (arena, source) = lazy_u32(10, 4);
+
+    let expected: Vec<u8> = (0..4u32).flat_map(|v| v.to_le_bytes()).collect();
+    assert_eq!(arena.chunk_bytes(0).unwrap(), expected);
+
+    assert_eq!(
+        arena.resident_chunks(),
+        0,
+        "copied through without decoding"
+    );
+    assert_eq!(source.reads.load(Ordering::SeqCst), 1);
+
+    for index in 0..arena.chunk_count() {
+        arena.chunk_bytes(index).unwrap();
+    }
+    assert_eq!(arena.resident_chunks(), 0);
+}
+
+#[test]
+fn writing_out_a_mutated_chunk_uses_its_rows_not_the_stale_disk_bytes() {
+    let (mut arena, _) = lazy_u32(10, 4);
+    arena.try_set(1, 999).unwrap();
+
+    let expected: Vec<u8> = [0u32, 999, 2, 3]
+        .iter()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    assert_eq!(arena.chunk_bytes(0).unwrap(), expected);
+
+    let untouched: Vec<u8> = (4..8u32).flat_map(|v| v.to_le_bytes()).collect();
+    assert_eq!(arena.chunk_bytes(1).unwrap(), untouched);
+    assert_eq!(arena.resident_chunks(), 1, "only the mutated chunk is held");
+}
+
+#[test]
+fn a_corrupt_chunk_is_not_laundered_into_a_new_file() {
+    let (good, _) = lazy_u32(8, 4);
+    let chunks: Vec<Vec<u8>> = (0..2).map(|i| good.chunk_bytes(i).unwrap()).collect();
+    let locations = vec![
+        ChunkLoc {
+            offset: 0,
+            byte_len: 16,
+            rows: 4,
+            fnv: 0xdead_beef,
+        },
+        ChunkLoc {
+            offset: 1,
+            byte_len: 16,
+            rows: 4,
+            fnv: fnv1a(&chunks[1]),
+        },
+    ];
+    let source = Arc::new(CountingSource {
+        chunks,
+        reads: AtomicUsize::new(0),
+    });
+    let arena = Arena::<u32>::from_locations(locations, 4, source).unwrap();
+
+    let err = arena.chunk_bytes(0).unwrap_err();
+    assert!(err.to_string().contains("failed checksum"), "{err}");
+    assert!(arena.chunk_bytes(1).is_ok());
+}
+
+#[test]
+fn a_mutated_chunk_forgets_its_disk_location() {
+    let (mut arena, _) = lazy_u32(10, 4);
+    assert!(arena.chunks.iter().all(|cell| cell.loc.is_some()));
+
+    arena.try_set(0, 5).unwrap();
+    assert!(arena.chunks[0].loc.is_none());
+    assert!(arena.chunks[1].loc.is_some());
+
+    arena.try_push(42).unwrap();
+    assert!(arena.chunks[2].loc.is_none());
+}
+
+#[test]
+fn writing_out_a_resident_chunk_does_not_read_it_again() {
+    let (arena, source) = lazy_u32(10, 4);
+    arena.try_get(0).unwrap();
+    assert_eq!(source.reads.load(Ordering::SeqCst), 1);
+
+    arena.chunk_bytes(0).unwrap();
+    assert_eq!(source.reads.load(Ordering::SeqCst), 1);
+    assert_eq!(arena.resident_chunks(), 1);
+}

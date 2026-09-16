@@ -222,3 +222,38 @@ fn an_empty_column_round_trips() {
         Some(&7)
     );
 }
+
+#[test]
+fn rewriting_a_file_streams_chunks_without_making_them_resident() {
+    let dir = TempDir::new("rewrite");
+    let original = dir.join("original.dbs");
+    let rewritten = dir.join("rewritten.dbs");
+
+    let mut values = Arena::<u32>::with_chunk_rows(4);
+    values.extend_from_slice(&(0..10).collect::<Vec<u32>>());
+    let mut blob_bytes = Arena::<u8>::with_chunk_rows(16);
+    blob_bytes.push_str("text long enough to spread across several small chunks");
+
+    let mut writer = ColumnFileWriter::create(&original).unwrap();
+    writer.column("values", &values).unwrap();
+    writer.column("bytes", &blob_bytes).unwrap();
+    writer.finish().unwrap();
+
+    let file = ColumnFile::open(&original).unwrap();
+    let values = file.column::<u32>("values").unwrap();
+    let blob_bytes = file.column::<u8>("bytes").unwrap();
+    assert!(values.chunk_count() > 1 && blob_bytes.chunk_count() > 1);
+
+    let mut writer = ColumnFileWriter::create(&rewritten).unwrap();
+    writer.column("values", &values).unwrap();
+    writer.column("bytes", &blob_bytes).unwrap();
+    writer.finish().unwrap();
+
+    assert_eq!(values.resident_chunks(), 0);
+    assert_eq!(blob_bytes.resident_chunks(), 0);
+    assert_eq!(
+        std::fs::read(&original).unwrap(),
+        std::fs::read(&rewritten).unwrap(),
+        "a rewrite of an untouched file is a fixpoint"
+    );
+}

@@ -48,10 +48,25 @@ impl<T> ChunkCell<T> {
             loc: Some(loc),
         }
     }
+
+    fn still_on_disk(&self) -> Option<ChunkLoc> {
+        match (self.loc, self.data.get()) {
+            (Some(loc), None) => Some(loc),
+            _ => None,
+        }
+    }
+
+    fn fill_once(&self, rows: Vec<T>) -> &[T] {
+        let _ = self.data.set(rows);
+        self.data.get().expect("filled")
+    }
+
+    fn detach_from_disk(&mut self) {
+        self.loc = None;
+    }
 }
 
 impl<T: Clone> Clone for ChunkCell<T> {
-    // An unloaded chunk must clone as unloaded, or a write faults in chunks it never touched.
     fn clone(&self) -> Self {
         let data = OnceLock::new();
         if let Some(rows) = self.data.get() {
@@ -191,16 +206,38 @@ impl<T: Record> Arena<T> {
         let loc = cell
             .loc
             .expect("a chunk with no location is always resident");
+        let bytes = self.read_verified(loc, index)?;
+        Ok(cell.fill_once(decode_rows::<T>(&bytes)))
+    }
+
+    fn make_resident(&self, index: usize) -> io::Result<()> {
+        self.chunk(index)?;
+        Ok(())
+    }
+
+    fn read_verified(&self, loc: ChunkLoc, index: usize) -> io::Result<Vec<u8>> {
         let source = self
             .source
             .as_ref()
             .ok_or_else(|| invalid("arena has an on-disk chunk but no source"))?;
-
         let bytes = source.read_chunk(loc)?;
-        let rows = decode_chunk::<T>(&bytes, loc, index)?;
-        // A concurrent reader may have won the race; either decoding is valid.
-        let _ = cell.data.set(rows);
-        Ok(cell.data.get().expect("just set"))
+
+        let actual = fnv1a(&bytes);
+        if actual != loc.fnv {
+            return Err(invalid(format!(
+                "chunk {index} at offset {} failed checksum: stored {:#018x}, computed {actual:#018x}",
+                loc.offset, loc.fnv
+            )));
+        }
+        if bytes.len() != loc.rows as usize * T::SIZE {
+            return Err(invalid(format!(
+                "chunk {index} read {} bytes for {} rows of {}",
+                bytes.len(),
+                loc.rows,
+                T::SIZE
+            )));
+        }
+        Ok(bytes)
     }
 
     pub fn prefetch(&self) -> io::Result<()> {
@@ -269,13 +306,11 @@ impl<T: Record> Arena<T> {
                     self.chunk_rows,
                 ))));
         } else {
-            // Fault in before unsharing: make_mut on an unloaded chunk clones it
-            // as unloaded, leaving nothing to append to.
-            self.chunk(self.chunks.len() - 1)?;
+            self.make_resident(self.chunks.len() - 1)?;
         }
 
-        let cell = Arc::make_mut(self.chunks.last_mut().expect("just ensured"));
-        cell.loc = None;
+        let cell = Arc::make_mut(self.chunks.last_mut().expect("chunk just ensured"));
+        cell.detach_from_disk();
         Ok(cell.data.get_mut().expect("resident"))
     }
 
@@ -311,15 +346,24 @@ impl<T: Record> Arena<T> {
             return Err(invalid(format!("index {index} past end {}", self.len)));
         }
         let chunk_index = index / self.chunk_rows;
-        self.chunk(chunk_index)?;
+        self.make_resident(chunk_index)?;
         let cell = Arc::make_mut(&mut self.chunks[chunk_index]);
-        cell.loc = None;
+        cell.detach_from_disk();
         cell.data.get_mut().expect("resident")[index % self.chunk_rows] = item;
         Ok(())
     }
 
     #[allow(clippy::chunks_exact_to_as_chunks)]
     pub fn chunk_bytes(&self, index: usize) -> io::Result<Vec<u8>> {
+        let cell = self
+            .chunks
+            .get(index)
+            .ok_or_else(|| invalid(format!("chunk {index} out of range")))?;
+
+        if let Some(loc) = cell.still_on_disk() {
+            return self.read_verified(loc, index);
+        }
+
         let rows = self.chunk(index)?;
         let mut bytes = vec![0u8; rows.len() * T::SIZE];
         for (row, slot) in rows.iter().zip(bytes.chunks_exact_mut(T::SIZE)) {
@@ -356,23 +400,8 @@ impl Arena<u8> {
 }
 
 #[allow(clippy::chunks_exact_to_as_chunks)]
-fn decode_chunk<T: Record>(bytes: &[u8], loc: ChunkLoc, index: usize) -> io::Result<Vec<T>> {
-    let actual = fnv1a(bytes);
-    if actual != loc.fnv {
-        return Err(invalid(format!(
-            "chunk {index} at offset {} failed checksum: stored {:#018x}, computed {actual:#018x}",
-            loc.offset, loc.fnv
-        )));
-    }
-    let rows = loc.rows as usize;
-    if bytes.len() != rows * T::SIZE {
-        return Err(invalid(format!(
-            "chunk {index} read {} bytes for {rows} rows of {}",
-            bytes.len(),
-            T::SIZE
-        )));
-    }
-    Ok(bytes.chunks_exact(T::SIZE).map(T::decode).collect())
+fn decode_rows<T: Record>(bytes: &[u8]) -> Vec<T> {
+    bytes.chunks_exact(T::SIZE).map(T::decode).collect()
 }
 
 pub(crate) fn invalid(message: impl Into<String>) -> io::Error {
