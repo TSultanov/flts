@@ -417,10 +417,7 @@ impl Arena<u8> {
     }
 
     pub fn bytes(&self, blob: Blob) -> Result<Cow<'_, [u8]>> {
-        let within = blob
-            .start
-            .checked_add(u64::from(blob.len))
-            .is_some_and(|end| end <= self.len() as u64);
+        let within = blob.end().is_some_and(|end| end <= self.len() as u64);
         if !within {
             return Err(Error::corrupt(
                 "blob",

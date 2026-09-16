@@ -19,8 +19,8 @@ impl Blob {
         self.len == 0
     }
 
-    pub const fn end(self) -> u64 {
-        self.start + self.len as u64
+    pub const fn end(self) -> Option<u64> {
+        self.start.checked_add(self.len as u64)
     }
 }
 
