@@ -383,3 +383,45 @@ fn an_abandoned_commit_does_not_permanently_waste_space() {
         "the abandoned bytes were written over, not skipped"
     );
 }
+
+#[test]
+fn losing_the_mark_and_the_slot_together_still_cannot_clobber_a_reader() {
+    let dir = TempDir::new("eof_floor");
+    let path = dir.join("values.dbs");
+    seed(&path, &(0..10).collect::<Vec<u32>>());
+
+    let file = ColumnFile::open(&path).unwrap();
+    let mut column = file.column::<u32>("values").unwrap();
+    column.try_set(5, 555).unwrap();
+    let mut updater = file.update(this_device()).unwrap();
+    updater.column("values", &column).unwrap();
+    assert_eq!(updater.commit().unwrap(), 2);
+
+    let reader = ColumnFile::open(&path).unwrap();
+    assert_eq!(reader.generation(), 2);
+    let snapshot = reader.column::<u32>("values").unwrap();
+    assert_eq!(snapshot.resident_chunks(), 0);
+
+    flip_byte(&path, SLOT_B);
+    flip_byte(&path, APPEND_MARK);
+
+    let fallen_back = ColumnFile::open(&path).unwrap();
+    assert_eq!(fallen_back.generation(), 1);
+
+    let mut column = fallen_back.column::<u32>("values").unwrap();
+    column.try_set(0, 111).unwrap();
+    let mut updater = fallen_back.update(this_device()).unwrap();
+    updater.column("values", &column).unwrap();
+    updater.commit().unwrap();
+
+    snapshot.prefetch().unwrap();
+    assert_eq!(
+        snapshot
+            .try_iter()
+            .map(|row| row.copied())
+            .collect::<io::Result<Vec<_>>>()
+            .unwrap(),
+        vec![0, 1, 2, 3, 4, 555, 6, 7, 8, 9],
+        "the file length floored the cursor above generation 2"
+    );
+}

@@ -56,10 +56,10 @@ impl ColumnFileUpdater {
         }
         let target_slot = if newest_at == SLOT_A { SLOT_B } else { SLOT_A };
 
-        let mark = read_append_mark(&file, reader.file_uuid())?;
-        let cursor = newest
-            .dir_end()
-            .max(mark.map_or(0, |mark| mark.append_from));
+        let cursor = match read_append_mark(&file, reader.file_uuid())? {
+            Some(mark) => newest.dir_end().max(mark.append_from),
+            None => newest.dir_end().max(file.metadata()?.len()),
+        };
 
         Ok(Self {
             file,
