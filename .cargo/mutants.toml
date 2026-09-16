@@ -1,0 +1,4 @@
+timeout_multiplier = 3.0
+minimum_test_timeout = 30
+error_values = ["crate::error::Error::invalid(\"mutant\")"]
+exclude_re = []
