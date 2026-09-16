@@ -24,7 +24,7 @@ macro_rules! impl_record_for_int {
 impl_record_for_int!(u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
 
 impl Record for bool {
-    const SIZE: usize = 1;
+    const SIZE: usize = size_of::<u8>();
 
     fn encode(&self, out: &mut [u8]) {
         out[0] = *self as u8;
@@ -36,7 +36,7 @@ impl Record for bool {
 }
 
 impl<T: ?Sized + 'static> Record for Id<T> {
-    const SIZE: usize = 8;
+    const SIZE: usize = size_of::<u64>();
 
     fn encode(&self, out: &mut [u8]) {
         out.copy_from_slice(&self.raw().to_le_bytes());
@@ -50,7 +50,7 @@ impl<T: ?Sized + 'static> Record for Id<T> {
 }
 
 impl<T: ?Sized + 'static> Record for Option<Id<T>> {
-    const SIZE: usize = 8;
+    const SIZE: usize = size_of::<u64>();
 
     fn encode(&self, out: &mut [u8]) {
         let raw = match self {

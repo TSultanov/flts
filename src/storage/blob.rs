@@ -24,8 +24,10 @@ impl Blob {
     }
 }
 
+const _: () = assert!(<Blob as Record>::SIZE == 12);
+
 impl Record for Blob {
-    const SIZE: usize = 12;
+    const SIZE: usize = size_of::<u64>() + size_of::<u32>();
 
     fn encode(&self, out: &mut [u8]) {
         out[..8].copy_from_slice(&self.start.to_le_bytes());
