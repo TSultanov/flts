@@ -1,4 +1,6 @@
 use super::*;
+use crate::test_utils::props;
+use proptest::prelude::*;
 
 #[test]
 fn blob_spans_are_half_open() {
@@ -22,4 +24,26 @@ fn a_blob_round_trips_through_its_twelve_bytes() {
     blob.encode(&mut buf);
     assert_eq!(<Blob as Record>::SIZE, 12);
     assert_eq!(Blob::decode(&buf), blob);
+}
+
+proptest! {
+    #[test]
+    fn a_blob_round_trips_through_its_twelve_bytes_wherever_it_points(
+        start in props::interesting_u64(),
+        len in props::interesting_u32(),
+    ) {
+        let blob = Blob::new(start, len);
+        let mut buf = [0u8; <Blob as Record>::SIZE];
+        blob.encode(&mut buf);
+
+        prop_assert_eq!(Blob::decode(&buf), blob);
+        prop_assert_eq!(blob.is_empty(), len == 0);
+    }
+
+    #[test]
+    fn every_twelve_bytes_decode_as_a_blob_and_re_encode_unchanged(bytes: [u8; 12]) {
+        let mut again = [0u8; <Blob as Record>::SIZE];
+        Blob::decode(&bytes).encode(&mut again);
+        prop_assert_eq!(again, bytes);
+    }
 }

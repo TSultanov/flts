@@ -1,4 +1,5 @@
 use super::*;
+use proptest::prelude::*;
 
 #[test]
 fn reads_little_endian_values_in_sequence() {
@@ -38,4 +39,32 @@ fn a_length_that_overflows_the_position_is_an_error() {
     cursor.take(2).unwrap();
     let err = cursor.take(usize::MAX).unwrap_err();
     assert!(err.to_string().contains("offset overflow"), "{err}");
+}
+
+proptest! {
+    #[test]
+    fn a_cursor_never_reads_past_the_slice_it_was_given(
+        bytes in prop::collection::vec(any::<u8>(), 0..64),
+        script in prop::collection::vec(0usize..4, 0..24),
+    ) {
+        let mut cursor = Cursor::new(&bytes);
+        let mut at = 0usize;
+
+        for step in script {
+            let (wanted, read) = match step {
+                0 => (1, cursor.u8().map(|value| vec![value])),
+                1 => (4, cursor.u32().map(|value| value.to_le_bytes().to_vec())),
+                2 => (8, cursor.u64().map(|value| value.to_le_bytes().to_vec())),
+                _ => (3, cursor.take(3).map(<[u8]>::to_vec)),
+            };
+
+            match read {
+                Ok(got) => {
+                    prop_assert_eq!(got.as_slice(), &bytes[at..at + wanted]);
+                    at += wanted;
+                }
+                Err(err) => prop_assert!(err.is_corrupt()),
+            }
+        }
+    }
 }

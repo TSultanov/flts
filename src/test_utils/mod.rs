@@ -1,6 +1,7 @@
 //! Helpers shared by test modules.
 
 mod flip_byte;
+pub mod props;
 mod temp_dir;
 
 pub use flip_byte::flip_byte;

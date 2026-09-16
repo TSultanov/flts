@@ -1,5 +1,8 @@
 use super::*;
+use crate::test_utils::props;
+use proptest::prelude::*;
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 
 struct Chapter;
 struct Paragraph;
@@ -30,4 +33,40 @@ fn debug_names_the_table() {
         format!("{:?}", Id::<Paragraph>::from_index(12)),
         "Id<Paragraph>(12)"
     );
+}
+
+fn hash_of<T: Hash>(value: &T) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
+}
+
+proptest! {
+    #[test]
+    fn an_id_hashes_as_the_number_it_wraps(raw in props::interesting_u64()) {
+        prop_assert_eq!(hash_of(&Id::<Chapter>::from_raw(raw)), hash_of(&raw));
+    }
+
+    #[test]
+    fn an_id_orders_and_compares_by_its_raw_value(
+        a in props::interesting_u64(),
+        b in props::interesting_u64(),
+    ) {
+        let left = Id::<Chapter>::from_raw(a);
+        let right = Id::<Chapter>::from_raw(b);
+        prop_assert_eq!(left.cmp(&right), a.cmp(&b));
+        prop_assert_eq!(left == right, a == b);
+    }
+
+    #[test]
+    fn casting_an_id_to_another_table_keeps_its_raw_value(raw in props::interesting_u64()) {
+        let id = Id::<Chapter>::from_raw(raw);
+        prop_assert_eq!(id.cast::<Paragraph>().raw(), raw);
+        prop_assert_eq!(id.cast::<Paragraph>().cast::<Chapter>(), id);
+    }
+
+    #[test]
+    fn an_index_survives_the_trip_through_a_raw_value(index: usize) {
+        prop_assert_eq!(Id::<Chapter>::from_index(index).index(), index);
+    }
 }

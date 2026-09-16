@@ -14,10 +14,6 @@ impl<T: ?Sized> Id<T> {
     pub const NULL: u64 = u64::MAX;
 
     pub const fn from_raw(raw: u64) -> Self {
-        debug_assert!(
-            raw != Self::NULL,
-            "Id::NULL is reserved for the None encoding"
-        );
         Self {
             raw,
             marker: PhantomData,

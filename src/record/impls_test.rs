@@ -1,5 +1,7 @@
 use super::*;
 use crate::id::Id;
+use crate::test_utils::props;
+use proptest::prelude::*;
 
 struct Chapter;
 
@@ -49,4 +51,90 @@ fn null_decodes_as_none_not_as_an_id() {
     None::<Id<Chapter>>.encode(&mut buf);
     assert_eq!(buf, u64::MAX.to_le_bytes());
     assert_eq!(<Option<Id<Chapter>> as Record>::decode(&buf), None);
+}
+
+proptest! {
+    #[test]
+    fn every_byte_pattern_decodes_without_panicking(raw in props::interesting_u64()) {
+        let bytes = raw.to_le_bytes();
+        <u8 as Record>::decode(&bytes[..1]);
+        <bool as Record>::decode(&bytes[..1]);
+        <u16 as Record>::decode(&bytes[..2]);
+        <u32 as Record>::decode(&bytes[..4]);
+        <u64 as Record>::decode(&bytes);
+        <i8 as Record>::decode(&bytes[..1]);
+        <i16 as Record>::decode(&bytes[..2]);
+        <i32 as Record>::decode(&bytes[..4]);
+        <i64 as Record>::decode(&bytes);
+        <f32 as Record>::decode(&bytes[..4]);
+        <f64 as Record>::decode(&bytes);
+        <Id<Chapter> as Record>::decode(&bytes);
+        <Option<Id<Chapter>> as Record>::decode(&bytes);
+    }
+
+    #[test]
+    fn every_integer_record_round_trips_through_its_own_encoding(
+        a: u8, b: u16, c: u32, d: u64, e: i8, f: i16, g: i32, h: i64, bit: bool,
+    ) {
+        roundtrip(a);
+        roundtrip(b);
+        roundtrip(c);
+        roundtrip(d);
+        roundtrip(e);
+        roundtrip(f);
+        roundtrip(g);
+        roundtrip(h);
+        roundtrip(bit);
+    }
+
+    #[test]
+    fn floats_round_trip_bit_for_bit_including_nan(narrow: u32, wide: u64) {
+        let mut four = [0u8; 4];
+        f32::from_bits(narrow).encode(&mut four);
+        prop_assert_eq!(<f32 as Record>::decode(&four).to_bits(), narrow);
+
+        let mut eight = [0u8; 8];
+        f64::from_bits(wide).encode(&mut eight);
+        prop_assert_eq!(<f64 as Record>::decode(&eight).to_bits(), wide);
+    }
+
+    #[test]
+    fn a_re_encoded_record_reproduces_the_bytes_it_came_from(raw in props::interesting_u64()) {
+        let bytes = raw.to_le_bytes();
+        let mut again = [0u8; 8];
+
+        <u64 as Record>::decode(&bytes).encode(&mut again);
+        prop_assert_eq!(again, bytes);
+
+        <i64 as Record>::decode(&bytes).encode(&mut again);
+        prop_assert_eq!(again, bytes);
+
+        <Id<Chapter> as Record>::decode(&bytes).encode(&mut again);
+        prop_assert_eq!(again, bytes);
+
+        <Option<Id<Chapter>> as Record>::decode(&bytes).encode(&mut again);
+        prop_assert_eq!(again, bytes);
+    }
+
+    #[test]
+    fn a_bool_reads_as_false_only_for_a_zero_byte_and_writes_back_canonically(byte: u8) {
+        let value = <bool as Record>::decode(&[byte]);
+        prop_assert_eq!(value, byte != 0);
+
+        let mut out = [0u8; 1];
+        value.encode(&mut out);
+        prop_assert_eq!(out[0], u8::from(byte != 0));
+    }
+
+    #[test]
+    fn a_null_id_only_round_trips_as_none(raw in props::interesting_u64()) {
+        let bytes = raw.to_le_bytes();
+        let decoded = <Option<Id<Chapter>> as Record>::decode(&bytes);
+
+        if raw == Id::<Chapter>::NULL {
+            prop_assert_eq!(decoded, None);
+        } else {
+            prop_assert_eq!(decoded.map(Id::raw), Some(raw));
+        }
+    }
 }
