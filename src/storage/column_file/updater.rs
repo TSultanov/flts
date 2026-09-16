@@ -4,13 +4,14 @@ use std::fs::{File, OpenOptions};
 use std::io;
 use std::sync::Arc;
 
+use super::append_mark::{AppendMark, read_append_mark};
 use super::codec::Codec;
 use super::column_meta::{ColumnMeta, content_id, write_directory};
 use super::commit_slot::{CommitSlot, newest_slot};
 use super::file_source::write_all_at;
 use super::reader::ColumnFile;
 use super::writer_id::WriterId;
-use super::{SLOT_A, SLOT_B};
+use super::{APPEND_MARK, SLOT_A, SLOT_B};
 use crate::record::Record;
 use crate::storage::arena::{Arena, ChunkLoc, ChunkSource, invalid};
 use crate::storage::hash::fnv1a;
@@ -55,6 +56,11 @@ impl ColumnFileUpdater {
         }
         let target_slot = if newest_at == SLOT_A { SLOT_B } else { SLOT_A };
 
+        let mark = read_append_mark(&file, reader.file_uuid())?;
+        let cursor = newest
+            .dir_end()
+            .max(mark.map_or(0, |mark| mark.append_from));
+
         Ok(Self {
             file,
             source,
@@ -62,7 +68,7 @@ impl ColumnFileUpdater {
             writer_id,
             expected_generation: newest.generation,
             target_slot,
-            cursor: newest.dir_end(),
+            cursor,
             previous: reader.columns().to_vec(),
             previous_content_id: newest.content_id,
             columns: Vec::new(),
@@ -160,6 +166,9 @@ impl ColumnFileUpdater {
         );
         write_all_at(&self.file, &slot.to_bytes(), self.target_slot)?;
         self.file.sync_data()?;
+
+        let mark = AppendMark::new(self.file_uuid, dir_offset + dir_len, generation);
+        write_all_at(&self.file, &mark.to_bytes(), APPEND_MARK)?;
         Ok(generation)
     }
 }

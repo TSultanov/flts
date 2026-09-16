@@ -4,12 +4,13 @@ use std::fs::File;
 use std::io::{self, Seek, SeekFrom, Write};
 use std::path::Path;
 
+use super::append_mark::AppendMark;
 use super::codec::Codec;
 use super::column_meta::{ColumnMeta, content_id, write_directory};
 use super::commit_slot::CommitSlot;
 use super::header::{Header, new_file_uuid};
 use super::writer_id::WriterId;
-use super::{HEAD_LEN, SLOT_A};
+use super::{APPEND_MARK, HEAD_LEN, SLOT_A};
 use crate::record::Record;
 use crate::storage::arena::{Arena, ChunkLoc, invalid};
 use crate::storage::hash::fnv1a;
@@ -90,6 +91,10 @@ impl<W: Write + Seek> ColumnFileWriter<W> {
         );
         self.out.seek(SeekFrom::Start(SLOT_A))?;
         self.out.write_all(&slot.to_bytes())?;
+
+        let mark = AppendMark::new(self.file_uuid, dir_offset + dir_len, 1);
+        self.out.seek(SeekFrom::Start(APPEND_MARK))?;
+        self.out.write_all(&mark.to_bytes())?;
         self.out.flush()?;
         Ok(self.out)
     }

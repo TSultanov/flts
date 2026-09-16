@@ -305,3 +305,81 @@ fn every_commit_records_who_wrote_it() {
     assert_eq!(after.writer_id(), peer);
     assert_ne!(after.writer_id(), this_device());
 }
+
+#[test]
+fn a_lost_slot_cannot_make_a_writer_overwrite_a_live_reader() {
+    let dir = TempDir::new("append_mark");
+    let path = dir.join("values.dbs");
+    seed(&path, &(0..10).collect::<Vec<u32>>());
+
+    let file = ColumnFile::open(&path).unwrap();
+    let mut column = file.column::<u32>("values").unwrap();
+    column.try_set(5, 555).unwrap();
+    let mut updater = file.update(this_device()).unwrap();
+    updater.column("values", &column).unwrap();
+    assert_eq!(updater.commit().unwrap(), 2);
+
+    let reader = ColumnFile::open(&path).unwrap();
+    assert_eq!(reader.generation(), 2);
+    let snapshot = reader.column::<u32>("values").unwrap();
+    assert_eq!(snapshot.resident_chunks(), 0);
+
+    flip_byte(&path, SLOT_B);
+    let fallen_back = ColumnFile::open(&path).unwrap();
+    assert_eq!(fallen_back.generation(), 1, "the newest commit is gone");
+
+    let mut column = fallen_back.column::<u32>("values").unwrap();
+    column.try_set(0, 111).unwrap();
+    let mut updater = fallen_back.update(this_device()).unwrap();
+    updater.column("values", &column).unwrap();
+    updater.commit().unwrap();
+
+    snapshot.prefetch().unwrap();
+    assert_eq!(
+        snapshot
+            .try_iter()
+            .map(|row| row.copied())
+            .collect::<io::Result<Vec<_>>>()
+            .unwrap(),
+        vec![0, 1, 2, 3, 4, 555, 6, 7, 8, 9],
+        "generation 2's chunks were not written over"
+    );
+    assert_eq!(read_all(&path)[0], 111);
+}
+
+#[test]
+fn an_abandoned_commit_does_not_permanently_waste_space() {
+    let dir = TempDir::new("reclaim");
+    let clean = dir.join("clean.dbs");
+    let abandoned = dir.join("abandoned.dbs");
+    seed(&clean, &(0..10).collect::<Vec<u32>>());
+    seed(&abandoned, &(0..10).collect::<Vec<u32>>());
+
+    {
+        let file = ColumnFile::open(&abandoned).unwrap();
+        let mut column = file.column::<u32>("values").unwrap();
+        column.try_set(0, 111).unwrap();
+        let mut updater = file.update(this_device()).unwrap();
+        updater.column("values", &column).unwrap();
+    }
+    assert!(
+        len_of(&abandoned) > len_of(&clean),
+        "the abandoned payload reached the file"
+    );
+    assert_eq!(ColumnFile::open(&abandoned).unwrap().generation(), 1);
+
+    for path in [&clean, &abandoned] {
+        let file = ColumnFile::open(path).unwrap();
+        let mut column = file.column::<u32>("values").unwrap();
+        column.try_set(0, 222).unwrap();
+        let mut updater = file.update(this_device()).unwrap();
+        updater.column("values", &column).unwrap();
+        updater.commit().unwrap();
+    }
+
+    assert_eq!(
+        len_of(&clean),
+        len_of(&abandoned),
+        "the abandoned bytes were written over, not skipped"
+    );
+}
