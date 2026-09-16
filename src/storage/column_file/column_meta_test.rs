@@ -119,3 +119,49 @@ fn adjacent_chunks_are_not_overlapping() {
     let read = read_directory(&bytes, DIRECTORY).unwrap();
     assert_eq!(read[0].chunks[0].offset + 32, read[0].chunks[1].offset);
 }
+
+fn one_column_claiming(chunk_count: u32) -> Vec<u8> {
+    let mut bytes = 1u32.to_le_bytes().to_vec();
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    bytes.push(b'a');
+    bytes.extend_from_slice(&4u32.to_le_bytes());
+    bytes.extend_from_slice(&4u64.to_le_bytes());
+    bytes.extend_from_slice(&0u64.to_le_bytes());
+    bytes.push(Codec::Raw as u8);
+    bytes.extend_from_slice(&chunk_count.to_le_bytes());
+    bytes
+}
+
+#[test]
+fn the_hand_built_directory_is_one_the_reader_accepts() {
+    let read = read_directory(&one_column_claiming(0), DIRECTORY).unwrap();
+    assert_eq!(read.len(), 1);
+    assert_eq!(read[0].name, "a");
+    assert!(read[0].chunks.is_empty());
+}
+
+#[test]
+fn a_directory_claiming_four_billion_columns_is_rejected_without_reserving_for_them() {
+    let mut lying = u32::MAX.to_le_bytes().to_vec();
+    lying.extend_from_slice(&write_directory(&sample())[4..]);
+
+    let err = read_directory(&lying, DIRECTORY).unwrap_err();
+    assert!(err.to_string().contains("ends mid-record"), "{err}");
+}
+
+#[test]
+fn a_column_claiming_four_billion_chunks_is_rejected_without_reserving_for_them() {
+    let err = read_directory(&one_column_claiming(u32::MAX), DIRECTORY).unwrap_err();
+    assert!(err.to_string().contains("ends mid-record"), "{err}");
+}
+
+#[test]
+fn a_column_chunked_zero_rows_at_a_time_is_rejected() {
+    let mut unchunked = sample();
+    unchunked[0].chunk_rows = 0;
+    let bytes = write_directory(&unchunked);
+
+    let err = read_directory(&bytes, DIRECTORY).unwrap_err();
+    assert!(err.to_string().contains("zero rows at a time"), "{err}");
+    assert!(err.is_corrupt());
+}

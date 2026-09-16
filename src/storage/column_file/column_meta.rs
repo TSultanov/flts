@@ -65,17 +65,23 @@ pub(super) fn write_directory(columns: &[ColumnMeta]) -> Vec<u8> {
 pub(super) fn read_directory(bytes: &[u8], dir_offset: u64) -> Result<Vec<ColumnMeta>> {
     let mut cursor = Cursor::new(bytes);
     let count = cursor.u32()? as usize;
-    let mut columns = Vec::with_capacity(count);
+    let mut columns = Vec::new();
     for _ in 0..count {
         let name_len = cursor.u32()? as usize;
         let name = String::from_utf8(cursor.take(name_len)?.to_vec())
             .map_err(|_| Error::corrupt("directory", "column name is not utf-8"))?;
         let elem_size = cursor.u32()?;
         let chunk_rows = cursor.u64()?;
+        if chunk_rows == 0 {
+            return Err(Error::corrupt(
+                "directory",
+                format!("column {name:?} is chunked zero rows at a time"),
+            ));
+        }
         let rows = cursor.u64()?;
         let codec = Codec::from_u8(cursor.u8()?)?;
         let chunk_count = cursor.u32()? as usize;
-        let mut chunks = Vec::with_capacity(chunk_count);
+        let mut chunks = Vec::new();
         for _ in 0..chunk_count {
             let loc = ChunkLoc {
                 offset: cursor.u64()?,
