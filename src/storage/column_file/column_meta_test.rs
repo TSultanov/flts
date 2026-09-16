@@ -1,4 +1,6 @@
 use super::*;
+use crate::test_utils::props;
+use proptest::prelude::*;
 
 const FIRST: u64 = HEAD_LEN;
 const SECOND: u64 = HEAD_LEN + 32;
@@ -114,6 +116,20 @@ fn overlapping_chunks_are_rejected() {
 }
 
 #[test]
+fn a_chunk_that_claims_no_bytes_cannot_overlap_anything() {
+    let mut empty_inside = sample();
+    empty_inside[1].chunks = vec![ChunkLoc {
+        offset: FIRST + 8,
+        byte_len: 0,
+        rows: 0,
+        fnv: 0,
+    }];
+
+    let read = read_directory(&write_directory(&empty_inside), DIRECTORY).unwrap();
+    assert_eq!(read[1].chunks[0].byte_len, 0);
+}
+
+#[test]
 fn adjacent_chunks_are_not_overlapping() {
     let bytes = write_directory(&sample());
     let read = read_directory(&bytes, DIRECTORY).unwrap();
@@ -164,4 +180,150 @@ fn a_column_chunked_zero_rows_at_a_time_is_rejected() {
     let err = read_directory(&bytes, DIRECTORY).unwrap_err();
     assert!(err.to_string().contains("zero rows at a time"), "{err}");
     assert!(err.is_corrupt());
+}
+
+fn a_directory() -> impl Strategy<Value = (Vec<ColumnMeta>, u64)> {
+    prop::collection::vec(
+        (
+            "[a-z.]{0,10}",
+            1u32..=8,
+            prop::collection::vec(0u32..6, 0..4),
+        ),
+        0..4,
+    )
+    .prop_map(|specs| {
+        let mut at = HEAD_LEN;
+        let mut columns = Vec::new();
+
+        for (index, (name, elem_size, counts)) in specs.into_iter().enumerate() {
+            let mut chunks = Vec::new();
+            let mut rows = 0u64;
+            for count in counts {
+                let byte_len = count * elem_size;
+                chunks.push(ChunkLoc {
+                    offset: at,
+                    byte_len,
+                    rows: count,
+                    fnv: u64::from(count) * 0x11,
+                });
+                at += u64::from(byte_len);
+                rows += u64::from(count);
+            }
+
+            columns.push(ColumnMeta {
+                name: format!("{index}{name}"),
+                elem_size,
+                chunk_rows: 8,
+                rows,
+                codec: Codec::Raw,
+                chunks,
+            });
+        }
+
+        (columns, at)
+    })
+}
+
+proptest! {
+    #[test]
+    fn a_directory_round_trips_every_column_it_describes((columns, dir_offset) in a_directory()) {
+        let read = read_directory(&write_directory(&columns), dir_offset).unwrap();
+
+        prop_assert_eq!(read.len(), columns.len());
+        for (read, written) in read.iter().zip(&columns) {
+            prop_assert_eq!(&read.name, &written.name);
+            prop_assert_eq!(read.elem_size, written.elem_size);
+            prop_assert_eq!(read.chunk_rows, written.chunk_rows);
+            prop_assert_eq!(read.rows, written.rows);
+            prop_assert_eq!(&read.chunks, &written.chunks);
+        }
+    }
+
+    #[test]
+    fn content_id_does_not_depend_on_the_order_columns_were_offered(
+        (columns, _) in a_directory(),
+        rotation in any::<prop::sample::Index>(),
+    ) {
+        prop_assume!(!columns.is_empty());
+
+        let mut shuffled = columns.clone();
+        shuffled.rotate_left(rotation.index(columns.len()));
+
+        prop_assert_eq!(content_id(&shuffled), content_id(&columns));
+    }
+
+    #[test]
+    fn content_id_ignores_where_chunks_live_but_not_what_they_hold(
+        (columns, _) in a_directory(),
+        shift in 1u64..4096,
+    ) {
+        prop_assume!(columns.iter().any(|column| !column.chunks.is_empty()));
+        let was = content_id(&columns);
+
+        let mut moved = columns.clone();
+        for column in &mut moved {
+            for chunk in &mut column.chunks {
+                chunk.offset += shift;
+            }
+        }
+        prop_assert_eq!(content_id(&moved), was);
+
+        let mut relabelled = columns.clone();
+        relabelled[0].name.push('!');
+        prop_assert_ne!(content_id(&relabelled), was);
+
+        let mut rechunked = columns.clone();
+        for column in &mut rechunked {
+            for chunk in &mut column.chunks {
+                chunk.fnv ^= 0xff;
+            }
+        }
+        prop_assert_ne!(content_id(&rechunked), was);
+    }
+
+    #[test]
+    fn two_columns_can_never_claim_the_same_byte(
+        (columns, dir_offset) in a_directory(),
+        overlap in 1u64..32,
+    ) {
+        prop_assert!(read_directory(&write_directory(&columns), dir_offset).is_ok());
+
+        let occupied: Vec<(usize, usize)> = columns
+            .iter()
+            .enumerate()
+            .flat_map(|(column, meta)| {
+                meta.chunks
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, chunk)| chunk.byte_len > 0)
+                    .map(move |(chunk, _)| (column, chunk))
+            })
+            .collect();
+        prop_assume!(occupied.len() >= 2);
+
+        let (column, chunk) = occupied[occupied.len() - 1];
+        let mut clashing = columns.clone();
+        let moved = &mut clashing[column].chunks[chunk];
+        moved.offset -= overlap.min(moved.offset - HEAD_LEN);
+
+        let err = read_directory(&write_directory(&clashing), dir_offset).unwrap_err();
+        prop_assert!(err.to_string().contains("overlap"), "{err}");
+        prop_assert!(err.is_corrupt());
+    }
+
+    #[test]
+    fn read_directory_refuses_every_directory_the_writer_could_not_have_written(
+        bytes in prop::collection::vec(any::<u8>(), 0..256),
+        dir_offset in props::interesting_u64(),
+    ) {
+        if let Ok(columns) = read_directory(&bytes, dir_offset) {
+            for column in &columns {
+                prop_assert!(column.chunk_rows > 0);
+                for chunk in &column.chunks {
+                    prop_assert!(chunk.offset >= HEAD_LEN);
+                    prop_assert!(chunk.offset + u64::from(chunk.byte_len) <= dir_offset);
+                }
+            }
+        }
+    }
 }

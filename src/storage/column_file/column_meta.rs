@@ -24,8 +24,11 @@ impl ColumnMeta {
 }
 
 pub(super) fn content_id(columns: &[ColumnMeta]) -> u64 {
+    let mut ordered: Vec<&ColumnMeta> = columns.iter().collect();
+    ordered.sort_by(|left, right| left.name.cmp(&right.name));
+
     let mut bytes = Vec::new();
-    for column in columns {
+    for column in ordered {
         bytes.extend_from_slice(&(column.name.len() as u32).to_le_bytes());
         bytes.extend_from_slice(column.name.as_bytes());
         bytes.extend_from_slice(&column.elem_size.to_le_bytes());
