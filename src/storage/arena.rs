@@ -1,7 +1,7 @@
 //! Chunked, copy-on-write, lazily-loaded column storage.
 
 use std::borrow::Cow;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use super::blob::Blob;
 use super::hash::fnv1a;
@@ -30,10 +30,25 @@ pub trait ChunkSource: Send + Sync {
     fn read_chunk(&self, loc: ChunkLoc) -> Result<Vec<u8>>;
 }
 
+#[derive(Clone)]
+struct Damage {
+    record: &'static str,
+    detail: String,
+}
+
+impl Damage {
+    fn to_error(&self) -> Error {
+        Error::corrupt(self.record, self.detail.clone())
+    }
+}
+
+type Settled<T> = std::result::Result<Vec<T>, Damage>;
+
 enum ChunkCell<T> {
     Clean {
         loc: ChunkLoc,
-        rows: OnceLock<Vec<T>>,
+        rows: OnceLock<Settled<T>>,
+        loading: Mutex<()>,
     },
     Dirty(Vec<T>),
 }
@@ -43,12 +58,16 @@ impl<T> ChunkCell<T> {
         Self::Clean {
             loc,
             rows: OnceLock::new(),
+            loading: Mutex::new(()),
         }
     }
 
     fn resident_rows(&self) -> Option<&[T]> {
         match self {
-            Self::Clean { rows, .. } => rows.get().map(Vec::as_slice),
+            Self::Clean { rows, .. } => rows
+                .get()
+                .and_then(|settled| settled.as_ref().ok())
+                .map(Vec::as_slice),
             Self::Dirty(rows) => Some(rows),
         }
     }
@@ -62,7 +81,7 @@ impl<T> ChunkCell<T> {
 
     fn still_on_disk(&self) -> Option<ChunkLoc> {
         match self {
-            Self::Clean { loc, rows } if rows.get().is_none() => Some(*loc),
+            Self::Clean { loc, rows, .. } if rows.get().is_none() => Some(*loc),
             _ => None,
         }
     }
@@ -71,7 +90,8 @@ impl<T> ChunkCell<T> {
         if let Self::Clean { rows, .. } = self {
             let taken = rows
                 .take()
-                .expect("chunk must be resident before it is owned");
+                .and_then(|settled| settled.ok())
+                .expect("a chunk is owned only after it loads cleanly");
             *self = Self::Dirty(taken);
         }
         let Self::Dirty(rows) = self else {
@@ -84,9 +104,10 @@ impl<T> ChunkCell<T> {
 impl<T: Clone> Clone for ChunkCell<T> {
     fn clone(&self) -> Self {
         match self {
-            Self::Clean { loc, rows } => Self::Clean {
+            Self::Clean { loc, rows, .. } => Self::Clean {
                 loc: *loc,
                 rows: rows.get().cloned().map(OnceLock::from).unwrap_or_default(),
+                loading: Mutex::new(()),
             },
             Self::Dirty(rows) => Self::Dirty(rows.clone()),
         }
@@ -249,16 +270,37 @@ impl<T: Record> Arena<T> {
     pub fn chunk(&self, index: usize) -> Result<&[T]> {
         let cell = &self.chunks[index];
 
-        let (loc, rows) = match &**cell {
+        let (loc, rows, loading) = match &**cell {
             ChunkCell::Dirty(rows) => return Ok(rows),
-            ChunkCell::Clean { loc, rows } => (loc, rows),
+            ChunkCell::Clean { loc, rows, loading } => (loc, rows, loading),
         };
-        if let Some(loaded) = rows.get() {
-            return Ok(loaded);
+        if let Some(settled) = rows.get() {
+            return settled
+                .as_ref()
+                .map(Vec::as_slice)
+                .map_err(Damage::to_error);
         }
 
-        let bytes = self.read_verified(*loc, index)?;
-        Ok(rows.get_or_init(|| decode_rows::<T>(&bytes)))
+        let _loading = loading.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(settled) = rows.get() {
+            return settled
+                .as_ref()
+                .map(Vec::as_slice)
+                .map_err(Damage::to_error);
+        }
+
+        let settled = match self
+            .read_verified(*loc, index)
+            .map(|bytes| decode_rows::<T>(&bytes))
+        {
+            Ok(rows) => Ok(rows),
+            Err(Error::Corrupt { record, detail }) => Err(Damage { record, detail }),
+            Err(passing) => return Err(passing),
+        };
+        rows.get_or_init(|| settled)
+            .as_ref()
+            .map(Vec::as_slice)
+            .map_err(Damage::to_error)
     }
 
     fn owned_chunk(&mut self, index: usize) -> Result<&mut Vec<T>> {

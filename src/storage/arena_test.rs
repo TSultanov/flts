@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::test_utils::props;
 use proptest::prelude::*;
+use std::sync::Mutex;
 
 use crate::error::Result;
 struct CountingSource {
@@ -17,7 +18,7 @@ impl ChunkSource for CountingSource {
     }
 }
 
-fn lazy_u32(rows: u32, chunk_rows: usize) -> (Arena<u32>, Arc<CountingSource>) {
+fn chunked_u32(rows: u32, chunk_rows: usize) -> (Vec<Vec<u8>>, Vec<ChunkLoc>) {
     let mut chunks = Vec::new();
     let mut locations = Vec::new();
     for start in (0..rows).step_by(chunk_rows) {
@@ -34,6 +35,11 @@ fn lazy_u32(rows: u32, chunk_rows: usize) -> (Arena<u32>, Arc<CountingSource>) {
         });
         chunks.push(bytes);
     }
+    (chunks, locations)
+}
+
+fn lazy_u32(rows: u32, chunk_rows: usize) -> (Arena<u32>, Arc<CountingSource>) {
+    let (chunks, locations) = chunked_u32(rows, chunk_rows);
 
     let source = Arc::new(CountingSource {
         chunks,
@@ -743,7 +749,7 @@ proptest! {
 }
 
 #[test]
-fn a_column_read_from_many_threads_gives_every_thread_the_same_rows() {
+fn a_column_read_from_many_threads_loads_each_chunk_once() {
     use std::sync::Barrier;
 
     for _ in 0..25 {
@@ -768,11 +774,327 @@ fn a_column_read_from_many_threads_gives_every_thread_the_same_rows() {
             reader.join().unwrap();
         }
 
-        let reads = source.reads.load(Ordering::SeqCst);
-        assert!(
-            (10..=80).contains(&reads),
-            "10 chunks and 8 readers cannot account for {reads} source reads"
+        assert_eq!(
+            source.reads.load(Ordering::SeqCst),
+            10,
+            "eight readers of ten chunks paid for more than ten reads"
         );
         assert_eq!(arena.resident_chunks(), 10);
+    }
+}
+
+struct ParkingSource {
+    chunks: Vec<Vec<u8>>,
+    reads: AtomicUsize,
+    entered: AtomicUsize,
+    released: Mutex<bool>,
+    wake: std::sync::Condvar,
+}
+
+impl ParkingSource {
+    fn holding(chunks: Vec<Vec<u8>>) -> Self {
+        Self {
+            chunks,
+            reads: AtomicUsize::new(0),
+            entered: AtomicUsize::new(0),
+            released: Mutex::new(false),
+            wake: std::sync::Condvar::new(),
+        }
+    }
+
+    fn release(&self) {
+        *self.released.lock().unwrap() = true;
+        self.wake.notify_all();
+    }
+}
+
+impl ChunkSource for ParkingSource {
+    fn read_chunk(&self, loc: ChunkLoc) -> Result<Vec<u8>> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        self.entered.fetch_add(1, Ordering::SeqCst);
+
+        let mut released = self.released.lock().unwrap();
+        while !*released {
+            released = self.wake.wait(released).unwrap();
+        }
+        Ok(self.chunks[loc.offset as usize].clone())
+    }
+}
+
+struct FlakySource {
+    chunks: Vec<Vec<u8>>,
+    failures_left: AtomicUsize,
+    reads: AtomicUsize,
+}
+
+impl ChunkSource for FlakySource {
+    fn read_chunk(&self, loc: ChunkLoc) -> Result<Vec<u8>> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+
+        let failing = self
+            .failures_left
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                left.checked_sub(1)
+            })
+            .is_ok();
+        if failing {
+            return Err(
+                std::io::Error::new(std::io::ErrorKind::Interrupted, "the disk hiccuped").into(),
+            );
+        }
+        Ok(self.chunks[loc.offset as usize].clone())
+    }
+}
+
+fn parked(
+    rows: u32,
+    chunk_rows: usize,
+    spoil: Option<usize>,
+) -> (Arc<Arena<u32>>, Arc<ParkingSource>) {
+    let (chunks, mut locations) = chunked_u32(rows, chunk_rows);
+    if let Some(at) = spoil {
+        locations[at].fnv ^= 0xffff;
+    }
+
+    let source = Arc::new(ParkingSource::holding(chunks));
+    let arena =
+        Arena::from_locations(locations, chunk_rows, Provenance::new(source.clone(), 1)).unwrap();
+    (Arc::new(arena), source)
+}
+
+fn wait_until(ready: impl Fn() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !ready() && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+}
+
+fn race_for_row_zero(
+    arena: Arc<Arena<u32>>,
+    source: &ParkingSource,
+    readers: usize,
+) -> Vec<Result<u32>> {
+    let start = Arc::new(std::sync::Barrier::new(readers));
+    let arrived = Arc::new(AtomicUsize::new(0));
+
+    let mut threads = Vec::new();
+    for _ in 0..readers {
+        let arena = arena.clone();
+        let start = start.clone();
+        let arrived = arrived.clone();
+
+        threads.push(std::thread::spawn(move || {
+            start.wait();
+            arrived.fetch_add(1, Ordering::SeqCst);
+            arena.row(0).copied()
+        }));
+    }
+
+    wait_until(|| {
+        arrived.load(Ordering::SeqCst) == readers && source.entered.load(Ordering::SeqCst) > 0
+    });
+    source.release();
+
+    threads
+        .into_iter()
+        .map(|reader| reader.join().unwrap())
+        .collect()
+}
+
+#[test]
+fn a_cold_chunk_is_read_exactly_once_even_when_eight_threads_race_for_it() {
+    let (arena, source) = parked(40, 4, None);
+    let seen = race_for_row_zero(arena, &source, 8);
+
+    for row in seen {
+        assert_eq!(row.unwrap(), 0);
+    }
+    assert_eq!(
+        source.reads.load(Ordering::SeqCst),
+        1,
+        "eight readers of one cold chunk paid for more than one read"
+    );
+}
+
+#[test]
+fn eight_readers_of_a_rotten_chunk_pay_for_exactly_one_read() {
+    let (arena, source) = parked(40, 4, Some(0));
+    let seen = race_for_row_zero(arena, &source, 8);
+
+    for row in seen {
+        assert!(row.unwrap_err().is_corrupt());
+    }
+    assert_eq!(
+        source.reads.load(Ordering::SeqCst),
+        1,
+        "a reader waiting on the gate re-read instead of re-checking"
+    );
+}
+
+#[test]
+fn two_views_of_the_same_chunk_share_one_gate() {
+    let (arena, source) = parked(40, 4, None);
+    let view = Arc::new(arena.as_ref().clone());
+
+    let start = Arc::new(std::sync::Barrier::new(2));
+    let arrived = Arc::new(AtomicUsize::new(0));
+    let mut readers = Vec::new();
+    for held in [arena, view] {
+        let start = start.clone();
+        let arrived = arrived.clone();
+        readers.push(std::thread::spawn(move || {
+            start.wait();
+            arrived.fetch_add(1, Ordering::SeqCst);
+            held.row(0).copied()
+        }));
+    }
+
+    wait_until(|| arrived.load(Ordering::SeqCst) == 2 && source.entered.load(Ordering::SeqCst) > 0);
+    source.release();
+
+    for reader in readers {
+        assert_eq!(reader.join().unwrap().unwrap(), 0);
+    }
+    assert_eq!(
+        source.reads.load(Ordering::SeqCst),
+        1,
+        "two views of one chunk each loaded it"
+    );
+}
+
+fn spoiled_u32(rows: u32, chunk_rows: usize, at: usize) -> (Arena<u32>, Arc<CountingSource>) {
+    let (chunks, mut locations) = chunked_u32(rows, chunk_rows);
+    locations[at].fnv ^= 0xffff;
+
+    let source = Arc::new(CountingSource {
+        chunks,
+        reads: AtomicUsize::new(0),
+    });
+    let arena =
+        Arena::from_locations(locations, chunk_rows, Provenance::new(source.clone(), 1)).unwrap();
+    (arena, source)
+}
+
+fn flaky_u32(rows: u32, chunk_rows: usize, failures: usize) -> (Arena<u32>, Arc<FlakySource>) {
+    let (chunks, locations) = chunked_u32(rows, chunk_rows);
+
+    let source = Arc::new(FlakySource {
+        chunks,
+        failures_left: AtomicUsize::new(failures),
+        reads: AtomicUsize::new(0),
+    });
+    let arena =
+        Arena::from_locations(locations, chunk_rows, Provenance::new(source.clone(), 1)).unwrap();
+    (arena, source)
+}
+
+#[test]
+fn a_corrupt_chunk_is_read_once_and_then_remembered() {
+    let (arena, source) = spoiled_u32(12, 4, 0);
+
+    for at in 0..4 {
+        assert!(arena.get(at).unwrap_err().is_corrupt());
+    }
+    assert_eq!(
+        source.reads.load(Ordering::SeqCst),
+        1,
+        "every row of a rotten chunk paid for its own read"
+    );
+    assert_eq!(arena.resident_chunks(), 0, "damage is not rows");
+    assert!(arena.get(4).is_ok(), "the healthy chunks still read");
+}
+
+#[test]
+fn chunk_bytes_reports_the_remembered_corruption_without_reading_again() {
+    let (arena, source) = spoiled_u32(12, 4, 0);
+
+    assert!(arena.get(0).unwrap_err().is_corrupt());
+    assert_eq!(source.reads.load(Ordering::SeqCst), 1);
+
+    assert!(arena.chunk_bytes(0).unwrap_err().is_corrupt());
+    assert_eq!(
+        source.reads.load(Ordering::SeqCst),
+        1,
+        "a remembered failure is neither resident nor on disk, and must not be re-read"
+    );
+}
+
+#[test]
+fn a_failed_read_is_retried_and_the_row_appears_once_the_source_recovers() {
+    let (arena, source) = flaky_u32(12, 4, 1);
+
+    let hiccup = arena.get(0).unwrap_err();
+    assert!(!hiccup.is_corrupt(), "{hiccup}");
+    assert_eq!(source.reads.load(Ordering::SeqCst), 1);
+    assert_eq!(arena.resident_chunks(), 0);
+    assert!(
+        arena.chunks[0].still_on_disk().is_some(),
+        "a chunk that merely failed to arrive is still on disk"
+    );
+
+    assert_eq!(arena.get(0).unwrap(), Some(&0));
+    assert_eq!(source.reads.load(Ordering::SeqCst), 2, "the retry happened");
+}
+
+struct PanickingSource {
+    chunks: Vec<Vec<u8>>,
+    panics_left: AtomicUsize,
+    reads: AtomicUsize,
+}
+
+impl ChunkSource for PanickingSource {
+    fn read_chunk(&self, loc: ChunkLoc) -> Result<Vec<u8>> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+
+        let bursting = self
+            .panics_left
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                left.checked_sub(1)
+            })
+            .is_ok();
+        assert!(!bursting, "this source panics on purpose");
+
+        Ok(self.chunks[loc.offset as usize].clone())
+    }
+}
+
+#[test]
+fn a_source_that_panics_does_not_wedge_the_chunk_for_later_readers() {
+    let (chunks, locations) = chunked_u32(12, 4);
+    let source = Arc::new(PanickingSource {
+        chunks,
+        panics_left: AtomicUsize::new(1),
+        reads: AtomicUsize::new(0),
+    });
+    let arena =
+        Arena::<u32>::from_locations(locations, 4, Provenance::new(source.clone(), 1)).unwrap();
+
+    let quiet = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let burst = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| arena.get(0)));
+    std::panic::set_hook(quiet);
+
+    assert!(burst.is_err(), "the source was supposed to panic");
+    assert_eq!(arena.get(0).unwrap(), Some(&0), "the gate stayed usable");
+    assert_eq!(source.reads.load(Ordering::SeqCst), 2);
+}
+
+proptest! {
+    #[test]
+    fn a_chunk_costs_one_read_for_each_failure_and_one_more_for_the_success(
+        failures in 0usize..5,
+        extra in 0usize..6,
+    ) {
+        let (arena, source) = flaky_u32(12, 4, failures);
+
+        for _ in 0..failures {
+            let hiccup = arena.get(0).unwrap_err();
+            prop_assert!(!hiccup.is_corrupt());
+        }
+        for _ in 0..=extra {
+            prop_assert_eq!(arena.get(0).unwrap(), Some(&0));
+        }
+
+        prop_assert_eq!(source.reads.load(Ordering::SeqCst), failures + 1);
     }
 }
