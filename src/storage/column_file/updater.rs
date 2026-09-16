@@ -11,7 +11,7 @@ use super::commit_token::CommitToken;
 use super::file_source::write_all_at;
 use super::reader::ColumnFile;
 use super::writer_id::WriterId;
-use super::{APPEND_MARK, SLOT_A, SLOT_B};
+use super::{APPEND_MARK, HEAD_LEN, SLOT_A, SLOT_B};
 use crate::error::{Error, Result};
 use crate::record::Record;
 use crate::storage::arena::{Arena, ChunkLoc, ChunkSource};
@@ -60,7 +60,8 @@ impl ColumnFileUpdater {
         let cursor = match read_append_mark(&file, reader.file_uuid())? {
             Some(mark) => newest.dir_end().max(mark.append_from),
             None => newest.dir_end().max(file.metadata()?.len()),
-        };
+        }
+        .max(HEAD_LEN);
 
         Ok(Self {
             file,
@@ -80,14 +81,21 @@ impl ColumnFileUpdater {
         if self.columns.iter().any(|column| column.name == name) {
             return Err(Error::invalid(format!("duplicate column {name:?}")));
         }
-        if let Some(previous) = self.previous.iter().find(|column| column.name == name)
-            && previous.chunk_rows != arena.chunk_rows() as u64
-        {
-            return Err(Error::invalid(format!(
-                "column {name:?} is chunked {} rows at a time on disk, not {}",
-                previous.chunk_rows,
-                arena.chunk_rows()
-            )));
+        if let Some(previous) = self.previous.iter().find(|column| column.name == name) {
+            if previous.chunk_rows != arena.chunk_rows() as u64 {
+                return Err(Error::invalid(format!(
+                    "column {name:?} is chunked {} rows at a time on disk, not {}",
+                    previous.chunk_rows,
+                    arena.chunk_rows()
+                )));
+            }
+            if previous.elem_size as usize != T::SIZE {
+                return Err(Error::invalid(format!(
+                    "column {name:?} holds {}-byte rows on disk, not {}",
+                    previous.elem_size,
+                    T::SIZE
+                )));
+            }
         }
 
         let reusable = arena

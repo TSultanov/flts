@@ -466,3 +466,142 @@ fn a_reused_generation_number_is_still_a_conflict() {
     let err = held.update(this_device()).unwrap_err();
     assert!(err.to_string().contains("moved to generation 2"), "{err}");
 }
+
+#[test]
+fn a_column_cannot_change_its_row_width_between_generations() {
+    let dir = TempDir::new("elem_size");
+    let path = dir.join("widths.dbs");
+    seed(&path, &[1, 2, 3]);
+
+    let file = ColumnFile::open(&path).unwrap();
+    let mut widened = Arena::<u64>::with_chunk_rows(4);
+    widened.extend_from_slice(&[1u64, 2, 3]).unwrap();
+
+    let mut updater = file.update(this_device()).unwrap();
+    let err = updater.column("values", &widened).unwrap_err();
+
+    assert!(
+        err.to_string().contains("4-byte rows on disk, not 8"),
+        "{err}"
+    );
+    assert!(
+        !err.is_corrupt(),
+        "a caller offering the wrong type is not damage"
+    );
+}
+
+#[test]
+fn a_slot_pointing_into_the_head_cannot_make_a_writer_overwrite_it() {
+    let dir = TempDir::new("cursor_floor");
+    let path = dir.join("floor.dbs");
+    seed(&path, &[1, 2, 3, 4, 5, 6]);
+
+    let file = ColumnFile::open(&path).unwrap();
+    let head_before = std::fs::read(&path).unwrap()[..HEAD_LEN as usize].to_vec();
+
+    let lying = CommitSlot::new(
+        file.generation(),
+        file.content_id(),
+        file.file_uuid(),
+        file.writer_id(),
+        64,
+        8,
+        0,
+    );
+    write_all_at(
+        &File::options().write(true).open(&path).unwrap(),
+        &lying.to_bytes(),
+        SLOT_A,
+    )
+    .unwrap();
+    let mark = AppendMark::new(file.file_uuid(), 64, file.generation());
+    write_all_at(
+        &File::options().write(true).open(&path).unwrap(),
+        &mark.to_bytes(),
+        APPEND_MARK,
+    )
+    .unwrap();
+
+    let mut values = Arena::<u32>::with_chunk_rows(4);
+    values.extend_from_slice(&[9, 9, 9, 9, 9, 9]).unwrap();
+    if let Ok(mut updater) = file.update(this_device()) {
+        updater.column("values", &values).unwrap();
+        let _ = updater.commit();
+    }
+
+    let head_after = std::fs::read(&path).unwrap()[..HEAD_LEN as usize].to_vec();
+    let published = [
+        (SLOT_A as usize, SLOT_A as usize + CommitSlot::SIZE),
+        (SLOT_B as usize, SLOT_B as usize + CommitSlot::SIZE),
+        (
+            APPEND_MARK as usize,
+            APPEND_MARK as usize + AppendMark::SIZE,
+        ),
+    ];
+
+    for at in 0..HEAD_LEN as usize {
+        if published.iter().any(|(from, to)| at >= *from && at < *to) {
+            continue;
+        }
+        assert_eq!(
+            head_after[at], head_before[at],
+            "a commit wrote payload into the head at {at}"
+        );
+    }
+}
+
+#[test]
+fn a_commit_marks_where_the_next_one_may_start() {
+    let dir = TempDir::new("mark_after_commit");
+    let path = dir.join("mark.dbs");
+    seed(&path, &[1, 2, 3, 4, 5, 6]);
+
+    let file = ColumnFile::open(&path).unwrap();
+    let mut values = file.column::<u32>("values").unwrap();
+    values.set(0, 99).unwrap();
+
+    let mut updater = file.update(this_device()).unwrap();
+    updater.column("values", &values).unwrap();
+    updater.commit().unwrap();
+
+    let reopened = ColumnFile::open(&path).unwrap();
+    let mark = read_append_mark(&File::open(&path).unwrap(), reopened.file_uuid())
+        .unwrap()
+        .unwrap();
+
+    let append_from = mark.append_from;
+    assert_eq!(
+        append_from,
+        len_of(&path),
+        "the mark must name the end of the file"
+    );
+}
+
+#[test]
+fn a_column_cannot_be_offered_twice_in_one_commit() {
+    let dir = TempDir::new("updater_duplicate");
+    let path = dir.join("dup.dbs");
+    seed(&path, &[1, 2, 3]);
+
+    let file = ColumnFile::open(&path).unwrap();
+    let values = file.column::<u32>("values").unwrap();
+
+    let mut updater = file.update(this_device()).unwrap();
+    updater.column("values", &values).unwrap();
+    let err = updater.column("values", &values).unwrap_err();
+
+    assert!(err.to_string().contains("duplicate column"), "{err}");
+}
+
+#[test]
+fn the_debug_of_an_updater_names_its_generation_and_cursor() {
+    let dir = TempDir::new("updater_debug");
+    let path = dir.join("debug.dbs");
+    seed(&path, &[1, 2, 3]);
+
+    let file = ColumnFile::open(&path).unwrap();
+    let shown = format!("{:?}", file.update(this_device()).unwrap());
+    for part in ["generation", "cursor", "columns"] {
+        assert!(shown.contains(part), "{shown} is missing {part}");
+    }
+}
