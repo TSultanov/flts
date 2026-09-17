@@ -4,6 +4,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use super::column::{ColumnSpec, Residency};
+use super::diff::SchemaDiff;
 use super::table::AnyTable;
 use crate::error::{Error, Result};
 use crate::storage::{ColumnFile, ColumnFileUpdater, ColumnFileWriter, WriterId};
@@ -65,19 +66,20 @@ pub trait Store: Default + Clone + Sized {
         self.clone()
     }
 
+    fn diff(&self, file: &ColumnFile) -> SchemaDiff {
+        SchemaDiff::of(&self.specs(), file)
+    }
+
     fn read(&mut self, file: &ColumnFile) -> Result<()> {
-        let wanted: Vec<String> = self.specs().into_iter().map(|spec| spec.name).collect();
-        let unknown: Vec<String> = file
-            .columns()
-            .iter()
-            .map(|column| column.name.clone())
-            .filter(|name| !wanted.contains(name))
-            .collect();
+        let diff = self.diff(file);
+        if let Some(mismatch) = diff.to_error() {
+            return Err(mismatch);
+        }
 
         for table in self.tables_mut() {
             table.read_columns(file)?;
         }
-        self.state_mut().unknown = unknown;
+        self.state_mut().unknown = diff.unknown;
         Ok(())
     }
 

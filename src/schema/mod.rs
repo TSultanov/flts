@@ -2,6 +2,7 @@
 
 mod child_index;
 mod column;
+mod diff;
 mod entity;
 mod enums;
 mod names;
@@ -13,6 +14,7 @@ mod text;
 
 pub use child_index::ChildIndex;
 pub use column::{Column, ColumnKind, ColumnSpec, Field, FieldMut, Residency, Row};
+pub use diff::SchemaDiff;
 pub use entity::{Child, Entity, Holds, children_of};
 pub use enums::{EnumColumn, UnitEnum};
 pub use names::{heap_name, presence_name, qualified};
