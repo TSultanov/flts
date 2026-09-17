@@ -1,8 +1,11 @@
+use std::borrow::Cow;
+use std::ops::Deref;
+
 use crate::error::Result;
 use crate::id::Id;
 use crate::schema::{
-    AnyTable, Child, Entity, Field, FieldMut, Holds, RefColumn, Store, StoreState, Table,
-    TextColumn,
+    AnyTable, Child, Entity, Entry, Field, FieldMut, Holds, RefColumn, Rows, Store, StoreState,
+    Table, TextColumn,
 };
 
 pub struct Book;
@@ -13,18 +16,33 @@ impl Entity for Book {
     const NAME: &'static str = "book";
 
     type Table = Books;
+
+    type Row<'a, S>
+        = BookRow<'a, S>
+    where
+        S: Holds<Book> + 'a;
 }
 
 impl Entity for Chapter {
     const NAME: &'static str = "chapter";
 
     type Table = Chapters;
+
+    type Row<'a, S>
+        = ChapterRow<'a, S>
+    where
+        S: Holds<Chapter> + 'a;
 }
 
 impl Entity for Paragraph {
     const NAME: &'static str = "paragraph";
 
     type Table = Paragraphs;
+
+    type Row<'a, S>
+        = ParagraphRow<'a, S>
+    where
+        S: Holds<Paragraph> + 'a;
 }
 
 #[derive(Default, Clone)]
@@ -70,6 +88,32 @@ impl Books {
     pub fn set_title(&mut self, book: Id<Book>, title: &str) -> Result<()> {
         let row = self.row_of(book)?;
         self.title.set(row, title)
+    }
+}
+
+pub struct BookRow<'a, S: Holds<Book>>(Entry<'a, S, Book>);
+
+impl<'a, S: Holds<Book>> From<Entry<'a, S, Book>> for BookRow<'a, S> {
+    fn from(entry: Entry<'a, S, Book>) -> Self {
+        Self(entry)
+    }
+}
+
+impl<'a, S: Holds<Book>> Deref for BookRow<'a, S> {
+    type Target = Entry<'a, S, Book>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a, S: Holds<Book>> BookRow<'a, S> {
+    pub fn title(&self) -> Result<Cow<'a, str>> {
+        self.0.table().title.get(self.0.row())
+    }
+
+    pub fn author(&self) -> Result<Cow<'a, str>> {
+        self.0.table().author.get(self.0.row())
     }
 }
 
@@ -128,6 +172,28 @@ impl Chapters {
     }
 }
 
+pub struct ChapterRow<'a, S: Holds<Chapter>>(Entry<'a, S, Chapter>);
+
+impl<'a, S: Holds<Chapter>> From<Entry<'a, S, Chapter>> for ChapterRow<'a, S> {
+    fn from(entry: Entry<'a, S, Chapter>) -> Self {
+        Self(entry)
+    }
+}
+
+impl<'a, S: Holds<Chapter>> Deref for ChapterRow<'a, S> {
+    type Target = Entry<'a, S, Chapter>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a, S: Holds<Chapter>> ChapterRow<'a, S> {
+    pub fn title(&self) -> Result<Cow<'a, str>> {
+        self.0.table().title.get(self.0.row())
+    }
+}
+
 #[derive(Default, Clone)]
 pub struct Paragraphs {
     chapter: RefColumn<Chapter, Paragraph>,
@@ -172,6 +238,28 @@ impl Paragraphs {
 
     pub fn of_chapter(&self, chapters: usize, chapter: Id<Chapter>) -> Result<&[Id<Paragraph>]> {
         self.chapter.children_of(chapters, chapter)
+    }
+}
+
+pub struct ParagraphRow<'a, S: Holds<Paragraph>>(Entry<'a, S, Paragraph>);
+
+impl<'a, S: Holds<Paragraph>> From<Entry<'a, S, Paragraph>> for ParagraphRow<'a, S> {
+    fn from(entry: Entry<'a, S, Paragraph>) -> Self {
+        Self(entry)
+    }
+}
+
+impl<'a, S: Holds<Paragraph>> Deref for ParagraphRow<'a, S> {
+    type Target = Entry<'a, S, Paragraph>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a, S: Holds<Paragraph>> ParagraphRow<'a, S> {
+    pub fn text(&self) -> Result<Cow<'a, str>> {
+        self.0.table().text.get(self.0.row())
     }
 }
 
@@ -232,6 +320,22 @@ impl Holds<Paragraph> for Library {
 }
 
 impl Library {
+    pub fn at<E>(&self, id: Id<E>) -> Result<E::Row<'_, Self>>
+    where
+        Self: Holds<E>,
+        E: Entity,
+    {
+        Ok(Entry::of(self, id)?.into())
+    }
+
+    pub fn all<E>(&self) -> Rows<'_, Self, E>
+    where
+        Self: Holds<E>,
+        E: Entity,
+    {
+        Rows::all(self)
+    }
+
     pub fn chapters_of(&self, book: Id<Book>) -> Result<&[Id<Chapter>]> {
         self.chapters.of_book(Table::rows(&self.books), book)
     }

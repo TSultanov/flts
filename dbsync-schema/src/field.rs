@@ -114,11 +114,11 @@ impl Kind {
         }
     }
 
-    pub fn read(&self) -> TokenStream {
+    pub fn read(&self, held: &TokenStream) -> TokenStream {
         match self {
-            Kind::Text => quote! { ::std::borrow::Cow<'_, str> },
+            Kind::Text => quote! { ::std::borrow::Cow<#held, str> },
             Kind::NullableText => {
-                quote! { ::core::option::Option<::std::borrow::Cow<'_, str>> }
+                quote! { ::core::option::Option<::std::borrow::Cow<#held, str>> }
             }
             Kind::Reference(parent) => quote! { ::dbsync::Id<#parent> },
             Kind::Scalar(ty) => quote! { #ty },
@@ -128,17 +128,17 @@ impl Kind {
         }
     }
 
-    pub fn get(&self, name: &syn::Ident) -> TokenStream {
+    pub fn get(&self, table: &TokenStream, name: &syn::Ident) -> TokenStream {
         match self {
-            Kind::Scalar(_) => quote! { self.#name.row(row.index()).copied() },
-            _ => quote! { self.#name.get(row) },
+            Kind::Scalar(_) => quote! { #table.#name.row(row.index()).copied() },
+            _ => quote! { #table.#name.get(row) },
         }
     }
 
-    pub fn set(&self, name: &syn::Ident) -> TokenStream {
+    pub fn set(&self, table: &TokenStream, name: &syn::Ident) -> TokenStream {
         match self {
-            Kind::Scalar(_) => quote! { self.#name.set(row.index(), value) },
-            _ => quote! { self.#name.set(row, value) },
+            Kind::Scalar(_) => quote! { #table.#name.set(row.index(), value) },
+            _ => quote! { #table.#name.set(row, value) },
         }
     }
 }

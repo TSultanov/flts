@@ -236,3 +236,79 @@ fn an_entity_whose_every_field_is_derived_is_refused() {
     assert!(err.contains("at least one stored field"), "{err}");
     assert!(err.contains("has no rows"), "{err}");
 }
+#[test]
+fn an_entity_gets_a_row_handle_that_borrows_the_store_its_table_lives_in() {
+    let out = expanded(quote! {
+        struct Book { title: String }
+    });
+
+    let declared = [
+        "struct BookRow < 'a , S : :: dbsync :: schema :: Holds < Book >> ",
+        "(:: dbsync :: schema :: Entry < 'a , S , Book > ,) ;",
+    ]
+    .concat();
+    let named = [
+        "type Row < 'a , S > = BookRow < 'a , S > ",
+        "where S : :: dbsync :: schema :: Holds < Book > + 'a ;",
+    ]
+    .concat();
+    let minted = [
+        ":: core :: convert :: From < :: dbsync :: schema :: Entry < 'a , S , Book >> ",
+        "for BookRow < 'a , S >",
+    ]
+    .concat();
+
+    assert!(out.contains(&declared), "{out}");
+    assert!(
+        out.contains(&named),
+        "the runtime reaches a handle through the entity, so the entity names it: {out}"
+    );
+    assert!(out.contains(&minted), "{out}");
+    assert!(
+        out.contains(":: core :: ops :: Deref for BookRow < 'a , S >"),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_row_handle_reads_each_field_out_of_the_table_the_store_holds() {
+    let out = expanded(quote! {
+        struct Book { title: String, year: u32 }
+    });
+
+    let opened = "let table = self . 0 . table () ; let row = self . 0 . row () ; ";
+    let text = [
+        "pub fn title (& self) -> :: dbsync :: Result < :: std :: borrow :: Cow < 'a , str > > { ",
+        opened,
+        "table . title . get (row) }",
+    ]
+    .concat();
+    let scalar = [
+        "pub fn year (& self) -> :: dbsync :: Result < u32 > { ",
+        opened,
+        "table . year . row (row . index ()) . copied () }",
+    ]
+    .concat();
+
+    assert!(out.contains(&text), "{out}");
+    assert!(
+        out.contains(&scalar),
+        "an arena is addressed by index; only a column knows what a Row means: {out}"
+    );
+}
+
+#[test]
+fn a_handle_reads_for_as_long_as_the_store_lives_and_a_table_only_for_the_call() {
+    let out = expanded(quote! {
+        struct Book { title: String }
+    });
+
+    assert!(
+        out.contains("-> :: dbsync :: Result < :: std :: borrow :: Cow < 'a , str > >"),
+        "a handle holds the store, so what it reads outlives the call: {out}"
+    );
+    assert!(
+        out.contains("-> :: dbsync :: Result < :: std :: borrow :: Cow < '_ , str > >"),
+        "a table is borrowed only for the call that reads it: {out}"
+    );
+}

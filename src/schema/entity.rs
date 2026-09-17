@@ -1,14 +1,19 @@
 //! What every entity knows about itself: its name, its columns, and whose child it is.
 
+use super::entry::Entry;
 use super::reference::RefColumn;
 use super::table::Table;
 use crate::error::Result;
 use crate::id::Id;
 
-pub trait Entity: 'static {
+pub trait Entity: Sized + 'static {
     const NAME: &'static str;
 
     type Table: Table<Of = Self>;
+
+    type Row<'a, S>: From<Entry<'a, S, Self>>
+    where
+        S: Holds<Self> + 'a;
 }
 
 #[diagnostic::on_unimplemented(

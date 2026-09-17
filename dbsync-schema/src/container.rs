@@ -111,6 +111,27 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         #(#holds)*
 
         impl #name {
+            pub fn at<E>(
+                &self,
+                id: ::dbsync::Id<E>,
+            ) -> ::dbsync::Result<<E as ::dbsync::schema::Entity>::Row<'_, Self>>
+            where
+                Self: ::dbsync::schema::Holds<E>,
+                E: ::dbsync::schema::Entity,
+            {
+                ::core::result::Result::Ok(::core::convert::Into::into(
+                    ::dbsync::schema::Entry::of(self, id)?,
+                ))
+            }
+
+            pub fn all<E>(&self) -> ::dbsync::schema::Rows<'_, Self, E>
+            where
+                Self: ::dbsync::schema::Holds<E>,
+                E: ::dbsync::schema::Entity,
+            {
+                ::dbsync::schema::Rows::all(self)
+            }
+
             pub fn children_of<P, C>(
                 &self,
                 parent: ::dbsync::Id<P>,

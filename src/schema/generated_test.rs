@@ -229,3 +229,71 @@ fn every_column_a_table_names_is_a_column_it_reports_residency_for() {
         );
     }
 }
+
+#[crate::container]
+struct Catalogue {
+    authors: Set<Author>,
+    works: Set<Work>,
+}
+
+fn catalogued() -> Result<Catalogue> {
+    let mut catalogue = Catalogue::default();
+    let soseki = catalogue.authors.push(
+        "Natsume Kinnosuke",
+        Some("Soseki"),
+        1867,
+        Some(1916),
+        Shelf::Rare,
+    )?;
+    catalogue
+        .authors
+        .push("Anonymous", None, 1200, None, Shelf::Fiction)?;
+    catalogue.works.push(soseki, "Kokoro")?;
+    Ok(catalogue)
+}
+
+#[test]
+fn a_generated_row_reads_every_kind_of_field_through_the_entity_that_owns_it() -> Result<()> {
+    use crate::id::Id;
+
+    let catalogue = catalogued()?;
+
+    let soseki = catalogue.at(Id::<Author>::from_index(0))?;
+    assert_eq!(soseki.name()?, "Natsume Kinnosuke");
+    assert_eq!(soseki.pen_name()?.as_deref(), Some("Soseki"));
+    assert_eq!(soseki.born()?, 1867);
+    assert_eq!(soseki.died()?, Some(1916));
+    assert_eq!(soseki.shelf()?, Shelf::Rare);
+
+    let anon = catalogue.at(Id::<Author>::from_index(1))?;
+    assert_eq!(anon.pen_name()?.as_deref(), None);
+    assert_eq!(anon.died()?, None);
+    Ok(())
+}
+
+#[test]
+fn a_generated_row_reads_the_reference_column_it_stands_on() -> Result<()> {
+    use crate::id::Id;
+
+    let catalogue = catalogued()?;
+
+    let kokoro = catalogue.at(Id::<Work>::from_index(0))?;
+
+    assert_eq!(kokoro.title()?, "Kokoro");
+    assert_eq!(kokoro.author()?, Id::<Author>::from_index(0));
+    Ok(())
+}
+
+#[test]
+fn walking_a_generated_table_hands_back_one_row_handle_per_row() -> Result<()> {
+    let catalogue = catalogued()?;
+
+    let names: Vec<String> = catalogue
+        .all::<Author>()
+        .map(|author| author.name().map(|name| name.into_owned()))
+        .collect::<Result<_>>()?;
+
+    assert_eq!(names, ["Natsume Kinnosuke", "Anonymous"]);
+    assert_eq!(catalogue.all::<Work>().count(), 1);
+    Ok(())
+}

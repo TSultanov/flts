@@ -249,3 +249,62 @@ fn listing_the_catalogue_leaves_every_paragraph_cold() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn a_declared_row_answers_with_its_own_fields() -> Result<()> {
+    let mut library = Library::default();
+    let alice = stock(&mut library)?;
+
+    let book = library.at(alice)?;
+
+    assert_eq!(book.title()?, "Alice");
+    assert_eq!(book.author()?, "Lewis Carroll");
+    assert_eq!(book.id(), alice);
+    Ok(())
+}
+
+#[test]
+fn every_declared_row_of_a_table_can_be_walked_in_turn() -> Result<()> {
+    let mut library = Library::default();
+    stock(&mut library)?;
+
+    let titles: Vec<String> = library
+        .all::<Chapter>()
+        .map(|chapter| chapter.title().map(|title| title.into_owned()))
+        .collect::<Result<_>>()?;
+
+    assert_eq!(
+        titles,
+        ["Down the Rabbit-Hole", "The Pool of Tears", "Sensei and I"]
+    );
+    Ok(())
+}
+
+#[test]
+fn a_declared_row_read_from_a_file_faults_in_only_the_column_it_was_asked_for() -> Result<()> {
+    let dir = TempDir::new("declared_row_cold");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device())?;
+    stock(&mut library)?;
+    library.commit(this_device())?;
+
+    let reopened = Library::open(&path)?;
+    for book in reopened.all::<Book>() {
+        book.title()?;
+    }
+
+    let resident = |name: &str| {
+        reopened
+            .residency()
+            .into_iter()
+            .find(|column| column.name == name)
+            .expect("the schema names this column")
+            .resident
+    };
+
+    assert!(resident("book.title.bytes") > 0);
+    assert_eq!(resident("book.author.bytes"), 0);
+    assert_eq!(resident("paragraph.text.bytes"), 0);
+    Ok(())
+}

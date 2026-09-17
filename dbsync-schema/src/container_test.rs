@@ -149,3 +149,38 @@ fn the_attribute_takes_no_arguments() {
 
     assert!(err.contains("takes no arguments"), "{err}");
 }
+
+#[test]
+fn a_container_mints_a_handle_for_any_entity_it_holds() {
+    let out = expanded(quote! {
+        struct Library { books: Set<Book> }
+    });
+
+    let mints = [
+        "pub fn at < E > (& self , id : :: dbsync :: Id < E > ,) ",
+        "-> :: dbsync :: Result << E as :: dbsync :: schema :: Entity > :: Row < '_ , Self >>",
+    ]
+    .concat();
+
+    assert!(out.contains(&mints), "{out}");
+    assert!(
+        out.contains(":: dbsync :: schema :: Entry :: of (self , id) ?"),
+        "the handle is minted once, where a bad id can still be named: {out}"
+    );
+}
+
+#[test]
+fn a_container_walks_every_row_of_any_entity_it_holds() {
+    let out = expanded(quote! {
+        struct Library { books: Set<Book> }
+    });
+
+    assert!(
+        out.contains("pub fn all < E > (& self) -> :: dbsync :: schema :: Rows < '_ , Self , E >"),
+        "{out}"
+    );
+    assert!(
+        out.contains(":: dbsync :: schema :: Rows :: all (self)"),
+        "{out}"
+    );
+}

@@ -45,6 +45,10 @@ impl Row {
         Ok(Row(index))
     }
 
+    pub(crate) fn trusted(index: usize) -> Self {
+        Row(index)
+    }
+
     pub fn index(self) -> usize {
         self.0
     }

@@ -47,6 +47,8 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     }
 
     let table = format_ident!("{}Table", name);
+    let row_type = format_ident!("{}Row", name);
+    let held = quote! { 'a };
     let vis = &input.vis;
     let attrs = &input.attrs;
     let stored: Vec<&Field> = fields.iter().filter(|field| field.is_stored()).collect();
@@ -86,10 +88,10 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     let accessors = stored.iter().map(|field| {
         let field_name = &field.name;
         let setter = format_ident!("set_{}", field_name);
-        let read = field.kind.read();
+        let read = field.kind.read(&quote! { '_ });
         let pushed = field.kind.pushed();
-        let get = field.kind.get(field_name);
-        let set = field.kind.set(field_name);
+        let get = field.kind.get(&quote! { self }, field_name);
+        let set = field.kind.set(&quote! { self }, field_name);
         quote! {
             pub fn #field_name(&self, of: ::dbsync::Id<#name>) -> ::dbsync::Result<#read> {
                 let row = <Self as ::dbsync::schema::Table>::row_of(self, of)?;
@@ -103,6 +105,19 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             ) -> ::dbsync::Result<()> {
                 let row = <Self as ::dbsync::schema::Table>::row_of(self, of)?;
                 #set
+            }
+        }
+    });
+
+    let readers = stored.iter().map(|field| {
+        let field_name = &field.name;
+        let read = field.kind.read(&held);
+        let get = field.kind.get(&quote! { table }, field_name);
+        quote! {
+            pub fn #field_name(&self) -> ::dbsync::Result<#read> {
+                let table = self.0.table();
+                let row = self.0.row();
+                #get
             }
         }
     });
@@ -136,6 +151,10 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             const NAME: &'static str = #label;
 
             type Table = #table;
+
+            type Row<#held, S> = #row_type<#held, S>
+            where
+                S: ::dbsync::schema::Holds<#name> + #held;
         }
 
         #[derive(Default, Clone)]
@@ -164,6 +183,33 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             }
 
             #(#accessors)*
+        }
+
+        #vis struct #row_type<#held, S: ::dbsync::schema::Holds<#name>>(
+            ::dbsync::schema::Entry<#held, S, #name>,
+        );
+
+        impl<#held, S: ::dbsync::schema::Holds<#name>>
+            ::core::convert::From<::dbsync::schema::Entry<#held, S, #name>>
+            for #row_type<#held, S>
+        {
+            fn from(entry: ::dbsync::schema::Entry<#held, S, #name>) -> Self {
+                Self(entry)
+            }
+        }
+
+        impl<#held, S: ::dbsync::schema::Holds<#name>> ::core::ops::Deref
+            for #row_type<#held, S>
+        {
+            type Target = ::dbsync::schema::Entry<#held, S, #name>;
+
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
+
+        impl<#held, S: ::dbsync::schema::Holds<#name>> #row_type<#held, S> {
+            #(#readers)*
         }
 
         #(#children)*
