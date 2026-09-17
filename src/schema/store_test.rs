@@ -457,3 +457,140 @@ fn open_or_create_reports_a_file_it_cannot_read_rather_than_claiming_it_exists()
         other => panic!("an unreadable file is an io error, not {other}"),
     }
 }
+
+fn without(path: &std::path::Path, dropped: &[&str]) {
+    let file = ColumnFile::open(path).unwrap();
+    let kept: Vec<String> = file
+        .columns()
+        .iter()
+        .map(|column| column.name.clone())
+        .filter(|name| !dropped.contains(&name.as_str()))
+        .collect();
+    let mut updater = file.update(this_device()).unwrap();
+    for name in &kept {
+        updater.keep_column(name).unwrap();
+    }
+    for name in dropped {
+        updater.remove_column(name);
+    }
+    updater.commit().unwrap();
+}
+
+#[test]
+fn an_index_a_file_never_held_is_rebuilt_when_it_is_opened_rather_than_refused() {
+    let dir = TempDir::new("store_derived");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device()).unwrap();
+    let alice = stock(&mut library);
+    library.commit(this_device()).unwrap();
+
+    without(
+        &path,
+        &[
+            "book.title.buckets",
+            "book.title.links",
+            "book.id.buckets",
+            "book.id.links",
+        ],
+    );
+
+    let reopened = Library::open(&path).unwrap();
+    assert_eq!(
+        reopened.books.find_by_title("Alice").unwrap(),
+        [alice],
+        "a column an index was derived from is all an index needs"
+    );
+    assert_eq!(reopened.at(alice).unwrap().title().unwrap(), "Alice");
+    reopened.verify().unwrap();
+}
+
+#[test]
+fn an_index_rebuilt_on_one_open_is_written_by_the_next_commit() {
+    let dir = TempDir::new("store_derived_written");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device()).unwrap();
+    stock(&mut library);
+    library.commit(this_device()).unwrap();
+    without(&path, &["book.title.buckets", "book.title.links"]);
+    assert!(
+        ColumnFile::open(&path)
+            .unwrap()
+            .column_meta("book.title.links")
+            .is_none()
+    );
+
+    let mut reopened = Library::open(&path).unwrap();
+    reopened.commit(this_device()).unwrap();
+
+    assert!(
+        ColumnFile::open(&path)
+            .unwrap()
+            .column_meta("book.title.links")
+            .is_some(),
+        "a file pays for a rebuild once, not on every open"
+    );
+    Library::open(&path).unwrap().verify().unwrap();
+}
+
+#[test]
+fn a_column_that_holds_rows_is_still_missing_when_the_file_does_not_have_it() {
+    let dir = TempDir::new("store_missing");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device()).unwrap();
+    stock(&mut library);
+    library.commit(this_device()).unwrap();
+
+    without(&path, &["book.title", "book.title.bytes"]);
+
+    let err = refused(Library::open(&path));
+    assert!(err.to_string().contains("missing columns"), "{err}");
+    assert!(err.to_string().contains("book.title"), "{err}");
+}
+
+#[test]
+fn an_index_a_file_wrote_to_another_shape_is_rebuilt_rather_than_read_wrongly() {
+    let dir = TempDir::new("store_derived_width");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device()).unwrap();
+    let alice = stock(&mut library);
+    library.commit(this_device()).unwrap();
+
+    let file = ColumnFile::open(&path).unwrap();
+    let kept: Vec<String> = file
+        .columns()
+        .iter()
+        .map(|column| column.name.clone())
+        .filter(|name| name != "book.title.links")
+        .collect();
+    let mut updater = file.update(this_device()).unwrap();
+    for name in &kept {
+        updater.keep_column(name).unwrap();
+    }
+    updater.remove_column("book.title.links");
+    let mut narrower = Arena::<u64>::new();
+    narrower.push(0).unwrap();
+    updater.column("book.title.links", &narrower).unwrap();
+    updater.commit().unwrap();
+
+    assert_eq!(
+        ColumnFile::open(&path)
+            .unwrap()
+            .column_meta("book.title.links")
+            .unwrap()
+            .elem_size,
+        8,
+        "the file now holds links of a width this schema never writes"
+    );
+
+    let reopened = Library::open(&path).unwrap();
+    assert_eq!(
+        reopened.books.find_by_title("Alice").unwrap(),
+        [alice],
+        "a key of another width is rebuilt, not decoded under the rules of this one"
+    );
+    reopened.verify().unwrap();
+}

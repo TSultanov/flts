@@ -171,3 +171,60 @@ fn opening_a_file_that_does_not_match_the_schema_says_so_before_reading_a_row() 
         "every missing column at once, not the first one it tried: {err}"
     );
 }
+
+fn derived(name: &str, kind: ColumnKind) -> ColumnSpec {
+    ColumnSpec {
+        name: name.to_owned(),
+        elem_size: 8,
+        kind,
+        counts_rows: false,
+    }
+}
+
+#[test]
+fn a_column_an_index_derives_is_not_a_column_a_file_has_to_have() {
+    let dir = TempDir::new("derived");
+    let (path, _library) = a_library(&dir);
+    let file = ColumnFile::open(&path).unwrap();
+
+    let diff = SchemaDiff::of(
+        &[
+            spec("book.title", 12),
+            derived("book.author.buckets", ColumnKind::Bucket),
+            derived("book.author.links", ColumnKind::Link),
+        ],
+        &file,
+    );
+
+    assert_eq!(diff.derived, ["book.author.buckets", "book.author.links"]);
+    assert!(diff.missing.is_empty(), "{diff:?}");
+    assert!(
+        diff.to_error().is_none(),
+        "an index is rebuilt from the column it indexes, so its absence is not a mismatch"
+    );
+    assert!(!diff.is_clean(), "a file that needs work is not yet clean");
+}
+
+#[test]
+fn a_derived_column_of_the_wrong_width_is_rebuilt_where_a_stored_one_is_refused() {
+    let dir = TempDir::new("derived_width");
+    let (path, _library) = a_library(&dir);
+    let file = ColumnFile::open(&path).unwrap();
+
+    let diff = SchemaDiff::of(
+        &[
+            derived("book.id.links", ColumnKind::Link),
+            spec("book.id", 8),
+        ],
+        &file,
+    );
+
+    assert_eq!(diff.derived, ["book.id.links"]);
+    assert_eq!(diff.widths, [("book.id".to_owned(), 16, 8)]);
+    let err = diff.to_error().expect("a stored column of the wrong width");
+    assert!(err.to_string().contains("book.id"), "{err}");
+    assert!(
+        !err.to_string().contains("book.id.links"),
+        "a link of the wrong width is rewritten, not reported: {err}"
+    );
+}

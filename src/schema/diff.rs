@@ -1,12 +1,13 @@
 //! What the file holds and the schema wants, reported in one message.
 
-use super::column::ColumnSpec;
+use super::column::{ColumnKind, ColumnSpec};
 use crate::error::Error;
 use crate::storage::ColumnFile;
 
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct SchemaDiff {
     pub missing: Vec<String>,
+    pub derived: Vec<String>,
     pub unknown: Vec<String>,
     pub widths: Vec<(String, u32, usize)>,
 }
@@ -16,12 +17,17 @@ impl SchemaDiff {
         let mut diff = Self::default();
 
         for spec in wanted {
+            let derived = matches!(spec.kind, ColumnKind::Bucket | ColumnKind::Link);
             match file.column_meta(&spec.name) {
+                None if derived => diff.derived.push(spec.name.clone()),
                 None => diff.missing.push(spec.name.clone()),
-                Some(held) if held.elem_size as usize != spec.elem_size => {
-                    diff.widths
-                        .push((spec.name.clone(), held.elem_size, spec.elem_size));
-                }
+                Some(held) if held.elem_size as usize != spec.elem_size => match derived {
+                    true => diff.derived.push(spec.name.clone()),
+                    false => {
+                        diff.widths
+                            .push((spec.name.clone(), held.elem_size, spec.elem_size));
+                    }
+                },
                 Some(_) => {}
             }
         }
@@ -33,13 +39,17 @@ impl SchemaDiff {
         }
 
         diff.missing.sort();
+        diff.derived.sort();
         diff.unknown.sort();
         diff.widths.sort();
         diff
     }
 
     pub fn is_clean(&self) -> bool {
-        self.missing.is_empty() && self.unknown.is_empty() && self.widths.is_empty()
+        self.missing.is_empty()
+            && self.derived.is_empty()
+            && self.unknown.is_empty()
+            && self.widths.is_empty()
     }
 
     pub fn to_error(&self) -> Option<Error> {

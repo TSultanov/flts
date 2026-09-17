@@ -327,8 +327,8 @@ impl<K: IndexKey> HashIndex<K> {
     }
 
     pub fn read_from(&mut self, entity: &str, field: &str, file: &ColumnFile) -> Result<()> {
-        self.buckets = file.column(&bucket_name(entity, field))?;
-        self.links = file.column(&link_name(entity, field))?;
+        self.buckets = as_written(file, &bucket_name(entity, field))?;
+        self.links = as_written(file, &link_name(entity, field))?;
         Ok(())
     }
 
@@ -434,6 +434,13 @@ impl<K: IndexKey> HashIndex<K> {
 
     fn damaged(&self, detail: String) -> Error {
         Error::corrupt("index", format!("{} {detail}", self.column))
+    }
+}
+
+fn as_written<T: Record>(file: &ColumnFile, name: &str) -> Result<Arena<T>> {
+    match file.column_meta(name) {
+        Some(held) if held.elem_size as usize == T::SIZE => file.column(name),
+        _ => Ok(Arena::new()),
     }
 }
 
