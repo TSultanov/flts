@@ -127,6 +127,56 @@ fn every_row_filed_under_one_key_comes_back_in_the_order_it_was_appended() {
 }
 
 #[test]
+fn a_walk_that_accepts_no_candidate_it_is_offered_finds_nothing() {
+    let key = Id::<Book>::mint();
+    let index = shared(5, key);
+
+    assert!(index.rows_where(key, |_| Ok(false)).unwrap().is_empty());
+    assert_eq!(index.row_where(key, |_| Ok(false)).unwrap(), None);
+}
+
+#[test]
+fn a_walk_keeps_only_the_candidates_its_predicate_accepts_and_orders_them_by_row() {
+    let key = Id::<Book>::mint();
+    let index = shared(6, key);
+
+    assert_eq!(
+        index.rows_where(key, |row| Ok(row % 2 == 0)).unwrap(),
+        [0, 2, 4]
+    );
+    assert_eq!(
+        index.row_where(key, |row| Ok(row < 3)).unwrap(),
+        Some(2),
+        "a chain is walked newest first, so the first row accepted is the last one filed"
+    );
+}
+
+#[test]
+fn a_predicate_that_cannot_answer_stops_the_walk_rather_than_being_read_as_no() {
+    let key = Id::<Book>::mint();
+    let index = shared(5, key);
+
+    let err = index
+        .rows_where(key, |_| Err(Error::invalid("the column could not be read")))
+        .unwrap_err();
+    assert!(err.to_string().contains("could not be read"), "{err}");
+
+    let err = index
+        .row_where(key, |_| Err(Error::invalid("the column could not be read")))
+        .unwrap_err();
+    assert!(err.to_string().contains("could not be read"), "{err}");
+}
+
+#[test]
+fn a_column_of_keys_hands_over_the_key_at_a_row_and_refuses_one_past_its_end() {
+    let Shelf { keys, minted, .. } = stocked(3);
+
+    assert_eq!(Keys::rows(&keys), 3);
+    assert_eq!(keys.key_at(2).unwrap(), minted[2]);
+    assert!(keys.key_at(3).is_err());
+}
+
+#[test]
 fn an_index_that_outgrew_its_buckets_still_names_every_key_it_already_held() {
     let Shelf { index, minted, .. } = stocked(300);
 

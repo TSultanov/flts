@@ -20,6 +20,32 @@ impl<T: ?Sized + 'static> IndexKey for Id<T> {
     }
 }
 
+pub trait Keys {
+    type Key: IndexKey;
+
+    fn rows(&self) -> usize;
+
+    fn key_at(&self, row: usize) -> Result<Self::Key>;
+}
+
+impl<K: IndexKey> Keys for Arena<K> {
+    type Key = K;
+
+    fn rows(&self) -> usize {
+        self.len()
+    }
+
+    fn key_at(&self, row: usize) -> Result<K> {
+        match self.get(row)? {
+            Some(key) => Ok(*key),
+            None => Err(Error::invalid(format!(
+                "a column of {} keys has no row {row}",
+                self.len()
+            ))),
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Link<K> {
     key: K,
@@ -111,19 +137,40 @@ impl<K: IndexKey> HashIndex<K> {
     }
 
     pub fn row_of(&self, key: K) -> Result<Option<usize>> {
+        self.row_where(key, |_| Ok(true))
+    }
+
+    pub fn rows_of(&self, key: K) -> Result<Vec<usize>> {
+        self.rows_where(key, |_| Ok(true))
+    }
+
+    pub fn row_where(
+        &self,
+        key: K,
+        mut holds: impl FnMut(usize) -> Result<bool>,
+    ) -> Result<Option<usize>> {
         let mut found = None;
-        self.walk(key, |row| {
-            found = Some(row);
-            false
+        self.walk(key, |row| match holds(row)? {
+            true => {
+                found = Some(row);
+                Ok(false)
+            }
+            false => Ok(true),
         })?;
         Ok(found)
     }
 
-    pub fn rows_of(&self, key: K) -> Result<Vec<usize>> {
+    pub fn rows_where(
+        &self,
+        key: K,
+        mut holds: impl FnMut(usize) -> Result<bool>,
+    ) -> Result<Vec<usize>> {
         let mut rows = Vec::new();
         self.walk(key, |row| {
-            rows.push(row);
-            true
+            if holds(row)? {
+                rows.push(row);
+            }
+            Ok(true)
         })?;
         rows.sort_unstable();
         Ok(rows)
@@ -177,27 +224,27 @@ impl<K: IndexKey> HashIndex<K> {
         self.install(&keys, capacity)
     }
 
-    pub fn rebuild(&mut self, keys: &Arena<K>) -> Result<()> {
-        let mut gathered = Vec::with_capacity(keys.len());
-        for row in 0..keys.len() {
-            gathered.push(*keys.row(row)?);
+    pub fn rebuild(&mut self, keys: &impl Keys<Key = K>) -> Result<()> {
+        let mut gathered = Vec::with_capacity(keys.rows());
+        for row in 0..keys.rows() {
+            gathered.push(keys.key_at(row)?);
         }
         self.install(&gathered, capacity_for(gathered.len()))
     }
 
-    pub fn audit(&self, keys: &Arena<K>) -> Result<()> {
-        if self.links.len() != keys.len() {
+    pub fn audit(&self, keys: &impl Keys<Key = K>) -> Result<()> {
+        if self.links.len() != keys.rows() {
             return Err(self.damaged(format!(
                 "holds {} links for {} rows",
                 self.links.len(),
-                keys.len()
+                keys.rows()
             )));
         }
-        if self.buckets.len() != capacity_for(keys.len()) {
+        if self.buckets.len() != capacity_for(keys.rows()) {
             return Err(self.damaged(format!(
                 "holds {} buckets for {} rows",
                 self.buckets.len(),
-                keys.len()
+                keys.rows()
             )));
         }
 
@@ -212,7 +259,7 @@ impl<K: IndexKey> HashIndex<K> {
                 found[row] = true;
 
                 let link = *self.links.row(row)?;
-                let key = *keys.row(row)?;
+                let key = keys.key_at(row)?;
                 if link.key != key {
                     return Err(self.damaged(format!(
                         "files row {row} under a key that row does not hold"
@@ -281,7 +328,7 @@ impl<K: IndexKey> HashIndex<K> {
         updater.column(&link_name(entity, field), &self.links)
     }
 
-    fn walk(&self, key: K, mut visit: impl FnMut(usize) -> bool) -> Result<()> {
+    fn walk(&self, key: K, mut visit: impl FnMut(usize) -> Result<bool>) -> Result<()> {
         if self.buckets.is_empty() {
             return Ok(());
         }
@@ -294,7 +341,7 @@ impl<K: IndexKey> HashIndex<K> {
             }
             let row = self.holding(at)?;
             let link = *self.links.row(row)?;
-            if link.key == key && !visit(row) {
+            if link.key == key && !visit(row)? {
                 return Ok(());
             }
             at = link.next;
