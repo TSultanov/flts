@@ -1,6 +1,7 @@
 use super::*;
 use crate::id::Id;
 use crate::storage::Arena;
+use crate::storage::ColumnFile;
 use crate::test_utils::{TempDir, committed};
 
 struct Book;
@@ -207,4 +208,23 @@ fn orphans_are_listed_apart_from_every_parent() {
 
     assert_eq!(rows(column.children_of(1, Id::from_index(0)).unwrap()), [0]);
     assert_eq!(rows(column.orphans(1).unwrap()), [1]);
+}
+
+#[test]
+fn touching_the_tail_of_a_rotten_reference_column_reports_the_damage() {
+    let dir = TempDir::new("ref_tail");
+    let path = dir.join("chapters.dbs");
+
+    let column = owners(&[0]);
+    let file = committed(&path, |updater| column.offer_to("chapter", "book", updater));
+    let tail = file.column_meta("chapter.book").unwrap().chunks[0];
+    drop(file);
+    crate::test_utils::flip_byte(&path, tail.offset);
+
+    let mut read = RefColumn::<Book, Chapter>::default();
+    read.read_from("chapter", "book", &ColumnFile::open(&path).unwrap())
+        .unwrap();
+
+    let err = read.touch_tail().unwrap_err();
+    assert!(err.is_corrupt(), "{err}");
 }

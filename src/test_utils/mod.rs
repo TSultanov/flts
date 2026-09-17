@@ -3,6 +3,7 @@
 pub mod column_file_bytes;
 mod committed;
 mod flip_byte;
+pub mod library;
 pub mod props;
 mod temp_dir;
 

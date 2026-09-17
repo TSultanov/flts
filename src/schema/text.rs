@@ -40,6 +40,11 @@ impl Column for TextColumn {
         self.blobs.len()
     }
 
+    fn touch_tail(&self) -> Result<()> {
+        self.blobs.touch_tail()?;
+        self.heap.touch_tail()
+    }
+
     fn describe(&self, entity: &str, field: &str, out: &mut Vec<ColumnSpec>) {
         out.push(ColumnSpec {
             name: qualified(entity, field),
@@ -106,6 +111,11 @@ impl NullableTextColumn {
 impl Column for NullableTextColumn {
     fn rows(&self) -> usize {
         self.blobs.len()
+    }
+
+    fn touch_tail(&self) -> Result<()> {
+        self.blobs.touch_tail()?;
+        self.heap.touch_tail()
     }
 
     fn describe(&self, entity: &str, field: &str, out: &mut Vec<ColumnSpec>) {

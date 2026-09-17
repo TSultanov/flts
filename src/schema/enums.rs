@@ -50,6 +50,10 @@ impl<E: UnitEnum> Column for EnumColumn<E> {
         self.codes.len()
     }
 
+    fn touch_tail(&self) -> Result<()> {
+        self.codes.touch_tail()
+    }
+
     fn describe(&self, entity: &str, field: &str, out: &mut Vec<ColumnSpec>) {
         out.push(ColumnSpec {
             name: qualified(entity, field),

@@ -1,4 +1,5 @@
 use super::*;
+use crate::storage::ColumnFile;
 use crate::test_utils::{TempDir, committed};
 
 fn row(index: usize, rows: usize) -> Row {
@@ -151,4 +152,27 @@ fn a_nullable_text_column_survives_a_commit_and_a_reopen() {
     assert_eq!(read.get(row(0, 3)).unwrap().as_deref(), Some("kept"));
     assert_eq!(read.get(row(1, 3)).unwrap().as_deref(), None);
     assert_eq!(read.get(row(2, 3)).unwrap().as_deref(), Some("also kept"));
+}
+
+#[test]
+fn touching_the_tail_of_a_rotten_nullable_heap_reports_the_damage() {
+    let dir = TempDir::new("nullable_text_tail");
+    let path = dir.join("notes.dbs");
+
+    let mut notes = NullableTextColumn::default();
+    notes.push(Some("a note")).unwrap();
+    let file = committed(&path, |updater| notes.offer_to("card", "note", updater));
+    let tail = file.column_meta("card.note.bytes").unwrap().chunks[0];
+    drop(file);
+    crate::test_utils::flip_byte(&path, tail.offset);
+
+    let mut read = NullableTextColumn::default();
+    read.read_from("card", "note", &ColumnFile::open(&path).unwrap())
+        .unwrap();
+
+    let err = read.touch_tail().unwrap_err();
+    assert!(
+        err.is_corrupt(),
+        "a blob column that reads cleanly does not excuse the heap it points into: {err}"
+    );
 }

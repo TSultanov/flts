@@ -1,0 +1,155 @@
+use crate::error::Result;
+use crate::id::Id;
+use crate::schema::{Entity, Field, FieldMut, RefColumn, Table, TextColumn};
+
+pub struct Book;
+pub struct Chapter;
+pub struct Paragraph;
+
+impl Entity for Book {
+    const NAME: &'static str = "book";
+}
+
+impl Entity for Chapter {
+    const NAME: &'static str = "chapter";
+}
+
+impl Entity for Paragraph {
+    const NAME: &'static str = "paragraph";
+}
+
+#[derive(Default, Clone)]
+pub struct Books {
+    title: TextColumn,
+    author: TextColumn,
+}
+
+impl Table for Books {
+    type Of = Book;
+
+    fn fields(&self) -> Vec<Field<'_>> {
+        vec![
+            Field::new("title", &self.title),
+            Field::new("author", &self.author),
+        ]
+    }
+
+    fn fields_mut(&mut self) -> Vec<FieldMut<'_>> {
+        vec![
+            FieldMut::new("title", &mut self.title),
+            FieldMut::new("author", &mut self.author),
+        ]
+    }
+}
+
+impl Books {
+    pub fn push(&mut self, title: &str, author: &str) -> Result<Id<Book>> {
+        self.reserve()?;
+        let row = self.title.push(title)?;
+        self.author.push(author)?;
+        Ok(Id::from_index(row))
+    }
+
+    pub fn title(&self, book: Id<Book>) -> Result<String> {
+        Ok(self.title.get(self.row_of(book)?)?.into_owned())
+    }
+
+    pub fn author(&self, book: Id<Book>) -> Result<String> {
+        Ok(self.author.get(self.row_of(book)?)?.into_owned())
+    }
+
+    pub fn set_title(&mut self, book: Id<Book>, title: &str) -> Result<()> {
+        let row = self.row_of(book)?;
+        self.title.set(row, title)
+    }
+}
+
+#[derive(Default, Clone)]
+pub struct Chapters {
+    book: RefColumn<Book, Chapter>,
+    title: TextColumn,
+}
+
+impl Table for Chapters {
+    type Of = Chapter;
+
+    fn fields(&self) -> Vec<Field<'_>> {
+        vec![
+            Field::new("book", &self.book),
+            Field::new("title", &self.title),
+        ]
+    }
+
+    fn fields_mut(&mut self) -> Vec<FieldMut<'_>> {
+        vec![
+            FieldMut::new("book", &mut self.book),
+            FieldMut::new("title", &mut self.title),
+        ]
+    }
+}
+
+impl Chapters {
+    pub fn push(&mut self, book: Id<Book>, title: &str) -> Result<Id<Chapter>> {
+        self.reserve()?;
+        let row = self.book.push(book)?;
+        self.title.push(title)?;
+        Ok(Id::from_index(row))
+    }
+
+    pub fn title(&self, chapter: Id<Chapter>) -> Result<String> {
+        Ok(self.title.get(self.row_of(chapter)?)?.into_owned())
+    }
+
+    pub fn book(&self, chapter: Id<Chapter>) -> Result<Id<Book>> {
+        self.book.get(self.row_of(chapter)?)
+    }
+
+    pub fn of_book(&self, books: usize, book: Id<Book>) -> Result<&[Id<Chapter>]> {
+        self.book.children_of(books, book)
+    }
+
+    pub fn is_indexed(&self) -> bool {
+        self.book.is_indexed()
+    }
+}
+
+#[derive(Default, Clone)]
+pub struct Paragraphs {
+    chapter: RefColumn<Chapter, Paragraph>,
+    text: TextColumn,
+}
+
+impl Table for Paragraphs {
+    type Of = Paragraph;
+
+    fn fields(&self) -> Vec<Field<'_>> {
+        vec![
+            Field::new("chapter", &self.chapter),
+            Field::new("text", &self.text),
+        ]
+    }
+
+    fn fields_mut(&mut self) -> Vec<FieldMut<'_>> {
+        vec![
+            FieldMut::new("chapter", &mut self.chapter),
+            FieldMut::new("text", &mut self.text),
+        ]
+    }
+}
+
+impl Paragraphs {
+    pub fn push(&mut self, chapter: Id<Chapter>, text: &str) -> Result<Id<Paragraph>> {
+        self.reserve()?;
+        let row = self.chapter.push(chapter)?;
+        self.text.push(text)?;
+        Ok(Id::from_index(row))
+    }
+
+    pub fn text(&self, paragraph: Id<Paragraph>) -> Result<String> {
+        Ok(self.text.get(self.row_of(paragraph)?)?.into_owned())
+    }
+
+    pub fn of_chapter(&self, chapters: usize, chapter: Id<Chapter>) -> Result<&[Id<Paragraph>]> {
+        self.chapter.children_of(chapters, chapter)
+    }
+}

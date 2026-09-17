@@ -1,5 +1,6 @@
 use super::*;
 use crate::error::Error;
+use crate::storage::ColumnFile;
 use crate::test_utils::{TempDir, committed};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -100,4 +101,24 @@ fn an_enum_column_survives_a_commit_and_a_reopen() {
     assert_eq!(read.rows(), 2);
     assert_eq!(read.get(row(0, 2)).unwrap(), Shelf::Reference);
     assert_eq!(read.get(row(1, 2)).unwrap(), Shelf::Rare);
+}
+
+#[test]
+fn touching_the_tail_of_a_rotten_enum_column_reports_the_damage() {
+    let dir = TempDir::new("enum_tail");
+    let path = dir.join("shelves.dbs");
+
+    let mut shelf = EnumColumn::<Shelf>::default();
+    shelf.push(Shelf::Rare).unwrap();
+    let file = committed(&path, |updater| shelf.offer_to("book", "shelf", updater));
+    let tail = file.column_meta("book.shelf").unwrap().chunks[0];
+    drop(file);
+    crate::test_utils::flip_byte(&path, tail.offset);
+
+    let mut read = EnumColumn::<Shelf>::default();
+    read.read_from("book", "shelf", &ColumnFile::open(&path).unwrap())
+        .unwrap();
+
+    let err = read.touch_tail().unwrap_err();
+    assert!(err.is_corrupt(), "{err}");
 }

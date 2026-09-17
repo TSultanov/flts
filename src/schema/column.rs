@@ -46,6 +46,8 @@ impl Row {
 pub trait Column {
     fn rows(&self) -> usize;
 
+    fn touch_tail(&self) -> Result<()>;
+
     fn describe(&self, entity: &str, field: &str, out: &mut Vec<ColumnSpec>);
 
     fn read_from(&mut self, entity: &str, field: &str, file: &ColumnFile) -> Result<()>;
@@ -56,6 +58,13 @@ pub trait Column {
 impl<T: Record> Column for Arena<T> {
     fn rows(&self) -> usize {
         self.len()
+    }
+
+    fn touch_tail(&self) -> Result<()> {
+        match self.chunk_count().checked_sub(1) {
+            Some(last) => self.chunk(last).map(|_| ()),
+            None => Ok(()),
+        }
     }
 
     fn describe(&self, entity: &str, field: &str, out: &mut Vec<ColumnSpec>) {

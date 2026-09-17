@@ -1,4 +1,5 @@
 use super::*;
+use crate::storage::ColumnFile;
 use crate::test_utils::{TempDir, committed};
 
 fn row(index: usize, rows: usize) -> Row {
@@ -95,4 +96,29 @@ fn a_nullable_scalar_survives_a_commit_and_a_reopen() {
     assert_eq!(read.get(row(1, 3)).unwrap(), None);
     assert_eq!(read.get(row(2, 3)).unwrap(), Some(13));
     assert!(file.column_meta("card.interval.present").is_some());
+}
+
+#[test]
+fn touching_the_tail_of_a_rotten_presence_column_reports_the_damage() {
+    let dir = TempDir::new("nullable_tail");
+    let path = dir.join("cards.dbs");
+
+    let mut interval = NullableColumn::<u64>::default();
+    interval.push(Some(1)).unwrap();
+    let file = committed(&path, |updater| {
+        interval.offer_to("card", "interval", updater)
+    });
+    let tail = file.column_meta("card.interval.present").unwrap().chunks[0];
+    drop(file);
+    crate::test_utils::flip_byte(&path, tail.offset);
+
+    let mut read = NullableColumn::<u64>::default();
+    read.read_from("card", "interval", &ColumnFile::open(&path).unwrap())
+        .unwrap();
+
+    let err = read.touch_tail().unwrap_err();
+    assert!(
+        err.is_corrupt(),
+        "a value column that reads cleanly does not excuse its presence column: {err}"
+    );
 }

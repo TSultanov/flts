@@ -37,6 +37,11 @@ impl<T: Record + Default> Column for NullableColumn<T> {
         self.values.len()
     }
 
+    fn touch_tail(&self) -> Result<()> {
+        self.values.touch_tail()?;
+        self.present.touch_tail()
+    }
+
     fn describe(&self, entity: &str, field: &str, out: &mut Vec<ColumnSpec>) {
         out.push(ColumnSpec {
             name: qualified(entity, field),

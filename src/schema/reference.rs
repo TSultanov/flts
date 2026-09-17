@@ -84,6 +84,10 @@ impl<P: Entity, C: Entity> Column for RefColumn<P, C> {
         self.ids.len()
     }
 
+    fn touch_tail(&self) -> Result<()> {
+        self.ids.touch_tail()
+    }
+
     fn describe(&self, entity: &str, field: &str, out: &mut Vec<ColumnSpec>) {
         out.push(ColumnSpec {
             name: qualified(entity, field),
