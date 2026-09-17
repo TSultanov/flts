@@ -81,6 +81,7 @@ struct Author {
     born: u32,
     died: Option<u32>,
     shelf: Shelf,
+    works: Many<Work>,
 }
 
 #[crate::entity]
@@ -272,7 +273,7 @@ fn a_generated_row_reads_every_kind_of_field_through_the_entity_that_owns_it() -
 }
 
 #[test]
-fn a_generated_row_reads_the_reference_column_it_stands_on() -> Result<()> {
+fn a_generated_row_follows_its_reference_into_the_row_it_points_at() -> Result<()> {
     use crate::id::Id;
 
     let catalogue = catalogued()?;
@@ -280,7 +281,44 @@ fn a_generated_row_reads_the_reference_column_it_stands_on() -> Result<()> {
     let kokoro = catalogue.at(Id::<Work>::from_index(0))?;
 
     assert_eq!(kokoro.title()?, "Kokoro");
-    assert_eq!(kokoro.author()?, Id::<Author>::from_index(0));
+    assert_eq!(kokoro.author()?.name()?, "Natsume Kinnosuke");
+    assert_eq!(kokoro.author()?.id(), Id::<Author>::from_index(0));
+    Ok(())
+}
+
+#[test]
+fn a_generated_row_hands_back_the_children_a_many_field_declared() -> Result<()> {
+    use crate::id::Id;
+
+    let mut catalogue = catalogued()?;
+    let soseki = Id::<Author>::from_index(0);
+    catalogue.works.push(soseki, "Botchan")?;
+    catalogue.works.push(Id::from_index(1), "Beowulf")?;
+
+    let titles: Vec<String> = catalogue
+        .at(soseki)?
+        .works()?
+        .map(|work| work.title().map(|title| title.into_owned()))
+        .collect::<Result<_>>()?;
+
+    assert_eq!(titles, ["Kokoro", "Botchan"]);
+    assert_eq!(
+        catalogue.at(Id::<Author>::from_index(1))?.works()?.count(),
+        1
+    );
+    Ok(())
+}
+
+#[test]
+fn a_generated_row_with_no_children_hands_back_nothing() -> Result<()> {
+    use crate::id::Id;
+
+    let catalogue = catalogued()?;
+
+    assert_eq!(
+        catalogue.at(Id::<Author>::from_index(1))?.works()?.count(),
+        0
+    );
     Ok(())
 }
 

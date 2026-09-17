@@ -135,3 +135,78 @@ fn every_table_in_a_store_mints_handles_of_its_own_entity() {
     assert_eq!(chapters, ["Down the Rabbit-Hole"]);
     assert_eq!(library.all::<Book>().count(), 2);
 }
+
+#[test]
+fn a_handle_follows_a_reference_into_the_row_it_points_at() {
+    let library = stocked();
+
+    let chapter = library.at(Id::<Chapter>::from_index(0)).unwrap();
+
+    assert_eq!(chapter.book().unwrap().title().unwrap(), "Alice");
+    assert_eq!(chapter.book().unwrap().id(), Id::<Book>::from_index(0));
+}
+
+#[test]
+fn a_handle_walks_two_levels_down_and_one_back_up() {
+    let library = stocked();
+
+    let alice = library.at(Id::<Book>::from_index(0)).unwrap();
+    let chapter = alice.chapters().unwrap().next().unwrap();
+    let paragraph = chapter.paragraphs().unwrap().next().unwrap();
+
+    assert_eq!(paragraph.text().unwrap(), "Alice was tired.");
+    assert_eq!(paragraph.chapter().unwrap().id(), chapter.id());
+}
+
+#[test]
+fn a_handle_whose_row_has_no_children_walks_nowhere() {
+    let library = stocked();
+
+    let kokoro = library.at(Id::<Book>::from_index(1)).unwrap();
+
+    assert_eq!(kokoro.chapters().unwrap().count(), 0);
+}
+
+#[test]
+fn walking_the_children_of_a_row_hands_back_only_that_row_s_children() {
+    let mut library = stocked();
+    let kokoro = Id::<Book>::from_index(1);
+    library.chapters.push(kokoro, "Sensei and I").unwrap();
+    library
+        .chapters
+        .push(Id::from_index(0), "The Pool of Tears")
+        .unwrap();
+
+    let titles: Vec<String> = library
+        .at(kokoro)
+        .unwrap()
+        .chapters()
+        .unwrap()
+        .map(|chapter| chapter.title().unwrap().into_owned())
+        .collect();
+
+    assert_eq!(titles, ["Sensei and I"]);
+    assert_eq!(
+        library
+            .at(Id::<Book>::from_index(0))
+            .unwrap()
+            .chapters()
+            .unwrap()
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn walking_the_children_of_a_row_refuses_a_reference_no_parent_answers_for() {
+    let mut library = Library::default();
+    library.books.push("Alice", "Lewis Carroll").unwrap();
+    library
+        .chapters
+        .push(Id::from_index(7), "Belongs to nobody")
+        .unwrap();
+
+    let err = refused(library.at(Id::<Book>::from_index(0)).unwrap().chapters());
+
+    assert!(err.contains("chapter.book"), "{err}");
+}

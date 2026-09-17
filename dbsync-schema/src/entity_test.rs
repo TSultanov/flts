@@ -35,12 +35,57 @@ fn a_many_field_asks_for_no_column_at_all() {
         "{out}"
     );
     assert!(
-        !out.contains("chapters :"),
+        !out.contains("chapters : ::"),
         "a Many field is derived, not stored: {out}"
     );
     assert!(
-        !out.contains("fn chapters"),
-        "the accessor belongs to the container, which can see both tables: {out}"
+        !out.contains("chapters : & str"),
+        "a Many field is never pushed: {out}"
+    );
+}
+
+#[test]
+fn a_many_field_hands_a_row_the_children_that_point_back_at_it() {
+    let out = expanded(quote! {
+        struct Book { title: String, chapters: Many<Chapter> }
+    });
+
+    let walks = [
+        "pub fn chapters (& self ,) ",
+        "-> :: dbsync :: Result < :: dbsync :: schema :: Children < 'a , S , Chapter >> ",
+        "where S : :: dbsync :: schema :: Holds < Chapter > , ",
+        "{ self . 0 . children :: < Chapter > () }",
+    ]
+    .concat();
+
+    assert!(
+        out.contains(&walks),
+        "a store that holds only books cannot walk to a chapter, so the bound is per accessor:          {out}"
+    );
+}
+
+#[test]
+fn a_reference_field_hands_a_row_the_parent_it_points_at_not_the_id() {
+    let out = expanded(quote! {
+        struct Chapter { book: Ref<Book>, title: String }
+    });
+
+    let follows = [
+        "pub fn book (& self ,) ",
+        "-> :: dbsync :: Result << Book as :: dbsync :: schema :: Entity > :: Row < 'a , S >> ",
+        "where S : :: dbsync :: schema :: Holds < Book > , ",
+        "{ let table = self . 0 . table () ; let row = self . 0 . row () ; ",
+        "self . 0 . at (table . book . get (row) ?) }",
+    ]
+    .concat();
+
+    assert!(
+        out.contains(&follows),
+        "the parent may be declared anywhere, so it is named through the entity: {out}"
+    );
+    assert!(
+        out.contains("pub fn book (& self , of : :: dbsync :: Id < Chapter >)"),
+        "the raw id stays reachable through the table: {out}"
     );
 }
 

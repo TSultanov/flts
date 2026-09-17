@@ -4,8 +4,8 @@ use std::ops::Deref;
 use crate::error::Result;
 use crate::id::Id;
 use crate::schema::{
-    AnyTable, Child, Entity, Entry, Field, FieldMut, Holds, RefColumn, Rows, Store, StoreState,
-    Table, TextColumn,
+    AnyTable, Child, Children, Entity, Entry, Field, FieldMut, Holds, RefColumn, Rows, Store,
+    StoreState, Table, TextColumn,
 };
 
 pub struct Book;
@@ -115,6 +115,13 @@ impl<'a, S: Holds<Book>> BookRow<'a, S> {
     pub fn author(&self) -> Result<Cow<'a, str>> {
         self.0.table().author.get(self.0.row())
     }
+
+    pub fn chapters(&self) -> Result<Children<'a, S, Chapter>>
+    where
+        S: Holds<Chapter>,
+    {
+        self.0.children::<Chapter>()
+    }
 }
 
 #[derive(Default, Clone)]
@@ -192,6 +199,22 @@ impl<'a, S: Holds<Chapter>> ChapterRow<'a, S> {
     pub fn title(&self) -> Result<Cow<'a, str>> {
         self.0.table().title.get(self.0.row())
     }
+
+    pub fn book(&self) -> Result<<Book as Entity>::Row<'a, S>>
+    where
+        S: Holds<Book>,
+    {
+        let table = self.0.table();
+        let row = self.0.row();
+        self.0.at(table.book.get(row)?)
+    }
+
+    pub fn paragraphs(&self) -> Result<Children<'a, S, Paragraph>>
+    where
+        S: Holds<Paragraph>,
+    {
+        self.0.children::<Paragraph>()
+    }
 }
 
 #[derive(Default, Clone)]
@@ -260,6 +283,15 @@ impl<'a, S: Holds<Paragraph>> Deref for ParagraphRow<'a, S> {
 impl<'a, S: Holds<Paragraph>> ParagraphRow<'a, S> {
     pub fn text(&self) -> Result<Cow<'a, str>> {
         self.0.table().text.get(self.0.row())
+    }
+
+    pub fn chapter(&self) -> Result<<Chapter as Entity>::Row<'a, S>>
+    where
+        S: Holds<Chapter>,
+    {
+        let table = self.0.table();
+        let row = self.0.row();
+        self.0.at(table.chapter.get(row)?)
     }
 }
 

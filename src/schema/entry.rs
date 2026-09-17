@@ -2,9 +2,10 @@
 
 use std::marker::PhantomData;
 use std::ops::Range;
+use std::slice;
 
 use super::column::Row;
-use super::entity::{Entity, Holds};
+use super::entity::{Child, Entity, Holds, children_of};
 use super::table::Table;
 use crate::error::Result;
 use crate::id::Id;
@@ -51,6 +52,38 @@ impl<'a, S: Holds<E>, E: Entity> Entry<'a, S, E> {
 
     pub fn table(&self) -> &'a E::Table {
         Holds::<E>::table(self.store)
+    }
+
+    pub fn at<T>(&self, id: Id<T>) -> Result<T::Row<'a, S>>
+    where
+        S: Holds<T>,
+        T: Entity,
+    {
+        Ok(Entry::of(self.store, id)?.into())
+    }
+
+    pub fn children<C>(&self) -> Result<Children<'a, S, C>>
+    where
+        S: Holds<C>,
+        C: Child<E>,
+    {
+        Ok(Children {
+            store: self.store,
+            ids: children_of(self.store, self.id)?.iter(),
+        })
+    }
+}
+
+pub struct Children<'a, S, C: Entity> {
+    store: &'a S,
+    ids: slice::Iter<'a, Id<C>>,
+}
+
+impl<'a, S: Holds<C> + 'a, C: Entity> Iterator for Children<'a, S, C> {
+    type Item = C::Row<'a, S>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        Some(Entry::trusted(self.store, self.ids.next()?.index()).into())
     }
 }
 

@@ -109,15 +109,41 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         }
     });
 
-    let readers = stored.iter().map(|field| {
+    let readers = fields.iter().map(|field| {
         let field_name = &field.name;
-        let read = field.kind.read(&held);
-        let get = field.kind.get(&quote! { table }, field_name);
-        quote! {
-            pub fn #field_name(&self) -> ::dbsync::Result<#read> {
-                let table = self.0.table();
-                let row = self.0.row();
-                #get
+        match &field.kind {
+            Kind::Many(child) => quote! {
+                pub fn #field_name(
+                    &self,
+                ) -> ::dbsync::Result<::dbsync::schema::Children<#held, S, #child>>
+                where
+                    S: ::dbsync::schema::Holds<#child>,
+                {
+                    self.0.children::<#child>()
+                }
+            },
+            Kind::Reference(parent) => quote! {
+                pub fn #field_name(
+                    &self,
+                ) -> ::dbsync::Result<<#parent as ::dbsync::schema::Entity>::Row<#held, S>>
+                where
+                    S: ::dbsync::schema::Holds<#parent>,
+                {
+                    let table = self.0.table();
+                    let row = self.0.row();
+                    self.0.at(table.#field_name.get(row)?)
+                }
+            },
+            kind => {
+                let read = kind.read(&held);
+                let get = kind.get(&quote! { table }, field_name);
+                quote! {
+                    pub fn #field_name(&self) -> ::dbsync::Result<#read> {
+                        let table = self.0.table();
+                        let row = self.0.row();
+                        #get
+                    }
+                }
             }
         }
     });

@@ -308,3 +308,75 @@ fn a_declared_row_read_from_a_file_faults_in_only_the_column_it_was_asked_for() 
     assert_eq!(resident("paragraph.text.bytes"), 0);
     Ok(())
 }
+
+#[test]
+fn a_declared_row_walks_down_to_its_children_and_back_up_to_its_parent() -> Result<()> {
+    let mut library = Library::default();
+    let alice = stock(&mut library)?;
+
+    let book = library.at(alice)?;
+    let mut read = Vec::new();
+    for chapter in book.chapters()? {
+        read.push(chapter.title()?.into_owned());
+        for paragraph in chapter.paragraphs()? {
+            read.push(paragraph.text()?.into_owned());
+            assert_eq!(paragraph.chapter()?.id(), chapter.id());
+            assert_eq!(paragraph.chapter()?.book()?.title()?, "Alice");
+        }
+    }
+
+    assert_eq!(
+        read,
+        [
+            "Down the Rabbit-Hole",
+            "Alice was beginning to get very tired.",
+            "So she was considering in her own mind.",
+            "The Pool of Tears",
+            "Curiouser and curiouser!",
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn a_declared_row_with_no_children_walks_nowhere() -> Result<()> {
+    let mut library = Library::default();
+    stock(&mut library)?;
+
+    let sensei = library.at(Id::<Chapter>::from_index(2))?;
+    assert_eq!(sensei.paragraphs()?.count(), 1);
+
+    let quiet = library.books.push("Unread", "Nobody")?;
+    assert_eq!(library.at(quiet)?.chapters()?.count(), 0);
+    Ok(())
+}
+
+#[test]
+fn walking_a_declared_book_reads_no_chapter_a_different_book_owns() -> Result<()> {
+    let dir = TempDir::new("declared_walk_cold");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device())?;
+    stock(&mut library)?;
+    library.commit(this_device())?;
+
+    let reopened = Library::open(&path)?;
+    let kokoro = reopened.at(Id::<Book>::from_index(1))?;
+    let titles: Vec<String> = kokoro
+        .chapters()?
+        .map(|chapter| chapter.title().map(|title| title.into_owned()))
+        .collect::<Result<_>>()?;
+
+    assert_eq!(titles, ["Sensei and I"]);
+    assert_eq!(
+        reopened
+            .residency()
+            .into_iter()
+            .find(|column| column.name == "paragraph.text.bytes")
+            .expect("the schema names this column")
+            .resident,
+        0,
+        "listing a book's chapters must not read a single paragraph"
+    );
+    Ok(())
+}
