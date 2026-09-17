@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 
-use super::column::{Column, ColumnKind, ColumnSpec, Row};
+use super::column::{Column, ColumnKind, ColumnSpec, Residency, Row};
 use super::names::{heap_name, qualified};
 use crate::error::Result;
 use crate::record::Record;
@@ -57,6 +57,15 @@ impl Column for TextColumn {
             elem_size: <u8 as Record>::SIZE,
             kind: ColumnKind::Heap,
             counts_rows: false,
+        });
+    }
+
+    fn residency(&self, entity: &str, field: &str, out: &mut Vec<Residency>) {
+        self.blobs.residency(entity, field, out);
+        out.push(Residency {
+            name: heap_name(entity, field),
+            resident: self.heap.resident_chunks(),
+            chunks: self.heap.chunk_count(),
         });
     }
 
@@ -130,6 +139,15 @@ impl Column for NullableTextColumn {
             elem_size: <u8 as Record>::SIZE,
             kind: ColumnKind::Heap,
             counts_rows: false,
+        });
+    }
+
+    fn residency(&self, entity: &str, field: &str, out: &mut Vec<Residency>) {
+        self.blobs.residency(entity, field, out);
+        out.push(Residency {
+            name: heap_name(entity, field),
+            resident: self.heap.resident_chunks(),
+            chunks: self.heap.chunk_count(),
         });
     }
 

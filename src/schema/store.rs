@@ -3,7 +3,7 @@
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
-use super::column::ColumnSpec;
+use super::column::{ColumnSpec, Residency};
 use super::table::AnyTable;
 use crate::error::{Error, Result};
 use crate::storage::{ColumnFile, ColumnFileUpdater, ColumnFileWriter, WriterId};
@@ -39,6 +39,13 @@ pub trait Store: Default + Clone + Sized {
         self.tables()
             .into_iter()
             .flat_map(|table| table.column_specs())
+            .collect()
+    }
+
+    fn residency(&self) -> Vec<Residency> {
+        self.tables()
+            .into_iter()
+            .flat_map(|table| table.column_residency())
             .collect()
     }
 

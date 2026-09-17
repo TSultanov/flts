@@ -1,6 +1,6 @@
 //! An entity's columns as one addressable unit.
 
-use super::column::{ColumnSpec, Field, FieldMut, Row};
+use super::column::{ColumnSpec, Field, FieldMut, Residency, Row};
 use super::entity::Entity;
 use super::names::qualified;
 use crate::error::{Error, Result};
@@ -26,6 +26,14 @@ pub trait Table: Default + Clone {
         let mut out = Vec::new();
         for field in self.fields() {
             field.column.describe(Self::Of::NAME, field.name, &mut out);
+        }
+        out
+    }
+
+    fn residency(&self) -> Vec<Residency> {
+        let mut out = Vec::new();
+        for field in self.fields() {
+            field.column.residency(Self::Of::NAME, field.name, &mut out);
         }
         out
     }
@@ -83,6 +91,8 @@ pub trait AnyTable {
 
     fn column_specs(&self) -> Vec<ColumnSpec>;
 
+    fn column_residency(&self) -> Vec<Residency>;
+
     fn rows_agree(&self) -> Result<()>;
 
     fn read_columns(&mut self, file: &ColumnFile) -> Result<()>;
@@ -101,6 +111,10 @@ impl<T: Table> AnyTable for T {
 
     fn column_specs(&self) -> Vec<ColumnSpec> {
         Table::specs(self)
+    }
+
+    fn column_residency(&self) -> Vec<Residency> {
+        Table::residency(self)
     }
 
     fn rows_agree(&self) -> Result<()> {

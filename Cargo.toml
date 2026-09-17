@@ -15,5 +15,9 @@ derive = ["dep:dbsync-schema"]
 [dependencies]
 dbsync-schema = { version = "0.1.0", path = "dbsync-schema", optional = true }
 
+[[example]]
+name = "library"
+required-features = ["derive"]
+
 [dev-dependencies]
 proptest = { version = "1.11", default-features = false, features = ["std", "bit-set"] }

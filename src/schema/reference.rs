@@ -3,7 +3,7 @@
 use std::sync::{Mutex, OnceLock, PoisonError};
 
 use super::child_index::ChildIndex;
-use super::column::{Column, ColumnKind, ColumnSpec, Row};
+use super::column::{Column, ColumnKind, ColumnSpec, Residency, Row};
 use super::entity::Entity;
 use super::names::qualified;
 use crate::error::Result;
@@ -95,6 +95,10 @@ impl<P: Entity, C: Entity> Column for RefColumn<P, C> {
             kind: ColumnKind::Ref { parent: P::NAME },
             counts_rows: true,
         });
+    }
+
+    fn residency(&self, entity: &str, field: &str, out: &mut Vec<Residency>) {
+        self.ids.residency(entity, field, out);
     }
 
     fn read_from(&mut self, entity: &str, field: &str, file: &ColumnFile) -> Result<()> {

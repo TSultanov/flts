@@ -1,6 +1,6 @@
 //! A field that may be absent, kept honest by a presence column beside it.
 
-use super::column::{Column, ColumnKind, ColumnSpec, Row};
+use super::column::{Column, ColumnKind, ColumnSpec, Residency, Row};
 use super::names::{presence_name, qualified};
 use crate::error::Result;
 use crate::record::Record;
@@ -54,6 +54,15 @@ impl<T: Record + Default> Column for NullableColumn<T> {
             elem_size: <bool as Record>::SIZE,
             kind: ColumnKind::Presence,
             counts_rows: true,
+        });
+    }
+
+    fn residency(&self, entity: &str, field: &str, out: &mut Vec<Residency>) {
+        self.values.residency(entity, field, out);
+        out.push(Residency {
+            name: presence_name(entity, field),
+            resident: self.present.resident_chunks(),
+            chunks: self.present.chunk_count(),
         });
     }
 

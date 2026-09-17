@@ -2,7 +2,7 @@
 
 use std::marker::PhantomData;
 
-use super::column::{Column, ColumnKind, ColumnSpec, Row};
+use super::column::{Column, ColumnKind, ColumnSpec, Residency, Row};
 use super::names::qualified;
 use crate::error::Result;
 use crate::record::Record;
@@ -61,6 +61,10 @@ impl<E: UnitEnum> Column for EnumColumn<E> {
             kind: ColumnKind::Enum { name: E::NAME },
             counts_rows: true,
         });
+    }
+
+    fn residency(&self, entity: &str, field: &str, out: &mut Vec<Residency>) {
+        self.codes.residency(entity, field, out);
     }
 
     fn read_from(&mut self, entity: &str, field: &str, file: &ColumnFile) -> Result<()> {

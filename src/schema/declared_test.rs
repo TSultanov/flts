@@ -191,3 +191,61 @@ fn an_edited_title_survives_a_commit_and_leaves_its_neighbours_alone() -> Result
     );
     Ok(())
 }
+
+#[test]
+fn opening_a_declared_library_reads_no_payload_at_all() -> Result<()> {
+    let dir = TempDir::new("declared_lazy");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device())?;
+    stock(&mut library)?;
+    library.commit(this_device())?;
+
+    let reopened = Library::open(&path)?;
+    for column in reopened.residency() {
+        assert_eq!(
+            column.resident, 0,
+            "{} was read before anyone asked for a row",
+            column.name
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn listing_the_catalogue_leaves_every_paragraph_cold() -> Result<()> {
+    let dir = TempDir::new("declared_cold");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device())?;
+    stock(&mut library)?;
+    library.commit(this_device())?;
+
+    let reopened = Library::open(&path)?;
+    for row in 0..Table::rows(&reopened.books) {
+        reopened.books.title(Id::from_index(row))?;
+        reopened.books.author(Id::from_index(row))?;
+    }
+
+    let cold = |name: &str| {
+        reopened
+            .residency()
+            .into_iter()
+            .find(|column| column.name == name)
+            .expect("the schema names this column")
+    };
+
+    assert!(cold("book.title").resident > 0);
+    assert!(cold("book.title.bytes").resident > 0);
+    assert_eq!(
+        cold("paragraph.text").resident,
+        0,
+        "reading the catalogue must not read the books"
+    );
+    assert_eq!(
+        cold("paragraph.text.bytes").resident,
+        0,
+        "a per-field heap is what keeps a title from faulting in a paragraph"
+    );
+    Ok(())
+}

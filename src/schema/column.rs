@@ -18,6 +18,13 @@ pub enum ColumnKind {
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Residency {
+    pub name: String,
+    pub resident: usize,
+    pub chunks: usize,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ColumnSpec {
     pub name: String,
     pub elem_size: usize,
@@ -50,6 +57,8 @@ pub trait Column {
 
     fn describe(&self, entity: &str, field: &str, out: &mut Vec<ColumnSpec>);
 
+    fn residency(&self, entity: &str, field: &str, out: &mut Vec<Residency>);
+
     fn read_from(&mut self, entity: &str, field: &str, file: &ColumnFile) -> Result<()>;
 
     fn offer_to(&self, entity: &str, field: &str, updater: &mut ColumnFileUpdater) -> Result<()>;
@@ -73,6 +82,14 @@ impl<T: Record> Column for Arena<T> {
             elem_size: T::SIZE,
             kind: ColumnKind::Scalar,
             counts_rows: true,
+        });
+    }
+
+    fn residency(&self, entity: &str, field: &str, out: &mut Vec<Residency>) {
+        out.push(Residency {
+            name: qualified(entity, field),
+            resident: self.resident_chunks(),
+            chunks: self.chunk_count(),
         });
     }
 

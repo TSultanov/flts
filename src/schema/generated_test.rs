@@ -207,3 +207,25 @@ fn a_generated_table_round_trips_through_a_file() -> Result<()> {
     assert_eq!(read.died(crate::id::Id::from_index(1))?, None);
     Ok(())
 }
+
+#[test]
+fn every_column_a_table_names_is_a_column_it_reports_residency_for() {
+    use crate::schema::Table;
+
+    for (specs, held) in [
+        (
+            AuthorTable::default().specs(),
+            AuthorTable::default().residency(),
+        ),
+        (
+            WorkTable::default().specs(),
+            WorkTable::default().residency(),
+        ),
+    ] {
+        assert_eq!(
+            held.into_iter().map(|held| held.name).collect::<Vec<_>>(),
+            specs.into_iter().map(|spec| spec.name).collect::<Vec<_>>(),
+            "a column that cannot say whether it is resident is a column nobody can tune"
+        );
+    }
+}
