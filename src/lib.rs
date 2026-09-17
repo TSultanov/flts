@@ -5,6 +5,7 @@ extern crate self as dbsync;
 pub mod error;
 pub mod id;
 pub mod record;
+pub mod schema;
 pub mod storage;
 
 #[cfg(test)]
