@@ -129,7 +129,10 @@ impl<C: Keyed, const UNIQUE: bool> Indexed<C, UNIQUE> {
 
 impl<C: Keyed> Indexed<C, true> {
     pub fn find_one(&self, value: C::Seek<'_>) -> Result<Option<Row>> {
-        self.one(value)
+        match C::absent(value) {
+            true => Ok(None),
+            false => self.one(value),
+        }
     }
 
     pub fn refuse_duplicate(&self, value: C::Seek<'_>) -> Result<()> {

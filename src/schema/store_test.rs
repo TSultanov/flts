@@ -1,6 +1,6 @@
 use super::*;
 use crate::id::Id;
-use crate::schema::{HashIndex, Table};
+use crate::schema::{HashIndex, Table, TextKey};
 use crate::storage::Arena;
 use crate::test_utils::TempDir;
 use crate::test_utils::library::{Book, Library};
@@ -69,6 +69,45 @@ fn a_store_verifies_the_indexes_the_file_hands_it_and_not_only_its_checksums() {
         "every chunk checksums, and the index still lies: {err}"
     );
     assert!(err.to_string().contains("book.id"), "{err}");
+}
+
+#[test]
+fn a_store_verifies_the_index_over_a_value_and_not_only_the_one_over_an_id() {
+    let dir = TempDir::new("store_audit_value");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device()).unwrap();
+    stock(&mut library);
+    library.commit(this_device()).unwrap();
+    library.verify().unwrap();
+
+    let mut foreign = HashIndex::<TextKey>::new("book.title".to_owned());
+    for row in 0..Table::rows(&library.books) {
+        foreign
+            .append(TextKey::of(&format!("no book is called this {row}")))
+            .unwrap();
+    }
+    let file = ColumnFile::open(&path).unwrap();
+    let kept: Vec<String> = file
+        .columns()
+        .iter()
+        .map(|column| column.name.clone())
+        .filter(|name| name != "book.title.buckets" && name != "book.title.links")
+        .collect();
+    let mut updater = file.update(this_device()).unwrap();
+    for name in &kept {
+        updater.keep_column(name).unwrap();
+    }
+    foreign.offer_to("book", "title", &mut updater).unwrap();
+    updater.commit().unwrap();
+
+    let reopened = Library::open(&path).unwrap();
+    let err = reopened.verify().unwrap_err();
+    assert!(
+        err.is_corrupt(),
+        "an index that files a row under a value it does not hold is damage: {err}"
+    );
+    assert!(err.to_string().contains("book.title"), "{err}");
 }
 
 #[test]

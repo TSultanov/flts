@@ -79,10 +79,14 @@ fn a_generated_enum_can_be_the_type_of_a_column() -> Result<()> {
 
 #[crate::entity]
 struct Author {
+    #[index]
     name: String,
+    #[index]
     pen_name: Option<String>,
+    #[index]
     born: u32,
     died: Option<u32>,
+    #[index]
     shelf: Shelf,
     works: Many<Work>,
 }
@@ -91,6 +95,14 @@ struct Author {
 struct Work {
     author: One<Author>,
     title: String,
+}
+
+#[crate::entity]
+struct Edition {
+    #[index(unique)]
+    isbn: Option<String>,
+    #[index]
+    year: u32,
 }
 
 #[test]
@@ -111,12 +123,20 @@ fn a_generated_entity_names_its_columns_after_itself() {
             "author.id.links",
             "author.name",
             "author.name.bytes",
+            "author.name.buckets",
+            "author.name.links",
             "author.pen_name",
             "author.pen_name.bytes",
+            "author.pen_name.buckets",
+            "author.pen_name.links",
             "author.born",
+            "author.born.buckets",
+            "author.born.links",
             "author.died",
             "author.died.present",
             "author.shelf",
+            "author.shelf.buckets",
+            "author.shelf.links",
         ]
     );
 }
@@ -720,4 +740,85 @@ proptest! {
             prop_assert_eq!(now.pen_name.clone(), want);
         }
     }
+}
+
+#[test]
+fn a_generated_table_finds_every_row_that_holds_a_value() -> Result<()> {
+    use crate::schema::Table;
+
+    let mut authors = AuthorTable::default();
+    let carroll = authors.push(
+        "Lewis Carroll",
+        Some("Charles Dodgson"),
+        1832,
+        None,
+        Shelf::Rare,
+    )?;
+    let soseki = authors.push("Natsume Soseki", None, 1867, None, Shelf::Fiction)?;
+    let also = authors.push("Lewis Carroll", None, 1900, None, Shelf::Fiction)?;
+
+    assert_eq!(authors.find_by_name("Lewis Carroll")?, [carroll, also]);
+    assert_eq!(authors.find_by_name("Natsume Soseki")?, [soseki]);
+    assert!(authors.find_by_name("Nobody")?.is_empty());
+    assert_eq!(authors.find_by_born(1867)?, [soseki]);
+    assert_eq!(authors.find_by_shelf(Shelf::Fiction)?, [soseki, also]);
+    assert_eq!(authors.find_by_pen_name(None)?, [soseki, also]);
+    assert_eq!(Table::rows(&authors), 3);
+    Ok(())
+}
+
+#[test]
+fn a_generated_table_finds_the_one_row_that_holds_a_value_no_two_may_share() -> Result<()> {
+    let mut editions = EditionTable::default();
+    let oxford = editions.push(Some("978-0-19-955829-2"), 2009)?;
+    let penguin = editions.push(None, 2012)?;
+    editions.push(None, 2015)?;
+
+    assert_eq!(
+        editions.find_by_isbn(Some("978-0-19-955829-2"))?,
+        Some(oxford)
+    );
+    assert_eq!(editions.find_by_isbn(Some("978-0-14-243724-7"))?, None);
+    assert_eq!(
+        editions.find_by_isbn(None)?,
+        None,
+        "absence is not a value one row holds, which is why many rows may be absent"
+    );
+    assert_eq!(editions.find_by_year(2012)?, [penguin]);
+    Ok(())
+}
+
+#[test]
+fn a_generated_push_refuses_a_shared_value_before_it_mints_the_row_that_would_hold_it() {
+    use crate::schema::Table;
+
+    let mut editions = EditionTable::default();
+    editions.push(Some("978-0-19-955829-2"), 2009).unwrap();
+
+    let err = editions
+        .push(Some("978-0-19-955829-2"), 2012)
+        .expect_err("two editions may not share one isbn");
+    assert!(err.to_string().contains("edition.isbn"), "{err}");
+    assert!(err.to_string().contains("row 0"), "{err}");
+
+    assert_eq!(
+        Table::rows(&editions),
+        1,
+        "the refusal came before the id, so no column grew"
+    );
+    Table::check_rows_agree(&editions).expect("a refused push leaves no ragged table");
+    Table::audit(&editions).expect("and no index that disagrees with its column");
+}
+
+#[test]
+fn a_generated_row_set_to_a_value_leaves_no_trace_under_the_value_it_left() -> Result<()> {
+    let mut authors = AuthorTable::default();
+    let carroll = authors.push("Lewis Carroll", None, 1832, None, Shelf::Rare)?;
+
+    authors.set_name(carroll, "Charles Dodgson")?;
+
+    assert!(authors.find_by_name("Lewis Carroll")?.is_empty());
+    assert_eq!(authors.find_by_name("Charles Dodgson")?, [carroll]);
+    assert_eq!(authors.name(carroll)?, "Charles Dodgson");
+    Ok(())
 }

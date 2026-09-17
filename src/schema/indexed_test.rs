@@ -231,6 +231,11 @@ fn a_unique_column_names_the_one_row_that_holds_a_value() {
         Some(0)
     );
     assert_eq!(isbns.find_one(Some("978-0-14-243724-7")).unwrap(), None);
+    assert_eq!(
+        isbns.find_one(None).unwrap(),
+        None,
+        "many rows may be absent, so absence names no one row"
+    );
 }
 
 #[test]

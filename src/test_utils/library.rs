@@ -3,12 +3,12 @@ use std::ops::{Deref, DerefMut};
 
 use crate::error::{Error, Result};
 use crate::id::Id;
-use crate::schema::IdColumn;
 use crate::schema::{
     AnyTable, Audited, Child, Children, Entity, Entry, EntryMut, EnumColumn, Field, FieldMut,
     Holds, NullableColumn, NullableTextColumn, RefColumn, Rows, Store, StoreState, Table,
     TextColumn, UnitEnum, audit_reference,
 };
+use crate::schema::{IdColumn, Indexed};
 use crate::storage::Arena;
 
 pub struct Book;
@@ -108,11 +108,21 @@ impl UnitEnum for Binding {
     }
 }
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct Books {
     ids: IdColumn<Book>,
-    title: TextColumn,
+    title: Indexed<TextColumn, false>,
     author: TextColumn,
+}
+
+impl Default for Books {
+    fn default() -> Self {
+        Self {
+            ids: IdColumn::default(),
+            title: Indexed::named("book.title"),
+            author: TextColumn::default(),
+        }
+    }
 }
 
 impl Table for Books {
@@ -153,7 +163,15 @@ impl Books {
     }
 
     pub fn title(&self, book: Id<Book>) -> Result<String> {
-        Ok(self.title.get(self.row_of(book)?)?.into_owned())
+        Ok(self.title.column().get(self.row_of(book)?)?.into_owned())
+    }
+
+    pub fn find_by_title(&self, title: &str) -> Result<Vec<Id<Book>>> {
+        self.title
+            .find(title)?
+            .into_iter()
+            .map(|row| self.id_at(row))
+            .collect()
     }
 
     pub fn author(&self, book: Id<Book>) -> Result<String> {
@@ -184,7 +202,7 @@ impl<'a, S: Holds<Book>> Deref for BookRow<'a, S> {
 
 impl<'a, S: Holds<Book>> BookRow<'a, S> {
     pub fn title(&self) -> Result<Cow<'a, str>> {
-        self.0.table().title.get(self.0.row())
+        self.0.table().title.column().get(self.0.row())
     }
 
     pub fn author(&self) -> Result<Cow<'a, str>> {

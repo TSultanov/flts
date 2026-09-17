@@ -2,11 +2,12 @@
 
 use std::path::PathBuf;
 
-use dbsync::schema::{Store, Table};
+use dbsync::schema::{Holds, Store, Table};
 use dbsync::{ColumnFile, Result, WriterId};
 
 #[dbsync::entity]
 struct Book {
+    #[index]
     title: String,
     author: String,
     chapters: Many<Chapter>,
@@ -79,12 +80,10 @@ fn stock(library: &mut Library) -> Result<()> {
 }
 
 fn book_called<'a>(library: &'a Library, title: &str) -> Result<BookRow<'a, Library>> {
-    for book in library.all::<Book>() {
-        if book.title()? == title {
-            return Ok(book);
-        }
+    match Holds::<Book>::table(library).find_by_title(title)?.first() {
+        Some(book) => library.at(*book),
+        None => Err(dbsync::Error::invalid(format!("no book called {title:?}"))),
     }
-    Err(dbsync::Error::invalid(format!("no book called {title:?}")))
 }
 
 fn resident(library: &Library, column: &str) -> usize {
@@ -157,7 +156,32 @@ fn main() -> Result<()> {
     println!("     and left paragraph.text.bytes entirely cold: every string field");
     println!("     has its own heap, so a title cannot fault in a paragraph");
 
-    println!("\n4. opened one book, and walked it by the columns that point back at it");
+    let cold = Library::open(&path)?;
+    let prince = book_called(&cold, "Le Petit Prince")?;
+    println!("\n4. asked a handle that had read nothing for one book by its title");
+    assert_eq!(resident(&cold, "book.title"), 0);
+    assert_eq!(resident(&cold, "book.title.bytes"), 0);
+    assert!(resident(&cold, "book.title.buckets") > 0);
+    println!("     Le Petit Prince is fifteen bytes, so the whole title sits in the index:",);
+    println!(
+        "     finding it read {} chunks of book.title.buckets and left both book.title",
+        resident(&cold, "book.title.buckets")
+    );
+    println!("     and book.title.bytes entirely cold");
+
+    let alice_cold = book_called(&cold, "Alice's Adventures in Wonderland")?;
+    assert_eq!(resident(&cold, "book.title"), 0);
+    assert_eq!(resident(&cold, "book.title.bytes"), 1);
+    println!("     a title too long to carry keeps a digest and where its bytes are, so");
+    println!("     finding that one read a single chunk of book.title.bytes to confirm --");
+    println!("     and still not one chunk of book.title, the column being indexed");
+    println!(
+        "     reading a title back is a separate act: {} and {}",
+        prince.title()?,
+        alice_cold.title()?
+    );
+
+    println!("\n5. opened one book, and walked it by the columns that point back at it");
     let alice = book_called(&shelf, "Alice's Adventures in Wonderland")?;
     assert_eq!(alice.chapters()?.count(), 2);
     assert_eq!(resident(&shelf, "chapter.book"), 0);
@@ -200,7 +224,7 @@ fn main() -> Result<()> {
         untouched
     );
     println!(
-        "\n5. catalogued a fourth book, retitled a first, and committed generation {published}"
+        "\n6. catalogued a fourth book, retitled a first, and committed generation {published}"
     );
     println!(
         "     the file grew by {} bytes; paragraph.text was never touched and did not move",
@@ -211,7 +235,7 @@ fn main() -> Result<()> {
 
     assert_eq!(Table::rows(&shelf.books), 3);
     assert_eq!(Table::rows(&library.books), 4);
-    println!("\n6. the handle opened at the older generation still serves it");
+    println!("\n7. the handle opened at the older generation still serves it");
     println!(
         "     it reads {} books from the same file the live one reads {} from",
         Table::rows(&shelf.books),
@@ -223,7 +247,7 @@ fn main() -> Result<()> {
     let refused = stale
         .commit(this_device())
         .expect_err("a stale handle cannot commit");
-    println!("\n7. and that handle can no longer commit over the newer generation");
+    println!("\n8. and that handle can no longer commit over the newer generation");
     println!("     {refused}");
     println!("     the caller reopens and retries; nothing was written");
 

@@ -8,6 +8,7 @@ use proptest::prelude::*;
 
 #[crate::entity]
 struct Book {
+    #[index]
     title: String,
     author: String,
     chapters: Many<Chapter>,
@@ -86,6 +87,8 @@ fn the_declared_schema_names_every_column_the_file_will_hold() {
             "book.id.links",
             "book.title",
             "book.title.bytes",
+            "book.title.buckets",
+            "book.title.links",
             "book.author",
             "book.author.bytes",
             "chapter.id",

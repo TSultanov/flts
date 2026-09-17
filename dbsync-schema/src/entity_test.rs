@@ -571,3 +571,52 @@ fn what_an_author_wrote_above_a_field_is_written_above_the_way_to_read_it() {
         "what a field says about itself belongs on the table accessor and on the row reader: {out}"
     );
 }
+
+#[test]
+fn a_unique_field_is_probed_before_the_id_is_minted_and_a_shared_one_is_not() {
+    let out = expanded(quote! {
+        struct Edition {
+            #[index(unique)] isbn: String,
+            #[index] year: u32,
+        }
+    });
+
+    assert!(
+        out.contains("self . isbn . refuse_duplicate (isbn) ?"),
+        "{out}"
+    );
+    assert!(
+        !out.contains("self . year . refuse_duplicate"),
+        "a value rows may share is never refused: {out}"
+    );
+
+    let probe = out
+        .find("refuse_duplicate")
+        .expect("the unique field is probed");
+    let mint = out.find("mint (self)").expect("an id is minted");
+    assert!(
+        probe < mint,
+        "a duplicate is refused before the row that would have held it exists: {out}"
+    );
+}
+
+#[test]
+fn a_unique_field_is_found_as_one_row_and_a_shared_one_as_many() {
+    let out = expanded(quote! {
+        struct Edition {
+            #[index(unique)] isbn: String,
+            #[index] year: u32,
+        }
+    });
+
+    assert!(
+        out.contains("find_by_isbn (& self , value : & str ,) -> :: dbsync :: Result < :: core :: option :: Option <"),
+        "{out}"
+    );
+    assert!(
+        out.contains(
+            "find_by_year (& self , value : u32 ,) -> :: dbsync :: Result < :: std :: vec :: Vec <"
+        ),
+        "{out}"
+    );
+}

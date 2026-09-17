@@ -157,6 +157,8 @@ fn a_table_names_every_column_it_needs_from_a_file() {
             "book.id.links",
             "book.title",
             "book.title.bytes",
+            "book.title.buckets",
+            "book.title.links",
             "book.author",
             "book.author.bytes",
         ]
@@ -203,7 +205,7 @@ fn a_table_erased_behind_any_table_still_names_its_entity() {
 
     assert_eq!(erased.entity(), "book");
     assert_eq!(erased.row_count(), 3);
-    assert_eq!(erased.column_specs().len(), 7);
+    assert_eq!(erased.column_specs().len(), 9);
     erased.rows_agree().unwrap();
 }
 
@@ -234,6 +236,13 @@ fn a_table_can_be_written_and_read_entirely_through_the_erased_view() {
 
     assert_eq!(target.row_count(), 3);
     assert_eq!(read.author(ids[1]).unwrap(), "Lewis Carroll");
+}
+
+fn held_by_book(books: &Books, column: &str) -> Residency {
+    Table::residency(books)
+        .into_iter()
+        .find(|held| held.name == column)
+        .expect("the schema names this column")
 }
 
 fn held_by(chapters: &Chapters, column: &str) -> Residency {
@@ -350,6 +359,53 @@ fn reserving_for_a_row_that_outgrows_an_index_reads_every_link_it_already_filed(
             "a push that rehashes every link must read every link first: {held:?}"
         );
     }
+}
+
+#[test]
+fn a_table_finds_every_row_that_shares_a_value_in_the_order_they_were_pushed() {
+    let mut books = Books::default();
+    let alice = books.push("Alice", "Lewis Carroll").unwrap();
+    let kokoro = books.push("Kokoro", "Natsume Soseki").unwrap();
+    let also = books.push("Alice", "Someone Else").unwrap();
+
+    assert_eq!(books.find_by_title("Alice").unwrap(), [alice, also]);
+    assert_eq!(books.find_by_title("Kokoro").unwrap(), [kokoro]);
+    assert!(books.find_by_title("Moby-Dick").unwrap().is_empty());
+}
+
+#[test]
+fn a_value_a_row_was_given_after_the_fact_is_the_value_it_is_found_by() {
+    let mut books = Books::default();
+    let alice = books.push("Alice", "Lewis Carroll").unwrap();
+
+    books.set_title(alice, "Alice in Wonderland").unwrap();
+
+    assert!(books.find_by_title("Alice").unwrap().is_empty());
+    assert_eq!(books.find_by_title("Alice in Wonderland").unwrap(), [alice]);
+    assert_eq!(books.title(alice).unwrap(), "Alice in Wonderland");
+}
+
+#[test]
+fn a_value_index_a_commit_wrote_finds_a_row_after_a_reopen_that_read_nothing() {
+    let dir = TempDir::new("value_index_reopen");
+    let path = dir.join("books.dbs");
+
+    let mut books = Books::default();
+    let alice = books.push("Alice", "Lewis Carroll").unwrap();
+    books.push("Kokoro", "Natsume Soseki").unwrap();
+    let file = committed(&path, |updater| books.offer_to(updater));
+    drop(file);
+
+    let mut read = Books::default();
+    read.read_from(&ColumnFile::open(&path).unwrap()).unwrap();
+
+    assert_eq!(read.find_by_title("Alice").unwrap(), [alice]);
+    assert_eq!(
+        held_by_book(&read, "book.title").resident,
+        0,
+        "nobody rebuilt the index, and the index read no title to answer"
+    );
+    read.audit().unwrap();
 }
 
 #[test]

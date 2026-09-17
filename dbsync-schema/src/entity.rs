@@ -96,6 +96,55 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         let field_name = &field.name;
         quote! { self.#field_name.push(#field_name)?; }
     });
+    let probes = stored
+        .iter()
+        .filter(|field| field.indexing == Indexing::Unique)
+        .map(|field| {
+            let field_name = &field.name;
+            quote! { self.#field_name.refuse_duplicate(#field_name)?; }
+        });
+
+    let finders = stored
+        .iter()
+        .filter(|field| field.indexing != Indexing::None)
+        .map(|field| {
+            let field_name = &field.name;
+            let finder = format_ident!("find_by_{}", field_name);
+            let pushed = field.kind.pushed();
+            let docs = &field.docs;
+            match field.indexing {
+                Indexing::Unique => quote! {
+                    #(#docs)*
+                    pub fn #finder(
+                        &self,
+                        value: #pushed,
+                    ) -> ::dbsync::Result<::core::option::Option<::dbsync::Id<#name>>> {
+                        match self.#field_name.find_one(value)? {
+                            ::core::option::Option::Some(row) => {
+                                <Self as ::dbsync::schema::Table>::id_at(self, row)
+                                    .map(::core::option::Option::Some)
+                            }
+                            ::core::option::Option::None => {
+                                ::core::result::Result::Ok(::core::option::Option::None)
+                            }
+                        }
+                    }
+                },
+                _ => quote! {
+                    #(#docs)*
+                    pub fn #finder(
+                        &self,
+                        value: #pushed,
+                    ) -> ::dbsync::Result<::std::vec::Vec<::dbsync::Id<#name>>> {
+                        let mut found = ::std::vec::Vec::new();
+                        for row in self.#field_name.find(value)? {
+                            found.push(<Self as ::dbsync::schema::Table>::id_at(self, row)?);
+                        }
+                        ::core::result::Result::Ok(found)
+                    }
+                },
+            }
+        });
 
     let accessors = stored.iter().map(|field| {
         let field_name = &field.name;
@@ -273,12 +322,15 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         impl #table {
             pub fn push(&mut self, #(#arguments,)*) -> ::dbsync::Result<::dbsync::Id<#name>> {
                 <Self as ::dbsync::schema::Table>::reserve(self)?;
+                #(#probes)*
                 let id = <Self as ::dbsync::schema::Table>::mint(self)?;
                 #(#pushes)*
                 ::core::result::Result::Ok(id)
             }
 
             #(#accessors)*
+
+            #(#finders)*
         }
 
         #vis struct #row_type<#held, S: ::dbsync::schema::Holds<#name>>(
