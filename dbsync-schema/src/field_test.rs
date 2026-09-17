@@ -44,8 +44,8 @@ fn a_borrowed_field_is_refused_because_a_column_outlives_it() {
 
 #[test]
 fn a_reference_field_remembers_the_parent_it_points_at() {
-    let Kind::Reference(parent) = kind(quote!(Ref<Book>)) else {
-        panic!("Ref<Book> is a reference");
+    let Kind::Reference(parent) = kind(quote!(One<Book>)) else {
+        panic!("One<Book> is a reference");
     };
     assert_eq!(quote!(#parent).to_string(), "Book");
 }
@@ -96,7 +96,7 @@ fn a_many_field_is_not_stored_in_a_column_and_everything_else_is() {
 #[test]
 fn the_column_a_field_asks_for_names_both_ends_of_a_reference() {
     let child: syn::Ident = syn::parse_quote!(Chapter);
-    let column = kind(quote!(Ref<Book>)).column(&child).to_string();
+    let column = kind(quote!(One<Book>)).column(&child).to_string();
 
     assert!(column.contains("RefColumn"), "{column}");
     assert!(column.contains("Book"), "{column}");
@@ -104,12 +104,25 @@ fn the_column_a_field_asks_for_names_both_ends_of_a_reference() {
 }
 
 #[test]
-fn an_optional_reference_is_refused_with_a_way_forward() {
-    let err = refused(quote!(Option<Ref<Book>>));
+fn an_optional_parent_is_refused_with_a_way_forward() {
+    let err = refused(quote!(Option<One<Book>>));
     assert!(
-        err.contains("optional reference is not supported yet"),
+        err.contains("optional parent is not supported yet"),
         "{err}"
     );
+}
+
+#[test]
+fn the_name_a_parent_field_used_to_have_is_refused_by_name() {
+    let err = refused(quote!(Ref<Book>));
+    assert!(err.contains("a parent is declared One<..>"), "{err}");
+    assert!(err.contains("one-to-many"), "{err}");
+}
+
+#[test]
+fn the_old_name_is_refused_inside_an_option_too() {
+    let err = refused(quote!(Option<Ref<Book>>));
+    assert!(err.contains("a parent is declared One<..>"), "{err}");
 }
 
 #[test]

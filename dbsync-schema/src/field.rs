@@ -47,10 +47,11 @@ impl Kind {
             return Ok(Kind::Text);
         }
         unsized_text(ty)?;
+        renamed(ty)?;
         if let Some(inner) = wrapped("Option", ty) {
             return Self::nullable(inner, ty);
         }
-        if let Some(parent) = wrapped("Ref", ty) {
+        if let Some(parent) = wrapped("One", ty) {
             return Ok(Kind::Reference(parent.clone()));
         }
         if let Some(child) = wrapped("Many", ty) {
@@ -67,13 +68,14 @@ impl Kind {
             return Ok(Kind::NullableText);
         }
         unsized_text(inner)?;
+        renamed(inner)?;
         if is_scalar(inner) {
             return Ok(Kind::NullableScalar(inner.clone()));
         }
-        if wrapped("Ref", inner).is_some() {
+        if wrapped("One", inner).is_some() {
             return Err(syn::Error::new(
                 whole.span(),
-                "an optional reference is not supported yet; declare it Ref<..> for now",
+                "an optional parent is not supported yet; declare it One<..> for now",
             ));
         }
         if wrapped("Many", inner).is_some() {
@@ -162,6 +164,16 @@ fn unsized_text(ty: &Type) -> syn::Result<()> {
         return Err(syn::Error::new(
             ty.span(),
             "a field is stored by value and outlives any borrow, so it cannot be a reference",
+        ));
+    }
+    Ok(())
+}
+
+fn renamed(ty: &Type) -> syn::Result<()> {
+    if wrapped("Ref", ty).is_some() {
+        return Err(syn::Error::new(
+            ty.span(),
+            "a parent is declared One<..>, the one side of the one-to-many a Many walks",
         ));
     }
     Ok(())

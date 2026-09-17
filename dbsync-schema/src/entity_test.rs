@@ -67,7 +67,7 @@ fn a_many_field_hands_a_row_the_children_that_point_back_at_it() {
 #[test]
 fn a_reference_field_hands_a_row_the_parent_it_points_at_not_the_id() {
     let out = expanded(quote! {
-        struct Chapter { book: Ref<Book>, title: String }
+        struct Chapter { book: One<Book>, title: String }
     });
 
     let follows = [
@@ -104,7 +104,7 @@ fn a_many_field_makes_the_compiler_check_the_child_points_back() {
 #[test]
 fn a_reference_field_says_whose_child_this_entity_is() {
     let out = expanded(quote! {
-        struct Chapter { book: Ref<Book>, title: String }
+        struct Chapter { book: One<Book>, title: String }
     });
 
     assert!(
@@ -117,7 +117,7 @@ fn a_reference_field_says_whose_child_this_entity_is() {
 #[test]
 fn push_takes_one_argument_per_stored_field_in_the_order_they_were_written() {
     let out = expanded(quote! {
-        struct Chapter { book: Ref<Book>, title: String, chapters: Many<Paragraph> }
+        struct Chapter { book: One<Book>, title: String, chapters: Many<Paragraph> }
     });
 
     assert!(
@@ -174,7 +174,7 @@ fn a_scalar_reads_through_its_row_index_and_everything_else_through_the_row() {
 #[test]
 fn each_kind_of_field_asks_for_the_column_that_holds_it() {
     let out = expanded(quote! {
-        struct Card { lemma: String, note: Option<String>, interval: Option<u64>, shelf: Shelf, book: Ref<Book> }
+        struct Card { lemma: String, note: Option<String>, interval: Option<u64>, shelf: Shelf, book: One<Book> }
     });
 
     assert!(
@@ -215,7 +215,7 @@ fn a_multi_word_entity_is_named_in_snake_case() {
 #[test]
 fn two_references_to_the_same_parent_are_refused_and_both_are_named() {
     let err = refused(quote! {
-        struct Chapter { book: Ref<Book>, reprint: Ref<Book>, title: String }
+        struct Chapter { book: One<Book>, reprint: One<Book>, title: String }
     });
 
     assert!(err.contains("`book` and `reprint`"), "{err}");
@@ -225,7 +225,7 @@ fn two_references_to_the_same_parent_are_refused_and_both_are_named() {
 #[test]
 fn two_references_to_different_parents_are_fine() {
     let out = expanded(quote! {
-        struct Note { book: Ref<Book>, chapter: Ref<Chapter> }
+        struct Note { book: One<Book>, chapter: One<Chapter> }
     });
 
     assert!(out.contains("Child < Book > for Note"), "{out}");

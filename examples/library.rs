@@ -14,14 +14,14 @@ struct Book {
 
 #[dbsync::entity]
 struct Chapter {
-    book: Ref<Book>,
+    book: One<Book>,
     title: String,
     paragraphs: Many<Paragraph>,
 }
 
 #[dbsync::entity]
 struct Paragraph {
-    chapter: Ref<Chapter>,
+    chapter: One<Chapter>,
     text: String,
 }
 

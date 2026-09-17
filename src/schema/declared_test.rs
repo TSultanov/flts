@@ -13,14 +13,14 @@ struct Book {
 
 #[crate::entity]
 struct Chapter {
-    book: Ref<Book>,
+    book: One<Book>,
     title: String,
     paragraphs: Many<Paragraph>,
 }
 
 #[crate::entity]
 struct Paragraph {
-    chapter: Ref<Chapter>,
+    chapter: One<Chapter>,
     text: String,
 }
 

@@ -86,7 +86,7 @@ struct Author {
 
 #[crate::entity]
 struct Work {
-    author: Ref<Author>,
+    author: One<Author>,
     title: String,
 }
 
