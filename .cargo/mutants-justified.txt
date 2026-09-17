@@ -57,3 +57,15 @@ src/storage/column_file/header.rs:45:33: replace | with ^ in new_file_uuid
 dbsync-schema/src/lib.rs:13:5: replace container -> TokenStream with Default::default()
 dbsync-schema/src/lib.rs:21:5: replace entity -> TokenStream with Default::default()
 dbsync-schema/src/lib.rs:29:5: replace field_enum -> TokenStream with Default::default()
+
+# Provably equivalent, the same way new_file_uuid's OR above is. v7_at masks
+# every field to its own width before shifting it into place, so no two operands
+# of these ORs have a set bit in common and OR and XOR agree on every input.
+# The masks are what make the mutants equivalent, and the masks are the point --
+# a_field_wider_than_its_place_does_not_reach_into_the_next is the test that
+# holds them. Saying "place these disjoint fields" with addition instead would
+# give the tool something to kill at the cost of meaning what it says.
+src/id/uuid.rs:72:17: replace | with ^ in Uuid::v7_at
+src/id/uuid.rs:73:17: replace | with ^ in Uuid::v7_at
+src/id/uuid.rs:74:17: replace | with ^ in Uuid::v7_at
+src/id/uuid.rs:75:17: replace | with ^ in Uuid::v7_at

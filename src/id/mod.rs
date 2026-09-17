@@ -5,6 +5,10 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 
+mod uuid;
+
+pub use uuid::Uuid;
+
 pub struct Id<T: ?Sized> {
     raw: u64,
     marker: PhantomData<fn() -> T>,

@@ -12,7 +12,7 @@ pub mod storage;
 mod test_utils;
 
 pub use error::{Error, Result};
-pub use id::Id;
+pub use id::{Id, Uuid};
 pub use record::Record;
 
 #[cfg(feature = "derive")]
