@@ -3,6 +3,8 @@ use crate::id::Id;
 use crate::schema::{Store, Table};
 use crate::storage::WriterId;
 use crate::test_utils::TempDir;
+use crate::test_utils::props;
+use proptest::prelude::*;
 
 #[crate::entity]
 struct Book {
@@ -419,4 +421,278 @@ fn a_chapter_moved_through_a_row_is_grouped_under_the_book_it_moved_to() -> Resu
         .collect::<Result<_>>()?;
     assert_eq!(moved, ["Down the Rabbit-Hole", "Sensei and I"]);
     Ok(())
+}
+
+#[test]
+fn a_library_lives_its_whole_life_through_the_rows_it_hands_out() -> Result<()> {
+    let dir = TempDir::new("declared_life");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device())?;
+    let alice = stock(&mut library)?;
+    let shelved = library.commit(this_device())?;
+
+    let opened = Library::open(&path)?;
+    assert!(
+        opened.residency().iter().all(|held| held.resident == 0),
+        "opening a library must read no payload"
+    );
+
+    let book = opened.at(alice)?;
+    let mut read = Vec::new();
+    for chapter in book.chapters()? {
+        assert_eq!(chapter.book()?.id(), book.id());
+        for paragraph in chapter.paragraphs()? {
+            assert_eq!(paragraph.chapter()?.id(), chapter.id());
+            read.push(paragraph.text()?.into_owned());
+        }
+    }
+    assert_eq!(
+        read,
+        [
+            "Alice was beginning to get very tired.",
+            "So she was considering in her own mind.",
+            "Curiouser and curiouser!",
+        ]
+    );
+
+    library.at_mut(alice)?.set_title("Alice in Wonderland")?;
+    library.books.push("Il nome della rosa", "Umberto Eco")?;
+    let published = library.commit(this_device())?;
+    assert!(published > shelved);
+
+    let reopened = Library::open(&path)?;
+    assert_eq!(reopened.at(alice)?.title()?, "Alice in Wonderland");
+    assert_eq!(reopened.at(alice)?.author()?, "Lewis Carroll");
+    assert_eq!(reopened.all::<Book>().count(), 3);
+    assert_eq!(reopened.at(alice)?.chapters()?.count(), 2);
+
+    let mut stale = opened;
+    stale.books.push("Never committed", "Nobody")?;
+    let refused = stale
+        .commit(this_device())
+        .expect_err("a handle opened at the older generation cannot commit over the newer one");
+    assert!(
+        refused.to_string().contains("moved to generation"),
+        "{refused}"
+    );
+
+    let token = crate::storage::ColumnFile::read_commit_token(&path)?;
+    assert_eq!(token.generation, published);
+    assert!(!token.is_echo_of(this_device(), shelved));
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+enum Deed {
+    Book(String, String),
+    Chapter(usize, String),
+    Paragraph(usize, String),
+    Retitle(usize, String),
+    Rebook(usize, usize),
+    Settle,
+}
+
+fn deed() -> impl Strategy<Value = Deed> {
+    prop_oneof![
+        5 => (props::text(), props::text()).prop_map(|(title, author)| Deed::Book(title, author)),
+        4 => (props::row_index(), props::text()).prop_map(|(at, title)| Deed::Chapter(at, title)),
+        4 => (props::row_index(), props::text()).prop_map(|(at, text)| Deed::Paragraph(at, text)),
+        2 => (props::row_index(), props::text()).prop_map(|(at, title)| Deed::Retitle(at, title)),
+        2 => (props::row_index(), props::row_index()).prop_map(|(at, to)| Deed::Rebook(at, to)),
+        1 => Just(Deed::Settle),
+    ]
+}
+
+fn deeds() -> impl Strategy<Value = Vec<Deed>> {
+    prop::collection::vec(deed(), 0..12)
+}
+
+type Shelves = (
+    Vec<(String, String)>,
+    Vec<(usize, String)>,
+    Vec<(usize, String)>,
+);
+
+fn expected(deeds: &[Deed]) -> Shelves {
+    let mut books: Vec<(String, String)> = Vec::new();
+    let mut chapters: Vec<(usize, String)> = Vec::new();
+    let mut paragraphs: Vec<(usize, String)> = Vec::new();
+
+    for deed in deeds {
+        match deed {
+            Deed::Book(title, author) => books.push((title.clone(), author.clone())),
+            Deed::Chapter(at, title) => {
+                if !books.is_empty() {
+                    chapters.push((at % books.len(), title.clone()));
+                }
+            }
+            Deed::Paragraph(at, text) => {
+                if !chapters.is_empty() {
+                    paragraphs.push((at % chapters.len(), text.clone()));
+                }
+            }
+            Deed::Retitle(at, title) => {
+                if !books.is_empty() {
+                    let row = at % books.len();
+                    books[row].0 = title.clone();
+                }
+            }
+            Deed::Rebook(at, to) => {
+                if !chapters.is_empty() {
+                    let row = at % chapters.len();
+                    chapters[row].0 = to % books.len();
+                }
+            }
+            Deed::Settle => {}
+        }
+    }
+    (books, chapters, paragraphs)
+}
+
+fn kept(deeds: &[Deed], path: &std::path::Path) -> Library {
+    let mut library = Library::create(path, this_device()).unwrap();
+
+    for deed in deeds {
+        let books = Table::rows(&library.books);
+        let chapters = Table::rows(&library.chapters);
+        match deed {
+            Deed::Book(title, author) => {
+                library.books.push(title, author).unwrap();
+            }
+            Deed::Chapter(at, title) => {
+                if books > 0 {
+                    library
+                        .chapters
+                        .push(Id::from_index(at % books), title)
+                        .unwrap();
+                }
+            }
+            Deed::Paragraph(at, text) => {
+                if chapters > 0 {
+                    library
+                        .paragraphs
+                        .push(Id::from_index(at % chapters), text)
+                        .unwrap();
+                }
+            }
+            Deed::Retitle(at, title) => {
+                if books > 0 {
+                    library
+                        .at_mut(Id::<Book>::from_index(at % books))
+                        .unwrap()
+                        .set_title(title)
+                        .unwrap();
+                }
+            }
+            Deed::Rebook(at, to) => {
+                if chapters > 0 {
+                    library
+                        .at_mut(Id::<Chapter>::from_index(at % chapters))
+                        .unwrap()
+                        .set_book(Id::from_index(to % books))
+                        .unwrap();
+                }
+            }
+            Deed::Settle => {
+                library.commit(this_device()).unwrap();
+                library = Library::open(path).unwrap();
+            }
+        }
+    }
+    library
+}
+
+proptest! {
+    #[test]
+    fn a_library_driven_only_through_its_rows_survives_every_commit_and_reopen(
+        deeds in deeds(),
+    ) {
+        let dir = TempDir::new("declared_survives");
+        let path = dir.join("library.dbs");
+        let (books, chapters, paragraphs) = expected(&deeds);
+
+        let mut library = kept(&deeds, &path);
+        library.commit(this_device()).unwrap();
+        let reopened = Library::open(&path).unwrap();
+
+        prop_assert_eq!(reopened.all::<Book>().count(), books.len());
+        for (row, (title, author)) in books.iter().enumerate() {
+            let book = reopened.at(Id::<Book>::from_index(row)).unwrap();
+            prop_assert_eq!(book.title().unwrap().into_owned(), title.clone());
+            prop_assert_eq!(book.author().unwrap().into_owned(), author.clone());
+        }
+
+        prop_assert_eq!(reopened.all::<Chapter>().count(), chapters.len());
+        for (row, (book, title)) in chapters.iter().enumerate() {
+            let chapter = reopened.at(Id::<Chapter>::from_index(row)).unwrap();
+            prop_assert_eq!(chapter.title().unwrap().into_owned(), title.clone());
+            prop_assert_eq!(chapter.book().unwrap().id().index(), *book);
+        }
+
+        prop_assert_eq!(reopened.all::<Paragraph>().count(), paragraphs.len());
+        for (row, (chapter, text)) in paragraphs.iter().enumerate() {
+            let paragraph = reopened.at(Id::<Paragraph>::from_index(row)).unwrap();
+            prop_assert_eq!(paragraph.text().unwrap().into_owned(), text.clone());
+            prop_assert_eq!(paragraph.chapter().unwrap().id().index(), *chapter);
+        }
+
+        let mut walked = Vec::new();
+        for book in reopened.all::<Book>() {
+            let at = book.id().index();
+            let found: Vec<usize> = book
+                .chapters()
+                .unwrap()
+                .map(|chapter| chapter.id().index())
+                .collect();
+            let scanned: Vec<usize> = chapters
+                .iter()
+                .enumerate()
+                .filter(|(_, (owner, _))| *owner == at)
+                .map(|(row, _)| row)
+                .collect();
+            prop_assert_eq!(&found, &scanned);
+            walked.extend(found);
+        }
+        walked.sort_unstable();
+        prop_assert_eq!(walked, (0..chapters.len()).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn reading_one_field_through_a_row_faults_in_no_column_it_did_not_name(
+        deeds in deeds(),
+        at in props::row_index(),
+        by_author in any::<bool>(),
+    ) {
+        let dir = TempDir::new("declared_cold");
+        let path = dir.join("library.dbs");
+
+        let mut library = kept(&deeds, &path);
+        library.books.push("Anchor", "Nobody").unwrap();
+        library.commit(this_device()).unwrap();
+
+        let reopened = Library::open(&path).unwrap();
+        let row = at % Table::rows(&reopened.books);
+        let book = reopened.at(Id::<Book>::from_index(row)).unwrap();
+        if by_author {
+            book.author().unwrap();
+        } else {
+            book.title().unwrap();
+        }
+
+        let unasked = if by_author { "book.title" } else { "book.author" };
+        for column in reopened.residency() {
+            let elsewhere = column.name.starts_with("chapter.")
+                || column.name.starts_with("paragraph.")
+                || column.name.starts_with(unasked);
+            if elsewhere {
+                prop_assert_eq!(
+                    column.resident,
+                    0,
+                    "{} was read though nobody asked for it",
+                    column.name
+                );
+            }
+        }
+    }
 }
