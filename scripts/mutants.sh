@@ -31,10 +31,14 @@ cd "$(dirname "$0")/.."
 # ulimit -v is inherited by every child, so the test binary dies on its own
 # failed allocation and cargo-mutants records the mutant as caught -- the right
 # answer, since a mutation that exhausts memory is one the suite detected.
+# --workspace is load-bearing, not tidiness. Without it cargo mutants sweeps
+# only the package in the current directory, so dbsync-schema -- where all the
+# codegen lives -- would report zero mutants and the gate would pass by looking
+# at nothing. default-members governs cargo test, not this.
 jobs="${DBSYNC_MUTANTS_JOBS:-4}"
 ulimit -v "${DBSYNC_MUTANTS_VMAX:-2000000}"
 
-PROPTEST_CASES="${PROPTEST_CASES:-64}" cargo mutants -j "$jobs" "$@"
+PROPTEST_CASES="${PROPTEST_CASES:-64}" cargo mutants --workspace -j "$jobs" "$@"
 swept=$?
 
 case "$swept" in

@@ -21,3 +21,7 @@ pub use reference::RefColumn;
 pub use store::{Store, StoreState};
 pub use table::{AnyTable, Table};
 pub use text::{NullableTextColumn, TextColumn};
+
+#[cfg(all(test, feature = "derive"))]
+#[path = "generated_test.rs"]
+mod generated_test;
