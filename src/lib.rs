@@ -1,5 +1,7 @@
 //! Disk-backed columnar storage with copy-on-write frozen views.
 
+extern crate self as dbsync;
+
 pub mod error;
 pub mod id;
 pub mod record;

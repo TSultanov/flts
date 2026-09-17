@@ -2,8 +2,18 @@
 name = "dbsync"
 version = "0.1.0"
 edition = "2024"
+exclude = ["dbsync-schema", "scripts", ".cargo"]
+
+[workspace]
+members = ["dbsync-schema"]
+default-members = [".", "dbsync-schema"]
+
+[features]
+default = ["derive"]
+derive = ["dep:dbsync-schema"]
 
 [dependencies]
+dbsync-schema = { version = "0.1.0", path = "dbsync-schema", optional = true }
 
 [dev-dependencies]
 proptest = { version = "1.11", default-features = false, features = ["std", "bit-set"] }

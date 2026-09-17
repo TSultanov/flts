@@ -39,7 +39,17 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 name = "dbsync"
 version = "0.1.0"
 dependencies = [
+ "dbsync-schema",
  "proptest",
+]
+
+[[package]]
+name = "dbsync-schema"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
