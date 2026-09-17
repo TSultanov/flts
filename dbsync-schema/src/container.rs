@@ -124,6 +124,19 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 ))
             }
 
+            pub fn at_mut<E>(
+                &mut self,
+                id: ::dbsync::Id<E>,
+            ) -> ::dbsync::Result<<E as ::dbsync::schema::Entity>::RowMut<'_, Self>>
+            where
+                Self: ::dbsync::schema::Holds<E>,
+                E: ::dbsync::schema::Entity,
+            {
+                ::core::result::Result::Ok(::core::convert::Into::into(
+                    ::dbsync::schema::EntryMut::of(self, id)?,
+                ))
+            }
+
             pub fn all<E>(&self) -> ::dbsync::schema::Rows<'_, Self, E>
             where
                 Self: ::dbsync::schema::Holds<E>,

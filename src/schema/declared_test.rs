@@ -380,3 +380,43 @@ fn walking_a_declared_book_reads_no_chapter_a_different_book_owns() -> Result<()
     );
     Ok(())
 }
+
+#[test]
+fn a_title_edited_through_a_row_survives_the_commit_that_follows_it() -> Result<()> {
+    let dir = TempDir::new("declared_row_edit");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device())?;
+    let alice = stock(&mut library)?;
+    library.commit(this_device())?;
+
+    library.at_mut(alice)?.set_title("Alice in Wonderland")?;
+    library.commit(this_device())?;
+
+    let reopened = Library::open(&path)?;
+    assert_eq!(reopened.at(alice)?.title()?, "Alice in Wonderland");
+    assert_eq!(reopened.at(alice)?.author()?, "Lewis Carroll");
+    assert_eq!(reopened.at(Id::<Book>::from_index(1))?.title()?, "Kokoro");
+    Ok(())
+}
+
+#[test]
+fn a_chapter_moved_through_a_row_is_grouped_under_the_book_it_moved_to() -> Result<()> {
+    let mut library = Library::default();
+    let alice = stock(&mut library)?;
+    let kokoro = Id::<Book>::from_index(1);
+    assert_eq!(library.at(alice)?.chapters()?.count(), 2);
+
+    library
+        .at_mut(Id::<Chapter>::from_index(0))?
+        .set_book(kokoro)?;
+
+    assert_eq!(library.at(alice)?.chapters()?.count(), 1);
+    let moved: Vec<String> = library
+        .at(kokoro)?
+        .chapters()?
+        .map(|chapter| chapter.title().map(|title| title.into_owned()))
+        .collect::<Result<_>>()?;
+    assert_eq!(moved, ["Down the Rabbit-Hole", "Sensei and I"]);
+    Ok(())
+}

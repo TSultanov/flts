@@ -48,6 +48,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
 
     let table = format_ident!("{}Table", name);
     let row_type = format_ident!("{}Row", name);
+    let row_mut_type = format_ident!("{}RowMut", name);
     let held = quote! { 'a };
     let vis = &input.vis;
     let attrs = &input.attrs;
@@ -148,6 +149,20 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         }
     });
 
+    let writers = stored.iter().map(|field| {
+        let field_name = &field.name;
+        let setter = format_ident!("set_{}", field_name);
+        let pushed = field.kind.pushed();
+        let set = field.kind.set(&quote! { table }, field_name);
+        quote! {
+            pub fn #setter(&mut self, value: #pushed) -> ::dbsync::Result<()> {
+                let row = self.0.row();
+                let table = self.0.table_mut();
+                #set
+            }
+        }
+    });
+
     let children = fields.iter().filter_map(|field| match &field.kind {
         Kind::Reference(parent) => {
             let field_name = &field.name;
@@ -179,6 +194,10 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             type Table = #table;
 
             type Row<#held, S> = #row_type<#held, S>
+            where
+                S: ::dbsync::schema::Holds<#name> + #held;
+
+            type RowMut<#held, S> = #row_mut_type<#held, S>
             where
                 S: ::dbsync::schema::Holds<#name> + #held;
         }
@@ -236,6 +255,41 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
 
         impl<#held, S: ::dbsync::schema::Holds<#name>> #row_type<#held, S> {
             #(#readers)*
+        }
+
+        #vis struct #row_mut_type<#held, S: ::dbsync::schema::Holds<#name>>(
+            ::dbsync::schema::EntryMut<#held, S, #name>,
+        );
+
+        impl<#held, S: ::dbsync::schema::Holds<#name>>
+            ::core::convert::From<::dbsync::schema::EntryMut<#held, S, #name>>
+            for #row_mut_type<#held, S>
+        {
+            fn from(entry: ::dbsync::schema::EntryMut<#held, S, #name>) -> Self {
+                Self(entry)
+            }
+        }
+
+        impl<#held, S: ::dbsync::schema::Holds<#name>> ::core::ops::Deref
+            for #row_mut_type<#held, S>
+        {
+            type Target = ::dbsync::schema::EntryMut<#held, S, #name>;
+
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
+
+        impl<#held, S: ::dbsync::schema::Holds<#name>> ::core::ops::DerefMut
+            for #row_mut_type<#held, S>
+        {
+            fn deref_mut(&mut self) -> &mut Self::Target {
+                &mut self.0
+            }
+        }
+
+        impl<#held, S: ::dbsync::schema::Holds<#name>> #row_mut_type<#held, S> {
+            #(#writers)*
         }
 
         #(#children)*

@@ -74,6 +74,31 @@ impl<'a, S: Holds<E>, E: Entity> Entry<'a, S, E> {
     }
 }
 
+pub struct EntryMut<'a, S, E: Entity> {
+    store: &'a mut S,
+    id: Id<E>,
+    row: Row,
+}
+
+impl<'a, S: Holds<E>, E: Entity> EntryMut<'a, S, E> {
+    pub fn of(store: &'a mut S, id: Id<E>) -> Result<Self> {
+        let row = Table::row_of(Holds::<E>::table(store), id)?;
+        Ok(Self { store, id, row })
+    }
+
+    pub fn id(&self) -> Id<E> {
+        self.id
+    }
+
+    pub fn row(&self) -> Row {
+        self.row
+    }
+
+    pub fn table_mut(&mut self) -> &mut E::Table {
+        Holds::<E>::table_mut(self.store)
+    }
+}
+
 pub struct Children<'a, S, C: Entity> {
     store: &'a S,
     ids: slice::Iter<'a, Id<C>>,

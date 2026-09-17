@@ -357,3 +357,59 @@ fn a_handle_reads_for_as_long_as_the_store_lives_and_a_table_only_for_the_call()
         "a table is borrowed only for the call that reads it: {out}"
     );
 }
+
+#[test]
+fn an_entity_gets_a_mutable_handle_that_only_writes() {
+    let out = expanded(quote! {
+        struct Book { title: String, chapters: Many<Chapter> }
+    });
+
+    let declared = [
+        "struct BookRowMut < 'a , S : :: dbsync :: schema :: Holds < Book >> ",
+        "(:: dbsync :: schema :: EntryMut < 'a , S , Book > ,) ;",
+    ]
+    .concat();
+    let named = [
+        "type RowMut < 'a , S > = BookRowMut < 'a , S > ",
+        "where S : :: dbsync :: schema :: Holds < Book > + 'a ;",
+    ]
+    .concat();
+
+    assert!(out.contains(&declared), "{out}");
+    assert!(out.contains(&named), "{out}");
+    assert!(
+        out.contains(":: core :: ops :: DerefMut for BookRowMut < 'a , S >"),
+        "{out}"
+    );
+    assert!(
+        !out.contains("fn set_chapters"),
+        "a Many is grouped from the child, so it is written by moving the child: {out}"
+    );
+}
+
+#[test]
+fn a_mutable_handle_writes_through_the_table_the_store_lends_it() {
+    let out = expanded(quote! {
+        struct Book { title: String, year: u32 }
+    });
+
+    let opened = "{ let row = self . 0 . row () ; let table = self . 0 . table_mut () ; ";
+    let text = [
+        "pub fn set_title (& mut self , value : & str) -> :: dbsync :: Result < () > ",
+        opened,
+        "table . title . set (row , value) }",
+    ]
+    .concat();
+    let scalar = [
+        "pub fn set_year (& mut self , value : u32) -> :: dbsync :: Result < () > ",
+        opened,
+        "table . year . set (row . index () , value) }",
+    ]
+    .concat();
+
+    assert!(
+        out.contains(&text),
+        "the row is read before the table is borrowed to write it: {out}"
+    );
+    assert!(out.contains(&scalar), "{out}");
+}

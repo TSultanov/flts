@@ -335,3 +335,66 @@ fn walking_a_generated_table_hands_back_one_row_handle_per_row() -> Result<()> {
     assert_eq!(catalogue.all::<Work>().count(), 1);
     Ok(())
 }
+
+#[test]
+fn a_mutable_generated_row_writes_every_kind_of_field_through_the_entity() -> Result<()> {
+    use crate::id::Id;
+
+    let mut catalogue = catalogued()?;
+    let carroll = Id::<Author>::from_index(1);
+
+    let mut author = catalogue.at_mut(carroll)?;
+    author.set_name("Charles Dodgson")?;
+    author.set_pen_name(Some("Lewis Carroll"))?;
+    author.set_born(1832)?;
+    author.set_died(Some(1898))?;
+    author.set_shelf(Shelf::Reference)?;
+
+    let author = catalogue.at(carroll)?;
+    assert_eq!(author.name()?, "Charles Dodgson");
+    assert_eq!(author.pen_name()?.as_deref(), Some("Lewis Carroll"));
+    assert_eq!(author.born()?, 1832);
+    assert_eq!(author.died()?, Some(1898));
+    assert_eq!(author.shelf()?, Shelf::Reference);
+    Ok(())
+}
+
+#[test]
+fn a_mutable_generated_row_clears_a_nullable_field_it_is_given_nothing_for() -> Result<()> {
+    use crate::id::Id;
+
+    let mut catalogue = catalogued()?;
+    let soseki = Id::<Author>::from_index(0);
+
+    let mut author = catalogue.at_mut(soseki)?;
+    author.set_pen_name(None)?;
+    author.set_died(None)?;
+
+    let author = catalogue.at(soseki)?;
+    assert_eq!(author.pen_name()?.as_deref(), None);
+    assert_eq!(author.died()?, None);
+    assert_eq!(author.name()?, "Natsume Kinnosuke");
+    Ok(())
+}
+
+#[test]
+fn a_mutable_generated_row_moves_a_work_to_another_author() -> Result<()> {
+    use crate::id::Id;
+
+    let mut catalogue = catalogued()?;
+    let anon = Id::<Author>::from_index(1);
+
+    catalogue
+        .at_mut(Id::<Work>::from_index(0))?
+        .set_author(anon)?;
+
+    assert_eq!(
+        catalogue.at(Id::<Author>::from_index(0))?.works()?.count(),
+        0
+    );
+    assert_eq!(
+        catalogue.at(anon)?.works()?.next().unwrap().title()?,
+        "Kokoro"
+    );
+    Ok(())
+}

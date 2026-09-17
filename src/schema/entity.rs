@@ -1,6 +1,6 @@
 //! What every entity knows about itself: its name, its columns, and whose child it is.
 
-use super::entry::Entry;
+use super::entry::{Entry, EntryMut};
 use super::reference::RefColumn;
 use super::table::Table;
 use crate::error::Result;
@@ -12,6 +12,10 @@ pub trait Entity: Sized + 'static {
     type Table: Table<Of = Self>;
 
     type Row<'a, S>: From<Entry<'a, S, Self>>
+    where
+        S: Holds<Self> + 'a;
+
+    type RowMut<'a, S>: From<EntryMut<'a, S, Self>>
     where
         S: Holds<Self> + 'a;
 }

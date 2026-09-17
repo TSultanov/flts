@@ -1,11 +1,11 @@
 use std::borrow::Cow;
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 
 use crate::error::Result;
 use crate::id::Id;
 use crate::schema::{
-    AnyTable, Child, Children, Entity, Entry, Field, FieldMut, Holds, RefColumn, Rows, Store,
-    StoreState, Table, TextColumn,
+    AnyTable, Child, Children, Entity, Entry, EntryMut, Field, FieldMut, Holds, RefColumn, Rows,
+    Store, StoreState, Table, TextColumn,
 };
 
 pub struct Book;
@@ -21,6 +21,11 @@ impl Entity for Book {
         = BookRow<'a, S>
     where
         S: Holds<Book> + 'a;
+
+    type RowMut<'a, S>
+        = BookRowMut<'a, S>
+    where
+        S: Holds<Book> + 'a;
 }
 
 impl Entity for Chapter {
@@ -32,6 +37,11 @@ impl Entity for Chapter {
         = ChapterRow<'a, S>
     where
         S: Holds<Chapter> + 'a;
+
+    type RowMut<'a, S>
+        = ChapterRowMut<'a, S>
+    where
+        S: Holds<Chapter> + 'a;
 }
 
 impl Entity for Paragraph {
@@ -41,6 +51,11 @@ impl Entity for Paragraph {
 
     type Row<'a, S>
         = ParagraphRow<'a, S>
+    where
+        S: Holds<Paragraph> + 'a;
+
+    type RowMut<'a, S>
+        = ParagraphRowMut<'a, S>
     where
         S: Holds<Paragraph> + 'a;
 }
@@ -121,6 +136,36 @@ impl<'a, S: Holds<Book>> BookRow<'a, S> {
         S: Holds<Chapter>,
     {
         self.0.children::<Chapter>()
+    }
+}
+
+pub struct BookRowMut<'a, S: Holds<Book>>(EntryMut<'a, S, Book>);
+
+impl<'a, S: Holds<Book>> From<EntryMut<'a, S, Book>> for BookRowMut<'a, S> {
+    fn from(entry: EntryMut<'a, S, Book>) -> Self {
+        Self(entry)
+    }
+}
+
+impl<'a, S: Holds<Book>> Deref for BookRowMut<'a, S> {
+    type Target = EntryMut<'a, S, Book>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a, S: Holds<Book>> DerefMut for BookRowMut<'a, S> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<S: Holds<Book>> BookRowMut<'_, S> {
+    pub fn set_title(&mut self, value: &str) -> Result<()> {
+        let row = self.0.row();
+        let table = self.0.table_mut();
+        table.title.set(row, value)
     }
 }
 
@@ -217,6 +262,36 @@ impl<'a, S: Holds<Chapter>> ChapterRow<'a, S> {
     }
 }
 
+pub struct ChapterRowMut<'a, S: Holds<Chapter>>(EntryMut<'a, S, Chapter>);
+
+impl<'a, S: Holds<Chapter>> From<EntryMut<'a, S, Chapter>> for ChapterRowMut<'a, S> {
+    fn from(entry: EntryMut<'a, S, Chapter>) -> Self {
+        Self(entry)
+    }
+}
+
+impl<'a, S: Holds<Chapter>> Deref for ChapterRowMut<'a, S> {
+    type Target = EntryMut<'a, S, Chapter>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a, S: Holds<Chapter>> DerefMut for ChapterRowMut<'a, S> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<S: Holds<Chapter>> ChapterRowMut<'_, S> {
+    pub fn set_book(&mut self, value: Id<Book>) -> Result<()> {
+        let row = self.0.row();
+        let table = self.0.table_mut();
+        table.book.set(row, value)
+    }
+}
+
 #[derive(Default, Clone)]
 pub struct Paragraphs {
     chapter: RefColumn<Chapter, Paragraph>,
@@ -295,6 +370,36 @@ impl<'a, S: Holds<Paragraph>> ParagraphRow<'a, S> {
     }
 }
 
+pub struct ParagraphRowMut<'a, S: Holds<Paragraph>>(EntryMut<'a, S, Paragraph>);
+
+impl<'a, S: Holds<Paragraph>> From<EntryMut<'a, S, Paragraph>> for ParagraphRowMut<'a, S> {
+    fn from(entry: EntryMut<'a, S, Paragraph>) -> Self {
+        Self(entry)
+    }
+}
+
+impl<'a, S: Holds<Paragraph>> Deref for ParagraphRowMut<'a, S> {
+    type Target = EntryMut<'a, S, Paragraph>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a, S: Holds<Paragraph>> DerefMut for ParagraphRowMut<'a, S> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<S: Holds<Paragraph>> ParagraphRowMut<'_, S> {
+    pub fn set_text(&mut self, value: &str) -> Result<()> {
+        let row = self.0.row();
+        let table = self.0.table_mut();
+        table.text.set(row, value)
+    }
+}
+
 #[derive(Default, Clone)]
 pub struct Library {
     state: StoreState,
@@ -358,6 +463,14 @@ impl Library {
         E: Entity,
     {
         Ok(Entry::of(self, id)?.into())
+    }
+
+    pub fn at_mut<E>(&mut self, id: Id<E>) -> Result<E::RowMut<'_, Self>>
+    where
+        Self: Holds<E>,
+        E: Entity,
+    {
+        Ok(EntryMut::of(self, id)?.into())
     }
 
     pub fn all<E>(&self) -> Rows<'_, Self, E>

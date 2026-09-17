@@ -210,3 +210,79 @@ fn walking_the_children_of_a_row_refuses_a_reference_no_parent_answers_for() {
 
     assert!(err.contains("chapter.book"), "{err}");
 }
+
+#[test]
+fn a_mutable_handle_writes_the_field_it_names_and_leaves_its_neighbours_alone() {
+    let mut library = stocked();
+    let alice = Id::<Book>::from_index(0);
+
+    library
+        .at_mut(alice)
+        .unwrap()
+        .set_title("Alice in Wonderland")
+        .unwrap();
+
+    assert_eq!(
+        library.at(alice).unwrap().title().unwrap(),
+        "Alice in Wonderland"
+    );
+    assert_eq!(
+        library.at(alice).unwrap().author().unwrap(),
+        "Lewis Carroll"
+    );
+    assert_eq!(
+        library
+            .at(Id::<Book>::from_index(1))
+            .unwrap()
+            .title()
+            .unwrap(),
+        "Kokoro"
+    );
+}
+
+#[test]
+fn a_mutable_handle_answers_with_the_id_it_was_minted_from() {
+    let mut library = stocked();
+    let asked = Id::<Paragraph>::from_index(0);
+
+    let mut paragraph = library.at_mut(asked).unwrap();
+    paragraph.set_text("She was very tired indeed.").unwrap();
+
+    assert_eq!(paragraph.id(), asked);
+    assert_eq!(paragraph.row().index(), 0);
+    assert_eq!(
+        library.at(asked).unwrap().text().unwrap(),
+        "She was very tired indeed."
+    );
+}
+
+#[test]
+fn a_mutable_handle_is_refused_for_an_id_past_the_last_row() {
+    let mut library = stocked();
+
+    let err = refused(library.at_mut(Id::<Book>::from_index(2)));
+
+    assert!(err.contains("book has no row 2"), "{err}");
+}
+
+#[test]
+fn moving_a_child_through_a_handle_forgets_the_grouping_it_belonged_to() {
+    let mut library = stocked();
+    let alice = Id::<Book>::from_index(0);
+    let kokoro = Id::<Book>::from_index(1);
+    assert_eq!(library.at(alice).unwrap().chapters().unwrap().count(), 1);
+    assert!(library.chapters.is_indexed());
+
+    library
+        .at_mut(Id::<Chapter>::from_index(0))
+        .unwrap()
+        .set_book(kokoro)
+        .unwrap();
+
+    assert!(
+        !library.chapters.is_indexed(),
+        "a grouping that outlives the column it grouped answers for rows that moved"
+    );
+    assert_eq!(library.at(alice).unwrap().chapters().unwrap().count(), 0);
+    assert_eq!(library.at(kokoro).unwrap().chapters().unwrap().count(), 1);
+}

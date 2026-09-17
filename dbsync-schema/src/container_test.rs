@@ -184,3 +184,22 @@ fn a_container_walks_every_row_of_any_entity_it_holds() {
         "{out}"
     );
 }
+
+#[test]
+fn a_container_mints_a_mutable_handle_for_any_entity_it_holds() {
+    let out = expanded(quote! {
+        struct Library { books: Set<Book> }
+    });
+
+    let mints = [
+        "pub fn at_mut < E > (& mut self , id : :: dbsync :: Id < E > ,) ",
+        "-> :: dbsync :: Result << E as :: dbsync :: schema :: Entity > :: RowMut < '_ , Self >>",
+    ]
+    .concat();
+
+    assert!(out.contains(&mints), "{out}");
+    assert!(
+        out.contains(":: dbsync :: schema :: EntryMut :: of (self , id) ?"),
+        "{out}"
+    );
+}
