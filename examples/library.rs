@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use dbsync::schema::{Store, Table};
-use dbsync::{ColumnFile, Id, Result, WriterId};
+use dbsync::{ColumnFile, Result, WriterId};
 
 #[dbsync::entity]
 struct Book {
@@ -78,10 +78,9 @@ fn stock(library: &mut Library) -> Result<()> {
     Ok(())
 }
 
-fn book_called(library: &Library, title: &str) -> Result<Id<Book>> {
-    for row in 0..Table::rows(&library.books) {
-        let book = Id::from_index(row);
-        if library.books.title(book)? == title {
+fn book_called<'a>(library: &'a Library, title: &str) -> Result<BookRow<'a, Library>> {
+    for book in library.all::<Book>() {
+        if book.title()? == title {
             return Ok(book);
         }
     }
@@ -141,13 +140,8 @@ fn main() -> Result<()> {
         shelf.specs().len()
     );
 
-    for row in 0..Table::rows(&shelf.books) {
-        let book = Id::from_index(row);
-        println!(
-            "     {} — {}",
-            shelf.books.title(book)?,
-            shelf.books.author(book)?
-        );
+    for book in shelf.all::<Book>() {
+        println!("     {} — {}", book.title()?, book.author()?);
     }
     assert!(resident(&shelf, "book.title.bytes") > 0);
     assert_eq!(resident(&shelf, "paragraph.text"), 0);
@@ -159,17 +153,18 @@ fn main() -> Result<()> {
     println!("     and left paragraph.text.bytes entirely cold: every string field");
     println!("     has its own heap, so a title cannot fault in a paragraph");
 
-    println!("\n4. opened one book, joined by the column that points back at it");
+    println!("\n4. opened one book, and walked it by the columns that point back at it");
     let alice = book_called(&shelf, "Alice's Adventures in Wonderland")?;
-    let chapters: &[Id<Chapter>] = shelf.children_of(alice)?;
-    assert_eq!(chapters.len(), 2);
-    for chapter in chapters {
-        println!("     {}", shelf.chapters.title(*chapter)?);
-        let paragraphs: &[Id<Paragraph>] = shelf.children_of(*chapter)?;
-        for paragraph in paragraphs {
-            println!("       {}", shelf.paragraphs.text(*paragraph)?);
+    assert_eq!(alice.chapters()?.count(), 2);
+    for chapter in alice.chapters()? {
+        println!("     {}", chapter.title()?);
+        assert_eq!(chapter.book()?.id(), alice.id());
+        for paragraph in chapter.paragraphs()? {
+            println!("       {}", paragraph.text()?);
+            assert_eq!(paragraph.chapter()?.id(), chapter.id());
         }
     }
+    println!("     nobody named a table or carried an id between the two levels");
 
     let before = std::fs::metadata(&path)?.len();
     let untouched = ColumnFile::open(&path)?
@@ -178,7 +173,12 @@ fn main() -> Result<()> {
         .chunks[0];
 
     library.books.push("Il nome della rosa", "Umberto Eco")?;
+    library
+        .at_mut(alice.id())?
+        .set_title("Alice in Wonderland")?;
     let published = library.commit(this_device())?;
+    assert_eq!(library.at(alice.id())?.title()?, "Alice in Wonderland");
+    assert_eq!(library.at(alice.id())?.author()?, "Lewis Carroll");
 
     assert_eq!(
         ColumnFile::open(&path)?
@@ -187,7 +187,9 @@ fn main() -> Result<()> {
             .chunks[0],
         untouched
     );
-    println!("\n5. catalogued a fourth book and committed generation {published}");
+    println!(
+        "\n5. catalogued a fourth book, retitled a first, and committed generation {published}"
+    );
     println!(
         "     the file grew by {} bytes; paragraph.text was never touched and did not move",
         std::fs::metadata(&path)?.len() - before
