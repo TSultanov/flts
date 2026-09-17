@@ -66,6 +66,10 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         let ty = field.kind.column(name);
         quote! { #field_name: #ty }
     });
+    let built = stored.iter().map(|field| {
+        let field_name = &field.name;
+        quote! { #field_name: ::core::default::Default::default() }
+    });
     let read_only = stored.iter().map(|field| {
         let field_name = &field.name;
         let label = field_name.to_string();
@@ -213,10 +217,19 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 S: ::dbsync::schema::Holds<#name> + #held;
         }
 
-        #[derive(Default, Clone)]
+        #[derive(Clone)]
         #vis struct #table {
             dbsync_ids: ::dbsync::schema::IdColumn<#name>,
             #(#columns,)*
+        }
+
+        impl ::core::default::Default for #table {
+            fn default() -> Self {
+                Self {
+                    dbsync_ids: ::core::default::Default::default(),
+                    #(#built,)*
+                }
+            }
         }
 
         impl ::dbsync::schema::Table for #table {

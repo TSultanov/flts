@@ -21,7 +21,15 @@ fn an_entity_becomes_a_tag_type_and_a_table_of_columns() {
     assert!(out.contains("struct BookTable"), "{out}");
     assert!(out.contains(r#"NAME : & 'static str = "book""#), "{out}");
     assert!(out.contains("type Table = BookTable"), "{out}");
-    assert!(out.contains("# [derive (Default , Clone)]"), "{out}");
+    assert!(out.contains("# [derive (Clone)]"), "{out}");
+    assert!(
+        out.contains("impl :: core :: default :: Default for BookTable"),
+        "a table builds its own columns, because an indexed one must be told its name: {out}"
+    );
+    assert!(
+        out.contains("title : :: core :: default :: Default :: default ()"),
+        "{out}"
+    );
 }
 
 #[test]
