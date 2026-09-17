@@ -73,3 +73,68 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn the_none_blob_is_not_the_empty_string_at_the_start_of_a_heap() {
+    let mut heap = crate::storage::Arena::<u8>::with_chunk_rows(8);
+    let first = heap.push_str("").unwrap();
+
+    assert_eq!(first, Blob::EMPTY);
+    assert_ne!(first, Blob::NONE);
+    assert_eq!(
+        <Option<Blob> as Record>::decode(&encoded(first)),
+        Some(first)
+    );
+    assert_eq!(heap.text(first).unwrap(), "");
+}
+
+#[test]
+fn no_heap_can_hold_the_bytes_the_none_blob_names() {
+    let mut heap = crate::storage::Arena::<u8>::with_chunk_rows(8);
+    heap.push_str("some bytes to make it non-empty").unwrap();
+
+    let err = heap.bytes(Blob::NONE).unwrap_err();
+    assert!(err.is_corrupt(), "{err}");
+    assert!(err.to_string().contains("runs past"), "{err}");
+}
+
+#[test]
+fn a_none_blob_round_trips_as_none() {
+    assert_eq!(
+        <Option<Blob> as Record>::decode(&encoded_option(None)),
+        None
+    );
+    assert_eq!(encoded_option(None), encoded(Blob::NONE));
+}
+
+fn encoded(blob: Blob) -> [u8; <Blob as Record>::SIZE] {
+    let mut buf = [0u8; <Blob as Record>::SIZE];
+    blob.encode(&mut buf);
+    buf
+}
+
+fn encoded_option(blob: Option<Blob>) -> [u8; <Blob as Record>::SIZE] {
+    let mut buf = [0u8; <Blob as Record>::SIZE];
+    blob.encode(&mut buf);
+    buf
+}
+
+proptest! {
+    #[test]
+    fn every_blob_but_one_round_trips_through_an_option(
+        start in props::interesting_u64(),
+        len in props::interesting_u32(),
+    ) {
+        let blob = Blob::new(start, len);
+        prop_assume!(blob != Blob::NONE);
+
+        prop_assert_eq!(<Option<Blob> as Record>::decode(&encoded_option(Some(blob))), Some(blob));
+    }
+
+    #[test]
+    fn every_twelve_bytes_decode_as_an_option_and_re_encode_unchanged(bytes: [u8; 12]) {
+        let mut again = [0u8; <Blob as Record>::SIZE];
+        <Option<Blob> as Record>::decode(&bytes).encode(&mut again);
+        prop_assert_eq!(again, bytes);
+    }
+}

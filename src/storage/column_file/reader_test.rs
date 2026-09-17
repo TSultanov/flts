@@ -4,6 +4,7 @@ use std::path::Path;
 use super::*;
 use crate::storage::ColumnFileWriter;
 use crate::storage::arena::Arena;
+use crate::storage::blob::Blob;
 use crate::storage::column_file::{FORMAT_VERSION, HEAD_LEN, MAGIC};
 use crate::test_utils::column_file_bytes as model;
 use crate::test_utils::{TempDir, flip_byte};
@@ -356,4 +357,81 @@ fn a_file_whose_directory_starts_where_the_payload_would_is_readable() {
     assert_eq!(file.column_meta("empty").unwrap().chunks.len(), 0);
     assert!(file.column::<u32>("empty").unwrap().is_empty());
     file.verify().unwrap();
+}
+
+#[test]
+fn a_cloned_handle_serves_the_generation_it_was_cloned_from() {
+    let dir = TempDir::new("cloned");
+    let path = dir.join("values.dbs");
+
+    let mut values = Arena::<u32>::with_chunk_rows(4);
+    values.extend_from_slice(&[1, 2, 3]).unwrap();
+    let mut writer = ColumnFileWriter::create(&path, WriterId::ANONYMOUS).unwrap();
+    writer.column("values", &values).unwrap();
+    writer.finish().unwrap();
+
+    let file = ColumnFile::open(&path).unwrap();
+    let pinned = file.clone();
+
+    let mut edited = file.column::<u32>("values").unwrap();
+    edited.set(0, 99).unwrap();
+    let mut updater = file.update(WriterId::ANONYMOUS).unwrap();
+    updater.column("values", &edited).unwrap();
+    assert_eq!(updater.commit().unwrap(), 2);
+
+    assert_eq!(pinned.generation(), 1);
+    assert_eq!(
+        pinned
+            .column::<u32>("values")
+            .unwrap()
+            .iter()
+            .map(|row| row.copied())
+            .collect::<Result<Vec<_>>>()
+            .unwrap(),
+        vec![1, 2, 3],
+        "the clone is a handle on its own generation, not a view of the newest"
+    );
+
+    let refused = pinned.update(WriterId::ANONYMOUS).unwrap_err();
+    assert!(
+        refused.to_string().contains("moved to generation 2"),
+        "{refused}"
+    );
+}
+
+#[test]
+fn a_nullable_text_column_tells_an_absent_string_from_an_empty_one() {
+    let dir = TempDir::new("nullable_text");
+    let path = dir.join("notes.dbs");
+
+    let mut heap = Arena::<u8>::with_chunk_rows(8);
+    let mut notes = Arena::<Option<Blob>>::with_chunk_rows(4);
+    let filled = heap.push_str("a note").unwrap();
+    let empty = heap.push_str("").unwrap();
+    notes.push(Some(filled)).unwrap();
+    notes.push(None).unwrap();
+    notes.push(Some(empty)).unwrap();
+
+    let mut writer = ColumnFileWriter::create(&path, WriterId::ANONYMOUS).unwrap();
+    writer.column("note", &notes).unwrap();
+    writer.column("note.bytes", &heap).unwrap();
+    writer.finish().unwrap();
+
+    let file = ColumnFile::open(&path).unwrap();
+    file.verify().unwrap();
+    let read_notes = file.column::<Option<Blob>>("note").unwrap();
+    let read_heap = file.column::<u8>("note.bytes").unwrap();
+
+    let text_at = |row: usize| -> Option<String> {
+        (*read_notes.row(row).unwrap()).map(|blob| read_heap.text(blob).unwrap().into_owned())
+    };
+
+    assert_eq!(text_at(0), Some("a note".to_owned()));
+    assert_eq!(text_at(1), None, "an absent note is absent, not empty");
+    assert_eq!(text_at(2), Some(String::new()));
+    assert_eq!(
+        file.column_meta("note").unwrap().elem_size,
+        <Blob as Record>::SIZE as u32,
+        "nullability costs no bytes and no second column"
+    );
 }

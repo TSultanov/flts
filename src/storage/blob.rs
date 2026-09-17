@@ -11,6 +11,11 @@ pub struct Blob {
 impl Blob {
     pub const EMPTY: Blob = Blob { start: 0, len: 0 };
 
+    pub const NONE: Blob = Blob {
+        start: u64::MAX,
+        len: 0,
+    };
+
     pub const fn new(start: u64, len: u32) -> Self {
         Self { start, len }
     }
@@ -25,6 +30,7 @@ impl Blob {
 }
 
 const _: () = assert!(<Blob as Record>::SIZE == 12);
+const _: () = assert!(<Option<Blob> as Record>::SIZE == <Blob as Record>::SIZE);
 
 impl Record for Blob {
     const SIZE: usize = size_of::<u64>() + size_of::<u32>();
@@ -43,6 +49,26 @@ impl Record for Blob {
             start: u64::from_le_bytes(start),
             len: u32::from_le_bytes(len),
         }
+    }
+}
+
+impl Record for Option<Blob> {
+    const SIZE: usize = <Blob as Record>::SIZE;
+
+    fn encode(&self, out: &mut [u8]) {
+        let blob = match self {
+            Some(blob) => {
+                debug_assert!(*blob != Blob::NONE, "Blob::NONE cannot round-trip as Some");
+                *blob
+            }
+            None => Blob::NONE,
+        };
+        blob.encode(out);
+    }
+
+    fn decode(src: &[u8]) -> Self {
+        let blob = Blob::decode(src);
+        if blob == Blob::NONE { None } else { Some(blob) }
     }
 }
 

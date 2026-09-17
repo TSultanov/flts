@@ -16,6 +16,7 @@ use crate::record::Record;
 use crate::storage::arena::{Arena, ChunkSource, Provenance};
 use crate::storage::hash::fnv1a;
 
+#[derive(Clone)]
 pub struct ColumnFile {
     source: Arc<FileSource>,
     columns: Vec<ColumnMeta>,
