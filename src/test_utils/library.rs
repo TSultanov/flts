@@ -1,6 +1,8 @@
 use crate::error::Result;
 use crate::id::Id;
-use crate::schema::{Entity, Field, FieldMut, RefColumn, Table, TextColumn};
+use crate::schema::{
+    AnyTable, Entity, Field, FieldMut, RefColumn, Store, StoreState, Table, TextColumn,
+};
 
 pub struct Book;
 pub struct Chapter;
@@ -151,5 +153,42 @@ impl Paragraphs {
 
     pub fn of_chapter(&self, chapters: usize, chapter: Id<Chapter>) -> Result<&[Id<Paragraph>]> {
         self.chapter.children_of(chapters, chapter)
+    }
+}
+
+#[derive(Default, Clone)]
+pub struct Library {
+    state: StoreState,
+    pub books: Books,
+    pub chapters: Chapters,
+    pub paragraphs: Paragraphs,
+}
+
+impl Store for Library {
+    fn state(&self) -> &StoreState {
+        &self.state
+    }
+
+    fn state_mut(&mut self) -> &mut StoreState {
+        &mut self.state
+    }
+
+    fn tables(&self) -> Vec<&dyn AnyTable> {
+        vec![&self.books, &self.chapters, &self.paragraphs]
+    }
+
+    fn tables_mut(&mut self) -> Vec<&mut dyn AnyTable> {
+        vec![&mut self.books, &mut self.chapters, &mut self.paragraphs]
+    }
+}
+
+impl Library {
+    pub fn chapters_of(&self, book: Id<Book>) -> Result<&[Id<Chapter>]> {
+        self.chapters.of_book(Table::rows(&self.books), book)
+    }
+
+    pub fn paragraphs_of(&self, chapter: Id<Chapter>) -> Result<&[Id<Paragraph>]> {
+        self.paragraphs
+            .of_chapter(Table::rows(&self.chapters), chapter)
     }
 }

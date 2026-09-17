@@ -7,6 +7,7 @@ mod enums;
 mod names;
 mod nullable;
 mod reference;
+mod store;
 mod table;
 mod text;
 
@@ -17,5 +18,6 @@ pub use enums::{EnumColumn, UnitEnum};
 pub use names::{heap_name, presence_name, qualified};
 pub use nullable::NullableColumn;
 pub use reference::RefColumn;
+pub use store::{Store, StoreState};
 pub use table::{AnyTable, Table};
 pub use text::{NullableTextColumn, TextColumn};
