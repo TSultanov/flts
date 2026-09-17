@@ -143,6 +143,15 @@ impl TextColumn {
     }
 }
 
+impl TextColumn {
+    fn bytes_of(&mut self, value: &str, shared: Option<TextKey>) -> Result<Blob> {
+        match shared {
+            Some(known) => Ok(known.blob()),
+            None => self.heap.push_str(value),
+        }
+    }
+}
+
 impl Column for TextColumn {
     fn rows(&self) -> usize {
         self.blobs.len()
@@ -223,6 +232,13 @@ impl NullableTextColumn {
             None => Ok(None),
         }
     }
+
+    fn bytes_of(&mut self, value: Option<&str>, shared: Option<TextKey>) -> Result<Option<Blob>> {
+        match shared {
+            Some(known) => Ok(Some(known.blob())),
+            None => self.store(value),
+        }
+    }
 }
 
 impl Column for NullableTextColumn {
@@ -293,14 +309,18 @@ impl Keyed for TextColumn {
         TextKey::of(value)
     }
 
-    fn append(&mut self, value: &str) -> Result<TextKey> {
-        let blob = self.heap.push_str(value)?;
+    fn shares_bytes(key: TextKey) -> bool {
+        !key.is_inline() && !key.is_absent()
+    }
+
+    fn append(&mut self, value: &str, shared: Option<TextKey>) -> Result<TextKey> {
+        let blob = self.bytes_of(value, shared)?;
         self.blobs.push(blob)?;
         Ok(TextKey::stored(value, blob))
     }
 
-    fn write(&mut self, row: Row, value: &str) -> Result<TextKey> {
-        let blob = self.heap.push_str(value)?;
+    fn write(&mut self, row: Row, value: &str, shared: Option<TextKey>) -> Result<TextKey> {
+        let blob = self.bytes_of(value, shared)?;
         self.blobs.set(row.index(), blob)?;
         Ok(TextKey::stored(value, blob))
     }
@@ -336,14 +356,18 @@ impl Keyed for NullableTextColumn {
         value.is_none()
     }
 
-    fn append(&mut self, value: Option<&str>) -> Result<TextKey> {
-        let blob = self.store(value)?;
+    fn shares_bytes(key: TextKey) -> bool {
+        !key.is_inline() && !key.is_absent()
+    }
+
+    fn append(&mut self, value: Option<&str>, shared: Option<TextKey>) -> Result<TextKey> {
+        let blob = self.bytes_of(value, shared)?;
         self.blobs.push(blob)?;
         Ok(perhaps(value, blob))
     }
 
-    fn write(&mut self, row: Row, value: Option<&str>) -> Result<TextKey> {
-        let blob = self.store(value)?;
+    fn write(&mut self, row: Row, value: Option<&str>, shared: Option<TextKey>) -> Result<TextKey> {
+        let blob = self.bytes_of(value, shared)?;
         self.blobs.set(row.index(), blob)?;
         Ok(perhaps(value, blob))
     }

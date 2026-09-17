@@ -94,12 +94,12 @@ impl<E: UnitEnum> Keyed for EnumColumn<E> {
         value.to_u8()
     }
 
-    fn append(&mut self, value: E) -> Result<u8> {
+    fn append(&mut self, value: E, _shared: Option<u8>) -> Result<u8> {
         self.codes.push(value.to_u8())?;
         Ok(value.to_u8())
     }
 
-    fn write(&mut self, row: Row, value: E) -> Result<u8> {
+    fn write(&mut self, row: Row, value: E, _shared: Option<u8>) -> Result<u8> {
         self.codes.set(row.index(), value.to_u8())?;
         Ok(value.to_u8())
     }

@@ -128,12 +128,12 @@ impl<T: IndexKey + Default> Keyed for NullableColumn<T> {
         value.is_none()
     }
 
-    fn append(&mut self, value: Option<T>) -> Result<Maybe<T>> {
+    fn append(&mut self, value: Option<T>, _shared: Option<Maybe<T>>) -> Result<Maybe<T>> {
         self.push(value)?;
         Ok(Maybe(value))
     }
 
-    fn write(&mut self, row: Row, value: Option<T>) -> Result<Maybe<T>> {
+    fn write(&mut self, row: Row, value: Option<T>, _shared: Option<Maybe<T>>) -> Result<Maybe<T>> {
         self.set(row, value)?;
         Ok(Maybe(value))
     }

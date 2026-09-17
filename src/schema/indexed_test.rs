@@ -1,5 +1,6 @@
 use super::*;
 use crate::record::Record;
+use crate::schema::index::{capacity_for, home_of};
 use crate::schema::{
     EnumColumn, IndexKey, Maybe, NullableColumn, NullableTextColumn, TextColumn, TextKey,
 };
@@ -187,8 +188,8 @@ fn a_column_that_keys_by_a_digest_reads_a_row_back_before_it_says_it_matched() {
     let mut column = TextColumn::default();
     let long = "a title longer than twenty bytes, one";
     let other = "a title longer than twenty bytes, two";
-    let key = column.append(long).unwrap();
-    column.append(other).unwrap();
+    let key = column.append(long, None).unwrap();
+    column.append(other, None).unwrap();
 
     assert!(column.holds(key, long).unwrap());
     assert!(
@@ -707,8 +708,8 @@ fn an_optional_column_that_keys_by_a_digest_reads_a_row_back_before_it_says_it_m
     let mut column = NullableTextColumn::default();
     let long = "an isbn-like value far longer than twenty bytes, one";
     let other = "an isbn-like value far longer than twenty bytes, two";
-    let key = column.append(Some(long)).unwrap();
-    column.append(Some(other)).unwrap();
+    let key = column.append(Some(long), None).unwrap();
+    column.append(Some(other), None).unwrap();
 
     assert!(column.holds(key, Some(long)).unwrap());
     assert!(
@@ -733,4 +734,164 @@ fn a_unique_column_of_optional_numbers_lets_every_row_be_absent_but_none_agree()
     let err = pages.refuse_duplicate(Some(7)).unwrap_err();
     assert!(err.to_string().contains("edition.pages"), "{err}");
     assert!(err.to_string().contains("row 0"), "{err}");
+}
+
+#[test]
+fn a_long_value_a_row_repeats_is_stored_once_and_not_again() {
+    let long = "a title far longer than twenty bytes";
+    let mut column: Indexed<TextColumn, false> = Indexed::named("book.title");
+
+    column.push(long).unwrap();
+    let after_first = column.column().heap_len();
+    column.push(long).unwrap();
+    column.push(long).unwrap();
+
+    assert_eq!(after_first, long.len());
+    assert_eq!(
+        column.column().heap_len(),
+        after_first,
+        "three rows hold one value, so the file holds its bytes once"
+    );
+    assert_eq!(found(&column, long), [0, 1, 2]);
+}
+
+#[test]
+fn a_short_value_a_row_repeats_is_stored_again_because_nothing_reads_it_back() {
+    let mut column: Indexed<TextColumn, false> = Indexed::named("book.title");
+
+    column.push("Alice").unwrap();
+    let after_first = column.column().heap_len();
+    column.push("Alice").unwrap();
+
+    assert_eq!(
+        column.column().heap_len(),
+        after_first * 2,
+        "a key that carries its own bytes is never confirmed, so sharing them buys nothing"
+    );
+    assert_eq!(found(&column, "Alice"), [0, 1]);
+}
+
+#[test]
+fn a_long_value_set_onto_a_row_joins_the_bytes_the_other_rows_already_share() {
+    let long = "a title far longer than twenty bytes";
+    let mut column = titles(&[long, "Kokoro"]);
+    let after_both = column.column().heap_len();
+
+    column.set(at(&column, 1), long).unwrap();
+
+    assert_eq!(
+        column.column().heap_len(),
+        after_both,
+        "a row moved onto a value that is already there writes no bytes"
+    );
+    assert_eq!(found(&column, long), [0, 1]);
+}
+
+#[test]
+fn a_long_value_many_rows_share_is_confirmed_from_one_chunk_of_the_heap() {
+    let dir = TempDir::new("indexed_intern");
+    let path = dir.join("books.dbs");
+
+    let shared = "a title far longer than twenty bytes, shared by many rows";
+    let mut column: Indexed<TextColumn, false> = Indexed::named("book.title");
+    for row in 0..6000 {
+        match row % 3 {
+            0 => column.push(shared).unwrap(),
+            _ => column
+                .push(&format!(
+                    "a title far longer than twenty bytes, number {row}"
+                ))
+                .unwrap(),
+        };
+    }
+    let file = committed(&path, |updater| column.offer_to("book", "title", updater));
+    drop(file);
+
+    let mut read: Indexed<TextColumn, false> = Indexed::named("book.title");
+    read.read_from("book", "title", &ColumnFile::open(&path).unwrap())
+        .unwrap();
+
+    assert_eq!(read.find(shared).unwrap().len(), 2000);
+
+    let mut warm = Vec::new();
+    read.residency("book", "title", &mut warm);
+    let heap = warm
+        .iter()
+        .find(|held| held.name == "book.title.bytes")
+        .expect("the column names this");
+    assert!(heap.chunks > 1, "{heap:?}");
+    assert_eq!(
+        heap.resident, 1,
+        "two thousand rows share one blob, so confirming them all faults one chunk"
+    );
+    assert_eq!(
+        warm.iter()
+            .find(|held| held.name == "book.title")
+            .expect("the column names this")
+            .resident,
+        0
+    );
+}
+
+#[test]
+fn a_long_optional_value_a_row_repeats_is_stored_once_and_not_again() {
+    let long = "an isbn-like value far longer than twenty bytes";
+    let mut column: Indexed<NullableTextColumn, false> = Indexed::named("edition.isbn");
+
+    column.push(Some(long)).unwrap();
+    let after_first = column.column().heap_len();
+    column.push(None).unwrap();
+    column.push(Some(long)).unwrap();
+    column.push(Some("short")).unwrap();
+
+    assert_eq!(after_first, long.len());
+    assert_eq!(
+        column.column().heap_len(),
+        after_first + "short".len(),
+        "the repeat shared the bytes and the absent row needed none"
+    );
+    let rows: Vec<usize> = column
+        .find(Some(long))
+        .unwrap()
+        .into_iter()
+        .map(Row::index)
+        .collect();
+    assert_eq!(rows, [0, 2]);
+    assert_eq!(column.find(None).unwrap()[0].index(), 1);
+}
+
+#[test]
+fn a_push_onto_a_column_whose_rows_share_nothing_never_walks_the_bucket_it_lands_in() {
+    let dir = TempDir::new("indexed_no_walk");
+    let path = dir.join("editions.dbs");
+
+    let mut years: Indexed<Arena<u32>, false> = Indexed::named("edition.year");
+    for _ in 0..6000 {
+        years.push(1865).unwrap();
+    }
+    let capacity = capacity_for(6000);
+    let crowded = home_of(1865u32.raw(), capacity);
+    let alongside = (1u32..200_000)
+        .find(|year| *year != 1865 && home_of(year.raw(), capacity) == crowded)
+        .expect("some year of two hundred thousand shares a bucket with 1865");
+
+    let file = committed(&path, |updater| years.offer_to("edition", "year", updater));
+    drop(file);
+
+    let mut read: Indexed<Arena<u32>, false> = Indexed::named("edition.year");
+    read.read_from("edition", "year", &ColumnFile::open(&path).unwrap())
+        .unwrap();
+    read.push(alongside).unwrap();
+
+    let mut held = Vec::new();
+    read.residency("edition", "year", &mut held);
+    let links = held
+        .iter()
+        .find(|held| held.name == "edition.year.links")
+        .expect("the column names this");
+    assert!(links.chunks > 1, "{links:?}");
+    assert_eq!(
+        links.resident, 1,
+        "a number carries itself, so a push has no bytes to look for and no chain to walk"
+    );
 }

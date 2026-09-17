@@ -15,9 +15,18 @@ pub trait Keyed: Column + Keys + Default + Clone {
         false
     }
 
-    fn append(&mut self, value: Self::Seek<'_>) -> Result<Self::Key>;
+    fn shares_bytes(_key: Self::Key) -> bool {
+        false
+    }
 
-    fn write(&mut self, row: Row, value: Self::Seek<'_>) -> Result<Self::Key>;
+    fn append(&mut self, value: Self::Seek<'_>, shared: Option<Self::Key>) -> Result<Self::Key>;
+
+    fn write(
+        &mut self,
+        row: Row,
+        value: Self::Seek<'_>,
+        shared: Option<Self::Key>,
+    ) -> Result<Self::Key>;
 
     fn holds(&self, _key: Self::Key, _value: Self::Seek<'_>) -> Result<bool> {
         Ok(true)
@@ -31,12 +40,12 @@ impl<T: IndexKey> Keyed for Arena<T> {
         value
     }
 
-    fn append(&mut self, value: T) -> Result<T> {
+    fn append(&mut self, value: T, _shared: Option<T>) -> Result<T> {
         self.push(value)?;
         Ok(value)
     }
 
-    fn write(&mut self, row: Row, value: T) -> Result<T> {
+    fn write(&mut self, row: Row, value: T, _shared: Option<T>) -> Result<T> {
         self.set(row.index(), value)?;
         Ok(value)
     }
@@ -74,7 +83,8 @@ impl<C: Keyed, const UNIQUE: bool> Indexed<C, UNIQUE> {
     }
 
     pub fn push(&mut self, value: C::Seek<'_>) -> Result<usize> {
-        let key = self.column.append(value)?;
+        let shared = self.already_here(value)?;
+        let key = self.column.append(value, shared)?;
         self.index.append(key)
     }
 
@@ -86,7 +96,8 @@ impl<C: Keyed, const UNIQUE: bool> Indexed<C, UNIQUE> {
         if let Some(held) = claimed {
             return Err(self.taken(held));
         }
-        let key = self.column.write(row, value)?;
+        let shared = self.already_here(value)?;
+        let key = self.column.write(row, value, shared)?;
         self.index.repoint_row(row.index(), key)
     }
 
@@ -98,6 +109,25 @@ impl<C: Keyed, const UNIQUE: bool> Indexed<C, UNIQUE> {
             .into_iter()
             .map(|row| self.at(row))
             .collect()
+    }
+
+    fn already_here(&self, value: C::Seek<'_>) -> Result<Option<C::Key>> {
+        let sought = C::key_for(value);
+        if !C::shares_bytes(sought) {
+            return Ok(None);
+        }
+
+        let mut shared = None;
+        self.index.row_where(sought, |row, key| {
+            match self.really_holds(row, key, value)? {
+                true => {
+                    shared = Some(key);
+                    Ok(true)
+                }
+                false => Ok(false),
+            }
+        })?;
+        Ok(shared)
     }
 
     fn one(&self, value: C::Seek<'_>) -> Result<Option<Row>> {
