@@ -138,6 +138,19 @@ impl ColumnFileUpdater {
         Ok(())
     }
 
+    pub fn keep_column(&mut self, name: &str) -> Result<()> {
+        if self.columns.iter().any(|column| column.name == name) {
+            return Err(Error::invalid(format!("duplicate column {name:?}")));
+        }
+        let kept = self
+            .previous
+            .iter()
+            .find(|column| column.name == name)
+            .ok_or_else(|| Error::invalid(format!("no column named {name:?} to keep")))?;
+        self.columns.push(kept.clone());
+        Ok(())
+    }
+
     pub fn remove_column(&mut self, name: &str) {
         self.previous.retain(|column| column.name != name);
     }

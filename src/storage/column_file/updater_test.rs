@@ -936,3 +936,139 @@ fn a_slot_whose_directory_cannot_fit_the_offsets_is_damage_not_a_failed_write() 
     );
     assert!(err.to_string().contains("directory ends past"), "{err}");
 }
+
+fn seed_pair(path: &Path) {
+    let mut values = Arena::<u32>::with_chunk_rows(4);
+    values
+        .extend_from_slice(&(0..10).collect::<Vec<u32>>())
+        .unwrap();
+    let mut spare = Arena::<u64>::with_chunk_rows(4);
+    spare.extend_from_slice(&[11, 22, 33, 44, 55]).unwrap();
+
+    let mut writer = ColumnFileWriter::create(path, this_device()).unwrap();
+    writer.column("values", &values).unwrap();
+    writer.column("spare", &spare).unwrap();
+    writer.finish().unwrap();
+}
+
+#[test]
+fn a_kept_column_survives_a_commit_that_never_mentions_it() {
+    let dir = TempDir::new("keep");
+    let path = dir.join("pair.dbs");
+    seed_pair(&path);
+
+    let file = ColumnFile::open(&path).unwrap();
+    let mut values = file.column::<u32>("values").unwrap();
+    values.set(5, 555).unwrap();
+
+    let mut updater = file.update(this_device()).unwrap();
+    updater.column("values", &values).unwrap();
+    updater.keep_column("spare").unwrap();
+    assert_eq!(updater.commit().unwrap(), 2);
+
+    let grown = ColumnFile::open(&path).unwrap();
+    grown.verify().unwrap();
+    assert_eq!(read_all(&path), vec![0, 1, 2, 3, 4, 555, 6, 7, 8, 9]);
+    assert_eq!(
+        grown
+            .column::<u64>("spare")
+            .unwrap()
+            .iter()
+            .map(|row| row.copied())
+            .collect::<Result<Vec<_>>>()
+            .unwrap(),
+        vec![11, 22, 33, 44, 55],
+        "a column nobody could name still holds what it held"
+    );
+}
+
+#[test]
+fn a_kept_column_keeps_every_chunk_offset_it_had() {
+    let dir = TempDir::new("keep_offsets");
+    let path = dir.join("pair.dbs");
+    seed_pair(&path);
+
+    let file = ColumnFile::open(&path).unwrap();
+    let was = file.column_meta("spare").unwrap().chunks.clone();
+    let mut values = file.column::<u32>("values").unwrap();
+    values.set(0, 999).unwrap();
+
+    let mut updater = file.update(this_device()).unwrap();
+    updater.column("values", &values).unwrap();
+    updater.keep_column("spare").unwrap();
+    updater.commit().unwrap();
+
+    assert_eq!(
+        ColumnFile::open(&path)
+            .unwrap()
+            .column_meta("spare")
+            .unwrap()
+            .chunks,
+        was,
+        "keeping a column reads none of it and rewrites none of it"
+    );
+}
+
+#[test]
+fn a_commit_that_only_keeps_does_not_advance_the_generation() {
+    let dir = TempDir::new("keep_only");
+    let path = dir.join("pair.dbs");
+    seed_pair(&path);
+
+    let file = ColumnFile::open(&path).unwrap();
+    let values = file.column::<u32>("values").unwrap();
+    let before = len_of(&path);
+
+    let mut updater = file.update(this_device()).unwrap();
+    updater.column("values", &values).unwrap();
+    updater.keep_column("spare").unwrap();
+
+    assert_eq!(updater.commit().unwrap(), 1);
+    assert_eq!(
+        len_of(&path),
+        before,
+        "nothing changed, so nothing was written"
+    );
+}
+
+#[test]
+fn keeping_a_column_twice_is_refused() {
+    let dir = TempDir::new("keep_twice");
+    let path = dir.join("pair.dbs");
+    seed_pair(&path);
+
+    let file = ColumnFile::open(&path).unwrap();
+    let mut updater = file.update(this_device()).unwrap();
+    updater.keep_column("spare").unwrap();
+
+    let err = updater.keep_column("spare").unwrap_err();
+    assert!(err.to_string().contains("duplicate column"), "{err}");
+}
+
+#[test]
+fn keeping_a_column_the_file_does_not_have_is_refused() {
+    let dir = TempDir::new("keep_missing");
+    let path = dir.join("pair.dbs");
+    seed_pair(&path);
+
+    let file = ColumnFile::open(&path).unwrap();
+    let mut updater = file.update(this_device()).unwrap();
+
+    let err = updater.keep_column("absent").unwrap_err();
+    assert!(err.to_string().contains("no column named"), "{err}");
+}
+
+#[test]
+fn a_column_offered_after_it_was_kept_is_refused_as_a_duplicate() {
+    let dir = TempDir::new("keep_then_offer");
+    let path = dir.join("pair.dbs");
+    seed_pair(&path);
+
+    let file = ColumnFile::open(&path).unwrap();
+    let values = file.column::<u32>("values").unwrap();
+    let mut updater = file.update(this_device()).unwrap();
+    updater.keep_column("values").unwrap();
+
+    let err = updater.column("values", &values).unwrap_err();
+    assert!(err.to_string().contains("duplicate column"), "{err}");
+}
