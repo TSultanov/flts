@@ -67,6 +67,9 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         quote! { #vis #field: <#held as ::dbsync::schema::Entity>::Table }
     });
     let read_only = sets.iter().map(|(field, _)| quote! { &self.#field });
+    let audits = sets.iter().map(|(_, held)| {
+        quote! { <#held as ::dbsync::schema::Audited<Self>>::audit_in(self)?; }
+    });
     let read_write = sets.iter().map(|(field, _)| quote! { &mut self.#field });
     let holds = sets.iter().map(|(field, held)| {
         quote! {
@@ -105,6 +108,11 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
 
             fn tables_mut(&mut self) -> ::std::vec::Vec<&mut dyn ::dbsync::schema::AnyTable> {
                 ::std::vec![#(#read_write,)*]
+            }
+
+            fn audit(&self) -> ::dbsync::Result<()> {
+                #(#audits)*
+                ::core::result::Result::Ok(())
             }
         }
 
@@ -148,7 +156,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             pub fn children_of<P, C>(
                 &self,
                 parent: ::dbsync::Id<P>,
-            ) -> ::dbsync::Result<&[::dbsync::Id<C>]>
+            ) -> ::dbsync::Result<::std::vec::Vec<::dbsync::Id<C>>>
             where
                 Self: ::dbsync::schema::Holds<P> + ::dbsync::schema::Holds<C>,
                 P: ::dbsync::schema::Entity,

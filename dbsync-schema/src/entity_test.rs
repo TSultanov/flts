@@ -452,3 +452,45 @@ fn a_mutable_handle_writes_through_the_table_the_store_lends_it() {
     );
     assert!(out.contains(&scalar), "{out}");
 }
+
+#[test]
+fn an_entity_audits_its_own_columns_even_when_it_answers_to_no_parent() {
+    let out = expanded(quote! {
+        struct Book { title: String }
+    });
+
+    assert!(
+        out.contains(
+            "impl < S > :: dbsync :: schema :: Audited < S > for Book \
+             where S : :: dbsync :: schema :: Holds < Book > ,"
+        ),
+        "{out}"
+    );
+    assert!(
+        out.contains("< BookTable as :: dbsync :: schema :: Table > :: audit"),
+        "{out}"
+    );
+    assert!(
+        !out.contains("audit_reference"),
+        "an entity with no One field has no parent to check: {out}"
+    );
+}
+
+#[test]
+fn an_entity_that_names_a_parent_has_that_reference_checked_by_the_audit() {
+    let out = expanded(quote! {
+        struct Chapter { book: One<Book>, title: String }
+    });
+
+    assert!(
+        out.contains(
+            "where S : :: dbsync :: schema :: Holds < Chapter > \
+             + :: dbsync :: schema :: Holds < Book > ,"
+        ),
+        "the audit needs both tables, so the bound names both: {out}"
+    );
+    assert!(
+        out.contains(":: dbsync :: schema :: audit_reference :: < S , Book , Chapter > (store) ?"),
+        "{out}"
+    );
+}

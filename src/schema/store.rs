@@ -36,6 +36,8 @@ pub trait Store: Default + Clone + Sized {
 
     fn tables_mut(&mut self) -> Vec<&mut dyn AnyTable>;
 
+    fn audit(&self) -> Result<()>;
+
     fn specs(&self) -> Vec<ColumnSpec> {
         self.tables()
             .into_iter()
@@ -61,13 +63,6 @@ pub trait Store: Default + Clone + Sized {
     fn verify(&self) -> Result<()> {
         self.state().attached()?.0.verify()?;
         self.audit()
-    }
-
-    fn audit(&self) -> Result<()> {
-        for table in self.tables() {
-            table.audit_columns()?;
-        }
-        Ok(())
     }
 
     fn snapshot(&self) -> Self {

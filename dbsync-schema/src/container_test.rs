@@ -203,3 +203,35 @@ fn a_container_mints_a_mutable_handle_for_any_entity_it_holds() {
         "{out}"
     );
 }
+
+#[test]
+fn the_children_a_join_hands_back_are_owned_because_it_gathers_them() {
+    let out = expanded(quote! {
+        struct Library { books: Set<Book>, chapters: Set<Chapter> }
+    });
+
+    assert!(
+        out.contains(":: dbsync :: Result < :: std :: vec :: Vec < :: dbsync :: Id < C >> >"),
+        "a chain is walked and sorted, so there is no slice to lend: {out}"
+    );
+}
+
+#[test]
+fn a_container_audits_every_entity_it_holds_and_not_only_its_own_columns() {
+    let out = expanded(quote! {
+        struct Library { books: Set<Book>, chapters: Set<Chapter> }
+    });
+
+    assert!(
+        out.contains("fn audit (& self) -> :: dbsync :: Result < () >"),
+        "{out}"
+    );
+    assert!(
+        out.contains("< Book as :: dbsync :: schema :: Audited < Self >> :: audit_in (self) ?"),
+        "{out}"
+    );
+    assert!(
+        out.contains("< Chapter as :: dbsync :: schema :: Audited < Self >> :: audit_in (self) ?"),
+        "{out}"
+    );
+}

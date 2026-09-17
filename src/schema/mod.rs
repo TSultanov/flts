@@ -1,6 +1,5 @@
 //! Typed tables over named columns: the runtime a generated schema wires itself into.
 
-mod child_index;
 mod column;
 mod diff;
 mod entity;
@@ -15,10 +14,9 @@ mod store;
 mod table;
 mod text;
 
-pub use child_index::ChildIndex;
 pub use column::{Column, ColumnKind, ColumnSpec, Field, FieldMut, Residency, Row};
 pub use diff::SchemaDiff;
-pub use entity::{Child, Entity, Holds, child_rows_of, children_of};
+pub use entity::{Audited, Child, Entity, Holds, audit_reference, child_rows_of, children_of};
 pub use entry::{Children, Entry, EntryMut, Rows};
 pub use enums::{EnumColumn, UnitEnum};
 pub use identity::IdColumn;

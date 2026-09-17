@@ -2,7 +2,7 @@
 
 use std::marker::PhantomData;
 use std::ops::Range;
-use std::slice;
+use std::vec;
 
 use super::column::Row;
 use super::entity::{Child, Entity, Holds, child_rows_of};
@@ -69,7 +69,7 @@ impl<'a, S: Holds<E>, E: Entity> Entry<'a, S, E> {
     {
         Ok(Children {
             store: self.store,
-            rows: child_rows_of::<S, E, C>(self.store, self.id()?)?.iter(),
+            rows: child_rows_of::<S, E, C>(self.store, self.id()?)?.into_iter(),
             marker: PhantomData,
         })
     }
@@ -106,7 +106,7 @@ impl<'a, S: Holds<E>, E: Entity> EntryMut<'a, S, E> {
 
 pub struct Children<'a, S, C: Entity> {
     store: &'a S,
-    rows: slice::Iter<'a, Row>,
+    rows: vec::IntoIter<Row>,
     marker: PhantomData<fn() -> C>,
 }
 
@@ -114,7 +114,7 @@ impl<'a, S: Holds<C> + 'a, C: Entity> Iterator for Children<'a, S, C> {
     type Item = C::Row<'a, S>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        Some(Entry::at_row(self.store, *self.rows.next()?).into())
+        Some(Entry::at_row(self.store, self.rows.next()?).into())
     }
 }
 

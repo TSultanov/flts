@@ -92,12 +92,16 @@ fn the_declared_schema_names_every_column_the_file_will_hold() {
             "chapter.id.buckets",
             "chapter.id.links",
             "chapter.book",
+            "chapter.book.buckets",
+            "chapter.book.links",
             "chapter.title",
             "chapter.title.bytes",
             "paragraph.id",
             "paragraph.id.buckets",
             "paragraph.id.links",
             "paragraph.chapter",
+            "paragraph.chapter.buckets",
+            "paragraph.chapter.links",
             "paragraph.text",
             "paragraph.text.bytes",
         ]
@@ -110,11 +114,11 @@ fn a_declared_library_joins_two_levels_down() -> Result<()> {
     let on = stock(&mut library)?;
     let alice = on.alice;
 
-    let chapters: &[Id<Chapter>] = library.children_of(alice)?;
+    let chapters: Vec<Id<Chapter>> = library.children_of(alice)?;
     assert_eq!(chapters.len(), 2);
     assert_eq!(library.chapters.title(chapters[0])?, "Down the Rabbit-Hole");
 
-    let paragraphs: &[Id<Paragraph>] = library.children_of(chapters[0])?;
+    let paragraphs: Vec<Id<Paragraph>> = library.children_of(chapters[0])?;
     assert_eq!(paragraphs.len(), 2);
     assert_eq!(
         library.paragraphs.text(paragraphs[1])?,
@@ -140,9 +144,9 @@ fn a_declared_library_round_trips_through_a_file_it_owns() -> Result<()> {
     assert_eq!(reopened.books.title(alice)?, "Alice");
     assert_eq!(reopened.books.author(alice)?, "Lewis Carroll");
 
-    let chapters: &[Id<Chapter>] = reopened.children_of(alice)?;
+    let chapters: Vec<Id<Chapter>> = reopened.children_of(alice)?;
     assert_eq!(chapters.len(), 2);
-    let paragraphs: &[Id<Paragraph>] = reopened.children_of(chapters[1])?;
+    let paragraphs: Vec<Id<Paragraph>> = reopened.children_of(chapters[1])?;
     assert_eq!(
         reopened.paragraphs.text(paragraphs[0])?,
         "Curiouser and curiouser!"
@@ -272,6 +276,41 @@ fn listing_the_catalogue_leaves_every_paragraph_cold() -> Result<()> {
         cold("paragraph.text.bytes").resident,
         0,
         "a per-field heap is what keeps a title from faulting in a paragraph"
+    );
+    Ok(())
+}
+
+#[test]
+fn walking_a_books_chapters_reads_the_index_and_never_the_column_it_indexes() -> Result<()> {
+    let dir = TempDir::new("declared_walk");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device())?;
+    let on = stock(&mut library)?;
+    library.commit(this_device())?;
+
+    let reopened = Library::open(&path)?;
+    let walked = reopened.at(on.alice)?.chapters()?.count();
+
+    let cold = |name: &str| {
+        reopened
+            .residency()
+            .into_iter()
+            .find(|column| column.name == name)
+            .expect("the schema names this column")
+    };
+
+    assert_eq!(walked, 2);
+    assert!(cold("chapter.book.buckets").resident > 0);
+    assert_eq!(
+        cold("chapter.book").resident,
+        0,
+        "a link carries the parent it files a child under, so the walk never reads the column"
+    );
+    assert_eq!(
+        cold("chapter.title").resident,
+        0,
+        "walking to a chapter is not reading it"
     );
     Ok(())
 }

@@ -164,6 +164,16 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         }
     });
 
+    let owners: Vec<&syn::Type> = fields
+        .iter()
+        .filter_map(|field| match &field.kind {
+            Kind::Reference(parent) => Some(parent),
+            _ => None,
+        })
+        .collect();
+    let held_by = owners.iter();
+    let checked = owners.iter();
+
     let children = fields.iter().filter_map(|field| match &field.kind {
         Kind::Reference(parent) => {
             let field_name = &field.name;
@@ -306,6 +316,21 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
 
         impl<#held, S: ::dbsync::schema::Holds<#name>> #row_mut_type<#held, S> {
             #(#writers)*
+        }
+
+        impl<S> ::dbsync::schema::Audited<S> for #name
+        where
+            S: ::dbsync::schema::Holds<#name> #(+ ::dbsync::schema::Holds<#held_by>)*,
+        {
+            fn audit_in(store: &S) -> ::dbsync::Result<()> {
+                <#table as ::dbsync::schema::Table>::audit(
+                    ::dbsync::schema::Holds::<#name>::table(store),
+                )?;
+                #(
+                    ::dbsync::schema::audit_reference::<S, #checked, #name>(store)?;
+                )*
+                ::core::result::Result::Ok(())
+            }
         }
 
         #(#children)*

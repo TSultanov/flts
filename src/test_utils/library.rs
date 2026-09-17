@@ -5,9 +5,9 @@ use crate::error::{Error, Result};
 use crate::id::Id;
 use crate::schema::IdColumn;
 use crate::schema::{
-    AnyTable, Child, Children, Entity, Entry, EntryMut, EnumColumn, Field, FieldMut, Holds,
-    NullableColumn, NullableTextColumn, RefColumn, Rows, Store, StoreState, Table, TextColumn,
-    UnitEnum,
+    AnyTable, Audited, Child, Children, Entity, Entry, EntryMut, EnumColumn, Field, FieldMut,
+    Holds, NullableColumn, NullableTextColumn, RefColumn, Rows, Store, StoreState, Table,
+    TextColumn, UnitEnum, audit_reference,
 };
 use crate::storage::Arena;
 
@@ -294,12 +294,8 @@ impl Chapters {
         self.book.get(self.row_of(chapter)?)
     }
 
-    pub fn of_book(&self, books: &IdColumn<Book>, book: Id<Book>) -> Result<&[Id<Chapter>]> {
-        self.book.children_of(&self.ids, books, book)
-    }
-
-    pub fn is_indexed(&self) -> bool {
-        self.book.is_indexed()
+    pub fn of_book(&self, book: Id<Book>) -> Result<Vec<Id<Chapter>>> {
+        self.book.children_of(&self.ids, book)
     }
 }
 
@@ -425,12 +421,8 @@ impl Paragraphs {
         Ok(self.text.get(self.row_of(paragraph)?)?.into_owned())
     }
 
-    pub fn of_chapter(
-        &self,
-        chapters: &IdColumn<Chapter>,
-        chapter: Id<Chapter>,
-    ) -> Result<&[Id<Paragraph>]> {
-        self.chapter.children_of(&self.ids, chapters, chapter)
+    pub fn of_chapter(&self, chapter: Id<Chapter>) -> Result<Vec<Id<Paragraph>>> {
+        self.chapter.children_of(&self.ids, chapter)
     }
 }
 
@@ -717,6 +709,40 @@ impl Store for Library {
             &mut self.editions,
         ]
     }
+
+    fn audit(&self) -> Result<()> {
+        <Book as Audited<Self>>::audit_in(self)?;
+        <Chapter as Audited<Self>>::audit_in(self)?;
+        <Paragraph as Audited<Self>>::audit_in(self)?;
+        <Edition as Audited<Self>>::audit_in(self)
+    }
+}
+
+impl<S: Holds<Book>> Audited<S> for Book {
+    fn audit_in(store: &S) -> Result<()> {
+        Table::audit(Holds::<Book>::table(store))
+    }
+}
+
+impl<S: Holds<Chapter> + Holds<Book>> Audited<S> for Chapter {
+    fn audit_in(store: &S) -> Result<()> {
+        Table::audit(Holds::<Chapter>::table(store))?;
+        audit_reference::<S, Book, Chapter>(store)
+    }
+}
+
+impl<S: Holds<Paragraph> + Holds<Chapter>> Audited<S> for Paragraph {
+    fn audit_in(store: &S) -> Result<()> {
+        Table::audit(Holds::<Paragraph>::table(store))?;
+        audit_reference::<S, Chapter, Paragraph>(store)
+    }
+}
+
+impl<S: Holds<Edition> + Holds<Book>> Audited<S> for Edition {
+    fn audit_in(store: &S) -> Result<()> {
+        Table::audit(Holds::<Edition>::table(store))?;
+        audit_reference::<S, Book, Edition>(store)
+    }
 }
 
 impl Holds<Book> for Library {
@@ -784,12 +810,11 @@ impl Library {
         Rows::all(self)
     }
 
-    pub fn chapters_of(&self, book: Id<Book>) -> Result<&[Id<Chapter>]> {
-        self.chapters.of_book(Table::ids(&self.books), book)
+    pub fn chapters_of(&self, book: Id<Book>) -> Result<Vec<Id<Chapter>>> {
+        self.chapters.of_book(book)
     }
 
-    pub fn paragraphs_of(&self, chapter: Id<Chapter>) -> Result<&[Id<Paragraph>]> {
-        self.paragraphs
-            .of_chapter(Table::ids(&self.chapters), chapter)
+    pub fn paragraphs_of(&self, chapter: Id<Chapter>) -> Result<Vec<Id<Paragraph>>> {
+        self.paragraphs.of_chapter(chapter)
     }
 }

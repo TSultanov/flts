@@ -37,26 +37,37 @@ pub trait Holds<E: Entity> {
     fn table_mut(&mut self) -> &mut E::Table;
 }
 
-pub fn children_of<S, P, C>(store: &S, parent: Id<P>) -> Result<&[Id<C>]>
-where
-    S: Holds<P> + Holds<C>,
-    P: Entity,
-    C: Child<P>,
-{
-    let mine = Table::ids(Holds::<C>::table(store));
-    let parents = Table::ids(Holds::<P>::table(store));
-    C::parents(Holds::<C>::table(store)).children_of(mine, parents, parent)
+pub trait Audited<S>: Entity {
+    fn audit_in(store: &S) -> Result<()>;
 }
 
-pub fn child_rows_of<S, P, C>(store: &S, parent: Id<P>) -> Result<&[Row]>
+pub fn children_of<S, P, C>(store: &S, parent: Id<P>) -> Result<Vec<Id<C>>>
 where
     S: Holds<P> + Holds<C>,
     P: Entity,
     C: Child<P>,
 {
     let mine = Table::ids(Holds::<C>::table(store));
+    C::parents(Holds::<C>::table(store)).children_of(mine, parent)
+}
+
+pub fn child_rows_of<S, P, C>(store: &S, parent: Id<P>) -> Result<Vec<Row>>
+where
+    S: Holds<P> + Holds<C>,
+    P: Entity,
+    C: Child<P>,
+{
+    C::parents(Holds::<C>::table(store)).child_rows_of(parent)
+}
+
+pub fn audit_reference<S, P, C>(store: &S) -> Result<()>
+where
+    S: Holds<P> + Holds<C>,
+    P: Entity,
+    C: Child<P>,
+{
     let parents = Table::ids(Holds::<P>::table(store));
-    C::parents(Holds::<C>::table(store)).child_rows_of(mine, parents, parent)
+    C::parents(Holds::<C>::table(store)).check_parents(parents)
 }
 
 #[cfg(test)]

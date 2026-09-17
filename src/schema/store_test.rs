@@ -176,6 +176,56 @@ fn a_store_round_trips_every_table_through_a_commit() {
 }
 
 #[test]
+fn an_index_a_commit_wrote_is_the_index_the_next_commit_reuses() {
+    let dir = TempDir::new("index_reuse");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device()).unwrap();
+    let alice = stock(&mut library);
+    library.commit(this_device()).unwrap();
+
+    let was = ColumnFile::open(&path).unwrap();
+    let chapters = was.column_meta("chapter.book.links").unwrap().chunks[0];
+    let books = was.column_meta("book.id.links").unwrap().chunks[0];
+    drop(was);
+
+    library.books.push("Kokoro", "Natsume Soseki").unwrap();
+    library.commit(this_device()).unwrap();
+
+    let now = ColumnFile::open(&path).unwrap();
+    assert_eq!(
+        now.column_meta("chapter.book.links").unwrap().chunks[0],
+        chapters,
+        "a table nobody touched must not rewrite the index it already had"
+    );
+    assert_ne!(
+        now.column_meta("book.id.links").unwrap().chunks[0],
+        books,
+        "the table that grew wrote the one chunk that changed"
+    );
+    assert_eq!(library.chapters_of(alice).unwrap().len(), 1);
+}
+
+#[test]
+fn a_snapshot_of_a_store_costs_nothing_the_rows_it_holds_can_measure() {
+    let dir = TempDir::new("snapshot_cost");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device()).unwrap();
+    stock(&mut library);
+    library.commit(this_device()).unwrap();
+
+    let opened = Library::open(&path).unwrap();
+    let pinned = opened.snapshot();
+
+    assert_eq!(
+        pinned.residency(),
+        opened.residency(),
+        "an index is columns held by refcount, not a map copied per table"
+    );
+}
+
+#[test]
 fn a_commit_that_changes_nothing_does_not_move_the_generation_or_the_file() {
     let dir = TempDir::new("idempotent");
     let path = dir.join("library.dbs");

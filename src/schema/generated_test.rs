@@ -187,11 +187,8 @@ fn a_generated_entity_knows_whose_child_it_is() -> Result<()> {
     works.push(carroll, "Alice")?;
     works.push(soseki, "Botchan")?;
 
-    let by_soseki = <Work as Child<Author>>::parents(&works).children_of(
-        Table::ids(&works),
-        Table::ids(&authors),
-        soseki,
-    )?;
+    let by_soseki =
+        <Work as Child<Author>>::parents(&works).children_of(Table::ids(&works), soseki)?;
 
     assert_eq!(by_soseki.len(), 2);
     assert_eq!(works.title(by_soseki[1])?, "Botchan");

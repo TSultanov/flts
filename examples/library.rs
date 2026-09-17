@@ -113,6 +113,8 @@ fn main() -> Result<()> {
     println!("     nobody wrote those names down; Many and Set asked for none of them,");
     println!("     and nobody declared an id: every entity is given one, and a row keeps");
     println!("     the one it was given for as long as it exists");
+    println!("     .buckets and .links are the hash index over the column they follow --");
+    println!("     columns like any other, written by the commit and paged on demand");
 
     let mut library = Library::create(&path, this_device())?;
     stock(&mut library)?;
@@ -158,6 +160,14 @@ fn main() -> Result<()> {
     println!("\n4. opened one book, and walked it by the columns that point back at it");
     let alice = book_called(&shelf, "Alice's Adventures in Wonderland")?;
     assert_eq!(alice.chapters()?.count(), 2);
+    assert_eq!(resident(&shelf, "chapter.book"), 0);
+    assert!(resident(&shelf, "chapter.book.buckets") > 0);
+    println!(
+        "     finding them read {} chunks of chapter.book.buckets and left chapter.book",
+        resident(&shelf, "chapter.book.buckets")
+    );
+    println!("     cold: a link carries the parent it files a child under, so the index");
+    println!("     answers without reading the column it indexes");
     for chapter in alice.chapters()? {
         println!("     {}", chapter.title()?);
         assert_eq!(chapter.book()?.id()?, alice.id()?);

@@ -117,8 +117,6 @@ pub trait AnyTable {
 
     fn rows_agree(&self) -> Result<()>;
 
-    fn audit_columns(&self) -> Result<()>;
-
     fn read_columns(&mut self, file: &ColumnFile) -> Result<()>;
 
     fn offer_columns(&self, updater: &mut ColumnFileUpdater) -> Result<()>;
@@ -143,10 +141,6 @@ impl<T: Table> AnyTable for T {
 
     fn rows_agree(&self) -> Result<()> {
         Table::check_rows_agree(self)
-    }
-
-    fn audit_columns(&self) -> Result<()> {
-        Table::audit(self)
     }
 
     fn read_columns(&mut self, file: &ColumnFile) -> Result<()> {

@@ -34,7 +34,7 @@ fn stocked() -> (Library, Id<Book>, Id<Book>) {
 fn a_parent_finds_its_children_through_the_store_that_holds_both_tables() {
     let (library, alice, _) = stocked();
 
-    let chapters: &[Id<Chapter>] = children_of(&library, alice).unwrap();
+    let chapters: Vec<Id<Chapter>> = children_of(&library, alice).unwrap();
 
     assert_eq!(chapters.len(), 2);
     assert_eq!(
@@ -51,8 +51,8 @@ fn a_parent_finds_its_children_through_the_store_that_holds_both_tables() {
 fn the_join_goes_two_levels_down_without_the_levels_knowing_about_each_other() {
     let (library, _, kokoro) = stocked();
 
-    let chapters: &[Id<Chapter>] = children_of(&library, kokoro).unwrap();
-    let paragraphs: &[Id<Paragraph>] = children_of(&library, chapters[0]).unwrap();
+    let chapters: Vec<Id<Chapter>> = children_of(&library, kokoro).unwrap();
+    let paragraphs: Vec<Id<Paragraph>> = children_of(&library, chapters[0]).unwrap();
 
     assert_eq!(paragraphs.len(), 1);
     assert_eq!(
@@ -66,7 +66,7 @@ fn a_parent_with_no_children_gets_an_empty_answer_not_an_error() {
     let mut library = Library::default();
     let lonely = library.books.push("Unread", "Nobody").unwrap();
 
-    let chapters: &[Id<Chapter>] = children_of(&library, lonely).unwrap();
+    let chapters: Vec<Id<Chapter>> = children_of(&library, lonely).unwrap();
 
     assert!(chapters.is_empty());
 }
@@ -101,6 +101,6 @@ fn children_found_after_a_reopen_are_the_ones_that_were_written() {
     read.chapters.read_from(&file).unwrap();
     read.paragraphs.read_from(&file).unwrap();
 
-    let chapters: &[Id<Chapter>] = children_of(&read, alice).unwrap();
+    let chapters: Vec<Id<Chapter>> = children_of(&read, alice).unwrap();
     assert_eq!(chapters.len(), 2);
 }

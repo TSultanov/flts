@@ -1,6 +1,7 @@
 use super::*;
 use crate::error::Result;
 use crate::id::Id;
+use crate::schema::Store;
 use crate::test_utils::library::{Binding, Book, Chapter, Edition, Library, Paragraph};
 use crate::test_utils::props;
 use proptest::prelude::*;
@@ -214,7 +215,7 @@ fn walking_the_children_of_a_row_hands_back_only_that_row_s_children() {
 }
 
 #[test]
-fn walking_the_children_of_a_row_refuses_a_reference_no_parent_answers_for() {
+fn an_audit_refuses_a_reference_no_parent_answers_for_that_no_walk_can_see() {
     let mut library = Library::default();
     let alice = library.books.push("Alice", "Lewis Carroll").unwrap();
     library
@@ -222,9 +223,14 @@ fn walking_the_children_of_a_row_refuses_a_reference_no_parent_answers_for() {
         .push(Id::mint(), "Belongs to nobody")
         .unwrap();
 
-    let err = refused(library.at(alice).unwrap().chapters());
-
-    assert!(err.contains("chapter.book"), "{err}");
+    assert_eq!(
+        library.at(alice).unwrap().chapters().unwrap().count(),
+        0,
+        "a chapter under a book nobody holds is under no book, and a walk cannot say so"
+    );
+    let err = library.audit().unwrap_err();
+    assert!(err.is_corrupt(), "{err}");
+    assert!(err.to_string().contains("chapter.book"), "{err}");
 }
 
 #[test]
@@ -275,19 +281,14 @@ fn a_mutable_handle_is_refused_for_an_id_no_row_holds() {
 }
 
 #[test]
-fn moving_a_child_through_a_handle_forgets_the_grouping_it_belonged_to() {
+fn moving_a_child_through_a_handle_moves_it_to_the_parent_it_was_given() {
     let (mut library, on) = stocked();
     let alice = on.alice;
     let kokoro = on.kokoro;
     assert_eq!(library.at(alice).unwrap().chapters().unwrap().count(), 1);
-    assert!(library.chapters.is_indexed());
 
     library.at_mut(on.rabbit).unwrap().set_book(kokoro).unwrap();
 
-    assert!(
-        !library.chapters.is_indexed(),
-        "a grouping that outlives the column it grouped answers for rows that moved"
-    );
     assert_eq!(library.at(alice).unwrap().chapters().unwrap().count(), 0);
     assert_eq!(library.at(kokoro).unwrap().chapters().unwrap().count(), 1);
 }

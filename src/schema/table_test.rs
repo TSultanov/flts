@@ -277,17 +277,10 @@ fn a_chapter_finds_its_paragraphs_through_the_tables_that_hold_them() {
         .push(rabbit, "So she was considering in her own mind.")
         .unwrap();
 
-    assert!(!chapters.is_indexed());
-    assert_eq!(
-        chapters.of_book(Table::ids(&books), alice).unwrap(),
-        [rabbit, pool]
-    );
-    assert!(chapters.is_indexed());
+    assert_eq!(chapters.of_book(alice).unwrap(), [rabbit, pool]);
     assert_eq!(chapters.title(pool).unwrap(), "The Pool of Tears");
     assert_eq!(chapters.book(pool).unwrap(), alice);
-    let of_rabbit = paragraphs
-        .of_chapter(Table::ids(&chapters), rabbit)
-        .unwrap();
+    let of_rabbit = paragraphs.of_chapter(rabbit).unwrap();
     assert_eq!(of_rabbit.len(), 2);
     assert_eq!(
         paragraphs.text(of_rabbit[1]).unwrap(),
