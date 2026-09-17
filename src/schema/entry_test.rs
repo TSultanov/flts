@@ -1,7 +1,7 @@
 use super::*;
 use crate::error::Result;
 use crate::id::Id;
-use crate::test_utils::library::{Book, Chapter, Library, Paragraph};
+use crate::test_utils::library::{Binding, Book, Chapter, Edition, Library, Paragraph};
 
 fn refused<T>(result: Result<T>) -> String {
     match result {
@@ -285,4 +285,114 @@ fn moving_a_child_through_a_handle_forgets_the_grouping_it_belonged_to() {
     );
     assert_eq!(library.at(alice).unwrap().chapters().unwrap().count(), 0);
     assert_eq!(library.at(kokoro).unwrap().chapters().unwrap().count(), 1);
+}
+
+fn shelved(library: &mut Library, book: Id<Book>) -> Id<Edition> {
+    library
+        .editions
+        .push(book, Some("0-486-41658-5"), 1865, Some(192), Binding::Cloth)
+        .unwrap()
+}
+
+#[test]
+fn a_handle_reads_every_kind_of_field_the_table_beneath_it_holds() {
+    let mut library = stocked();
+    let alice = Id::<Book>::from_index(0);
+    let bound = shelved(&mut library, alice);
+    let plain = library
+        .editions
+        .push(alice, None, 1946, None, Binding::Paper)
+        .unwrap();
+
+    let edition = library.at(bound).unwrap();
+    assert_eq!(edition.isbn().unwrap().as_deref(), Some("0-486-41658-5"));
+    assert_eq!(edition.year().unwrap(), 1865);
+    assert_eq!(edition.pages().unwrap(), Some(192));
+    assert_eq!(edition.binding().unwrap(), Binding::Cloth);
+    assert_eq!(edition.book().unwrap().title().unwrap(), "Alice");
+
+    let edition = library.at(plain).unwrap();
+    assert_eq!(edition.isbn().unwrap(), None);
+    assert_eq!(edition.pages().unwrap(), None);
+    assert_eq!(edition.binding().unwrap(), Binding::Paper);
+}
+
+#[test]
+fn a_handle_hands_back_what_the_table_accessor_hands_back_for_the_same_id() {
+    let mut library = stocked();
+    let bound = shelved(&mut library, Id::<Book>::from_index(1));
+
+    let edition = library.at(bound).unwrap();
+    assert_eq!(
+        edition.book().unwrap().id(),
+        library.editions.book(bound).unwrap()
+    );
+    assert_eq!(
+        edition.isbn().unwrap(),
+        library.editions.isbn(bound).unwrap()
+    );
+    assert_eq!(
+        edition.year().unwrap(),
+        library.editions.year(bound).unwrap()
+    );
+    assert_eq!(
+        edition.pages().unwrap(),
+        library.editions.pages(bound).unwrap()
+    );
+    assert_eq!(
+        edition.binding().unwrap(),
+        library.editions.binding(bound).unwrap()
+    );
+}
+
+#[test]
+fn a_mutable_handle_writes_every_kind_of_field_the_table_beneath_it_holds() {
+    let mut library = stocked();
+    let alice = Id::<Book>::from_index(0);
+    let kokoro = Id::<Book>::from_index(1);
+    let bound = shelved(&mut library, alice);
+    let untouched = shelved(&mut library, alice);
+
+    let mut edition = library.at_mut(bound).unwrap();
+    edition.set_book(kokoro).unwrap();
+    edition.set_isbn(None).unwrap();
+    edition.set_year(1946).unwrap();
+    edition.set_pages(None).unwrap();
+    edition.set_binding(Binding::Leather).unwrap();
+
+    let edition = library.at(bound).unwrap();
+    assert_eq!(edition.book().unwrap().id(), kokoro);
+    assert_eq!(edition.isbn().unwrap(), None);
+    assert_eq!(edition.year().unwrap(), 1946);
+    assert_eq!(edition.pages().unwrap(), None);
+    assert_eq!(edition.binding().unwrap(), Binding::Leather);
+
+    let edition = library.at(untouched).unwrap();
+    assert_eq!(edition.isbn().unwrap().as_deref(), Some("0-486-41658-5"));
+    assert_eq!(edition.year().unwrap(), 1865);
+    assert_eq!(edition.pages().unwrap(), Some(192));
+    assert_eq!(edition.binding().unwrap(), Binding::Cloth);
+}
+
+#[test]
+fn a_parent_of_two_kinds_of_child_walks_into_each_of_them_separately() {
+    let mut library = stocked();
+    let alice = Id::<Book>::from_index(0);
+    shelved(&mut library, alice);
+    shelved(&mut library, alice);
+    shelved(&mut library, Id::<Book>::from_index(1));
+
+    let book = library.at(alice).unwrap();
+
+    assert_eq!(book.chapters().unwrap().count(), 1);
+    assert_eq!(book.editions().unwrap().count(), 2);
+    assert_eq!(
+        library
+            .at(Id::<Book>::from_index(1))
+            .unwrap()
+            .editions()
+            .unwrap()
+            .count(),
+        1
+    );
 }

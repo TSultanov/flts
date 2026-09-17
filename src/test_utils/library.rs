@@ -1,16 +1,19 @@
 use std::borrow::Cow;
 use std::ops::{Deref, DerefMut};
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::id::Id;
 use crate::schema::{
-    AnyTable, Child, Children, Entity, Entry, EntryMut, Field, FieldMut, Holds, RefColumn, Rows,
-    Store, StoreState, Table, TextColumn,
+    AnyTable, Child, Children, Entity, Entry, EntryMut, EnumColumn, Field, FieldMut, Holds,
+    NullableColumn, NullableTextColumn, RefColumn, Rows, Store, StoreState, Table, TextColumn,
+    UnitEnum,
 };
+use crate::storage::Arena;
 
 pub struct Book;
 pub struct Chapter;
 pub struct Paragraph;
+pub struct Edition;
 
 impl Entity for Book {
     const NAME: &'static str = "book";
@@ -58,6 +61,50 @@ impl Entity for Paragraph {
         = ParagraphRowMut<'a, S>
     where
         S: Holds<Paragraph> + 'a;
+}
+
+impl Entity for Edition {
+    const NAME: &'static str = "edition";
+
+    type Table = Editions;
+
+    type Row<'a, S>
+        = EditionRow<'a, S>
+    where
+        S: Holds<Edition> + 'a;
+
+    type RowMut<'a, S>
+        = EditionRowMut<'a, S>
+    where
+        S: Holds<Edition> + 'a;
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Binding {
+    Cloth,
+    Paper,
+    Leather,
+}
+
+impl UnitEnum for Binding {
+    const NAME: &'static str = "binding";
+
+    fn to_u8(self) -> u8 {
+        match self {
+            Binding::Cloth => 0,
+            Binding::Paper => 1,
+            Binding::Leather => 2,
+        }
+    }
+
+    fn from_u8(code: u8) -> Result<Self> {
+        match code {
+            0 => Ok(Binding::Cloth),
+            1 => Ok(Binding::Paper),
+            2 => Ok(Binding::Leather),
+            other => Err(Error::unsupported(format!("unknown binding {other}"))),
+        }
+    }
 }
 
 #[derive(Default, Clone)]
@@ -136,6 +183,13 @@ impl<'a, S: Holds<Book>> BookRow<'a, S> {
         S: Holds<Chapter>,
     {
         self.0.children::<Chapter>()
+    }
+
+    pub fn editions(&self) -> Result<Children<'a, S, Edition>>
+    where
+        S: Holds<Edition>,
+    {
+        self.0.children::<Edition>()
     }
 }
 
@@ -401,11 +455,188 @@ impl<S: Holds<Paragraph>> ParagraphRowMut<'_, S> {
 }
 
 #[derive(Default, Clone)]
+pub struct Editions {
+    book: RefColumn<Book, Edition>,
+    isbn: NullableTextColumn,
+    year: Arena<u32>,
+    pages: NullableColumn<u32>,
+    binding: EnumColumn<Binding>,
+}
+
+impl Table for Editions {
+    type Of = Edition;
+
+    fn fields(&self) -> Vec<Field<'_>> {
+        vec![
+            Field::new("book", &self.book),
+            Field::new("isbn", &self.isbn),
+            Field::new("year", &self.year),
+            Field::new("pages", &self.pages),
+            Field::new("binding", &self.binding),
+        ]
+    }
+
+    fn fields_mut(&mut self) -> Vec<FieldMut<'_>> {
+        vec![
+            FieldMut::new("book", &mut self.book),
+            FieldMut::new("isbn", &mut self.isbn),
+            FieldMut::new("year", &mut self.year),
+            FieldMut::new("pages", &mut self.pages),
+            FieldMut::new("binding", &mut self.binding),
+        ]
+    }
+}
+
+impl Child<Book> for Edition {
+    fn parents(table: &Editions) -> &RefColumn<Book, Edition> {
+        &table.book
+    }
+}
+
+impl Editions {
+    pub fn push(
+        &mut self,
+        book: Id<Book>,
+        isbn: Option<&str>,
+        year: u32,
+        pages: Option<u32>,
+        binding: Binding,
+    ) -> Result<Id<Edition>> {
+        self.reserve()?;
+        let row = Table::rows(self);
+        self.book.push(book)?;
+        self.isbn.push(isbn)?;
+        self.year.push(year)?;
+        self.pages.push(pages)?;
+        self.binding.push(binding)?;
+        Ok(Id::from_index(row))
+    }
+
+    pub fn book(&self, of: Id<Edition>) -> Result<Id<Book>> {
+        self.book.get(self.row_of(of)?)
+    }
+
+    pub fn isbn(&self, of: Id<Edition>) -> Result<Option<Cow<'_, str>>> {
+        self.isbn.get(self.row_of(of)?)
+    }
+
+    pub fn year(&self, of: Id<Edition>) -> Result<u32> {
+        self.year.row(self.row_of(of)?.index()).copied()
+    }
+
+    pub fn pages(&self, of: Id<Edition>) -> Result<Option<u32>> {
+        self.pages.get(self.row_of(of)?)
+    }
+
+    pub fn binding(&self, of: Id<Edition>) -> Result<Binding> {
+        self.binding.get(self.row_of(of)?)
+    }
+}
+
+pub struct EditionRow<'a, S: Holds<Edition>>(Entry<'a, S, Edition>);
+
+impl<'a, S: Holds<Edition>> From<Entry<'a, S, Edition>> for EditionRow<'a, S> {
+    fn from(entry: Entry<'a, S, Edition>) -> Self {
+        Self(entry)
+    }
+}
+
+impl<'a, S: Holds<Edition>> Deref for EditionRow<'a, S> {
+    type Target = Entry<'a, S, Edition>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a, S: Holds<Edition>> EditionRow<'a, S> {
+    pub fn book(&self) -> Result<<Book as Entity>::Row<'a, S>>
+    where
+        S: Holds<Book>,
+    {
+        let table = self.0.table();
+        let row = self.0.row();
+        self.0.at(table.book.get(row)?)
+    }
+
+    pub fn isbn(&self) -> Result<Option<Cow<'a, str>>> {
+        self.0.table().isbn.get(self.0.row())
+    }
+
+    pub fn year(&self) -> Result<u32> {
+        self.0.table().year.row(self.0.row().index()).copied()
+    }
+
+    pub fn pages(&self) -> Result<Option<u32>> {
+        self.0.table().pages.get(self.0.row())
+    }
+
+    pub fn binding(&self) -> Result<Binding> {
+        self.0.table().binding.get(self.0.row())
+    }
+}
+
+pub struct EditionRowMut<'a, S: Holds<Edition>>(EntryMut<'a, S, Edition>);
+
+impl<'a, S: Holds<Edition>> From<EntryMut<'a, S, Edition>> for EditionRowMut<'a, S> {
+    fn from(entry: EntryMut<'a, S, Edition>) -> Self {
+        Self(entry)
+    }
+}
+
+impl<'a, S: Holds<Edition>> Deref for EditionRowMut<'a, S> {
+    type Target = EntryMut<'a, S, Edition>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a, S: Holds<Edition>> DerefMut for EditionRowMut<'a, S> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<S: Holds<Edition>> EditionRowMut<'_, S> {
+    pub fn set_book(&mut self, value: Id<Book>) -> Result<()> {
+        let row = self.0.row();
+        let table = self.0.table_mut();
+        table.book.set(row, value)
+    }
+
+    pub fn set_isbn(&mut self, value: Option<&str>) -> Result<()> {
+        let row = self.0.row();
+        let table = self.0.table_mut();
+        table.isbn.set(row, value)
+    }
+
+    pub fn set_year(&mut self, value: u32) -> Result<()> {
+        let row = self.0.row();
+        let table = self.0.table_mut();
+        table.year.set(row.index(), value)
+    }
+
+    pub fn set_pages(&mut self, value: Option<u32>) -> Result<()> {
+        let row = self.0.row();
+        let table = self.0.table_mut();
+        table.pages.set(row, value)
+    }
+
+    pub fn set_binding(&mut self, value: Binding) -> Result<()> {
+        let row = self.0.row();
+        let table = self.0.table_mut();
+        table.binding.set(row, value)
+    }
+}
+
+#[derive(Default, Clone)]
 pub struct Library {
     state: StoreState,
     pub books: Books,
     pub chapters: Chapters,
     pub paragraphs: Paragraphs,
+    pub editions: Editions,
 }
 
 impl Store for Library {
@@ -418,11 +649,21 @@ impl Store for Library {
     }
 
     fn tables(&self) -> Vec<&dyn AnyTable> {
-        vec![&self.books, &self.chapters, &self.paragraphs]
+        vec![
+            &self.books,
+            &self.chapters,
+            &self.paragraphs,
+            &self.editions,
+        ]
     }
 
     fn tables_mut(&mut self) -> Vec<&mut dyn AnyTable> {
-        vec![&mut self.books, &mut self.chapters, &mut self.paragraphs]
+        vec![
+            &mut self.books,
+            &mut self.chapters,
+            &mut self.paragraphs,
+            &mut self.editions,
+        ]
     }
 }
 
@@ -453,6 +694,16 @@ impl Holds<Paragraph> for Library {
 
     fn table_mut(&mut self) -> &mut Paragraphs {
         &mut self.paragraphs
+    }
+}
+
+impl Holds<Edition> for Library {
+    fn table(&self) -> &Editions {
+        &self.editions
+    }
+
+    fn table_mut(&mut self) -> &mut Editions {
+        &mut self.editions
     }
 }
 
