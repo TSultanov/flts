@@ -451,6 +451,7 @@ fn a_library_lives_its_whole_life_through_the_rows_it_hands_out() -> Result<()> 
     let mut library = Library::create(&path, this_device())?;
     let on = stock(&mut library)?;
     let alice = on.alice;
+    let written_down = alice.to_string();
     let shelved = library.commit(this_device())?;
 
     let opened = Library::open(&path)?;
@@ -487,6 +488,26 @@ fn a_library_lives_its_whole_life_through_the_rows_it_hands_out() -> Result<()> 
     assert_eq!(reopened.at(alice)?.author()?, "Lewis Carroll");
     assert_eq!(reopened.all::<Book>().count(), 3);
     assert_eq!(reopened.at(alice)?.chapters()?.count(), 2);
+    assert_eq!(
+        reopened.at(alice)?.id()?,
+        alice,
+        "two commits and two reopens later, the row still answers to the name it was minted with"
+    );
+
+    let carried: Id<Book> = written_down.parse()?;
+    assert_eq!(carried, alice);
+    assert_eq!(reopened.at(carried)?.title()?, "Alice in Wonderland");
+    assert_eq!(
+        reopened
+            .at(alice)?
+            .chapters()?
+            .next()
+            .unwrap()
+            .book()?
+            .id()?,
+        alice,
+        "and the chapters written before the edit still point at it"
+    );
 
     let mut stale = opened;
     stale.books.push("Never committed", "Nobody")?;
@@ -597,26 +618,40 @@ fn chapter_row(library: &Library, of: Id<Chapter>) -> usize {
     Table::row_of(&library.chapters, of).unwrap().index()
 }
 
-fn kept(deeds: &[Deed], path: &std::path::Path) -> Library {
+#[derive(Default)]
+struct Minted {
+    books: Vec<Id<Book>>,
+    chapters: Vec<Id<Chapter>>,
+    paragraphs: Vec<Id<Paragraph>>,
+}
+
+fn kept(deeds: &[Deed], path: &std::path::Path) -> (Library, Minted) {
     let mut library = Library::create(path, this_device()).unwrap();
+    let mut minted = Minted::default();
 
     for deed in deeds {
         let books = Table::rows(&library.books);
         let chapters = Table::rows(&library.chapters);
         match deed {
             Deed::Book(title, author) => {
-                library.books.push(title, author).unwrap();
+                minted
+                    .books
+                    .push(library.books.push(title, author).unwrap());
             }
             Deed::Chapter(at, title) => {
                 if books > 0 {
                     let held = book_at(&library, at % books);
-                    library.chapters.push(held, title).unwrap();
+                    minted
+                        .chapters
+                        .push(library.chapters.push(held, title).unwrap());
                 }
             }
             Deed::Paragraph(at, text) => {
                 if chapters > 0 {
                     let held = chapter_at(&library, at % chapters);
-                    library.paragraphs.push(held, text).unwrap();
+                    minted
+                        .paragraphs
+                        .push(library.paragraphs.push(held, text).unwrap());
                 }
             }
             Deed::Retitle(at, title) => {
@@ -638,7 +673,7 @@ fn kept(deeds: &[Deed], path: &std::path::Path) -> Library {
             }
         }
     }
-    library
+    (library, minted)
 }
 
 proptest! {
@@ -650,7 +685,7 @@ proptest! {
         let path = dir.join("library.dbs");
         let (books, chapters, paragraphs) = expected(&deeds);
 
-        let mut library = kept(&deeds, &path);
+        let (mut library, _) = kept(&deeds, &path);
         library.commit(this_device()).unwrap();
         let reopened = Library::open(&path).unwrap();
 
@@ -697,6 +732,53 @@ proptest! {
     }
 
     #[test]
+    fn every_id_a_row_was_given_still_names_that_row_after_every_commit_and_reopen(
+        deeds in deeds(),
+    ) {
+        let dir = TempDir::new("declared_identity");
+        let path = dir.join("library.dbs");
+        let (books, chapters, paragraphs) = expected(&deeds);
+
+        let (mut library, minted) = kept(&deeds, &path);
+        library.commit(this_device()).unwrap();
+        let reopened = Library::open(&path).unwrap();
+
+        prop_assert_eq!(minted.books.len(), books.len());
+        prop_assert_eq!(minted.chapters.len(), chapters.len());
+        prop_assert_eq!(minted.paragraphs.len(), paragraphs.len());
+
+        for (row, id) in minted.books.iter().enumerate() {
+            let book = reopened.at(*id).unwrap();
+            prop_assert_eq!(book.id().unwrap(), *id);
+            prop_assert_eq!(book_row(&reopened, *id), row);
+            prop_assert_eq!(book.title().unwrap().into_owned(), books[row].0.clone());
+            prop_assert_eq!(id.to_string().parse::<Id<Book>>().unwrap(), *id);
+        }
+
+        for (row, id) in minted.chapters.iter().enumerate() {
+            let chapter = reopened.at(*id).unwrap();
+            prop_assert_eq!(chapter.id().unwrap(), *id);
+            prop_assert_eq!(chapter_row(&reopened, *id), row);
+            prop_assert_eq!(chapter.title().unwrap().into_owned(), chapters[row].1.clone());
+        }
+
+        for (row, id) in minted.paragraphs.iter().enumerate() {
+            let paragraph = reopened.at(*id).unwrap();
+            prop_assert_eq!(paragraph.id().unwrap(), *id);
+            prop_assert_eq!(paragraph.text().unwrap().into_owned(), paragraphs[row].1.clone());
+        }
+
+        let mut distinct = minted.books.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        prop_assert_eq!(distinct.len(), books.len());
+
+        let stranger = Id::<Book>::mint();
+        prop_assert!(!minted.books.contains(&stranger));
+        prop_assert!(reopened.at(stranger).is_err());
+    }
+
+    #[test]
     fn reading_one_field_through_a_row_faults_in_no_column_it_did_not_name(
         deeds in deeds(),
         at in props::row_index(),
@@ -705,7 +787,7 @@ proptest! {
         let dir = TempDir::new("declared_cold");
         let path = dir.join("library.dbs");
 
-        let mut library = kept(&deeds, &path);
+        let (mut library, _) = kept(&deeds, &path);
         library.books.push("Anchor", "Nobody").unwrap();
         library.commit(this_device()).unwrap();
 

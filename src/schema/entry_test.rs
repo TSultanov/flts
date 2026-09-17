@@ -1,6 +1,6 @@
 use super::*;
 use crate::error::Result;
-use crate::id::{Id, Uuid};
+use crate::id::Id;
 use crate::test_utils::library::{Binding, Book, Chapter, Edition, Library, Paragraph};
 use crate::test_utils::props;
 use proptest::prelude::*;
@@ -819,10 +819,10 @@ proptest! {
     #[test]
     fn an_id_no_row_answers_for_is_refused_and_never_panics(
         ops in ops(),
-        claim in any::<u128>(),
+        claim in props::uuid(),
     ) {
         let (mut library, model, minted) = played(&ops);
-        let claimed = Id::<Book>::from_uuid(Uuid::from_u128(claim));
+        let claimed = Id::<Book>::from_uuid(claim);
 
         match library.at(claimed) {
             Ok(book) => {

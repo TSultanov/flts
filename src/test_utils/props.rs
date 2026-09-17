@@ -1,6 +1,8 @@
 //! Property-test configuration and the generators every module shares.
 
 use proptest::prelude::{Just, Strategy, any, prop_oneof};
+
+use crate::id::Uuid;
 use proptest::test_runner::Config;
 
 pub fn scaled(divisor: u32) -> Config {
@@ -56,6 +58,15 @@ pub fn interesting_u32() -> impl Strategy<Value = u32> {
         1 => Just(u32::MAX),
         1 => Just(u32::MAX - 1),
         1 => (0..32u32).prop_map(|shift| 1u32 << shift),
+    ]
+}
+
+pub fn uuid() -> impl Strategy<Value = Uuid> {
+    prop_oneof![
+        6 => any::<u128>().prop_map(Uuid::from_u128),
+        1 => Just(Uuid::NIL),
+        1 => Just(Uuid::from_u128(u128::MAX)),
+        1 => (0..128u32).prop_map(|shift| Uuid::from_u128(1u128 << shift)),
     ]
 }
 

@@ -1,14 +1,11 @@
 use super::*;
+use crate::test_utils::props;
 use proptest::prelude::*;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 
 struct Chapter;
 struct Paragraph;
-
-fn uuid() -> impl Strategy<Value = Uuid> {
-    any::<u128>().prop_map(Uuid::from_u128)
-}
 
 #[test]
 fn ids_of_different_tables_are_different_types() {
@@ -76,12 +73,12 @@ fn hash_of<T: Hash>(value: &T) -> u64 {
 
 proptest! {
     #[test]
-    fn an_id_hashes_as_the_uuid_it_wraps(uuid in uuid()) {
+    fn an_id_hashes_as_the_uuid_it_wraps(uuid in props::uuid()) {
         prop_assert_eq!(hash_of(&Id::<Chapter>::from_uuid(uuid)), hash_of(&uuid));
     }
 
     #[test]
-    fn an_id_orders_and_compares_by_the_uuid_it_wraps(a in uuid(), b in uuid()) {
+    fn an_id_orders_and_compares_by_the_uuid_it_wraps(a in props::uuid(), b in props::uuid()) {
         let left = Id::<Chapter>::from_uuid(a);
         let right = Id::<Chapter>::from_uuid(b);
 
@@ -90,7 +87,7 @@ proptest! {
     }
 
     #[test]
-    fn casting_an_id_to_another_table_keeps_the_uuid_it_names(uuid in uuid()) {
+    fn casting_an_id_to_another_table_keeps_the_uuid_it_names(uuid in props::uuid()) {
         let id = Id::<Chapter>::from_uuid(uuid);
 
         prop_assert_eq!(id.cast::<Paragraph>().uuid(), uuid);
@@ -98,7 +95,7 @@ proptest! {
     }
 
     #[test]
-    fn an_id_finds_its_way_back_from_its_own_text(uuid in uuid()) {
+    fn an_id_finds_its_way_back_from_its_own_text(uuid in props::uuid()) {
         let id = Id::<Chapter>::from_uuid(uuid);
 
         prop_assert_eq!(id.to_string().parse::<Id<Chapter>>().unwrap(), id);
