@@ -13,6 +13,8 @@ pub enum ColumnKind {
     Text,
     Heap,
     Presence,
+    Bucket,
+    Link,
     Ref { parent: &'static str },
     Enum { name: &'static str },
     Nullable(Box<ColumnKind>),
