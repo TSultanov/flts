@@ -6,22 +6,22 @@ use crate::test_utils::TempDir;
 
 #[crate::entity]
 struct Book {
-    title: str,
-    author: str,
+    title: String,
+    author: String,
     chapters: Many<Chapter>,
 }
 
 #[crate::entity]
 struct Chapter {
     book: Ref<Book>,
-    title: str,
+    title: String,
     paragraphs: Many<Paragraph>,
 }
 
 #[crate::entity]
 struct Paragraph {
     chapter: Ref<Chapter>,
-    text: str,
+    text: String,
 }
 
 #[crate::container]

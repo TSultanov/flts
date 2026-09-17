@@ -43,9 +43,10 @@ impl Field {
 
 impl Kind {
     fn parse(ty: &Type) -> syn::Result<Self> {
-        if is_str(ty) {
+        if is_string(ty) {
             return Ok(Kind::Text);
         }
+        unsized_text(ty)?;
         if let Some(inner) = wrapped("Option", ty) {
             return Self::nullable(inner, ty);
         }
@@ -62,9 +63,10 @@ impl Kind {
     }
 
     fn nullable(inner: &Type, whole: &Type) -> syn::Result<Self> {
-        if is_str(inner) {
+        if is_string(inner) {
             return Ok(Kind::NullableText);
         }
+        unsized_text(inner)?;
         if is_scalar(inner) {
             return Ok(Kind::NullableScalar(inner.clone()));
         }
@@ -145,8 +147,24 @@ pub fn set_of(ty: &Type) -> Option<&Type> {
     wrapped("Set", ty)
 }
 
-fn is_str(ty: &Type) -> bool {
-    named(ty).is_some_and(|name| name == "str")
+fn is_string(ty: &Type) -> bool {
+    named(ty).is_some_and(|name| name == "String")
+}
+
+fn unsized_text(ty: &Type) -> syn::Result<()> {
+    if named(ty).is_some_and(|name| name == "str") {
+        return Err(syn::Error::new(
+            ty.span(),
+            "a field is stored by value, so a string field is declared String",
+        ));
+    }
+    if matches!(ty, Type::Reference(_)) {
+        return Err(syn::Error::new(
+            ty.span(),
+            "a field is stored by value and outlives any borrow, so it cannot be a reference",
+        ));
+    }
+    Ok(())
 }
 
 fn is_scalar(ty: &Type) -> bool {

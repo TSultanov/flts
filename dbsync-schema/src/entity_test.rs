@@ -14,7 +14,7 @@ fn refused(item: TokenStream) -> String {
 #[test]
 fn an_entity_becomes_a_tag_type_and_a_table_of_columns() {
     let out = expanded(quote! {
-        struct Book { title: str, author: str }
+        struct Book { title: String, author: String }
     });
 
     assert!(out.contains("struct Book ;"), "{out}");
@@ -27,7 +27,7 @@ fn an_entity_becomes_a_tag_type_and_a_table_of_columns() {
 #[test]
 fn a_many_field_asks_for_no_column_at_all() {
     let out = expanded(quote! {
-        struct Book { title: str, chapters: Many<Chapter> }
+        struct Book { title: String, chapters: Many<Chapter> }
     });
 
     assert!(
@@ -47,7 +47,7 @@ fn a_many_field_asks_for_no_column_at_all() {
 #[test]
 fn a_many_field_makes_the_compiler_check_the_child_points_back() {
     let out = expanded(quote! {
-        struct Book { title: str, chapters: Many<Chapter> }
+        struct Book { title: String, chapters: Many<Chapter> }
     });
 
     assert!(
@@ -59,7 +59,7 @@ fn a_many_field_makes_the_compiler_check_the_child_points_back() {
 #[test]
 fn a_reference_field_says_whose_child_this_entity_is() {
     let out = expanded(quote! {
-        struct Chapter { book: Ref<Book>, title: str }
+        struct Chapter { book: Ref<Book>, title: String }
     });
 
     assert!(
@@ -72,7 +72,7 @@ fn a_reference_field_says_whose_child_this_entity_is() {
 #[test]
 fn push_takes_one_argument_per_stored_field_in_the_order_they_were_written() {
     let out = expanded(quote! {
-        struct Chapter { book: Ref<Book>, title: str, chapters: Many<Paragraph> }
+        struct Chapter { book: Ref<Book>, title: String, chapters: Many<Paragraph> }
     });
 
     assert!(
@@ -92,7 +92,7 @@ fn push_takes_one_argument_per_stored_field_in_the_order_they_were_written() {
 #[test]
 fn every_stored_field_gets_a_reader_and_a_writer() {
     let out = expanded(quote! {
-        struct Book { title: str, year: u32, note: Option<str>, rank: Option<u64> }
+        struct Book { title: String, year: u32, note: Option<String>, rank: Option<u64> }
     });
 
     for accessor in [
@@ -111,7 +111,7 @@ fn every_stored_field_gets_a_reader_and_a_writer() {
 #[test]
 fn a_scalar_reads_through_its_row_index_and_everything_else_through_the_row() {
     let out = expanded(quote! {
-        struct Book { title: str, year: u32 }
+        struct Book { title: String, year: u32 }
     });
 
     assert!(
@@ -129,7 +129,7 @@ fn a_scalar_reads_through_its_row_index_and_everything_else_through_the_row() {
 #[test]
 fn each_kind_of_field_asks_for_the_column_that_holds_it() {
     let out = expanded(quote! {
-        struct Card { lemma: str, note: Option<str>, interval: Option<u64>, shelf: Shelf, book: Ref<Book> }
+        struct Card { lemma: String, note: Option<String>, interval: Option<u64>, shelf: Shelf, book: Ref<Book> }
     });
 
     assert!(
@@ -170,7 +170,7 @@ fn a_multi_word_entity_is_named_in_snake_case() {
 #[test]
 fn two_references_to_the_same_parent_are_refused_and_both_are_named() {
     let err = refused(quote! {
-        struct Chapter { book: Ref<Book>, reprint: Ref<Book>, title: str }
+        struct Chapter { book: Ref<Book>, reprint: Ref<Book>, title: String }
     });
 
     assert!(err.contains("`book` and `reprint`"), "{err}");
@@ -208,7 +208,7 @@ fn a_tuple_entity_is_refused() {
 #[test]
 fn an_entity_that_would_claim_the_reserved_prefix_is_refused() {
     let err = refused(quote! {
-        struct Dbsync { title: str }
+        struct Dbsync { title: String }
     });
 
     assert!(err.contains("reserved"), "{err}");
@@ -218,7 +218,7 @@ fn an_entity_that_would_claim_the_reserved_prefix_is_refused() {
 fn the_attribute_takes_no_arguments() {
     let err = match expand(
         quote! { prefix = "b" },
-        quote! { struct Book { title: str } },
+        quote! { struct Book { title: String } },
     ) {
         Ok(_) => panic!("arguments must be refused"),
         Err(err) => err.to_string(),

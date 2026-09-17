@@ -14,8 +14,32 @@ fn refused(ty: TokenStream) -> String {
 
 #[test]
 fn a_string_field_becomes_a_text_column() {
-    assert!(matches!(kind(quote!(str)), Kind::Text));
-    assert!(matches!(kind(quote!(Option<str>)), Kind::NullableText));
+    assert!(matches!(kind(quote!(String)), Kind::Text));
+    assert!(matches!(kind(quote!(Option<String>)), Kind::NullableText));
+}
+
+#[test]
+fn an_unsized_str_is_refused_by_name_rather_than_taken_for_an_enum() {
+    let err = refused(quote!(str));
+    assert!(err.contains("string field is declared String"), "{err}");
+
+    let optional = refused(quote!(Option<str>));
+    assert!(
+        optional.contains("string field is declared String"),
+        "{optional}"
+    );
+}
+
+#[test]
+fn a_borrowed_field_is_refused_because_a_column_outlives_it() {
+    let err = refused(quote!(&'a str));
+    assert!(err.contains("cannot be a reference"), "{err}");
+
+    let owned_target = refused(quote!(&'a Book));
+    assert!(
+        owned_target.contains("cannot be a reference"),
+        "{owned_target}"
+    );
 }
 
 #[test]
@@ -62,7 +86,7 @@ fn a_many_field_is_not_stored_in_a_column_and_everything_else_is() {
     };
     let text = Field {
         name: syn::parse_quote!(title),
-        kind: kind(quote!(str)),
+        kind: kind(quote!(String)),
     };
 
     assert!(!many.is_stored());

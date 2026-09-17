@@ -76,8 +76,8 @@ fn a_generated_enum_can_be_the_type_of_a_column() -> Result<()> {
 
 #[crate::entity]
 struct Author {
-    name: str,
-    pen_name: Option<str>,
+    name: String,
+    pen_name: Option<String>,
     born: u32,
     died: Option<u32>,
     shelf: Shelf,
@@ -86,7 +86,7 @@ struct Author {
 #[crate::entity]
 struct Work {
     author: Ref<Author>,
-    title: str,
+    title: String,
 }
 
 #[test]

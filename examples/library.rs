@@ -7,22 +7,22 @@ use dbsync::{ColumnFile, Id, Result, WriterId};
 
 #[dbsync::entity]
 struct Book {
-    title: str,
-    author: str,
+    title: String,
+    author: String,
     chapters: Many<Chapter>,
 }
 
 #[dbsync::entity]
 struct Chapter {
     book: Ref<Book>,
-    title: str,
+    title: String,
     paragraphs: Many<Paragraph>,
 }
 
 #[dbsync::entity]
 struct Paragraph {
     chapter: Ref<Chapter>,
-    text: str,
+    text: String,
 }
 
 #[dbsync::container]
