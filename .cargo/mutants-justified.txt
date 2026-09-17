@@ -54,5 +54,6 @@ src/storage/column_file/header.rs:45:33: replace | with ^ in new_file_uuid
 # cargo mutants mutates dbsync-schema and runs dbsync-schema's tests, never
 # dbsync's. If that ever changes, the staleness half of scripts/mutants.sh will
 # say so.
-dbsync-schema/src/lib.rs:12:5: replace entity -> TokenStream with Default::default()
-dbsync-schema/src/lib.rs:20:5: replace field_enum -> TokenStream with Default::default()
+dbsync-schema/src/lib.rs:13:5: replace container -> TokenStream with Default::default()
+dbsync-schema/src/lib.rs:21:5: replace entity -> TokenStream with Default::default()
+dbsync-schema/src/lib.rs:29:5: replace field_enum -> TokenStream with Default::default()

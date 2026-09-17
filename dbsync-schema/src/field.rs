@@ -141,6 +141,10 @@ impl Kind {
     }
 }
 
+pub fn set_of(ty: &Type) -> Option<&Type> {
+    wrapped("Set", ty)
+}
+
 fn is_str(ty: &Type) -> bool {
     named(ty).is_some_and(|name| name == "str")
 }

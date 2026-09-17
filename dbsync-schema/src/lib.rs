@@ -1,11 +1,20 @@
 //! Turns entity declarations into the columns that hold them.
 
+mod container;
 mod entity;
 mod field;
 mod field_enum;
 mod naming;
 
 use proc_macro::TokenStream;
+
+#[proc_macro_attribute]
+pub fn container(attr: TokenStream, item: TokenStream) -> TokenStream {
+    match container::expand(attr.into(), item.into()) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
 
 #[proc_macro_attribute]
 pub fn entity(attr: TokenStream, item: TokenStream) -> TokenStream {

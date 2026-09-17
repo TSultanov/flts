@@ -1,0 +1,193 @@
+use crate::error::Result;
+use crate::id::Id;
+use crate::schema::{Store, Table};
+use crate::storage::WriterId;
+use crate::test_utils::TempDir;
+
+#[crate::entity]
+struct Book {
+    title: str,
+    author: str,
+    chapters: Many<Chapter>,
+}
+
+#[crate::entity]
+struct Chapter {
+    book: Ref<Book>,
+    title: str,
+    paragraphs: Many<Paragraph>,
+}
+
+#[crate::entity]
+struct Paragraph {
+    chapter: Ref<Chapter>,
+    text: str,
+}
+
+#[crate::container]
+struct Library {
+    books: Set<Book>,
+    chapters: Set<Chapter>,
+    paragraphs: Set<Paragraph>,
+}
+
+fn this_device() -> WriterId {
+    WriterId::from_device_id("KRZH3XY-7PH4NJK-2WQ5LMC")
+}
+
+fn stock(library: &mut Library) -> Result<Id<Book>> {
+    let alice = library.books.push("Alice", "Lewis Carroll")?;
+    let kokoro = library.books.push("Kokoro", "Natsume Soseki")?;
+
+    let rabbit = library.chapters.push(alice, "Down the Rabbit-Hole")?;
+    let pool = library.chapters.push(alice, "The Pool of Tears")?;
+    let sensei = library.chapters.push(kokoro, "Sensei and I")?;
+
+    library
+        .paragraphs
+        .push(rabbit, "Alice was beginning to get very tired.")?;
+    library
+        .paragraphs
+        .push(sensei, "I always called him Sensei.")?;
+    library
+        .paragraphs
+        .push(rabbit, "So she was considering in her own mind.")?;
+    library.paragraphs.push(pool, "Curiouser and curiouser!")?;
+    Ok(alice)
+}
+
+#[test]
+fn the_declared_schema_names_every_column_the_file_will_hold() {
+    let names: Vec<String> = Library::default()
+        .specs()
+        .into_iter()
+        .map(|spec| spec.name)
+        .collect();
+
+    assert_eq!(
+        names,
+        [
+            "book.title",
+            "book.title.bytes",
+            "book.author",
+            "book.author.bytes",
+            "chapter.book",
+            "chapter.title",
+            "chapter.title.bytes",
+            "paragraph.chapter",
+            "paragraph.text",
+            "paragraph.text.bytes",
+        ]
+    );
+}
+
+#[test]
+fn a_declared_library_joins_two_levels_down() -> Result<()> {
+    let mut library = Library::default();
+    let alice = stock(&mut library)?;
+
+    let chapters: &[Id<Chapter>] = library.children_of(alice)?;
+    assert_eq!(chapters.len(), 2);
+    assert_eq!(library.chapters.title(chapters[0])?, "Down the Rabbit-Hole");
+
+    let paragraphs: &[Id<Paragraph>] = library.children_of(chapters[0])?;
+    assert_eq!(paragraphs.len(), 2);
+    assert_eq!(
+        library.paragraphs.text(paragraphs[1])?,
+        "So she was considering in her own mind."
+    );
+    Ok(())
+}
+
+#[test]
+fn a_declared_library_round_trips_through_a_file_it_owns() -> Result<()> {
+    let dir = TempDir::new("declared");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device())?;
+    let alice = stock(&mut library)?;
+    library.commit(this_device())?;
+
+    let reopened = Library::open(&path)?;
+    reopened.verify()?;
+
+    assert_eq!(Table::rows(&reopened.books), 2);
+    assert_eq!(reopened.books.title(alice)?, "Alice");
+    assert_eq!(reopened.books.author(alice)?, "Lewis Carroll");
+
+    let chapters: &[Id<Chapter>] = reopened.children_of(alice)?;
+    assert_eq!(chapters.len(), 2);
+    let paragraphs: &[Id<Paragraph>] = reopened.children_of(chapters[1])?;
+    assert_eq!(
+        reopened.paragraphs.text(paragraphs[0])?,
+        "Curiouser and curiouser!"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_declared_library_appends_only_what_changed() -> Result<()> {
+    let dir = TempDir::new("declared_append");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device())?;
+    stock(&mut library)?;
+    library.commit(this_device())?;
+
+    let settled = crate::storage::ColumnFile::open(&path)?;
+    let untouched = settled.column_meta("paragraph.text").unwrap().chunks[0];
+    drop(settled);
+
+    library.books.push("Il nome della rosa", "Umberto Eco")?;
+    library.commit(this_device())?;
+
+    let grown = crate::storage::ColumnFile::open(&path)?;
+    assert_eq!(
+        grown.column_meta("paragraph.text").unwrap().chunks[0],
+        untouched,
+        "a table nobody touched must not be rewritten"
+    );
+    assert_eq!(Table::rows(&library.books), 3);
+    Ok(())
+}
+
+#[test]
+fn a_snapshot_of_a_declared_library_keeps_what_it_saw() -> Result<()> {
+    let dir = TempDir::new("declared_snapshot");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device())?;
+    stock(&mut library)?;
+    library.commit(this_device())?;
+
+    let pinned = library.snapshot();
+    library.books.push("Added later", "Nobody")?;
+    library.commit(this_device())?;
+
+    assert_eq!(Table::rows(&pinned.books), 2);
+    assert_eq!(Table::rows(&library.books), 3);
+    Ok(())
+}
+
+#[test]
+fn an_edited_title_survives_a_commit_and_leaves_its_neighbours_alone() -> Result<()> {
+    let dir = TempDir::new("declared_edit");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device())?;
+    let alice = stock(&mut library)?;
+    library.commit(this_device())?;
+
+    library.books.set_title(alice, "Alice in Wonderland")?;
+    library.commit(this_device())?;
+
+    let reopened = Library::open(&path)?;
+    assert_eq!(reopened.books.title(alice)?, "Alice in Wonderland");
+    assert_eq!(reopened.books.author(alice)?, "Lewis Carroll");
+    assert_eq!(
+        reopened.books.title(Id::from_index(1))?,
+        "Kokoro",
+        "the row beside the edited one is untouched"
+    );
+    Ok(())
+}

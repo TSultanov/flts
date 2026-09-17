@@ -1,7 +1,8 @@
 use crate::error::Result;
 use crate::id::Id;
 use crate::schema::{
-    AnyTable, Child, Entity, Field, FieldMut, RefColumn, Store, StoreState, Table, TextColumn,
+    AnyTable, Child, Entity, Field, FieldMut, Holds, RefColumn, Store, StoreState, Table,
+    TextColumn,
 };
 
 pub struct Book;
@@ -197,6 +198,36 @@ impl Store for Library {
 
     fn tables_mut(&mut self) -> Vec<&mut dyn AnyTable> {
         vec![&mut self.books, &mut self.chapters, &mut self.paragraphs]
+    }
+}
+
+impl Holds<Book> for Library {
+    fn table(&self) -> &Books {
+        &self.books
+    }
+
+    fn table_mut(&mut self) -> &mut Books {
+        &mut self.books
+    }
+}
+
+impl Holds<Chapter> for Library {
+    fn table(&self) -> &Chapters {
+        &self.chapters
+    }
+
+    fn table_mut(&mut self) -> &mut Chapters {
+        &mut self.chapters
+    }
+}
+
+impl Holds<Paragraph> for Library {
+    fn table(&self) -> &Paragraphs {
+        &self.paragraphs
+    }
+
+    fn table_mut(&mut self) -> &mut Paragraphs {
+        &mut self.paragraphs
     }
 }
 
