@@ -1,10 +1,8 @@
-//! The column every entity has: the identity of each row, and the way back from one to its row.
-
-use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock, PoisonError};
+//! The column every entity has: the identity of each row, and the index that finds a row from one.
 
 use super::column::{Column, ColumnKind, ColumnSpec, Residency, Row};
 use super::entity::Entity;
+use super::index::HashIndex;
 use super::names::qualified;
 use crate::error::{Error, Result};
 use crate::id::Id;
@@ -13,16 +11,14 @@ use crate::storage::{Arena, ColumnFile, ColumnFileUpdater};
 
 pub struct IdColumn<E: Entity> {
     ids: Arena<Id<E>>,
-    rows: OnceLock<HashMap<Id<E>, Row>>,
-    building: Mutex<()>,
+    index: HashIndex<Id<E>>,
 }
 
 impl<E: Entity> Default for IdColumn<E> {
     fn default() -> Self {
         Self {
             ids: Arena::new(),
-            rows: OnceLock::new(),
-            building: Mutex::new(()),
+            index: HashIndex::new(qualified(E::NAME, "id")),
         }
     }
 }
@@ -31,15 +27,28 @@ impl<E: Entity> Clone for IdColumn<E> {
     fn clone(&self) -> Self {
         Self {
             ids: self.ids.clone(),
-            rows: self.rows.clone(),
-            building: Mutex::new(()),
+            index: self.index.clone(),
         }
     }
 }
 
 impl<E: Entity> IdColumn<E> {
     pub fn push(&mut self, id: Id<E>) -> Result<usize> {
-        self.rows.take();
+        if id.is_nil() {
+            return Err(Error::invalid(format!(
+                "a {} row cannot be given no id at all",
+                E::NAME
+            )));
+        }
+
+        if let Some(held) = self.index.row_of(id)? {
+            return Err(Error::invalid(format!(
+                "{} already holds row {held} with id {id}",
+                E::NAME
+            )));
+        }
+
+        self.index.append(id)?;
         self.ids.push(id)
     }
 
@@ -48,48 +57,15 @@ impl<E: Entity> IdColumn<E> {
     }
 
     pub fn find(&self, id: Id<E>) -> Result<Option<Row>> {
-        Ok(self.grouping()?.get(&id).copied())
+        match self.index.row_of(id)? {
+            Some(row) => Ok(Some(Row::of(row, self.ids.len(), E::NAME)?)),
+            None => Ok(None),
+        }
     }
 
     pub fn row_of(&self, id: Id<E>) -> Result<Row> {
         self.find(id)?
             .ok_or_else(|| Error::invalid(format!("{} has no row with id {id}", E::NAME)))
-    }
-
-    fn grouping(&self) -> Result<&HashMap<Id<E>, Row>> {
-        if let Some(rows) = self.rows.get() {
-            return Ok(rows);
-        }
-
-        let _building = self.building.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(rows) = self.rows.get() {
-            return Ok(rows);
-        }
-
-        let built = self.build()?;
-        Ok(self.rows.get_or_init(|| built))
-    }
-
-    fn build(&self) -> Result<HashMap<Id<E>, Row>> {
-        let column = qualified(E::NAME, "id");
-        let mut rows = HashMap::with_capacity(self.ids.len());
-
-        for index in 0..self.ids.len() {
-            let id = *self.ids.row(index)?;
-            if id.is_nil() {
-                return Err(Error::corrupt(
-                    "identity",
-                    format!("{column} row {index} has no id"),
-                ));
-            }
-            if let Some(first) = rows.insert(id, Row::trusted(index)) {
-                return Err(Error::corrupt(
-                    "identity",
-                    format!("{column} rows {} and {index} are both {id}", first.index()),
-                ));
-            }
-        }
-        Ok(rows)
     }
 }
 
@@ -99,7 +75,30 @@ impl<E: Entity> Column for IdColumn<E> {
     }
 
     fn touch_tail(&self) -> Result<()> {
-        self.ids.touch_tail()
+        self.ids.touch_tail()?;
+        self.index.touch_tail()
+    }
+
+    fn audit(&self) -> Result<()> {
+        let column = qualified(E::NAME, "id");
+        self.index.audit(&self.ids)?;
+
+        for index in 0..self.ids.len() {
+            let id = *self.ids.row(index)?;
+            if id.is_nil() {
+                return Err(Error::corrupt(
+                    "identity",
+                    format!("{column} row {index} has no id"),
+                ));
+            }
+            if let [first, second, ..] = self.index.rows_of(id)?.as_slice() {
+                return Err(Error::corrupt(
+                    "identity",
+                    format!("{column} rows {first} and {second} are both {id}"),
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn describe(&self, entity: &str, field: &str, out: &mut Vec<ColumnSpec>) {
@@ -109,20 +108,26 @@ impl<E: Entity> Column for IdColumn<E> {
             kind: ColumnKind::Identity,
             counts_rows: true,
         });
+        self.index.describe(entity, field, out);
     }
 
     fn residency(&self, entity: &str, field: &str, out: &mut Vec<Residency>) {
         self.ids.residency(entity, field, out);
+        self.index.residency(entity, field, out);
     }
 
     fn read_from(&mut self, entity: &str, field: &str, file: &ColumnFile) -> Result<()> {
-        self.rows.take();
         self.ids = file.column(&qualified(entity, field))?;
+        self.index.read_from(entity, field, file)?;
+        if !self.index.agrees_with(self.ids.len()) {
+            self.index.rebuild(&self.ids)?;
+        }
         Ok(())
     }
 
     fn offer_to(&self, entity: &str, field: &str, updater: &mut ColumnFileUpdater) -> Result<()> {
-        updater.column(&qualified(entity, field), &self.ids)
+        updater.column(&qualified(entity, field), &self.ids)?;
+        self.index.offer_to(entity, field, updater)
     }
 }
 

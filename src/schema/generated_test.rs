@@ -107,6 +107,8 @@ fn a_generated_entity_names_its_columns_after_itself() {
         names,
         [
             "author.id",
+            "author.id.buckets",
+            "author.id.links",
             "author.name",
             "author.name.bytes",
             "author.pen_name",

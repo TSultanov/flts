@@ -1,6 +1,6 @@
 use super::*;
 use crate::id::Id;
-use crate::schema::Table;
+use crate::schema::{HashIndex, Table};
 use crate::storage::Arena;
 use crate::test_utils::TempDir;
 use crate::test_utils::library::{Book, Library};
@@ -32,6 +32,43 @@ fn refused(opened: Result<Library>) -> Error {
 
 fn len_of(path: &Path) -> u64 {
     std::fs::metadata(path).unwrap().len()
+}
+
+#[test]
+fn a_store_verifies_the_indexes_the_file_hands_it_and_not_only_its_checksums() {
+    let dir = TempDir::new("store_audit");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device()).unwrap();
+    stock(&mut library);
+    library.commit(this_device()).unwrap();
+    library.verify().unwrap();
+
+    let mut foreign = HashIndex::<Id<Book>>::new("book.id".to_owned());
+    for _ in 0..Table::rows(&library.books) {
+        foreign.append(Id::mint()).unwrap();
+    }
+    let file = ColumnFile::open(&path).unwrap();
+    let kept: Vec<String> = file
+        .columns()
+        .iter()
+        .map(|column| column.name.clone())
+        .filter(|name| name != "book.id.buckets" && name != "book.id.links")
+        .collect();
+    let mut updater = file.update(this_device()).unwrap();
+    for name in &kept {
+        updater.keep_column(name).unwrap();
+    }
+    foreign.offer_to("book", "id", &mut updater).unwrap();
+    updater.commit().unwrap();
+
+    let reopened = Library::open(&path).unwrap();
+    let err = reopened.verify().unwrap_err();
+    assert!(
+        err.is_corrupt(),
+        "every chunk checksums, and the index still lies: {err}"
+    );
+    assert!(err.to_string().contains("book.id"), "{err}");
 }
 
 #[test]
@@ -220,8 +257,10 @@ fn committing_twice_in_a_row_still_reuses_the_chunks_it_already_wrote() {
     );
     let grew_by = len_of(&path) - after_second;
     assert!(
-        grew_by < 2000,
-        "the third commit appended {grew_by} bytes, which is the whole database, not the change"
+        grew_by < 3000,
+        "the third commit appended {grew_by} bytes of a {} byte database: the directory is \
+         rewritten whole on every commit, but the chunks that did not change are not",
+        len_of(&path)
     );
 }
 

@@ -62,6 +62,10 @@ pub trait Column {
 
     fn touch_tail(&self) -> Result<()>;
 
+    fn audit(&self) -> Result<()> {
+        Ok(())
+    }
+
     fn describe(&self, entity: &str, field: &str, out: &mut Vec<ColumnSpec>);
 
     fn residency(&self, entity: &str, field: &str, out: &mut Vec<Residency>);
