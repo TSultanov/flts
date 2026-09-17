@@ -5,7 +5,7 @@ use quote::{format_ident, quote};
 use syn::spanned::Spanned;
 use syn::{Fields, ItemStruct};
 
-use crate::field::{Field, Kind};
+use crate::field::{Field, Indexing, Kind};
 use crate::naming::snake_case;
 
 pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
@@ -63,12 +63,18 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
 
     let columns = stored.iter().map(|field| {
         let field_name = &field.name;
-        let ty = field.kind.column(name);
+        let ty = field.kind.column(name, field.indexing);
         quote! { #field_name: #ty }
     });
     let built = stored.iter().map(|field| {
         let field_name = &field.name;
-        quote! { #field_name: ::core::default::Default::default() }
+        match field.indexing {
+            Indexing::None => quote! { #field_name: ::core::default::Default::default() },
+            _ => {
+                let column = format!("{label}.{field_name}");
+                quote! { #field_name: ::dbsync::schema::Indexed::named(#column) }
+            }
+        }
     });
     let read_only = stored.iter().map(|field| {
         let field_name = &field.name;
@@ -96,9 +102,11 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         let setter = format_ident!("set_{}", field_name);
         let read = field.kind.read(&quote! { '_ });
         let pushed = field.kind.pushed();
-        let get = field.kind.get(&quote! { self }, field_name);
-        let set = field.kind.set(&quote! { self }, field_name);
+        let get = field.kind.get(&quote! { self }, field_name, field.indexing);
+        let set = field.kind.set(&quote! { self }, field_name, field.indexing);
+        let docs = &field.docs;
         quote! {
+            #(#docs)*
             pub fn #field_name(&self, of: ::dbsync::Id<#name>) -> ::dbsync::Result<#read> {
                 let row = <Self as ::dbsync::schema::Table>::row_of(self, of)?;
                 #get
@@ -142,8 +150,10 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             },
             kind => {
                 let read = kind.read(&held);
-                let get = kind.get(&quote! { table }, field_name);
+                let get = kind.get(&quote! { table }, field_name, field.indexing);
+                let docs = &field.docs;
                 quote! {
+                    #(#docs)*
                     pub fn #field_name(&self) -> ::dbsync::Result<#read> {
                         let table = self.0.table();
                         let row = self.0.row();
@@ -158,7 +168,9 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         let field_name = &field.name;
         let setter = format_ident!("set_{}", field_name);
         let pushed = field.kind.pushed();
-        let set = field.kind.set(&quote! { table }, field_name);
+        let set = field
+            .kind
+            .set(&quote! { table }, field_name, field.indexing);
         quote! {
             pub fn #setter(&mut self, value: #pushed) -> ::dbsync::Result<()> {
                 let row = self.0.row();

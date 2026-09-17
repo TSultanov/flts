@@ -1,5 +1,6 @@
 use super::*;
 use quote::quote;
+use syn::parse::Parser;
 
 fn kind(ty: TokenStream) -> Kind {
     Kind::parse(&syn::parse2(ty).unwrap()).unwrap()
@@ -83,10 +84,14 @@ fn a_many_field_is_not_stored_in_a_column_and_everything_else_is() {
     let many = Field {
         name: syn::parse_quote!(chapters),
         kind: kind(quote!(Many<Chapter>)),
+        indexing: Indexing::None,
+        docs: Vec::new(),
     };
     let text = Field {
         name: syn::parse_quote!(title),
         kind: kind(quote!(String)),
+        indexing: Indexing::None,
+        docs: Vec::new(),
     };
 
     assert!(!many.is_stored());
@@ -96,7 +101,9 @@ fn a_many_field_is_not_stored_in_a_column_and_everything_else_is() {
 #[test]
 fn the_column_a_field_asks_for_names_both_ends_of_a_reference() {
     let child: syn::Ident = syn::parse_quote!(Chapter);
-    let column = kind(quote!(One<Book>)).column(&child).to_string();
+    let column = kind(quote!(One<Book>))
+        .column(&child, Indexing::None)
+        .to_string();
 
     assert!(column.contains("RefColumn"), "{column}");
     assert!(column.contains("Book"), "{column}");
@@ -135,4 +142,108 @@ fn an_optional_many_is_refused_because_it_is_already_possibly_empty() {
 fn an_optional_enum_is_refused_with_a_way_forward() {
     let err = refused(quote!(Option<Shelf>));
     assert!(err.contains("optional enum is not supported yet"), "{err}");
+}
+
+fn field_of(field: TokenStream) -> Field {
+    let parsed = syn::Field::parse_named.parse2(field).unwrap();
+    Field::parse(&parsed).unwrap()
+}
+
+fn refused_field(field: TokenStream) -> String {
+    let parsed = syn::Field::parse_named.parse2(field).unwrap();
+    match Field::parse(&parsed) {
+        Ok(_) => panic!("this field must not have parsed"),
+        Err(err) => err.to_string(),
+    }
+}
+
+#[test]
+fn a_field_says_whether_it_is_indexed_and_whether_two_rows_may_share_it() {
+    assert_eq!(field_of(quote!(title: String)).indexing, Indexing::None);
+    assert_eq!(
+        field_of(quote!(#[index] title: String)).indexing,
+        Indexing::Shared
+    );
+    assert_eq!(
+        field_of(quote!(#[index(unique)] isbn: String)).indexing,
+        Indexing::Unique
+    );
+    for indexable in [
+        quote!(#[index] year: u32),
+        quote!(#[index] pages: Option<u32>),
+        quote!(#[index] isbn: Option<String>),
+        quote!(#[index] binding: Binding),
+        quote!(#[index] borrowed: bool),
+    ] {
+        assert_eq!(field_of(indexable).indexing, Indexing::Shared);
+    }
+}
+
+#[test]
+fn an_attribute_a_field_does_not_take_is_refused_rather_than_dropped() {
+    let err = refused_field(quote!(#[indexed] title: String));
+    assert!(err.contains("`indexed` is not an attribute"), "{err}");
+    assert!(err.contains("#[index]"), "{err}");
+
+    let err = refused_field(quote!(#[serde(rename = "t")] title: String));
+    assert!(err.contains("`serde` is not an attribute"), "{err}");
+}
+
+#[test]
+fn a_field_that_could_be_compiled_out_is_refused_because_its_column_cannot_be() {
+    for conditional in [
+        quote!(#[cfg(feature = "x")] isbn: String),
+        quote!(#[cfg_attr(test, index)] isbn: String),
+    ] {
+        let err = refused_field(conditional);
+        assert!(err.contains("cannot be compiled out"), "{err}");
+    }
+}
+
+#[test]
+fn an_index_asked_for_twice_or_asked_for_wrongly_is_refused() {
+    let err = refused_field(quote!(#[index] #[index] title: String));
+    assert!(err.contains("this field is indexed already"), "{err}");
+
+    let err = refused_field(quote!(#[index = "yes"] title: String));
+    assert!(err.contains("takes no value"), "{err}");
+
+    for wrong in [
+        quote!(#[index(sorted)] title: String),
+        quote!(#[index(unique, sorted)] title: String),
+    ] {
+        let err = refused_field(wrong);
+        assert!(err.contains("`unique` is the only thing"), "{err}");
+    }
+}
+
+#[test]
+fn a_field_an_index_could_not_answer_for_is_refused_where_it_is_asked() {
+    for float in [
+        quote!(#[index] score: f64),
+        quote!(#[index] score: f32),
+        quote!(#[index(unique)] score: Option<f64>),
+    ] {
+        let err = refused_field(float);
+        assert!(err.contains("NaN"), "{err}");
+    }
+
+    let err = refused_field(quote!(#[index] book: One<Book>));
+    assert!(err.contains("a parent is indexed already"), "{err}");
+
+    let err = refused_field(quote!(#[index] chapters: Many<Chapter>));
+    assert!(err.contains("nothing to index"), "{err}");
+}
+
+#[test]
+fn a_doc_comment_on_a_field_is_kept_rather_than_refused_or_dropped() {
+    let documented = field_of(quote! {
+        /// The title on the spine.
+        #[index]
+        title: String
+    });
+
+    assert_eq!(documented.docs.len(), 1);
+    assert_eq!(documented.indexing, Indexing::Shared);
+    assert!(field_of(quote!(title: String)).docs.is_empty());
 }

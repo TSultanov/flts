@@ -502,3 +502,72 @@ fn an_entity_that_names_a_parent_has_that_reference_checked_by_the_audit() {
         "{out}"
     );
 }
+
+#[test]
+fn an_indexed_field_asks_for_a_column_that_carries_its_own_index() {
+    let out = expanded(quote! {
+        struct Book {
+            #[index] title: String,
+            #[index(unique)] isbn: String,
+            #[index] year: u32,
+            author: String,
+        }
+    });
+
+    for asked in [
+        "title : :: dbsync :: schema :: Indexed < :: dbsync :: schema :: TextColumn , false >",
+        "isbn : :: dbsync :: schema :: Indexed < :: dbsync :: schema :: TextColumn , true >",
+        "year : :: dbsync :: schema :: Indexed < :: dbsync :: Arena < u32 > , false >",
+        "author : :: dbsync :: schema :: TextColumn",
+    ] {
+        assert!(out.contains(asked), "{asked} is missing from {out}");
+    }
+}
+
+#[test]
+fn an_indexed_column_is_built_knowing_the_column_it_indexes() {
+    let out = expanded(quote! {
+        struct Book { #[index] title: String, author: String }
+    });
+
+    assert!(
+        out.contains(r#"title : :: dbsync :: schema :: Indexed :: named ("book.title")"#),
+        "{out}"
+    );
+    assert!(
+        out.contains("author : :: core :: default :: Default :: default ()"),
+        "{out}"
+    );
+}
+
+#[test]
+fn an_indexed_field_is_reached_through_the_column_its_index_wraps() {
+    let out = expanded(quote! {
+        struct Book { #[index] year: u32, month: u32 }
+    });
+
+    for asked in [
+        "self . year . column () . row (row . index ()) . copied ()",
+        "self . month . row (row . index ()) . copied ()",
+        "self . year . set (row , value)",
+        "self . month . set (row . index () , value)",
+    ] {
+        assert!(out.contains(asked), "{asked} is missing from {out}");
+    }
+}
+
+#[test]
+fn what_an_author_wrote_above_a_field_is_written_above_the_way_to_read_it() {
+    let out = expanded(quote! {
+        struct Book {
+            /// The title on the spine.
+            title: String,
+        }
+    });
+
+    assert_eq!(
+        out.matches(r#"doc = r" The title on the spine.""#).count(),
+        2,
+        "what a field says about itself belongs on the table accessor and on the row reader: {out}"
+    );
+}

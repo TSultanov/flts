@@ -1,13 +1,22 @@
 //! What a declared field means: the column that holds it and the accessors that reach it.
 
 use proc_macro2::TokenStream;
-use quote::quote;
+use quote::{ToTokens, quote};
 use syn::spanned::Spanned;
 use syn::{GenericArgument, PathArguments, Type, TypePath};
 
 const SCALARS: &[&str] = &[
     "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "f32", "f64", "bool",
 ];
+
+const FLOATS: &[&str] = &["f32", "f64"];
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Indexing {
+    None,
+    Shared,
+    Unique,
+}
 
 pub enum Kind {
     Text,
@@ -22,6 +31,8 @@ pub enum Kind {
 pub struct Field {
     pub name: syn::Ident,
     pub kind: Kind,
+    pub indexing: Indexing,
+    pub docs: Vec<syn::Attribute>,
 }
 
 impl Field {
@@ -30,15 +41,112 @@ impl Field {
             .ident
             .clone()
             .ok_or_else(|| syn::Error::new(field.span(), "an entity needs named fields"))?;
+        let kind = Kind::parse(&field.ty)?;
+        let indexing = indexing_of(field, &kind)?;
+        let docs = field
+            .attrs
+            .iter()
+            .filter(|attr| attr.path().is_ident("doc"))
+            .cloned()
+            .collect();
         Ok(Self {
             name,
-            kind: Kind::parse(&field.ty)?,
+            kind,
+            indexing,
+            docs,
         })
     }
 
     pub fn is_stored(&self) -> bool {
         !matches!(self.kind, Kind::Many(_))
     }
+}
+
+fn indexing_of(field: &syn::Field, kind: &Kind) -> syn::Result<Indexing> {
+    let mut asked: Option<(&syn::Attribute, Indexing)> = None;
+
+    for attr in &field.attrs {
+        if attr.path().is_ident("doc") {
+            continue;
+        }
+        if attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr") {
+            return Err(syn::Error::new(
+                attr.span(),
+                "a column outlives the build that named it, so a field cannot be compiled out",
+            ));
+        }
+        if !attr.path().is_ident("index") {
+            let written = attr.path().to_token_stream().to_string().replace(' ', "");
+            return Err(syn::Error::new(
+                attr.span(),
+                format!(
+                    "`{written}` is not an attribute a field of an entity takes, and this struct \
+                     becomes a tag, so it would be dropped without a word; #[index] and \
+                     #[index(unique)] are the only ones"
+                ),
+            ));
+        }
+        if asked.is_some() {
+            return Err(syn::Error::new(
+                attr.span(),
+                "this field is indexed already; one #[index] says all there is to say",
+            ));
+        }
+        asked = Some((attr, unique_or_shared(attr)?));
+    }
+
+    let Some((attr, indexing)) = asked else {
+        return Ok(Indexing::None);
+    };
+    match kind {
+        Kind::Reference(_) => Err(syn::Error::new(
+            attr.span(),
+            "a parent is indexed already, which is how a Many finds its children",
+        )),
+        Kind::Many(_) => Err(syn::Error::new(
+            attr.span(),
+            "a Many is the children that name this row, not a column of its own, so there is \
+             nothing to index",
+        )),
+        Kind::Scalar(ty) | Kind::NullableScalar(ty) if is_float(ty) => Err(syn::Error::new(
+            attr.span(),
+            "an index answers by equality, and a float is not equal to itself when it is NaN, \
+             so a float field cannot be indexed",
+        )),
+        _ => Ok(indexing),
+    }
+}
+
+fn unique_or_shared(attr: &syn::Attribute) -> syn::Result<Indexing> {
+    match &attr.meta {
+        syn::Meta::Path(_) => Ok(Indexing::Shared),
+        syn::Meta::NameValue(named) => Err(syn::Error::new(
+            named.span(),
+            "#[index] takes no value; write #[index] for a field rows may share and \
+             #[index(unique)] for one they may not",
+        )),
+        syn::Meta::List(_) => {
+            let args = attr.parse_args_with(
+                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+            )?;
+            let mut args = args.into_iter();
+            match (args.next(), args.next()) {
+                (Some(syn::Meta::Path(only)), None) if only.is_ident("unique") => {
+                    Ok(Indexing::Unique)
+                }
+                (first, _) => Err(syn::Error::new(
+                    first
+                        .as_ref()
+                        .map_or_else(|| attr.span(), syn::spanned::Spanned::span),
+                    "`unique` is the only thing #[index] takes; write #[index] or #[index(unique)]",
+                )),
+            }
+        }
+    }
+}
+
+fn is_float(ty: &Type) -> bool {
+    named(ty).is_some_and(|name| FLOATS.contains(&name.as_str()))
 }
 
 impl Kind {
@@ -90,7 +198,18 @@ impl Kind {
         ))
     }
 
-    pub fn column(&self, child: &syn::Ident) -> TokenStream {
+    pub fn column(&self, child: &syn::Ident, indexing: Indexing) -> TokenStream {
+        let bare = self.bare_column(child);
+        match indexing {
+            Indexing::None => bare,
+            _ => {
+                let unique = indexing == Indexing::Unique;
+                quote! { ::dbsync::schema::Indexed<#bare, #unique> }
+            }
+        }
+    }
+
+    fn bare_column(&self, child: &syn::Ident) -> TokenStream {
         match self {
             Kind::Text => quote! { ::dbsync::schema::TextColumn },
             Kind::NullableText => quote! { ::dbsync::schema::NullableTextColumn },
@@ -130,16 +249,20 @@ impl Kind {
         }
     }
 
-    pub fn get(&self, table: &TokenStream, name: &syn::Ident) -> TokenStream {
+    pub fn get(&self, table: &TokenStream, name: &syn::Ident, indexing: Indexing) -> TokenStream {
+        let held = match indexing {
+            Indexing::None => quote! { #table.#name },
+            _ => quote! { #table.#name.column() },
+        };
         match self {
-            Kind::Scalar(_) => quote! { #table.#name.row(row.index()).copied() },
-            _ => quote! { #table.#name.get(row) },
+            Kind::Scalar(_) => quote! { #held.row(row.index()).copied() },
+            _ => quote! { #held.get(row) },
         }
     }
 
-    pub fn set(&self, table: &TokenStream, name: &syn::Ident) -> TokenStream {
-        match self {
-            Kind::Scalar(_) => quote! { #table.#name.set(row.index(), value) },
+    pub fn set(&self, table: &TokenStream, name: &syn::Ident, indexing: Indexing) -> TokenStream {
+        match (self, indexing) {
+            (Kind::Scalar(_), Indexing::None) => quote! { #table.#name.set(row.index(), value) },
             _ => quote! { #table.#name.set(row, value) },
         }
     }
