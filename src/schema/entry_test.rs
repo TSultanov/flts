@@ -2,6 +2,8 @@ use super::*;
 use crate::error::Result;
 use crate::id::Id;
 use crate::test_utils::library::{Binding, Book, Chapter, Edition, Library, Paragraph};
+use crate::test_utils::props;
+use proptest::prelude::*;
 
 fn refused<T>(result: Result<T>) -> String {
     match result {
@@ -395,4 +397,425 @@ fn a_parent_of_two_kinds_of_child_walks_into_each_of_them_separately() {
             .count(),
         1
     );
+}
+
+struct Printing {
+    book: usize,
+    isbn: Option<String>,
+    year: u32,
+    pages: Option<u32>,
+    binding: Binding,
+}
+
+#[derive(Default)]
+struct Model {
+    books: Vec<(String, String)>,
+    chapters: Vec<(usize, String)>,
+    paragraphs: Vec<(usize, String)>,
+    printings: Vec<Printing>,
+}
+
+#[derive(Debug, Clone)]
+enum Op {
+    Book(String, String),
+    Chapter(usize, String),
+    Paragraph(usize, String),
+    Print(usize, Option<String>, u32, Option<u32>, Binding),
+    Retitle(usize, String),
+    Rebook(usize, usize),
+    Retext(usize, String),
+    Reprint(usize, Option<String>, u32, Option<u32>, Binding),
+}
+
+fn binding() -> impl Strategy<Value = Binding> {
+    prop_oneof![
+        Just(Binding::Cloth),
+        Just(Binding::Paper),
+        Just(Binding::Leather),
+    ]
+}
+
+fn printed() -> impl Strategy<Value = (usize, Option<String>, u32, Option<u32>, Binding)> {
+    (
+        props::row_index(),
+        props::optional_text(),
+        props::interesting_u32(),
+        proptest::option::of(props::interesting_u32()),
+        binding(),
+    )
+}
+
+fn op() -> impl Strategy<Value = Op> {
+    prop_oneof![
+        4 => (props::text(), props::text()).prop_map(|(title, author)| Op::Book(title, author)),
+        4 => (props::row_index(), props::text()).prop_map(|(at, title)| Op::Chapter(at, title)),
+        4 => (props::row_index(), props::text()).prop_map(|(at, text)| Op::Paragraph(at, text)),
+        4 => printed().prop_map(|(at, isbn, year, pages, bound)| Op::Print(at, isbn, year, pages, bound)),
+        2 => (props::row_index(), props::text()).prop_map(|(at, title)| Op::Retitle(at, title)),
+        2 => (props::row_index(), props::row_index()).prop_map(|(at, to)| Op::Rebook(at, to)),
+        2 => (props::row_index(), props::text()).prop_map(|(at, text)| Op::Retext(at, text)),
+        2 => printed().prop_map(|(at, isbn, year, pages, bound)| Op::Reprint(at, isbn, year, pages, bound)),
+    ]
+}
+
+fn ops() -> impl Strategy<Value = Vec<Op>> {
+    prop::collection::vec(op(), 0..24)
+}
+
+fn wrapped(at: usize, rows: usize) -> Option<usize> {
+    (rows > 0).then(|| at % rows)
+}
+
+fn played(ops: &[Op]) -> (Library, Model) {
+    let mut library = Library::default();
+    let mut model = Model::default();
+
+    for op in ops {
+        match op {
+            Op::Book(title, author) => {
+                library.books.push(title, author).unwrap();
+                model.books.push((title.clone(), author.clone()));
+            }
+            Op::Chapter(at, title) => {
+                if let Some(book) = wrapped(*at, model.books.len()) {
+                    library.chapters.push(Id::from_index(book), title).unwrap();
+                    model.chapters.push((book, title.clone()));
+                }
+            }
+            Op::Paragraph(at, text) => {
+                if let Some(chapter) = wrapped(*at, model.chapters.len()) {
+                    library
+                        .paragraphs
+                        .push(Id::from_index(chapter), text)
+                        .unwrap();
+                    model.paragraphs.push((chapter, text.clone()));
+                }
+            }
+            Op::Print(at, isbn, year, pages, bound) => {
+                if let Some(book) = wrapped(*at, model.books.len()) {
+                    library
+                        .editions
+                        .push(Id::from_index(book), isbn.as_deref(), *year, *pages, *bound)
+                        .unwrap();
+                    model.printings.push(Printing {
+                        book,
+                        isbn: isbn.clone(),
+                        year: *year,
+                        pages: *pages,
+                        binding: *bound,
+                    });
+                }
+            }
+            Op::Retitle(at, title) => {
+                if let Some(book) = wrapped(*at, model.books.len()) {
+                    library
+                        .at_mut(Id::<Book>::from_index(book))
+                        .unwrap()
+                        .set_title(title)
+                        .unwrap();
+                    model.books[book].0 = title.clone();
+                }
+            }
+            Op::Rebook(at, to) => {
+                let moved = wrapped(*at, model.chapters.len());
+                let home = wrapped(*to, model.books.len());
+                if let (Some(chapter), Some(book)) = (moved, home) {
+                    library
+                        .at_mut(Id::<Chapter>::from_index(chapter))
+                        .unwrap()
+                        .set_book(Id::from_index(book))
+                        .unwrap();
+                    model.chapters[chapter].0 = book;
+                }
+            }
+            Op::Retext(at, text) => {
+                if let Some(paragraph) = wrapped(*at, model.paragraphs.len()) {
+                    library
+                        .at_mut(Id::<Paragraph>::from_index(paragraph))
+                        .unwrap()
+                        .set_text(text)
+                        .unwrap();
+                    model.paragraphs[paragraph].1 = text.clone();
+                }
+            }
+            Op::Reprint(at, isbn, year, pages, bound) => {
+                if let Some(printing) = wrapped(*at, model.printings.len()) {
+                    let mut row = library.at_mut(Id::<Edition>::from_index(printing)).unwrap();
+                    row.set_isbn(isbn.as_deref()).unwrap();
+                    row.set_year(*year).unwrap();
+                    row.set_pages(*pages).unwrap();
+                    row.set_binding(*bound).unwrap();
+                    model.printings[printing].isbn = isbn.clone();
+                    model.printings[printing].year = *year;
+                    model.printings[printing].pages = *pages;
+                    model.printings[printing].binding = *bound;
+                }
+            }
+        }
+    }
+    (library, model)
+}
+
+fn counted(rows: usize) -> Vec<usize> {
+    (0..rows).collect()
+}
+
+fn printings_by_table(library: &Library) -> Vec<Printing> {
+    (0..Table::rows(&library.editions))
+        .map(|row| {
+            let of = Id::<Edition>::from_index(row);
+            Printing {
+                book: library.editions.book(of).unwrap().index(),
+                isbn: library
+                    .editions
+                    .isbn(of)
+                    .unwrap()
+                    .map(|isbn| isbn.into_owned()),
+                year: library.editions.year(of).unwrap(),
+                pages: library.editions.pages(of).unwrap(),
+                binding: library.editions.binding(of).unwrap(),
+            }
+        })
+        .collect()
+}
+
+fn printings_by_row(library: &Library) -> Vec<Printing> {
+    library
+        .all::<Edition>()
+        .map(|row| Printing {
+            book: row.book().unwrap().id().index(),
+            isbn: row.isbn().unwrap().map(|isbn| isbn.into_owned()),
+            year: row.year().unwrap(),
+            pages: row.pages().unwrap(),
+            binding: row.binding().unwrap(),
+        })
+        .collect()
+}
+
+proptest! {
+    #[test]
+    fn every_field_a_row_hands_back_is_the_one_its_table_stores(ops in ops()) {
+        let (library, model) = played(&ops);
+
+        for (row, (title, author)) in model.books.iter().enumerate() {
+            let of = Id::<Book>::from_index(row);
+            let book = library.at(of).unwrap();
+            prop_assert_eq!(book.title().unwrap().into_owned(), title.clone());
+            prop_assert_eq!(book.author().unwrap().into_owned(), author.clone());
+            prop_assert_eq!(book.title().unwrap().into_owned(), library.books.title(of).unwrap());
+        }
+
+        for (row, (book, title)) in model.chapters.iter().enumerate() {
+            let of = Id::<Chapter>::from_index(row);
+            let chapter = library.at(of).unwrap();
+            prop_assert_eq!(chapter.title().unwrap().into_owned(), title.clone());
+            prop_assert_eq!(chapter.book().unwrap().id().index(), *book);
+            prop_assert_eq!(chapter.book().unwrap().id(), library.chapters.book(of).unwrap());
+        }
+
+        for (row, (chapter, text)) in model.paragraphs.iter().enumerate() {
+            let of = Id::<Paragraph>::from_index(row);
+            let paragraph = library.at(of).unwrap();
+            prop_assert_eq!(paragraph.text().unwrap().into_owned(), text.clone());
+            prop_assert_eq!(paragraph.chapter().unwrap().id().index(), *chapter);
+        }
+
+        for (row, printing) in model.printings.iter().enumerate() {
+            let edition = library.at(Id::<Edition>::from_index(row)).unwrap();
+            prop_assert_eq!(edition.book().unwrap().id().index(), printing.book);
+            prop_assert_eq!(
+                edition.isbn().unwrap().map(|isbn| isbn.into_owned()),
+                printing.isbn.clone()
+            );
+            prop_assert_eq!(edition.year().unwrap(), printing.year);
+            prop_assert_eq!(edition.pages().unwrap(), printing.pages);
+            prop_assert_eq!(edition.binding().unwrap(), printing.binding);
+        }
+    }
+
+    #[test]
+    fn walking_a_table_hands_back_every_row_once_in_the_order_they_were_pushed(ops in ops()) {
+        let (library, model) = played(&ops);
+
+        let books: Vec<usize> = library.all::<Book>().map(|row| row.id().index()).collect();
+        let chapters: Vec<usize> = library.all::<Chapter>().map(|row| row.id().index()).collect();
+        let paragraphs: Vec<usize> = library
+            .all::<Paragraph>()
+            .map(|row| row.id().index())
+            .collect();
+        let printings: Vec<usize> = library.all::<Edition>().map(|row| row.id().index()).collect();
+
+        prop_assert_eq!(books, counted(model.books.len()));
+        prop_assert_eq!(chapters, counted(model.chapters.len()));
+        prop_assert_eq!(paragraphs, counted(model.paragraphs.len()));
+        prop_assert_eq!(printings, counted(model.printings.len()));
+        prop_assert_eq!(library.all::<Book>().count(), model.books.len());
+    }
+
+    #[test]
+    fn a_row_is_refused_exactly_when_it_is_past_the_last_row(
+        ops in ops(),
+        at in props::row_index(),
+    ) {
+        let (library, model) = played(&ops);
+
+        match library.at(Id::<Chapter>::from_index(at)) {
+            Ok(chapter) => {
+                prop_assert!(at < model.chapters.len());
+                prop_assert_eq!(chapter.id().index(), at);
+            }
+            Err(err) => {
+                prop_assert!(at >= model.chapters.len());
+                let said = err.to_string();
+                prop_assert!(said.contains("chapter has no row"), "{}", said);
+                prop_assert!(!said.contains("book has no row"), "{}", said);
+            }
+        }
+    }
+
+    #[test]
+    fn every_child_is_found_under_exactly_one_parent(ops in ops()) {
+        let (library, model) = played(&ops);
+
+        let mut chapters = Vec::new();
+        let mut printings = Vec::new();
+        for book in library.all::<Book>() {
+            let at = book.id().index();
+
+            let found: Vec<usize> = book.chapters().unwrap().map(|row| row.id().index()).collect();
+            let scanned: Vec<usize> = model
+                .chapters
+                .iter()
+                .enumerate()
+                .filter(|(_, (owner, _))| *owner == at)
+                .map(|(row, _)| row)
+                .collect();
+            prop_assert_eq!(&found, &scanned);
+            chapters.extend(found);
+
+            let found: Vec<usize> = book.editions().unwrap().map(|row| row.id().index()).collect();
+            let scanned: Vec<usize> = model
+                .printings
+                .iter()
+                .enumerate()
+                .filter(|(_, printing)| printing.book == at)
+                .map(|(row, _)| row)
+                .collect();
+            prop_assert_eq!(&found, &scanned);
+            printings.extend(found);
+        }
+
+        let mut paragraphs = Vec::new();
+        for chapter in library.all::<Chapter>() {
+            let at = chapter.id().index();
+            let found: Vec<usize> = chapter
+                .paragraphs()
+                .unwrap()
+                .map(|row| row.id().index())
+                .collect();
+            let scanned: Vec<usize> = model
+                .paragraphs
+                .iter()
+                .enumerate()
+                .filter(|(_, (owner, _))| *owner == at)
+                .map(|(row, _)| row)
+                .collect();
+            prop_assert_eq!(&found, &scanned);
+            paragraphs.extend(found);
+        }
+
+        chapters.sort_unstable();
+        paragraphs.sort_unstable();
+        printings.sort_unstable();
+        prop_assert_eq!(chapters, counted(model.chapters.len()));
+        prop_assert_eq!(paragraphs, counted(model.paragraphs.len()));
+        prop_assert_eq!(printings, counted(model.printings.len()));
+    }
+
+    #[test]
+    fn a_child_walked_down_to_names_the_parent_it_was_walked_from(ops in ops()) {
+        let (library, _) = played(&ops);
+
+        for book in library.all::<Book>() {
+            for chapter in book.chapters().unwrap() {
+                prop_assert_eq!(chapter.book().unwrap().id(), book.id());
+                for paragraph in chapter.paragraphs().unwrap() {
+                    prop_assert_eq!(paragraph.chapter().unwrap().id(), chapter.id());
+                }
+            }
+            for edition in book.editions().unwrap() {
+                prop_assert_eq!(edition.book().unwrap().id(), book.id());
+            }
+        }
+    }
+
+    #[test]
+    fn a_field_written_through_a_row_is_the_only_field_that_changes(
+        ops in ops(),
+        at in props::row_index(),
+        isbn in props::optional_text(),
+    ) {
+        let (mut library, _) = played(&ops);
+        let anchor = library.books.push("Anchor", "Nobody").unwrap();
+        library
+            .editions
+            .push(anchor, Some("anchor"), 1, Some(1), Binding::Cloth)
+            .unwrap();
+        let before = printings_by_table(&library);
+        let row = at % before.len();
+
+        library
+            .at_mut(Id::<Edition>::from_index(row))
+            .unwrap()
+            .set_isbn(isbn.as_deref())
+            .unwrap();
+
+        let after = printings_by_row(&library);
+        prop_assert_eq!(after.len(), before.len());
+        for (index, (was, now)) in before.iter().zip(&after).enumerate() {
+            prop_assert_eq!(now.book, was.book);
+            prop_assert_eq!(now.year, was.year);
+            prop_assert_eq!(now.pages, was.pages);
+            prop_assert_eq!(now.binding, was.binding);
+            let want = if index == row { isbn.clone() } else { was.isbn.clone() };
+            prop_assert_eq!(now.isbn.clone(), want);
+        }
+    }
+
+    #[test]
+    fn an_id_no_row_answers_for_is_refused_and_never_panics(
+        ops in ops(),
+        claim in props::interesting_u64(),
+    ) {
+        let (mut library, model) = played(&ops);
+        let index = claim as usize;
+
+        match library.at(Id::<Book>::from_index(index)) {
+            Ok(book) => {
+                prop_assert!(index < model.books.len());
+                prop_assert!(book.chapters().is_ok());
+                prop_assert!(book.editions().is_ok());
+            }
+            Err(err) => {
+                prop_assert!(index >= model.books.len());
+                prop_assert!(err.to_string().contains("book has no row"), "{}", err);
+            }
+        }
+
+        let anchor = library.books.push("Anchor", "Nobody").unwrap();
+        library
+            .chapters
+            .push(Id::from_index(index), "Belongs to whom?")
+            .unwrap();
+
+        match library.at(anchor).unwrap().chapters() {
+            Ok(children) => {
+                prop_assert!(
+                    index == Id::<Book>::NULL as usize || index < Table::rows(&library.books)
+                );
+                prop_assert!(children.count() <= Table::rows(&library.chapters));
+            }
+            Err(err) => prop_assert!(err.to_string().contains("chapter.book"), "{}", err),
+        }
+    }
 }

@@ -29,6 +29,26 @@ pub fn interesting_u64() -> impl Strategy<Value = u64> {
     ]
 }
 
+pub fn text() -> impl Strategy<Value = String> {
+    prop_oneof![
+        1 => Just(String::new()),
+        6 => "[a-z ]{0,12}",
+        2 => "[αβγδεζηθ]{1,4}",
+        1 => "[a-z]{200,260}",
+    ]
+}
+
+pub fn optional_text() -> impl Strategy<Value = Option<String>> {
+    prop_oneof![
+        1 => Just(None),
+        3 => text().prop_map(Some),
+    ]
+}
+
+pub fn row_index() -> impl Strategy<Value = usize> {
+    0usize..64
+}
+
 pub fn interesting_u32() -> impl Strategy<Value = u32> {
     prop_oneof![
         6 => any::<u32>(),
