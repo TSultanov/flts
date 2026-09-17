@@ -1,7 +1,7 @@
 use crate::error::Result;
 use crate::id::Id;
 use crate::schema::{
-    AnyTable, Entity, Field, FieldMut, RefColumn, Store, StoreState, Table, TextColumn,
+    AnyTable, Child, Entity, Field, FieldMut, RefColumn, Store, StoreState, Table, TextColumn,
 };
 
 pub struct Book;
@@ -10,14 +10,20 @@ pub struct Paragraph;
 
 impl Entity for Book {
     const NAME: &'static str = "book";
+
+    type Table = Books;
 }
 
 impl Entity for Chapter {
     const NAME: &'static str = "chapter";
+
+    type Table = Chapters;
 }
 
 impl Entity for Paragraph {
     const NAME: &'static str = "paragraph";
+
+    type Table = Paragraphs;
 }
 
 #[derive(Default, Clone)]
@@ -90,6 +96,12 @@ impl Table for Chapters {
     }
 }
 
+impl Child<Book> for Chapter {
+    fn parents(table: &Chapters) -> &RefColumn<Book, Chapter> {
+        &table.book
+    }
+}
+
 impl Chapters {
     pub fn push(&mut self, book: Id<Book>, title: &str) -> Result<Id<Chapter>> {
         self.reserve()?;
@@ -136,6 +148,12 @@ impl Table for Paragraphs {
             FieldMut::new("chapter", &mut self.chapter),
             FieldMut::new("text", &mut self.text),
         ]
+    }
+}
+
+impl Child<Chapter> for Paragraph {
+    fn parents(table: &Paragraphs) -> &RefColumn<Chapter, Paragraph> {
+        &table.chapter
     }
 }
 

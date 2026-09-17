@@ -2,18 +2,8 @@ use super::*;
 use crate::id::Id;
 use crate::storage::Arena;
 use crate::storage::ColumnFile;
+use crate::test_utils::library::{Book, Chapter};
 use crate::test_utils::{TempDir, committed};
-
-struct Book;
-struct Chapter;
-
-impl Entity for Book {
-    const NAME: &'static str = "book";
-}
-
-impl Entity for Chapter {
-    const NAME: &'static str = "chapter";
-}
 
 fn owners(parents: &[usize]) -> RefColumn<Book, Chapter> {
     let mut column = RefColumn::<Book, Chapter>::default();

@@ -43,7 +43,7 @@ src/storage/column_file/file_source.rs:98:20: replace += with -= in read_exact_a
 # kill, so it stays and this entry explains why.
 src/storage/column_file/header.rs:45:33: replace | with ^ in new_file_uuid
 
-# The #[proc_macro_attribute] entry point. A proc-macro crate cannot expand its
+# The #[proc_macro_attribute] entry points. A proc-macro crate cannot expand its
 # own macros inside its own test harness -- the proc_macro API panics outside an
 # expansion context -- so no test in this workspace can observe the shim
 # returning an empty TokenStream. The shim is one call into field_enum::expand,
@@ -54,4 +54,5 @@ src/storage/column_file/header.rs:45:33: replace | with ^ in new_file_uuid
 # cargo mutants mutates dbsync-schema and runs dbsync-schema's tests, never
 # dbsync's. If that ever changes, the staleness half of scripts/mutants.sh will
 # say so.
-dbsync-schema/src/lib.rs:10:5: replace field_enum -> TokenStream with Default::default()
+dbsync-schema/src/lib.rs:12:5: replace entity -> TokenStream with Default::default()
+dbsync-schema/src/lib.rs:20:5: replace field_enum -> TokenStream with Default::default()
