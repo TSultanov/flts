@@ -1,5 +1,8 @@
 use crate::error::Result;
+use crate::id::Id;
 use crate::schema::UnitEnum;
+use crate::test_utils::props;
+use proptest::prelude::*;
 
 #[crate::field_enum]
 #[derive(PartialEq, Eq, Debug)]
@@ -397,4 +400,320 @@ fn a_mutable_generated_row_moves_a_work_to_another_author() -> Result<()> {
         "Kokoro"
     );
     Ok(())
+}
+
+struct Penned {
+    name: String,
+    pen_name: Option<String>,
+    born: u32,
+    died: Option<u32>,
+    shelf: Shelf,
+}
+
+#[derive(Debug, Clone)]
+enum Deed {
+    Write(String, Option<String>, u32, Option<u32>, Shelf),
+    Publish(usize, String),
+    Rename(usize, String),
+    Repen(usize, Option<String>),
+    Reborn(usize, u32),
+    Redied(usize, Option<u32>),
+    Reshelve(usize, Shelf),
+    Reassign(usize, usize),
+}
+
+fn shelved() -> impl Strategy<Value = Shelf> {
+    prop_oneof![
+        Just(Shelf::Fiction),
+        Just(Shelf::Reference),
+        Just(Shelf::Rare),
+    ]
+}
+
+fn written() -> impl Strategy<Value = (String, Option<String>, u32, Option<u32>, Shelf)> {
+    (
+        props::text(),
+        props::optional_text(),
+        props::interesting_u32(),
+        proptest::option::of(props::interesting_u32()),
+        shelved(),
+    )
+}
+
+fn deed() -> impl Strategy<Value = Deed> {
+    prop_oneof![
+        5 => written().prop_map(|(name, pen, born, died, shelf)| Deed::Write(name, pen, born, died, shelf)),
+        4 => (props::row_index(), props::text()).prop_map(|(at, title)| Deed::Publish(at, title)),
+        2 => (props::row_index(), props::text()).prop_map(|(at, name)| Deed::Rename(at, name)),
+        2 => (props::row_index(), props::optional_text()).prop_map(|(at, pen)| Deed::Repen(at, pen)),
+        2 => (props::row_index(), props::interesting_u32()).prop_map(|(at, born)| Deed::Reborn(at, born)),
+        2 => (props::row_index(), proptest::option::of(props::interesting_u32())).prop_map(|(at, died)| Deed::Redied(at, died)),
+        2 => (props::row_index(), shelved()).prop_map(|(at, shelf)| Deed::Reshelve(at, shelf)),
+        2 => (props::row_index(), props::row_index()).prop_map(|(at, to)| Deed::Reassign(at, to)),
+    ]
+}
+
+fn deeds() -> impl Strategy<Value = Vec<Deed>> {
+    prop::collection::vec(deed(), 0..24)
+}
+
+fn expected(deeds: &[Deed]) -> (Vec<Penned>, Vec<(usize, String)>) {
+    let mut authors: Vec<Penned> = Vec::new();
+    let mut works: Vec<(usize, String)> = Vec::new();
+
+    for deed in deeds {
+        match deed {
+            Deed::Write(name, pen_name, born, died, shelf) => authors.push(Penned {
+                name: name.clone(),
+                pen_name: pen_name.clone(),
+                born: *born,
+                died: *died,
+                shelf: *shelf,
+            }),
+            Deed::Publish(at, title) => {
+                if !authors.is_empty() {
+                    works.push((at % authors.len(), title.clone()));
+                }
+            }
+            Deed::Rename(at, name) => {
+                if !authors.is_empty() {
+                    let row = at % authors.len();
+                    authors[row].name = name.clone();
+                }
+            }
+            Deed::Repen(at, pen_name) => {
+                if !authors.is_empty() {
+                    let row = at % authors.len();
+                    authors[row].pen_name = pen_name.clone();
+                }
+            }
+            Deed::Reborn(at, born) => {
+                if !authors.is_empty() {
+                    let row = at % authors.len();
+                    authors[row].born = *born;
+                }
+            }
+            Deed::Redied(at, died) => {
+                if !authors.is_empty() {
+                    let row = at % authors.len();
+                    authors[row].died = *died;
+                }
+            }
+            Deed::Reshelve(at, shelf) => {
+                if !authors.is_empty() {
+                    let row = at % authors.len();
+                    authors[row].shelf = *shelf;
+                }
+            }
+            Deed::Reassign(at, to) => {
+                if !works.is_empty() {
+                    let row = at % works.len();
+                    works[row].0 = to % authors.len();
+                }
+            }
+        }
+    }
+    (authors, works)
+}
+
+fn done(deeds: &[Deed]) -> Catalogue {
+    use crate::schema::Table;
+
+    let mut catalogue = Catalogue::default();
+
+    for deed in deeds {
+        let authors = Table::rows(&catalogue.authors);
+        let works = Table::rows(&catalogue.works);
+        match deed {
+            Deed::Write(name, pen_name, born, died, shelf) => {
+                catalogue
+                    .authors
+                    .push(name, pen_name.as_deref(), *born, *died, *shelf)
+                    .unwrap();
+            }
+            Deed::Publish(at, title) => {
+                if authors > 0 {
+                    catalogue
+                        .works
+                        .push(Id::from_index(at % authors), title)
+                        .unwrap();
+                }
+            }
+            Deed::Rename(at, name) => {
+                if authors > 0 {
+                    catalogue
+                        .at_mut(Id::<Author>::from_index(at % authors))
+                        .unwrap()
+                        .set_name(name)
+                        .unwrap();
+                }
+            }
+            Deed::Repen(at, pen_name) => {
+                if authors > 0 {
+                    catalogue
+                        .at_mut(Id::<Author>::from_index(at % authors))
+                        .unwrap()
+                        .set_pen_name(pen_name.as_deref())
+                        .unwrap();
+                }
+            }
+            Deed::Reborn(at, born) => {
+                if authors > 0 {
+                    catalogue
+                        .at_mut(Id::<Author>::from_index(at % authors))
+                        .unwrap()
+                        .set_born(*born)
+                        .unwrap();
+                }
+            }
+            Deed::Redied(at, died) => {
+                if authors > 0 {
+                    catalogue
+                        .at_mut(Id::<Author>::from_index(at % authors))
+                        .unwrap()
+                        .set_died(*died)
+                        .unwrap();
+                }
+            }
+            Deed::Reshelve(at, shelf) => {
+                if authors > 0 {
+                    catalogue
+                        .at_mut(Id::<Author>::from_index(at % authors))
+                        .unwrap()
+                        .set_shelf(*shelf)
+                        .unwrap();
+                }
+            }
+            Deed::Reassign(at, to) => {
+                if works > 0 {
+                    catalogue
+                        .at_mut(Id::<Work>::from_index(at % works))
+                        .unwrap()
+                        .set_author(Id::from_index(to % authors))
+                        .unwrap();
+                }
+            }
+        }
+    }
+    catalogue
+}
+
+fn penned_by_table(catalogue: &Catalogue) -> Vec<Penned> {
+    use crate::schema::Table;
+
+    (0..Table::rows(&catalogue.authors))
+        .map(|row| {
+            let of = Id::<Author>::from_index(row);
+            Penned {
+                name: catalogue.authors.name(of).unwrap().into_owned(),
+                pen_name: catalogue
+                    .authors
+                    .pen_name(of)
+                    .unwrap()
+                    .map(|pen| pen.into_owned()),
+                born: catalogue.authors.born(of).unwrap(),
+                died: catalogue.authors.died(of).unwrap(),
+                shelf: catalogue.authors.shelf(of).unwrap(),
+            }
+        })
+        .collect()
+}
+
+fn penned_by_row(catalogue: &Catalogue) -> Vec<Penned> {
+    catalogue
+        .all::<Author>()
+        .map(|row| Penned {
+            name: row.name().unwrap().into_owned(),
+            pen_name: row.pen_name().unwrap().map(|pen| pen.into_owned()),
+            born: row.born().unwrap(),
+            died: row.died().unwrap(),
+            shelf: row.shelf().unwrap(),
+        })
+        .collect()
+}
+
+proptest! {
+    #[test]
+    fn every_generated_field_a_row_hands_back_is_the_one_its_table_stores(deeds in deeds()) {
+        let (authors, works) = expected(&deeds);
+        let catalogue = done(&deeds);
+
+        prop_assert_eq!(catalogue.all::<Author>().count(), authors.len());
+        for (row, author) in authors.iter().enumerate() {
+            let of = Id::<Author>::from_index(row);
+            let held = catalogue.at(of).unwrap();
+            prop_assert_eq!(held.name().unwrap().into_owned(), author.name.clone());
+            prop_assert_eq!(
+                held.pen_name().unwrap().map(|pen| pen.into_owned()),
+                author.pen_name.clone()
+            );
+            prop_assert_eq!(held.born().unwrap(), author.born);
+            prop_assert_eq!(held.died().unwrap(), author.died);
+            prop_assert_eq!(held.shelf().unwrap(), author.shelf);
+            prop_assert_eq!(held.name().unwrap().into_owned(), catalogue.authors.name(of).unwrap().into_owned());
+        }
+
+        prop_assert_eq!(catalogue.all::<Work>().count(), works.len());
+        for (row, (author, title)) in works.iter().enumerate() {
+            let held = catalogue.at(Id::<Work>::from_index(row)).unwrap();
+            prop_assert_eq!(held.title().unwrap().into_owned(), title.clone());
+            prop_assert_eq!(held.author().unwrap().id().index(), *author);
+        }
+    }
+
+    #[test]
+    fn every_generated_child_is_found_under_exactly_one_parent(deeds in deeds()) {
+        let (authors, works) = expected(&deeds);
+        let catalogue = done(&deeds);
+
+        let mut seen = Vec::new();
+        for author in catalogue.all::<Author>() {
+            let at = author.id().index();
+            let found: Vec<usize> = author.works().unwrap().map(|work| work.id().index()).collect();
+            let scanned: Vec<usize> = works
+                .iter()
+                .enumerate()
+                .filter(|(_, (owner, _))| *owner == at)
+                .map(|(row, _)| row)
+                .collect();
+            prop_assert_eq!(&found, &scanned);
+            seen.extend(found);
+        }
+
+        seen.sort_unstable();
+        prop_assert_eq!(seen, (0..works.len()).collect::<Vec<_>>());
+        prop_assert_eq!(catalogue.all::<Author>().count(), authors.len());
+    }
+
+    #[test]
+    fn a_generated_field_written_through_a_row_is_the_only_field_that_changes(
+        deeds in deeds(),
+        at in props::row_index(),
+        pen_name in props::optional_text(),
+    ) {
+        let mut catalogue = done(&deeds);
+        catalogue
+            .authors
+            .push("Anchor", None, 1, None, Shelf::Fiction)
+            .unwrap();
+        let before = penned_by_table(&catalogue);
+        let row = at % before.len();
+
+        catalogue
+            .at_mut(Id::<Author>::from_index(row))
+            .unwrap()
+            .set_pen_name(pen_name.as_deref())
+            .unwrap();
+
+        let after = penned_by_row(&catalogue);
+        prop_assert_eq!(after.len(), before.len());
+        for (index, (was, now)) in before.iter().zip(&after).enumerate() {
+            prop_assert_eq!(now.name.clone(), was.name.clone());
+            prop_assert_eq!(now.born, was.born);
+            prop_assert_eq!(now.died, was.died);
+            prop_assert_eq!(now.shelf, was.shelf);
+            let want = if index == row { pen_name.clone() } else { was.pen_name.clone() };
+            prop_assert_eq!(now.pen_name.clone(), want);
+        }
+    }
 }
