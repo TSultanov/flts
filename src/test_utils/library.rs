@@ -3,6 +3,7 @@ use std::ops::{Deref, DerefMut};
 
 use crate::error::{Error, Result};
 use crate::id::Id;
+use crate::schema::IdColumn;
 use crate::schema::{
     AnyTable, Child, Children, Entity, Entry, EntryMut, EnumColumn, Field, FieldMut, Holds,
     NullableColumn, NullableTextColumn, RefColumn, Rows, Store, StoreState, Table, TextColumn,
@@ -109,6 +110,7 @@ impl UnitEnum for Binding {
 
 #[derive(Default, Clone)]
 pub struct Books {
+    ids: IdColumn<Book>,
     title: TextColumn,
     author: TextColumn,
 }
@@ -116,8 +118,17 @@ pub struct Books {
 impl Table for Books {
     type Of = Book;
 
+    fn ids(&self) -> &IdColumn<Book> {
+        &self.ids
+    }
+
+    fn ids_mut(&mut self) -> &mut IdColumn<Book> {
+        &mut self.ids
+    }
+
     fn fields(&self) -> Vec<Field<'_>> {
         vec![
+            Field::new("id", &self.ids),
             Field::new("title", &self.title),
             Field::new("author", &self.author),
         ]
@@ -125,6 +136,7 @@ impl Table for Books {
 
     fn fields_mut(&mut self) -> Vec<FieldMut<'_>> {
         vec![
+            FieldMut::new("id", &mut self.ids),
             FieldMut::new("title", &mut self.title),
             FieldMut::new("author", &mut self.author),
         ]
@@ -134,9 +146,10 @@ impl Table for Books {
 impl Books {
     pub fn push(&mut self, title: &str, author: &str) -> Result<Id<Book>> {
         self.reserve()?;
-        let row = self.title.push(title)?;
+        let id = self.mint()?;
+        self.title.push(title)?;
         self.author.push(author)?;
-        Ok(Id::from_index(row))
+        Ok(id)
     }
 
     pub fn title(&self, book: Id<Book>) -> Result<String> {
@@ -225,6 +238,7 @@ impl<S: Holds<Book>> BookRowMut<'_, S> {
 
 #[derive(Default, Clone)]
 pub struct Chapters {
+    ids: IdColumn<Chapter>,
     book: RefColumn<Book, Chapter>,
     title: TextColumn,
 }
@@ -232,8 +246,17 @@ pub struct Chapters {
 impl Table for Chapters {
     type Of = Chapter;
 
+    fn ids(&self) -> &IdColumn<Chapter> {
+        &self.ids
+    }
+
+    fn ids_mut(&mut self) -> &mut IdColumn<Chapter> {
+        &mut self.ids
+    }
+
     fn fields(&self) -> Vec<Field<'_>> {
         vec![
+            Field::new("id", &self.ids),
             Field::new("book", &self.book),
             Field::new("title", &self.title),
         ]
@@ -241,6 +264,7 @@ impl Table for Chapters {
 
     fn fields_mut(&mut self) -> Vec<FieldMut<'_>> {
         vec![
+            FieldMut::new("id", &mut self.ids),
             FieldMut::new("book", &mut self.book),
             FieldMut::new("title", &mut self.title),
         ]
@@ -256,9 +280,10 @@ impl Child<Book> for Chapter {
 impl Chapters {
     pub fn push(&mut self, book: Id<Book>, title: &str) -> Result<Id<Chapter>> {
         self.reserve()?;
-        let row = self.book.push(book)?;
+        let id = self.mint()?;
+        self.book.push(book)?;
         self.title.push(title)?;
-        Ok(Id::from_index(row))
+        Ok(id)
     }
 
     pub fn title(&self, chapter: Id<Chapter>) -> Result<String> {
@@ -269,8 +294,8 @@ impl Chapters {
         self.book.get(self.row_of(chapter)?)
     }
 
-    pub fn of_book(&self, books: usize, book: Id<Book>) -> Result<&[Id<Chapter>]> {
-        self.book.children_of(books, book)
+    pub fn of_book(&self, books: &IdColumn<Book>, book: Id<Book>) -> Result<&[Id<Chapter>]> {
+        self.book.children_of(&self.ids, books, book)
     }
 
     pub fn is_indexed(&self) -> bool {
@@ -348,6 +373,7 @@ impl<S: Holds<Chapter>> ChapterRowMut<'_, S> {
 
 #[derive(Default, Clone)]
 pub struct Paragraphs {
+    ids: IdColumn<Paragraph>,
     chapter: RefColumn<Chapter, Paragraph>,
     text: TextColumn,
 }
@@ -355,8 +381,17 @@ pub struct Paragraphs {
 impl Table for Paragraphs {
     type Of = Paragraph;
 
+    fn ids(&self) -> &IdColumn<Paragraph> {
+        &self.ids
+    }
+
+    fn ids_mut(&mut self) -> &mut IdColumn<Paragraph> {
+        &mut self.ids
+    }
+
     fn fields(&self) -> Vec<Field<'_>> {
         vec![
+            Field::new("id", &self.ids),
             Field::new("chapter", &self.chapter),
             Field::new("text", &self.text),
         ]
@@ -364,6 +399,7 @@ impl Table for Paragraphs {
 
     fn fields_mut(&mut self) -> Vec<FieldMut<'_>> {
         vec![
+            FieldMut::new("id", &mut self.ids),
             FieldMut::new("chapter", &mut self.chapter),
             FieldMut::new("text", &mut self.text),
         ]
@@ -379,17 +415,22 @@ impl Child<Chapter> for Paragraph {
 impl Paragraphs {
     pub fn push(&mut self, chapter: Id<Chapter>, text: &str) -> Result<Id<Paragraph>> {
         self.reserve()?;
-        let row = self.chapter.push(chapter)?;
+        let id = self.mint()?;
+        self.chapter.push(chapter)?;
         self.text.push(text)?;
-        Ok(Id::from_index(row))
+        Ok(id)
     }
 
     pub fn text(&self, paragraph: Id<Paragraph>) -> Result<String> {
         Ok(self.text.get(self.row_of(paragraph)?)?.into_owned())
     }
 
-    pub fn of_chapter(&self, chapters: usize, chapter: Id<Chapter>) -> Result<&[Id<Paragraph>]> {
-        self.chapter.children_of(chapters, chapter)
+    pub fn of_chapter(
+        &self,
+        chapters: &IdColumn<Chapter>,
+        chapter: Id<Chapter>,
+    ) -> Result<&[Id<Paragraph>]> {
+        self.chapter.children_of(&self.ids, chapters, chapter)
     }
 }
 
@@ -456,6 +497,7 @@ impl<S: Holds<Paragraph>> ParagraphRowMut<'_, S> {
 
 #[derive(Default, Clone)]
 pub struct Editions {
+    ids: IdColumn<Edition>,
     book: RefColumn<Book, Edition>,
     isbn: NullableTextColumn,
     year: Arena<u32>,
@@ -466,8 +508,17 @@ pub struct Editions {
 impl Table for Editions {
     type Of = Edition;
 
+    fn ids(&self) -> &IdColumn<Edition> {
+        &self.ids
+    }
+
+    fn ids_mut(&mut self) -> &mut IdColumn<Edition> {
+        &mut self.ids
+    }
+
     fn fields(&self) -> Vec<Field<'_>> {
         vec![
+            Field::new("id", &self.ids),
             Field::new("book", &self.book),
             Field::new("isbn", &self.isbn),
             Field::new("year", &self.year),
@@ -478,6 +529,7 @@ impl Table for Editions {
 
     fn fields_mut(&mut self) -> Vec<FieldMut<'_>> {
         vec![
+            FieldMut::new("id", &mut self.ids),
             FieldMut::new("book", &mut self.book),
             FieldMut::new("isbn", &mut self.isbn),
             FieldMut::new("year", &mut self.year),
@@ -503,13 +555,13 @@ impl Editions {
         binding: Binding,
     ) -> Result<Id<Edition>> {
         self.reserve()?;
-        let row = Table::rows(self);
+        let id = self.mint()?;
         self.book.push(book)?;
         self.isbn.push(isbn)?;
         self.year.push(year)?;
         self.pages.push(pages)?;
         self.binding.push(binding)?;
-        Ok(Id::from_index(row))
+        Ok(id)
     }
 
     pub fn book(&self, of: Id<Edition>) -> Result<Id<Book>> {
@@ -733,11 +785,11 @@ impl Library {
     }
 
     pub fn chapters_of(&self, book: Id<Book>) -> Result<&[Id<Chapter>]> {
-        self.chapters.of_book(Table::rows(&self.books), book)
+        self.chapters.of_book(Table::ids(&self.books), book)
     }
 
     pub fn paragraphs_of(&self, chapter: Id<Chapter>) -> Result<&[Id<Paragraph>]> {
         self.paragraphs
-            .of_chapter(Table::rows(&self.chapters), chapter)
+            .of_chapter(Table::ids(&self.chapters), chapter)
     }
 }

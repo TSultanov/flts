@@ -1,62 +1,71 @@
 //! Children grouped by parent, built from one scan of a reference column.
 
+use std::ops::Range;
+
+use super::column::{Column, Row};
+use super::entity::Entity;
+use super::identity::IdColumn;
 use crate::error::{Error, Result};
 use crate::id::Id;
 use crate::storage::Arena;
 
-pub struct ChildIndex<C: ?Sized + 'static> {
+pub struct ChildIndex<C: Entity> {
     starts: Vec<usize>,
     children: Vec<Id<C>>,
+    rows: Vec<Row>,
     orphans: Vec<Id<C>>,
     parent_rows: usize,
 }
 
-impl<C: ?Sized + 'static> Clone for ChildIndex<C> {
+impl<C: Entity> Clone for ChildIndex<C> {
     fn clone(&self) -> Self {
         Self {
             starts: self.starts.clone(),
             children: self.children.clone(),
+            rows: self.rows.clone(),
             orphans: self.orphans.clone(),
             parent_rows: self.parent_rows,
         }
     }
 }
 
-impl<C: ?Sized + 'static> ChildIndex<C> {
-    pub fn build<P: ?Sized + 'static>(
-        parents: &Arena<Id<P>>,
-        parent_rows: usize,
+impl<C: Entity> ChildIndex<C> {
+    pub fn build<P: Entity>(
+        refs: &Arena<Id<P>>,
+        mine: &IdColumn<C>,
+        parents: &IdColumn<P>,
         column: &str,
     ) -> Result<Self> {
-        let mut buckets = Vec::with_capacity(parents.len());
-        for child in 0..parents.len() {
-            buckets.push(bucket(*parents.row(child)?, parent_rows, column, child)?);
+        let mut buckets = Vec::with_capacity(refs.len());
+        for child in 0..refs.len() {
+            buckets.push(bucket(*refs.row(child)?, parents, column, child)?);
         }
-        Ok(Self::group(&buckets, parent_rows))
+        Self::group(&buckets, mine, Column::rows(parents))
     }
 
-    pub fn build_optional<P: ?Sized + 'static>(
-        parents: &Arena<Option<Id<P>>>,
-        parent_rows: usize,
+    pub fn build_optional<P: Entity>(
+        refs: &Arena<Option<Id<P>>>,
+        mine: &IdColumn<C>,
+        parents: &IdColumn<P>,
         column: &str,
     ) -> Result<Self> {
-        let mut buckets = Vec::with_capacity(parents.len());
-        for child in 0..parents.len() {
-            buckets.push(match *parents.row(child)? {
-                Some(parent) => bucket(parent, parent_rows, column, child)?,
+        let mut buckets = Vec::with_capacity(refs.len());
+        for child in 0..refs.len() {
+            buckets.push(match *refs.row(child)? {
+                Some(parent) => bucket(parent, parents, column, child)?,
                 None => None,
             });
         }
-        Ok(Self::group(&buckets, parent_rows))
+        Self::group(&buckets, mine, Column::rows(parents))
     }
 
-    fn group(buckets: &[Option<usize>], parent_rows: usize) -> Self {
+    fn group(buckets: &[Option<usize>], mine: &IdColumn<C>, parent_rows: usize) -> Result<Self> {
         let mut counts = vec![0usize; parent_rows];
         let mut orphans = Vec::new();
         for (child, bucket) in buckets.iter().enumerate() {
             match bucket {
                 Some(parent) => counts[*parent] += 1,
-                None => orphans.push(Id::from_index(child)),
+                None => orphans.push(mine.at(Row::trusted(child))?),
             }
         }
 
@@ -69,28 +78,45 @@ impl<C: ?Sized + 'static> ChildIndex<C> {
         starts.push(running);
 
         let mut at = starts.clone();
-        let mut children = vec![Id::from_index(0); running];
+        let mut children = vec![Id::NIL; running];
+        let mut rows = vec![Row::trusted(0); running];
         for (child, bucket) in buckets.iter().enumerate() {
             if let Some(parent) = bucket {
-                children[at[*parent]] = Id::from_index(child);
+                children[at[*parent]] = mine.at(Row::trusted(child))?;
+                rows[at[*parent]] = Row::trusted(child);
                 at[*parent] += 1;
             }
         }
 
-        Self {
+        Ok(Self {
             starts,
             children,
+            rows,
             orphans,
             parent_rows,
+        })
+    }
+
+    pub fn children_of<P: Entity>(&self, parents: &IdColumn<P>, parent: Id<P>) -> &[Id<C>] {
+        match self.span(parents, parent) {
+            Some(span) => &self.children[span],
+            None => &[],
         }
     }
 
-    pub fn children_of<P: ?Sized + 'static>(&self, parent: Id<P>) -> &[Id<C>] {
-        let index = parent.index();
-        if index >= self.parent_rows {
-            return &[];
+    pub fn child_rows_of<P: Entity>(&self, parents: &IdColumn<P>, parent: Id<P>) -> &[Row] {
+        match self.span(parents, parent) {
+            Some(span) => &self.rows[span],
+            None => &[],
         }
-        &self.children[self.starts[index]..self.starts[index + 1]]
+    }
+
+    fn span<P: Entity>(&self, parents: &IdColumn<P>, parent: Id<P>) -> Option<Range<usize>> {
+        let row = parents.find(parent).ok()??.index();
+        if row >= self.parent_rows {
+            return None;
+        }
+        Some(self.starts[row]..self.starts[row + 1])
     }
 
     pub fn orphans(&self) -> &[Id<C>] {
@@ -102,25 +128,25 @@ impl<C: ?Sized + 'static> ChildIndex<C> {
     }
 }
 
-fn bucket<P: ?Sized + 'static>(
+fn bucket<P: Entity>(
     parent: Id<P>,
-    parent_rows: usize,
+    parents: &IdColumn<P>,
     column: &str,
     child: usize,
 ) -> Result<Option<usize>> {
-    if parent.raw() == Id::<P>::NULL {
+    if parent.is_nil() {
         return Ok(None);
     }
-    let index = parent.index();
-    if index >= parent_rows {
-        return Err(Error::corrupt(
+    match parents.find(parent)? {
+        Some(row) => Ok(Some(row.index())),
+        None => Err(Error::corrupt(
             "reference",
             format!(
-                "{column} row {child} names parent row {index}, past the {parent_rows} rows there are"
+                "{column} row {child} names parent {parent}, which is not a row of {}",
+                P::NAME
             ),
-        ));
+        )),
     }
-    Ok(Some(index))
 }
 
 #[cfg(test)]

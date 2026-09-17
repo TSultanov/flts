@@ -1,44 +1,47 @@
-//! Opaque typed row identifier: the join key between tables.
+//! Opaque typed row identifier: minted once, stored in a column, never changed.
 
 use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
+use std::str::FromStr;
 
 mod uuid;
 
 pub use uuid::Uuid;
 
+use crate::error::{Error, Result};
+
 pub struct Id<T: ?Sized> {
-    raw: u64,
+    uuid: Uuid,
     marker: PhantomData<fn() -> T>,
 }
 
 impl<T: ?Sized> Id<T> {
-    pub const NULL: u64 = u64::MAX;
+    pub const NIL: Self = Self::from_uuid(Uuid::NIL);
 
-    pub const fn from_raw(raw: u64) -> Self {
+    pub fn mint() -> Self {
+        Self::from_uuid(Uuid::now_v7())
+    }
+
+    pub const fn from_uuid(uuid: Uuid) -> Self {
         Self {
-            raw,
+            uuid,
             marker: PhantomData,
         }
     }
 
-    pub const fn from_index(index: usize) -> Self {
-        Self::from_raw(index as u64)
+    pub const fn uuid(self) -> Uuid {
+        self.uuid
     }
 
-    pub const fn raw(self) -> u64 {
-        self.raw
-    }
-
-    pub const fn index(self) -> usize {
-        self.raw as usize
+    pub const fn is_nil(self) -> bool {
+        self.uuid.is_nil()
     }
 
     pub const fn cast<U: ?Sized>(self) -> Id<U> {
         Id {
-            raw: self.raw,
+            uuid: self.uuid,
             marker: PhantomData,
         }
     }
@@ -54,7 +57,7 @@ impl<T: ?Sized> Copy for Id<T> {}
 
 impl<T: ?Sized> PartialEq for Id<T> {
     fn eq(&self, other: &Self) -> bool {
-        self.raw == other.raw
+        self.uuid == other.uuid
     }
 }
 
@@ -68,13 +71,19 @@ impl<T: ?Sized> PartialOrd for Id<T> {
 
 impl<T: ?Sized> Ord for Id<T> {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.raw.cmp(&other.raw)
+        self.uuid.cmp(&other.uuid)
     }
 }
 
 impl<T: ?Sized> Hash for Id<T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.raw.hash(state);
+        self.uuid.hash(state);
+    }
+}
+
+impl<T: ?Sized> fmt::Display for Id<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.uuid, f)
     }
 }
 
@@ -82,7 +91,15 @@ impl<T: ?Sized> fmt::Debug for Id<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let full = std::any::type_name::<T>();
         let short = full.rsplit("::").next().unwrap_or(full);
-        write!(f, "Id<{short}>({})", self.raw)
+        write!(f, "Id<{short}>({})", self.uuid)
+    }
+}
+
+impl<T: ?Sized> FromStr for Id<T> {
+    type Err = Error;
+
+    fn from_str(text: &str) -> Result<Self> {
+        Ok(Self::from_uuid(text.parse()?))
     }
 }
 

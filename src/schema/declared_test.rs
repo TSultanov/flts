@@ -37,7 +37,14 @@ fn this_device() -> WriterId {
     WriterId::from_device_id("KRZH3XY-7PH4NJK-2WQ5LMC")
 }
 
-fn stock(library: &mut Library) -> Result<Id<Book>> {
+struct Shelved {
+    alice: Id<Book>,
+    kokoro: Id<Book>,
+    rabbit: Id<Chapter>,
+    sensei: Id<Chapter>,
+}
+
+fn stock(library: &mut Library) -> Result<Shelved> {
     let alice = library.books.push("Alice", "Lewis Carroll")?;
     let kokoro = library.books.push("Kokoro", "Natsume Soseki")?;
 
@@ -55,7 +62,12 @@ fn stock(library: &mut Library) -> Result<Id<Book>> {
         .paragraphs
         .push(rabbit, "So she was considering in her own mind.")?;
     library.paragraphs.push(pool, "Curiouser and curiouser!")?;
-    Ok(alice)
+    Ok(Shelved {
+        alice,
+        kokoro,
+        rabbit,
+        sensei,
+    })
 }
 
 #[test]
@@ -69,13 +81,16 @@ fn the_declared_schema_names_every_column_the_file_will_hold() {
     assert_eq!(
         names,
         [
+            "book.id",
             "book.title",
             "book.title.bytes",
             "book.author",
             "book.author.bytes",
+            "chapter.id",
             "chapter.book",
             "chapter.title",
             "chapter.title.bytes",
+            "paragraph.id",
             "paragraph.chapter",
             "paragraph.text",
             "paragraph.text.bytes",
@@ -86,7 +101,8 @@ fn the_declared_schema_names_every_column_the_file_will_hold() {
 #[test]
 fn a_declared_library_joins_two_levels_down() -> Result<()> {
     let mut library = Library::default();
-    let alice = stock(&mut library)?;
+    let on = stock(&mut library)?;
+    let alice = on.alice;
 
     let chapters: &[Id<Chapter>] = library.children_of(alice)?;
     assert_eq!(chapters.len(), 2);
@@ -107,7 +123,8 @@ fn a_declared_library_round_trips_through_a_file_it_owns() -> Result<()> {
     let path = dir.join("library.dbs");
 
     let mut library = Library::create(&path, this_device())?;
-    let alice = stock(&mut library)?;
+    let on = stock(&mut library)?;
+    let alice = on.alice;
     library.commit(this_device())?;
 
     let reopened = Library::open(&path)?;
@@ -133,7 +150,7 @@ fn a_declared_library_appends_only_what_changed() -> Result<()> {
     let path = dir.join("library.dbs");
 
     let mut library = Library::create(&path, this_device())?;
-    stock(&mut library)?;
+    let _ = stock(&mut library)?;
     library.commit(this_device())?;
 
     let settled = crate::storage::ColumnFile::open(&path)?;
@@ -159,7 +176,7 @@ fn a_snapshot_of_a_declared_library_keeps_what_it_saw() -> Result<()> {
     let path = dir.join("library.dbs");
 
     let mut library = Library::create(&path, this_device())?;
-    stock(&mut library)?;
+    let _ = stock(&mut library)?;
     library.commit(this_device())?;
 
     let pinned = library.snapshot();
@@ -177,7 +194,8 @@ fn an_edited_title_survives_a_commit_and_leaves_its_neighbours_alone() -> Result
     let path = dir.join("library.dbs");
 
     let mut library = Library::create(&path, this_device())?;
-    let alice = stock(&mut library)?;
+    let on = stock(&mut library)?;
+    let alice = on.alice;
     library.commit(this_device())?;
 
     library.books.set_title(alice, "Alice in Wonderland")?;
@@ -187,7 +205,7 @@ fn an_edited_title_survives_a_commit_and_leaves_its_neighbours_alone() -> Result
     assert_eq!(reopened.books.title(alice)?, "Alice in Wonderland");
     assert_eq!(reopened.books.author(alice)?, "Lewis Carroll");
     assert_eq!(
-        reopened.books.title(Id::from_index(1))?,
+        reopened.books.title(on.kokoro)?,
         "Kokoro",
         "the row beside the edited one is untouched"
     );
@@ -200,7 +218,7 @@ fn opening_a_declared_library_reads_no_payload_at_all() -> Result<()> {
     let path = dir.join("library.dbs");
 
     let mut library = Library::create(&path, this_device())?;
-    stock(&mut library)?;
+    let _ = stock(&mut library)?;
     library.commit(this_device())?;
 
     let reopened = Library::open(&path)?;
@@ -220,13 +238,13 @@ fn listing_the_catalogue_leaves_every_paragraph_cold() -> Result<()> {
     let path = dir.join("library.dbs");
 
     let mut library = Library::create(&path, this_device())?;
-    stock(&mut library)?;
+    let _ = stock(&mut library)?;
     library.commit(this_device())?;
 
     let reopened = Library::open(&path)?;
-    for row in 0..Table::rows(&reopened.books) {
-        reopened.books.title(Id::from_index(row))?;
-        reopened.books.author(Id::from_index(row))?;
+    for book in reopened.all::<Book>() {
+        book.title()?;
+        book.author()?;
     }
 
     let cold = |name: &str| {
@@ -255,20 +273,21 @@ fn listing_the_catalogue_leaves_every_paragraph_cold() -> Result<()> {
 #[test]
 fn a_declared_row_answers_with_its_own_fields() -> Result<()> {
     let mut library = Library::default();
-    let alice = stock(&mut library)?;
+    let on = stock(&mut library)?;
+    let alice = on.alice;
 
     let book = library.at(alice)?;
 
     assert_eq!(book.title()?, "Alice");
     assert_eq!(book.author()?, "Lewis Carroll");
-    assert_eq!(book.id(), alice);
+    assert_eq!(book.id()?, alice);
     Ok(())
 }
 
 #[test]
 fn every_declared_row_of_a_table_can_be_walked_in_turn() -> Result<()> {
     let mut library = Library::default();
-    stock(&mut library)?;
+    let _ = stock(&mut library)?;
 
     let titles: Vec<String> = library
         .all::<Chapter>()
@@ -288,7 +307,7 @@ fn a_declared_row_read_from_a_file_faults_in_only_the_column_it_was_asked_for() 
     let path = dir.join("library.dbs");
 
     let mut library = Library::create(&path, this_device())?;
-    stock(&mut library)?;
+    let _ = stock(&mut library)?;
     library.commit(this_device())?;
 
     let reopened = Library::open(&path)?;
@@ -314,7 +333,8 @@ fn a_declared_row_read_from_a_file_faults_in_only_the_column_it_was_asked_for() 
 #[test]
 fn a_declared_row_walks_down_to_its_children_and_back_up_to_its_parent() -> Result<()> {
     let mut library = Library::default();
-    let alice = stock(&mut library)?;
+    let on = stock(&mut library)?;
+    let alice = on.alice;
 
     let book = library.at(alice)?;
     let mut read = Vec::new();
@@ -322,7 +342,7 @@ fn a_declared_row_walks_down_to_its_children_and_back_up_to_its_parent() -> Resu
         read.push(chapter.title()?.into_owned());
         for paragraph in chapter.paragraphs()? {
             read.push(paragraph.text()?.into_owned());
-            assert_eq!(paragraph.chapter()?.id(), chapter.id());
+            assert_eq!(paragraph.chapter()?.id()?, chapter.id()?);
             assert_eq!(paragraph.chapter()?.book()?.title()?, "Alice");
         }
     }
@@ -343,9 +363,9 @@ fn a_declared_row_walks_down_to_its_children_and_back_up_to_its_parent() -> Resu
 #[test]
 fn a_declared_row_with_no_children_walks_nowhere() -> Result<()> {
     let mut library = Library::default();
-    stock(&mut library)?;
+    let on = stock(&mut library)?;
 
-    let sensei = library.at(Id::<Chapter>::from_index(2))?;
+    let sensei = library.at(on.sensei)?;
     assert_eq!(sensei.paragraphs()?.count(), 1);
 
     let quiet = library.books.push("Unread", "Nobody")?;
@@ -359,11 +379,11 @@ fn walking_a_declared_book_reads_no_chapter_a_different_book_owns() -> Result<()
     let path = dir.join("library.dbs");
 
     let mut library = Library::create(&path, this_device())?;
-    stock(&mut library)?;
+    let on = stock(&mut library)?;
     library.commit(this_device())?;
 
     let reopened = Library::open(&path)?;
-    let kokoro = reopened.at(Id::<Book>::from_index(1))?;
+    let kokoro = reopened.at(on.kokoro)?;
     let titles: Vec<String> = kokoro
         .chapters()?
         .map(|chapter| chapter.title().map(|title| title.into_owned()))
@@ -389,7 +409,8 @@ fn a_title_edited_through_a_row_survives_the_commit_that_follows_it() -> Result<
     let path = dir.join("library.dbs");
 
     let mut library = Library::create(&path, this_device())?;
-    let alice = stock(&mut library)?;
+    let on = stock(&mut library)?;
+    let alice = on.alice;
     library.commit(this_device())?;
 
     library.at_mut(alice)?.set_title("Alice in Wonderland")?;
@@ -398,20 +419,19 @@ fn a_title_edited_through_a_row_survives_the_commit_that_follows_it() -> Result<
     let reopened = Library::open(&path)?;
     assert_eq!(reopened.at(alice)?.title()?, "Alice in Wonderland");
     assert_eq!(reopened.at(alice)?.author()?, "Lewis Carroll");
-    assert_eq!(reopened.at(Id::<Book>::from_index(1))?.title()?, "Kokoro");
+    assert_eq!(reopened.at(on.kokoro)?.title()?, "Kokoro");
     Ok(())
 }
 
 #[test]
 fn a_chapter_moved_through_a_row_is_grouped_under_the_book_it_moved_to() -> Result<()> {
     let mut library = Library::default();
-    let alice = stock(&mut library)?;
-    let kokoro = Id::<Book>::from_index(1);
+    let on = stock(&mut library)?;
+    let alice = on.alice;
+    let kokoro = on.kokoro;
     assert_eq!(library.at(alice)?.chapters()?.count(), 2);
 
-    library
-        .at_mut(Id::<Chapter>::from_index(0))?
-        .set_book(kokoro)?;
+    library.at_mut(on.rabbit)?.set_book(kokoro)?;
 
     assert_eq!(library.at(alice)?.chapters()?.count(), 1);
     let moved: Vec<String> = library
@@ -429,7 +449,8 @@ fn a_library_lives_its_whole_life_through_the_rows_it_hands_out() -> Result<()> 
     let path = dir.join("library.dbs");
 
     let mut library = Library::create(&path, this_device())?;
-    let alice = stock(&mut library)?;
+    let on = stock(&mut library)?;
+    let alice = on.alice;
     let shelved = library.commit(this_device())?;
 
     let opened = Library::open(&path)?;
@@ -441,9 +462,9 @@ fn a_library_lives_its_whole_life_through_the_rows_it_hands_out() -> Result<()> 
     let book = opened.at(alice)?;
     let mut read = Vec::new();
     for chapter in book.chapters()? {
-        assert_eq!(chapter.book()?.id(), book.id());
+        assert_eq!(chapter.book()?.id()?, book.id()?);
         for paragraph in chapter.paragraphs()? {
-            assert_eq!(paragraph.chapter()?.id(), chapter.id());
+            assert_eq!(paragraph.chapter()?.id()?, chapter.id()?);
             read.push(paragraph.text()?.into_owned());
         }
     }
@@ -550,6 +571,32 @@ fn expected(deeds: &[Deed]) -> Shelves {
     (books, chapters, paragraphs)
 }
 
+fn book_at(library: &Library, row: usize) -> Id<Book> {
+    use crate::schema::Row;
+
+    Table::id_at(&library.books, Row::trusted(row)).unwrap()
+}
+
+fn chapter_at(library: &Library, row: usize) -> Id<Chapter> {
+    use crate::schema::Row;
+
+    Table::id_at(&library.chapters, Row::trusted(row)).unwrap()
+}
+
+fn paragraph_at(library: &Library, row: usize) -> Id<Paragraph> {
+    use crate::schema::Row;
+
+    Table::id_at(&library.paragraphs, Row::trusted(row)).unwrap()
+}
+
+fn book_row(library: &Library, of: Id<Book>) -> usize {
+    Table::row_of(&library.books, of).unwrap().index()
+}
+
+fn chapter_row(library: &Library, of: Id<Chapter>) -> usize {
+    Table::row_of(&library.chapters, of).unwrap().index()
+}
+
 fn kept(deeds: &[Deed], path: &std::path::Path) -> Library {
     let mut library = Library::create(path, this_device()).unwrap();
 
@@ -562,36 +609,27 @@ fn kept(deeds: &[Deed], path: &std::path::Path) -> Library {
             }
             Deed::Chapter(at, title) => {
                 if books > 0 {
-                    library
-                        .chapters
-                        .push(Id::from_index(at % books), title)
-                        .unwrap();
+                    let held = book_at(&library, at % books);
+                    library.chapters.push(held, title).unwrap();
                 }
             }
             Deed::Paragraph(at, text) => {
                 if chapters > 0 {
-                    library
-                        .paragraphs
-                        .push(Id::from_index(at % chapters), text)
-                        .unwrap();
+                    let held = chapter_at(&library, at % chapters);
+                    library.paragraphs.push(held, text).unwrap();
                 }
             }
             Deed::Retitle(at, title) => {
                 if books > 0 {
-                    library
-                        .at_mut(Id::<Book>::from_index(at % books))
-                        .unwrap()
-                        .set_title(title)
-                        .unwrap();
+                    let held = book_at(&library, at % books);
+                    library.at_mut(held).unwrap().set_title(title).unwrap();
                 }
             }
             Deed::Rebook(at, to) => {
                 if chapters > 0 {
-                    library
-                        .at_mut(Id::<Chapter>::from_index(at % chapters))
-                        .unwrap()
-                        .set_book(Id::from_index(to % books))
-                        .unwrap();
+                    let moved = chapter_at(&library, at % chapters);
+                    let home = book_at(&library, to % books);
+                    library.at_mut(moved).unwrap().set_book(home).unwrap();
                 }
             }
             Deed::Settle => {
@@ -618,32 +656,32 @@ proptest! {
 
         prop_assert_eq!(reopened.all::<Book>().count(), books.len());
         for (row, (title, author)) in books.iter().enumerate() {
-            let book = reopened.at(Id::<Book>::from_index(row)).unwrap();
+            let book = reopened.at(book_at(&reopened, row)).unwrap();
             prop_assert_eq!(book.title().unwrap().into_owned(), title.clone());
             prop_assert_eq!(book.author().unwrap().into_owned(), author.clone());
         }
 
         prop_assert_eq!(reopened.all::<Chapter>().count(), chapters.len());
         for (row, (book, title)) in chapters.iter().enumerate() {
-            let chapter = reopened.at(Id::<Chapter>::from_index(row)).unwrap();
+            let chapter = reopened.at(chapter_at(&reopened, row)).unwrap();
             prop_assert_eq!(chapter.title().unwrap().into_owned(), title.clone());
-            prop_assert_eq!(chapter.book().unwrap().id().index(), *book);
+            prop_assert_eq!(book_row(&reopened, chapter.book().unwrap().id().unwrap()), *book);
         }
 
         prop_assert_eq!(reopened.all::<Paragraph>().count(), paragraphs.len());
         for (row, (chapter, text)) in paragraphs.iter().enumerate() {
-            let paragraph = reopened.at(Id::<Paragraph>::from_index(row)).unwrap();
+            let paragraph = reopened.at(paragraph_at(&reopened, row)).unwrap();
             prop_assert_eq!(paragraph.text().unwrap().into_owned(), text.clone());
-            prop_assert_eq!(paragraph.chapter().unwrap().id().index(), *chapter);
+            prop_assert_eq!(chapter_row(&reopened, paragraph.chapter().unwrap().id().unwrap()), *chapter);
         }
 
         let mut walked = Vec::new();
         for book in reopened.all::<Book>() {
-            let at = book.id().index();
+            let at = book_row(&reopened, book.id().unwrap());
             let found: Vec<usize> = book
                 .chapters()
                 .unwrap()
-                .map(|chapter| chapter.id().index())
+                .map(|chapter| chapter_row(&reopened, chapter.id().unwrap()))
                 .collect();
             let scanned: Vec<usize> = chapters
                 .iter()
@@ -673,7 +711,7 @@ proptest! {
 
         let reopened = Library::open(&path).unwrap();
         let row = at % Table::rows(&reopened.books);
-        let book = reopened.at(Id::<Book>::from_index(row)).unwrap();
+        let book = reopened.at(book_at(&reopened, row)).unwrap();
         if by_author {
             book.author().unwrap();
         } else {

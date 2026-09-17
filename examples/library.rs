@@ -110,7 +110,9 @@ fn main() -> Result<()> {
     for spec in declared.specs() {
         println!("     {} holding {}-byte rows", spec.name, spec.elem_size);
     }
-    println!("     nobody wrote those names down; Many and Set asked for none of them");
+    println!("     nobody wrote those names down; Many and Set asked for none of them,");
+    println!("     and nobody declared an id: every entity is given one, and a row keeps");
+    println!("     the one it was given for as long as it exists");
 
     let mut library = Library::create(&path, this_device())?;
     stock(&mut library)?;
@@ -158,10 +160,10 @@ fn main() -> Result<()> {
     assert_eq!(alice.chapters()?.count(), 2);
     for chapter in alice.chapters()? {
         println!("     {}", chapter.title()?);
-        assert_eq!(chapter.book()?.id(), alice.id());
+        assert_eq!(chapter.book()?.id()?, alice.id()?);
         for paragraph in chapter.paragraphs()? {
             println!("       {}", paragraph.text()?);
-            assert_eq!(paragraph.chapter()?.id(), chapter.id());
+            assert_eq!(paragraph.chapter()?.id()?, chapter.id()?);
         }
     }
     println!("     nobody named a table or carried an id between the two levels");
@@ -174,11 +176,11 @@ fn main() -> Result<()> {
 
     library.books.push("Il nome della rosa", "Umberto Eco")?;
     library
-        .at_mut(alice.id())?
+        .at_mut(alice.id()?)?
         .set_title("Alice in Wonderland")?;
     let published = library.commit(this_device())?;
-    assert_eq!(library.at(alice.id())?.title()?, "Alice in Wonderland");
-    assert_eq!(library.at(alice.id())?.author()?, "Lewis Carroll");
+    assert_eq!(library.at(alice.id()?)?.title()?, "Alice in Wonderland");
+    assert_eq!(library.at(alice.id()?)?.author()?, "Lewis Carroll");
 
     assert_eq!(
         ColumnFile::open(&path)?

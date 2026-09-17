@@ -5,15 +5,15 @@ use std::ops::Range;
 use std::slice;
 
 use super::column::Row;
-use super::entity::{Child, Entity, Holds, children_of};
+use super::entity::{Child, Entity, Holds, child_rows_of};
 use super::table::Table;
 use crate::error::Result;
 use crate::id::Id;
 
 pub struct Entry<'a, S, E: Entity> {
     store: &'a S,
-    id: Id<E>,
     row: Row,
+    marker: PhantomData<fn() -> E>,
 }
 
 impl<S, E: Entity> Clone for Entry<'_, S, E> {
@@ -27,19 +27,19 @@ impl<S, E: Entity> Copy for Entry<'_, S, E> {}
 impl<'a, S: Holds<E>, E: Entity> Entry<'a, S, E> {
     pub fn of(store: &'a S, id: Id<E>) -> Result<Self> {
         let row = Table::row_of(Holds::<E>::table(store), id)?;
-        Ok(Self { store, id, row })
+        Ok(Self::at_row(store, row))
     }
 
-    fn trusted(store: &'a S, index: usize) -> Self {
+    fn at_row(store: &'a S, row: Row) -> Self {
         Self {
             store,
-            id: Id::from_index(index),
-            row: Row::trusted(index),
+            row,
+            marker: PhantomData,
         }
     }
 
-    pub fn id(&self) -> Id<E> {
-        self.id
+    pub fn id(&self) -> Result<Id<E>> {
+        Table::id_at(Holds::<E>::table(self.store), self.row)
     }
 
     pub fn row(&self) -> Row {
@@ -69,25 +69,30 @@ impl<'a, S: Holds<E>, E: Entity> Entry<'a, S, E> {
     {
         Ok(Children {
             store: self.store,
-            ids: children_of(self.store, self.id)?.iter(),
+            rows: child_rows_of::<S, E, C>(self.store, self.id()?)?.iter(),
+            marker: PhantomData,
         })
     }
 }
 
 pub struct EntryMut<'a, S, E: Entity> {
     store: &'a mut S,
-    id: Id<E>,
     row: Row,
+    marker: PhantomData<fn() -> E>,
 }
 
 impl<'a, S: Holds<E>, E: Entity> EntryMut<'a, S, E> {
     pub fn of(store: &'a mut S, id: Id<E>) -> Result<Self> {
         let row = Table::row_of(Holds::<E>::table(store), id)?;
-        Ok(Self { store, id, row })
+        Ok(Self {
+            store,
+            row,
+            marker: PhantomData,
+        })
     }
 
-    pub fn id(&self) -> Id<E> {
-        self.id
+    pub fn id(&self) -> Result<Id<E>> {
+        Table::id_at(Holds::<E>::table(self.store), self.row)
     }
 
     pub fn row(&self) -> Row {
@@ -101,14 +106,15 @@ impl<'a, S: Holds<E>, E: Entity> EntryMut<'a, S, E> {
 
 pub struct Children<'a, S, C: Entity> {
     store: &'a S,
-    ids: slice::Iter<'a, Id<C>>,
+    rows: slice::Iter<'a, Row>,
+    marker: PhantomData<fn() -> C>,
 }
 
 impl<'a, S: Holds<C> + 'a, C: Entity> Iterator for Children<'a, S, C> {
     type Item = C::Row<'a, S>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        Some(Entry::trusted(self.store, self.ids.next()?.index()).into())
+        Some(Entry::at_row(self.store, *self.rows.next()?).into())
     }
 }
 
@@ -132,7 +138,7 @@ impl<'a, S: Holds<E> + 'a, E: Entity> Iterator for Rows<'a, S, E> {
     type Item = E::Row<'a, S>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        Some(Entry::trusted(self.store, self.rows.next()?).into())
+        Some(Entry::at_row(self.store, Row::trusted(self.rows.next()?)).into())
     }
 }
 

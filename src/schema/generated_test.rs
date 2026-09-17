@@ -106,6 +106,7 @@ fn a_generated_entity_names_its_columns_after_itself() {
     assert_eq!(
         names,
         [
+            "author.id",
             "author.name",
             "author.name.bytes",
             "author.pen_name",
@@ -157,14 +158,17 @@ fn a_generated_setter_changes_one_field_and_leaves_the_rest() -> Result<()> {
 }
 
 #[test]
-fn an_id_past_the_last_generated_row_is_refused_by_name() -> Result<()> {
-    use crate::id::Id;
-
+fn an_id_no_generated_row_holds_is_refused_by_name() -> Result<()> {
     let mut authors = AuthorTable::default();
     authors.push("Only", None, 1, None, Shelf::Fiction)?;
+    let stranger = Id::mint();
 
-    let err = authors.name(Id::from_index(1)).unwrap_err();
-    assert!(err.to_string().contains("author has no row 1"), "{err}");
+    let err = authors.name(stranger).unwrap_err();
+    assert!(
+        err.to_string().contains("author has no row with id"),
+        "{err}"
+    );
+    assert!(err.to_string().contains(&stranger.to_string()), "{err}");
     Ok(())
 }
 
@@ -181,8 +185,11 @@ fn a_generated_entity_knows_whose_child_it_is() -> Result<()> {
     works.push(carroll, "Alice")?;
     works.push(soseki, "Botchan")?;
 
-    let by_soseki =
-        <Work as Child<Author>>::parents(&works).children_of(Table::rows(&authors), soseki)?;
+    let by_soseki = <Work as Child<Author>>::parents(&works).children_of(
+        Table::ids(&works),
+        Table::ids(&authors),
+        soseki,
+    )?;
 
     assert_eq!(by_soseki.len(), 2);
     assert_eq!(works.title(by_soseki[1])?, "Botchan");
@@ -199,7 +206,7 @@ fn a_generated_table_round_trips_through_a_file() -> Result<()> {
 
     let mut authors = AuthorTable::default();
     let soseki = authors.push("Soseki", Some("S"), 1867, Some(1916), Shelf::Rare)?;
-    authors.push("Anonymous", None, 1200, None, Shelf::Reference)?;
+    let anon = authors.push("Anonymous", None, 1200, None, Shelf::Reference)?;
     let file = committed(&path, |updater| authors.offer_to(updater));
 
     let mut read = AuthorTable::default();
@@ -208,7 +215,7 @@ fn a_generated_table_round_trips_through_a_file() -> Result<()> {
     assert_eq!(Table::rows(&read), 2);
     assert_eq!(read.pen_name(soseki)?.as_deref(), Some("S"));
     assert_eq!(read.shelf(soseki)?, Shelf::Rare);
-    assert_eq!(read.died(crate::id::Id::from_index(1))?, None);
+    assert_eq!(read.died(anon)?, None);
     Ok(())
 }
 
@@ -240,7 +247,13 @@ struct Catalogue {
     works: Set<Work>,
 }
 
-fn catalogued() -> Result<Catalogue> {
+struct Shelved {
+    soseki: Id<Author>,
+    anon: Id<Author>,
+    kokoro: Id<Work>,
+}
+
+fn catalogued() -> Result<(Catalogue, Shelved)> {
     let mut catalogue = Catalogue::default();
     let soseki = catalogue.authors.push(
         "Natsume Kinnosuke",
@@ -249,27 +262,32 @@ fn catalogued() -> Result<Catalogue> {
         Some(1916),
         Shelf::Rare,
     )?;
-    catalogue
+    let anon = catalogue
         .authors
         .push("Anonymous", None, 1200, None, Shelf::Fiction)?;
-    catalogue.works.push(soseki, "Kokoro")?;
-    Ok(catalogue)
+    let kokoro = catalogue.works.push(soseki, "Kokoro")?;
+    Ok((
+        catalogue,
+        Shelved {
+            soseki,
+            anon,
+            kokoro,
+        },
+    ))
 }
 
 #[test]
 fn a_generated_row_reads_every_kind_of_field_through_the_entity_that_owns_it() -> Result<()> {
-    use crate::id::Id;
+    let (catalogue, on) = catalogued()?;
 
-    let catalogue = catalogued()?;
-
-    let soseki = catalogue.at(Id::<Author>::from_index(0))?;
+    let soseki = catalogue.at(on.soseki)?;
     assert_eq!(soseki.name()?, "Natsume Kinnosuke");
     assert_eq!(soseki.pen_name()?.as_deref(), Some("Soseki"));
     assert_eq!(soseki.born()?, 1867);
     assert_eq!(soseki.died()?, Some(1916));
     assert_eq!(soseki.shelf()?, Shelf::Rare);
 
-    let anon = catalogue.at(Id::<Author>::from_index(1))?;
+    let anon = catalogue.at(on.anon)?;
     assert_eq!(anon.pen_name()?.as_deref(), None);
     assert_eq!(anon.died()?, None);
     Ok(())
@@ -277,57 +295,44 @@ fn a_generated_row_reads_every_kind_of_field_through_the_entity_that_owns_it() -
 
 #[test]
 fn a_generated_row_follows_its_reference_into_the_row_it_points_at() -> Result<()> {
-    use crate::id::Id;
+    let (catalogue, on) = catalogued()?;
 
-    let catalogue = catalogued()?;
-
-    let kokoro = catalogue.at(Id::<Work>::from_index(0))?;
+    let kokoro = catalogue.at(on.kokoro)?;
 
     assert_eq!(kokoro.title()?, "Kokoro");
     assert_eq!(kokoro.author()?.name()?, "Natsume Kinnosuke");
-    assert_eq!(kokoro.author()?.id(), Id::<Author>::from_index(0));
+    assert_eq!(kokoro.author()?.id()?, on.soseki);
     Ok(())
 }
 
 #[test]
 fn a_generated_row_hands_back_the_children_a_many_field_declared() -> Result<()> {
-    use crate::id::Id;
-
-    let mut catalogue = catalogued()?;
-    let soseki = Id::<Author>::from_index(0);
-    catalogue.works.push(soseki, "Botchan")?;
-    catalogue.works.push(Id::from_index(1), "Beowulf")?;
+    let (mut catalogue, on) = catalogued()?;
+    catalogue.works.push(on.soseki, "Botchan")?;
+    catalogue.works.push(on.anon, "Beowulf")?;
 
     let titles: Vec<String> = catalogue
-        .at(soseki)?
+        .at(on.soseki)?
         .works()?
         .map(|work| work.title().map(|title| title.into_owned()))
         .collect::<Result<_>>()?;
 
     assert_eq!(titles, ["Kokoro", "Botchan"]);
-    assert_eq!(
-        catalogue.at(Id::<Author>::from_index(1))?.works()?.count(),
-        1
-    );
+    assert_eq!(catalogue.at(on.anon)?.works()?.count(), 1);
     Ok(())
 }
 
 #[test]
 fn a_generated_row_with_no_children_hands_back_nothing() -> Result<()> {
-    use crate::id::Id;
+    let (catalogue, on) = catalogued()?;
 
-    let catalogue = catalogued()?;
-
-    assert_eq!(
-        catalogue.at(Id::<Author>::from_index(1))?.works()?.count(),
-        0
-    );
+    assert_eq!(catalogue.at(on.anon)?.works()?.count(), 0);
     Ok(())
 }
 
 #[test]
 fn walking_a_generated_table_hands_back_one_row_handle_per_row() -> Result<()> {
-    let catalogue = catalogued()?;
+    let (catalogue, _) = catalogued()?;
 
     let names: Vec<String> = catalogue
         .all::<Author>()
@@ -341,19 +346,16 @@ fn walking_a_generated_table_hands_back_one_row_handle_per_row() -> Result<()> {
 
 #[test]
 fn a_mutable_generated_row_writes_every_kind_of_field_through_the_entity() -> Result<()> {
-    use crate::id::Id;
+    let (mut catalogue, on) = catalogued()?;
 
-    let mut catalogue = catalogued()?;
-    let carroll = Id::<Author>::from_index(1);
-
-    let mut author = catalogue.at_mut(carroll)?;
+    let mut author = catalogue.at_mut(on.anon)?;
     author.set_name("Charles Dodgson")?;
     author.set_pen_name(Some("Lewis Carroll"))?;
     author.set_born(1832)?;
     author.set_died(Some(1898))?;
     author.set_shelf(Shelf::Reference)?;
 
-    let author = catalogue.at(carroll)?;
+    let author = catalogue.at(on.anon)?;
     assert_eq!(author.name()?, "Charles Dodgson");
     assert_eq!(author.pen_name()?.as_deref(), Some("Lewis Carroll"));
     assert_eq!(author.born()?, 1832);
@@ -364,16 +366,13 @@ fn a_mutable_generated_row_writes_every_kind_of_field_through_the_entity() -> Re
 
 #[test]
 fn a_mutable_generated_row_clears_a_nullable_field_it_is_given_nothing_for() -> Result<()> {
-    use crate::id::Id;
+    let (mut catalogue, on) = catalogued()?;
 
-    let mut catalogue = catalogued()?;
-    let soseki = Id::<Author>::from_index(0);
-
-    let mut author = catalogue.at_mut(soseki)?;
+    let mut author = catalogue.at_mut(on.soseki)?;
     author.set_pen_name(None)?;
     author.set_died(None)?;
 
-    let author = catalogue.at(soseki)?;
+    let author = catalogue.at(on.soseki)?;
     assert_eq!(author.pen_name()?.as_deref(), None);
     assert_eq!(author.died()?, None);
     assert_eq!(author.name()?, "Natsume Kinnosuke");
@@ -382,21 +381,13 @@ fn a_mutable_generated_row_clears_a_nullable_field_it_is_given_nothing_for() -> 
 
 #[test]
 fn a_mutable_generated_row_moves_a_work_to_another_author() -> Result<()> {
-    use crate::id::Id;
+    let (mut catalogue, on) = catalogued()?;
 
-    let mut catalogue = catalogued()?;
-    let anon = Id::<Author>::from_index(1);
+    catalogue.at_mut(on.kokoro)?.set_author(on.anon)?;
 
-    catalogue
-        .at_mut(Id::<Work>::from_index(0))?
-        .set_author(anon)?;
-
+    assert_eq!(catalogue.at(on.soseki)?.works()?.count(), 0);
     assert_eq!(
-        catalogue.at(Id::<Author>::from_index(0))?.works()?.count(),
-        0
-    );
-    assert_eq!(
-        catalogue.at(anon)?.works()?.next().unwrap().title()?,
+        catalogue.at(on.anon)?.works()?.next().unwrap().title()?,
         "Kokoro"
     );
     Ok(())
@@ -516,6 +507,30 @@ fn expected(deeds: &[Deed]) -> (Vec<Penned>, Vec<(usize, String)>) {
     (authors, works)
 }
 
+fn author_at(catalogue: &Catalogue, row: usize) -> Id<Author> {
+    use crate::schema::{Row, Table};
+
+    Table::id_at(&catalogue.authors, Row::trusted(row)).unwrap()
+}
+
+fn work_at(catalogue: &Catalogue, row: usize) -> Id<Work> {
+    use crate::schema::{Row, Table};
+
+    Table::id_at(&catalogue.works, Row::trusted(row)).unwrap()
+}
+
+fn author_row(catalogue: &Catalogue, of: Id<Author>) -> usize {
+    use crate::schema::Table;
+
+    Table::row_of(&catalogue.authors, of).unwrap().index()
+}
+
+fn work_row(catalogue: &Catalogue, of: Id<Work>) -> usize {
+    use crate::schema::Table;
+
+    Table::row_of(&catalogue.works, of).unwrap().index()
+}
+
 fn done(deeds: &[Deed]) -> Catalogue {
     use crate::schema::Table;
 
@@ -533,25 +548,21 @@ fn done(deeds: &[Deed]) -> Catalogue {
             }
             Deed::Publish(at, title) => {
                 if authors > 0 {
-                    catalogue
-                        .works
-                        .push(Id::from_index(at % authors), title)
-                        .unwrap();
+                    let wrote = author_at(&catalogue, at % authors);
+                    catalogue.works.push(wrote, title).unwrap();
                 }
             }
             Deed::Rename(at, name) => {
                 if authors > 0 {
-                    catalogue
-                        .at_mut(Id::<Author>::from_index(at % authors))
-                        .unwrap()
-                        .set_name(name)
-                        .unwrap();
+                    let held = author_at(&catalogue, at % authors);
+                    catalogue.at_mut(held).unwrap().set_name(name).unwrap();
                 }
             }
             Deed::Repen(at, pen_name) => {
                 if authors > 0 {
+                    let held = author_at(&catalogue, at % authors);
                     catalogue
-                        .at_mut(Id::<Author>::from_index(at % authors))
+                        .at_mut(held)
                         .unwrap()
                         .set_pen_name(pen_name.as_deref())
                         .unwrap();
@@ -559,38 +570,27 @@ fn done(deeds: &[Deed]) -> Catalogue {
             }
             Deed::Reborn(at, born) => {
                 if authors > 0 {
-                    catalogue
-                        .at_mut(Id::<Author>::from_index(at % authors))
-                        .unwrap()
-                        .set_born(*born)
-                        .unwrap();
+                    let held = author_at(&catalogue, at % authors);
+                    catalogue.at_mut(held).unwrap().set_born(*born).unwrap();
                 }
             }
             Deed::Redied(at, died) => {
                 if authors > 0 {
-                    catalogue
-                        .at_mut(Id::<Author>::from_index(at % authors))
-                        .unwrap()
-                        .set_died(*died)
-                        .unwrap();
+                    let held = author_at(&catalogue, at % authors);
+                    catalogue.at_mut(held).unwrap().set_died(*died).unwrap();
                 }
             }
             Deed::Reshelve(at, shelf) => {
                 if authors > 0 {
-                    catalogue
-                        .at_mut(Id::<Author>::from_index(at % authors))
-                        .unwrap()
-                        .set_shelf(*shelf)
-                        .unwrap();
+                    let held = author_at(&catalogue, at % authors);
+                    catalogue.at_mut(held).unwrap().set_shelf(*shelf).unwrap();
                 }
             }
             Deed::Reassign(at, to) => {
                 if works > 0 {
-                    catalogue
-                        .at_mut(Id::<Work>::from_index(at % works))
-                        .unwrap()
-                        .set_author(Id::from_index(to % authors))
-                        .unwrap();
+                    let moved = work_at(&catalogue, at % works);
+                    let home = author_at(&catalogue, to % authors);
+                    catalogue.at_mut(moved).unwrap().set_author(home).unwrap();
                 }
             }
         }
@@ -603,7 +603,7 @@ fn penned_by_table(catalogue: &Catalogue) -> Vec<Penned> {
 
     (0..Table::rows(&catalogue.authors))
         .map(|row| {
-            let of = Id::<Author>::from_index(row);
+            let of = author_at(catalogue, row);
             Penned {
                 name: catalogue.authors.name(of).unwrap().into_owned(),
                 pen_name: catalogue
@@ -640,7 +640,7 @@ proptest! {
 
         prop_assert_eq!(catalogue.all::<Author>().count(), authors.len());
         for (row, author) in authors.iter().enumerate() {
-            let of = Id::<Author>::from_index(row);
+            let of = author_at(&catalogue, row);
             let held = catalogue.at(of).unwrap();
             prop_assert_eq!(held.name().unwrap().into_owned(), author.name.clone());
             prop_assert_eq!(
@@ -655,9 +655,9 @@ proptest! {
 
         prop_assert_eq!(catalogue.all::<Work>().count(), works.len());
         for (row, (author, title)) in works.iter().enumerate() {
-            let held = catalogue.at(Id::<Work>::from_index(row)).unwrap();
+            let held = catalogue.at(work_at(&catalogue, row)).unwrap();
             prop_assert_eq!(held.title().unwrap().into_owned(), title.clone());
-            prop_assert_eq!(held.author().unwrap().id().index(), *author);
+            prop_assert_eq!(author_row(&catalogue, held.author().unwrap().id().unwrap()), *author);
         }
     }
 
@@ -668,8 +668,12 @@ proptest! {
 
         let mut seen = Vec::new();
         for author in catalogue.all::<Author>() {
-            let at = author.id().index();
-            let found: Vec<usize> = author.works().unwrap().map(|work| work.id().index()).collect();
+            let at = author_row(&catalogue, author.id().unwrap());
+            let found: Vec<usize> = author
+                .works()
+                .unwrap()
+                .map(|work| work_row(&catalogue, work.id().unwrap()))
+                .collect();
             let scanned: Vec<usize> = works
                 .iter()
                 .enumerate()
@@ -699,8 +703,9 @@ proptest! {
         let before = penned_by_table(&catalogue);
         let row = at % before.len();
 
+        let held = author_at(&catalogue, row);
         catalogue
-            .at_mut(Id::<Author>::from_index(row))
+            .at_mut(held)
             .unwrap()
             .set_pen_name(pen_name.as_deref())
             .unwrap();

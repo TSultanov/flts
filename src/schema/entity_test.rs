@@ -2,7 +2,7 @@ use super::*;
 use crate::test_utils::library::{Book, Chapter, Library, Paragraph};
 use crate::test_utils::{TempDir, committed};
 
-fn stocked() -> Library {
+fn stocked() -> (Library, Id<Book>, Id<Book>) {
     let mut library = Library::default();
     let alice = library.books.push("Alice", "Lewis Carroll").unwrap();
     let kokoro = library.books.push("Kokoro", "Natsume Soseki").unwrap();
@@ -27,13 +27,12 @@ fn stocked() -> Library {
         .paragraphs
         .push(pool, "Curiouser and curiouser!")
         .unwrap();
-    library
+    (library, alice, kokoro)
 }
 
 #[test]
 fn a_parent_finds_its_children_through_the_store_that_holds_both_tables() {
-    let library = stocked();
-    let alice = Id::<Book>::from_index(0);
+    let (library, alice, _) = stocked();
 
     let chapters: &[Id<Chapter>] = children_of(&library, alice).unwrap();
 
@@ -50,8 +49,7 @@ fn a_parent_finds_its_children_through_the_store_that_holds_both_tables() {
 
 #[test]
 fn the_join_goes_two_levels_down_without_the_levels_knowing_about_each_other() {
-    let library = stocked();
-    let kokoro = Id::<Book>::from_index(1);
+    let (library, _, kokoro) = stocked();
 
     let chapters: &[Id<Chapter>] = children_of(&library, kokoro).unwrap();
     let paragraphs: &[Id<Paragraph>] = children_of(&library, chapters[0]).unwrap();
@@ -75,7 +73,7 @@ fn a_parent_with_no_children_gets_an_empty_answer_not_an_error() {
 
 #[test]
 fn the_store_reaches_each_table_it_holds_by_the_entity_that_names_it() {
-    let mut library = stocked();
+    let (mut library, _, _) = stocked();
 
     assert_eq!(Table::rows(Holds::<Book>::table(&library)), 2);
     assert_eq!(Table::rows(Holds::<Chapter>::table(&library)), 3);
@@ -91,7 +89,7 @@ fn children_found_after_a_reopen_are_the_ones_that_were_written() {
     let dir = TempDir::new("join_roundtrip");
     let path = dir.join("library.dbs");
 
-    let library = stocked();
+    let (library, alice, _) = stocked();
     let file = committed(&path, |updater| {
         library.books.offer_to(updater)?;
         library.chapters.offer_to(updater)?;
@@ -103,6 +101,6 @@ fn children_found_after_a_reopen_are_the_ones_that_were_written() {
     read.chapters.read_from(&file).unwrap();
     read.paragraphs.read_from(&file).unwrap();
 
-    let chapters: &[Id<Chapter>] = children_of(&read, Id::<Book>::from_index(0)).unwrap();
+    let chapters: &[Id<Chapter>] = children_of(&read, alice).unwrap();
     assert_eq!(chapters.len(), 2);
 }

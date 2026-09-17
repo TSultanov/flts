@@ -1,7 +1,7 @@
 //! `Record` for primitives, ids and blobs.
 
 use super::Record;
-use crate::id::Id;
+use crate::id::{Id, Uuid};
 
 macro_rules! impl_record_for_int {
     ($($t:ty),*) => {$(
@@ -36,45 +36,38 @@ impl Record for bool {
 }
 
 impl<T: ?Sized + 'static> Record for Id<T> {
-    const SIZE: usize = size_of::<u64>();
+    const SIZE: usize = size_of::<u128>();
 
     fn encode(&self, out: &mut [u8]) {
-        out.copy_from_slice(&self.raw().to_le_bytes());
+        out.copy_from_slice(&self.uuid().to_u128().to_le_bytes());
     }
 
     fn decode(src: &[u8]) -> Self {
-        let mut buf = [0u8; 8];
+        let mut buf = [0u8; 16];
         buf.copy_from_slice(src);
-        Id::from_raw(u64::from_le_bytes(buf))
+        Id::from_uuid(Uuid::from_u128(u128::from_le_bytes(buf)))
     }
 }
 
 impl<T: ?Sized + 'static> Record for Option<Id<T>> {
-    const SIZE: usize = size_of::<u64>();
+    const SIZE: usize = size_of::<u128>();
 
     fn encode(&self, out: &mut [u8]) {
         let raw = match self {
             Some(id) => {
-                debug_assert!(
-                    id.raw() != Id::<T>::NULL,
-                    "Id::NULL cannot round-trip as Some"
-                );
-                id.raw()
+                debug_assert!(!id.is_nil(), "a nil Id cannot round-trip as Some");
+                id.uuid().to_u128()
             }
-            None => Id::<T>::NULL,
+            None => Uuid::NIL.to_u128(),
         };
         out.copy_from_slice(&raw.to_le_bytes());
     }
 
     fn decode(src: &[u8]) -> Self {
-        let mut buf = [0u8; 8];
+        let mut buf = [0u8; 16];
         buf.copy_from_slice(src);
-        let raw = u64::from_le_bytes(buf);
-        if raw == Id::<T>::NULL {
-            None
-        } else {
-            Some(Id::from_raw(raw))
-        }
+        let id = Id::from_uuid(Uuid::from_u128(u128::from_le_bytes(buf)));
+        (!id.is_nil()).then_some(id)
     }
 }
 

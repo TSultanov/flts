@@ -1,7 +1,8 @@
 //! An entity's columns as one addressable unit.
 
-use super::column::{ColumnSpec, Field, FieldMut, Residency, Row};
+use super::column::{Column, ColumnSpec, Field, FieldMut, Residency, Row};
 use super::entity::Entity;
+use super::identity::IdColumn;
 use super::names::qualified;
 use crate::error::{Error, Result};
 use crate::id::Id;
@@ -10,16 +11,30 @@ use crate::storage::{ColumnFile, ColumnFileUpdater};
 pub trait Table: Default + Clone {
     type Of: Entity;
 
+    fn ids(&self) -> &IdColumn<Self::Of>;
+
+    fn ids_mut(&mut self) -> &mut IdColumn<Self::Of>;
+
     fn fields(&self) -> Vec<Field<'_>>;
 
     fn fields_mut(&mut self) -> Vec<FieldMut<'_>>;
 
     fn rows(&self) -> usize {
-        self.fields().first().map_or(0, |field| field.column.rows())
+        Column::rows(self.ids())
     }
 
     fn row_of(&self, id: Id<Self::Of>) -> Result<Row> {
-        Row::of(id.index(), self.rows(), Self::Of::NAME)
+        self.ids().row_of(id)
+    }
+
+    fn id_at(&self, row: Row) -> Result<Id<Self::Of>> {
+        self.ids().at(row)
+    }
+
+    fn mint(&mut self) -> Result<Id<Self::Of>> {
+        let id = Id::mint();
+        self.ids_mut().push(id)?;
+        Ok(id)
     }
 
     fn specs(&self) -> Vec<ColumnSpec> {

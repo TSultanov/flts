@@ -36,6 +36,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         .map(Field::parse)
         .collect::<syn::Result<_>>()?;
     check_one_parent_each(&fields)?;
+    check_no_field_called_id(&fields)?;
 
     let name = &input.ident;
     let label = snake_case(&name.to_string());
@@ -204,27 +205,42 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
 
         #[derive(Default, Clone)]
         #vis struct #table {
+            dbsync_ids: ::dbsync::schema::IdColumn<#name>,
             #(#columns,)*
         }
 
         impl ::dbsync::schema::Table for #table {
             type Of = #name;
 
+            fn ids(&self) -> &::dbsync::schema::IdColumn<#name> {
+                &self.dbsync_ids
+            }
+
+            fn ids_mut(&mut self) -> &mut ::dbsync::schema::IdColumn<#name> {
+                &mut self.dbsync_ids
+            }
+
             fn fields(&self) -> ::std::vec::Vec<::dbsync::schema::Field<'_>> {
-                ::std::vec![#(#read_only,)*]
+                ::std::vec![
+                    ::dbsync::schema::Field::new("id", &self.dbsync_ids),
+                    #(#read_only,)*
+                ]
             }
 
             fn fields_mut(&mut self) -> ::std::vec::Vec<::dbsync::schema::FieldMut<'_>> {
-                ::std::vec![#(#read_write,)*]
+                ::std::vec![
+                    ::dbsync::schema::FieldMut::new("id", &mut self.dbsync_ids),
+                    #(#read_write,)*
+                ]
             }
         }
 
         impl #table {
             pub fn push(&mut self, #(#arguments,)*) -> ::dbsync::Result<::dbsync::Id<#name>> {
                 <Self as ::dbsync::schema::Table>::reserve(self)?;
-                let row = <Self as ::dbsync::schema::Table>::rows(self);
+                let id = <Self as ::dbsync::schema::Table>::mint(self)?;
                 #(#pushes)*
-                ::core::result::Result::Ok(::dbsync::Id::from_index(row))
+                ::core::result::Result::Ok(id)
             }
 
             #(#accessors)*
@@ -308,6 +324,18 @@ fn quote_spanned_child(child: &syn::Type, parent: &syn::Ident) -> TokenStream {
             groups_by_its_parent::<#parent, #child>();
         };
     }
+}
+
+fn check_no_field_called_id(fields: &[Field]) -> syn::Result<()> {
+    for field in fields {
+        if field.name == "id" {
+            return Err(syn::Error::new(
+                field.name.span(),
+                "`id` is the identity every entity already has, not a field to declare",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn check_one_parent_each(fields: &[Field]) -> syn::Result<()> {

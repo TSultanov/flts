@@ -5,6 +5,7 @@ use std::sync::{Mutex, OnceLock, PoisonError};
 use super::child_index::ChildIndex;
 use super::column::{Column, ColumnKind, ColumnSpec, Residency, Row};
 use super::entity::Entity;
+use super::identity::IdColumn;
 use super::names::qualified;
 use crate::error::Result;
 use crate::id::Id;
@@ -56,15 +57,29 @@ impl<P: Entity, C: Entity> RefColumn<P, C> {
         self.index.get().is_some()
     }
 
-    pub fn children_of(&self, parent_rows: usize, parent: Id<P>) -> Result<&[Id<C>]> {
-        Ok(self.grouping(parent_rows)?.children_of(parent))
+    pub fn children_of(
+        &self,
+        mine: &IdColumn<C>,
+        parents: &IdColumn<P>,
+        parent: Id<P>,
+    ) -> Result<&[Id<C>]> {
+        Ok(self.grouping(mine, parents)?.children_of(parents, parent))
     }
 
-    pub fn orphans(&self, parent_rows: usize) -> Result<&[Id<C>]> {
-        Ok(self.grouping(parent_rows)?.orphans())
+    pub fn child_rows_of(
+        &self,
+        mine: &IdColumn<C>,
+        parents: &IdColumn<P>,
+        parent: Id<P>,
+    ) -> Result<&[Row]> {
+        Ok(self.grouping(mine, parents)?.child_rows_of(parents, parent))
     }
 
-    fn grouping(&self, parent_rows: usize) -> Result<&ChildIndex<C>> {
+    pub fn orphans(&self, mine: &IdColumn<C>, parents: &IdColumn<P>) -> Result<&[Id<C>]> {
+        Ok(self.grouping(mine, parents)?.orphans())
+    }
+
+    fn grouping(&self, mine: &IdColumn<C>, parents: &IdColumn<P>) -> Result<&ChildIndex<C>> {
         if let Some(index) = self.index.get() {
             return Ok(index);
         }
@@ -74,7 +89,7 @@ impl<P: Entity, C: Entity> RefColumn<P, C> {
             return Ok(index);
         }
 
-        let built = ChildIndex::build(&self.ids, parent_rows, &qualified(C::NAME, P::NAME))?;
+        let built = ChildIndex::build(&self.ids, mine, parents, &qualified(C::NAME, P::NAME))?;
         Ok(self.index.get_or_init(|| built))
     }
 }

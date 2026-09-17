@@ -129,8 +129,47 @@ fn push_takes_one_argument_per_stored_field_in_the_order_they_were_written() {
         "a push touches every column or none: {out}"
     );
     assert!(
-        out.contains("let row = < Self as :: dbsync :: schema :: Table > :: rows (self) ;"),
-        "the new row's index is the count before the push, not one column's return value: {out}"
+        out.contains("let id = < Self as :: dbsync :: schema :: Table > :: mint (self) ? ;"),
+        "the new row is named by an id minted for it, not by where it landed: {out}"
+    );
+    assert!(
+        out.contains(":: core :: result :: Result :: Ok (id)"),
+        "push hands back the id it minted: {out}"
+    );
+}
+
+#[test]
+fn every_table_carries_the_identity_column_before_the_fields_that_were_declared() {
+    let out = expanded(quote! {
+        struct Chapter { book: One<Book>, title: String }
+    });
+
+    assert!(
+        out.contains("dbsync_ids : :: dbsync :: schema :: IdColumn < Chapter >"),
+        "{out}"
+    );
+    assert!(
+        out.contains(
+            "vec ! [:: dbsync :: schema :: Field :: new (\"id\" , & self . dbsync_ids) , \
+             :: dbsync :: schema :: Field :: new (\"book\""
+        ),
+        "the identity column is the first field, so it is what counts the rows: {out}"
+    );
+    assert!(
+        out.contains("fn ids (& self) -> & :: dbsync :: schema :: IdColumn < Chapter >"),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_field_called_id_is_refused_because_every_entity_already_has_one() {
+    let err = refused(quote! {
+        struct Chapter { id: String, title: String }
+    });
+
+    assert!(
+        err.contains("`id` is the identity every entity already has"),
+        "{err}"
     );
 }
 

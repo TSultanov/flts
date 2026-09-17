@@ -1,5 +1,5 @@
 use super::*;
-use crate::id::Id;
+use crate::id::{Id, Uuid};
 use crate::test_utils::props;
 use proptest::prelude::*;
 
@@ -32,7 +32,20 @@ fn encoding_is_little_endian_regardless_of_host() {
 
 #[test]
 fn ids_roundtrip() {
-    roundtrip(Id::<Chapter>::from_index(9));
+    roundtrip(Id::<Chapter>::mint());
+}
+
+#[test]
+fn an_id_is_sixteen_bytes_of_the_uuid_it_names() {
+    let id = Id::<Chapter>::from_uuid(Uuid::from_u128(0x0199_c4f2_8a1c_7f3b_9d0e_5a6c_1b2d_3e4f));
+    let mut buf = [0u8; 16];
+    id.encode(&mut buf);
+
+    assert_eq!(<Id<Chapter> as Record>::SIZE, 16);
+    assert_eq!(
+        buf,
+        0x0199_c4f2_8a1c_7f3b_9d0e_5a6c_1b2d_3e4fu128.to_le_bytes()
+    );
 }
 
 #[test]
@@ -41,15 +54,16 @@ fn optional_join_costs_the_same_as_a_required_one() {
         <Option<Id<Chapter>> as Record>::SIZE,
         <Id<Chapter> as Record>::SIZE
     );
-    roundtrip(Some(Id::<Chapter>::from_index(4)));
+    roundtrip(Some(Id::<Chapter>::mint()));
     roundtrip(None::<Id<Chapter>>);
 }
 
 #[test]
-fn null_decodes_as_none_not_as_an_id() {
-    let mut buf = [0u8; 8];
+fn the_nil_id_decodes_as_none_not_as_an_id() {
+    let mut buf = [0u8; 16];
     None::<Id<Chapter>>.encode(&mut buf);
-    assert_eq!(buf, u64::MAX.to_le_bytes());
+
+    assert_eq!(buf, [0u8; 16]);
     assert_eq!(<Option<Id<Chapter>> as Record>::decode(&buf), None);
 }
 
@@ -68,8 +82,10 @@ proptest! {
         <i64 as Record>::decode(&bytes);
         <f32 as Record>::decode(&bytes[..4]);
         <f64 as Record>::decode(&bytes);
-        <Id<Chapter> as Record>::decode(&bytes);
-        <Option<Id<Chapter>> as Record>::decode(&bytes);
+
+        let wide = (raw as u128) << 64 | raw as u128;
+        <Id<Chapter> as Record>::decode(&wide.to_le_bytes());
+        <Option<Id<Chapter>> as Record>::decode(&wide.to_le_bytes());
     }
 
     #[test]
@@ -109,11 +125,20 @@ proptest! {
         <i64 as Record>::decode(&bytes).encode(&mut again);
         prop_assert_eq!(again, bytes);
 
+    }
+
+    #[test]
+    fn a_re_encoded_id_reproduces_the_sixteen_bytes_it_came_from(raw in any::<u128>()) {
+        let bytes = raw.to_le_bytes();
+        let mut again = [0u8; 16];
+
         <Id<Chapter> as Record>::decode(&bytes).encode(&mut again);
         prop_assert_eq!(again, bytes);
 
-        <Option<Id<Chapter>> as Record>::decode(&bytes).encode(&mut again);
-        prop_assert_eq!(again, bytes);
+        if raw != 0 {
+            <Option<Id<Chapter>> as Record>::decode(&bytes).encode(&mut again);
+            prop_assert_eq!(again, bytes);
+        }
     }
 
     #[test]
@@ -127,14 +152,14 @@ proptest! {
     }
 
     #[test]
-    fn a_null_id_only_round_trips_as_none(raw in props::interesting_u64()) {
+    fn only_the_nil_id_round_trips_as_none(raw in any::<u128>()) {
         let bytes = raw.to_le_bytes();
         let decoded = <Option<Id<Chapter>> as Record>::decode(&bytes);
 
-        if raw == Id::<Chapter>::NULL {
+        if raw == 0 {
             prop_assert_eq!(decoded, None);
         } else {
-            prop_assert_eq!(decoded.map(Id::raw), Some(raw));
+            prop_assert_eq!(decoded.map(|id| id.uuid().to_u128()), Some(raw));
         }
     }
 }

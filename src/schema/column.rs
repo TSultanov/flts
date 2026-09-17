@@ -8,6 +8,7 @@ use crate::storage::{ColumnFile, ColumnFileUpdater};
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum ColumnKind {
+    Identity,
     Scalar,
     Text,
     Heap,

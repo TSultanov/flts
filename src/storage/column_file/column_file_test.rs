@@ -57,7 +57,9 @@ struct Paragraph;
 
 struct Doc {
     bytes: Arena<u8>,
+    chapter_id: Arena<Id<Chapter>>,
     chapter_title: Arena<Blob>,
+    paragraph_id: Arena<Id<Paragraph>>,
     paragraph_chapter: Arena<Id<Chapter>>,
     paragraph_text: Arena<Blob>,
     paragraph_note: Arena<Option<Id<Paragraph>>>,
@@ -67,7 +69,9 @@ impl Doc {
     fn new() -> Self {
         Self {
             bytes: Arena::with_chunk_rows(16),
+            chapter_id: Arena::with_chunk_rows(4),
             chapter_title: Arena::with_chunk_rows(4),
+            paragraph_id: Arena::with_chunk_rows(4),
             paragraph_chapter: Arena::with_chunk_rows(4),
             paragraph_text: Arena::with_chunk_rows(4),
             paragraph_note: Arena::with_chunk_rows(4),
@@ -76,7 +80,10 @@ impl Doc {
 
     fn push_chapter(&mut self, title: &str) -> Id<Chapter> {
         let title = self.bytes.push_str(title).unwrap();
-        Id::from_index(self.chapter_title.push(title).unwrap())
+        let id = Id::mint();
+        self.chapter_id.push(id).unwrap();
+        self.chapter_title.push(title).unwrap();
+        id
     }
 
     fn push_paragraph(
@@ -86,10 +93,12 @@ impl Doc {
         note_on: Option<Id<Paragraph>>,
     ) -> Id<Paragraph> {
         let text = self.bytes.push_str(text).unwrap();
-        let index = self.paragraph_chapter.push(chapter).unwrap();
+        let id = Id::mint();
+        self.paragraph_id.push(id).unwrap();
+        self.paragraph_chapter.push(chapter).unwrap();
         self.paragraph_text.push(text).unwrap();
         self.paragraph_note.push(note_on).unwrap();
-        Id::from_index(index)
+        id
     }
 
     fn paragraphs_of(&self, chapter: Id<Chapter>) -> Vec<Id<Paragraph>> {
@@ -97,20 +106,33 @@ impl Doc {
             .iter()
             .enumerate()
             .filter_map(|(index, owner)| {
-                (*owner.unwrap() == chapter).then(|| Id::from_index(index))
+                (*owner.unwrap() == chapter).then(|| self.paragraph(index))
             })
             .collect()
     }
 
+    fn paragraph(&self, row: usize) -> Id<Paragraph> {
+        *self.paragraph_id.row(row).unwrap()
+    }
+
+    fn row_of(&self, paragraph: Id<Paragraph>) -> usize {
+        self.paragraph_id
+            .iter()
+            .position(|held| *held.unwrap() == paragraph)
+            .unwrap()
+    }
+
     fn text_of(&self, paragraph: Id<Paragraph>) -> String {
-        let blob = *self.paragraph_text.get(paragraph.index()).unwrap().unwrap();
+        let blob = *self.paragraph_text.row(self.row_of(paragraph)).unwrap();
         self.bytes.text(blob).unwrap().into_owned()
     }
 
     fn write(&self, path: &Path) {
         let mut writer = ColumnFileWriter::create(path, WriterId::ANONYMOUS).unwrap();
         writer.column("bytes", &self.bytes).unwrap();
+        writer.column("chapter.id", &self.chapter_id).unwrap();
         writer.column("chapter.title", &self.chapter_title).unwrap();
+        writer.column("paragraph.id", &self.paragraph_id).unwrap();
         writer
             .column("paragraph.chapter", &self.paragraph_chapter)
             .unwrap();
@@ -126,7 +148,9 @@ impl Doc {
     fn read(file: &ColumnFile) -> Self {
         Self {
             bytes: file.column("bytes").unwrap(),
+            chapter_id: file.column("chapter.id").unwrap(),
             chapter_title: file.column("chapter.title").unwrap(),
+            paragraph_id: file.column("paragraph.id").unwrap(),
             paragraph_chapter: file.column("paragraph.chapter").unwrap(),
             paragraph_text: file.column("paragraph.text").unwrap(),
             paragraph_note: file.column("paragraph.note").unwrap(),
@@ -175,14 +199,14 @@ fn a_document_round_trips_through_a_column_file() {
 
     let file = ColumnFile::open(&path).unwrap();
     file.verify().unwrap();
-    assert_eq!(file.columns().len(), 5);
+    assert_eq!(file.columns().len(), 7);
 
     let loaded = Doc::read(&file);
     assert_eq!(loaded.paragraphs_of(one), vec![anchor]);
     assert_eq!(loaded.paragraphs_of(two).len(), 9);
     assert_eq!(loaded.text_of(anchor), "the first paragraph of chapter one");
     assert_eq!(
-        loaded.text_of(Id::from_index(5)),
+        loaded.text_of(loaded.paragraph(5)),
         "chapter two, paragraph 4"
     );
 

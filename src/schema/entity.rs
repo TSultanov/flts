@@ -1,5 +1,6 @@
 //! What every entity knows about itself: its name, its columns, and whose child it is.
 
+use super::column::Row;
 use super::entry::{Entry, EntryMut};
 use super::reference::RefColumn;
 use super::table::Table;
@@ -42,8 +43,20 @@ where
     P: Entity,
     C: Child<P>,
 {
-    let parents = Table::rows(Holds::<P>::table(store));
-    C::parents(Holds::<C>::table(store)).children_of(parents, parent)
+    let mine = Table::ids(Holds::<C>::table(store));
+    let parents = Table::ids(Holds::<P>::table(store));
+    C::parents(Holds::<C>::table(store)).children_of(mine, parents, parent)
+}
+
+pub fn child_rows_of<S, P, C>(store: &S, parent: Id<P>) -> Result<&[Row]>
+where
+    S: Holds<P> + Holds<C>,
+    P: Entity,
+    C: Child<P>,
+{
+    let mine = Table::ids(Holds::<C>::table(store));
+    let parents = Table::ids(Holds::<P>::table(store));
+    C::parents(Holds::<C>::table(store)).child_rows_of(mine, parents, parent)
 }
 
 #[cfg(test)]

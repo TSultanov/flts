@@ -82,17 +82,13 @@ fn creating_a_store_refuses_to_flatten_a_file_that_is_already_there() {
     let path = dir.join("library.dbs");
 
     let mut first = Library::create(&path, this_device()).unwrap();
-    stock(&mut first);
+    let alice = stock(&mut first);
     first.commit(this_device()).unwrap();
 
     let err = refused(Library::create(&path, this_device()));
     assert!(matches!(err, Error::Io(_)), "{err}");
     assert_eq!(
-        Library::open(&path)
-            .unwrap()
-            .books
-            .title(Id::from_index(0))
-            .unwrap(),
+        Library::open(&path).unwrap().books.title(alice).unwrap(),
         "Alice",
         "the file that was already there is untouched"
     );
