@@ -79,6 +79,11 @@ impl<E: Entity> Column for IdColumn<E> {
         self.index.touch_tail()
     }
 
+    fn make_room(&self, rows: usize) -> Result<()> {
+        self.ids.touch_tail()?;
+        self.index.make_room(rows)
+    }
+
     fn audit(&self) -> Result<()> {
         let column = qualified(E::NAME, "id");
         self.index.audit(&self.ids)?;

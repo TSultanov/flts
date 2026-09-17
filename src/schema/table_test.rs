@@ -236,6 +236,23 @@ fn a_table_can_be_written_and_read_entirely_through_the_erased_view() {
     assert_eq!(read.author(ids[1]).unwrap(), "Lewis Carroll");
 }
 
+fn held_by(chapters: &Chapters, column: &str) -> Residency {
+    Table::residency(chapters)
+        .into_iter()
+        .find(|held| held.name == column)
+        .expect("the schema names this column")
+}
+
+fn shelf_of(rows: usize) -> (Id<Book>, Chapters) {
+    let mut books = Books::default();
+    let alice = books.push("Alice", "Lewis Carroll").unwrap();
+    let mut chapters = Chapters::default();
+    for _ in 0..rows {
+        chapters.push(alice, "a chapter").unwrap();
+    }
+    (alice, chapters)
+}
+
 #[test]
 fn a_push_touches_no_column_when_another_columns_tail_cannot_be_read() {
     let dir = TempDir::new("reserve");
@@ -258,6 +275,81 @@ fn a_push_touches_no_column_when_another_columns_tail_cannot_be_read() {
         3,
         "the push refused before any column grew, so the table is not ragged"
     );
+}
+
+#[test]
+fn a_push_that_must_regrow_an_index_reads_all_of_it_before_it_mints_an_id() {
+    let dir = TempDir::new("regrow");
+    let path = dir.join("chapters.dbs");
+
+    let (alice, chapters) = shelf_of(4096);
+    let file = committed(&path, |updater| chapters.offer_to(updater));
+    let links = file.column_meta("chapter.book.links").unwrap();
+    let interior = links.chunks[0];
+    assert!(
+        links.chunks.len() > 1,
+        "a tail-only fault would reach this chunk anyway: {links:?}"
+    );
+    drop(file);
+
+    flip_byte(&path, interior.offset);
+
+    let mut read = Chapters::default();
+    read.read_from(&ColumnFile::open(&path).unwrap()).unwrap();
+
+    let err = read.push(alice, "one chapter too many").unwrap_err();
+    assert!(err.is_corrupt(), "{err}");
+    assert_eq!(
+        Table::rows(&read),
+        4096,
+        "the id was never minted, so no column grew"
+    );
+    read.check_rows_agree()
+        .expect("a refused push leaves a table its columns still agree about");
+}
+
+#[test]
+fn a_push_that_need_not_regrow_an_index_reads_only_the_tail_of_it() {
+    let dir = TempDir::new("no_regrow");
+    let path = dir.join("chapters.dbs");
+
+    let (_, chapters) = shelf_of(5000);
+    let file = committed(&path, |updater| chapters.offer_to(updater));
+    drop(file);
+
+    let mut read = Chapters::default();
+    read.read_from(&ColumnFile::open(&path).unwrap()).unwrap();
+    read.reserve().unwrap();
+
+    let held = held_by(&read, "chapter.book.links");
+    assert!(held.chunks > 1, "{held:?}");
+    assert_eq!(
+        held.resident, 1,
+        "only a push that outgrows its buckets has cause to read a link it already filed"
+    );
+}
+
+#[test]
+fn reserving_for_a_row_that_outgrows_an_index_reads_every_link_it_already_filed() {
+    let dir = TempDir::new("reserve_reads");
+    let path = dir.join("chapters.dbs");
+
+    let (_, chapters) = shelf_of(4096);
+    let file = committed(&path, |updater| chapters.offer_to(updater));
+    drop(file);
+
+    let mut read = Chapters::default();
+    read.read_from(&ColumnFile::open(&path).unwrap()).unwrap();
+    read.reserve().unwrap();
+
+    for column in ["chapter.id.links", "chapter.book.links"] {
+        let held = held_by(&read, column);
+        assert!(held.chunks > 1, "{held:?}");
+        assert_eq!(
+            held.resident, held.chunks,
+            "a push that rehashes every link must read every link first: {held:?}"
+        );
+    }
 }
 
 #[test]

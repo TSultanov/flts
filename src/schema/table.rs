@@ -84,8 +84,9 @@ pub trait Table: Default + Clone {
     }
 
     fn reserve(&self) -> Result<()> {
+        let wanted = Table::rows(self) + 1;
         for field in self.fields() {
-            field.column.touch_tail()?;
+            field.column.make_room(wanted)?;
         }
         Ok(())
     }

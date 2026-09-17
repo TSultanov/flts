@@ -142,7 +142,7 @@ fn a_repointed_row_leaves_the_key_it_had_for_the_one_it_was_given() {
     let second = Id::<Book>::mint();
     let mut index = shared(3, first);
 
-    index.repoint(1, first, second).unwrap();
+    index.repoint_row(1, second).unwrap();
 
     assert_eq!(index.rows_of(first).unwrap(), [0, 2]);
     assert_eq!(index.rows_of(second).unwrap(), [1]);
@@ -154,8 +154,8 @@ fn a_row_repointed_back_to_the_key_it_started_with_is_named_once_and_not_twice()
     let second = Id::<Book>::mint();
     let mut index = shared(2, first);
 
-    index.repoint(1, first, second).unwrap();
-    index.repoint(1, second, first).unwrap();
+    index.repoint_row(1, second).unwrap();
+    index.repoint_row(1, first).unwrap();
 
     assert_eq!(
         index.rows_of(first).unwrap(),
@@ -171,7 +171,7 @@ fn the_only_row_a_bucket_held_can_be_repointed_away_from_it() {
     let second = Id::<Book>::mint();
     let mut index = shared(1, first);
 
-    index.repoint(0, first, second).unwrap();
+    index.repoint_row(0, second).unwrap();
 
     assert!(index.rows_of(first).unwrap().is_empty());
     assert_eq!(index.rows_of(second).unwrap(), [0]);
@@ -199,6 +199,20 @@ fn an_index_agrees_only_with_the_number_of_rows_it_was_built_for() {
     assert!(index.agrees_with(9));
     assert!(!index.agrees_with(8), "one row short is one link too many");
     assert!(!index.agrees_with(10));
+}
+
+#[test]
+fn making_room_for_a_row_that_never_arrives_leaves_the_index_the_size_it_was() {
+    let Shelf { index, .. } = stocked(8);
+
+    assert_eq!(index.capacity(), 8);
+    index.make_room(9).unwrap();
+
+    assert!(
+        index.agrees_with(8),
+        "make_room reads what a growth would read; appending is what grows"
+    );
+    assert_eq!(index.capacity(), 8);
 }
 
 #[test]
@@ -278,6 +292,42 @@ fn touching_the_tail_of_a_rotten_index_reports_the_damage() {
 
     let err = read.touch_tail().unwrap_err();
     assert!(err.is_corrupt(), "{err}");
+}
+
+#[test]
+fn a_row_is_not_unlinked_until_the_bucket_it_is_moving_to_can_be_read() {
+    let dir = TempDir::new("repoint_cold");
+    let path = dir.join("books.dbs");
+
+    let Shelf { index, minted, .. } = stocked(8193);
+    assert_eq!(index.capacity(), 16384);
+    let file = committed(&path, |updater| index.offer_to("book", "id", updater));
+    let buckets = file.column_meta("book.id.buckets").unwrap();
+    assert_eq!(buckets.chunks.len(), 2);
+    let far = buckets.chunks[1];
+    drop(file);
+
+    flip_byte(&path, far.offset);
+
+    let mut read = empty();
+    read.read_from("book", "id", &ColumnFile::open(&path).unwrap())
+        .unwrap();
+
+    let near = (0..minted.len())
+        .find(|&row| home_of(minted[row].raw(), 16384) < 8192)
+        .expect("some key of eight thousand homes in the readable chunk");
+    let unreadable = (0..64)
+        .map(|_| Id::<Book>::mint())
+        .find(|id| home_of(id.raw(), 16384) >= 8192)
+        .expect("of sixty-four ids, one homes in the second half of the buckets");
+
+    let err = read.repoint_row(near, unreadable).unwrap_err();
+    assert!(err.is_corrupt(), "{err}");
+    assert_eq!(
+        read.rows_of(minted[near]).unwrap(),
+        [near],
+        "a row the index could not move is still filed under the key it had"
+    );
 }
 
 #[test]
@@ -399,7 +449,7 @@ fn a_row_no_bucket_reaches_can_never_be_moved_to_another_key() {
     let home = home_of(key.raw(), index.capacity());
     index.buckets.set(home, 0).unwrap();
 
-    let err = index.repoint(1, key, other).unwrap_err();
+    let err = index.repoint_row(1, other).unwrap_err();
     assert!(err.is_corrupt(), "{err}");
     assert!(err.to_string().contains("row 1"), "{err}");
 }

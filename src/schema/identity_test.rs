@@ -101,7 +101,7 @@ fn an_audit_passes_a_column_of_any_size_every_id_was_pushed_into() {
 fn two_rows_claiming_one_id_are_corruption_that_names_both() {
     let (mut column, ids) = stocked(3);
     column.ids.set(2, ids[0]).unwrap();
-    column.index.repoint(2, ids[2], ids[0]).unwrap();
+    column.index.repoint_row(2, ids[0]).unwrap();
 
     let err = column.audit().unwrap_err();
     assert!(err.is_corrupt(), "{err}");
@@ -114,9 +114,9 @@ fn two_rows_claiming_one_id_are_corruption_that_names_both() {
 
 #[test]
 fn a_row_with_no_id_at_all_is_corruption_that_names_the_row() {
-    let (mut column, ids) = stocked(2);
+    let (mut column, _) = stocked(2);
     column.ids.set(1, Id::NIL).unwrap();
-    column.index.repoint(1, ids[1], Id::NIL).unwrap();
+    column.index.repoint_row(1, Id::NIL).unwrap();
 
     let err = column.audit().unwrap_err();
     assert!(err.is_corrupt(), "{err}");

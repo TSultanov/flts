@@ -49,8 +49,7 @@ impl<P: Entity, C: Entity> RefColumn<P, C> {
     }
 
     pub fn set(&mut self, row: Row, parent: Id<P>) -> Result<()> {
-        let was = self.get(row)?;
-        self.index.repoint(row.index(), was, parent)?;
+        self.index.repoint_row(row.index(), parent)?;
         self.ids.set(row.index(), parent)
     }
 
@@ -100,6 +99,11 @@ impl<P: Entity, C: Entity> Column for RefColumn<P, C> {
     fn touch_tail(&self) -> Result<()> {
         self.ids.touch_tail()?;
         self.index.touch_tail()
+    }
+
+    fn make_room(&self, rows: usize) -> Result<()> {
+        self.ids.touch_tail()?;
+        self.index.make_room(rows)
     }
 
     fn audit(&self) -> Result<()> {

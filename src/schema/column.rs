@@ -62,6 +62,10 @@ pub trait Column {
 
     fn touch_tail(&self) -> Result<()>;
 
+    fn make_room(&self, _rows: usize) -> Result<()> {
+        self.touch_tail()
+    }
+
     fn audit(&self) -> Result<()> {
         Ok(())
     }

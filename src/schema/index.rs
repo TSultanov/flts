@@ -138,9 +138,12 @@ impl<K: IndexKey> HashIndex<K> {
         Ok(row)
     }
 
-    pub fn repoint(&mut self, row: usize, was: K, now: K) -> Result<()> {
-        self.unlink(row, was)?;
+    pub fn repoint_row(&mut self, row: usize, now: K) -> Result<()> {
+        let was = self.links.row(row)?.key;
         let home = self.home_for(now)?;
+        self.reachable(home)?;
+
+        self.unlink(row, was)?;
         let head = self.head(home)?;
         self.links.set(
             row,
@@ -149,8 +152,16 @@ impl<K: IndexKey> HashIndex<K> {
                 next: head,
             },
         )?;
-        self.buckets.set(home, row as u64)?;
-        Ok(())
+        self.buckets.set(home, row as u64)
+    }
+
+    pub fn make_room(&self, rows: usize) -> Result<()> {
+        if capacity_for(rows) > self.buckets.len() {
+            for chunk in 0..self.links.chunk_count() {
+                self.links.chunk(chunk)?;
+            }
+        }
+        self.touch_tail()
     }
 
     pub fn reserve(&mut self, rows: usize) -> Result<()> {
@@ -339,6 +350,10 @@ impl<K: IndexKey> HashIndex<K> {
             true => Err(self.damaged("has no bucket to name".to_owned())),
             false => Ok(home_of(key.raw(), self.buckets.len())),
         }
+    }
+
+    fn reachable(&self, home: usize) -> Result<()> {
+        self.head(home).map(|_| ())
     }
 
     fn head(&self, home: usize) -> Result<u64> {
