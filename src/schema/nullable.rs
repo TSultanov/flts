@@ -1,10 +1,34 @@
 //! A field that may be absent, kept honest by a presence column beside it.
 
 use super::column::{Column, ColumnKind, ColumnSpec, Residency, Row};
+use super::index::{IndexKey, Keys};
+use super::indexed::Keyed;
 use super::names::{presence_name, qualified};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::record::Record;
 use crate::storage::{Arena, ColumnFile, ColumnFileUpdater};
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Maybe<T>(pub Option<T>);
+
+impl<T: Record + Default> Record for Maybe<T> {
+    const SIZE: usize = T::SIZE + 1;
+
+    fn encode(&self, out: &mut [u8]) {
+        out[0] = u8::from(self.0.is_some());
+        self.0.unwrap_or_default().encode(&mut out[1..]);
+    }
+
+    fn decode(src: &[u8]) -> Self {
+        Self((src[0] != 0).then(|| T::decode(&src[1..])))
+    }
+}
+
+impl<T: IndexKey + Default> IndexKey for Maybe<T> {
+    fn raw(self) -> u128 {
+        self.0.map_or(u128::MAX, IndexKey::raw)
+    }
+}
 
 #[derive(Clone, Default)]
 pub struct NullableColumn<T: Record + Default> {
@@ -75,6 +99,43 @@ impl<T: Record + Default> Column for NullableColumn<T> {
     fn offer_to(&self, entity: &str, field: &str, updater: &mut ColumnFileUpdater) -> Result<()> {
         updater.column(&qualified(entity, field), &self.values)?;
         updater.column(&presence_name(entity, field), &self.present)
+    }
+}
+
+impl<T: IndexKey + Default> Keys for NullableColumn<T> {
+    type Key = Maybe<T>;
+
+    fn key_at(&self, row: usize) -> Result<Maybe<T>> {
+        match self.present.get(row)?.copied() {
+            Some(true) => Ok(Maybe(Some(self.values.key_at(row)?))),
+            Some(false) => Ok(Maybe(None)),
+            None => Err(Error::invalid(format!(
+                "a column of {} keys has no row {row}",
+                self.values.len()
+            ))),
+        }
+    }
+}
+
+impl<T: IndexKey + Default> Keyed for NullableColumn<T> {
+    type Seek<'a> = Option<T>;
+
+    fn key_for(value: Option<T>) -> Maybe<T> {
+        Maybe(value)
+    }
+
+    fn absent(value: Option<T>) -> bool {
+        value.is_none()
+    }
+
+    fn append(&mut self, value: Option<T>) -> Result<Maybe<T>> {
+        self.push(value)?;
+        Ok(Maybe(value))
+    }
+
+    fn write(&mut self, row: Row, value: Option<T>) -> Result<Maybe<T>> {
+        self.set(row, value)?;
+        Ok(Maybe(value))
     }
 }
 

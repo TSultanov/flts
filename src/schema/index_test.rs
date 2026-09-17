@@ -131,8 +131,8 @@ fn a_walk_that_accepts_no_candidate_it_is_offered_finds_nothing() {
     let key = Id::<Book>::mint();
     let index = shared(5, key);
 
-    assert!(index.rows_where(key, |_| Ok(false)).unwrap().is_empty());
-    assert_eq!(index.row_where(key, |_| Ok(false)).unwrap(), None);
+    assert!(index.rows_where(key, |_, _| Ok(false)).unwrap().is_empty());
+    assert_eq!(index.row_where(key, |_, _| Ok(false)).unwrap(), None);
 }
 
 #[test]
@@ -141,11 +141,11 @@ fn a_walk_keeps_only_the_candidates_its_predicate_accepts_and_orders_them_by_row
     let index = shared(6, key);
 
     assert_eq!(
-        index.rows_where(key, |row| Ok(row % 2 == 0)).unwrap(),
+        index.rows_where(key, |row, _| Ok(row % 2 == 0)).unwrap(),
         [0, 2, 4]
     );
     assert_eq!(
-        index.row_where(key, |row| Ok(row < 3)).unwrap(),
+        index.row_where(key, |row, _| Ok(row < 3)).unwrap(),
         Some(2),
         "a chain is walked newest first, so the first row accepted is the last one filed"
     );
@@ -157,12 +157,16 @@ fn a_predicate_that_cannot_answer_stops_the_walk_rather_than_being_read_as_no() 
     let index = shared(5, key);
 
     let err = index
-        .rows_where(key, |_| Err(Error::invalid("the column could not be read")))
+        .rows_where(key, |_, _| {
+            Err(Error::invalid("the column could not be read"))
+        })
         .unwrap_err();
     assert!(err.to_string().contains("could not be read"), "{err}");
 
     let err = index
-        .row_where(key, |_| Err(Error::invalid("the column could not be read")))
+        .row_where(key, |_, _| {
+            Err(Error::invalid("the column could not be read"))
+        })
         .unwrap_err();
     assert!(err.to_string().contains("could not be read"), "{err}");
 }
@@ -171,7 +175,7 @@ fn a_predicate_that_cannot_answer_stops_the_walk_rather_than_being_read_as_no() 
 fn a_column_of_keys_hands_over_the_key_at_a_row_and_refuses_one_past_its_end() {
     let Shelf { keys, minted, .. } = stocked(3);
 
-    assert_eq!(Keys::rows(&keys), 3);
+    assert_eq!(Column::rows(&keys), 3);
     assert_eq!(keys.key_at(2).unwrap(), minted[2]);
     assert!(keys.key_at(3).is_err());
 }

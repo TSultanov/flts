@@ -1,6 +1,6 @@
 //! A hash index over a column: bucket heads and chained links, written to the file beside its keys.
 
-use super::column::{ColumnKind, ColumnSpec, Residency};
+use super::column::{Column, ColumnKind, ColumnSpec, Residency};
 use super::names::{bucket_name, link_name};
 use crate::error::{Error, Result};
 use crate::id::Id;
@@ -20,20 +20,34 @@ impl<T: ?Sized + 'static> IndexKey for Id<T> {
     }
 }
 
-pub trait Keys {
-    type Key: IndexKey;
+macro_rules! whole_numbers_key_by_their_value {
+    ($($number:ty),*) => {
+        $(
+            impl IndexKey for $number {
+                fn raw(self) -> u128 {
+                    self as u128
+                }
+            }
+        )*
+    };
+}
 
-    fn rows(&self) -> usize;
+whole_numbers_key_by_their_value!(u8, u16, u32, u64, i8, i16, i32, i64);
+
+impl IndexKey for bool {
+    fn raw(self) -> u128 {
+        u128::from(self)
+    }
+}
+
+pub trait Keys: Column {
+    type Key: IndexKey;
 
     fn key_at(&self, row: usize) -> Result<Self::Key>;
 }
 
 impl<K: IndexKey> Keys for Arena<K> {
     type Key = K;
-
-    fn rows(&self) -> usize {
-        self.len()
-    }
 
     fn key_at(&self, row: usize) -> Result<K> {
         match self.get(row)? {
@@ -137,20 +151,20 @@ impl<K: IndexKey> HashIndex<K> {
     }
 
     pub fn row_of(&self, key: K) -> Result<Option<usize>> {
-        self.row_where(key, |_| Ok(true))
+        self.row_where(key, |_, _| Ok(true))
     }
 
     pub fn rows_of(&self, key: K) -> Result<Vec<usize>> {
-        self.rows_where(key, |_| Ok(true))
+        self.rows_where(key, |_, _| Ok(true))
     }
 
     pub fn row_where(
         &self,
         key: K,
-        mut holds: impl FnMut(usize) -> Result<bool>,
+        mut holds: impl FnMut(usize, K) -> Result<bool>,
     ) -> Result<Option<usize>> {
         let mut found = None;
-        self.walk(key, |row| match holds(row)? {
+        self.walk(key, |row, held| match holds(row, held)? {
             true => {
                 found = Some(row);
                 Ok(false)
@@ -163,11 +177,11 @@ impl<K: IndexKey> HashIndex<K> {
     pub fn rows_where(
         &self,
         key: K,
-        mut holds: impl FnMut(usize) -> Result<bool>,
+        mut holds: impl FnMut(usize, K) -> Result<bool>,
     ) -> Result<Vec<usize>> {
         let mut rows = Vec::new();
-        self.walk(key, |row| {
-            if holds(row)? {
+        self.walk(key, |row, held| {
+            if holds(row, held)? {
                 rows.push(row);
             }
             Ok(true)
@@ -225,26 +239,26 @@ impl<K: IndexKey> HashIndex<K> {
     }
 
     pub fn rebuild(&mut self, keys: &impl Keys<Key = K>) -> Result<()> {
-        let mut gathered = Vec::with_capacity(keys.rows());
-        for row in 0..keys.rows() {
+        let mut gathered = Vec::with_capacity(Column::rows(keys));
+        for row in 0..Column::rows(keys) {
             gathered.push(keys.key_at(row)?);
         }
         self.install(&gathered, capacity_for(gathered.len()))
     }
 
     pub fn audit(&self, keys: &impl Keys<Key = K>) -> Result<()> {
-        if self.links.len() != keys.rows() {
+        if self.links.len() != Column::rows(keys) {
             return Err(self.damaged(format!(
                 "holds {} links for {} rows",
                 self.links.len(),
-                keys.rows()
+                Column::rows(keys)
             )));
         }
-        if self.buckets.len() != capacity_for(keys.rows()) {
+        if self.buckets.len() != capacity_for(Column::rows(keys)) {
             return Err(self.damaged(format!(
                 "holds {} buckets for {} rows",
                 self.buckets.len(),
-                keys.rows()
+                Column::rows(keys)
             )));
         }
 
@@ -328,7 +342,7 @@ impl<K: IndexKey> HashIndex<K> {
         updater.column(&link_name(entity, field), &self.links)
     }
 
-    fn walk(&self, key: K, mut visit: impl FnMut(usize) -> Result<bool>) -> Result<()> {
+    fn walk(&self, key: K, mut visit: impl FnMut(usize, K) -> Result<bool>) -> Result<()> {
         if self.buckets.is_empty() {
             return Ok(());
         }
@@ -341,7 +355,7 @@ impl<K: IndexKey> HashIndex<K> {
             }
             let row = self.holding(at)?;
             let link = *self.links.row(row)?;
-            if link.key == key && !visit(row)? {
+            if link.key == key && !visit(row, link.key)? {
                 return Ok(());
             }
             at = link.next;

@@ -3,6 +3,8 @@
 use std::marker::PhantomData;
 
 use super::column::{Column, ColumnKind, ColumnSpec, Residency, Row};
+use super::index::Keys;
+use super::indexed::Keyed;
 use super::names::qualified;
 use crate::error::Result;
 use crate::record::Record;
@@ -74,6 +76,32 @@ impl<E: UnitEnum> Column for EnumColumn<E> {
 
     fn offer_to(&self, entity: &str, field: &str, updater: &mut ColumnFileUpdater) -> Result<()> {
         updater.column(&qualified(entity, field), &self.codes)
+    }
+}
+
+impl<E: UnitEnum> Keys for EnumColumn<E> {
+    type Key = u8;
+
+    fn key_at(&self, row: usize) -> Result<u8> {
+        self.codes.key_at(row)
+    }
+}
+
+impl<E: UnitEnum> Keyed for EnumColumn<E> {
+    type Seek<'a> = E;
+
+    fn key_for(value: E) -> u8 {
+        value.to_u8()
+    }
+
+    fn append(&mut self, value: E) -> Result<u8> {
+        self.codes.push(value.to_u8())?;
+        Ok(value.to_u8())
+    }
+
+    fn write(&mut self, row: Row, value: E) -> Result<u8> {
+        self.codes.set(row.index(), value.to_u8())?;
+        Ok(value.to_u8())
     }
 }
 

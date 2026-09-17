@@ -7,6 +7,7 @@ mod entry;
 mod enums;
 mod identity;
 mod index;
+mod indexed;
 mod names;
 mod nullable;
 mod reference;
@@ -20,13 +21,14 @@ pub use entity::{Audited, Child, Entity, Holds, audit_reference, child_rows_of, 
 pub use entry::{Children, Entry, EntryMut, Rows};
 pub use enums::{EnumColumn, UnitEnum};
 pub use identity::IdColumn;
-pub use index::{HashIndex, IndexKey};
+pub use index::{HashIndex, IndexKey, Keys};
+pub use indexed::{Indexed, Keyed, Unique};
 pub use names::{bucket_name, heap_name, link_name, presence_name, qualified};
-pub use nullable::NullableColumn;
+pub use nullable::{Maybe, NullableColumn};
 pub use reference::RefColumn;
 pub use store::{Store, StoreState};
 pub use table::{AnyTable, Table};
-pub use text::{NullableTextColumn, TextColumn};
+pub use text::{NullableTextColumn, TextColumn, TextKey};
 
 #[cfg(all(test, feature = "derive"))]
 #[path = "generated_test.rs"]
