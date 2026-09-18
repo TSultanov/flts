@@ -346,7 +346,7 @@ fn committing_twice_in_a_row_still_reuses_the_chunks_it_already_wrote() {
     );
     let grew_by = len_of(&path) - after_second;
     assert!(
-        grew_by < 3000,
+        grew_by * 4 < len_of(&path),
         "the third commit appended {grew_by} bytes of a {} byte database: the directory is \
          rewritten whole on every commit, but the chunks that did not change are not",
         len_of(&path)
