@@ -1,6 +1,6 @@
 use crate::error::Result;
 use crate::id::Id;
-use crate::schema::UnitEnum;
+use crate::schema::{Store, UnitEnum};
 use crate::test_utils::props;
 use proptest::prelude::*;
 
@@ -95,6 +95,9 @@ struct Author {
 struct Work {
     author: One<Author>,
     title: String,
+    appearances: Many<Appearance>,
+    #[through(Appearance)]
+    editions: Many<Edition>,
 }
 
 #[crate::entity]
@@ -103,6 +106,16 @@ struct Edition {
     isbn: Option<String>,
     #[index]
     year: u32,
+    #[through(Appearance)]
+    works: Many<Work>,
+}
+
+#[crate::entity]
+#[distinct(work, edition)]
+struct Appearance {
+    work: One<Work>,
+    edition: One<Edition>,
+    page: u32,
 }
 
 #[test]
@@ -139,6 +152,162 @@ fn a_generated_entity_names_its_columns_after_itself() {
             "author.shelf.links",
         ]
     );
+}
+
+#[test]
+fn a_generated_join_names_a_column_for_the_pair_no_two_of_its_rows_may_share() {
+    use crate::schema::{ColumnKind, Table};
+
+    let names: Vec<String> = AppearanceTable::default()
+        .specs()
+        .into_iter()
+        .map(|spec| spec.name)
+        .collect();
+
+    assert_eq!(
+        names,
+        [
+            "appearance.id",
+            "appearance.id.buckets",
+            "appearance.id.links",
+            "appearance.work",
+            "appearance.work.buckets",
+            "appearance.work.links",
+            "appearance.edition",
+            "appearance.edition.buckets",
+            "appearance.edition.links",
+            "appearance.page",
+            "appearance.work_edition",
+            "appearance.work_edition.buckets",
+            "appearance.work_edition.links",
+        ]
+    );
+
+    let pair = AppearanceTable::default()
+        .specs()
+        .into_iter()
+        .find(|spec| spec.name == "appearance.work_edition")
+        .expect("the pair names itself");
+    assert_eq!(pair.elem_size, 32);
+    assert_eq!(
+        pair.kind,
+        ColumnKind::Pair {
+            left: "work",
+            right: "edition"
+        }
+    );
+}
+
+fn issued() -> (Catalogue, Id<Work>, Id<Work>, Id<Edition>, Id<Edition>) {
+    let mut catalogue = Catalogue::default();
+    let soseki = catalogue
+        .authors
+        .push("Natsume Soseki", None, 1867, None, Shelf::Fiction)
+        .unwrap();
+    let kokoro = catalogue.works.push(soseki, "Kokoro").unwrap();
+    let michikusa = catalogue.works.push(soseki, "Michikusa").unwrap();
+    let cloth = catalogue.editions.push(Some("978-0"), 1914).unwrap();
+    let paper = catalogue.editions.push(Some("978-1"), 1955).unwrap();
+
+    catalogue.appearances.push(kokoro, cloth, 1).unwrap();
+    catalogue.appearances.push(kokoro, paper, 7).unwrap();
+    catalogue.appearances.push(michikusa, cloth, 90).unwrap();
+    (catalogue, kokoro, michikusa, cloth, paper)
+}
+
+#[test]
+fn a_generated_row_crosses_a_join_the_declaration_named_with_through() {
+    let (catalogue, kokoro, michikusa, cloth, paper) = issued();
+
+    assert_eq!(
+        catalogue
+            .at(kokoro)
+            .unwrap()
+            .editions()
+            .unwrap()
+            .map(|edition| edition.year().unwrap())
+            .collect::<Vec<_>>(),
+        [1914, 1955]
+    );
+    assert_eq!(
+        catalogue
+            .at(cloth)
+            .unwrap()
+            .works()
+            .unwrap()
+            .map(|work| work.title().unwrap().into_owned())
+            .collect::<Vec<_>>(),
+        ["Kokoro", "Michikusa"]
+    );
+    assert_eq!(catalogue.at(paper).unwrap().works().unwrap().count(), 1);
+    assert_eq!(
+        catalogue
+            .at(michikusa)
+            .unwrap()
+            .appearances()
+            .unwrap()
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_generated_push_whose_pair_is_taken_is_refused_and_leaves_every_column_as_it_was() {
+    use crate::schema::Table;
+
+    let (mut catalogue, kokoro, _, cloth, _) = issued();
+    let before: Vec<usize> = Table::fields(&catalogue.appearances)
+        .iter()
+        .map(|field| field.column.rows())
+        .collect();
+
+    let err = catalogue.appearances.push(kokoro, cloth, 500).unwrap_err();
+
+    assert!(err.to_string().contains("appearance.work_edition"), "{err}");
+    assert_eq!(
+        Table::fields(&catalogue.appearances)
+            .iter()
+            .map(|field| field.column.rows())
+            .collect::<Vec<_>>(),
+        before,
+        "a refused push writes no column at all"
+    );
+    Table::check_rows_agree(&catalogue.appearances).unwrap();
+    Store::audit(&catalogue).unwrap();
+}
+
+#[test]
+fn a_generated_set_moves_the_pair_with_the_parent_it_changes() {
+    let (mut catalogue, kokoro, michikusa, _, paper) = issued();
+    let moved = catalogue.children_of::<Work, Appearance>(kokoro).unwrap()[0];
+
+    let err = catalogue
+        .at_mut(moved)
+        .unwrap()
+        .set_work(michikusa)
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("appearance.work_edition"),
+        "michikusa already appears in the cloth edition: {err}"
+    );
+    assert_eq!(catalogue.appearances.work(moved).unwrap(), kokoro);
+
+    catalogue
+        .at_mut(moved)
+        .unwrap()
+        .set_edition(paper)
+        .unwrap_err();
+    let second = catalogue
+        .children_of::<Work, Appearance>(michikusa)
+        .unwrap()[0];
+    catalogue
+        .at_mut(second)
+        .unwrap()
+        .set_edition(paper)
+        .unwrap();
+
+    assert_eq!(catalogue.at(paper).unwrap().works().unwrap().count(), 2);
+    Store::audit(&catalogue).unwrap();
 }
 
 #[test]
@@ -264,6 +433,8 @@ fn every_column_a_table_names_is_a_column_it_reports_residency_for() {
 struct Catalogue {
     authors: Set<Author>,
     works: Set<Work>,
+    editions: Set<Edition>,
+    appearances: Set<Appearance>,
 }
 
 struct Shelved {

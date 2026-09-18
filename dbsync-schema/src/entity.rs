@@ -37,6 +37,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         .collect::<syn::Result<_>>()?;
     check_one_parent_each(&fields)?;
     check_no_field_called_id(&fields)?;
+    let pair = distinct_of(&input.attrs, &fields)?;
 
     let name = &input.ident;
     let label = snake_case(&name.to_string());
@@ -52,7 +53,11 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     let row_mut_type = format_ident!("{}RowMut", name);
     let held = quote! { 'a };
     let vis = &input.vis;
-    let attrs = &input.attrs;
+    let attrs: Vec<&syn::Attribute> = input
+        .attrs
+        .iter()
+        .filter(|attr| !attr.path().is_ident("distinct"))
+        .collect();
     let stored: Vec<&Field> = fields.iter().filter(|field| field.is_stored()).collect();
     if stored.is_empty() {
         return Err(syn::Error::new(
@@ -77,6 +82,50 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             _ => quote! { #field_name: ::dbsync::schema::Indexed::named(#column) },
         }
     });
+    let pair_column = pair.as_ref().map(|shared| {
+        let column = &shared.column;
+        let (left, right) = (&shared.left_parent, &shared.right_parent);
+        quote! { #column: ::dbsync::schema::Distinct<#left, #right> }
+    });
+    let pair_built = pair.as_ref().map(|shared| {
+        let column = &shared.column;
+        let named = format!("{label}.{}", shared.column);
+        quote! { #column: ::dbsync::schema::Indexed::named(#named) }
+    });
+    let pair_field = pair.as_ref().map(|shared| {
+        let column = &shared.column;
+        let named = shared.column.to_string();
+        quote! { ::dbsync::schema::Field::new(#named, &self.#column) }
+    });
+    let pair_field_mut = pair.as_ref().map(|shared| {
+        let column = &shared.column;
+        let named = shared.column.to_string();
+        quote! { ::dbsync::schema::FieldMut::new(#named, &mut self.#column) }
+    });
+    let pair_reach = pair.as_ref().map(|shared| {
+        let (column, left, right) = (&shared.column, &shared.left, &shared.right);
+        quote! {
+            let pair = ::dbsync::schema::Pair::of(#left, #right);
+            self.#column.reach(pair)?;
+            self.#column.refuse_duplicate(pair)?;
+        }
+    });
+    let pair_push = pair.as_ref().map(|shared| {
+        let column = &shared.column;
+        quote! { self.#column.push(pair)?; }
+    });
+    let pair_audit = pair.as_ref().map(|shared| {
+        let (column, left, right) = (&shared.column, &shared.left, &shared.right);
+        let (left_ty, right_ty) = (&shared.left_parent, &shared.right_parent);
+        quote! {
+            ::dbsync::schema::check_pairs::<#left_ty, #right_ty, #name>(
+                &::dbsync::schema::Holds::<#name>::table(store).#column,
+                &::dbsync::schema::Holds::<#name>::table(store).#left,
+                &::dbsync::schema::Holds::<#name>::table(store).#right,
+            )?;
+        }
+    });
+
     let read_only = stored.iter().map(|field| {
         let field_name = &field.name;
         let label = field_name.to_string();
@@ -162,7 +211,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         let read = field.kind.read(&quote! { '_ });
         let pushed = field.kind.pushed();
         let get = field.kind.get(&quote! { self }, field_name, field.indexing);
-        let set = field.kind.set(&quote! { self }, field_name, field.indexing);
+        let set = set_beside_its_pair(field, &quote! { self }, pair.as_ref());
         let docs = &field.docs;
         quote! {
             #(#docs)*
@@ -185,15 +234,27 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     let readers = fields.iter().map(|field| {
         let field_name = &field.name;
         match &field.kind {
-            Kind::Many(child) => quote! {
-                pub fn #field_name(
-                    &self,
-                ) -> ::dbsync::Result<::dbsync::schema::Children<#held, S, #child>>
-                where
-                    S: ::dbsync::schema::Holds<#child>,
-                {
-                    self.0.children::<#child>()
-                }
+            Kind::Many(child) => match &field.through {
+                Some(join) => quote! {
+                    pub fn #field_name(
+                        &self,
+                    ) -> ::dbsync::Result<::dbsync::schema::Across<#held, S, #child>>
+                    where
+                        S: ::dbsync::schema::Holds<#join> + ::dbsync::schema::Holds<#child>,
+                    {
+                        self.0.across::<#join, #child>()
+                    }
+                },
+                None => quote! {
+                    pub fn #field_name(
+                        &self,
+                    ) -> ::dbsync::Result<::dbsync::schema::Children<#held, S, #child>>
+                    where
+                        S: ::dbsync::schema::Holds<#child>,
+                    {
+                        self.0.children::<#child>()
+                    }
+                },
             },
             Kind::Reference(parent) => quote! {
                 pub fn #field_name(
@@ -227,9 +288,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         let field_name = &field.name;
         let setter = format_ident!("set_{}", field_name);
         let pushed = field.kind.pushed();
-        let set = field
-            .kind
-            .set(&quote! { table }, field_name, field.indexing);
+        let set = set_beside_its_pair(field, &quote! { table }, pair.as_ref());
         quote! {
             pub fn #setter(&mut self, value: #pushed) -> ::dbsync::Result<()> {
                 let row = self.0.row();
@@ -266,7 +325,10 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     });
 
     let parents = fields.iter().filter_map(|field| match &field.kind {
-        Kind::Many(child) => Some(quote_spanned_child(child, name)),
+        Kind::Many(child) => Some(match &field.through {
+            Some(join) => quote_spanned_crossing(child, join, name),
+            None => quote_spanned_child(child, name),
+        }),
         _ => None,
     });
 
@@ -292,6 +354,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         #vis struct #table {
             dbsync_ids: ::dbsync::schema::IdColumn<#name>,
             #(#columns,)*
+            #pair_column
         }
 
         impl ::core::default::Default for #table {
@@ -299,6 +362,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 Self {
                     dbsync_ids: ::core::default::Default::default(),
                     #(#built,)*
+                    #pair_built
                 }
             }
         }
@@ -318,6 +382,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 ::std::vec![
                     ::dbsync::schema::Field::new("id", &self.dbsync_ids),
                     #(#read_only,)*
+                    #pair_field
                 ]
             }
 
@@ -325,6 +390,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 ::std::vec![
                     ::dbsync::schema::FieldMut::new("id", &mut self.dbsync_ids),
                     #(#read_write,)*
+                    #pair_field_mut
                 ]
             }
         }
@@ -333,9 +399,11 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             pub fn push(&mut self, #(#arguments,)*) -> ::dbsync::Result<::dbsync::Id<#name>> {
                 <Self as ::dbsync::schema::Table>::reserve(self)?;
                 #(#reaches)*
+                #pair_reach
                 #(#probes)*
                 let id = <Self as ::dbsync::schema::Table>::mint(self)?;
                 #(#pushes)*
+                #pair_push
                 ::core::result::Result::Ok(id)
             }
 
@@ -414,6 +482,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 <#table as ::dbsync::schema::Table>::audit(
                     ::dbsync::schema::Holds::<#name>::table(store),
                 )?;
+                #pair_audit
                 #(
                     ::dbsync::schema::audit_reference::<S, #checked, #name>(store)?;
                 )*
@@ -435,6 +504,132 @@ fn quote_spanned_child(child: &syn::Type, parent: &syn::Ident) -> TokenStream {
             >() {
             }
             groups_by_its_parent::<#parent, #child>();
+        };
+    }
+}
+
+fn set_beside_its_pair(field: &Field, table: &TokenStream, pair: Option<&Shared>) -> TokenStream {
+    let alone = field.kind.set(table, &field.name, field.indexing);
+    let Some(shared) = pair else {
+        return alone;
+    };
+    let column = &shared.column;
+
+    let held = if field.name == shared.left {
+        let other = &shared.right;
+        quote! { ::dbsync::schema::Pair::of(value, #table.#other.get(row)?) }
+    } else if field.name == shared.right {
+        let other = &shared.left;
+        quote! { ::dbsync::schema::Pair::of(#table.#other.get(row)?, value) }
+    } else {
+        return alone;
+    };
+    quote! {
+        #table.#column.set(row, #held)?;
+        #alone
+    }
+}
+
+struct Shared {
+    column: syn::Ident,
+    left: syn::Ident,
+    right: syn::Ident,
+    left_parent: syn::Type,
+    right_parent: syn::Type,
+}
+
+fn distinct_of(attrs: &[syn::Attribute], fields: &[Field]) -> syn::Result<Option<Shared>> {
+    let mut asked: Option<&syn::Attribute> = None;
+
+    for attr in attrs {
+        if !attr.path().is_ident("distinct") {
+            continue;
+        }
+        if asked.is_some() {
+            return Err(syn::Error::new(
+                attr.span(),
+                "an entity says once which of its parents no two rows may share",
+            ));
+        }
+        asked = Some(attr);
+    }
+    let Some(attr) = asked else {
+        return Ok(None);
+    };
+
+    let named = attr
+        .parse_args_with(
+            syn::punctuated::Punctuated::<syn::Ident, syn::Token![,]>::parse_terminated,
+        )
+        .map_err(|_| {
+            syn::Error::new(
+                attr.span(),
+                "#[distinct] names the two parents no two rows may share, as \
+                 #[distinct(book, author)]",
+            )
+        })?;
+    let mut named = named.into_iter();
+    let (Some(left), Some(right), None) = (named.next(), named.next(), named.next()) else {
+        return Err(syn::Error::new(
+            attr.span(),
+            "#[distinct] holds exactly two parents apart; one is #[index(unique)] on the field, \
+             and three would be a key this does not carry yet",
+        ));
+    };
+    if left == right {
+        return Err(syn::Error::new(
+            right.span(),
+            "a parent paired with itself is the parent, so nothing is held apart by it",
+        ));
+    }
+
+    let parent_of = |asked: &syn::Ident| -> syn::Result<syn::Type> {
+        let Some(field) = fields.iter().find(|field| field.name == *asked) else {
+            return Err(syn::Error::new(
+                asked.span(),
+                format!("`{asked}` is not a field of this entity, so there is nothing to pair"),
+            ));
+        };
+        match &field.kind {
+            Kind::Reference(parent) => Ok(parent.clone()),
+            _ => Err(syn::Error::new(
+                asked.span(),
+                format!(
+                    "a pair is made of two parents, and `{asked}` is not one; declare it \
+                     One<..>, or hold the field apart with #[index(unique)]"
+                ),
+            )),
+        }
+    };
+    let (left_parent, right_parent) = (parent_of(&left)?, parent_of(&right)?);
+
+    let column = format_ident!("{left}_{right}");
+    if let Some(clash) = fields.iter().find(|field| field.name == column) {
+        return Err(syn::Error::new(
+            clash.name.span(),
+            format!("the pair of `{left}` and `{right}` is held in a column called `{column}`"),
+        ));
+    }
+
+    Ok(Some(Shared {
+        column,
+        left,
+        right,
+        left_parent,
+        right_parent,
+    }))
+}
+
+fn quote_spanned_crossing(far: &syn::Type, join: &syn::Type, near: &syn::Ident) -> TokenStream {
+    quote::quote_spanned! {join.span()=>
+        const _: fn() = || {
+            fn crosses<
+                A: ::dbsync::schema::Entity,
+                B: ::dbsync::schema::Entity,
+                J: ::dbsync::schema::Child<A> + ::dbsync::schema::Child<B>,
+            >() {
+            }
+            crosses::<#near, #far, #join>();
         };
     }
 }

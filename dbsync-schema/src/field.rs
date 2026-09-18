@@ -32,6 +32,7 @@ pub struct Field {
     pub name: syn::Ident,
     pub kind: Kind,
     pub indexing: Indexing,
+    pub through: Option<Type>,
     pub docs: Vec<syn::Attribute>,
 }
 
@@ -42,7 +43,7 @@ impl Field {
             .clone()
             .ok_or_else(|| syn::Error::new(field.span(), "an entity needs named fields"))?;
         let kind = Kind::parse(&field.ty)?;
-        let indexing = indexing_of(field, &kind)?;
+        let (indexing, through) = asked_of(field, &kind)?;
         let docs = field
             .attrs
             .iter()
@@ -53,6 +54,7 @@ impl Field {
             name,
             kind,
             indexing,
+            through,
             docs,
         })
     }
@@ -62,8 +64,9 @@ impl Field {
     }
 }
 
-fn indexing_of(field: &syn::Field, kind: &Kind) -> syn::Result<Indexing> {
+fn asked_of(field: &syn::Field, kind: &Kind) -> syn::Result<(Indexing, Option<Type>)> {
     let mut asked: Option<(&syn::Attribute, Indexing)> = None;
+    let mut crossed: Option<Type> = None;
 
     for attr in &field.attrs {
         if attr.path().is_ident("doc") {
@@ -75,14 +78,31 @@ fn indexing_of(field: &syn::Field, kind: &Kind) -> syn::Result<Indexing> {
                 "a column outlives the build that named it, so a field cannot be compiled out",
             ));
         }
+        if attr.path().is_ident("through") {
+            if !matches!(kind, Kind::Many(_)) {
+                return Err(syn::Error::new(
+                    attr.span(),
+                    "only a Many crosses a table to reach the rows on its far side; a field that \
+                     holds a value is already where its value is",
+                ));
+            }
+            if crossed.is_some() {
+                return Err(syn::Error::new(
+                    attr.span(),
+                    "this field crosses one table already; a second would be a different question",
+                ));
+            }
+            crossed = Some(one_table(attr)?);
+            continue;
+        }
         if !attr.path().is_ident("index") {
             let written = attr.path().to_token_stream().to_string().replace(' ', "");
             return Err(syn::Error::new(
                 attr.span(),
                 format!(
                     "`{written}` is not an attribute a field of an entity takes, and this struct \
-                     becomes a tag, so it would be dropped without a word; #[index] and \
-                     #[index(unique)] are the only ones"
+                     becomes a tag, so it would be dropped without a word; #[index], \
+                     #[index(unique)] and #[through(..)] are the only ones"
                 ),
             ));
         }
@@ -96,7 +116,7 @@ fn indexing_of(field: &syn::Field, kind: &Kind) -> syn::Result<Indexing> {
     }
 
     let Some((attr, indexing)) = asked else {
-        return Ok(Indexing::None);
+        return Ok((Indexing::None, crossed));
     };
     match kind {
         Kind::Reference(_) => Err(syn::Error::new(
@@ -113,7 +133,28 @@ fn indexing_of(field: &syn::Field, kind: &Kind) -> syn::Result<Indexing> {
             "an index answers by equality, and a float is not equal to itself when it is NaN, \
              so a float field cannot be indexed",
         )),
-        _ => Ok(indexing),
+        _ => Ok((indexing, crossed)),
+    }
+}
+
+fn one_table(attr: &syn::Attribute) -> syn::Result<Type> {
+    let named =
+        attr.parse_args_with(syn::punctuated::Punctuated::<Type, syn::Token![,]>::parse_terminated);
+    let mut named = match named {
+        Ok(named) => named.into_iter(),
+        Err(_) => {
+            return Err(syn::Error::new(
+                attr.span(),
+                "#[through] names the one table the hop goes over, as #[through(Authorship)]",
+            ));
+        }
+    };
+    match (named.next(), named.next()) {
+        (Some(only), None) => Ok(only),
+        _ => Err(syn::Error::new(
+            attr.span(),
+            "#[through] names the one table the hop goes over, as #[through(Authorship)]",
+        )),
     }
 }
 

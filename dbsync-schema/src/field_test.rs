@@ -85,12 +85,14 @@ fn a_many_field_is_not_stored_in_a_column_and_everything_else_is() {
         name: syn::parse_quote!(chapters),
         kind: kind(quote!(Many<Chapter>)),
         indexing: Indexing::None,
+        through: None,
         docs: Vec::new(),
     };
     let text = Field {
         name: syn::parse_quote!(title),
         kind: kind(quote!(String)),
         indexing: Indexing::None,
+        through: None,
         docs: Vec::new(),
     };
 

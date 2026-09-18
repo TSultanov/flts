@@ -666,3 +666,205 @@ fn a_push_reaches_for_every_bucket_it_will_write_before_it_mints() {
         "a bucket that cannot be read must stop a push before the id exists: {out}"
     );
 }
+
+#[test]
+fn a_many_that_names_a_table_to_cross_reads_the_far_side_rather_than_the_near_one() {
+    let out = expanded(quote! {
+        struct Book {
+            title: String,
+            #[through(Authorship)]
+            authors: Many<Author>,
+            authorships: Many<Authorship>,
+        }
+    });
+
+    assert!(
+        out.contains("self . 0 . across :: < Authorship , Author > ()"),
+        "{out}"
+    );
+    assert!(
+        out.contains("Result < :: dbsync :: schema :: Across < 'a , S , Author >>"),
+        "{out}"
+    );
+    assert!(
+        out.contains("Holds < Authorship > + :: dbsync :: schema :: Holds < Author >"),
+        "a crossing needs both tables, not just the far one: {out}"
+    );
+    assert!(
+        out.contains("self . 0 . children :: < Authorship > ()"),
+        "a Many with no table to cross is still the children that name this row: {out}"
+    );
+    assert!(out.contains("fn crosses"), "{out}");
+    assert!(
+        out.contains("crosses :: < Book , Author , Authorship > ()"),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_through_is_refused_on_anything_but_a_many() {
+    let err = refused(quote! {
+        struct Book {
+            #[through(Authorship)]
+            title: String,
+        }
+    });
+
+    assert!(err.contains("only a Many crosses a table"), "{err}");
+}
+
+#[test]
+fn a_through_names_one_table_and_says_so_when_it_does_not() {
+    for asked in [
+        quote! { struct Book { #[through] authors: Many<Author>, t: String } },
+        quote! { struct Book { #[through()] authors: Many<Author>, t: String } },
+        quote! { struct Book { #[through(A, B)] authors: Many<Author>, t: String } },
+    ] {
+        let err = refused(asked);
+        assert!(
+            err.contains("names the one table the hop goes over"),
+            "{err}"
+        );
+    }
+
+    let err = refused(quote! {
+        struct Book {
+            #[through(Authorship)]
+            #[through(Translation)]
+            authors: Many<Author>,
+            t: String,
+        }
+    });
+    assert!(err.contains("crosses one table already"), "{err}");
+}
+
+#[test]
+fn a_distinct_pair_becomes_a_column_of_its_own_that_the_push_probes_first() {
+    let out = expanded(quote! {
+        #[distinct(book, author)]
+        struct Authorship {
+            book: One<Book>,
+            author: One<Author>,
+            credit: String,
+        }
+    });
+
+    assert!(
+        out.contains("book_author : :: dbsync :: schema :: Distinct < Book , Author >"),
+        "{out}"
+    );
+    assert!(
+        out.contains(
+            r#"book_author : :: dbsync :: schema :: Indexed :: named ("authorship.book_author")"#
+        ),
+        "{out}"
+    );
+    assert!(
+        out.contains(r#"Field :: new ("book_author" , & self . book_author)"#),
+        "the pair is a column of the table like any other: {out}"
+    );
+
+    let push = out
+        .split("pub fn push")
+        .nth(1)
+        .expect("the table has a push");
+    let probe = push.find("refuse_duplicate").expect("the push probes");
+    let mint = push.find("mint").expect("the push mints");
+    assert!(probe < mint, "a refused pair must not spend an id: {out}");
+
+    assert!(
+        out.contains("check_pairs :: < Book , Author , Authorship >"),
+        "the audit holds the pair to the two references beside it: {out}"
+    );
+    assert!(
+        !out.contains("# [distinct (book , author)]"),
+        "the attribute is consumed, not forwarded onto the tag: {out}"
+    );
+}
+
+#[test]
+fn a_set_of_either_parent_in_a_distinct_pair_moves_the_pair_with_it() {
+    let out = expanded(quote! {
+        #[distinct(book, author)]
+        struct Authorship {
+            book: One<Book>,
+            author: One<Author>,
+        }
+    });
+
+    assert!(
+        out.contains(
+            "book_author . set (row , :: dbsync :: schema :: Pair :: of (value , \
+             self . author . get (row) ?)) ?"
+        ),
+        "{out}"
+    );
+    assert!(
+        out.contains(
+            "book_author . set (row , :: dbsync :: schema :: Pair :: of (\
+             table . book . get (row) ? , value)) ?"
+        ),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_distinct_names_two_parents_of_this_entity_and_nothing_else() {
+    let err = refused(quote! {
+        #[distinct(book)]
+        struct Authorship { book: One<Book>, author: One<Author> }
+    });
+    assert!(err.contains("exactly two parents"), "{err}");
+
+    let err = refused(quote! {
+        #[distinct(book, author, credit)]
+        struct Authorship { book: One<Book>, author: One<Author>, credit: String }
+    });
+    assert!(err.contains("exactly two parents"), "{err}");
+
+    let err = refused(quote! {
+        #[distinct(book, credit)]
+        struct Authorship { book: One<Book>, author: One<Author>, credit: String }
+    });
+    assert!(err.contains("`credit` is not one"), "{err}");
+    assert!(err.contains("#[index(unique)]"), "{err}");
+
+    let err = refused(quote! {
+        #[distinct(book, editor)]
+        struct Authorship { book: One<Book>, author: One<Author> }
+    });
+    assert!(
+        err.contains("`editor` is not a field of this entity"),
+        "{err}"
+    );
+
+    let err = refused(quote! {
+        #[distinct(book, book)]
+        struct Authorship { book: One<Book>, author: One<Author> }
+    });
+    assert!(err.contains("paired with itself"), "{err}");
+
+    let err = refused(quote! {
+        #[distinct(book, author)]
+        #[distinct(author, book)]
+        struct Authorship { book: One<Book>, author: One<Author> }
+    });
+    assert!(err.contains("says once"), "{err}");
+}
+
+#[test]
+fn a_field_named_after_the_pair_it_would_share_a_column_with_is_refused() {
+    let err = refused(quote! {
+        #[distinct(book, author)]
+        struct Authorship {
+            book: One<Book>,
+            author: One<Author>,
+            book_author: String,
+        }
+    });
+
+    assert!(
+        err.contains("is held in a column called `book_author`"),
+        "{err}"
+    );
+}

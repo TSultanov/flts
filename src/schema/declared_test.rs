@@ -12,6 +12,24 @@ struct Book {
     title: String,
     author: String,
     chapters: Many<Chapter>,
+    credits: Many<Credit>,
+    #[through(Credit)]
+    editors: Many<Editor>,
+}
+
+#[crate::entity]
+struct Editor {
+    #[index]
+    name: String,
+    #[through(Credit)]
+    books: Many<Book>,
+}
+
+#[crate::entity]
+#[distinct(book, editor)]
+struct Credit {
+    book: One<Book>,
+    editor: One<Editor>,
 }
 
 #[crate::entity]
@@ -32,6 +50,8 @@ struct Library {
     books: Set<Book>,
     chapters: Set<Chapter>,
     paragraphs: Set<Paragraph>,
+    editors: Set<Editor>,
+    credits: Set<Credit>,
 }
 
 fn this_device() -> WriterId {
@@ -107,6 +127,25 @@ fn the_declared_schema_names_every_column_the_file_will_hold() {
             "paragraph.chapter.links",
             "paragraph.text",
             "paragraph.text.bytes",
+            "editor.id",
+            "editor.id.buckets",
+            "editor.id.links",
+            "editor.name",
+            "editor.name.bytes",
+            "editor.name.buckets",
+            "editor.name.links",
+            "credit.id",
+            "credit.id.buckets",
+            "credit.id.links",
+            "credit.book",
+            "credit.book.buckets",
+            "credit.book.links",
+            "credit.editor",
+            "credit.editor.buckets",
+            "credit.editor.links",
+            "credit.book_editor",
+            "credit.book_editor.buckets",
+            "credit.book_editor.links",
         ]
     );
 }
@@ -986,4 +1025,99 @@ proptest! {
             );
         }
     }
+}
+
+fn credited(library: &mut Library) -> (Id<Book>, Id<Book>, Id<Editor>, Id<Editor>) {
+    let alice = library.books.push("Alice", "Lewis Carroll").unwrap();
+    let kokoro = library.books.push("Kokoro", "Natsume Soseki").unwrap();
+    let ada = library.editors.push("Ada").unwrap();
+    let bram = library.editors.push("Bram").unwrap();
+
+    library.credits.push(alice, ada).unwrap();
+    library.credits.push(alice, bram).unwrap();
+    library.credits.push(kokoro, ada).unwrap();
+    (alice, kokoro, ada, bram)
+}
+
+fn edited(library: &Library, book: Id<Book>) -> Vec<String> {
+    library
+        .at(book)
+        .unwrap()
+        .editors()
+        .unwrap()
+        .map(|editor| editor.name().unwrap().into_owned())
+        .collect()
+}
+
+#[test]
+fn a_declared_join_crosses_the_same_way_after_a_reopen_that_read_no_payload() {
+    let dir = TempDir::new("declared_join");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device()).unwrap();
+    let (alice, kokoro, ada, _) = credited(&mut library);
+    library.commit(this_device()).unwrap();
+    drop(library);
+
+    let reopened = Library::open(&path).unwrap();
+    assert!(reopened.residency().iter().all(|held| held.resident == 0));
+
+    assert_eq!(edited(&reopened, alice), ["Ada", "Bram"]);
+    assert_eq!(edited(&reopened, kokoro), ["Ada"]);
+    assert_eq!(
+        reopened
+            .at(ada)
+            .unwrap()
+            .books()
+            .unwrap()
+            .map(|book| book.title().unwrap().into_owned())
+            .collect::<Vec<_>>(),
+        ["Alice", "Kokoro"]
+    );
+    reopened.verify().unwrap();
+}
+
+#[test]
+fn a_pair_a_file_holds_is_still_refused_after_the_file_is_reopened() {
+    let dir = TempDir::new("declared_pair");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device()).unwrap();
+    let (alice, _, ada, _) = credited(&mut library);
+    library.commit(this_device()).unwrap();
+    drop(library);
+
+    let mut reopened = Library::open(&path).unwrap();
+    let err = reopened.credits.push(alice, ada).unwrap_err();
+
+    assert!(err.to_string().contains("credit.book_editor"), "{err}");
+    assert_eq!(Table::rows(&reopened.credits), 3);
+    reopened.verify().unwrap();
+}
+
+#[test]
+fn a_pair_index_stripped_from_a_file_is_rebuilt_on_open_and_refuses_as_it_did() {
+    let dir = TempDir::new("declared_pair_rebuild");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device()).unwrap();
+    let (alice, _, ada, _) = credited(&mut library);
+    library.commit(this_device()).unwrap();
+    drop(library);
+
+    without(
+        &path,
+        &["credit.book_editor.buckets", "credit.book_editor.links"],
+    );
+    let stripped = ColumnFile::open(&path).unwrap();
+    assert!(stripped.column_meta("credit.book_editor.buckets").is_none());
+    assert!(stripped.column_meta("credit.book_editor").is_some());
+    drop(stripped);
+
+    let mut reopened = Library::open(&path).unwrap();
+
+    let err = reopened.credits.push(alice, ada).unwrap_err();
+    assert!(err.to_string().contains("credit.book_editor"), "{err}");
+    assert_eq!(edited(&reopened, alice), ["Ada", "Bram"]);
+    reopened.verify().unwrap();
 }
