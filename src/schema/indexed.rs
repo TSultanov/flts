@@ -82,6 +82,10 @@ impl<C: Keyed, const UNIQUE: bool> Indexed<C, UNIQUE> {
         &self.column
     }
 
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
     pub fn reach(&self, value: C::Seek<'_>) -> Result<()> {
         self.index.reach_for(C::key_for(value))
     }

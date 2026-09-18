@@ -15,8 +15,16 @@ pub enum ColumnKind {
     Presence,
     Bucket,
     Link,
-    Ref { parent: &'static str },
-    Enum { name: &'static str },
+    Pair {
+        left: &'static str,
+        right: &'static str,
+    },
+    Ref {
+        parent: &'static str,
+    },
+    Enum {
+        name: &'static str,
+    },
     Nullable(Box<ColumnKind>),
 }
 
