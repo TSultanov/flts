@@ -1,3 +1,5 @@
+use proptest::prelude::*;
+
 use super::*;
 use crate::record::Record;
 use crate::schema::index::{capacity_for, home_of};
@@ -6,7 +8,7 @@ use crate::schema::{
 };
 use crate::storage::{Blob, ColumnFile};
 use crate::test_utils::library::Binding;
-use crate::test_utils::{TempDir, committed, flip_byte};
+use crate::test_utils::{TempDir, committed, flip_byte, props};
 
 const _: () = assert!(<TextKey as Record>::SIZE == 24);
 const _: () = assert!(<Maybe<u32> as Record>::SIZE == 5);
@@ -934,4 +936,489 @@ fn reaching_for_a_value_reads_the_bucket_a_push_of_it_would_write() {
             .all(|held| held.resident == 0),
         "and nothing else: {warm:?}"
     );
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct Held {
+    title: String,
+    isbn: Option<String>,
+    year: u32,
+    pages: Option<u32>,
+    binding: Binding,
+}
+
+#[derive(Clone)]
+struct Shelf {
+    title: Indexed<TextColumn, false>,
+    isbn: Unique<NullableTextColumn>,
+    year: Indexed<Arena<u32>, false>,
+    pages: Indexed<NullableColumn<u32>, false>,
+    binding: Indexed<EnumColumn<Binding>, false>,
+}
+
+impl Default for Shelf {
+    fn default() -> Self {
+        Self {
+            title: Indexed::named("shelf.title"),
+            isbn: Indexed::named("shelf.isbn"),
+            year: Indexed::named("shelf.year"),
+            pages: Indexed::named("shelf.pages"),
+            binding: Indexed::named("shelf.binding"),
+        }
+    }
+}
+
+impl Shelf {
+    fn every(&self) -> [(&'static str, &dyn Column); 5] {
+        [
+            ("shelf.title", &self.title),
+            ("shelf.isbn", &self.isbn),
+            ("shelf.year", &self.year),
+            ("shelf.pages", &self.pages),
+            ("shelf.binding", &self.binding),
+        ]
+    }
+}
+
+#[derive(Clone, Debug)]
+enum Deed {
+    Shelve(Held),
+    Retitle(usize, String),
+    Reissue(usize, Option<String>),
+    Redate(usize, u32),
+    Repaginate(usize, Option<u32>),
+    Rebind(usize, Binding),
+}
+
+#[derive(Default)]
+struct Ever {
+    titles: Vec<String>,
+    isbns: Vec<Option<String>>,
+    years: Vec<u32>,
+    pages: Vec<Option<u32>>,
+}
+
+fn bound() -> impl Strategy<Value = Binding> {
+    prop_oneof![
+        Just(Binding::Cloth),
+        Just(Binding::Paper),
+        Just(Binding::Leather),
+    ]
+}
+
+fn counted() -> impl Strategy<Value = u32> {
+    prop_oneof![
+        3 => 0u32..4,
+        1 => props::interesting_u32(),
+    ]
+}
+
+fn held() -> impl Strategy<Value = Held> {
+    (
+        props::indexable_text(),
+        props::indexable_optional_text(),
+        counted(),
+        proptest::option::of(counted()),
+        bound(),
+    )
+        .prop_map(|(title, isbn, year, pages, binding)| Held {
+            title,
+            isbn,
+            year,
+            pages,
+            binding,
+        })
+}
+
+fn deed() -> impl Strategy<Value = Deed> {
+    prop_oneof![
+        6 => held().prop_map(Deed::Shelve),
+        2 => (props::row_index(), props::indexable_text()).prop_map(|(at, title)| Deed::Retitle(at, title)),
+        2 => (props::row_index(), props::indexable_optional_text()).prop_map(|(at, isbn)| Deed::Reissue(at, isbn)),
+        1 => (props::row_index(), counted()).prop_map(|(at, year)| Deed::Redate(at, year)),
+        1 => (props::row_index(), proptest::option::of(counted())).prop_map(|(at, pages)| Deed::Repaginate(at, pages)),
+        1 => (props::row_index(), bound()).prop_map(|(at, binding)| Deed::Rebind(at, binding)),
+    ]
+}
+
+fn deeds() -> impl Strategy<Value = Vec<Deed>> {
+    prop::collection::vec(deed(), 0..24)
+}
+
+fn wrapped(at: usize, rows: usize) -> Option<usize> {
+    (rows > 0).then(|| at % rows)
+}
+
+fn claimed(model: &[Held], isbn: &Option<String>, but: Option<usize>) -> bool {
+    isbn.is_some()
+        && model
+            .iter()
+            .enumerate()
+            .any(|(row, held)| Some(row) != but && held.isbn == *isbn)
+}
+
+fn shelved(deeds: &[Deed]) -> (Shelf, Vec<Held>, Ever) {
+    let mut shelf = Shelf::default();
+    let mut model: Vec<Held> = Vec::new();
+    let mut ever = Ever::default();
+
+    for deed in deeds {
+        match deed {
+            Deed::Shelve(wanted) => {
+                let taken = claimed(&model, &wanted.isbn, None);
+                let refused = shelf.isbn.refuse_duplicate(wanted.isbn.as_deref()).is_err();
+                assert_eq!(refused, taken, "{wanted:?} against {model:?}");
+                if refused {
+                    continue;
+                }
+
+                shelf.title.push(&wanted.title).unwrap();
+                shelf.isbn.push(wanted.isbn.as_deref()).unwrap();
+                shelf.year.push(wanted.year).unwrap();
+                shelf.pages.push(wanted.pages).unwrap();
+                shelf.binding.push(wanted.binding).unwrap();
+
+                ever.titles.push(wanted.title.clone());
+                ever.isbns.push(wanted.isbn.clone());
+                ever.years.push(wanted.year);
+                ever.pages.push(wanted.pages);
+                model.push(wanted.clone());
+            }
+            Deed::Retitle(at, title) => {
+                if let Some(row) = wrapped(*at, model.len()) {
+                    shelf.title.set(Row::trusted(row), title).unwrap();
+                    ever.titles.push(title.clone());
+                    model[row].title = title.clone();
+                }
+            }
+            Deed::Reissue(at, isbn) => {
+                if let Some(row) = wrapped(*at, model.len()) {
+                    let taken = claimed(&model, isbn, Some(row));
+                    let said = shelf.isbn.set(Row::trusted(row), isbn.as_deref());
+                    assert_eq!(said.is_err(), taken, "{isbn:?} onto row {row} of {model:?}");
+                    if said.is_ok() {
+                        ever.isbns.push(isbn.clone());
+                        model[row].isbn = isbn.clone();
+                    }
+                }
+            }
+            Deed::Redate(at, year) => {
+                if let Some(row) = wrapped(*at, model.len()) {
+                    shelf.year.set(Row::trusted(row), *year).unwrap();
+                    ever.years.push(*year);
+                    model[row].year = *year;
+                }
+            }
+            Deed::Repaginate(at, pages) => {
+                if let Some(row) = wrapped(*at, model.len()) {
+                    shelf.pages.set(Row::trusted(row), *pages).unwrap();
+                    ever.pages.push(*pages);
+                    model[row].pages = *pages;
+                }
+            }
+            Deed::Rebind(at, binding) => {
+                if let Some(row) = wrapped(*at, model.len()) {
+                    shelf.binding.set(Row::trusted(row), *binding).unwrap();
+                    model[row].binding = *binding;
+                }
+            }
+        }
+    }
+    (shelf, model, ever)
+}
+
+fn seated(found: Vec<Row>) -> Vec<usize> {
+    found.into_iter().map(Row::index).collect()
+}
+
+fn holding(model: &[Held], same: impl Fn(&Held) -> bool) -> Vec<usize> {
+    model
+        .iter()
+        .enumerate()
+        .filter(|(_, held)| same(held))
+        .map(|(row, _)| row)
+        .collect()
+}
+
+proptest! {
+    #[test]
+    fn every_indexed_column_names_exactly_the_rows_a_scan_of_it_would_name(
+        deeds in deeds(),
+        wanted in held(),
+    ) {
+        let (shelf, model, _) = shelved(&deeds);
+        let mine = [wanted];
+
+        for held in model.iter().chain(&mine) {
+            let title = &held.title;
+            prop_assert_eq!(
+                seated(shelf.title.find(title).unwrap()),
+                holding(&model, |row| row.title == *title),
+                "shelf.title and a scan disagree about {:?}",
+                title
+            );
+
+            let isbn = held.isbn.as_deref();
+            prop_assert_eq!(
+                seated(shelf.isbn.find(isbn).unwrap()),
+                holding(&model, |row| row.isbn.as_deref() == isbn),
+                "shelf.isbn and a scan disagree about {:?}",
+                isbn
+            );
+
+            prop_assert_eq!(
+                seated(shelf.year.find(held.year).unwrap()),
+                holding(&model, |row| row.year == held.year),
+                "shelf.year and a scan disagree about {}",
+                held.year
+            );
+
+            prop_assert_eq!(
+                seated(shelf.pages.find(held.pages).unwrap()),
+                holding(&model, |row| row.pages == held.pages),
+                "shelf.pages and a scan disagree about {:?}",
+                held.pages
+            );
+
+            prop_assert_eq!(
+                seated(shelf.binding.find(held.binding).unwrap()),
+                holding(&model, |row| row.binding == held.binding),
+                "shelf.binding and a scan disagree about {:?}",
+                held.binding
+            );
+        }
+    }
+
+    #[test]
+    fn no_value_a_row_has_left_ever_names_that_row_again(deeds in deeds()) {
+        let (shelf, model, ever) = shelved(&deeds);
+
+        for title in &ever.titles {
+            prop_assert_eq!(
+                seated(shelf.title.find(title).unwrap()),
+                holding(&model, |row| row.title == *title),
+                "shelf.title still answers for {:?}",
+                title
+            );
+        }
+        for isbn in &ever.isbns {
+            let isbn = isbn.as_deref();
+            prop_assert_eq!(
+                seated(shelf.isbn.find(isbn).unwrap()),
+                holding(&model, |row| row.isbn.as_deref() == isbn),
+                "shelf.isbn still answers for {:?}",
+                isbn
+            );
+        }
+        for year in &ever.years {
+            prop_assert_eq!(
+                seated(shelf.year.find(*year).unwrap()),
+                holding(&model, |row| row.year == *year)
+            );
+        }
+        for pages in &ever.pages {
+            prop_assert_eq!(
+                seated(shelf.pages.find(*pages).unwrap()),
+                holding(&model, |row| row.pages == *pages)
+            );
+        }
+    }
+
+    #[test]
+    fn every_indexed_column_audits_clean_however_it_was_driven(deeds in deeds()) {
+        let (shelf, model, _) = shelved(&deeds);
+
+        for (name, column) in shelf.every() {
+            prop_assert_eq!(Column::rows(column), model.len(), "{} holds another count", name);
+            if let Err(said) = column.audit() {
+                prop_assert!(false, "{} was left damaged: {}", name, said);
+            }
+        }
+    }
+
+    #[test]
+    fn a_column_no_two_rows_may_share_refuses_exactly_the_values_it_already_holds(
+        deeds in deeds(),
+        wanted in props::indexable_optional_text(),
+    ) {
+        let (shelf, model, _) = shelved(&deeds);
+
+        prop_assert_eq!(shelf.isbn.find_one(None).unwrap(), None);
+        prop_assert!(shelf.isbn.refuse_duplicate(None).is_ok());
+        prop_assert_eq!(
+            seated(shelf.isbn.find(None).unwrap()),
+            holding(&model, |row| row.isbn.is_none()),
+            "an absent value is a key for the finder that names many rows"
+        );
+
+        for isbn in model.iter().map(|row| row.isbn.clone()).chain([wanted]) {
+            let sought = isbn.as_deref();
+            let held = holding(&model, |row| row.isbn.as_deref() == sought);
+            let one = match sought {
+                None => None,
+                Some(_) => held.first().copied(),
+            };
+
+            prop_assert_eq!(
+                shelf.isbn.find_one(sought).unwrap().map(Row::index),
+                one,
+                "shelf.isbn names another row for {:?}",
+                sought
+            );
+            prop_assert_eq!(
+                shelf.isbn.refuse_duplicate(sought).is_err(),
+                one.is_some(),
+                "shelf.isbn refuses the wrong values around {:?}",
+                sought
+            );
+            prop_assert!(held.len() <= 1 || sought.is_none());
+        }
+    }
+
+    #[test]
+    fn an_audit_refuses_a_row_filed_under_any_value_but_the_one_it_holds(
+        deeds in deeds(),
+        at in props::row_index(),
+        other in props::indexable_text(),
+    ) {
+        let (mut shelf, model, _) = shelved(&deeds);
+        let Some(row) = wrapped(at, model.len()) else { return Ok(()); };
+
+        shelf.title.index.repoint_row(row, TextKey::of(&other)).unwrap();
+        let said = shelf.title.audit();
+
+        prop_assert_eq!(
+            said.is_err(),
+            model[row].title != other,
+            "row {} holds {:?} and was filed under {:?}",
+            row,
+            model[row].title,
+            other
+        );
+        if let Err(damage) = said {
+            prop_assert!(damage.is_corrupt(), "{}", damage);
+            prop_assert!(damage.to_string().contains("shelf.title"), "{}", damage);
+        }
+    }
+
+    #[test]
+    fn a_long_value_a_column_already_holds_is_never_stored_twice(
+        value in props::indexable_text(),
+        again in 1usize..5,
+        at in props::row_index(),
+    ) {
+        let mut column: Indexed<TextColumn, false> = Indexed::named("shelf.title");
+        column.push(&value).unwrap();
+        let once = column.column().heap_len();
+
+        for _ in 0..again {
+            column.push(&value).unwrap();
+        }
+        let shared = column.column().heap_len();
+
+        match !TextKey::of(&value).is_inline() {
+            true => prop_assert_eq!(
+                shared,
+                once,
+                "{:?} is too long to carry, so every row must share one copy",
+                value
+            ),
+            false => prop_assert_eq!(shared, once + again * value.len()),
+        }
+
+        let row = at % Column::rows(&column);
+        column.set(Row::trusted(row), &value).unwrap();
+        if !TextKey::of(&value).is_inline() {
+            prop_assert_eq!(column.column().heap_len(), shared, "a set joins the bytes too");
+        }
+        prop_assert_eq!(
+            seated(column.find(&value).unwrap()),
+            (0..=again).collect::<Vec<usize>>()
+        );
+    }
+}
+
+fn after_a_cold_find(values: &[String], sought: &str, named: &str) -> Vec<Residency> {
+    let dir = TempDir::new(named);
+    let path = dir.join("shelf.dbs");
+
+    let mut column: Indexed<TextColumn, false> = Indexed::named("shelf.title");
+    for value in values {
+        column.push(value).unwrap();
+    }
+    let file = committed(&path, |updater| column.offer_to("shelf", "title", updater));
+    drop(file);
+
+    let mut read: Indexed<TextColumn, false> = Indexed::named("shelf.title");
+    read.read_from("shelf", "title", &ColumnFile::open(&path).unwrap())
+        .unwrap();
+
+    let mut cold = Vec::new();
+    read.residency("shelf", "title", &mut cold);
+    assert!(
+        cold.iter().all(|held| held.resident == 0),
+        "opening a column reads no payload: {cold:?}"
+    );
+
+    read.find(sought).unwrap();
+
+    let mut warm = Vec::new();
+    read.residency("shelf", "title", &mut warm);
+    warm
+}
+
+fn resident(reported: &[Residency], name: &str) -> usize {
+    reported
+        .iter()
+        .find(|held| held.name == name)
+        .expect("the column names this")
+        .resident
+}
+
+proptest! {
+    #![proptest_config(props::scaled(8))]
+
+    #[test]
+    fn finding_a_value_never_reads_a_byte_of_the_column_that_holds_it(
+        values in prop::collection::vec(props::indexable_text(), 40..90),
+        at in 0usize..90,
+    ) {
+        let sought = values[at % values.len()].clone();
+        let warm = after_a_cold_find(&values, &sought, "indexed_scan");
+
+        prop_assert!(
+            resident(&warm, "shelf.title.buckets") > 0,
+            "a find that read no bucket never looked: {warm:?}"
+        );
+        prop_assert_eq!(
+            resident(&warm, "shelf.title"),
+            0,
+            "the key answers for {:?}, so the column it indexes is never read",
+            sought
+        );
+    }
+
+    #[test]
+    fn finding_a_short_value_never_reads_the_heap_and_finding_a_long_one_always_does(
+        values in prop::collection::vec(props::indexable_text(), 40..90),
+        at in 0usize..90,
+    ) {
+        let sought = values[at % values.len()].clone();
+        let warm = after_a_cold_find(&values, &sought, "indexed_heap");
+        let heap = resident(&warm, "shelf.title.bytes");
+
+        match TextKey::of(&sought).is_inline() {
+            true => prop_assert_eq!(
+                heap,
+                0,
+                "{:?} is carried whole by its key, so the heap holds nothing to read",
+                sought
+            ),
+            false => prop_assert!(
+                heap > 0,
+                "{:?} is only named by its key, so the row must be read back: {warm:?}",
+                sought
+            ),
+        }
+    }
 }

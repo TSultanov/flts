@@ -86,6 +86,13 @@ pub fn indexable_text() -> impl Strategy<Value = String> {
     ]
 }
 
+pub fn indexable_optional_text() -> impl Strategy<Value = Option<String>> {
+    prop_oneof![
+        1 => Just(None),
+        3 => indexable_text().prop_map(Some),
+    ]
+}
+
 #[cfg(test)]
 #[path = "props_test.rs"]
 mod props_test;
