@@ -497,3 +497,215 @@ fn a_chapter_finds_its_paragraphs_through_the_tables_that_hold_them() {
         "So she was considering in her own mind."
     );
 }
+
+fn two_books() -> (Books, Id<Book>) {
+    let mut books = Books::default();
+    let alice = books.push("Alice", "Lewis Carroll").unwrap();
+    books.push("Kokoro", "Natsume Soseki").unwrap();
+    (books, alice)
+}
+
+#[test]
+fn writing_over_a_row_leaves_the_one_it_replaced_where_it_was() {
+    let (mut books, alice) = two_books();
+
+    books
+        .write_over(alice, "Alice's Adventures", "Lewis Carroll")
+        .unwrap();
+
+    assert_eq!(
+        Table::rows(&books),
+        3,
+        "a write appends rather than overwrites"
+    );
+    assert_eq!(books.versions_of(alice).unwrap().len(), 2);
+    assert_eq!(books.title(alice).unwrap(), "Alice's Adventures");
+    Table::audit(&books).unwrap();
+}
+
+#[test]
+fn an_id_answers_with_its_newest_version_and_the_older_ones_stay_readable() {
+    let (mut books, alice) = two_books();
+    let first = books.row_of(alice).unwrap();
+
+    books
+        .write_over(alice, "Alice's Adventures", "Lewis Carroll")
+        .unwrap();
+    let second = books.row_of(alice).unwrap();
+
+    assert_ne!(first, second);
+    assert_eq!(
+        books.versions_of(alice).unwrap(),
+        vec![first, second],
+        "every version of an id, oldest first"
+    );
+    assert_eq!(
+        books.title_at(first).unwrap(),
+        "Alice",
+        "the row that was written over still holds what it held"
+    );
+}
+
+#[test]
+fn a_value_only_an_older_version_holds_no_longer_names_that_row() {
+    let (mut books, alice) = two_books();
+
+    books
+        .write_over(alice, "Alice's Adventures", "Lewis Carroll")
+        .unwrap();
+
+    assert_eq!(
+        books.find_by_title("Alice's Adventures").unwrap(),
+        vec![alice]
+    );
+    assert!(
+        books.find_by_title("Alice").unwrap().is_empty(),
+        "a title a book used to have is not a title it has"
+    );
+}
+
+#[test]
+fn a_title_a_newer_version_gave_up_is_free_for_another_book_to_take() {
+    let (mut books, alice) = two_books();
+
+    books
+        .write_over(alice, "Alice's Adventures", "Lewis Carroll")
+        .unwrap();
+    let other = books.push("Alice", "Somebody Else").unwrap();
+
+    assert_eq!(books.find_by_title("Alice").unwrap(), vec![other]);
+    Table::audit(&books).unwrap();
+}
+
+#[test]
+fn a_walk_over_a_table_hands_back_the_newest_version_of_each_id_and_no_other() {
+    let mut library = crate::test_utils::library::Library::default();
+    let alice = library.books.push("Alice", "Lewis Carroll").unwrap();
+    library.books.push("Kokoro", "Natsume Soseki").unwrap();
+    library
+        .books
+        .write_over(alice, "Alice's Adventures", "Lewis Carroll")
+        .unwrap();
+
+    let walked: Vec<String> = library
+        .all::<Book>()
+        .map(|book| book.title().unwrap().into_owned())
+        .collect();
+
+    assert_eq!(walked, ["Kokoro", "Alice's Adventures"]);
+    assert_eq!(
+        Table::rows(&library.books),
+        3,
+        "the table holds three rows and the walk hands back two"
+    );
+}
+
+#[test]
+fn writing_over_a_row_that_no_id_names_is_refused() {
+    let (books_held, _) = two_books();
+    let mut books = books_held;
+    let stranger = Id::<Book>::mint();
+
+    let err = books
+        .write_over(stranger, "Nothing", "Nobody")
+        .expect_err("there is no newest version of an id nobody wrote");
+
+    assert!(err.to_string().contains("to write over"), "{err}");
+    assert!(err.to_string().contains(&stranger.to_string()), "{err}");
+    assert_eq!(Table::rows(&books), 2);
+}
+
+#[test]
+fn a_table_with_two_rows_that_are_both_the_newest_of_one_id_is_corruption() {
+    let (mut books, alice) = two_books();
+    books
+        .write_over(alice, "Alice's Adventures", "Lewis Carroll")
+        .unwrap();
+    books.quietly_unsupersede(Row::of(0, 3, "book").unwrap());
+
+    let err = Table::audit(&books).expect_err("one id has one newest version");
+
+    assert!(err.is_corrupt(), "{err}");
+    assert!(
+        err.to_string()
+            .contains("two rows that are both the newest"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_table_where_no_row_is_the_newest_of_an_id_is_corruption() {
+    let (mut books, alice) = two_books();
+    let newest = books.row_of(alice).unwrap();
+    books.quietly_supersede(newest).unwrap();
+
+    let err = Table::audit(&books).expect_err("some row has to be the one an id names");
+
+    assert!(err.is_corrupt(), "{err}");
+    assert!(
+        err.to_string().contains("no row holds the newest one"),
+        "{err}"
+    );
+}
+
+#[test]
+fn only_a_row_that_is_still_the_newest_of_its_id_holds_a_value_against_another() {
+    let (mut books, alice) = two_books();
+    let was = books.row_of(alice).unwrap();
+
+    books
+        .write_over(alice, "Alice's Adventures", "Lewis Carroll")
+        .unwrap();
+
+    assert_eq!(
+        books.live_one(vec![was]).unwrap(),
+        None,
+        "a row that was written over holds nothing against anyone"
+    );
+    assert_eq!(
+        books.live_one(books.versions_of(alice).unwrap()).unwrap(),
+        Some(books.row_of(alice).unwrap()),
+        "and the newest version of the id is the one that does"
+    );
+}
+
+#[test]
+fn a_handle_that_writes_twice_writes_over_what_it_wrote_and_not_what_it_opened_at() {
+    let mut library = crate::test_utils::library::Library::default();
+    let alice = library.books.push("Alice", "Lewis Carroll").unwrap();
+
+    let mut held = library.at_mut(alice).unwrap();
+    held.write_over("Alice's Adventures", "Lewis Carroll")
+        .unwrap();
+    held.write_over("Alice Through the Looking-Glass", "Lewis Carroll")
+        .unwrap();
+
+    assert_eq!(
+        library.books.title(alice).unwrap(),
+        "Alice Through the Looking-Glass",
+        "a handle holds an id, so the second write replaces the first and not the row it opened at"
+    );
+    assert_eq!(library.books.versions_of(alice).unwrap().len(), 3);
+    Table::audit(&library.books).unwrap();
+}
+
+#[test]
+fn a_handle_writes_to_the_row_its_id_names_now_and_not_the_one_it_opened_at() {
+    let mut library = crate::test_utils::library::Library::default();
+    let alice = library.books.push("Alice", "Lewis Carroll").unwrap();
+
+    let mut held = library.at_mut(alice).unwrap();
+    held.write_over("Alice's Adventures", "Lewis Carroll")
+        .unwrap();
+    held.set_title("Alice in Wonderland").unwrap();
+
+    assert_eq!(library.books.title(alice).unwrap(), "Alice in Wonderland");
+    assert_eq!(
+        library
+            .books
+            .title_at(Row::of(0, 2, "book").unwrap())
+            .unwrap(),
+        "Alice",
+        "the row the handle opened at was written over, not written to"
+    );
+}

@@ -29,8 +29,48 @@ pub trait Table: Default + Clone {
         Column::rows(self.ids())
     }
 
+    fn versions_of(&self, id: Id<Self::Of>) -> Result<Vec<Row>> {
+        self.ids().rows_of(id)
+    }
+
+    fn current_row_of(&self, id: Id<Self::Of>) -> Result<Option<Row>> {
+        for row in self.versions_of(id)? {
+            if self.versions().at(row)?.is_current() {
+                return Ok(Some(row));
+            }
+        }
+        Ok(None)
+    }
+
+    fn live_row_of(&self, id: Id<Self::Of>) -> Result<Option<Row>> {
+        match self.current_row_of(id)? {
+            Some(row) if self.versions().at(row)?.is_live() => Ok(Some(row)),
+            _ => Ok(None),
+        }
+    }
+
     fn row_of(&self, id: Id<Self::Of>) -> Result<Row> {
-        self.ids().row_of(id)
+        self.live_row_of(id)?
+            .ok_or_else(|| Error::invalid(format!("{} has no row with id {id}", Self::Of::NAME)))
+    }
+
+    fn live_among(&self, rows: Vec<Row>) -> Result<Vec<Row>> {
+        let mut kept = Vec::new();
+        for row in rows {
+            if self.versions().at(row)?.is_live() {
+                kept.push(row);
+            }
+        }
+        Ok(kept)
+    }
+
+    fn live_one(&self, rows: Vec<Row>) -> Result<Option<Row>> {
+        for row in rows {
+            if self.versions().at(row)?.is_live() {
+                return Ok(Some(row));
+            }
+        }
+        Ok(None)
     }
 
     fn id_at(&self, row: Row) -> Result<Id<Self::Of>> {
@@ -44,8 +84,67 @@ pub trait Table: Default + Clone {
         Ok(id)
     }
 
+    fn revise(&mut self, id: Id<Self::Of>) -> Result<Row> {
+        let held = self.current_row_of(id)?.ok_or_else(|| {
+            Error::invalid(format!(
+                "{} has no row with id {id} to write over",
+                Self::Of::NAME
+            ))
+        })?;
+        self.versions_mut().supersede(held)?;
+        self.ids_mut().push(id)?;
+        let row = self.versions_mut().push(Version::UNSTAMPED)?;
+        Ok(Row::trusted(row))
+    }
+
     fn stamp_rows(&mut self, clock: &mut VersionVector, writer: WriterId) -> Result<()> {
         self.versions_mut().stamp(clock, writer)
+    }
+
+    fn check_versions(&self) -> Result<()> {
+        let column = qualified(Self::Of::NAME, "version");
+        let rows = Table::rows(self);
+
+        for index in 0..rows {
+            let row = Row::of(index, rows, Self::Of::NAME)?;
+            let id = self.ids().at(row)?;
+
+            let mut current = None;
+            let mut highest = None;
+            for other in self.versions_of(id)? {
+                let version = self.versions().at(other)?;
+                if version.is_current() && current.replace(other).is_some() {
+                    return Err(Error::corrupt(
+                        "version",
+                        format!("{column} has two rows that are both the newest {id}"),
+                    ));
+                }
+                if version.is_stamped() && highest.is_none_or(|(dot, _)| dot < version.dot()) {
+                    highest = Some((version.dot(), other));
+                }
+            }
+
+            let current = current.ok_or_else(|| {
+                Error::corrupt(
+                    "version",
+                    format!("{column} row {index} holds {id}, and no row holds the newest one"),
+                )
+            })?;
+            if self.versions().at(current)?.is_stamped()
+                && let Some((dot, at)) = highest
+                && at != current
+            {
+                return Err(Error::corrupt(
+                    "version",
+                    format!(
+                        "{column} row {} is the newest {id}, and row {} counted further at {dot:?}",
+                        current.index(),
+                        at.index()
+                    ),
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn specs(&self) -> Vec<ColumnSpec> {
@@ -91,7 +190,7 @@ pub trait Table: Default + Clone {
         for field in self.fields() {
             field.column.audit()?;
         }
-        Ok(())
+        self.check_versions()
     }
 
     fn reserve(&self) -> Result<()> {

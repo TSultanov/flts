@@ -41,13 +41,6 @@ impl<E: Entity> IdColumn<E> {
             )));
         }
 
-        if let Some(held) = self.index.row_of(id)? {
-            return Err(Error::invalid(format!(
-                "{} already holds row {held} with id {id}",
-                E::NAME
-            )));
-        }
-
         self.index.append(id)?;
         self.ids.push(id)
     }
@@ -66,6 +59,14 @@ impl<E: Entity> IdColumn<E> {
     pub fn row_of(&self, id: Id<E>) -> Result<Row> {
         self.find(id)?
             .ok_or_else(|| Error::invalid(format!("{} has no row with id {id}", E::NAME)))
+    }
+
+    pub fn rows_of(&self, id: Id<E>) -> Result<Vec<Row>> {
+        self.index
+            .rows_of(id)?
+            .into_iter()
+            .map(|row| Row::of(row, self.ids.len(), E::NAME))
+            .collect()
     }
 }
 
@@ -94,12 +95,6 @@ impl<E: Entity> Column for IdColumn<E> {
                 return Err(Error::corrupt(
                     "identity",
                     format!("{column} row {index} has no id"),
-                ));
-            }
-            if let [first, second, ..] = self.index.rows_of(id)?.as_slice() {
-                return Err(Error::corrupt(
-                    "identity",
-                    format!("{column} rows {first} and {second} are both {id}"),
                 ));
             }
         }

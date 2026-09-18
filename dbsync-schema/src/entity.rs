@@ -160,7 +160,16 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         .filter(|field| field.indexing == Indexing::Unique)
         .map(|field| {
             let field_name = &field.name;
-            quote! { self.#field_name.refuse_duplicate(#field_name)?; }
+            quote! {
+                if let ::core::option::Option::Some(held) =
+                    <Self as ::dbsync::schema::Table>::live_one(
+                        self,
+                        self.#field_name.rows_holding(#field_name)?,
+                    )?
+                {
+                    return ::core::result::Result::Err(self.#field_name.taken_by(held));
+                }
+            }
         });
 
     let finders = stored
@@ -178,7 +187,11 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                         &self,
                         value: #pushed,
                     ) -> ::dbsync::Result<::core::option::Option<::dbsync::Id<#name>>> {
-                        match self.#field_name.find_one(value)? {
+                        let held = <Self as ::dbsync::schema::Table>::live_one(
+                            self,
+                            self.#field_name.rows_holding(value)?,
+                        )?;
+                        match held {
                             ::core::option::Option::Some(row) => {
                                 <Self as ::dbsync::schema::Table>::id_at(self, row)
                                     .map(::core::option::Option::Some)
@@ -196,7 +209,11 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                         value: #pushed,
                     ) -> ::dbsync::Result<::std::vec::Vec<::dbsync::Id<#name>>> {
                         let mut found = ::std::vec::Vec::new();
-                        for row in self.#field_name.find(value)? {
+                        let rows = <Self as ::dbsync::schema::Table>::live_among(
+                            self,
+                            self.#field_name.find(value)?,
+                        )?;
+                        for row in rows {
                             found.push(<Self as ::dbsync::schema::Table>::id_at(self, row)?);
                         }
                         ::core::result::Result::Ok(found)
@@ -291,7 +308,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         let set = set_beside_its_pair(field, &quote! { table }, pair.as_ref());
         quote! {
             pub fn #setter(&mut self, value: #pushed) -> ::dbsync::Result<()> {
-                let row = self.0.row();
+                let row = self.0.row()?;
                 let table = self.0.table_mut();
                 #set
             }

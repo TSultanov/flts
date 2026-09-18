@@ -109,6 +109,17 @@ impl<C: Keyed, const UNIQUE: bool> Indexed<C, UNIQUE> {
         self.index.repoint_row(row.index(), key)
     }
 
+    pub fn rows_holding(&self, value: C::Seek<'_>) -> Result<Vec<Row>> {
+        match C::absent(value) {
+            true => Ok(Vec::new()),
+            false => self.find(value),
+        }
+    }
+
+    pub fn taken_by(&self, held: Row) -> Error {
+        self.taken(held)
+    }
+
     pub fn find(&self, value: C::Seek<'_>) -> Result<Vec<Row>> {
         self.index
             .rows_where(C::key_for(value), |row, key| {

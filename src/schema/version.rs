@@ -207,6 +207,23 @@ impl<E: Entity> VersionColumn<E> {
         self.versions.row(row.index()).copied()
     }
 
+    pub fn supersede(&mut self, row: Row) -> Result<()> {
+        let held = self.at(row)?;
+        self.versions.set(row.index(), held.supersede())
+    }
+
+    #[cfg(test)]
+    pub fn unsupersede(&mut self, row: Row) {
+        let held = self.at(row).expect("a row this column holds");
+        let raw = Version {
+            dot: held.dot(),
+            flags: 0,
+        };
+        self.versions
+            .set(row.index(), raw)
+            .expect("the row is here");
+    }
+
     pub fn unstamped_from(&self) -> usize {
         self.stamped
     }

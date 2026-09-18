@@ -59,17 +59,25 @@ fn an_id_pushed_after_a_lookup_is_found_by_the_next_one() {
 }
 
 #[test]
-fn a_second_row_claiming_an_id_the_column_already_holds_is_refused_at_the_door() {
+fn an_id_may_name_several_rows_because_a_row_is_one_version_of_it() {
     let (mut column, ids) = stocked(3);
 
-    let err = column.push(ids[1]).unwrap_err();
-    assert!(!err.is_corrupt(), "a caller asked for this: {err}");
-    assert!(
-        err.to_string().contains("book already holds row 1 with id"),
-        "{err}"
+    column.push(ids[1]).unwrap();
+
+    assert_eq!(Column::rows(&column), 4);
+    assert_eq!(
+        column.rows_of(ids[1]).unwrap(),
+        vec![
+            Row::of(1, 4, "book").unwrap(),
+            Row::of(3, 4, "book").unwrap()
+        ],
+        "every version of an id, oldest first"
     );
-    assert!(err.to_string().contains(&ids[1].to_string()), "{err}");
-    assert_eq!(Column::rows(&column), 3, "the refused push grew nothing");
+    assert_eq!(
+        column.rows_of(ids[0]).unwrap().len(),
+        1,
+        "and an id written once still names one row"
+    );
 }
 
 #[test]
@@ -98,18 +106,16 @@ fn an_audit_passes_a_column_of_any_size_every_id_was_pushed_into() {
 }
 
 #[test]
-fn two_rows_claiming_one_id_are_corruption_that_names_both() {
+fn two_rows_claiming_one_id_are_for_the_table_to_judge_and_not_this_column() {
     let (mut column, ids) = stocked(3);
     column.ids.set(2, ids[0]).unwrap();
     column.index.repoint_row(2, ids[0]).unwrap();
 
-    let err = column.audit().unwrap_err();
-    assert!(err.is_corrupt(), "{err}");
-    assert!(
-        err.to_string().contains("book.id rows 0 and 2 are both"),
-        "{err}"
+    column.audit().expect(
+        "which of two rows with one id is the newest is a question about versions, \
+         and this column holds none; Table::check_versions answers it",
     );
-    assert!(err.to_string().contains(&ids[0].to_string()), "{err}");
+    assert_eq!(column.rows_of(ids[0]).unwrap().len(), 2);
 }
 
 #[test]

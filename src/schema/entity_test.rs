@@ -279,3 +279,79 @@ fn an_audit_refuses_a_pair_a_link_no_longer_agrees_with() {
         "{err}"
     );
 }
+
+#[test]
+fn a_chapter_written_over_is_not_listed_under_its_book_twice() {
+    let mut library = Library::default();
+    let alice = library.books.push("Alice", "Lewis Carroll").unwrap();
+    let rabbit = library
+        .chapters
+        .push(alice, "Down the Rabbit-Hole")
+        .unwrap();
+
+    library
+        .chapters
+        .write_over(rabbit, alice, "Down the Rabbit Hole")
+        .unwrap();
+
+    assert_eq!(
+        children_of::<Library, Book, Chapter>(&library, alice).unwrap(),
+        vec![rabbit],
+        "a book has one chapter, however many versions that chapter has had"
+    );
+    assert_eq!(Table::rows(&library.chapters), 2);
+}
+
+#[test]
+fn a_chapter_moved_to_another_book_is_listed_under_the_new_one_alone() {
+    let mut library = Library::default();
+    let alice = library.books.push("Alice", "Lewis Carroll").unwrap();
+    let kokoro = library.books.push("Kokoro", "Natsume Soseki").unwrap();
+    let rabbit = library
+        .chapters
+        .push(alice, "Down the Rabbit-Hole")
+        .unwrap();
+
+    library
+        .chapters
+        .write_over(rabbit, kokoro, "Down the Rabbit-Hole")
+        .unwrap();
+
+    assert!(
+        children_of::<Library, Book, Chapter>(&library, alice)
+            .unwrap()
+            .is_empty(),
+        "the version that named the old book is not the one the chapter is now"
+    );
+    assert_eq!(
+        children_of::<Library, Book, Chapter>(&library, kokoro).unwrap(),
+        vec![rabbit]
+    );
+}
+
+#[test]
+fn a_link_written_over_is_crossed_once_and_from_its_newest_end() {
+    let mut library = Library::default();
+    let alice = library.books.push("Alice", "Lewis Carroll").unwrap();
+    let carroll = library.authors.push("Lewis Carroll").unwrap();
+    let tenniel = library.authors.push("John Tenniel").unwrap();
+    let link = library.authorships.push(alice, carroll).unwrap();
+
+    library
+        .authorships
+        .write_over(link, alice, tenniel)
+        .unwrap();
+
+    let reached: Vec<Id<Author>> =
+        across_rows_of::<Library, Book, Authorship, Author>(&library, alice)
+            .unwrap()
+            .into_iter()
+            .map(|row| Table::id_at(&library.authors, row).unwrap())
+            .collect();
+
+    assert_eq!(
+        reached,
+        vec![tenniel],
+        "one link crosses once, and it crosses from the end it names now"
+    );
+}

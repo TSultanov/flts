@@ -462,7 +462,7 @@ fn a_mutable_handle_writes_through_the_table_the_store_lends_it() {
         struct Book { title: String, year: u32 }
     });
 
-    let opened = "{ let row = self . 0 . row () ; let table = self . 0 . table_mut () ; ";
+    let opened = "{ let row = self . 0 . row () ? ; let table = self . 0 . table_mut () ; ";
     let text = [
         "pub fn set_title (& mut self , value : & str) -> :: dbsync :: Result < () > ",
         opened,
@@ -617,17 +617,19 @@ fn a_unique_field_is_probed_before_the_id_is_minted_and_a_shared_one_is_not() {
         }
     });
 
+    assert!(out.contains("self . isbn . rows_holding (isbn) ?"), "{out}");
+    assert!(out.contains("self . isbn . taken_by (held)"), "{out}");
     assert!(
-        out.contains("self . isbn . refuse_duplicate (isbn) ?"),
-        "{out}"
+        !out.contains("self . year . rows_holding"),
+        "a value rows may share is never refused: {out}"
     );
     assert!(
-        !out.contains("self . year . refuse_duplicate"),
-        "a value rows may share is never refused: {out}"
+        out.contains("live_one (self , self . isbn . rows_holding (isbn) ? ,)"),
+        "only a row that is still the newest of its id holds a value against a new one: {out}"
     );
 
     let probe = out
-        .find("refuse_duplicate")
+        .find("rows_holding")
         .expect("the unique field is probed");
     let mint = out.find("mint (self)").expect("an id is minted");
     assert!(

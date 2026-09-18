@@ -7,6 +7,7 @@ use std::vec;
 use super::column::Row;
 use super::entity::{Child, Entity, Holds, across_rows_of, child_rows_of};
 use super::table::Table;
+use super::version::Version;
 use crate::error::Result;
 use crate::id::Id;
 
@@ -90,26 +91,26 @@ impl<'a, S: Holds<E>, E: Entity> Entry<'a, S, E> {
 
 pub struct EntryMut<'a, S, E: Entity> {
     store: &'a mut S,
-    row: Row,
+    id: Id<E>,
     marker: PhantomData<fn() -> E>,
 }
 
 impl<'a, S: Holds<E>, E: Entity> EntryMut<'a, S, E> {
     pub fn of(store: &'a mut S, id: Id<E>) -> Result<Self> {
-        let row = Table::row_of(Holds::<E>::table(store), id)?;
+        Table::row_of(Holds::<E>::table(store), id)?;
         Ok(Self {
             store,
-            row,
+            id,
             marker: PhantomData,
         })
     }
 
     pub fn id(&self) -> Result<Id<E>> {
-        Table::id_at(Holds::<E>::table(self.store), self.row)
+        Ok(self.id)
     }
 
-    pub fn row(&self) -> Row {
-        self.row
+    pub fn row(&self) -> Result<Row> {
+        Table::row_of(Holds::<E>::table(self.store), self.id)
     }
 
     pub fn table_mut(&mut self) -> &mut E::Table {
@@ -165,7 +166,13 @@ impl<'a, S: Holds<E> + 'a, E: Entity> Iterator for Rows<'a, S, E> {
     type Item = E::Row<'a, S>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        Some(Entry::at_row(self.store, Row::trusted(self.rows.next()?)).into())
+        let table = Holds::<E>::table(self.store);
+        loop {
+            let row = Row::trusted(self.rows.next()?);
+            if table.versions().at(row).is_ok_and(Version::is_live) {
+                return Some(Entry::at_row(self.store, row).into());
+            }
+        }
     }
 }
 

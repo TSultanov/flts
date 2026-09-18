@@ -47,8 +47,12 @@ where
     P: Entity,
     C: Child<P>,
 {
-    let mine = Table::ids(Holds::<C>::table(store));
-    C::parents(Holds::<C>::table(store)).children_of(mine, parent)
+    let table = Holds::<C>::table(store);
+    let mine = Table::ids(table);
+    child_rows_of::<S, P, C>(store, parent)?
+        .into_iter()
+        .map(|row| mine.at(row))
+        .collect()
 }
 
 pub fn child_rows_of<S, P, C>(store: &S, parent: Id<P>) -> Result<Vec<Row>>
@@ -57,7 +61,8 @@ where
     P: Entity,
     C: Child<P>,
 {
-    C::parents(Holds::<C>::table(store)).child_rows_of(parent)
+    let table = Holds::<C>::table(store);
+    Table::live_among(table, C::parents(table).child_rows_of(parent)?)
 }
 
 pub fn across_rows_of<S, A, J, B>(store: &S, from: Id<A>) -> Result<Vec<Row>>
@@ -71,12 +76,12 @@ where
     let far = Holds::<B>::table(store);
     let mut reached = Vec::new();
 
-    for link in <J as Child<A>>::parents(joins).child_rows_of(from)? {
+    let links = Table::live_among(joins, <J as Child<A>>::parents(joins).child_rows_of(from)?)?;
+    for link in links {
         let beyond = <J as Child<B>>::parents(joins).get(link)?;
-        if beyond.is_nil() {
-            continue;
+        if let Some(row) = Table::live_row_of(far, beyond)? {
+            reached.push(row);
         }
-        reached.push(Table::row_of(far, beyond)?);
     }
     Ok(reached)
 }

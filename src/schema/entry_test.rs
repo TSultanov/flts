@@ -268,7 +268,12 @@ fn a_mutable_handle_answers_with_the_id_it_was_minted_from() {
     paragraph.set_text("She was very tired indeed.").unwrap();
 
     assert_eq!(paragraph.id().unwrap(), asked);
-    assert_eq!(paragraph.row().index(), 0);
+    assert_eq!(
+        paragraph.row().unwrap().index(),
+        0,
+        "a mutable handle holds an id and looks up the row it names, so a write \
+         that moves the row does not leave the handle pointing at the old one"
+    );
     assert_eq!(
         library.at(asked).unwrap().text().unwrap(),
         "She was very tired indeed."
