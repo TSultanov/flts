@@ -1,6 +1,7 @@
 //! Property-test configuration and the generators every module shares.
 
 use proptest::prelude::{Just, Strategy, any, prop_oneof};
+use proptest::sample::select;
 
 use crate::id::Uuid;
 use proptest::test_runner::Config;
@@ -67,6 +68,21 @@ pub fn uuid() -> impl Strategy<Value = Uuid> {
         1 => Just(Uuid::NIL),
         1 => Just(Uuid::from_u128(u128::MAX)),
         1 => (0..128u32).prop_map(|shift| Uuid::from_u128(1u128 << shift)),
+    ]
+}
+
+const SHARED_LONG: [&str; 2] = [
+    "a title far too long to be carried inline",
+    "another title too long to be carried inline",
+];
+
+pub fn indexable_text() -> impl Strategy<Value = String> {
+    prop_oneof![
+        4 => select(vec!["", "a", "quiet", "the same title twice"]).prop_map(str::to_owned),
+        3 => "[a-z]{17,24}",
+        2 => "[αβγδεζηθ]{9,12}",
+        2 => select(SHARED_LONG.to_vec()).prop_map(str::to_owned),
+        1 => "[a-z]{200,260}",
     ]
 }
 

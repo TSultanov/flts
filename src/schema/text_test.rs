@@ -1,6 +1,8 @@
+use proptest::prelude::*;
+
 use super::*;
 use crate::storage::ColumnFile;
-use crate::test_utils::{TempDir, committed};
+use crate::test_utils::{TempDir, committed, props};
 
 fn row(index: usize, rows: usize) -> Row {
     Row::of(index, rows, "book").unwrap()
@@ -175,4 +177,75 @@ fn touching_the_tail_of_a_rotten_nullable_heap_reports_the_damage() {
         err.is_corrupt(),
         "a blob column that reads cleanly does not excuse the heap it points into: {err}"
     );
+}
+
+proptest! {
+    #[test]
+    fn two_values_make_one_key_only_when_they_are_the_same_value(
+        left in props::indexable_text(),
+        right in props::indexable_text(),
+    ) {
+        let one_key = TextKey::of(&left) == TextKey::of(&right);
+        prop_assert_eq!(
+            one_key,
+            left == right,
+            "the key says {} and the value says {} for {:?} and {:?}",
+            one_key,
+            left == right,
+            left,
+            right
+        );
+    }
+
+    #[test]
+    fn every_value_makes_the_same_key_wherever_its_bytes_were_put(
+        value in props::indexable_text(),
+        here in props::interesting_u64(),
+        there in props::interesting_u64(),
+    ) {
+        let span = value.len() as u32;
+        let one = TextKey::stored(&value, Blob::new(here, span));
+        let other = TextKey::stored(&value, Blob::new(there, span));
+
+        prop_assert_eq!(one, other, "where {:?} was put is not which value it is", value);
+        prop_assert_eq!(one, TextKey::of(&value));
+        prop_assert_eq!(one.raw(), other.raw());
+        prop_assert_eq!(one, TextKey::maybe(Some(&value)));
+    }
+
+    #[test]
+    fn a_key_carries_its_value_whole_or_names_the_heap_that_holds_it(
+        value in props::indexable_text(),
+        start in props::interesting_u64(),
+    ) {
+        let span = value.len() as u32;
+        let key = TextKey::stored(&value, Blob::new(start, span));
+
+        prop_assert!(!key.is_absent());
+        prop_assert_eq!(key.is_inline(), value.len() <= INLINE);
+        prop_assert_ne!(key, TextKey::ABSENT);
+
+        if !key.is_inline() {
+            prop_assert_eq!(
+                key.blob(),
+                Blob::new(start, span),
+                "a key too long to carry {:?} must name where it was put",
+                value
+            );
+        }
+    }
+
+    #[test]
+    fn every_twenty_four_bytes_decode_as_a_key_and_re_encode_unchanged(
+        bytes in prop::collection::vec(any::<u8>(), <TextKey as Record>::SIZE),
+    ) {
+        let key = TextKey::decode(&bytes);
+        let mut written = vec![0u8; <TextKey as Record>::SIZE];
+        key.encode(&mut written);
+
+        prop_assert_eq!(&written, &bytes);
+        prop_assert_eq!(key, TextKey::decode(&bytes));
+        prop_assert_eq!(key.raw(), TextKey::decode(&bytes).raw());
+        prop_assert_eq!(key.blob().len, key.len);
+    }
 }

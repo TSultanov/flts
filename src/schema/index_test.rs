@@ -1,5 +1,7 @@
 use proptest::prelude::*;
 
+use super::super::nullable::Maybe;
+use super::super::text::TextKey;
 use super::*;
 use crate::id::Uuid;
 use crate::storage::ColumnFile;
@@ -508,7 +510,52 @@ fn a_row_no_bucket_reaches_can_never_be_moved_to_another_key() {
     assert!(err.to_string().contains("row 1"), "{err}");
 }
 
+fn same_bucket<K: IndexKey + Copy + std::fmt::Debug>(
+    left: K,
+    right: K,
+) -> std::result::Result<(), TestCaseError> {
+    if left != right {
+        return Ok(());
+    }
+    prop_assert_eq!(
+        left.raw(),
+        right.raw(),
+        "{:?} and {:?} are one key at two hashes",
+        left,
+        right
+    );
+    for rows in [1usize, 9, 5000] {
+        let capacity = capacity_for(rows);
+        prop_assert_eq!(
+            home_of(left.raw(), capacity),
+            home_of(right.raw(), capacity)
+        );
+    }
+    Ok(())
+}
+
 proptest! {
+    #[test]
+    fn two_keys_that_are_equal_always_name_the_same_bucket(
+        left in props::indexable_text(),
+        right in props::indexable_text(),
+        number in props::interesting_u32(),
+        other in props::interesting_u32(),
+        flag in any::<bool>(),
+    ) {
+        same_bucket(TextKey::of(&left), TextKey::of(&right))?;
+        same_bucket(TextKey::of(&left), TextKey::of(&left))?;
+        same_bucket(TextKey::maybe(None), TextKey::of(&right))?;
+        same_bucket(Maybe(Some(number)), Maybe(Some(other)))?;
+        same_bucket(Maybe::<u32>(None), Maybe(Some(number)))?;
+        same_bucket(Maybe::<u32>(None), Maybe::<u32>(None))?;
+        same_bucket(number, other)?;
+        same_bucket(number as i32, other as i32)?;
+        same_bucket(number as u8, other as u8)?;
+        same_bucket(flag, !flag)?;
+        same_bucket(flag, flag)?;
+    }
+
     #[test]
     fn every_home_is_a_bucket_the_index_holds(
         raw in any::<u128>(),

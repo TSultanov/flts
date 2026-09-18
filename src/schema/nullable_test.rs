@@ -1,6 +1,8 @@
+use proptest::prelude::*;
+
 use super::*;
 use crate::storage::ColumnFile;
-use crate::test_utils::{TempDir, committed};
+use crate::test_utils::{TempDir, committed, props};
 
 fn row(index: usize, rows: usize) -> Row {
     Row::of(index, rows, "card").unwrap()
@@ -121,4 +123,40 @@ fn touching_the_tail_of_a_rotten_presence_column_reports_the_damage() {
         err.is_corrupt(),
         "a value column that reads cleanly does not excuse its presence column: {err}"
     );
+}
+
+proptest! {
+    #[test]
+    fn an_absent_value_is_equal_to_every_other_absence_and_to_no_value_that_is_there(
+        value in props::interesting_u64(),
+    ) {
+        let here = Maybe(Some(value));
+
+        prop_assert_eq!(Maybe::<u64>(None), Maybe::<u64>(None));
+        prop_assert_eq!(Maybe::<u64>(None).raw(), Maybe::<u64>(None).raw());
+        prop_assert_ne!(here, Maybe(None));
+        prop_assert_ne!(
+            here.raw(),
+            Maybe::<u64>(None).raw(),
+            "an absent value must not share a bucket with {}",
+            value
+        );
+    }
+
+    #[test]
+    fn a_maybe_round_trips_through_the_byte_that_says_whether_it_is_there(
+        value in proptest::option::of(props::interesting_u64()),
+        said in any::<u8>(),
+    ) {
+        let mut bytes = vec![0u8; <Maybe<u64> as Record>::SIZE];
+        Maybe(value).encode(&mut bytes);
+        prop_assert_eq!(<Maybe<u64> as Record>::decode(&bytes), Maybe(value));
+
+        bytes[0] = said;
+        prop_assert_eq!(
+            <Maybe<u64> as Record>::decode(&bytes).0.is_some(),
+            said != 0,
+            "only a zero byte says a value is not there"
+        );
+    }
 }
