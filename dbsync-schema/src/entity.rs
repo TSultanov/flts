@@ -96,6 +96,15 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         let field_name = &field.name;
         quote! { self.#field_name.push(#field_name)?; }
     });
+    let reaches = stored.iter().filter_map(|field| {
+        let field_name = &field.name;
+        match (&field.kind, field.indexing) {
+            (Kind::Reference(_), _) | (_, Indexing::Shared) => {
+                Some(quote! { self.#field_name.reach(#field_name)?; })
+            }
+            _ => None,
+        }
+    });
     let probes = stored
         .iter()
         .filter(|field| field.indexing == Indexing::Unique)
@@ -322,6 +331,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         impl #table {
             pub fn push(&mut self, #(#arguments,)*) -> ::dbsync::Result<::dbsync::Id<#name>> {
                 <Self as ::dbsync::schema::Table>::reserve(self)?;
+                #(#reaches)*
                 #(#probes)*
                 let id = <Self as ::dbsync::schema::Table>::mint(self)?;
                 #(#pushes)*

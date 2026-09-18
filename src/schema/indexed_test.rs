@@ -895,3 +895,43 @@ fn a_push_onto_a_column_whose_rows_share_nothing_never_walks_the_bucket_it_lands
         "a number carries itself, so a push has no bytes to look for and no chain to walk"
     );
 }
+
+#[test]
+fn reaching_for_a_value_reads_the_bucket_a_push_of_it_would_write() {
+    let dir = TempDir::new("indexed_reach");
+    let path = dir.join("books.dbs");
+
+    let mut column: Indexed<TextColumn, false> = Indexed::named("book.title");
+    for row in 0..8193 {
+        column.push(&format!("title number {row}")).unwrap();
+    }
+    let file = committed(&path, |updater| column.offer_to("book", "title", updater));
+    drop(file);
+
+    let mut read: Indexed<TextColumn, false> = Indexed::named("book.title");
+    read.read_from("book", "title", &ColumnFile::open(&path).unwrap())
+        .unwrap();
+    let mut cold = Vec::new();
+    read.residency("book", "title", &mut cold);
+    assert!(cold.iter().all(|held| held.resident == 0), "{cold:?}");
+
+    read.reach("a title no row holds").unwrap();
+
+    let mut warm = Vec::new();
+    read.residency("book", "title", &mut warm);
+    let buckets = warm
+        .iter()
+        .find(|held| held.name == "book.title.buckets")
+        .expect("the column names this");
+    assert!(buckets.chunks > 1, "{buckets:?}");
+    assert_eq!(
+        buckets.resident, 1,
+        "the bucket a push would write is the one bucket it reads before minting"
+    );
+    assert!(
+        warm.iter()
+            .filter(|held| held.name != "book.title.buckets")
+            .all(|held| held.resident == 0),
+        "and nothing else: {warm:?}"
+    );
+}

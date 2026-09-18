@@ -1,4 +1,6 @@
 use super::*;
+use crate::schema::IndexKey;
+use crate::schema::index::home_of;
 use crate::schema::{IdColumn, TextColumn};
 use crate::storage::Arena;
 use crate::storage::{ColumnFile, ColumnFileWriter, WriterId};
@@ -406,6 +408,47 @@ fn a_value_index_a_commit_wrote_finds_a_row_after_a_reopen_that_read_nothing() {
         "nobody rebuilt the index, and the index read no title to answer"
     );
     read.audit().unwrap();
+}
+
+#[test]
+fn a_push_reads_the_bucket_it_will_write_before_it_mints_the_row_that_names_it() {
+    let dir = TempDir::new("reach_push");
+    let path = dir.join("chapters.dbs");
+
+    let mut books = Books::default();
+    let shelved = books.push("Alice", "Lewis Carroll").unwrap();
+    let mut chapters = Chapters::default();
+    for _ in 0..8193 {
+        chapters.push(shelved, "a chapter").unwrap();
+    }
+
+    let file = committed(&path, |updater| chapters.offer_to(updater));
+    let buckets = file.column_meta("chapter.book.buckets").unwrap();
+    assert_eq!(buckets.chunks.len(), 2);
+    let near = buckets.chunks[0];
+    drop(file);
+
+    flip_byte(&path, near.offset);
+
+    let mut read = Chapters::default();
+    read.read_from(&ColumnFile::open(&path).unwrap()).unwrap();
+
+    let elsewhere = (0..64)
+        .map(|_| books.push("another", "someone").unwrap())
+        .find(|book| home_of(book.raw(), 16384) < 8192)
+        .expect("of sixty-four books, one files its chapters in the unreadable chunk");
+
+    let err = read
+        .push(elsewhere, "a chapter nobody can file")
+        .unwrap_err();
+    assert!(err.is_corrupt(), "{err}");
+    assert_eq!(
+        Table::rows(&read),
+        8193,
+        "the bucket could not be read, and the id was never minted"
+    );
+    read.check_rows_agree()
+        .expect("a refused push leaves a table its columns still agree about");
 }
 
 #[test]

@@ -216,6 +216,13 @@ impl<K: IndexKey> HashIndex<K> {
         self.buckets.set(home, row as u64)
     }
 
+    pub fn reach_for(&self, key: K) -> Result<()> {
+        match self.buckets.is_empty() {
+            true => Ok(()),
+            false => self.reachable(home_of(key.raw(), self.buckets.len())),
+        }
+    }
+
     pub fn make_room(&self, rows: usize) -> Result<()> {
         if capacity_for(rows) > self.buckets.len() {
             for chunk in 0..self.links.chunk_count() {

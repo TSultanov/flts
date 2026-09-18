@@ -559,3 +559,35 @@ proptest! {
         prop_assert_eq!(index.rows_of(mine)?, ours_at);
     }
 }
+
+#[test]
+fn reaching_for_a_key_reads_the_bucket_a_push_of_it_would_write() {
+    let dir = TempDir::new("reach");
+    let path = dir.join("books.dbs");
+
+    let Shelf { index, .. } = stocked(8193);
+    assert_eq!(index.capacity(), 16384);
+    let file = committed(&path, |updater| index.offer_to("book", "id", updater));
+    drop(file);
+
+    let mut read = empty();
+    read.read_from("book", "id", &ColumnFile::open(&path).unwrap())
+        .unwrap();
+    let mut cold = Vec::new();
+    read.residency("book", "id", &mut cold);
+    assert!(cold.iter().all(|held| held.resident == 0), "{cold:?}");
+
+    read.reach_for(Id::mint()).unwrap();
+
+    let mut warm = Vec::new();
+    read.residency("book", "id", &mut warm);
+    let buckets = warm
+        .iter()
+        .find(|held| held.name == "book.id.buckets")
+        .expect("the index names this column");
+    assert!(buckets.chunks > 1, "{buckets:?}");
+    assert_eq!(
+        buckets.resident, 1,
+        "the bucket a push will write is the one bucket it reads first"
+    );
+}

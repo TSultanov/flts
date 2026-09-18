@@ -156,6 +156,7 @@ impl Table for Books {
 impl Books {
     pub fn push(&mut self, title: &str, author: &str) -> Result<Id<Book>> {
         self.reserve()?;
+        self.title.reach(title)?;
         let id = self.mint()?;
         self.title.push(title)?;
         self.author.push(author)?;
@@ -298,6 +299,7 @@ impl Child<Book> for Chapter {
 impl Chapters {
     pub fn push(&mut self, book: Id<Book>, title: &str) -> Result<Id<Chapter>> {
         self.reserve()?;
+        self.book.reach(book)?;
         let id = self.mint()?;
         self.book.push(book)?;
         self.title.push(title)?;
@@ -429,6 +431,7 @@ impl Child<Chapter> for Paragraph {
 impl Paragraphs {
     pub fn push(&mut self, chapter: Id<Chapter>, text: &str) -> Result<Id<Paragraph>> {
         self.reserve()?;
+        self.chapter.reach(chapter)?;
         let id = self.mint()?;
         self.chapter.push(chapter)?;
         self.text.push(text)?;
@@ -565,6 +568,7 @@ impl Editions {
         binding: Binding,
     ) -> Result<Id<Edition>> {
         self.reserve()?;
+        self.book.reach(book)?;
         let id = self.mint()?;
         self.book.push(book)?;
         self.isbn.push(isbn)?;

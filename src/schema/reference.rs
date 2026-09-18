@@ -39,6 +39,10 @@ impl<P: Entity, C: Entity> Clone for RefColumn<P, C> {
 }
 
 impl<P: Entity, C: Entity> RefColumn<P, C> {
+    pub fn reach(&self, parent: Id<P>) -> Result<()> {
+        self.index.reach_for(parent)
+    }
+
     pub fn push(&mut self, parent: Id<P>) -> Result<usize> {
         self.index.append(parent)?;
         self.ids.push(parent)

@@ -620,3 +620,35 @@ fn a_unique_field_is_found_as_one_row_and_a_shared_one_as_many() {
         "{out}"
     );
 }
+
+#[test]
+fn a_push_reaches_for_every_bucket_it_will_write_before_it_mints() {
+    let out = expanded(quote! {
+        struct Chapter {
+            book: One<Book>,
+            #[index] title: String,
+            #[index(unique)] slug: String,
+            text: String,
+        }
+    });
+
+    assert!(out.contains("self . book . reach (book) ?"), "{out}");
+    assert!(out.contains("self . title . reach (title) ?"), "{out}");
+    assert!(
+        !out.contains("self . text . reach"),
+        "a column with no index has no bucket to reach for: {out}"
+    );
+    assert!(
+        !out.contains("self . slug . reach"),
+        "a unique field is probed, and the probe reads that bucket already: {out}"
+    );
+
+    let reach = out
+        .find("reach (book)")
+        .expect("the parent's bucket is reached for");
+    let mint = out.find("mint (self)").expect("an id is minted");
+    assert!(
+        reach < mint,
+        "a bucket that cannot be read must stop a push before the id exists: {out}"
+    );
+}

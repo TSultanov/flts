@@ -82,6 +82,10 @@ impl<C: Keyed, const UNIQUE: bool> Indexed<C, UNIQUE> {
         &self.column
     }
 
+    pub fn reach(&self, value: C::Seek<'_>) -> Result<()> {
+        self.index.reach_for(C::key_for(value))
+    }
+
     pub fn push(&mut self, value: C::Seek<'_>) -> Result<usize> {
         let shared = self.already_here(value)?;
         let key = self.column.append(value, shared)?;
