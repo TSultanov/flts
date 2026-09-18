@@ -33,7 +33,7 @@ pub use names::{bucket_name, heap_name, link_name, presence_name, qualified};
 pub use nullable::{Maybe, NullableColumn};
 pub use pair::{Distinct, Pair, PairColumn, check_pairs};
 pub use reference::RefColumn;
-pub use store::{Store, StoreState};
+pub use store::{CLOCK, Store, StoreState};
 pub use table::{AnyTable, Table};
 pub use text::{NullableTextColumn, TextColumn, TextKey};
 pub use version::{Dot, Version};

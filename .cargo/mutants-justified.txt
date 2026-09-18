@@ -82,4 +82,4 @@ src/schema/version.rs:12:31: replace | with ^
 # The arm was reached by a binary search on the writer, so at equal counts the
 # held dot and the incoming one are the same value and the assignment writes
 # what is already there. No input distinguishes < from <=.
-src/schema/clock.rs:54:47: replace < with <= in VersionVector::observe
+src/schema/clock.rs:56:47: replace < with <= in VersionVector::observe

@@ -2,9 +2,11 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use super::column::{ColumnKind, ColumnSpec, Residency};
 use super::version::Dot;
 use crate::error::{Error, Result};
-use crate::storage::WriterId;
+use crate::record::Record;
+use crate::storage::{Arena, ColumnFile, ColumnFileUpdater, WriterId, default_chunk_rows};
 
 const LOGICAL_BITS: u32 = 16;
 
@@ -76,6 +78,45 @@ impl VersionVector {
         let dot = Dot::new(writer, counter);
         self.observe(dot);
         Ok(dot)
+    }
+
+    pub fn describe(&self, column: &str, out: &mut Vec<ColumnSpec>) {
+        out.push(ColumnSpec {
+            name: column.to_owned(),
+            elem_size: <Dot as Record>::SIZE,
+            kind: ColumnKind::Clock,
+            counts_rows: false,
+        });
+    }
+
+    pub fn residency(&self, column: &str, out: &mut Vec<Residency>) {
+        let chunks = self
+            .seen
+            .len()
+            .div_ceil(default_chunk_rows(<Dot as Record>::SIZE));
+        out.push(Residency {
+            name: column.to_owned(),
+            resident: chunks,
+            chunks,
+        });
+    }
+
+    pub fn read_from(&mut self, column: &str, file: &ColumnFile) -> Result<()> {
+        let dots: Arena<Dot> = file.column(column)?;
+        let mut read = Self::default();
+        for row in 0..dots.len() {
+            read.observe(*dots.row(row)?);
+        }
+        *self = read;
+        Ok(())
+    }
+
+    pub fn offer_to(&self, column: &str, updater: &mut ColumnFileUpdater) -> Result<()> {
+        let mut dots = Arena::new();
+        for dot in &self.seen {
+            dots.push(*dot)?;
+        }
+        updater.column(column, &dots)
     }
 
     fn at(&self, writer: WriterId) -> std::result::Result<usize, usize> {

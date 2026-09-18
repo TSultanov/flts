@@ -594,3 +594,170 @@ fn an_index_a_file_wrote_to_another_shape_is_rebuilt_rather_than_read_wrongly() 
     );
     reopened.verify().unwrap();
 }
+
+fn held(library: &Library, column: &str) -> Residency {
+    library
+        .residency()
+        .into_iter()
+        .find(|held| held.name == column)
+        .unwrap_or_else(|| panic!("{column} is not a column this store reports"))
+}
+
+#[test]
+fn a_created_store_has_not_seen_a_write_from_anyone() -> Result<()> {
+    let dir = TempDir::new("store_clock_fresh");
+    let path = dir.join("library.dbs");
+
+    let library = Library::create(&path, this_device())?;
+
+    assert!(library.clock().is_empty());
+    assert_eq!(library.clock().frontier(), 0);
+    assert_eq!(
+        held(&library, CLOCK).chunks,
+        0,
+        "a clock nobody has counted in costs nothing to carry"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_count_a_store_reached_is_still_there_when_the_file_is_opened_again() -> Result<()> {
+    let dir = TempDir::new("store_clock_kept");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device())?;
+    stock(&mut library);
+    let dot = library.tick(this_device())?;
+    library.commit(this_device())?;
+
+    let reopened = Library::open(&path)?;
+
+    assert!(reopened.clock().dominates(dot), "{:?}", reopened.clock());
+    assert_eq!(reopened.clock().frontier(), dot.counter());
+    Ok(())
+}
+
+#[test]
+fn a_count_reached_but_never_committed_is_not_there_on_the_next_open() -> Result<()> {
+    let dir = TempDir::new("store_clock_uncommitted");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device())?;
+    let dot = library.tick(this_device())?;
+    drop(library);
+
+    let reopened = Library::open(&path)?;
+
+    assert!(
+        !reopened.clock().dominates(dot),
+        "a clock is data a commit wrote, not something the file keeps on its own"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_store_remembers_every_writer_that_ever_counted_in_it() -> Result<()> {
+    let dir = TempDir::new("store_clock_writers");
+    let path = dir.join("library.dbs");
+    let annexe = WriterId::from_device_id("the annexe");
+
+    let mut library = Library::create(&path, this_device())?;
+    let mine = library.tick(this_device())?;
+    let theirs = library.tick(annexe)?;
+    library.commit(this_device())?;
+
+    let reopened = Library::open(&path)?;
+
+    assert_eq!(reopened.clock().writers(), 2);
+    assert!(reopened.clock().dominates(mine));
+    assert!(reopened.clock().dominates(theirs));
+    Ok(())
+}
+
+#[test]
+fn a_count_in_one_file_says_nothing_about_another_file() -> Result<()> {
+    let dir = TempDir::new("store_clock_apart");
+    let annexe = WriterId::from_device_id("the annexe");
+
+    let here = dir.join("here.dbs");
+    let mut mine = Library::create(&here, this_device())?;
+    let counted_here = mine.tick(this_device())?;
+    mine.commit(this_device())?;
+
+    let there = dir.join("there.dbs");
+    let mut theirs = Library::create(&there, annexe)?;
+    let counted_there = theirs.tick(annexe)?;
+    theirs.commit(annexe)?;
+
+    assert!(!mine.clock().dominates(counted_there));
+    assert!(!theirs.clock().dominates(counted_here));
+    Ok(())
+}
+
+#[test]
+fn opening_a_store_reads_its_clock_and_not_a_row_of_any_table() -> Result<()> {
+    let dir = TempDir::new("store_clock_cold");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device())?;
+    stock(&mut library);
+    library.tick(this_device())?;
+    library.commit(this_device())?;
+
+    let reopened = Library::open(&path)?;
+
+    for column in reopened.residency() {
+        match column.name.as_str() {
+            CLOCK => assert_eq!(
+                (column.resident, column.chunks),
+                (1, 1),
+                "a store cannot mint a dot without knowing how far it has counted"
+            ),
+            _ => assert_eq!(
+                column.resident, 0,
+                "{} was read before anyone asked for a row",
+                column.name
+            ),
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_file_with_no_clock_column_is_refused_rather_than_handed_a_fresh_one() -> Result<()> {
+    let dir = TempDir::new("store_clock_stripped");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device())?;
+    library.tick(this_device())?;
+    library.commit(this_device())?;
+    drop(library);
+
+    without(&path, &[CLOCK]);
+    let err = refused(Library::open(&path));
+
+    assert!(err.to_string().contains("missing columns"), "{err}");
+    assert!(err.to_string().contains(CLOCK), "{err}");
+    Ok(())
+}
+
+#[test]
+fn committing_again_does_not_lose_the_count_the_store_had_reached() -> Result<()> {
+    let dir = TempDir::new("store_clock_recommit");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device())?;
+    let dot = library.tick(this_device())?;
+    library.commit(this_device())?;
+
+    stock(&mut library);
+    library.commit(this_device())?;
+
+    assert!(
+        library.clock().dominates(dot),
+        "a commit that advanced the generation reads the file back, and the clock \
+         must come back with it rather than start again: {:?}",
+        library.clock()
+    );
+    Ok(())
+}

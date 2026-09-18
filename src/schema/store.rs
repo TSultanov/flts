@@ -3,17 +3,22 @@
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
+use super::clock::VersionVector;
 use super::column::{ColumnSpec, Residency};
 use super::diff::SchemaDiff;
 use super::table::AnyTable;
+use super::version::Dot;
 use crate::error::{Error, Result};
 use crate::storage::{ColumnFile, ColumnFileUpdater, ColumnFileWriter, WriterId};
+
+pub const CLOCK: &str = "dbsync.clock";
 
 #[derive(Default, Clone)]
 pub struct StoreState {
     file: Option<ColumnFile>,
     path: Option<PathBuf>,
     unknown: Vec<String>,
+    clock: VersionVector,
 }
 
 impl StoreState {
@@ -38,18 +43,32 @@ pub trait Store: Default + Clone + Sized {
 
     fn audit(&self) -> Result<()>;
 
+    fn clock(&self) -> &VersionVector {
+        &self.state().clock
+    }
+
+    fn tick(&mut self, writer: WriterId) -> Result<Dot> {
+        self.state_mut().clock.tick(writer)
+    }
+
     fn specs(&self) -> Vec<ColumnSpec> {
-        self.tables()
+        let mut out: Vec<ColumnSpec> = self
+            .tables()
             .into_iter()
             .flat_map(|table| table.column_specs())
-            .collect()
+            .collect();
+        self.clock().describe(CLOCK, &mut out);
+        out
     }
 
     fn residency(&self) -> Vec<Residency> {
-        self.tables()
+        let mut out: Vec<Residency> = self
+            .tables()
             .into_iter()
             .flat_map(|table| table.column_residency())
-            .collect()
+            .collect();
+        self.clock().residency(CLOCK, &mut out);
+        out
     }
 
     fn generation(&self) -> Option<u64> {
@@ -82,6 +101,9 @@ pub trait Store: Default + Clone + Sized {
         for table in self.tables_mut() {
             table.read_columns(file)?;
         }
+        let mut clock = VersionVector::default();
+        clock.read_from(CLOCK, file)?;
+        self.state_mut().clock = clock;
         self.state_mut().unknown = diff.unknown;
         Ok(())
     }
@@ -90,6 +112,7 @@ pub trait Store: Default + Clone + Sized {
         for table in self.tables() {
             table.offer_columns(updater)?;
         }
+        self.clock().offer_to(CLOCK, updater)?;
         for name in &self.state().unknown {
             updater.keep_column(name)?;
         }
