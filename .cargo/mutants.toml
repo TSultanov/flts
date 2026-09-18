@@ -2,3 +2,12 @@ timeout_multiplier = 3.0
 minimum_test_timeout = 30
 error_values = ["crate::error::Error::invalid(\"mutant\")"]
 exclude_re = []
+# Test code is not what this sweep is measuring. cargo mutants skips a module
+# declared #[cfg(test)], which is how ten of the twelve *_test.rs files were
+# already left alone -- but generated_test.rs and declared_test.rs are declared
+# #[cfg(all(test, feature = "derive"))], which it does not read the same way, so
+# they were mutated for as long as they have existed. Every such mutant was
+# caught, because breaking a helper breaks the tests that use it, so nothing ever
+# showed. This says it once for every file rather than relying on how each one is
+# declared. A test module whose file is not named *_test.rs would still be swept.
+exclude_globs = ["**/*_test.rs"]
