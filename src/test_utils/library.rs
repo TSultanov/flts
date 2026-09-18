@@ -255,11 +255,21 @@ impl<S: Holds<Book>> BookRowMut<'_, S> {
     }
 }
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct Chapters {
     ids: IdColumn<Chapter>,
     book: RefColumn<Book, Chapter>,
     title: TextColumn,
+}
+
+impl Default for Chapters {
+    fn default() -> Self {
+        Self {
+            ids: IdColumn::default(),
+            book: RefColumn::named("chapter.book"),
+            title: TextColumn::default(),
+        }
+    }
 }
 
 impl Table for Chapters {
@@ -387,11 +397,21 @@ impl<S: Holds<Chapter>> ChapterRowMut<'_, S> {
     }
 }
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct Paragraphs {
     ids: IdColumn<Paragraph>,
     chapter: RefColumn<Chapter, Paragraph>,
     text: TextColumn,
+}
+
+impl Default for Paragraphs {
+    fn default() -> Self {
+        Self {
+            ids: IdColumn::default(),
+            chapter: RefColumn::named("paragraph.chapter"),
+            text: TextColumn::default(),
+        }
+    }
 }
 
 impl Table for Paragraphs {
@@ -508,7 +528,7 @@ impl<S: Holds<Paragraph>> ParagraphRowMut<'_, S> {
     }
 }
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct Editions {
     ids: IdColumn<Edition>,
     book: RefColumn<Book, Edition>,
@@ -516,6 +536,19 @@ pub struct Editions {
     year: Arena<u32>,
     pages: NullableColumn<u32>,
     binding: EnumColumn<Binding>,
+}
+
+impl Default for Editions {
+    fn default() -> Self {
+        Self {
+            ids: IdColumn::default(),
+            book: RefColumn::named("edition.book"),
+            isbn: NullableTextColumn::default(),
+            year: Arena::new(),
+            pages: NullableColumn::default(),
+            binding: EnumColumn::default(),
+        }
+    }
 }
 
 impl Table for Editions {

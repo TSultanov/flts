@@ -15,17 +15,8 @@ use crate::storage::{Arena, ColumnFile, ColumnFileUpdater};
 pub struct RefColumn<P: Entity, C: Entity> {
     ids: Arena<Id<P>>,
     index: HashIndex<Id<P>>,
+    name: String,
     marker: PhantomData<fn() -> C>,
-}
-
-impl<P: Entity, C: Entity> Default for RefColumn<P, C> {
-    fn default() -> Self {
-        Self {
-            ids: Arena::new(),
-            index: HashIndex::new(qualified(C::NAME, P::NAME)),
-            marker: PhantomData,
-        }
-    }
 }
 
 impl<P: Entity, C: Entity> Clone for RefColumn<P, C> {
@@ -33,12 +24,22 @@ impl<P: Entity, C: Entity> Clone for RefColumn<P, C> {
         Self {
             ids: self.ids.clone(),
             index: self.index.clone(),
+            name: self.name.clone(),
             marker: PhantomData,
         }
     }
 }
 
 impl<P: Entity, C: Entity> RefColumn<P, C> {
+    pub fn named(column: &str) -> Self {
+        Self {
+            ids: Arena::new(),
+            index: HashIndex::new(column.to_owned()),
+            name: column.to_owned(),
+            marker: PhantomData,
+        }
+    }
+
     pub fn reach(&self, parent: Id<P>) -> Result<()> {
         self.index.reach_for(parent)
     }
@@ -77,15 +78,14 @@ impl<P: Entity, C: Entity> RefColumn<P, C> {
     }
 
     pub fn check_parents(&self, parents: &IdColumn<P>) -> Result<()> {
-        let column = qualified(C::NAME, P::NAME);
-
         for child in 0..self.ids.len() {
             let parent = *self.ids.row(child)?;
             if !parent.is_nil() && parents.find(parent)?.is_none() {
                 return Err(Error::corrupt(
                     "reference",
                     format!(
-                        "{column} row {child} names parent {parent}, which is not a row of {}",
+                        "{} row {child} names parent {parent}, which is not a row of {}",
+                        self.name,
                         P::NAME
                     ),
                 ));

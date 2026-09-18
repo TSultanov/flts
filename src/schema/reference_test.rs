@@ -16,7 +16,7 @@ impl Shelf {
         let mut shelf = Self {
             books: IdColumn::default(),
             chapters: IdColumn::default(),
-            column: RefColumn::default(),
+            column: RefColumn::named("chapter.book"),
         };
         for _ in 0..books {
             shelf.books.push(Id::mint()).unwrap();
@@ -227,7 +227,7 @@ fn a_reference_column_survives_a_commit_and_a_reopen() {
         shelf.column.offer_to("chapter", "book", updater)
     });
 
-    let mut read = RefColumn::<Book, Chapter>::default();
+    let mut read = RefColumn::<Book, Chapter>::named("chapter.book");
     read.read_from("chapter", "book", &file).unwrap();
     shelf.column = read;
 
@@ -249,7 +249,7 @@ fn reading_a_reference_column_beside_an_index_that_lost_rows_rebuilds_it() {
         behind.offer_to("chapter", "book", updater)
     });
 
-    let mut read = RefColumn::<Book, Chapter>::default();
+    let mut read = RefColumn::<Book, Chapter>::named("chapter.book");
     read.read_from("chapter", "book", &file).unwrap();
 
     assert_eq!(
@@ -276,7 +276,7 @@ fn touching_the_tail_of_a_rotten_reference_column_reports_the_damage() {
     drop(file);
     flip_byte(&path, tail.offset);
 
-    let mut read = RefColumn::<Book, Chapter>::default();
+    let mut read = RefColumn::<Book, Chapter>::named("chapter.book");
     read.read_from("chapter", "book", &ColumnFile::open(&path).unwrap())
         .unwrap();
 
@@ -297,7 +297,7 @@ fn touching_the_tail_of_a_rotten_reference_index_reports_the_damage_too() {
     drop(file);
     flip_byte(&path, tail.offset);
 
-    let mut read = RefColumn::<Book, Chapter>::default();
+    let mut read = RefColumn::<Book, Chapter>::named("chapter.book");
     read.read_from("chapter", "book", &ColumnFile::open(&path).unwrap())
         .unwrap();
 
@@ -343,6 +343,25 @@ fn an_audit_refuses_a_reference_that_names_no_parent_of_the_table() {
 }
 
 #[test]
+fn a_reference_is_named_for_the_field_that_holds_it_not_the_parent_it_names() {
+    let mut credited = RefColumn::<Book, Chapter>::named("chapter.credited_to");
+    credited.push(Id::mint()).unwrap();
+
+    let err = credited.check_parents(&IdColumn::default()).unwrap_err();
+    assert!(
+        err.to_string().contains("chapter.credited_to row 0"),
+        "{err}"
+    );
+
+    credited.ids.push(Id::mint()).unwrap();
+    let err = credited.audit().unwrap_err();
+    assert!(
+        err.to_string().contains("chapter.credited_to holds"),
+        "{err}"
+    );
+}
+
+#[test]
 fn an_audit_refuses_an_index_that_files_children_under_parents_the_column_never_named() {
     let dir = TempDir::new("ref_audit");
     let path = dir.join("chapters.dbs");
@@ -357,7 +376,7 @@ fn an_audit_refuses_an_index_that_files_children_under_parents_the_column_never_
         foreign.offer_to("chapter", "book", updater)
     });
 
-    let mut read = RefColumn::<Book, Chapter>::default();
+    let mut read = RefColumn::<Book, Chapter>::named("chapter.book");
     read.read_from("chapter", "book", &file).unwrap();
 
     let err = read.audit().unwrap_err();

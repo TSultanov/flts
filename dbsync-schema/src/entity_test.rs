@@ -541,6 +541,20 @@ fn an_indexed_column_is_built_knowing_the_column_it_indexes() {
 }
 
 #[test]
+fn a_reference_column_is_built_knowing_the_field_that_holds_it() {
+    let out = expanded(quote! {
+        struct Card { credited_to: One<Author>, lemma: String }
+    });
+
+    assert!(
+        out.contains(
+            r#"credited_to : :: dbsync :: schema :: RefColumn :: named ("card.credited_to")"#
+        ),
+        "a reference knows the field it sits in, not the parent it points at: {out}"
+    );
+}
+
+#[test]
 fn an_indexed_field_is_reached_through_the_column_its_index_wraps() {
     let out = expanded(quote! {
         struct Book { #[index] year: u32, month: u32 }

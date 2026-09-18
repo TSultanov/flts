@@ -68,12 +68,13 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     });
     let built = stored.iter().map(|field| {
         let field_name = &field.name;
-        match field.indexing {
-            Indexing::None => quote! { #field_name: ::core::default::Default::default() },
-            _ => {
-                let column = format!("{label}.{field_name}");
-                quote! { #field_name: ::dbsync::schema::Indexed::named(#column) }
+        let column = format!("{label}.{field_name}");
+        match (&field.kind, field.indexing) {
+            (Kind::Reference(_), _) => {
+                quote! { #field_name: ::dbsync::schema::RefColumn::named(#column) }
             }
+            (_, Indexing::None) => quote! { #field_name: ::core::default::Default::default() },
+            _ => quote! { #field_name: ::dbsync::schema::Indexed::named(#column) },
         }
     });
     let read_only = stored.iter().map(|field| {
