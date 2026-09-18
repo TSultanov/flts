@@ -1260,3 +1260,39 @@ fn writing_a_join_back_onto_the_pair_it_already_holds_is_not_a_duplicate_of_itse
     assert!(err.to_string().contains("appearance.work_edition"), "{err}");
     Table::audit(&catalogue.appearances).unwrap();
 }
+
+#[test]
+fn a_value_no_two_rows_may_share_is_given_up_by_one_of_the_copies_that_wrote_it() {
+    use crate::schema::{Store, Table};
+    use crate::storage::WriterId;
+    use crate::test_utils::TempDir;
+
+    let dir = TempDir::new("merge_isbn");
+    let here = dir.join("here.dbs");
+    let there = dir.join("there.dbs");
+    let mut mine = Catalogue::create(&here, WriterId::from_device_id("here")).unwrap();
+    mine.commit(WriterId::from_device_id("here")).unwrap();
+
+    std::fs::copy(&here, &there).unwrap();
+    let mut theirs = Catalogue::open(&there).unwrap();
+    theirs.editions.push(Some("978-0"), 1914).unwrap();
+    theirs.commit(WriterId::from_device_id("there")).unwrap();
+    mine.editions.push(Some("978-0"), 1955).unwrap();
+    mine.commit(WriterId::from_device_id("here")).unwrap();
+
+    let report = mine.merge(&theirs).unwrap();
+
+    assert_eq!(report.collided.len(), 1, "{report:?}");
+    assert_eq!(report.collided[0].column, "edition.isbn");
+    assert_eq!(
+        mine.all::<Edition>().count(),
+        1,
+        "two rows wrote down one isbn, and one of them has to give it up"
+    );
+    assert_eq!(
+        Table::rows(&mine.editions),
+        2,
+        "the one that gave it up is still a row that says what it held"
+    );
+    mine.audit().unwrap();
+}

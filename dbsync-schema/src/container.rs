@@ -71,6 +71,12 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         quote! { <#held as ::dbsync::schema::Audited<Self>>::audit_in(self)?; }
     });
     let read_write = sets.iter().map(|(field, _)| quote! { &mut self.#field });
+    let merges = sets.iter().map(|(field, _)| {
+        quote! { self.#field.merge_from(&theirs.#field, &seen, &told, &mut report)?; }
+    });
+    let settles = sets.iter().map(|(field, _)| {
+        quote! { self.#field.settle_unique(&mut report)?; }
+    });
     let holds = sets.iter().map(|(field, held)| {
         quote! {
             impl ::dbsync::schema::Holds<#held> for #name {
@@ -163,6 +169,41 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 C: ::dbsync::schema::Child<P>,
             {
                 ::dbsync::schema::children_of(self, parent)
+            }
+
+            pub fn merge(
+                &mut self,
+                theirs: &Self,
+            ) -> ::dbsync::Result<::dbsync::schema::MergeReport> {
+                <Self as ::dbsync::schema::Store>::check_published(self)?;
+                <Self as ::dbsync::schema::Store>::check_published(theirs)?;
+
+                let kept = <Self as ::dbsync::schema::Store>::snapshot(self);
+                let seen = <Self as ::dbsync::schema::Store>::clock(self).clone();
+                let told = <Self as ::dbsync::schema::Store>::clock(theirs).clone();
+                let mut report = ::dbsync::schema::MergeReport::default();
+
+                let said = (|| -> ::dbsync::Result<()> {
+                    #(#merges)*
+                    #(#settles)*
+                    ::core::result::Result::Ok(())
+                })();
+
+                if let ::core::result::Result::Err(err) = said {
+                    *self = kept;
+                    return ::core::result::Result::Err(err);
+                }
+
+                <Self as ::dbsync::schema::Store>::absorb(self, &told);
+                match <Self as ::dbsync::schema::Store>::audit(self) {
+                    ::core::result::Result::Ok(()) => ::core::result::Result::Ok(report),
+                    ::core::result::Result::Err(said) => {
+                        *self = kept;
+                        ::core::result::Result::Err(::dbsync::Error::invalid(::std::format!(
+                            "these two copies cannot be merged as they stand: {said}"
+                        )))
+                    }
+                }
             }
 
             pub fn remove<E>(&mut self, of: ::dbsync::Id<E>) -> ::dbsync::Result<()>

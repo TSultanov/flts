@@ -198,6 +198,118 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             }
         });
 
+    let carried_theirs = stored.iter().map(|field| {
+        let field_name = &field.name;
+        let read = field
+            .kind
+            .get(&quote! { theirs }, field_name, field.indexing);
+        let owned = field.kind.owned();
+        quote! { let #field_name = #read #owned ?; }
+    });
+    let reaches_theirs = stored.iter().filter_map(|field| {
+        let field_name = &field.name;
+        let lent = field.kind.lent(field_name);
+        match (&field.kind, field.indexing) {
+            (Kind::Reference(_), _) => Some(quote! { self.#field_name.reach(#lent)?; }),
+            (_, Indexing::None) => None,
+            _ => Some(quote! { self.#field_name.reach(#lent)?; }),
+        }
+    });
+    let pushes_theirs = stored.iter().map(|field| {
+        let field_name = &field.name;
+        let lent = field.kind.lent(field_name);
+        quote! { self.#field_name.push(#lent)?; }
+    });
+    let pair_reach_plain = pair.as_ref().map(|shared| {
+        let (column, left, right) = (&shared.column, &shared.left, &shared.right);
+        quote! {
+            let pair = ::dbsync::schema::Pair::of(#left, #right);
+            self.#column.reach(pair)?;
+        }
+    });
+    let pair_push_theirs = pair.as_ref().map(|shared| {
+        let column = &shared.column;
+        quote! { self.#column.push(pair)?; }
+    });
+
+    let sweeps = stored
+        .iter()
+        .filter(|field| field.indexing == Indexing::Unique)
+        .map(|field| {
+            let field_name = &field.name;
+            let read = field.kind.get(&quote! { self }, field_name, field.indexing);
+            let owned = field.kind.owned();
+            let lent = field.kind.lent(&syn::Ident::new("held", field_name.span()));
+            let column = syn::LitStr::new(&format!("{label}.{field_name}"), field_name.span());
+            quote! {
+                let mut at = 0usize;
+                while at < <Self as ::dbsync::schema::Table>::rows(self) {
+                    let rows = <Self as ::dbsync::schema::Table>::rows(self);
+                    let row = ::dbsync::schema::Row::of(at, rows, #label)?;
+                    at += 1;
+                    if !<Self as ::dbsync::schema::Table>::versions(self).at(row)?.is_live() {
+                        continue;
+                    }
+                    let held = #read #owned ?;
+                    let together = <Self as ::dbsync::schema::Table>::live_among(
+                        self,
+                        self.#field_name.rows_holding(#lent)?,
+                    )?;
+                    if let ::core::option::Option::Some((kept, given)) =
+                        <Self as ::dbsync::schema::Table>::yield_among(self, &together)?
+                    {
+                        let kept = <Self as ::dbsync::schema::Table>::id_at(self, kept)?;
+                        for row in given {
+                            report.collided.push(::dbsync::schema::Collision {
+                                column: #column,
+                                kept: kept.uuid(),
+                                dropped:
+                                    <Self as ::dbsync::schema::Table>::id_at(self, row)?.uuid(),
+                            });
+                        }
+                    }
+                }
+            }
+        });
+    let pair_sweep = pair.as_ref().map(|shared| {
+        let (column, left, right) = (&shared.column, &shared.left, &shared.right);
+        let named = syn::LitStr::new(
+            &format!("{}.{}", label, shared.column),
+            shared.column.span(),
+        );
+        quote! {
+            let mut at = 0usize;
+            while at < <Self as ::dbsync::schema::Table>::rows(self) {
+                let rows = <Self as ::dbsync::schema::Table>::rows(self);
+                let row = ::dbsync::schema::Row::of(at, rows, #label)?;
+                at += 1;
+                if !<Self as ::dbsync::schema::Table>::versions(self).at(row)?.is_live() {
+                    continue;
+                }
+                let held = ::dbsync::schema::Pair::of(
+                    self.#left.get(row)?,
+                    self.#right.get(row)?,
+                );
+                let together = <Self as ::dbsync::schema::Table>::live_among(
+                    self,
+                    self.#column.rows_holding(held)?,
+                )?;
+                if let ::core::option::Option::Some((kept, given)) =
+                    <Self as ::dbsync::schema::Table>::yield_among(self, &together)?
+                {
+                    let kept = <Self as ::dbsync::schema::Table>::id_at(self, kept)?;
+                    for row in given {
+                        report.collided.push(::dbsync::schema::Collision {
+                            column: #named,
+                            kept: kept.uuid(),
+                            dropped: <Self as ::dbsync::schema::Table>::id_at(self, row)?.uuid(),
+                        });
+                    }
+                }
+            }
+        }
+    });
+
     let carried_whole = stored.iter().map(|field| {
         let field_name = &field.name;
         let read = field.kind.get(&quote! { self }, field_name, field.indexing);
@@ -540,6 +652,55 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 <Self as ::dbsync::schema::Table>::revise(self, of)?;
                 #(#pushes_again)*
                 #pair_push_again
+                ::core::result::Result::Ok(())
+            }
+
+            pub fn merge_from(
+                &mut self,
+                theirs: &Self,
+                seen: &::dbsync::schema::VersionVector,
+                told: &::dbsync::schema::VersionVector,
+                report: &mut ::dbsync::schema::MergeReport,
+            ) -> ::dbsync::Result<()> {
+                for row in <Self as ::dbsync::schema::Table>::rows_by_dot(theirs)? {
+                    let version = <Self as ::dbsync::schema::Table>::versions(theirs).at(row)?;
+                    let of = <Self as ::dbsync::schema::Table>::id_at(theirs, row)?;
+                    let taking = <Self as ::dbsync::schema::Table>::how_to_take(
+                        self, of, version, seen, told,
+                    )?;
+
+                    if taking == ::dbsync::schema::Taking::Known {
+                        report.known += 1;
+                        continue;
+                    }
+                    if let ::dbsync::schema::Taking::Concurrent { kept, dropped } = taking {
+                        report.concurrent.push(::dbsync::schema::Concurrent {
+                            entity: <#name as ::dbsync::schema::Entity>::NAME,
+                            id: of.uuid(),
+                            kept,
+                            dropped,
+                        });
+                    }
+
+                    #(#carried_theirs)*
+                    <Self as ::dbsync::schema::Table>::reserve(self)?;
+                    #(#reaches_theirs)*
+                    #pair_reach_plain
+                    <Self as ::dbsync::schema::Table>::adopt(self, of, version)?;
+                    #(#pushes_theirs)*
+                    #pair_push_theirs
+                    <Self as ::dbsync::schema::Table>::settle(self, of)?;
+                    report.taken += 1;
+                }
+                ::core::result::Result::Ok(())
+            }
+
+            pub fn settle_unique(
+                &mut self,
+                report: &mut ::dbsync::schema::MergeReport,
+            ) -> ::dbsync::Result<()> {
+                #({ #sweeps })*
+                { #pair_sweep }
                 ::core::result::Result::Ok(())
             }
 

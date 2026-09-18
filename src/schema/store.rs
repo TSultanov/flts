@@ -52,6 +52,22 @@ pub trait Store: Default + Clone + Sized {
         self.state_mut().clock.tick(writer)
     }
 
+    fn absorb(&mut self, told: &VersionVector) {
+        self.state_mut().clock.absorb(told);
+    }
+
+    fn check_published(&self) -> Result<()> {
+        for table in self.tables() {
+            if !table.published() {
+                return Err(Error::invalid(format!(
+                    "{} holds a write nobody has published; commit before merging,                      because a write with no name of its own cannot be told apart                      from another copy's",
+                    table.entity()
+                )));
+            }
+        }
+        Ok(())
+    }
+
     fn specs(&self) -> Vec<ColumnSpec> {
         let mut out: Vec<ColumnSpec> = self
             .tables()

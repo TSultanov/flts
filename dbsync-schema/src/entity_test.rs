@@ -701,6 +701,12 @@ fn a_push_reaches_for_every_bucket_it_will_write_before_it_mints() {
         }
     });
 
+    let after = out
+        .split("pub fn push")
+        .nth(1)
+        .expect("the table has a push");
+    let push = &after[..after.find("fn rewrite").unwrap_or(after.len())];
+
     assert!(out.contains("self . book . reach (book) ?"), "{out}");
     assert!(out.contains("self . title . reach (title) ?"), "{out}");
     assert!(
@@ -708,8 +714,12 @@ fn a_push_reaches_for_every_bucket_it_will_write_before_it_mints() {
         "a column with no index has no bucket to reach for: {out}"
     );
     assert!(
-        !out.contains("self . slug . reach"),
+        !push.contains("self . slug . reach"),
         "a unique field is probed, and the probe reads that bucket already: {out}"
+    );
+    assert!(
+        out.contains("self . slug . reach (& slug) ?"),
+        "a merge takes a row without probing it, so it reaches that bucket itself: {out}"
     );
 
     let reach = out

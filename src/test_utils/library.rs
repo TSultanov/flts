@@ -250,8 +250,8 @@ impl Books {
         self.versions.supersede(row)
     }
 
-    pub fn quietly_unsupersede(&mut self, row: crate::schema::Row) {
-        self.versions.unsupersede(row);
+    pub fn quietly_unsupersede(&mut self, row: crate::schema::Row) -> Result<()> {
+        self.versions.restore(row)
     }
 
     pub fn set_title(&mut self, book: Id<Book>, title: &str) -> Result<()> {

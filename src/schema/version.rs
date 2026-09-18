@@ -121,6 +121,13 @@ impl Version {
         }
     }
 
+    pub const fn restore(self) -> Self {
+        Self {
+            dot: self.dot,
+            flags: self.flags & !SUPERSEDED,
+        }
+    }
+
     pub const fn withdraw(self) -> Self {
         Self {
             dot: self.dot,
@@ -212,16 +219,9 @@ impl<E: Entity> VersionColumn<E> {
         self.versions.set(row.index(), held.supersede())
     }
 
-    #[cfg(test)]
-    pub fn unsupersede(&mut self, row: Row) {
-        let held = self.at(row).expect("a row this column holds");
-        let raw = Version {
-            dot: held.dot(),
-            flags: 0,
-        };
-        self.versions
-            .set(row.index(), raw)
-            .expect("the row is here");
+    pub fn restore(&mut self, row: Row) -> Result<()> {
+        let held = self.at(row)?;
+        self.versions.set(row.index(), held.restore())
     }
 
     pub fn withdraw(&mut self, row: Row) -> Result<()> {

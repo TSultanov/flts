@@ -1231,3 +1231,248 @@ fn a_declared_entity_carries_the_retention_it_was_marked_with() {
     );
     assert!(!Chapter::KEEPS.keeps_what_was_written_over());
 }
+
+fn device(named: &str) -> WriterId {
+    WriterId::from_device_id(named)
+}
+
+fn titles(library: &Library) -> Vec<String> {
+    let mut held: Vec<String> = library
+        .all::<Book>()
+        .map(|book| book.title().unwrap().into_owned())
+        .collect();
+    held.sort();
+    held
+}
+
+fn copied(dir: &TempDir, from: &str, to: &str) -> Result<Library> {
+    std::fs::copy(dir.join(from), dir.join(to))?;
+    Library::open(dir.join(to))
+}
+
+#[test]
+fn two_copies_edited_apart_end_up_holding_what_both_of_them_wrote() -> Result<()> {
+    let dir = TempDir::new("merge_apart");
+    let mut mine = Library::create(dir.join("here.dbs"), device("here"))?;
+    mine.books.push("Alice", "Lewis Carroll")?;
+    mine.commit(device("here"))?;
+
+    let mut theirs = copied(&dir, "here.dbs", "there.dbs")?;
+    theirs.books.push("Kokoro", "Natsume Soseki")?;
+    theirs.commit(device("there"))?;
+    mine.books.push("An Atlas", "many hands")?;
+    mine.commit(device("here"))?;
+
+    let report = mine.merge(&theirs)?;
+
+    assert_eq!(titles(&mine), ["Alice", "An Atlas", "Kokoro"]);
+    assert_eq!(report.taken, 1, "only their new book was news here");
+    assert!(report.is_quiet(), "{report:?}");
+    mine.audit()?;
+    Ok(())
+}
+
+#[test]
+fn merging_the_same_copy_twice_says_the_second_time_that_it_knew_it_all() -> Result<()> {
+    let dir = TempDir::new("merge_twice");
+    let mut mine = Library::create(dir.join("here.dbs"), device("here"))?;
+    mine.books.push("Alice", "Lewis Carroll")?;
+    mine.commit(device("here"))?;
+
+    let mut theirs = copied(&dir, "here.dbs", "there.dbs")?;
+    theirs.books.push("Kokoro", "Natsume Soseki")?;
+    theirs.commit(device("there"))?;
+
+    let once = mine.merge(&theirs)?;
+    let rows = Table::rows(&mine.books);
+    let again = mine.merge(&theirs)?;
+
+    assert_eq!(once.taken, 1);
+    assert_eq!(again.taken, 0, "{again:?}");
+    assert!(again.known > 0);
+    assert_eq!(
+        Table::rows(&mine.books),
+        rows,
+        "a second merge wrote nothing"
+    );
+    assert_eq!(titles(&mine), ["Alice", "Kokoro"]);
+    Ok(())
+}
+
+#[test]
+fn two_copies_merged_in_either_order_hold_the_same_books() -> Result<()> {
+    let dir = TempDir::new("merge_either");
+    let mut mine = Library::create(dir.join("here.dbs"), device("here"))?;
+    mine.books.push("Alice", "Lewis Carroll")?;
+    mine.commit(device("here"))?;
+
+    let mut theirs = copied(&dir, "here.dbs", "there.dbs")?;
+    theirs.books.push("Kokoro", "Natsume Soseki")?;
+    theirs.commit(device("there"))?;
+    mine.books.push("An Atlas", "many hands")?;
+    mine.commit(device("here"))?;
+
+    let mut ours = mine.clone();
+    ours.merge(&theirs)?;
+    let mut backwards = theirs.clone();
+    backwards.merge(&mine)?;
+
+    assert_eq!(titles(&ours), titles(&backwards));
+    assert_eq!(titles(&ours), ["Alice", "An Atlas", "Kokoro"]);
+    Ok(())
+}
+
+#[test]
+fn a_row_two_copies_wrote_apart_is_kept_by_the_later_write_and_the_other_is_reported() -> Result<()>
+{
+    let dir = TempDir::new("merge_concurrent");
+    let mut mine = Library::create(dir.join("here.dbs"), device("here"))?;
+    let alice = mine.books.push("Alice", "Lewis Carroll")?;
+    mine.commit(device("here"))?;
+
+    let mut theirs = copied(&dir, "here.dbs", "there.dbs")?;
+    theirs.at_mut(alice)?.set_title("Alice's Adventures")?;
+    theirs.commit(device("there"))?;
+    mine.at_mut(alice)?.set_title("Alice in Wonderland")?;
+    mine.commit(device("here"))?;
+
+    let report = mine.merge(&theirs)?;
+
+    assert_eq!(report.concurrent.len(), 1, "{report:?}");
+    let said = report.concurrent[0];
+    assert_eq!(said.entity, "book");
+    assert_eq!(said.id, alice.uuid());
+    assert!(said.kept > said.dropped, "the later write is the one kept");
+    assert_eq!(titles(&mine).len(), 1, "one book, however many wrote it");
+    mine.audit()?;
+    Ok(())
+}
+
+#[test]
+fn a_pair_two_copies_both_declared_leaves_one_credit_and_names_the_other() -> Result<()> {
+    let dir = TempDir::new("merge_pair");
+    let mut mine = Library::create(dir.join("here.dbs"), device("here"))?;
+    let alice = mine.books.push("Alice", "Lewis Carroll")?;
+    let carroll = mine.editors.push("Lewis Carroll")?;
+    mine.commit(device("here"))?;
+
+    let mut theirs = copied(&dir, "here.dbs", "there.dbs")?;
+    theirs.credits.push(alice, carroll)?;
+    theirs.commit(device("there"))?;
+    mine.credits.push(alice, carroll)?;
+    mine.commit(device("here"))?;
+
+    let report = mine.merge(&theirs)?;
+
+    assert_eq!(report.collided.len(), 1, "{report:?}");
+    assert_eq!(report.collided[0].column, "credit.book_editor");
+    assert_ne!(report.collided[0].kept, report.collided[0].dropped);
+    assert_eq!(
+        mine.children_of::<Book, Credit>(alice)?.len(),
+        1,
+        "two copies each wrote the pair down, and one of them has to give it up"
+    );
+    mine.audit()?;
+    Ok(())
+}
+
+#[test]
+fn a_copy_with_a_write_nobody_published_is_refused_before_anything_is_merged() -> Result<()> {
+    let dir = TempDir::new("merge_unpublished");
+    let mut mine = Library::create(dir.join("here.dbs"), device("here"))?;
+    mine.books.push("Alice", "Lewis Carroll")?;
+    mine.commit(device("here"))?;
+    let theirs = copied(&dir, "here.dbs", "there.dbs")?;
+
+    mine.books.push("An Atlas", "many hands")?;
+    let err = mine
+        .merge(&theirs)
+        .expect_err("a write with no name of its own cannot be merged");
+
+    assert!(err.to_string().contains("nobody has published"), "{err}");
+    Ok(())
+}
+
+#[test]
+fn three_copies_merged_in_either_grouping_hold_the_same_books() -> Result<()> {
+    let dir = TempDir::new("merge_three");
+    let mut first = Library::create(dir.join("first.dbs"), device("first"))?;
+    first.books.push("Alice", "Lewis Carroll")?;
+    first.commit(device("first"))?;
+
+    let mut second = copied(&dir, "first.dbs", "second.dbs")?;
+    let mut third = copied(&dir, "first.dbs", "third.dbs")?;
+    second.books.push("Kokoro", "Natsume Soseki")?;
+    second.commit(device("second"))?;
+    third.books.push("An Atlas", "many hands")?;
+    third.commit(device("third"))?;
+
+    let mut leftwards = first.clone();
+    leftwards.merge(&second)?;
+    leftwards.merge(&third)?;
+
+    let mut gathered = second.clone();
+    gathered.merge(&third)?;
+    let mut rightwards = first.clone();
+    rightwards.merge(&gathered)?;
+
+    assert_eq!(titles(&leftwards), titles(&rightwards));
+    assert_eq!(titles(&leftwards), ["Alice", "An Atlas", "Kokoro"]);
+    leftwards.audit()?;
+    rightwards.audit()?;
+    Ok(())
+}
+
+#[test]
+fn a_row_only_the_other_copy_wrote_is_taken_without_calling_it_a_disagreement() -> Result<()> {
+    let dir = TempDir::new("merge_later");
+    let mut mine = Library::create(dir.join("here.dbs"), device("here"))?;
+    let alice = mine.books.push("Alice", "Lewis Carroll")?;
+    mine.commit(device("here"))?;
+
+    let mut theirs = copied(&dir, "here.dbs", "there.dbs")?;
+    theirs.at_mut(alice)?.set_title("Alice's Adventures")?;
+    theirs.commit(device("there"))?;
+
+    let report = mine.merge(&theirs)?;
+
+    assert_eq!(mine.books.title(alice)?, "Alice's Adventures");
+    assert_eq!(report.taken, 1);
+    assert!(
+        report.concurrent.is_empty(),
+        "they wrote after seeing what I had, so nobody disagreed: {report:?}"
+    );
+    mine.audit()?;
+    Ok(())
+}
+
+#[test]
+fn a_merge_that_would_orphan_a_chapter_is_refused_and_leaves_the_copy_as_it_was() -> Result<()> {
+    let dir = TempDir::new("merge_orphan");
+    let mut mine = Library::create(dir.join("here.dbs"), device("here"))?;
+    let alice = mine.books.push("Alice", "Lewis Carroll")?;
+    mine.commit(device("here"))?;
+
+    let mut theirs = copied(&dir, "here.dbs", "there.dbs")?;
+    theirs.chapters.push(alice, "Down the Rabbit-Hole")?;
+    theirs.commit(device("there"))?;
+
+    mine.remove(alice)?;
+    mine.commit(device("here"))?;
+    let before = Table::rows(&mine.chapters);
+
+    let err = mine
+        .merge(&theirs)
+        .expect_err("their chapter belongs to a book this copy took out");
+
+    assert!(err.to_string().contains("cannot be merged"), "{err}");
+    assert!(err.to_string().contains("was taken out of book"), "{err}");
+    assert_eq!(
+        Table::rows(&mine.chapters),
+        before,
+        "a merge that cannot be made to hold together writes nothing at all"
+    );
+    assert_eq!(mine.all::<Book>().count(), 0);
+    mine.audit()?;
+    Ok(())
+}

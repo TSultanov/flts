@@ -625,7 +625,9 @@ fn a_table_with_two_rows_that_are_both_the_newest_of_one_id_is_corruption() {
     books
         .write_over(alice, "Alice's Adventures", "Lewis Carroll")
         .unwrap();
-    books.quietly_unsupersede(Row::of(0, 3, "book").unwrap());
+    books
+        .quietly_unsupersede(Row::of(0, 3, "book").unwrap())
+        .unwrap();
 
     let err = Table::audit(&books).expect_err("one id has one newest version");
 
@@ -712,4 +714,28 @@ fn a_handle_writes_to_the_row_its_id_names_now_and_not_the_one_it_opened_at() {
         "Alice",
         "the row the handle opened at was written over, not written to"
     );
+}
+
+#[test]
+fn settling_an_id_makes_its_newest_version_the_one_it_names() {
+    let (mut books, alice) = two_books();
+    books
+        .write_over(alice, "Alice's Adventures", "Lewis Carroll")
+        .unwrap();
+    let newest = books.row_of(alice).unwrap();
+    let older = Row::of(0, 3, "book").unwrap();
+
+    books.quietly_supersede(newest).unwrap();
+    books.quietly_unsupersede(older).unwrap();
+    assert_eq!(books.title(alice).unwrap(), "Alice");
+
+    books.settle(alice).unwrap();
+
+    assert_eq!(
+        books.title(alice).unwrap(),
+        "Alice's Adventures",
+        "whichever row was marked, the version that counted furthest is the one the id names"
+    );
+    assert_eq!(books.row_of(alice).unwrap(), newest);
+    Table::audit(&books).unwrap();
 }
