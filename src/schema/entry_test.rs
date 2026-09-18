@@ -1,8 +1,12 @@
 use super::*;
 use crate::error::Result;
 use crate::id::Id;
-use crate::schema::Store;
-use crate::test_utils::library::{Binding, Book, Chapter, Edition, Library, Paragraph};
+use crate::schema::{Residency, Store};
+use crate::storage::WriterId;
+use crate::test_utils::TempDir;
+use crate::test_utils::library::{
+    Author, Authorship, Binding, Book, Chapter, Edition, Library, Paragraph,
+};
 use crate::test_utils::props;
 use proptest::prelude::*;
 
@@ -845,5 +849,303 @@ proptest! {
             prop_assert!(book.chapters().is_ok() || book.chapters().is_err());
         }
         prop_assert_eq!(model.books.len(), minted.books.len());
+    }
+}
+
+#[derive(Clone, Debug)]
+enum Credit {
+    Link(usize, usize),
+    Clear(usize),
+    Repoint(usize, usize),
+}
+
+struct Credited {
+    books: Vec<Id<Book>>,
+    authors: Vec<Id<Author>>,
+    links: Vec<Id<Authorship>>,
+}
+
+fn crediting() -> impl Strategy<Value = Vec<Credit>> {
+    prop::collection::vec(
+        prop_oneof![
+            6 => (0usize..4, 0usize..4).prop_map(|(book, author)| Credit::Link(book, author)),
+            2 => (0usize..40, 0usize..4).prop_map(|(at, author)| Credit::Repoint(at, author)),
+            1 => (0usize..40).prop_map(Credit::Clear),
+        ],
+        0..40,
+    )
+}
+
+fn credited(library: &mut Library, program: &[Credit]) -> (Credited, Vec<(usize, Option<usize>)>) {
+    let books: Vec<Id<Book>> = (0..4)
+        .map(|at| library.books.push(&format!("book {at}"), "nobody").unwrap())
+        .collect();
+    let authors: Vec<Id<Author>> = (0..4)
+        .map(|at| library.authors.push(&format!("author {at}")).unwrap())
+        .collect();
+
+    let mut links = Vec::new();
+    let mut model: Vec<(usize, Option<usize>)> = Vec::new();
+
+    for step in program {
+        match step {
+            Credit::Link(book, author) => {
+                links.push(
+                    library
+                        .authorships
+                        .push(books[*book], authors[*author])
+                        .unwrap(),
+                );
+                model.push((*book, Some(*author)));
+            }
+            Credit::Repoint(at, author) => {
+                if model.is_empty() {
+                    continue;
+                }
+                let row = at % model.len();
+                library
+                    .at_mut(links[row])
+                    .unwrap()
+                    .set_author(authors[*author])
+                    .unwrap();
+                model[row].1 = Some(*author);
+            }
+            Credit::Clear(at) => {
+                if model.is_empty() {
+                    continue;
+                }
+                let row = at % model.len();
+                library
+                    .at_mut(links[row])
+                    .unwrap()
+                    .set_author(Id::NIL)
+                    .unwrap();
+                model[row].1 = None;
+            }
+        }
+    }
+    (
+        Credited {
+            books,
+            authors,
+            links,
+        },
+        model,
+    )
+}
+
+fn scanned(model: &[(usize, Option<usize>)], book: usize) -> Vec<usize> {
+    model
+        .iter()
+        .filter(|(at, _)| *at == book)
+        .filter_map(|(_, author)| *author)
+        .collect()
+}
+
+#[test]
+fn a_row_reaches_the_far_side_of_a_join_without_naming_the_table_between_it() {
+    let mut library = Library::default();
+    let atlas = library.books.push("An Atlas", "many hands").unwrap();
+    let ada = library.authors.push("Ada").unwrap();
+    let bram = library.authors.push("Bram").unwrap();
+    library.authorships.push(atlas, ada).unwrap();
+    library.authorships.push(atlas, bram).unwrap();
+
+    let named: Vec<String> = library
+        .at(atlas)
+        .unwrap()
+        .authors()
+        .unwrap()
+        .map(|author| author.name().unwrap().into_owned())
+        .collect();
+
+    assert_eq!(named, ["Ada", "Bram"]);
+    assert_eq!(
+        library
+            .at(ada)
+            .unwrap()
+            .books()
+            .unwrap()
+            .map(|book| book.title().unwrap().into_owned())
+            .collect::<Vec<_>>(),
+        ["An Atlas"]
+    );
+}
+
+#[test]
+fn a_crossing_passes_over_a_link_whose_far_side_was_cleared() {
+    let mut library = Library::default();
+    let atlas = library.books.push("An Atlas", "many hands").unwrap();
+    let ada = library.authors.push("Ada").unwrap();
+    let bram = library.authors.push("Bram").unwrap();
+    let first = library.authorships.push(atlas, ada).unwrap();
+    library.authorships.push(atlas, bram).unwrap();
+
+    library.at_mut(first).unwrap().set_author(Id::NIL).unwrap();
+
+    assert_eq!(library.at(atlas).unwrap().authorships().unwrap().count(), 2);
+    assert_eq!(
+        library
+            .at(atlas)
+            .unwrap()
+            .authors()
+            .unwrap()
+            .map(|author| author.name().unwrap().into_owned())
+            .collect::<Vec<_>>(),
+        ["Bram"],
+        "the link is still a row of the join; it just names nobody to reach"
+    );
+}
+
+proptest! {
+    #[test]
+    fn a_crossing_names_exactly_the_rows_a_scan_of_the_links_would_name(
+        program in crediting(),
+        from in 0usize..4,
+    ) {
+        let mut library = Library::default();
+        let (held, model) = credited(&mut library, &program);
+
+        let crossed: Vec<usize> = library
+            .at(held.books[from])?
+            .authors()?
+            .map(|author| {
+                held.authors
+                    .iter()
+                    .position(|known| *known == author.id().unwrap())
+                    .unwrap()
+            })
+            .collect();
+
+        prop_assert_eq!(
+            crossed,
+            scanned(&model, from),
+            "a crossing from book {} disagrees with a scan of {:?}",
+            from,
+            model
+        );
+    }
+
+    #[test]
+    fn a_crossing_names_one_row_for_every_link_and_not_one_for_every_row_it_reaches(
+        program in crediting(),
+        from in 0usize..4,
+    ) {
+        let mut library = Library::default();
+        let (held, model) = credited(&mut library, &program);
+
+        prop_assert_eq!(
+            library.at(held.books[from])?.authors()?.count(),
+            scanned(&model, from).len(),
+            "two links naming one author are two crossings, not one"
+        );
+    }
+
+    #[test]
+    fn every_row_a_crossing_reaches_is_one_the_join_named_from_the_row_it_started_at(
+        program in crediting(),
+        from in 0usize..4,
+    ) {
+        let mut library = Library::default();
+        let (held, _) = credited(&mut library, &program);
+
+        for author in library.at(held.books[from])?.authors()? {
+            let reached = author.id()?;
+            prop_assert!(
+                held.links.iter().any(|link| {
+                    library.authorships.book(*link).unwrap() == held.books[from]
+                        && library.authorships.author(*link).unwrap() == reached
+                }),
+                "nothing links book {} to {:?}",
+                from,
+                reached
+            );
+        }
+    }
+}
+
+fn held_after_a_cold_crossing(program: &[Credit], from: usize) -> Vec<Residency> {
+    let dir = TempDir::new("crossing");
+    let path = dir.join("library.dbs");
+
+    let mut written = Library::create(&path, WriterId::ANONYMOUS).unwrap();
+    let (held, _) = credited(&mut written, program);
+    let crossing = held.books[from];
+    written.commit(WriterId::ANONYMOUS).unwrap();
+    drop(written);
+
+    let reopened = Library::open(&path).unwrap();
+    assert!(
+        reopened
+            .residency()
+            .iter()
+            .all(|column| column.resident == 0),
+        "opening a store reads no payload at all"
+    );
+    reopened.at(crossing).unwrap().authors().unwrap().count();
+    reopened.residency()
+}
+
+fn held(reported: &[Residency], column: &str) -> usize {
+    reported
+        .iter()
+        .find(|one| one.name == column)
+        .expect("the schema names this column")
+        .resident
+}
+
+proptest! {
+    #![proptest_config(props::scaled(8))]
+
+    #[test]
+    fn crossing_a_join_reads_the_index_it_starts_from_and_never_the_column_under_it(
+        program in crediting(),
+        from in 0usize..4,
+    ) {
+        let warm = held_after_a_cold_crossing(&program, from);
+
+        prop_assert_eq!(
+            held(&warm, "authorship.book"),
+            0,
+            "a link carries the book it is filed under, so the column is never read: {:?}",
+            warm
+        );
+        prop_assert_eq!(
+            held(&warm, "author.name"),
+            0,
+            "a crossing names rows; reading what they hold is a separate act"
+        );
+        prop_assert_eq!(held(&warm, "author.name.bytes"), 0);
+    }
+
+    #[test]
+    fn crossing_a_join_reads_the_far_end_of_every_link_it_walks(
+        program in crediting(),
+        from in 0usize..4,
+    ) {
+        let warm = held_after_a_cold_crossing(&program, from);
+        let linked = |book: Option<usize>| {
+            program
+                .iter()
+                .filter(|step| match (step, book) {
+                    (Credit::Link(at, _), Some(only)) => *at == only,
+                    (Credit::Link(..), None) => true,
+                    _ => false,
+                })
+                .count()
+        };
+
+        prop_assert_eq!(
+            held(&warm, "authorship.author") > 0,
+            linked(Some(from)) > 0,
+            "the far id of a link is read exactly when there is a link to walk: {:?}",
+            warm
+        );
+        prop_assert_eq!(
+            held(&warm, "authorship.book.buckets") > 0,
+            linked(None) > 0,
+            "a join that holds a row has an index, and a crossing asks it: {:?}",
+            warm
+        );
     }
 }

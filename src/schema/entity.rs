@@ -60,6 +60,27 @@ where
     C::parents(Holds::<C>::table(store)).child_rows_of(parent)
 }
 
+pub fn across_rows_of<S, A, J, B>(store: &S, from: Id<A>) -> Result<Vec<Row>>
+where
+    S: Holds<J> + Holds<B>,
+    A: Entity,
+    B: Entity,
+    J: Child<A> + Child<B>,
+{
+    let joins = Holds::<J>::table(store);
+    let far = Holds::<B>::table(store);
+    let mut reached = Vec::new();
+
+    for link in <J as Child<A>>::parents(joins).child_rows_of(from)? {
+        let beyond = <J as Child<B>>::parents(joins).get(link)?;
+        if beyond.is_nil() {
+            continue;
+        }
+        reached.push(Table::row_of(far, beyond)?);
+    }
+    Ok(reached)
+}
+
 pub fn audit_reference<S, P, C>(store: &S) -> Result<()>
 where
     S: Holds<P> + Holds<C>,

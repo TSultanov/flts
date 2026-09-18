@@ -5,7 +5,7 @@ use std::ops::Range;
 use std::vec;
 
 use super::column::Row;
-use super::entity::{Child, Entity, Holds, child_rows_of};
+use super::entity::{Child, Entity, Holds, across_rows_of, child_rows_of};
 use super::table::Table;
 use crate::error::Result;
 use crate::id::Id;
@@ -73,6 +73,19 @@ impl<'a, S: Holds<E>, E: Entity> Entry<'a, S, E> {
             marker: PhantomData,
         })
     }
+
+    pub fn across<J, B>(&self) -> Result<Across<'a, S, B>>
+    where
+        S: Holds<J> + Holds<B>,
+        B: Entity,
+        J: Child<E> + Child<B>,
+    {
+        Ok(Across {
+            store: self.store,
+            rows: across_rows_of::<S, E, J, B>(self.store, self.id()?)?.into_iter(),
+            marker: PhantomData,
+        })
+    }
 }
 
 pub struct EntryMut<'a, S, E: Entity> {
@@ -112,6 +125,20 @@ pub struct Children<'a, S, C: Entity> {
 
 impl<'a, S: Holds<C> + 'a, C: Entity> Iterator for Children<'a, S, C> {
     type Item = C::Row<'a, S>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        Some(Entry::at_row(self.store, self.rows.next()?).into())
+    }
+}
+
+pub struct Across<'a, S, B: Entity> {
+    store: &'a S,
+    rows: vec::IntoIter<Row>,
+    marker: PhantomData<fn() -> B>,
+}
+
+impl<'a, S: Holds<B> + 'a, B: Entity> Iterator for Across<'a, S, B> {
+    type Item = B::Row<'a, S>;
 
     fn next(&mut self) -> Option<Self::Item> {
         Some(Entry::at_row(self.store, self.rows.next()?).into())

@@ -4,8 +4,8 @@ use std::ops::{Deref, DerefMut};
 use crate::error::{Error, Result};
 use crate::id::Id;
 use crate::schema::{
-    AnyTable, Audited, Child, Children, Entity, Entry, EntryMut, EnumColumn, Field, FieldMut,
-    Holds, NullableColumn, NullableTextColumn, RefColumn, Rows, Store, StoreState, Table,
+    Across, AnyTable, Audited, Child, Children, Entity, Entry, EntryMut, EnumColumn, Field,
+    FieldMut, Holds, NullableColumn, NullableTextColumn, RefColumn, Rows, Store, StoreState, Table,
     TextColumn, UnitEnum, audit_reference,
 };
 use crate::schema::{IdColumn, Indexed};
@@ -263,6 +263,13 @@ impl<'a, S: Holds<Book>> BookRow<'a, S> {
         S: Holds<Authorship>,
     {
         self.0.children::<Authorship>()
+    }
+
+    pub fn authors(&self) -> Result<Across<'a, S, Author>>
+    where
+        S: Holds<Authorship> + Holds<Author>,
+    {
+        self.0.across::<Authorship, Author>()
     }
 }
 
@@ -856,6 +863,13 @@ impl<'a, S: Holds<Author>> AuthorRow<'a, S> {
         S: Holds<Authorship>,
     {
         self.0.children::<Authorship>()
+    }
+
+    pub fn books(&self) -> Result<Across<'a, S, Book>>
+    where
+        S: Holds<Authorship> + Holds<Book>,
+    {
+        self.0.across::<Authorship, Book>()
     }
 }
 

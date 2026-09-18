@@ -17,8 +17,10 @@ mod text;
 
 pub use column::{Column, ColumnKind, ColumnSpec, Field, FieldMut, Residency, Row};
 pub use diff::SchemaDiff;
-pub use entity::{Audited, Child, Entity, Holds, audit_reference, child_rows_of, children_of};
-pub use entry::{Children, Entry, EntryMut, Rows};
+pub use entity::{
+    Audited, Child, Entity, Holds, across_rows_of, audit_reference, child_rows_of, children_of,
+};
+pub use entry::{Across, Children, Entry, EntryMut, Rows};
 pub use enums::{EnumColumn, UnitEnum};
 pub use identity::IdColumn;
 pub use index::{HashIndex, IndexKey, Keys};
