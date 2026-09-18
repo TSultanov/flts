@@ -534,6 +534,81 @@ fn same_bucket<K: IndexKey + Copy + std::fmt::Debug>(
     Ok(())
 }
 
+#[derive(Clone, Debug)]
+enum Move {
+    Append(u32),
+    Repoint(usize, u32),
+}
+
+struct Filed {
+    keys: Arena<u32>,
+    index: HashIndex<u32>,
+}
+
+fn filing() -> impl Strategy<Value = u32> {
+    prop_oneof![
+        3 => 0u32..4,
+        1 => props::interesting_u32(),
+    ]
+}
+
+fn moves() -> impl Strategy<Value = Vec<Move>> {
+    prop::collection::vec(
+        prop_oneof![
+            3 => filing().prop_map(Move::Append),
+            1 => (0usize..100, filing()).prop_map(|(at, key)| Move::Repoint(at, key)),
+        ],
+        0..80,
+    )
+}
+
+fn step(filed: &mut Filed, model: &mut Vec<u32>, made: &Move) {
+    match made {
+        Move::Append(key) => {
+            let row = filed.keys.push(*key).unwrap();
+            assert_eq!(filed.index.append(*key).unwrap(), row);
+            model.push(*key);
+        }
+        Move::Repoint(at, key) => {
+            if !model.is_empty() {
+                let row = at % model.len();
+                filed.keys.set(row, *key).unwrap();
+                filed.index.repoint_row(row, *key).unwrap();
+                model[row] = *key;
+            }
+        }
+    }
+}
+
+fn filed(made: &[Move]) -> (Filed, Vec<u32>) {
+    let mut filed = Filed {
+        keys: Arena::new(),
+        index: HashIndex::new("card.number".to_owned()),
+    };
+    let mut model = Vec::new();
+    for one in made {
+        step(&mut filed, &mut model, one);
+    }
+    (filed, model)
+}
+
+fn every_key(model: &[u32], sought: u32) -> Vec<u32> {
+    let mut wanted = model.to_vec();
+    wanted.push(sought);
+    wanted.sort_unstable();
+    wanted.dedup();
+    wanted
+}
+
+fn scan(model: &[u32], key: u32) -> Vec<usize> {
+    model
+        .iter()
+        .enumerate()
+        .filter(|(_, held)| **held == key)
+        .map(|(row, _)| row)
+        .collect()
+}
+
 proptest! {
     #[test]
     fn two_keys_that_are_equal_always_name_the_same_bucket(
@@ -637,4 +712,218 @@ fn reaching_for_a_key_reads_the_bucket_a_push_of_it_would_write() {
         buckets.resident, 1,
         "the bucket a push will write is the one bucket it reads first"
     );
+}
+
+proptest! {
+    #[test]
+    fn an_index_driven_through_every_move_it_allows_names_the_rows_a_scan_would(
+        made in moves(),
+        sought in filing(),
+    ) {
+        let (filed, model) = filed(&made);
+
+        for key in every_key(&model, sought) {
+            let scanned = scan(&model, key);
+            prop_assert_eq!(
+                filed.index.rows_of(key).unwrap(),
+                scanned.clone(),
+                "the index and a scan disagree about {}",
+                key
+            );
+            let one = filed.index.row_of(key).unwrap();
+            prop_assert_eq!(
+                one.is_some(),
+                !scanned.is_empty(),
+                "one row is named for {} where a scan finds {:?}",
+                key,
+                scanned
+            );
+            if let Some(row) = one {
+                prop_assert!(
+                    scanned.contains(&row),
+                    "the row named for {} is {}, which does not hold it",
+                    key,
+                    row
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_index_audits_clean_after_every_move_it_allows(made in moves()) {
+        let mut filed = Filed {
+            keys: Arena::new(),
+            index: HashIndex::new("card.number".to_owned()),
+        };
+        let mut model = Vec::new();
+
+        for one in &made {
+            step(&mut filed, &mut model, one);
+            prop_assert!(
+                filed.index.agrees_with(model.len()),
+                "{} links and {} buckets after {:?} filed {} rows",
+                filed.index.rows(),
+                filed.index.capacity(),
+                one,
+                model.len()
+            );
+            if let Err(said) = filed.index.audit(&filed.keys) {
+                prop_assert!(false, "{} rows in, {:?} left the index damaged: {}", model.len(), one, said);
+            }
+        }
+    }
+
+    #[test]
+    fn an_index_rebuilt_from_its_column_answers_exactly_as_the_one_it_replaced(
+        made in moves(),
+        sought in filing(),
+    ) {
+        let (filed, model) = filed(&made);
+        let mut fresh = HashIndex::new("card.number".to_owned());
+        fresh.rebuild(&filed.keys).unwrap();
+
+        prop_assert!(fresh.agrees_with(model.len()));
+        if let Err(said) = fresh.audit(&filed.keys) {
+            prop_assert!(false, "a rebuilt index is damaged: {}", said);
+        }
+
+        for key in every_key(&model, sought) {
+            prop_assert_eq!(
+                fresh.rows_of(key).unwrap(),
+                filed.index.rows_of(key).unwrap(),
+                "a rebuilt index answers differently about {}",
+                key
+            );
+        }
+    }
+
+    #[test]
+    fn every_candidate_a_walk_offers_carries_the_key_it_was_asked_for(
+        made in moves(),
+        sought in filing(),
+    ) {
+        let (filed, model) = filed(&made);
+
+        let mut offered = Vec::new();
+        let named = filed
+            .index
+            .rows_where(sought, |row, held| {
+                offered.push((row, held));
+                Ok(true)
+            })
+            .unwrap();
+
+        prop_assert_eq!(offered.len(), named.len());
+        for (row, held) in offered {
+            prop_assert_eq!(held, sought, "a walk offered row {} under another key", row);
+            prop_assert_eq!(model[row], sought);
+        }
+    }
+
+    #[test]
+    fn a_walk_stops_at_the_first_candidate_its_predicate_cannot_judge(
+        made in moves(),
+        sought in filing(),
+        after in 0usize..8,
+    ) {
+        let (filed, model) = filed(&made);
+        let matching = scan(&model, sought).len();
+        prop_assume!(matching > 0);
+        let stop = after % matching;
+
+        let mut seen = 0usize;
+        let said = filed.index.rows_where(sought, |_, _| {
+            seen += 1;
+            match seen > stop {
+                true => Err(Error::invalid("the predicate cannot say")),
+                false => Ok(true),
+            }
+        });
+
+        let err = said.unwrap_err();
+        prop_assert!(err.to_string().contains("the predicate cannot say"), "{}", err);
+        prop_assert_eq!(
+            seen,
+            stop + 1,
+            "the walk went on past a candidate it could not judge"
+        );
+    }
+
+    #[test]
+    fn an_audit_refuses_a_row_reached_twice_or_reached_from_the_wrong_bucket(
+        rows in 2usize..40,
+        pick in 0usize..64,
+        twice in any::<bool>(),
+    ) {
+        let Shelf { keys, mut index, .. } = stocked(rows);
+
+        let mut alone = Vec::new();
+        for home in 0..index.capacity() {
+            let head = *index.buckets.row(home).unwrap();
+            if head != NO_ROW && index.links.row(head as usize).unwrap().next == NO_ROW {
+                alone.push((home, head));
+            }
+        }
+        prop_assume!(alone.len() >= 2);
+
+        let one = pick % alone.len();
+        let two = (one + 1) % alone.len();
+        let (first, held) = alone[one.min(two)];
+        let (second, other) = alone[one.max(two)];
+
+        let wanted = match twice {
+            true => {
+                index.buckets.set(second, held).unwrap();
+                "twice"
+            }
+            false => {
+                index.buckets.set(first, other).unwrap();
+                index.buckets.set(second, held).unwrap();
+                "not the bucket its key names"
+            }
+        };
+
+        let err = index.audit(&keys).unwrap_err();
+        prop_assert!(err.is_corrupt(), "{}", err);
+        prop_assert!(err.to_string().contains(wanted), "{}", err);
+    }
+
+    #[test]
+    fn flipping_any_byte_of_an_index_is_reported_as_damage_and_never_hangs(
+        rows in 1usize..40,
+        at in 0usize..64,
+        byte in 0usize..<Link<Id<Book>> as Record>::SIZE,
+        in_links in any::<bool>(),
+    ) {
+        let Shelf { keys, mut index, minted } = stocked(rows);
+
+        if in_links {
+            let row = at % index.links.len();
+            let mut bytes = vec![0u8; <Link<Id<Book>> as Record>::SIZE];
+            index.links.row(row).unwrap().encode(&mut bytes);
+            bytes[byte] ^= 0xff;
+            index
+                .links
+                .set(row, <Link<Id<Book>> as Record>::decode(&bytes))
+                .unwrap();
+        } else {
+            let home = at % index.buckets.len();
+            let mut bytes = vec![0u8; <u64 as Record>::SIZE];
+            index.buckets.row(home).unwrap().encode(&mut bytes);
+            bytes[byte % <u64 as Record>::SIZE] ^= 0xff;
+            index
+                .buckets
+                .set(home, <u64 as Record>::decode(&bytes))
+                .unwrap();
+        }
+
+        let err = index.audit(&keys).unwrap_err();
+        prop_assert!(err.is_corrupt(), "{}", err);
+
+        for key in minted {
+            if let Err(said) = index.rows_of(key) {
+                prop_assert!(said.is_corrupt(), "{}", said);
+            }
+        }
+    }
 }
