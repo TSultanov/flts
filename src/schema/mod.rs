@@ -1,5 +1,6 @@
 //! Typed tables over named columns: the runtime a generated schema wires itself into.
 
+mod clock;
 mod column;
 mod diff;
 mod entity;
@@ -15,7 +16,9 @@ mod reference;
 mod store;
 mod table;
 mod text;
+mod version;
 
+pub use clock::VersionVector;
 pub use column::{Column, ColumnKind, ColumnSpec, Field, FieldMut, Residency, Row};
 pub use diff::SchemaDiff;
 pub use entity::{
@@ -33,6 +36,7 @@ pub use reference::RefColumn;
 pub use store::{Store, StoreState};
 pub use table::{AnyTable, Table};
 pub use text::{NullableTextColumn, TextColumn, TextKey};
+pub use version::{Dot, Version};
 
 #[cfg(all(test, feature = "derive"))]
 #[path = "generated_test.rs"]

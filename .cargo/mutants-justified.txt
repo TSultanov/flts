@@ -69,3 +69,17 @@ src/id/uuid.rs:72:17: replace | with ^ in Uuid::v7_at
 src/id/uuid.rs:73:17: replace | with ^ in Uuid::v7_at
 src/id/uuid.rs:74:17: replace | with ^ in Uuid::v7_at
 src/id/uuid.rs:75:17: replace | with ^ in Uuid::v7_at
+
+# Provably equivalent, not untested. KNOWN is
+#     const KNOWN: u64 = SUPERSEDED | REMOVED;
+# over the disjoint single bits 1 and 2, so OR and XOR agree on every input.
+# Same shape as the new_file_uuid and v7_at entries above.
+src/schema/version.rs:12:31: replace | with ^
+
+# Provably equivalent. observe raises an entry only when the incoming count is
+# higher:
+#     Ok(at) if self.seen[at].counter() < dot.counter() => self.seen[at] = dot,
+# The arm was reached by a binary search on the writer, so at equal counts the
+# held dot and the incoming one are the same value and the assignment writes
+# what is already there. No input distinguishes < from <=.
+src/schema/clock.rs:54:47: replace < with <= in VersionVector::observe
