@@ -153,6 +153,8 @@ fn main() -> Result<()> {
     println!("     nobody wrote those names down; Many and Set asked for none of them,");
     println!("     and nobody declared an id: every entity is given one, and a row keeps");
     println!("     the one it was given for as long as it exists");
+    println!("     nobody declared a version either: every row carries the write that");
+    println!("     made it, and dbsync.clock is how far this copy has counted");
     println!("     credit.book_author is the pair no two credits may share, carried whole,");
     println!("     so a book and a person are held apart by one key rather than two");
     println!("     .buckets and .links are the hash index over the column they follow --");
@@ -181,12 +183,21 @@ fn main() -> Result<()> {
     println!("     generation 1 was the empty file these columns were committed into");
 
     let shelf = Library::open(&path)?;
-    assert!(shelf.residency().iter().all(|held| held.resident == 0));
+    assert!(
+        shelf
+            .residency()
+            .iter()
+            .filter(|held| held.name != dbsync::schema::CLOCK)
+            .all(|held| held.resident == 0)
+    );
+    assert_eq!(resident(&shelf, dbsync::schema::CLOCK), 1);
     println!("\n3. reopened it, and opening a column read no payload at all");
     println!(
-        "     resident chunks across all {} columns: 0",
+        "     resident chunks across all {} columns: 1",
         shelf.specs().len()
     );
+    println!("     and the one is dbsync.clock, which an open must read because a store");
+    println!("     cannot name its next write without knowing how far it has counted");
 
     for book in shelf.all::<Book>() {
         println!("     {}", book.title()?);

@@ -353,6 +353,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         #[derive(Clone)]
         #vis struct #table {
             dbsync_ids: ::dbsync::schema::IdColumn<#name>,
+            dbsync_versions: ::dbsync::schema::VersionColumn<#name>,
             #(#columns,)*
             #pair_column
         }
@@ -361,6 +362,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             fn default() -> Self {
                 Self {
                     dbsync_ids: ::core::default::Default::default(),
+                    dbsync_versions: ::core::default::Default::default(),
                     #(#built,)*
                     #pair_built
                 }
@@ -378,9 +380,18 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 &mut self.dbsync_ids
             }
 
+            fn versions(&self) -> &::dbsync::schema::VersionColumn<#name> {
+                &self.dbsync_versions
+            }
+
+            fn versions_mut(&mut self) -> &mut ::dbsync::schema::VersionColumn<#name> {
+                &mut self.dbsync_versions
+            }
+
             fn fields(&self) -> ::std::vec::Vec<::dbsync::schema::Field<'_>> {
                 ::std::vec![
                     ::dbsync::schema::Field::new("id", &self.dbsync_ids),
+                    ::dbsync::schema::Field::new("version", &self.dbsync_versions),
                     #(#read_only,)*
                     #pair_field
                 ]
@@ -389,6 +400,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             fn fields_mut(&mut self) -> ::std::vec::Vec<::dbsync::schema::FieldMut<'_>> {
                 ::std::vec![
                     ::dbsync::schema::FieldMut::new("id", &mut self.dbsync_ids),
+                    ::dbsync::schema::FieldMut::new("version", &mut self.dbsync_versions),
                     #(#read_write,)*
                     #pair_field_mut
                 ]
@@ -640,6 +652,12 @@ fn check_no_field_called_id(fields: &[Field]) -> syn::Result<()> {
             return Err(syn::Error::new(
                 field.name.span(),
                 "`id` is the identity every entity already has, not a field to declare",
+            ));
+        }
+        if field.name == "version" {
+            return Err(syn::Error::new(
+                field.name.span(),
+                "`version` is the write every row already carries, not a field to declare",
             ));
         }
     }

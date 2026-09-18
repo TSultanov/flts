@@ -6,7 +6,7 @@ use super::column::{ColumnKind, ColumnSpec, Residency};
 use super::version::Dot;
 use crate::error::{Error, Result};
 use crate::record::Record;
-use crate::storage::{Arena, ColumnFile, ColumnFileUpdater, WriterId, default_chunk_rows};
+use crate::storage::{Arena, ColumnFileUpdater, WriterId, default_chunk_rows};
 
 const LOGICAL_BITS: u32 = 16;
 
@@ -101,8 +101,7 @@ impl VersionVector {
         });
     }
 
-    pub fn read_from(&mut self, column: &str, file: &ColumnFile) -> Result<()> {
-        let dots: Arena<Dot> = file.column(column)?;
+    pub fn read_from(&mut self, dots: &Arena<Dot>) -> Result<()> {
         let mut read = Self::default();
         for row in 0..dots.len() {
             read.observe(*dots.row(row)?);
@@ -111,12 +110,33 @@ impl VersionVector {
         Ok(())
     }
 
-    pub fn offer_to(&self, column: &str, updater: &mut ColumnFileUpdater) -> Result<()> {
+    pub fn offer_to(
+        &self,
+        column: &str,
+        held: &Arena<Dot>,
+        updater: &mut ColumnFileUpdater,
+    ) -> Result<()> {
+        if self.is_what(held)? {
+            return updater.column(column, held);
+        }
+
         let mut dots = Arena::new();
         for dot in &self.seen {
             dots.push(*dot)?;
         }
         updater.column(column, &dots)
+    }
+
+    fn is_what(&self, held: &Arena<Dot>) -> Result<bool> {
+        if held.len() != self.seen.len() {
+            return Ok(false);
+        }
+        for (row, dot) in self.seen.iter().enumerate() {
+            if held.row(row)? != dot {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     fn at(&self, writer: WriterId) -> std::result::Result<usize, usize> {

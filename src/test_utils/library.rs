@@ -8,7 +8,7 @@ use crate::schema::{
     Field, FieldMut, Holds, NullableColumn, NullableTextColumn, Pair, RefColumn, Rows, Store,
     StoreState, Table, TextColumn, UnitEnum, audit_reference, check_pairs,
 };
-use crate::schema::{IdColumn, Indexed};
+use crate::schema::{IdColumn, Indexed, VersionColumn};
 use crate::storage::Arena;
 
 pub struct Book;
@@ -145,6 +145,7 @@ impl UnitEnum for Binding {
 #[derive(Clone)]
 pub struct Books {
     ids: IdColumn<Book>,
+    versions: VersionColumn<Book>,
     title: Indexed<TextColumn, false>,
     author: TextColumn,
 }
@@ -153,6 +154,7 @@ impl Default for Books {
     fn default() -> Self {
         Self {
             ids: IdColumn::default(),
+            versions: VersionColumn::default(),
             title: Indexed::named("book.title"),
             author: TextColumn::default(),
         }
@@ -170,9 +172,18 @@ impl Table for Books {
         &mut self.ids
     }
 
+    fn versions(&self) -> &VersionColumn<Book> {
+        &self.versions
+    }
+
+    fn versions_mut(&mut self) -> &mut VersionColumn<Book> {
+        &mut self.versions
+    }
+
     fn fields(&self) -> Vec<Field<'_>> {
         vec![
             Field::new("id", &self.ids),
+            Field::new("version", &self.versions),
             Field::new("title", &self.title),
             Field::new("author", &self.author),
         ]
@@ -181,6 +192,7 @@ impl Table for Books {
     fn fields_mut(&mut self) -> Vec<FieldMut<'_>> {
         vec![
             FieldMut::new("id", &mut self.ids),
+            FieldMut::new("version", &mut self.versions),
             FieldMut::new("title", &mut self.title),
             FieldMut::new("author", &mut self.author),
         ]
@@ -306,6 +318,7 @@ impl<S: Holds<Book>> BookRowMut<'_, S> {
 #[derive(Clone)]
 pub struct Chapters {
     ids: IdColumn<Chapter>,
+    versions: VersionColumn<Chapter>,
     book: RefColumn<Book, Chapter>,
     title: TextColumn,
 }
@@ -314,6 +327,7 @@ impl Default for Chapters {
     fn default() -> Self {
         Self {
             ids: IdColumn::default(),
+            versions: VersionColumn::default(),
             book: RefColumn::named("chapter.book"),
             title: TextColumn::default(),
         }
@@ -331,9 +345,18 @@ impl Table for Chapters {
         &mut self.ids
     }
 
+    fn versions(&self) -> &VersionColumn<Chapter> {
+        &self.versions
+    }
+
+    fn versions_mut(&mut self) -> &mut VersionColumn<Chapter> {
+        &mut self.versions
+    }
+
     fn fields(&self) -> Vec<Field<'_>> {
         vec![
             Field::new("id", &self.ids),
+            Field::new("version", &self.versions),
             Field::new("book", &self.book),
             Field::new("title", &self.title),
         ]
@@ -342,6 +365,7 @@ impl Table for Chapters {
     fn fields_mut(&mut self) -> Vec<FieldMut<'_>> {
         vec![
             FieldMut::new("id", &mut self.ids),
+            FieldMut::new("version", &mut self.versions),
             FieldMut::new("book", &mut self.book),
             FieldMut::new("title", &mut self.title),
         ]
@@ -448,6 +472,7 @@ impl<S: Holds<Chapter>> ChapterRowMut<'_, S> {
 #[derive(Clone)]
 pub struct Paragraphs {
     ids: IdColumn<Paragraph>,
+    versions: VersionColumn<Paragraph>,
     chapter: RefColumn<Chapter, Paragraph>,
     text: TextColumn,
 }
@@ -456,6 +481,7 @@ impl Default for Paragraphs {
     fn default() -> Self {
         Self {
             ids: IdColumn::default(),
+            versions: VersionColumn::default(),
             chapter: RefColumn::named("paragraph.chapter"),
             text: TextColumn::default(),
         }
@@ -473,9 +499,18 @@ impl Table for Paragraphs {
         &mut self.ids
     }
 
+    fn versions(&self) -> &VersionColumn<Paragraph> {
+        &self.versions
+    }
+
+    fn versions_mut(&mut self) -> &mut VersionColumn<Paragraph> {
+        &mut self.versions
+    }
+
     fn fields(&self) -> Vec<Field<'_>> {
         vec![
             Field::new("id", &self.ids),
+            Field::new("version", &self.versions),
             Field::new("chapter", &self.chapter),
             Field::new("text", &self.text),
         ]
@@ -484,6 +519,7 @@ impl Table for Paragraphs {
     fn fields_mut(&mut self) -> Vec<FieldMut<'_>> {
         vec![
             FieldMut::new("id", &mut self.ids),
+            FieldMut::new("version", &mut self.versions),
             FieldMut::new("chapter", &mut self.chapter),
             FieldMut::new("text", &mut self.text),
         ]
@@ -579,6 +615,7 @@ impl<S: Holds<Paragraph>> ParagraphRowMut<'_, S> {
 #[derive(Clone)]
 pub struct Editions {
     ids: IdColumn<Edition>,
+    versions: VersionColumn<Edition>,
     book: RefColumn<Book, Edition>,
     isbn: NullableTextColumn,
     year: Arena<u32>,
@@ -590,6 +627,7 @@ impl Default for Editions {
     fn default() -> Self {
         Self {
             ids: IdColumn::default(),
+            versions: VersionColumn::default(),
             book: RefColumn::named("edition.book"),
             isbn: NullableTextColumn::default(),
             year: Arena::new(),
@@ -610,9 +648,18 @@ impl Table for Editions {
         &mut self.ids
     }
 
+    fn versions(&self) -> &VersionColumn<Edition> {
+        &self.versions
+    }
+
+    fn versions_mut(&mut self) -> &mut VersionColumn<Edition> {
+        &mut self.versions
+    }
+
     fn fields(&self) -> Vec<Field<'_>> {
         vec![
             Field::new("id", &self.ids),
+            Field::new("version", &self.versions),
             Field::new("book", &self.book),
             Field::new("isbn", &self.isbn),
             Field::new("year", &self.year),
@@ -624,6 +671,7 @@ impl Table for Editions {
     fn fields_mut(&mut self) -> Vec<FieldMut<'_>> {
         vec![
             FieldMut::new("id", &mut self.ids),
+            FieldMut::new("version", &mut self.versions),
             FieldMut::new("book", &mut self.book),
             FieldMut::new("isbn", &mut self.isbn),
             FieldMut::new("year", &mut self.year),
@@ -780,6 +828,7 @@ impl<S: Holds<Edition>> EditionRowMut<'_, S> {
 #[derive(Clone)]
 pub struct Authors {
     ids: IdColumn<Author>,
+    versions: VersionColumn<Author>,
     name: Indexed<TextColumn, false>,
 }
 
@@ -787,6 +836,7 @@ impl Default for Authors {
     fn default() -> Self {
         Self {
             ids: IdColumn::default(),
+            versions: VersionColumn::default(),
             name: Indexed::named("author.name"),
         }
     }
@@ -803,13 +853,26 @@ impl Table for Authors {
         &mut self.ids
     }
 
+    fn versions(&self) -> &VersionColumn<Author> {
+        &self.versions
+    }
+
+    fn versions_mut(&mut self) -> &mut VersionColumn<Author> {
+        &mut self.versions
+    }
+
     fn fields(&self) -> Vec<Field<'_>> {
-        vec![Field::new("id", &self.ids), Field::new("name", &self.name)]
+        vec![
+            Field::new("id", &self.ids),
+            Field::new("version", &self.versions),
+            Field::new("name", &self.name),
+        ]
     }
 
     fn fields_mut(&mut self) -> Vec<FieldMut<'_>> {
         vec![
             FieldMut::new("id", &mut self.ids),
+            FieldMut::new("version", &mut self.versions),
             FieldMut::new("name", &mut self.name),
         ]
     }
@@ -898,6 +961,7 @@ impl<'a, S: Holds<Author>> DerefMut for AuthorRowMut<'a, S> {
 #[derive(Clone)]
 pub struct Authorships {
     ids: IdColumn<Authorship>,
+    versions: VersionColumn<Authorship>,
     book: RefColumn<Book, Authorship>,
     author: RefColumn<Author, Authorship>,
     book_author: Distinct<Book, Author>,
@@ -907,6 +971,7 @@ impl Default for Authorships {
     fn default() -> Self {
         Self {
             ids: IdColumn::default(),
+            versions: VersionColumn::default(),
             book: RefColumn::named("authorship.book"),
             author: RefColumn::named("authorship.author"),
             book_author: Indexed::named("authorship.book_author"),
@@ -925,9 +990,18 @@ impl Table for Authorships {
         &mut self.ids
     }
 
+    fn versions(&self) -> &VersionColumn<Authorship> {
+        &self.versions
+    }
+
+    fn versions_mut(&mut self) -> &mut VersionColumn<Authorship> {
+        &mut self.versions
+    }
+
     fn fields(&self) -> Vec<Field<'_>> {
         vec![
             Field::new("id", &self.ids),
+            Field::new("version", &self.versions),
             Field::new("book", &self.book),
             Field::new("author", &self.author),
             Field::new("book_author", &self.book_author),
@@ -937,6 +1011,7 @@ impl Table for Authorships {
     fn fields_mut(&mut self) -> Vec<FieldMut<'_>> {
         vec![
             FieldMut::new("id", &mut self.ids),
+            FieldMut::new("version", &mut self.versions),
             FieldMut::new("book", &mut self.book),
             FieldMut::new("author", &mut self.author),
             FieldMut::new("book_author", &mut self.book_author),

@@ -36,7 +36,7 @@ pub use reference::RefColumn;
 pub use store::{CLOCK, Store, StoreState};
 pub use table::{AnyTable, Table};
 pub use text::{NullableTextColumn, TextColumn, TextKey};
-pub use version::{Dot, Version};
+pub use version::{Dot, Version, VersionColumn};
 
 #[cfg(all(test, feature = "derive"))]
 #[path = "generated_test.rs"]

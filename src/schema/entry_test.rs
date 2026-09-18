@@ -1136,8 +1136,9 @@ fn held_after_a_cold_crossing(program: &[Credit], from: usize) -> Vec<Residency>
         reopened
             .residency()
             .iter()
+            .filter(|column| column.name != crate::schema::CLOCK)
             .all(|column| column.resident == 0),
-        "opening a store reads no payload at all"
+        "opening a store reads its clock and no payload at all"
     );
     reopened.at(crossing).unwrap().authors().unwrap().count();
     reopened.residency()

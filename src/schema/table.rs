@@ -1,12 +1,14 @@
 //! An entity's columns as one addressable unit.
 
+use super::clock::VersionVector;
 use super::column::{Column, ColumnSpec, Field, FieldMut, Residency, Row};
 use super::entity::Entity;
 use super::identity::IdColumn;
 use super::names::qualified;
+use super::version::{Version, VersionColumn};
 use crate::error::{Error, Result};
 use crate::id::Id;
-use crate::storage::{ColumnFile, ColumnFileUpdater};
+use crate::storage::{ColumnFile, ColumnFileUpdater, WriterId};
 
 pub trait Table: Default + Clone {
     type Of: Entity;
@@ -14,6 +16,10 @@ pub trait Table: Default + Clone {
     fn ids(&self) -> &IdColumn<Self::Of>;
 
     fn ids_mut(&mut self) -> &mut IdColumn<Self::Of>;
+
+    fn versions(&self) -> &VersionColumn<Self::Of>;
+
+    fn versions_mut(&mut self) -> &mut VersionColumn<Self::Of>;
 
     fn fields(&self) -> Vec<Field<'_>>;
 
@@ -34,7 +40,12 @@ pub trait Table: Default + Clone {
     fn mint(&mut self) -> Result<Id<Self::Of>> {
         let id = Id::mint();
         self.ids_mut().push(id)?;
+        self.versions_mut().push(Version::UNSTAMPED)?;
         Ok(id)
+    }
+
+    fn stamp_rows(&mut self, clock: &mut VersionVector, writer: WriterId) -> Result<()> {
+        self.versions_mut().stamp(clock, writer)
     }
 
     fn specs(&self) -> Vec<ColumnSpec> {
@@ -118,6 +129,8 @@ pub trait AnyTable {
 
     fn rows_agree(&self) -> Result<()>;
 
+    fn stamp_unstamped(&mut self, clock: &mut VersionVector, writer: WriterId) -> Result<()>;
+
     fn read_columns(&mut self, file: &ColumnFile) -> Result<()>;
 
     fn offer_columns(&self, updater: &mut ColumnFileUpdater) -> Result<()>;
@@ -142,6 +155,10 @@ impl<T: Table> AnyTable for T {
 
     fn rows_agree(&self) -> Result<()> {
         Table::check_rows_agree(self)
+    }
+
+    fn stamp_unstamped(&mut self, clock: &mut VersionVector, writer: WriterId) -> Result<()> {
+        Table::stamp_rows(self, clock, writer)
     }
 
     fn read_columns(&mut self, file: &ColumnFile) -> Result<()> {

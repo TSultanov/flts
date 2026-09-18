@@ -9,7 +9,7 @@ use super::diff::SchemaDiff;
 use super::table::AnyTable;
 use super::version::Dot;
 use crate::error::{Error, Result};
-use crate::storage::{ColumnFile, ColumnFileUpdater, ColumnFileWriter, WriterId};
+use crate::storage::{Arena, ColumnFile, ColumnFileUpdater, ColumnFileWriter, WriterId};
 
 pub const CLOCK: &str = "dbsync.clock";
 
@@ -19,6 +19,7 @@ pub struct StoreState {
     path: Option<PathBuf>,
     unknown: Vec<String>,
     clock: VersionVector,
+    dots: Arena<Dot>,
 }
 
 impl StoreState {
@@ -101,9 +102,11 @@ pub trait Store: Default + Clone + Sized {
         for table in self.tables_mut() {
             table.read_columns(file)?;
         }
+        let dots: Arena<Dot> = file.column(CLOCK)?;
         let mut clock = VersionVector::default();
-        clock.read_from(CLOCK, file)?;
+        clock.read_from(&dots)?;
         self.state_mut().clock = clock;
+        self.state_mut().dots = dots;
         self.state_mut().unknown = diff.unknown;
         Ok(())
     }
@@ -112,7 +115,7 @@ pub trait Store: Default + Clone + Sized {
         for table in self.tables() {
             table.offer_columns(updater)?;
         }
-        self.clock().offer_to(CLOCK, updater)?;
+        self.clock().offer_to(CLOCK, &self.state().dots, updater)?;
         for name in &self.state().unknown {
             updater.keep_column(name)?;
         }
@@ -159,6 +162,12 @@ pub trait Store: Default + Clone + Sized {
         for table in self.tables() {
             table.rows_agree()?;
         }
+
+        let mut clock = std::mem::take(&mut self.state_mut().clock);
+        for table in self.tables_mut() {
+            table.stamp_unstamped(&mut clock, writer_id)?;
+        }
+        self.state_mut().clock = clock;
 
         let held = self.state().attached()?.0.generation();
         let mut updater = self.state().attached()?.0.update(writer_id)?;

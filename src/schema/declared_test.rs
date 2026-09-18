@@ -105,6 +105,7 @@ fn the_declared_schema_names_every_column_the_file_will_hold() {
             "book.id",
             "book.id.buckets",
             "book.id.links",
+            "book.version",
             "book.title",
             "book.title.bytes",
             "book.title.buckets",
@@ -114,6 +115,7 @@ fn the_declared_schema_names_every_column_the_file_will_hold() {
             "chapter.id",
             "chapter.id.buckets",
             "chapter.id.links",
+            "chapter.version",
             "chapter.book",
             "chapter.book.buckets",
             "chapter.book.links",
@@ -122,6 +124,7 @@ fn the_declared_schema_names_every_column_the_file_will_hold() {
             "paragraph.id",
             "paragraph.id.buckets",
             "paragraph.id.links",
+            "paragraph.version",
             "paragraph.chapter",
             "paragraph.chapter.buckets",
             "paragraph.chapter.links",
@@ -130,6 +133,7 @@ fn the_declared_schema_names_every_column_the_file_will_hold() {
             "editor.id",
             "editor.id.buckets",
             "editor.id.links",
+            "editor.version",
             "editor.name",
             "editor.name.bytes",
             "editor.name.buckets",
@@ -137,6 +141,7 @@ fn the_declared_schema_names_every_column_the_file_will_hold() {
             "credit.id",
             "credit.id.buckets",
             "credit.id.links",
+            "credit.version",
             "credit.book",
             "credit.book.buckets",
             "credit.book.links",
@@ -276,6 +281,9 @@ fn opening_a_declared_library_reads_no_payload_at_all() -> Result<()> {
 
     let reopened = Library::open(&path)?;
     for column in reopened.residency() {
+        if column.name == crate::schema::CLOCK {
+            continue;
+        }
         assert_eq!(
             column.resident, 0,
             "{} was read before anyone asked for a row",
@@ -544,7 +552,11 @@ fn a_library_lives_its_whole_life_through_the_rows_it_hands_out() -> Result<()> 
 
     let opened = Library::open(&path)?;
     assert!(
-        opened.residency().iter().all(|held| held.resident == 0),
+        opened
+            .residency()
+            .iter()
+            .filter(|held| held.name != crate::schema::CLOCK)
+            .all(|held| held.resident == 0),
         "opening a library must read no payload"
     );
 
@@ -961,8 +973,12 @@ proptest! {
 
         let reopened = Library::open(&path).unwrap();
         prop_assert!(
-            reopened.residency().iter().all(|held| held.resident == 0),
-            "opening a library must read no payload"
+            reopened
+                .residency()
+                .iter()
+                .filter(|held| held.name != crate::schema::CLOCK)
+                .all(|held| held.resident == 0),
+            "opening a library must read its clock and no payload"
         );
 
         for title in books.iter().map(|(held, _)| held.clone()).chain([wanted]) {
@@ -1061,7 +1077,14 @@ fn a_declared_join_crosses_the_same_way_after_a_reopen_that_read_no_payload() {
     drop(library);
 
     let reopened = Library::open(&path).unwrap();
-    assert!(reopened.residency().iter().all(|held| held.resident == 0));
+    assert!(
+        reopened
+            .residency()
+            .iter()
+            .filter(|held| held.name != crate::schema::CLOCK)
+            .all(|held| held.resident == 0),
+        "the clock is the one column an open reads, because a store cannot mint without it"
+    );
 
     assert_eq!(edited(&reopened, alice), ["Ada", "Bram"]);
     assert_eq!(edited(&reopened, kokoro), ["Ada"]);

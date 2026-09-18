@@ -2,10 +2,15 @@
 
 use std::cmp::Ordering;
 use std::fmt;
+use std::marker::PhantomData;
 
+use super::clock::VersionVector;
+use super::column::{Column, ColumnKind, ColumnSpec, Residency, Row};
+use super::entity::Entity;
+use super::names::qualified;
 use crate::error::{Error, Result};
 use crate::record::Record;
-use crate::storage::WriterId;
+use crate::storage::{Arena, ColumnFile, ColumnFileUpdater, WriterId};
 
 const SUPERSEDED: u64 = 1;
 const REMOVED: u64 = 1 << 1;
@@ -72,8 +77,21 @@ pub struct Version {
 }
 
 impl Version {
+    pub const UNSTAMPED: Self = Self::of(Dot::new(WriterId::ANONYMOUS, 0));
+
     pub const fn of(dot: Dot) -> Self {
         Self { dot, flags: 0 }
+    }
+
+    pub const fn is_stamped(self) -> bool {
+        self.dot.counter() != 0
+    }
+
+    pub const fn stamped_with(self, dot: Dot) -> Self {
+        Self {
+            dot,
+            flags: self.flags,
+        }
     }
 
     pub const fn dot(self) -> Dot {
@@ -147,6 +165,103 @@ impl Record for Version {
             dot: Dot::decode(&src[..<Dot as Record>::SIZE]),
             flags: u64::from_le_bytes(src[<Dot as Record>::SIZE..].try_into().expect("8 bytes")),
         }
+    }
+}
+
+pub struct VersionColumn<E: Entity> {
+    versions: Arena<Version>,
+    stamped: usize,
+    marker: PhantomData<fn() -> E>,
+}
+
+impl<E: Entity> Default for VersionColumn<E> {
+    fn default() -> Self {
+        Self {
+            versions: Arena::new(),
+            stamped: 0,
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<E: Entity> Clone for VersionColumn<E> {
+    fn clone(&self) -> Self {
+        Self {
+            versions: self.versions.clone(),
+            stamped: self.stamped,
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<E: Entity> VersionColumn<E> {
+    pub fn push(&mut self, version: Version) -> Result<usize> {
+        let row = self.versions.push(version)?;
+        if version.is_stamped() && self.stamped == row {
+            self.stamped = row + 1;
+        }
+        Ok(row)
+    }
+
+    pub fn at(&self, row: Row) -> Result<Version> {
+        self.versions.row(row.index()).copied()
+    }
+
+    pub fn unstamped_from(&self) -> usize {
+        self.stamped
+    }
+
+    pub fn stamp(&mut self, clock: &mut VersionVector, writer: WriterId) -> Result<()> {
+        for row in self.stamped..self.versions.len() {
+            let held = *self.versions.row(row)?;
+            if !held.is_stamped() {
+                let dot = clock.tick(writer)?;
+                self.versions.set(row, held.stamped_with(dot))?;
+            }
+        }
+        self.stamped = self.versions.len();
+        Ok(())
+    }
+}
+
+impl<E: Entity> Column for VersionColumn<E> {
+    fn rows(&self) -> usize {
+        self.versions.len()
+    }
+
+    fn touch_tail(&self) -> Result<()> {
+        self.versions.touch_tail()
+    }
+
+    fn audit(&self) -> Result<()> {
+        let column = qualified(E::NAME, "version");
+        for row in 0..self.versions.len() {
+            self.versions.row(row)?.check(&column, row)?;
+        }
+        Ok(())
+    }
+
+    fn describe(&self, entity: &str, field: &str, out: &mut Vec<ColumnSpec>) {
+        out.push(ColumnSpec {
+            name: qualified(entity, field),
+            elem_size: <Version as Record>::SIZE,
+            kind: ColumnKind::Version,
+            counts_rows: true,
+        });
+    }
+
+    fn residency(&self, entity: &str, field: &str, out: &mut Vec<Residency>) {
+        self.versions.residency(entity, field, out);
+    }
+
+    fn read_from(&mut self, entity: &str, field: &str, file: &ColumnFile) -> Result<()> {
+        self.versions.read_from(entity, field, file)?;
+        self.stamped = self.versions.len();
+        Ok(())
+    }
+
+    fn offer_to(&self, entity: &str, field: &str, updater: &mut ColumnFileUpdater) -> Result<()> {
+        self.versions.offer_to(entity, field, updater)
     }
 }
 

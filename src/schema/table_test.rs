@@ -1,7 +1,7 @@
 use super::*;
 use crate::schema::IndexKey;
 use crate::schema::index::home_of;
-use crate::schema::{IdColumn, TextColumn};
+use crate::schema::{IdColumn, TextColumn, VersionColumn};
 use crate::storage::Arena;
 use crate::storage::{ColumnFile, ColumnFileWriter, WriterId};
 use crate::test_utils::library::{Book, Books, Chapters, Paragraphs};
@@ -10,6 +10,7 @@ use crate::test_utils::{TempDir, committed, flip_byte};
 #[derive(Default, Clone)]
 struct Ragged {
     ids: IdColumn<Book>,
+    versions: VersionColumn<Book>,
     title: TextColumn,
     year: Arena<u32>,
 }
@@ -23,6 +24,14 @@ impl Table for Ragged {
 
     fn ids_mut(&mut self) -> &mut IdColumn<Book> {
         &mut self.ids
+    }
+
+    fn versions(&self) -> &VersionColumn<Book> {
+        &self.versions
+    }
+
+    fn versions_mut(&mut self) -> &mut VersionColumn<Book> {
+        &mut self.versions
     }
 
     fn fields(&self) -> Vec<Field<'_>> {
@@ -43,6 +52,7 @@ impl Table for Ragged {
 #[derive(Default, Clone)]
 struct Empty {
     ids: IdColumn<Book>,
+    versions: VersionColumn<Book>,
 }
 
 impl Table for Empty {
@@ -54,6 +64,14 @@ impl Table for Empty {
 
     fn ids_mut(&mut self) -> &mut IdColumn<Book> {
         &mut self.ids
+    }
+
+    fn versions(&self) -> &VersionColumn<Book> {
+        &self.versions
+    }
+
+    fn versions_mut(&mut self) -> &mut VersionColumn<Book> {
+        &mut self.versions
     }
 
     fn fields(&self) -> Vec<Field<'_>> {
@@ -157,6 +175,7 @@ fn a_table_names_every_column_it_needs_from_a_file() {
             "book.id",
             "book.id.buckets",
             "book.id.links",
+            "book.version",
             "book.title",
             "book.title.bytes",
             "book.title.buckets",
@@ -207,7 +226,7 @@ fn a_table_erased_behind_any_table_still_names_its_entity() {
 
     assert_eq!(erased.entity(), "book");
     assert_eq!(erased.row_count(), 3);
-    assert_eq!(erased.column_specs().len(), 9);
+    assert_eq!(erased.column_specs().len(), 10);
     erased.rows_agree().unwrap();
 }
 

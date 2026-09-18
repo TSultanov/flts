@@ -157,14 +157,24 @@ fn every_table_carries_the_identity_column_before_the_fields_that_were_declared(
         "{out}"
     );
     assert!(
+        out.contains("dbsync_versions : :: dbsync :: schema :: VersionColumn < Chapter >"),
+        "{out}"
+    );
+    assert!(
         out.contains(
             "vec ! [:: dbsync :: schema :: Field :: new (\"id\" , & self . dbsync_ids) , \
+             :: dbsync :: schema :: Field :: new (\"version\" , & self . dbsync_versions) , \
              :: dbsync :: schema :: Field :: new (\"book\""
         ),
-        "the identity column is the first field, so it is what counts the rows: {out}"
+        "the identity column is the first field, so it is what counts the rows, \
+         and the write that made the row comes with it: {out}"
     );
     assert!(
         out.contains("fn ids (& self) -> & :: dbsync :: schema :: IdColumn < Chapter >"),
+        "{out}"
+    );
+    assert!(
+        out.contains("fn versions (& self) -> & :: dbsync :: schema :: VersionColumn < Chapter >"),
         "{out}"
     );
 }
@@ -177,6 +187,18 @@ fn a_field_called_id_is_refused_because_every_entity_already_has_one() {
 
     assert!(
         err.contains("`id` is the identity every entity already has"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_field_called_version_is_refused_because_every_row_already_carries_one() {
+    let err = refused(quote! {
+        struct Chapter { version: u32, title: String }
+    });
+
+    assert!(
+        err.contains("`version` is the write every row already carries"),
         "{err}"
     );
 }

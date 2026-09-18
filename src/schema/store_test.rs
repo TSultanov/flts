@@ -1,6 +1,6 @@
 use super::*;
 use crate::id::Id;
-use crate::schema::{HashIndex, Table, TextKey};
+use crate::schema::{HashIndex, Row, Table, TextKey, Version};
 use crate::storage::Arena;
 use crate::test_utils::TempDir;
 use crate::test_utils::library::{Book, Library};
@@ -633,7 +633,11 @@ fn a_count_a_store_reached_is_still_there_when_the_file_is_opened_again() -> Res
     let reopened = Library::open(&path)?;
 
     assert!(reopened.clock().dominates(dot), "{:?}", reopened.clock());
-    assert_eq!(reopened.clock().frontier(), dot.counter());
+    assert_eq!(
+        reopened.clock().frontier(),
+        library.clock().frontier(),
+        "the file hands back the count the store reached, not one of its own"
+    );
     Ok(())
 }
 
@@ -758,6 +762,110 @@ fn committing_again_does_not_lose_the_count_the_store_had_reached() -> Result<()
         "a commit that advanced the generation reads the file back, and the clock \
          must come back with it rather than start again: {:?}",
         library.clock()
+    );
+    Ok(())
+}
+
+fn stamp_of(library: &Library, row: usize) -> Version {
+    let rows = Table::rows(&library.books);
+    Table::versions(&library.books)
+        .at(Row::of(row, rows, "book").unwrap())
+        .unwrap()
+}
+
+#[test]
+fn a_row_is_not_stamped_until_the_commit_that_publishes_it() -> Result<()> {
+    let dir = TempDir::new("store_stamp_late");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device())?;
+    stock(&mut library);
+
+    assert!(
+        !stamp_of(&library, 0).is_stamped(),
+        "a store that was opened does not know which writer it is until a commit says so"
+    );
+
+    library.commit(this_device())?;
+
+    assert!(stamp_of(&library, 0).is_stamped());
+    Ok(())
+}
+
+#[test]
+fn a_commit_stamps_every_row_it_publishes_with_a_count_of_its_own() -> Result<()> {
+    let dir = TempDir::new("store_stamp_each");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device())?;
+    library.books.push("Alice", "Lewis Carroll").unwrap();
+    library.books.push("Kokoro", "Natsume Soseki").unwrap();
+    library.books.push("Sensei", "Natsume Soseki").unwrap();
+    library.commit(this_device())?;
+
+    let stamps: Vec<Dot> = (0..3).map(|row| stamp_of(&library, row).dot()).collect();
+
+    assert!(
+        stamps.windows(2).all(|two| two[0] < two[1]),
+        "one commit is many writes, and each of them needs a name of its own: {stamps:?}"
+    );
+    for dot in &stamps {
+        assert_eq!(dot.writer(), this_device());
+        assert!(library.clock().dominates(*dot));
+    }
+    Ok(())
+}
+
+#[test]
+fn a_commit_does_not_stamp_again_what_an_earlier_one_already_stamped() -> Result<()> {
+    let dir = TempDir::new("store_stamp_once");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device())?;
+    library.books.push("Alice", "Lewis Carroll").unwrap();
+    library.commit(this_device())?;
+    let first = stamp_of(&library, 0);
+
+    library.books.push("Kokoro", "Natsume Soseki").unwrap();
+    library.commit(this_device())?;
+
+    assert_eq!(
+        stamp_of(&library, 0),
+        first,
+        "a row keeps the write that made it for as long as it lives"
+    );
+    assert!(stamp_of(&library, 1).dot() > first.dot());
+    Ok(())
+}
+
+#[test]
+fn committing_one_new_row_reads_only_the_tail_of_the_version_column() -> Result<()> {
+    let dir = TempDir::new("store_stamp_tail");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device())?;
+    for at in 0..3000 {
+        library.books.push(&format!("Book {at}"), "Nobody").unwrap();
+    }
+    library.commit(this_device())?;
+    drop(library);
+
+    let mut reopened = Library::open(&path)?;
+    let cold = held(&reopened, "book.version");
+    assert!(cold.chunks > 1, "{cold:?}");
+    assert_eq!(cold.resident, 0);
+
+    reopened.books.push("One More", "Nobody").unwrap();
+    let mut clock = reopened.clock().clone();
+    Table::stamp_rows(&mut reopened.books, &mut clock, this_device())?;
+
+    let warm = Table::residency(&reopened.books)
+        .into_iter()
+        .find(|held| held.name == "book.version")
+        .expect("the table reports the column it stamps");
+    assert_eq!(
+        warm.resident, 1,
+        "the rows a commit has not stamped are all at the tail, so stamping reads          the tail and not the three thousand rows already named: {warm:?}"
     );
     Ok(())
 }

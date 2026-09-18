@@ -13,6 +13,7 @@ pub enum ColumnKind {
     Text,
     Heap,
     Presence,
+    Version,
     Clock,
     Bucket,
     Link,

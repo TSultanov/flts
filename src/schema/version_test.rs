@@ -190,3 +190,105 @@ proptest! {
         prop_assert_eq!(one.cmp(&other) == Ordering::Equal, one == other);
     }
 }
+
+fn column(versions: &[Version]) -> VersionColumn<crate::test_utils::library::Book> {
+    let mut held = VersionColumn::default();
+    for version in versions {
+        held.push(*version).unwrap();
+    }
+    held
+}
+
+fn at(held: &VersionColumn<crate::test_utils::library::Book>, row: usize) -> Version {
+    held.at(Row::of(row, Column::rows(held), "book").unwrap())
+        .unwrap()
+}
+
+#[test]
+fn a_version_column_hands_back_the_write_that_was_pushed_into_it() {
+    let held = column(&[Version::of(wrote(1, 5)), Version::UNSTAMPED]);
+
+    assert_eq!(Column::rows(&held), 2);
+    assert_eq!(at(&held, 0).dot(), wrote(1, 5));
+    assert!(!at(&held, 1).is_stamped());
+}
+
+#[test]
+fn a_column_of_versions_refuses_a_mark_this_build_does_not_know() {
+    let mut bytes = vec![0u8; <Version as Record>::SIZE];
+    Version::of(wrote(1, 7)).encode(&mut bytes);
+    bytes[16] = 0b1000;
+
+    let held = column(&[Version::of(wrote(1, 5)), Version::decode(&bytes)]);
+    let err = Column::audit(&held).expect_err("an audit reads every row, marks included");
+
+    assert!(err.to_string().contains("book.version row 1"), "{err}");
+}
+
+#[test]
+fn stamping_counts_once_for_every_unstamped_row_and_leaves_the_rest_alone() {
+    let already = wrote(4, 9);
+    let mut held = column(&[
+        Version::UNSTAMPED,
+        Version::of(already),
+        Version::UNSTAMPED.withdraw(),
+    ]);
+    let mut clock = VersionVector::default();
+
+    held.stamp(&mut clock, WriterId::from_raw(1)).unwrap();
+
+    assert_eq!(
+        at(&held, 1).dot(),
+        already,
+        "a stamped row is not stamped again"
+    );
+    assert!(at(&held, 0).is_stamped());
+    assert!(at(&held, 2).is_stamped());
+    assert!(
+        at(&held, 0).dot() < at(&held, 2).dot(),
+        "rows are stamped in the order they were appended"
+    );
+    assert!(
+        at(&held, 2).is_removed(),
+        "stamping a row says when it was written, not what was written"
+    );
+    assert_eq!(held.unstamped_from(), 3);
+}
+
+#[test]
+fn a_column_of_versions_read_from_a_file_has_nothing_left_to_stamp() {
+    let mut held: VersionColumn<crate::test_utils::library::Book> = VersionColumn::default();
+    held.push(Version::UNSTAMPED).unwrap();
+
+    assert_eq!(
+        held.unstamped_from(),
+        0,
+        "a row pushed here has not been published yet"
+    );
+
+    let mut clock = VersionVector::default();
+    held.stamp(&mut clock, WriterId::from_raw(1)).unwrap();
+
+    assert_eq!(
+        held.unstamped_from(),
+        1,
+        "a commit that stamped every row has nothing to walk on the next one"
+    );
+}
+
+#[test]
+fn a_version_column_names_itself_beside_the_rows_it_counts() {
+    let held = column(&[Version::of(wrote(1, 5))]);
+
+    let mut told = Vec::new();
+    Column::describe(&held, "book", "version", &mut told);
+
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert_eq!(told[0].name, "book.version");
+    assert_eq!(told[0].elem_size, 24);
+    assert_eq!(told[0].kind, ColumnKind::Version);
+    assert!(
+        told[0].counts_rows,
+        "every row carries the write that made it, so this column is as long as the table"
+    );
+}
