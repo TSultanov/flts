@@ -823,13 +823,15 @@ proptest! {
     #[test]
     fn a_walk_stops_at_the_first_candidate_its_predicate_cannot_judge(
         made in moves(),
-        sought in filing(),
+        at in 0usize..100,
         after in 0usize..8,
     ) {
         let (filed, model) = filed(&made);
-        let matching = scan(&model, sought).len();
-        prop_assume!(matching > 0);
-        let stop = after % matching;
+        if model.is_empty() {
+            return Ok(());
+        }
+        let sought = model[at % model.len()];
+        let stop = after % scan(&model, sought).len();
 
         let mut seen = 0usize;
         let said = filed.index.rows_where(sought, |_, _| {
@@ -864,7 +866,9 @@ proptest! {
                 alone.push((home, head));
             }
         }
-        prop_assume!(alone.len() >= 2);
+        if alone.len() < 2 {
+            return Ok(());
+        }
 
         let one = pick % alone.len();
         let two = (one + 1) % alone.len();
