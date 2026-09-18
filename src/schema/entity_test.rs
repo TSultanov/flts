@@ -178,17 +178,104 @@ fn an_audit_holds_a_join_to_both_of_the_tables_it_names() {
 }
 
 #[test]
-fn a_link_moved_to_another_pair_is_gone_from_the_two_rows_it_used_to_name() {
+fn a_link_moved_to_another_pair_is_gone_from_the_row_it_used_to_name() {
     let (mut library, atlas, primer, ada, bram) = credited();
-    let first = library.authorships.of_book(atlas).unwrap()[0];
+    let moved = library.authorships.of_book(atlas).unwrap()[1];
 
-    library.at_mut(first).unwrap().set_book(primer).unwrap();
-    library.at_mut(first).unwrap().set_author(bram).unwrap();
+    library.at_mut(moved).unwrap().set_book(primer).unwrap();
 
     assert_eq!(library.authorships.of_book(atlas).unwrap().len(), 1);
-    assert_eq!(library.authorships.of_author(ada).unwrap().len(), 1);
     assert_eq!(library.authorships.of_book(primer).unwrap().len(), 2);
-    assert_eq!(library.authorships.of_author(bram).unwrap().len(), 2);
+    assert_eq!(library.authorships.of_author(bram).unwrap(), [moved]);
+    assert_eq!(library.authorships.of_author(ada).unwrap().len(), 2);
     assert_eq!(library.authors.name(bram).unwrap(), "Bram");
     Store::audit(&library).unwrap();
+}
+
+#[test]
+fn a_join_refuses_a_pair_of_parents_it_already_holds_and_leaves_every_column_as_it_was() {
+    let (mut library, atlas, _, ada, _) = credited();
+    let before = Table::rows(&library.authorships);
+
+    let err = library.authorships.push(atlas, ada).unwrap_err();
+
+    assert!(err.to_string().contains("authorship.book_author"), "{err}");
+    assert!(
+        err.to_string().contains("no two rows may share one value"),
+        "{err}"
+    );
+    assert_eq!(Table::rows(&library.authorships), before);
+    Table::check_rows_agree(&library.authorships).unwrap();
+    Store::audit(&library).unwrap();
+}
+
+#[test]
+fn a_link_moved_onto_a_pair_another_link_holds_is_refused_and_moves_nothing() {
+    let (mut library, atlas, primer, ada, _) = credited();
+    let moved = library.authorships.of_book(atlas).unwrap()[0];
+
+    let err = library.at_mut(moved).unwrap().set_book(primer).unwrap_err();
+
+    assert!(err.to_string().contains("authorship.book_author"), "{err}");
+    assert_eq!(library.authorships.book(moved).unwrap(), atlas);
+    assert_eq!(library.authorships.author(moved).unwrap(), ada);
+    assert_eq!(library.authorships.of_book(atlas).unwrap().len(), 2);
+    assert_eq!(library.authorships.of_book(primer).unwrap().len(), 1);
+    Store::audit(&library).unwrap();
+}
+
+#[test]
+fn a_link_that_names_nobody_is_no_pair_at_all_however_many_of_them_there_are() {
+    let (mut library, atlas, _, _, _) = credited();
+    let links = library.authorships.of_book(atlas).unwrap();
+
+    library
+        .at_mut(links[0])
+        .unwrap()
+        .set_author(Id::NIL)
+        .unwrap();
+    library
+        .at_mut(links[1])
+        .unwrap()
+        .set_author(Id::NIL)
+        .unwrap();
+
+    assert_eq!(
+        library.authorships.of_book(atlas).unwrap().len(),
+        2,
+        "both are still rows of the join; neither names an author"
+    );
+    Store::audit(&library).unwrap();
+}
+
+#[test]
+fn a_pair_a_link_gave_up_may_be_taken_by_another() {
+    let (mut library, atlas, _, ada, _) = credited();
+    let held = library.authorships.of_book(atlas).unwrap()[0];
+
+    library.at_mut(held).unwrap().set_author(Id::NIL).unwrap();
+    let again = library.authorships.push(atlas, ada).unwrap();
+
+    assert_eq!(library.authorships.author(again).unwrap(), ada);
+    assert_eq!(library.authorships.of_author(ada).unwrap().len(), 2);
+    Store::audit(&library).unwrap();
+}
+
+#[test]
+fn an_audit_refuses_a_pair_a_link_no_longer_agrees_with() {
+    let (library, _, _, _, _) = credited();
+    Store::audit(&library).unwrap();
+
+    let mut drifted = library.clone();
+    let stranger = drifted.authors.push("Nobody").unwrap();
+    drifted
+        .authorships
+        .quietly_repoint_author(Row::trusted(0), stranger);
+
+    let err = Store::audit(&drifted).unwrap_err();
+    assert!(err.is_corrupt(), "{err}");
+    assert!(
+        err.to_string().contains("authorship.book_author row 0"),
+        "{err}"
+    );
 }

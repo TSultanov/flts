@@ -876,6 +876,18 @@ fn crediting() -> impl Strategy<Value = Vec<Credit>> {
     )
 }
 
+fn holds(
+    model: &[(usize, Option<usize>)],
+    pair: (usize, Option<usize>),
+    but: Option<usize>,
+) -> bool {
+    pair.1.is_some()
+        && model
+            .iter()
+            .enumerate()
+            .any(|(row, held)| Some(row) != but && *held == pair)
+}
+
 fn credited(library: &mut Library, program: &[Credit]) -> (Credited, Vec<(usize, Option<usize>)>) {
     let books: Vec<Id<Book>> = (0..4)
         .map(|at| library.books.push(&format!("book {at}"), "nobody").unwrap())
@@ -890,25 +902,34 @@ fn credited(library: &mut Library, program: &[Credit]) -> (Credited, Vec<(usize,
     for step in program {
         match step {
             Credit::Link(book, author) => {
-                links.push(
-                    library
-                        .authorships
-                        .push(books[*book], authors[*author])
-                        .unwrap(),
-                );
-                model.push((*book, Some(*author)));
+                let refused = holds(&model, (*book, Some(*author)), None);
+                match library.authorships.push(books[*book], authors[*author]) {
+                    Ok(link) => {
+                        assert!(!refused, "a pair the join already holds was taken again");
+                        links.push(link);
+                        model.push((*book, Some(*author)));
+                    }
+                    Err(err) => assert!(refused, "{err}"),
+                }
             }
             Credit::Repoint(at, author) => {
                 if model.is_empty() {
                     continue;
                 }
                 let row = at % model.len();
-                library
+                let wanted = (model[row].0, Some(*author));
+                let refused = holds(&model, wanted, Some(row));
+                match library
                     .at_mut(links[row])
                     .unwrap()
                     .set_author(authors[*author])
-                    .unwrap();
-                model[row].1 = Some(*author);
+                {
+                    Ok(()) => {
+                        assert!(!refused, "a link was moved onto a pair already held");
+                        model[row].1 = Some(*author);
+                    }
+                    Err(err) => assert!(refused, "{err}"),
+                }
             }
             Credit::Clear(at) => {
                 if model.is_empty() {
@@ -1039,6 +1060,42 @@ proptest! {
             scanned(&model, from).len(),
             "two links naming one author are two crossings, not one"
         );
+    }
+
+    #[test]
+    fn no_two_links_of_a_join_ever_name_the_same_pair_of_parents(
+        program in crediting(),
+    ) {
+        let mut library = Library::default();
+        let (held, model) = credited(&mut library, &program);
+
+        let mut seen = std::collections::BTreeSet::new();
+        for link in &held.links {
+            let pair = (
+                library.authorships.book(*link)?,
+                library.authorships.author(*link)?,
+            );
+            if pair.1.is_nil() {
+                continue;
+            }
+            prop_assert!(seen.insert(pair), "two links name {:?}", pair);
+        }
+        prop_assert_eq!(
+            seen.len(),
+            model.iter().filter(|(_, author)| author.is_some()).count(),
+            "every link that names an author is one of the pairs held"
+        );
+    }
+
+    #[test]
+    fn a_join_driven_through_every_move_it_allows_audits_clean(
+        program in crediting(),
+    ) {
+        let mut library = Library::default();
+        credited(&mut library, &program);
+
+        Store::audit(&library)?;
+        Table::check_rows_agree(&library.authorships)?;
     }
 
     #[test]

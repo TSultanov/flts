@@ -4,9 +4,9 @@ use std::ops::{Deref, DerefMut};
 use crate::error::{Error, Result};
 use crate::id::Id;
 use crate::schema::{
-    Across, AnyTable, Audited, Child, Children, Entity, Entry, EntryMut, EnumColumn, Field,
-    FieldMut, Holds, NullableColumn, NullableTextColumn, RefColumn, Rows, Store, StoreState, Table,
-    TextColumn, UnitEnum, audit_reference,
+    Across, AnyTable, Audited, Child, Children, Distinct, Entity, Entry, EntryMut, EnumColumn,
+    Field, FieldMut, Holds, NullableColumn, NullableTextColumn, Pair, RefColumn, Rows, Store,
+    StoreState, Table, TextColumn, UnitEnum, audit_reference, check_pairs,
 };
 use crate::schema::{IdColumn, Indexed};
 use crate::storage::Arena;
@@ -900,6 +900,7 @@ pub struct Authorships {
     ids: IdColumn<Authorship>,
     book: RefColumn<Book, Authorship>,
     author: RefColumn<Author, Authorship>,
+    book_author: Distinct<Book, Author>,
 }
 
 impl Default for Authorships {
@@ -908,6 +909,7 @@ impl Default for Authorships {
             ids: IdColumn::default(),
             book: RefColumn::named("authorship.book"),
             author: RefColumn::named("authorship.author"),
+            book_author: Indexed::named("authorship.book_author"),
         }
     }
 }
@@ -928,6 +930,7 @@ impl Table for Authorships {
             Field::new("id", &self.ids),
             Field::new("book", &self.book),
             Field::new("author", &self.author),
+            Field::new("book_author", &self.book_author),
         ]
     }
 
@@ -936,6 +939,7 @@ impl Table for Authorships {
             FieldMut::new("id", &mut self.ids),
             FieldMut::new("book", &mut self.book),
             FieldMut::new("author", &mut self.author),
+            FieldMut::new("book_author", &mut self.book_author),
         ]
     }
 }
@@ -954,12 +958,16 @@ impl Child<Author> for Authorship {
 
 impl Authorships {
     pub fn push(&mut self, book: Id<Book>, author: Id<Author>) -> Result<Id<Authorship>> {
+        let pair = Pair::of(book, author);
         self.reserve()?;
         self.book.reach(book)?;
         self.author.reach(author)?;
+        self.book_author.reach(pair)?;
+        self.book_author.refuse_duplicate(pair)?;
         let id = self.mint()?;
         self.book.push(book)?;
         self.author.push(author)?;
+        self.book_author.push(pair)?;
         Ok(id)
     }
 
@@ -977,6 +985,22 @@ impl Authorships {
 
     pub fn of_author(&self, author: Id<Author>) -> Result<Vec<Id<Authorship>>> {
         self.author.children_of(&self.ids, author)
+    }
+
+    pub fn quietly_repoint_author(&mut self, row: crate::schema::Row, author: Id<Author>) {
+        self.author.set(row, author).unwrap();
+    }
+
+    fn set_book(&mut self, row: crate::schema::Row, book: Id<Book>) -> Result<()> {
+        self.book_author
+            .set(row, Pair::of(book, self.author.get(row)?))?;
+        self.book.set(row, book)
+    }
+
+    fn set_author(&mut self, row: crate::schema::Row, author: Id<Author>) -> Result<()> {
+        self.book_author
+            .set(row, Pair::of(self.book.get(row)?, author))?;
+        self.author.set(row, author)
     }
 }
 
@@ -1042,13 +1066,13 @@ impl<S: Holds<Authorship>> AuthorshipRowMut<'_, S> {
     pub fn set_book(&mut self, value: Id<Book>) -> Result<()> {
         let row = self.0.row();
         let table = self.0.table_mut();
-        table.book.set(row, value)
+        table.set_book(row, value)
     }
 
     pub fn set_author(&mut self, value: Id<Author>) -> Result<()> {
         let row = self.0.row();
         let table = self.0.table_mut();
-        table.author.set(row, value)
+        table.set_author(row, value)
     }
 }
 
@@ -1139,7 +1163,9 @@ impl<S: Holds<Author>> Audited<S> for Author {
 
 impl<S: Holds<Authorship> + Holds<Book> + Holds<Author>> Audited<S> for Authorship {
     fn audit_in(store: &S) -> Result<()> {
-        Table::audit(Holds::<Authorship>::table(store))?;
+        let links = Holds::<Authorship>::table(store);
+        Table::audit(links)?;
+        check_pairs::<Book, Author, Authorship>(&links.book_author, &links.book, &links.author)?;
         audit_reference::<S, Book, Authorship>(store)?;
         audit_reference::<S, Author, Authorship>(store)
     }
