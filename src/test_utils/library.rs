@@ -247,8 +247,8 @@ impl Books {
     }
 
     pub fn set_title(&mut self, book: Id<Book>, title: &str) -> Result<()> {
-        let row = self.row_of(book)?;
-        self.title.set(row, title)
+        let author = self.author.get(self.row_of(book)?)?.into_owned();
+        self.write_over(book, title, &author)
     }
 }
 
@@ -330,9 +330,9 @@ impl<'a, S: Holds<Book>> DerefMut for BookRowMut<'a, S> {
 
 impl<S: Holds<Book>> BookRowMut<'_, S> {
     pub fn set_title(&mut self, value: &str) -> Result<()> {
-        let row = self.0.row()?;
+        let of = self.0.id()?;
         let table = self.0.table_mut();
-        table.title.set(row, value)
+        table.set_title(of, value)
     }
 
     pub fn write_over(&mut self, title: &str, author: &str) -> Result<()> {
@@ -433,7 +433,10 @@ impl Chapters {
     }
 
     pub fn of_book(&self, book: Id<Book>) -> Result<Vec<Id<Chapter>>> {
-        self.book.children_of(&self.ids, book)
+        self.live_among(self.book.child_rows_of(book)?)?
+            .into_iter()
+            .map(|row| self.id_at(row))
+            .collect()
     }
 }
 
@@ -499,9 +502,10 @@ impl<'a, S: Holds<Chapter>> DerefMut for ChapterRowMut<'a, S> {
 
 impl<S: Holds<Chapter>> ChapterRowMut<'_, S> {
     pub fn set_book(&mut self, value: Id<Book>) -> Result<()> {
-        let row = self.0.row()?;
+        let of = self.0.id()?;
         let table = self.0.table_mut();
-        table.book.set(row, value)
+        let title = table.title.get(table.row_of(of)?)?.into_owned();
+        table.write_over(of, value, &title)
     }
 }
 
@@ -582,8 +586,25 @@ impl Paragraphs {
         Ok(self.text.get(self.row_of(paragraph)?)?.into_owned())
     }
 
+    pub fn write_over(
+        &mut self,
+        paragraph: Id<Paragraph>,
+        chapter: Id<Chapter>,
+        text: &str,
+    ) -> Result<()> {
+        self.reserve()?;
+        self.chapter.reach(chapter)?;
+        self.revise(paragraph)?;
+        self.chapter.push(chapter)?;
+        self.text.push(text)?;
+        Ok(())
+    }
+
     pub fn of_chapter(&self, chapter: Id<Chapter>) -> Result<Vec<Id<Paragraph>>> {
-        self.chapter.children_of(&self.ids, chapter)
+        self.live_among(self.chapter.child_rows_of(chapter)?)?
+            .into_iter()
+            .map(|row| self.id_at(row))
+            .collect()
     }
 }
 
@@ -642,9 +663,9 @@ impl<'a, S: Holds<Paragraph>> DerefMut for ParagraphRowMut<'a, S> {
 
 impl<S: Holds<Paragraph>> ParagraphRowMut<'_, S> {
     pub fn set_text(&mut self, value: &str) -> Result<()> {
-        let row = self.0.row()?;
+        let of = self.0.id()?;
         let table = self.0.table_mut();
-        table.text.set(row, value)
+        table.write_over(of, table.chapter.get(table.row_of(of)?)?, value)
     }
 }
 
@@ -762,6 +783,41 @@ impl Editions {
     pub fn binding(&self, of: Id<Edition>) -> Result<Binding> {
         self.binding.get(self.row_of(of)?)
     }
+
+    #[allow(clippy::type_complexity)]
+    pub fn held(
+        &self,
+        of: Id<Edition>,
+    ) -> Result<(Id<Book>, Option<String>, u32, Option<u32>, Binding)> {
+        let row = self.row_of(of)?;
+        Ok((
+            self.book.get(row)?,
+            self.isbn.get(row)?.map(|held| held.into_owned()),
+            *self.year.row(row.index())?,
+            self.pages.get(row)?,
+            self.binding.get(row)?,
+        ))
+    }
+
+    pub fn write_over(
+        &mut self,
+        of: Id<Edition>,
+        book: Id<Book>,
+        isbn: Option<&str>,
+        year: u32,
+        pages: Option<u32>,
+        binding: Binding,
+    ) -> Result<()> {
+        self.reserve()?;
+        self.book.reach(book)?;
+        self.revise(of)?;
+        self.book.push(book)?;
+        self.isbn.push(isbn)?;
+        self.year.push(year)?;
+        self.pages.push(pages)?;
+        self.binding.push(binding)?;
+        Ok(())
+    }
 }
 
 pub struct EditionRow<'a, S: Holds<Edition>>(Entry<'a, S, Edition>);
@@ -831,33 +887,38 @@ impl<'a, S: Holds<Edition>> DerefMut for EditionRowMut<'a, S> {
 
 impl<S: Holds<Edition>> EditionRowMut<'_, S> {
     pub fn set_book(&mut self, value: Id<Book>) -> Result<()> {
-        let row = self.0.row()?;
+        let of = self.0.id()?;
         let table = self.0.table_mut();
-        table.book.set(row, value)
+        let held = table.held(of)?;
+        table.write_over(of, value, held.1.as_deref(), held.2, held.3, held.4)
     }
 
     pub fn set_isbn(&mut self, value: Option<&str>) -> Result<()> {
-        let row = self.0.row()?;
+        let of = self.0.id()?;
         let table = self.0.table_mut();
-        table.isbn.set(row, value)
+        let held = table.held(of)?;
+        table.write_over(of, held.0, value, held.2, held.3, held.4)
     }
 
     pub fn set_year(&mut self, value: u32) -> Result<()> {
-        let row = self.0.row()?;
+        let of = self.0.id()?;
         let table = self.0.table_mut();
-        table.year.set(row.index(), value)
+        let held = table.held(of)?;
+        table.write_over(of, held.0, held.1.as_deref(), value, held.3, held.4)
     }
 
     pub fn set_pages(&mut self, value: Option<u32>) -> Result<()> {
-        let row = self.0.row()?;
+        let of = self.0.id()?;
         let table = self.0.table_mut();
-        table.pages.set(row, value)
+        let held = table.held(of)?;
+        table.write_over(of, held.0, held.1.as_deref(), held.2, value, held.4)
     }
 
     pub fn set_binding(&mut self, value: Binding) -> Result<()> {
-        let row = self.0.row()?;
+        let of = self.0.id()?;
         let table = self.0.table_mut();
-        table.binding.set(row, value)
+        let held = table.held(of)?;
+        table.write_over(of, held.0, held.1.as_deref(), held.2, held.3, value)
     }
 }
 
@@ -1099,9 +1160,15 @@ impl Authorships {
     ) -> Result<()> {
         let pair = Pair::of(book, author);
         self.reserve()?;
+        let held = self.row_of(link)?;
         self.book.reach(book)?;
         self.author.reach(author)?;
         self.book_author.reach(pair)?;
+        if let Some(taken) = self.live_one(self.book_author.rows_holding(pair)?)?
+            && taken != held
+        {
+            return Err(self.book_author.taken_by(taken));
+        }
         self.revise(link)?;
         self.book.push(book)?;
         self.author.push(author)?;
@@ -1110,27 +1177,21 @@ impl Authorships {
     }
 
     pub fn of_book(&self, book: Id<Book>) -> Result<Vec<Id<Authorship>>> {
-        self.book.children_of(&self.ids, book)
+        self.live_among(self.book.child_rows_of(book)?)?
+            .into_iter()
+            .map(|row| self.id_at(row))
+            .collect()
     }
 
     pub fn of_author(&self, author: Id<Author>) -> Result<Vec<Id<Authorship>>> {
-        self.author.children_of(&self.ids, author)
+        self.live_among(self.author.child_rows_of(author)?)?
+            .into_iter()
+            .map(|row| self.id_at(row))
+            .collect()
     }
 
     pub fn quietly_repoint_author(&mut self, row: crate::schema::Row, author: Id<Author>) {
         self.author.set(row, author).unwrap();
-    }
-
-    fn set_book(&mut self, row: crate::schema::Row, book: Id<Book>) -> Result<()> {
-        self.book_author
-            .set(row, Pair::of(book, self.author.get(row)?))?;
-        self.book.set(row, book)
-    }
-
-    fn set_author(&mut self, row: crate::schema::Row, author: Id<Author>) -> Result<()> {
-        self.book_author
-            .set(row, Pair::of(self.book.get(row)?, author))?;
-        self.author.set(row, author)
     }
 }
 
@@ -1194,15 +1255,17 @@ impl<'a, S: Holds<Authorship>> DerefMut for AuthorshipRowMut<'a, S> {
 
 impl<S: Holds<Authorship>> AuthorshipRowMut<'_, S> {
     pub fn set_book(&mut self, value: Id<Book>) -> Result<()> {
-        let row = self.0.row()?;
+        let of = self.0.id()?;
         let table = self.0.table_mut();
-        table.set_book(row, value)
+        let author = table.author.get(table.row_of(of)?)?;
+        table.write_over(of, value, author)
     }
 
     pub fn set_author(&mut self, value: Id<Author>) -> Result<()> {
-        let row = self.0.row()?;
+        let of = self.0.id()?;
         let table = self.0.table_mut();
-        table.set_author(row, value)
+        let book = table.book.get(table.row_of(of)?)?;
+        table.write_over(of, book, value)
     }
 }
 

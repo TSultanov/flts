@@ -535,7 +535,12 @@ fn a_chapter_moved_through_a_row_is_grouped_under_the_book_it_moved_to() -> Resu
         .chapters()?
         .map(|chapter| chapter.title().map(|title| title.into_owned()))
         .collect::<Result<_>>()?;
-    assert_eq!(moved, ["Down the Rabbit-Hole", "Sensei and I"]);
+    assert_eq!(
+        moved,
+        ["Sensei and I", "Down the Rabbit-Hole"],
+        "a chapter written over is appended, so it comes back after the ones \
+         that were left where they were"
+    );
     Ok(())
 }
 
@@ -692,30 +697,43 @@ fn expected(deeds: &[Deed]) -> Shelves {
     (books, chapters, paragraphs)
 }
 
-fn book_at(library: &Library, row: usize) -> Id<Book> {
+fn minted_in<T: Table>(table: &T) -> Vec<Id<T::Of>> {
     use crate::schema::Row;
 
-    Table::id_at(&library.books, Row::trusted(row)).unwrap()
+    let mut seen: Vec<Id<T::Of>> = Vec::new();
+    for index in 0..Table::rows(table) {
+        let id = Table::id_at(table, Row::trusted(index)).unwrap();
+        if !seen.contains(&id) {
+            seen.push(id);
+        }
+    }
+    seen
+}
+
+fn book_at(library: &Library, row: usize) -> Id<Book> {
+    minted_in(&library.books)[row]
 }
 
 fn chapter_at(library: &Library, row: usize) -> Id<Chapter> {
-    use crate::schema::Row;
-
-    Table::id_at(&library.chapters, Row::trusted(row)).unwrap()
+    minted_in(&library.chapters)[row]
 }
 
 fn paragraph_at(library: &Library, row: usize) -> Id<Paragraph> {
-    use crate::schema::Row;
-
-    Table::id_at(&library.paragraphs, Row::trusted(row)).unwrap()
+    minted_in(&library.paragraphs)[row]
 }
 
 fn book_row(library: &Library, of: Id<Book>) -> usize {
-    Table::row_of(&library.books, of).unwrap().index()
+    minted_in(&library.books)
+        .iter()
+        .position(|held| *held == of)
+        .expect("an id this library minted")
 }
 
 fn chapter_row(library: &Library, of: Id<Chapter>) -> usize {
-    Table::row_of(&library.chapters, of).unwrap().index()
+    minted_in(&library.chapters)
+        .iter()
+        .position(|held| *held == of)
+        .expect("an id this library minted")
 }
 
 #[derive(Default)]
@@ -730,8 +748,8 @@ fn kept(deeds: &[Deed], path: &std::path::Path) -> (Library, Minted) {
     let mut minted = Minted::default();
 
     for deed in deeds {
-        let books = Table::rows(&library.books);
-        let chapters = Table::rows(&library.chapters);
+        let books = minted_in(&library.books).len();
+        let chapters = minted_in(&library.chapters).len();
         match deed {
             Deed::Book(title, author) => {
                 minted
@@ -813,7 +831,7 @@ proptest! {
         let mut walked = Vec::new();
         for book in reopened.all::<Book>() {
             let at = book_row(&reopened, book.id().unwrap());
-            let found: Vec<usize> = book
+            let mut found: Vec<usize> = book
                 .chapters()
                 .unwrap()
                 .map(|chapter| chapter_row(&reopened, chapter.id().unwrap()))
@@ -824,6 +842,7 @@ proptest! {
                 .filter(|(_, (owner, _))| *owner == at)
                 .map(|(row, _)| row)
                 .collect();
+            found.sort_unstable();
             prop_assert_eq!(&found, &scanned);
             walked.extend(found);
         }
@@ -892,7 +911,7 @@ proptest! {
         library.commit(this_device()).unwrap();
 
         let reopened = Library::open(&path).unwrap();
-        let row = at % Table::rows(&reopened.books);
+        let row = at % minted_in(&reopened.books).len();
         let book = reopened.at(book_at(&reopened, row)).unwrap();
         if by_author {
             book.author().unwrap();
@@ -918,13 +937,15 @@ proptest! {
 }
 
 fn found_by_title(library: &Library, title: &str) -> Vec<usize> {
-    library
+    let mut named: Vec<usize> = library
         .books
         .find_by_title(title)
         .unwrap()
         .into_iter()
         .map(|of| book_row(library, of))
-        .collect()
+        .collect();
+    named.sort_unstable();
+    named
 }
 
 fn shelving(books: &[(String, String)], title: &str) -> Vec<usize> {

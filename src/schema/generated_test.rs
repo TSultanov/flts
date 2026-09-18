@@ -699,38 +699,47 @@ fn expected(deeds: &[Deed]) -> (Vec<Penned>, Vec<(usize, String)>) {
     (authors, works)
 }
 
-fn author_at(catalogue: &Catalogue, row: usize) -> Id<Author> {
+fn minted<T: crate::schema::Table>(table: &T) -> Vec<Id<T::Of>> {
     use crate::schema::{Row, Table};
 
-    Table::id_at(&catalogue.authors, Row::trusted(row)).unwrap()
+    let mut seen: Vec<Id<T::Of>> = Vec::new();
+    for index in 0..Table::rows(table) {
+        let id = Table::id_at(table, Row::trusted(index)).unwrap();
+        if !seen.contains(&id) {
+            seen.push(id);
+        }
+    }
+    seen
+}
+
+fn author_at(catalogue: &Catalogue, row: usize) -> Id<Author> {
+    minted(&catalogue.authors)[row]
 }
 
 fn work_at(catalogue: &Catalogue, row: usize) -> Id<Work> {
-    use crate::schema::{Row, Table};
-
-    Table::id_at(&catalogue.works, Row::trusted(row)).unwrap()
+    minted(&catalogue.works)[row]
 }
 
 fn author_row(catalogue: &Catalogue, of: Id<Author>) -> usize {
-    use crate::schema::Table;
-
-    Table::row_of(&catalogue.authors, of).unwrap().index()
+    minted(&catalogue.authors)
+        .iter()
+        .position(|held| *held == of)
+        .expect("an id this catalogue minted")
 }
 
 fn work_row(catalogue: &Catalogue, of: Id<Work>) -> usize {
-    use crate::schema::Table;
-
-    Table::row_of(&catalogue.works, of).unwrap().index()
+    minted(&catalogue.works)
+        .iter()
+        .position(|held| *held == of)
+        .expect("an id this catalogue minted")
 }
 
 fn done(deeds: &[Deed]) -> Catalogue {
-    use crate::schema::Table;
-
     let mut catalogue = Catalogue::default();
 
     for deed in deeds {
-        let authors = Table::rows(&catalogue.authors);
-        let works = Table::rows(&catalogue.works);
+        let authors = minted(&catalogue.authors).len();
+        let works = minted(&catalogue.works).len();
         match deed {
             Deed::Write(name, pen_name, born, died, shelf) => {
                 catalogue
@@ -791,9 +800,7 @@ fn done(deeds: &[Deed]) -> Catalogue {
 }
 
 fn penned_by_table(catalogue: &Catalogue) -> Vec<Penned> {
-    use crate::schema::Table;
-
-    (0..Table::rows(&catalogue.authors))
+    (0..minted(&catalogue.authors).len())
         .map(|row| {
             let of = author_at(catalogue, row);
             Penned {
@@ -812,8 +819,9 @@ fn penned_by_table(catalogue: &Catalogue) -> Vec<Penned> {
 }
 
 fn penned_by_row(catalogue: &Catalogue) -> Vec<Penned> {
-    catalogue
-        .all::<Author>()
+    minted(&catalogue.authors)
+        .into_iter()
+        .map(|of| catalogue.at(of).unwrap())
         .map(|row| Penned {
             name: row.name().unwrap().into_owned(),
             pen_name: row.pen_name().unwrap().map(|pen| pen.into_owned()),
@@ -861,11 +869,12 @@ proptest! {
         let mut seen = Vec::new();
         for author in catalogue.all::<Author>() {
             let at = author_row(&catalogue, author.id().unwrap());
-            let found: Vec<usize> = author
+            let mut found: Vec<usize> = author
                 .works()
                 .unwrap()
                 .map(|work| work_row(&catalogue, work.id().unwrap()))
                 .collect();
+            found.sort_unstable();
             let scanned: Vec<usize> = works
                 .iter()
                 .enumerate()
@@ -1038,12 +1047,10 @@ fn whole(editions: &EditionTable) -> usize {
 
     Table::check_rows_agree(editions).expect("a refused push leaves no ragged table");
     Table::audit(editions).expect("nor an index that disagrees with its column");
-    Table::rows(editions)
+    minted(editions).len()
 }
 
 fn printed(printings: &[Printing]) -> (EditionTable, Vec<(Option<String>, u32)>) {
-    use crate::schema::{Row, Table};
-
     let mut editions = EditionTable::default();
     let mut model: Vec<(Option<String>, u32)> = Vec::new();
 
@@ -1064,7 +1071,7 @@ fn printed(printings: &[Printing]) -> (EditionTable, Vec<(Option<String>, u32)>)
                 if !model.is_empty() {
                     let row = at % model.len();
                     let taken = claimed(&model, isbn, Some(row));
-                    let of = Table::id_at(&editions, Row::trusted(row)).unwrap();
+                    let of = minted(&editions)[row];
                     match editions.set_isbn(of, isbn.as_deref()) {
                         Ok(()) => {
                             assert!(!taken, "{isbn:?} was already there");
@@ -1078,7 +1085,7 @@ fn printed(printings: &[Printing]) -> (EditionTable, Vec<(Option<String>, u32)>)
             Printing::Redate(at, year) => {
                 if !model.is_empty() {
                     let row = at % model.len();
-                    let of = Table::id_at(&editions, Row::trusted(row)).unwrap();
+                    let of = minted(&editions)[row];
                     editions.set_year(of, *year).unwrap();
                     model[row].1 = *year;
                 }
@@ -1089,9 +1096,10 @@ fn printed(printings: &[Printing]) -> (EditionTable, Vec<(Option<String>, u32)>)
 }
 
 fn edition_row(editions: &EditionTable, of: Id<Edition>) -> usize {
-    use crate::schema::Table;
-
-    Table::row_of(editions, of).unwrap().index()
+    minted(editions)
+        .iter()
+        .position(|held| *held == of)
+        .expect("an id this table minted")
 }
 
 proptest! {
@@ -1105,10 +1113,12 @@ proptest! {
         let (name, pen_name, born, _died, shelf) = wanted;
 
         let rows = |found: Vec<Id<Author>>| -> Vec<usize> {
-            found
+            let mut named: Vec<usize> = found
                 .into_iter()
                 .map(|of| author_row(&catalogue, of))
-                .collect()
+                .collect();
+            named.sort_unstable();
+            named
         };
         let scan = |same: &dyn Fn(&Penned) -> bool| -> Vec<usize> {
             authors
@@ -1158,10 +1168,8 @@ proptest! {
         printings in printings(),
         wanted in props::indexable_optional_text(),
     ) {
-        use crate::schema::Table;
-
         let (editions, model) = printed(&printings);
-        prop_assert_eq!(Table::rows(&editions), model.len());
+        prop_assert_eq!(minted(&editions).len(), model.len());
 
         let prints = printings
             .iter()
@@ -1199,12 +1207,13 @@ proptest! {
         let (editions, model) = printed(&printings);
 
         for year in model.iter().map(|(_, held)| *held).chain([wanted]) {
-            let found: Vec<usize> = editions
+            let mut found: Vec<usize> = editions
                 .find_by_year(year)
                 .unwrap()
                 .into_iter()
                 .map(|of| edition_row(&editions, of))
                 .collect();
+            found.sort_unstable();
             let scanned: Vec<usize> = model
                 .iter()
                 .enumerate()
@@ -1215,4 +1224,39 @@ proptest! {
             prop_assert_eq!(found, scanned, "find_by_year disagrees about {}", year);
         }
     }
+}
+
+#[test]
+fn writing_a_join_back_onto_the_pair_it_already_holds_is_not_a_duplicate_of_itself() {
+    use crate::schema::Table;
+
+    let (mut catalogue, kokoro, _, cloth, paper) = issued();
+    let link = catalogue
+        .children_of::<Work, Appearance>(kokoro)
+        .unwrap()
+        .into_iter()
+        .find(|of| catalogue.appearances.edition(*of).unwrap() == cloth)
+        .expect("kokoro appeared in cloth");
+
+    catalogue
+        .at_mut(link)
+        .unwrap()
+        .set_page(2)
+        .expect("a page is not half of the pair, so the pair did not move");
+    catalogue
+        .at_mut(link)
+        .unwrap()
+        .set_edition(cloth)
+        .expect("a row does not hold its own pair against itself");
+
+    assert_eq!(catalogue.appearances.page(link).unwrap(), 2);
+    assert_eq!(catalogue.appearances.edition(link).unwrap(), cloth);
+
+    let err = catalogue
+        .at_mut(link)
+        .unwrap()
+        .set_edition(paper)
+        .expect_err("kokoro already appears in paper");
+    assert!(err.to_string().contains("appearance.work_edition"), "{err}");
+    Table::audit(&catalogue.appearances).unwrap();
 }

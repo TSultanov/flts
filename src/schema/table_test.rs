@@ -195,7 +195,11 @@ fn an_edited_row_keeps_its_id_and_its_neighbours() {
     assert_eq!(books.title(ids[1]).unwrap(), "Alice in Wonderland");
     assert_eq!(books.author(ids[1]).unwrap(), "Lewis Carroll");
     assert_eq!(books.title(ids[0]).unwrap(), "Kokoro");
-    assert_eq!(Table::rows(&books), 3);
+    assert_eq!(
+        Table::rows(&books),
+        4,
+        "an edit appends the row it replaces rather than writing over it"
+    );
 }
 
 #[test]

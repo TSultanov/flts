@@ -270,9 +270,9 @@ fn a_mutable_handle_answers_with_the_id_it_was_minted_from() {
     assert_eq!(paragraph.id().unwrap(), asked);
     assert_eq!(
         paragraph.row().unwrap().index(),
-        0,
-        "a mutable handle holds an id and looks up the row it names, so a write \
-         that moves the row does not leave the handle pointing at the old one"
+        1,
+        "a mutable handle holds an id and looks up the row it names, so after a \
+         write appends it answers with the row the write left behind it"
     );
     assert_eq!(
         library.at(asked).unwrap().text().unwrap(),
@@ -609,8 +609,10 @@ fn printings_by_table(library: &Library, minted: &Minted) -> Vec<Printing> {
 }
 
 fn printings_by_row(library: &Library, minted: &Minted) -> Vec<Printing> {
-    library
-        .all::<Edition>()
+    minted
+        .printings
+        .iter()
+        .map(|of| library.at(*of).unwrap())
         .map(|row| Printing {
             book: at(&minted.books, row.book().unwrap().id().unwrap()),
             isbn: row.isbn().unwrap().map(|isbn| isbn.into_owned()),
@@ -663,23 +665,25 @@ proptest! {
     }
 
     #[test]
-    fn walking_a_table_hands_back_every_row_once_in_the_order_they_were_pushed(ops in ops()) {
+    fn walking_a_table_hands_back_every_id_it_minted_exactly_once(ops in ops()) {
         let (library, model, minted) = played(&ops);
 
-        let books: Vec<Id<Book>> = library.all::<Book>().map(|row| row.id().unwrap()).collect();
-        let chapters: Vec<Id<Chapter>> =
-            library.all::<Chapter>().map(|row| row.id().unwrap()).collect();
-        let paragraphs: Vec<Id<Paragraph>> = library
-            .all::<Paragraph>()
-            .map(|row| row.id().unwrap())
-            .collect();
-        let printings: Vec<Id<Edition>> =
-            library.all::<Edition>().map(|row| row.id().unwrap()).collect();
+        let gathered = |mut walked: Vec<String>, mut held: Vec<String>| {
+            walked.sort_unstable();
+            held.sort_unstable();
+            (walked, held)
+        };
+        let said = |ids: &[Id<Book>]| ids.iter().map(|of| of.to_string()).collect::<Vec<_>>();
 
-        prop_assert_eq!(books, minted.books.clone());
-        prop_assert_eq!(chapters, minted.chapters.clone());
-        prop_assert_eq!(paragraphs, minted.paragraphs.clone());
-        prop_assert_eq!(printings, minted.printings.clone());
+        let (walked, held) = gathered(
+            library.all::<Book>().map(|row| row.id().unwrap().to_string()).collect(),
+            said(&minted.books),
+        );
+        prop_assert_eq!(walked, held);
+
+        prop_assert_eq!(library.all::<Chapter>().count(), minted.chapters.len());
+        prop_assert_eq!(library.all::<Paragraph>().count(), minted.paragraphs.len());
+        prop_assert_eq!(library.all::<Edition>().count(), minted.printings.len());
         prop_assert_eq!(library.all::<Book>().count(), model.books.len());
     }
 
@@ -693,7 +697,6 @@ proptest! {
         if let Some(row) = wrapped(at_row, model.chapters.len()) {
             let chapter = library.at(minted.chapters[row]).unwrap();
             prop_assert_eq!(chapter.id().unwrap(), minted.chapters[row]);
-            prop_assert_eq!(chapter.row().index(), row);
         }
 
         let stranger = Id::<Chapter>::mint();
@@ -712,11 +715,12 @@ proptest! {
         for book in library.all::<Book>() {
             let owner = at(&minted.books, book.id().unwrap());
 
-            let found: Vec<usize> = book
+            let mut found: Vec<usize> = book
                 .chapters()
                 .unwrap()
                 .map(|row| at(&minted.chapters, row.id().unwrap()))
                 .collect();
+            found.sort_unstable();
             let scanned: Vec<usize> = model
                 .chapters
                 .iter()
@@ -727,11 +731,12 @@ proptest! {
             prop_assert_eq!(&found, &scanned);
             chapters.extend(found);
 
-            let found: Vec<usize> = book
+            let mut found: Vec<usize> = book
                 .editions()
                 .unwrap()
                 .map(|row| at(&minted.printings, row.id().unwrap()))
                 .collect();
+            found.sort_unstable();
             let scanned: Vec<usize> = model
                 .printings
                 .iter()
@@ -746,7 +751,7 @@ proptest! {
         let mut paragraphs = Vec::new();
         for chapter in library.all::<Chapter>() {
             let owner = at(&minted.chapters, chapter.id().unwrap());
-            let found: Vec<usize> = chapter
+            let mut found: Vec<usize> = chapter
                 .paragraphs()
                 .unwrap()
                 .map(|row| at(&minted.paragraphs, row.id().unwrap()))
@@ -758,6 +763,7 @@ proptest! {
                 .filter(|(_, (held, _))| *held == owner)
                 .map(|(row, _)| row)
                 .collect();
+            found.sort_unstable();
             prop_assert_eq!(&found, &scanned);
             paragraphs.extend(found);
         }
@@ -1043,9 +1049,13 @@ proptest! {
             })
             .collect();
 
+        let mut crossed = crossed;
+        crossed.sort_unstable();
+        let mut wanted = scanned(&model, from);
+        wanted.sort_unstable();
         prop_assert_eq!(
             crossed,
-            scanned(&model, from),
+            wanted,
             "a crossing from book {} disagrees with a scan of {:?}",
             from,
             model

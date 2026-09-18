@@ -107,7 +107,30 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         quote! {
             let pair = ::dbsync::schema::Pair::of(#left, #right);
             self.#column.reach(pair)?;
-            self.#column.refuse_duplicate(pair)?;
+            if let ::core::option::Option::Some(taken) =
+                <Self as ::dbsync::schema::Table>::live_one(
+                    self,
+                    self.#column.rows_holding(pair)?,
+                )?
+            {
+                return ::core::result::Result::Err(self.#column.taken_by(taken));
+            }
+        }
+    });
+    let pair_reach_again = pair.as_ref().map(|shared| {
+        let (column, left, right) = (&shared.column, &shared.left, &shared.right);
+        quote! {
+            let pair = ::dbsync::schema::Pair::of(#left, #right);
+            self.#column.reach(pair)?;
+            if let ::core::option::Option::Some(taken) =
+                <Self as ::dbsync::schema::Table>::live_one(
+                    self,
+                    self.#column.rows_holding(pair)?,
+                )?
+                && taken != held
+            {
+                return ::core::result::Result::Err(self.#column.taken_by(taken));
+            }
         }
     });
     let pair_push = pair.as_ref().map(|shared| {
@@ -172,6 +195,47 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             }
         });
 
+    let probes_again = stored
+        .iter()
+        .filter(|field| field.indexing == Indexing::Unique)
+        .map(|field| {
+            let field_name = &field.name;
+            quote! {
+                if let ::core::option::Option::Some(taken) =
+                    <Self as ::dbsync::schema::Table>::live_one(
+                        self,
+                        self.#field_name.rows_holding(#field_name)?,
+                    )?
+                    && taken != held
+                {
+                    return ::core::result::Result::Err(self.#field_name.taken_by(taken));
+                }
+            }
+        });
+
+    let arguments_again = stored.iter().map(|field| {
+        let field_name = &field.name;
+        let ty = field.kind.pushed();
+        quote! { #field_name: #ty }
+    });
+    let pushes_again = stored.iter().map(|field| {
+        let field_name = &field.name;
+        quote! { self.#field_name.push(#field_name)?; }
+    });
+    let reaches_again = stored.iter().filter_map(|field| {
+        let field_name = &field.name;
+        match (&field.kind, field.indexing) {
+            (Kind::Reference(_), _) | (_, Indexing::Shared) => {
+                Some(quote! { self.#field_name.reach(#field_name)?; })
+            }
+            _ => None,
+        }
+    });
+    let pair_push_again = pair.as_ref().map(|shared| {
+        let column = &shared.column;
+        quote! { self.#column.push(pair)?; }
+    });
+
     let finders = stored
         .iter()
         .filter(|field| field.indexing != Indexing::None)
@@ -228,8 +292,25 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         let read = field.kind.read(&quote! { '_ });
         let pushed = field.kind.pushed();
         let get = field.kind.get(&quote! { self }, field_name, field.indexing);
-        let set = set_beside_its_pair(field, &quote! { self }, pair.as_ref());
         let docs = &field.docs;
+
+        let carried = stored
+            .iter()
+            .filter(|other| other.name != *field_name)
+            .map(|other| {
+                let other_name = &other.name;
+                let read = other.kind.get(&quote! { self }, other_name, other.indexing);
+                let owned = other.kind.owned();
+                quote! { let #other_name = #read #owned ?; }
+            });
+        let handed = stored.iter().map(|other| {
+            let other_name = &other.name;
+            match other.name == *field_name {
+                true => quote! { value },
+                false => other.kind.lent(other_name),
+            }
+        });
+
         quote! {
             #(#docs)*
             pub fn #field_name(&self, of: ::dbsync::Id<#name>) -> ::dbsync::Result<#read> {
@@ -243,7 +324,8 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 value: #pushed,
             ) -> ::dbsync::Result<()> {
                 let row = <Self as ::dbsync::schema::Table>::row_of(self, of)?;
-                #set
+                #(#carried)*
+                self.rewrite(of, #(#handed,)*)
             }
         }
     });
@@ -305,12 +387,11 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         let field_name = &field.name;
         let setter = format_ident!("set_{}", field_name);
         let pushed = field.kind.pushed();
-        let set = set_beside_its_pair(field, &quote! { table }, pair.as_ref());
         quote! {
             pub fn #setter(&mut self, value: #pushed) -> ::dbsync::Result<()> {
-                let row = self.0.row()?;
+                let of = self.0.id()?;
                 let table = self.0.table_mut();
-                #set
+                table.#setter(of, value)
             }
         }
     });
@@ -436,6 +517,20 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 ::core::result::Result::Ok(id)
             }
 
+            fn rewrite(&mut self, of: ::dbsync::Id<#name>, #(#arguments_again,)*)
+                -> ::dbsync::Result<()>
+            {
+                <Self as ::dbsync::schema::Table>::reserve(self)?;
+                let held = <Self as ::dbsync::schema::Table>::row_of(self, of)?;
+                #(#reaches_again)*
+                #pair_reach_again
+                #(#probes_again)*
+                <Self as ::dbsync::schema::Table>::revise(self, of)?;
+                #(#pushes_again)*
+                #pair_push_again
+                ::core::result::Result::Ok(())
+            }
+
             #(#accessors)*
 
             #(#finders)*
@@ -534,28 +629,6 @@ fn quote_spanned_child(child: &syn::Type, parent: &syn::Ident) -> TokenStream {
             }
             groups_by_its_parent::<#parent, #child>();
         };
-    }
-}
-
-fn set_beside_its_pair(field: &Field, table: &TokenStream, pair: Option<&Shared>) -> TokenStream {
-    let alone = field.kind.set(table, &field.name, field.indexing);
-    let Some(shared) = pair else {
-        return alone;
-    };
-    let column = &shared.column;
-
-    let held = if field.name == shared.left {
-        let other = &shared.right;
-        quote! { ::dbsync::schema::Pair::of(value, #table.#other.get(row)?) }
-    } else if field.name == shared.right {
-        let other = &shared.left;
-        quote! { ::dbsync::schema::Pair::of(#table.#other.get(row)?, value) }
-    } else {
-        return alone;
-    };
-    quote! {
-        #table.#column.set(row, #held)?;
-        #alone
     }
 }
 

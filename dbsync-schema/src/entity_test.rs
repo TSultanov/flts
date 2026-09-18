@@ -232,12 +232,18 @@ fn a_scalar_reads_through_its_row_index_and_everything_else_through_the_row() {
         out.contains("self . year . row (row . index ()) . copied ()"),
         "{out}"
     );
-    assert!(
-        out.contains("self . year . set (row . index () , value)"),
-        "an arena is addressed by index; only a column knows what a Row means: {out}"
-    );
     assert!(out.contains("self . title . get (row)"), "{out}");
-    assert!(out.contains("self . title . set (row , value)"), "{out}");
+    assert!(
+        out.contains(
+            "let title = self . title . get (row) . map (| held | held . into_owned ()) ?"
+        ),
+        "a string carried onto the next version is owned, because the table is about \
+         to be borrowed to write it: {out}"
+    );
+    assert!(
+        out.contains("self . rewrite (of , & title , value ,)"),
+        "and it is lent back, in declared order, as the push takes it: {out}"
+    );
 }
 
 #[test]
@@ -462,25 +468,50 @@ fn a_mutable_handle_writes_through_the_table_the_store_lends_it() {
         struct Book { title: String, year: u32 }
     });
 
-    let opened = "{ let row = self . 0 . row () ? ; let table = self . 0 . table_mut () ; ";
+    let opened = "{ let of = self . 0 . id () ? ; let table = self . 0 . table_mut () ; ";
     let text = [
         "pub fn set_title (& mut self , value : & str) -> :: dbsync :: Result < () > ",
         opened,
-        "table . title . set (row , value) }",
+        "table . set_title (of , value) }",
     ]
     .concat();
     let scalar = [
         "pub fn set_year (& mut self , value : u32) -> :: dbsync :: Result < () > ",
         opened,
-        "table . year . set (row . index () , value) }",
+        "table . set_year (of , value) }",
     ]
     .concat();
 
     assert!(
         out.contains(&text),
-        "the row is read before the table is borrowed to write it: {out}"
+        "a handle holds an id, and the table is what knows how to write over a row: {out}"
     );
     assert!(out.contains(&scalar), "{out}");
+}
+
+#[test]
+fn a_setter_carries_every_other_field_forward_onto_the_row_it_appends() {
+    let out = expanded(quote! {
+        struct Book { title: String, year: u32 }
+    });
+
+    let carries = [
+        "pub fn set_title (& mut self , of : :: dbsync :: Id < Book > , value : & str ,) ",
+        "-> :: dbsync :: Result < () > { ",
+        "let row = < Self as :: dbsync :: schema :: Table > :: row_of (self , of) ? ; ",
+        "let year = self . year . row (row . index ()) . copied () ? ; ",
+        "self . rewrite (of , value , year ,) }",
+    ]
+    .concat();
+
+    assert!(
+        out.contains(&carries),
+        "a write appends a whole row, so every field it does not change comes with it: {out}"
+    );
+    assert!(
+        out.contains("< Self as :: dbsync :: schema :: Table > :: revise (self , of) ?"),
+        "{out}"
+    );
 }
 
 #[test]
@@ -585,8 +616,8 @@ fn an_indexed_field_is_reached_through_the_column_its_index_wraps() {
     for asked in [
         "self . year . column () . row (row . index ()) . copied ()",
         "self . month . row (row . index ()) . copied ()",
-        "self . year . set (row , value)",
-        "self . month . set (row . index () , value)",
+        "self . year . push (year) ?",
+        "self . month . push (month) ?",
     ] {
         assert!(out.contains(asked), "{asked} is missing from {out}");
     }
@@ -792,9 +823,20 @@ fn a_distinct_pair_becomes_a_column_of_its_own_that_the_push_probes_first() {
         .split("pub fn push")
         .nth(1)
         .expect("the table has a push");
-    let probe = push.find("refuse_duplicate").expect("the push probes");
+    let probe = push.find("rows_holding").expect("the push probes");
     let mint = push.find("mint").expect("the push mints");
     assert!(probe < mint, "a refused pair must not spend an id: {out}");
+
+    let rewrite = out
+        .split("fn rewrite")
+        .nth(1)
+        .expect("the table writes over a row");
+    let asked = rewrite.find("rows_holding").expect("the rewrite probes");
+    let revise = rewrite.find("revise").expect("the rewrite revises");
+    assert!(
+        asked < revise,
+        "a refused pair must not supersede the row it would have replaced: {out}"
+    );
 
     assert!(
         out.contains("check_pairs :: < Book , Author , Authorship >"),
@@ -817,18 +859,20 @@ fn a_set_of_either_parent_in_a_distinct_pair_moves_the_pair_with_it() {
     });
 
     assert!(
-        out.contains(
-            "book_author . set (row , :: dbsync :: schema :: Pair :: of (value , \
-             self . author . get (row) ?)) ?"
-        ),
+        out.contains("let author = self . author . get (row) ?"),
+        "a set of one parent carries the other onto the new row: {out}"
+    );
+    assert!(
+        out.contains("self . rewrite (of , value , author ,)"),
         "{out}"
     );
     assert!(
-        out.contains(
-            "book_author . set (row , :: dbsync :: schema :: Pair :: of (\
-             table . book . get (row) ? , value)) ?"
-        ),
+        out.contains("self . rewrite (of , book , value ,)"),
         "{out}"
+    );
+    assert!(
+        !out.contains("book_author . set ("),
+        "the pair is rebuilt from what the rewrite was handed, not moved in place: {out}"
     );
 }
 

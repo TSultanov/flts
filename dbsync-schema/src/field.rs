@@ -301,10 +301,21 @@ impl Kind {
         }
     }
 
-    pub fn set(&self, table: &TokenStream, name: &syn::Ident, indexing: Indexing) -> TokenStream {
-        match (self, indexing) {
-            (Kind::Scalar(_), Indexing::None) => quote! { #table.#name.set(row.index(), value) },
-            _ => quote! { #table.#name.set(row, value) },
+    pub fn owned(&self) -> TokenStream {
+        match self {
+            Kind::Text => quote! { .map(|held| held.into_owned()) },
+            Kind::NullableText => {
+                quote! { .map(|held| held.map(|text| text.into_owned())) }
+            }
+            _ => quote! {},
+        }
+    }
+
+    pub fn lent(&self, name: &syn::Ident) -> TokenStream {
+        match self {
+            Kind::Text => quote! { &#name },
+            Kind::NullableText => quote! { #name.as_deref() },
+            _ => quote! { #name },
         }
     }
 }

@@ -342,14 +342,26 @@ fn main() -> Result<()> {
     );
     println!("     these columns hold thousands of rows per chunk, so at this size each is");
     println!("     one chunk; a real library appends to the tail of the column that grew");
+    println!(
+        "     retitling Alice did not write over her row: book now holds {} rows for {} books,",
+        Table::rows(&library.books),
+        library.all::<Book>().count()
+    );
+    println!("     because a write appends the version that replaces the one before it, and");
+    println!("     the row it replaced is still there to be read and still says \"Alice\"");
 
-    assert_eq!(Table::rows(&shelf.books), 4);
-    assert_eq!(Table::rows(&library.books), 5);
+    assert_eq!(shelf.all::<Book>().count(), 4);
+    assert_eq!(library.all::<Book>().count(), 5);
+    assert_eq!(
+        Table::rows(&library.books),
+        6,
+        "five books in six rows: retitling Alice appended the row it replaced"
+    );
     println!("\n9. the handle opened at the older generation still serves it");
     println!(
         "     it reads {} books from the same file the live one reads {} from",
-        Table::rows(&shelf.books),
-        Table::rows(&library.books)
+        shelf.all::<Book>().count(),
+        library.all::<Book>().count()
     );
 
     let mut stale = shelf;
