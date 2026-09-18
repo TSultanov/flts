@@ -1333,8 +1333,16 @@ fn a_row_two_copies_wrote_apart_is_kept_by_the_later_write_and_the_other_is_repo
     let mut theirs = copied(&dir, "here.dbs", "there.dbs")?;
     theirs.at_mut(alice)?.set_title("Alice's Adventures")?;
     theirs.commit(device("there"))?;
+    std::thread::sleep(std::time::Duration::from_millis(2));
     mine.at_mut(alice)?.set_title("Alice in Wonderland")?;
     mine.commit(device("here"))?;
+
+    let ours = Table::versions(&mine.books)
+        .at(mine.books.row_of(alice)?)?
+        .dot();
+    let theirs_dot = Table::versions(&theirs.books)
+        .at(theirs.books.row_of(alice)?)?
+        .dot();
 
     let report = mine.merge(&theirs)?;
 
@@ -1342,9 +1350,72 @@ fn a_row_two_copies_wrote_apart_is_kept_by_the_later_write_and_the_other_is_repo
     let said = report.concurrent[0];
     assert_eq!(said.entity, "book");
     assert_eq!(said.id, alice.uuid());
-    assert!(said.kept > said.dropped, "the later write is the one kept");
+    assert!(
+        ours > theirs_dot,
+        "this copy wrote a clear two milliseconds later: {ours:?} against {theirs_dot:?}"
+    );
+    assert_eq!(said.kept, ours);
+    assert_eq!(said.dropped, theirs_dot);
+    assert_eq!(
+        mine.books.title(alice)?,
+        "Alice in Wonderland",
+        "the row that counted further is the one the id names"
+    );
     assert_eq!(titles(&mine).len(), 1, "one book, however many wrote it");
     mine.audit()?;
+    Ok(())
+}
+
+#[test]
+fn three_copies_that_all_declared_one_pair_leave_one_credit_between_them() -> Result<()> {
+    let dir = TempDir::new("merge_three_pairs");
+    let mut first = Library::create(dir.join("first.dbs"), device("first"))?;
+    let alice = first.books.push("Alice", "Lewis Carroll")?;
+    let carroll = first.editors.push("Lewis Carroll")?;
+    first.commit(device("first"))?;
+
+    let mut second = copied(&dir, "first.dbs", "second.dbs")?;
+    let mut third = copied(&dir, "first.dbs", "third.dbs")?;
+    for (shelf, who) in [
+        (&mut second, "second"),
+        (&mut third, "third"),
+        (&mut first, "first"),
+    ] {
+        shelf.credits.push(alice, carroll)?;
+        shelf.commit(device(who))?;
+    }
+
+    first.merge(&second)?;
+    let report = first.merge(&third)?;
+
+    let live = first.children_of::<Book, Credit>(alice)?;
+    assert_eq!(
+        live.len(),
+        1,
+        "three copies each wrote the pair down and one credit is left: {report:?}"
+    );
+    assert_eq!(
+        Table::rows(&first.credits),
+        3,
+        "the two that gave it up are still rows that say what they held"
+    );
+
+    let rows = Table::rows(&first.credits);
+    let furthest = (0..rows)
+        .map(|at| {
+            let row = crate::schema::Row::of(at, rows, "credit").unwrap();
+            (
+                Table::versions(&first.credits).at(row).unwrap().dot(),
+                Table::id_at(&first.credits, row).unwrap(),
+            )
+        })
+        .max()
+        .expect("three rows");
+    assert_eq!(
+        live[0], furthest.1,
+        "the credit that counted furthest is the one that keeps the pair"
+    );
+    first.audit()?;
     Ok(())
 }
 

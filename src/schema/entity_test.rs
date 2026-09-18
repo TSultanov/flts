@@ -404,6 +404,10 @@ fn a_book_with_a_chapter_still_in_it_cannot_be_taken_out() {
 
     assert!(err.to_string().contains("cannot be taken out"), "{err}");
     assert!(err.to_string().contains("was taken out of book"), "{err}");
+    assert!(
+        err.to_string().contains("chapter.book row 0"),
+        "the refusal names the column and the row that still points at it: {err}"
+    );
     assert_eq!(
         Table::rows(&library.books),
         before,

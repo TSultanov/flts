@@ -739,3 +739,60 @@ fn settling_an_id_makes_its_newest_version_the_one_it_names() {
     assert_eq!(books.row_of(alice).unwrap(), newest);
     Table::audit(&books).unwrap();
 }
+
+fn three_alices() -> (Books, Vec<Id<Book>>, Vec<Row>) {
+    use crate::schema::VersionVector;
+
+    let mut books = Books::default();
+    let ids: Vec<Id<Book>> = ["one", "two", "three"]
+        .iter()
+        .map(|who| books.push("Alice", who).unwrap())
+        .collect();
+    let mut clock = VersionVector::default();
+    Table::stamp_rows(&mut books, &mut clock, WriterId::from_raw(1)).unwrap();
+
+    let rows = (0..3).map(|at| Row::of(at, 3, "book").unwrap()).collect();
+    (books, ids, rows)
+}
+
+#[test]
+fn a_value_three_rows_share_is_kept_by_the_one_that_counted_furthest() {
+    let (mut books, ids, rows) = three_alices();
+
+    let (kept, given) = books
+        .yield_among(&rows)
+        .unwrap()
+        .expect("three rows hold one title between them");
+
+    assert_eq!(
+        Table::id_at(&books, kept).unwrap(),
+        ids[2],
+        "the row whose version counted furthest keeps the value"
+    );
+    assert_eq!(given.len(), 2, "and the other two give it up");
+    assert!(books.live_row_of(ids[0]).unwrap().is_none());
+    assert!(books.live_row_of(ids[1]).unwrap().is_none());
+    assert!(books.live_row_of(ids[2]).unwrap().is_some());
+}
+
+#[test]
+fn a_value_nobody_else_holds_is_not_something_to_give_up() {
+    let (mut books, ids, rows) = three_alices();
+
+    assert_eq!(
+        books.yield_among(&[]).unwrap(),
+        None,
+        "no rows, nothing to settle"
+    );
+    assert_eq!(
+        books.yield_among(&rows[..1]).unwrap(),
+        None,
+        "one row holding a value is one row holding a value"
+    );
+    for of in &ids {
+        assert!(
+            books.live_row_of(*of).unwrap().is_some(),
+            "nothing was given up"
+        );
+    }
+}

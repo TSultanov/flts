@@ -717,9 +717,22 @@ fn a_push_reaches_for_every_bucket_it_will_write_before_it_mints() {
         !push.contains("self . slug . reach"),
         "a unique field is probed, and the probe reads that bucket already: {out}"
     );
+    let merging = out
+        .split("pub fn merge_from")
+        .nth(1)
+        .expect("the table merges");
+    let merging = &merging[..merging.find("fn settle_unique").unwrap_or(merging.len())];
     assert!(
-        out.contains("self . slug . reach (& slug) ?"),
+        merging.contains("self . slug . reach (& slug) ?"),
         "a merge takes a row without probing it, so it reaches that bucket itself: {out}"
+    );
+    assert!(
+        merging.contains("self . book . reach (book) ?"),
+        "and it reaches the parent's bucket before it writes a link into it: {out}"
+    );
+    assert!(
+        !merging.contains("self . text . reach"),
+        "a column with no index still has no bucket to reach for: {out}"
     );
 
     let reach = out

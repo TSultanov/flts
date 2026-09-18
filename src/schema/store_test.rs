@@ -869,3 +869,31 @@ fn committing_one_new_row_reads_only_the_tail_of_the_version_column() -> Result<
     );
     Ok(())
 }
+
+#[test]
+fn making_room_for_a_row_reads_the_tail_of_the_version_column_and_no_more() -> Result<()> {
+    let dir = TempDir::new("store_version_room");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device())?;
+    for at in 0..3000 {
+        library.books.push(&format!("Book {at}"), "Nobody").unwrap();
+    }
+    library.commit(this_device())?;
+    drop(library);
+
+    let reopened = Library::open(&path)?;
+    let cold = held(&reopened, "book.version");
+    assert!(cold.chunks > 1, "{cold:?}");
+    assert_eq!(cold.resident, 0);
+
+    Table::reserve(&reopened.books)?;
+
+    let warm = held(&reopened, "book.version");
+    assert_eq!(
+        warm.resident, 1,
+        "a push writes one version at the tail, so that is the one chunk it has to \
+         be able to read before it starts: {warm:?}"
+    );
+    Ok(())
+}
