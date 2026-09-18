@@ -1,4 +1,4 @@
-//! A library of books, chapters and paragraphs, declared once and derived into columns.
+//! A library of books, authors, chapters and paragraphs, declared once and derived into columns.
 
 use std::path::PathBuf;
 
@@ -9,8 +9,26 @@ use dbsync::{ColumnFile, Result, WriterId};
 struct Book {
     #[index]
     title: String,
-    author: String,
     chapters: Many<Chapter>,
+    credits: Many<Credit>,
+    #[through(Credit)]
+    authors: Many<Author>,
+}
+
+#[dbsync::entity]
+struct Author {
+    #[index]
+    name: String,
+    #[through(Credit)]
+    books: Many<Book>,
+}
+
+#[dbsync::entity]
+#[distinct(book, author)]
+struct Credit {
+    book: One<Book>,
+    author: One<Author>,
+    role: String,
 }
 
 #[dbsync::entity]
@@ -29,6 +47,8 @@ struct Paragraph {
 #[dbsync::container]
 struct Library {
     books: Set<Book>,
+    authors: Set<Author>,
+    credits: Set<Credit>,
     chapters: Set<Chapter>,
     paragraphs: Set<Paragraph>,
 }
@@ -38,9 +58,13 @@ fn this_device() -> WriterId {
 }
 
 fn stock(library: &mut Library) -> Result<()> {
-    let prince = library
-        .books
-        .push("Le Petit Prince", "Antoine de Saint-Exupéry")?;
+    let exupery = library.authors.push("Antoine de Saint-Exupéry")?;
+    let soseki = library.authors.push("夏目漱石")?;
+    let carroll = library.authors.push("Lewis Carroll")?;
+    let tenniel = library.authors.push("John Tenniel")?;
+
+    let prince = library.books.push("Le Petit Prince")?;
+    library.credits.push(prince, exupery, "wrote")?;
     let one = library.chapters.push(prince, "Chapitre I")?;
     library
         .paragraphs
@@ -53,7 +77,8 @@ fn stock(library: &mut Library) -> Result<()> {
         .paragraphs
         .push(two, "J'ai vécu seul, sans personne à qui parler.")?;
 
-    let kokoro = library.books.push("こころ", "夏目漱石")?;
+    let kokoro = library.books.push("こころ")?;
+    library.credits.push(kokoro, soseki, "wrote")?;
     let sensei = library.chapters.push(kokoro, "上 先生と私")?;
     library
         .paragraphs
@@ -62,9 +87,9 @@ fn stock(library: &mut Library) -> Result<()> {
         .paragraphs
         .push(sensei, "筆を執っても心持は同じ事である。")?;
 
-    let alice = library
-        .books
-        .push("Alice's Adventures in Wonderland", "Lewis Carroll")?;
+    let alice = library.books.push("Alice's Adventures in Wonderland")?;
+    library.credits.push(alice, carroll, "wrote")?;
+    library.credits.push(alice, tenniel, "illustrated")?;
     let rabbit = library.chapters.push(alice, "Down the Rabbit-Hole")?;
     library
         .paragraphs
@@ -76,7 +101,23 @@ fn stock(library: &mut Library) -> Result<()> {
     library
         .paragraphs
         .push(pool, "Curiouser and curiouser! cried Alice.")?;
+
+    let glass = library.books.push("Through the Looking-Glass")?;
+    library.credits.push(glass, carroll, "wrote")?;
+    library.credits.push(glass, tenniel, "illustrated")?;
+    let looking = library.chapters.push(glass, "Looking-Glass House")?;
+    library.paragraphs.push(
+        looking,
+        "One thing was certain, that the white kitten had nothing to do with it.",
+    )?;
     Ok(())
+}
+
+fn named<'a>(library: &'a Library, name: &str) -> Result<AuthorRow<'a, Library>> {
+    match Holds::<Author>::table(library).find_by_name(name)?.first() {
+        Some(author) => library.at(*author),
+        None => Err(dbsync::Error::invalid(format!("nobody called {name:?}"))),
+    }
 }
 
 fn book_called<'a>(library: &'a Library, title: &str) -> Result<BookRow<'a, Library>> {
@@ -103,7 +144,7 @@ fn main() -> Result<()> {
 
     let declared = Library::default();
     println!(
-        "\n1. four declarations became {} columns",
+        "\n1. five declarations became {} columns",
         declared.specs().len()
     );
     for spec in declared.specs() {
@@ -112,6 +153,8 @@ fn main() -> Result<()> {
     println!("     nobody wrote those names down; Many and Set asked for none of them,");
     println!("     and nobody declared an id: every entity is given one, and a row keeps");
     println!("     the one it was given for as long as it exists");
+    println!("     credit.book_author is the pair no two credits may share, carried whole,");
+    println!("     so a book and a person are held apart by one key rather than two");
     println!("     .buckets and .links are the hash index over the column they follow --");
     println!("     columns like any other, written by the commit and paged on demand");
 
@@ -123,12 +166,14 @@ fn main() -> Result<()> {
         Table::rows(&library.books)
             + Table::rows(&library.chapters)
             + Table::rows(&library.paragraphs),
-        3 + 5 + 8
+        4 + 6 + 9
     );
     println!("\n2. shelved the books and committed generation {generation}");
     println!(
-        "     {} books, {} chapters, {} paragraphs in {} bytes",
+        "     {} books by {} people in {} credits, {} chapters, {} paragraphs in {} bytes",
         Table::rows(&library.books),
+        Table::rows(&library.authors),
+        Table::rows(&library.credits),
         Table::rows(&library.chapters),
         Table::rows(&library.paragraphs),
         std::fs::metadata(&path)?.len()
@@ -144,7 +189,7 @@ fn main() -> Result<()> {
     );
 
     for book in shelf.all::<Book>() {
-        println!("     {} — {}", book.title()?, book.author()?);
+        println!("     {}", book.title()?);
     }
     assert!(resident(&shelf, "book.title.bytes") > 0);
     assert_eq!(resident(&shelf, "paragraph.text"), 0);
@@ -202,19 +247,73 @@ fn main() -> Result<()> {
     }
     println!("     nobody named a table or carried an id between the two levels");
 
+    println!("\n6. and crossed the table that holds books and people together");
+    let crossing = Library::open(&path)?;
+    let looking = book_called(&crossing, "Through the Looking-Glass")?;
+    assert_eq!(looking.authors()?.count(), 2);
+    assert_eq!(resident(&crossing, "credit.book"), 0);
+    assert!(resident(&crossing, "credit.book.buckets") > 0);
+    assert!(resident(&crossing, "credit.author") > 0);
+    assert_eq!(resident(&crossing, "author.name"), 0);
+    assert_eq!(resident(&crossing, "author.name.bytes"), 0);
+    println!(
+        "     the two people behind it were named by {} chunks of credit.book.buckets and",
+        resident(&crossing, "credit.book.buckets")
+    );
+    println!(
+        "     {} of credit.author, and nothing else: a Many that names a table to cross",
+        resident(&crossing, "credit.author")
+    );
+    println!("     walks the index on one end of the link and reads the id at the other, so");
+    println!("     credit.book stayed cold, and so did author.name -- naming rows and reading");
+    println!("     what they hold are separate acts, exactly as they were for a title");
+
+    for role in looking.credits()? {
+        println!("     {} {}", role.author()?.name()?, role.role()?);
+    }
+    assert!(resident(&crossing, "author.name.bytes") > 0);
+    println!("     asking for the names is what read author.name.bytes, and the credits are");
+    println!("     still rows carrying a role of their own, because the join is a table that");
+    println!("     was declared rather than one that was conjured");
+
+    let tenniel = named(&crossing, "John Tenniel")?;
+    let drawn: Vec<String> = tenniel
+        .books()?
+        .map(|book| Ok(book.title()?.into_owned()))
+        .collect::<Result<Vec<String>>>()?;
+    assert_eq!(drawn.len(), 2);
+    println!("     the same table answers the other way round, declared the same way: John",);
+    println!("     Tenniel illustrated {} and {}", drawn[0], drawn[1]);
+
+    let mut again = Library::open(&path)?;
+    let carroll = named(&again, "Lewis Carroll")?.id()?;
+    let glass = book_called(&again, "Through the Looking-Glass")?.id()?;
+    let refused = again
+        .credits
+        .push(glass, carroll, "wrote again")
+        .expect_err("this pair is already held");
+    println!("\n7. offered a credit the library already holds");
+    println!("     {refused}");
+    assert_eq!(Table::rows(&again.credits), 6);
+    again.verify()?;
+    println!("     nothing was written: the pair is probed before an id is minted, so a");
+    println!("     refused push leaves every column exactly the length it was");
+
     let before = std::fs::metadata(&path)?.len();
     let untouched = ColumnFile::open(&path)?
         .column_meta("paragraph.text")
         .expect("paragraph.text is in the file")
         .chunks[0];
 
-    library.books.push("Il nome della rosa", "Umberto Eco")?;
+    let eco = library.authors.push("Umberto Eco")?;
+    let rosa = library.books.push("Il nome della rosa")?;
+    library.credits.push(rosa, eco, "wrote")?;
     library
         .at_mut(alice.id()?)?
         .set_title("Alice in Wonderland")?;
     let published = library.commit(this_device())?;
     assert_eq!(library.at(alice.id()?)?.title()?, "Alice in Wonderland");
-    assert_eq!(library.at(alice.id()?)?.author()?, "Lewis Carroll");
+    assert_eq!(library.at(alice.id()?)?.authors()?.count(), 2);
 
     assert_eq!(
         ColumnFile::open(&path)?
@@ -224,7 +323,7 @@ fn main() -> Result<()> {
         untouched
     );
     println!(
-        "\n6. catalogued a fourth book, retitled a first, and committed generation {published}"
+        "\n8. catalogued a fifth book, retitled a first, and committed generation {published}"
     );
     println!(
         "     the file grew by {} bytes; paragraph.text was never touched and did not move",
@@ -233,9 +332,9 @@ fn main() -> Result<()> {
     println!("     these columns hold thousands of rows per chunk, so at this size each is");
     println!("     one chunk; a real library appends to the tail of the column that grew");
 
-    assert_eq!(Table::rows(&shelf.books), 3);
-    assert_eq!(Table::rows(&library.books), 4);
-    println!("\n7. the handle opened at the older generation still serves it");
+    assert_eq!(Table::rows(&shelf.books), 4);
+    assert_eq!(Table::rows(&library.books), 5);
+    println!("\n9. the handle opened at the older generation still serves it");
     println!(
         "     it reads {} books from the same file the live one reads {} from",
         Table::rows(&shelf.books),
@@ -243,11 +342,11 @@ fn main() -> Result<()> {
     );
 
     let mut stale = shelf;
-    stale.books.push("Never committed", "Nobody")?;
+    stale.books.push("Never committed")?;
     let refused = stale
         .commit(this_device())
         .expect_err("a stale handle cannot commit");
-    println!("\n8. and that handle can no longer commit over the newer generation");
+    println!("\n10. and that handle can no longer commit over the newer generation");
     println!("     {refused}");
     println!("     the caller reopens and retries; nothing was written");
 
