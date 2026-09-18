@@ -1166,3 +1166,53 @@ fn a_pair_index_stripped_from_a_file_is_rebuilt_on_open_and_refuses_as_it_did() 
     assert_eq!(edited(&reopened, alice), ["Ada", "Bram"]);
     reopened.verify().unwrap();
 }
+
+#[test]
+fn a_declared_store_refuses_to_take_out_a_book_a_chapter_still_names() -> Result<()> {
+    let mut library = Library::default();
+    let alice = library.books.push("Alice", "Lewis Carroll")?;
+    let rabbit = library.chapters.push(alice, "Down the Rabbit-Hole")?;
+    let before = Table::rows(&library.books);
+
+    let err = library
+        .remove(alice)
+        .expect_err("a chapter of a book that is gone belongs to nobody");
+    assert!(err.to_string().contains("cannot be taken out"), "{err}");
+    assert_eq!(Table::rows(&library.books), before);
+    assert_eq!(library.all::<Book>().count(), 1);
+    library.audit()?;
+
+    library.remove(rabbit)?;
+    library.remove(alice)?;
+
+    assert_eq!(library.all::<Book>().count(), 0);
+    assert_eq!(library.all::<Chapter>().count(), 0);
+    library.audit()?;
+    Ok(())
+}
+
+#[test]
+fn a_declared_store_keeps_a_book_it_took_out_across_a_commit_and_a_reopen() -> Result<()> {
+    let dir = TempDir::new("declared_remove");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device())?;
+    let alice = library.books.push("Alice", "Lewis Carroll")?;
+    library.books.push("Kokoro", "Natsume Soseki")?;
+    library.remove(alice)?;
+    library.commit(this_device())?;
+    drop(library);
+
+    let reopened = Library::open(&path)?;
+
+    assert_eq!(reopened.all::<Book>().count(), 1);
+    assert!(reopened.books.find_by_title("Alice")?.is_empty());
+    assert!(reopened.at(alice).is_err());
+    assert_eq!(
+        Table::rows(&reopened.books),
+        3,
+        "a removal is written down like anything else, and it says which row it ended"
+    );
+    reopened.verify()?;
+    Ok(())
+}

@@ -97,6 +97,16 @@ pub trait Table: Default + Clone {
         Ok(Row::trusted(row))
     }
 
+    fn withdraw(&mut self, id: Id<Self::Of>) -> Result<()> {
+        let held = self.current_row_of(id)?.ok_or_else(|| {
+            Error::invalid(format!(
+                "{} has no row with id {id} to take out",
+                Self::Of::NAME
+            ))
+        })?;
+        self.versions_mut().withdraw(held)
+    }
+
     fn stamp_rows(&mut self, clock: &mut VersionVector, writer: WriterId) -> Result<()> {
         self.versions_mut().stamp(clock, writer)
     }

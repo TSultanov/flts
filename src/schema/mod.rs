@@ -22,7 +22,8 @@ pub use clock::VersionVector;
 pub use column::{Column, ColumnKind, ColumnSpec, Field, FieldMut, Residency, Row};
 pub use diff::SchemaDiff;
 pub use entity::{
-    Audited, Child, Entity, Holds, across_rows_of, audit_reference, child_rows_of, children_of,
+    Audited, Child, Entity, Holds, Removed, across_rows_of, audit_reference, child_rows_of,
+    children_of,
 };
 pub use entry::{Across, Children, Entry, EntryMut, Rows};
 pub use enums::{EnumColumn, UnitEnum};

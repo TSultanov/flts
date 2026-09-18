@@ -5,8 +5,8 @@ use crate::error::{Error, Result};
 use crate::id::Id;
 use crate::schema::{
     Across, AnyTable, Audited, Child, Children, Distinct, Entity, Entry, EntryMut, EnumColumn,
-    Field, FieldMut, Holds, NullableColumn, NullableTextColumn, Pair, RefColumn, Rows, Store,
-    StoreState, Table, TextColumn, UnitEnum, audit_reference, check_pairs,
+    Field, FieldMut, Holds, NullableColumn, NullableTextColumn, Pair, RefColumn, Removed, Rows,
+    Store, StoreState, Table, TextColumn, UnitEnum, audit_reference, check_pairs,
 };
 use crate::schema::{IdColumn, Indexed, VersionColumn};
 use crate::storage::Arena;
@@ -234,6 +234,14 @@ impl Books {
         Ok(self.author.get(self.row_of(book)?)?.into_owned())
     }
 
+    pub fn remove(&mut self, of: Id<Book>) -> Result<()> {
+        let row = self.row_of(of)?;
+        let title = self.title.column().get(row)?.into_owned();
+        let author = self.author.get(row)?.into_owned();
+        self.write_over(of, &title, &author)?;
+        self.withdraw(of)
+    }
+
     pub fn title_at(&self, row: crate::schema::Row) -> Result<String> {
         Ok(self.title.column().get(row)?.into_owned())
     }
@@ -432,6 +440,13 @@ impl Chapters {
         Ok(())
     }
 
+    pub fn remove(&mut self, of: Id<Chapter>) -> Result<()> {
+        let row = self.row_of(of)?;
+        let (book, title) = (self.book.get(row)?, self.title.get(row)?.into_owned());
+        self.write_over(of, book, &title)?;
+        self.withdraw(of)
+    }
+
     pub fn of_book(&self, book: Id<Book>) -> Result<Vec<Id<Chapter>>> {
         self.live_among(self.book.child_rows_of(book)?)?
             .into_iter()
@@ -598,6 +613,13 @@ impl Paragraphs {
         self.chapter.push(chapter)?;
         self.text.push(text)?;
         Ok(())
+    }
+
+    pub fn remove(&mut self, of: Id<Paragraph>) -> Result<()> {
+        let row = self.row_of(of)?;
+        let (chapter, text) = (self.chapter.get(row)?, self.text.get(row)?.into_owned());
+        self.write_over(of, chapter, &text)?;
+        self.withdraw(of)
     }
 
     pub fn of_chapter(&self, chapter: Id<Chapter>) -> Result<Vec<Id<Paragraph>>> {
@@ -782,6 +804,12 @@ impl Editions {
 
     pub fn binding(&self, of: Id<Edition>) -> Result<Binding> {
         self.binding.get(self.row_of(of)?)
+    }
+
+    pub fn remove(&mut self, of: Id<Edition>) -> Result<()> {
+        let held = self.held(of)?;
+        self.write_over(of, held.0, held.1.as_deref(), held.2, held.3, held.4)?;
+        self.withdraw(of)
     }
 
     #[allow(clippy::type_complexity)]
@@ -988,6 +1016,20 @@ impl Authors {
         Ok(self.name.column().get(self.row_of(author)?)?.into_owned())
     }
 
+    pub fn write_over(&mut self, author: Id<Author>, name: &str) -> Result<()> {
+        self.reserve()?;
+        self.name.reach(name)?;
+        self.revise(author)?;
+        self.name.push(name)?;
+        Ok(())
+    }
+
+    pub fn remove(&mut self, of: Id<Author>) -> Result<()> {
+        let name = self.name.column().get(self.row_of(of)?)?.into_owned();
+        self.write_over(of, &name)?;
+        self.withdraw(of)
+    }
+
     pub fn find_by_name(&self, name: &str) -> Result<Vec<Id<Author>>> {
         self.live_among(self.name.find(name)?)?
             .into_iter()
@@ -1176,6 +1218,13 @@ impl Authorships {
         Ok(())
     }
 
+    pub fn remove(&mut self, of: Id<Authorship>) -> Result<()> {
+        let row = self.row_of(of)?;
+        let (book, author) = (self.book.get(row)?, self.author.get(row)?);
+        self.write_over(of, book, author)?;
+        self.withdraw(of)
+    }
+
     pub fn of_book(&self, book: Id<Book>) -> Result<Vec<Id<Authorship>>> {
         self.live_among(self.book.child_rows_of(book)?)?
             .into_iter()
@@ -1321,6 +1370,42 @@ impl Store for Library {
     }
 }
 
+impl<S: Holds<Book>> Removed<S> for Book {
+    fn remove_in(store: &mut S, of: Id<Book>) -> Result<()> {
+        Holds::<Book>::table_mut(store).remove(of)
+    }
+}
+
+impl<S: Holds<Chapter>> Removed<S> for Chapter {
+    fn remove_in(store: &mut S, of: Id<Chapter>) -> Result<()> {
+        Holds::<Chapter>::table_mut(store).remove(of)
+    }
+}
+
+impl<S: Holds<Paragraph>> Removed<S> for Paragraph {
+    fn remove_in(store: &mut S, of: Id<Paragraph>) -> Result<()> {
+        Holds::<Paragraph>::table_mut(store).remove(of)
+    }
+}
+
+impl<S: Holds<Edition>> Removed<S> for Edition {
+    fn remove_in(store: &mut S, of: Id<Edition>) -> Result<()> {
+        Holds::<Edition>::table_mut(store).remove(of)
+    }
+}
+
+impl<S: Holds<Author>> Removed<S> for Author {
+    fn remove_in(store: &mut S, of: Id<Author>) -> Result<()> {
+        Holds::<Author>::table_mut(store).remove(of)
+    }
+}
+
+impl<S: Holds<Authorship>> Removed<S> for Authorship {
+    fn remove_in(store: &mut S, of: Id<Authorship>) -> Result<()> {
+        Holds::<Authorship>::table_mut(store).remove(of)
+    }
+}
+
 impl<S: Holds<Book>> Audited<S> for Book {
     fn audit_in(store: &S) -> Result<()> {
         Table::audit(Holds::<Book>::table(store))
@@ -1425,6 +1510,25 @@ impl Holds<Authorship> for Library {
 }
 
 impl Library {
+    pub fn remove<E>(&mut self, of: Id<E>) -> Result<()>
+    where
+        Self: Holds<E>,
+        E: Removed<Self>,
+    {
+        let kept = Store::snapshot(self);
+        <E as Removed<Self>>::remove_in(self, of)?;
+        match Store::audit(self) {
+            Ok(()) => Ok(()),
+            Err(said) => {
+                *self = kept;
+                Err(crate::error::Error::invalid(format!(
+                    "{} {of} cannot be taken out while something still names it: {said}",
+                    E::NAME
+                )))
+            }
+        }
+    }
+
     pub fn at<E>(&self, id: Id<E>) -> Result<E::Row<'_, Self>>
     where
         Self: Holds<E>,

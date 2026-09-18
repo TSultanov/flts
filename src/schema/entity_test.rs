@@ -355,3 +355,102 @@ fn a_link_written_over_is_crossed_once_and_from_its_newest_end() {
         "one link crosses once, and it crosses from the end it names now"
     );
 }
+
+#[test]
+fn a_book_taken_out_is_gone_from_every_walk_and_every_finder() {
+    let mut library = Library::default();
+    let alice = library.books.push("Alice", "Lewis Carroll").unwrap();
+    let kokoro = library.books.push("Kokoro", "Natsume Soseki").unwrap();
+
+    library.remove(alice).unwrap();
+
+    assert_eq!(library.all::<Book>().count(), 1);
+    assert_eq!(library.all::<Book>().next().unwrap().id().unwrap(), kokoro);
+    assert!(library.books.find_by_title("Alice").unwrap().is_empty());
+    assert!(library.at(alice).is_err());
+    assert_eq!(
+        Table::rows(&library.books),
+        3,
+        "the row that was taken out is still a row, and so is the one it replaced"
+    );
+    Store::audit(&library).unwrap();
+}
+
+#[test]
+fn a_title_a_book_took_with_it_is_free_for_another_to_use() {
+    let mut library = Library::default();
+    let alice = library.books.push("Alice", "Lewis Carroll").unwrap();
+
+    library.remove(alice).unwrap();
+    let again = library.books.push("Alice", "Somebody Else").unwrap();
+
+    assert_eq!(library.books.find_by_title("Alice").unwrap(), vec![again]);
+    Store::audit(&library).unwrap();
+}
+
+#[test]
+fn a_book_with_a_chapter_still_in_it_cannot_be_taken_out() {
+    let mut library = Library::default();
+    let alice = library.books.push("Alice", "Lewis Carroll").unwrap();
+    library
+        .chapters
+        .push(alice, "Down the Rabbit-Hole")
+        .unwrap();
+    let before = Table::rows(&library.books);
+
+    let err = library
+        .remove(alice)
+        .expect_err("a chapter of a book that is gone belongs to nobody");
+
+    assert!(err.to_string().contains("cannot be taken out"), "{err}");
+    assert!(err.to_string().contains("was taken out of book"), "{err}");
+    assert_eq!(
+        Table::rows(&library.books),
+        before,
+        "a refused removal leaves the table exactly as it was"
+    );
+    assert_eq!(library.all::<Book>().count(), 1);
+    Store::audit(&library).unwrap();
+}
+
+#[test]
+fn a_book_whose_chapters_went_first_can_be_taken_out_after_them() {
+    let mut library = Library::default();
+    let alice = library.books.push("Alice", "Lewis Carroll").unwrap();
+    let rabbit = library
+        .chapters
+        .push(alice, "Down the Rabbit-Hole")
+        .unwrap();
+
+    library.remove(rabbit).unwrap();
+    library.remove(alice).unwrap();
+
+    assert_eq!(library.all::<Book>().count(), 0);
+    assert_eq!(library.all::<Chapter>().count(), 0);
+    Store::audit(&library).unwrap();
+}
+
+#[test]
+fn a_link_that_names_nobody_does_not_keep_a_book_from_being_taken_out() {
+    let mut library = Library::default();
+    let alice = library.books.push("Alice", "Lewis Carroll").unwrap();
+    let ada = library.authors.push("Ada").unwrap();
+    let link = library.authorships.push(alice, ada).unwrap();
+    library.at_mut(link).unwrap().set_book(Id::NIL).unwrap();
+
+    library.remove(alice).unwrap();
+
+    assert_eq!(library.all::<Book>().count(), 0);
+    Store::audit(&library).unwrap();
+}
+
+#[test]
+fn a_row_already_taken_out_cannot_be_taken_out_again() {
+    let mut library = Library::default();
+    let alice = library.books.push("Alice", "Lewis Carroll").unwrap();
+    library.remove(alice).unwrap();
+
+    let err = library.remove(alice).expect_err("it is already gone");
+
+    assert!(err.to_string().contains("has no row with id"), "{err}");
+}

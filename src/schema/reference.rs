@@ -77,6 +77,10 @@ impl<P: Entity, C: Entity> RefColumn<P, C> {
         self.children_of(mine, Id::NIL)
     }
 
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
     pub fn check_parents(&self, parents: &IdColumn<P>) -> Result<()> {
         for child in 0..self.ids.len() {
             let parent = *self.ids.row(child)?;

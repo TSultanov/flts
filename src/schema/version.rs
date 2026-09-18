@@ -224,6 +224,11 @@ impl<E: Entity> VersionColumn<E> {
             .expect("the row is here");
     }
 
+    pub fn withdraw(&mut self, row: Row) -> Result<()> {
+        let held = self.at(row)?;
+        self.versions.set(row.index(), held.withdraw())
+    }
+
     pub fn unstamped_from(&self) -> usize {
         self.stamped
     }

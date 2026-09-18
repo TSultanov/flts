@@ -936,3 +936,33 @@ fn a_field_named_after_the_pair_it_would_share_a_column_with_is_refused() {
         "{err}"
     );
 }
+
+#[test]
+fn every_table_can_take_a_row_out_by_writing_a_last_version_that_says_so() {
+    let out = expanded(quote! {
+        struct Book { title: String, year: u32 }
+    });
+
+    let takes = [
+        "pub fn remove (& mut self , of : :: dbsync :: Id < Book >) -> :: dbsync :: Result < () > { ",
+        "let row = < Self as :: dbsync :: schema :: Table > :: row_of (self , of) ? ; ",
+        "let title = self . title . get (row) . map (| held | held . into_owned ()) ? ; ",
+        "let year = self . year . row (row . index ()) . copied () ? ; ",
+        "self . rewrite (of , & title , year ,) ? ; ",
+        "< Self as :: dbsync :: schema :: Table > :: withdraw (self , of) }",
+    ]
+    .concat();
+
+    assert!(
+        out.contains(&takes),
+        "a removal is the newest thing said about an id, so it is a row like any \
+         other and it carries what the row held: {out}"
+    );
+    assert!(
+        out.contains(
+            "impl < S > :: dbsync :: schema :: Removed < S > for Book \
+             where S : :: dbsync :: schema :: Holds < Book > ,"
+        ),
+        "{out}"
+    );
+}

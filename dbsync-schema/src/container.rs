@@ -164,6 +164,25 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             {
                 ::dbsync::schema::children_of(self, parent)
             }
+
+            pub fn remove<E>(&mut self, of: ::dbsync::Id<E>) -> ::dbsync::Result<()>
+            where
+                Self: ::dbsync::schema::Holds<E>,
+                E: ::dbsync::schema::Removed<Self>,
+            {
+                let kept = <Self as ::dbsync::schema::Store>::snapshot(self);
+                <E as ::dbsync::schema::Removed<Self>>::remove_in(self, of)?;
+                match <Self as ::dbsync::schema::Store>::audit(self) {
+                    ::core::result::Result::Ok(()) => ::core::result::Result::Ok(()),
+                    ::core::result::Result::Err(said) => {
+                        *self = kept;
+                        ::core::result::Result::Err(::dbsync::Error::invalid(::std::format!(
+                            "{} {of} cannot be taken out while something still names it: {said}",
+                            <E as ::dbsync::schema::Entity>::NAME,
+                        )))
+                    }
+                }
+            }
         }
     })
 }

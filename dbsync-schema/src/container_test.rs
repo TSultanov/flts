@@ -235,3 +235,27 @@ fn a_container_audits_every_entity_it_holds_and_not_only_its_own_columns() {
         "{out}"
     );
 }
+
+#[test]
+fn a_store_takes_a_row_out_and_puts_it_back_if_the_audit_refuses() {
+    let out = expanded(quote! {
+        struct Library { books: Set<Book>, chapters: Set<Chapter> }
+    });
+
+    assert!(
+        out.contains("pub fn remove < E > (& mut self , of : :: dbsync :: Id < E >)"),
+        "{out}"
+    );
+    assert!(
+        out.contains("let kept = < Self as :: dbsync :: schema :: Store > :: snapshot (self)"),
+        "a snapshot is an Arc-level clone, so the way back costs nothing: {out}"
+    );
+    assert!(
+        out.contains("* self = kept"),
+        "a removal something still names leaves the store as it was: {out}"
+    );
+    assert!(
+        out.contains("cannot be taken out while something still names it"),
+        "{out}"
+    );
+}

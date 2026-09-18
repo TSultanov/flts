@@ -195,6 +195,14 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             }
         });
 
+    let carried_whole = stored.iter().map(|field| {
+        let field_name = &field.name;
+        let read = field.kind.get(&quote! { self }, field_name, field.indexing);
+        let owned = field.kind.owned();
+        quote! { let #field_name = #read #owned ?; }
+    });
+    let handed_whole = stored.iter().map(|field| field.kind.lent(&field.name));
+
     let probes_again = stored
         .iter()
         .filter(|field| field.indexing == Indexing::Unique)
@@ -531,6 +539,13 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 ::core::result::Result::Ok(())
             }
 
+            pub fn remove(&mut self, of: ::dbsync::Id<#name>) -> ::dbsync::Result<()> {
+                let row = <Self as ::dbsync::schema::Table>::row_of(self, of)?;
+                #(#carried_whole)*
+                self.rewrite(of, #(#handed_whole,)*)?;
+                <Self as ::dbsync::schema::Table>::withdraw(self, of)
+            }
+
             #(#accessors)*
 
             #(#finders)*
@@ -611,6 +626,15 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                     ::dbsync::schema::audit_reference::<S, #checked, #name>(store)?;
                 )*
                 ::core::result::Result::Ok(())
+            }
+        }
+
+        impl<S> ::dbsync::schema::Removed<S> for #name
+        where
+            S: ::dbsync::schema::Holds<#name>,
+        {
+            fn remove_in(store: &mut S, of: ::dbsync::Id<#name>) -> ::dbsync::Result<()> {
+                ::dbsync::schema::Holds::<#name>::table_mut(store).remove(of)
             }
         }
 
