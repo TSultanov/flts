@@ -1296,3 +1296,57 @@ fn a_value_no_two_rows_may_share_is_given_up_by_one_of_the_copies_that_wrote_it(
     );
     mine.audit().unwrap();
 }
+
+#[test]
+fn a_merge_brings_every_kind_of_column_across_exactly_as_it_was_written() {
+    use crate::schema::Store;
+    use crate::storage::WriterId;
+    use crate::test_utils::TempDir;
+
+    let dir = TempDir::new("merge_kinds");
+    let here = dir.join("here.dbs");
+    let there = dir.join("there.dbs");
+    let mut mine = Catalogue::create(&here, WriterId::from_device_id("here")).unwrap();
+    mine.commit(WriterId::from_device_id("here")).unwrap();
+
+    std::fs::copy(&here, &there).unwrap();
+    let mut theirs = Catalogue::open(&there).unwrap();
+    let soseki = theirs
+        .authors
+        .push(
+            "Natsume Soseki",
+            Some("Kinnosuke"),
+            1867,
+            Some(1916),
+            Shelf::Fiction,
+        )
+        .unwrap();
+    let plain = theirs
+        .authors
+        .push("Nobody", None, 1900, None, Shelf::Reference)
+        .unwrap();
+    theirs.works.push(soseki, "Kokoro").unwrap();
+    theirs.commit(WriterId::from_device_id("there")).unwrap();
+
+    let report = mine.merge(&theirs).unwrap();
+
+    assert_eq!(report.taken, 3);
+    let held = mine.at(soseki).unwrap();
+    assert_eq!(held.name().unwrap(), "Natsume Soseki");
+    assert_eq!(held.pen_name().unwrap().unwrap(), "Kinnosuke");
+    assert_eq!(held.born().unwrap(), 1867);
+    assert_eq!(held.died().unwrap(), Some(1916));
+    assert_eq!(held.shelf().unwrap(), Shelf::Fiction);
+    assert_eq!(held.works().unwrap().count(), 1);
+
+    let bare = mine.at(plain).unwrap();
+    assert_eq!(bare.pen_name().unwrap(), None);
+    assert_eq!(bare.died().unwrap(), None);
+    assert_eq!(bare.shelf().unwrap(), Shelf::Reference);
+
+    assert_eq!(
+        mine.authors.find_by_name("Natsume Soseki").unwrap(),
+        [soseki]
+    );
+    mine.audit().unwrap();
+}

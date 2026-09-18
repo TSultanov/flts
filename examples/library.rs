@@ -239,6 +239,7 @@ fn main() -> Result<()> {
 
     println!("\n5. opened one book, and walked it by the columns that point back at it");
     let alice = book_called(&shelf, "Alice's Adventures in Wonderland")?;
+    let alice_of = alice.id()?;
     assert_eq!(alice.chapters()?.count(), 2);
     assert_eq!(resident(&shelf, "chapter.book"), 0);
     assert!(resident(&shelf, "chapter.book.buckets") > 0);
@@ -319,12 +320,10 @@ fn main() -> Result<()> {
     let eco = library.authors.push("Umberto Eco")?;
     let rosa = library.books.push("Il nome della rosa")?;
     library.credits.push(rosa, eco, "wrote")?;
-    library
-        .at_mut(alice.id()?)?
-        .set_title("Alice in Wonderland")?;
+    library.at_mut(alice_of)?.set_title("Alice in Wonderland")?;
     let published = library.commit(this_device())?;
-    assert_eq!(library.at(alice.id()?)?.title()?, "Alice in Wonderland");
-    assert_eq!(library.at(alice.id()?)?.authors()?.count(), 2);
+    assert_eq!(library.at(alice_of)?.title()?, "Alice in Wonderland");
+    assert_eq!(library.at(alice_of)?.authors()?.count(), 2);
 
     assert_eq!(
         ColumnFile::open(&path)?
@@ -381,6 +380,90 @@ fn main() -> Result<()> {
         token.generation
     );
 
+    let annexe = WriterId::from_device_id("the annexe");
+    let elsewhere: PathBuf =
+        std::env::temp_dir().join(format!("dbsync-annexe-{}.dbs", std::process::id()));
+    std::fs::copy(&path, &elsewhere)?;
+    let mut theirs = Library::open(&elsewhere)?;
+
+    let calvino = theirs.authors.push("Italo Calvino")?;
+    let cities = theirs.books.push("Le citta invisibili")?;
+    theirs.credits.push(cities, calvino, "wrote")?;
+    theirs.at_mut(alice_of)?.set_title("Alice, annotated")?;
+    theirs.commit(annexe)?;
+
+    let woolf = library.authors.push("Virginia Woolf")?;
+    let waves = library.books.push("The Waves")?;
+    library.credits.push(waves, woolf, "wrote")?;
+    library.at_mut(alice_of)?.set_title("Alice Underground")?;
+    library.commit(this_device())?;
+
+    println!("\n11. someone copied the file to the annexe and both shelves were worked on");
+    println!("     here: added The Waves and retitled Alice");
+    println!("     there: added Le citta invisibili and retitled Alice as well");
+    println!(
+        "     neither file knows about the other: {} books here, {} there",
+        library.all::<Book>().count(),
+        theirs.all::<Book>().count()
+    );
+
+    let report = library.merge(&theirs)?;
+    library.verify()?;
+
+    println!("\n12. merged the annexe back in");
+    println!(
+        "     {} rows came across, {} were already known here",
+        report.taken, report.known
+    );
+    assert_eq!(library.all::<Book>().count(), 7);
+    println!(
+        "     {} books now, by {} people",
+        library.all::<Book>().count(),
+        library.all::<Author>().count()
+    );
+
+    assert_eq!(report.concurrent.len(), 1);
+    let said = report.concurrent[0];
+    println!(
+        "     one row was written on both shelves without either knowing: {} {}",
+        said.entity, said.id
+    );
+    println!("     the later write kept it and the earlier one is still there to read:");
+    println!("       it says {:?}", library.at(alice_of)?.title()?);
+    println!("     nobody chose that by hand; the two clocks did, and they would have");
+    println!("     said the same thing had the annexe merged this shelf instead");
+
+    let again = library.merge(&theirs)?;
+    assert_eq!(again.taken, 0);
+    println!(
+        "     merging the same shelf again takes nothing: {} rows, all of them known",
+        again.taken
+    );
+
+    let held = library
+        .remove(waves)
+        .expect_err("a credit still names The Waves");
+    println!("\n13. asked for The Waves to come off the shelf, and was told what it holds");
+    println!("     {held}");
+    assert_eq!(library.all::<Book>().count(), 7);
+
+    for credit in library.children_of::<Book, Credit>(waves)? {
+        library.remove(credit)?;
+    }
+    library.remove(waves)?;
+    library.verify()?;
+    assert_eq!(library.all::<Book>().count(), 6);
+    println!("\n14. took the credit off first, and then the book");
+    println!("     it is gone from every walk and every finder, and the rows that held it");
+    println!("     are still in the file, because a removal is the newest thing said about");
+    println!("     an id rather than the absence of anything said");
+    println!(
+        "     {} rows of book for {} books on the shelf",
+        Table::rows(&library.books),
+        library.all::<Book>().count()
+    );
+
     std::fs::remove_file(&path)?;
+    std::fs::remove_file(&elsewhere)?;
     Ok(())
 }
