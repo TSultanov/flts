@@ -822,3 +822,224 @@ fn a_generated_row_set_to_a_value_leaves_no_trace_under_the_value_it_left() -> R
     assert_eq!(authors.name(carroll)?, "Charles Dodgson");
     Ok(())
 }
+
+#[derive(Clone, Debug)]
+enum Printing {
+    Print(Option<String>, u32),
+    Reissue(usize, Option<String>),
+    Redate(usize, u32),
+}
+
+fn printed_year() -> impl Strategy<Value = u32> {
+    prop_oneof![
+        3 => 1900u32..1905,
+        1 => props::interesting_u32(),
+    ]
+}
+
+fn printing() -> impl Strategy<Value = Printing> {
+    prop_oneof![
+        4 => (props::indexable_optional_text(), printed_year())
+            .prop_map(|(isbn, year)| Printing::Print(isbn, year)),
+        2 => (props::row_index(), props::indexable_optional_text())
+            .prop_map(|(at, isbn)| Printing::Reissue(at, isbn)),
+        1 => (props::row_index(), printed_year())
+            .prop_map(|(at, year)| Printing::Redate(at, year)),
+    ]
+}
+
+fn printings() -> impl Strategy<Value = Vec<Printing>> {
+    prop::collection::vec(printing(), 0..24)
+}
+
+fn claimed(model: &[(Option<String>, u32)], isbn: &Option<String>, but: Option<usize>) -> bool {
+    isbn.is_some()
+        && model
+            .iter()
+            .enumerate()
+            .any(|(row, (held, _))| Some(row) != but && held == isbn)
+}
+
+fn whole(editions: &EditionTable) -> usize {
+    use crate::schema::Table;
+
+    Table::check_rows_agree(editions).expect("a refused push leaves no ragged table");
+    Table::audit(editions).expect("nor an index that disagrees with its column");
+    Table::rows(editions)
+}
+
+fn printed(printings: &[Printing]) -> (EditionTable, Vec<(Option<String>, u32)>) {
+    use crate::schema::{Row, Table};
+
+    let mut editions = EditionTable::default();
+    let mut model: Vec<(Option<String>, u32)> = Vec::new();
+
+    for one in printings {
+        match one {
+            Printing::Print(isbn, year) => {
+                let taken = claimed(&model, isbn, None);
+                match editions.push(isbn.as_deref(), *year) {
+                    Ok(_) => {
+                        assert!(!taken, "{isbn:?} was already there");
+                        model.push((isbn.clone(), *year));
+                    }
+                    Err(said) => assert!(taken, "{said}"),
+                }
+                assert_eq!(whole(&editions), model.len(), "a column grew without a row");
+            }
+            Printing::Reissue(at, isbn) => {
+                if !model.is_empty() {
+                    let row = at % model.len();
+                    let taken = claimed(&model, isbn, Some(row));
+                    let of = Table::id_at(&editions, Row::trusted(row)).unwrap();
+                    match editions.set_isbn(of, isbn.as_deref()) {
+                        Ok(()) => {
+                            assert!(!taken, "{isbn:?} was already there");
+                            model[row].0 = isbn.clone();
+                        }
+                        Err(said) => assert!(taken, "{said}"),
+                    }
+                    assert_eq!(whole(&editions), model.len(), "a column grew without a row");
+                }
+            }
+            Printing::Redate(at, year) => {
+                if !model.is_empty() {
+                    let row = at % model.len();
+                    let of = Table::id_at(&editions, Row::trusted(row)).unwrap();
+                    editions.set_year(of, *year).unwrap();
+                    model[row].1 = *year;
+                }
+            }
+        }
+    }
+    (editions, model)
+}
+
+fn edition_row(editions: &EditionTable, of: Id<Edition>) -> usize {
+    use crate::schema::Table;
+
+    Table::row_of(editions, of).unwrap().index()
+}
+
+proptest! {
+    #[test]
+    fn every_generated_finder_names_exactly_the_rows_a_scan_of_the_table_would(
+        deeds in deeds(),
+        wanted in written(),
+    ) {
+        let (authors, _) = expected(&deeds);
+        let catalogue = done(&deeds);
+        let (name, pen_name, born, _died, shelf) = wanted;
+
+        let rows = |found: Vec<Id<Author>>| -> Vec<usize> {
+            found
+                .into_iter()
+                .map(|of| author_row(&catalogue, of))
+                .collect()
+        };
+        let scan = |same: &dyn Fn(&Penned) -> bool| -> Vec<usize> {
+            authors
+                .iter()
+                .enumerate()
+                .filter(|(_, held)| same(held))
+                .map(|(row, _)| row)
+                .collect()
+        };
+
+        for value in authors.iter().map(|held| held.name.clone()).chain([name]) {
+            prop_assert_eq!(
+                rows(catalogue.authors.find_by_name(&value).unwrap()),
+                scan(&|held| held.name == value),
+                "find_by_name and a scan disagree about {:?}",
+                value
+            );
+        }
+        for value in authors.iter().map(|held| held.pen_name.clone()).chain([pen_name]) {
+            prop_assert_eq!(
+                rows(catalogue.authors.find_by_pen_name(value.as_deref()).unwrap()),
+                scan(&|held| held.pen_name == value),
+                "find_by_pen_name and a scan disagree about {:?}",
+                value
+            );
+        }
+        for value in authors.iter().map(|held| held.born).chain([born]) {
+            prop_assert_eq!(
+                rows(catalogue.authors.find_by_born(value).unwrap()),
+                scan(&|held| held.born == value),
+                "find_by_born and a scan disagree about {}",
+                value
+            );
+        }
+        for value in authors.iter().map(|held| held.shelf).chain([shelf]) {
+            prop_assert_eq!(
+                rows(catalogue.authors.find_by_shelf(value).unwrap()),
+                scan(&|held| held.shelf == value),
+                "find_by_shelf and a scan disagree about {:?}",
+                value
+            );
+        }
+    }
+
+    #[test]
+    fn a_generated_push_whose_unique_value_is_taken_is_refused_and_leaves_every_column_as_it_was(
+        printings in printings(),
+        wanted in props::indexable_optional_text(),
+    ) {
+        use crate::schema::Table;
+
+        let (editions, model) = printed(&printings);
+        prop_assert_eq!(Table::rows(&editions), model.len());
+
+        let prints = printings
+            .iter()
+            .filter(|one| matches!(one, Printing::Print(..)))
+            .count();
+        prop_assert!(
+            prints == 0 || !model.is_empty(),
+            "the first print of a program has nothing to collide with, so it is always kept"
+        );
+
+        for isbn in model.iter().map(|(held, _)| held.clone()).chain([wanted]) {
+            let sought = isbn.as_deref();
+            let one = match sought {
+                None => None,
+                Some(_) => model.iter().position(|(held, _)| held.as_deref() == sought),
+            };
+
+            prop_assert_eq!(
+                editions
+                    .find_by_isbn(sought)
+                    .unwrap()
+                    .map(|of| edition_row(&editions, of)),
+                one,
+                "find_by_isbn names another row for {:?}",
+                sought
+            );
+        }
+    }
+
+    #[test]
+    fn every_generated_row_is_found_by_the_value_it_ended_up_holding(
+        printings in printings(),
+        wanted in printed_year(),
+    ) {
+        let (editions, model) = printed(&printings);
+
+        for year in model.iter().map(|(_, held)| *held).chain([wanted]) {
+            let found: Vec<usize> = editions
+                .find_by_year(year)
+                .unwrap()
+                .into_iter()
+                .map(|of| edition_row(&editions, of))
+                .collect();
+            let scanned: Vec<usize> = model
+                .iter()
+                .enumerate()
+                .filter(|(_, (_, held))| *held == year)
+                .map(|(row, _)| row)
+                .collect();
+
+            prop_assert_eq!(found, scanned, "find_by_year disagrees about {}", year);
+        }
+    }
+}

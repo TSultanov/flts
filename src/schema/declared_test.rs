@@ -1,7 +1,7 @@
 use crate::error::Result;
 use crate::id::Id;
 use crate::schema::{Store, Table};
-use crate::storage::WriterId;
+use crate::storage::{ColumnFile, WriterId};
 use crate::test_utils::TempDir;
 use crate::test_utils::props;
 use proptest::prelude::*;
@@ -861,6 +861,129 @@ proptest! {
                     column.name
                 );
             }
+        }
+    }
+}
+
+fn found_by_title(library: &Library, title: &str) -> Vec<usize> {
+    library
+        .books
+        .find_by_title(title)
+        .unwrap()
+        .into_iter()
+        .map(|of| book_row(library, of))
+        .collect()
+}
+
+fn shelving(books: &[(String, String)], title: &str) -> Vec<usize> {
+    books
+        .iter()
+        .enumerate()
+        .filter(|(_, (held, _))| held == title)
+        .map(|(row, _)| row)
+        .collect()
+}
+
+fn without(path: &std::path::Path, dropped: &[&str]) {
+    let file = ColumnFile::open(path).unwrap();
+    let kept: Vec<String> = file
+        .columns()
+        .iter()
+        .map(|column| column.name.clone())
+        .filter(|name| !dropped.contains(&name.as_str()))
+        .collect();
+
+    let mut updater = file.update(this_device()).unwrap();
+    for name in &kept {
+        updater.keep_column(name).unwrap();
+    }
+    for name in dropped {
+        updater.remove_column(name);
+    }
+    updater.commit().unwrap();
+}
+
+proptest! {
+    #![proptest_config(props::scaled(4))]
+
+    #[test]
+    fn every_value_a_commit_wrote_is_found_after_a_reopen_that_read_no_payload(
+        deeds in deeds(),
+        wanted in props::indexable_text(),
+    ) {
+        let dir = TempDir::new("declared_find");
+        let path = dir.join("library.dbs");
+
+        let (books, _, _) = expected(&deeds);
+        let (mut library, _) = kept(&deeds, &path);
+        library.commit(this_device()).unwrap();
+        drop(library);
+
+        let reopened = Library::open(&path).unwrap();
+        prop_assert!(
+            reopened.residency().iter().all(|held| held.resident == 0),
+            "opening a library must read no payload"
+        );
+
+        for title in books.iter().map(|(held, _)| held.clone()).chain([wanted]) {
+            prop_assert_eq!(
+                found_by_title(&reopened, &title),
+                shelving(&books, &title),
+                "find_by_title and a scan disagree about {:?}",
+                title
+            );
+        }
+    }
+
+    #[test]
+    fn an_index_stripped_from_a_file_is_rebuilt_on_open_and_answers_as_it_did(
+        deeds in deeds(),
+        strip in prop::collection::vec(any::<bool>(), 4),
+    ) {
+        let dir = TempDir::new("declared_strip");
+        let path = dir.join("library.dbs");
+
+        let (mut books, _, _) = expected(&deeds);
+        let (mut library, _) = kept(&deeds, &path);
+        library.books.push("Anchor", "Nobody").unwrap();
+        books.push(("Anchor".to_owned(), "Nobody".to_owned()));
+        library.commit(this_device()).unwrap();
+        drop(library);
+
+        let derived = [
+            "book.title.buckets",
+            "book.title.links",
+            "book.id.buckets",
+            "book.id.links",
+        ];
+        let dropped: Vec<&str> = derived
+            .iter()
+            .zip(&strip)
+            .filter(|(_, strip)| **strip)
+            .map(|(name, _)| *name)
+            .collect();
+        without(&path, &dropped);
+        let after = ColumnFile::open(&path).unwrap();
+        for name in &dropped {
+            prop_assert!(
+                after.column_meta(name).is_none(),
+                "{} was still in the file after it was dropped",
+                name
+            );
+        }
+        drop(after);
+
+        let reopened = Library::open(&path).unwrap();
+        Table::audit(&reopened.books).unwrap();
+
+        for title in books.iter().map(|(held, _)| held.clone()) {
+            prop_assert_eq!(
+                found_by_title(&reopened, &title),
+                shelving(&books, &title),
+                "an index rebuilt without {:?} disagrees about {:?}",
+                dropped,
+                title
+            );
         }
     }
 }
