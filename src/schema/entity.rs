@@ -7,8 +7,22 @@ use super::table::Table;
 use crate::error::{Error, Result};
 use crate::id::Id;
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Retention {
+    Newest,
+    History,
+}
+
+impl Retention {
+    pub const fn keeps_what_was_written_over(self) -> bool {
+        matches!(self, Self::History)
+    }
+}
+
 pub trait Entity: Sized + 'static {
     const NAME: &'static str;
+
+    const KEEPS: Retention = Retention::Newest;
 
     type Table: Table<Of = Self>;
 

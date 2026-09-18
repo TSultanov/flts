@@ -7,6 +7,7 @@ use crate::test_utils::props;
 use proptest::prelude::*;
 
 #[crate::entity]
+#[merge(history)]
 struct Book {
     #[index]
     title: String,
@@ -1215,4 +1216,18 @@ fn a_declared_store_keeps_a_book_it_took_out_across_a_commit_and_a_reopen() -> R
     );
     reopened.verify()?;
     Ok(())
+}
+
+#[test]
+fn a_declared_entity_carries_the_retention_it_was_marked_with() {
+    use crate::schema::{Entity, Retention};
+
+    assert_eq!(Book::KEEPS, Retention::History);
+    assert!(Book::KEEPS.keeps_what_was_written_over());
+    assert_eq!(
+        Chapter::KEEPS,
+        Retention::Newest,
+        "an entity that says nothing keeps only what it needs to"
+    );
+    assert!(!Chapter::KEEPS.keeps_what_was_written_over());
 }

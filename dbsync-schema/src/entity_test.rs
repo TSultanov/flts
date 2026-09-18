@@ -966,3 +966,83 @@ fn every_table_can_take_a_row_out_by_writing_a_last_version_that_says_so() {
         "{out}"
     );
 }
+
+#[test]
+fn an_entity_says_what_a_merge_keeps_of_the_versions_it_writes_over() {
+    let kept = expanded(quote! {
+        #[merge(history)]
+        struct Book { title: String }
+    });
+    assert!(
+        kept.contains(
+            "const KEEPS : :: dbsync :: schema :: Retention = \
+             :: dbsync :: schema :: Retention :: History ;"
+        ),
+        "{kept}"
+    );
+    assert!(
+        !kept.contains("# [merge (history)]"),
+        "the attribute is consumed, not forwarded onto the tag: {kept}"
+    );
+
+    let dropped = expanded(quote! {
+        #[merge(newest)]
+        struct Book { title: String }
+    });
+    assert!(
+        dropped.contains(":: dbsync :: schema :: Retention :: Newest ;"),
+        "{dropped}"
+    );
+
+    let quiet = expanded(quote! {
+        struct Book { title: String }
+    });
+    assert!(
+        !quiet.contains("const KEEPS"),
+        "an entity that says nothing takes what the trait says: {quiet}"
+    );
+}
+
+#[test]
+fn a_merge_that_names_something_nobody_can_keep_is_refused() {
+    let err = refused(quote! {
+        #[merge(everything)]
+        struct Book { title: String }
+    });
+    assert!(
+        err.contains("`everything` is not something a merge keeps"),
+        "{err}"
+    );
+    assert!(err.contains("#[merge(history)]"), "{err}");
+}
+
+#[test]
+fn a_merge_names_one_thing_to_keep_and_an_entity_says_it_once() {
+    for asked in [
+        quote! {
+            #[merge]
+            struct Book { title: String }
+        },
+        quote! {
+            #[merge(newest, history)]
+            struct Book { title: String }
+        },
+        quote! {
+            #[merge()]
+            struct Book { title: String }
+        },
+    ] {
+        let err = refused(asked);
+        assert!(
+            err.contains("#[merge] says what becomes of the versions"),
+            "{err}"
+        );
+    }
+
+    let twice = refused(quote! {
+        #[merge(newest)]
+        #[merge(history)]
+        struct Book { title: String }
+    });
+    assert!(twice.contains("says once what a merge keeps"), "{twice}");
+}

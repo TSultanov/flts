@@ -38,6 +38,9 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     check_one_parent_each(&fields)?;
     check_no_field_called_id(&fields)?;
     let pair = distinct_of(&input.attrs, &fields)?;
+    let keeps = keeping_of(&input.attrs)?.map(|what| {
+        quote! { const KEEPS: ::dbsync::schema::Retention = #what; }
+    });
 
     let name = &input.ident;
     let label = snake_case(&name.to_string());
@@ -56,7 +59,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     let attrs: Vec<&syn::Attribute> = input
         .attrs
         .iter()
-        .filter(|attr| !attr.path().is_ident("distinct"))
+        .filter(|attr| !attr.path().is_ident("distinct") && !attr.path().is_ident("merge"))
         .collect();
     let stored: Vec<&Field> = fields.iter().filter(|field| field.is_stored()).collect();
     if stored.is_empty() {
@@ -444,6 +447,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
 
         impl ::dbsync::schema::Entity for #name {
             const NAME: &'static str = #label;
+            #keeps
 
             type Table = #table;
 
@@ -663,6 +667,46 @@ struct Shared {
     left_parent: syn::Type,
     right_parent: syn::Type,
 }
+
+fn keeping_of(attrs: &[syn::Attribute]) -> syn::Result<Option<TokenStream>> {
+    let mut said: Option<&syn::Attribute> = None;
+    for attr in attrs {
+        if !attr.path().is_ident("merge") {
+            continue;
+        }
+        if said.is_some() {
+            return Err(syn::Error::new(
+                attr.span(),
+                "an entity says once what a merge keeps of the versions it writes over",
+            ));
+        }
+        said = Some(attr);
+    }
+
+    let Some(attr) = said else {
+        return Ok(None);
+    };
+
+    let asked = attr
+        .parse_args_with(
+            syn::punctuated::Punctuated::<syn::Ident, syn::Token![,]>::parse_terminated,
+        )
+        .map_err(|_| syn::Error::new(attr.span(), KEEPS))?;
+    let [only] = asked.iter().collect::<Vec<_>>()[..] else {
+        return Err(syn::Error::new(attr.span(), KEEPS));
+    };
+
+    match only.to_string().as_str() {
+        "newest" => Ok(Some(quote! { ::dbsync::schema::Retention::Newest })),
+        "history" => Ok(Some(quote! { ::dbsync::schema::Retention::History })),
+        written => Err(syn::Error::new(
+            only.span(),
+            format!("`{written}` is not something a merge keeps; {KEEPS}"),
+        )),
+    }
+}
+
+const KEEPS: &str = "#[merge] says what becomes of the versions a write leaves behind,                      as #[merge(newest)], which lets them be dropped, or #[merge(history)],                      which does not";
 
 fn distinct_of(attrs: &[syn::Attribute], fields: &[Field]) -> syn::Result<Option<Shared>> {
     let mut asked: Option<&syn::Attribute> = None;
