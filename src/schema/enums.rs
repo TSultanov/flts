@@ -49,6 +49,13 @@ impl<E: UnitEnum> EnumColumn<E> {
 }
 
 impl<E: UnitEnum> Column for EnumColumn<E> {
+    fn append_value_bytes(&mut self, bytes: &[u8]) -> Result<usize> {
+        let [code] = bytes else {
+            return Err(crate::Error::corrupt("enum", "invalid enum width"));
+        };
+        self.push(E::from_u8(*code)?)
+    }
+
     fn value_bytes(&self, row: Row) -> Result<Vec<u8>> {
         Ok(vec![self.get(row)?.to_u8()])
     }

@@ -19,16 +19,27 @@ pub(crate) enum CommitFault {
 }
 
 thread_local! {
-    static COMMIT_FAULT: std::cell::Cell<Option<CommitFault>> = const { std::cell::Cell::new(None) };
+    static COMMIT_FAULT: std::cell::Cell<Option<(CommitFault, usize)>> = const { std::cell::Cell::new(None) };
 }
 
 pub(crate) fn fail_commit_at(fault: CommitFault) {
-    COMMIT_FAULT.set(Some(fault));
+    fail_commit_times(fault, 1);
+}
+
+pub(crate) fn fail_commit_times(fault: CommitFault, count: usize) {
+    assert!(count > 0);
+    COMMIT_FAULT.set(Some((fault, count)));
 }
 
 fn fault_at(fault: CommitFault) -> std::io::Result<()> {
-    if COMMIT_FAULT.get() == Some(fault) {
-        COMMIT_FAULT.set(None);
+    if let Some((armed, count)) = COMMIT_FAULT.get()
+        && armed == fault
+    {
+        COMMIT_FAULT.set(if count == 1 {
+            None
+        } else {
+            Some((armed, count - 1))
+        });
         return Err(std::io::Error::other(format!("injected {fault:?} failure")));
     }
     Ok(())

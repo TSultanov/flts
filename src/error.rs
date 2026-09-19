@@ -9,6 +9,11 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug)]
 pub enum Error {
+    RetryExhausted {
+        attempts: usize,
+        source: Box<Error>,
+    },
+
     CommitUncertain {
         attempt: Box<crate::storage::CommitAttempt>,
         source: io::Error,
@@ -54,6 +59,10 @@ impl Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::RetryExhausted { attempts, source } => write!(
+                f,
+                "could not complete after {attempts} publication attempts: {source}"
+            ),
             Self::CommitUncertain { attempt, source } => write!(
                 f,
                 "publication of generation {} is uncertain: {source}",
@@ -75,6 +84,7 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::RetryExhausted { source, .. } => Some(source.as_ref()),
             Self::CommitUncertain { source, .. } => Some(source),
             Self::Io(err) => Some(err),
             _ => None,

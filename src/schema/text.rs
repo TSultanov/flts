@@ -153,6 +153,10 @@ impl TextColumn {
 }
 
 impl Column for TextColumn {
+    fn append_value_bytes(&mut self, bytes: &[u8]) -> Result<usize> {
+        self.push(decode_text(bytes)?)
+    }
+
     fn value_bytes(&self, row: Row) -> Result<Vec<u8>> {
         let mut out = Vec::new();
         super::encode_text(&self.get(row)?, &mut out);
@@ -248,6 +252,14 @@ impl NullableTextColumn {
 }
 
 impl Column for NullableTextColumn {
+    fn append_value_bytes(&mut self, bytes: &[u8]) -> Result<usize> {
+        match bytes {
+            [0] => self.push(None),
+            [1, value @ ..] => self.push(Some(decode_text(value)?)),
+            _ => Err(Error::corrupt("text", "invalid optional text")),
+        }
+    }
+
     fn value_bytes(&self, row: Row) -> Result<Vec<u8>> {
         let value = self.get(row)?;
         let mut out = vec![u8::from(value.is_some())];
@@ -300,6 +312,18 @@ impl Column for NullableTextColumn {
         updater.column(&qualified(entity, field), &self.blobs)?;
         updater.column(&heap_name(entity, field), &self.heap)
     }
+}
+
+fn decode_text(bytes: &[u8]) -> Result<&str> {
+    let length = bytes
+        .get(..8)
+        .ok_or_else(|| Error::corrupt("text", "missing text length"))?;
+    let length = u64::from_le_bytes(length.try_into().expect("8 bytes"));
+    let value = &bytes[8..];
+    if length != value.len() as u64 {
+        return Err(Error::corrupt("text", "text length mismatch"));
+    }
+    std::str::from_utf8(value).map_err(|_| Error::corrupt("text", "invalid UTF-8"))
 }
 
 fn no_row(row: usize, rows: usize) -> Error {
@@ -365,10 +389,6 @@ impl Keyed for NullableTextColumn {
 
     fn key_for(value: Option<&str>) -> TextKey {
         TextKey::maybe(value)
-    }
-
-    fn absent(value: Option<&str>) -> bool {
-        value.is_none()
     }
 
     fn shares_bytes(key: TextKey) -> bool {

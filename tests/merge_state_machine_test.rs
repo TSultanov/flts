@@ -4,9 +4,15 @@ use dbsync::schema::{Parent, RowStatus, Store, Table};
 use dbsync::{Id, Result, Uuid, WriterId};
 use proptest::prelude::*;
 
+macro_rules! exercise_schema {
+    ($module:ident, [$($policy:meta)?], [$($resolver:item)*]) => {
+        mod $module {
+            use super::*;
+            $($resolver)*
 #[dbsync::entity]
+$(#[$policy])?
 struct Node {
-    #[index(unique)]
+    #[index]
     key: Option<u32>,
     parent: One<Node>,
     value: u32,
@@ -70,7 +76,7 @@ fn state(db: &Database) -> Result<String> {
     revisions.sort();
     let mut visible = Vec::new();
     for row in db.all::<Node>() {
-        visible.push((row.id()?.uuid(), row.key()?, row.value()?));
+        visible.push((row.id()?.uuid(), row.key()?, row.value()?, row.parent_id::<Node>()?.uuid(), row.sources()?));
     }
     visible.sort();
     Ok(format!(
@@ -101,7 +107,7 @@ fn exercise(operations: &[(usize, usize, u8, usize, u32)]) -> Result<()> {
     ];
     for &(actor, other, action, selected, value) in operations {
         let id = ids[selected];
-        let source = replicas[other].clone();
+        if action == 5 { replicas[other].commit(WriterId::from_raw(other as u64 + 10))?; }
         let db = &mut replicas[actor];
         match action {
             0 => {
@@ -120,7 +126,7 @@ fn exercise(operations: &[(usize, usize, u8, usize, u32)]) -> Result<()> {
                 db.restore(id, originals[selected])?;
             }
             5 => {
-                db.merge(&source)?;
+                db.merge_from(dir.path(other), WriterId::from_raw(actor as u64 + 10))?;
             }
             6 => {
                 db.commit(WriterId::from_raw(actor as u64 + 10))?;
@@ -131,9 +137,9 @@ fn exercise(operations: &[(usize, usize, u8, usize, u32)]) -> Result<()> {
             }
             _ => {}
         }
-        publish(db, actor)?;
         db.audit()?;
     }
+    for (actor, replica) in replicas.iter_mut().enumerate() { publish(replica, actor)?; }
     let permutations = [
         [0, 1, 2],
         [0, 2, 1],
@@ -145,13 +151,13 @@ fn exercise(operations: &[(usize, usize, u8, usize, u32)]) -> Result<()> {
     let mut expected = None;
     for [a, b, c] in permutations {
         let mut left = replicas[a].clone();
-        left.merge(&replicas[b])?;
-        left.merge(&replicas[c])?;
+        left.merge_snapshot(&replicas[b])?;
+        left.merge_snapshot(&replicas[c])?;
         left.audit()?;
         let mut bc = replicas[b].clone();
-        bc.merge(&replicas[c])?;
+        bc.merge_snapshot(&replicas[c])?;
         let mut right = replicas[a].clone();
-        right.merge(&bc)?;
+        right.merge_snapshot(&bc)?;
         let actual = state(&left)?;
         assert_eq!(actual, state(&right)?);
         if let Some(expected) = &expected {
@@ -160,15 +166,15 @@ fn exercise(operations: &[(usize, usize, u8, usize, u32)]) -> Result<()> {
             expected = Some(actual);
         }
         for replica in &replicas {
-            let report = left.merge(replica)?;
+            let report = left.merge_snapshot(replica)?;
             assert!(!report.changed_anything(), "{report:?}");
             assert!(report.is_quiet(), "{report:?}");
         }
         assert_eq!(state(&left)?, expected.as_ref().unwrap().as_str());
     }
     let mut merged = replicas[0].clone();
-    merged.merge(&replicas[1])?;
-    merged.merge(&replicas[2])?;
+    merged.merge_snapshot(&replicas[1])?;
+    merged.merge_snapshot(&replicas[2])?;
     merged.commit(WriterId::from_raw(10))?;
     assert_eq!(state(&Database::open(dir.path(0))?)?, expected.unwrap());
     Ok(())
@@ -183,3 +189,18 @@ proptest! {
         exercise(&operations).unwrap();
     }
 }
+
+        }
+    };
+}
+
+exercise_schema!(builtin, [], []);
+exercise_schema!(combined, [merge(with = combine)], [
+    fn combine(input: &dbsync::schema::MergeInput<'_, NodeValue>) -> NodeValue {
+        NodeValue {
+            key: input.candidates.iter().map(|row| row.value.key).max().unwrap(),
+            parent: input.candidates.first().unwrap().value.parent,
+            value: input.candidates.iter().map(|row| row.value.value).max().unwrap(),
+        }
+    }
+]);

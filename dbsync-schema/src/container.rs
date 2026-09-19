@@ -78,10 +78,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     });
     let read_write = sets.iter().map(|(field, _)| quote! { &mut self.#field });
     let merges = sets.iter().map(|(field, _)| {
-        quote! { self.#field.merge_from(&theirs.#field, &seen, &told, &mut report)?; }
-    });
-    let settles = sets.iter().map(|(field, _)| {
-        quote! { self.#field.settle_unique(&mut report)?; }
+        quote! { ::dbsync::schema::Table::merge_rows(&mut self.#field, &theirs.#field, report)?; }
     });
     let holds = sets.iter().map(|(field, held)| {
         quote! {
@@ -122,6 +119,11 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         }
 
         impl ::dbsync::schema::Store for #name {
+            fn merge_rows_from(&mut self, theirs: &Self, report: &mut ::dbsync::schema::MergeReport) -> ::dbsync::Result<()> {
+                #(#merges)*
+                Ok(())
+            }
+
             fn recovery(&self) -> ::core::option::Option<&::dbsync::schema::Recovery<Self>> { self.dbsync_recovery.as_deref() }
 
             fn set_recovery(&mut self, recovery: ::core::option::Option<::dbsync::schema::Recovery<Self>>) { self.dbsync_recovery = recovery.map(::std::boxed::Box::new); }
@@ -144,6 +146,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
 
             fn audit(&self) -> ::dbsync::Result<()> {
                 <Self as ::dbsync::schema::Store>::audit_dots(self)?;
+                <Self as ::dbsync::schema::Store>::audit_references(self)?;
                 #(#audits)*
                 ::core::result::Result::Ok(())
             }
@@ -199,7 +202,11 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 ::dbsync::schema::children_of(self, parent)
             }
 
-            pub fn merge(
+            pub fn merge_from(&mut self, path: impl AsRef<::std::path::Path>, writer_id: ::dbsync::WriterId) -> ::dbsync::Result<::dbsync::schema::MergeReport> {
+                <Self as ::dbsync::schema::Store>::merge_from(self, path, writer_id)
+            }
+
+            pub(crate) fn merge_snapshot(
                 &mut self,
                 theirs: &Self,
             ) -> ::dbsync::Result<::dbsync::schema::MergeReport> {
@@ -209,13 +216,11 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 <Self as ::dbsync::schema::Store>::audit(theirs)?;
 
                 let kept = <Self as ::dbsync::schema::Store>::snapshot(self);
-                let seen = <Self as ::dbsync::schema::Store>::clock(self).clone();
                 let told = <Self as ::dbsync::schema::Store>::clock(theirs).clone();
                 let mut report = ::dbsync::schema::MergeReport::default();
 
                 let said = (|| -> ::dbsync::Result<()> {
-                    #(#merges)*
-                    #(#settles)*
+                    <Self as ::dbsync::schema::Store>::merge_rows_from(self, theirs, &mut report)?;
                     ::core::result::Result::Ok(())
                 })();
 
@@ -262,7 +267,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             pub fn at_hidden<E>(&self, id: ::dbsync::Id<E>) -> ::dbsync::Result<E::Row<'_, Self>>
             where Self: ::dbsync::schema::Holds<E>, E: ::dbsync::schema::Entity {
                 let row = ::dbsync::schema::Table::logical_row_of(::dbsync::schema::Holds::<E>::table(self), id)?;
-                Ok(::dbsync::schema::Entry::at_row(self, row).into())
+                Ok(::dbsync::schema::Entry::current_at_row(self, row).into())
             }
 
             pub fn at_hidden_mut<E>(&mut self, id: ::dbsync::Id<E>) -> ::dbsync::Result<E::RowMut<'_, Self>>

@@ -45,7 +45,8 @@ impl Clone for StoreState {
 pub struct Recovery<S> {
     pub pending: S,
     pub prepared: S,
-    pub attempt: crate::storage::CommitAttempt,
+    pub attempt: Option<crate::storage::CommitAttempt>,
+    pub known: std::collections::BTreeSet<Dot>,
 }
 
 impl StoreState {
@@ -60,6 +61,8 @@ impl StoreState {
 }
 
 pub trait Store: Default + Clone + Sized {
+    fn merge_rows_from(&mut self, theirs: &Self, report: &mut MergeReport) -> Result<()>;
+
     fn recovery(&self) -> Option<&Recovery<Self>>;
     fn set_recovery(&mut self, recovery: Option<Recovery<Self>>);
 
@@ -157,7 +160,7 @@ pub trait Store: Default + Clone + Sized {
             }
             match conflict {
                 Conflict::Concurrent(c) => report.concurrent.push(c),
-                Conflict::Collision(c) => report.collided.push(c),
+                Conflict::Combined(c) => report.combined.push(c),
                 Conflict::Reference(r) => report.references.push(r),
             }
         }
@@ -363,113 +366,165 @@ pub trait Store: Default + Clone + Sized {
     }
 
     fn commit(&mut self, writer_id: WriterId) -> Result<u64> {
-        self.check_mutable()?;
-        let expected = self.state().attached()?.0.commit_token();
-        let mut updater = self.state().attached()?.0.update(writer_id)?;
-        let mut prepared = self.snapshot();
-        for table in prepared.tables() {
-            table.rows_agree()?;
-        }
-        prepared.refresh()?;
-        prepared.audit()?;
-        let mut clock = prepared.clock().clone();
-        for table in prepared.tables_mut() {
-            table.stamp_unstamped(&mut clock, writer_id)?;
-        }
-        prepared.state_mut().clock = clock;
-        prepared.audit_dots()?;
-        prepared.offer_to(&mut updater)?;
-        match updater.commit_file() {
-            Ok(file) => {
-                let generation = file.generation();
-                let mut attached = Self::default();
-                attached.state_mut().path = prepared.state().path.clone();
-                if let Err(err) = attached.read(&file) {
-                    let attempt = crate::storage::CommitAttempt::published(&file, expected);
-                    let pending = self.snapshot();
-                    pending.state().view.block(true);
-                    prepared.state().view.block(true);
-                    self.set_recovery(Some(Recovery {
-                        pending,
-                        prepared,
-                        attempt: attempt.clone(),
-                    }));
-                    self.state().view.block(true);
-                    return Err(Error::CommitUncertain {
-                        attempt: Box::new(attempt),
-                        source: std::io::Error::other(err),
-                    });
-                }
-                attached.state_mut().file = Some(file);
-                *self = attached;
-                Ok(generation)
-            }
-            Err(Error::CommitUncertain { attempt, source }) => {
-                let pending = self.snapshot();
-                pending.state().view.block(true);
-                prepared.state().view.block(true);
-                self.set_recovery(Some(Recovery {
-                    pending,
-                    prepared,
-                    attempt: (*attempt).clone(),
-                }));
-                self.state().view.block(true);
-                Err(Error::CommitUncertain { attempt, source })
-            }
-            Err(err) => Err(err),
-        }
+        self.synchronize(None, writer_id)?;
+        self.generation()
+            .ok_or_else(|| Error::invalid("commit did not attach a generation"))
     }
 
-    fn recover_commit(&mut self) -> Result<u64> {
-        let recovery = self
-            .recovery()
-            .ok_or_else(|| Error::invalid("no uncertain commit to recover"))?
-            .clone();
-        let file = recovery.attempt.inspect()?;
-        let generation = file.generation();
-        let token = file.commit_token();
-        if token == recovery.attempt.attempted {
-            let mut restored = recovery.prepared;
-            restored.state_mut().file = Some(file);
-            restored.state().view.block(false);
-            restored.set_recovery(None);
-            *self = restored;
-            return Ok(generation);
+    fn merge_from(&mut self, source: impl AsRef<Path>, writer_id: WriterId) -> Result<MergeReport> {
+        self.synchronize(Some(source.as_ref()), writer_id)
+    }
+
+    fn synchronize(&mut self, source: Option<&Path>, writer_id: WriterId) -> Result<MergeReport> {
+        if self.recovery().is_none() {
+            self.check_mutable()?;
         }
-        if token == recovery.attempt.expected {
-            let mut restored = recovery.pending;
-            restored.state_mut().file = Some(file);
-            restored.state().view.block(false);
-            restored.set_recovery(None);
-            *self = restored;
-            return Ok(generation);
-        }
-        let mut found = Self::default();
-        found.read(&file)?;
-        let mut records = HashMap::new();
-        for table in found.tables() {
-            for record in table.revision_records()? {
-                records.insert(record.version.dot(), record);
-            }
-        }
-        let mut included = true;
-        for table in recovery.prepared.tables() {
-            for record in table.revision_records()? {
-                if records.get(&record.version.dot()) != Some(&record) {
-                    included = false;
-                    break;
+        let path = self.state().attached()?.1.to_owned();
+        let peer = source.map(Self::open).transpose()?;
+        let mut before = self.snapshot();
+        before.set_recovery(None);
+        let (mut pending, mut carried, mut attempt, mut retained) = match self.recovery() {
+            Some(recovery) => (
+                recovery.pending.snapshot(),
+                recovery.prepared.snapshot(),
+                recovery.attempt.clone(),
+                true,
+            ),
+            None => (self.snapshot(), self.snapshot(), None, false),
+        };
+        pending.set_recovery(None);
+        carried.set_recovery(None);
+        pending.state().view.block(false);
+        carried.state().view.block(false);
+        let bootstrap = self
+            .state()
+            .file
+            .as_ref()
+            .is_some_and(|file| file.columns().is_empty());
+        let mut known = self.recovery().map(|recovery| recovery.known.clone());
+        for number in 1..=3 {
+            let result = (|| -> Result<(Self, MergeReport)> {
+                let file = ColumnFile::open(&path)?;
+                let mut latest = Self::default();
+                latest.state_mut().path = Some(path.clone());
+                if !(bootstrap
+                    && file.columns().is_empty()
+                    && file.commit_token().file_uuid
+                        == self.state().attached()?.0.commit_token().file_uuid)
+                {
+                    latest.read(&file)?;
+                }
+                latest.state_mut().file = Some(file.clone());
+                let expected = file.commit_token();
+                let mut updater = file.update(writer_id)?;
+                let mut clock = carried.clock().clone();
+                clock.absorb(latest.clock());
+                if let Some(peer) = &peer {
+                    clock.absorb(peer.clock());
+                }
+                for table in carried.tables() {
+                    table.rows_agree()?;
+                }
+                for table in carried.tables_mut() {
+                    table.stamp_unstamped(&mut clock, writer_id)?;
+                }
+                carried.state_mut().clock = clock;
+                if known.is_none() {
+                    let mut dots = std::collections::BTreeSet::new();
+                    for table in carried.tables() {
+                        for (dot, _) in table.revision_owners()? {
+                            dots.insert(dot);
+                        }
+                    }
+                    known = Some(dots);
+                }
+                let mut report = MergeReport::default();
+                latest.merge_rows_from(&carried, &mut report)?;
+                latest.absorb(carried.clock())?;
+                if let Some(peer) = &peer {
+                    latest.merge_rows_from(peer, &mut report)?;
+                    latest.absorb(peer.clock())?;
+                }
+                latest.refresh()?;
+                latest.audit()?;
+                report.taken = 0;
+                for table in latest.tables() {
+                    for (dot, _) in table.revision_owners()? {
+                        if !known.as_ref().expect("prepared local dots").contains(&dot) {
+                            report.taken += 1;
+                        }
+                    }
+                }
+                carried = latest.snapshot();
+                retained = true;
+                latest.offer_to(&mut updater)?;
+                let published = match updater.commit_file() {
+                    Ok(file) => file,
+                    Err(Error::CommitUncertain {
+                        attempt: uncertain,
+                        source,
+                    }) => {
+                        attempt = Some((*uncertain).clone());
+                        return Err(Error::CommitUncertain {
+                            attempt: uncertain,
+                            source,
+                        });
+                    }
+                    Err(err) => return Err(err),
+                };
+                attempt = Some(crate::storage::CommitAttempt::published(
+                    &published, expected,
+                ));
+                let found = ColumnFile::read_commit_token(&path)?;
+                if found != published.commit_token() {
+                    return Err(Error::Conflict {
+                        expected: published.commit_token(),
+                        found,
+                    });
+                }
+                let mut attached = Self::default();
+                attached.read(&published)?;
+                attached.state_mut().file = Some(published);
+                attached.state_mut().path = Some(path.clone());
+                let report = attached.finish_report(&before, report)?;
+                Ok((attached, report))
+            })();
+            match result {
+                Ok((attached, report)) => {
+                    *self = attached;
+                    return Ok(report);
+                }
+                Err(err) => {
+                    let retryable = matches!(
+                        err,
+                        Error::Io(_) | Error::Conflict { .. } | Error::CommitUncertain { .. }
+                    );
+                    if retryable && number < 3 {
+                        continue;
+                    }
+                    if retained {
+                        pending.state().view.block(true);
+                        carried.state().view.block(true);
+                        self.set_recovery(Some(Recovery {
+                            pending,
+                            prepared: carried,
+                            attempt,
+                            known: known.unwrap_or_default(),
+                        }));
+                        self.state().view.block(true);
+                    }
+                    return Err(if retryable {
+                        Error::RetryExhausted {
+                            attempts: number,
+                            source: Box::new(err),
+                        }
+                    } else {
+                        err
+                    });
                 }
             }
         }
-        if included {
-            found.state_mut().file = Some(file);
-            found.state_mut().path = self.state().path.clone();
-            *self = found;
-            return Ok(generation);
-        }
-        Err(Error::invalid(
-            "commit outcome cannot be established; pending edits remain retained",
-        ))
+        unreachable!("three publication attempts return a result")
     }
 }
 

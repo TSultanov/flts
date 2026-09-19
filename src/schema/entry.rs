@@ -8,12 +8,13 @@ use super::column::Row;
 use super::entity::{Child, Entity, Holds, across_rows_of, child_rows_of};
 use super::table::Table;
 use super::version::Version;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::id::Id;
 
 pub struct Entry<'a, S, E: Entity> {
     store: &'a S,
     row: Row,
+    historical: bool,
     marker: PhantomData<fn() -> E>,
 }
 
@@ -28,15 +29,36 @@ impl<S, E: Entity> Copy for Entry<'_, S, E> {}
 impl<'a, S: Holds<E>, E: Entity> Entry<'a, S, E> {
     pub fn of(store: &'a S, id: Id<E>) -> Result<Self> {
         let row = Table::row_of(Holds::<E>::table(store), id)?;
-        Ok(Self::at_row(store, row))
+        Ok(Self::current_at_row(store, row))
     }
 
     pub fn at_row(store: &'a S, row: Row) -> Self {
         Self {
             store,
             row,
+            historical: true,
             marker: PhantomData,
         }
+    }
+
+    pub fn current_at_row(store: &'a S, row: Row) -> Self {
+        Self {
+            store,
+            row,
+            historical: false,
+            marker: PhantomData,
+        }
+    }
+
+    pub fn is_historical(&self) -> bool {
+        self.historical
+    }
+
+    pub fn sources(&self) -> Result<Vec<super::Dot>> {
+        if self.historical {
+            return Ok(vec![self.table().versions().raw_at(self.row)?.dot()]);
+        }
+        self.table().source_dots(self.id()?)
     }
 
     pub fn id(&self) -> Result<Id<E>> {
@@ -48,10 +70,25 @@ impl<'a, S: Holds<E>, E: Entity> Entry<'a, S, E> {
     }
 
     pub fn version(&self) -> Result<Version> {
-        self.table().versions().at(self.row)
+        if !self.historical && self.table().is_derived(self.id()?) {
+            return Err(Error::invalid(
+                "a merged row has multiple source revisions; use sources()",
+            ));
+        }
+        let version = self.table().versions().at(self.row)?;
+        Ok(if self.historical && self.table().is_derived(self.id()?) {
+            version.supersede()
+        } else {
+            version
+        })
     }
 
     pub fn parents(&self) -> Result<&[super::Parent]> {
+        if !self.historical && self.table().is_derived(self.id()?) {
+            return Err(Error::invalid(
+                "a merged row has source revisions instead of a single parent list; use sources()",
+            ));
+        }
         self.table().versions().parents(self.row)
     }
 
@@ -59,7 +96,7 @@ impl<'a, S: Holds<E>, E: Entity> Entry<'a, S, E> {
     where
         E: Child<P>,
     {
-        <E as Child<P>>::parents(self.table()).get(self.row)
+        <E as Child<P>>::parent_at(self.table(), self.row, self.historical)
     }
 
     pub fn store(&self) -> &'a S {
@@ -152,7 +189,7 @@ impl<'a, S: Holds<C> + 'a, C: Entity> Iterator for Children<'a, S, C> {
     type Item = C::Row<'a, S>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        Some(Entry::at_row(self.store, self.rows.next()?).into())
+        Some(Entry::current_at_row(self.store, self.rows.next()?).into())
     }
 }
 
@@ -166,7 +203,7 @@ impl<'a, S: Holds<B> + 'a, B: Entity> Iterator for Across<'a, S, B> {
     type Item = B::Row<'a, S>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        Some(Entry::at_row(self.store, self.rows.next()?).into())
+        Some(Entry::current_at_row(self.store, self.rows.next()?).into())
     }
 }
 
@@ -194,7 +231,7 @@ impl<'a, S: Holds<E> + 'a, E: Entity> Iterator for Rows<'a, S, E> {
         loop {
             let row = Row::trusted(self.rows.next()?);
             if table.versions().at(row).is_ok_and(Version::is_live) {
-                return Some(Entry::at_row(self.store, row).into());
+                return Some(Entry::current_at_row(self.store, row).into());
             }
         }
     }

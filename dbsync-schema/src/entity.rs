@@ -41,10 +41,19 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         .collect::<syn::Result<_>>()?;
     check_one_parent_each(&fields)?;
     check_no_field_called_id(&fields)?;
-    let pair = distinct_of(&input.attrs, &fields)?;
-    let keeps = keeping_of(&input.attrs)?.map(|what| {
-        generated! { const KEEPS: ::dbsync::schema::Retention = #what; }
-    });
+    if let Some(attr) = input
+        .attrs
+        .iter()
+        .find(|attr| attr.path().is_ident("distinct"))
+    {
+        return Err(syn::Error::new(
+            attr.span(),
+            "only entity UUIDs are unique; distinct parent pairs are not supported",
+        ));
+    }
+    let (retention, resolver) = merging_of(&input.attrs)?;
+    let keeps =
+        retention.map(|what| generated! { const KEEPS: ::dbsync::schema::Retention = #what; });
 
     let name = &input.ident;
     let label = snake_case(&name.to_string());
@@ -58,6 +67,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     let table = format_ident!("{}Table", name);
     let row_type = format_ident!("{}Row", name);
     let row_mut_type = format_ident!("{}RowMut", name);
+    let value_type = format_ident!("{}Value", name);
     let held = generated! { 'a };
     let vis = &input.vis;
     let attrs: Vec<&syn::Attribute> = input
@@ -72,6 +82,37 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             "an entity needs at least one stored field; a table of no columns has no rows              for a Many to group",
         ));
     }
+
+    let value_fields = stored.iter().map(|field| {
+        let field_name = &field.name;
+        let ty = match &field.kind {
+            Kind::Text => generated! { ::std::string::String },
+            Kind::NullableText => generated! { ::core::option::Option<::std::string::String> },
+            other => other.pushed(),
+        };
+        generated! { pub #field_name: #ty }
+    });
+    let value_names: Vec<_> = stored.iter().map(|field| &field.name).collect();
+    let current_whole: Vec<_> = stored
+        .iter()
+        .map(|field| {
+            let field_name = &field.name;
+            generated! { let #field_name = current.#field_name; }
+        })
+        .collect();
+    let current_read = if resolver.is_some() {
+        generated! { let current = self.dbsync_value(of)?; #(#current_whole)* }
+    } else {
+        let reads = stored.iter().map(|field| {
+            let field_name = &field.name;
+            let read = field
+                .kind
+                .get(&generated! { self }, field_name, field.indexing);
+            let owned = field.kind.owned();
+            generated! { let #field_name = #read #owned ?; }
+        });
+        generated! { let row = <Self as ::dbsync::schema::Table>::logical_row_of(self, of)?; #(#reads)* }
+    };
 
     let columns = stored.iter().map(|field| {
         let field_name = &field.name;
@@ -89,73 +130,6 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             _ => generated! { #field_name: ::dbsync::schema::Indexed::named(#column) },
         }
     });
-    let pair_column = pair.as_ref().map(|shared| {
-        let column = &shared.column;
-        let (left, right) = (&shared.left_parent, &shared.right_parent);
-        generated! { #column: ::dbsync::schema::Distinct<#left, #right> }
-    });
-    let pair_built = pair.as_ref().map(|shared| {
-        let column = &shared.column;
-        let named = format!("{label}.{}", shared.column);
-        generated! { #column: ::dbsync::schema::Indexed::named(#named) }
-    });
-    let pair_field = pair.as_ref().map(|shared| {
-        let column = &shared.column;
-        let named = shared.column.to_string();
-        generated! { ::dbsync::schema::Field::new(#named, &self.#column) }
-    });
-    let pair_field_mut = pair.as_ref().map(|shared| {
-        let column = &shared.column;
-        let named = shared.column.to_string();
-        generated! { ::dbsync::schema::FieldMut::new(#named, &mut self.#column) }
-    });
-    let pair_reach = pair.as_ref().map(|shared| {
-        let (column, left, right) = (&shared.column, &shared.left, &shared.right);
-        generated! {
-            let pair = ::dbsync::schema::Pair::of(#left, #right);
-            self.#column.reach(pair)?;
-            if let ::core::option::Option::Some(taken) =
-                <Self as ::dbsync::schema::Table>::live_one(
-                    self,
-                    self.#column.rows_holding(pair)?,
-                )?
-            {
-                return ::core::result::Result::Err(self.#column.taken_by(taken));
-            }
-        }
-    });
-    let pair_reach_again = pair.as_ref().map(|shared| {
-        let (column, left, right) = (&shared.column, &shared.left, &shared.right);
-        generated! {
-            let pair = ::dbsync::schema::Pair::of(#left, #right);
-            self.#column.reach(pair)?;
-            if let ::core::option::Option::Some(taken) =
-                <Self as ::dbsync::schema::Table>::live_one(
-                    self,
-                    self.#column.rows_holding(pair)?,
-                )?
-                && taken != held
-            {
-                return ::core::result::Result::Err(self.#column.taken_by(taken));
-            }
-        }
-    });
-    let pair_push = pair.as_ref().map(|shared| {
-        let column = &shared.column;
-        generated! { self.#column.push(pair)?; }
-    });
-    let pair_audit = pair.as_ref().map(|shared| {
-        let (column, left, right) = (&shared.column, &shared.left, &shared.right);
-        let (left_ty, right_ty) = (&shared.left_parent, &shared.right_parent);
-        generated! {
-            ::dbsync::schema::check_pairs::<#left_ty, #right_ty, #name>(
-                &::dbsync::schema::Holds::<#name>::table(store).#column,
-                &::dbsync::schema::Holds::<#name>::table(store).#left,
-                &::dbsync::schema::Holds::<#name>::table(store).#right,
-            )?;
-        }
-    });
-
     let read_only = stored.iter().map(|field| {
         let field_name = &field.name;
         let label = field_name.to_string();
@@ -185,40 +159,6 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             _ => None,
         }
     });
-    let probes = stored
-        .iter()
-        .filter(|field| field.indexing == Indexing::Unique)
-        .map(|field| {
-            let field_name = &field.name;
-            generated! {
-                if let ::core::option::Option::Some(held) =
-                    <Self as ::dbsync::schema::Table>::live_one(
-                        self,
-                        self.#field_name.rows_holding(#field_name)?,
-                    )?
-                {
-                    return ::core::result::Result::Err(self.#field_name.taken_by(held));
-                }
-            }
-        });
-
-    let carried_theirs = stored.iter().map(|field| {
-        let field_name = &field.name;
-        let read = field
-            .kind
-            .get(&generated! { theirs }, field_name, field.indexing);
-        let owned = field.kind.owned();
-        generated! { let #field_name = #read #owned ?; }
-    });
-    let reaches_theirs = stored.iter().filter_map(|field| {
-        let field_name = &field.name;
-        let lent = field.kind.lent(field_name);
-        match (&field.kind, field.indexing) {
-            (Kind::Reference(_), _) => Some(generated! { self.#field_name.reach(#lent)?; }),
-            (_, Indexing::None) => None,
-            _ => Some(generated! { self.#field_name.reach(#lent)?; }),
-        }
-    });
     let pushes_theirs: Vec<_> = stored
         .iter()
         .map(|field| {
@@ -227,18 +167,6 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             generated! { self.#field_name.push(#lent)?; }
         })
         .collect();
-    let pair_reach_plain = pair.as_ref().map(|shared| {
-        let (column, left, right) = (&shared.column, &shared.left, &shared.right);
-        generated! {
-            let pair = ::dbsync::schema::Pair::of(#left, #right);
-            self.#column.reach(pair)?;
-        }
-    });
-    let pair_push_theirs = pair.as_ref().map(|shared| {
-        let column = &shared.column;
-        generated! { self.#column.push(pair)?; }
-    });
-
     let carried_whole: Vec<_> = stored
         .iter()
         .map(|field| {
@@ -250,24 +178,6 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             generated! { let #field_name = #read #owned ?; }
         })
         .collect();
-
-    let probes_again = stored
-        .iter()
-        .filter(|field| field.indexing == Indexing::Unique)
-        .map(|field| {
-            let field_name = &field.name;
-            generated! {
-                if let ::core::option::Option::Some(taken) =
-                    <Self as ::dbsync::schema::Table>::live_one(
-                        self,
-                        self.#field_name.rows_holding(#field_name)?,
-                    )?
-                    && taken != held
-                {
-                    return ::core::result::Result::Err(self.#field_name.taken_by(taken));
-                }
-            }
-        });
 
     let arguments_again = stored.iter().map(|field| {
         let field_name = &field.name;
@@ -287,60 +197,31 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             _ => None,
         }
     });
-    let pair_push_again = pair.as_ref().map(|shared| {
-        let column = &shared.column;
-        generated! { self.#column.push(pair)?; }
-    });
-
-    let finders = stored
-        .iter()
-        .filter(|field| field.indexing != Indexing::None)
-        .map(|field| {
-            let field_name = &field.name;
-            let finder = format_ident!("find_by_{}", field_name);
-            let pushed = field.kind.pushed();
-            let docs = &field.docs;
-            match field.indexing {
-                Indexing::Unique => generated! {
-                    #(#docs)*
-                    pub fn #finder(
-                        &self,
-                        value: #pushed,
-                    ) -> ::dbsync::Result<::core::option::Option<::dbsync::Id<#name>>> {
-                        let held = <Self as ::dbsync::schema::Table>::live_one(
-                            self,
-                            self.#field_name.rows_holding(value)?,
-                        )?;
-                        match held {
-                            ::core::option::Option::Some(row) => {
-                                <Self as ::dbsync::schema::Table>::id_at(self, row)
-                                    .map(::core::option::Option::Some)
-                            }
-                            ::core::option::Option::None => {
-                                ::core::result::Result::Ok(::core::option::Option::None)
-                            }
-                        }
-                    }
-                },
-                _ => generated! {
-                    #(#docs)*
-                    pub fn #finder(
-                        &self,
-                        value: #pushed,
-                    ) -> ::dbsync::Result<::std::vec::Vec<::dbsync::Id<#name>>> {
-                        let mut found = ::std::vec::Vec::new();
-                        let rows = <Self as ::dbsync::schema::Table>::live_among(
-                            self,
-                            self.#field_name.find(value)?,
-                        )?;
-                        for row in rows {
-                            found.push(<Self as ::dbsync::schema::Table>::id_at(self, row)?);
-                        }
-                        ::core::result::Result::Ok(found)
-                    }
-                },
+    let finders = stored.iter().filter(|field| field.indexing != Indexing::None).map(|field| {
+        let field_name = &field.name;
+        let finder = format_ident!("find_by_{}", field_name);
+        let pushed = field.kind.pushed();
+        let equality = match &field.kind {
+            Kind::Text => generated! { row_value.#field_name.as_str() == value },
+            Kind::NullableText => generated! { row_value.#field_name.as_deref() == value },
+            Kind::Enum(_) => generated! { ::dbsync::schema::UnitEnum::to_u8(row_value.#field_name) == ::dbsync::schema::UnitEnum::to_u8(value) },
+            _ => generated! { row_value.#field_name == value },
+        };
+        let resolved = resolver.as_ref().map(|_| generated! {
+            rows.retain(|row| <Self as ::dbsync::schema::Table>::id_at(self, *row).is_ok_and(|id| self.dbsync_resolved.get(id.uuid()).is_none()));
+            for (uuid, row_value) in self.dbsync_resolved.entries() {
+                if #equality && let Some(row) = <Self as ::dbsync::schema::Table>::live_row_of(self, ::dbsync::Id::from_uuid(uuid))? { rows.push(row); }
             }
+            rows.sort_by_key(|row| row.index());
         });
+        generated! {
+            pub fn #finder(&self, value: #pushed) -> ::dbsync::Result<::std::vec::Vec<::dbsync::Id<#name>>> {
+                let mut rows = <Self as ::dbsync::schema::Table>::live_among(self, self.#field_name.find(value)?)?;
+                #resolved
+                rows.into_iter().map(|row| <Self as ::dbsync::schema::Table>::id_at(self, row)).collect()
+            }
+        }
+    });
 
     let accessors = stored.iter().map(|field| {
         let field_name = &field.name;
@@ -352,17 +233,25 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             .get(&generated! { self }, field_name, field.indexing);
         let docs = &field.docs;
 
-        let carried = stored
-            .iter()
-            .filter(|other| other.name != *field_name)
-            .map(|other| {
-                let other_name = &other.name;
-                let read = other
-                    .kind
-                    .get(&generated! { self }, other_name, other.indexing);
+        let carried = stored.iter().filter(|other| other.name != *field_name).map(|other| {
+            let other_name = &other.name;
+            if resolver.is_some() { generated! { let #other_name = current.#other_name; } }
+            else {
+                let read = other.kind.get(&generated! { self }, other_name, other.indexing);
                 let owned = other.kind.owned();
                 generated! { let #other_name = #read #owned ?; }
-            });
+            }
+        });
+        let begin = if resolver.is_some() { generated! { let current = self.dbsync_value(of)?; } }
+            else { generated! { let row = <Self as ::dbsync::schema::Table>::logical_row_of(self, of)?; } };
+        let cached = resolver.as_ref().map(|_| {
+            let value = match &field.kind {
+                Kind::Text => generated! { ::std::borrow::Cow::Owned(current.#field_name.clone()) },
+                Kind::NullableText => generated! { current.#field_name.clone().map(::std::borrow::Cow::Owned) },
+                _ => generated! { current.#field_name },
+            };
+            generated! { if let Some(current) = self.dbsync_resolved.get(of.uuid()) { return Ok(#value); } }
+        });
         let handed = stored.iter().map(|other| {
             let other_name = &other.name;
             match other.name == *field_name {
@@ -375,6 +264,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             #(#docs)*
             pub fn #field_name(&self, of: ::dbsync::Id<#name>) -> ::dbsync::Result<#read> {
                 let row = <Self as ::dbsync::schema::Table>::row_of(self, of)?;
+                #cached
                 #get
             }
 
@@ -384,7 +274,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 value: #pushed,
             ) -> ::dbsync::Result<()> {
                 let __dbsync_value = value;
-                let row = <Self as ::dbsync::schema::Table>::logical_row_of(self, of)?;
+                #begin
                 #(#carried)*
                 self.rewrite(of, #(#handed,)*)
             }
@@ -425,18 +315,20 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 {
                     let table = self.0.table();
                     let row = self.0.row();
-                    self.0.at(table.#field_name.get(row)?)
+                    self.0.at(<#name as ::dbsync::schema::Child<#parent>>::parent_at(table, row, self.0.is_historical())?)
                 }
             },
             kind => {
                 let read = kind.read(&held);
                 let get = kind.get(&generated! { table }, field_name, field.indexing);
                 let docs = &field.docs;
+                let current = resolver.as_ref().map(|_| generated! { if !self.0.is_historical() { return table.#field_name(self.0.id()?); } });
                 generated! {
                     #(#docs)*
                     pub fn #field_name(&self) -> ::dbsync::Result<#read> {
                         let table = self.0.table();
                         let row = self.0.row();
+                        #current
                         #get
                     }
                 }
@@ -465,41 +357,6 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         let encoded = encode_value(&field.kind, generated! { value });
         generated! { { let value = #read?; #encoded } }
     });
-    let claims = stored
-        .iter()
-        .filter(|field| field.indexing == Indexing::Unique)
-        .map(|field| {
-            let field_name = &field.name;
-            let read = field
-                .kind
-                .get(&generated! { self }, field_name, field.indexing);
-            let encoded = encode_value(&field.kind, generated! { value });
-            let column = format!("{label}.{field_name}");
-            let absent = match field.kind {
-                Kind::NullableText | Kind::NullableScalar(_) => generated! { value.is_none() },
-                _ => generated! { false },
-            };
-            generated! { {
-                let value = #read?;
-                if !#absent {
-                    let mut out = ::std::vec::Vec::new();
-                    #encoded
-                    claims.push(::dbsync::schema::Claim { column: #column, value: out });
-                }
-            } }
-        });
-    let pair_claim = pair.as_ref().map(|shared| {
-        let (left, right) = (&shared.left, &shared.right);
-        let column = format!("{label}.{}", shared.column);
-        generated! {
-            let pair = ::dbsync::schema::Pair::of(self.#left.get(row)?, self.#right.get(row)?);
-            if pair.is_whole() {
-                let mut out = ::std::vec::Vec::new();
-                ::dbsync::schema::encode_record(&pair, &mut out);
-                claims.push(::dbsync::schema::Claim { column: #column, value: out });
-            }
-        }
-    });
     let references = stored.iter().filter_map(|field| {
         let Kind::Reference(parent) = &field.kind else {
             return None;
@@ -513,7 +370,6 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     });
     let schema_fields = stored.iter().map(|field| {
         let field_name = field.name.to_string();
-        let unique = field.indexing == Indexing::Unique;
         let ty = match &field.kind {
             Kind::Text => generated! { "text".to_owned() },
             Kind::NullableText => generated! { "optional text".to_owned() },
@@ -523,12 +379,89 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             Kind::Enum(ty) => generated! { ::std::format!("enum {} {:?}", <#ty as ::dbsync::schema::UnitEnum>::NAME, <#ty as ::dbsync::schema::UnitEnum>::VARIANTS) },
             Kind::Many(_) => unreachable!(),
         };
-        generated! { fields.push((#field_name, #ty, #unique)); }
+        generated! { fields.push((#field_name, #ty)); }
     });
-    let distinct_schema = pair
-        .as_ref()
-        .map(|p| format!("{}:{}", p.left, p.right))
-        .unwrap_or_default();
+    let resolved_references: Vec<_> = stored.iter().filter_map(|field| {
+        let Kind::Reference(parent) = &field.kind else { return None; };
+        let field_name = &field.name;
+        let column = format!("{label}.{field_name}");
+        Some(generated! { references.push(::dbsync::schema::Reference { column: #column,
+            entity: <#parent as ::dbsync::schema::Entity>::NAME, id: value.#field_name.uuid() }); })
+    }).collect();
+    let checks = stored.iter().filter_map(|field| {
+        let Kind::Enum(ty) = &field.kind else { return None; };
+        let field_name = &field.name;
+        Some(generated! { <#ty as ::dbsync::schema::UnitEnum>::from_u8(::dbsync::schema::UnitEnum::to_u8(value.#field_name))?; })
+    });
+    let policy_name = match &resolver {
+        Some(path) => {
+            generated! { ::core::concat!("function ", ::core::module_path!(), "::", ::core::stringify!(#path)) }
+        }
+        None => generated! { "builtin newest" },
+    };
+    let resolution = resolver.as_ref().map(|function| generated! {
+        fn resolve(&self, id: ::dbsync::Id<#name>) -> ::dbsync::Result<()> {
+            let rows = <Self as ::dbsync::schema::Table>::eligible_heads(self, id)?;
+            if rows.len() < 2 { self.dbsync_resolved.remove(id.uuid()); return Ok(()); }
+            let sources = rows.iter().map(|row| self.dbsync_versions.raw_at(*row).map(|v| v.dot())).collect::<::dbsync::Result<::std::vec::Vec<_>>>()?;
+            if self.dbsync_resolved.sources(id.uuid()).as_ref() == Some(&sources) { return Ok(()); }
+            let mut candidates = ::std::vec::Vec::new();
+            let mut supporting = ::std::collections::BTreeSet::new();
+            for row in rows {
+                supporting.insert(row.index());
+                supporting.extend(self.dbsync_versions.ancestors(row)?);
+                let version = self.dbsync_versions.raw_at(row)?;
+                if !version.is_stamped() { return Err(::dbsync::Error::invalid("concurrent merge inputs need published revision identities")); }
+                candidates.push(::dbsync::schema::MergeCandidate { version, value: self.dbsync_raw_value(row)? });
+            }
+            let mut ancestry = ::std::vec::Vec::new();
+            for index in supporting {
+                let row = ::dbsync::schema::Row::of(index, <Self as ::dbsync::schema::Table>::rows(self), <#name as ::dbsync::schema::Entity>::NAME)?;
+                let version = self.dbsync_versions.raw_at(row)?;
+                let parents = self.dbsync_versions.parents(row)?.iter().map(|parent| match parent {
+                    ::dbsync::schema::Parent::Published(dot) => Ok(*dot),
+                    _ => Err(::dbsync::Error::invalid("merge ancestry must be published")),
+                }).collect::<::dbsync::Result<::std::vec::Vec<_>>>()?;
+                ancestry.push(::dbsync::schema::RevisionAncestry { dot: version.dot(), parents });
+            }
+            ancestry.sort_by_key(|revision| revision.dot);
+            let input = ::dbsync::schema::MergeInput { id: id.uuid(), candidates: &candidates, ancestry: &ancestry };
+            let value: #value_type = #function(&input);
+            #(#checks)*
+            self.dbsync_resolved.insert(id.uuid(), sources, value);
+            Ok(())
+        }
+
+        fn invalidate_resolved(&self) { self.dbsync_resolved.clear(); }
+
+        fn is_derived(&self, id: ::dbsync::Id<#name>) -> bool { self.dbsync_resolved.get(id.uuid()).is_some() }
+
+        fn source_dots(&self, id: ::dbsync::Id<#name>) -> ::dbsync::Result<::std::vec::Vec<::dbsync::schema::Dot>> {
+            if let Some(sources) = self.dbsync_resolved.sources(id.uuid()) { return Ok(sources); }
+            <Self as ::dbsync::schema::Table>::versions_of(self, id)?.into_iter()
+                .filter(|row| self.dbsync_versions.at(*row).is_ok_and(|v| v.is_current()))
+                .map(|row| self.dbsync_versions.raw_at(row).map(|v| v.dot())).collect()
+        }
+
+        fn current_references(&self, id: ::dbsync::Id<#name>, row: ::dbsync::schema::Row) -> ::dbsync::Result<::std::vec::Vec<::dbsync::schema::Reference>> {
+            if let Some(value) = self.dbsync_resolved.get(id.uuid()) {
+                let mut references = ::std::vec::Vec::new();
+                let _ = &value;
+                #(#resolved_references)*
+                return Ok(references);
+            }
+            <Self as ::dbsync::schema::Table>::references(self, row)
+        }
+
+        fn additional_references(&self) -> ::dbsync::Result<::std::vec::Vec<::dbsync::schema::Reference>> {
+            let mut references = ::std::vec::Vec::new();
+            for (_, value) in self.dbsync_resolved.entries() {
+                let _ = &value;
+                #(#resolved_references)*
+            }
+            Ok(references)
+        }
+    });
 
     let owners: Vec<&syn::Type> = fields
         .iter()
@@ -543,8 +476,27 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     let children = fields.iter().filter_map(|field| match &field.kind {
         Kind::Reference(parent) => {
             let field_name = &field.name;
+            let resolved = resolver.as_ref().map(|_| generated! {
+                fn parent_at(table: &#table, row: ::dbsync::schema::Row, historical: bool) -> ::dbsync::Result<::dbsync::Id<#parent>> {
+                    if historical { return table.#field_name.get(row); }
+                    let id = <#table as ::dbsync::schema::Table>::id_at(table, row)?;
+                    Ok(table.dbsync_value(id)?.#field_name)
+                }
+
+                fn child_rows(table: &#table, parent: ::dbsync::Id<#parent>) -> ::dbsync::Result<::std::vec::Vec<::dbsync::schema::Row>> {
+                    let mut rows = <#table as ::dbsync::schema::Table>::live_among(table, table.#field_name.child_rows_of(parent)?)?;
+                    rows.retain(|row| <#table as ::dbsync::schema::Table>::id_at(table, *row).is_ok_and(|id| table.dbsync_resolved.get(id.uuid()).is_none()));
+                    for (uuid, value) in table.dbsync_resolved.entries() {
+                        if value.#field_name == parent && let Some(row) = <#table as ::dbsync::schema::Table>::live_row_of(table, ::dbsync::Id::from_uuid(uuid))? { rows.push(row); }
+                    }
+                    rows.sort_by_key(|row| row.index());
+                    Ok(rows)
+                }
+            });
             Some(generated! {
                 impl ::dbsync::schema::Child<#parent> for #name {
+                    #resolved
+
                     fn parents(
                         table: &#table,
                     ) -> &::dbsync::schema::RefColumn<#parent, #name> {
@@ -568,6 +520,9 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         #(#attrs)*
         #vis struct #name;
 
+        #[derive(Clone)]
+        #vis struct #value_type { #(#value_fields,)* }
+
         impl ::dbsync::schema::Entity for #name {
             const NAME: &'static str = #label;
             #keeps
@@ -587,8 +542,8 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         #vis struct #table {
             dbsync_ids: ::dbsync::schema::IdColumn<#name>,
             dbsync_versions: ::dbsync::schema::VersionColumn<#name>,
+            dbsync_resolved: ::dbsync::schema::Resolved<#value_type>,
             #(#columns,)*
-            #pair_column
         }
 
         impl ::core::default::Default for #table {
@@ -596,14 +551,16 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 Self {
                     dbsync_ids: ::core::default::Default::default(),
                     dbsync_versions: ::core::default::Default::default(),
+                    dbsync_resolved: ::core::default::Default::default(),
                     #(#built,)*
-                    #pair_built
                 }
             }
         }
 
         impl ::dbsync::schema::Table for #table {
             type Of = #name;
+
+            #resolution
 
             fn ids(&self) -> &::dbsync::schema::IdColumn<#name> {
                 &self.dbsync_ids
@@ -627,14 +584,6 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 ::core::result::Result::Ok(out)
             }
 
-            fn claims(&self, row: ::dbsync::schema::Row) -> ::dbsync::Result<::std::vec::Vec<::dbsync::schema::Claim>> {
-                let mut claims = ::std::vec::Vec::new();
-                let _ = row;
-                #(#claims)*
-                #pair_claim
-                ::core::result::Result::Ok(claims)
-            }
-
             fn references(&self, row: ::dbsync::schema::Row) -> ::dbsync::Result<::std::vec::Vec<::dbsync::schema::Reference>> {
                 let mut references = ::std::vec::Vec::new();
                 let _ = row;
@@ -645,17 +594,15 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             fn schema(&self) -> ::std::string::String {
                 let mut fields = ::std::vec::Vec::new();
                 #(#schema_fields)*
-                ::std::format!("{} {:?} distinct {}", #label, fields, #distinct_schema)
+                ::std::format!("{} {:?} merge {}", #label, fields, #policy_name)
             }
 
             fn recover_row(&mut self, of: ::dbsync::Id<#name>, dot: ::dbsync::schema::Dot, restore: bool) -> ::dbsync::Result<()> {
                 let row = <Self as ::dbsync::schema::Table>::revision_row(self, of, dot)?;
                 #(#carried_whole)*
                 <Self as ::dbsync::schema::Table>::reserve(self)?;
-                #pair_reach_plain
                 <Self as ::dbsync::schema::Table>::begin_recovery(self, of, restore)?;
                 #(#pushes_theirs)*
-                #pair_push_theirs
                 <Self as ::dbsync::schema::Table>::refresh_one(self, of)
             }
 
@@ -664,7 +611,6 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                     ::dbsync::schema::Field::new("id", &self.dbsync_ids),
                     ::dbsync::schema::Field::new("version", &self.dbsync_versions),
                     #(#read_only,)*
-                    #pair_field
                 ]
             }
 
@@ -673,20 +619,29 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                     ::dbsync::schema::FieldMut::new("id", &mut self.dbsync_ids),
                     ::dbsync::schema::FieldMut::new("version", &mut self.dbsync_versions),
                     #(#read_write,)*
-                    #pair_field_mut
                 ]
             }
         }
 
         impl #table {
+            fn dbsync_raw_value(&self, row: ::dbsync::schema::Row) -> ::dbsync::Result<#value_type> {
+                #(#carried_whole)*
+                Ok(#value_type { #(#value_names,)* })
+            }
+
+            fn dbsync_value(&self, of: ::dbsync::Id<#name>) -> ::dbsync::Result<#value_type> {
+                let row = <Self as ::dbsync::schema::Table>::logical_row_of(self, of)?;
+                match self.dbsync_resolved.get(of.uuid()) {
+                    Some(value) => Ok((*value).clone()),
+                    None => self.dbsync_raw_value(row),
+                }
+            }
+
             pub fn push(&mut self, #(#arguments,)*) -> ::dbsync::Result<::dbsync::Id<#name>> {
                 <Self as ::dbsync::schema::Table>::reserve(self)?;
                 #(#reaches)*
-                #pair_reach
-                #(#probes)*
                 let id = <Self as ::dbsync::schema::Table>::mint(self)?;
                 #(#pushes)*
-                #pair_push
                 <Self as ::dbsync::schema::Table>::refresh_one(self, id)?;
                 ::core::result::Result::Ok(id)
             }
@@ -695,72 +650,18 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 -> ::dbsync::Result<()>
             {
                 <Self as ::dbsync::schema::Table>::reserve(self)?;
-                let held = <Self as ::dbsync::schema::Table>::logical_row_of(self, of)?;
                 #(#reaches_again)*
-                #pair_reach_again
-                #(#probes_again)*
                 <Self as ::dbsync::schema::Table>::revise(self, of)?;
                 #(#pushes_again)*
-                #pair_push_again
                 <Self as ::dbsync::schema::Table>::refresh_one(self, of)
 
             }
 
-            pub fn merge_from(
-                &mut self,
-                theirs: &Self,
-                seen: &::dbsync::schema::VersionVector,
-                told: &::dbsync::schema::VersionVector,
-                report: &mut ::dbsync::schema::MergeReport,
-            ) -> ::dbsync::Result<()> {
-                for row in <Self as ::dbsync::schema::Table>::rows_by_dot(theirs)? {
-                    let version = <Self as ::dbsync::schema::Table>::versions(theirs).raw_at(row)?;
-                    let of = <Self as ::dbsync::schema::Table>::id_at(theirs, row)?;
-                    if let ::core::option::Option::Some(held) =
-                        <Self as ::dbsync::schema::Table>::versions(self).row_for_dot(version.dot())
-                    {
-                        if <Self as ::dbsync::schema::Table>::id_at(self, held)? != of
-                            || <Self as ::dbsync::schema::Table>::versions(self).raw_at(held)? != version
-                            || <Self as ::dbsync::schema::Table>::versions(self).parents(held)? != <Self as ::dbsync::schema::Table>::versions(theirs).parents(row)?
-                            || <Self as ::dbsync::schema::Table>::payload(self, held)? != <Self as ::dbsync::schema::Table>::payload(theirs, row)?
-                        { return ::core::result::Result::Err(::dbsync::Error::corrupt("revision", "a dot identifies different revisions")); }
-                        report.known += 1;
-                        continue;
-                    }
-                    let _ = (seen, told);
-
-                    #(#carried_theirs)*
-                    <Self as ::dbsync::schema::Table>::reserve(self)?;
-                    #(#reaches_theirs)*
-                    #pair_reach_plain
-                    let parents = <Self as ::dbsync::schema::Table>::versions(theirs).parents(row)?.to_vec();
-                    <Self as ::dbsync::schema::Table>::adopt_revision(self, of, version, parents)?;
-                    #(#pushes_theirs)*
-                    #pair_push_theirs
-                    report.taken += 1;
-                }
-                <Self as ::dbsync::schema::Table>::check_versions(self)?;
-                <Self as ::dbsync::schema::Table>::refresh(self)
-
-            }
-
-            pub fn settle_unique(
-                &mut self,
-                report: &mut ::dbsync::schema::MergeReport,
-            ) -> ::dbsync::Result<()> {
-                let _ = report;
-                <Self as ::dbsync::schema::Table>::refresh(self)
-
-            }
-
             pub fn remove(&mut self, of: ::dbsync::Id<#name>) -> ::dbsync::Result<()> {
-                let row = <Self as ::dbsync::schema::Table>::logical_row_of(self, of)?;
-                #(#carried_whole)*
+                #current_read
                 <Self as ::dbsync::schema::Table>::reserve(self)?;
-                #pair_reach_plain
                 <Self as ::dbsync::schema::Table>::begin_recovery(self, of, false)?;
                 #(#pushes_theirs)*
-                #pair_push_theirs
                 <Self as ::dbsync::schema::Table>::withdraw(self, of)
             }
 
@@ -839,7 +740,6 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 <#table as ::dbsync::schema::Table>::audit(
                     ::dbsync::schema::Holds::<#name>::table(store),
                 )?;
-                #pair_audit
                 #(
                     ::dbsync::schema::audit_reference::<S, #checked, #name>(store)?;
                 )*
@@ -874,134 +774,65 @@ fn quote_spanned_child(child: &syn::Type, parent: &syn::Ident) -> TokenStream {
     }
 }
 
-struct Shared {
-    column: syn::Ident,
-    left: syn::Ident,
-    right: syn::Ident,
-    left_parent: syn::Type,
-    right_parent: syn::Type,
-}
-
-fn keeping_of(attrs: &[syn::Attribute]) -> syn::Result<Option<TokenStream>> {
-    let mut said: Option<&syn::Attribute> = None;
-    for attr in attrs {
-        if !attr.path().is_ident("merge") {
-            continue;
-        }
-        if said.is_some() {
+fn merging_of(attrs: &[syn::Attribute]) -> syn::Result<(Option<TokenStream>, Option<syn::Path>)> {
+    let mut retention = None;
+    let mut resolver = None;
+    for attr in attrs.iter().filter(|attr| attr.path().is_ident("merge")) {
+        let options = attr.parse_args_with(
+            syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+        )?;
+        if options.is_empty() {
             return Err(syn::Error::new(
                 attr.span(),
-                "an entity says once what a merge keeps of the versions it writes over",
+                "#[merge] expects newest, history, or with = path::function",
             ));
         }
-        said = Some(attr);
-    }
-
-    let Some(attr) = said else {
-        return Ok(None);
-    };
-
-    let asked = attr
-        .parse_args_with(
-            syn::punctuated::Punctuated::<syn::Ident, syn::Token![,]>::parse_terminated,
-        )
-        .map_err(|_| syn::Error::new(attr.span(), KEEPS))?;
-    let [only] = asked.iter().collect::<Vec<_>>()[..] else {
-        return Err(syn::Error::new(attr.span(), KEEPS));
-    };
-
-    match only.to_string().as_str() {
-        "newest" => Ok(Some(generated! { ::dbsync::schema::Retention::Newest })),
-        "history" => Ok(Some(generated! { ::dbsync::schema::Retention::History })),
-        written => Err(syn::Error::new(
-            only.span(),
-            format!("`{written}` is not something a merge keeps; {KEEPS}"),
-        )),
-    }
-}
-
-const KEEPS: &str = "#[merge] says what becomes of the versions a write leaves behind,                      as #[merge(newest)], which lets them be dropped, or #[merge(history)],                      which does not";
-
-fn distinct_of(attrs: &[syn::Attribute], fields: &[Field]) -> syn::Result<Option<Shared>> {
-    let mut asked: Option<&syn::Attribute> = None;
-
-    for attr in attrs {
-        if !attr.path().is_ident("distinct") {
-            continue;
+        for option in options {
+            match option {
+                syn::Meta::Path(path) if path.is_ident("newest") || path.is_ident("history") => {
+                    if retention.is_some() {
+                        return Err(syn::Error::new(
+                            path.span(),
+                            "an entity says once what a merge keeps",
+                        ));
+                    }
+                    retention = Some(if path.is_ident("history") {
+                        generated! { ::dbsync::schema::Retention::History }
+                    } else {
+                        generated! { ::dbsync::schema::Retention::Newest }
+                    });
+                }
+                syn::Meta::NameValue(named) if named.path.is_ident("with") => {
+                    if resolver.is_some() {
+                        return Err(syn::Error::new(
+                            named.span(),
+                            "an entity names one merge function",
+                        ));
+                    }
+                    let syn::Expr::Path(function) = named.value else {
+                        return Err(syn::Error::new(
+                            named.span(),
+                            "with expects a function path",
+                        ));
+                    };
+                    if function.qself.is_some() {
+                        return Err(syn::Error::new(
+                            function.span(),
+                            "with expects a function path",
+                        ));
+                    }
+                    resolver = Some(function.path);
+                }
+                other => {
+                    return Err(syn::Error::new(
+                        other.span(),
+                        "#[merge] accepts newest, history, and with = path::function",
+                    ));
+                }
+            }
         }
-        if asked.is_some() {
-            return Err(syn::Error::new(
-                attr.span(),
-                "an entity says once which of its parents no two rows may share",
-            ));
-        }
-        asked = Some(attr);
     }
-    let Some(attr) = asked else {
-        return Ok(None);
-    };
-
-    let named = attr
-        .parse_args_with(
-            syn::punctuated::Punctuated::<syn::Ident, syn::Token![,]>::parse_terminated,
-        )
-        .map_err(|_| {
-            syn::Error::new(
-                attr.span(),
-                "#[distinct] names the two parents no two rows may share, as \
-                 #[distinct(book, author)]",
-            )
-        })?;
-    let mut named = named.into_iter();
-    let (Some(left), Some(right), None) = (named.next(), named.next(), named.next()) else {
-        return Err(syn::Error::new(
-            attr.span(),
-            "#[distinct] holds exactly two parents apart; one is #[index(unique)] on the field, \
-             and three would be a key this does not carry yet",
-        ));
-    };
-    if left == right {
-        return Err(syn::Error::new(
-            right.span(),
-            "a parent paired with itself is the parent, so nothing is held apart by it",
-        ));
-    }
-
-    let parent_of = |asked: &syn::Ident| -> syn::Result<syn::Type> {
-        let Some(field) = fields.iter().find(|field| field.name == *asked) else {
-            return Err(syn::Error::new(
-                asked.span(),
-                format!("`{asked}` is not a field of this entity, so there is nothing to pair"),
-            ));
-        };
-        match &field.kind {
-            Kind::Reference(parent) => Ok(parent.clone()),
-            _ => Err(syn::Error::new(
-                asked.span(),
-                format!(
-                    "a pair is made of two parents, and `{asked}` is not one; declare it \
-                     One<..>, or hold the field apart with #[index(unique)]"
-                ),
-            )),
-        }
-    };
-    let (left_parent, right_parent) = (parent_of(&left)?, parent_of(&right)?);
-
-    let column = format_ident!("{left}_{right}");
-    if let Some(clash) = fields.iter().find(|field| field.name == column) {
-        return Err(syn::Error::new(
-            clash.name.span(),
-            format!("the pair of `{left}` and `{right}` is held in a column called `{column}`"),
-        ));
-    }
-
-    Ok(Some(Shared {
-        column,
-        left,
-        right,
-        left_parent,
-        right_parent,
-    }))
+    Ok((retention, resolver))
 }
 
 fn quote_spanned_crossing(far: &syn::Type, join: &syn::Type, near: &syn::Ident) -> TokenStream {

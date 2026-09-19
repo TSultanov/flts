@@ -193,34 +193,25 @@ fn a_link_moved_to_another_pair_is_gone_from_the_row_it_used_to_name() {
 }
 
 #[test]
-fn a_join_refuses_a_pair_of_parents_it_already_holds_and_leaves_every_column_as_it_was() {
+fn a_join_keeps_multiple_links_with_the_same_parents() {
     let (mut library, atlas, _, ada, _) = credited();
     let before = Table::rows(&library.authorships);
-
-    let err = library.authorships.push(atlas, ada).unwrap_err();
-
-    assert!(err.to_string().contains("authorship.book_author"), "{err}");
-    assert!(
-        err.to_string().contains("no two rows may share one value"),
-        "{err}"
-    );
-    assert_eq!(Table::rows(&library.authorships), before);
-    Table::check_rows_agree(&library.authorships).unwrap();
+    let id = library.authorships.push(atlas, ada).unwrap();
+    assert_eq!(Table::rows(&library.authorships), before + 1);
+    assert_eq!(library.authorships.book(id).unwrap(), atlas);
+    assert_eq!(library.authorships.author(id).unwrap(), ada);
     Store::audit(&library).unwrap();
 }
 
 #[test]
-fn a_link_moved_onto_a_pair_another_link_holds_is_refused_and_moves_nothing() {
+fn a_link_can_move_onto_a_pair_another_link_holds() {
     let (mut library, atlas, primer, ada, _) = credited();
     let moved = library.authorships.of_book(atlas).unwrap()[0];
-
-    let err = library.at_mut(moved).unwrap().set_book(primer).unwrap_err();
-
-    assert!(err.to_string().contains("authorship.book_author"), "{err}");
-    assert_eq!(library.authorships.book(moved).unwrap(), atlas);
+    library.at_mut(moved).unwrap().set_book(primer).unwrap();
+    assert_eq!(library.authorships.book(moved).unwrap(), primer);
     assert_eq!(library.authorships.author(moved).unwrap(), ada);
-    assert_eq!(library.authorships.of_book(atlas).unwrap().len(), 2);
-    assert_eq!(library.authorships.of_book(primer).unwrap().len(), 1);
+    assert_eq!(library.authorships.of_book(atlas).unwrap().len(), 1);
+    assert_eq!(library.authorships.of_book(primer).unwrap().len(), 2);
     Store::audit(&library).unwrap();
 }
 
@@ -262,22 +253,14 @@ fn a_pair_a_link_gave_up_may_be_taken_by_another() {
 }
 
 #[test]
-fn an_audit_refuses_a_pair_a_link_no_longer_agrees_with() {
-    let (library, _, _, _, _) = credited();
-    Store::audit(&library).unwrap();
-
-    let mut drifted = library.clone();
-    let stranger = drifted.authors.push("Nobody").unwrap();
-    drifted
+fn an_audit_refuses_a_link_changed_to_an_unknown_parent() {
+    let (mut library, _, _, _, _) = credited();
+    library
         .authorships
-        .quietly_repoint_author(Row::trusted(0), stranger);
-
-    let err = Store::audit(&drifted).unwrap_err();
+        .quietly_repoint_author(Row::trusted(0), Id::mint());
+    let err = Store::audit(&library).unwrap_err();
     assert!(err.is_corrupt(), "{err}");
-    assert!(
-        err.to_string().contains("authorship.book_author row 0"),
-        "{err}"
-    );
+    assert!(err.to_string().contains("authorship.author"), "{err}");
 }
 
 #[test]

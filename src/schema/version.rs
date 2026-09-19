@@ -203,7 +203,6 @@ pub struct VersionColumn<E: Entity> {
     held_ends: Arena<u64>,
     by_dot: HashMap<Dot, usize>,
     superseded: RwLock<BTreeSet<usize>>,
-    hidden: RwLock<BTreeSet<usize>>,
     row_ids: RwLock<Vec<crate::Uuid>>,
     view: super::View,
     stamped: usize,
@@ -225,7 +224,6 @@ impl<E: Entity> Default for VersionColumn<E> {
             held_ends: Arena::new(),
             by_dot: HashMap::new(),
             superseded: RwLock::new(BTreeSet::new()),
-            hidden: RwLock::new(BTreeSet::new()),
             row_ids: RwLock::new(Vec::new()),
             view: super::View::default(),
             stamped: 0,
@@ -243,7 +241,6 @@ impl<E: Entity> Clone for VersionColumn<E> {
             held_ends: self.held_ends.clone(),
             by_dot: self.by_dot.clone(),
             superseded: RwLock::new(self.superseded.read().expect("versions lock").clone()),
-            hidden: RwLock::new(self.hidden.read().expect("versions lock").clone()),
             row_ids: RwLock::new(self.row_ids.read().expect("versions lock").clone()),
             view: self.view.fork(),
             stamped: self.stamped,
@@ -282,14 +279,6 @@ impl<E: Entity> VersionColumn<E> {
             .contains(&row.index())
         {
             version = version.supersede();
-        }
-        if self
-            .hidden
-            .read()
-            .expect("versions lock")
-            .contains(&row.index())
-        {
-            version.flags |= HIDDEN;
         }
         if let Some(id) = self.row_ids.read().expect("versions lock").get(row.index())
             && self
@@ -411,13 +400,6 @@ impl<E: Entity> VersionColumn<E> {
                 superseded.insert(row.index());
             }
         }
-    }
-
-    pub fn hide(&self, row: Row) {
-        self.hidden
-            .write()
-            .expect("versions lock")
-            .insert(row.index());
     }
 
     pub fn supersede(&mut self, row: Row) -> Result<()> {
@@ -562,7 +544,6 @@ impl<E: Entity> Column for VersionColumn<E> {
         self.parents.clear();
         self.by_dot.clear();
         self.superseded.write().expect("versions lock").clear();
-        self.hidden.write().expect("versions lock").clear();
         self.row_ids.write().expect("versions lock").clear();
         let mut start = 0;
         for row in 0..ends.len() {

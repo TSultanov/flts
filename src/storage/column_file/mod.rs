@@ -29,7 +29,7 @@ pub use reader::ColumnFile;
 pub use updater::{ColumnFileUpdater, CommitAttempt};
 
 #[cfg(all(test, feature = "derive"))]
-pub(crate) use updater::{CommitFault, fail_commit_at};
+pub(crate) use updater::{CommitFault, fail_commit_at, fail_commit_times};
 pub use writer::ColumnFileWriter;
 pub use writer_id::WriterId;
 

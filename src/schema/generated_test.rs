@@ -102,7 +102,7 @@ struct Work {
 
 #[crate::entity]
 struct Edition {
-    #[index(unique)]
+    #[index]
     isbn: Option<String>,
     #[index]
     year: u32,
@@ -111,7 +111,7 @@ struct Edition {
 }
 
 #[crate::entity]
-#[distinct(work, edition)]
+
 struct Appearance {
     work: One<Work>,
     edition: One<Edition>,
@@ -158,8 +158,8 @@ fn a_generated_entity_names_its_columns_after_itself() {
 }
 
 #[test]
-fn a_generated_join_names_a_column_for_the_pair_no_two_of_its_rows_may_share() {
-    use crate::schema::{ColumnKind, Table};
+fn a_generated_join_names_its_reference_columns_and_indexes() {
+    use crate::schema::Table;
 
     let names: Vec<String> = AppearanceTable::default()
         .specs()
@@ -183,24 +183,7 @@ fn a_generated_join_names_a_column_for_the_pair_no_two_of_its_rows_may_share() {
             "appearance.edition.buckets",
             "appearance.edition.links",
             "appearance.page",
-            "appearance.work_edition",
-            "appearance.work_edition.buckets",
-            "appearance.work_edition.links",
         ]
-    );
-
-    let pair = AppearanceTable::default()
-        .specs()
-        .into_iter()
-        .find(|spec| spec.name == "appearance.work_edition")
-        .expect("the pair names itself");
-    assert_eq!(pair.elem_size, 32);
-    assert_eq!(
-        pair.kind,
-        ColumnKind::Pair {
-            left: "work",
-            right: "edition"
-        }
     );
 }
 
@@ -258,62 +241,37 @@ fn a_generated_row_crosses_a_join_the_declaration_named_with_through() {
 }
 
 #[test]
-fn a_generated_push_whose_pair_is_taken_is_refused_and_leaves_every_column_as_it_was() {
-    use crate::schema::Table;
-
+fn repeated_parent_pairs_are_independent_relationship_records() {
     let (mut catalogue, kokoro, _, cloth, _) = issued();
-    let before: Vec<usize> = Table::fields(&catalogue.appearances)
-        .iter()
-        .map(|field| field.column.rows())
-        .collect();
-
-    let err = catalogue.appearances.push(kokoro, cloth, 500).unwrap_err();
-
-    assert!(err.to_string().contains("appearance.work_edition"), "{err}");
+    let before = catalogue
+        .children_of::<Work, Appearance>(kokoro)
+        .unwrap()
+        .len();
+    let id = catalogue.appearances.push(kokoro, cloth, 500).unwrap();
     assert_eq!(
-        Table::fields(&catalogue.appearances)
-            .iter()
-            .map(|field| field.column.rows())
-            .collect::<Vec<_>>(),
-        before,
-        "a refused push writes no column at all"
+        catalogue
+            .children_of::<Work, Appearance>(kokoro)
+            .unwrap()
+            .len(),
+        before + 1
     );
-    Table::check_rows_agree(&catalogue.appearances).unwrap();
-    Store::audit(&catalogue).unwrap();
+    assert_eq!(catalogue.appearances.page(id).unwrap(), 500);
+    catalogue.audit().unwrap();
 }
 
 #[test]
-fn a_generated_set_moves_the_pair_with_the_parent_it_changes() {
+fn a_generated_setter_moves_a_relationship_to_an_existing_parent_pair() {
     let (mut catalogue, kokoro, michikusa, _, paper) = issued();
     let moved = catalogue.children_of::<Work, Appearance>(kokoro).unwrap()[0];
-
-    let err = catalogue
+    catalogue
         .at_mut(moved)
         .unwrap()
         .set_work(michikusa)
-        .unwrap_err();
-    assert!(
-        err.to_string().contains("appearance.work_edition"),
-        "michikusa already appears in the cloth edition: {err}"
-    );
-    assert_eq!(catalogue.appearances.work(moved).unwrap(), kokoro);
-
-    catalogue
-        .at_mut(moved)
-        .unwrap()
-        .set_edition(paper)
-        .unwrap_err();
-    let second = catalogue
-        .children_of::<Work, Appearance>(michikusa)
-        .unwrap()[0];
-    catalogue
-        .at_mut(second)
-        .unwrap()
-        .set_edition(paper)
         .unwrap();
-
-    assert_eq!(catalogue.at(paper).unwrap().works().unwrap().count(), 2);
-    Store::audit(&catalogue).unwrap();
+    catalogue.at_mut(moved).unwrap().set_edition(paper).unwrap();
+    assert_eq!(catalogue.appearances.work(moved).unwrap(), michikusa);
+    assert_eq!(catalogue.appearances.edition(moved).unwrap(), paper);
+    catalogue.audit().unwrap();
 }
 
 #[test]
@@ -954,46 +912,27 @@ fn a_generated_table_finds_every_row_that_holds_a_value() -> Result<()> {
 }
 
 #[test]
-fn a_generated_table_finds_the_one_row_that_holds_a_value_no_two_may_share() -> Result<()> {
+fn a_generated_table_finds_all_rows_with_an_optional_value() -> Result<()> {
     let mut editions = EditionTable::default();
-    let oxford = editions.push(Some("978-0-19-955829-2"), 2009)?;
-    let penguin = editions.push(None, 2012)?;
-    editions.push(None, 2015)?;
-
-    assert_eq!(
-        editions.find_by_isbn(Some("978-0-19-955829-2"))?,
-        Some(oxford)
-    );
-    assert_eq!(editions.find_by_isbn(Some("978-0-14-243724-7"))?, None);
-    assert_eq!(
-        editions.find_by_isbn(None)?,
-        None,
-        "absence is not a value one row holds, which is why many rows may be absent"
-    );
-    assert_eq!(editions.find_by_year(2012)?, [penguin]);
+    let first = editions.push(Some("978-0"), 2009)?;
+    let second = editions.push(Some("978-0"), 2012)?;
+    let absent = editions.push(None, 2015)?;
+    assert_eq!(editions.find_by_isbn(Some("978-0"))?, [first, second]);
+    assert!(editions.find_by_isbn(Some("missing"))?.is_empty());
+    assert_eq!(editions.find_by_isbn(None)?, [absent]);
     Ok(())
 }
 
 #[test]
-fn a_generated_push_refuses_a_shared_value_before_it_mints_the_row_that_would_hold_it() {
+fn repeated_field_values_receive_distinct_ids() {
     use crate::schema::Table;
-
     let mut editions = EditionTable::default();
-    editions.push(Some("978-0-19-955829-2"), 2009).unwrap();
-
-    let err = editions
-        .push(Some("978-0-19-955829-2"), 2012)
-        .expect_err("two editions may not share one isbn");
-    assert!(err.to_string().contains("edition.isbn"), "{err}");
-    assert!(err.to_string().contains("row 0"), "{err}");
-
-    assert_eq!(
-        Table::rows(&editions),
-        1,
-        "the refusal came before the id, so no column grew"
-    );
-    Table::check_rows_agree(&editions).expect("a refused push leaves no ragged table");
-    Table::audit(&editions).expect("and no index that disagrees with its column");
+    let first = editions.push(Some("978-0"), 2009).unwrap();
+    let second = editions.push(Some("978-0"), 2009).unwrap();
+    assert_ne!(first, second);
+    assert_eq!(Table::rows(&editions), 2);
+    editions.check_rows_agree().unwrap();
+    Table::audit(&editions).unwrap();
 }
 
 #[test]
@@ -1038,14 +977,6 @@ fn printings() -> impl Strategy<Value = Vec<Printing>> {
     prop::collection::vec(printing(), 0..24)
 }
 
-fn claimed(model: &[(Option<String>, u32)], isbn: &Option<String>, but: Option<usize>) -> bool {
-    isbn.is_some()
-        && model
-            .iter()
-            .enumerate()
-            .any(|(row, (held, _))| Some(row) != but && held == isbn)
-}
-
 fn whole(editions: &EditionTable) -> usize {
     use crate::schema::Table;
 
@@ -1061,28 +992,16 @@ fn printed(printings: &[Printing]) -> (EditionTable, Vec<(Option<String>, u32)>)
     for one in printings {
         match one {
             Printing::Print(isbn, year) => {
-                let taken = claimed(&model, isbn, None);
-                match editions.push(isbn.as_deref(), *year) {
-                    Ok(_) => {
-                        assert!(!taken, "{isbn:?} was already there");
-                        model.push((isbn.clone(), *year));
-                    }
-                    Err(said) => assert!(taken, "{said}"),
-                }
+                editions.push(isbn.as_deref(), *year).unwrap();
+                model.push((isbn.clone(), *year));
                 assert_eq!(whole(&editions), model.len(), "a column grew without a row");
             }
             Printing::Reissue(at, isbn) => {
                 if !model.is_empty() {
                     let row = at % model.len();
-                    let taken = claimed(&model, isbn, Some(row));
                     let of = minted(&editions)[row];
-                    match editions.set_isbn(of, isbn.as_deref()) {
-                        Ok(()) => {
-                            assert!(!taken, "{isbn:?} was already there");
-                            model[row].0 = isbn.clone();
-                        }
-                        Err(said) => assert!(taken, "{said}"),
-                    }
+                    editions.set_isbn(of, isbn.as_deref()).unwrap();
+                    model[row].0 = isbn.clone();
                     assert_eq!(whole(&editions), model.len(), "a column grew without a row");
                 }
             }
@@ -1168,38 +1087,14 @@ proptest! {
     }
 
     #[test]
-    fn a_generated_push_whose_unique_value_is_taken_is_refused_and_leaves_every_column_as_it_was(
-        printings in printings(),
-        wanted in props::indexable_optional_text(),
-    ) {
+    fn generated_optional_finders_match_a_scan(printings in printings(), wanted in props::indexable_optional_text()) {
         let (editions, model) = printed(&printings);
         prop_assert_eq!(minted(&editions).len(), model.len());
-
-        let prints = printings
-            .iter()
-            .filter(|one| matches!(one, Printing::Print(..)))
-            .count();
-        prop_assert!(
-            prints == 0 || !model.is_empty(),
-            "the first print of a program has nothing to collide with, so it is always kept"
-        );
-
         for isbn in model.iter().map(|(held, _)| held.clone()).chain([wanted]) {
-            let sought = isbn.as_deref();
-            let one = match sought {
-                None => None,
-                Some(_) => model.iter().position(|(held, _)| held.as_deref() == sought),
-            };
-
-            prop_assert_eq!(
-                editions
-                    .find_by_isbn(sought)
-                    .unwrap()
-                    .map(|of| edition_row(&editions, of)),
-                one,
-                "find_by_isbn names another row for {:?}",
-                sought
-            );
+            let mut found: Vec<_> = editions.find_by_isbn(isbn.as_deref()).unwrap().into_iter().map(|of| edition_row(&editions, of)).collect();
+            found.sort_unstable();
+            let expected: Vec<_> = model.iter().enumerate().filter(|(_, (held, _))| *held == isbn).map(|(row, _)| row).collect();
+            prop_assert_eq!(found, expected);
         }
     }
 
@@ -1256,17 +1151,13 @@ fn writing_a_join_back_onto_the_pair_it_already_holds_is_not_a_duplicate_of_itse
     assert_eq!(catalogue.appearances.page(link).unwrap(), 2);
     assert_eq!(catalogue.appearances.edition(link).unwrap(), cloth);
 
-    let err = catalogue
-        .at_mut(link)
-        .unwrap()
-        .set_edition(paper)
-        .expect_err("kokoro already appears in paper");
-    assert!(err.to_string().contains("appearance.work_edition"), "{err}");
+    catalogue.at_mut(link).unwrap().set_edition(paper).unwrap();
+    assert_eq!(catalogue.appearances.edition(link).unwrap(), paper);
     Table::audit(&catalogue.appearances).unwrap();
 }
 
 #[test]
-fn a_value_no_two_rows_may_share_is_given_up_by_one_of_the_copies_that_wrote_it() {
+fn repeated_indexed_values_on_different_ids_survive_merging() {
     use crate::schema::{Store, Table};
     use crate::storage::WriterId;
     use crate::test_utils::TempDir;
@@ -1284,20 +1175,11 @@ fn a_value_no_two_rows_may_share_is_given_up_by_one_of_the_copies_that_wrote_it(
     mine.editions.push(Some("978-0"), 1955).unwrap();
     mine.commit(WriterId::from_device_id("here")).unwrap();
 
-    let report = mine.merge(&theirs).unwrap();
+    let report = mine.merge_snapshot(&theirs).unwrap();
 
-    assert_eq!(report.collided.len(), 1, "{report:?}");
-    assert_eq!(report.collided[0].column, "edition.isbn");
-    assert_eq!(
-        mine.all::<Edition>().count(),
-        1,
-        "two rows wrote down one isbn, and one of them has to give it up"
-    );
-    assert_eq!(
-        Table::rows(&mine.editions),
-        2,
-        "the one that gave it up is still a row that says what it held"
-    );
+    assert!(report.is_quiet());
+    assert_eq!(mine.all::<Edition>().count(), 2);
+    assert_eq!(Table::rows(&mine.editions), 2);
     mine.audit().unwrap();
 }
 
@@ -1332,7 +1214,7 @@ fn a_merge_brings_every_kind_of_column_across_exactly_as_it_was_written() {
     theirs.works.push(soseki, "Kokoro").unwrap();
     theirs.commit(WriterId::from_device_id("there")).unwrap();
 
-    let report = mine.merge(&theirs).unwrap();
+    let report = mine.merge_snapshot(&theirs).unwrap();
 
     assert_eq!(report.taken, 3);
     let held = mine.at(soseki).unwrap();

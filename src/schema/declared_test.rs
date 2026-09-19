@@ -27,7 +27,7 @@ struct Editor {
 }
 
 #[crate::entity]
-#[distinct(book, editor)]
+
 struct Credit {
     book: One<Book>,
     editor: One<Editor>,
@@ -159,9 +159,6 @@ fn the_declared_schema_names_every_column_the_file_will_hold() {
             "credit.editor",
             "credit.editor.buckets",
             "credit.editor.links",
-            "credit.book_editor",
-            "credit.book_editor.buckets",
-            "credit.book_editor.links",
             "dbsync.clock",
             "dbsync.schema",
         ]
@@ -628,16 +625,12 @@ fn a_library_lives_its_whole_life_through_the_rows_it_hands_out() -> Result<()> 
 
     let mut stale = opened;
     stale.books.push("Never committed", "Nobody")?;
-    let refused = stale
-        .commit(this_device())
-        .expect_err("a handle opened at the older generation cannot commit over the newer one");
-    assert!(
-        refused.to_string().contains("moved to generation"),
-        "{refused}"
-    );
-
+    let reconciled = stale.commit(this_device())?;
+    assert!(reconciled > published);
+    assert_eq!(stale.at(alice)?.title()?, "Alice in Wonderland");
+    assert_eq!(stale.all::<Book>().count(), 4);
     let token = crate::storage::ColumnFile::read_commit_token(&path)?;
-    assert_eq!(token.generation, published);
+    assert_eq!(token.generation, reconciled);
     assert!(!token.is_echo_of(this_device(), shelved));
     Ok(())
 }
@@ -1135,47 +1128,37 @@ fn a_declared_join_crosses_the_same_way_after_a_reopen_that_read_no_payload() {
 }
 
 #[test]
-fn a_pair_a_file_holds_is_still_refused_after_the_file_is_reopened() {
+fn repeated_relationship_pairs_survive_a_reopen() {
     let dir = TempDir::new("declared_pair");
     let path = dir.join("library.dbs");
-
     let mut library = Library::create(&path, this_device()).unwrap();
     let (alice, _, ada, _) = credited(&mut library);
     library.commit(this_device()).unwrap();
-    drop(library);
-
     let mut reopened = Library::open(&path).unwrap();
-    let err = reopened.credits.push(alice, ada).unwrap_err();
-
-    assert!(err.to_string().contains("credit.book_editor"), "{err}");
-    assert_eq!(Table::rows(&reopened.credits), 3);
+    reopened.credits.push(alice, ada).unwrap();
+    reopened.commit(this_device()).unwrap();
+    assert_eq!(Table::rows(&Library::open(&path).unwrap().credits), 4);
     reopened.verify().unwrap();
 }
 
 #[test]
-fn a_pair_index_stripped_from_a_file_is_rebuilt_on_open_and_refuses_as_it_did() {
-    let dir = TempDir::new("declared_pair_rebuild");
+fn a_relationship_index_is_rebuilt_without_enforcing_pair_uniqueness() {
+    let dir = TempDir::new("declared_reference_rebuild");
     let path = dir.join("library.dbs");
-
     let mut library = Library::create(&path, this_device()).unwrap();
     let (alice, _, ada, _) = credited(&mut library);
     library.commit(this_device()).unwrap();
-    drop(library);
-
-    without(
-        &path,
-        &["credit.book_editor.buckets", "credit.book_editor.links"],
-    );
-    let stripped = ColumnFile::open(&path).unwrap();
-    assert!(stripped.column_meta("credit.book_editor.buckets").is_none());
-    assert!(stripped.column_meta("credit.book_editor").is_some());
-    drop(stripped);
-
+    without(&path, &["credit.book.buckets", "credit.book.links"]);
     let mut reopened = Library::open(&path).unwrap();
-
-    let err = reopened.credits.push(alice, ada).unwrap_err();
-    assert!(err.to_string().contains("credit.book_editor"), "{err}");
-    assert_eq!(edited(&reopened, alice), ["Ada", "Bram"]);
+    assert_eq!(
+        reopened.children_of::<Book, Credit>(alice).unwrap().len(),
+        2
+    );
+    reopened.credits.push(alice, ada).unwrap();
+    assert_eq!(
+        reopened.children_of::<Book, Credit>(alice).unwrap().len(),
+        3
+    );
     reopened.verify().unwrap();
 }
 
@@ -1265,7 +1248,7 @@ fn two_copies_edited_apart_end_up_holding_what_both_of_them_wrote() -> Result<()
     mine.books.push("An Atlas", "many hands")?;
     mine.commit(device("here"))?;
 
-    let report = mine.merge(&theirs)?;
+    let report = mine.merge_snapshot(&theirs)?;
 
     assert_eq!(titles(&mine), ["Alice", "An Atlas", "Kokoro"]);
     assert_eq!(report.taken, 1, "only their new book was news here");
@@ -1285,9 +1268,9 @@ fn merging_the_same_copy_twice_says_the_second_time_that_it_knew_it_all() -> Res
     theirs.books.push("Kokoro", "Natsume Soseki")?;
     theirs.commit(device("there"))?;
 
-    let once = mine.merge(&theirs)?;
+    let once = mine.merge_snapshot(&theirs)?;
     let rows = Table::rows(&mine.books);
-    let again = mine.merge(&theirs)?;
+    let again = mine.merge_snapshot(&theirs)?;
 
     assert_eq!(once.taken, 1);
     assert_eq!(again.taken, 0, "{again:?}");
@@ -1315,9 +1298,9 @@ fn two_copies_merged_in_either_order_hold_the_same_books() -> Result<()> {
     mine.commit(device("here"))?;
 
     let mut ours = mine.clone();
-    ours.merge(&theirs)?;
+    ours.merge_snapshot(&theirs)?;
     let mut backwards = theirs.clone();
-    backwards.merge(&mine)?;
+    backwards.merge_snapshot(&mine)?;
 
     assert_eq!(titles(&ours), titles(&backwards));
     assert_eq!(titles(&ours), ["Alice", "An Atlas", "Kokoro"]);
@@ -1346,7 +1329,7 @@ fn a_row_two_copies_wrote_apart_is_kept_by_the_later_write_and_the_other_is_repo
         .at(theirs.books.row_of(alice)?)?
         .dot();
 
-    let report = mine.merge(&theirs)?;
+    let report = mine.merge_snapshot(&theirs)?;
 
     assert_eq!(report.concurrent.len(), 1, "{report:?}");
     let said = report.concurrent[0];
@@ -1369,7 +1352,7 @@ fn a_row_two_copies_wrote_apart_is_kept_by_the_later_write_and_the_other_is_repo
 }
 
 #[test]
-fn three_copies_that_all_declared_one_pair_leave_one_credit_between_them() -> Result<()> {
+fn three_copies_that_declared_the_same_pair_keep_three_credits() -> Result<()> {
     let dir = TempDir::new("merge_three_pairs");
     let mut first = Library::create(dir.join("first.dbs"), device("first"))?;
     let alice = first.books.push("Alice", "Lewis Carroll")?;
@@ -1387,14 +1370,14 @@ fn three_copies_that_all_declared_one_pair_leave_one_credit_between_them() -> Re
         shelf.commit(device(who))?;
     }
 
-    first.merge(&second)?;
-    let report = first.merge(&third)?;
+    first.merge_snapshot(&second)?;
+    let report = first.merge_snapshot(&third)?;
 
     let live = first.children_of::<Book, Credit>(alice)?;
     assert_eq!(
         live.len(),
-        1,
-        "three copies each wrote the pair down and one credit is left: {report:?}"
+        3,
+        "three different UUIDs remain independent: {report:?}"
     );
     assert_eq!(
         Table::rows(&first.credits),
@@ -1402,27 +1385,12 @@ fn three_copies_that_all_declared_one_pair_leave_one_credit_between_them() -> Re
         "the two that gave it up are still rows that say what they held"
     );
 
-    let rows = Table::rows(&first.credits);
-    let furthest = (0..rows)
-        .map(|at| {
-            let row = crate::schema::Row::of(at, rows, "credit").unwrap();
-            (
-                Table::versions(&first.credits).at(row).unwrap().dot(),
-                Table::id_at(&first.credits, row).unwrap(),
-            )
-        })
-        .max()
-        .expect("three rows");
-    assert_eq!(
-        live[0], furthest.1,
-        "the credit that counted furthest is the one that keeps the pair"
-    );
     first.audit()?;
     Ok(())
 }
 
 #[test]
-fn a_pair_two_copies_both_declared_leaves_one_credit_and_names_the_other() -> Result<()> {
+fn equal_parent_pairs_on_different_ids_are_kept_without_conflict() -> Result<()> {
     let dir = TempDir::new("merge_pair");
     let mut mine = Library::create(dir.join("here.dbs"), device("here"))?;
     let alice = mine.books.push("Alice", "Lewis Carroll")?;
@@ -1435,15 +1403,13 @@ fn a_pair_two_copies_both_declared_leaves_one_credit_and_names_the_other() -> Re
     mine.credits.push(alice, carroll)?;
     mine.commit(device("here"))?;
 
-    let report = mine.merge(&theirs)?;
+    let report = mine.merge_snapshot(&theirs)?;
 
-    assert_eq!(report.collided.len(), 1, "{report:?}");
-    assert_eq!(report.collided[0].column, "credit.book_editor");
-    assert_ne!(report.collided[0].kept, report.collided[0].dropped);
+    assert!(report.is_quiet());
     assert_eq!(
         mine.children_of::<Book, Credit>(alice)?.len(),
-        1,
-        "two copies each wrote the pair down, and one of them has to give it up"
+        2,
+        "different UUIDs remain independent relationship rows"
     );
     mine.audit()?;
     Ok(())
@@ -1459,7 +1425,7 @@ fn a_copy_with_a_write_nobody_published_is_refused_before_anything_is_merged() -
 
     mine.books.push("An Atlas", "many hands")?;
     let err = mine
-        .merge(&theirs)
+        .merge_snapshot(&theirs)
         .expect_err("a write with no name of its own cannot be merged");
 
     assert!(err.to_string().contains("nobody has published"), "{err}");
@@ -1481,13 +1447,13 @@ fn three_copies_merged_in_either_grouping_hold_the_same_books() -> Result<()> {
     third.commit(device("third"))?;
 
     let mut leftwards = first.clone();
-    leftwards.merge(&second)?;
-    leftwards.merge(&third)?;
+    leftwards.merge_snapshot(&second)?;
+    leftwards.merge_snapshot(&third)?;
 
     let mut gathered = second.clone();
-    gathered.merge(&third)?;
+    gathered.merge_snapshot(&third)?;
     let mut rightwards = first.clone();
-    rightwards.merge(&gathered)?;
+    rightwards.merge_snapshot(&gathered)?;
 
     assert_eq!(titles(&leftwards), titles(&rightwards));
     assert_eq!(titles(&leftwards), ["Alice", "An Atlas", "Kokoro"]);
@@ -1507,7 +1473,7 @@ fn a_row_only_the_other_copy_wrote_is_taken_without_calling_it_a_disagreement() 
     theirs.at_mut(alice)?.set_title("Alice's Adventures")?;
     theirs.commit(device("there"))?;
 
-    let report = mine.merge(&theirs)?;
+    let report = mine.merge_snapshot(&theirs)?;
 
     assert_eq!(mine.books.title(alice)?, "Alice's Adventures");
     assert_eq!(report.taken, 1);
@@ -1530,7 +1496,7 @@ fn a_merge_retains_and_hides_a_child_whose_parent_was_deleted() -> Result<()> {
     theirs.commit(device("there"))?;
     mine.remove(alice)?;
     mine.commit(device("here"))?;
-    let report = mine.merge(&theirs)?;
+    let report = mine.merge_snapshot(&theirs)?;
     assert_eq!(report.references.len(), 1);
     assert_eq!(mine.all::<Book>().count(), 0);
     assert_eq!(mine.all::<Chapter>().count(), 0);

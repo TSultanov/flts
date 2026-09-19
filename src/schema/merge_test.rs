@@ -46,16 +46,14 @@ fn a_report_is_not_quiet_when_two_copies_wrote_the_same_row_apart() {
 }
 
 #[test]
-fn a_report_is_not_quiet_when_a_value_two_rows_may_not_share_had_to_be_given_up() {
-    let said = MergeReport {
-        collided: vec![Collision {
-            column: "book.title",
-            key: b"title".to_vec(),
-            kept: crate::id::Uuid::from_u128(1),
-            dropped: crate::id::Uuid::from_u128(2),
+fn a_report_includes_combined_source_revisions() {
+    let report = MergeReport {
+        combined: vec![Combined {
+            entity: "book",
+            id: crate::Uuid::from_u128(1),
+            sources: vec![wrote(1, 1), wrote(2, 1)],
         }],
         ..MergeReport::default()
     };
-
-    assert!(!said.is_quiet());
+    assert!(!report.is_quiet());
 }

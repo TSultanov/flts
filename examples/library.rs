@@ -24,7 +24,7 @@ struct Author {
 }
 
 #[dbsync::entity]
-#[distinct(book, author)]
+
 struct Credit {
     book: One<Book>,
     author: One<Author>,
@@ -155,8 +155,6 @@ fn main() -> Result<()> {
     println!("     the one it was given for as long as it exists");
     println!("     nobody declared a version either: every row carries the write that");
     println!("     made it, and dbsync.clock is how far this copy has counted");
-    println!("     credit.book_author is the pair no two credits may share, carried whole,");
-    println!("     so a book and a person are held apart by one key rather than two");
     println!("     .buckets and .links are the hash index over the column they follow --");
     println!("     columns like any other, written by the commit and paged on demand");
 
@@ -284,16 +282,10 @@ fn main() -> Result<()> {
     let mut again = Library::open(&path)?;
     let carroll = named(&again, "Lewis Carroll")?.id()?;
     let glass = book_called(&again, "Through the Looking-Glass")?.id()?;
-    let refused = again
-        .credits
-        .push(glass, carroll, "wrote again")
-        .expect_err("this pair is already held");
-    println!("\n7. offered a credit the library already holds");
-    println!("     {refused}");
-    assert_eq!(Table::rows(&again.credits), 6);
+    let repeated = again.credits.push(glass, carroll, "wrote again")?;
+    println!("\n7. another credit with the same parents receives its own UUID: {repeated}");
+    assert_eq!(Table::rows(&again.credits), 7);
     again.verify()?;
-    println!("     nothing was written: the pair is probed before an id is minted, so a");
-    println!("     refused push leaves every column exactly the length it was");
 
     let before = std::fs::metadata(&path)?.len();
     let untouched = ColumnFile::open(&path)?
@@ -348,16 +340,16 @@ fn main() -> Result<()> {
     );
 
     let mut stale = shelf;
-    stale.books.push("Never committed")?;
-    let refused = stale
-        .commit(this_device())
-        .expect_err("a stale handle cannot commit");
-    println!("\n10. and that handle can no longer commit over the newer generation");
-    println!("     {refused}");
-    println!("     the caller reopens and retries; nothing was written");
+    stale
+        .at_mut(alice_of)?
+        .set_title("Alice from an older snapshot")?;
+    let reconciled = stale.commit(this_device())?;
+    assert_eq!(stale.all::<Book>().count(), 5);
+    println!("\n10. committing the older handle automatically incorporated the newer generation");
+    library = stale;
 
     let token = ColumnFile::read_commit_token(&path)?;
-    assert_eq!(token.generation, published);
+    assert_eq!(token.generation, reconciled);
     assert!(!token.is_echo_of(this_device(), generation));
     println!(
         "     a peer polls read_commit_token for that: generation {}, not an echo of its own write",
@@ -380,7 +372,6 @@ fn main() -> Result<()> {
     let waves = library.books.push("The Waves")?;
     library.credits.push(waves, woolf, "wrote")?;
     library.at_mut(alice_of)?.set_title("Alice Underground")?;
-    library.commit(this_device())?;
 
     println!("\n11. someone copied the file to the annexe and both shelves were worked on");
     println!("     here: added The Waves and retitled Alice");
@@ -391,7 +382,7 @@ fn main() -> Result<()> {
         theirs.all::<Book>().count()
     );
 
-    let report = library.merge(&theirs)?;
+    let report = library.merge_from(&elsewhere, this_device())?;
     library.verify()?;
 
     println!("\n12. merged the annexe back in");
@@ -417,7 +408,7 @@ fn main() -> Result<()> {
     println!("     nobody chose that by hand; the two clocks did, and they would have");
     println!("     said the same thing had the annexe merged this shelf instead");
 
-    let again = library.merge(&theirs)?;
+    let again = library.merge_from(&elsewhere, this_device())?;
     assert_eq!(again.taken, 0);
     println!(
         "     merging the same shelf again takes nothing: {} rows, all of them known",

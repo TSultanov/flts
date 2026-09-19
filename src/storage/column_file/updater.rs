@@ -48,7 +48,7 @@ trait CommitIo: std::borrow::Borrow<File> {
 impl CommitIo for File {}
 
 #[cfg(all(test, feature = "derive"))]
-pub(crate) use updater_test::{CommitFault, fail_commit_at};
+pub(crate) use updater_test::{CommitFault, fail_commit_at, fail_commit_times};
 
 impl std::fmt::Debug for ColumnFileUpdater {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -249,6 +249,7 @@ impl ColumnFileUpdater {
 
         let content = content_id(&self.columns);
         if content == self.previous_content_id {
+            self.file.sync_slot()?;
             return Ok(self.original);
         }
 

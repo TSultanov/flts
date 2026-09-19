@@ -57,6 +57,14 @@ impl<T: Record + Default> NullableColumn<T> {
 }
 
 impl<T: Record + Default> Column for NullableColumn<T> {
+    fn append_value_bytes(&mut self, bytes: &[u8]) -> Result<usize> {
+        match bytes {
+            [0] => self.push(None),
+            [1, value @ ..] if value.len() == T::SIZE => self.push(Some(T::decode(value))),
+            _ => Err(Error::corrupt("nullable", "invalid optional value")),
+        }
+    }
+
     fn value_bytes(&self, row: Row) -> Result<Vec<u8>> {
         let value = self.get(row)?;
         let mut out = vec![u8::from(value.is_some())];
@@ -135,10 +143,6 @@ impl<T: IndexKey + Default> Keyed for NullableColumn<T> {
 
     fn key_for(value: Option<T>) -> Maybe<T> {
         Maybe(value)
-    }
-
-    fn absent(value: Option<T>) -> bool {
-        value.is_none()
     }
 
     fn append(&mut self, value: Option<T>, _shared: Option<Maybe<T>>) -> Result<Maybe<T>> {

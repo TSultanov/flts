@@ -84,7 +84,7 @@ fn a_reference_field_hands_a_row_the_parent_it_points_at_not_the_id() {
         "-> :: dbsync :: Result << Book as :: dbsync :: schema :: Entity > :: Row < 'a , S >> ",
         "where S : :: dbsync :: schema :: Holds < Book > , ",
         "{ let table = self . 0 . table () ; let row = self . 0 . row () ; ",
-        "self . 0 . at (table . book . get (row) ?) }",
+        "self . 0 . at (< Chapter as :: dbsync :: schema :: Child < Book >> :: parent_at (table , row , self . 0 . is_historical ()) ?) }",
     ]
     .concat();
 
@@ -563,16 +563,16 @@ fn an_indexed_field_asks_for_a_column_that_carries_its_own_index() {
     let out = expanded(quote! {
         struct Book {
             #[index] title: String,
-            #[index(unique)] isbn: String,
+            #[index] isbn: String,
             #[index] year: u32,
             author: String,
         }
     });
 
     for asked in [
-        "title : :: dbsync :: schema :: Indexed < :: dbsync :: schema :: TextColumn , false >",
-        "isbn : :: dbsync :: schema :: Indexed < :: dbsync :: schema :: TextColumn , true >",
-        "year : :: dbsync :: schema :: Indexed < :: dbsync :: Arena < u32 > , false >",
+        "title : :: dbsync :: schema :: Indexed < :: dbsync :: schema :: TextColumn >",
+        "isbn : :: dbsync :: schema :: Indexed < :: dbsync :: schema :: TextColumn >",
+        "year : :: dbsync :: schema :: Indexed < :: dbsync :: Arena < u32 > >",
         "author : :: dbsync :: schema :: TextColumn",
     ] {
         assert!(out.contains(asked), "{asked} is missing from {out}");
@@ -642,109 +642,35 @@ fn what_an_author_wrote_above_a_field_is_written_above_the_way_to_read_it() {
 }
 
 #[test]
-fn a_unique_field_is_probed_before_the_id_is_minted_and_a_shared_one_is_not() {
-    let out = expanded(quote! {
-        struct Edition {
-            #[index(unique)] isbn: String,
-            #[index] year: u32,
-        }
-    });
-
-    assert!(out.contains("self . isbn . rows_holding (isbn) ?"), "{out}");
-    assert!(out.contains("self . isbn . taken_by (held)"), "{out}");
-    assert!(
-        !out.contains("self . year . rows_holding"),
-        "a value rows may share is never refused: {out}"
-    );
-    assert!(
-        out.contains("live_one (self , self . isbn . rows_holding (isbn) ? ,)"),
-        "only a row that is still the newest of its id holds a value against a new one: {out}"
-    );
-
-    let probe = out
-        .find("rows_holding")
-        .expect("the unique field is probed");
-    let mint = out.find("mint (self)").expect("an id is minted");
-    assert!(
-        probe < mint,
-        "a duplicate is refused before the row that would have held it exists: {out}"
-    );
+fn secondary_uniqueness_is_rejected() {
+    let err = refused(quote! { struct Book { #[index(unique)] isbn: String } });
+    assert!(err.contains("only entity UUIDs are unique"), "{err}");
 }
 
 #[test]
-fn a_unique_field_is_found_as_one_row_and_a_shared_one_as_many() {
-    let out = expanded(quote! {
-        struct Edition {
-            #[index(unique)] isbn: String,
-            #[index] year: u32,
-        }
-    });
-
+fn every_indexed_finder_returns_a_collection_of_ids() {
+    let out = expanded(quote! { struct Book { #[index] isbn: String, #[index] year: u32 } });
     assert!(
-        out.contains("find_by_isbn (& self , value : & str ,) -> :: dbsync :: Result < :: core :: option :: Option <"),
+        out.contains("find_by_isbn (& self , value : & str ,)")
+            || out.contains("find_by_isbn (& self , value : & str)"),
         "{out}"
     );
-    assert!(
-        out.contains(
-            "find_by_year (& self , value : u32 ,) -> :: dbsync :: Result < :: std :: vec :: Vec <"
-        ),
-        "{out}"
-    );
+    assert!(out.contains("Vec < :: dbsync :: Id < Book"), "{out}");
+    assert!(!out.contains("taken_by"), "{out}");
 }
 
 #[test]
-fn a_push_reaches_for_every_bucket_it_will_write_before_it_mints() {
-    let out = expanded(quote! {
-        struct Chapter {
-            book: One<Book>,
-            #[index] title: String,
-            #[index(unique)] slug: String,
-            text: String,
-        }
-    });
-
-    let after = out
-        .split("pub fn push")
-        .nth(1)
-        .expect("the table has a push");
-    let push = &after[..after.find("fn rewrite").unwrap_or(after.len())];
-
-    assert!(out.contains("self . book . reach (book) ?"), "{out}");
-    assert!(out.contains("self . title . reach (title) ?"), "{out}");
-    assert!(
-        !out.contains("self . text . reach"),
-        "a column with no index has no bucket to reach for: {out}"
+fn a_push_reaches_for_every_index_before_it_mints() {
+    let out = expanded(
+        quote! { struct Chapter { book: One<Book>, #[index] title: String, #[index] slug: String, text: String } },
     );
-    assert!(
-        !push.contains("self . slug . reach"),
-        "a unique field is probed, and the probe reads that bucket already: {out}"
-    );
-    let merging = out
-        .split("pub fn merge_from")
-        .nth(1)
-        .expect("the table merges");
-    let merging = &merging[..merging.find("fn settle_unique").unwrap_or(merging.len())];
-    assert!(
-        merging.contains("self . slug . reach (& slug) ?"),
-        "a merge takes a row without probing it, so it reaches that bucket itself: {out}"
-    );
-    assert!(
-        merging.contains("self . book . reach (book) ?"),
-        "and it reaches the parent's bucket before it writes a link into it: {out}"
-    );
-    assert!(
-        !merging.contains("self . text . reach"),
-        "a column with no index still has no bucket to reach for: {out}"
-    );
-
-    let reach = out
-        .find("reach (book)")
-        .expect("the parent's bucket is reached for");
-    let mint = out.find("mint (self)").expect("an id is minted");
-    assert!(
-        reach < mint,
-        "a bucket that cannot be read must stop a push before the id exists: {out}"
-    );
+    let after = out.split("pub fn push").nth(1).unwrap();
+    let push = &after[..after.find("fn rewrite").unwrap()];
+    for field in ["book", "title", "slug"] {
+        let reach = format!("self . {field} . reach ({field}) ?");
+        assert!(push.find(&reach).unwrap() < push.find("mint (self)").unwrap());
+    }
+    assert!(!push.contains("self . text . reach"));
 }
 
 #[test]
@@ -819,150 +745,6 @@ fn a_through_names_one_table_and_says_so_when_it_does_not() {
 }
 
 #[test]
-fn a_distinct_pair_becomes_a_column_of_its_own_that_the_push_probes_first() {
-    let out = expanded(quote! {
-        #[distinct(book, author)]
-        struct Authorship {
-            book: One<Book>,
-            author: One<Author>,
-            credit: String,
-        }
-    });
-
-    assert!(
-        out.contains("book_author : :: dbsync :: schema :: Distinct < Book , Author >"),
-        "{out}"
-    );
-    assert!(
-        out.contains(
-            r#"book_author : :: dbsync :: schema :: Indexed :: named ("authorship.book_author")"#
-        ),
-        "{out}"
-    );
-    assert!(
-        out.contains(r#"Field :: new ("book_author" , & self . book_author)"#),
-        "the pair is a column of the table like any other: {out}"
-    );
-
-    let push = out
-        .split("pub fn push")
-        .nth(1)
-        .expect("the table has a push");
-    let probe = push.find("rows_holding").expect("the push probes");
-    let mint = push.find("mint").expect("the push mints");
-    assert!(probe < mint, "a refused pair must not spend an id: {out}");
-
-    let rewrite = out
-        .split("fn rewrite")
-        .nth(1)
-        .expect("the table writes over a row");
-    let asked = rewrite.find("rows_holding").expect("the rewrite probes");
-    let revise = rewrite.find("revise").expect("the rewrite revises");
-    assert!(
-        asked < revise,
-        "a refused pair must not supersede the row it would have replaced: {out}"
-    );
-
-    assert!(
-        out.contains("check_pairs :: < Book , Author , Authorship >"),
-        "the audit holds the pair to the two references beside it: {out}"
-    );
-    assert!(
-        !out.contains("# [distinct (book , author)]"),
-        "the attribute is consumed, not forwarded onto the tag: {out}"
-    );
-}
-
-#[test]
-fn a_set_of_either_parent_in_a_distinct_pair_moves_the_pair_with_it() {
-    let out = expanded(quote! {
-        #[distinct(book, author)]
-        struct Authorship {
-            book: One<Book>,
-            author: One<Author>,
-        }
-    });
-
-    assert!(
-        out.contains("let author = self . author . get (row) ?"),
-        "a set of one parent carries the other onto the new row: {out}"
-    );
-    assert!(
-        out.contains("self . rewrite (of , __dbsync_value , author ,)"),
-        "{out}"
-    );
-    assert!(
-        out.contains("self . rewrite (of , book , __dbsync_value ,)"),
-        "{out}"
-    );
-    assert!(
-        !out.contains("book_author . set ("),
-        "the pair is rebuilt from what the rewrite was handed, not moved in place: {out}"
-    );
-}
-
-#[test]
-fn a_distinct_names_two_parents_of_this_entity_and_nothing_else() {
-    let err = refused(quote! {
-        #[distinct(book)]
-        struct Authorship { book: One<Book>, author: One<Author> }
-    });
-    assert!(err.contains("exactly two parents"), "{err}");
-
-    let err = refused(quote! {
-        #[distinct(book, author, credit)]
-        struct Authorship { book: One<Book>, author: One<Author>, credit: String }
-    });
-    assert!(err.contains("exactly two parents"), "{err}");
-
-    let err = refused(quote! {
-        #[distinct(book, credit)]
-        struct Authorship { book: One<Book>, author: One<Author>, credit: String }
-    });
-    assert!(err.contains("`credit` is not one"), "{err}");
-    assert!(err.contains("#[index(unique)]"), "{err}");
-
-    let err = refused(quote! {
-        #[distinct(book, editor)]
-        struct Authorship { book: One<Book>, author: One<Author> }
-    });
-    assert!(
-        err.contains("`editor` is not a field of this entity"),
-        "{err}"
-    );
-
-    let err = refused(quote! {
-        #[distinct(book, book)]
-        struct Authorship { book: One<Book>, author: One<Author> }
-    });
-    assert!(err.contains("paired with itself"), "{err}");
-
-    let err = refused(quote! {
-        #[distinct(book, author)]
-        #[distinct(author, book)]
-        struct Authorship { book: One<Book>, author: One<Author> }
-    });
-    assert!(err.contains("says once"), "{err}");
-}
-
-#[test]
-fn a_field_named_after_the_pair_it_would_share_a_column_with_is_refused() {
-    let err = refused(quote! {
-        #[distinct(book, author)]
-        struct Authorship {
-            book: One<Book>,
-            author: One<Author>,
-            book_author: String,
-        }
-    });
-
-    assert!(
-        err.contains("is held in a column called `book_author`"),
-        "{err}"
-    );
-}
-
-#[test]
 fn every_table_can_take_a_row_out_by_writing_a_last_version_that_says_so() {
     let out = expanded(quote! {
         struct Book { title: String, year: u32 }
@@ -1020,45 +802,44 @@ fn an_entity_says_what_a_merge_keeps_of_the_versions_it_writes_over() {
 }
 
 #[test]
-fn a_merge_that_names_something_nobody_can_keep_is_refused() {
-    let err = refused(quote! {
-        #[merge(everything)]
-        struct Book { title: String }
-    });
-    assert!(
-        err.contains("`everything` is not something a merge keeps"),
-        "{err}"
-    );
-    assert!(err.contains("#[merge(history)]"), "{err}");
+fn unknown_merge_options_are_rejected() {
+    let err = refused(quote! { #[merge(everything)] struct Book { title: String } });
+    assert!(err.contains("with = path::function"), "{err}");
 }
 
 #[test]
-fn a_merge_names_one_thing_to_keep_and_an_entity_says_it_once() {
+fn invalid_or_duplicate_merge_options_are_rejected() {
     for asked in [
-        quote! {
-            #[merge]
-            struct Book { title: String }
-        },
-        quote! {
-            #[merge(newest, history)]
-            struct Book { title: String }
-        },
-        quote! {
-            #[merge()]
-            struct Book { title: String }
-        },
+        quote! { #[merge] struct Book { title: String } },
+        quote! { #[merge()] struct Book { title: String } },
+        quote! { #[merge(newest, history)] struct Book { title: String } },
+        quote! { #[merge(with = one, with = two)] struct Book { title: String } },
+        quote! { #[merge(with = 42)] struct Book { title: String } },
+        quote! { #[merge(with = "function")] struct Book { title: String } },
     ] {
-        let err = refused(asked);
-        assert!(
-            err.contains("#[merge] says what becomes of the versions"),
-            "{err}"
-        );
+        assert!(!refused(asked).is_empty());
     }
+    let twice =
+        refused(quote! { #[merge(newest)] #[merge(history)] struct Book { title: String } });
+    assert!(twice.contains("says once"));
+}
 
-    let twice = refused(quote! {
-        #[merge(newest)]
-        #[merge(history)]
-        struct Book { title: String }
-    });
-    assert!(twice.contains("says once what a merge keeps"), "{twice}");
+#[test]
+fn distinct_pair_constraints_are_rejected() {
+    let err = refused(
+        quote! { #[distinct(book, author)] struct Credit { book: One<Book>, author: One<Author> } },
+    );
+    assert!(err.contains("only entity UUIDs are unique"), "{err}");
+}
+
+#[test]
+fn a_merge_function_is_combined_with_independent_history_retention() {
+    let out = expanded(
+        quote! { #[merge(history)] #[merge(with = policies::combine)] struct Book { title: String, year: u32 } },
+    );
+    assert!(out.contains("struct BookValue"), "{out}");
+    assert!(out.contains("title : :: std :: string :: String"), "{out}");
+    assert!(out.contains("policies :: combine (& input)"), "{out}");
+    assert!(out.contains("Retention :: History"), "{out}");
+    assert!(!out.contains("# [merge"), "{out}");
 }

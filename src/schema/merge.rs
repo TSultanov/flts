@@ -21,11 +21,10 @@ pub struct Concurrent {
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub struct Collision {
-    pub column: &'static str,
-    pub key: Vec<u8>,
-    pub kept: Uuid,
-    pub dropped: Uuid,
+pub struct Combined {
+    pub entity: &'static str,
+    pub id: Uuid,
+    pub sources: Vec<Dot>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -38,22 +37,16 @@ pub struct ReferenceConflict {
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub enum Suppression {
-    Collision(Collision),
-    Reference(ReferenceConflict),
-}
-
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum RowStatus {
     Visible,
     Deleted,
-    Suppressed(Vec<Suppression>),
+    Suppressed(Vec<ReferenceConflict>),
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Conflict {
     Concurrent(Concurrent),
-    Collision(Collision),
+    Combined(Combined),
     Reference(ReferenceConflict),
 }
 
@@ -70,7 +63,7 @@ pub struct MergeReport {
     pub taken: usize,
     pub known: usize,
     pub concurrent: Vec<Concurrent>,
-    pub collided: Vec<Collision>,
+    pub combined: Vec<Combined>,
     pub references: Vec<ReferenceConflict>,
     pub visibility: Vec<VisibilityChange>,
     pub clock_changed: bool,
@@ -78,20 +71,12 @@ pub struct MergeReport {
 
 impl MergeReport {
     pub fn is_quiet(&self) -> bool {
-        self.concurrent.is_empty() && self.collided.is_empty() && self.references.is_empty()
+        self.concurrent.is_empty() && self.combined.is_empty() && self.references.is_empty()
     }
 
     pub fn changed_anything(&self) -> bool {
         self.taken > 0 || self.clock_changed || !self.visibility.is_empty()
     }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Taking {
-    Known,
-    Fresh,
-    Later,
-    Concurrent { kept: Dot, dropped: Dot },
 }
 
 #[cfg(test)]

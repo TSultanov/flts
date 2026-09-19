@@ -19,7 +19,6 @@ const FLOATS: &[&str] = &["f32", "f64"];
 pub enum Indexing {
     None,
     Shared,
-    Unique,
 }
 
 pub enum Kind {
@@ -105,8 +104,7 @@ fn asked_of(field: &syn::Field, kind: &Kind) -> syn::Result<(Indexing, Option<Ty
                 attr.span(),
                 format!(
                     "`{written}` is not an attribute a field of an entity takes, and this struct \
-                     becomes a tag, so it would be dropped without a word; #[index], \
-                     #[index(unique)] and #[through(..)] are the only ones"
+                     becomes a tag, so it would be dropped without a word; #[index] and #[through(..)] are the only ones"
                 ),
             ));
         }
@@ -116,7 +114,7 @@ fn asked_of(field: &syn::Field, kind: &Kind) -> syn::Result<(Indexing, Option<Ty
                 "this field is indexed already; one #[index] says all there is to say",
             ));
         }
-        asked = Some((attr, unique_or_shared(attr)?));
+        asked = Some((attr, indexing_of(attr)?));
     }
 
     let Some((attr, indexing)) = asked else {
@@ -162,31 +160,13 @@ fn one_table(attr: &syn::Attribute) -> syn::Result<Type> {
     }
 }
 
-fn unique_or_shared(attr: &syn::Attribute) -> syn::Result<Indexing> {
+fn indexing_of(attr: &syn::Attribute) -> syn::Result<Indexing> {
     match &attr.meta {
         syn::Meta::Path(_) => Ok(Indexing::Shared),
-        syn::Meta::NameValue(named) => Err(syn::Error::new(
-            named.span(),
-            "#[index] takes no value; write #[index] for a field rows may share and \
-             #[index(unique)] for one they may not",
+        _ => Err(syn::Error::new(
+            attr.span(),
+            "only entity UUIDs are unique; use #[index] for a nonunique lookup",
         )),
-        syn::Meta::List(_) => {
-            let args = attr.parse_args_with(
-                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
-            )?;
-            let mut args = args.into_iter();
-            match (args.next(), args.next()) {
-                (Some(syn::Meta::Path(only)), None) if only.is_ident("unique") => {
-                    Ok(Indexing::Unique)
-                }
-                (first, _) => Err(syn::Error::new(
-                    first
-                        .as_ref()
-                        .map_or_else(|| attr.span(), syn::spanned::Spanned::span),
-                    "`unique` is the only thing #[index] takes; write #[index] or #[index(unique)]",
-                )),
-            }
-        }
     }
 }
 
@@ -248,8 +228,7 @@ impl Kind {
         match indexing {
             Indexing::None => bare,
             _ => {
-                let unique = indexing == Indexing::Unique;
-                generated! { ::dbsync::schema::Indexed<#bare, #unique> }
+                generated! { ::dbsync::schema::Indexed<#bare> }
             }
         }
     }

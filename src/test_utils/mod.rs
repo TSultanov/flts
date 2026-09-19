@@ -24,7 +24,6 @@ pub fn is_merge_metadata<S: crate::schema::Store>(store: &S, name: &str) -> bool
                         | ColumnKind::Version
                         | ColumnKind::Clock
                         | ColumnKind::Ref { .. }
-                        | ColumnKind::Pair { .. }
                 )
         })
 }

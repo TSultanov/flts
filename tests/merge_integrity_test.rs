@@ -69,7 +69,7 @@ fn an_existing_dot_with_a_different_payload_is_rejected_without_mutation() -> Re
     update.commit()?;
     let other = Database::open(dir.path("b"))?;
     let clock = db.clock().clone();
-    let err = db.merge(&other).unwrap_err();
+    let err = db.merge_snapshot(&other).unwrap_err();
     assert!(err.is_corrupt(), "{err}");
     assert_eq!(db.items.text(id)?, "original");
     assert_eq!(*db.clock(), clock);
@@ -91,7 +91,7 @@ fn an_existing_dot_with_different_valid_ancestry_is_rejected() -> Result<()> {
     std::fs::copy(dir.path("a"), dir.path("b"))?;
     replace(&dir.path("b"), "item.version.parents", &[first, first])?;
     let other = Database::open(dir.path("b"))?;
-    assert!(db.merge(&other).unwrap_err().is_corrupt());
+    assert!(db.merge_snapshot(&other).unwrap_err().is_corrupt());
     assert_eq!(db.items.text(id)?, "three");
     assert_eq!(db.history(id)?.len(), 3);
     Ok(())
@@ -224,7 +224,7 @@ fn identical_concurrent_payloads_are_retained_without_a_value_conflict() -> Resu
     b.items.set_text(id, "same")?;
     a.commit(WriterId::from_raw(1))?;
     b.commit(WriterId::from_raw(2))?;
-    let report = a.merge(&b)?;
+    let report = a.merge_snapshot(&b)?;
     assert!(report.concurrent.is_empty());
     assert_eq!(a.history(id)?.len(), 3);
     assert_eq!(a.items.text(id)?, "same");

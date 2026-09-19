@@ -100,6 +100,13 @@ impl<P: Entity, C: Entity> RefColumn<P, C> {
 }
 
 impl<P: Entity, C: Entity> Column for RefColumn<P, C> {
+    fn append_value_bytes(&mut self, bytes: &[u8]) -> Result<usize> {
+        if bytes.len() != <Id<P> as Record>::SIZE {
+            return Err(Error::corrupt("reference", "invalid reference width"));
+        }
+        self.push(Id::<P>::decode(bytes))
+    }
+
     fn value_bytes(&self, row: Row) -> Result<Vec<u8>> {
         let mut out = Vec::new();
         super::encode_record(&self.get(row)?, &mut out);

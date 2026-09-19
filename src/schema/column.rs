@@ -17,16 +17,8 @@ pub enum ColumnKind {
     Clock,
     Bucket,
     Link,
-    Pair {
-        left: &'static str,
-        right: &'static str,
-    },
-    Ref {
-        parent: &'static str,
-    },
-    Enum {
-        name: &'static str,
-    },
+    Ref { parent: &'static str },
+    Enum { name: &'static str },
     Nullable(Box<ColumnKind>),
 }
 
@@ -68,6 +60,12 @@ impl Row {
 }
 
 pub trait Column {
+    fn append_value_bytes(&mut self, _bytes: &[u8]) -> Result<usize> {
+        Err(Error::unsupported(
+            "column does not accept logical row values",
+        ))
+    }
+
     fn value_bytes(&self, _row: Row) -> Result<Vec<u8>> {
         Err(Error::unsupported(
             "column does not expose its logical row value",
@@ -102,6 +100,16 @@ pub trait Column {
 }
 
 impl<T: Record> Column for Arena<T> {
+    fn append_value_bytes(&mut self, bytes: &[u8]) -> Result<usize> {
+        if bytes.len() != T::SIZE {
+            return Err(Error::corrupt(
+                "value",
+                "record width does not match column",
+            ));
+        }
+        self.push(T::decode(bytes))
+    }
+
     fn value_bytes(&self, row: Row) -> Result<Vec<u8>> {
         let mut out = Vec::new();
         super::encode_record(self.row(row.index())?, &mut out);

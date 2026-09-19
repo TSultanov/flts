@@ -13,7 +13,7 @@ use crate::test_utils::{TempDir, committed, flip_byte, props};
 const _: () = assert!(<TextKey as Record>::SIZE == 24);
 const _: () = assert!(<Maybe<u32> as Record>::SIZE == 5);
 
-fn titles(values: &[&str]) -> Indexed<TextColumn, false> {
+fn titles(values: &[&str]) -> Indexed<TextColumn> {
     let mut column = Indexed::named("book.title");
     for value in values {
         column.push(*value).unwrap();
@@ -21,7 +21,7 @@ fn titles(values: &[&str]) -> Indexed<TextColumn, false> {
     column
 }
 
-fn found(column: &Indexed<TextColumn, false>, value: &str) -> Vec<usize> {
+fn found(column: &Indexed<TextColumn>, value: &str) -> Vec<usize> {
     column
         .find(value)
         .unwrap()
@@ -30,7 +30,7 @@ fn found(column: &Indexed<TextColumn, false>, value: &str) -> Vec<usize> {
         .collect()
 }
 
-fn at(column: &Indexed<TextColumn, false>, row: usize) -> Row {
+fn at(column: &Indexed<TextColumn>, row: usize) -> Row {
     Row::of(row, Column::rows(column), "book.title").unwrap()
 }
 
@@ -151,7 +151,7 @@ fn an_index_over_a_value_survives_a_commit_and_a_reopen() {
     let column = titles(&["Alice", "Kokoro", "Alice"]);
     let file = committed(&path, |updater| column.offer_to("book", "title", updater));
 
-    let mut read: Indexed<TextColumn, false> = Indexed::named("book.title");
+    let mut read: Indexed<TextColumn> = Indexed::named("book.title");
     read.read_from("book", "title", &file).unwrap();
 
     assert_eq!(found(&read, "Alice"), [0, 2]);
@@ -178,7 +178,7 @@ fn a_column_whose_index_disagrees_with_it_is_rebuilt_when_it_is_read() {
     column.index = HashIndex::new("book.title".to_owned());
     let file = committed(&path, |updater| column.offer_to("book", "title", updater));
 
-    let mut read: Indexed<TextColumn, false> = Indexed::named("book.title");
+    let mut read: Indexed<TextColumn> = Indexed::named("book.title");
     read.read_from("book", "title", &file).unwrap();
 
     assert_eq!(found(&read, "Alice"), [0, 2]);
@@ -202,69 +202,8 @@ fn a_column_that_keys_by_a_digest_reads_a_row_back_before_it_says_it_matched() {
 }
 
 #[test]
-fn a_unique_column_refuses_a_value_another_row_already_holds() {
-    let mut isbns: Unique<NullableTextColumn> = Indexed::named("edition.isbn");
-    isbns.push(Some("978-0-19-955829-2")).unwrap();
-    isbns.push(None).unwrap();
-    isbns.push(None).unwrap();
-
-    isbns.refuse_duplicate(Some("978-0-14-243724-7")).unwrap();
-    isbns
-        .refuse_duplicate(None)
-        .expect("absence is not a value two rows may not share");
-
-    let err = isbns
-        .refuse_duplicate(Some("978-0-19-955829-2"))
-        .unwrap_err();
-    assert!(err.to_string().contains("edition.isbn"), "{err}");
-    assert!(err.to_string().contains("row 0"), "{err}");
-}
-
-#[test]
-fn a_unique_column_names_the_one_row_that_holds_a_value() {
-    let mut isbns: Unique<NullableTextColumn> = Indexed::named("edition.isbn");
-    isbns.push(Some("978-0-19-955829-2")).unwrap();
-    isbns.push(None).unwrap();
-
-    assert_eq!(
-        isbns
-            .find_one(Some("978-0-19-955829-2"))
-            .unwrap()
-            .map(Row::index),
-        Some(0)
-    );
-    assert_eq!(isbns.find_one(Some("978-0-14-243724-7")).unwrap(), None);
-    assert_eq!(
-        isbns.find_one(None).unwrap(),
-        None,
-        "many rows may be absent, so absence names no one row"
-    );
-}
-
-#[test]
-fn a_unique_column_lets_a_row_be_set_to_the_value_it_already_holds() {
-    let mut isbns: Unique<NullableTextColumn> = Indexed::named("edition.isbn");
-    isbns.push(Some("978-0-19-955829-2")).unwrap();
-    isbns.push(Some("978-0-14-243724-7")).unwrap();
-    let first = Row::of(0, 2, "edition.isbn").unwrap();
-    let second = Row::of(1, 2, "edition.isbn").unwrap();
-
-    isbns
-        .set(first, Some("978-0-19-955829-2"))
-        .expect("a row does not collide with itself");
-
-    let err = isbns.set(second, Some("978-0-19-955829-2")).unwrap_err();
-    assert!(err.to_string().contains("row 0"), "{err}");
-    assert_eq!(
-        isbns.column().get(second).unwrap().as_deref(),
-        Some("978-0-14-243724-7"),
-        "a refused set leaves the row the value it had"
-    );
-}
-
-#[test]
 fn a_column_of_numbers_names_the_rows_that_hold_one() {
-    let mut years: Indexed<Arena<u32>, false> = Indexed::named("edition.year");
+    let mut years: Indexed<Arena<u32>> = Indexed::named("edition.year");
     for year in [1865u32, 1914, 1865, 2001] {
         years.push(year).unwrap();
     }
@@ -281,7 +220,7 @@ fn a_column_of_numbers_names_the_rows_that_hold_one() {
 
 #[test]
 fn a_column_of_absent_numbers_keeps_them_apart_from_the_zero_it_stores() {
-    let mut pages: Indexed<NullableColumn<u32>, false> = Indexed::named("edition.pages");
+    let mut pages: Indexed<NullableColumn<u32>> = Indexed::named("edition.pages");
     for count in [Some(0u32), None, Some(0), None] {
         pages.push(count).unwrap();
     }
@@ -308,7 +247,7 @@ fn a_column_of_absent_numbers_keeps_them_apart_from_the_zero_it_stores() {
 
 #[test]
 fn a_column_of_variants_names_the_rows_that_hold_one() {
-    let mut bindings: Indexed<EnumColumn<Binding>, false> = Indexed::named("edition.binding");
+    let mut bindings: Indexed<EnumColumn<Binding>> = Indexed::named("edition.binding");
     for binding in [Binding::Cloth, Binding::Paper, Binding::Cloth] {
         bindings.push(binding).unwrap();
     }
@@ -354,14 +293,14 @@ fn a_short_value_is_found_without_reading_one_byte_of_the_column_that_holds_it()
     let dir = TempDir::new("indexed_cold");
     let path = dir.join("books.dbs");
 
-    let mut column: Indexed<TextColumn, false> = Indexed::named("book.title");
+    let mut column: Indexed<TextColumn> = Indexed::named("book.title");
     for row in 0..6000 {
         column.push(&format!("title number {row}")).unwrap();
     }
     let file = committed(&path, |updater| column.offer_to("book", "title", updater));
     drop(file);
 
-    let mut read: Indexed<TextColumn, false> = Indexed::named("book.title");
+    let mut read: Indexed<TextColumn> = Indexed::named("book.title");
     read.read_from("book", "title", &ColumnFile::open(&path).unwrap())
         .unwrap();
     let mut cold = Vec::new();
@@ -400,7 +339,7 @@ fn a_long_value_is_confirmed_from_the_heap_and_not_from_the_column_it_indexes() 
     let dir = TempDir::new("indexed_long");
     let path = dir.join("books.dbs");
 
-    let mut column: Indexed<TextColumn, false> = Indexed::named("book.title");
+    let mut column: Indexed<TextColumn> = Indexed::named("book.title");
     for row in 0..6000 {
         column
             .push(&format!(
@@ -411,7 +350,7 @@ fn a_long_value_is_confirmed_from_the_heap_and_not_from_the_column_it_indexes() 
     let file = committed(&path, |updater| column.offer_to("book", "title", updater));
     drop(file);
 
-    let mut read: Indexed<TextColumn, false> = Indexed::named("book.title");
+    let mut read: Indexed<TextColumn> = Indexed::named("book.title");
     read.read_from("book", "title", &ColumnFile::open(&path).unwrap())
         .unwrap();
 
@@ -453,22 +392,6 @@ fn two_values_that_begin_alike_are_still_two_values() {
 }
 
 #[test]
-fn a_column_no_two_rows_may_share_refuses_a_value_that_is_there_whatever_its_shape() {
-    let mut column: Unique<TextColumn> = Indexed::named("book.title");
-    column.push("Alice").unwrap();
-    column.push("").unwrap();
-
-    let err = column.refuse_duplicate("Alice").unwrap_err();
-    assert!(err.to_string().contains("row 0"), "{err}");
-    let err = column.refuse_duplicate("").unwrap_err();
-    assert!(
-        err.to_string().contains("row 1"),
-        "a column with nothing in it still holds a value: {err}"
-    );
-    column.refuse_duplicate("Kokoro").unwrap();
-}
-
-#[test]
 fn a_column_rows_may_share_lets_a_row_be_set_to_a_value_another_row_holds() {
     let mut column = titles(&["Alice", "Kokoro"]);
 
@@ -484,7 +407,7 @@ fn a_column_rows_may_share_lets_a_row_be_set_to_a_value_another_row_holds() {
 fn an_optional_string_is_indexed_by_the_whole_of_a_value_too_long_to_carry() {
     let first = "an isbn-like value far longer than twenty bytes, one";
     let second = "an isbn-like value far longer than twenty bytes, two";
-    let mut column: Indexed<NullableTextColumn, false> = Indexed::named("edition.isbn");
+    let mut column: Indexed<NullableTextColumn> = Indexed::named("edition.isbn");
     for value in [Some(first), None, Some(second), Some(first)] {
         column.push(value).unwrap();
     }
@@ -505,7 +428,7 @@ fn an_optional_string_is_indexed_by_the_whole_of_a_value_too_long_to_carry() {
 #[test]
 fn an_optional_string_moved_off_a_row_leaves_no_trace_under_what_it_left() {
     let long = "an isbn-like value far longer than twenty bytes";
-    let mut column: Indexed<NullableTextColumn, false> = Indexed::named("edition.isbn");
+    let mut column: Indexed<NullableTextColumn> = Indexed::named("edition.isbn");
     for value in [Some(long), None] {
         column.push(value).unwrap();
     }
@@ -528,7 +451,7 @@ fn an_optional_string_moved_off_a_row_leaves_no_trace_under_what_it_left() {
 #[test]
 fn an_index_over_an_optional_string_is_rebuilt_from_the_column_that_holds_it() {
     let long = "an isbn-like value far longer than twenty bytes";
-    let mut column: Indexed<NullableTextColumn, false> = Indexed::named("edition.isbn");
+    let mut column: Indexed<NullableTextColumn> = Indexed::named("edition.isbn");
     for value in [Some(long), None, Some("short")] {
         column.push(value).unwrap();
     }
@@ -547,13 +470,13 @@ fn an_optional_number_keeps_its_index_across_a_commit_and_a_reopen() {
     let dir = TempDir::new("indexed_maybe");
     let path = dir.join("editions.dbs");
 
-    let mut pages: Indexed<NullableColumn<u32>, false> = Indexed::named("edition.pages");
+    let mut pages: Indexed<NullableColumn<u32>> = Indexed::named("edition.pages");
     for count in [Some(7u32), None, Some(7), Some(0)] {
         pages.push(count).unwrap();
     }
     let file = committed(&path, |updater| pages.offer_to("edition", "pages", updater));
 
-    let mut read: Indexed<NullableColumn<u32>, false> = Indexed::named("edition.pages");
+    let mut read: Indexed<NullableColumn<u32>> = Indexed::named("edition.pages");
     read.read_from("edition", "pages", &file).unwrap();
 
     let rows = |value| -> Vec<usize> {
@@ -571,7 +494,7 @@ fn an_optional_number_keeps_its_index_across_a_commit_and_a_reopen() {
 
 #[test]
 fn an_optional_number_moved_off_a_row_leaves_no_trace_under_what_it_left() {
-    let mut pages: Indexed<NullableColumn<u32>, false> = Indexed::named("edition.pages");
+    let mut pages: Indexed<NullableColumn<u32>> = Indexed::named("edition.pages");
     for count in [Some(7u32), None] {
         pages.push(count).unwrap();
     }
@@ -587,7 +510,7 @@ fn an_optional_number_moved_off_a_row_leaves_no_trace_under_what_it_left() {
 
 #[test]
 fn an_index_over_an_optional_number_is_rebuilt_from_the_column_that_holds_it() {
-    let mut pages: Indexed<NullableColumn<u32>, false> = Indexed::named("edition.pages");
+    let mut pages: Indexed<NullableColumn<u32>> = Indexed::named("edition.pages");
     for count in [Some(7u32), None, Some(0)] {
         pages.push(count).unwrap();
     }
@@ -603,7 +526,7 @@ fn an_index_over_an_optional_number_is_rebuilt_from_the_column_that_holds_it() {
 
 #[test]
 fn a_variant_moved_off_a_row_leaves_no_trace_under_the_one_it_left() {
-    let mut bindings: Indexed<EnumColumn<Binding>, false> = Indexed::named("edition.binding");
+    let mut bindings: Indexed<EnumColumn<Binding>> = Indexed::named("edition.binding");
     for binding in [Binding::Cloth, Binding::Paper] {
         bindings.push(binding).unwrap();
     }
@@ -618,7 +541,7 @@ fn a_variant_moved_off_a_row_leaves_no_trace_under_the_one_it_left() {
 
 #[test]
 fn an_index_over_a_variant_is_rebuilt_from_the_column_that_holds_it() {
-    let mut bindings: Indexed<EnumColumn<Binding>, false> = Indexed::named("edition.binding");
+    let mut bindings: Indexed<EnumColumn<Binding>> = Indexed::named("edition.binding");
     for binding in [Binding::Cloth, Binding::Paper, Binding::Cloth] {
         bindings.push(binding).unwrap();
     }
@@ -639,7 +562,7 @@ fn an_index_over_a_variant_is_rebuilt_from_the_column_that_holds_it() {
 
 #[test]
 fn a_number_moved_off_a_row_leaves_no_trace_under_the_number_it_left() {
-    let mut years: Indexed<Arena<u32>, false> = Indexed::named("edition.year");
+    let mut years: Indexed<Arena<u32>> = Indexed::named("edition.year");
     for year in [1865u32, 1914] {
         years.push(year).unwrap();
     }
@@ -670,7 +593,7 @@ fn touching_the_tail_of_an_indexed_column_reaches_the_index_as_well_as_the_colum
 
     flip_byte(&path, tail.offset);
 
-    let mut read: Indexed<TextColumn, false> = Indexed::named("book.title");
+    let mut read: Indexed<TextColumn> = Indexed::named("book.title");
     read.read_from("book", "title", &ColumnFile::open(&path).unwrap())
         .unwrap();
 
@@ -683,14 +606,14 @@ fn making_room_in_an_indexed_column_reads_the_links_a_growth_would_rehash() {
     let dir = TempDir::new("indexed_room");
     let path = dir.join("books.dbs");
 
-    let mut column: Indexed<TextColumn, false> = Indexed::named("book.title");
+    let mut column: Indexed<TextColumn> = Indexed::named("book.title");
     for row in 0..4096 {
         column.push(&format!("title number {row}")).unwrap();
     }
     let file = committed(&path, |updater| column.offer_to("book", "title", updater));
     drop(file);
 
-    let mut read: Indexed<TextColumn, false> = Indexed::named("book.title");
+    let mut read: Indexed<TextColumn> = Indexed::named("book.title");
     read.read_from("book", "title", &ColumnFile::open(&path).unwrap())
         .unwrap();
     read.make_room(4097).unwrap();
@@ -722,26 +645,9 @@ fn an_optional_column_that_keys_by_a_digest_reads_a_row_back_before_it_says_it_m
 }
 
 #[test]
-fn a_unique_column_of_optional_numbers_lets_every_row_be_absent_but_none_agree() {
-    let mut pages: Unique<NullableColumn<u32>> = Indexed::named("edition.pages");
-    pages.push(Some(7u32)).unwrap();
-    pages.push(None).unwrap();
-    pages.push(None).unwrap();
-
-    pages
-        .refuse_duplicate(None)
-        .expect("absence is not a value two rows may not share");
-    pages.refuse_duplicate(Some(8)).unwrap();
-
-    let err = pages.refuse_duplicate(Some(7)).unwrap_err();
-    assert!(err.to_string().contains("edition.pages"), "{err}");
-    assert!(err.to_string().contains("row 0"), "{err}");
-}
-
-#[test]
 fn a_long_value_a_row_repeats_is_stored_once_and_not_again() {
     let long = "a title far longer than twenty bytes";
-    let mut column: Indexed<TextColumn, false> = Indexed::named("book.title");
+    let mut column: Indexed<TextColumn> = Indexed::named("book.title");
 
     column.push(long).unwrap();
     let after_first = column.column().heap_len();
@@ -759,7 +665,7 @@ fn a_long_value_a_row_repeats_is_stored_once_and_not_again() {
 
 #[test]
 fn a_short_value_a_row_repeats_is_stored_again_because_nothing_reads_it_back() {
-    let mut column: Indexed<TextColumn, false> = Indexed::named("book.title");
+    let mut column: Indexed<TextColumn> = Indexed::named("book.title");
 
     column.push("Alice").unwrap();
     let after_first = column.column().heap_len();
@@ -795,7 +701,7 @@ fn a_long_value_many_rows_share_is_confirmed_from_one_chunk_of_the_heap() {
     let path = dir.join("books.dbs");
 
     let shared = "a title far longer than twenty bytes, shared by many rows";
-    let mut column: Indexed<TextColumn, false> = Indexed::named("book.title");
+    let mut column: Indexed<TextColumn> = Indexed::named("book.title");
     for row in 0..6000 {
         match row % 3 {
             0 => column.push(shared).unwrap(),
@@ -809,7 +715,7 @@ fn a_long_value_many_rows_share_is_confirmed_from_one_chunk_of_the_heap() {
     let file = committed(&path, |updater| column.offer_to("book", "title", updater));
     drop(file);
 
-    let mut read: Indexed<TextColumn, false> = Indexed::named("book.title");
+    let mut read: Indexed<TextColumn> = Indexed::named("book.title");
     read.read_from("book", "title", &ColumnFile::open(&path).unwrap())
         .unwrap();
 
@@ -838,7 +744,7 @@ fn a_long_value_many_rows_share_is_confirmed_from_one_chunk_of_the_heap() {
 #[test]
 fn a_long_optional_value_a_row_repeats_is_stored_once_and_not_again() {
     let long = "an isbn-like value far longer than twenty bytes";
-    let mut column: Indexed<NullableTextColumn, false> = Indexed::named("edition.isbn");
+    let mut column: Indexed<NullableTextColumn> = Indexed::named("edition.isbn");
 
     column.push(Some(long)).unwrap();
     let after_first = column.column().heap_len();
@@ -867,7 +773,7 @@ fn a_push_onto_a_column_whose_rows_share_nothing_never_walks_the_bucket_it_lands
     let dir = TempDir::new("indexed_no_walk");
     let path = dir.join("editions.dbs");
 
-    let mut years: Indexed<Arena<u32>, false> = Indexed::named("edition.year");
+    let mut years: Indexed<Arena<u32>> = Indexed::named("edition.year");
     for _ in 0..6000 {
         years.push(1865).unwrap();
     }
@@ -880,7 +786,7 @@ fn a_push_onto_a_column_whose_rows_share_nothing_never_walks_the_bucket_it_lands
     let file = committed(&path, |updater| years.offer_to("edition", "year", updater));
     drop(file);
 
-    let mut read: Indexed<Arena<u32>, false> = Indexed::named("edition.year");
+    let mut read: Indexed<Arena<u32>> = Indexed::named("edition.year");
     read.read_from("edition", "year", &ColumnFile::open(&path).unwrap())
         .unwrap();
     read.push(alongside).unwrap();
@@ -903,14 +809,14 @@ fn reaching_for_a_value_reads_the_bucket_a_push_of_it_would_write() {
     let dir = TempDir::new("indexed_reach");
     let path = dir.join("books.dbs");
 
-    let mut column: Indexed<TextColumn, false> = Indexed::named("book.title");
+    let mut column: Indexed<TextColumn> = Indexed::named("book.title");
     for row in 0..8193 {
         column.push(&format!("title number {row}")).unwrap();
     }
     let file = committed(&path, |updater| column.offer_to("book", "title", updater));
     drop(file);
 
-    let mut read: Indexed<TextColumn, false> = Indexed::named("book.title");
+    let mut read: Indexed<TextColumn> = Indexed::named("book.title");
     read.read_from("book", "title", &ColumnFile::open(&path).unwrap())
         .unwrap();
     let mut cold = Vec::new();
@@ -949,11 +855,11 @@ struct Held {
 
 #[derive(Clone)]
 struct Shelf {
-    title: Indexed<TextColumn, false>,
-    isbn: Unique<NullableTextColumn>,
-    year: Indexed<Arena<u32>, false>,
-    pages: Indexed<NullableColumn<u32>, false>,
-    binding: Indexed<EnumColumn<Binding>, false>,
+    title: Indexed<TextColumn>,
+    isbn: Indexed<NullableTextColumn>,
+    year: Indexed<Arena<u32>>,
+    pages: Indexed<NullableColumn<u32>>,
+    binding: Indexed<EnumColumn<Binding>>,
 }
 
 impl Default for Shelf {
@@ -1049,14 +955,6 @@ fn wrapped(at: usize, rows: usize) -> Option<usize> {
     (rows > 0).then(|| at % rows)
 }
 
-fn claimed(model: &[Held], isbn: &Option<String>, but: Option<usize>) -> bool {
-    isbn.is_some()
-        && model
-            .iter()
-            .enumerate()
-            .any(|(row, held)| Some(row) != but && held.isbn == *isbn)
-}
-
 fn shelved(deeds: &[Deed]) -> (Shelf, Vec<Held>, Ever) {
     let mut shelf = Shelf::default();
     let mut model: Vec<Held> = Vec::new();
@@ -1065,13 +963,6 @@ fn shelved(deeds: &[Deed]) -> (Shelf, Vec<Held>, Ever) {
     for deed in deeds {
         match deed {
             Deed::Shelve(wanted) => {
-                let taken = claimed(&model, &wanted.isbn, None);
-                let refused = shelf.isbn.refuse_duplicate(wanted.isbn.as_deref()).is_err();
-                assert_eq!(refused, taken, "{wanted:?} against {model:?}");
-                if refused {
-                    continue;
-                }
-
                 shelf.title.push(&wanted.title).unwrap();
                 shelf.isbn.push(wanted.isbn.as_deref()).unwrap();
                 shelf.year.push(wanted.year).unwrap();
@@ -1093,13 +984,9 @@ fn shelved(deeds: &[Deed]) -> (Shelf, Vec<Held>, Ever) {
             }
             Deed::Reissue(at, isbn) => {
                 if let Some(row) = wrapped(*at, model.len()) {
-                    let taken = claimed(&model, isbn, Some(row));
-                    let said = shelf.isbn.set(Row::trusted(row), isbn.as_deref());
-                    assert_eq!(said.is_err(), taken, "{isbn:?} onto row {row} of {model:?}");
-                    if said.is_ok() {
-                        ever.isbns.push(isbn.clone());
-                        model[row].isbn = isbn.clone();
-                    }
+                    shelf.isbn.set(Row::trusted(row), isbn.as_deref()).unwrap();
+                    ever.isbns.push(isbn.clone());
+                    model[row].isbn = isbn.clone();
                 }
             }
             Deed::Redate(at, year) => {
@@ -1237,41 +1124,11 @@ proptest! {
     }
 
     #[test]
-    fn a_column_no_two_rows_may_share_refuses_exactly_the_values_it_already_holds(
-        deeds in deeds(),
-        wanted in props::indexable_optional_text(),
-    ) {
+    fn an_index_returns_every_matching_optional_value(deeds in deeds(), wanted in props::indexable_optional_text()) {
         let (shelf, model, _) = shelved(&deeds);
-
-        prop_assert_eq!(shelf.isbn.find_one(None).unwrap(), None);
-        prop_assert!(shelf.isbn.refuse_duplicate(None).is_ok());
-        prop_assert_eq!(
-            seated(shelf.isbn.find(None).unwrap()),
-            holding(&model, |row| row.isbn.is_none()),
-            "an absent value is a key for the finder that names many rows"
-        );
-
         for isbn in model.iter().map(|row| row.isbn.clone()).chain([wanted]) {
             let sought = isbn.as_deref();
-            let held = holding(&model, |row| row.isbn.as_deref() == sought);
-            let one = match sought {
-                None => None,
-                Some(_) => held.first().copied(),
-            };
-
-            prop_assert_eq!(
-                shelf.isbn.find_one(sought).unwrap().map(Row::index),
-                one,
-                "shelf.isbn names another row for {:?}",
-                sought
-            );
-            prop_assert_eq!(
-                shelf.isbn.refuse_duplicate(sought).is_err(),
-                one.is_some(),
-                "shelf.isbn refuses the wrong values around {:?}",
-                sought
-            );
-            prop_assert!(held.len() <= 1 || sought.is_none());
+            prop_assert_eq!(seated(shelf.isbn.find(sought).unwrap()), holding(&model, |row| row.isbn.as_deref() == sought));
         }
     }
 
@@ -1307,7 +1164,7 @@ proptest! {
         again in 1usize..5,
         at in props::row_index(),
     ) {
-        let mut column: Indexed<TextColumn, false> = Indexed::named("shelf.title");
+        let mut column: Indexed<TextColumn> = Indexed::named("shelf.title");
         column.push(&value).unwrap();
         let once = column.column().heap_len();
 
@@ -1342,14 +1199,14 @@ fn after_a_cold_find(values: &[String], sought: &str, named: &str) -> Vec<Reside
     let dir = TempDir::new(named);
     let path = dir.join("shelf.dbs");
 
-    let mut column: Indexed<TextColumn, false> = Indexed::named("shelf.title");
+    let mut column: Indexed<TextColumn> = Indexed::named("shelf.title");
     for value in values {
         column.push(value).unwrap();
     }
     let file = committed(&path, |updater| column.offer_to("shelf", "title", updater));
     drop(file);
 
-    let mut read: Indexed<TextColumn, false> = Indexed::named("shelf.title");
+    let mut read: Indexed<TextColumn> = Indexed::named("shelf.title");
     read.read_from("shelf", "title", &ColumnFile::open(&path).unwrap())
         .unwrap();
 

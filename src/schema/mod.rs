@@ -12,9 +12,9 @@ mod indexed;
 mod merge;
 mod names;
 mod nullable;
-mod pair;
 mod projection;
 mod reference;
+mod resolved;
 mod store;
 mod table;
 mod text;
@@ -31,16 +31,16 @@ pub use entry::{Across, Children, Entry, EntryMut, Rows};
 pub use enums::{EnumColumn, UnitEnum};
 pub use identity::IdColumn;
 pub use index::{HashIndex, IndexKey, Keys};
-pub use indexed::{Indexed, Keyed, Unique};
+pub use indexed::{Indexed, Keyed};
 pub use merge::{
-    Collision, Concurrent, Conflict, MergeReport, ReferenceConflict, RevisionRecord, RowStatus,
-    Suppression, Taking, VisibilityChange,
+    Combined, Concurrent, Conflict, MergeReport, ReferenceConflict, RevisionRecord, RowStatus,
+    VisibilityChange,
 };
 pub use names::{bucket_name, heap_name, link_name, presence_name, qualified};
 pub use nullable::{Maybe, NullableColumn};
-pub use pair::{Distinct, Pair, PairColumn, check_pairs};
-pub use projection::{Candidate, Claim, Reference, View, encode_record, encode_text};
+pub use projection::{Candidate, Reference, View, encode_record, encode_text};
 pub use reference::RefColumn;
+pub use resolved::{MergeCandidate, MergeInput, Resolved, RevisionAncestry};
 pub use store::{CLOCK, Recovery, SCHEMA, Store, StoreState};
 pub use table::{AnyTable, Table};
 pub use text::{NullableTextColumn, TextColumn, TextKey};

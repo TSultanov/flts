@@ -3,17 +3,13 @@
 use super::column::{Column, ColumnSpec, Residency, Row};
 use super::index::IndexKey;
 use super::index::{HashIndex, Keys};
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::storage::{Arena, ColumnFile, ColumnFileUpdater};
 
 pub trait Keyed: Column + Keys + Default + Clone {
     type Seek<'a>: Copy;
 
     fn key_for(value: Self::Seek<'_>) -> Self::Key;
-
-    fn absent(_value: Self::Seek<'_>) -> bool {
-        false
-    }
 
     fn shares_bytes(_key: Self::Key) -> bool {
         false
@@ -51,15 +47,13 @@ impl<T: IndexKey> Keyed for Arena<T> {
     }
 }
 
-pub type Unique<C> = Indexed<C, true>;
-
-pub struct Indexed<C: Keyed, const UNIQUE: bool> {
+pub struct Indexed<C: Keyed> {
     column: C,
     index: HashIndex<C::Key>,
     name: String,
 }
 
-impl<C: Keyed, const UNIQUE: bool> Clone for Indexed<C, UNIQUE> {
+impl<C: Keyed> Clone for Indexed<C> {
     fn clone(&self) -> Self {
         Self {
             column: self.column.clone(),
@@ -69,7 +63,7 @@ impl<C: Keyed, const UNIQUE: bool> Clone for Indexed<C, UNIQUE> {
     }
 }
 
-impl<C: Keyed, const UNIQUE: bool> Indexed<C, UNIQUE> {
+impl<C: Keyed> Indexed<C> {
     pub fn named(column: &str) -> Self {
         Self {
             column: C::default(),
@@ -97,27 +91,9 @@ impl<C: Keyed, const UNIQUE: bool> Indexed<C, UNIQUE> {
     }
 
     pub fn set(&mut self, row: Row, value: C::Seek<'_>) -> Result<()> {
-        let claimed = match UNIQUE && !C::absent(value) {
-            true => self.one(value)?.filter(|held| *held != row),
-            false => None,
-        };
-        if let Some(held) = claimed {
-            return Err(self.taken(held));
-        }
         let shared = self.already_here(value)?;
         let key = self.column.write(row, value, shared)?;
         self.index.repoint_row(row.index(), key)
-    }
-
-    pub fn rows_holding(&self, value: C::Seek<'_>) -> Result<Vec<Row>> {
-        match C::absent(value) {
-            true => Ok(Vec::new()),
-            false => self.find(value),
-        }
-    }
-
-    pub fn taken_by(&self, held: Row) -> Error {
-        self.taken(held)
     }
 
     pub fn find(&self, value: C::Seek<'_>) -> Result<Vec<Row>> {
@@ -149,15 +125,6 @@ impl<C: Keyed, const UNIQUE: bool> Indexed<C, UNIQUE> {
         Ok(shared)
     }
 
-    fn one(&self, value: C::Seek<'_>) -> Result<Option<Row>> {
-        match self.index.row_where(C::key_for(value), |row, key| {
-            self.really_holds(row, key, value)
-        })? {
-            Some(row) => self.at(row).map(Some),
-            None => Ok(None),
-        }
-    }
-
     fn really_holds(&self, row: usize, key: C::Key, value: C::Seek<'_>) -> Result<bool> {
         self.at(row)?;
         self.column.holds(key, value)
@@ -166,46 +133,20 @@ impl<C: Keyed, const UNIQUE: bool> Indexed<C, UNIQUE> {
     fn at(&self, row: usize) -> Result<Row> {
         Row::of(row, Column::rows(&self.column), &self.name)
     }
-
-    fn taken(&self, held: Row) -> Error {
-        Error::invalid(format!(
-            "{} already holds row {}, and no two rows may share one value",
-            self.name,
-            held.index()
-        ))
-    }
 }
 
-impl<C: Keyed> Indexed<C, true> {
-    pub fn find_one(&self, value: C::Seek<'_>) -> Result<Option<Row>> {
-        match C::absent(value) {
-            true => Ok(None),
-            false => self.one(value),
-        }
+impl<C: Keyed> Column for Indexed<C> {
+    fn append_value_bytes(&mut self, bytes: &[u8]) -> Result<usize> {
+        let row = self.column.append_value_bytes(bytes)?;
+        self.index.append(self.column.key_at(row)?)
     }
 
-    pub fn refuse_duplicate(&self, value: C::Seek<'_>) -> Result<()> {
-        if C::absent(value) {
-            return Ok(());
-        }
-        match self.one(value)? {
-            Some(held) => Err(self.taken(held)),
-            None => Ok(()),
-        }
-    }
-}
-
-impl<C: Keyed, const UNIQUE: bool> Column for Indexed<C, UNIQUE> {
     fn value_bytes(&self, row: Row) -> Result<Vec<u8>> {
         self.column.value_bytes(row)
     }
 
     fn schema_type(&self) -> String {
-        if UNIQUE {
-            format!("unique {}", self.column.schema_type())
-        } else {
-            self.column.schema_type()
-        }
+        self.column.schema_type()
     }
 
     fn rows(&self) -> usize {

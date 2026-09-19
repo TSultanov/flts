@@ -378,22 +378,20 @@ fn a_snapshot_keeps_serving_the_generation_it_was_taken_at() {
 }
 
 #[test]
-fn a_snapshot_that_tries_to_commit_is_told_the_file_moved_on() {
-    let dir = TempDir::new("snapshot_conflict");
+fn a_stale_snapshot_automatically_preserves_newer_disk_rows() {
+    let dir = TempDir::new("snapshot_reconcile");
     let path = dir.join("library.dbs");
-
     let mut library = Library::create(&path, this_device()).unwrap();
     stock(&mut library);
     library.commit(this_device()).unwrap();
-
     let mut pinned = library.snapshot();
-    library.books.push("Kokoro", "Natsume Soseki").unwrap();
+    let added = library.books.push("Kokoro", "Natsume Soseki").unwrap();
     library.commit(this_device()).unwrap();
-
-    pinned.books.push("Alice again", "Lewis Carroll").unwrap();
-    let err = pinned.commit(this_device()).unwrap_err();
-    assert!(matches!(err, Error::Conflict { .. }), "{err}");
-    assert!(err.to_string().contains("moved to generation"), "{err}");
+    let local = pinned.books.push("Alice again", "Lewis Carroll").unwrap();
+    pinned.commit(this_device()).unwrap();
+    let reopened = Library::open(&path).unwrap();
+    assert_eq!(reopened.books.title(added).unwrap(), "Kokoro");
+    assert_eq!(reopened.books.title(local).unwrap(), "Alice again");
 }
 
 #[test]

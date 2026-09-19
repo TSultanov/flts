@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 #[dbsync::entity]
 struct Doc {
-    #[index(unique)]
+    #[index]
     key: String,
     title: String,
     body: String,
@@ -60,7 +60,7 @@ fn fork(dir: &std::path::Path, from: &str, to: &str) -> Result<Library> {
 }
 
 #[test]
-fn unique_collision_must_converge_when_winner_moves_away() -> Result<()> {
+fn different_ids_stay_independent_when_indexed_values_change() -> Result<()> {
     let dir = directory("collision");
     let mut base = Library::create(dir.join("base"), writer(1))?;
     commit(&mut base, 1)?;
@@ -75,16 +75,16 @@ fn unique_collision_must_converge_when_winner_moves_away() -> Result<()> {
     commit(&mut c, 4)?;
 
     let mut left = a.clone();
-    left.merge(&b)?;
-    left.merge(&c)?;
+    left.merge_snapshot(&b)?;
+    left.merge_snapshot(&c)?;
     let mut gathered = b.clone();
-    gathered.merge(&c)?;
+    gathered.merge_snapshot(&c)?;
     let mut right = a.clone();
-    right.merge(&gathered)?;
+    right.merge_snapshot(&gathered)?;
     left.audit()?;
     right.audit()?;
-    left.merge(&right)?;
-    right.merge(&left)?;
+    left.merge_snapshot(&right)?;
+    right.merge_snapshot(&left)?;
     assert_eq!(
         left.docs.live_row_of(x)?.is_some(),
         right.docs.live_row_of(x)?.is_some()
@@ -103,7 +103,7 @@ fn concurrent_field_edits_choose_one_complete_row() -> Result<()> {
     commit(&mut a, 1)?;
     b.docs.set_body(id, "new body")?;
     commit(&mut b, 2)?;
-    a.merge(&b)?;
+    a.merge_snapshot(&b)?;
     assert_eq!(a.docs.title(id)?, "original title");
     assert_eq!(a.docs.body(id)?, "new body");
     Ok(())
@@ -122,7 +122,7 @@ fn report_must_identify_the_actual_conflict_winner() -> Result<()> {
     commit(&mut b, 2)?;
     b.docs.set_title(id, "remote final")?;
     commit(&mut b, 2)?;
-    let report = a.merge(&b)?;
+    let report = a.merge_snapshot(&b)?;
     let winner = a.docs.versions().at(a.docs.row_of(id)?)?.dot();
     assert!(
         report
@@ -137,7 +137,7 @@ fn report_must_identify_the_actual_conflict_winner() -> Result<()> {
 mod newer {
     #[dbsync::entity]
     pub struct Doc {
-        #[index(unique)]
+        #[index]
         key: String,
         title: String,
         body: String,
@@ -170,7 +170,7 @@ fn old_schema_must_not_acknowledge_unmerged_entities() -> Result<()> {
 mod added_field {
     #[dbsync::entity]
     pub struct Doc {
-        #[index(unique)]
+        #[index]
         key: String,
         title: String,
         body: String,
@@ -197,23 +197,22 @@ fn old_schema_merge_must_not_break_new_schema_row_alignment() -> Result<()> {
 }
 
 #[test]
-fn same_device_commit_conflict_recovery_must_preserve_disk_edit() -> Result<()> {
-    let dir = directory("commit-conflict");
-    let mut a = Library::create(dir.join("a"), writer(1))?;
+fn a_same_device_stale_commit_preserves_both_sets_of_edits() -> Result<()> {
+    let dir = directory("stale_commit");
+    let mut a = Library::create(dir.join("db"), writer(1))?;
     let first = a.docs.push("first", "old first", "")?;
     let second = a.docs.push("second", "old second", "")?;
     commit(&mut a, 1)?;
-    let mut b = Library::open(dir.join("a"))?;
+    let mut b = Library::open(dir.join("db"))?;
     a.docs.set_title(first, "new first")?;
     commit(&mut a, 1)?;
     b.docs.set_title(second, "new second")?;
-    assert!(matches!(
-        commit(&mut b, 1),
-        Err(dbsync::Error::Conflict { .. })
-    ));
-    assert!(b.merge(&a).is_err());
-    assert_eq!(b.docs.title(first)?, "old first");
+    commit(&mut b, 1)?;
+    assert_eq!(b.docs.title(first)?, "new first");
     assert_eq!(b.docs.title(second)?, "new second");
+    let reloaded = Library::open(dir.join("db"))?;
+    assert_eq!(reloaded.docs.title(first)?, "new first");
+    assert_eq!(reloaded.docs.title(second)?, "new second");
     Ok(())
 }
 
@@ -239,13 +238,13 @@ fn control_plain_row_updates_converge_for_every_merge_order() -> Result<()> {
         [2, 1, 0],
     ] {
         let mut merged = replicas[order[0]].clone();
-        merged.merge(&replicas[order[1]])?;
-        merged.merge(&replicas[order[2]])?;
+        merged.merge_snapshot(&replicas[order[1]])?;
+        merged.merge_snapshot(&replicas[order[2]])?;
         assert_eq!(merged.docs.title(id)?, "edit-2");
         merged.audit()?;
         let count = merged.docs.rows();
         for replica in &replicas {
-            assert!(!merged.merge(replica)?.changed_anything());
+            assert!(!merged.merge_snapshot(replica)?.changed_anything());
         }
         assert_eq!(merged.docs.rows(), count);
     }
@@ -262,8 +261,8 @@ fn control_explicit_deletion_propagates_and_survives_stale_sync() -> Result<()> 
     let mut b = fork(&dir, "a", "b")?;
     b.remove(id)?;
     commit(&mut b, 2)?;
-    a.merge(&b)?;
-    a.merge(&stale)?;
+    a.merge_snapshot(&b)?;
+    a.merge_snapshot(&stale)?;
     commit(&mut a, 1)?;
     let reopened = Library::open(dir.join("a"))?;
     assert!(reopened.docs.live_row_of(id)?.is_none());
@@ -274,7 +273,7 @@ fn control_explicit_deletion_propagates_and_survives_stale_sync() -> Result<()> 
 mod relationships {
     #[dbsync::entity]
     pub struct Parent {
-        #[index(unique)]
+        #[index]
         name: String,
     }
     #[dbsync::entity]
@@ -296,28 +295,23 @@ mod relationships {
 }
 
 #[test]
-fn a_unique_parent_collision_hides_children_until_the_key_is_released() -> Result<()> {
-    let dir = directory("parent-collision");
+fn repeated_parent_names_do_not_hide_parents_or_children() -> Result<()> {
+    let dir = directory("parent-name");
     let mut a = relationships::Library::create(dir.join("a"), writer(1))?;
     std::fs::copy(dir.join("a"), dir.join("b"))?;
     let mut b = relationships::Library::open(dir.join("b"))?;
-    let older = a.parents.push("same")?;
-    let child = a.children.push(older, "retained child")?;
-    commit(&mut a, 1)?;
-    let newer = b.parents.push("same")?;
+    let first = a.parents.push("same")?;
+    let child = a.children.push(first, "child")?;
+    let second = b.parents.push("same")?;
     commit(&mut b, 2)?;
-    a.merge(&b)?;
-    assert!(a.at(older).is_err());
-    assert!(a.at(child).is_err());
-    assert_eq!(
-        a.at_hidden(child)?.parent_id::<relationships::Parent>()?,
-        older
-    );
-    assert_eq!(a.parents.find_by_name("same")?, Some(newer));
-    a.remove(newer)?;
-    assert_eq!(a.parents.find_by_name("same")?, Some(older));
-    assert_eq!(a.at(child)?.text()?, "retained child");
-    a.audit()?;
+    a.merge_from(dir.join("b"), writer(1))?;
+    assert!(a.at(first).is_ok());
+    assert!(a.at(second).is_ok());
+    assert!(a.at(child).is_ok());
+    assert_eq!(a.parents.find_by_name("same")?.len(), 2);
+    a.remove(second)?;
+    assert_eq!(a.parents.find_by_name("same")?, [first]);
+    assert_eq!(a.at(child)?.text()?, "child");
     Ok(())
 }
 
@@ -334,14 +328,14 @@ fn deletion_wins_concurrent_edits_and_restore_excludes_delayed_old_edits() -> Re
     commit(&mut a, 1)?;
     b.docs.set_title(id, "concurrent edit")?;
     commit(&mut b, 2)?;
-    a.merge(&b)?;
+    a.merge_snapshot(&b)?;
     assert_eq!(a.status(id)?, dbsync::schema::RowStatus::Deleted);
     assert!(a.docs.set_title(id, "implicit resurrection").is_err());
     a.restore(id, base)?;
     commit(&mut a, 1)?;
     delayed.docs.set_title(id, "late old edit")?;
     commit(&mut delayed, 3)?;
-    a.merge(&delayed)?;
+    a.merge_snapshot(&delayed)?;
     assert_eq!(a.docs.title(id)?, "base");
     assert_eq!(a.history(id)?.len(), 5);
     assert_eq!(a.at_version(id, base)?.title()?, "base");
@@ -366,11 +360,11 @@ fn a_restore_cannot_undo_an_unseen_concurrent_deletion() -> Result<()> {
     commit(&mut a, 1)?;
     b.remove(id)?;
     commit(&mut b, 2)?;
-    a.merge(&b)?;
+    a.merge_snapshot(&b)?;
     assert_eq!(a.status(id)?, dbsync::schema::RowStatus::Deleted);
     a.restore(id, dot)?;
     commit(&mut a, 1)?;
-    b.merge(&a)?;
+    b.merge_snapshot(&a)?;
     assert_eq!(b.docs.title(id)?, "base");
     Ok(())
 }
@@ -401,39 +395,30 @@ fn parent_restoration_reveals_a_transitively_hidden_subtree() -> Result<()> {
 }
 
 #[test]
-fn hidden_rows_can_be_repaired_and_value_conflicts_resolved_from_history() -> Result<()> {
-    let dir = directory("repair");
-    let mut a = Library::create(dir.join("a"), writer(1))?;
-    let mut b = fork(&dir, "a", "b")?;
-    let first = a.docs.push("same", "A", "")?;
-    commit(&mut a, 1)?;
-    b.docs.push("same", "B", "")?;
-    commit(&mut b, 2)?;
-    a.merge(&b)?;
-    assert!(a.at(first).is_err());
-    assert_eq!(a.at_hidden(first)?.title()?, "A");
-    assert!(!a.at_hidden(first)?.version()?.is_live());
-    assert!(a.at_hidden(first)?.version()?.is_current());
-    a.at_hidden_mut(first)?.set_key("different")?;
-    assert_eq!(a.at(first)?.title()?, "A");
-    commit(&mut a, 1)?;
-    let chosen = a.at(first)?.version()?.dot();
-    a.docs.set_title(first, "changed")?;
-    commit(&mut a, 1)?;
-    a.resolve(first, chosen)?;
-    assert_eq!(a.docs.title(first)?, "A");
-    commit(&mut a, 1)?;
-    assert_ne!(a.at(first)?.version()?.dot(), chosen);
-    assert_eq!(a.at_version(first, chosen)?.title()?, "A");
+fn a_historical_row_can_be_selected_as_an_explicit_new_edit() -> Result<()> {
+    let dir = directory("history_edit");
+    let mut db = Library::create(dir.join("db"), writer(1))?;
+    let id = db.docs.push("same", "A", "")?;
+    db.docs.push("same", "B", "")?;
+    commit(&mut db, 1)?;
+    let chosen = db.at(id)?.version()?.dot();
+    db.docs.set_title(id, "changed")?;
+    commit(&mut db, 1)?;
+    db.resolve(id, chosen)?;
+    commit(&mut db, 1)?;
+    assert_eq!(db.docs.title(id)?, "A");
+    assert_ne!(db.at(id)?.version()?.dot(), chosen);
+    assert_eq!(db.at_version(id, chosen)?.title()?, "A");
+    assert_eq!(db.all::<Doc>().count(), 2);
     Ok(())
 }
 
 mod multiple_keys {
     #[dbsync::entity]
     pub struct Item {
-        #[index(unique)]
+        #[index]
         first: String,
-        #[index(unique)]
+        #[index]
         second: Option<String>,
     }
     #[dbsync::container]
@@ -443,31 +428,13 @@ mod multiple_keys {
 }
 
 #[test]
-fn unique_keys_are_reserved_together_in_revision_order() -> Result<()> {
-    let dir = directory("multiple-keys");
-    let mut a = multiple_keys::Database::create(dir.join("a"), writer(1))?;
-    std::fs::copy(dir.join("a"), dir.join("b"))?;
-    std::fs::copy(dir.join("a"), dir.join("c"))?;
-    let mut b = multiple_keys::Database::open(dir.join("b"))?;
-    let mut c = multiple_keys::Database::open(dir.join("c"))?;
-    let first = a.items.push("x", Some("p"))?;
-    commit(&mut a, 1)?;
-    let second = b.items.push("y", Some("p"))?;
-    commit(&mut b, 2)?;
-    let third = c.items.push("y", Some("q"))?;
-    commit(&mut c, 3)?;
-    a.merge(&b)?;
-    a.merge(&c)?;
-    assert!(a.at(first).is_ok());
-    assert!(a.at(second).is_err());
-    assert!(a.at(third).is_ok());
-    assert_eq!(a.items.find_by_second(Some("p"))?, Some(first));
-    a.remove(third)?;
-    assert!(a.at(second).is_ok());
-    assert!(a.at(first).is_err());
-    a.items.push("n1", None)?;
-    a.items.push("n2", None)?;
-    a.audit()?;
+fn repeated_values_across_multiple_indexes_remain_independent() -> Result<()> {
+    let mut db = multiple_keys::Database::default();
+    let first = db.items.push("same", Some("same"))?;
+    let second = db.items.push("same", Some("same"))?;
+    assert_eq!(db.items.find_by_first("same")?, [first, second]);
+    assert_eq!(db.items.find_by_second(Some("same"))?, [first, second]);
+    db.audit()?;
     Ok(())
 }
 
@@ -518,7 +485,7 @@ fn parent_deletion_hides_concurrent_children() -> Result<()> {
     commit(&mut a, 1)?;
     let old_clock = a.clock().clone();
     let old_parents = a.parents.rows();
-    a.merge(&b)?;
+    a.merge_snapshot(&b)?;
     assert_ne!(*a.clock(), old_clock);
     assert_eq!(a.parents.rows(), old_parents);
     assert_eq!(a.children.rows(), 1);

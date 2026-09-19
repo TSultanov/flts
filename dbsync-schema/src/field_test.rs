@@ -160,25 +160,15 @@ fn refused_field(field: TokenStream) -> String {
 }
 
 #[test]
-fn a_field_says_whether_it_is_indexed_and_whether_two_rows_may_share_it() {
-    assert_eq!(field_of(quote!(title: String)).indexing, Indexing::None);
-    assert_eq!(
-        field_of(quote!(#[index] title: String)).indexing,
-        Indexing::Shared
-    );
-    assert_eq!(
-        field_of(quote!(#[index(unique)] isbn: String)).indexing,
-        Indexing::Unique
-    );
-    for indexable in [
-        quote!(#[index] year: u32),
-        quote!(#[index] pages: Option<u32>),
-        quote!(#[index] isbn: Option<String>),
-        quote!(#[index] binding: Binding),
-        quote!(#[index] borrowed: bool),
-    ] {
-        assert_eq!(field_of(indexable).indexing, Indexing::Shared);
-    }
+fn a_field_cannot_request_secondary_uniqueness() {
+    let err = Field::parse(
+        &syn::Field::parse_named
+            .parse2(quote!(#[index(unique)] isbn: String))
+            .unwrap(),
+    )
+    .err()
+    .unwrap();
+    assert!(err.to_string().contains("only entity UUIDs are unique"));
 }
 
 #[test]
@@ -208,14 +198,14 @@ fn an_index_asked_for_twice_or_asked_for_wrongly_is_refused() {
     assert!(err.contains("this field is indexed already"), "{err}");
 
     let err = refused_field(quote!(#[index = "yes"] title: String));
-    assert!(err.contains("takes no value"), "{err}");
+    assert!(err.contains("only entity UUIDs are unique"), "{err}");
 
     for wrong in [
         quote!(#[index(sorted)] title: String),
         quote!(#[index(unique, sorted)] title: String),
     ] {
         let err = refused_field(wrong);
-        assert!(err.contains("`unique` is the only thing"), "{err}");
+        assert!(err.contains("only entity UUIDs are unique"), "{err}");
     }
 }
 
@@ -224,7 +214,7 @@ fn a_field_an_index_could_not_answer_for_is_refused_where_it_is_asked() {
     for float in [
         quote!(#[index] score: f64),
         quote!(#[index] score: f32),
-        quote!(#[index(unique)] score: Option<f64>),
+        quote!(#[index] score: Option<f64>),
     ] {
         let err = refused_field(float);
         assert!(err.contains("NaN"), "{err}");

@@ -43,6 +43,14 @@ pub trait Entity: Sized + 'static {
 )]
 pub trait Child<P: Entity>: Entity + Sized {
     fn parents(table: &Self::Table) -> &RefColumn<P, Self>;
+
+    fn parent_at(table: &Self::Table, row: Row, _historical: bool) -> Result<Id<P>> {
+        Self::parents(table).get(row)
+    }
+
+    fn child_rows(table: &Self::Table, parent: Id<P>) -> Result<Vec<Row>> {
+        table.live_among(Self::parents(table).child_rows_of(parent)?)
+    }
 }
 
 pub trait Holds<E: Entity> {
@@ -80,7 +88,7 @@ where
     C: Child<P>,
 {
     let table = Holds::<C>::table(store);
-    Table::live_among(table, C::parents(table).child_rows_of(parent)?)
+    C::child_rows(table, parent)
 }
 
 pub fn across_rows_of<S, A, J, B>(store: &S, from: Id<A>) -> Result<Vec<Row>>
@@ -94,9 +102,9 @@ where
     let far = Holds::<B>::table(store);
     let mut reached = Vec::new();
 
-    let links = Table::live_among(joins, <J as Child<A>>::parents(joins).child_rows_of(from)?)?;
+    let links = <J as Child<A>>::child_rows(joins, from)?;
     for link in links {
-        let beyond = <J as Child<B>>::parents(joins).get(link)?;
+        let beyond = <J as Child<B>>::parent_at(joins, link, false)?;
         if let Some(row) = Table::live_row_of(far, beyond)? {
             reached.push(row);
         }

@@ -3,14 +3,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock};
 
-use super::{Collision, Conflict, Dot, ReferenceConflict, RowStatus, Suppression};
+use super::{Conflict, ReferenceConflict, RowStatus};
 use crate::{Error, Result, Uuid};
-
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub struct Claim {
-    pub column: &'static str,
-    pub value: Vec<u8>,
-}
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct Reference {
@@ -23,10 +17,7 @@ pub struct Reference {
 pub struct Candidate {
     pub entity: &'static str,
     pub id: Uuid,
-    pub dot: Dot,
-    pub pending: Option<usize>,
     pub deleted: bool,
-    pub claims: Vec<Claim>,
     pub references: Vec<Reference>,
 }
 
@@ -56,7 +47,7 @@ impl View {
     pub fn check_mutable(&self) -> Result<()> {
         if self.0.read().expect("view lock").blocked {
             return Err(Error::invalid(
-                "recover the uncertain commit before changing this store",
+                "retry commit or merge_from to finish the pending publication before changing this store",
             ));
         }
         Ok(())
@@ -87,39 +78,15 @@ impl View {
             return;
         }
         held.statuses.clear();
-        let mut candidates: Vec<_> = held.nodes.values().collect();
-        candidates.sort_by_key(|node| {
-            std::cmp::Reverse((node.pending.is_some(), node.pending, node.dot, node.id))
-        });
-        let mut claimed = BTreeMap::<Claim, Uuid>::new();
-        for node in candidates {
-            let key = (node.entity, node.id);
-            if node.deleted {
-                held.statuses.insert(key, RowStatus::Deleted);
-                continue;
-            }
-            let reasons: Vec<_> = node
-                .claims
-                .iter()
-                .filter_map(|claim| {
-                    claimed.get(claim).map(|kept| {
-                        Suppression::Collision(Collision {
-                            column: claim.column,
-                            key: claim.value.clone(),
-                            kept: *kept,
-                            dropped: node.id,
-                        })
-                    })
-                })
-                .collect();
-            if reasons.is_empty() {
-                for claim in &node.claims {
-                    claimed.insert(claim.clone(), node.id);
-                }
-                held.statuses.insert(key, RowStatus::Visible);
-            } else {
-                held.statuses.insert(key, RowStatus::Suppressed(reasons));
-            }
+        for node in held.nodes.values() {
+            held.statuses.insert(
+                (node.entity, node.id),
+                if node.deleted {
+                    RowStatus::Deleted
+                } else {
+                    RowStatus::Visible
+                },
+            );
         }
         loop {
             let hidden: BTreeSet<_> = held
@@ -140,13 +107,13 @@ impl View {
                         || (held.entities.contains(parent.entity)
                             && !held.nodes.contains_key(&(parent.entity, parent.id)))
                     {
-                        let reason = Suppression::Reference(ReferenceConflict {
+                        let reason = ReferenceConflict {
                             entity: node.entity,
                             id: node.id,
                             column: parent.column,
                             parent_entity: parent.entity,
                             parent: parent.id,
-                        });
+                        };
                         let status = held.statuses.get_mut(key).expect("candidate status");
                         if *status == RowStatus::Visible {
                             *status = RowStatus::Suppressed(Vec::new());
@@ -189,13 +156,9 @@ impl View {
         self.statuses()
             .into_values()
             .flat_map(|status| match status {
-                RowStatus::Suppressed(reasons) => reasons
-                    .into_iter()
-                    .map(|reason| match reason {
-                        Suppression::Collision(c) => Conflict::Collision(c),
-                        Suppression::Reference(r) => Conflict::Reference(r),
-                    })
-                    .collect(),
+                RowStatus::Suppressed(reasons) => {
+                    reasons.into_iter().map(Conflict::Reference).collect()
+                }
                 _ => Vec::new(),
             })
             .collect()

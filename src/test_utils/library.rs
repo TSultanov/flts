@@ -4,9 +4,9 @@ use std::ops::{Deref, DerefMut};
 use crate::error::{Error, Result};
 use crate::id::Id;
 use crate::schema::{
-    Across, AnyTable, Audited, Child, Children, Distinct, Entity, Entry, EntryMut, EnumColumn,
-    Field, FieldMut, Holds, NullableColumn, NullableTextColumn, Pair, RefColumn, Removed, Rows,
-    Store, StoreState, Table, TextColumn, UnitEnum, audit_reference, check_pairs,
+    Across, AnyTable, Audited, Child, Children, Entity, Entry, EntryMut, EnumColumn, Field,
+    FieldMut, Holds, NullableColumn, NullableTextColumn, RefColumn, Removed, Rows, Store,
+    StoreState, Table, TextColumn, UnitEnum, audit_reference,
 };
 use crate::schema::{IdColumn, Indexed, VersionColumn};
 use crate::storage::Arena;
@@ -147,7 +147,7 @@ impl UnitEnum for Binding {
 pub struct Books {
     ids: IdColumn<Book>,
     versions: VersionColumn<Book>,
-    title: Indexed<TextColumn, false>,
+    title: Indexed<TextColumn>,
     author: TextColumn,
 }
 
@@ -980,7 +980,7 @@ impl<S: Holds<Edition>> EditionRowMut<'_, S> {
 pub struct Authors {
     ids: IdColumn<Author>,
     versions: VersionColumn<Author>,
-    name: Indexed<TextColumn, false>,
+    name: Indexed<TextColumn>,
 }
 
 impl Default for Authors {
@@ -1129,7 +1129,6 @@ pub struct Authorships {
     versions: VersionColumn<Authorship>,
     book: RefColumn<Book, Authorship>,
     author: RefColumn<Author, Authorship>,
-    book_author: Distinct<Book, Author>,
 }
 
 impl Default for Authorships {
@@ -1139,7 +1138,6 @@ impl Default for Authorships {
             versions: VersionColumn::default(),
             book: RefColumn::named("authorship.book"),
             author: RefColumn::named("authorship.author"),
-            book_author: Indexed::named("authorship.book_author"),
         }
     }
 }
@@ -1183,7 +1181,6 @@ impl Table for Authorships {
             Field::new("version", &self.versions),
             Field::new("book", &self.book),
             Field::new("author", &self.author),
-            Field::new("book_author", &self.book_author),
         ]
     }
 
@@ -1193,7 +1190,6 @@ impl Table for Authorships {
             FieldMut::new("version", &mut self.versions),
             FieldMut::new("book", &mut self.book),
             FieldMut::new("author", &mut self.author),
-            FieldMut::new("book_author", &mut self.book_author),
         ]
     }
 }
@@ -1212,18 +1208,12 @@ impl Child<Author> for Authorship {
 
 impl Authorships {
     pub fn push(&mut self, book: Id<Book>, author: Id<Author>) -> Result<Id<Authorship>> {
-        let pair = Pair::of(book, author);
         self.reserve()?;
         self.book.reach(book)?;
         self.author.reach(author)?;
-        self.book_author.reach(pair)?;
-        if let Some(held) = self.live_one(self.book_author.rows_holding(pair)?)? {
-            return Err(self.book_author.taken_by(held));
-        }
         let id = self.mint()?;
         self.book.push(book)?;
         self.author.push(author)?;
-        self.book_author.push(pair)?;
         self.refresh_one(id)?;
         Ok(id)
     }
@@ -1242,21 +1232,12 @@ impl Authorships {
         book: Id<Book>,
         author: Id<Author>,
     ) -> Result<()> {
-        let pair = Pair::of(book, author);
         self.reserve()?;
-        let held = self.row_of(link)?;
         self.book.reach(book)?;
         self.author.reach(author)?;
-        self.book_author.reach(pair)?;
-        if let Some(taken) = self.live_one(self.book_author.rows_holding(pair)?)?
-            && taken != held
-        {
-            return Err(self.book_author.taken_by(taken));
-        }
         self.revise(link)?;
         self.book.push(book)?;
         self.author.push(author)?;
-        self.book_author.push(pair)?;
         self.refresh_one(link)
     }
 
@@ -1406,6 +1387,19 @@ impl Clone for Library {
 }
 
 impl Store for Library {
+    fn merge_rows_from(
+        &mut self,
+        theirs: &Self,
+        report: &mut crate::schema::MergeReport,
+    ) -> Result<()> {
+        self.books.merge_rows(&theirs.books, report)?;
+        self.chapters.merge_rows(&theirs.chapters, report)?;
+        self.paragraphs.merge_rows(&theirs.paragraphs, report)?;
+        self.editions.merge_rows(&theirs.editions, report)?;
+        self.authors.merge_rows(&theirs.authors, report)?;
+        self.authorships.merge_rows(&theirs.authorships, report)
+    }
+
     fn recovery(&self) -> Option<&crate::schema::Recovery<Self>> {
         self.recovery.as_deref()
     }
@@ -1527,7 +1521,6 @@ impl<S: Holds<Authorship> + Holds<Book> + Holds<Author>> Audited<S> for Authorsh
     fn audit_in(store: &S) -> Result<()> {
         let links = Holds::<Authorship>::table(store);
         Table::audit(links)?;
-        check_pairs::<Book, Author, Authorship>(&links.book_author, &links.book, &links.author)?;
         audit_reference::<S, Book, Authorship>(store)?;
         audit_reference::<S, Author, Authorship>(store)
     }
