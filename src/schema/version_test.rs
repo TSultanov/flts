@@ -283,7 +283,7 @@ fn a_version_column_names_itself_beside_the_rows_it_counts() {
     let mut told = Vec::new();
     Column::describe(&held, "book", "version", &mut told);
 
-    assert_eq!(told.len(), 1, "{told:?}");
+    assert_eq!(told.len(), 3, "{told:?}");
     assert_eq!(told[0].name, "book.version");
     assert_eq!(told[0].elem_size, 24);
     assert_eq!(told[0].kind, ColumnKind::Version);

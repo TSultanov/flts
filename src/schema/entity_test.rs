@@ -389,31 +389,18 @@ fn a_title_a_book_took_with_it_is_free_for_another_to_use() {
 }
 
 #[test]
-fn a_book_with_a_chapter_still_in_it_cannot_be_taken_out() {
+fn taking_out_a_book_hides_its_chapters() {
     let mut library = Library::default();
     let alice = library.books.push("Alice", "Lewis Carroll").unwrap();
-    library
+    let chapter = library
         .chapters
         .push(alice, "Down the Rabbit-Hole")
         .unwrap();
-    let before = Table::rows(&library.books);
-
-    let err = library
-        .remove(alice)
-        .expect_err("a chapter of a book that is gone belongs to nobody");
-
-    assert!(err.to_string().contains("cannot be taken out"), "{err}");
-    assert!(err.to_string().contains("was taken out of book"), "{err}");
-    assert!(
-        err.to_string().contains("chapter.book row 0"),
-        "the refusal names the column and the row that still points at it: {err}"
-    );
-    assert_eq!(
-        Table::rows(&library.books),
-        before,
-        "a refused removal leaves the table exactly as it was"
-    );
-    assert_eq!(library.all::<Book>().count(), 1);
+    library.remove(alice).unwrap();
+    assert_eq!(library.all::<Book>().count(), 0);
+    assert_eq!(library.all::<Chapter>().count(), 0);
+    assert!(library.chapters.live_row_of(chapter).unwrap().is_none());
+    assert_eq!(library.chapters.versions_of(chapter).unwrap().len(), 1);
     Store::audit(&library).unwrap();
 }
 

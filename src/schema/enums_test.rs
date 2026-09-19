@@ -13,6 +13,8 @@ enum Shelf {
 
 impl UnitEnum for Shelf {
     const NAME: &'static str = "shelf";
+    const VARIANTS: &'static [(&'static str, u8)] =
+        &[("Fiction", 0), ("Reference", 1), ("Rare", 2)];
 
     fn to_u8(self) -> u8 {
         self as u8

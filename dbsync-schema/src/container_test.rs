@@ -29,7 +29,14 @@ fn a_container_holds_one_table_per_set_and_the_state_of_its_file() {
         out.contains("chapters : < Chapter as :: dbsync :: schema :: Entity > :: Table"),
         "{out}"
     );
-    assert!(out.contains("# [derive (Default , Clone)]"), "{out}");
+    assert!(
+        out.contains("impl :: core :: default :: Default for Library"),
+        "{out}"
+    );
+    assert!(
+        out.contains("impl :: core :: clone :: Clone for Library"),
+        "{out}"
+    );
 }
 
 #[test]

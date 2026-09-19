@@ -153,6 +153,12 @@ impl TextColumn {
 }
 
 impl Column for TextColumn {
+    fn value_bytes(&self, row: Row) -> Result<Vec<u8>> {
+        let mut out = Vec::new();
+        super::encode_text(&self.get(row)?, &mut out);
+        Ok(out)
+    }
+
     fn rows(&self) -> usize {
         self.blobs.len()
     }
@@ -242,6 +248,15 @@ impl NullableTextColumn {
 }
 
 impl Column for NullableTextColumn {
+    fn value_bytes(&self, row: Row) -> Result<Vec<u8>> {
+        let value = self.get(row)?;
+        let mut out = vec![u8::from(value.is_some())];
+        if let Some(value) = value {
+            super::encode_text(&value, &mut out);
+        }
+        Ok(out)
+    }
+
     fn rows(&self) -> usize {
         self.blobs.len()
     }

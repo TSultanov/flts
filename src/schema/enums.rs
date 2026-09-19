@@ -12,6 +12,7 @@ use crate::storage::{Arena, ColumnFile, ColumnFileUpdater};
 
 pub trait UnitEnum: Copy + 'static {
     const NAME: &'static str;
+    const VARIANTS: &'static [(&'static str, u8)];
 
     fn to_u8(self) -> u8;
 
@@ -48,6 +49,14 @@ impl<E: UnitEnum> EnumColumn<E> {
 }
 
 impl<E: UnitEnum> Column for EnumColumn<E> {
+    fn value_bytes(&self, row: Row) -> Result<Vec<u8>> {
+        Ok(vec![self.get(row)?.to_u8()])
+    }
+
+    fn schema_type(&self) -> String {
+        format!("enum {} {:?}", E::NAME, E::VARIANTS)
+    }
+
     fn rows(&self) -> usize {
         self.codes.len()
     }

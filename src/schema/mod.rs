@@ -13,6 +13,7 @@ mod merge;
 mod names;
 mod nullable;
 mod pair;
+mod projection;
 mod reference;
 mod store;
 mod table;
@@ -31,15 +32,19 @@ pub use enums::{EnumColumn, UnitEnum};
 pub use identity::IdColumn;
 pub use index::{HashIndex, IndexKey, Keys};
 pub use indexed::{Indexed, Keyed, Unique};
-pub use merge::{Collision, Concurrent, MergeReport, Taking};
+pub use merge::{
+    Collision, Concurrent, Conflict, MergeReport, ReferenceConflict, RevisionRecord, RowStatus,
+    Suppression, Taking, VisibilityChange,
+};
 pub use names::{bucket_name, heap_name, link_name, presence_name, qualified};
 pub use nullable::{Maybe, NullableColumn};
 pub use pair::{Distinct, Pair, PairColumn, check_pairs};
+pub use projection::{Candidate, Claim, Reference, View, encode_record, encode_text};
 pub use reference::RefColumn;
-pub use store::{CLOCK, Store, StoreState};
+pub use store::{CLOCK, Recovery, SCHEMA, Store, StoreState};
 pub use table::{AnyTable, Table};
 pub use text::{NullableTextColumn, TextColumn, TextKey};
-pub use version::{Dot, Version, VersionColumn};
+pub use version::{Dot, Parent, Version, VersionColumn};
 
 #[cfg(all(test, feature = "derive"))]
 #[path = "generated_test.rs"]
@@ -48,3 +53,6 @@ mod generated_test;
 #[cfg(all(test, feature = "derive"))]
 #[path = "declared_test.rs"]
 mod declared_test;
+
+#[cfg(all(test, feature = "derive"))]
+mod recovery_test;

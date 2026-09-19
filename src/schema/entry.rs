@@ -31,7 +31,7 @@ impl<'a, S: Holds<E>, E: Entity> Entry<'a, S, E> {
         Ok(Self::at_row(store, row))
     }
 
-    fn at_row(store: &'a S, row: Row) -> Self {
+    pub fn at_row(store: &'a S, row: Row) -> Self {
         Self {
             store,
             row,
@@ -45,6 +45,21 @@ impl<'a, S: Holds<E>, E: Entity> Entry<'a, S, E> {
 
     pub fn row(&self) -> Row {
         self.row
+    }
+
+    pub fn version(&self) -> Result<Version> {
+        self.table().versions().at(self.row)
+    }
+
+    pub fn parents(&self) -> Result<&[super::Parent]> {
+        self.table().versions().parents(self.row)
+    }
+
+    pub fn parent_id<P: Entity>(&self) -> Result<Id<P>>
+    where
+        E: Child<P>,
+    {
+        <E as Child<P>>::parents(self.table()).get(self.row)
     }
 
     pub fn store(&self) -> &'a S {
@@ -96,6 +111,15 @@ pub struct EntryMut<'a, S, E: Entity> {
 }
 
 impl<'a, S: Holds<E>, E: Entity> EntryMut<'a, S, E> {
+    pub fn hidden(store: &'a mut S, id: Id<E>) -> Result<Self> {
+        Table::logical_row_of(Holds::<E>::table(store), id)?;
+        Ok(Self {
+            store,
+            id,
+            marker: PhantomData,
+        })
+    }
+
     pub fn of(store: &'a mut S, id: Id<E>) -> Result<Self> {
         Table::row_of(Holds::<E>::table(store), id)?;
         Ok(Self {

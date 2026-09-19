@@ -107,6 +107,10 @@ impl<A: Entity, B: Entity> Clone for PairColumn<A, B> {
 }
 
 impl<A: Entity, B: Entity> Column for PairColumn<A, B> {
+    fn value_bytes(&self, row: Row) -> Result<Vec<u8>> {
+        self.pairs.value_bytes(row)
+    }
+
     fn rows(&self) -> usize {
         self.pairs.len()
     }

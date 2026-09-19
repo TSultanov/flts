@@ -12,6 +12,10 @@ pub(super) struct FileSource {
 }
 
 impl FileSource {
+    pub(super) fn from_file(file: File, path: PathBuf) -> Self {
+        Self { file, path }
+    }
+
     pub(super) fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         Ok(Self {

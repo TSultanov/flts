@@ -4,7 +4,7 @@ use super::column::Row;
 use super::entry::{Entry, EntryMut};
 use super::reference::RefColumn;
 use super::table::Table;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::id::Id;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -115,24 +115,6 @@ where
     let column = C::parents(mine);
     column.check_parents(Table::ids(parents))?;
 
-    let rows = Table::rows(mine);
-    for index in 0..rows {
-        let row = Row::of(index, rows, C::NAME)?;
-        let parent = column.get(row)?;
-        if parent.is_nil() || !Table::versions(mine).at(row)?.is_live() {
-            continue;
-        }
-        if Table::live_row_of(parents, parent)?.is_none() {
-            return Err(Error::corrupt(
-                "reference",
-                format!(
-                    "{} row {index} names parent {parent}, which was taken out of {}",
-                    column.name(),
-                    P::NAME
-                ),
-            ));
-        }
-    }
     Ok(())
 }
 

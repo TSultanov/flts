@@ -8,6 +8,88 @@ use crate::storage::column_file::HEAD_LEN;
 use crate::test_utils::{TempDir, flip_byte};
 use proptest::prelude::*;
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum CommitFault {
+    Payload,
+    Directory,
+    BeforeSlot,
+    PartialSlot,
+    SlotSync,
+    AppendMark,
+}
+
+thread_local! {
+    static COMMIT_FAULT: std::cell::Cell<Option<CommitFault>> = const { std::cell::Cell::new(None) };
+}
+
+pub(crate) fn fail_commit_at(fault: CommitFault) {
+    COMMIT_FAULT.set(Some(fault));
+}
+
+fn fault_at(fault: CommitFault) -> std::io::Result<()> {
+    if COMMIT_FAULT.get() == Some(fault) {
+        COMMIT_FAULT.set(None);
+        return Err(std::io::Error::other(format!("injected {fault:?} failure")));
+    }
+    Ok(())
+}
+
+impl CommitIo for File {
+    fn write_payload(&self, bytes: &[u8], offset: u64) -> Result<()> {
+        fault_at(CommitFault::Payload)?;
+        write_all_at(self, bytes, offset)
+    }
+
+    fn sync_directory(&self) -> std::io::Result<()> {
+        fault_at(CommitFault::Directory)?;
+        self.sync_data()
+    }
+
+    fn prepare_publication(&self) -> std::io::Result<File> {
+        fault_at(CommitFault::BeforeSlot)?;
+        self.try_clone()
+    }
+
+    fn write_slot(&self, bytes: &[u8], offset: u64) -> Result<()> {
+        if let Err(err) = fault_at(CommitFault::PartialSlot) {
+            write_all_at(self, &bytes[..40], offset)?;
+            return Err(err.into());
+        }
+        write_all_at(self, bytes, offset)
+    }
+
+    fn sync_slot(&self) -> std::io::Result<()> {
+        fault_at(CommitFault::SlotSync)?;
+        self.sync_data()
+    }
+
+    fn write_mark(&self, bytes: &[u8]) -> Result<()> {
+        fault_at(CommitFault::AppendMark)?;
+        write_all_at(self, bytes, APPEND_MARK)
+    }
+}
+
+#[test]
+fn a_failed_slot_sync_preserves_the_attempt_for_recovery() -> Result<()> {
+    let dir = TempDir::new("slot_sync");
+    let path = dir.join("db");
+    seed(&path, &[1]);
+    let file = ColumnFile::open(&path)?;
+    let mut values = file.column::<u32>("values")?;
+    values.set(0, 2)?;
+    let mut update = file.update(this_device())?;
+    update.column("values", &values)?;
+    fail_commit_at(CommitFault::SlotSync);
+    let err = update.commit().unwrap_err();
+    let Error::CommitUncertain { attempt, .. } = err else {
+        panic!("{err}");
+    };
+    let recovered = attempt.inspect()?;
+    assert_eq!(recovered.commit_token(), attempt.attempted);
+    assert_eq!(*recovered.column::<u32>("values")?.row(0)?, 2);
+    Ok(())
+}
+
 fn this_device() -> WriterId {
     WriterId::from_device_id("KRZH3XY-7PH4NJK-2WQ5LMC")
 }

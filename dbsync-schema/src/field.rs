@@ -1,9 +1,13 @@
 //! What a declared field means: the column that holds it and the accessors that reach it.
 
 use proc_macro2::TokenStream;
-use quote::{ToTokens, quote};
+use quote::ToTokens;
 use syn::spanned::Spanned;
 use syn::{GenericArgument, PathArguments, Type, TypePath};
+
+macro_rules! generated {
+    ($($tokens:tt)*) => { quote::quote_spanned!(proc_macro2::Span::mixed_site()=> $($tokens)*) };
+}
 
 const SCALARS: &[&str] = &[
     "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "f32", "f64", "bool",
@@ -245,77 +249,77 @@ impl Kind {
             Indexing::None => bare,
             _ => {
                 let unique = indexing == Indexing::Unique;
-                quote! { ::dbsync::schema::Indexed<#bare, #unique> }
+                generated! { ::dbsync::schema::Indexed<#bare, #unique> }
             }
         }
     }
 
     fn bare_column(&self, child: &syn::Ident) -> TokenStream {
         match self {
-            Kind::Text => quote! { ::dbsync::schema::TextColumn },
-            Kind::NullableText => quote! { ::dbsync::schema::NullableTextColumn },
+            Kind::Text => generated! { ::dbsync::schema::TextColumn },
+            Kind::NullableText => generated! { ::dbsync::schema::NullableTextColumn },
             Kind::Reference(parent) => {
-                quote! { ::dbsync::schema::RefColumn<#parent, #child> }
+                generated! { ::dbsync::schema::RefColumn<#parent, #child> }
             }
-            Kind::Scalar(ty) => quote! { ::dbsync::Arena<#ty> },
-            Kind::NullableScalar(ty) => quote! { ::dbsync::schema::NullableColumn<#ty> },
-            Kind::Enum(ty) => quote! { ::dbsync::schema::EnumColumn<#ty> },
+            Kind::Scalar(ty) => generated! { ::dbsync::Arena<#ty> },
+            Kind::NullableScalar(ty) => generated! { ::dbsync::schema::NullableColumn<#ty> },
+            Kind::Enum(ty) => generated! { ::dbsync::schema::EnumColumn<#ty> },
             Kind::Many(_) => unreachable!("a Many field has no column"),
         }
     }
 
     pub fn pushed(&self) -> TokenStream {
         match self {
-            Kind::Text => quote! { &str },
-            Kind::NullableText => quote! { ::core::option::Option<&str> },
-            Kind::Reference(parent) => quote! { ::dbsync::Id<#parent> },
-            Kind::Scalar(ty) => quote! { #ty },
-            Kind::NullableScalar(ty) => quote! { ::core::option::Option<#ty> },
-            Kind::Enum(ty) => quote! { #ty },
+            Kind::Text => generated! { &str },
+            Kind::NullableText => generated! { ::core::option::Option<&str> },
+            Kind::Reference(parent) => generated! { ::dbsync::Id<#parent> },
+            Kind::Scalar(ty) => generated! { #ty },
+            Kind::NullableScalar(ty) => generated! { ::core::option::Option<#ty> },
+            Kind::Enum(ty) => generated! { #ty },
             Kind::Many(_) => unreachable!("a Many field is never pushed"),
         }
     }
 
     pub fn read(&self, held: &TokenStream) -> TokenStream {
         match self {
-            Kind::Text => quote! { ::std::borrow::Cow<#held, str> },
+            Kind::Text => generated! { ::std::borrow::Cow<#held, str> },
             Kind::NullableText => {
-                quote! { ::core::option::Option<::std::borrow::Cow<#held, str>> }
+                generated! { ::core::option::Option<::std::borrow::Cow<#held, str>> }
             }
-            Kind::Reference(parent) => quote! { ::dbsync::Id<#parent> },
-            Kind::Scalar(ty) => quote! { #ty },
-            Kind::NullableScalar(ty) => quote! { ::core::option::Option<#ty> },
-            Kind::Enum(ty) => quote! { #ty },
+            Kind::Reference(parent) => generated! { ::dbsync::Id<#parent> },
+            Kind::Scalar(ty) => generated! { #ty },
+            Kind::NullableScalar(ty) => generated! { ::core::option::Option<#ty> },
+            Kind::Enum(ty) => generated! { #ty },
             Kind::Many(_) => unreachable!("a Many field is not read from a column"),
         }
     }
 
     pub fn get(&self, table: &TokenStream, name: &syn::Ident, indexing: Indexing) -> TokenStream {
         let held = match indexing {
-            Indexing::None => quote! { #table.#name },
-            _ => quote! { #table.#name.column() },
+            Indexing::None => generated! { #table.#name },
+            _ => generated! { #table.#name.column() },
         };
         match self {
-            Kind::Scalar(_) => quote! { #held.row(row.index()).copied() },
-            _ => quote! { #held.get(row) },
+            Kind::Scalar(_) => generated! { #held.row(row.index()).copied() },
+            _ => generated! { #held.get(row) },
         }
     }
 
     pub fn owned(&self) -> TokenStream {
         match self {
-            Kind::Text => quote! { .map(|held| held.into_owned()) },
+            Kind::Text => generated! { .map(|held| held.into_owned()) },
             Kind::NullableText => {
-                quote! { .map(|held| held.map(|text| text.into_owned())) }
+                generated! { .map(|held| held.map(|text| text.into_owned())) }
             }
-            _ => quote! {},
+            _ => generated! {},
         }
     }
 
     pub fn lent(&self, name: &syn::Ident) -> TokenStream {
         match self {
-            Kind::Text => quote! { &#name },
-            Kind::NullableText => quote! { #name.as_deref() },
-            _ => quote! { #name },
+            Kind::Text => generated! { &#name },
+            Kind::NullableText => generated! { #name.as_deref() },
+            _ => generated! { #name },
         }
     }
 }

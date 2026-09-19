@@ -1,4 +1,5 @@
 use super::*;
+use quote::quote;
 
 fn expanded(item: TokenStream) -> String {
     expand(TokenStream::new(), item).unwrap().to_string()
@@ -241,7 +242,7 @@ fn a_scalar_reads_through_its_row_index_and_everything_else_through_the_row() {
          to be borrowed to write it: {out}"
     );
     assert!(
-        out.contains("self . rewrite (of , & title , value ,)"),
+        out.contains("self . rewrite (of , & title , __dbsync_value ,)"),
         "and it is lent back, in declared order, as the push takes it: {out}"
     );
 }
@@ -498,9 +499,10 @@ fn a_setter_carries_every_other_field_forward_onto_the_row_it_appends() {
     let carries = [
         "pub fn set_title (& mut self , of : :: dbsync :: Id < Book > , value : & str ,) ",
         "-> :: dbsync :: Result < () > { ",
-        "let row = < Self as :: dbsync :: schema :: Table > :: row_of (self , of) ? ; ",
+        "let __dbsync_value = value ; ",
+        "let row = < Self as :: dbsync :: schema :: Table > :: logical_row_of (self , of) ? ; ",
         "let year = self . year . row (row . index ()) . copied () ? ; ",
-        "self . rewrite (of , value , year ,) }",
+        "self . rewrite (of , __dbsync_value , year ,) }",
     ]
     .concat();
 
@@ -886,11 +888,11 @@ fn a_set_of_either_parent_in_a_distinct_pair_moves_the_pair_with_it() {
         "a set of one parent carries the other onto the new row: {out}"
     );
     assert!(
-        out.contains("self . rewrite (of , value , author ,)"),
+        out.contains("self . rewrite (of , __dbsync_value , author ,)"),
         "{out}"
     );
     assert!(
-        out.contains("self . rewrite (of , book , value ,)"),
+        out.contains("self . rewrite (of , book , __dbsync_value ,)"),
         "{out}"
     );
     assert!(
@@ -966,21 +968,12 @@ fn every_table_can_take_a_row_out_by_writing_a_last_version_that_says_so() {
         struct Book { title: String, year: u32 }
     });
 
-    let takes = [
-        "pub fn remove (& mut self , of : :: dbsync :: Id < Book >) -> :: dbsync :: Result < () > { ",
-        "let row = < Self as :: dbsync :: schema :: Table > :: row_of (self , of) ? ; ",
-        "let title = self . title . get (row) . map (| held | held . into_owned ()) ? ; ",
-        "let year = self . year . row (row . index ()) . copied () ? ; ",
-        "self . rewrite (of , & title , year ,) ? ; ",
-        "< Self as :: dbsync :: schema :: Table > :: withdraw (self , of) }",
-    ]
-    .concat();
-
-    assert!(
-        out.contains(&takes),
-        "a removal is the newest thing said about an id, so it is a row like any \
-         other and it carries what the row held: {out}"
-    );
+    let takes = out.split("pub fn remove").nth(1).unwrap();
+    assert!(takes.contains(":: logical_row_of (self , of) ?"));
+    assert!(takes.contains(":: begin_recovery (self , of , false) ?"));
+    assert!(takes.contains("self . title . push (& title) ?"));
+    assert!(takes.contains("self . year . push (year) ?"));
+    assert!(takes.contains(":: withdraw (self , of)"));
     assert!(
         out.contains(
             "impl < S > :: dbsync :: schema :: Removed < S > for Book \

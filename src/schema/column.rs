@@ -68,6 +68,18 @@ impl Row {
 }
 
 pub trait Column {
+    fn value_bytes(&self, _row: Row) -> Result<Vec<u8>> {
+        Err(Error::unsupported(
+            "column does not expose its logical row value",
+        ))
+    }
+
+    fn schema_type(&self) -> String {
+        let mut columns = Vec::new();
+        self.describe("", "", &mut columns);
+        format!("{columns:?}")
+    }
+
     fn rows(&self) -> usize;
 
     fn touch_tail(&self) -> Result<()>;
@@ -90,6 +102,16 @@ pub trait Column {
 }
 
 impl<T: Record> Column for Arena<T> {
+    fn value_bytes(&self, row: Row) -> Result<Vec<u8>> {
+        let mut out = Vec::new();
+        super::encode_record(self.row(row.index())?, &mut out);
+        Ok(out)
+    }
+
+    fn schema_type(&self) -> String {
+        std::any::type_name::<T>().to_owned()
+    }
+
     fn rows(&self) -> usize {
         self.len()
     }

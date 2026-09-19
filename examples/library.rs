@@ -183,21 +183,10 @@ fn main() -> Result<()> {
     println!("     generation 1 was the empty file these columns were committed into");
 
     let shelf = Library::open(&path)?;
-    assert!(
-        shelf
-            .residency()
-            .iter()
-            .filter(|held| held.name != dbsync::schema::CLOCK)
-            .all(|held| held.resident == 0)
-    );
+    assert_eq!(resident(&shelf, "book.title.bytes"), 0);
+    assert_eq!(resident(&shelf, "paragraph.text.bytes"), 0);
     assert_eq!(resident(&shelf, dbsync::schema::CLOCK), 1);
-    println!("\n3. reopened it, and opening a column read no payload at all");
-    println!(
-        "     resident chunks across all {} columns: 1",
-        shelf.specs().len()
-    );
-    println!("     and the one is dbsync.clock, which an open must read because a store");
-    println!("     cannot name its next write without knowing how far it has counted");
+    println!("\n3. reopened it with merge metadata loaded and text payloads cold");
 
     for book in shelf.all::<Book>() {
         println!("     {}", book.title()?);
@@ -241,14 +230,9 @@ fn main() -> Result<()> {
     let alice = book_called(&shelf, "Alice's Adventures in Wonderland")?;
     let alice_of = alice.id()?;
     assert_eq!(alice.chapters()?.count(), 2);
-    assert_eq!(resident(&shelf, "chapter.book"), 0);
+    assert!(resident(&shelf, "chapter.book") > 0);
     assert!(resident(&shelf, "chapter.book.buckets") > 0);
-    println!(
-        "     finding them read {} chunks of chapter.book.buckets and left chapter.book",
-        resident(&shelf, "chapter.book.buckets")
-    );
-    println!("     cold: a link carries the parent it files a child under, so the index");
-    println!("     answers without reading the column it indexes");
+    println!("     walking uses the parent index; parent references were loaded for visibility");
     for chapter in alice.chapters()? {
         println!("     {}", chapter.title()?);
         assert_eq!(chapter.book()?.id()?, alice.id()?);
@@ -263,7 +247,7 @@ fn main() -> Result<()> {
     let crossing = Library::open(&path)?;
     let looking = book_called(&crossing, "Through the Looking-Glass")?;
     assert_eq!(looking.authors()?.count(), 2);
-    assert_eq!(resident(&crossing, "credit.book"), 0);
+    assert!(resident(&crossing, "credit.book") > 0);
     assert!(resident(&crossing, "credit.book.buckets") > 0);
     assert!(resident(&crossing, "credit.author") > 0);
     assert_eq!(resident(&crossing, "author.name"), 0);
@@ -277,7 +261,7 @@ fn main() -> Result<()> {
         resident(&crossing, "credit.author")
     );
     println!("     walks the index on one end of the link and reads the id at the other, so");
-    println!("     credit.book stayed cold, and so did author.name -- naming rows and reading");
+    println!("     author.name stayed cold -- naming rows and reading");
     println!("     what they hold are separate acts, exactly as they were for a title");
 
     for role in looking.credits()? {
@@ -440,23 +424,21 @@ fn main() -> Result<()> {
         again.taken
     );
 
-    let held = library
-        .remove(waves)
-        .expect_err("a credit still names The Waves");
-    println!("\n13. asked for The Waves to come off the shelf, and was told what it holds");
-    println!("     {held}");
-    assert_eq!(library.all::<Book>().count(), 7);
-
-    for credit in library.children_of::<Book, Credit>(waves)? {
-        library.remove(credit)?;
-    }
+    let saved = library.at(waves)?.version()?.dot();
+    let credits = library.children_of::<Book, Credit>(waves)?;
     library.remove(waves)?;
-    library.verify()?;
     assert_eq!(library.all::<Book>().count(), 6);
-    println!("\n14. took the credit off first, and then the book");
-    println!("     it is gone from every walk and every finder, and the rows that held it");
-    println!("     are still in the file, because a removal is the newest thing said about");
-    println!("     an id rather than the absence of anything said");
+    for credit in &credits {
+        assert!(library.at(*credit).is_err());
+        assert_eq!(library.at_hidden(*credit)?.id()?, *credit);
+    }
+    println!("\n13. removed The Waves and retained its hidden credits");
+
+    library.restore(waves, saved)?;
+    assert_eq!(library.all::<Book>().count(), 7);
+    assert_eq!(library.children_of::<Book, Credit>(waves)?, credits);
+    library.verify()?;
+    println!("\n14. restored the book and its credits became visible again");
     println!(
         "     {} rows of book for {} books on the shelf",
         Table::rows(&library.books),

@@ -57,6 +57,19 @@ impl<T: Record + Default> NullableColumn<T> {
 }
 
 impl<T: Record + Default> Column for NullableColumn<T> {
+    fn value_bytes(&self, row: Row) -> Result<Vec<u8>> {
+        let value = self.get(row)?;
+        let mut out = vec![u8::from(value.is_some())];
+        if let Some(value) = value {
+            super::encode_record(&value, &mut out);
+        }
+        Ok(out)
+    }
+
+    fn schema_type(&self) -> String {
+        format!("optional {}", std::any::type_name::<T>())
+    }
+
     fn rows(&self) -> usize {
         self.values.len()
     }

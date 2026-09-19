@@ -196,6 +196,18 @@ impl<C: Keyed> Indexed<C, true> {
 }
 
 impl<C: Keyed, const UNIQUE: bool> Column for Indexed<C, UNIQUE> {
+    fn value_bytes(&self, row: Row) -> Result<Vec<u8>> {
+        self.column.value_bytes(row)
+    }
+
+    fn schema_type(&self) -> String {
+        if UNIQUE {
+            format!("unique {}", self.column.schema_type())
+        } else {
+            self.column.schema_type()
+        }
+    }
+
     fn rows(&self) -> usize {
         Column::rows(&self.column)
     }

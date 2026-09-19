@@ -176,6 +176,8 @@ fn a_table_names_every_column_it_needs_from_a_file() {
             "book.id.buckets",
             "book.id.links",
             "book.version",
+            "book.version.parent_ends",
+            "book.version.parents",
             "book.title",
             "book.title.bytes",
             "book.title.buckets",
@@ -230,7 +232,7 @@ fn a_table_erased_behind_any_table_still_names_its_entity() {
 
     assert_eq!(erased.entity(), "book");
     assert_eq!(erased.row_count(), 3);
-    assert_eq!(erased.column_specs().len(), 10);
+    assert_eq!(erased.column_specs().len(), 12);
     erased.rows_agree().unwrap();
 }
 
@@ -620,38 +622,28 @@ fn writing_over_a_row_that_no_id_names_is_refused() {
 }
 
 #[test]
-fn a_table_with_two_rows_that_are_both_the_newest_of_one_id_is_corruption() {
+fn derived_selection_does_not_change_the_revision_history() {
     let (mut books, alice) = two_books();
     books
         .write_over(alice, "Alice's Adventures", "Lewis Carroll")
         .unwrap();
-    books
-        .quietly_unsupersede(Row::of(0, 3, "book").unwrap())
-        .unwrap();
-
-    let err = Table::audit(&books).expect_err("one id has one newest version");
-
-    assert!(err.is_corrupt(), "{err}");
-    assert!(
-        err.to_string()
-            .contains("two rows that are both the newest"),
-        "{err}"
-    );
+    let old = Row::of(0, 3, "book").unwrap();
+    let original = books.versions().raw_at(old).unwrap();
+    books.quietly_unsupersede(old).unwrap();
+    books.refresh().unwrap();
+    assert_eq!(books.title(alice).unwrap(), "Alice's Adventures");
+    assert_eq!(books.versions().raw_at(old).unwrap(), original);
+    Table::audit(&books).unwrap();
 }
 
 #[test]
-fn a_table_where_no_row_is_the_newest_of_an_id_is_corruption() {
+fn refreshing_reconstructs_the_selected_revision() {
     let (mut books, alice) = two_books();
     let newest = books.row_of(alice).unwrap();
     books.quietly_supersede(newest).unwrap();
-
-    let err = Table::audit(&books).expect_err("some row has to be the one an id names");
-
-    assert!(err.is_corrupt(), "{err}");
-    assert!(
-        err.to_string().contains("no row holds the newest one"),
-        "{err}"
-    );
+    books.refresh().unwrap();
+    assert_eq!(books.row_of(alice).unwrap(), newest);
+    Table::audit(&books).unwrap();
 }
 
 #[test]
@@ -727,7 +719,7 @@ fn settling_an_id_makes_its_newest_version_the_one_it_names() {
 
     books.quietly_supersede(newest).unwrap();
     books.quietly_unsupersede(older).unwrap();
-    assert_eq!(books.title(alice).unwrap(), "Alice");
+    assert_eq!(books.title_at(older).unwrap(), "Alice");
 
     books.settle(alice).unwrap();
 

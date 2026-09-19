@@ -100,6 +100,12 @@ impl<P: Entity, C: Entity> RefColumn<P, C> {
 }
 
 impl<P: Entity, C: Entity> Column for RefColumn<P, C> {
+    fn value_bytes(&self, row: Row) -> Result<Vec<u8>> {
+        let mut out = Vec::new();
+        super::encode_record(&self.get(row)?, &mut out);
+        Ok(out)
+    }
+
     fn rows(&self) -> usize {
         self.ids.len()
     }

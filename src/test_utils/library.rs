@@ -123,6 +123,7 @@ pub enum Binding {
 
 impl UnitEnum for Binding {
     const NAME: &'static str = "binding";
+    const VARIANTS: &'static [(&'static str, u8)] = &[("Cloth", 0), ("Paper", 1), ("Leather", 2)];
 
     fn to_u8(self) -> u8 {
         match self {
@@ -206,6 +207,7 @@ impl Books {
         let id = self.mint()?;
         self.title.push(title)?;
         self.author.push(author)?;
+        self.refresh_one(id)?;
         Ok(id)
     }
 
@@ -227,7 +229,7 @@ impl Books {
         self.title.push(title)?;
         self.author.push(author)?;
         debug_assert_eq!(row.index() + 1, Table::rows(self));
-        Ok(())
+        self.refresh_one(book)
     }
 
     pub fn author(&self, book: Id<Book>) -> Result<String> {
@@ -370,6 +372,13 @@ impl Default for Chapters {
 }
 
 impl Table for Chapters {
+    fn references(&self, row: crate::schema::Row) -> Result<Vec<crate::schema::Reference>> {
+        Ok(vec![crate::schema::Reference {
+            column: "chapter.book",
+            entity: Book::NAME,
+            id: self.book.get(row)?.uuid(),
+        }])
+    }
     type Of = Chapter;
 
     fn ids(&self) -> &IdColumn<Chapter> {
@@ -420,6 +429,7 @@ impl Chapters {
         let id = self.mint()?;
         self.book.push(book)?;
         self.title.push(title)?;
+        self.refresh_one(id)?;
         Ok(id)
     }
 
@@ -437,7 +447,7 @@ impl Chapters {
         self.revise(chapter)?;
         self.book.push(book)?;
         self.title.push(title)?;
-        Ok(())
+        self.refresh_one(chapter)
     }
 
     pub fn remove(&mut self, of: Id<Chapter>) -> Result<()> {
@@ -544,6 +554,13 @@ impl Default for Paragraphs {
 }
 
 impl Table for Paragraphs {
+    fn references(&self, row: crate::schema::Row) -> Result<Vec<crate::schema::Reference>> {
+        Ok(vec![crate::schema::Reference {
+            column: "paragraph.chapter",
+            entity: Chapter::NAME,
+            id: self.chapter.get(row)?.uuid(),
+        }])
+    }
     type Of = Paragraph;
 
     fn ids(&self) -> &IdColumn<Paragraph> {
@@ -594,6 +611,7 @@ impl Paragraphs {
         let id = self.mint()?;
         self.chapter.push(chapter)?;
         self.text.push(text)?;
+        self.refresh_one(id)?;
         Ok(id)
     }
 
@@ -612,7 +630,7 @@ impl Paragraphs {
         self.revise(paragraph)?;
         self.chapter.push(chapter)?;
         self.text.push(text)?;
-        Ok(())
+        self.refresh_one(paragraph)
     }
 
     pub fn remove(&mut self, of: Id<Paragraph>) -> Result<()> {
@@ -717,6 +735,13 @@ impl Default for Editions {
 }
 
 impl Table for Editions {
+    fn references(&self, row: crate::schema::Row) -> Result<Vec<crate::schema::Reference>> {
+        Ok(vec![crate::schema::Reference {
+            column: "edition.book",
+            entity: Book::NAME,
+            id: self.book.get(row)?.uuid(),
+        }])
+    }
     type Of = Edition;
 
     fn ids(&self) -> &IdColumn<Edition> {
@@ -783,6 +808,7 @@ impl Editions {
         self.year.push(year)?;
         self.pages.push(pages)?;
         self.binding.push(binding)?;
+        self.refresh_one(id)?;
         Ok(id)
     }
 
@@ -844,7 +870,7 @@ impl Editions {
         self.year.push(year)?;
         self.pages.push(pages)?;
         self.binding.push(binding)?;
-        Ok(())
+        self.refresh_one(of)
     }
 }
 
@@ -1009,6 +1035,7 @@ impl Authors {
         self.name.reach(name)?;
         let id = self.mint()?;
         self.name.push(name)?;
+        self.refresh_one(id)?;
         Ok(id)
     }
 
@@ -1021,7 +1048,7 @@ impl Authors {
         self.name.reach(name)?;
         self.revise(author)?;
         self.name.push(name)?;
-        Ok(())
+        self.refresh_one(author)
     }
 
     pub fn remove(&mut self, of: Id<Author>) -> Result<()> {
@@ -1118,6 +1145,20 @@ impl Default for Authorships {
 }
 
 impl Table for Authorships {
+    fn references(&self, row: crate::schema::Row) -> Result<Vec<crate::schema::Reference>> {
+        Ok(vec![
+            crate::schema::Reference {
+                column: "authorship.book",
+                entity: Book::NAME,
+                id: self.book.get(row)?.uuid(),
+            },
+            crate::schema::Reference {
+                column: "authorship.author",
+                entity: Author::NAME,
+                id: self.author.get(row)?.uuid(),
+            },
+        ])
+    }
     type Of = Authorship;
 
     fn ids(&self) -> &IdColumn<Authorship> {
@@ -1183,6 +1224,7 @@ impl Authorships {
         self.book.push(book)?;
         self.author.push(author)?;
         self.book_author.push(pair)?;
+        self.refresh_one(id)?;
         Ok(id)
     }
 
@@ -1215,7 +1257,7 @@ impl Authorships {
         self.book.push(book)?;
         self.author.push(author)?;
         self.book_author.push(pair)?;
-        Ok(())
+        self.refresh_one(link)
     }
 
     pub fn remove(&mut self, of: Id<Authorship>) -> Result<()> {
@@ -1318,9 +1360,9 @@ impl<S: Holds<Authorship>> AuthorshipRowMut<'_, S> {
     }
 }
 
-#[derive(Default, Clone)]
 pub struct Library {
     state: StoreState,
+    recovery: Option<Box<crate::schema::Recovery<Self>>>,
     pub books: Books,
     pub chapters: Chapters,
     pub paragraphs: Paragraphs,
@@ -1329,7 +1371,49 @@ pub struct Library {
     pub authorships: Authorships,
 }
 
+impl Default for Library {
+    fn default() -> Self {
+        let mut store = Self {
+            state: StoreState::default(),
+            recovery: None,
+            books: Books::default(),
+            chapters: Chapters::default(),
+            paragraphs: Paragraphs::default(),
+            editions: Editions::default(),
+            authors: Authors::default(),
+            authorships: Authorships::default(),
+        };
+        store.bind_tables();
+        store
+    }
+}
+
+impl Clone for Library {
+    fn clone(&self) -> Self {
+        let mut store = Self {
+            state: self.state.clone(),
+            recovery: self.recovery.clone(),
+            books: self.books.clone(),
+            chapters: self.chapters.clone(),
+            paragraphs: self.paragraphs.clone(),
+            editions: self.editions.clone(),
+            authors: self.authors.clone(),
+            authorships: self.authorships.clone(),
+        };
+        store.bind_tables();
+        store
+    }
+}
+
 impl Store for Library {
+    fn recovery(&self) -> Option<&crate::schema::Recovery<Self>> {
+        self.recovery.as_deref()
+    }
+
+    fn set_recovery(&mut self, recovery: Option<crate::schema::Recovery<Self>>) {
+        self.recovery = recovery.map(Box::new);
+    }
+
     fn state(&self) -> &StoreState {
         &self.state
     }

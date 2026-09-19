@@ -4,12 +4,14 @@ use super::clock::VersionVector;
 use super::column::{Column, ColumnSpec, Field, FieldMut, Residency, Row};
 use super::entity::Entity;
 use super::identity::IdColumn;
-use super::merge::Taking;
+use super::merge::{Concurrent, Conflict, Taking};
 use super::names::qualified;
 use super::version::{Dot, Version, VersionColumn};
+use super::{Candidate, Claim, Parent, Reference, View};
 use crate::error::{Error, Result};
 use crate::id::Id;
 use crate::storage::{ColumnFile, ColumnFileUpdater, WriterId};
+use std::collections::BTreeSet;
 
 pub trait Table: Default + Clone {
     type Of: Entity;
@@ -34,13 +36,205 @@ pub trait Table: Default + Clone {
         self.ids().rows_of(id)
     }
 
-    fn current_row_of(&self, id: Id<Self::Of>) -> Result<Option<Row>> {
-        for row in self.versions_of(id)? {
-            if self.versions().at(row)?.is_current() {
-                return Ok(Some(row));
+    fn heads(&self, id: Id<Self::Of>) -> Result<Vec<Row>> {
+        let rows = self.versions_of(id)?;
+        let mut ancestors = BTreeSet::new();
+        for row in &rows {
+            for parent in self.versions().parent_rows(*row)? {
+                ancestors.insert(parent.index());
             }
         }
-        Ok(None)
+        Ok(rows
+            .into_iter()
+            .filter(|row| !ancestors.contains(&row.index()))
+            .collect())
+    }
+
+    fn winner(&self, id: Id<Self::Of>) -> Result<Option<Row>> {
+        let rows = self.versions_of(id)?;
+        let mut deletes = Vec::new();
+        for row in &rows {
+            if self.versions().raw_at(*row)?.is_removed() {
+                deletes.push(*row);
+            }
+        }
+        let mut eligible = Vec::new();
+        for row in self.heads(id)? {
+            if self.versions().raw_at(row)?.is_removed() {
+                continue;
+            }
+            let ancestors = self.versions().ancestors(row)?;
+            if deletes
+                .iter()
+                .all(|deletion| ancestors.contains(&deletion.index()))
+            {
+                eligible.push(row);
+            }
+        }
+        if eligible.is_empty() {
+            for deletion in &deletes {
+                let mut superseded = false;
+                for other in &deletes {
+                    if other != deletion && self.versions().descends(*other, *deletion)? {
+                        superseded = true;
+                        break;
+                    }
+                }
+                if !superseded {
+                    eligible.push(*deletion);
+                }
+            }
+        }
+        let mut ranked = Vec::new();
+        for row in eligible {
+            let version = self.versions().raw_at(row)?;
+            ranked.push(((!version.is_stamped(), version.dot(), row.index()), row));
+        }
+        Ok(ranked
+            .into_iter()
+            .max_by_key(|(rank, _)| *rank)
+            .map(|(_, row)| row))
+    }
+
+    fn current_row_of(&self, id: Id<Self::Of>) -> Result<Option<Row>> {
+        self.winner(id)
+    }
+
+    fn logical_row_of(&self, id: Id<Self::Of>) -> Result<Row> {
+        let row = self
+            .winner(id)?
+            .ok_or_else(|| Error::invalid(format!("{} has no row with id {id}", Self::Of::NAME)))?;
+        if self.versions().raw_at(row)?.is_removed() {
+            return Err(Error::invalid("the row is deleted; restore it explicitly"));
+        }
+        Ok(row)
+    }
+
+    fn claims(&self, _row: Row) -> Result<Vec<Claim>> {
+        Ok(Vec::new())
+    }
+
+    fn references(&self, _row: Row) -> Result<Vec<Reference>> {
+        Ok(Vec::new())
+    }
+
+    fn payload(&self, row: Row) -> Result<Vec<u8>> {
+        let mut out = Vec::new();
+        for field in self.fields() {
+            if field.name == "id" || field.name == "version" {
+                continue;
+            }
+            let bytes = field.column.value_bytes(row)?;
+            super::encode_record(&(bytes.len() as u64), &mut out);
+            out.extend(bytes);
+        }
+        Ok(out)
+    }
+
+    fn schema(&self) -> String {
+        let fields: Vec<_> = self
+            .fields()
+            .iter()
+            .map(|field| (field.name, field.column.schema_type()))
+            .collect();
+        format!("{} {fields:?}", Self::Of::NAME)
+    }
+
+    fn refresh(&self) -> Result<()> {
+        let mut ids = Vec::new();
+        let mut unique = BTreeSet::new();
+        for index in 0..Table::rows(self) {
+            let id = self.id_at(Row::trusted(index))?;
+            ids.push(id.uuid());
+            unique.insert(id.uuid());
+        }
+        let mut candidates = Vec::new();
+        for uuid in unique {
+            let id = Id::from_uuid(uuid);
+            if let Some(row) = self.winner(id)? {
+                let version = self.versions().raw_at(row)?;
+                self.versions().select(&self.versions_of(id)?, row);
+                candidates.push(Candidate {
+                    entity: Self::Of::NAME,
+                    id: uuid,
+                    dot: version.dot(),
+                    pending: (!version.is_stamped()).then_some(row.index()),
+                    deleted: version.is_removed(),
+                    claims: self.claims(row)?,
+                    references: self.references(row)?,
+                });
+            }
+        }
+        self.versions().identify(ids);
+        self.versions().view().replace(Self::Of::NAME, candidates);
+        Ok(())
+    }
+
+    fn refresh_one(&self, id: Id<Self::Of>) -> Result<()> {
+        if let Some(row) = self.winner(id)? {
+            let rows = self.versions_of(id)?;
+            let version = self.versions().raw_at(row)?;
+            self.versions().select(&rows, row);
+            self.versions().identify_rows(&rows, id.uuid());
+            self.versions().view().upsert(Candidate {
+                entity: Self::Of::NAME,
+                id: id.uuid(),
+                dot: version.dot(),
+                pending: (!version.is_stamped()).then_some(row.index()),
+                deleted: version.is_removed(),
+                claims: self.claims(row)?,
+                references: self.references(row)?,
+            });
+        }
+        Ok(())
+    }
+
+    fn conflicts(&self) -> Result<Vec<Conflict>> {
+        let mut conflicts = Vec::new();
+        let mut ids = BTreeSet::new();
+        for index in 0..Table::rows(self) {
+            ids.insert(self.id_at(Row::trusted(index))?.uuid());
+        }
+        for uuid in ids {
+            let id = Id::from_uuid(uuid);
+            let Some(winner) = self.winner(id)? else {
+                continue;
+            };
+            let version = self.versions().raw_at(winner)?;
+            for row in self.heads(id)? {
+                if row == winner
+                    || self.versions().descends(winner, row)?
+                    || self.versions().descends(row, winner)?
+                {
+                    continue;
+                }
+                let other = self.versions().raw_at(row)?;
+                if version.is_removed() == other.is_removed()
+                    && self.payload(winner)? == self.payload(row)?
+                {
+                    continue;
+                }
+                conflicts.push(Conflict::Concurrent(Concurrent {
+                    entity: Self::Of::NAME,
+                    id: uuid,
+                    kept: version.dot(),
+                    dropped: other.dot(),
+                }));
+            }
+        }
+        conflicts.sort();
+        Ok(conflicts)
+    }
+
+    fn revision_row(&self, id: Id<Self::Of>, dot: Dot) -> Result<Row> {
+        let row = self
+            .versions()
+            .row_for_dot(dot)
+            .ok_or_else(|| Error::invalid("unknown revision"))?;
+        if self.id_at(row)? != id {
+            return Err(Error::invalid("revision belongs to a different entity id"));
+        }
+        Ok(row)
     }
 
     fn live_row_of(&self, id: Id<Self::Of>) -> Result<Option<Row>> {
@@ -92,9 +286,17 @@ pub trait Table: Default + Clone {
                 Self::Of::NAME
             ))
         })?;
+        if self.versions().raw_at(held)?.is_removed() {
+            return Err(Error::invalid("restore deleted rows explicitly"));
+        }
+        let parents = self
+            .heads(id)?
+            .into_iter()
+            .map(|row| self.versions().parent_of(row))
+            .collect::<Result<_>>()?;
         self.versions_mut().supersede(held)?;
         self.ids_mut().push(id)?;
-        let row = self.versions_mut().push(Version::UNSTAMPED)?;
+        let row = self.versions_mut().push_with(Version::UNSTAMPED, parents)?;
         Ok(Row::trusted(row))
     }
 
@@ -105,7 +307,8 @@ pub trait Table: Default + Clone {
                 Self::Of::NAME
             ))
         })?;
-        self.versions_mut().withdraw(held)
+        self.versions_mut().withdraw(held)?;
+        self.refresh_one(id)
     }
 
     fn is_published(&self) -> bool {
@@ -132,30 +335,60 @@ pub trait Table: Default + Clone {
         &self,
         of: Id<Self::Of>,
         theirs: Version,
-        seen: &VersionVector,
-        told: &VersionVector,
+        _seen: &VersionVector,
+        _told: &VersionVector,
     ) -> Result<Taking> {
-        if seen.dominates(theirs.dot()) {
+        if let Some(row) = self.versions().row_for_dot(theirs.dot()) {
+            if self.id_at(row)? != of {
+                return Err(Error::corrupt("revision", "dot reused for another id"));
+            }
             return Ok(Taking::Known);
         }
-        let Some(row) = self.current_row_of(of)? else {
-            return Ok(Taking::Fresh);
-        };
+        Ok(Taking::Fresh)
+    }
 
-        let mine = self.versions().at(row)?;
-        if told.dominates(mine.dot()) {
-            return Ok(Taking::Later);
+    fn adopt_revision(
+        &mut self,
+        of: Id<Self::Of>,
+        version: Version,
+        parents: Vec<Parent>,
+    ) -> Result<Row> {
+        self.ids_mut().push(of)?;
+        self.versions_mut()
+            .push_with(version, parents)
+            .map(Row::trusted)
+    }
+
+    fn recover_row(&mut self, _id: Id<Self::Of>, _dot: Dot, _restore: bool) -> Result<()> {
+        Err(Error::unsupported(
+            "this table does not implement revision recovery",
+        ))
+    }
+
+    fn begin_recovery(&mut self, id: Id<Self::Of>, restore: bool) -> Result<Row> {
+        self.versions().view().check_mutable()?;
+        let current = self
+            .winner(id)?
+            .ok_or_else(|| Error::invalid("unknown entity id"))?;
+        if self.versions().raw_at(current)?.is_removed() != restore {
+            return Err(Error::invalid(
+                "use restore for deleted rows and resolve for live rows",
+            ));
         }
-        Ok(match mine.dot() > theirs.dot() {
-            true => Taking::Concurrent {
-                kept: mine.dot(),
-                dropped: theirs.dot(),
-            },
-            false => Taking::Concurrent {
-                kept: theirs.dot(),
-                dropped: mine.dot(),
-            },
-        })
+        let parents = self
+            .heads(id)?
+            .into_iter()
+            .map(|row| self.versions().parent_of(row))
+            .collect::<Result<_>>()?;
+        let version = if restore {
+            Version::UNSTAMPED.restoration()
+        } else {
+            Version::UNSTAMPED
+        };
+        self.ids_mut().push(id)?;
+        self.versions_mut()
+            .push_with(version, parents)
+            .map(Row::trusted)
     }
 
     fn adopt(&mut self, of: Id<Self::Of>, version: Version) -> Result<Row> {
@@ -165,21 +398,10 @@ pub trait Table: Default + Clone {
     }
 
     fn settle(&mut self, of: Id<Self::Of>) -> Result<()> {
-        let rows = self.versions_of(of)?;
-        let mut newest = *rows
-            .first()
-            .ok_or_else(|| Error::invalid(format!("{} has no row with id {of}", Self::Of::NAME)))?;
-        for row in &rows {
-            if self.versions().at(*row)?.dot() >= self.versions().at(newest)?.dot() {
-                newest = *row;
-            }
-        }
-        for row in rows {
-            match row == newest {
-                true => self.versions_mut().restore(row)?,
-                false => self.versions_mut().supersede(row)?,
-            }
-        }
+        let winner = self
+            .winner(of)?
+            .ok_or_else(|| Error::invalid("unknown entity id"))?;
+        self.versions().select(&self.versions_of(of)?, winner);
         Ok(())
     }
 
@@ -201,7 +423,7 @@ pub trait Table: Default + Clone {
         let mut given = Vec::new();
         for row in rows {
             if *row != kept {
-                self.versions_mut().withdraw(*row)?;
+                self.versions().hide(*row);
                 given.push(*row);
             }
         }
@@ -209,50 +431,47 @@ pub trait Table: Default + Clone {
     }
 
     fn stamp_rows(&mut self, clock: &mut VersionVector, writer: WriterId) -> Result<()> {
-        self.versions_mut().stamp(clock, writer)
+        self.versions_mut().stamp(clock, writer)?;
+        self.refresh()
     }
 
     fn check_versions(&self) -> Result<()> {
-        let column = qualified(Self::Of::NAME, "version");
-        let rows = Table::rows(self);
-
-        for index in 0..rows {
-            let row = Row::of(index, rows, Self::Of::NAME)?;
-            let id = self.ids().at(row)?;
-
-            let mut current = None;
-            let mut highest = None;
-            for other in self.versions_of(id)? {
-                let version = self.versions().at(other)?;
-                if version.is_current() && current.replace(other).is_some() {
+        self.versions().audit_graph()?;
+        for index in 0..Table::rows(self) {
+            let row = Row::trusted(index);
+            let id = self.id_at(row)?;
+            let version = self.versions().raw_at(row)?;
+            let parents = self.versions().parent_rows(row)?;
+            if version.is_superseded() || (version.is_removed() && version.is_restoration()) {
+                return Err(Error::corrupt(
+                    "revision",
+                    "invalid persisted operation flags",
+                ));
+            }
+            let mut seen = BTreeSet::new();
+            for parent in &parents {
+                if !seen.insert(parent.index()) || self.id_at(*parent)? != id {
                     return Err(Error::corrupt(
-                        "version",
-                        format!("{column} has two rows that are both the newest {id}"),
+                        "revision",
+                        "duplicate parent or parent belonging to another id",
                     ));
                 }
-                if version.is_stamped() && highest.is_none_or(|(dot, _)| dot < version.dot()) {
-                    highest = Some((version.dot(), other));
+                if version.is_stamped() && !self.versions().raw_at(*parent)?.is_stamped() {
+                    return Err(Error::corrupt(
+                        "revision",
+                        "published revision has a pending parent",
+                    ));
                 }
             }
-
-            let current = current.ok_or_else(|| {
-                Error::corrupt(
-                    "version",
-                    format!("{column} row {index} holds {id}, and no row holds the newest one"),
-                )
-            })?;
-            if self.versions().at(current)?.is_stamped()
-                && let Some((dot, at)) = highest
-                && at != current
-            {
-                return Err(Error::corrupt(
-                    "version",
-                    format!(
-                        "{column} row {} is the newest {id}, and row {} counted further at {dot:?}",
-                        current.index(),
-                        at.index()
-                    ),
-                ));
+            if !version.is_removed() && !version.is_restoration() {
+                for parent in parents {
+                    if self.versions().raw_at(parent)?.is_removed() {
+                        return Err(Error::corrupt(
+                            "revision",
+                            "only restoration can follow a deletion",
+                        ));
+                    }
+                }
             }
         }
         Ok(())
@@ -305,6 +524,7 @@ pub trait Table: Default + Clone {
     }
 
     fn reserve(&self) -> Result<()> {
+        self.versions().view().check_mutable()?;
         let wanted = Table::rows(self) + 1;
         for field in self.fields() {
             field.column.make_room(wanted)?;
@@ -316,7 +536,9 @@ pub trait Table: Default + Clone {
         for field in self.fields_mut() {
             field.column.read_from(Self::Of::NAME, field.name, file)?;
         }
-        self.check_rows_agree()
+        self.check_rows_agree()?;
+        self.check_versions()?;
+        self.refresh()
     }
 
     fn offer_to(&self, updater: &mut ColumnFileUpdater) -> Result<()> {
@@ -329,6 +551,16 @@ pub trait Table: Default + Clone {
 }
 
 pub trait AnyTable {
+    fn identities(&self) -> Result<Vec<crate::Uuid>>;
+    fn all_references(&self) -> Result<Vec<Reference>>;
+    fn revision_records(&self) -> Result<Vec<super::RevisionRecord>>;
+
+    fn bind_view(&mut self, view: View);
+    fn refresh_view(&self) -> Result<()>;
+    fn schema_descriptor(&self) -> String;
+    fn row_conflicts(&self) -> Result<Vec<Conflict>>;
+    fn revision_owners(&self) -> Result<Vec<(Dot, crate::Uuid)>>;
+
     fn entity(&self) -> &'static str;
 
     fn row_count(&self) -> usize;
@@ -349,6 +581,74 @@ pub trait AnyTable {
 }
 
 impl<T: Table> AnyTable for T {
+    fn identities(&self) -> Result<Vec<crate::Uuid>> {
+        (0..Table::rows(self))
+            .map(|index| self.id_at(Row::trusted(index)).map(|id| id.uuid()))
+            .collect()
+    }
+
+    fn all_references(&self) -> Result<Vec<Reference>> {
+        let mut references = Vec::new();
+        for index in 0..Table::rows(self) {
+            references.extend(self.references(Row::trusted(index))?);
+        }
+        Ok(references)
+    }
+
+    fn revision_records(&self) -> Result<Vec<super::RevisionRecord>> {
+        let mut out = Vec::new();
+        for index in 0..Table::rows(self) {
+            let row = Row::trusted(index);
+            let parents = self
+                .versions()
+                .parents(row)?
+                .iter()
+                .map(|parent| match parent {
+                    Parent::Published(dot) => Ok(*dot),
+                    Parent::Pending(_) => {
+                        Err(Error::invalid("pending revision has no published identity"))
+                    }
+                })
+                .collect::<Result<_>>()?;
+            out.push(super::RevisionRecord {
+                entity: T::Of::NAME,
+                id: self.id_at(row)?.uuid(),
+                version: self.versions().raw_at(row)?,
+                parents,
+                payload: self.payload(row)?,
+            });
+        }
+        Ok(out)
+    }
+
+    fn bind_view(&mut self, view: View) {
+        self.versions_mut().bind(view);
+    }
+
+    fn refresh_view(&self) -> Result<()> {
+        self.refresh()
+    }
+
+    fn schema_descriptor(&self) -> String {
+        self.schema()
+    }
+
+    fn row_conflicts(&self) -> Result<Vec<Conflict>> {
+        self.conflicts()
+    }
+
+    fn revision_owners(&self) -> Result<Vec<(Dot, crate::Uuid)>> {
+        let mut out = Vec::new();
+        for index in 0..Table::rows(self) {
+            let row = Row::trusted(index);
+            let version = self.versions().raw_at(row)?;
+            if version.is_stamped() {
+                out.push((version.dot(), self.id_at(row)?.uuid()));
+            }
+        }
+        Ok(out)
+    }
+
     fn entity(&self) -> &'static str {
         T::Of::NAME
     }
@@ -382,6 +682,7 @@ impl<T: Table> AnyTable for T {
     }
 
     fn offer_columns(&self, updater: &mut ColumnFileUpdater) -> Result<()> {
+        self.versions().view().check_mutable()?;
         Table::offer_to(self, updater)
     }
 }

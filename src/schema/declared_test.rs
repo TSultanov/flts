@@ -107,6 +107,8 @@ fn the_declared_schema_names_every_column_the_file_will_hold() {
             "book.id.buckets",
             "book.id.links",
             "book.version",
+            "book.version.parent_ends",
+            "book.version.parents",
             "book.title",
             "book.title.bytes",
             "book.title.buckets",
@@ -117,6 +119,8 @@ fn the_declared_schema_names_every_column_the_file_will_hold() {
             "chapter.id.buckets",
             "chapter.id.links",
             "chapter.version",
+            "chapter.version.parent_ends",
+            "chapter.version.parents",
             "chapter.book",
             "chapter.book.buckets",
             "chapter.book.links",
@@ -126,6 +130,8 @@ fn the_declared_schema_names_every_column_the_file_will_hold() {
             "paragraph.id.buckets",
             "paragraph.id.links",
             "paragraph.version",
+            "paragraph.version.parent_ends",
+            "paragraph.version.parents",
             "paragraph.chapter",
             "paragraph.chapter.buckets",
             "paragraph.chapter.links",
@@ -135,6 +141,8 @@ fn the_declared_schema_names_every_column_the_file_will_hold() {
             "editor.id.buckets",
             "editor.id.links",
             "editor.version",
+            "editor.version.parent_ends",
+            "editor.version.parents",
             "editor.name",
             "editor.name.bytes",
             "editor.name.buckets",
@@ -143,6 +151,8 @@ fn the_declared_schema_names_every_column_the_file_will_hold() {
             "credit.id.buckets",
             "credit.id.links",
             "credit.version",
+            "credit.version.parent_ends",
+            "credit.version.parents",
             "credit.book",
             "credit.book.buckets",
             "credit.book.links",
@@ -153,6 +163,7 @@ fn the_declared_schema_names_every_column_the_file_will_hold() {
             "credit.book_editor.buckets",
             "credit.book_editor.links",
             "dbsync.clock",
+            "dbsync.schema",
         ]
     );
 }
@@ -282,7 +293,7 @@ fn opening_a_declared_library_reads_no_payload_at_all() -> Result<()> {
 
     let reopened = Library::open(&path)?;
     for column in reopened.residency() {
-        if column.name == crate::schema::CLOCK {
+        if crate::test_utils::is_merge_metadata(&reopened, &column.name) {
             continue;
         }
         assert_eq!(
@@ -356,8 +367,8 @@ fn walking_a_books_chapters_reads_the_index_and_never_the_column_it_indexes() ->
     assert!(cold("chapter.book.buckets").resident > 0);
     assert_eq!(
         cold("chapter.book").resident,
-        0,
-        "a link carries the parent it files a child under, so the walk never reads the column"
+        cold("chapter.book").chunks,
+        "parent references are resident for visibility resolution"
     );
     assert_eq!(
         cold("chapter.title").resident,
@@ -561,9 +572,9 @@ fn a_library_lives_its_whole_life_through_the_rows_it_hands_out() -> Result<()> 
         opened
             .residency()
             .iter()
-            .filter(|held| held.name != crate::schema::CLOCK)
+            .filter(|held| !crate::test_utils::is_merge_metadata(&opened, &held.name))
             .all(|held| held.resident == 0),
-        "opening a library must read no payload"
+        "opening reads merge metadata but leaves ordinary payload cold"
     );
 
     let book = opened.at(alice)?;
@@ -925,7 +936,7 @@ proptest! {
             let elsewhere = column.name.starts_with("chapter.")
                 || column.name.starts_with("paragraph.")
                 || column.name.starts_with(unasked);
-            if elsewhere {
+            if elsewhere && !crate::test_utils::is_merge_metadata(&reopened, &column.name) {
                 prop_assert_eq!(
                     column.resident,
                     0,
@@ -998,9 +1009,9 @@ proptest! {
             reopened
                 .residency()
                 .iter()
-                .filter(|held| held.name != crate::schema::CLOCK)
+                .filter(|held| !crate::test_utils::is_merge_metadata(&reopened, &held.name))
                 .all(|held| held.resident == 0),
-            "opening a library must read its clock and no payload"
+            "opening reads merge metadata but leaves ordinary payload cold"
         );
 
         for title in books.iter().map(|(held, _)| held.clone()).chain([wanted]) {
@@ -1103,7 +1114,7 @@ fn a_declared_join_crosses_the_same_way_after_a_reopen_that_read_no_payload() {
         reopened
             .residency()
             .iter()
-            .filter(|held| held.name != crate::schema::CLOCK)
+            .filter(|held| !crate::test_utils::is_merge_metadata(&reopened, &held.name))
             .all(|held| held.resident == 0),
         "the clock is the one column an open reads, because a store cannot mint without it"
     );
@@ -1169,25 +1180,16 @@ fn a_pair_index_stripped_from_a_file_is_rebuilt_on_open_and_refuses_as_it_did() 
 }
 
 #[test]
-fn a_declared_store_refuses_to_take_out_a_book_a_chapter_still_names() -> Result<()> {
+fn deleting_a_book_hides_its_children_without_deleting_them() -> Result<()> {
     let mut library = Library::default();
     let alice = library.books.push("Alice", "Lewis Carroll")?;
     let rabbit = library.chapters.push(alice, "Down the Rabbit-Hole")?;
-    let before = Table::rows(&library.books);
-
-    let err = library
-        .remove(alice)
-        .expect_err("a chapter of a book that is gone belongs to nobody");
-    assert!(err.to_string().contains("cannot be taken out"), "{err}");
-    assert_eq!(Table::rows(&library.books), before);
-    assert_eq!(library.all::<Book>().count(), 1);
-    library.audit()?;
-
-    library.remove(rabbit)?;
     library.remove(alice)?;
-
     assert_eq!(library.all::<Book>().count(), 0);
     assert_eq!(library.all::<Chapter>().count(), 0);
+    assert_eq!(library.at_hidden(rabbit)?.title()?, "Down the Rabbit-Hole");
+    library.remove(rabbit)?;
+    assert_eq!(library.status(rabbit)?, crate::schema::RowStatus::Deleted);
     library.audit()?;
     Ok(())
 }
@@ -1518,32 +1520,21 @@ fn a_row_only_the_other_copy_wrote_is_taken_without_calling_it_a_disagreement() 
 }
 
 #[test]
-fn a_merge_that_would_orphan_a_chapter_is_refused_and_leaves_the_copy_as_it_was() -> Result<()> {
+fn a_merge_retains_and_hides_a_child_whose_parent_was_deleted() -> Result<()> {
     let dir = TempDir::new("merge_orphan");
     let mut mine = Library::create(dir.join("here.dbs"), device("here"))?;
     let alice = mine.books.push("Alice", "Lewis Carroll")?;
     mine.commit(device("here"))?;
-
     let mut theirs = copied(&dir, "here.dbs", "there.dbs")?;
-    theirs.chapters.push(alice, "Down the Rabbit-Hole")?;
+    let chapter = theirs.chapters.push(alice, "Down the Rabbit-Hole")?;
     theirs.commit(device("there"))?;
-
     mine.remove(alice)?;
     mine.commit(device("here"))?;
-    let before = Table::rows(&mine.chapters);
-
-    let err = mine
-        .merge(&theirs)
-        .expect_err("their chapter belongs to a book this copy took out");
-
-    assert!(err.to_string().contains("cannot be merged"), "{err}");
-    assert!(err.to_string().contains("was taken out of book"), "{err}");
-    assert_eq!(
-        Table::rows(&mine.chapters),
-        before,
-        "a merge that cannot be made to hold together writes nothing at all"
-    );
+    let report = mine.merge(&theirs)?;
+    assert_eq!(report.references.len(), 1);
     assert_eq!(mine.all::<Book>().count(), 0);
+    assert_eq!(mine.all::<Chapter>().count(), 0);
+    assert_eq!(mine.at_hidden(chapter)?.title()?, "Down the Rabbit-Hole");
     mine.audit()?;
     Ok(())
 }

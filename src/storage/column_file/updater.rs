@@ -8,6 +8,7 @@ use super::codec::Codec;
 use super::column_meta::{ColumnMeta, content_id, write_directory};
 use super::commit_slot::{CommitSlot, newest_slot};
 use super::commit_token::CommitToken;
+use super::file_source::FileSource;
 use super::file_source::write_all_at;
 use super::reader::ColumnFile;
 use super::writer_id::WriterId;
@@ -16,6 +17,38 @@ use crate::error::{Error, Result};
 use crate::record::Record;
 use crate::storage::arena::{Arena, ChunkLoc, ChunkSource};
 use crate::storage::hash::fnv1a;
+
+trait CommitIo: std::borrow::Borrow<File> {
+    fn write_payload(&self, bytes: &[u8], offset: u64) -> Result<()> {
+        write_all_at(self.borrow(), bytes, offset)
+    }
+
+    fn sync_directory(&self) -> std::io::Result<()> {
+        self.borrow().sync_data()
+    }
+
+    fn prepare_publication(&self) -> std::io::Result<File> {
+        self.borrow().try_clone()
+    }
+
+    fn write_slot(&self, bytes: &[u8], offset: u64) -> Result<()> {
+        write_all_at(self.borrow(), bytes, offset)
+    }
+
+    fn sync_slot(&self) -> std::io::Result<()> {
+        self.borrow().sync_data()
+    }
+
+    fn write_mark(&self, bytes: &[u8]) -> Result<()> {
+        write_all_at(self.borrow(), bytes, APPEND_MARK)
+    }
+}
+
+#[cfg(not(test))]
+impl CommitIo for File {}
+
+#[cfg(all(test, feature = "derive"))]
+pub(crate) use updater_test::{CommitFault, fail_commit_at};
 
 impl std::fmt::Debug for ColumnFileUpdater {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -38,6 +71,47 @@ pub struct ColumnFileUpdater {
     previous: Vec<ColumnMeta>,
     previous_content_id: u64,
     columns: Vec<ColumnMeta>,
+    original: ColumnFile,
+}
+
+#[derive(Clone)]
+pub struct CommitAttempt {
+    pub expected: CommitToken,
+    pub attempted: CommitToken,
+    source: Arc<FileSource>,
+}
+
+impl std::fmt::Debug for CommitAttempt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CommitAttempt")
+            .field("expected", &self.expected)
+            .field("attempted", &self.attempted)
+            .finish()
+    }
+}
+
+impl CommitAttempt {
+    pub(crate) fn published(file: &ColumnFile, expected: CommitToken) -> Self {
+        Self {
+            expected,
+            attempted: file.commit_token(),
+            source: file.file_source().clone(),
+        }
+    }
+
+    pub fn inspect(&self) -> Result<ColumnFile> {
+        self.source.file().lock()?;
+        let result: Result<ColumnFile> = (|| {
+            self.source.file().sync_data()?;
+            let file = ColumnFile::from_source(self.source.clone())?;
+            file.verify()?;
+            Ok(file)
+        })();
+        let unlocked = self.source.file().unlock();
+        let file = result?;
+        unlocked?;
+        Ok(file)
+    }
 }
 
 impl ColumnFileUpdater {
@@ -80,6 +154,7 @@ impl ColumnFileUpdater {
             previous: reader.columns().to_vec(),
             previous_content_id: newest.content_id,
             columns: Vec::new(),
+            original: reader.clone(),
         })
     }
 
@@ -122,7 +197,7 @@ impl ColumnFileUpdater {
                 rows: (bytes.len() / T::SIZE.max(1)) as u32,
                 fnv: fnv1a(&bytes),
             };
-            write_all_at(&self.file, &bytes, self.cursor)?;
+            self.file.write_payload(&bytes, self.cursor)?;
             self.cursor += bytes.len() as u64;
             chunks.push(loc);
         }
@@ -156,6 +231,10 @@ impl ColumnFileUpdater {
     }
 
     pub fn commit(self) -> Result<u64> {
+        self.commit_file().map(|file| file.generation())
+    }
+
+    pub fn commit_file(self) -> Result<ColumnFile> {
         let missing: Vec<&str> = self
             .previous
             .iter()
@@ -170,14 +249,14 @@ impl ColumnFileUpdater {
 
         let content = content_id(&self.columns);
         if content == self.previous_content_id {
-            return Ok(self.expected_generation);
+            return Ok(self.original);
         }
 
         let directory = write_directory(&self.columns);
         let dir_offset = self.cursor;
         let dir_len = directory.len() as u64;
         write_all_at(&self.file, &directory, dir_offset)?;
-        self.file.sync_data()?;
+        self.file.sync_directory()?;
 
         let generation = self
             .expected_generation
@@ -192,12 +271,36 @@ impl ColumnFileUpdater {
             dir_len,
             fnv1a(&directory),
         );
-        write_all_at(&self.file, &slot.to_bytes(), self.target_slot)?;
-        self.file.sync_data()?;
+        let source = Arc::new(FileSource::from_file(
+            self.file.prepare_publication()?,
+            self.original.file_source().path().to_owned(),
+        ));
+        let attempt = CommitAttempt {
+            expected: self.original.commit_token(),
+            attempted: slot.token(),
+            source: source.clone(),
+        };
+        let publication = (|| -> std::io::Result<()> {
+            self.file
+                .write_slot(&slot.to_bytes(), self.target_slot)
+                .map_err(|e| match e {
+                    Error::Io(e) => e,
+                    other => std::io::Error::other(other.to_string()),
+                })?;
+            self.file.sync_slot()
+        })();
+        if let Err(source) = publication {
+            let _ = self.file.unlock();
+            return Err(Error::CommitUncertain {
+                attempt: Box::new(attempt),
+                source,
+            });
+        }
 
         let mark = AppendMark::new(self.file_uuid, dir_offset + dir_len, generation);
-        write_all_at(&self.file, &mark.to_bytes(), APPEND_MARK)?;
-        Ok(generation)
+        let _ = self.file.write_mark(&mark.to_bytes());
+        let _ = self.file.unlock();
+        Ok(ColumnFile::published(source, self.columns, slot))
     }
 }
 

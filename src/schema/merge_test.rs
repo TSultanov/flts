@@ -50,6 +50,7 @@ fn a_report_is_not_quiet_when_a_value_two_rows_may_not_share_had_to_be_given_up(
     let said = MergeReport {
         collided: vec![Collision {
             column: "book.title",
+            key: b"title".to_vec(),
             kept: crate::id::Uuid::from_u128(1),
             dropped: crate::id::Uuid::from_u128(2),
         }],

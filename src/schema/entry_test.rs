@@ -1151,9 +1151,9 @@ fn held_after_a_cold_crossing(program: &[Credit], from: usize) -> Vec<Residency>
         reopened
             .residency()
             .iter()
-            .filter(|column| column.name != crate::schema::CLOCK)
+            .filter(|column| !crate::test_utils::is_merge_metadata(&reopened, &column.name))
             .all(|column| column.resident == 0),
-        "opening a store reads its clock and no payload at all"
+        "opening reads merge metadata but leaves ordinary payload cold"
     );
     reopened.at(crossing).unwrap().authors().unwrap().count();
     reopened.residency()
@@ -1178,10 +1178,9 @@ proptest! {
         let warm = held_after_a_cold_crossing(&program, from);
 
         prop_assert_eq!(
-            held(&warm, "authorship.book"),
-            0,
-            "a link carries the book it is filed under, so the column is never read: {:?}",
-            warm
+            held(&warm, "authorship.book") > 0,
+            program.iter().any(|step| matches!(step, Credit::Link(..))),
+            "parent references are loaded for visibility resolution"
         );
         prop_assert_eq!(
             held(&warm, "author.name"),
@@ -1210,8 +1209,8 @@ proptest! {
 
         prop_assert_eq!(
             held(&warm, "authorship.author") > 0,
-            linked(Some(from)) > 0,
-            "the far id of a link is read exactly when there is a link to walk: {:?}",
+            linked(None) > 0,
+            "parent references are loaded for visibility resolution: {:?}",
             warm
         );
         prop_assert_eq!(

@@ -49,7 +49,10 @@ impl ColumnFile {
     }
 
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let source = FileSource::open(path)?;
+        Self::from_source(Arc::new(FileSource::open(path)?))
+    }
+
+    pub(super) fn from_source(source: Arc<FileSource>) -> Result<Self> {
         let total = source.len()?;
         if total < HEAD_LEN {
             return Err(Error::corrupt("file", "too short to be a column file"));
@@ -75,7 +78,7 @@ impl ColumnFile {
 
         let columns = read_directory(&directory, dir_offset)?;
         Ok(Self {
-            source: Arc::new(source),
+            source,
             columns,
             slot,
         })
@@ -83,6 +86,18 @@ impl ColumnFile {
 
     pub fn update(&self, writer_id: WriterId) -> Result<super::ColumnFileUpdater> {
         super::ColumnFileUpdater::open(self, writer_id)
+    }
+
+    pub(super) fn published(
+        source: Arc<FileSource>,
+        columns: Vec<ColumnMeta>,
+        slot: CommitSlot,
+    ) -> Self {
+        Self {
+            source,
+            columns,
+            slot,
+        }
     }
 
     pub(super) fn file_source(&self) -> &Arc<FileSource> {

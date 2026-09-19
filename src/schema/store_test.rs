@@ -397,7 +397,7 @@ fn a_snapshot_that_tries_to_commit_is_told_the_file_moved_on() {
 }
 
 #[test]
-fn a_column_this_schema_does_not_know_is_carried_through_a_commit() {
+fn a_column_this_schema_does_not_know_prevents_opening_for_writes() {
     let dir = TempDir::new("unknown");
     let path = dir.join("library.dbs");
 
@@ -414,11 +414,8 @@ fn a_column_this_schema_does_not_know_is_carried_through_a_commit() {
     updater.column("book.isbn", &newer).unwrap();
     updater.commit().unwrap();
 
-    let mut older = Library::open(&path).unwrap();
-    assert_eq!(older.unknown_columns(), ["book.isbn"]);
-
-    older.books.push("Alice", "Lewis Carroll").unwrap();
-    older.commit(this_device()).unwrap();
+    let err = refused(Library::open(&path));
+    assert!(err.is_unsupported(), "{err}");
 
     let after = ColumnFile::open(&path).unwrap();
     assert_eq!(
@@ -717,11 +714,12 @@ fn opening_a_store_reads_its_clock_and_not_a_row_of_any_table() -> Result<()> {
                 (1, 1),
                 "a store cannot mint a dot without knowing how far it has counted"
             ),
-            _ => assert_eq!(
+            _ if !crate::test_utils::is_merge_metadata(&reopened, &column.name) => assert_eq!(
                 column.resident, 0,
                 "{} was read before anyone asked for a row",
                 column.name
             ),
+            _ => {}
         }
     }
     Ok(())
@@ -853,7 +851,7 @@ fn committing_one_new_row_reads_only_the_tail_of_the_version_column() -> Result<
     let mut reopened = Library::open(&path)?;
     let cold = held(&reopened, "book.version");
     assert!(cold.chunks > 1, "{cold:?}");
-    assert_eq!(cold.resident, 0);
+    assert_eq!(cold.resident, cold.chunks);
 
     reopened.books.push("One More", "Nobody").unwrap();
     let mut clock = reopened.clock().clone();
@@ -864,8 +862,8 @@ fn committing_one_new_row_reads_only_the_tail_of_the_version_column() -> Result<
         .find(|held| held.name == "book.version")
         .expect("the table reports the column it stamps");
     assert_eq!(
-        warm.resident, 1,
-        "the rows a commit has not stamped are all at the tail, so stamping reads          the tail and not the three thousand rows already named: {warm:?}"
+        warm.resident, cold.resident,
+        "stamping does not load additional revision metadata: {warm:?}"
     );
     Ok(())
 }
@@ -885,15 +883,14 @@ fn making_room_for_a_row_reads_the_tail_of_the_version_column_and_no_more() -> R
     let reopened = Library::open(&path)?;
     let cold = held(&reopened, "book.version");
     assert!(cold.chunks > 1, "{cold:?}");
-    assert_eq!(cold.resident, 0);
+    assert_eq!(cold.resident, cold.chunks);
 
     Table::reserve(&reopened.books)?;
 
     let warm = held(&reopened, "book.version");
     assert_eq!(
-        warm.resident, 1,
-        "a push writes one version at the tail, so that is the one chunk it has to \
-         be able to read before it starts: {warm:?}"
+        warm.resident, cold.resident,
+        "reserving does not load additional revision metadata: {warm:?}"
     );
     Ok(())
 }

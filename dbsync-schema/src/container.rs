@@ -66,6 +66,12 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     let fields = sets.iter().map(|(field, held)| {
         quote! { #vis #field: <#held as ::dbsync::schema::Entity>::Table }
     });
+    let defaults = sets
+        .iter()
+        .map(|(field, _)| quote! { #field: ::core::default::Default::default() });
+    let clones = sets
+        .iter()
+        .map(|(field, _)| quote! { #field: self.#field.clone() });
     let read_only = sets.iter().map(|(field, _)| quote! { &self.#field });
     let audits = sets.iter().map(|(_, held)| {
         quote! { <#held as ::dbsync::schema::Audited<Self>>::audit_in(self)?; }
@@ -93,13 +99,33 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
 
     Ok(quote! {
         #(#attrs)*
-        #[derive(Default, Clone)]
         #vis struct #name {
             dbsync_state: ::dbsync::schema::StoreState,
+            dbsync_recovery: ::core::option::Option<::std::boxed::Box<::dbsync::schema::Recovery<Self>>>,
             #(#fields,)*
         }
 
+        impl ::core::default::Default for #name {
+            fn default() -> Self {
+                let mut store = Self { dbsync_state: ::core::default::Default::default(), dbsync_recovery: None, #(#defaults,)* };
+                <Self as ::dbsync::schema::Store>::bind_tables(&mut store);
+                store
+            }
+        }
+
+        impl ::core::clone::Clone for #name {
+            fn clone(&self) -> Self {
+                let mut store = Self { dbsync_state: self.dbsync_state.clone(), dbsync_recovery: self.dbsync_recovery.clone(), #(#clones,)* };
+                <Self as ::dbsync::schema::Store>::bind_tables(&mut store);
+                store
+            }
+        }
+
         impl ::dbsync::schema::Store for #name {
+            fn recovery(&self) -> ::core::option::Option<&::dbsync::schema::Recovery<Self>> { self.dbsync_recovery.as_deref() }
+
+            fn set_recovery(&mut self, recovery: ::core::option::Option<::dbsync::schema::Recovery<Self>>) { self.dbsync_recovery = recovery.map(::std::boxed::Box::new); }
+
             fn state(&self) -> &::dbsync::schema::StoreState {
                 &self.dbsync_state
             }
@@ -117,6 +143,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             }
 
             fn audit(&self) -> ::dbsync::Result<()> {
+                <Self as ::dbsync::schema::Store>::audit_dots(self)?;
                 #(#audits)*
                 ::core::result::Result::Ok(())
             }
@@ -146,6 +173,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 Self: ::dbsync::schema::Holds<E>,
                 E: ::dbsync::schema::Entity,
             {
+                <Self as ::dbsync::schema::Store>::check_mutable(self)?;
                 ::core::result::Result::Ok(::core::convert::Into::into(
                     ::dbsync::schema::EntryMut::of(self, id)?,
                 ))
@@ -177,6 +205,8 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             ) -> ::dbsync::Result<::dbsync::schema::MergeReport> {
                 <Self as ::dbsync::schema::Store>::check_published(self)?;
                 <Self as ::dbsync::schema::Store>::check_published(theirs)?;
+                <Self as ::dbsync::schema::Store>::audit(self)?;
+                <Self as ::dbsync::schema::Store>::audit(theirs)?;
 
                 let kept = <Self as ::dbsync::schema::Store>::snapshot(self);
                 let seen = <Self as ::dbsync::schema::Store>::clock(self).clone();
@@ -194,9 +224,12 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                     return ::core::result::Result::Err(err);
                 }
 
-                <Self as ::dbsync::schema::Store>::absorb(self, &told);
+                if let Err(err) = <Self as ::dbsync::schema::Store>::absorb(self, &told) { *self = kept; return Err(err); }
                 match <Self as ::dbsync::schema::Store>::audit(self) {
-                    ::core::result::Result::Ok(()) => ::core::result::Result::Ok(report),
+                    ::core::result::Result::Ok(()) => match <Self as ::dbsync::schema::Store>::finish_report(self, &kept, report) {
+                        ::core::result::Result::Ok(report) => ::core::result::Result::Ok(report),
+                        ::core::result::Result::Err(err) => { *self = kept; ::core::result::Result::Err(err) }
+                    },
                     ::core::result::Result::Err(said) => {
                         *self = kept;
                         ::core::result::Result::Err(::dbsync::Error::invalid(::std::format!(
@@ -206,14 +239,70 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 }
             }
 
+            pub fn history<E>(&self, id: ::dbsync::Id<E>) -> ::dbsync::Result<::std::vec::Vec<E::Row<'_, Self>>>
+            where Self: ::dbsync::schema::Holds<E>, E: ::dbsync::schema::Entity {
+                let table = ::dbsync::schema::Holds::<E>::table(self);
+                let mut rows = ::dbsync::schema::Table::versions_of(table, id)?;
+                if rows.is_empty() { return Err(::dbsync::Error::invalid("unknown entity id")); }
+                rows.sort_by_key(|row| ::dbsync::schema::Table::versions(table).raw_at(*row).map(|v| (!v.is_stamped(), v.dot(), row.index())).ok());
+                Ok(rows.into_iter().map(|row| ::dbsync::schema::Entry::at_row(self, row).into()).collect())
+            }
+
+            pub fn at_version<E>(&self, id: ::dbsync::Id<E>, dot: ::dbsync::schema::Dot) -> ::dbsync::Result<E::Row<'_, Self>>
+            where Self: ::dbsync::schema::Holds<E>, E: ::dbsync::schema::Entity {
+                let row = ::dbsync::schema::Table::revision_row(::dbsync::schema::Holds::<E>::table(self), id, dot)?;
+                Ok(::dbsync::schema::Entry::at_row(self, row).into())
+            }
+
+            pub fn status<E>(&self, id: ::dbsync::Id<E>) -> ::dbsync::Result<::dbsync::schema::RowStatus>
+            where Self: ::dbsync::schema::Holds<E>, E: ::dbsync::schema::Entity {
+                <Self as ::dbsync::schema::Store>::statuses(self)?.get(&(E::NAME, id.uuid())).cloned().ok_or_else(|| ::dbsync::Error::invalid("unknown entity id"))
+            }
+
+            pub fn at_hidden<E>(&self, id: ::dbsync::Id<E>) -> ::dbsync::Result<E::Row<'_, Self>>
+            where Self: ::dbsync::schema::Holds<E>, E: ::dbsync::schema::Entity {
+                let row = ::dbsync::schema::Table::logical_row_of(::dbsync::schema::Holds::<E>::table(self), id)?;
+                Ok(::dbsync::schema::Entry::at_row(self, row).into())
+            }
+
+            pub fn at_hidden_mut<E>(&mut self, id: ::dbsync::Id<E>) -> ::dbsync::Result<E::RowMut<'_, Self>>
+            where Self: ::dbsync::schema::Holds<E>, E: ::dbsync::schema::Entity {
+                <Self as ::dbsync::schema::Store>::check_mutable(self)?;
+                Ok(::dbsync::schema::EntryMut::hidden(self, id)?.into())
+            }
+
+            pub fn resolve<E>(&mut self, id: ::dbsync::Id<E>, dot: ::dbsync::schema::Dot) -> ::dbsync::Result<()>
+            where Self: ::dbsync::schema::Holds<E>, E: ::dbsync::schema::Entity {
+                self.recover_row(id, dot, false)
+            }
+
+            pub fn restore<E>(&mut self, id: ::dbsync::Id<E>, dot: ::dbsync::schema::Dot) -> ::dbsync::Result<()>
+            where Self: ::dbsync::schema::Holds<E>, E: ::dbsync::schema::Entity {
+                self.recover_row(id, dot, true)
+            }
+
+            fn recover_row<E>(&mut self, id: ::dbsync::Id<E>, dot: ::dbsync::schema::Dot, restore: bool) -> ::dbsync::Result<()>
+            where Self: ::dbsync::schema::Holds<E>, E: ::dbsync::schema::Entity {
+                <Self as ::dbsync::schema::Store>::check_mutable(self)?;
+                let kept = <Self as ::dbsync::schema::Store>::snapshot(self);
+                let result = (|| {
+                    ::dbsync::schema::Table::recover_row(::dbsync::schema::Holds::<E>::table_mut(self), id, dot, restore)?;
+                    <Self as ::dbsync::schema::Store>::audit(self)
+                })();
+                if result.is_err() { *self = kept; }
+                result
+            }
+
             pub fn remove<E>(&mut self, of: ::dbsync::Id<E>) -> ::dbsync::Result<()>
             where
                 Self: ::dbsync::schema::Holds<E>,
                 E: ::dbsync::schema::Removed<Self>,
             {
+                <Self as ::dbsync::schema::Store>::check_mutable(self)?;
                 let kept = <Self as ::dbsync::schema::Store>::snapshot(self);
-                <E as ::dbsync::schema::Removed<Self>>::remove_in(self, of)?;
-                match <Self as ::dbsync::schema::Store>::audit(self) {
+                let result = <E as ::dbsync::schema::Removed<Self>>::remove_in(self, of)
+                    .and_then(|()| <Self as ::dbsync::schema::Store>::audit(self));
+                match result {
                     ::core::result::Result::Ok(()) => ::core::result::Result::Ok(()),
                     ::core::result::Result::Err(said) => {
                         *self = kept;

@@ -9,6 +9,10 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug)]
 pub enum Error {
+    CommitUncertain {
+        attempt: Box<crate::storage::CommitAttempt>,
+        source: io::Error,
+    },
     Corrupt {
         record: &'static str,
         detail: String,
@@ -50,6 +54,11 @@ impl Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::CommitUncertain { attempt, source } => write!(
+                f,
+                "publication of generation {} is uncertain: {source}",
+                attempt.attempted.generation
+            ),
             Self::Corrupt { record, detail } => write!(f, "corrupt {record}: {detail}"),
             Self::Unsupported(detail) => write!(f, "unsupported: {detail}"),
             Self::Conflict { expected, found } => write!(
@@ -66,6 +75,7 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::CommitUncertain { source, .. } => Some(source),
             Self::Io(err) => Some(err),
             _ => None,
         }

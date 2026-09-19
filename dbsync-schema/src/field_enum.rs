@@ -34,6 +34,11 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         quote! { #variant = #code }
     });
 
+    let names = codes.iter().map(|(variant, code)| {
+        let name = variant.to_string();
+        quote! { (#name, #code) }
+    });
+
     Ok(quote! {
         #(#attrs)*
         #missing
@@ -44,6 +49,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
 
         impl ::dbsync::schema::UnitEnum for #name {
             const NAME: &'static str = #label;
+            const VARIANTS: &'static [(&'static str, u8)] = &[#(#names,)*];
 
             fn to_u8(self) -> u8 {
                 self as u8
