@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Keep the Tauri Rust crates and their npm counterparts on the same major.minor.
 #
 # `cargo tauri build` aborts with
@@ -12,9 +12,9 @@
 # site/package.json (tilde ranges, plus the pnpm override for @tauri-apps/api),
 # never by silently bumping the crate.
 
-set -euo pipefail
+set -eu
 
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+root="$(cd "$(dirname "$0")/.." && pwd)"
 cargo_lock="$root/Cargo.lock"
 pnpm_lock="$root/site/pnpm-lock.yaml"
 
@@ -28,22 +28,36 @@ done
 minor() { printf '%s\n' "${1%.*}"; }
 
 # crate name -> version, for `tauri` and every `tauri-plugin-*` in Cargo.lock.
-declare -A crates=()
-while read -r name version; do
-    crates["$name"]="$version"
-done < <(awk '
+crates="$(awk '
     /^name = /    { gsub(/"/, ""); name = $3 }
-    /^version = / { gsub(/"/, ""); if (name != "") { print name, $3; name = "" } }
-' "$cargo_lock" | grep -E '^tauri(-plugin-[a-z0-9-]+)? ')
+    /^version = / {
+        gsub(/"/, "")
+        if (name ~ /^tauri(-plugin-[a-z0-9-]+)?$/) { print name, $3 }
+        name = ""
+    }
+' "$cargo_lock")"
 
-# npm package -> every version the lockfile resolves (duplicates included).
-declare -A npm=()
-while read -r spec; do
-    pkg="${spec%@*}"
-    version="${spec##*@}"
-    npm["$pkg"]="${npm[$pkg]:-} $version"
-done < <(grep -oE "'@tauri-apps/[a-z0-9-]+@[0-9][^']*'" "$pnpm_lock" |
-    tr -d "'" | sort -u)
+# npm package -> every distinct version the lockfile resolves.
+npm="$(awk -F "'" '
+    {
+        for (i = 2; i <= NF; i += 2) {
+            if ($i ~ /^@tauri-apps\/[a-z0-9-]+@[0-9]/) {
+                spec = $i
+                version = spec
+                sub(/^.*@/, "", version)
+                sub(/@[^@]*$/, "", spec)
+                print spec, version
+            }
+        }
+    }
+' "$pnpm_lock" | sort -u)"
+packages="$(printf '%s\n' "$npm" | awk '!seen[$1]++ { print $1 }')"
+
+npm_versions() {
+    printf '%s\n' "$npm" | awk -v pkg="$1" '
+        $1 == pkg { printf "%s%s", sep, $2; sep = " " }
+    '
+}
 
 status=0
 fail() {
@@ -51,8 +65,8 @@ fail() {
     status=1
 }
 
-for pkg in $(printf '%s\n' "${!npm[@]}" | sort); do
-    versions=(${npm[$pkg]})
+for pkg in $packages; do
+    versions="$(npm_versions "$pkg")"
     short="${pkg#@tauri-apps/}"
     if [ "$short" = "api" ]; then
         crate="tauri"
@@ -62,14 +76,18 @@ for pkg in $(printf '%s\n' "${!npm[@]}" | sort); do
 
     # More than one resolved copy is how @tauri-apps/api crept back to a newer
     # minor through a plugin's own dependency range.
-    mapfile -t distinct < <(printf '%s\n' "${versions[@]}" | sort -u)
-    if [ "${#distinct[@]}" -gt 1 ]; then
-        fail "$pkg resolves to multiple versions (${distinct[*]}); pin it with a pnpm override in site/package.json"
-        continue
-    fi
+    case "$versions" in
+        *" "*)
+            fail "$pkg resolves to multiple versions ($versions); pin it with a pnpm override in site/package.json"
+            continue
+            ;;
+    esac
 
-    npm_version="${distinct[0]}"
-    crate_version="${crates[$crate]:-}"
+    npm_version="$versions"
+    crate_version="$(printf '%s\n' "$crates" | awk -v crate="$crate" '
+        $1 == crate { version = $2 }
+        END { print version }
+    ')"
     if [ -z "$crate_version" ]; then
         continue # npm-only tooling package, nothing to match against
     fi
@@ -83,11 +101,11 @@ done
 # agree, so verify what is actually installed when it is present.
 modules="$root/site/node_modules"
 if [ -d "$modules" ]; then
-    for pkg in $(printf '%s\n' "${!npm[@]}" | sort); do
+    for pkg in $packages; do
         manifest="$modules/$pkg/package.json"
         [ -f "$manifest" ] || continue
         installed="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$manifest" | head -1)"
-        expected="${npm[$pkg]## }"
+        expected="$(npm_versions "$pkg")"
         if [ "$installed" != "$expected" ]; then
             fail "$pkg installed as v$installed but the lockfile pins v$expected; run \`pnpm install\` in site/"
         fi
