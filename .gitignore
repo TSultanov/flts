@@ -9,4 +9,5 @@ MC_TTrace_*
 .specs/
 /docs/superpowers/
 .worktrees/
+.opencode/
 
