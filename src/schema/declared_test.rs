@@ -46,7 +46,7 @@ struct Paragraph {
     text: String,
 }
 
-#[crate::container]
+#[crate::container(schema = "library", version = 1)]
 struct Library {
     books: Set<Book>,
     chapters: Set<Chapter>,

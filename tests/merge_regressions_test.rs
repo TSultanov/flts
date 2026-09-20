@@ -11,7 +11,7 @@ struct Doc {
     body: String,
 }
 
-#[dbsync::container]
+#[dbsync::container(schema = "library", version = 1)]
 struct Library {
     docs: Set<Doc>,
 }
@@ -146,7 +146,7 @@ mod newer {
     pub struct Note {
         text: String,
     }
-    #[dbsync::container]
+    #[dbsync::container(schema = "library", version = 1)]
     pub struct Library {
         docs: Set<Doc>,
         notes: Set<Note>,
@@ -176,7 +176,7 @@ mod added_field {
         body: String,
         extra: u32,
     }
-    #[dbsync::container]
+    #[dbsync::container(schema = "library", version = 1)]
     pub struct Library {
         docs: Set<Doc>,
     }
@@ -286,7 +286,7 @@ mod relationships {
         child: One<Child>,
         text: String,
     }
-    #[dbsync::container]
+    #[dbsync::container(schema = "library", version = 1)]
     pub struct Library {
         parents: Set<Parent>,
         children: Set<Child>,
@@ -421,7 +421,7 @@ mod multiple_keys {
         #[index]
         second: Option<String>,
     }
-    #[dbsync::container]
+    #[dbsync::container(schema = "database", version = 1)]
     pub struct Database {
         items: Set<Item>,
     }
@@ -444,7 +444,7 @@ mod cycle {
         target: One<Link>,
         name: String,
     }
-    #[dbsync::container]
+    #[dbsync::container(schema = "database", version = 1)]
     pub struct Database {
         links: Set<Link>,
     }

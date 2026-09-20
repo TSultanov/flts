@@ -9,7 +9,7 @@ struct Note {
     body: String,
     score: u64,
 }
-#[dbsync::container]
+#[dbsync::container(schema = "database", version = 1)]
 struct Database {
     notes: Set<Note>,
 }

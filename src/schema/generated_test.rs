@@ -393,7 +393,7 @@ fn every_column_a_table_names_is_a_column_it_reports_residency_for() {
     }
 }
 
-#[crate::container]
+#[crate::container(schema = "catalogue", version = 1)]
 struct Catalogue {
     authors: Set<Author>,
     works: Set<Work>,

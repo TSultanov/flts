@@ -16,6 +16,8 @@ use header::Header;
 mod append_mark;
 mod codec;
 mod compaction;
+#[cfg(all(test, feature = "macros"))]
+pub(crate) use compaction::fail_rewrite_at;
 mod compression;
 mod delta;
 pub use compaction::{CompactionPolicy, CompactionReport, MaintenanceOutcome, StorageStats};

@@ -44,7 +44,7 @@ struct Paragraph {
     text: String,
 }
 
-#[dbsync::container]
+#[dbsync::container(schema = "library", version = 1)]
 struct Library {
     books: Set<Book>,
     authors: Set<Author>,

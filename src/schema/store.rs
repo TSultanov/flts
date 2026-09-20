@@ -54,6 +54,11 @@ pub struct Recovery<S> {
 }
 
 impl StoreState {
+    pub(crate) fn attach(&mut self, file: ColumnFile, path: PathBuf) {
+        self.file = Some(file);
+        self.path = Some(path);
+    }
+
     fn attached(&self) -> Result<(&ColumnFile, &Path)> {
         match (&self.file, &self.path) {
             (Some(file), Some(path)) => Ok((file, path.as_path())),
@@ -65,6 +70,18 @@ impl StoreState {
 }
 
 pub trait Store: Default + Clone + Sized {
+    const SCHEMA_NAME: &'static str;
+    const SCHEMA_VERSION: u64;
+
+    fn schema_metadata(&self) -> super::SchemaMetadata {
+        super::SchemaMetadata {
+            format_version: 1,
+            name: Self::SCHEMA_NAME.to_owned(),
+            version: Self::SCHEMA_VERSION,
+            descriptor: self.schema_descriptor(),
+        }
+    }
+
     fn merge_rows_from(&mut self, theirs: &Self, report: &mut MergeReport) -> Result<()>;
 
     fn recovery(&self) -> Option<&Recovery<Self>>;
@@ -368,19 +385,16 @@ pub trait Store: Default + Clone + Sized {
 
     fn read(&mut self, file: &ColumnFile) -> Result<()> {
         self.check_mutable()?;
+        if file.column_meta(SCHEMA).is_some() {
+            self.schema_metadata()
+                .check(super::SchemaMetadata::read(file)?)?;
+        }
         let diff = self.diff(file);
         if let Some(mismatch) = diff.to_error() {
             return Err(mismatch);
         }
 
         let schema: Arena<u8> = file.column(SCHEMA)?;
-        let actual = schema
-            .iter()
-            .map(|v| v.copied())
-            .collect::<Result<Vec<_>>>()?;
-        if actual != self.schema_descriptor() {
-            return Err(Error::unsupported("schema does not match this store"));
-        }
         if !diff.unknown.is_empty() {
             return Err(Error::unsupported(format!(
                 "unknown columns: {:?}",
@@ -411,7 +425,7 @@ pub trait Store: Default + Clone + Sized {
         }
         self.clock().offer_to(CLOCK, &self.state().dots, updater)?;
         let mut schema = Arena::new();
-        schema.extend_from_slice(&self.schema_descriptor())?;
+        schema.extend_from_slice(&self.schema_metadata().encode()?)?;
         updater.column(
             SCHEMA,
             if self.state().schema_bytes.is_empty() {
@@ -424,6 +438,7 @@ pub trait Store: Default + Clone + Sized {
     }
 
     fn create(path: impl AsRef<Path>, writer_id: WriterId) -> Result<Self> {
+        Self::default().schema_metadata().validate()?;
         let path = path.as_ref();
         let handle = File::options()
             .write(true)

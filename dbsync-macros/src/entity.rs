@@ -527,6 +527,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             const NAME: &'static str = #label;
             #keeps
 
+            type Value = #value_type;
             type Table = #table;
 
             type Row<#held, S> = #row_type<#held, S>
@@ -620,6 +621,26 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                     ::dbsync::schema::FieldMut::new("version", &mut self.dbsync_versions),
                     #(#read_write,)*
                 ]
+            }
+        }
+
+        impl ::dbsync::schema::MigrationTable for #table {
+            fn revision_value(&self, row: ::dbsync::schema::Row) -> ::dbsync::Result<#value_type> {
+                self.dbsync_raw_value(row)
+            }
+
+            fn append_revision_value(
+                &mut self,
+                id: ::dbsync::Id<#name>,
+                version: ::dbsync::schema::Version,
+                parents: ::std::vec::Vec<::dbsync::schema::Parent>,
+                value: #value_type,
+            ) -> ::dbsync::Result<()> {
+                let #value_type { #(#value_names,)* } = value;
+                <Self as ::dbsync::schema::Table>::reserve(self)?;
+                <Self as ::dbsync::schema::Table>::adopt_revision(self, id, version, parents)?;
+                #(#pushes_theirs)*
+                Ok(())
             }
         }
 

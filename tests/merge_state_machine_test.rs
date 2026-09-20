@@ -18,7 +18,7 @@ struct Node {
     value: u32,
 }
 
-#[dbsync::container]
+#[dbsync::container(schema = "database", version = 1)]
 struct Database {
     nodes: Set<Node>,
 }

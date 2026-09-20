@@ -20,7 +20,7 @@ fn choose(input: &dbsync::schema::MergeInput<'_, NoteValue>) -> NoteValue {
         .value
         .clone()
 }
-#[dbsync::container]
+#[dbsync::container(schema = "database", version = 1)]
 struct Database {
     notes: Set<Note>,
 }

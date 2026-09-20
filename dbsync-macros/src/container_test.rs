@@ -1,11 +1,13 @@
 use super::*;
 
 fn expanded(item: TokenStream) -> String {
-    expand(TokenStream::new(), item).unwrap().to_string()
+    expand(quote! { schema = "library", version = 1 }, item)
+        .unwrap()
+        .to_string()
 }
 
 fn refused(item: TokenStream) -> String {
-    match expand(TokenStream::new(), item) {
+    match expand(quote! { schema = "library", version = 1 }, item) {
         Ok(_) => panic!("this container must not have expanded"),
         Err(err) => err.to_string(),
     }
@@ -145,7 +147,7 @@ fn a_tuple_container_is_refused() {
 }
 
 #[test]
-fn the_attribute_takes_no_arguments() {
+fn unknown_arguments_are_rejected() {
     let err = match expand(
         quote! { path = "x" },
         quote! { struct Library { books: Set<Book> } },
@@ -154,7 +156,7 @@ fn the_attribute_takes_no_arguments() {
         Err(err) => err.to_string(),
     };
 
-    assert!(err.contains("takes no arguments"), "{err}");
+    assert!(err.contains("expected unique schema and version"), "{err}");
 }
 
 #[test]
@@ -265,4 +267,41 @@ fn a_store_takes_a_row_out_and_puts_it_back_if_the_audit_refuses() {
         out.contains("cannot be taken out while something still names it"),
         "{out}"
     );
+}
+
+#[test]
+fn container_emits_explicit_schema_identity() {
+    let out = expand(
+        quote! { schema = "catalog", version = 42 },
+        quote! { struct Library { books: Set<Book> } },
+    )
+    .unwrap()
+    .to_string();
+    assert!(
+        out.contains("const SCHEMA_NAME : & 'static str = \"catalog\""),
+        "{out}"
+    );
+    assert!(out.contains("const SCHEMA_VERSION : u64 = 42"), "{out}");
+}
+
+#[test]
+fn schema_identity_arguments_are_required_unique_and_valid() {
+    for attr in [
+        quote! {},
+        quote! { schema = "library" },
+        quote! { version = 1 },
+        quote! { schema = "", version = 1 },
+        quote! { schema = "  ", version = 1 },
+        quote! { schema = "library", version = 0 },
+        quote! { schema = "library", version = -1 },
+        quote! { schema = "library", version = 18446744073709551616 },
+        quote! { schema = "library", version = "1" },
+        quote! { schema = "library", schema = "other", version = 1 },
+        quote! { schema = "library", version = 1, version = 2 },
+    ] {
+        assert!(
+            expand(attr.clone(), quote! { struct Library { books: Set<Book> } }).is_err(),
+            "accepted {attr}"
+        );
+    }
 }

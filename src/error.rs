@@ -9,6 +9,15 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug)]
 pub enum Error {
+    SchemaMismatch {
+        expected: Box<crate::schema::SchemaMetadata>,
+        actual: Box<crate::schema::SchemaMetadata>,
+    },
+    MigrationUncertain {
+        expected: CommitToken,
+        attempted: CommitToken,
+        source: io::Error,
+    },
     CompactionUncertain {
         expected: CommitToken,
         attempted: CommitToken,
@@ -57,13 +66,30 @@ impl Error {
     }
 
     pub fn is_unsupported(&self) -> bool {
-        matches!(self, Self::Unsupported(_))
+        matches!(self, Self::Unsupported(_) | Self::SchemaMismatch { .. })
     }
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::SchemaMismatch { expected, actual } => write!(
+                f,
+                "schema mismatch: expected {} version {}, found {} version {}{}",
+                expected.name,
+                expected.version,
+                actual.name,
+                actual.version,
+                if expected.descriptor != actual.descriptor {
+                    " (descriptor differs)"
+                } else {
+                    ""
+                }
+            ),
+            Self::MigrationUncertain { source, .. } => write!(
+                f,
+                "migration was replaced but durability is uncertain: {source}"
+            ),
             Self::CompactionUncertain { source, .. } => write!(
                 f,
                 "compaction was replaced but durability is uncertain: {source}"
@@ -96,7 +122,9 @@ impl std::error::Error for Error {
             Self::RetryExhausted { source, .. } => Some(source.as_ref()),
             Self::CommitUncertain { source, .. } => Some(source),
             Self::Io(err) => Some(err),
-            Self::CompactionUncertain { source, .. } => Some(source),
+            Self::CompactionUncertain { source, .. } | Self::MigrationUncertain { source, .. } => {
+                Some(source)
+            }
             _ => None,
         }
     }

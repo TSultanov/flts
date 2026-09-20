@@ -24,6 +24,8 @@ pub trait Entity: Sized + 'static {
 
     const KEEPS: Retention = Retention::Newest;
 
+    type Value;
+
     type Table: Table<Of = Self>;
 
     type Row<'a, S>: From<Entry<'a, S, Self>>

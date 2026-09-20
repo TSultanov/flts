@@ -209,6 +209,8 @@ impl ColumnFile {
             compaction_fault("after_replace")?;
             #[cfg(unix)]
             File::open(parent)?.sync_all()?;
+            compaction_fault("before_unlock")?;
+            replacement.unlock()?;
             Ok(())
         })();
         if let Err(source) = sync {
@@ -218,7 +220,6 @@ impl ColumnFile {
                 source,
             });
         }
-        replacement.unlock()?;
         Ok((
             published,
             CompactionReport {
@@ -251,6 +252,11 @@ fn collect(source: &FileSource, loc: ChunkLoc, ranges: &mut BTreeMap<u64, u64>) 
 
 #[cfg(test)]
 thread_local! { static FAULT: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) }; }
+
+#[cfg(all(test, feature = "macros"))]
+pub(crate) fn fail_rewrite_at(point: &'static str) {
+    FAULT.set(Some(point));
+}
 
 fn compaction_fault(_point: &str) -> std::io::Result<()> {
     #[cfg(test)]

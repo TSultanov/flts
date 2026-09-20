@@ -21,6 +21,8 @@ pub struct Authorship;
 impl Entity for Book {
     const NAME: &'static str = "book";
 
+    type Value = ();
+
     type Table = Books;
 
     type Row<'a, S>
@@ -36,6 +38,8 @@ impl Entity for Book {
 
 impl Entity for Chapter {
     const NAME: &'static str = "chapter";
+
+    type Value = ();
 
     type Table = Chapters;
 
@@ -53,6 +57,8 @@ impl Entity for Chapter {
 impl Entity for Paragraph {
     const NAME: &'static str = "paragraph";
 
+    type Value = ();
+
     type Table = Paragraphs;
 
     type Row<'a, S>
@@ -68,6 +74,8 @@ impl Entity for Paragraph {
 
 impl Entity for Edition {
     const NAME: &'static str = "edition";
+
+    type Value = ();
 
     type Table = Editions;
 
@@ -85,6 +93,8 @@ impl Entity for Edition {
 impl Entity for Author {
     const NAME: &'static str = "author";
 
+    type Value = ();
+
     type Table = Authors;
 
     type Row<'a, S>
@@ -100,6 +110,8 @@ impl Entity for Author {
 
 impl Entity for Authorship {
     const NAME: &'static str = "authorship";
+
+    type Value = ();
 
     type Table = Authorships;
 
@@ -1387,6 +1399,8 @@ impl Clone for Library {
 }
 
 impl Store for Library {
+    const SCHEMA_NAME: &'static str = "library";
+    const SCHEMA_VERSION: u64 = 1;
     fn merge_rows_from(
         &mut self,
         theirs: &Self,

@@ -41,7 +41,7 @@ fn combine(input: &MergeInput<'_, NoteValue>) -> NoteValue {
     }
 }
 
-#[dbsync::container]
+#[dbsync::container(schema = "database", version = 1)]
 struct Database {
     folders: Set<Folder>,
     notes: Set<Note>,
@@ -209,7 +209,7 @@ mod ancestry {
         }
     }
 
-    #[dbsync::container]
+    #[dbsync::container(schema = "database", version = 1)]
     pub struct Database {
         counters: Set<Counter>,
     }
@@ -263,7 +263,7 @@ mod invalid {
         }
     }
 
-    #[dbsync::container]
+    #[dbsync::container(schema = "database", version = 1)]
     pub struct Database {
         links: Set<Link>,
     }
@@ -296,7 +296,7 @@ mod plain_policy {
     pub struct Item {
         value: u32,
     }
-    #[dbsync::container]
+    #[dbsync::container(schema = "database", version = 1)]
     pub struct Database {
         items: Set<Item>,
     }
@@ -315,7 +315,7 @@ mod named_policy {
         }
     }
 
-    #[dbsync::container]
+    #[dbsync::container(schema = "database", version = 1)]
     pub struct Database {
         items: Set<Item>,
     }

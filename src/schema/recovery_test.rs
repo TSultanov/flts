@@ -8,7 +8,7 @@ struct Item {
     value: String,
 }
 
-#[crate::container]
+#[crate::container(schema = "database", version = 1)]
 struct Database {
     items: Set<Item>,
 }

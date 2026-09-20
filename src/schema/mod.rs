@@ -10,6 +10,8 @@ mod identity;
 mod index;
 mod indexed;
 mod merge;
+mod metadata;
+mod migration;
 mod names;
 mod nullable;
 mod projection;
@@ -36,6 +38,8 @@ pub use merge::{
     Combined, Concurrent, Conflict, MergeReport, ReferenceConflict, RevisionRecord, RowStatus,
     VisibilityChange,
 };
+pub use metadata::SchemaMetadata;
+pub use migration::{Migration, MigrationReport, MigrationStepReport, MigrationTable, Migrations};
 pub use names::{bucket_name, heap_name, link_name, presence_name, qualified};
 pub use nullable::{Maybe, NullableColumn};
 pub use projection::{Candidate, Reference, View, encode_record, encode_text};

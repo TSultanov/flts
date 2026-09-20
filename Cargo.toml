@@ -27,3 +27,7 @@ proptest = { version = "1.11", default-features = false, features = ["std", "bit
 [[example]]
 name = "store_bench"
 required-features = ["macros"]
+
+[[example]]
+name = "library_migration"
+required-features = ["macros"]

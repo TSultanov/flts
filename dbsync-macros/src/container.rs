@@ -8,10 +8,38 @@ use syn::{Fields, ItemStruct, Type};
 use crate::field::set_of;
 
 pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
-    if !attr.is_empty() {
+    let mut schema = None;
+    let mut version = None;
+    let parser = syn::meta::parser(|meta| {
+        if meta.path.is_ident("schema") && schema.is_none() {
+            schema = Some(meta.value()?.parse::<syn::LitStr>()?);
+        } else if meta.path.is_ident("version") && version.is_none() {
+            version = Some(meta.value()?.parse::<syn::LitInt>()?);
+        } else {
+            return Err(meta.error("expected unique schema and version arguments"));
+        }
+        Ok(())
+    });
+    syn::parse::Parser::parse2(parser, attr)?;
+    let schema = schema.ok_or_else(|| {
+        syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "container requires schema and version",
+        )
+    })?;
+    if schema.value().trim().is_empty() {
         return Err(syn::Error::new(
-            attr.span(),
-            "#[dbsync::container] takes no arguments",
+            schema.span(),
+            "schema name must not be empty",
+        ));
+    }
+    let version =
+        version.ok_or_else(|| syn::Error::new(schema.span(), "container requires version"))?;
+    let number = version.base10_parse::<u64>()?;
+    if number == 0 {
+        return Err(syn::Error::new(
+            version.span(),
+            "schema version must be positive",
         ));
     }
 
@@ -119,6 +147,9 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         }
 
         impl ::dbsync::schema::Store for #name {
+            const SCHEMA_NAME: &'static str = #schema;
+            const SCHEMA_VERSION: u64 = #number;
+
             fn merge_rows_from(&mut self, theirs: &Self, report: &mut ::dbsync::schema::MergeReport) -> ::dbsync::Result<()> {
                 #(#merges)*
                 Ok(())

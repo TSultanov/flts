@@ -9,7 +9,7 @@ struct Item {
     text: String,
 }
 
-#[dbsync::container]
+#[dbsync::container(schema = "database", version = 1)]
 struct Database {
     items: Set<Item>,
 }
@@ -128,7 +128,7 @@ mod integer {
     pub struct Item {
         number: u32,
     }
-    #[dbsync::container]
+    #[dbsync::container(schema = "database", version = 1)]
     pub struct Database {
         items: Set<Item>,
     }
@@ -139,7 +139,7 @@ mod float {
     pub struct Item {
         number: f32,
     }
-    #[dbsync::container]
+    #[dbsync::container(schema = "database", version = 1)]
     pub struct Database {
         items: Set<Item>,
     }
@@ -155,7 +155,7 @@ mod enum_a {
     pub struct Item {
         state: State,
     }
-    #[dbsync::container]
+    #[dbsync::container(schema = "database", version = 1)]
     pub struct Database {
         items: Set<Item>,
     }
@@ -171,7 +171,7 @@ mod enum_b {
     pub struct Item {
         state: State,
     }
-    #[dbsync::container]
+    #[dbsync::container(schema = "database", version = 1)]
     pub struct Database {
         items: Set<Item>,
     }
@@ -250,7 +250,7 @@ mod names {
         dot: u32,
         value: u32,
     }
-    #[dbsync::container]
+    #[dbsync::container(schema = "database", version = 1)]
     pub struct Database {
         items: Set<Item>,
     }
@@ -285,7 +285,7 @@ mod references {
     pub struct Item {
         parent: One<Item>,
     }
-    #[dbsync::container]
+    #[dbsync::container(schema = "database", version = 1)]
     pub struct Database {
         items: Set<Item>,
     }
