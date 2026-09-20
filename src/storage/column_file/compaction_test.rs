@@ -11,6 +11,19 @@ fn seed(path: &std::path::Path) -> Result<ColumnFile> {
     ColumnFile::open(path)
 }
 
+fn varied_seed(path: &std::path::Path, chunks: usize) -> Result<ColumnFile> {
+    use rand::{Rng, SeedableRng};
+    let mut rng = rand::rngs::StdRng::seed_from_u64(17);
+    let mut arena = Arena::<u64>::new();
+    for _ in 0..8192 * chunks {
+        arena.push(rng.random())?;
+    }
+    let mut writer = ColumnFileWriter::create(path, WriterId::from_raw(1))?;
+    writer.column("values", &arena)?;
+    writer.finish()?;
+    ColumnFile::open(path)
+}
+
 fn change(file: &ColumnFile, value: u64) -> Result<ColumnFile> {
     let mut arena = file.column::<u64>("values")?;
     arena.set(0, value)?;
@@ -45,6 +58,42 @@ fn sparse_updates_and_reverts_do_not_write_full_chunks() -> Result<()> {
     let mut updater = same.update(WriterId::from_raw(1))?;
     updater.column("values", &rebuilt)?;
     assert_eq!(updater.commit_file()?.storage_stats()?.file_bytes, size);
+    Ok(())
+}
+
+#[test]
+fn reverting_a_delta_reuses_the_compressed_base() -> Result<()> {
+    let dir = TempDir::new("compressed_revert");
+    let path = dir.join("db");
+    let original = varied_seed(&path, 2)?;
+    let initial_value = *original.column::<u64>("values")?.row(0)?;
+    let base = original.columns()[0].chunks[0];
+    let changed = change(&original, 42)?;
+    assert_eq!(changed.columns()[0].chunks[0].depth, 1);
+    let reverted = change(&changed, initial_value)?;
+    assert_eq!(reverted.columns()[0].chunks[0], base);
+    assert_eq!(reverted.content_id(), original.content_id());
+    assert_eq!(
+        reverted.columns()[0].chunks[1],
+        original.columns()[0].chunks[1]
+    );
+    ColumnFile::open(&path)?.verify()?;
+    Ok(())
+}
+
+#[test]
+fn a_compressed_full_chunk_can_be_smaller_than_a_delta() -> Result<()> {
+    let dir = TempDir::new("compressed_full");
+    let original = seed(&dir.join("db"))?;
+    let stats = original.storage_stats()?;
+    assert!(stats.file_bytes < stats.retained_value_bytes / 4);
+    assert_eq!(stats.consolidated_bytes, stats.file_bytes);
+    assert_eq!(stats.obsolete_bytes, 0);
+    let changed = change(&original, 42)?;
+    let loc = changed.columns()[0].chunks[0];
+    assert_eq!(loc.depth, 0);
+    assert!(loc.physical_len() < 100);
+    changed.verify()?;
     Ok(())
 }
 
@@ -84,7 +133,7 @@ fn consolidation_bounds_chains_and_compaction_preserves_snapshots() -> Result<()
 fn replacement_failures_leave_a_verified_published_file() -> Result<()> {
     let dir = TempDir::new("compact_failure");
     let path = dir.join("db");
-    let file = change(&seed(&path)?, 42)?;
+    let file = change(&varied_seed(&path, 2)?, 42)?;
     FAULT.set(Some("before_replace"));
     assert!(file.compact().is_err());
     assert_eq!(ColumnFile::open(&path)?.commit_token(), file.commit_token());
@@ -102,19 +151,20 @@ fn replacement_failures_leave_a_verified_published_file() -> Result<()> {
 }
 
 #[test]
-fn dense_updates_are_raw_and_corrupt_delta_bases_are_rejected() -> Result<()> {
+fn dense_updates_are_full_and_corrupt_delta_bases_are_rejected() -> Result<()> {
     let dir = TempDir::new("delta_corruption");
     let path = dir.join("db");
     let file = seed(&path)?;
     let mut arena = file.column::<u64>("values")?;
     for row in 0..8192 {
-        arena.set(row, 7)?;
+        arena.set(row, row as u64)?;
     }
     let mut updater = file.update(WriterId::from_raw(1))?;
     updater.column("values", &arena)?;
     let dense = updater.commit_file()?;
     assert_eq!(dense.columns()[0].chunks[0].depth, 0);
     let sparse = change(&dense, 8)?;
+    assert_eq!(sparse.columns()[0].chunks[0].depth, 1);
     let base = dense.columns()[0].chunks[0];
     crate::test_utils::flip_byte(&path, base.offset);
     assert!(sparse.verify().is_err());
@@ -126,7 +176,7 @@ fn dense_updates_are_raw_and_corrupt_delta_bases_are_rejected() -> Result<()> {
 fn every_byte_of_a_chunk_delta_is_checksummed_before_it_is_applied() -> Result<()> {
     let dir = TempDir::new("chunk_delta_checksum");
     let path = dir.join("db");
-    let file = change(&seed(&path)?, 42)?;
+    let file = change(&varied_seed(&path, 2)?, 42)?;
     let loc = file.columns()[0].chunks[0];
     assert_eq!(loc.depth, 1);
     for byte in 0..loc.physical_len() {
@@ -146,12 +196,7 @@ fn every_byte_of_a_chunk_delta_is_checksummed_before_it_is_applied() -> Result<(
 fn directory_deltas_and_their_bases_are_checksummed_on_open() -> Result<()> {
     let dir = TempDir::new("directory_delta_checksum");
     let path = dir.join("db");
-    let mut data = Arena::<u64>::new();
-    data.extend_from_slice(&vec![0; 8192 * 16])?;
-    let mut writer = ColumnFileWriter::create(&path, WriterId::from_raw(1))?;
-    writer.column("values", &data)?;
-    writer.finish()?;
-    let original = ColumnFile::open(&path)?;
+    let original = varied_seed(&path, 64)?;
     let changed = change(&original, 42)?;
     let loc = changed.directory_loc()?;
     assert_eq!(loc.depth, 1);
@@ -174,24 +219,26 @@ fn directory_deltas_and_their_bases_are_checksummed_on_open() -> Result<()> {
 
 #[test]
 fn reconstructed_bytes_are_verified_even_when_the_delta_checksum_matches() -> Result<()> {
-    use crate::storage::column_file::file_source::write_all_at;
+    use crate::storage::column_file::{compression, file_source::write_all_at};
     let dir = TempDir::new("delta_result_checksum");
     let path = dir.join("db");
-    let file = change(&seed(&path)?, 42)?;
-    let loc = file.columns()[0].chunks[0];
-    let mut bytes = vec![0; loc.physical_len() as usize];
-    file.file_source().read_at(&mut bytes, loc.offset)?;
-    // Corrupt a replacement value, then deliberately repair the record checksum.
+    let file = change(&varied_seed(&path, 2)?, 42)?;
+    let mut loc = file.columns()[0].chunks[0];
+    assert_eq!(loc.depth, 1);
+    let mut bytes = file.file_source().read_payload(loc)?;
+    // Change a replacement value, then repair both the delta and zstd checksums.
     let last_payload = bytes.len() - 9;
     bytes[last_payload] ^= 1;
     let checksum_at = bytes.len() - 8;
     let checksum = crate::fnv1a(&bytes[..checksum_at]);
     bytes[checksum_at..].copy_from_slice(&checksum.to_le_bytes());
+    let payload = compression::encode(&bytes, loc.byte_len, loc.depth)?;
+    loc.offset = file.file_bytes()?;
+    loc.stored_len = payload.len() as u32;
     let handle = OpenOptions::new().write(true).open(&path)?;
-    write_all_at(&handle, &bytes, loc.offset)?;
-    let err = file.verify().unwrap_err();
-    assert!(err.to_string().contains("checksum"));
-    assert!(file.compact().is_err());
+    write_all_at(&handle, &payload, loc.offset)?;
+    let err = file.file_source().read_chunk(loc).unwrap_err();
+    assert!(err.to_string().contains("failed checksum"));
     Ok(())
 }
 

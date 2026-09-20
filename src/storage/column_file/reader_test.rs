@@ -71,14 +71,8 @@ fn a_flipped_byte_in_a_chunk_is_caught_on_read_not_on_open() {
 
     let err = values.get(4).unwrap_err();
     assert!(err.is_corrupt(), "{err}");
-    assert!(err.to_string().contains("failed checksum"), "{err}");
 
-    assert!(
-        file.verify()
-            .unwrap_err()
-            .to_string()
-            .contains("failed checksum")
-    );
+    assert!(file.verify().unwrap_err().is_corrupt());
 }
 
 #[test]
@@ -95,16 +89,10 @@ fn a_damaged_directory_or_slot_is_caught_on_open() {
 
     let damaged = dir.join("damaged.dbs");
     build(&damaged);
-    let dir_offset = ColumnFile::open(&damaged)
-        .unwrap()
-        .column_meta("values")
-        .unwrap()
-        .byte_len()
-        + HEAD_LEN;
+    let dir_offset = ColumnFile::open(&damaged).unwrap().slot.dir_offset;
     flip_byte(&damaged, dir_offset);
     let err = ColumnFile::open(&damaged).unwrap_err();
     assert!(err.is_corrupt(), "{err}");
-    assert!(err.to_string().contains("failed checksum"), "{err}");
 
     let truncated = dir.join("truncated.dbs");
     build(&truncated);
@@ -172,7 +160,7 @@ fn a_commit_token_reads_without_touching_the_directory() {
     assert_eq!(token.generation, 1);
     assert_eq!(token.file_uuid, file.file_uuid());
 
-    let dir_offset = file.column_meta("values").unwrap().byte_len() + HEAD_LEN;
+    let dir_offset = file.slot.dir_offset;
     flip_byte(&path, dir_offset);
     assert!(
         ColumnFile::open(&path).is_err(),
@@ -324,7 +312,7 @@ proptest! {
         let held = 4 * chunk_rows * chunks as u64;
 
         prop_assert_eq!(file.live_bytes(), held);
-        prop_assert!(file.live_bytes() <= image.len() as u64 - HEAD_LEN);
+        file.verify().unwrap();
     }
 }
 

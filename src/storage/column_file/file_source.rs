@@ -24,7 +24,7 @@ impl FileSource {
         })
     }
 
-    pub(super) fn raw_base(&self, mut loc: ChunkLoc) -> Result<ChunkLoc> {
+    pub(super) fn full_base(&self, mut loc: ChunkLoc) -> Result<ChunkLoc> {
         if loc.depth > super::delta::MAX_DEPTH {
             return Err(crate::Error::corrupt("delta", "chain too deep"));
         }
@@ -36,8 +36,7 @@ impl FileSource {
             {
                 return Err(crate::Error::corrupt("delta", "invalid extent"));
             }
-            let mut bytes = vec![0; loc.physical_len() as usize];
-            self.read_at(&mut bytes, loc.offset)?;
+            let bytes = self.read_payload(loc)?;
             loc = super::delta::parse(loc, &bytes)?.0;
         }
         Ok(loc)
@@ -58,11 +57,10 @@ impl FileSource {
     pub(super) fn read_at(&self, buf: &mut [u8], offset: u64) -> Result<()> {
         read_exact_at(&self.file, buf, offset)
     }
-}
 
-impl ChunkSource for FileSource {
-    fn read_chunk(&self, loc: ChunkLoc) -> Result<Vec<u8>> {
+    pub(super) fn read_payload(&self, loc: ChunkLoc) -> Result<Vec<u8>> {
         if loc.depth > super::delta::MAX_DEPTH
+            || loc.stored_len <= super::compression::HEADER_LEN as u32
             || loc
                 .offset
                 .checked_add(loc.physical_len())
@@ -72,6 +70,13 @@ impl ChunkSource for FileSource {
         }
         let mut buf = vec![0u8; loc.physical_len() as usize];
         self.read_at(&mut buf, loc.offset)?;
+        super::compression::decode(loc, &buf)
+    }
+}
+
+impl ChunkSource for FileSource {
+    fn read_chunk(&self, loc: ChunkLoc) -> Result<Vec<u8>> {
+        let buf = self.read_payload(loc)?;
         let bytes = if loc.depth == 0 {
             buf
         } else {

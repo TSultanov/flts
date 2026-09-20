@@ -60,7 +60,7 @@ impl Column {
             elem_size,
             chunk_rows,
             rows: None,
-            codec: 0,
+            codec: 1,
             chunks: chunk_counts
                 .iter()
                 .map(|rows| Chunk::of(*rows, elem_size))
@@ -111,15 +111,16 @@ impl FileModel {
                 if chunk.offset.is_none() {
                     chunk.offset = Some(image.len() as u64);
                 }
-                image.extend_from_slice(&chunk.bytes);
+                image.extend_from_slice(&compressed(&chunk.bytes));
             }
         }
 
         let directory = write_directory(&placed, self.column_count);
         let dir_offset = self.dir_offset.unwrap_or(image.len() as u64);
-        let dir_len = self.dir_len.unwrap_or(directory.len() as u64);
+        let payload = compressed(&directory);
+        let dir_len = self.dir_len.unwrap_or(payload.len() as u64);
         if self.dir_offset.is_none() {
-            image.extend_from_slice(&directory);
+            image.extend_from_slice(&payload);
         }
 
         let slot_at = if self.second_slot { SLOT_B } else { SLOT_A };
@@ -183,7 +184,7 @@ fn write_directory(columns: &[Column], count: Option<u32>) -> Vec<u8> {
                     .unwrap_or_else(|| fnv1a(&chunk.bytes))
                     .to_le_bytes(),
             );
-            out.extend_from_slice(&0u32.to_le_bytes());
+            out.extend_from_slice(&(compressed(&chunk.bytes).len() as u32).to_le_bytes());
             out.push(0);
         }
     }
@@ -221,5 +222,18 @@ fn mark_bytes(file_uuid: u128, append_from: u64, generation: u64) -> [u8; 48] {
     out[32..40].copy_from_slice(&generation.to_le_bytes());
     let signature = fnv1a(&out[..40]);
     out[40..].copy_from_slice(&signature.to_le_bytes());
+    out
+}
+
+fn compressed(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+    out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+    out.push(0);
+    let mut compressor = zstd::bulk::Compressor::new(3).unwrap();
+    compressor
+        .set_parameter(zstd::zstd_safe::CParameter::ChecksumFlag(true))
+        .unwrap();
+    out.extend_from_slice(&compressor.compress(bytes).unwrap());
     out
 }

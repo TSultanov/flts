@@ -23,7 +23,7 @@ pub(super) fn get_loc(cursor: &mut Cursor<'_>) -> Result<ChunkLoc> {
         stored_len: cursor.u32()?,
         depth: cursor.u8()?,
     };
-    if loc.depth > MAX_DEPTH || (loc.depth == 0 && loc.stored_len != 0) {
+    if loc.depth > MAX_DEPTH || loc.stored_len <= super::compression::HEADER_LEN as u32 {
         return Err(Error::corrupt("delta", "invalid encoding"));
     }
     Ok(loc)
@@ -65,7 +65,7 @@ pub(super) fn encode(base: ChunkLoc, before: &[u8], after: &[u8], width: usize) 
         out.extend_from_slice(&after[start..end]);
     }
     out.extend_from_slice(&fnv1a(&out).to_le_bytes());
-    (out.len() * 2 < after.len()).then_some(out)
+    Some(out)
 }
 
 pub(super) fn parse<'a>(loc: ChunkLoc, bytes: &'a [u8]) -> Result<(ChunkLoc, Cursor<'a>)> {

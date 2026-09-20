@@ -6,15 +6,18 @@ use std::sync::Arc;
 use super::column_meta::write_directory;
 use super::file_source::FileSource;
 use super::{ColumnFile, ColumnFileUpdater, ColumnFileWriter, HEAD_LEN};
-use crate::{ChunkLoc, Error, Result};
+use crate::{ChunkLoc, ChunkSource, Error, Result};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StorageStats {
     pub file_bytes: u64,
     pub reachable_bytes: u64,
     pub obsolete_bytes: u64,
+    /// Compressed rewrite size, excluding savings from schema-level heap cleanup.
     pub consolidated_bytes: u64,
+    /// Logical value bytes, before compression.
     pub retained_value_bytes: u64,
+    /// Logical heap bytes that schema-level compaction can remove.
     pub unused_heap_bytes: u64,
 }
 
@@ -117,13 +120,28 @@ impl ColumnFile {
         }
         let file_bytes = self.file_source().len()?;
         let retained_value_bytes = self.live_bytes();
+        let mut consolidated = self.columns().to_vec();
+        let mut cursor = HEAD_LEN;
+        for column in &mut consolidated {
+            for loc in &mut column.chunks {
+                let bytes = self.file_source().read_chunk(*loc)?;
+                let payload = super::compression::encode(&bytes, loc.byte_len, 0)?;
+                loc.offset = cursor;
+                loc.depth = 0;
+                loc.stored_len = payload.len() as u32;
+                cursor += loc.physical_len();
+            }
+        }
+        let directory = write_directory(&consolidated);
+        let byte_len =
+            u32::try_from(directory.len()).map_err(|_| Error::invalid("directory exceeds u32"))?;
+        let consolidated_bytes =
+            cursor + super::compression::encode(&directory, byte_len, 0)?.len() as u64;
         Ok(StorageStats {
             file_bytes,
             reachable_bytes,
             obsolete_bytes: file_bytes.saturating_sub(reachable_bytes),
-            consolidated_bytes: HEAD_LEN
-                + retained_value_bytes
-                + write_directory(self.columns()).len() as u64,
+            consolidated_bytes,
             retained_value_bytes,
             unused_heap_bytes: 0,
         })
@@ -224,8 +242,7 @@ fn collect(source: &FileSource, loc: ChunkLoc, ranges: &mut BTreeMap<u64, u64>) 
         return Ok(());
     }
     if loc.depth > 0 {
-        let mut bytes = vec![0; loc.physical_len() as usize];
-        source.read_at(&mut bytes, loc.offset)?;
+        let bytes = source.read_payload(loc)?;
         let (base, _) = super::delta::parse(loc, &bytes)?;
         collect(source, base, ranges)?;
     }

@@ -5,13 +5,13 @@ use crate::error::{Error, Result};
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum Codec {
-    Raw = 0,
+    Zstd = 1,
 }
 
 impl Codec {
     pub(super) fn from_u8(value: u8) -> Result<Self> {
         match value {
-            0 => Ok(Codec::Raw),
+            1 => Ok(Codec::Zstd),
             other => Err(Error::unsupported(format!("unknown codec {other}"))),
         }
     }

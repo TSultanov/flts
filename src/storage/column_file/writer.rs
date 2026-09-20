@@ -53,16 +53,19 @@ impl<W: Write + Seek> ColumnFileWriter<W> {
         let mut chunks = Vec::with_capacity(arena.chunk_count());
         for index in 0..arena.chunk_count() {
             let bytes = arena.chunk_bytes(index)?;
+            let byte_len =
+                u32::try_from(bytes.len()).map_err(|_| Error::invalid("chunk exceeds u32"))?;
+            let payload = super::compression::encode(&bytes, byte_len, 0)?;
             let loc = ChunkLoc {
-                stored_len: 0,
+                stored_len: payload.len() as u32,
                 depth: 0,
                 offset: self.offset,
-                byte_len: bytes.len() as u32,
+                byte_len,
                 rows: (bytes.len() / T::SIZE.max(1)) as u32,
                 fnv: fnv1a(&bytes),
             };
-            self.out.write_all(&bytes)?;
-            self.offset += bytes.len() as u64;
+            self.out.write_all(&payload)?;
+            self.offset += payload.len() as u64;
             chunks.push(loc);
         }
 
@@ -71,7 +74,7 @@ impl<W: Write + Seek> ColumnFileWriter<W> {
             elem_size: T::SIZE as u32,
             chunk_rows: arena.chunk_rows() as u64,
             rows: arena.len() as u64,
-            codec: Codec::Raw,
+            codec: Codec::Zstd,
             chunks,
         });
         Ok(())
@@ -79,9 +82,12 @@ impl<W: Write + Seek> ColumnFileWriter<W> {
 
     pub fn finish(mut self) -> Result<W> {
         let directory = write_directory(&self.columns);
+        let byte_len =
+            u32::try_from(directory.len()).map_err(|_| Error::invalid("directory exceeds u32"))?;
+        let payload = super::compression::encode(&directory, byte_len, 0)?;
         let dir_offset = self.offset;
-        let dir_len = directory.len() as u64;
-        self.out.write_all(&directory)?;
+        let dir_len = payload.len() as u64;
+        self.out.write_all(&payload)?;
 
         let slot = CommitSlot::new(
             1,

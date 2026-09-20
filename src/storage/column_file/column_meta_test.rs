@@ -13,10 +13,10 @@ fn sample() -> Vec<ColumnMeta> {
             elem_size: 8,
             chunk_rows: 4,
             rows: 6,
-            codec: Codec::Raw,
+            codec: Codec::Zstd,
             chunks: vec![
                 ChunkLoc {
-                    stored_len: 0,
+                    stored_len: 32,
                     depth: 0,
                     offset: FIRST,
                     byte_len: 32,
@@ -24,7 +24,7 @@ fn sample() -> Vec<ColumnMeta> {
                     fnv: 0x1111,
                 },
                 ChunkLoc {
-                    stored_len: 0,
+                    stored_len: 32,
                     depth: 0,
                     offset: SECOND,
                     byte_len: 16,
@@ -38,7 +38,7 @@ fn sample() -> Vec<ColumnMeta> {
             elem_size: 1,
             chunk_rows: 64,
             rows: 0,
-            codec: Codec::Raw,
+            codec: Codec::Zstd,
             chunks: Vec::new(),
         },
     ]
@@ -108,7 +108,7 @@ fn a_chunk_range_that_overflows_is_rejected() {
 fn overlapping_chunks_are_rejected() {
     let mut overlapping = sample();
     overlapping[1].chunks = vec![ChunkLoc {
-        stored_len: 0,
+        stored_len: 32,
         depth: 0,
         offset: FIRST + 12,
         byte_len: 32,
@@ -122,10 +122,10 @@ fn overlapping_chunks_are_rejected() {
 }
 
 #[test]
-fn a_chunk_that_claims_no_bytes_cannot_overlap_anything() {
+fn a_compressed_empty_chunk_still_occupies_physical_bytes() {
     let mut empty_inside = sample();
     empty_inside[1].chunks = vec![ChunkLoc {
-        stored_len: 0,
+        stored_len: 32,
         depth: 0,
         offset: FIRST + 8,
         byte_len: 0,
@@ -133,8 +133,8 @@ fn a_chunk_that_claims_no_bytes_cannot_overlap_anything() {
         fnv: 0,
     }];
 
-    let read = read_directory(&write_directory(&empty_inside), DIRECTORY).unwrap();
-    assert_eq!(read[1].chunks[0].byte_len, 0);
+    let err = read_directory(&write_directory(&empty_inside), DIRECTORY).unwrap_err();
+    assert!(err.to_string().contains("overlap"));
 }
 
 #[test]
@@ -151,7 +151,7 @@ fn one_column_claiming(chunk_count: u32) -> Vec<u8> {
     bytes.extend_from_slice(&4u32.to_le_bytes());
     bytes.extend_from_slice(&4u64.to_le_bytes());
     bytes.extend_from_slice(&0u64.to_le_bytes());
-    bytes.push(Codec::Raw as u8);
+    bytes.push(Codec::Zstd as u8);
     bytes.extend_from_slice(&chunk_count.to_le_bytes());
     bytes
 }
@@ -200,14 +200,14 @@ fn laid_out(specs: Vec<(String, u32, Vec<u32>)>) -> (Vec<ColumnMeta>, u64) {
         for count in counts {
             let byte_len = count * elem_size;
             chunks.push(ChunkLoc {
-                stored_len: 0,
+                stored_len: 32,
                 depth: 0,
                 offset: at,
                 byte_len,
                 rows: count,
                 fnv: u64::from(count) * 0x11,
             });
-            at += u64::from(byte_len);
+            at += 32;
             rows += u64::from(count);
         }
 
@@ -216,7 +216,7 @@ fn laid_out(specs: Vec<(String, u32, Vec<u32>)>) -> (Vec<ColumnMeta>, u64) {
             elem_size,
             chunk_rows: 8,
             rows,
-            codec: Codec::Raw,
+            codec: Codec::Zstd,
             chunks,
         });
     }
@@ -341,7 +341,7 @@ proptest! {
                 prop_assert!(column.chunk_rows > 0);
                 for chunk in &column.chunks {
                     prop_assert!(chunk.offset >= HEAD_LEN);
-                    prop_assert!(chunk.offset + u64::from(chunk.byte_len) <= dir_offset);
+                    prop_assert!(chunk.offset + chunk.physical_len() <= dir_offset);
                 }
             }
         }

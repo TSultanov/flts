@@ -7,7 +7,7 @@ fn base(bytes: &[u8]) -> ChunkLoc {
         byte_len: bytes.len() as u32,
         rows: bytes.len() as u32,
         fnv: fnv1a(bytes),
-        stored_len: 0,
+        stored_len: bytes.len() as u32,
         depth: 0,
     }
 }

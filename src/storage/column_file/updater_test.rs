@@ -133,9 +133,6 @@ fn editing_one_row_appends_one_chunk_even_after_the_column_was_read() {
     let path = dir.join("values.dbs");
     seed(&path, &(0..10).collect::<Vec<u32>>());
 
-    let payload = 10 * 4;
-    let directory_len = len_of(&path) - HEAD_LEN - payload;
-
     let file = ColumnFile::open(&path).unwrap();
     let mut column = file.column::<u32>("values").unwrap();
     column.prefetch().unwrap();
@@ -147,10 +144,15 @@ fn editing_one_row_appends_one_chunk_even_after_the_column_was_read() {
     updater.column("values", &column).unwrap();
     assert_eq!(updater.commit().unwrap(), 2);
 
-    let one_chunk = 4 * 4;
+    let updated = ColumnFile::open(&path).unwrap();
+    let chunks = &updated.column_meta("values").unwrap().chunks;
+    let old = &file.column_meta("values").unwrap().chunks;
+    assert_eq!(chunks[0], old[0]);
+    assert_eq!(chunks[2], old[2]);
+    assert_eq!(chunks[1].offset, before);
     assert_eq!(
         len_of(&path) - before,
-        one_chunk + directory_len,
+        chunks[1].physical_len() + updated.slot.dir_len,
         "only the edited chunk and a new directory were appended"
     );
     assert_eq!(read_all(&path), vec![0, 1, 2, 3, 4, 555, 6, 7, 8, 9]);

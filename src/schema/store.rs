@@ -261,9 +261,6 @@ pub trait Store: Default + Clone + Sized {
             .try_fold(0, |sum, table| -> Result<u64> {
                 Ok(sum + table.unused_heap_bytes()?)
             })?;
-        stats.consolidated_bytes = stats
-            .consolidated_bytes
-            .saturating_sub(stats.unused_heap_bytes);
         stats.retained_value_bytes = stats
             .retained_value_bytes
             .saturating_sub(stats.unused_heap_bytes);

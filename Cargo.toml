@@ -15,6 +15,7 @@ macros = ["dep:dbsync-macros"]
 [dependencies]
 dbsync-macros = { version = "0.1.0", path = "dbsync-macros", optional = true }
 rand = "0.9"
+zstd = { version = "0.14", default-features = false }
 
 [[example]]
 name = "library"

@@ -118,7 +118,7 @@ fn check_disjoint(columns: &[ColumnMeta]) -> Result<()> {
     let mut ranges: Vec<(u64, u64, &str)> = Vec::new();
     for column in columns {
         for chunk in &column.chunks {
-            if chunk.byte_len > 0 {
+            if chunk.stored_len > 0 {
                 let end = chunk.offset + chunk.physical_len();
                 ranges.push((chunk.offset, end, column.name.as_str()));
             }

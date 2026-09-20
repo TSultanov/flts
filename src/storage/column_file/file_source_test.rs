@@ -23,11 +23,14 @@ fn reads_at_an_offset_without_a_cursor() {
 fn a_chunk_read_returns_exactly_the_located_bytes() {
     let dir = TempDir::new("file_source_chunk");
     let path = dir.join("bytes.bin");
-    std::fs::write(&path, b"0123456789").unwrap();
+    let payload = super::super::compression::encode(b"234", 3, 0).unwrap();
+    let mut image = b"01".to_vec();
+    image.extend_from_slice(&payload);
+    std::fs::write(&path, image).unwrap();
 
     let source = FileSource::open(&path).unwrap();
     let loc = ChunkLoc {
-        stored_len: 0,
+        stored_len: payload.len() as u32,
         depth: 0,
         offset: 2,
         byte_len: 3,

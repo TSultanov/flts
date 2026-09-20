@@ -70,7 +70,18 @@ proptest! {
         let (dir_offset, dir_len, generation) = (slot.dir_offset, slot.dir_len, slot.generation);
 
         prop_assert_eq!(generation, 1);
-        prop_assert_eq!(dir_offset, HEAD_LEN + u64::from(rows) * 4);
+        let record = &image[dir_offset as usize..];
+        let directory = zstd::bulk::decompress(
+            &record[9..], u32::from_le_bytes(record[4..8].try_into().unwrap()) as usize,
+        ).unwrap();
+        let columns = super::super::column_meta::read_directory(&directory, dir_offset).unwrap();
+        let mut end = HEAD_LEN;
+        for loc in &columns[0].chunks {
+            prop_assert_eq!(loc.offset, end);
+            prop_assert_eq!(&image[loc.offset as usize + 9..][..4], &[0x28, 0xb5, 0x2f, 0xfd]);
+            end += loc.physical_len();
+        }
+        prop_assert_eq!(dir_offset, end);
         prop_assert_eq!(dir_offset + dir_len, image.len() as u64);
         prop_assert!(
             CommitSlot::from_bytes(&image[SLOT_B as usize..][..CommitSlot::SIZE], file_uuid)

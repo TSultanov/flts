@@ -21,20 +21,19 @@ pub const fn default_chunk_rows(elem_size: usize) -> usize {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ChunkLoc {
     pub offset: u64,
+    /// Reconstructed byte length, after decompression and any delta application.
     pub byte_len: u32,
     pub rows: u32,
+    /// Checksum of the reconstructed bytes.
     pub fnv: u64,
+    /// Physical record length, including its header and compressed frame.
     pub stored_len: u32,
     pub depth: u8,
 }
 
 impl ChunkLoc {
     pub fn physical_len(self) -> u64 {
-        if self.depth == 0 {
-            self.byte_len as u64
-        } else {
-            self.stored_len as u64
-        }
+        self.stored_len as u64
     }
 }
 

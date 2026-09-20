@@ -147,7 +147,7 @@ impl ColumnFile {
                 T::SIZE
             )));
         }
-        if meta.codec != Codec::Raw {
+        if meta.codec != Codec::Zstd {
             return Err(Error::unsupported(format!(
                 "column {name:?} uses an unsupported codec"
             )));
@@ -183,34 +183,21 @@ impl ColumnFile {
 }
 
 fn directory_loc(source: &FileSource, slot: CommitSlot) -> Result<crate::ChunkLoc> {
-    let mut prefix = [0; 4];
-    if slot.dir_len < 4 {
+    if slot.dir_len <= super::compression::HEADER_LEN as u64 {
         return Err(Error::corrupt("directory", "short record"));
     }
-    source.read_at(&mut prefix, slot.dir_offset)?;
-    let mut loc = crate::ChunkLoc {
+    let mut header = [0; super::compression::HEADER_LEN];
+    source.read_at(&mut header, slot.dir_offset)?;
+    let (byte_len, _, depth) = super::compression::header(&header)?;
+    Ok(crate::ChunkLoc {
         offset: slot.dir_offset,
-        byte_len: u32::try_from(slot.dir_len)
-            .map_err(|_| Error::corrupt("directory", "too large"))?,
+        byte_len,
         rows: 0,
         fnv: slot.dir_fnv,
-        stored_len: 0,
-        depth: 0,
-    };
-    if u32::from_le_bytes(prefix) == super::delta::MAGIC {
-        if slot.dir_len < 9 {
-            return Err(Error::corrupt("directory", "short delta"));
-        }
-        let mut header = [0; 5];
-        source.read_at(&mut header, slot.dir_offset + 4)?;
-        loc.stored_len = loc.byte_len;
-        loc.byte_len = u32::from_le_bytes(header[..4].try_into().unwrap());
-        loc.depth = header[4];
-        if loc.depth == 0 || loc.depth > super::delta::MAX_DEPTH {
-            return Err(Error::corrupt("directory", "invalid depth"));
-        }
-    }
-    Ok(loc)
+        stored_len: u32::try_from(slot.dir_len)
+            .map_err(|_| Error::corrupt("directory", "too large"))?,
+        depth,
+    })
 }
 
 fn read_header(source: &FileSource) -> Result<Header> {

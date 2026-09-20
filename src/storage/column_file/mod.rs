@@ -3,6 +3,10 @@
 //! ```text
 //! Header | SlotA@4096 | SlotB@8192 | Mark@12288 | payloads from 16384, append-only
 //! ```
+//!
+//! Chunk and directory records contain two little-endian u32 lengths (reconstructed
+//! bytes, decoded payload bytes), a u8 delta depth, and one checksummed zstd frame.
+//! Full records have depth zero; delta records reconstruct against a compressed base.
 
 use crate::record::Record;
 use append_mark::AppendMark;
@@ -12,6 +16,7 @@ use header::Header;
 mod append_mark;
 mod codec;
 mod compaction;
+mod compression;
 mod delta;
 pub use compaction::{CompactionPolicy, CompactionReport, MaintenanceOutcome, StorageStats};
 mod column_meta;

@@ -180,11 +180,12 @@ impl ColumnFileUpdater {
         let mut meta = meta.clone();
         for loc in &mut meta.chunks {
             let bytes = source.read_chunk(*loc)?;
+            let payload = super::compression::encode(&bytes, loc.byte_len, 0)?;
             loc.offset = self.cursor;
             loc.depth = 0;
-            loc.stored_len = 0;
-            self.file.write_payload(&bytes, self.cursor)?;
-            self.cursor += bytes.len() as u64;
+            loc.stored_len = payload.len() as u32;
+            self.file.write_payload(&payload, self.cursor)?;
+            self.cursor += payload.len() as u64;
         }
         self.columns.push(meta);
         Ok(())
@@ -223,11 +224,13 @@ impl ColumnFileUpdater {
             }
 
             let bytes = arena.chunk_bytes(index)?;
+            let byte_len =
+                u32::try_from(bytes.len()).map_err(|_| Error::invalid("chunk exceeds u32"))?;
             let mut loc = ChunkLoc {
                 stored_len: 0,
                 depth: 0,
                 offset: self.cursor,
-                byte_len: bytes.len() as u32,
+                byte_len,
                 rows: (bytes.len() / T::SIZE.max(1)) as u32,
                 fnv: fnv1a(&bytes),
             };
@@ -237,31 +240,33 @@ impl ColumnFileUpdater {
                 .find(|column| column.name == name)
                 .and_then(|column| column.chunks.get(index))
                 .copied();
-            let mut encoded = None;
+            let mut payload = super::compression::encode(&bytes, byte_len, 0)?;
             if let Some(base) = previous {
                 let before = self.source.read_chunk(base)?;
                 if before == bytes {
                     chunks.push(base);
                     continue;
                 }
-                let raw_base = self.original.file_source().raw_base(base)?;
-                let raw = if raw_base == base {
+                let full_base = self.original.file_source().full_base(base)?;
+                let full = if full_base == base {
                     before
                 } else {
-                    self.source.read_chunk(raw_base)?
+                    self.source.read_chunk(full_base)?
                 };
-                if raw == bytes {
-                    chunks.push(raw_base);
+                if full == bytes {
+                    chunks.push(full_base);
                     continue;
                 }
-                encoded = super::delta::encode(raw_base, &raw, &bytes, T::SIZE);
-                if let Some(delta) = &encoded {
-                    loc.depth = 1;
-                    loc.stored_len = delta.len() as u32;
+                if let Some(delta) = super::delta::encode(full_base, &full, &bytes, T::SIZE) {
+                    let compressed = super::compression::encode(&delta, byte_len, 1)?;
+                    if compressed.len() * 2 < payload.len() {
+                        loc.depth = 1;
+                        payload = compressed;
+                    }
                 }
             }
-            let payload = encoded.as_deref().unwrap_or(&bytes);
-            self.file.write_payload(payload, self.cursor)?;
+            loc.stored_len = payload.len() as u32;
+            self.file.write_payload(&payload, self.cursor)?;
             self.cursor += payload.len() as u64;
             chunks.push(loc);
         }
@@ -271,7 +276,7 @@ impl ColumnFileUpdater {
             elem_size: T::SIZE as u32,
             chunk_rows: arena.chunk_rows() as u64,
             rows: arena.len() as u64,
-            codec: Codec::Raw,
+            codec: Codec::Zstd,
             chunks,
         });
         Ok(())
@@ -324,20 +329,25 @@ impl ColumnFileUpdater {
         }
 
         let directory = write_directory(&self.columns);
+        let byte_len =
+            u32::try_from(directory.len()).map_err(|_| Error::invalid("directory exceeds u32"))?;
         let dir_offset = self.cursor;
-        let encoded = if !self.rewriting {
+        let mut payload = super::compression::encode(&directory, byte_len, 0)?;
+        if !self.rewriting {
             let base = self
                 .original
                 .file_source()
-                .raw_base(self.original.directory_loc()?)?;
+                .full_base(self.original.directory_loc()?)?;
             let before = self.source.read_chunk(base)?;
-            super::delta::encode(base, &before, &directory, 1)
-        } else {
-            None
-        };
-        let payload = encoded.as_deref().unwrap_or(&directory);
+            if let Some(delta) = super::delta::encode(base, &before, &directory, 1) {
+                let compressed = super::compression::encode(&delta, byte_len, 1)?;
+                if compressed.len() * 2 < payload.len() {
+                    payload = compressed;
+                }
+            }
+        }
         let dir_len = payload.len() as u64;
-        write_all_at(&self.file, payload, dir_offset)?;
+        write_all_at(&self.file, &payload, dir_offset)?;
         self.file.sync_directory()?;
 
         let generation = self
