@@ -32,7 +32,7 @@ cd "$(dirname "$0")/.."
 # failed allocation and cargo-mutants records the mutant as caught -- the right
 # answer, since a mutation that exhausts memory is one the suite detected.
 # --workspace is load-bearing, not tidiness. Without it cargo mutants sweeps
-# only the package in the current directory, so dbsync-schema -- where all the
+# only the package in the current directory, so dbsync-macros -- where all the
 # codegen lives -- would report zero mutants and the gate would pass by looking
 # at nothing. default-members governs cargo test, not this.
 jobs="${DBSYNC_MUTANTS_JOBS:-4}"

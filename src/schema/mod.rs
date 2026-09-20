@@ -46,13 +46,13 @@ pub use table::{AnyTable, Table};
 pub use text::{NullableTextColumn, TextColumn, TextKey};
 pub use version::{Dot, Parent, Version, VersionColumn};
 
-#[cfg(all(test, feature = "derive"))]
+#[cfg(all(test, feature = "macros"))]
 #[path = "generated_test.rs"]
 mod generated_test;
 
-#[cfg(all(test, feature = "derive"))]
+#[cfg(all(test, feature = "macros"))]
 #[path = "declared_test.rs"]
 mod declared_test;
 
-#[cfg(all(test, feature = "derive"))]
+#[cfg(all(test, feature = "macros"))]
 mod recovery_test;

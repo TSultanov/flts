@@ -15,8 +15,8 @@ pub use error::{Error, Result};
 pub use id::{Id, Uuid};
 pub use record::Record;
 
-#[cfg(feature = "derive")]
-pub use dbsync_schema::{container, entity, field_enum};
+#[cfg(feature = "macros")]
+pub use dbsync_macros::{container, entity, field_enum};
 pub use storage::{
     Arena, Blob, ChunkLoc, ChunkSource, ColumnFile, ColumnFileUpdater, ColumnFileWriter,
     ColumnMeta, CommitToken, WriterId, default_chunk_rows, fnv1a,

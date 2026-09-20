@@ -2,23 +2,23 @@
 name = "dbsync"
 version = "0.1.0"
 edition = "2024"
-exclude = ["dbsync-schema", "scripts", ".cargo"]
+exclude = ["dbsync-macros", "scripts", ".cargo"]
 
 [workspace]
-members = ["dbsync-schema"]
-default-members = [".", "dbsync-schema"]
+members = ["dbsync-macros"]
+default-members = [".", "dbsync-macros"]
 
 [features]
-default = ["derive"]
-derive = ["dep:dbsync-schema"]
+default = ["macros"]
+macros = ["dep:dbsync-macros"]
 
 [dependencies]
-dbsync-schema = { version = "0.1.0", path = "dbsync-schema", optional = true }
+dbsync-macros = { version = "0.1.0", path = "dbsync-macros", optional = true }
 rand = "0.9"
 
 [[example]]
 name = "library"
-required-features = ["derive"]
+required-features = ["macros"]
 
 [dev-dependencies]
 proptest = { version = "1.11", default-features = false, features = ["std", "bit-set"] }

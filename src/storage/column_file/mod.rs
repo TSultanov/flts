@@ -28,7 +28,7 @@ pub use commit_token::CommitToken;
 pub use reader::ColumnFile;
 pub use updater::{ColumnFileUpdater, CommitAttempt};
 
-#[cfg(all(test, feature = "derive"))]
+#[cfg(all(test, feature = "macros"))]
 pub(crate) use updater::{CommitFault, fail_commit_at, fail_commit_times};
 pub use writer::ColumnFileWriter;
 pub use writer_id::WriterId;

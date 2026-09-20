@@ -1,4 +1,4 @@
-#![cfg(feature = "derive")]
+#![cfg(feature = "macros")]
 use dbsync::schema::{Store, Table};
 use dbsync::{Result, WriterId};
 use std::path::PathBuf;

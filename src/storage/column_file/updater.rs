@@ -47,7 +47,7 @@ trait CommitIo: std::borrow::Borrow<File> {
 #[cfg(not(test))]
 impl CommitIo for File {}
 
-#[cfg(all(test, feature = "derive"))]
+#[cfg(all(test, feature = "macros"))]
 pub(crate) use updater_test::{CommitFault, fail_commit_at, fail_commit_times};
 
 impl std::fmt::Debug for ColumnFileUpdater {

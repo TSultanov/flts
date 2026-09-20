@@ -1,4 +1,4 @@
-#![cfg(feature = "derive")]
+#![cfg(feature = "macros")]
 
 use dbsync::schema::{MergeInput, Store, Table};
 use dbsync::{Result, Uuid, WriterId};

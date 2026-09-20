@@ -1,4 +1,4 @@
-#![cfg(feature = "derive")]
+#![cfg(feature = "macros")]
 
 use dbsync::schema::{Parent, RowStatus, Store, Table};
 use dbsync::{Id, Result, Uuid, WriterId};
