@@ -69,9 +69,9 @@ pub struct ColumnFileUpdater {
     target_slot: u64,
     cursor: u64,
     previous: Vec<ColumnMeta>,
-    previous_content_id: u64,
     columns: Vec<ColumnMeta>,
     original: ColumnFile,
+    rewriting: bool,
 }
 
 #[derive(Clone)]
@@ -123,6 +123,10 @@ impl ColumnFileUpdater {
             .write(true)
             .open(file_source.path())?;
         file.lock()?;
+        let found = ColumnFile::read_commit_token(file_source.path())?;
+        if found != reader.commit_token() {
+            return Err(conflict(reader.commit_token(), found));
+        }
 
         let (newest_at, newest) = newest_slot(&file, reader.file_uuid())?
             .ok_or_else(|| Error::corrupt("commit slot", "no valid commit slot"))?;
@@ -152,10 +156,38 @@ impl ColumnFileUpdater {
             target_slot,
             cursor,
             previous: reader.columns().to_vec(),
-            previous_content_id: newest.content_id,
             columns: Vec::new(),
             original: reader.clone(),
+            rewriting: false,
         })
+    }
+
+    pub(crate) fn prepare_rewrite(&mut self, generation: u64) -> Result<()> {
+        generation
+            .checked_add(1)
+            .ok_or_else(|| Error::invalid("generation counter exhausted"))?;
+        self.rewriting = true;
+        self.expected_generation = generation;
+        self.cursor = HEAD_LEN;
+        Ok(())
+    }
+
+    pub(crate) fn copy_column(
+        &mut self,
+        meta: &ColumnMeta,
+        source: &dyn ChunkSource,
+    ) -> Result<()> {
+        let mut meta = meta.clone();
+        for loc in &mut meta.chunks {
+            let bytes = source.read_chunk(*loc)?;
+            loc.offset = self.cursor;
+            loc.depth = 0;
+            loc.stored_len = 0;
+            self.file.write_payload(&bytes, self.cursor)?;
+            self.cursor += bytes.len() as u64;
+        }
+        self.columns.push(meta);
+        Ok(())
     }
 
     pub fn column<T: Record>(&mut self, name: &str, arena: &Arena<T>) -> Result<()> {
@@ -191,14 +223,46 @@ impl ColumnFileUpdater {
             }
 
             let bytes = arena.chunk_bytes(index)?;
-            let loc = ChunkLoc {
+            let mut loc = ChunkLoc {
+                stored_len: 0,
+                depth: 0,
                 offset: self.cursor,
                 byte_len: bytes.len() as u32,
                 rows: (bytes.len() / T::SIZE.max(1)) as u32,
                 fnv: fnv1a(&bytes),
             };
-            self.file.write_payload(&bytes, self.cursor)?;
-            self.cursor += bytes.len() as u64;
+            let previous = self
+                .previous
+                .iter()
+                .find(|column| column.name == name)
+                .and_then(|column| column.chunks.get(index))
+                .copied();
+            let mut encoded = None;
+            if let Some(base) = previous {
+                let before = self.source.read_chunk(base)?;
+                if before == bytes {
+                    chunks.push(base);
+                    continue;
+                }
+                let raw_base = self.original.file_source().raw_base(base)?;
+                let raw = if raw_base == base {
+                    before
+                } else {
+                    self.source.read_chunk(raw_base)?
+                };
+                if raw == bytes {
+                    chunks.push(raw_base);
+                    continue;
+                }
+                encoded = super::delta::encode(raw_base, &raw, &bytes, T::SIZE);
+                if let Some(delta) = &encoded {
+                    loc.depth = 1;
+                    loc.stored_len = delta.len() as u32;
+                }
+            }
+            let payload = encoded.as_deref().unwrap_or(&bytes);
+            self.file.write_payload(payload, self.cursor)?;
+            self.cursor += payload.len() as u64;
             chunks.push(loc);
         }
 
@@ -248,15 +312,32 @@ impl ColumnFileUpdater {
         }
 
         let content = content_id(&self.columns);
-        if content == self.previous_content_id {
+        if !self.rewriting
+            && self.columns.len() == self.original.columns().len()
+            && self
+                .columns
+                .iter()
+                .all(|column| self.original.column_meta(&column.name) == Some(column))
+        {
             self.file.sync_slot()?;
             return Ok(self.original);
         }
 
         let directory = write_directory(&self.columns);
         let dir_offset = self.cursor;
-        let dir_len = directory.len() as u64;
-        write_all_at(&self.file, &directory, dir_offset)?;
+        let encoded = if !self.rewriting {
+            let base = self
+                .original
+                .file_source()
+                .raw_base(self.original.directory_loc()?)?;
+            let before = self.source.read_chunk(base)?;
+            super::delta::encode(base, &before, &directory, 1)
+        } else {
+            None
+        };
+        let payload = encoded.as_deref().unwrap_or(&directory);
+        let dir_len = payload.len() as u64;
+        write_all_at(&self.file, payload, dir_offset)?;
         self.file.sync_directory()?;
 
         let generation = self

@@ -22,3 +22,7 @@ required-features = ["macros"]
 
 [dev-dependencies]
 proptest = { version = "1.11", default-features = false, features = ["std", "bit-set"] }
+
+[[example]]
+name = "store_bench"
+required-features = ["macros"]

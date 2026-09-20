@@ -24,6 +24,18 @@ pub struct ChunkLoc {
     pub byte_len: u32,
     pub rows: u32,
     pub fnv: u64,
+    pub stored_len: u32,
+    pub depth: u8,
+}
+
+impl ChunkLoc {
+    pub fn physical_len(self) -> u64 {
+        if self.depth == 0 {
+            self.byte_len as u64
+        } else {
+            self.stored_len as u64
+        }
+    }
 }
 
 pub trait ChunkSource: Send + Sync {

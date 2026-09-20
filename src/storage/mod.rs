@@ -9,6 +9,6 @@ pub use arena::{Arena, ChunkLoc, ChunkSource, default_chunk_rows};
 pub use blob::Blob;
 pub use column_file::{
     ColumnFile, ColumnFileUpdater, ColumnFileWriter, ColumnMeta, CommitAttempt, CommitToken,
-    WriterId,
+    CompactionPolicy, CompactionReport, MaintenanceOutcome, StorageStats, WriterId,
 };
 pub use hash::fnv1a;

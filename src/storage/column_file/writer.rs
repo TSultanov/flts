@@ -54,6 +54,8 @@ impl<W: Write + Seek> ColumnFileWriter<W> {
         for index in 0..arena.chunk_count() {
             let bytes = arena.chunk_bytes(index)?;
             let loc = ChunkLoc {
+                stored_len: 0,
+                depth: 0,
                 offset: self.offset,
                 byte_len: bytes.len() as u32,
                 rows: (bytes.len() / T::SIZE.max(1)) as u32,

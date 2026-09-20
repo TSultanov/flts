@@ -14,13 +14,12 @@ use super::writer_id::WriterId;
 use crate::error::{Error, Result};
 use crate::record::Record;
 use crate::storage::arena::{Arena, ChunkSource, Provenance};
-use crate::storage::hash::fnv1a;
 
 #[derive(Clone)]
 pub struct ColumnFile {
     source: Arc<FileSource>,
     columns: Vec<ColumnMeta>,
-    slot: CommitSlot,
+    pub(super) slot: CommitSlot,
 }
 
 impl std::fmt::Debug for ColumnFile {
@@ -63,18 +62,15 @@ impl ColumnFile {
         let (_, slot) = newest_slot(source.file(), file_uuid)?
             .ok_or_else(|| Error::corrupt("commit slot", "no valid commit slot"))?;
 
-        let (dir_offset, dir_len, dir_fnv) = (slot.dir_offset, slot.dir_len, slot.dir_fnv);
+        let (dir_offset, dir_len) = (slot.dir_offset, slot.dir_len);
         let dir_end = dir_offset
             .checked_add(dir_len)
             .ok_or_else(|| Error::corrupt("directory", "extends outside the file"))?;
         if dir_offset < HEAD_LEN || dir_end > total {
             return Err(Error::corrupt("directory", "extends outside the file"));
         }
-        let mut directory = vec![0u8; dir_len as usize];
-        source.read_at(&mut directory, dir_offset)?;
-        if fnv1a(&directory) != dir_fnv {
-            return Err(Error::corrupt("directory", "failed checksum"));
-        }
+        let loc = directory_loc(&source, slot)?;
+        let directory = source.read_chunk(loc)?;
 
         let columns = read_directory(&directory, dir_offset)?;
         Ok(Self {
@@ -82,6 +78,10 @@ impl ColumnFile {
             columns,
             slot,
         })
+    }
+
+    pub(super) fn directory_loc(&self) -> Result<crate::ChunkLoc> {
+        directory_loc(&self.source, self.slot)
     }
 
     pub fn update(&self, writer_id: WriterId) -> Result<super::ColumnFileUpdater> {
@@ -118,6 +118,10 @@ impl ColumnFile {
 
     pub fn file_uuid(&self) -> u128 {
         self.slot.file_uuid
+    }
+
+    pub fn file_bytes(&self) -> Result<u64> {
+        self.source.len()
     }
 
     pub fn live_bytes(&self) -> u64 {
@@ -168,19 +172,45 @@ impl ColumnFile {
     }
 
     pub fn verify(&self) -> Result<()> {
+        self.source.read_chunk(self.directory_loc()?)?;
         for meta in &self.columns {
-            for (index, loc) in meta.chunks.iter().enumerate() {
-                let bytes = self.source.read_chunk(*loc)?;
-                if fnv1a(&bytes) != loc.fnv {
-                    return Err(Error::corrupt(
-                        "chunk",
-                        format!("column {:?} chunk {index} failed checksum", meta.name),
-                    ));
-                }
+            for loc in &meta.chunks {
+                self.source.read_chunk(*loc)?;
             }
         }
         Ok(())
     }
+}
+
+fn directory_loc(source: &FileSource, slot: CommitSlot) -> Result<crate::ChunkLoc> {
+    let mut prefix = [0; 4];
+    if slot.dir_len < 4 {
+        return Err(Error::corrupt("directory", "short record"));
+    }
+    source.read_at(&mut prefix, slot.dir_offset)?;
+    let mut loc = crate::ChunkLoc {
+        offset: slot.dir_offset,
+        byte_len: u32::try_from(slot.dir_len)
+            .map_err(|_| Error::corrupt("directory", "too large"))?,
+        rows: 0,
+        fnv: slot.dir_fnv,
+        stored_len: 0,
+        depth: 0,
+    };
+    if u32::from_le_bytes(prefix) == super::delta::MAGIC {
+        if slot.dir_len < 9 {
+            return Err(Error::corrupt("directory", "short delta"));
+        }
+        let mut header = [0; 5];
+        source.read_at(&mut header, slot.dir_offset + 4)?;
+        loc.stored_len = loc.byte_len;
+        loc.byte_len = u32::from_le_bytes(header[..4].try_into().unwrap());
+        loc.depth = header[4];
+        if loc.depth == 0 || loc.depth > super::delta::MAX_DEPTH {
+            return Err(Error::corrupt("directory", "invalid depth"));
+        }
+    }
+    Ok(loc)
 }
 
 fn read_header(source: &FileSource) -> Result<Header> {

@@ -1,0 +1,9 @@
+implementation,workload,commits,initial_bytes,added_bytes,update_us,read_us,compacted_bytes,compact_us
+original,scalar,32,104080,1104704,535179,982,,
+original,text,32,104080,1104704,587819,1442,,
+original,bulk,8,104080,714704,149153,1183,,
+original,merge,8,104080,574000,318804,1266,,
+delta_single_base,scalar,32,104155,310152,574893,1778,45390,32997
+delta_single_base,text,32,104155,308104,609256,1240,61774,35267
+delta_single_base,bulk,8,104155,432572,146372,1739,83534,24410
+delta_single_base,merge,8,104155,298484,257750,1319,59998,21898

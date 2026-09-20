@@ -28,6 +28,8 @@ fn chunked_u32(rows: u32, chunk_rows: usize) -> (Vec<Vec<u8>>, Vec<ChunkLoc>) {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
         locations.push(ChunkLoc {
+            stored_len: 0,
+            depth: 0,
             offset: chunks.len() as u64,
             byte_len: bytes.len() as u32,
             rows: end - start,
@@ -205,6 +207,8 @@ fn a_corrupt_chunk_is_rejected_rather_than_decoded() {
     let (arena, _) = lazy_u32(10, 4);
     let mut locations: Vec<ChunkLoc> = (0..3)
         .map(|index| ChunkLoc {
+            stored_len: 0,
+            depth: 0,
             offset: index,
             byte_len: if index == 2 { 8 } else { 16 },
             rows: if index == 2 { 2 } else { 4 },
@@ -234,12 +238,16 @@ fn chunk_geometry_is_validated_when_a_lazy_arena_is_built() {
     });
     let short_in_the_middle = vec![
         ChunkLoc {
+            stored_len: 0,
+            depth: 0,
             offset: 0,
             byte_len: 8,
             rows: 2,
             fnv: 0,
         },
         ChunkLoc {
+            stored_len: 0,
+            depth: 0,
             offset: 1,
             byte_len: 16,
             rows: 4,
@@ -255,6 +263,8 @@ fn chunk_geometry_is_validated_when_a_lazy_arena_is_built() {
     );
 
     let wrong_width = vec![ChunkLoc {
+        stored_len: 0,
+        depth: 0,
         offset: 0,
         byte_len: 9,
         rows: 2,
@@ -332,12 +342,16 @@ fn a_corrupt_chunk_is_not_laundered_into_a_new_file() {
     let chunks: Vec<Vec<u8>> = (0..2).map(|i| good.chunk_bytes(i).unwrap()).collect();
     let locations = vec![
         ChunkLoc {
+            stored_len: 0,
+            depth: 0,
             offset: 0,
             byte_len: 16,
             rows: 4,
             fnv: 0xdead_beef,
         },
         ChunkLoc {
+            stored_len: 0,
+            depth: 0,
             offset: 1,
             byte_len: 16,
             rows: 4,
@@ -580,6 +594,8 @@ fn lazy_from_rows(rows: &[u32], chunk_rows: usize, corrupt: Option<usize>) -> Re
     for &count in rows {
         let bytes = vec![0u8; count as usize * size_of::<u32>()];
         locations.push(ChunkLoc {
+            stored_len: 0,
+            depth: 0,
             offset: chunks.len() as u64,
             byte_len: bytes.len() as u32,
             rows: count,

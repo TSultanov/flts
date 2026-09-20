@@ -16,12 +16,16 @@ fn sample() -> Vec<ColumnMeta> {
             codec: Codec::Raw,
             chunks: vec![
                 ChunkLoc {
+                    stored_len: 0,
+                    depth: 0,
                     offset: FIRST,
                     byte_len: 32,
                     rows: 4,
                     fnv: 0x1111,
                 },
                 ChunkLoc {
+                    stored_len: 0,
+                    depth: 0,
                     offset: SECOND,
                     byte_len: 16,
                     rows: 2,
@@ -104,6 +108,8 @@ fn a_chunk_range_that_overflows_is_rejected() {
 fn overlapping_chunks_are_rejected() {
     let mut overlapping = sample();
     overlapping[1].chunks = vec![ChunkLoc {
+        stored_len: 0,
+        depth: 0,
         offset: FIRST + 12,
         byte_len: 32,
         rows: 32,
@@ -119,6 +125,8 @@ fn overlapping_chunks_are_rejected() {
 fn a_chunk_that_claims_no_bytes_cannot_overlap_anything() {
     let mut empty_inside = sample();
     empty_inside[1].chunks = vec![ChunkLoc {
+        stored_len: 0,
+        depth: 0,
         offset: FIRST + 8,
         byte_len: 0,
         rows: 0,
@@ -192,6 +200,8 @@ fn laid_out(specs: Vec<(String, u32, Vec<u32>)>) -> (Vec<ColumnMeta>, u64) {
         for count in counts {
             let byte_len = count * elem_size;
             chunks.push(ChunkLoc {
+                stored_len: 0,
+                depth: 0,
                 offset: at,
                 byte_len,
                 rows: count,

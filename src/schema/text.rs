@@ -153,6 +153,35 @@ impl TextColumn {
 }
 
 impl Column for TextColumn {
+    fn unused_heap_bytes(&self) -> Result<u64> {
+        heap_garbage(
+            self.heap.len(),
+            self.blobs
+                .iter()
+                .map(|blob| blob.copied())
+                .collect::<Result<Vec<_>>>()?,
+        )
+    }
+
+    fn compact_storage(&mut self) -> Result<bool> {
+        let mut compacted = Self::default();
+        let mut shared = std::collections::HashMap::<String, Blob>::new();
+        for index in 0..self.blobs.len() {
+            let value = self.get(Row::trusted(index))?;
+            let blob = match shared.get(value.as_ref()) {
+                Some(blob) => *blob,
+                None => {
+                    let blob = compacted.heap.push_str(&value)?;
+                    shared.insert(value.into_owned(), blob);
+                    blob
+                }
+            };
+            compacted.blobs.push(blob)?;
+        }
+        *self = compacted;
+        Ok(true)
+    }
+
     fn append_value_bytes(&mut self, bytes: &[u8]) -> Result<usize> {
         self.push(decode_text(bytes)?)
     }
@@ -252,6 +281,40 @@ impl NullableTextColumn {
 }
 
 impl Column for NullableTextColumn {
+    fn unused_heap_bytes(&self) -> Result<u64> {
+        heap_garbage(
+            self.heap.len(),
+            self.blobs
+                .iter()
+                .map(|blob| blob.copied())
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .flatten()
+                .collect(),
+        )
+    }
+
+    fn compact_storage(&mut self) -> Result<bool> {
+        let mut compacted = Self::default();
+        let mut shared = std::collections::HashMap::<String, Blob>::new();
+        for index in 0..self.blobs.len() {
+            let blob = match self.get(Row::trusted(index))? {
+                None => None,
+                Some(value) => Some(match shared.get(value.as_ref()) {
+                    Some(blob) => *blob,
+                    None => {
+                        let blob = compacted.heap.push_str(&value)?;
+                        shared.insert(value.into_owned(), blob);
+                        blob
+                    }
+                }),
+            };
+            compacted.blobs.push(blob)?;
+        }
+        *self = compacted;
+        Ok(true)
+    }
+
     fn append_value_bytes(&mut self, bytes: &[u8]) -> Result<usize> {
         match bytes {
             [0] => self.push(None),
@@ -425,3 +488,23 @@ fn perhaps(value: Option<&str>, blob: Option<Blob>) -> TextKey {
 #[cfg(test)]
 #[path = "text_test.rs"]
 mod text_test;
+
+fn heap_garbage(length: usize, blobs: Vec<Blob>) -> Result<u64> {
+    let mut ranges = Vec::with_capacity(blobs.len());
+    for blob in blobs {
+        let end = blob
+            .start
+            .checked_add(blob.len as u64)
+            .filter(|end| *end <= length as u64)
+            .ok_or_else(|| Error::corrupt("heap", "blob outside heap"))?;
+        ranges.push((blob.start, end));
+    }
+    ranges.sort_unstable();
+    let mut covered = 0;
+    let mut previous = 0;
+    for (start, end) in ranges {
+        covered += end.saturating_sub(previous.max(start));
+        previous = previous.max(end);
+    }
+    Ok(length as u64 - covered)
+}

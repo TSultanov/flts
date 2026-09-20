@@ -11,6 +11,9 @@ use header::Header;
 
 mod append_mark;
 mod codec;
+mod compaction;
+mod delta;
+pub use compaction::{CompactionPolicy, CompactionReport, MaintenanceOutcome, StorageStats};
 mod column_meta;
 mod commit_slot;
 mod commit_token;

@@ -60,6 +60,13 @@ impl Row {
 }
 
 pub trait Column {
+    fn unused_heap_bytes(&self) -> Result<u64> {
+        Ok(0)
+    }
+    fn compact_storage(&mut self) -> Result<bool> {
+        Ok(false)
+    }
+
     fn append_value_bytes(&mut self, _bytes: &[u8]) -> Result<usize> {
         Err(Error::unsupported(
             "column does not accept logical row values",

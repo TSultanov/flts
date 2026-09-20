@@ -9,6 +9,11 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug)]
 pub enum Error {
+    CompactionUncertain {
+        expected: CommitToken,
+        attempted: CommitToken,
+        source: io::Error,
+    },
     RetryExhausted {
         attempts: usize,
         source: Box<Error>,
@@ -59,6 +64,10 @@ impl Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::CompactionUncertain { source, .. } => write!(
+                f,
+                "compaction was replaced but durability is uncertain: {source}"
+            ),
             Self::RetryExhausted { attempts, source } => write!(
                 f,
                 "could not complete after {attempts} publication attempts: {source}"
@@ -87,6 +96,7 @@ impl std::error::Error for Error {
             Self::RetryExhausted { source, .. } => Some(source.as_ref()),
             Self::CommitUncertain { source, .. } => Some(source),
             Self::Io(err) => Some(err),
+            Self::CompactionUncertain { source, .. } => Some(source),
             _ => None,
         }
     }

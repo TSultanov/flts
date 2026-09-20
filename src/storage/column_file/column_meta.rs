@@ -7,7 +7,7 @@ use crate::error::{Error, Result};
 use crate::storage::arena::ChunkLoc;
 use crate::storage::hash::fnv1a;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ColumnMeta {
     pub name: String,
     pub elem_size: u32,
@@ -56,10 +56,7 @@ pub(super) fn write_directory(columns: &[ColumnMeta]) -> Vec<u8> {
         out.push(column.codec as u8);
         out.extend_from_slice(&(column.chunks.len() as u32).to_le_bytes());
         for chunk in &column.chunks {
-            out.extend_from_slice(&chunk.offset.to_le_bytes());
-            out.extend_from_slice(&chunk.byte_len.to_le_bytes());
-            out.extend_from_slice(&chunk.rows.to_le_bytes());
-            out.extend_from_slice(&chunk.fnv.to_le_bytes());
+            super::delta::put_loc(&mut out, *chunk);
         }
     }
     out
@@ -86,13 +83,8 @@ pub(super) fn read_directory(bytes: &[u8], dir_offset: u64) -> Result<Vec<Column
         let chunk_count = cursor.u32()? as usize;
         let mut chunks = Vec::new();
         for _ in 0..chunk_count {
-            let loc = ChunkLoc {
-                offset: cursor.u64()?,
-                byte_len: cursor.u32()?,
-                rows: cursor.u32()?,
-                fnv: cursor.u64()?,
-            };
-            let end = loc.offset.checked_add(loc.byte_len as u64).ok_or_else(|| {
+            let loc = super::delta::get_loc(&mut cursor)?;
+            let end = loc.offset.checked_add(loc.physical_len()).ok_or_else(|| {
                 Error::corrupt(
                     "directory",
                     format!("column {name:?} has a chunk range that overflows"),
@@ -115,6 +107,9 @@ pub(super) fn read_directory(bytes: &[u8], dir_offset: u64) -> Result<Vec<Column
             chunks,
         });
     }
+    if !cursor.is_empty() {
+        return Err(Error::corrupt("directory", "trailing bytes"));
+    }
     check_disjoint(&columns)?;
     Ok(columns)
 }
@@ -124,7 +119,7 @@ fn check_disjoint(columns: &[ColumnMeta]) -> Result<()> {
     for column in columns {
         for chunk in &column.chunks {
             if chunk.byte_len > 0 {
-                let end = chunk.offset + chunk.byte_len as u64;
+                let end = chunk.offset + chunk.physical_len();
                 ranges.push((chunk.offset, end, column.name.as_str()));
             }
         }

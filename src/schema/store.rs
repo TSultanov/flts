@@ -25,6 +25,8 @@ pub struct StoreState {
     dots: Arena<Dot>,
     schema_bytes: Arena<u8>,
     view: View,
+    compaction_policy: crate::CompactionPolicy,
+    maintenance: Option<crate::MaintenanceOutcome>,
 }
 
 impl Clone for StoreState {
@@ -37,6 +39,8 @@ impl Clone for StoreState {
             dots: self.dots.clone(),
             schema_bytes: self.schema_bytes.clone(),
             view: self.view.fork(),
+            compaction_policy: self.compaction_policy,
+            maintenance: self.maintenance.clone(),
         }
     }
 }
@@ -247,6 +251,99 @@ pub trait Store: Default + Clone + Sized {
             chunks: 1,
         });
         out
+    }
+
+    fn storage_stats(&self) -> Result<crate::StorageStats> {
+        let mut stats = self.state().attached()?.0.storage_stats()?;
+        stats.unused_heap_bytes = self
+            .tables()
+            .iter()
+            .try_fold(0, |sum, table| -> Result<u64> {
+                Ok(sum + table.unused_heap_bytes()?)
+            })?;
+        stats.consolidated_bytes = stats
+            .consolidated_bytes
+            .saturating_sub(stats.unused_heap_bytes);
+        stats.retained_value_bytes = stats
+            .retained_value_bytes
+            .saturating_sub(stats.unused_heap_bytes);
+        Ok(stats)
+    }
+
+    fn compaction_policy(&self) -> crate::CompactionPolicy {
+        self.state().compaction_policy
+    }
+
+    fn set_compaction_policy(&mut self, policy: crate::CompactionPolicy) -> Result<()> {
+        policy.validate()?;
+        self.state_mut().compaction_policy = policy;
+        Ok(())
+    }
+
+    fn maintenance_outcome(&self) -> Option<&crate::MaintenanceOutcome> {
+        self.state().maintenance.as_ref()
+    }
+
+    fn compact(&mut self) -> Result<crate::CompactionReport> {
+        self.check_published()?;
+        let (file, path) = self.state().attached()?;
+        let file = file.clone();
+        let path = path.to_owned();
+        let mut disk = Self::default();
+        disk.read(&file)?;
+        if self.clock() != disk.clock() {
+            return Err(Error::invalid("commit pending changes before compaction"));
+        }
+        for (table, held) in self.tables().iter().zip(disk.tables()) {
+            if table.revision_records()? != held.revision_records()? {
+                return Err(Error::invalid("commit pending changes before compaction"));
+            }
+        }
+        let mut prepared = self.snapshot();
+        for table in prepared.tables_mut() {
+            table.compact_columns()?;
+        }
+        prepared.audit()?;
+        let mut attached = Self::default();
+        let (published, report) = file.rewrite(
+            |updater| prepared.offer_to(updater),
+            |candidate| {
+                attached.read(candidate)?;
+                attached.audit()
+            },
+        )?;
+        attached.state_mut().file = Some(published);
+        attached.state_mut().path = Some(path);
+        attached.state_mut().compaction_policy = self.compaction_policy();
+        attached.state_mut().maintenance = Some(crate::MaintenanceOutcome::Compacted(report));
+        *self = attached;
+        Ok(report)
+    }
+
+    fn auto_compact(&mut self) {
+        let policy = self.compaction_policy();
+        if policy == crate::CompactionPolicy::Disabled {
+            return;
+        }
+        let result = (|| {
+            if let crate::CompactionPolicy::Automatic {
+                min_reclaim_bytes, ..
+            } = policy
+            {
+                let file = self.state().attached()?.0;
+                if file.file_bytes()? < min_reclaim_bytes {
+                    return Ok(None);
+                }
+            }
+            if policy.should_compact(self.storage_stats()?) {
+                self.compact().map(Some)
+            } else {
+                Ok(None)
+            }
+        })();
+        if let Err(err) = result {
+            self.state_mut().maintenance = Some(crate::MaintenanceOutcome::Failed(err.to_string()));
+        }
     }
 
     fn generation(&self) -> Option<u64> {
@@ -490,8 +587,11 @@ pub trait Store: Default + Clone + Sized {
                 Ok((attached, report))
             })();
             match result {
-                Ok((attached, report)) => {
+                Ok((mut attached, report)) => {
+                    attached.state_mut().compaction_policy = self.compaction_policy();
+                    attached.state_mut().maintenance = self.state().maintenance.clone();
                     *self = attached;
+                    self.auto_compact();
                     return Ok(report);
                 }
                 Err(err) => {

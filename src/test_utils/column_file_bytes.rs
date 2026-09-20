@@ -183,6 +183,8 @@ fn write_directory(columns: &[Column], count: Option<u32>) -> Vec<u8> {
                     .unwrap_or_else(|| fnv1a(&chunk.bytes))
                     .to_le_bytes(),
             );
+            out.extend_from_slice(&0u32.to_le_bytes());
+            out.push(0);
         }
     }
 

@@ -12,6 +12,14 @@ impl<'a> Cursor<'a> {
         Self { bytes, at: 0 }
     }
 
+    pub(super) fn remaining(&self) -> usize {
+        self.bytes.len() - self.at
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.at == self.bytes.len()
+    }
+
     pub(super) fn take(&mut self, len: usize) -> Result<&'a [u8]> {
         let end = self
             .at

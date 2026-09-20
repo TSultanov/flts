@@ -132,6 +132,12 @@ fn exercise(operations: &[(usize, usize, u8, usize, u32)]) -> Result<()> {
                 db.commit(WriterId::from_raw(actor as u64 + 10))?;
                 *db = Database::open(dir.path(actor))?;
             }
+            8 => {
+                db.commit(WriterId::from_raw(actor as u64 + 10))?;
+                let before = state(db)?;
+                db.compact()?;
+                assert_eq!(state(db)?, before);
+            }
             7 => {
                 let _ = db.nodes.push(Some(value), id, value);
             }
@@ -184,7 +190,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]
     fn replicas_converge_through_mutations_partitions_and_reopens(
-        operations in prop::collection::vec((0usize..3, 0usize..3, 0u8..8, 0usize..2, 0u32..4), 0..30)
+        operations in prop::collection::vec((0usize..3, 0usize..3, 0u8..9, 0usize..2, 0u32..4), 0..30)
     ) {
         exercise(&operations).unwrap();
     }

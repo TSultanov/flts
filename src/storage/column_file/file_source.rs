@@ -17,11 +17,30 @@ impl FileSource {
     }
 
     pub(super) fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let path = path.as_ref().to_path_buf();
+        let path = std::fs::canonicalize(path.as_ref())?;
         Ok(Self {
             file: File::open(&path)?,
             path,
         })
+    }
+
+    pub(super) fn raw_base(&self, mut loc: ChunkLoc) -> Result<ChunkLoc> {
+        if loc.depth > super::delta::MAX_DEPTH {
+            return Err(crate::Error::corrupt("delta", "chain too deep"));
+        }
+        while loc.depth > 0 {
+            if loc
+                .offset
+                .checked_add(loc.physical_len())
+                .is_none_or(|end| end > self.len().unwrap_or(0))
+            {
+                return Err(crate::Error::corrupt("delta", "invalid extent"));
+            }
+            let mut bytes = vec![0; loc.physical_len() as usize];
+            self.read_at(&mut bytes, loc.offset)?;
+            loc = super::delta::parse(loc, &bytes)?.0;
+        }
+        Ok(loc)
     }
 
     pub(super) fn path(&self) -> &Path {
@@ -43,9 +62,26 @@ impl FileSource {
 
 impl ChunkSource for FileSource {
     fn read_chunk(&self, loc: ChunkLoc) -> Result<Vec<u8>> {
-        let mut buf = vec![0u8; loc.byte_len as usize];
+        if loc.depth > super::delta::MAX_DEPTH
+            || loc
+                .offset
+                .checked_add(loc.physical_len())
+                .is_none_or(|end| end > self.len().unwrap_or(0))
+        {
+            return Err(crate::Error::corrupt("chunk", "invalid location"));
+        }
+        let mut buf = vec![0u8; loc.physical_len() as usize];
         self.read_at(&mut buf, loc.offset)?;
-        Ok(buf)
+        let bytes = if loc.depth == 0 {
+            buf
+        } else {
+            let (base, cursor) = super::delta::parse(loc, &buf)?;
+            super::delta::apply(self.read_chunk(base)?, loc.byte_len as usize, cursor)?
+        };
+        if crate::storage::fnv1a(&bytes) != loc.fnv {
+            return Err(crate::Error::corrupt("chunk", "failed checksum"));
+        }
+        Ok(bytes)
     }
 }
 

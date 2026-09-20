@@ -27,10 +27,12 @@ fn a_chunk_read_returns_exactly_the_located_bytes() {
 
     let source = FileSource::open(&path).unwrap();
     let loc = ChunkLoc {
+        stored_len: 0,
+        depth: 0,
         offset: 2,
         byte_len: 3,
         rows: 3,
-        fnv: 0,
+        fnv: crate::fnv1a(b"234"),
     };
     assert_eq!(source.read_chunk(loc).unwrap(), b"234");
 }

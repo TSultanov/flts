@@ -249,3 +249,32 @@ proptest! {
         prop_assert_eq!(key.blob().len, key.len);
     }
 }
+
+#[test]
+fn heap_compaction_reclaims_replaced_bytes_and_preserves_nulls_and_sharing() -> Result<()> {
+    let mut text = TextColumn::default();
+    text.push("old unused bytes")?;
+    text.set(row(0, 1), "retained")?;
+    text.push("retained")?;
+    assert_eq!(text.unused_heap_bytes()?, "old unused bytes".len() as u64);
+    let snapshot = text.clone();
+    text.compact_storage()?;
+    assert_eq!(text.heap_len(), "retained".len());
+    assert_eq!(text.unused_heap_bytes()?, 0);
+    assert_eq!(text.get(row(0, 2))?, snapshot.get(row(0, 2))?);
+    assert_eq!(text.get(row(1, 2))?, "retained");
+
+    let mut optional = NullableTextColumn::default();
+    optional.push(Some("gone"))?;
+    optional.push(Some("retained"))?;
+    optional.push(Some("retained"))?;
+    optional.push(Some(""))?;
+    optional.set(row(0, 4), None)?;
+    assert_eq!(optional.unused_heap_bytes()?, 4);
+    optional.compact_storage()?;
+    assert_eq!(optional.heap_len(), "retained".len());
+    assert_eq!(optional.get(row(0, 4))?, None);
+    assert_eq!(optional.get(row(3, 4))?.as_deref(), Some(""));
+    assert_eq!(optional.unused_heap_bytes()?, 0);
+    Ok(())
+}

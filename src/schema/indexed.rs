@@ -136,6 +136,17 @@ impl<C: Keyed> Indexed<C> {
 }
 
 impl<C: Keyed> Column for Indexed<C> {
+    fn unused_heap_bytes(&self) -> Result<u64> {
+        self.column.unused_heap_bytes()
+    }
+    fn compact_storage(&mut self) -> Result<bool> {
+        if self.column.compact_storage()? {
+            self.index.rebuild(&self.column)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     fn append_value_bytes(&mut self, bytes: &[u8]) -> Result<usize> {
         let row = self.column.append_value_bytes(bytes)?;
         self.index.append(self.column.key_at(row)?)

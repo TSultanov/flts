@@ -596,6 +596,8 @@ pub trait Table: Default + Clone {
 }
 
 pub trait AnyTable {
+    fn unused_heap_bytes(&self) -> Result<u64>;
+    fn compact_columns(&mut self) -> Result<()>;
     fn identities(&self) -> Result<Vec<crate::Uuid>>;
     fn all_references(&self) -> Result<Vec<Reference>>;
     fn revision_records(&self) -> Result<Vec<super::RevisionRecord>>;
@@ -626,6 +628,20 @@ pub trait AnyTable {
 }
 
 impl<T: Table> AnyTable for T {
+    fn unused_heap_bytes(&self) -> Result<u64> {
+        self.fields()
+            .iter()
+            .try_fold(0, |sum, field| Ok(sum + field.column.unused_heap_bytes()?))
+    }
+
+    fn compact_columns(&mut self) -> Result<()> {
+        for field in self.fields_mut() {
+            field.column.compact_storage()?;
+        }
+        self.invalidate_resolved();
+        Ok(())
+    }
+
     fn identities(&self) -> Result<Vec<crate::Uuid>> {
         (0..Table::rows(self))
             .map(|index| self.id_at(Row::trusted(index)).map(|id| id.uuid()))
