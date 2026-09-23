@@ -737,11 +737,18 @@
     .container {
         display: flex;
         justify-content: center;
-        align-items: center;
         height: 100%;
+        box-sizing: border-box;
+        padding: 16px;
+        overflow-y: auto;
     }
 
+    /* Auto margins rather than align-items: center, which clips the top of
+       an overflowing form out of scroll reach. */
     .config-form {
+        margin-block: auto;
+        width: 100%;
+        min-width: 0;
         max-width: 500px;
         display: grid;
         gap: 10px;
