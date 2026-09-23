@@ -39,10 +39,10 @@ pub struct CacheKey {
     pub chapter_id: usize,
 }
 
-/// Cached payload: the system instruction plus per-chapter reference material,
-/// which is `None` only when there is nothing chapter-scoped to send.
+/// Cached payload: per-chapter reference material (`None` only when there is
+/// nothing chapter-scoped to send) followed by the translation instructions.
 pub struct CacheContent {
-    pub system_instruction: String,
+    pub instructions: String,
     pub user_reference_material: Option<String>,
 }
 
@@ -58,7 +58,7 @@ pub struct PurgeReport {
 struct DiskEntry {
     /// Server-side resource name, e.g. `"cachedContents/abc-123"`.
     name: String,
-    /// FNV-1a of `(system_instruction || 0x1F || reference_material_or_empty)`,
+    /// FNV-1a of `(layout || instructions || 0x1F || reference_material_or_empty)`,
     /// scoped per-`disk_key`. Covering the prompt auto-invalidates entries when
     /// its text changes.
     fingerprint: u64,
@@ -192,8 +192,8 @@ impl GeminiPromptCache {
 
                 let display = cache_display_name(&key_for_init);
                 info!(
-                    "Creating Gemini cache {display} (system {} chars, reference {} chars, ttl {}s)",
-                    content.system_instruction.len(),
+                    "Creating Gemini cache {display} (instructions {} chars, reference {} chars, ttl {}s)",
+                    content.instructions.len(),
                     content
                         .user_reference_material
                         .as_deref()
@@ -201,15 +201,20 @@ impl GeminiPromptCache {
                         .unwrap_or(0),
                     DEFAULT_CACHE_TTL.as_secs()
                 );
+                // Instructions go after the reference as a user turn, not as the
+                // system instruction: read before a famous book's text and
+                // summaries, they let Gemini refuse long passages as copyrighted.
                 let mut builder = client
                     .create_cache()
                     .with_display_name(display)?
-                    .with_system_instruction(content.system_instruction)
                     .with_ttl(DEFAULT_CACHE_TTL);
                 if let Some(reference) = content.user_reference_material {
                     builder = builder.with_user_message(reference);
                 }
-                let handle = builder.execute().await?;
+                let handle = builder
+                    .with_user_message(content.instructions)
+                    .execute()
+                    .await?;
                 info!("Created Gemini cache: {}", handle.name());
                 disk.insert(
                     dk,
@@ -270,9 +275,14 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+/// Bumped when the cached message layout changes, so older caches holding the
+/// same text in a different layout aren't reused.
+const CACHE_LAYOUT_VERSION: u8 = 2;
+
 fn fingerprint_of(content: &CacheContent) -> u64 {
     let mut h = fnv::FnvHasher::default();
-    h.write(content.system_instruction.as_bytes());
+    h.write(&[CACHE_LAYOUT_VERSION]);
+    h.write(content.instructions.as_bytes());
     h.write(&[0x1F]);
     if let Some(r) = &content.user_reference_material {
         h.write(r.as_bytes());
@@ -315,7 +325,7 @@ fn is_flts_cache(display_name: Option<&str>) -> bool {
 }
 
 /// The per-chapter reference-material payload, or `None` when both pieces are
-/// empty so the cache holds the system prompt alone.
+/// empty so the cache holds the instructions alone.
 pub fn build_reference_material(prior_summaries: &str, chapter_text: &str) -> Option<String> {
     if prior_summaries.is_empty() && chapter_text.is_empty() {
         return None;
@@ -402,7 +412,7 @@ mod tests {
 
     fn make_content(label: &str) -> CacheContent {
         CacheContent {
-            system_instruction: format!("instruction-{label}"),
+            instructions: format!("instruction-{label}"),
             user_reference_material: Some(format!("reference-{label}")),
         }
     }
@@ -607,19 +617,19 @@ mod tests {
     #[test]
     fn fingerprint_changes_with_content() {
         let a = CacheContent {
-            system_instruction: "sys".into(),
+            instructions: "sys".into(),
             user_reference_material: Some("ref".into()),
         };
         let b = CacheContent {
-            system_instruction: "sys".into(),
+            instructions: "sys".into(),
             user_reference_material: Some("ref-modified".into()),
         };
         let c = CacheContent {
-            system_instruction: "sys-modified".into(),
+            instructions: "sys-modified".into(),
             user_reference_material: Some("ref".into()),
         };
         let d = CacheContent {
-            system_instruction: "sys".into(),
+            instructions: "sys".into(),
             user_reference_material: None,
         };
         assert_ne!(fingerprint_of(&a), fingerprint_of(&b));

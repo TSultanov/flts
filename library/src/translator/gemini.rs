@@ -193,7 +193,7 @@ impl GeminiTranslator {
                 .get_or_create(&self.client, key.clone(), || {
                     let reference = build_reference_material(&prior_summaries, &chapter_text);
                     CacheContent {
-                        system_instruction: Self::get_prompt(from.to_name(), to.to_name()),
+                        instructions: Self::get_prompt(from.to_name(), to.to_name()),
                         user_reference_material: reference,
                     }
                 }),

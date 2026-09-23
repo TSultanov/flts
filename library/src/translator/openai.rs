@@ -4,9 +4,8 @@ use std::{
 };
 
 use async_openai::types::chat::{
-    ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
-    ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs, FinishReason,
-    ResponseFormat, ResponseFormatJsonSchema,
+    ChatCompletionRequestMessage, ChatCompletionRequestUserMessageArgs,
+    CreateChatCompletionRequestArgs, FinishReason, ResponseFormat, ResponseFormatJsonSchema,
 };
 use async_openai::{Client, config::OpenAIConfig};
 use async_trait::async_trait;
@@ -138,7 +137,7 @@ impl Translator for OpenAITranslator {
                 | TranslationProvider::Zai
                 | TranslationProvider::Openrouter
         );
-        let mut system_prompt = format!(
+        let mut instructions = format!(
             "{}\n\nReturn ONLY a single JSON object that matches the requested schema. Do not wrap it in markdown.",
             Self::get_prompt(self.from.to_name(), self.to.to_name())
         );
@@ -146,8 +145,8 @@ impl Translator for OpenAITranslator {
         // so the prompt must carry the target shape.
         if is_deepseek {
             if let Ok(schema_text) = serde_json::to_string_pretty(&*self.schema) {
-                system_prompt.push_str("\n\nJSON schema for the response:\n");
-                system_prompt.push_str(&schema_text);
+                instructions.push_str("\n\nJSON schema for the response:\n");
+                instructions.push_str(&schema_text);
             }
         }
 
@@ -167,12 +166,10 @@ impl Translator for OpenAITranslator {
             .await
             .unwrap_or_default();
 
-        let mut messages: Vec<ChatCompletionRequestMessage> = Vec::with_capacity(3);
-        messages.push(ChatCompletionRequestMessage::System(
-            ChatCompletionRequestSystemMessageArgs::default()
-                .content(system_prompt)
-                .build()?,
-        ));
+        // Instructions follow the reference as a user turn, not a system
+        // message, for the same copyright-refusal reason as the Gemini cache.
+        // They share the paragraph's message to avoid three successive user turns.
+        let mut messages: Vec<ChatCompletionRequestMessage> = Vec::with_capacity(2);
         if let Some(reference) = build_reference_material(&prior_summaries, &chapter_text) {
             messages.push(ChatCompletionRequestMessage::User(
                 ChatCompletionRequestUserMessageArgs::default()
@@ -182,7 +179,9 @@ impl Translator for OpenAITranslator {
         }
         messages.push(ChatCompletionRequestMessage::User(
             ChatCompletionRequestUserMessageArgs::default()
-                .content(format!("Translate this paragraph: {paragraph}"))
+                .content(format!(
+                    "{instructions}\n\nTranslate this paragraph: {paragraph}"
+                ))
                 .build()?,
         ));
 
