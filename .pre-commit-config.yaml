@@ -34,6 +34,16 @@ repos:
 
   - repo: local
     hooks:
+      - id: svelte-check
+        # Whole-project type check, so filenames aren't passed.
+        name: pnpm check (svelte-check + tsc)
+        entry: pnpm --dir site check
+        language: system
+        files: ^site/(?!src-tauri/)
+        pass_filenames: false
+
+  - repo: local
+    hooks:
       - id: prettier
         # The workspace's own prettier, not a pre-commit-managed copy: Prettier
         # resolves plugins from the CWD, so `prettier-plugin-svelte` is only

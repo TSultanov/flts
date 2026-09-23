@@ -54,7 +54,7 @@
 
     // Deliberately not $derived: a background config_updated refetch would
     // clobber typed-but-unsaved edits. Seeded once by the $effect below.
-    let translationProvider: TranslationProvider = $state("google");
+    let translationProvider = $state<TranslationProvider>("google");
     let geminiApiKey: string | undefined = $state(undefined);
     let openaiApiKey: string | undefined = $state(undefined);
     let deepseekApiKey: string | undefined = $state(undefined);
