@@ -19,15 +19,15 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 e2e-bridge = ["dep:axum", "tokio/net"]
 
 [build-dependencies]
-tauri-build = { version = "2.5.6", features = [] }
+tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
 serde_json = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 library = { path = "../../library", features = ["sync-engine"] }
 log = { workspace = true }
-tauri = { version = "2.10.3", features = [] }
-tauri-plugin-log = "2.8.0"
+tauri = { version = "2.11.6", features = [] }
+tauri-plugin-log = "2.9.2"
 strum = { workspace = true }
 isolang = { workspace = true, features = [
   "list_languages",
@@ -46,7 +46,7 @@ tokio = { workspace = true, features = [
   "io-util",
   "process",
 ] }
-tauri-plugin-dialog = "2.7.0"
+tauri-plugin-dialog = "2.7.3"
 uuid = { workspace = true }
 htmlentity = "1.3.2"
 tauri-plugin-os = "2.3.2"
