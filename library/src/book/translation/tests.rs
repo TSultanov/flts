@@ -558,12 +558,64 @@ fn to_import_empty_paragraph() {
     };
     translation.add_paragraph_translation(0, &input, "models/gemini-2.5-flash");
 
-    let view = translation.paragraph_view(0).unwrap();
+    let view = translation.latest_version_view(0).unwrap();
     let out = view.to_import();
 
     assert_eq!(out.timestamp, 42);
     assert_eq!(out.total_tokens, Some(17));
     assert!(out.sentences.is_empty());
+}
+
+fn make_empty_paragraph(ts: u64) -> translation_import::ParagraphTranslation {
+    translation_import::ParagraphTranslation {
+        timestamp: ts,
+        sentences: vec![],
+        total_tokens: None,
+    }
+}
+
+#[test]
+fn empty_latest_version_counts_as_untranslated() {
+    let mut t = Translation::create("en", "ru");
+    t.add_paragraph_translation(0, &make_empty_paragraph(1), "models/gemini-2.5-flash");
+    assert!(t.paragraph_view(0).is_none());
+    assert_eq!(t.translated_paragraphs_count(), 0);
+
+    t.add_paragraph_translation(1, &make_paragraph(2, "p1"), "models/gemini-2.5-flash");
+    assert_eq!(t.translated_paragraphs_count(), 1);
+}
+
+#[test]
+fn empty_version_over_real_one_hides_it_until_retranslated() {
+    let mut t = Translation::create("en", "ru");
+    t.add_paragraph_translation(0, &make_paragraph(1, "v1"), "models/gemini-2.5-flash");
+    t.add_paragraph_translation(0, &make_empty_paragraph(2), "models/gemini-2.5-flash");
+    assert!(t.paragraph_view(0).is_none());
+
+    t.add_paragraph_translation(0, &make_paragraph(3, "v3"), "models/gemini-2.5-flash");
+    let latest = t.paragraph_view(0).expect("retranslated paragraph");
+    assert_eq!(latest.timestamp, 3);
+    let empty = latest.get_previous_version().expect("empty version kept");
+    assert_eq!((empty.timestamp, empty.sentence_count()), (2, 0));
+    let first = empty.get_previous_version().expect("original version kept");
+    assert_eq!(first.sentence_view(0).full_translation, "v1");
+    assert_eq!(t.translated_paragraphs_count(), 1);
+}
+
+#[test]
+fn merge_keeps_empty_head_and_its_history() {
+    let mut a = Translation::create("en", "ru");
+    a.add_paragraph_translation(0, &make_paragraph(1, "v1"), "models/gemini-2.5-flash");
+    a.add_paragraph_translation(0, &make_empty_paragraph(2), "models/gemini-2.5-flash");
+    let b = Translation::create("en", "ru");
+
+    for merged in [a.merge(&b), b.merge(&a)] {
+        assert!(merged.paragraph_view(0).is_none());
+        let head = merged.latest_version_view(0).expect("empty head merged");
+        assert_eq!((head.timestamp, head.sentence_count()), (2, 0));
+        let prev = head.get_previous_version().expect("history merged");
+        assert_eq!(prev.sentence_view(0).full_translation, "v1");
+    }
 }
 
 #[test]

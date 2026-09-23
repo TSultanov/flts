@@ -19,7 +19,7 @@ use crate::{
     cache::TranslationsCache,
     translator::{
         ChapterContextProvider, TranslationContext, TranslationProvider, Translator,
-        paragraph_translation_schema,
+        ensure_complete, paragraph_translation_schema,
     },
 };
 
@@ -123,6 +123,8 @@ impl Translator for OpenAITranslator {
                 .await
                 .ok()
                 .flatten()
+            // Entries cached before the completeness check may be refusals.
+            && ensure_complete(ctx.paragraph_text, &cached_result).is_ok()
         {
             return Ok(cached_result);
         }
@@ -280,6 +282,7 @@ impl Translator for OpenAITranslator {
 
         let mut translation: ParagraphTranslation = serde_json::from_str(&full_content)?;
         translation.normalize_html_entities();
+        ensure_complete(paragraph, &translation)?;
 
         // Streamed chunks carry no reliable usage data, so token counts are
         // left unset.

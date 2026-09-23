@@ -18,7 +18,7 @@ use crate::{
     book::translation_import::ParagraphTranslation,
     cache::TranslationsCache,
     translator::{
-        ChapterContextProvider, ProgressCallback, TranslationContext, Translator,
+        ChapterContextProvider, ProgressCallback, TranslationContext, Translator, ensure_complete,
         gemini_cache::{
             CacheContent, CacheKey, GeminiPromptCache, build_reference_material,
             is_cache_missing_error,
@@ -326,6 +326,8 @@ impl Translator for GeminiTranslator {
                 .await
                 .ok()
                 .flatten()
+            // Entries cached before the completeness check may be refusals.
+            && ensure_complete(ctx.paragraph_text, &cached_result).is_ok()
         {
             return Ok(cached_result);
         }
@@ -380,6 +382,7 @@ impl Translator for GeminiTranslator {
             }
             Err(err) => return Err(err),
         };
+        ensure_complete(paragraph, &translation)?;
 
         let now = SystemTime::now();
         let duration_since_epoch = now.duration_since(UNIX_EPOCH)?;

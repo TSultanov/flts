@@ -193,7 +193,16 @@ impl Translation {
         }
     }
 
+    /// Current translation of `paragraph`. An empty latest version (e.g. an LLM
+    /// refusal) counts as untranslated, so the reader offers translating it again.
     pub fn paragraph_view(&'_ self, paragraph: usize) -> Option<ParagraphTranslationView<'_>> {
+        self.latest_version_view(paragraph)
+            .filter(|view| view.sentence_count() > 0)
+    }
+
+    /// Latest version regardless of content; merge must see empty heads to keep
+    /// the history behind them.
+    fn latest_version_view(&'_ self, paragraph: usize) -> Option<ParagraphTranslationView<'_>> {
         if paragraph >= self.paragraphs.len() {
             return None;
         }
@@ -211,7 +220,11 @@ impl Translation {
     }
 
     pub fn translated_paragraphs_count(&self) -> usize {
-        self.paragraphs.iter().filter(|p| p.is_some()).count()
+        self.paragraphs
+            .iter()
+            .flatten()
+            .filter(|&&p| self.paragraph_translations[p].sentences.len > 0)
+            .count()
     }
 
     pub fn version_count(&self) -> usize {
@@ -427,8 +440,8 @@ impl Translation {
         let mut merged_translation = Self::create(&self.source_language, &self.target_language);
         merged_translation.id = self.id;
         for paragraph_idx in 0..self.paragraphs.len().max(other.paragraphs.len()) {
-            if let Some(paragarph) = self.paragraph_view(paragraph_idx)
-                && let Some(other_paragraph) = other.paragraph_view(paragraph_idx)
+            if let Some(paragarph) = self.latest_version_view(paragraph_idx)
+                && let Some(other_paragraph) = other.latest_version_view(paragraph_idx)
             {
                 let mut versions = Vec::new();
                 let mut curr_paragraph = paragarph;
@@ -486,8 +499,8 @@ impl Translation {
                         merged_translation.add_visible_word(paragraph_idx, *word_idx);
                     }
                 }
-            } else if let Some(paragarph) = self.paragraph_view(paragraph_idx)
-                && other.paragraph_view(paragraph_idx).is_none()
+            } else if let Some(paragarph) = self.latest_version_view(paragraph_idx)
+                && other.latest_version_view(paragraph_idx).is_none()
             {
                 let mut versions = Vec::new();
                 let mut curr = Some(paragarph);
@@ -504,8 +517,8 @@ impl Translation {
                         v.timestamp,
                     );
                 }
-            } else if self.paragraph_view(paragraph_idx).is_none()
-                && let Some(other_paragraph) = other.paragraph_view(paragraph_idx)
+            } else if self.latest_version_view(paragraph_idx).is_none()
+                && let Some(other_paragraph) = other.latest_version_view(paragraph_idx)
             {
                 let mut versions = Vec::new();
                 let mut curr = Some(other_paragraph);

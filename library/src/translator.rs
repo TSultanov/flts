@@ -252,6 +252,37 @@ impl StreamChunkAccumulator {
     }
 }
 
+/// Refusals come back as valid JSON covering one sentence or none; complete
+/// results cover ~100% of the source's letters.
+const MIN_TRANSLATION_COVERAGE: f64 = 0.5;
+
+/// Rejects a translation whose words cover too little of the source text.
+/// Counts alphanumeric chars, so contractions and CJK compare like split words.
+pub(crate) fn ensure_complete(
+    paragraph: &str,
+    translation: &ParagraphTranslation,
+) -> anyhow::Result<()> {
+    let source = paragraph.chars().filter(|c| c.is_alphanumeric()).count();
+    if source == 0 {
+        return Ok(());
+    }
+    let covered: usize = translation
+        .sentences
+        .iter()
+        .flat_map(|s| &s.words)
+        .filter(|w| !w.is_punctuation)
+        .map(|w| w.original.chars().filter(|c| c.is_alphanumeric()).count())
+        .sum();
+    let coverage = covered as f64 / source as f64;
+    if coverage < MIN_TRANSLATION_COVERAGE {
+        anyhow::bail!(
+            "Incomplete translation: covers {:.0}% of the paragraph",
+            coverage * 100.0
+        );
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 pub enum TranslationErrors {
     UnknownModel,
@@ -620,6 +651,8 @@ pub fn is_transient_translation_error(err: &anyhow::Error) -> bool {
         // MAX_TOKENS means a decoding repetition loop, not a property of the
         // paragraph, so a fresh attempt is worth it.
         "max output tokens",
+        // Refusals are sampled, so a fresh attempt usually completes.
+        "incomplete translation",
     ];
     TRANSIENT_SIGS.iter().any(|s| msg_lower.contains(s))
 }
@@ -628,7 +661,75 @@ pub fn is_transient_translation_error(err: &anyhow::Error) -> bool {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use super::{StreamChunkAccumulator, is_transient_translation_error};
+    use super::{StreamChunkAccumulator, ensure_complete, is_transient_translation_error};
+    use crate::book::translation_import::{Grammar, ParagraphTranslation, Sentence, Word};
+
+    fn word(original: &str, is_punctuation: bool) -> Word {
+        Word {
+            original: original.into(),
+            contextual_translations: vec![],
+            note: None,
+            is_punctuation,
+            grammar: Grammar {
+                original_initial_form: original.into(),
+                target_initial_form: String::new(),
+                part_of_speech: "other".into(),
+                plurality: None,
+                person: None,
+                tense: None,
+                case: None,
+                other: None,
+            },
+        }
+    }
+
+    fn translation_of(sentences: &[&str]) -> ParagraphTranslation {
+        ParagraphTranslation {
+            timestamp: 0,
+            total_tokens: None,
+            sentences: sentences
+                .iter()
+                .map(|s| Sentence {
+                    full_translation: String::new(),
+                    words: s
+                        .split_whitespace()
+                        .map(|w| word(w, false))
+                        .chain([word("&period;", true)])
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+
+    const PARAGRAPH: &str = "Nunca encontró ninguna. Casi nadie había oído hablar del autor. Esos libros eran imposibles de encontrar.";
+
+    #[test]
+    fn ensure_complete_accepts_full_translation() {
+        let t = translation_of(&[
+            "Nunca encontró ninguna",
+            "Casi nadie había oído hablar del autor",
+            "Esos libros eran imposibles de encontrar",
+        ]);
+        ensure_complete(PARAGRAPH, &t).unwrap();
+    }
+
+    #[test]
+    fn ensure_complete_rejects_first_sentence_only() {
+        let t = translation_of(&["Nunca encontró ninguna"]);
+        let err = ensure_complete(PARAGRAPH, &t).unwrap_err();
+        assert!(err.to_string().starts_with("Incomplete translation"));
+        assert!(is_transient_translation_error(&err));
+    }
+
+    #[test]
+    fn ensure_complete_rejects_empty_translation() {
+        assert!(ensure_complete(PARAGRAPH, &translation_of(&[])).is_err());
+    }
+
+    #[test]
+    fn ensure_complete_accepts_punctuation_only_paragraph() {
+        ensure_complete("* * *", &translation_of(&[])).unwrap();
+    }
 
     #[test]
     fn first_chunk_error_is_retried() {
