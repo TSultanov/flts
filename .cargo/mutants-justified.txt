@@ -84,14 +84,6 @@ src/schema/version.rs:17:31: replace | with ^
 # what is already there. No input distinguishes < from <=.
 src/schema/clock.rs:56:47: replace < with <= in VersionVector::observe
 
-# Provably equivalent. check_versions tracks the highest dot among the versions
-# of an id, but only ever considers a version that is_stamped():
-#     if version.is_stamped() && highest.is_none_or(|(dot, _)| dot < version.dot())
-# Stamped dots are unique within a store -- a commit ticks once per row it
-# stamps, and a merge skips any dot its clock already covers -- so < and <=
-# never see an equal pair and cannot disagree.
-src/schema/table.rs:233:78: replace < with <= in Table::check_versions
-
 # Two arms of the code-shape helpers that only a downstream crate can observe.
 # A mutant in dbsync-macros changes what the macro emits, and the sweep records
 # "0s build" against both of these -- the crate that expands the macro was not
@@ -101,17 +93,5 @@ src/schema/table.rs:233:78: replace < with <= in Table::check_versions
 # Option<String> and neither is Option<&str>. The compiler refuses them; the
 # sweep simply cannot see them, the same blind spot as the proc-macro shims
 # above.
-dbsync-macros/src/field.rs:307:13: delete match arm Kind::NullableText in Kind::owned
-dbsync-macros/src/field.rs:317:13: delete match arm Kind::NullableText in Kind::lent
-
-# Two comparisons that can only differ on a tie, where a tie cannot happen.
-# how_to_take picks which of two concurrent versions is kept, and yield_among
-# picks which of several rows keeps a value no two may share; both compare dots.
-# Dot ordering is (counter, writer), so two dots are equal only when the same
-# writer counted the same far -- which a store never does, because a commit ticks
-# once per row and a merge skips any dot its clock already covers. Both callers
-# are reached only from Store::merge, which refuses a copy holding an unstamped
-# version, so the all-zero dots of an uncommitted table never arrive here either.
-# > and >= therefore agree on every input these two see.
-src/schema/table.rs:149:29: replace > with >= in Table::how_to_take
-src/schema/table.rs:197:21: replace > with >= in Table::yield_among
+dbsync-macros/src/field.rs:392:13: delete match arm Kind::NullableText in Kind::owned
+dbsync-macros/src/field.rs:402:13: delete match arm Kind::NullableText in Kind::lent

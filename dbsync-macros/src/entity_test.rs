@@ -843,3 +843,143 @@ fn a_merge_function_is_combined_with_independent_history_retention() {
     assert!(out.contains("Retention :: History"), "{out}");
     assert!(!out.contains("# [merge"), "{out}");
 }
+
+#[test]
+fn a_resolved_child_is_walked_in_creation_order_not_row_order() {
+    let out = expanded(quote! {
+        #[merge(with = policies::combine)]
+        struct Chapter { book: One<Book>, title: String }
+    });
+
+    assert!(
+        out.contains("< ChapterTable as :: dbsync :: schema :: Table > :: in_creation_order (table , & mut rows) ?"),
+        "{out}"
+    );
+    assert!(
+        !out.contains("sort_by_key (| row | row . index ())"),
+        "{out}"
+    );
+}
+
+#[test]
+fn an_order_must_name_a_parent_this_entity_holds_and_only_once() {
+    let err = refused(quote! {
+        struct Paragraph { #[order(chapter)] pos: u32, text: String }
+    });
+    assert!(
+        err.contains("`chapter` is not a One field of this entity"),
+        "{err}"
+    );
+
+    let err = refused(quote! {
+        struct Paragraph { #[order(text)] pos: u32, text: String }
+    });
+    assert!(err.contains("`text` is not a One field"), "{err}");
+
+    let err = refused(quote! {
+        struct Paragraph {
+            #[order(chapter)] pos: u32,
+            #[order(chapter)] rank: u32,
+            chapter: One<Chapter>,
+        }
+    });
+    assert!(
+        err.contains("ordered by one position field, not two"),
+        "{err}"
+    );
+}
+
+#[test]
+fn an_ordered_position_walks_its_parents_children_by_the_run_it_keeps() {
+    let out = expanded(quote! {
+        struct Paragraph { #[order(chapter)] pos: u32, chapter: One<Chapter>, text: String }
+    });
+
+    assert!(
+        out.contains("pos : :: dbsync :: schema :: Sorted < :: dbsync :: Arena < u32 > , :: dbsync :: Id < Chapter > >"),
+        "{out}"
+    );
+    assert!(
+        out.contains(r#"pos : :: dbsync :: schema :: Sorted :: named ("paragraph.pos")"#),
+        "{out}"
+    );
+    assert!(
+        out.contains("let mut keyed = table . pos . children (parent , & table . chapter) ?"),
+        "{out}"
+    );
+    assert!(
+        out.contains("< ParagraphTable as :: dbsync :: schema :: Table > :: live_in_key_order (table , keyed)"),
+        "{out}"
+    );
+    assert!(
+        out.contains("pub fn by_pos (& self , parent : :: dbsync :: Id < Chapter > , range : impl :: core :: ops :: RangeBounds < u32 >)"),
+        "{out}"
+    );
+    assert!(
+        out.contains("self . pos . children_between (parent , low , high , & self . chapter) ?"),
+        "{out}"
+    );
+    assert!(
+        out.contains("self . pos . fold_within (& self . chapter , force) ?"),
+        "{out}"
+    );
+    assert!(
+        out.contains("self . pos . audit_within (& self . chapter) ?"),
+        "{out}"
+    );
+    assert!(
+        out.contains("self . pos . column () . row (row . index ())"),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_sorted_field_answers_a_range_and_folds_its_run_at_commit() {
+    let out = expanded(quote! {
+        struct Card { #[sorted] due: u64, #[sorted] stage: Stage, lemma: String }
+    });
+
+    assert!(
+        out.contains("pub fn by_due (& self , range : impl :: core :: ops :: RangeBounds < u64 >)"),
+        "{out}"
+    );
+    assert!(out.contains("self . due . between (low , high) ?"), "{out}");
+    assert!(out.contains("self . due . fold (force) ?"), "{out}");
+    assert!(out.contains("self . stage . fold (force) ?"), "{out}");
+    assert!(
+        out.contains(":: dbsync :: schema :: UnitEnum :: to_u8 (* value)"),
+        "{out}"
+    );
+    assert!(!out.contains("audit_within"), "{out}");
+    assert!(!out.contains("fn by_lemma"), "{out}");
+}
+
+#[test]
+fn an_entity_that_sorts_nothing_keeps_the_default_hooks() {
+    let out = expanded(quote! {
+        struct Book { #[index] title: String, chapters: Many<Chapter> }
+    });
+
+    assert!(!out.contains("fn settle_indexes"), "{out}");
+    assert!(!out.contains("fn audit_indexes"), "{out}");
+    assert!(!out.contains("fn by_"), "{out}");
+}
+
+#[test]
+fn a_resolved_position_orders_the_children_by_what_the_merge_function_chose() {
+    let out = expanded(quote! {
+        #[merge(with = policies::combine)]
+        struct Step { #[order(book)] pos: u32, book: One<Book>, label: String }
+    });
+
+    assert!(
+        out.contains("if value . book == parent && let Some (row) = < StepTable as :: dbsync :: schema :: Table > :: live_row_of (table , :: dbsync :: Id :: from_uuid (uuid)) ? { keyed . push ((:: dbsync :: schema :: SortKey :: sort_key (value . pos) , row)) ; }"),
+        "{out}"
+    );
+    assert!(
+        out.contains("if row_value . book == parent && (low ..= high) . contains (& key)"),
+        "{out}"
+    );
+    assert!(out.contains("fn parent_at"), "{out}");
+    assert_eq!(out.matches("fn child_rows").count(), 1, "{out}");
+}

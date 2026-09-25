@@ -15,10 +15,19 @@ const SCALARS: &[&str] = &[
 
 const FLOATS: &[&str] = &["f32", "f64"];
 
+const POSITIONS: &[&str] = &["u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64"];
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Indexing {
     None,
     Shared,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Sorting {
+    None,
+    Sorted,
+    Within(syn::Ident),
 }
 
 pub enum Kind {
@@ -35,6 +44,7 @@ pub struct Field {
     pub name: syn::Ident,
     pub kind: Kind,
     pub indexing: Indexing,
+    pub sorting: Sorting,
     pub through: Option<Type>,
     pub docs: Vec<syn::Attribute>,
 }
@@ -46,7 +56,7 @@ impl Field {
             .clone()
             .ok_or_else(|| syn::Error::new(field.span(), "an entity needs named fields"))?;
         let kind = Kind::parse(&field.ty)?;
-        let (indexing, through) = asked_of(field, &kind)?;
+        let (indexing, sorting, through) = asked_of(field, &kind)?;
         let docs = field
             .attrs
             .iter()
@@ -57,9 +67,18 @@ impl Field {
             name,
             kind,
             indexing,
+            sorting,
             through,
             docs,
         })
+    }
+
+    pub fn wraps(&self) -> bool {
+        self.indexing != Indexing::None || self.sorting != Sorting::None
+    }
+
+    pub fn get(&self, table: &TokenStream) -> TokenStream {
+        self.kind.get(table, &self.name, self.wraps())
     }
 
     pub fn is_stored(&self) -> bool {
@@ -67,9 +86,10 @@ impl Field {
     }
 }
 
-fn asked_of(field: &syn::Field, kind: &Kind) -> syn::Result<(Indexing, Option<Type>)> {
+fn asked_of(field: &syn::Field, kind: &Kind) -> syn::Result<(Indexing, Sorting, Option<Type>)> {
     let mut asked: Option<(&syn::Attribute, Indexing)> = None;
     let mut crossed: Option<Type> = None;
+    let mut sorted: Option<(&syn::Attribute, Sorting)> = None;
 
     for attr in &field.attrs {
         if attr.path().is_ident("doc") {
@@ -98,13 +118,25 @@ fn asked_of(field: &syn::Field, kind: &Kind) -> syn::Result<(Indexing, Option<Ty
             crossed = Some(one_table(attr)?);
             continue;
         }
+        if attr.path().is_ident("sorted") || attr.path().is_ident("order") {
+            if sorted.is_some() {
+                return Err(syn::Error::new(
+                    attr.span(),
+                    "this field is sorted already; it is sorted across its table with #[sorted] \
+                     or among its siblings with #[order(..)], once",
+                ));
+            }
+            sorted = Some((attr, sorting_of(attr)?));
+            continue;
+        }
         if !attr.path().is_ident("index") {
             let written = attr.path().to_token_stream().to_string().replace(' ', "");
             return Err(syn::Error::new(
                 attr.span(),
                 format!(
                     "`{written}` is not an attribute a field of an entity takes, and this struct \
-                     becomes a tag, so it would be dropped without a word; #[index] and #[through(..)] are the only ones"
+                     becomes a tag, so it would be dropped without a word; #[index], #[sorted], \
+                     #[order(..)] and #[through(..)] are the only ones"
                 ),
             ));
         }
@@ -117,8 +149,22 @@ fn asked_of(field: &syn::Field, kind: &Kind) -> syn::Result<(Indexing, Option<Ty
         asked = Some((attr, indexing_of(attr)?));
     }
 
+    let sorting = match sorted {
+        None => Sorting::None,
+        Some((attr, sorting)) => {
+            if let Some((index, _)) = asked {
+                return Err(syn::Error::new(
+                    index.span(),
+                    "a sorted field already finds its rows by a range of values, so it needs no \
+                     #[index] beside it",
+                ));
+            }
+            sortable(attr, &sorting, kind)?;
+            sorting
+        }
+    };
     let Some((attr, indexing)) = asked else {
-        return Ok((Indexing::None, crossed));
+        return Ok((Indexing::None, sorting, crossed));
     };
     match kind {
         Kind::Reference(_) => Err(syn::Error::new(
@@ -135,8 +181,60 @@ fn asked_of(field: &syn::Field, kind: &Kind) -> syn::Result<(Indexing, Option<Ty
             "an index answers by equality, and a float is not equal to itself when it is NaN, \
              so a float field cannot be indexed",
         )),
-        _ => Ok((indexing, crossed)),
+        _ => Ok((indexing, sorting, crossed)),
     }
+}
+
+fn sorting_of(attr: &syn::Attribute) -> syn::Result<Sorting> {
+    if attr.path().is_ident("sorted") {
+        return match &attr.meta {
+            syn::Meta::Path(_) => Ok(Sorting::Sorted),
+            _ => Err(syn::Error::new(
+                attr.span(),
+                "#[sorted] takes no arguments; to order children within their parent, write \
+                 #[order(parent)]",
+            )),
+        };
+    }
+    attr.parse_args::<syn::Ident>()
+        .map(Sorting::Within)
+        .map_err(|_| {
+            syn::Error::new(
+                attr.span(),
+                "#[order] names the One field whose parent it orders children within, as \
+                 #[order(chapter)]",
+            )
+        })
+}
+
+fn sortable(attr: &syn::Attribute, sorting: &Sorting, kind: &Kind) -> syn::Result<()> {
+    let refused = |said: &str| Err(syn::Error::new(attr.span(), said));
+    match (sorting, kind) {
+        (Sorting::Within(_), Kind::Scalar(ty)) if is_position(ty) => Ok(()),
+        (Sorting::Within(_), _) => refused(
+            "a position is a whole number the caller chooses, so #[order(..)] takes an integer \
+             field and nothing else",
+        ),
+        (_, Kind::Scalar(ty) | Kind::NullableScalar(ty)) if is_float(ty) => {
+            refused("a float is not ordered when it is NaN, so a float field cannot be sorted")
+        }
+        (_, Kind::Scalar(_) | Kind::NullableScalar(_) | Kind::Enum(_)) => Ok(()),
+        (_, Kind::Text | Kind::NullableText) => {
+            refused("text is not sorted yet; sort a number or an enum")
+        }
+        (_, Kind::Reference(_)) => refused(
+            "a parent is grouped by its own index; order the children beneath it with \
+             #[order(..)] on a position field",
+        ),
+        (_, Kind::Many(_)) => refused(
+            "a Many is the children that name this row, not a column of its own, so there is \
+             nothing to sort",
+        ),
+    }
+}
+
+fn is_position(ty: &Type) -> bool {
+    named(ty).is_some_and(|name| POSITIONS.contains(&name.as_str()))
 }
 
 fn one_table(attr: &syn::Attribute) -> syn::Result<Type> {
@@ -223,13 +321,17 @@ impl Kind {
         ))
     }
 
-    pub fn column(&self, child: &syn::Ident, indexing: Indexing) -> TokenStream {
+    pub fn column(
+        &self,
+        child: &syn::Ident,
+        indexing: Indexing,
+        sorted_by: Option<&TokenStream>,
+    ) -> TokenStream {
         let bare = self.bare_column(child);
-        match indexing {
-            Indexing::None => bare,
-            _ => {
-                generated! { ::dbsync::schema::Indexed<#bare> }
-            }
+        match (indexing, sorted_by) {
+            (_, Some(prefix)) => generated! { ::dbsync::schema::Sorted<#bare, #prefix> },
+            (Indexing::None, None) => bare,
+            _ => generated! { ::dbsync::schema::Indexed<#bare> },
         }
     }
 
@@ -273,10 +375,10 @@ impl Kind {
         }
     }
 
-    pub fn get(&self, table: &TokenStream, name: &syn::Ident, indexing: Indexing) -> TokenStream {
-        let held = match indexing {
-            Indexing::None => generated! { #table.#name },
-            _ => generated! { #table.#name.column() },
+    pub fn get(&self, table: &TokenStream, name: &syn::Ident, wrapped: bool) -> TokenStream {
+        let held = match wrapped {
+            false => generated! { #table.#name },
+            true => generated! { #table.#name.column() },
         };
         match self {
             Kind::Scalar(_) => generated! { #held.row(row.index()).copied() },

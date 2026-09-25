@@ -21,6 +21,7 @@ pub struct StoreState {
     file: Option<ColumnFile>,
     path: Option<PathBuf>,
     unknown: Vec<String>,
+    dropped: Vec<String>,
     clock: VersionVector,
     dots: Arena<Dot>,
     schema_bytes: Arena<u8>,
@@ -35,6 +36,7 @@ impl Clone for StoreState {
             file: self.file.clone(),
             path: self.path.clone(),
             unknown: self.unknown.clone(),
+            dropped: self.dropped.clone(),
             clock: self.clock.clone(),
             dots: self.dots.clone(),
             schema_bytes: self.schema_bytes.clone(),
@@ -316,6 +318,7 @@ pub trait Store: Default + Clone + Sized {
         let mut prepared = self.snapshot();
         for table in prepared.tables_mut() {
             table.compact_columns()?;
+            table.fold_indexes(true)?;
         }
         prepared.audit()?;
         let mut attached = Self::default();
@@ -410,6 +413,7 @@ pub trait Store: Default + Clone + Sized {
         clock.read_from(&dots)?;
         self.state_mut().clock = clock;
         self.state_mut().dots = dots;
+        self.state_mut().dropped = diff.to_drop();
         self.state_mut().unknown = diff.unknown;
         self.state_mut().schema_bytes = schema;
         self.audit_dots()?;
@@ -420,6 +424,9 @@ pub trait Store: Default + Clone + Sized {
 
     fn offer_to(&self, updater: &mut ColumnFileUpdater) -> Result<()> {
         self.check_mutable()?;
+        for name in &self.state().dropped {
+            updater.remove_column(name);
+        }
         for table in self.tables() {
             table.offer_columns(updater)?;
         }
@@ -555,6 +562,9 @@ pub trait Store: Default + Clone + Sized {
                     latest.absorb(peer.clock())?;
                 }
                 latest.refresh()?;
+                for table in latest.tables_mut() {
+                    table.fold_indexes(false)?;
+                }
                 latest.audit()?;
                 report.taken = 0;
                 for table in latest.tables() {

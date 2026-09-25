@@ -321,9 +321,12 @@ impl<L: Store + 'static> Migrations<L> {
             current = next;
             report.steps.push(applied);
         }
-        let prepared = current
+        let mut prepared = current
             .downcast::<L>()
             .map_err(|_| Error::invalid("migration did not reach the latest Rust schema type"))?;
+        for table in prepared.tables_mut() {
+            table.fold_indexes(true)?;
+        }
         let mut attached = L::default();
         let (published, _) = file
             .rewrite(

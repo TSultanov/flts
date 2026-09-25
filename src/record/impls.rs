@@ -23,6 +23,28 @@ macro_rules! impl_record_for_int {
 
 impl_record_for_int!(u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
 
+impl Record for u128 {
+    const SIZE: usize = size_of::<u128>();
+
+    fn encode(&self, out: &mut [u8]) {
+        out.copy_from_slice(&self.to_le_bytes());
+    }
+
+    fn decode(src: &[u8]) -> Self {
+        let mut buf = [0u8; size_of::<u128>()];
+        buf.copy_from_slice(src);
+        u128::from_le_bytes(buf)
+    }
+}
+
+impl Record for () {
+    const SIZE: usize = 0;
+
+    fn encode(&self, _out: &mut [u8]) {}
+
+    fn decode(_src: &[u8]) -> Self {}
+}
+
 impl Record for bool {
     const SIZE: usize = size_of::<u8>();
 

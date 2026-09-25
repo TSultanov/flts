@@ -34,6 +34,8 @@ struct Credit {
 #[dbsync::entity]
 struct Chapter {
     book: One<Book>,
+    #[order(book)]
+    number: u32,
     title: String,
     paragraphs: Many<Paragraph>,
 }
@@ -41,6 +43,8 @@ struct Chapter {
 #[dbsync::entity]
 struct Paragraph {
     chapter: One<Chapter>,
+    #[order(chapter)]
+    number: u32,
     text: String,
 }
 
@@ -65,49 +69,50 @@ fn stock(library: &mut Library) -> Result<()> {
 
     let prince = library.books.push("Le Petit Prince")?;
     library.credits.push(prince, exupery, "wrote")?;
-    let one = library.chapters.push(prince, "Chapitre I")?;
+    let one = library.chapters.push(prince, 1, "Chapitre I")?;
     library
         .paragraphs
-        .push(one, "Lorsque j'avais six ans j'ai vu une image.")?;
+        .push(one, 1, "Lorsque j'avais six ans j'ai vu une image.")?;
     library
         .paragraphs
-        .push(one, "On disait: les serpents avalent leur proie.")?;
-    let two = library.chapters.push(prince, "Chapitre II")?;
+        .push(one, 2, "On disait: les serpents avalent leur proie.")?;
+    let two = library.chapters.push(prince, 2, "Chapitre II")?;
     library
         .paragraphs
-        .push(two, "J'ai vécu seul, sans personne à qui parler.")?;
+        .push(two, 1, "J'ai vécu seul, sans personne à qui parler.")?;
 
     let kokoro = library.books.push("こころ")?;
     library.credits.push(kokoro, soseki, "wrote")?;
-    let sensei = library.chapters.push(kokoro, "上 先生と私")?;
+    let sensei = library.chapters.push(kokoro, 1, "上 先生と私")?;
     library
         .paragraphs
-        .push(sensei, "私はその人を常に先生と呼んでいた。")?;
+        .push(sensei, 1, "私はその人を常に先生と呼んでいた。")?;
     library
         .paragraphs
-        .push(sensei, "筆を執っても心持は同じ事である。")?;
+        .push(sensei, 2, "筆を執っても心持は同じ事である。")?;
 
     let alice = library.books.push("Alice's Adventures in Wonderland")?;
     library.credits.push(alice, carroll, "wrote")?;
     library.credits.push(alice, tenniel, "illustrated")?;
-    let rabbit = library.chapters.push(alice, "Down the Rabbit-Hole")?;
+    let rabbit = library.chapters.push(alice, 1, "Down the Rabbit-Hole")?;
     library
         .paragraphs
-        .push(rabbit, "Alice was beginning to get very tired.")?;
+        .push(rabbit, 1, "Alice was beginning to get very tired.")?;
     library
         .paragraphs
-        .push(rabbit, "So she was considering in her own mind.")?;
-    let pool = library.chapters.push(alice, "The Pool of Tears")?;
+        .push(rabbit, 2, "So she was considering in her own mind.")?;
+    let pool = library.chapters.push(alice, 2, "The Pool of Tears")?;
     library
         .paragraphs
-        .push(pool, "Curiouser and curiouser! cried Alice.")?;
+        .push(pool, 1, "Curiouser and curiouser! cried Alice.")?;
 
     let glass = library.books.push("Through the Looking-Glass")?;
     library.credits.push(glass, carroll, "wrote")?;
     library.credits.push(glass, tenniel, "illustrated")?;
-    let looking = library.chapters.push(glass, "Looking-Glass House")?;
+    let looking = library.chapters.push(glass, 1, "Looking-Glass House")?;
     library.paragraphs.push(
         looking,
+        1,
         "One thing was certain, that the white kitten had nothing to do with it.",
     )?;
     Ok(())
@@ -366,16 +371,23 @@ fn main() -> Result<()> {
     let cities = theirs.books.push("Le citta invisibili")?;
     theirs.credits.push(cities, calvino, "wrote")?;
     theirs.at_mut(alice_of)?.set_title("Alice, annotated")?;
+    let alice_chapters = theirs.children_of::<Book, Chapter>(alice_of)?;
+    let (rabbit_of, pool_of) = (alice_chapters[0], alice_chapters[1]);
+    theirs.chapters.set_number(pool_of, 0)?;
     theirs.commit(annexe)?;
 
     let woolf = library.authors.push("Virginia Woolf")?;
     let waves = library.books.push("The Waves")?;
     library.credits.push(waves, woolf, "wrote")?;
     library.at_mut(alice_of)?.set_title("Alice Underground")?;
+    library
+        .chapters
+        .set_title(rabbit_of, "Down the Rabbit Hole")?;
 
     println!("\n11. someone copied the file to the annexe and both shelves were worked on");
-    println!("     here: added The Waves and retitled Alice");
-    println!("     there: added Le citta invisibili and retitled Alice as well");
+    println!("     here: added The Waves, retitled Alice and her first chapter");
+    println!("     there: added Le citta invisibili, retitled Alice as well, and numbered");
+    println!("     The Pool of Tears 0 so it reads before Down the Rabbit-Hole");
     println!(
         "     neither file knows about the other: {} books here, {} there",
         library.all::<Book>().count(),
@@ -407,6 +419,18 @@ fn main() -> Result<()> {
     println!("       it says {:?}", library.at(alice_of)?.title()?);
     println!("     nobody chose that by hand; the two clocks did, and they would have");
     println!("     said the same thing had the annexe merged this shelf instead");
+
+    let order: Vec<String> = library
+        .at(alice_of)?
+        .chapters()?
+        .map(|chapter| Ok(chapter.title()?.into_owned()))
+        .collect::<Result<_>>()?;
+    assert_eq!(order, ["The Pool of Tears", "Down the Rabbit Hole"]);
+    println!("     her chapters now read {order:?}: the number chosen there and the");
+    println!("     title chosen here both arrived, and neither edit moved a chapter out of");
+    println!("     the place its number gives it; a copy that merged the other way reads");
+    println!("     them in the same order, because order is a column, not an accident of");
+    println!("     which row was written last");
 
     let again = library.merge_from(&elsewhere, this_device())?;
     assert_eq!(again.taken, 0);

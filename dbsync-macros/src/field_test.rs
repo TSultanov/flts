@@ -85,6 +85,7 @@ fn a_many_field_is_not_stored_in_a_column_and_everything_else_is() {
         name: syn::parse_quote!(chapters),
         kind: kind(quote!(Many<Chapter>)),
         indexing: Indexing::None,
+        sorting: Sorting::None,
         through: None,
         docs: Vec::new(),
     };
@@ -92,6 +93,7 @@ fn a_many_field_is_not_stored_in_a_column_and_everything_else_is() {
         name: syn::parse_quote!(title),
         kind: kind(quote!(String)),
         indexing: Indexing::None,
+        sorting: Sorting::None,
         through: None,
         docs: Vec::new(),
     };
@@ -104,7 +106,7 @@ fn a_many_field_is_not_stored_in_a_column_and_everything_else_is() {
 fn the_column_a_field_asks_for_names_both_ends_of_a_reference() {
     let child: syn::Ident = syn::parse_quote!(Chapter);
     let column = kind(quote!(One<Book>))
-        .column(&child, Indexing::None)
+        .column(&child, Indexing::None, None)
         .to_string();
 
     assert!(column.contains("RefColumn"), "{column}");
@@ -238,4 +240,116 @@ fn a_doc_comment_on_a_field_is_kept_rather_than_refused_or_dropped() {
     assert_eq!(documented.docs.len(), 1);
     assert_eq!(documented.indexing, Indexing::Shared);
     assert!(field_of(quote!(title: String)).docs.is_empty());
+}
+
+#[test]
+fn a_sorted_field_or_an_ordered_position_is_read_back_as_what_it_asked_for() {
+    assert_eq!(
+        field_of(quote!(#[sorted] due: u64)).sorting,
+        Sorting::Sorted
+    );
+    assert_eq!(
+        field_of(quote!(#[sorted] interval: Option<u32>)).sorting,
+        Sorting::Sorted
+    );
+    assert_eq!(
+        field_of(quote!(#[sorted] stage: Stage)).sorting,
+        Sorting::Sorted
+    );
+    assert_eq!(
+        field_of(quote!(#[order(chapter)] pos: i64)).sorting,
+        Sorting::Within(syn::parse_quote!(chapter))
+    );
+    let plain = field_of(quote!(pos: u32));
+    assert_eq!(plain.sorting, Sorting::None);
+    assert!(!plain.wraps());
+    assert!(field_of(quote!(#[sorted] due: u64)).wraps());
+}
+
+#[test]
+fn a_sorted_field_asks_for_a_column_that_keeps_its_own_run() {
+    let child: syn::Ident = syn::parse_quote!(Card);
+    let prefix = quote!(());
+    let column = kind(quote!(u64))
+        .column(&child, Indexing::None, Some(&prefix))
+        .to_string();
+
+    assert!(
+        column.contains("Sorted < :: dbsync :: Arena < u64 > , ()"),
+        "{column}"
+    );
+}
+
+#[test]
+fn a_field_sorting_could_not_answer_for_is_refused_where_it_is_asked() {
+    for float in [
+        quote!(#[sorted] score: f64),
+        quote!(#[sorted] score: Option<f32>),
+    ] {
+        let err = refused_field(float);
+        assert!(err.contains("NaN"), "{err}");
+    }
+    for text in [
+        quote!(#[sorted] title: String),
+        quote!(#[sorted] title: Option<String>),
+    ] {
+        let err = refused_field(text);
+        assert!(err.contains("text is not sorted yet"), "{err}");
+    }
+    let err = refused_field(quote!(#[sorted] book: One<Book>));
+    assert!(err.contains("#[order(..)] on a position field"), "{err}");
+    let err = refused_field(quote!(#[sorted] chapters: Many<Chapter>));
+    assert!(err.contains("nothing to sort"), "{err}");
+}
+
+#[test]
+fn a_position_is_a_whole_number_and_nothing_else() {
+    for wrong in [
+        quote!(#[order(book)] pos: f64),
+        quote!(#[order(book)] pos: bool),
+        quote!(#[order(book)] pos: Option<u32>),
+        quote!(#[order(book)] pos: String),
+        quote!(#[order(book)] pos: Stage),
+        quote!(#[order(book)] book: One<Book>),
+    ] {
+        let err = refused_field(wrong);
+        assert!(err.contains("integer field and nothing else"), "{err}");
+    }
+}
+
+#[test]
+fn a_sort_asked_for_twice_or_beside_an_index_or_wrongly_is_refused() {
+    for twice in [
+        quote!(#[sorted] #[sorted] due: u64),
+        quote!(#[sorted] #[order(book)] due: u64),
+        quote!(#[order(book)] #[order(shelf)] pos: u32),
+    ] {
+        let err = refused_field(twice);
+        assert!(err.contains("this field is sorted already"), "{err}");
+    }
+    for beside in [
+        quote!(#[index] #[sorted] due: u64),
+        quote!(#[order(book)] #[index] pos: u32),
+    ] {
+        let err = refused_field(beside);
+        assert!(err.contains("needs no #[index] beside it"), "{err}");
+    }
+    let err = refused_field(quote!(#[sorted(desc)] due: u64));
+    assert!(err.contains("#[sorted] takes no arguments"), "{err}");
+    for wrong in [
+        quote!(#[order] pos: u32),
+        quote!(#[order(book, shelf)] pos: u32),
+        quote!(#[order = "book"] pos: u32),
+    ] {
+        let err = refused_field(wrong);
+        assert!(err.contains("#[order] names the One field"), "{err}");
+    }
+}
+
+#[test]
+fn the_refusal_of_an_unknown_attribute_names_every_attribute_a_field_takes() {
+    let err = refused_field(quote!(#[ordered] pos: u32));
+    for named in ["#[index]", "#[sorted]", "#[order(..)]", "#[through(..)]"] {
+        assert!(err.contains(named), "{err}");
+    }
 }

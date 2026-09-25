@@ -5,7 +5,7 @@ use quote::format_ident;
 use syn::spanned::Spanned;
 use syn::{Fields, ItemStruct};
 
-use crate::field::{Field, Indexing, Kind};
+use crate::field::{Field, Indexing, Kind, Sorting};
 use crate::naming::snake_case;
 
 macro_rules! generated {
@@ -40,6 +40,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         .map(Field::parse)
         .collect::<syn::Result<_>>()?;
     check_one_parent_each(&fields)?;
+    check_orders(&fields)?;
     check_no_field_called_id(&fields)?;
     if let Some(attr) = input
         .attrs
@@ -105,9 +106,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     } else {
         let reads = stored.iter().map(|field| {
             let field_name = &field.name;
-            let read = field
-                .kind
-                .get(&generated! { self }, field_name, field.indexing);
+            let read = field.get(&generated! { self });
             let owned = field.kind.owned();
             generated! { let #field_name = #read #owned ?; }
         });
@@ -116,7 +115,8 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
 
     let columns = stored.iter().map(|field| {
         let field_name = &field.name;
-        let ty = field.kind.column(name, field.indexing);
+        let prefix = prefix_of(field, &fields);
+        let ty = field.kind.column(name, field.indexing, prefix.as_ref());
         generated! { #field_name: #ty }
     });
     let built = stored.iter().map(|field| {
@@ -125,6 +125,9 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         match (&field.kind, field.indexing) {
             (Kind::Reference(_), _) => {
                 generated! { #field_name: ::dbsync::schema::RefColumn::named(#column) }
+            }
+            _ if field.sorting != Sorting::None => {
+                generated! { #field_name: ::dbsync::schema::Sorted::named(#column) }
             }
             (_, Indexing::None) => generated! { #field_name: ::core::default::Default::default() },
             _ => generated! { #field_name: ::dbsync::schema::Indexed::named(#column) },
@@ -171,9 +174,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         .iter()
         .map(|field| {
             let field_name = &field.name;
-            let read = field
-                .kind
-                .get(&generated! { self }, field_name, field.indexing);
+            let read = field.get(&generated! { self });
             let owned = field.kind.owned();
             generated! { let #field_name = #read #owned ?; }
         })
@@ -223,21 +224,100 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         }
     });
 
+    let ranges = stored.iter().filter(|field| field.sorting != Sorting::None).map(|field| {
+        let field_name = &field.name;
+        let finder = format_ident!("by_{}", field_name);
+        let (bound, value) = sort_value(&field.kind);
+        let key = sort_key_of(&field.kind, generated! { row_value.#field_name });
+        let (parent, lookup, belongs) = match &field.sorting {
+            Sorting::Within(by) => {
+                let parent_type = parent_named(by, &fields);
+                (
+                    Some(generated! { parent: ::dbsync::Id<#parent_type>, }),
+                    generated! { self.#field_name.children_between(parent, low, high, &self.#by)? },
+                    generated! { row_value.#by == parent && },
+                )
+            }
+            _ => (None, generated! { self.#field_name.between(low, high)? }, generated! {}),
+        };
+        let resolved = resolver.as_ref().map(|_| generated! {
+            keyed.retain(|(_, row)| <Self as ::dbsync::schema::Table>::id_at(self, *row).is_ok_and(|id| self.dbsync_resolved.get(id.uuid()).is_none()));
+            for (uuid, row_value) in self.dbsync_resolved.entries() {
+                let key = #key;
+                if #belongs (low..=high).contains(&key) && let Some(row) = <Self as ::dbsync::schema::Table>::live_row_of(self, ::dbsync::Id::from_uuid(uuid))? { keyed.push((key, row)); }
+            }
+        });
+        generated! {
+            pub fn #finder(&self, #parent range: impl ::core::ops::RangeBounds<#bound>) -> ::dbsync::Result<::std::vec::Vec<::dbsync::Id<#name>>> {
+                let range = (
+                    ::core::ops::RangeBounds::start_bound(&range).map(|value| #value),
+                    ::core::ops::RangeBounds::end_bound(&range).map(|value| #value),
+                );
+                let ::core::option::Option::Some((low, high)) = ::dbsync::schema::key_bounds(&range) else {
+                    return ::core::result::Result::Ok(::std::vec::Vec::new());
+                };
+                #[allow(unused_mut)]
+                let mut keyed = #lookup;
+                #resolved
+                <Self as ::dbsync::schema::Table>::live_in_key_order(self, keyed)?
+                    .into_iter()
+                    .map(|row| <Self as ::dbsync::schema::Table>::id_at(self, row))
+                    .collect()
+            }
+        }
+    });
+    let folds: Vec<_> = stored
+        .iter()
+        .filter_map(|field| {
+            let field_name = &field.name;
+            match &field.sorting {
+                Sorting::None => None,
+                Sorting::Sorted => Some(generated! { self.#field_name.fold(force)?; }),
+                Sorting::Within(by) => {
+                    Some(generated! { self.#field_name.fold_within(&self.#by, force)?; })
+                }
+            }
+        })
+        .collect();
+    let prefix_audits: Vec<_> = stored
+        .iter()
+        .filter_map(|field| {
+            let field_name = &field.name;
+            match &field.sorting {
+                Sorting::Within(by) => {
+                    Some(generated! { self.#field_name.audit_within(&self.#by)?; })
+                }
+                _ => None,
+            }
+        })
+        .collect();
+    let index_hooks = (!folds.is_empty()).then(|| {
+        generated! {
+            fn settle_indexes(&mut self, force: bool) -> ::dbsync::Result<()> {
+                #(#folds)*
+                ::core::result::Result::Ok(())
+            }
+
+            fn audit_indexes(&self) -> ::dbsync::Result<()> {
+                #(#prefix_audits)*
+                ::core::result::Result::Ok(())
+            }
+        }
+    });
+
     let accessors = stored.iter().map(|field| {
         let field_name = &field.name;
         let setter = format_ident!("set_{}", field_name);
         let read = field.kind.read(&generated! { '_ });
         let pushed = field.kind.pushed();
-        let get = field
-            .kind
-            .get(&generated! { self }, field_name, field.indexing);
+        let get = field.get(&generated! { self });
         let docs = &field.docs;
 
         let carried = stored.iter().filter(|other| other.name != *field_name).map(|other| {
             let other_name = &other.name;
             if resolver.is_some() { generated! { let #other_name = current.#other_name; } }
             else {
-                let read = other.kind.get(&generated! { self }, other_name, other.indexing);
+                let read = other.get(&generated! { self });
                 let owned = other.kind.owned();
                 generated! { let #other_name = #read #owned ?; }
             }
@@ -320,7 +400,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             },
             kind => {
                 let read = kind.read(&held);
-                let get = kind.get(&generated! { table }, field_name, field.indexing);
+                let get = field.get(&generated! { table });
                 let docs = &field.docs;
                 let current = resolver.as_ref().map(|_| generated! { if !self.0.is_historical() { return table.#field_name(self.0.id()?); } });
                 generated! {
@@ -350,10 +430,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     });
 
     let payloads = stored.iter().map(|field| {
-        let field_name = &field.name;
-        let read = field
-            .kind
-            .get(&generated! { self }, field_name, field.indexing);
+        let read = field.get(&generated! { self });
         let encoded = encode_value(&field.kind, generated! { value });
         generated! { { let value = #read?; #encoded } }
     });
@@ -476,12 +553,36 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     let children = fields.iter().filter_map(|field| match &field.kind {
         Kind::Reference(parent) => {
             let field_name = &field.name;
-            let resolved = resolver.as_ref().map(|_| generated! {
+            let position = stored.iter().find(|other| other.sorting == Sorting::Within(field_name.clone()));
+            let resolved_parent = resolver.as_ref().map(|_| generated! {
                 fn parent_at(table: &#table, row: ::dbsync::schema::Row, historical: bool) -> ::dbsync::Result<::dbsync::Id<#parent>> {
                     if historical { return table.#field_name.get(row); }
                     let id = <#table as ::dbsync::schema::Table>::id_at(table, row)?;
                     Ok(table.dbsync_value(id)?.#field_name)
                 }
+            });
+            let ordered = position.map(|position| {
+                let position_name = &position.name;
+                let key = sort_key_of(&position.kind, generated! { value.#position_name });
+                let patch = resolver.as_ref().map(|_| generated! {
+                    keyed.retain(|(_, row)| <#table as ::dbsync::schema::Table>::id_at(table, *row).is_ok_and(|id| table.dbsync_resolved.get(id.uuid()).is_none()));
+                    for (uuid, value) in table.dbsync_resolved.entries() {
+                        if value.#field_name == parent && let Some(row) = <#table as ::dbsync::schema::Table>::live_row_of(table, ::dbsync::Id::from_uuid(uuid))? { keyed.push((#key, row)); }
+                    }
+                });
+                generated! {
+                    fn child_rows(table: &#table, parent: ::dbsync::Id<#parent>) -> ::dbsync::Result<::std::vec::Vec<::dbsync::schema::Row>> {
+                        #[allow(unused_mut)]
+                        let mut keyed = table.#position_name.children(parent, &table.#field_name)?;
+                        #patch
+                        <#table as ::dbsync::schema::Table>::live_in_key_order(table, keyed)
+                    }
+                }
+            });
+            let resolved = match ordered {
+                Some(ordered) => Some(generated! { #resolved_parent #ordered }),
+                None => resolver.as_ref().map(|_| generated! {
+                #resolved_parent
 
                 fn child_rows(table: &#table, parent: ::dbsync::Id<#parent>) -> ::dbsync::Result<::std::vec::Vec<::dbsync::schema::Row>> {
                     let mut rows = <#table as ::dbsync::schema::Table>::live_among(table, table.#field_name.child_rows_of(parent)?)?;
@@ -489,10 +590,11 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                     for (uuid, value) in table.dbsync_resolved.entries() {
                         if value.#field_name == parent && let Some(row) = <#table as ::dbsync::schema::Table>::live_row_of(table, ::dbsync::Id::from_uuid(uuid))? { rows.push(row); }
                     }
-                    rows.sort_by_key(|row| row.index());
+                    <#table as ::dbsync::schema::Table>::in_creation_order(table, &mut rows)?;
                     Ok(rows)
                 }
-            });
+                }),
+            };
             Some(generated! {
                 impl ::dbsync::schema::Child<#parent> for #name {
                     #resolved
@@ -562,6 +664,8 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             type Of = #name;
 
             #resolution
+
+            #index_hooks
 
             fn ids(&self) -> &::dbsync::schema::IdColumn<#name> {
                 &self.dbsync_ids
@@ -689,6 +793,8 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             #(#accessors)*
 
             #(#finders)*
+
+            #(#ranges)*
         }
 
         #vis struct #row_type<#held, S: ::dbsync::schema::Holds<#name>>(
@@ -886,6 +992,78 @@ fn check_no_field_called_id(fields: &[Field]) -> syn::Result<()> {
         }
     }
     Ok(())
+}
+
+fn check_orders(fields: &[Field]) -> syn::Result<()> {
+    let mut ordered: Vec<&syn::Ident> = Vec::new();
+    for field in fields {
+        let Sorting::Within(by) = &field.sorting else {
+            continue;
+        };
+        let named = fields.iter().find(|other| other.name == *by);
+        if !named.is_some_and(|other| matches!(other.kind, Kind::Reference(_))) {
+            return Err(syn::Error::new(
+                by.span(),
+                format!(
+                    "#[order({by})] orders children within the parent a One field names, and \
+                     `{by}` is not a One field of this entity"
+                ),
+            ));
+        }
+        if ordered.contains(&by) {
+            return Err(syn::Error::new(
+                by.span(),
+                format!("the children `{by}` groups are ordered by one position field, not two"),
+            ));
+        }
+        ordered.push(by);
+    }
+    Ok(())
+}
+
+fn parent_named<'a>(by: &syn::Ident, fields: &'a [Field]) -> &'a syn::Type {
+    fields
+        .iter()
+        .find_map(|field| match &field.kind {
+            Kind::Reference(parent) if field.name == *by => Some(parent),
+            _ => None,
+        })
+        .expect("check_orders confirmed the field an order names is a reference")
+}
+
+fn prefix_of(field: &Field, fields: &[Field]) -> Option<TokenStream> {
+    match &field.sorting {
+        Sorting::None => None,
+        Sorting::Sorted => Some(generated! { () }),
+        Sorting::Within(by) => {
+            let parent = parent_named(by, fields);
+            Some(generated! { ::dbsync::Id<#parent> })
+        }
+    }
+}
+
+fn sort_value(kind: &Kind) -> (TokenStream, TokenStream) {
+    match kind {
+        Kind::Scalar(ty) | Kind::NullableScalar(ty) => (generated! { #ty }, generated! { *value }),
+        Kind::Enum(ty) => (
+            generated! { #ty },
+            generated! { ::dbsync::schema::UnitEnum::to_u8(*value) },
+        ),
+        _ => unreachable!("only numbers and enums are sorted"),
+    }
+}
+
+fn sort_key_of(kind: &Kind, value: TokenStream) -> TokenStream {
+    match kind {
+        Kind::Scalar(_) => generated! { ::dbsync::schema::SortKey::sort_key(#value) },
+        Kind::NullableScalar(_) => {
+            generated! { ::dbsync::schema::SortKey::sort_key(::dbsync::schema::Maybe(#value)) }
+        }
+        Kind::Enum(_) => generated! {
+            ::dbsync::schema::SortKey::sort_key(::dbsync::schema::UnitEnum::to_u8(#value))
+        },
+        _ => unreachable!("only numbers and enums are sorted"),
+    }
 }
 
 fn check_one_parent_each(fields: &[Field]) -> syn::Result<()> {

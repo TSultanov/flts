@@ -1,6 +1,7 @@
 //! What the file holds and the schema wants, reported in one message.
 
 use super::column::{ColumnKind, ColumnSpec};
+use super::names::is_derived_name;
 use crate::error::Error;
 use crate::storage::ColumnFile;
 
@@ -9,6 +10,7 @@ pub struct SchemaDiff {
     pub missing: Vec<String>,
     pub derived: Vec<String>,
     pub unknown: Vec<String>,
+    pub stale: Vec<String>,
     pub widths: Vec<(String, u32, usize)>,
 }
 
@@ -17,7 +19,10 @@ impl SchemaDiff {
         let mut diff = Self::default();
 
         for spec in wanted {
-            let derived = matches!(spec.kind, ColumnKind::Bucket | ColumnKind::Link);
+            let derived = matches!(
+                spec.kind,
+                ColumnKind::Bucket | ColumnKind::Link | ColumnKind::Sorted
+            );
             match file.column_meta(&spec.name) {
                 None if derived => diff.derived.push(spec.name.clone()),
                 None => diff.missing.push(spec.name.clone()),
@@ -33,14 +38,19 @@ impl SchemaDiff {
         }
 
         for held in file.columns() {
-            if !wanted.iter().any(|spec| spec.name == held.name) {
-                diff.unknown.push(held.name.clone());
+            if wanted.iter().any(|spec| spec.name == held.name) {
+                continue;
+            }
+            match is_derived_name(&held.name) {
+                true => diff.stale.push(held.name.clone()),
+                false => diff.unknown.push(held.name.clone()),
             }
         }
 
         diff.missing.sort();
         diff.derived.sort();
         diff.unknown.sort();
+        diff.stale.sort();
         diff.widths.sort();
         diff
     }
@@ -49,7 +59,14 @@ impl SchemaDiff {
         self.missing.is_empty()
             && self.derived.is_empty()
             && self.unknown.is_empty()
+            && self.stale.is_empty()
             && self.widths.is_empty()
+    }
+
+    pub fn to_drop(&self) -> Vec<String> {
+        let mut out = self.stale.clone();
+        out.extend(self.derived.iter().cloned());
+        out
     }
 
     pub fn to_error(&self) -> Option<Error> {

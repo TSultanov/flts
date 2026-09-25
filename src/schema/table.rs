@@ -301,6 +301,37 @@ pub trait Table: Default + Clone {
         Ok(kept)
     }
 
+    fn in_creation_order(&self, rows: &mut [Row]) -> Result<()> {
+        let mut keyed = Vec::with_capacity(rows.len());
+        for row in rows.iter() {
+            keyed.push((self.id_at(*row)?, *row));
+        }
+        keyed.sort_unstable();
+        for (at, (_, row)) in keyed.into_iter().enumerate() {
+            rows[at] = row;
+        }
+        Ok(())
+    }
+
+    fn live_in_key_order(&self, keyed: Vec<(u128, Row)>) -> Result<Vec<Row>> {
+        let mut kept = Vec::with_capacity(keyed.len());
+        for (key, row) in keyed {
+            if self.versions().at(row)?.is_live() {
+                kept.push((key, self.id_at(row)?, row));
+            }
+        }
+        kept.sort_unstable();
+        Ok(kept.into_iter().map(|(_, _, row)| row).collect())
+    }
+
+    fn settle_indexes(&mut self, _force: bool) -> Result<()> {
+        Ok(())
+    }
+
+    fn audit_indexes(&self) -> Result<()> {
+        Ok(())
+    }
+
     fn live_one(&self, rows: Vec<Row>) -> Result<Option<Row>> {
         for row in rows {
             if self.versions().at(row)?.is_live() {
@@ -564,6 +595,7 @@ pub trait Table: Default + Clone {
         for field in self.fields() {
             field.column.audit()?;
         }
+        self.audit_indexes()?;
         self.check_versions()
     }
 
@@ -623,6 +655,8 @@ pub trait AnyTable {
     fn stamp_unstamped(&mut self, clock: &mut VersionVector, writer: WriterId) -> Result<()>;
 
     fn read_columns(&mut self, file: &ColumnFile) -> Result<()>;
+
+    fn fold_indexes(&mut self, force: bool) -> Result<()>;
 
     fn offer_columns(&self, updater: &mut ColumnFileUpdater) -> Result<()>;
 }
@@ -741,6 +775,10 @@ impl<T: Table> AnyTable for T {
 
     fn read_columns(&mut self, file: &ColumnFile) -> Result<()> {
         Table::read_from(self, file)
+    }
+
+    fn fold_indexes(&mut self, force: bool) -> Result<()> {
+        Table::settle_indexes(self, force)
     }
 
     fn offer_columns(&self, updater: &mut ColumnFileUpdater) -> Result<()> {

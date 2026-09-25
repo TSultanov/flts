@@ -51,7 +51,9 @@ pub trait Child<P: Entity>: Entity + Sized {
     }
 
     fn child_rows(table: &Self::Table, parent: Id<P>) -> Result<Vec<Row>> {
-        table.live_among(Self::parents(table).child_rows_of(parent)?)
+        let mut rows = table.live_among(Self::parents(table).child_rows_of(parent)?)?;
+        table.in_creation_order(&mut rows)?;
+        Ok(rows)
     }
 }
 

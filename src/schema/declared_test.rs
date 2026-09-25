@@ -465,6 +465,52 @@ fn a_declared_row_walks_down_to_its_children_and_back_up_to_its_parent() -> Resu
     Ok(())
 }
 
+fn texts_of(library: &Library, chapter: Id<Chapter>) -> Result<Vec<String>> {
+    library
+        .at(chapter)?
+        .paragraphs()?
+        .map(|paragraph| Ok(paragraph.text()?.into_owned()))
+        .collect()
+}
+
+#[test]
+fn editing_a_paragraph_keeps_its_place_among_its_siblings() -> Result<()> {
+    let mut library = Library::default();
+    let on = stock(&mut library)?;
+    let first = library.children_of::<Chapter, Paragraph>(on.rabbit)?[0];
+
+    library
+        .paragraphs
+        .set_text(first, "Alice was very tired indeed.")?;
+
+    assert_eq!(
+        texts_of(&library, on.rabbit)?,
+        [
+            "Alice was very tired indeed.",
+            "So she was considering in her own mind.",
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn a_child_moved_to_another_parent_takes_its_creation_order_with_it() -> Result<()> {
+    let mut library = Library::default();
+    let on = stock(&mut library)?;
+    let first = library.children_of::<Chapter, Paragraph>(on.rabbit)?[0];
+
+    library.paragraphs.set_chapter(first, on.sensei)?;
+
+    assert_eq!(
+        texts_of(&library, on.sensei)?,
+        [
+            "Alice was beginning to get very tired.",
+            "I always called him Sensei.",
+        ]
+    );
+    Ok(())
+}
+
 #[test]
 fn a_declared_row_with_no_children_walks_nowhere() -> Result<()> {
     let mut library = Library::default();
@@ -546,9 +592,8 @@ fn a_chapter_moved_through_a_row_is_grouped_under_the_book_it_moved_to() -> Resu
         .collect::<Result<_>>()?;
     assert_eq!(
         moved,
-        ["Sensei and I", "Down the Rabbit-Hole"],
-        "a chapter written over is appended, so it comes back after the ones \
-         that were left where they were"
+        ["Down the Rabbit-Hole", "Sensei and I"],
+        "a chapter written over keeps the place its creation gave it"
     );
     Ok(())
 }
@@ -1254,6 +1299,44 @@ fn two_copies_edited_apart_end_up_holding_what_both_of_them_wrote() -> Result<()
     assert_eq!(report.taken, 1, "only their new book was news here");
     assert!(report.is_quiet(), "{report:?}");
     mine.audit()?;
+    Ok(())
+}
+
+#[test]
+fn two_copies_that_wrote_into_one_chapter_apart_walk_it_in_the_same_order() -> Result<()> {
+    let dir = TempDir::new("merge_order");
+    let mut mine = Library::create(dir.join("here.dbs"), device("here"))?;
+    let alice = mine.books.push("Alice", "Lewis Carroll")?;
+    let rabbit = mine.chapters.push(alice, "Down the Rabbit-Hole")?;
+    let tired = mine.paragraphs.push(rabbit, "Alice was tired.")?;
+    mine.commit(device("here"))?;
+
+    let mut theirs = copied(&dir, "here.dbs", "there.dbs")?;
+    mine.paragraphs.push(rabbit, "Written here first.")?;
+    theirs.paragraphs.push(rabbit, "Written there second.")?;
+    mine.paragraphs.set_text(tired, "Alice was very tired.")?;
+    theirs.paragraphs.push(rabbit, "Written there third.")?;
+    mine.commit(device("here"))?;
+    theirs.commit(device("there"))?;
+
+    let mut other = copied(&dir, "there.dbs", "other.dbs")?;
+    let mut again = copied(&dir, "here.dbs", "again.dbs")?;
+    mine.merge_snapshot(&theirs)?;
+    other.merge_snapshot(&again)?;
+    again.merge_snapshot(&other)?;
+
+    let walked = texts_of(&mine, rabbit)?;
+    assert_eq!(
+        walked,
+        [
+            "Alice was very tired.",
+            "Written here first.",
+            "Written there second.",
+            "Written there third.",
+        ]
+    );
+    assert_eq!(texts_of(&other, rabbit)?, walked);
+    assert_eq!(texts_of(&again, rabbit)?, walked);
     Ok(())
 }
 

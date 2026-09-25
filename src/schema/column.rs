@@ -17,6 +17,7 @@ pub enum ColumnKind {
     Clock,
     Bucket,
     Link,
+    Sorted,
     Ref { parent: &'static str },
     Enum { name: &'static str },
     Nullable(Box<ColumnKind>),

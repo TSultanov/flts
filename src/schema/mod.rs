@@ -17,6 +17,7 @@ mod nullable;
 mod projection;
 mod reference;
 mod resolved;
+mod sorted;
 mod store;
 mod table;
 mod text;
@@ -40,11 +41,14 @@ pub use merge::{
 };
 pub use metadata::SchemaMetadata;
 pub use migration::{Migration, MigrationReport, MigrationStepReport, MigrationTable, Migrations};
-pub use names::{bucket_name, heap_name, link_name, presence_name, qualified};
+pub use names::{
+    bucket_name, heap_name, is_derived_name, link_name, presence_name, qualified, sorted_name,
+};
 pub use nullable::{Maybe, NullableColumn};
 pub use projection::{Candidate, Reference, View, encode_record, encode_text};
 pub use reference::RefColumn;
 pub use resolved::{MergeCandidate, MergeInput, Resolved, RevisionAncestry};
+pub use sorted::{Prefix, SortEntry, SortKey, Sorted, SortedRun, key_bounds};
 pub use store::{CLOCK, Recovery, SCHEMA, Store, StoreState};
 pub use table::{AnyTable, Table};
 pub use text::{NullableTextColumn, TextColumn, TextKey};
@@ -60,3 +64,7 @@ mod declared_test;
 
 #[cfg(all(test, feature = "macros"))]
 mod recovery_test;
+
+#[cfg(all(test, feature = "macros"))]
+#[path = "ordered_test.rs"]
+mod ordered_test;

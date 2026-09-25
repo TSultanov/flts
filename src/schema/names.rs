@@ -20,6 +20,16 @@ pub fn link_name(entity: &str, field: &str) -> String {
     format!("{entity}.{field}.links")
 }
 
+pub fn sorted_name(entity: &str, field: &str) -> String {
+    format!("{entity}.{field}.sorted")
+}
+
+pub fn is_derived_name(name: &str) -> bool {
+    [".buckets", ".links", ".sorted"]
+        .iter()
+        .any(|suffix| name.ends_with(suffix))
+}
+
 #[cfg(test)]
 #[path = "names_test.rs"]
 mod names_test;

@@ -228,3 +228,59 @@ fn a_derived_column_of_the_wrong_width_is_rebuilt_where_a_stored_one_is_refused(
         "a link of the wrong width is rewritten, not reported: {err}"
     );
 }
+
+#[test]
+fn an_index_the_schema_no_longer_asks_for_is_stale_rather_than_unknown() {
+    let dir = TempDir::new("stale");
+    let (path, library) = a_library(&dir);
+
+    let file = ColumnFile::open(&path).unwrap();
+    let mut leftover = Arena::<u64>::new();
+    leftover.extend_from_slice(&[1]).unwrap();
+    let mut updater = file.update(this_device()).unwrap();
+    for column in file.columns() {
+        updater.keep_column(&column.name).unwrap();
+    }
+    for name in [
+        "book.author.buckets",
+        "book.author.links",
+        "book.author.sorted",
+    ] {
+        updater.column(name, &leftover).unwrap();
+    }
+    updater.commit().unwrap();
+
+    let diff = library.diff(&ColumnFile::open(&path).unwrap());
+
+    assert_eq!(
+        diff.stale,
+        [
+            "book.author.buckets",
+            "book.author.links",
+            "book.author.sorted"
+        ]
+    );
+    assert!(diff.unknown.is_empty(), "{diff:?}");
+    assert!(diff.to_error().is_none());
+    assert!(
+        !diff.is_clean(),
+        "a file carrying a stale index still needs work"
+    );
+    assert_eq!(diff.to_drop(), diff.stale);
+}
+
+#[test]
+fn a_sorted_run_is_derived_like_the_hash_index_columns() {
+    let dir = TempDir::new("derived_sorted");
+    let (path, library) = a_library(&dir);
+    let file = ColumnFile::open(&path).unwrap();
+
+    let mut wanted = library.specs();
+    wanted.push(derived("book.title.sorted", ColumnKind::Sorted));
+    let diff = SchemaDiff::of(&wanted, &file);
+
+    assert_eq!(diff.derived, ["book.title.sorted"]);
+    assert!(diff.stale.is_empty(), "{diff:?}");
+    assert!(diff.to_error().is_none());
+    assert_eq!(diff.to_drop(), ["book.title.sorted"]);
+}

@@ -590,6 +590,106 @@ fn an_index_a_file_wrote_to_another_shape_is_rebuilt_rather_than_read_wrongly() 
     reopened.verify().unwrap();
 }
 
+#[test]
+fn an_index_a_file_wrote_to_another_shape_is_written_in_this_shape_by_the_next_commit() {
+    let dir = TempDir::new("store_derived_rewidth");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device()).unwrap();
+    let alice = stock(&mut library);
+    library.commit(this_device()).unwrap();
+    let wanted = ColumnFile::open(&path)
+        .unwrap()
+        .column_meta("book.title.links")
+        .unwrap()
+        .elem_size;
+
+    let file = ColumnFile::open(&path).unwrap();
+    let mut updater = file.update(this_device()).unwrap();
+    for column in file.columns() {
+        if column.name != "book.title.links" {
+            updater.keep_column(&column.name).unwrap();
+        }
+    }
+    updater.remove_column("book.title.links");
+    let mut narrower = Arena::<u64>::new();
+    narrower.push(0).unwrap();
+    updater.column("book.title.links", &narrower).unwrap();
+    updater.commit().unwrap();
+
+    let mut reopened = Library::open(&path).unwrap();
+    reopened.commit(this_device()).unwrap();
+
+    assert_eq!(
+        ColumnFile::open(&path)
+            .unwrap()
+            .column_meta("book.title.links")
+            .unwrap()
+            .elem_size,
+        wanted,
+        "the commit replaced the links of the old width instead of refusing them"
+    );
+    let again = Library::open(&path).unwrap();
+    assert_eq!(again.books.find_by_title("Alice").unwrap(), [alice]);
+    again.verify().unwrap();
+}
+
+#[test]
+fn an_index_no_field_asks_for_any_more_is_opened_past_and_dropped_by_the_next_commit() {
+    let dir = TempDir::new("store_derived_stale");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device()).unwrap();
+    stock(&mut library);
+    library.commit(this_device()).unwrap();
+
+    let file = ColumnFile::open(&path).unwrap();
+    let mut updater = file.update(this_device()).unwrap();
+    for column in file.columns() {
+        updater.keep_column(&column.name).unwrap();
+    }
+    let mut leftover = Arena::<u64>::new();
+    leftover.push(7).unwrap();
+    updater.column("book.author.buckets", &leftover).unwrap();
+    updater.column("book.author.sorted", &leftover).unwrap();
+    updater.commit().unwrap();
+
+    let mut reopened = Library::open(&path).unwrap();
+    assert!(
+        reopened.unknown_columns().is_empty(),
+        "an index a schema stopped asking for is not a column it does not know"
+    );
+    reopened.commit(this_device()).unwrap();
+
+    let file = ColumnFile::open(&path).unwrap();
+    assert!(file.column_meta("book.author.buckets").is_none());
+    assert!(file.column_meta("book.author.sorted").is_none());
+    Library::open(&path).unwrap().verify().unwrap();
+}
+
+#[test]
+fn a_stored_column_no_field_asks_for_is_still_refused() {
+    let dir = TempDir::new("store_unknown_stored");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device()).unwrap();
+    stock(&mut library);
+    library.commit(this_device()).unwrap();
+
+    let file = ColumnFile::open(&path).unwrap();
+    let mut updater = file.update(this_device()).unwrap();
+    for column in file.columns() {
+        updater.keep_column(&column.name).unwrap();
+    }
+    let mut isbn = Arena::<u64>::new();
+    isbn.push(7).unwrap();
+    updater.column("book.isbn", &isbn).unwrap();
+    updater.commit().unwrap();
+
+    let err = refused(Library::open(&path));
+    assert!(err.to_string().contains("book.isbn"), "{err}");
+}
+
 fn held(library: &Library, column: &str) -> Residency {
     library
         .residency()
