@@ -195,11 +195,12 @@ deliberately diverges from the original).
   for state to appear (see `restart-under-load.spec.ts`'s `expectLibraryHas`).
   What the gate does _not_ cover is the pass the relaunched app fires on its
   own: `sync_anki_now` can still lose the race with it ("anki sync already in
-  progress" — one pass at a time, by design), which is the single transient
-  `spec-helpers`' `syncNow` retries. `restartApp` takes `{ signal: 'SIGKILL' }`
-  to skip the graceful shutdown entirely.
+  progress" — one pass at a time, by design), so retry that error and nothing
+  else. `restartApp` takes `{ signal: 'SIGKILL' }` to skip the graceful
+  shutdown entirely.
 - **Anki has no UI here** either; `sync_anki_now` / `get_anki_sync_status` over
-  the bridge, cards on disk under `<configDir>/library/cards/<pair>/`.
+  the bridge. Translation writes no cards, so a pass has none to push
+  unless a spec puts them on disk.
 
 ## Deferred
 

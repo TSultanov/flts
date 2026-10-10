@@ -120,8 +120,8 @@ test.describe("cross-cutting resilience", () => {
     }
 
     // Save-bearing flows, all expected to fail: navigation re-runs the chapter
-    // load (summaries), the re-translate rewrites the paragraph, the sync
-    // rewrites card state, the resolve rewrites the lyrics cache.
+    // load (summaries), the re-translate rewrites the paragraph, the resolve
+    // rewrites the lyrics cache.
     await page.goto("/");
     await page.goto(`/book/${bookId}/0`);
     await expect(

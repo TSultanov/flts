@@ -1,28 +1,20 @@
 import { test, expect } from "../../real/fixtures";
 import type { RealHarness } from "../../real/fixtures";
 import {
-  DECK,
   MODEL,
   STREAM_GLOB,
-  addsOf,
-  blockAnki,
-  clearCards,
   drained,
   lemmaSets,
-  quiesceAnki,
   seedBook,
-  storedCards,
   storedIds,
   storedSegments,
-  syncNow,
   textOf,
   translationJson,
-  type Status,
 } from "../../real/spec-helpers";
 
 /**
  * Concurrency: several paragraph translations in flight at once, and other
- * writers (anki sync, reading state) racing them. All chapter 0 — translated
+ * writers (reading state) racing them. All chapter 0 — translated
  * paragraphs in chapter >0 pay for the preceding chapters' summaries.
  *
  * Everything runs over the bridge; there is no UI for the queue's parallelism.
@@ -166,103 +158,6 @@ test.describe("translation queue concurrency", () => {
         lemmas.map((l) => `t-${l}`),
       );
     }
-  });
-
-  test("an anki sync in flight never double-adds the cards written under it", async ({
-    harness,
-  }) => {
-    test.setTimeout(120_000);
-    const sets = lemmaSets(6);
-    const early = [0, 1, 2];
-    const late = [3, 4, 5];
-    const allLemmas = sets.flat();
-
-    clearCards(harness);
-    await harness.anki.seed({ decks: [DECK] });
-    const bookId = await seed(harness, sets);
-
-    // Seed the early cards with anki blocked, so nothing is pushed or put in
-    // backoff behind the test's back.
-    await blockAnki(harness);
-    for (const id of early) {
-      await harness.invoke("translate_paragraph", {
-        bookId,
-        paragraphId: id,
-        model: MODEL,
-        useCache: false,
-      });
-    }
-    await expect
-      .poll(() => storedCards(harness).length, { timeout: 60_000 })
-      .toBe(early.length * 3);
-    await quiesceAnki(harness, 400);
-    await harness.anki.clearRules();
-
-    // Held at the version() probe, which run_pass reaches after flipping the
-    // status to syncing — a wide, cheap window (a blanket delay would instead
-    // pay 1.5s on every one of the pass's ~30 requests).
-    await harness.anki.addRule({
-      matcher: { bodyContains: '"action":"version"' },
-      action: { type: "delay", ms: 2000 },
-    });
-    const inFlight = syncNow(harness);
-    await expect
-      .poll(
-        () =>
-          harness.invoke<Status>("get_anki_sync_status").then((s) => s.state),
-        {
-          timeout: 30_000,
-        },
-      )
-      .toBe("syncing");
-
-    for (const id of late) {
-      await harness.invoke("translate_paragraph", {
-        bookId,
-        paragraphId: id,
-        model: MODEL,
-        useCache: false,
-      });
-    }
-    let overlapped = false;
-    await expect
-      .poll(
-        async () => {
-          const n = storedCards(harness).length;
-          if (n === allLemmas.length) {
-            overlapped =
-              (await harness.invoke<Status>("get_anki_sync_status")).state ===
-              "syncing";
-          }
-          return n;
-        },
-        { timeout: 60_000, intervals: [100] },
-      )
-      .toBe(allLemmas.length);
-    // The late cards really did land under a running pass.
-    expect(overlapped).toBe(true);
-
-    expect((await inFlight).failed).toBe(0);
-
-    await harness.anki.clearRules();
-    // A card save during a pass leaves a pending wake, so a follow-up pass
-    // fires on its own; let it finish before taking the mark.
-    await quiesceAnki(harness, 400);
-
-    const mark = (await harness.anki.requests()).length;
-    const second = await syncNow(harness);
-    expect(second.totalCards).toBe(allLemmas.length);
-    expect(second.failed).toBe(0);
-
-    // The settled pass re-adds nothing: the early cards are updates only.
-    for (const lemma of sets.slice(0, 3).flat()) {
-      expect(await addsOf(harness, lemma, mark)).toBe(0);
-    }
-    // And no card was ever added twice, whichever pass picked it up.
-    for (const lemma of allLemmas) expect(await addsOf(harness, lemma)).toBe(1);
-    expect(storedCards(harness).map((c) => c.anki_data?.state ?? null)).toEqual(
-      allLemmas.map(() => "active"),
-    );
   });
 
   test("reading-state writes land intact while translations are saving", async ({

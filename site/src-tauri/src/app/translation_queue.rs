@@ -722,15 +722,6 @@ async fn handle_request(
         );
     }
 
-    library
-        .apply_paragraph_to_cards(
-            request.book_id,
-            request.paragraph_id,
-            &p_translation,
-            target_language,
-        )
-        .await?;
-
     save_notify.send(SaveNotify {
         request_id: request.request_id,
         book_id: request.book_id,
