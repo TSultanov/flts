@@ -13,6 +13,7 @@ import "C"
 import (
 	"context"
 	"path/filepath"
+	"runtime"
 	"sync"
 
 	"github.com/syncthing/syncthing/lib/config"
@@ -108,6 +109,16 @@ func flts_st_start(home, guiAddr, apiKey *C.char, hermetic C.int) C.int {
 			c.Options.NATEnabled = false
 			c.Options.RawListenAddresses = []string{"tcp://127.0.0.1:0"}
 		}
+		// iOS watches via kqueue, one descriptor per file: a large library
+		// exhausts the process fd table, and a failed watch never releases what
+		// it took. Must land before app.Start starts the persisted folders;
+		// the defaults too, since FLTS creates its folder from them.
+		if runtime.GOOS == "ios" {
+			pollOnly(&c.Defaults.Folder)
+			for i := range c.Folders {
+				pollOnly(&c.Folders[i])
+			}
+		}
 	})
 	if err != nil {
 		earlyCancel()
@@ -133,6 +144,13 @@ func flts_st_start(home, guiAddr, apiKey *C.char, hermetic C.int) C.int {
 
 	running = &engine{app: app, earlyCancel: earlyCancel}
 	return 0
+}
+
+// Replaces the watcher with a short rescan period, so local changes still
+// propagate within about a minute.
+func pollOnly(f *config.FolderConfiguration) {
+	f.FSWatcherEnabled = false
+	f.RescanIntervalS = 60
 }
 
 // Stops the engine and the early services. Idempotent.

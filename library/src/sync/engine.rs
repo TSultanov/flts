@@ -90,6 +90,24 @@ impl SyncEngine {
 
         let gui_url = format!("http://{addr}");
         let client: Arc<dyn SyncthingApi> = Arc::new(HttpSyncthing::new(gui_url.clone(), api_key));
+        match Self::bootstrap(gui_url, client, cfg).await {
+            Ok(engine) => Ok(engine),
+            Err(err) => {
+                // The Go start no-ops while an engine runs, so a retry would poll
+                // a fresh port nothing binds; stop it so the retry boots anew.
+                if let Err(stop_err) = stop_engine().await {
+                    log::warn!("stopping syncthing after a failed start failed: {stop_err}");
+                }
+                Err(err)
+            }
+        }
+    }
+
+    async fn bootstrap(
+        gui_url: String,
+        client: Arc<dyn SyncthingApi>,
+        cfg: EngineConfig,
+    ) -> Result<Self> {
         let my_id = wait_until_up(client.as_ref()).await?;
         let roster = RosterStore::new(&cfg.library_root, &my_id);
         let library_root = cfg.library_root.to_string_lossy().into_owned();
@@ -313,14 +331,18 @@ impl SyncEngine {
         &self.my_id
     }
 
-    /// Idempotent on the Go side. Runs on the blocking pool so exit-path
-    /// timeouts can preempt the teardown.
     pub async fn stop(&self) -> Result<()> {
-        tokio::task::spawn_blocking(syncthing_sys::stop)
-            .await
-            .map_err(|e| anyhow!("syncthing stop task panicked: {e}"))?
-            .map_err(|e| anyhow!("stopping syncthing engine failed: {e}"))
+        stop_engine().await
     }
+}
+
+/// Idempotent on the Go side. Runs on the blocking pool so exit-path timeouts
+/// can preempt the teardown.
+async fn stop_engine() -> Result<()> {
+    tokio::task::spawn_blocking(syncthing_sys::stop)
+        .await
+        .map_err(|e| anyhow!("syncthing stop task panicked: {e}"))?
+        .map_err(|e| anyhow!("stopping syncthing engine failed: {e}"))
 }
 
 /// Polls `my_id()` until the REST API answers: it is listening slightly before

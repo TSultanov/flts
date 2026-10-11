@@ -208,9 +208,10 @@ impl HttpSyncthing {
         }
         let resp = match resp {
             Some(r) => r,
+            // `{:#}` keeps reqwest's causes (e.g. EMFILE), which its Display drops.
             None => bail!(
-                "syncthing: {method} {path} failed: {}",
-                last_err.expect("a send error when resp is None")
+                "syncthing: {method} {path} failed: {:#}",
+                anyhow::Error::new(last_err.expect("a send error when resp is None"))
             ),
         };
         let status = resp.status();

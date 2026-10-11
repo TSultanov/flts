@@ -14,8 +14,8 @@ pub mod bridge;
 ///
 /// iOS gives the whole process 256 descriptors, shared by WebKit, the embedded
 /// Syncthing engine, and library I/O, and exhaustion surfaces as EMFILE far from
-/// the culprit. Upstream Syncthing raises it in `cmd/syncthing`, which the
-/// embedded c-archive never runs.
+/// the culprit. The Go runtime raises it too, but from a c-archive constructor
+/// that races `main`.
 ///
 /// Targets descend because Darwin refuses a soft limit above `OPEN_MAX` /
 /// `kern.maxfilesperproc` even under an unlimited hard limit; if none land, the
