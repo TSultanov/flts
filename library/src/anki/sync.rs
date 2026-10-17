@@ -690,6 +690,7 @@ mod tests {
 
     use crate::anki::connect::{AnkiConnect, MockAnkiConnect};
     use crate::anki::sync::{AnkiSyncState, next_delay, render_fields, sync_card, sync_pass};
+    use crate::book::translation_import;
     use crate::card::{AnkiData, AnkiState, Card, Example};
     use crate::library::Library;
     use crate::test_utils::{TempDir, full_word, one_sentence_paragraph};
@@ -1601,8 +1602,29 @@ mod tests {
         (library, book_id)
     }
 
+    async fn seed_translation(
+        library: &Library,
+        book_id: Uuid,
+        paragraph_id: usize,
+        paragraph: &translation_import::ParagraphTranslation,
+        target_language: Language,
+    ) {
+        let book_arc = library.get_book(&book_id).await.unwrap();
+        let mut book = book_arc.lock().await;
+        let translation_arc = book
+            .get_or_create_translation(&target_language)
+            .await
+            .unwrap();
+        translation_arc.lock().await.add_paragraph_translation(
+            paragraph_id,
+            paragraph,
+            "models/test",
+        );
+        book.save().await.unwrap();
+    }
+
     #[tokio::test]
-    async fn e2e_paragraph_translation_creates_card_and_syncs_to_anki() {
+    async fn e2e_create_card_for_word_syncs_to_anki() {
         let tmp = TempDir::new("flts_e2e_translate_sync");
         let (library, book_id) =
             library_with_one_paragraph_book(tmp.path.join("lib"), "Puedo entrar en casa.").await;
@@ -1618,8 +1640,9 @@ mod tests {
             ],
         );
 
+        seed_translation(&library, book_id, 0, &paragraph, rus()).await;
         library
-            .apply_paragraph_to_cards(book_id, 0, &paragraph, rus())
+            .create_card_for_word(book_id, 0, 0, 0, rus())
             .await
             .unwrap();
 
@@ -1628,8 +1651,8 @@ mod tests {
         let report = sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
             .await
             .unwrap();
-        assert_eq!(report.attempted, 4, "four eligible lemmas (punct skipped)");
-        assert_eq!(report.succeeded, 4);
+        assert_eq!(report.attempted, 1, "one manually created card");
+        assert_eq!(report.succeeded, 1);
         assert_eq!(report.failed, 0);
 
         let poder_tag = "flts_spa_rus_poder";
@@ -1660,110 +1683,6 @@ mod tests {
             Some(AnkiState::Active),
             "card state flips to Active after first sync"
         );
-
-        assert!(
-            mock.note_id_for_tag("flts_spa_rus_casa").is_some(),
-            "casa note exists in mock"
-        );
-    }
-
-    #[tokio::test]
-    async fn e2e_suspend_in_anki_persists_through_re_translation() {
-        let tmp = TempDir::new("flts_e2e_suspend");
-        let (library, book_id) =
-            library_with_one_paragraph_book(tmp.path.join("lib"), "Puedo entrar.").await;
-
-        let paragraph = one_sentence_paragraph(
-            "Я могу войти.",
-            vec![full_word(
-                "Puedo",
-                "poder",
-                "мочь",
-                "verb",
-                &["могу"],
-                false,
-            )],
-        );
-
-        library
-            .apply_paragraph_to_cards(book_id, 0, &paragraph, rus())
-            .await
-            .unwrap();
-
-        let mock = MockAnkiConnect::new();
-        let mut state = AnkiSyncState::new();
-        sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
-            .await
-            .unwrap();
-
-        let poder_tag = "flts_spa_rus_poder";
-        let note_id = mock
-            .note_id_for_tag(poder_tag)
-            .expect("note exists after first sync");
-
-        let card_ids = mock.notes_info(&[note_id]).await.unwrap()[0].cards.clone();
-        assert!(!card_ids.is_empty(), "note has at least one direction card");
-        mock.suspend_card(card_ids[0]);
-
-        sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
-            .await
-            .unwrap();
-        let card = library
-            .card_store()
-            .load("spa", "rus", "poder")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            card.anki_data.as_ref().map(|a| a.state),
-            Some(AnkiState::Suspended)
-        );
-
-        let (fields_before, _) = mock.peek_note(note_id).unwrap();
-
-        // The local merge path is idempotent; state must not regress to Active.
-        library
-            .apply_paragraph_to_cards(book_id, 0, &paragraph, rus())
-            .await
-            .unwrap();
-        let card_after_reencounter = library
-            .card_store()
-            .load("spa", "rus", "poder")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            card_after_reencounter.anki_data.as_ref().map(|a| a.state),
-            Some(AnkiState::Suspended),
-            "re-encountering the paragraph must not reset state to Active"
-        );
-
-        sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
-            .await
-            .unwrap();
-
-        assert_eq!(
-            mock.note_id_for_tag(poder_tag),
-            Some(note_id),
-            "no second note created for the same tag"
-        );
-        let (fields_after, _) = mock.peek_note(note_id).unwrap();
-        assert_eq!(
-            fields_before, fields_after,
-            "suspended note fields untouched"
-        );
-
-        let card_final = library
-            .card_store()
-            .load("spa", "rus", "poder")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            card_final.anki_data.as_ref().map(|a| a.state),
-            Some(AnkiState::Suspended),
-            "state stays Suspended across the third sync"
-        );
     }
 
     #[tokio::test]
@@ -1786,105 +1705,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn e2e_delete_in_anki_persists_through_re_translation() {
-        let tmp = TempDir::new("flts_e2e_delete");
-        let (library, book_id) =
-            library_with_one_paragraph_book(tmp.path.join("lib"), "Puedo entrar.").await;
-
-        let paragraph = one_sentence_paragraph(
-            "Я могу войти.",
-            vec![full_word(
-                "Puedo",
-                "poder",
-                "мочь",
-                "verb",
-                &["могу"],
-                false,
-            )],
-        );
-
-        library
-            .apply_paragraph_to_cards(book_id, 0, &paragraph, rus())
-            .await
-            .unwrap();
-
-        // A co-resident synced card corroborates the collection, so the guard
-        // honors poder's deletion.
-        library
-            .card_store()
-            .save(&make_card("comer", vec!["есть"], vec![]), "spa", "rus")
-            .await
-            .unwrap();
-
-        let mock = MockAnkiConnect::new();
-        let mut state = AnkiSyncState::new();
-        sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
-            .await
-            .unwrap();
-
-        let poder_tag = "flts_spa_rus_poder";
-        let note_id = mock
-            .note_id_for_tag(poder_tag)
-            .expect("note exists after first sync");
-
-        mock.remove_note(note_id);
-        assert!(
-            mock.note_id_for_tag(poder_tag).is_none(),
-            "post-removal there's no note for the tag"
-        );
-
-        sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
-            .await
-            .unwrap();
-        let card = library
-            .card_store()
-            .load("spa", "rus", "poder")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            card.anki_data.as_ref().map(|a| a.state),
-            Some(AnkiState::Deleted)
-        );
-
-        library
-            .apply_paragraph_to_cards(book_id, 0, &paragraph, rus())
-            .await
-            .unwrap();
-        let card_after = library
-            .card_store()
-            .load("spa", "rus", "poder")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            card_after.anki_data.as_ref().map(|a| a.state),
-            Some(AnkiState::Deleted),
-            "re-encountering the paragraph must not reset state to Active"
-        );
-
-        sync_pass(&mock, &library, &mut state, tokio::time::Instant::now())
-            .await
-            .unwrap();
-        assert!(
-            mock.note_id_for_tag(poder_tag).is_none(),
-            "deleted card must not be re-added to Anki on subsequent syncs"
-        );
-        let card_final = library
-            .card_store()
-            .load("spa", "rus", "poder")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            card_final.anki_data.as_ref().map(|a| a.state),
-            Some(AnkiState::Deleted),
-            "state stays Deleted across the third sync"
-        );
-    }
-
-    #[tokio::test]
-    async fn e2e_translation_creates_cards_when_anki_unreachable() {
+    async fn e2e_create_card_for_word_when_anki_unreachable() {
         let tmp = TempDir::new("flts_e2e_unreachable");
         let (library, book_id) =
             library_with_one_paragraph_book(tmp.path.join("lib"), "Puedo entrar en casa.").await;
@@ -1897,8 +1718,13 @@ mod tests {
             ],
         );
 
+        seed_translation(&library, book_id, 0, &paragraph, rus()).await;
         library
-            .apply_paragraph_to_cards(book_id, 0, &paragraph, rus())
+            .create_card_for_word(book_id, 0, 0, 0, rus())
+            .await
+            .unwrap();
+        library
+            .create_card_for_word(book_id, 0, 0, 1, rus())
             .await
             .unwrap();
 
@@ -1952,8 +1778,9 @@ mod tests {
                 false,
             )],
         );
+        seed_translation(&library, book_id, 0, &paragraph, rus()).await;
         library
-            .apply_paragraph_to_cards(book_id, 0, &paragraph, rus())
+            .create_card_for_word(book_id, 0, 0, 0, rus())
             .await
             .unwrap();
 

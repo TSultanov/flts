@@ -3,7 +3,6 @@ use std::{
     error::Error,
     fmt::Display,
     path::{Path, PathBuf},
-    str::FromStr,
     sync::Arc,
 };
 
@@ -14,11 +13,9 @@ use tokio::io::AsyncReadExt;
 use uuid::Uuid;
 
 use crate::{
-    book::{
-        book_metadata::BookMetadata, translation_import, translation_metadata::TranslationMetadata,
-    },
+    book::{book_metadata::BookMetadata, translation_metadata::TranslationMetadata},
     cache::WeakLruCache,
-    card::{Card, CardWordFields, card_update_from_word, extract_card_updates},
+    card::{Card, CardWordFields, card_update_from_word},
     epub_importer::EpubBook,
     library::{
         file_watcher::LibraryFileChange,
@@ -290,78 +287,6 @@ impl Library {
         &self.card_store
     }
 
-    pub async fn apply_paragraph_to_cards(
-        &self,
-        book_id: Uuid,
-        paragraph_id: usize,
-        paragraph: &translation_import::ParagraphTranslation,
-        target_language: Language,
-    ) -> anyhow::Result<()> {
-        let book_arc = self.get_book(&book_id).await?;
-        let (source_language, chapter_index) = {
-            let book = book_arc.lock().await;
-            let source_language = Language::from_639_3(&book.book.language).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "unknown source language code on book {book_id}: {}",
-                    book.book.language
-                )
-            })?;
-            let chapter_index =
-                chapter_index_for_paragraph(&book.book, paragraph_id).ok_or_else(|| {
-                    anyhow::anyhow!("paragraph {paragraph_id} is not attached to any chapter")
-                })?;
-            (source_language, chapter_index)
-        };
-
-        let updates = extract_card_updates(
-            paragraph,
-            source_language,
-            target_language,
-            book_id,
-            chapter_index,
-            paragraph_id,
-        );
-
-        for update in updates {
-            let id = update.key.id();
-            let lock = self.card_store.lock_for(&id).await;
-            let _guard = lock.lock().await;
-
-            let result = async {
-                let existing = self
-                    .card_store
-                    .load(
-                        &update.key.source_language,
-                        &update.key.target_language,
-                        &update.key.slug,
-                    )
-                    .await?;
-                let card = match existing {
-                    Some(mut card) => {
-                        card.apply_update(&update);
-                        card
-                    }
-                    None => Card::new_from_update(&update),
-                };
-                self.card_store
-                    .save(
-                        &card,
-                        &update.key.source_language,
-                        &update.key.target_language,
-                    )
-                    .await?;
-                anyhow::Ok(())
-            }
-            .await;
-
-            if let Err(err) = result {
-                log::warn!("Failed to persist card {id}: {err}");
-            }
-        }
-
-        Ok(())
-    }
-
     /// Create the card for one word in a translated paragraph, or report that
     /// it already exists. This is the manual counterpart of the old
     /// paragraph-wide write: one user action, one file.
@@ -566,85 +491,6 @@ impl Library {
         book.save().await?;
 
         Ok(book.book.id)
-    }
-
-    pub async fn backfill_cards_from_translations(&self) -> anyhow::Result<()> {
-        let books = self.list_books().await?;
-        info!("Card backfill starting: {} book(s)", books.len());
-
-        for book_meta in books {
-            let book_arc = match self.get_book(&book_meta.id).await {
-                Ok(arc) => arc,
-                Err(err) => {
-                    log::warn!("Backfill: failed to load book {}: {err}", book_meta.id);
-                    continue;
-                }
-            };
-
-            for translation_meta in &book_meta.translations_metadata {
-                if let Err(err) = Language::from_str(&translation_meta.source_langugage) {
-                    log::warn!(
-                        "Backfill: unknown source language {:?} on book {}: {err}",
-                        translation_meta.source_langugage,
-                        book_meta.id
-                    );
-                    continue;
-                }
-                let target_language = match Language::from_str(&translation_meta.target_language) {
-                    Ok(lang) => lang,
-                    Err(err) => {
-                        log::warn!(
-                            "Backfill: unknown target language {:?} on book {}: {err}",
-                            translation_meta.target_language,
-                            book_meta.id
-                        );
-                        continue;
-                    }
-                };
-
-                let collected: Vec<(usize, translation_import::ParagraphTranslation)> = {
-                    let mut book = book_arc.lock().await;
-                    let translation_arc =
-                        match book.get_or_create_translation(&target_language).await {
-                            Ok(arc) => arc,
-                            Err(err) => {
-                                log::warn!("Backfill: {err} on book {}", book_meta.id);
-                                continue;
-                            }
-                        };
-                    let translation = translation_arc.lock().await;
-                    let mut out = Vec::new();
-                    for chapter in book.book.chapter_views() {
-                        for paragraph in chapter.paragraphs() {
-                            if let Some(view) = translation.paragraph_view(paragraph.id) {
-                                out.push((paragraph.id, view.to_import()));
-                            }
-                        }
-                    }
-                    out
-                };
-
-                for (paragraph_id, paragraph) in collected {
-                    if let Err(err) = self
-                        .apply_paragraph_to_cards(
-                            book_meta.id,
-                            paragraph_id,
-                            &paragraph,
-                            target_language,
-                        )
-                        .await
-                    {
-                        log::warn!(
-                            "Backfill: failed to apply paragraph {paragraph_id} of book {}: {err}",
-                            book_meta.id
-                        );
-                    }
-                }
-            }
-        }
-
-        info!("Card backfill complete");
-        Ok(())
     }
 
     pub async fn save_all(&self) {
@@ -1011,92 +857,6 @@ mod library_tests {
         );
     }
 
-    #[tokio::test]
-    async fn integration_translate_paragraph_writes_cards() {
-        let tmp = TempDir::new("flts_card_int");
-        let (library, book_id) =
-            library_with_one_paragraph_book(tmp.path.join("lib"), "No puedo más.").await;
-
-        let paragraph = paragraph_with(
-            "Я больше не могу.",
-            vec![
-                full_word("No", "no", "не", "adv", &["не"], false),
-                full_word("puedo", "poder", "мочь", "verb", &["могу"], false),
-                full_word("más", "más", "больше", "adv", &["больше"], false),
-                full_word(".", ".", ".", "punct", &[], true),
-            ],
-        );
-
-        library
-            .apply_paragraph_to_cards(book_id, 0, &paragraph, Language::from_639_3("rus").unwrap())
-            .await
-            .unwrap();
-
-        let deck = tmp.path.join("lib").join("cards").join("spa-rus");
-        let mut names: Vec<String> = std::fs::read_dir(&deck)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().into_string().unwrap())
-            .collect();
-        names.sort();
-        assert_eq!(
-            names,
-            vec![
-                "más.json".to_string(),
-                "no.json".to_string(),
-                "poder.json".to_string(),
-            ]
-        );
-
-        let poder = std::fs::read_to_string(deck.join("poder.json")).unwrap();
-        let card: Card = serde_json::from_str(&poder).unwrap();
-        assert_eq!(card.lemma, "poder");
-        assert_eq!(card.translations_flat(), vec!["мочь"]);
-        assert_eq!(card.examples.len(), 1);
-        assert_eq!(card.examples[0].book_id, book_id);
-        assert_eq!(card.examples[0].chapter, 0);
-        assert_eq!(card.examples[0].paragraph, 0);
-    }
-
-    #[tokio::test]
-    async fn integration_idempotent_on_repeat() {
-        let tmp = TempDir::new("flts_card_idemp");
-        let (library, book_id) =
-            library_with_one_paragraph_book(tmp.path.join("lib"), "No puedo más.").await;
-
-        let paragraph = paragraph_with(
-            "Я больше не могу.",
-            vec![full_word(
-                "puedo",
-                "poder",
-                "мочь",
-                "verb",
-                &["могу"],
-                false,
-            )],
-        );
-        let tgt = Language::from_639_3("rus").unwrap();
-
-        library
-            .apply_paragraph_to_cards(book_id, 0, &paragraph, tgt)
-            .await
-            .unwrap();
-        library
-            .apply_paragraph_to_cards(book_id, 0, &paragraph, tgt)
-            .await
-            .unwrap();
-
-        let card_path = tmp
-            .path
-            .join("lib")
-            .join("cards")
-            .join("spa-rus")
-            .join("poder.json");
-        let body = std::fs::read_to_string(&card_path).unwrap();
-        let card: Card = serde_json::from_str(&body).unwrap();
-        assert_eq!(card.translations_flat(), vec!["мочь"]);
-        assert_eq!(card.examples.len(), 1);
-    }
-
     fn spanish_paragraph() -> translation_import::ParagraphTranslation {
         paragraph_with(
             "Я могу войти в дом.",
@@ -1204,71 +964,7 @@ mod library_tests {
     }
 
     #[tokio::test]
-    async fn integration_new_paragraph_appends_example() {
-        let tmp = TempDir::new("flts_card_append");
-        let library = Library::open(tmp.path.join("lib")).await.unwrap();
-        let book = library
-            .create_book("Two-Paragraph Book", &Language::from_639_3("spa").unwrap())
-            .await
-            .unwrap();
-        let book_id = {
-            let mut b = book.lock().await;
-            b.book.push_chapter(Some("Intro"));
-            b.book.push_paragraph(0, "No puedo más.", None);
-            b.book.push_paragraph(0, "Pueden venir mañana.", None);
-            b.save().await.unwrap();
-            b.book.id
-        };
-
-        let tgt = Language::from_639_3("rus").unwrap();
-        let p_a = paragraph_with(
-            "Я больше не могу.",
-            vec![full_word(
-                "puedo",
-                "poder",
-                "мочь",
-                "verb",
-                &["могу"],
-                false,
-            )],
-        );
-        let p_b = paragraph_with(
-            "Они могут прийти завтра.",
-            vec![full_word(
-                "pueden",
-                "poder",
-                "мочь",
-                "verb",
-                &["могут"],
-                false,
-            )],
-        );
-
-        library
-            .apply_paragraph_to_cards(book_id, 0, &p_a, tgt)
-            .await
-            .unwrap();
-        library
-            .apply_paragraph_to_cards(book_id, 1, &p_b, tgt)
-            .await
-            .unwrap();
-
-        let card_path = tmp
-            .path
-            .join("lib")
-            .join("cards")
-            .join("spa-rus")
-            .join("poder.json");
-        let card: Card =
-            serde_json::from_str(&std::fs::read_to_string(&card_path).unwrap()).unwrap();
-        assert_eq!(card.translations_flat(), vec!["мочь"]);
-        assert_eq!(card.examples.len(), 2);
-        assert_eq!(card.examples[0].paragraph, 0);
-        assert_eq!(card.examples[1].paragraph, 1);
-    }
-
-    #[tokio::test]
-    async fn integration_apply_paragraph_merges_existing_conflict_file() {
+    async fn create_card_for_word_merges_existing_conflict_file() {
         use crate::card::Example;
         let tmp = TempDir::new("flts_card_conflict_int");
         let (library, book_id) =
@@ -1338,10 +1034,16 @@ mod library_tests {
                 false,
             )],
         );
-        library
-            .apply_paragraph_to_cards(book_id, 0, &paragraph, Language::from_639_3("rus").unwrap())
+        let tgt = Language::from_639_3("rus").unwrap();
+        seed_translation(&library, book_id, 0, &paragraph, tgt).await;
+
+        // The canonical card already exists, so the manual path reports
+        // AlreadyExists; loading it still merges the conflict sibling.
+        let outcome = library
+            .create_card_for_word(book_id, 0, 0, 0, tgt)
             .await
             .unwrap();
+        assert_eq!(outcome, CardCreationOutcome::AlreadyExists);
 
         assert!(!conflict_path.exists(), "conflict sibling must be deleted");
         let names: Vec<String> = std::fs::read_dir(&deck)
@@ -1358,7 +1060,11 @@ mod library_tests {
             serde_json::from_slice(&tokio::fs::read(deck.join("poder.json")).await.unwrap())
                 .unwrap();
         assert_eq!(on_disk.translations_flat(), vec!["мочь", "уметь"]);
-        assert_eq!(on_disk.examples.len(), 3);
+        assert_eq!(
+            on_disk.examples.len(),
+            2,
+            "the existing card is not given a new example"
+        );
 
         let provenances: std::collections::HashSet<_> = on_disk
             .examples
@@ -1367,11 +1073,11 @@ mod library_tests {
             .collect();
         assert!(provenances.contains(&(other_book, 0, 0)));
         assert!(provenances.contains(&(other_book, 1, 5)));
-        assert!(provenances.contains(&(book_id, 0, 0)));
+        assert!(!provenances.contains(&(book_id, 0, 0)));
     }
 
     #[tokio::test]
-    async fn integration_noisy_pos_persists_to_disk() {
+    async fn create_card_for_word_persists_noisy_pos() {
         // Slashes in multi-PoS values would read as path separators; cards are
         // keyed by lemma alone so the filename stays safe.
         let tmp = TempDir::new("flts_card_noisy_pos");
@@ -1399,8 +1105,14 @@ mod library_tests {
             ],
         );
 
+        let tgt = Language::from_639_3("rus").unwrap();
+        seed_translation(&library, book_id, 0, &paragraph, tgt).await;
         library
-            .apply_paragraph_to_cards(book_id, 0, &paragraph, Language::from_639_3("rus").unwrap())
+            .create_card_for_word(book_id, 0, 0, 0, tgt)
+            .await
+            .unwrap();
+        library
+            .create_card_for_word(book_id, 0, 0, 1, tgt)
             .await
             .unwrap();
 
@@ -1438,7 +1150,7 @@ mod library_tests {
     }
 
     #[tokio::test]
-    async fn integration_uses_dash_separator_for_directory() {
+    async fn create_card_for_word_uses_dash_separator_for_directory() {
         let tmp = TempDir::new("flts_card_dash");
         let (library, book_id) =
             library_with_one_paragraph_book(tmp.path.join("lib"), "hola").await;
@@ -1453,8 +1165,10 @@ mod library_tests {
                 false,
             )],
         );
+        let tgt = Language::from_639_3("rus").unwrap();
+        seed_translation(&library, book_id, 0, &paragraph, tgt).await;
         library
-            .apply_paragraph_to_cards(book_id, 0, &paragraph, Language::from_639_3("rus").unwrap())
+            .create_card_for_word(book_id, 0, 0, 0, tgt)
             .await
             .unwrap();
         assert!(tmp.path.join("lib").join("cards").join("spa-rus").exists());
@@ -1499,255 +1213,5 @@ mod library_tests {
             "models/gemini-2.5-flash",
         );
         book.save().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn backfill_empty_library() {
-        let tmp = TempDir::new("flts_backfill_empty");
-        let library_path = tmp.path.join("lib");
-        let library = Library::open(library_path.clone()).await.unwrap();
-
-        library.backfill_cards_from_translations().await.unwrap();
-
-        let cards_dir = library_path.join("cards");
-        assert!(
-            !cards_dir.exists() || std::fs::read_dir(&cards_dir).unwrap().next().is_none(),
-            "expected no cards after backfill of empty library",
-        );
-    }
-
-    #[tokio::test]
-    async fn backfill_book_without_translations() {
-        let tmp = TempDir::new("flts_backfill_notrans");
-        let library_path = tmp.path.join("lib");
-        let (library, _book_id) =
-            library_with_one_paragraph_book(library_path.clone(), "No puedo más.").await;
-
-        library.backfill_cards_from_translations().await.unwrap();
-
-        let cards_dir = library_path.join("cards");
-        assert!(
-            !cards_dir.exists() || std::fs::read_dir(&cards_dir).unwrap().next().is_none(),
-            "expected no cards for a book without translations",
-        );
-    }
-
-    #[tokio::test]
-    async fn backfill_book_with_one_translation_creates_cards() {
-        let tmp = TempDir::new("flts_backfill_one");
-        let library_path = tmp.path.join("lib");
-        let (library, book_id) =
-            library_with_one_paragraph_book(library_path.clone(), "No puedo más.").await;
-        let paragraph = paragraph_with(
-            "Я больше не могу.",
-            vec![full_word(
-                "puedo",
-                "poder",
-                "мочь",
-                "verb",
-                &["могу"],
-                false,
-            )],
-        );
-        seed_translation(
-            &library,
-            book_id,
-            0,
-            &paragraph,
-            Language::from_639_3("rus").unwrap(),
-        )
-        .await;
-
-        library.backfill_cards_from_translations().await.unwrap();
-
-        let card_path = library_path
-            .join("cards")
-            .join("spa-rus")
-            .join("poder.json");
-        let body = std::fs::read_to_string(&card_path).unwrap();
-        let card: Card = serde_json::from_str(&body).unwrap();
-        assert_eq!(card.lemma, "poder");
-        assert_eq!(card.translations_flat(), vec!["мочь"]);
-        assert_eq!(card.examples.len(), 1);
-        assert_eq!(card.examples[0].book_id, book_id);
-        assert_eq!(card.examples[0].chapter, 0);
-        assert_eq!(card.examples[0].paragraph, 0);
-    }
-
-    #[tokio::test]
-    async fn backfill_idempotent() {
-        let tmp = TempDir::new("flts_backfill_idemp");
-        let library_path = tmp.path.join("lib");
-        let (library, book_id) =
-            library_with_one_paragraph_book(library_path.clone(), "No puedo más.").await;
-        let paragraph = paragraph_with(
-            "Я больше не могу.",
-            vec![full_word(
-                "puedo",
-                "poder",
-                "мочь",
-                "verb",
-                &["могу"],
-                false,
-            )],
-        );
-        seed_translation(
-            &library,
-            book_id,
-            0,
-            &paragraph,
-            Language::from_639_3("rus").unwrap(),
-        )
-        .await;
-
-        library.backfill_cards_from_translations().await.unwrap();
-        let deck_dir = library_path.join("cards").join("spa-rus");
-        let after_first: Vec<u8> = std::fs::read(deck_dir.join("poder.json")).unwrap();
-
-        library.backfill_cards_from_translations().await.unwrap();
-        let after_second: Vec<u8> = std::fs::read(deck_dir.join("poder.json")).unwrap();
-
-        assert_eq!(after_first, after_second);
-        let names: Vec<String> = std::fs::read_dir(&deck_dir)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().into_string().unwrap())
-            .collect();
-        assert_eq!(names, vec!["poder.json".to_string()]);
-    }
-
-    #[tokio::test]
-    async fn backfill_walks_multiple_books_in_list_order() {
-        let tmp = TempDir::new("flts_backfill_multi");
-        let library_path = tmp.path.join("lib");
-        let library = Library::open(library_path.clone()).await.unwrap();
-        let spa = Language::from_639_3("spa").unwrap();
-        let rus = Language::from_639_3("rus").unwrap();
-
-        let book_a_arc = library.create_book("Book A", &spa).await.unwrap();
-        let book_a_id = {
-            let mut b = book_a_arc.lock().await;
-            b.book.push_chapter(Some("Intro"));
-            b.book.push_paragraph(0, "No puedo más.", None);
-            b.save().await.unwrap();
-            b.book.id
-        };
-        let paragraph_a = paragraph_with(
-            "Я больше не могу.",
-            vec![full_word(
-                "puedo",
-                "poder",
-                "мочь",
-                "verb",
-                &["могу"],
-                false,
-            )],
-        );
-        seed_translation(&library, book_a_id, 0, &paragraph_a, rus).await;
-
-        let book_b_arc = library.create_book("Book B", &spa).await.unwrap();
-        let book_b_id = {
-            let mut b = book_b_arc.lock().await;
-            b.book.push_chapter(Some("Intro"));
-            b.book.push_paragraph(0, "Quiero comer.", None);
-            b.save().await.unwrap();
-            b.book.id
-        };
-        let paragraph_b = paragraph_with(
-            "Я хочу есть.",
-            vec![full_word(
-                "comer",
-                "comer",
-                "есть",
-                "verb",
-                &["есть"],
-                false,
-            )],
-        );
-        seed_translation(&library, book_b_id, 0, &paragraph_b, rus).await;
-
-        library.backfill_cards_from_translations().await.unwrap();
-
-        let deck = library_path.join("cards").join("spa-rus");
-        let poder: Card =
-            serde_json::from_str(&std::fs::read_to_string(deck.join("poder.json")).unwrap())
-                .unwrap();
-        let comer: Card =
-            serde_json::from_str(&std::fs::read_to_string(deck.join("comer.json")).unwrap())
-                .unwrap();
-
-        assert_eq!(poder.examples.len(), 1);
-        assert_eq!(poder.examples[0].book_id, book_a_id);
-        assert_eq!(comer.examples.len(), 1);
-        assert_eq!(comer.examples[0].book_id, book_b_id);
-    }
-
-    #[tokio::test]
-    async fn backfill_walks_multiple_target_languages_on_same_book() {
-        let tmp = TempDir::new("flts_backfill_multilang");
-        let library_path = tmp.path.join("lib");
-        let (library, book_id) =
-            library_with_one_paragraph_book(library_path.clone(), "Puedo.").await;
-
-        let p_rus = paragraph_with(
-            "Я могу.",
-            vec![full_word(
-                "puedo",
-                "poder",
-                "мочь",
-                "verb",
-                &["могу"],
-                false,
-            )],
-        );
-        let p_eng = translation_import::ParagraphTranslation {
-            timestamp: 0,
-            total_tokens: None,
-            sentences: vec![translation_import::Sentence {
-                full_translation: "I can.".into(),
-                words: vec![full_word("puedo", "poder", "can", "verb", &["can"], false)],
-            }],
-        };
-        seed_translation(
-            &library,
-            book_id,
-            0,
-            &p_rus,
-            Language::from_639_3("rus").unwrap(),
-        )
-        .await;
-        seed_translation(
-            &library,
-            book_id,
-            0,
-            &p_eng,
-            Language::from_639_3("eng").unwrap(),
-        )
-        .await;
-
-        library.backfill_cards_from_translations().await.unwrap();
-
-        let rus_card: Card = serde_json::from_str(
-            &std::fs::read_to_string(
-                library_path
-                    .join("cards")
-                    .join("spa-rus")
-                    .join("poder.json"),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        let eng_card: Card = serde_json::from_str(
-            &std::fs::read_to_string(
-                library_path
-                    .join("cards")
-                    .join("spa-eng")
-                    .join("poder.json"),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-
-        assert_eq!(rus_card.translations_flat(), vec!["мочь"]);
-        assert_eq!(eng_card.translations_flat(), vec!["can"]);
     }
 }

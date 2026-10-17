@@ -6,8 +6,6 @@ use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
-use crate::book::translation_import;
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Card {
     #[serde(default = "default_version")]
@@ -243,20 +241,6 @@ where
     out
 }
 
-pub fn is_eligible(word: &translation_import::Word) -> bool {
-    if word.is_punctuation {
-        return false;
-    }
-    let lemma = word.grammar.original_initial_form.trim();
-    if lemma.is_empty() {
-        return false;
-    }
-    if is_pure_digit_lemma(lemma) {
-        return false;
-    }
-    true
-}
-
 fn is_pure_digit_lemma(lemma: &str) -> bool {
     let mut has_digit = false;
     for c in lemma.chars() {
@@ -449,28 +433,6 @@ impl Card {
         }
     }
 
-    pub fn apply_update(&mut self, update: &CardUpdate) {
-        let bucket = self
-            .translations
-            .entry(update.part_of_speech.clone())
-            .or_default();
-        for t in &update.translations {
-            if !bucket.contains(t) {
-                bucket.push(t.clone());
-            }
-        }
-        if let Some(example) = &update.example
-            && !self.examples.iter().any(|e| {
-                e.book_id == example.book_id
-                    && e.chapter == example.chapter
-                    && e.paragraph == example.paragraph
-            })
-            && self.examples.len() < EXAMPLES_CAP
-        {
-            self.examples.push(example.clone());
-        }
-    }
-
     /// Per-PoS buckets flattened and deduped, in PoS-key then insertion order.
     pub fn translations_flat(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
@@ -546,80 +508,11 @@ impl Card {
     }
 }
 
-pub fn extract_card_updates(
-    paragraph: &translation_import::ParagraphTranslation,
-    src_lang: Language,
-    tgt_lang: Language,
-    book_id: Uuid,
-    chapter: usize,
-    paragraph_index: usize,
-) -> Vec<CardUpdate> {
-    let mut updates: Vec<CardUpdate> = Vec::new();
-
-    for sentence in &paragraph.sentences {
-        let source_text = render_example_source(sentence.words.iter().map(|w| w.original.as_str()));
-
-        for word in &sentence.words {
-            let Ok(update) = card_update_from_word(
-                CardWordFields {
-                    is_punctuation: word.is_punctuation,
-                    original_initial_form: &word.grammar.original_initial_form,
-                    target_initial_form: &word.grammar.target_initial_form,
-                    part_of_speech: &word.grammar.part_of_speech,
-                },
-                &source_text,
-                &sentence.full_translation,
-                src_lang,
-                tgt_lang,
-                book_id,
-                chapter,
-                paragraph_index,
-            ) else {
-                continue;
-            };
-
-            let pos_slug = part_of_speech_slug(&update.part_of_speech);
-            if let Some(existing) = updates
-                .iter_mut()
-                .find(|u| u.key == update.key && part_of_speech_slug(&u.part_of_speech) == pos_slug)
-            {
-                for translation in &update.translations {
-                    if !existing.translations.iter().any(|t| t == translation) {
-                        existing.translations.push(translation.clone());
-                    }
-                }
-            } else {
-                updates.push(update);
-            }
-        }
-    }
-
-    updates
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{full_word, one_sentence_paragraph};
-
-    fn word(lemma: &str, is_punctuation: bool) -> translation_import::Word {
-        translation_import::Word {
-            original: lemma.into(),
-            contextual_translations: vec![],
-            note: None,
-            is_punctuation,
-            grammar: translation_import::Grammar {
-                original_initial_form: lemma.into(),
-                target_initial_form: String::new(),
-                part_of_speech: "noun".into(),
-                plurality: None,
-                person: None,
-                tense: None,
-                case: None,
-                other: None,
-            },
-        }
-    }
+    use crate::book::translation_import;
+    use crate::test_utils::full_word;
 
     fn spa() -> Language {
         Language::from_639_3("spa").unwrap()
@@ -759,97 +652,64 @@ mod tests {
     }
 
     #[test]
-    fn extract_card_updates_canonicalizes_noisy_pos() {
-        // PoS strings differing only in noise canonicalize to one key.
-        let paragraph = one_sentence_paragraph(
-            "Хорошо.",
-            vec![
-                full_word(
-                    "good",
-                    "good",
-                    "хорошо",
-                    "Существительное / Прилагательное",
-                    &["хорошо"],
-                    false,
-                ),
-                full_word(
-                    "good",
-                    "good",
-                    "хорошо",
-                    "существительное /прилагательное ",
-                    &["добро"],
-                    false,
-                ),
-            ],
+    fn card_update_from_word_canonicalizes_noisy_pos() {
+        let word = full_word(
+            "good",
+            "good",
+            "хорошо",
+            "Существительное / Прилагательное",
+            &["хорошо"],
+            false,
         );
-        let updates = extract_card_updates(
-            &paragraph,
+        let update = card_update_from_word(
+            eligible_fields(&word),
+            "good",
+            "хорошо",
             spa(),
             Language::from_639_3("rus").unwrap(),
-            Uuid::new_v4(),
+            Uuid::nil(),
             0,
             0,
-        );
-        assert_eq!(updates.len(), 1);
-        let update = &updates[0];
+        )
+        .unwrap();
         assert_eq!(update.part_of_speech, "существительное / прилагательное");
         assert_eq!(update.key.id(), "flts_spa_rus_good");
         assert_eq!(update.translations, vec!["хорошо"]);
     }
 
     #[test]
-    fn extract_card_updates_skips_pos_that_slugs_to_empty() {
-        let paragraph = one_sentence_paragraph(
-            "Хорошо.",
-            vec![full_word(
-                "good",
-                "good",
-                "хорошо",
-                "///",
-                &["хорошо"],
-                false,
-            )],
+    fn card_update_from_word_uses_target_initial_form() {
+        // Contextual translations serve reader annotations only; cards carry
+        // target_initial_form.
+        let word = full_word(
+            "witnessed",
+            "witness",
+            "быть свидетелем",
+            "verb",
+            &["свидетель"],
+            false,
         );
-        let updates = extract_card_updates(
-            &paragraph,
-            spa(),
+        let update = card_update_from_word(
+            eligible_fields(&word),
+            "witnessed",
+            "стал свидетелем",
+            Language::from_639_3("eng").unwrap(),
             Language::from_639_3("rus").unwrap(),
-            Uuid::new_v4(),
+            Uuid::nil(),
             0,
             0,
-        );
-        assert!(
-            updates.is_empty(),
-            "expected pure-separator PoS to be skipped"
-        );
+        )
+        .unwrap();
+        assert_eq!(update.translations, vec!["быть свидетелем"]);
     }
 
     #[test]
-    fn eligible_keeps_normal_word() {
-        assert!(is_eligible(&word("hola", false)));
-    }
-
-    #[test]
-    fn eligible_rejects_punctuation() {
-        assert!(!is_eligible(&word(".", true)));
-        assert!(!is_eligible(&word("hola", true)));
-    }
-
-    #[test]
-    fn eligible_rejects_pure_digits() {
-        for lemma in ["42", "2026", "1,000", "3.14", "1_000", "5"] {
-            assert!(
-                !is_eligible(&word(lemma, false)),
-                "expected {lemma} to be ineligible"
-            );
-        }
-    }
-
-    #[test]
-    fn eligible_keeps_word_form_numeral() {
+    fn card_word_eligibility_keeps_word_form_numeral() {
         for lemma in ["cinco", "пять", "fünf", "five"] {
-            assert!(
-                is_eligible(&word(lemma, false)),
+            let word = full_word(lemma, lemma, "translation", "numeral", &[], false);
+            assert_eq!(
+                card_word_eligibility(eligible_fields(&word)),
+                Ok(()),
                 "expected {lemma} eligible"
             );
         }
@@ -1018,214 +878,6 @@ mod tests {
     }
 
     #[test]
-    fn apply_update_adds_new_translation() {
-        let mut card = Card::new_from_update(&verb_update(vec!["мочь"], None));
-        card.apply_update(&verb_update(vec!["уметь"], None));
-        assert_eq!(card.translations_flat(), vec!["мочь", "уметь"]);
-    }
-
-    #[test]
-    fn apply_update_dedups_translation() {
-        let mut card = Card::new_from_update(&verb_update(vec!["мочь"], None));
-        card.apply_update(&verb_update(vec!["мочь", "уметь", "мочь"], None));
-        assert_eq!(card.translations_flat(), vec!["мочь", "уметь"]);
-    }
-
-    #[test]
-    fn apply_update_groups_translations_by_pos() {
-        let mut card = Card::new_from_update(&verb_update(vec!["мочь"], None));
-        card.apply_update(&CardUpdate {
-            key: poder_key(),
-            part_of_speech: "verb_auxiliary".into(),
-            translations: vec!["мочь".into()],
-            example: None,
-        });
-        assert_eq!(card.translations.len(), 2);
-        assert_eq!(card.translations.get("verb").unwrap().as_slice(), ["мочь"]);
-        assert_eq!(
-            card.translations.get("verb_auxiliary").unwrap().as_slice(),
-            ["мочь"]
-        );
-        assert_eq!(card.translations_flat(), vec!["мочь"]);
-    }
-
-    #[test]
-    fn apply_update_adds_new_example_with_distinct_provenance() {
-        let book = Uuid::new_v4();
-        let mut card = Card::new_from_update(&verb_update(vec![], Some(example_at(book, 1, 1))));
-        card.apply_update(&verb_update(vec![], Some(example_at(book, 1, 2))));
-        assert_eq!(card.examples.len(), 2);
-    }
-
-    #[test]
-    fn apply_update_skips_example_with_same_provenance() {
-        let book = Uuid::new_v4();
-        let mut card = Card::new_from_update(&verb_update(vec![], Some(example_at(book, 1, 1))));
-        card.apply_update(&verb_update(vec![], Some(example_at(book, 1, 1))));
-        assert_eq!(card.examples.len(), 1);
-    }
-
-    #[test]
-    fn apply_update_caps_examples_at_10() {
-        let book = Uuid::new_v4();
-        let mut card = Card::new_from_update(&verb_update(vec![], Some(example_at(book, 0, 0))));
-        for i in 1..20 {
-            card.apply_update(&verb_update(vec![], Some(example_at(book, 0, i))));
-        }
-        assert_eq!(card.examples.len(), EXAMPLES_CAP);
-        assert_eq!(card.examples[0].paragraph, 0);
-        assert_eq!(card.examples[9].paragraph, 9);
-    }
-
-    #[test]
-    fn apply_update_handles_empty_translations_no_example() {
-        let mut card = Card::new_from_update(&verb_update(vec!["мочь"], None));
-        let before = card.clone();
-        card.apply_update(&verb_update(vec![], None));
-        assert_eq!(card, before);
-    }
-
-    #[test]
-    fn walk_produces_one_update_per_eligible_word() {
-        let p = one_sentence_paragraph(
-            "Я больше не могу.",
-            vec![
-                full_word("No", "no", "не", "adv", &["не"], false),
-                full_word("puedo", "poder", "мочь", "verb", &["могу"], false),
-                full_word("más", "más", "больше", "adv", &["больше"], false),
-                full_word(".", ".", ".", "punct", &[], true),
-            ],
-        );
-        let updates = extract_card_updates(
-            &p,
-            Language::from_639_3("spa").unwrap(),
-            Language::from_639_3("rus").unwrap(),
-            Uuid::nil(),
-            0,
-            0,
-        );
-        assert_eq!(updates.len(), 3, "punctuation should be excluded");
-    }
-
-    #[test]
-    fn walk_skips_punctuation() {
-        let p = one_sentence_paragraph(".", vec![full_word(".", ".", ".", "punct", &[], true)]);
-        let updates = extract_card_updates(
-            &p,
-            Language::from_639_3("spa").unwrap(),
-            Language::from_639_3("rus").unwrap(),
-            Uuid::nil(),
-            0,
-            0,
-        );
-        assert!(updates.is_empty());
-    }
-
-    #[test]
-    fn walk_skips_pure_digits() {
-        let p = one_sentence_paragraph(
-            "42",
-            vec![
-                full_word("42", "42", "42", "num", &["42"], false),
-                full_word("años", "año", "год", "noun", &["лет"], false),
-            ],
-        );
-        let updates = extract_card_updates(
-            &p,
-            Language::from_639_3("spa").unwrap(),
-            Language::from_639_3("rus").unwrap(),
-            Uuid::nil(),
-            0,
-            0,
-        );
-        assert_eq!(updates.len(), 1);
-        assert_eq!(updates[0].key.lemma, "año");
-    }
-
-    #[test]
-    fn walk_preserves_llm_casing_in_key_lemma() {
-        let p = one_sentence_paragraph(
-            "Mosca",
-            vec![full_word(
-                "España",
-                "España",
-                "Испания",
-                "propn",
-                &["Испания"],
-                false,
-            )],
-        );
-        let updates = extract_card_updates(
-            &p,
-            Language::from_639_3("spa").unwrap(),
-            Language::from_639_3("rus").unwrap(),
-            Uuid::nil(),
-            0,
-            0,
-        );
-        assert_eq!(updates.len(), 1);
-        assert_eq!(updates[0].key.lemma, "España");
-        assert_eq!(updates[0].key.slug, "españa");
-        assert_eq!(updates[0].key.id(), "flts_spa_rus_españa");
-    }
-
-    #[test]
-    fn walk_preserves_proper_noun_casing_into_card_lemma() {
-        let p = one_sentence_paragraph(
-            "Harry caught the Snitch.",
-            vec![full_word(
-                "Harry",
-                "Harry",
-                "Гарри",
-                "proper_noun",
-                &["Гарри"],
-                false,
-            )],
-        );
-        let updates = extract_card_updates(
-            &p,
-            Language::from_639_3("eng").unwrap(),
-            Language::from_639_3("rus").unwrap(),
-            Uuid::nil(),
-            0,
-            0,
-        );
-        assert_eq!(updates.len(), 1);
-        assert_eq!(updates[0].key.lemma, "Harry");
-        assert_eq!(updates[0].key.slug, "harry");
-
-        let card = Card::new_from_update(&updates[0]);
-        assert_eq!(card.lemma, "Harry");
-        assert_eq!(card.id, "flts_eng_rus_harry");
-    }
-
-    #[test]
-    fn walk_preserves_german_common_noun_casing() {
-        // German nouns arrive capitalized; the display lemma must keep that.
-        let p = one_sentence_paragraph(
-            "Das Haus ist groß.",
-            vec![
-                full_word("Das", "der", "дом", "determiner_article", &["дом"], false),
-                full_word("Haus", "Haus", "дом", "common_noun", &["дом"], false),
-            ],
-        );
-        let updates = extract_card_updates(
-            &p,
-            Language::from_639_3("deu").unwrap(),
-            Language::from_639_3("rus").unwrap(),
-            Uuid::nil(),
-            0,
-            0,
-        );
-        let haus = updates
-            .iter()
-            .find(|u| u.key.slug == "haus")
-            .expect("Haus update emitted");
-        assert_eq!(haus.key.lemma, "Haus");
-        assert_eq!(haus.key.slug, "haus");
-    }
-
-    #[test]
     fn render_example_source_decodes_entities_and_strips_pre_punctuation_space() {
         // Entity punctuation tokens must not join naively with spaces.
         let words = vec![
@@ -1266,147 +918,6 @@ mod tests {
             render_example_source(words.iter().map(|w| w.original.as_str())),
             "He said (loudly)."
         );
-    }
-
-    #[test]
-    fn walk_carries_provenance() {
-        let book = Uuid::new_v4();
-        let p = one_sentence_paragraph(
-            "Я могу.",
-            vec![full_word(
-                "puedo",
-                "poder",
-                "мочь",
-                "verb",
-                &["могу"],
-                false,
-            )],
-        );
-        let updates = extract_card_updates(
-            &p,
-            Language::from_639_3("spa").unwrap(),
-            Language::from_639_3("rus").unwrap(),
-            book,
-            3,
-            12,
-        );
-        let example = updates[0].example.as_ref().unwrap();
-        assert_eq!(example.book_id, book);
-        assert_eq!(example.chapter, 3);
-        assert_eq!(example.paragraph, 12);
-        assert_eq!(example.source, "puedo");
-        assert_eq!(example.translation, "Я могу.");
-    }
-
-    #[test]
-    fn walk_dedupes_within_paragraph() {
-        let p = translation_import::ParagraphTranslation {
-            timestamp: 0,
-            total_tokens: None,
-            sentences: vec![
-                translation_import::Sentence {
-                    full_translation: "Я могу.".into(),
-                    words: vec![full_word(
-                        "puedo",
-                        "poder",
-                        "мочь",
-                        "verb",
-                        &["могу"],
-                        false,
-                    )],
-                },
-                translation_import::Sentence {
-                    full_translation: "Я не могу.".into(),
-                    words: vec![full_word(
-                        "puedo",
-                        "poder",
-                        "мочь",
-                        "verb",
-                        &["умею"],
-                        false,
-                    )],
-                },
-            ],
-        };
-        let updates = extract_card_updates(
-            &p,
-            Language::from_639_3("spa").unwrap(),
-            Language::from_639_3("rus").unwrap(),
-            Uuid::nil(),
-            0,
-            0,
-        );
-        assert_eq!(updates.len(), 1);
-        assert_eq!(updates[0].translations, vec!["мочь"]);
-        assert_eq!(updates[0].example.as_ref().unwrap().translation, "Я могу.");
-    }
-
-    #[test]
-    fn extract_card_updates_uses_target_initial_form_for_card_translation() {
-        let p = one_sentence_paragraph(
-            "Байрон стал свидетелем последствий оккупации.",
-            vec![full_word(
-                "witnessed",
-                "witness",
-                "быть свидетелем",
-                "verb",
-                &["свидетелем"],
-                false,
-            )],
-        );
-        let updates = extract_card_updates(
-            &p,
-            Language::from_639_3("eng").unwrap(),
-            Language::from_639_3("rus").unwrap(),
-            Uuid::nil(),
-            0,
-            0,
-        );
-        assert_eq!(updates.len(), 1);
-        assert_eq!(updates[0].translations, vec!["быть свидетелем"]);
-    }
-
-    #[test]
-    fn extract_card_updates_ignores_contextual_translations() {
-        // Contextual translations serve reader annotations only; cards carry
-        // target_initial_form.
-        let p = one_sentence_paragraph(
-            "Я могу.",
-            vec![full_word(
-                "puedo",
-                "poder",
-                "мочь",
-                "verb",
-                &["могу", "умею"],
-                false,
-            )],
-        );
-        let updates = extract_card_updates(
-            &p,
-            Language::from_639_3("spa").unwrap(),
-            Language::from_639_3("rus").unwrap(),
-            Uuid::nil(),
-            0,
-            0,
-        );
-        assert_eq!(updates.len(), 1);
-        assert_eq!(updates[0].translations, vec!["мочь"]);
-    }
-
-    #[test]
-    fn extract_card_updates_skips_word_with_empty_target_initial_form() {
-        let mut word = full_word("puedo", "poder", "", "verb", &["могу"], false);
-        word.grammar.target_initial_form = "   ".into();
-        let p = one_sentence_paragraph("Я могу.", vec![word]);
-        let updates = extract_card_updates(
-            &p,
-            Language::from_639_3("spa").unwrap(),
-            Language::from_639_3("rus").unwrap(),
-            Uuid::nil(),
-            0,
-            0,
-        );
-        assert!(updates.is_empty());
     }
 
     fn make_card_with(

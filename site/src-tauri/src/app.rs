@@ -292,7 +292,6 @@ pub struct AppState {
     summary_generation_queue: watch::Sender<Option<Arc<SummaryGenerationQueue>>>,
     summary_generation_queue_init_lock: Mutex<()>,
     watcher: Arc<Mutex<LibraryWatcher>>,
-    backfill_lock: Arc<Mutex<()>>,
     /// Serializes config/sync evaluation: the Go engine is one-per-process.
     /// Lock order: eval_lock → translation_queue_init_lock →
     /// summary_generation_queue_init_lock. Task-slot mutexes are leaves.
@@ -352,7 +351,6 @@ impl AppState {
             summary_generation_queue: watch::channel(None).0,
             summary_generation_queue_init_lock: Mutex::new(()),
             watcher,
-            backfill_lock: Arc::new(Mutex::new(())),
             eval_lock: Mutex::new(()),
             anki_sync_status: Arc::new(watch::channel(initial_anki_status).0),
             sync_status: Arc::new(watch::channel(crate::app::sync_daemon::SyncStatus::default()).0),
@@ -576,22 +574,6 @@ impl AppState {
 
         let library = Arc::new(Library::open(library_root.clone()).await?);
         self.gated.install_library(library.clone());
-
-        if std::env::var_os("FLTS_ENABLE_CARD_BACKFILL").is_some_and(|v| !v.is_empty()) {
-            let backfill_lock = self.backfill_lock.clone();
-            let backfill_library = library.clone();
-            tauri::async_runtime::spawn(async move {
-                let Ok(_guard) = backfill_lock.try_lock() else {
-                    info!("Card backfill skipped: already in progress");
-                    return;
-                };
-                if let Err(err) = backfill_library.backfill_cards_from_translations().await {
-                    warn!("Card backfill failed: {err}");
-                }
-            });
-        } else {
-            info!("Card backfill disabled: set FLTS_ENABLE_CARD_BACKFILL=1 to enable");
-        }
 
         let prior = self.gated.take_anki_task().await;
         if let Some(task) = prior {
