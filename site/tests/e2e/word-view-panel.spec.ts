@@ -1,4 +1,5 @@
 import { expect, test } from "./helpers/test";
+import { isRealMode } from "./helpers/backend-mode";
 import {
   paragraphLocator,
   seedAndOpen,
@@ -40,6 +41,45 @@ async function seedClickableBook(page: import("@playwright/test").Page) {
           contextualTranslations: ["hola", "hi"],
           fullSentenceTranslation: "hola",
           note: "a greeting",
+        },
+      },
+    ],
+  });
+  return { bookId };
+}
+
+async function seedCardBook(
+  page: import("@playwright/test").Page,
+  opts: { canCreateCard?: boolean; hasCard?: boolean } = {},
+) {
+  const segments = [
+    wordSegment({
+      flatIndex: 0,
+      sentence: 0,
+      word: 0,
+      text: "hola",
+      translation: "hello",
+    }),
+  ];
+  const { bookId } = await seedAndOpen(page, {
+    chapters: [{ paragraphs: [{ html: "hola", segments }] }],
+    wordInfos: [
+      {
+        paragraphId: 0,
+        sentenceId: 0,
+        wordId: 0,
+        info: {
+          original: "hello",
+          contextualTranslations: ["hola"],
+          fullSentenceTranslation: "hola",
+          note: "",
+          canCreateCard: opts.canCreateCard ?? true,
+          hasCard: opts.hasCard ?? false,
+          grammar: {
+            originalInitialForm: "hablar",
+            targetInitialForm: "говорить",
+            partOfSpeech: "verb",
+          },
         },
       },
     ],
@@ -169,6 +209,95 @@ test.describe("WordView panel — overlay does not resize book viewport", () => 
       return c ? c.clientWidth : -1;
     });
     expect(afterWidth).toBe(beforeWidth);
+  });
+});
+
+const ADD_CARD = '[data-testid="word-view-add-card"]';
+const ADD_CARD_EXPANDED = '[data-testid="word-view-add-card-expanded"]';
+const ADD_CARD_ADDED = '[data-testid="word-view-add-card-added"]';
+const ADD_CARD_EXPANDED_ADDED =
+  '[data-testid="word-view-add-card-expanded-added"]';
+
+test.describe("WordView panel — add to Anki", () => {
+  test.skip(
+    ({ browserName }) => browserName === "firefox",
+    "chromium + webkit only",
+  );
+  test.skip(isRealMode(), "mock-only card creation control surface");
+
+  test("adds the selected word from the peek bar", async ({ page }) => {
+    const { bookId } = await seedCardBook(page);
+    await page.waitForSelector(".paragraphs-container.is-ready");
+    await wordSpan(paragraphLocator(page, 0), 0).click();
+
+    const add = page.locator(ADD_CARD);
+    await expect(add).toBeVisible();
+    await add.click();
+
+    // The action disappears once the card exists; a check confirms the add.
+    await expect(page.locator(ADD_CARD_ADDED)).toBeVisible();
+    await expect(page.locator(ADD_CARD)).toHaveCount(0);
+
+    const calls = await page.evaluate(() =>
+      (window as any).__test.getCreateCardCalls(),
+    );
+    expect(calls).toEqual([
+      { bookId, paragraphId: 0, sentenceId: 0, wordId: 0 },
+    ]);
+  });
+
+  test("adds the selected word from the expanded header", async ({ page }) => {
+    await seedCardBook(page);
+    await page.waitForSelector(".paragraphs-container.is-ready");
+    await wordSpan(paragraphLocator(page, 0), 0).click();
+    await page.locator(EXPAND).click();
+
+    const add = page.locator(ADD_CARD_EXPANDED);
+    await expect(add).toBeVisible();
+    await add.click();
+
+    await expect(page.locator(ADD_CARD_EXPANDED_ADDED)).toBeVisible();
+    await expect(page.locator(ADD_CARD_EXPANDED)).toHaveCount(0);
+  });
+
+  test("hides the action when a card already exists", async ({ page }) => {
+    await seedCardBook(page, { hasCard: true });
+    await page.waitForSelector(".paragraphs-container.is-ready");
+    await wordSpan(paragraphLocator(page, 0), 0).click();
+
+    await expect(page.locator(ADD_CARD)).toHaveCount(0);
+    await page.locator(EXPAND).click();
+    await expect(page.locator(ADD_CARD_EXPANDED)).toHaveCount(0);
+  });
+
+  test("hides the action when the word cannot become a card", async ({
+    page,
+  }) => {
+    await seedCardBook(page, { canCreateCard: false });
+    await page.waitForSelector(".paragraphs-container.is-ready");
+    await wordSpan(paragraphLocator(page, 0), 0).click();
+
+    await expect(page.locator(ADD_CARD)).toHaveCount(0);
+  });
+
+  test("shows a failed add and retries", async ({ page }) => {
+    await seedCardBook(page);
+    await page.waitForSelector(".paragraphs-container.is-ready");
+    await wordSpan(paragraphLocator(page, 0), 0).click();
+
+    await page.evaluate(() =>
+      (window as any).__test.setCardCreateError("Anki is offline"),
+    );
+    const add = page.locator(ADD_CARD);
+    await add.click();
+    await expect(add).toHaveAttribute("title", "Anki is offline");
+
+    await page.locator(EXPAND).click();
+    await expect(page.locator(EXPANDED)).toContainText("Anki is offline");
+
+    await page.evaluate(() => (window as any).__test.setCardCreateError(null));
+    await page.locator(ADD_CARD_EXPANDED).click();
+    await expect(page.locator(ADD_CARD_EXPANDED_ADDED)).toBeVisible();
   });
 });
 

@@ -40,6 +40,8 @@ export type WordInfoSeed = {
   fullSentenceTranslation?: string;
   translationModel?: number;
   sourceLanguage?: string;
+  canCreateCard?: boolean;
+  hasCard?: boolean;
   grammar?: {
     originalInitialForm?: string;
     targetInitialForm?: string;
@@ -113,6 +115,8 @@ export async function seedAndOpen(
       fullSentenceTranslation: info.fullSentenceTranslation ?? "",
       translationModel: info.translationModel ?? 1,
       sourceLanguage: info.sourceLanguage ?? "eng",
+      canCreateCard: info.canCreateCard ?? false,
+      hasCard: info.hasCard ?? false,
       grammar: {
         originalInitialForm: info.grammar?.originalInitialForm ?? info.original,
         targetInitialForm: info.grammar?.targetInitialForm ?? "",

@@ -33,6 +33,8 @@ export type SentenceWordTranslation = {
   readonly fullSentenceTranslation: string;
   readonly translationModel: string;
   readonly sourceLanguage: string;
+  readonly canCreateCard: boolean;
+  readonly hasCard: boolean;
 };
 
 /** Inline emphasis, normalized backend-side from the sanitizer's `em, i, b`. */
@@ -199,6 +201,20 @@ export class Library {
         },
       ],
     );
+  }
+
+  async createWordCard(
+    bookId: UUID,
+    paragraphId: number,
+    sentence: number,
+    word: number,
+  ): Promise<"created" | "alreadyExists"> {
+    return await invoke<"created" | "alreadyExists">("create_card_for_word", {
+      bookId,
+      paragraphId,
+      sentenceId: sentence,
+      wordId: word,
+    });
   }
 
   getSystemDefinition(

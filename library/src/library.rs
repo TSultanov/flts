@@ -18,7 +18,7 @@ use crate::{
         book_metadata::BookMetadata, translation_import, translation_metadata::TranslationMetadata,
     },
     cache::WeakLruCache,
-    card::{Card, extract_card_updates},
+    card::{Card, CardWordFields, card_update_from_word, extract_card_updates},
     epub_importer::EpubBook,
     library::{
         file_watcher::LibraryFileChange,
@@ -52,6 +52,23 @@ impl Display for LibraryError {
 }
 
 impl Error for LibraryError {}
+
+/// The chapter that owns `paragraph_id`, if any. Shared by the card paths so a
+/// card's provenance matches the chapter the reader clicked in.
+fn chapter_index_for_paragraph(
+    book: &crate::book::book::Book,
+    paragraph_id: usize,
+) -> Option<usize> {
+    book.chapter_views()
+        .find(|ch| (0..ch.paragraph_count()).any(|i| ch.paragraph_view(i).id == paragraph_id))
+        .map(|ch| ch.idx)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CardCreationOutcome {
+    Created,
+    AlreadyExists,
+}
 
 pub struct LibraryTranslationMetadata {
     pub id: Uuid,
@@ -289,14 +306,8 @@ impl Library {
                     book.book.language
                 )
             })?;
-            let chapter_index = book
-                .book
-                .chapter_views()
-                .find(|ch| {
-                    (0..ch.paragraph_count()).any(|i| ch.paragraph_view(i).id == paragraph_id)
-                })
-                .map(|ch| ch.idx)
-                .ok_or_else(|| {
+            let chapter_index =
+                chapter_index_for_paragraph(&book.book, paragraph_id).ok_or_else(|| {
                     anyhow::anyhow!("paragraph {paragraph_id} is not attached to any chapter")
                 })?;
             (source_language, chapter_index)
@@ -349,6 +360,100 @@ impl Library {
         }
 
         Ok(())
+    }
+
+    /// Create the card for one word in a translated paragraph, or report that
+    /// it already exists. This is the manual counterpart of the old
+    /// paragraph-wide write: one user action, one file.
+    pub async fn create_card_for_word(
+        &self,
+        book_id: Uuid,
+        paragraph_id: usize,
+        sentence_id: usize,
+        word_id: usize,
+        target_language: Language,
+    ) -> anyhow::Result<CardCreationOutcome> {
+        let book_arc = self.get_book(&book_id).await?;
+        let book = book_arc.lock().await;
+
+        let source_language = Language::from_639_3(&book.book.language).ok_or_else(|| {
+            anyhow::anyhow!(
+                "unknown source language code on book {book_id}: {}",
+                book.book.language
+            )
+        })?;
+        let chapter_index =
+            chapter_index_for_paragraph(&book.book, paragraph_id).ok_or_else(|| {
+                anyhow::anyhow!("paragraph {paragraph_id} is not attached to any chapter")
+            })?;
+
+        let translation_arc = book
+            .get_translation(&target_language)
+            .await
+            .ok_or_else(|| {
+                anyhow::anyhow!("book {book_id} has no translation to {target_language}")
+            })?;
+
+        let update = {
+            let translation = translation_arc.lock().await;
+            let paragraph = translation
+                .paragraph_view(paragraph_id)
+                .ok_or_else(|| anyhow::anyhow!("paragraph {paragraph_id} is not translated"))?;
+            // The frontend can race a re-translation that shrinks the view;
+            // indexing raw would abort the process (panic = abort).
+            if sentence_id >= paragraph.sentence_count() {
+                anyhow::bail!("sentence {sentence_id} is out of range");
+            }
+            let sentence = paragraph.sentence_view(sentence_id);
+            if word_id >= sentence.word_count() {
+                anyhow::bail!("word {word_id} is out of range");
+            }
+            let word = sentence.word_view(word_id);
+            card_update_from_word(
+                CardWordFields {
+                    is_punctuation: word.is_punctuation,
+                    original_initial_form: word.grammar.original_initial_form.as_ref(),
+                    target_initial_form: word.grammar.target_initial_form.as_ref(),
+                    part_of_speech: word.grammar.part_of_speech.as_ref(),
+                },
+                &sentence.source_text(),
+                sentence.full_translation.as_ref(),
+                source_language,
+                target_language,
+                book_id,
+                chapter_index,
+                paragraph_id,
+            )
+            .map_err(|reason| anyhow::anyhow!("cannot add word to Anki: {reason}"))?
+        };
+
+        drop(book);
+
+        let lock = self.card_store.lock_for(&update.key.id()).await;
+        let _guard = lock.lock().await;
+
+        let existing = self
+            .card_store
+            .load(
+                &update.key.source_language,
+                &update.key.target_language,
+                &update.key.slug,
+            )
+            .await?;
+        if existing.is_some() {
+            return Ok(CardCreationOutcome::AlreadyExists);
+        }
+
+        let card = Card::new_from_update(&update);
+        self.card_store
+            .save(
+                &card,
+                &update.key.source_language,
+                &update.key.target_language,
+            )
+            .await?;
+
+        Ok(CardCreationOutcome::Created)
     }
 
     pub async fn list_books(&self) -> anyhow::Result<Vec<LibraryBookMetadata>> {
@@ -990,6 +1095,112 @@ mod library_tests {
         let card: Card = serde_json::from_str(&body).unwrap();
         assert_eq!(card.translations_flat(), vec!["мочь"]);
         assert_eq!(card.examples.len(), 1);
+    }
+
+    fn spanish_paragraph() -> translation_import::ParagraphTranslation {
+        paragraph_with(
+            "Я могу войти в дом.",
+            vec![
+                full_word("Puedo", "poder", "мочь", "verb", &["могу"], false),
+                full_word("entrar", "entrar", "входить", "verb", &["войти"], false),
+                full_word("en", "en", "в", "prep", &["в"], false),
+                full_word("casa", "casa", "дом", "noun", &["дом"], false),
+                full_word(".", ".", ".", "punct", &[], true),
+            ],
+        )
+    }
+
+    #[tokio::test]
+    async fn create_card_for_word_writes_one_card() {
+        let tmp = TempDir::new("flts_card_manual");
+        let (library, book_id) =
+            library_with_one_paragraph_book(tmp.path.join("lib"), "Puedo entrar en casa.").await;
+        let tgt = Language::from_639_3("rus").unwrap();
+        let paragraph = spanish_paragraph();
+        seed_translation(&library, book_id, 0, &paragraph, tgt).await;
+
+        // Clicking the inflected "Puedo" creates the citation-form card.
+        let outcome = library
+            .create_card_for_word(book_id, 0, 0, 0, tgt)
+            .await
+            .unwrap();
+        assert_eq!(outcome, CardCreationOutcome::Created);
+
+        let card_path = tmp
+            .path
+            .join("lib")
+            .join("cards")
+            .join("spa-rus")
+            .join("poder.json");
+        let card: Card =
+            serde_json::from_str(&std::fs::read_to_string(&card_path).unwrap()).unwrap();
+        assert_eq!(card.lemma, "poder");
+        assert_eq!(card.translations_flat(), vec!["мочь"]);
+        let example = &card.examples[0];
+        assert_eq!(example.source, "Puedo entrar en casa.");
+        assert_eq!(example.translation, "Я могу войти в дом.");
+        assert_eq!(example.book_id, book_id);
+        assert_eq!(example.chapter, 0);
+        assert_eq!(example.paragraph, 0);
+        assert!(card.anki_data.is_none(), "new cards wait for the sync pass");
+
+        // A second click is a no-op, not a second example.
+        let outcome = library
+            .create_card_for_word(book_id, 0, 0, 0, tgt)
+            .await
+            .unwrap();
+        assert_eq!(outcome, CardCreationOutcome::AlreadyExists);
+        let card: Card =
+            serde_json::from_str(&std::fs::read_to_string(&card_path).unwrap()).unwrap();
+        assert_eq!(card.examples.len(), 1);
+
+        // The other words were not touched by this one click.
+        let deck: Vec<String> =
+            std::fs::read_dir(tmp.path.join("lib").join("cards").join("spa-rus"))
+                .unwrap()
+                .map(|e| e.unwrap().file_name().into_string().unwrap())
+                .collect();
+        assert_eq!(deck, vec!["poder.json".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn create_card_for_word_rejects_ineligible_word() {
+        let tmp = TempDir::new("flts_card_manual_skip");
+        let (library, book_id) =
+            library_with_one_paragraph_book(tmp.path.join("lib"), "Puedo entrar en casa.").await;
+        let tgt = Language::from_639_3("rus").unwrap();
+        let paragraph = spanish_paragraph();
+        seed_translation(&library, book_id, 0, &paragraph, tgt).await;
+
+        let err = library
+            .create_card_for_word(book_id, 0, 0, 4, tgt)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("punctuation"),
+            "unexpected error: {err}"
+        );
+        let deck = tmp.path.join("lib").join("cards").join("spa-rus");
+        assert!(
+            !deck.exists() || std::fs::read_dir(&deck).unwrap().next().is_none(),
+            "ineligible words must not write a card"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_card_for_word_requires_a_translation() {
+        let tmp = TempDir::new("flts_card_manual_notrans");
+        let (library, book_id) =
+            library_with_one_paragraph_book(tmp.path.join("lib"), "Puedo entrar.").await;
+
+        let err = library
+            .create_card_for_word(book_id, 0, 0, 0, Language::from_639_3("rus").unwrap())
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("no translation"),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]

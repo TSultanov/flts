@@ -158,6 +158,8 @@ type WordInfo = {
   fullSentenceTranslation: string;
   translationModel: number;
   sourceLanguage: string;
+  canCreateCard?: boolean;
+  hasCard?: boolean;
   grammar: {
     originalInitialForm: string;
     targetInitialForm: string;
@@ -256,6 +258,14 @@ function emitSummaryProgress(
 const translateConfigs = new Map<string, TranslateConfig>();
 const activeActivities = new Map<string, ParagraphTranslationActivity>();
 const wordInfos = new Map<string, WordInfo>();
+
+const createCardCalls: Array<{
+  bookId: UUID;
+  paragraphId: number;
+  sentenceId: number;
+  wordId: number;
+}> = [];
+let cardCreateError: string | null = null;
 
 const translateCalls: Array<{
   bookId: UUID;
@@ -560,6 +570,8 @@ export function resetMockState() {
   activeActivities.clear();
   pendingInFlightWork.clear();
   wordInfos.clear();
+  createCardCalls.length = 0;
+  cardCreateError = null;
   translateCalls.length = 0;
   translateChapterCalls.length = 0;
   translationsBatchCalls.length = 0;
@@ -745,6 +757,12 @@ if (typeof window !== "undefined") {
     },
     emitCardsUpdated() {
       emit("cards_updated", null);
+    },
+    getCreateCardCalls() {
+      return createCardCalls.slice();
+    },
+    setCardCreateError(message: string | null) {
+      cardCreateError = message;
     },
     getTranslateCalls() {
       return translateCalls.slice();
@@ -1167,7 +1185,33 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
       const info = wordInfos.get(
         wordKey(bookId, paragraphId, sentenceId, wordId),
       );
-      return Promise.resolve((info ?? undefined) as T);
+      return Promise.resolve(
+        (info
+          ? { canCreateCard: false, hasCard: false, ...info }
+          : undefined) as T,
+      );
+    }
+
+    case "create_card_for_word": {
+      const bookId = args?.bookId as UUID;
+      const paragraphId = args?.paragraphId as number;
+      const sentenceId = args?.sentenceId as number;
+      const wordId = args?.wordId as number;
+      createCardCalls.push({ bookId, paragraphId, sentenceId, wordId });
+      if (cardCreateError != null) {
+        return Promise.reject(new Error(cardCreateError));
+      }
+
+      const key = wordKey(bookId, paragraphId, sentenceId, wordId);
+      const info = wordInfos.get(key);
+      if (info?.hasCard) {
+        return Promise.resolve("alreadyExists" as T);
+      }
+      if (info) {
+        wordInfos.set(key, { ...info, hasCard: true });
+      }
+      emit("cards_updated", null);
+      return Promise.resolve("created" as T);
     }
 
     case "translate_paragraph": {

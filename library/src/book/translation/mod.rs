@@ -1468,6 +1468,14 @@ impl<'a> SentenceView<'a> {
         self.words.len()
     }
 
+    /// The sentence text reconstructed from its words, for card examples.
+    /// Applies the same entity decoding and punctuation spacing as the card
+    /// builder.
+    pub fn source_text(&self) -> String {
+        let words: Vec<String> = self.words().map(|w| w.original.to_string()).collect();
+        crate::card::render_example_source(words.iter().map(|w| w.as_str()))
+    }
+
     pub fn word_view(&self, word: usize) -> WordView<'a> {
         let word = &self.words[word];
         WordView {

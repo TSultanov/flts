@@ -129,6 +129,20 @@ pub struct WordView {
     translation_model: String,
     #[serde(rename = "sourceLanguage")]
     source_language: String,
+    /// Whether this word passes the card eligibility rules. The reader hides
+    /// the add button otherwise.
+    #[serde(rename = "canCreateCard")]
+    can_create_card: bool,
+    /// Whether a card already exists for this word and language pair.
+    #[serde(rename = "hasCard")]
+    has_card: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CardCreationResultView {
+    Created,
+    AlreadyExists,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -447,45 +461,84 @@ impl LibraryView {
             return Ok(None);
         };
 
-        Ok(
-            if let Some(paragraph) = book_translation.lock().await.paragraph_view(paragraph_id) {
-                // The frontend refetches on `book_updated` with its selected
-                // {sentence, word}, which a re-translation can shrink away. The
-                // views index raw, and panic = abort would take the app down.
-                if sentence_id >= paragraph.sentence_count() {
-                    return Ok(None);
+        // Copy the view out before any card I/O: the translation lock must not
+        // be held across an await.
+        let mut view = {
+            let translation = book_translation.lock().await;
+            let Some(paragraph) = translation.paragraph_view(paragraph_id) else {
+                return Ok(None);
+            };
+            // The frontend refetches on `book_updated` with its selected
+            // {sentence, word}, which a re-translation can shrink away. The
+            // views index raw, and panic = abort would take the app down.
+            if sentence_id >= paragraph.sentence_count() {
+                return Ok(None);
+            }
+            let sentence = paragraph.sentence_view(sentence_id);
+            if word_id >= sentence.word_count() {
+                return Ok(None);
+            }
+            let word = sentence.word_view(word_id);
+            WordView {
+                original: word.original.to_string(),
+                note: word.note.to_string(),
+                is_punctuation: word.is_punctuation,
+                contextual_translations: word
+                    .contextual_translations()
+                    .map(|ct| ct.translation.to_string())
+                    .collect(),
+                grammar: GrammarView {
+                    original_initial_form: word.grammar.original_initial_form.to_string(),
+                    target_initial_form: word.grammar.target_initial_form.to_string(),
+                    part_of_speech: word.grammar.part_of_speech.to_string(),
+                    plurality: word.grammar.plurality.map(|p| p.to_string()),
+                    person: word.grammar.person.map(|p| p.to_string()),
+                    tense: word.grammar.tense.map(|t| t.to_string()),
+                    case: word.grammar.case.map(|c| c.to_string()),
+                    other: word.grammar.other.map(|o| o.to_string()),
+                },
+                full_sentence_translation: sentence.full_translation.to_string(),
+                translation_model: paragraph.model,
+                source_language: source_language_code,
+                can_create_card: false,
+                has_card: false,
+            }
+        };
+
+        let source_language = Language::from_639_3(&view.source_language);
+        view.can_create_card = source_language.is_some()
+            && card::card_word_eligibility(card::CardWordFields {
+                is_punctuation: view.is_punctuation,
+                original_initial_form: &view.grammar.original_initial_form,
+                target_initial_form: &view.grammar.target_initial_form,
+                part_of_speech: &view.grammar.part_of_speech,
+            })
+            .is_ok();
+
+        if let Some(source_language) = source_language
+            && view.can_create_card
+            && let Some(key) = card::card_key_for_lemma(
+                &view.grammar.original_initial_form,
+                source_language,
+                *target_language,
+            )
+        {
+            view.has_card = match self
+                .library
+                .card_store()
+                .load_canonical(&key.source_language, &key.target_language, &key.slug)
+                .await
+            {
+                Ok(card) => card.is_some(),
+                Err(err) => {
+                    // A corrupt card should not break the word panel.
+                    log::warn!("Failed to read card {}: {err}", key.slug);
+                    false
                 }
-                let sentence = paragraph.sentence_view(sentence_id);
-                if word_id >= sentence.word_count() {
-                    return Ok(None);
-                }
-                let word = sentence.word_view(word_id);
-                Some(WordView {
-                    original: word.original.to_string(),
-                    note: word.note.to_string(),
-                    is_punctuation: word.is_punctuation,
-                    contextual_translations: word
-                        .contextual_translations()
-                        .map(|ct| ct.translation.to_string())
-                        .collect(),
-                    grammar: GrammarView {
-                        original_initial_form: word.grammar.original_initial_form.to_string(),
-                        target_initial_form: word.grammar.target_initial_form.to_string(),
-                        part_of_speech: word.grammar.part_of_speech.to_string(),
-                        plurality: word.grammar.plurality.map(|p| p.to_string()),
-                        person: word.grammar.person.map(|p| p.to_string()),
-                        tense: word.grammar.tense.map(|t| t.to_string()),
-                        case: word.grammar.case.map(|c| c.to_string()),
-                        other: word.grammar.other.map(|o| o.to_string()),
-                    },
-                    full_sentence_translation: sentence.full_translation.to_string(),
-                    translation_model: paragraph.model,
-                    source_language: source_language_code,
-                })
-            } else {
-                None
-            },
-        )
+            };
+        }
+
+        Ok(Some(view))
     }
 
     pub async fn import_plain_text(

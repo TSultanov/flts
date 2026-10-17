@@ -196,7 +196,10 @@ pub fn card_id(source_language: &str, target_language: &str, lemma_slug: &str) -
 /// (the prompt asks for them, see [`crate::translator`]) decode back to
 /// literals, and spacing is suppressed around punctuation. The spacing rule is
 /// a Western-script heuristic, not a typographic engine.
-pub fn render_example_source(words: &[translation_import::Word]) -> String {
+pub fn render_example_source<'a, I>(words: I) -> String
+where
+    I: IntoIterator<Item = &'a str>,
+{
     fn decode_entities(input: &str) -> String {
         decode(input.as_bytes())
             .to_string()
@@ -228,7 +231,7 @@ pub fn render_example_source(words: &[translation_import::Word]) -> String {
     let mut out = String::new();
     let mut suppress_next_space = false;
     for word in words {
-        let decoded = decode_entities(&word.original);
+        let decoded = decode_entities(word);
         let starts_with_eat = decoded.chars().next().is_some_and(eats_leading_space);
         let want_space = !out.is_empty() && !starts_with_eat && !suppress_next_space;
         if want_space {
@@ -275,6 +278,150 @@ pub struct CardUpdate {
     pub part_of_speech: String,
     pub translations: Vec<String>,
     pub example: Option<Example>,
+}
+
+/// Lexical fields needed to decide whether a word can become a card and to
+/// build one. Borrowed so callers can pass views without cloning.
+#[derive(Debug, Clone, Copy)]
+pub struct CardWordFields<'a> {
+    pub is_punctuation: bool,
+    pub original_initial_form: &'a str,
+    pub target_initial_form: &'a str,
+    pub part_of_speech: &'a str,
+}
+
+/// Why a word cannot become a card. Mirrors the reasons the paragraph-wide
+/// extractor used to skip words silently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CardSkipReason {
+    Punctuation,
+    EmptyLemma,
+    PureDigits,
+    EmptyTargetForm,
+    EmptyPartOfSpeech,
+}
+
+impl CardSkipReason {
+    pub fn message(self) -> &'static str {
+        match self {
+            CardSkipReason::Punctuation => "punctuation is not added to cards",
+            CardSkipReason::EmptyLemma => "the word has no dictionary form",
+            CardSkipReason::PureDigits => "numbers are not added to cards",
+            CardSkipReason::EmptyTargetForm => "the translation has no dictionary form",
+            CardSkipReason::EmptyPartOfSpeech => "the word has no part of speech",
+        }
+    }
+}
+
+impl std::fmt::Display for CardSkipReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.message())
+    }
+}
+
+struct CompiledWord {
+    lemma: String,
+    slug: String,
+    part_of_speech: String,
+    target: String,
+}
+
+fn compile_word(fields: CardWordFields<'_>) -> Result<CompiledWord, CardSkipReason> {
+    if fields.is_punctuation {
+        return Err(CardSkipReason::Punctuation);
+    }
+    let raw_lemma = fields.original_initial_form.trim();
+    if raw_lemma.is_empty() {
+        return Err(CardSkipReason::EmptyLemma);
+    }
+    if is_pure_digit_lemma(raw_lemma) {
+        return Err(CardSkipReason::PureDigits);
+    }
+
+    // Display form keeps the citation casing; the slug lowercases so
+    // filesystem identity and cross-occurrence dedup stay stable.
+    let lemma = canonicalize_lemma_display(raw_lemma);
+    if lemma.is_empty() {
+        return Err(CardSkipReason::EmptyLemma);
+    }
+    let slug = lemma_slug(&lemma.to_lowercase());
+    if slug.is_empty() {
+        return Err(CardSkipReason::EmptyLemma);
+    }
+
+    let part_of_speech = canonicalize_part_of_speech(fields.part_of_speech);
+    if part_of_speech_slug(&part_of_speech).is_empty() {
+        return Err(CardSkipReason::EmptyPartOfSpeech);
+    }
+
+    let target = fields.target_initial_form.trim();
+    if target.is_empty() {
+        return Err(CardSkipReason::EmptyTargetForm);
+    }
+
+    Ok(CompiledWord {
+        lemma,
+        slug,
+        part_of_speech,
+        target: target.to_owned(),
+    })
+}
+
+/// Whether [`card_update_from_word`] would produce a card for these fields.
+/// The reader uses this to decide whether to offer the add button.
+pub fn card_word_eligibility(fields: CardWordFields<'_>) -> Result<(), CardSkipReason> {
+    compile_word(fields).map(|_| ())
+}
+
+/// The on-disk identity for a lemma, used both to create a card and to answer
+/// whether one already exists. `None` when the lemma slugs to nothing.
+pub fn card_key_for_lemma(
+    raw_lemma: &str,
+    src_lang: Language,
+    tgt_lang: Language,
+) -> Option<CardKey> {
+    let lemma = canonicalize_lemma_display(raw_lemma);
+    let slug = lemma_slug(&lemma.to_lowercase());
+    if lemma.is_empty() || slug.is_empty() {
+        return None;
+    }
+    Some(CardKey {
+        source_language: src_lang.to_639_3().to_owned(),
+        target_language: tgt_lang.to_639_3().to_owned(),
+        lemma,
+        slug,
+    })
+}
+
+/// Build a single card update from one word in one sentence.
+pub fn card_update_from_word(
+    fields: CardWordFields<'_>,
+    example_source: &str,
+    example_translation: &str,
+    src_lang: Language,
+    tgt_lang: Language,
+    book_id: Uuid,
+    chapter: usize,
+    paragraph: usize,
+) -> Result<CardUpdate, CardSkipReason> {
+    let word = compile_word(fields)?;
+    Ok(CardUpdate {
+        key: CardKey {
+            source_language: src_lang.to_639_3().to_owned(),
+            target_language: tgt_lang.to_639_3().to_owned(),
+            lemma: word.lemma,
+            slug: word.slug,
+        },
+        part_of_speech: word.part_of_speech,
+        translations: vec![word.target],
+        example: Some(Example {
+            source: example_source.to_owned(),
+            translation: example_translation.to_owned(),
+            book_id,
+            chapter,
+            paragraph,
+        }),
+    })
 }
 
 impl Card {
@@ -407,65 +554,42 @@ pub fn extract_card_updates(
     chapter: usize,
     paragraph_index: usize,
 ) -> Vec<CardUpdate> {
-    let source_language = src_lang.to_639_3();
-    let target_language = tgt_lang.to_639_3();
     let mut updates: Vec<CardUpdate> = Vec::new();
 
     for sentence in &paragraph.sentences {
-        let source_text = render_example_source(&sentence.words);
-        let example = Example {
-            source: source_text,
-            translation: sentence.full_translation.clone(),
-            book_id,
-            chapter,
-            paragraph: paragraph_index,
-        };
+        let source_text = render_example_source(sentence.words.iter().map(|w| w.original.as_str()));
 
         for word in &sentence.words {
-            if !is_eligible(word) {
+            let Ok(update) = card_update_from_word(
+                CardWordFields {
+                    is_punctuation: word.is_punctuation,
+                    original_initial_form: &word.grammar.original_initial_form,
+                    target_initial_form: &word.grammar.target_initial_form,
+                    part_of_speech: &word.grammar.part_of_speech,
+                },
+                &source_text,
+                &sentence.full_translation,
+                src_lang,
+                tgt_lang,
+                book_id,
+                chapter,
+                paragraph_index,
+            ) else {
                 continue;
-            }
-            // Display form keeps the citation casing; the slug lowercases so
-            // filesystem identity and cross-occurrence dedup stay stable.
-            let lemma = canonicalize_lemma_display(&word.grammar.original_initial_form);
-            if lemma.is_empty() {
-                continue;
-            }
-            let slug = lemma_slug(&lemma.to_lowercase());
-            if slug.is_empty() {
-                continue;
-            }
-            let part_of_speech = canonicalize_part_of_speech(&word.grammar.part_of_speech);
-            let pos_slug = part_of_speech_slug(&part_of_speech);
-            if pos_slug.is_empty() {
-                continue;
-            }
-            let key = CardKey {
-                source_language: source_language.to_owned(),
-                target_language: target_language.to_owned(),
-                lemma,
-                slug,
             };
 
-            let target_dictionary = word.grammar.target_initial_form.trim();
-            if target_dictionary.is_empty() {
-                continue;
-            }
-
+            let pos_slug = part_of_speech_slug(&update.part_of_speech);
             if let Some(existing) = updates
                 .iter_mut()
-                .find(|u| u.key == key && part_of_speech_slug(&u.part_of_speech) == pos_slug)
+                .find(|u| u.key == update.key && part_of_speech_slug(&u.part_of_speech) == pos_slug)
             {
-                if !existing.translations.iter().any(|t| t == target_dictionary) {
-                    existing.translations.push(target_dictionary.to_owned());
+                for translation in &update.translations {
+                    if !existing.translations.iter().any(|t| t == translation) {
+                        existing.translations.push(translation.clone());
+                    }
                 }
             } else {
-                updates.push(CardUpdate {
-                    key,
-                    part_of_speech,
-                    translations: vec![target_dictionary.to_owned()],
-                    example: Some(example.clone()),
-                });
+                updates.push(update);
             }
         }
     }
@@ -729,6 +853,127 @@ mod tests {
                 "expected {lemma} eligible"
             );
         }
+    }
+
+    fn eligible_fields<'a>(word: &'a translation_import::Word) -> CardWordFields<'a> {
+        CardWordFields {
+            is_punctuation: word.is_punctuation,
+            original_initial_form: &word.grammar.original_initial_form,
+            target_initial_form: &word.grammar.target_initial_form,
+            part_of_speech: &word.grammar.part_of_speech,
+        }
+    }
+
+    #[test]
+    fn card_update_from_word_builds_one_card_with_citation_forms() {
+        let word = full_word("puedo", "poder", "мочь", "verb", &["могу"], false);
+        let update = card_update_from_word(
+            eligible_fields(&word),
+            "Puedo entrar.",
+            "Я могу войти.",
+            spa(),
+            Language::from_639_3("rus").unwrap(),
+            Uuid::nil(),
+            3,
+            7,
+        )
+        .unwrap();
+
+        assert_eq!(update.key.id(), "flts_spa_rus_poder");
+        assert_eq!(update.key.lemma, "poder");
+        assert_eq!(update.part_of_speech, "verb");
+        assert_eq!(update.translations, vec!["мочь"]);
+        let example = update.example.unwrap();
+        assert_eq!(example.source, "Puedo entrar.");
+        assert_eq!(example.translation, "Я могу войти.");
+        assert_eq!(example.book_id, Uuid::nil());
+        assert_eq!(example.chapter, 3);
+        assert_eq!(example.paragraph, 7);
+    }
+
+    #[test]
+    fn card_word_eligibility_reports_each_skip_reason() {
+        let base = CardWordFields {
+            is_punctuation: false,
+            original_initial_form: "poder",
+            target_initial_form: "мочь",
+            part_of_speech: "verb",
+        };
+        assert_eq!(card_word_eligibility(base), Ok(()));
+
+        assert_eq!(
+            card_word_eligibility(CardWordFields {
+                is_punctuation: true,
+                ..base
+            }),
+            Err(CardSkipReason::Punctuation)
+        );
+        assert_eq!(
+            card_word_eligibility(CardWordFields {
+                original_initial_form: "   ",
+                ..base
+            }),
+            Err(CardSkipReason::EmptyLemma)
+        );
+        assert_eq!(
+            card_word_eligibility(CardWordFields {
+                original_initial_form: "42",
+                ..base
+            }),
+            Err(CardSkipReason::PureDigits)
+        );
+        assert_eq!(
+            card_word_eligibility(CardWordFields {
+                target_initial_form: "   ",
+                ..base
+            }),
+            Err(CardSkipReason::EmptyTargetForm)
+        );
+        assert_eq!(
+            card_word_eligibility(CardWordFields {
+                part_of_speech: "///",
+                ..base
+            }),
+            Err(CardSkipReason::EmptyPartOfSpeech)
+        );
+    }
+
+    #[test]
+    fn card_key_for_lemma_matches_creation_identity() {
+        let word = full_word("España", "España", "Испания", "propn", &[], false);
+        let update = card_update_from_word(
+            eligible_fields(&word),
+            "España",
+            "Испания",
+            Language::from_639_3("spa").unwrap(),
+            Language::from_639_3("rus").unwrap(),
+            Uuid::nil(),
+            0,
+            0,
+        )
+        .unwrap();
+        let key = card_key_for_lemma(
+            "España",
+            Language::from_639_3("spa").unwrap(),
+            Language::from_639_3("rus").unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(key, update.key);
+        assert_eq!(key.lemma, "España");
+        assert_eq!(key.slug, "españa");
+    }
+
+    #[test]
+    fn card_key_for_lemma_rejects_unsluggable_lemma() {
+        assert!(
+            card_key_for_lemma(
+                "///",
+                Language::from_639_3("spa").unwrap(),
+                Language::from_639_3("rus").unwrap(),
+            )
+            .is_none()
+        );
     }
 
     fn poder_key() -> CardKey {
@@ -1002,7 +1247,7 @@ mod tests {
             full_word("&period;", ".", "", "punct", &[], true),
         ];
         assert_eq!(
-            render_example_source(&words),
+            render_example_source(words.iter().map(|w| w.original.as_str())),
             "Militia and infantrymen sat menacingly in towns, cities, and pubs across the Midlands."
         );
     }
@@ -1017,7 +1262,10 @@ mod tests {
             full_word("&rpar;", ")", "", "punct", &[], true),
             full_word("&period;", ".", "", "punct", &[], true),
         ];
-        assert_eq!(render_example_source(&words), "He said (loudly).");
+        assert_eq!(
+            render_example_source(words.iter().map(|w| w.original.as_str())),
+            "He said (loudly)."
+        );
     }
 
     #[test]

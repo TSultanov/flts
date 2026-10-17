@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { getContext, onMount } from "svelte";
+    import { getContext, onDestroy, onMount } from "svelte";
     import type { Library } from "../data/library";
     import type { UUID } from "../data/uuid";
     import { models, configStore } from "../config/store";
@@ -8,6 +8,10 @@
         faChevronUp,
         faChevronDown,
         faBookOpen,
+        faPlus,
+        faCheck,
+        faSpinner,
+        faTriangleExclamation,
     } from "@fortawesome/free-solid-svg-icons";
     import Fa from "svelte-fa";
     import CircularProgress from "../widgets/CircularProgress.svelte";
@@ -39,6 +43,70 @@
     // Losing word focus returns the panel to its peek bar.
     $effect(() => {
         if (!selection) expanded = false;
+    });
+
+    const wordKey = $derived(
+        selection
+            ? `${selection.paragraphId}:${selection.sentence}:${selection.word}`
+            : null,
+    );
+
+    // Card action state is keyed by selection so an in-flight request or an
+    // error never leaks onto the next word.
+    let addingKey = $state<string | null>(null);
+    let addedKey = $state<string | null>(null);
+    let justAddedKey = $state<string | null>(null);
+    let cardError = $state<{ key: string; message: string } | null>(null);
+    let justAddedTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const isAddingCard = $derived(addingKey != null && addingKey === wordKey);
+    const hasCard = $derived(
+        word?.current?.hasCard === true ||
+            (wordKey != null && addedKey === wordKey),
+    );
+    const showAddCard = $derived(
+        word?.current?.canCreateCard === true && !hasCard,
+    );
+    const showAdded = $derived(
+        justAddedKey != null && justAddedKey === wordKey,
+    );
+    const currentCardError = $derived(
+        cardError != null && cardError.key === wordKey
+            ? cardError.message
+            : null,
+    );
+
+    async function addCard() {
+        if (!selection || !word?.current || wordKey == null) return;
+        const key = wordKey;
+        addingKey = key;
+        cardError = null;
+        try {
+            await library.createWordCard(
+                bookId,
+                selection.paragraphId,
+                selection.sentence,
+                selection.word,
+            );
+            addedKey = key;
+            justAddedKey = key;
+            if (justAddedTimer) clearTimeout(justAddedTimer);
+            justAddedTimer = setTimeout(() => {
+                if (justAddedKey === key) justAddedKey = null;
+                justAddedTimer = null;
+            }, 1200);
+        } catch (e) {
+            cardError = {
+                key,
+                message: e instanceof Error ? e.message : String(e),
+            };
+        } finally {
+            if (addingKey === key) addingKey = null;
+        }
+    }
+
+    onDestroy(() => {
+        if (justAddedTimer) clearTimeout(justAddedTimer);
     });
 
     let model = $derived(word?.current?.translationModel);
@@ -95,6 +163,37 @@
     }
 </script>
 
+{#snippet cardAction(testId: string)}
+    {#if showAddCard}
+        <button
+            class="peek-button"
+            class:spin={isAddingCard}
+            aria-label={currentCardError ?? "Add to Anki"}
+            title={currentCardError ?? "Add to Anki"}
+            data-testid={testId}
+            disabled={isAddingCard}
+            onclick={addCard}
+        >
+            {#if isAddingCard}
+                <Fa icon={faSpinner} />
+            {:else if currentCardError}
+                <Fa icon={faTriangleExclamation} />
+            {:else}
+                <Fa icon={faPlus} />
+            {/if}
+        </button>
+    {:else if showAdded}
+        <span
+            class="peek-button added"
+            role="status"
+            aria-label="Card added"
+            data-testid={`${testId}-added`}
+        >
+            <Fa icon={faCheck} />
+        </span>
+    {/if}
+{/snippet}
+
 <ResizableOverlayPanel
     side="bottom"
     bind:expanded
@@ -133,6 +232,7 @@
                         <Fa icon={faBookOpen} />
                     </button>
                 {/if}
+                {@render cardAction("word-view-add-card")}
                 <button
                     class="peek-button"
                     aria-label="Expand word details"
@@ -152,6 +252,7 @@
         <div class="expanded-body" data-testid="word-view-expanded">
             <header class="expanded-header">
                 <p class="word-original">{@html w.original}</p>
+                {@render cardAction("word-view-add-card-expanded")}
                 <button
                     class="collapse-button"
                     aria-label="Collapse word details"
@@ -246,6 +347,9 @@
                     >
                         Show System Dictionary
                     </button>
+                {/if}
+                {#if currentCardError}
+                    <p class="card-error" role="alert">{currentCardError}</p>
                 {/if}
             </div>
             <div class="translate-section">
@@ -342,8 +446,37 @@
         background-color: var(--button-cancel-hover);
     }
 
+    .peek-button:disabled {
+        cursor: not-allowed;
+        opacity: 0.7;
+    }
+
+    .peek-button.added {
+        cursor: default;
+        color: var(--dialog-text-secondary);
+    }
+
+    .peek-button.spin :global(svg) {
+        animation: card-spin 0.9s linear infinite;
+    }
+
+    @keyframes card-spin {
+        from {
+            transform: rotate(0deg);
+        }
+        to {
+            transform: rotate(360deg);
+        }
+    }
+
     .peek-button :global(svg) {
         pointer-events: none;
+    }
+
+    .card-error {
+        margin: 0.5em 0 0;
+        color: var(--error-color);
+        font-size: 0.9em;
     }
 
     .expanded-body {

@@ -55,6 +55,7 @@ pub const COMMANDS: &[&str] = &[
     "get_paragraph_translations_batch",
     "get_translation_providers",
     "get_word_info",
+    "create_card_for_word",
     "import_plain_text",
     "parse_epub",
     "import_epub",
@@ -373,6 +374,21 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: Value) -> Result<Value, Valu
             });
             wrap(
                 crate::app::library_view::get_word_info(
+                    state,
+                    book_id,
+                    paragraph_id,
+                    sentence_id,
+                    word_id,
+                )
+                .await,
+            )
+        }
+        "create_card_for_word" => {
+            let (book_id, paragraph_id, sentence_id, word_id) = args!(args, {
+                book_id: Uuid, paragraph_id: usize, sentence_id: usize, word_id: usize
+            });
+            wrap(
+                crate::app::library_view::create_card_for_word(
                     state,
                     book_id,
                     paragraph_id,
