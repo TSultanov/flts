@@ -4,7 +4,7 @@
 # paths are excluded via `exclude` and `.prettierignore`.
 
 default_language_version:
-  node: "22.14.0"
+  node: "24.22.0"
 
 exclude: |
   (?x)^(
@@ -55,12 +55,12 @@ repos:
         files: \.(css|html?|json|md|ya?ml|jsx?|tsx?|svelte)$
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.11.2
+    rev: v0.17.1
     hooks:
       - id: ruff-format
 
   - repo: https://github.com/scop/pre-commit-shfmt
-    rev: v3.10.0-1
+    rev: v3.14.1-1
     hooks:
       - id: shfmt
         args: [-i, "4", -ci, -bn]
