@@ -72,6 +72,14 @@ test.describe("appearance (light)", () => {
 test.describe("appearance (dark)", () => {
   test.use({ colorScheme: "dark" });
 
+  // The dev/preview server sends COOP/COEP headers, and Firefox ignores the
+  // context-level colorScheme emulation on cross-origin-isolated pages.
+  // Re-apply it after the first navigation; it survives later reloads.
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/library");
+    await page.emulateMedia({ colorScheme: "dark" });
+  });
+
   test("document is a dark page with light text", async ({ page }) => {
     await page.goto("/library");
     expect(rgbLuminance(await bg(page, "body"))).toBeLessThan(0.15);
