@@ -1428,3 +1428,6 @@ pub async fn show_system_dictionary(
         Ok(())
     }
 }
+
+#[cfg(all(test, feature = "manual-llm-diagnostics"))]
+mod manual_llm_diagnostics;

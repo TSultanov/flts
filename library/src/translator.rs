@@ -1,4 +1,6 @@
 pub mod catalog;
+#[cfg(feature = "manual-llm-diagnostics")]
+pub mod diagnostics;
 pub(crate) mod gemini;
 pub mod gemini_cache;
 pub(crate) mod openai;

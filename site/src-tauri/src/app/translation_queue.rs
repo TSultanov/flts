@@ -94,7 +94,7 @@ async fn handle_translation_failure(
         });
         if requeued.is_ok() {
             warn!(
-                "Transient failure translating {}/{} (attempt {}/{}): {}; requeued",
+                "Transient failure translating {}/{} (attempt {}/{}): {:#}; requeued",
                 request.book_id, request.paragraph_id, next_attempt, MAX_TRANSLATION_ATTEMPTS, err
             );
             return FailureDisposition::Requeued { expected_chars };
@@ -103,7 +103,7 @@ async fn handle_translation_failure(
     }
 
     warn!(
-        "Failed to translate {}/{}: {}",
+        "Failed to translate {}/{}: {:#}",
         request.book_id, request.paragraph_id, err
     );
     state
@@ -376,7 +376,7 @@ impl TranslationQueue {
                                         request.book_id,
                                         request.paragraph_id,
                                         request.request_id,
-                                        Some(err.to_string()),
+                                        Some(format!("{err:#}")),
                                     );
                                 }
                             }

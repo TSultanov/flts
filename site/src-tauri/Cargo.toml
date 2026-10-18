@@ -14,6 +14,7 @@ name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
+manual-llm-diagnostics = ["library/manual-llm-diagnostics"]
 # Opt-in only. Never enable by default or in ship builds: it exposes the whole
 # invoke surface over a local socket.
 e2e-bridge = ["dep:axum", "tokio/net"]

@@ -79,6 +79,26 @@ pub(crate) fn openai_compat_base_url(
     }
 }
 
+pub(crate) fn translation_instructions(
+    from: Language,
+    to: Language,
+    schema: &Value,
+    json_mode: bool,
+) -> String {
+    let mut instructions = format!(
+        "{}\n\nReturn ONLY a single JSON object that matches the requested schema. Do not wrap it in markdown.",
+        OpenAITranslator::get_prompt(from.to_name(), to.to_name())
+    );
+    // JSON mode guarantees JSON syntax, so the prompt must carry the target shape.
+    if json_mode {
+        if let Ok(schema_text) = serde_json::to_string_pretty(schema) {
+            instructions.push_str("\n\nJSON schema for the response:\n");
+            instructions.push_str(&schema_text);
+        }
+    }
+    instructions
+}
+
 impl OpenAITranslator {
     pub fn create(
         cache: Arc<TranslationsCache>,
@@ -139,18 +159,7 @@ impl Translator for OpenAITranslator {
                 | TranslationProvider::Zai
                 | TranslationProvider::Openrouter
         );
-        let mut instructions = format!(
-            "{}\n\nReturn ONLY a single JSON object that matches the requested schema. Do not wrap it in markdown.",
-            Self::get_prompt(self.from.to_name(), self.to.to_name())
-        );
-        // DeepSeek's JSON mode guarantees valid JSON but enforces no schema,
-        // so the prompt must carry the target shape.
-        if is_deepseek {
-            if let Ok(schema_text) = serde_json::to_string_pretty(&*self.schema) {
-                instructions.push_str("\n\nJSON schema for the response:\n");
-                instructions.push_str(&schema_text);
-            }
-        }
+        let instructions = translation_instructions(self.from, self.to, &self.schema, is_deepseek);
 
         // The UI gates translate on the same predicate, so this is normally
         // instant. Errors propagate; there is no summary-free fallback.

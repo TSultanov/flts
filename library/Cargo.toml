@@ -6,6 +6,7 @@ edition = "2024"
 [features]
 default = []
 tla_trace = []
+manual-llm-diagnostics = []
 # Pulls in the embedded Syncthing engine FFI (syncthing-sys → Go c-archive).
 # Off by default so `cargo test -p library` stays fast and Go-free; the app and
 # the sync harness enable it. The pure sync logic (control/roster/reconcile) is
