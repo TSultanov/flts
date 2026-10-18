@@ -23,47 +23,47 @@
     "test:e2e:real:debug": "PLAYWRIGHT_REAL=true playwright test -c playwright.real.config.ts --debug"
   },
   "devDependencies": {
-    "@playwright/test": "^1.60.0",
+    "@playwright/test": "^1.64.1",
     "@stryker-mutator/core": "^9.6.1",
     "@stryker-mutator/typescript-checker": "^9.6.1",
     "@stryker-mutator/vitest-runner": "^9.6.1",
-    "@sveltejs/vite-plugin-svelte": "^7.1.2",
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
     "@tsconfig/svelte": "^5.0.8",
     "@types/qrcode": "^1.5.6",
-    "@types/ws": "^8.18.1",
-    "@vitest/coverage-v8": "^4.1.6",
-    "@vitest/ui": "^4.1.6",
+    "@types/ws": "^8.18.2",
+    "@vitest/coverage-v8": "^4.1.12",
+    "@vitest/ui": "^4.1.12",
     "epubts": "^0.2.0",
-    "fake-indexeddb": "^6.2.5",
-    "fast-check": "^4.8.0",
+    "fake-indexeddb": "^6.2.6",
+    "fast-check": "^4.10.2",
     "jsdom": "^29.1.1",
-    "jszip": "^3.10.1",
+    "jszip": "^3.10.2",
     "prettier": "3.4.2",
     "prettier-plugin-svelte": "3.3.3",
-    "svelte": "^5.55.5",
-    "svelte-check": "^4.4.8",
+    "svelte": "^5.57.2",
+    "svelte-check": "^4.7.7",
     "typescript": "~6.0.3",
-    "vite": "^8.0.12",
-    "vitest": "^4.1.6",
-    "ws": "^8.21.3"
+    "vite": "^8.3.4",
+    "vitest": "^4.1.12",
+    "ws": "^8.22.0"
   },
   "dependencies": {
-    "@fortawesome/free-solid-svg-icons": "^7.2.0",
-    "@tauri-apps/api": "~2.11.1",
-    "@tauri-apps/plugin-barcode-scanner": "~2.4.6",
-    "@tauri-apps/plugin-dialog": "~2.7.3",
-    "@tauri-apps/plugin-log": "~2.9.2",
-    "@tauri-apps/plugin-os": "~2.3.2",
-    "@tauri-apps/plugin-window-state": "~2.4.1",
-    "@types/jsdom": "^28.0.2",
-    "dexie": "^4.4.2",
+    "@fortawesome/free-solid-svg-icons": "^7.3.1",
+    "@tauri-apps/api": "~2.12.4",
+    "@tauri-apps/plugin-barcode-scanner": "~2.5.3",
+    "@tauri-apps/plugin-dialog": "~2.8.3",
+    "@tauri-apps/plugin-log": "~2.10.1",
+    "@tauri-apps/plugin-os": "~2.4.0",
+    "@tauri-apps/plugin-window-state": "~2.5.0",
+    "@types/jsdom": "^28.0.3",
+    "dexie": "^4.4.6",
     "qrcode": "^1.5.4",
-    "sv-router": "^0.16.1",
+    "sv-router": "^0.16.3",
     "svelte-fa": "^4.0.4"
   },
   "pnpm": {
     "overrides": {
-      "@tauri-apps/api": "~2.11.1"
+      "@tauri-apps/api": "~2.12.4"
     }
   }
 }
