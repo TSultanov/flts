@@ -1,3 +1,7 @@
+// gemini-rust 2.1 deprecates the generate_content API in favour of the
+// Interactions API. Keep the existing API until the migration is done.
+#![allow(deprecated)]
+
 //! Single-call generator for per-chapter source-language summaries.
 //!
 //! Summaries feed cross-paragraph translation context. One call per chapter,
@@ -326,6 +330,8 @@ fn part_variant_name(p: &gemini_rust::Part) -> &'static str {
         Part::FileData { .. } => "FileData",
         Part::ExecutableCode { .. } => "ExecutableCode",
         Part::CodeExecutionResult { .. } => "CodeExecutionResult",
+        Part::ToolCall { .. } => "ToolCall",
+        Part::ToolResponse { .. } => "ToolResponse",
     }
 }
 
