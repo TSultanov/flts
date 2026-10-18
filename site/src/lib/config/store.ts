@@ -2,11 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Resource } from "../data/tauri.svelte";
 
 export type TranslationProvider =
-  | "google"
-  | "openai"
-  | "deepseek"
-  | "zai"
-  | "openrouter";
+  "google" | "openai" | "deepseek" | "zai" | "openrouter";
 
 export type Model = {
   id: string;

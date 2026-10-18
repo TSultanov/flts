@@ -271,13 +271,13 @@ test.describe("Chapter paging vs virtualization (chromium only)", () => {
           };
         };
         const scrollTo = async (id: number) => {
-          c
-            .querySelector(`.paragraph-wrapper[data-paragraph-id="${id}"]`)
-            ?.scrollIntoView({
-              behavior: "auto",
-              block: "nearest",
-              inline: "center",
-            });
+          c.querySelector(
+            `.paragraph-wrapper[data-paragraph-id="${id}"]`,
+          )?.scrollIntoView({
+            behavior: "auto",
+            block: "nearest",
+            inline: "center",
+          });
           await new Promise((r) => setTimeout(r, 500));
         };
         await scrollTo(120);

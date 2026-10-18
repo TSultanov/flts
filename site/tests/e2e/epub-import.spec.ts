@@ -326,9 +326,8 @@ test.describe("EPUB Import with Mocked Translation", () => {
     await page.goto("/import");
     await page.click("text=File import");
 
-    const { createComplexTestEpub } = await import(
-      "../fixtures/epub-generator"
-    );
+    const { createComplexTestEpub } =
+      await import("../fixtures/epub-generator");
     const epubBuffer = await createComplexTestEpub();
 
     const fileInput = page.locator('input[type="file"]');
@@ -390,9 +389,8 @@ test.describe("EPUB Import with Mocked Translation", () => {
     await page.goto("/import");
     await page.click("text=File import");
 
-    const { createEmptyChaptersTestEpub } = await import(
-      "../fixtures/epub-generator"
-    );
+    const { createEmptyChaptersTestEpub } =
+      await import("../fixtures/epub-generator");
     const epubBuffer = await createEmptyChaptersTestEpub();
 
     const fileInput = page.locator('input[type="file"]');
@@ -438,9 +436,8 @@ test.describe("EPUB Import with Mocked Translation", () => {
     await page.goto("/import");
     await page.click("text=File import");
 
-    const { createMultilingualTestEpub } = await import(
-      "../fixtures/epub-generator"
-    );
+    const { createMultilingualTestEpub } =
+      await import("../fixtures/epub-generator");
     const epubBuffer = await createMultilingualTestEpub();
 
     const fileInput = page.locator('input[type="file"]');
@@ -541,9 +538,8 @@ test.describe("EPUB Import with Mocked Translation", () => {
     await page.goto("/import");
     await page.click("text=File import");
 
-    const { createComplexTestEpub } = await import(
-      "../fixtures/epub-generator"
-    );
+    const { createComplexTestEpub } =
+      await import("../fixtures/epub-generator");
     const epubBuffer = await createComplexTestEpub();
 
     const fileInput = page.locator('input[type="file"]');

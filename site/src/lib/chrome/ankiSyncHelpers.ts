@@ -7,11 +7,7 @@ import {
 } from "@fortawesome/free-solid-svg-icons";
 
 export type AnkiSyncStatusState =
-  | "idle"
-  | "syncing"
-  | "ok"
-  | "err"
-  | "unreachable";
+  "idle" | "syncing" | "ok" | "err" | "unreachable";
 
 export type SyncReportDto = {
   totalCards: number;

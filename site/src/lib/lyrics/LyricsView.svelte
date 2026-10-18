@@ -50,11 +50,8 @@
     let lyrics: Lyrics | null = $state(null);
     let translation: LyricsTranslation | null = $state(null);
     let translationStatus:
-        | "idle"
-        | "fetching"
-        | "translating"
-        | "error"
-        | "unsupported-track" = $state("idle");
+        "idle" | "fetching" | "translating" | "error" | "unsupported-track" =
+        $state("idle");
     let translationBytes: number = $state(0);
     let errorMessage: string | null = $state(null);
     let lastDispatchKey: string | null = null;

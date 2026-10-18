@@ -3,11 +3,7 @@ import { platform } from "@tauri-apps/plugin-os";
 import { Resource } from "../data/tauri.svelte";
 
 export type SyncState =
-  | "disabled"
-  | "starting"
-  | "online"
-  | "syncing"
-  | "error";
+  "disabled" | "starting" | "online" | "syncing" | "error";
 
 export type SyncStatus = {
   state: SyncState;
@@ -115,9 +111,8 @@ export function canScan(): boolean {
 /// Must run before `scan()`: it does not request the camera permission
 /// itself and fails outright on a fresh install.
 export async function ensureCameraPermission(): Promise<boolean> {
-  const { checkPermissions, requestPermissions } = await import(
-    "@tauri-apps/plugin-barcode-scanner"
-  );
+  const { checkPermissions, requestPermissions } =
+    await import("@tauri-apps/plugin-barcode-scanner");
   // The plugin's declared return type resolves to the DOM-global
   // PermissionState, which lacks 'prompt-with-rationale' — a value that
   // does occur at runtime on Android.

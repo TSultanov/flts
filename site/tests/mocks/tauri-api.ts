@@ -16,11 +16,7 @@ type Language = {
 };
 
 type TranslationProvider =
-  | "google"
-  | "openai"
-  | "deepseek"
-  | "zai"
-  | "openrouter";
+  "google" | "openai" | "deepseek" | "zai" | "openrouter";
 
 type ProviderMeta = {
   id: TranslationProvider;
@@ -548,8 +544,7 @@ function buildBookFromChapters(
 // subscribers never see it.
 function emit(event: string, payload: unknown) {
   const dispatch = (window as any).__tauriEmit as
-    | ((e: string, p?: unknown) => void)
-    | undefined;
+    ((e: string, p?: unknown) => void) | undefined;
   dispatch?.(event, payload);
 }
 
@@ -869,8 +864,7 @@ if (typeof window !== "undefined") {
   (window as any).__mockSpotifyState = (np: NowPlaying | null) => {
     mockNowPlaying = np;
     const dispatch = (window as any).__tauriEmit as
-      | ((e: string, p?: unknown) => void)
-      | undefined;
+      ((e: string, p?: unknown) => void) | undefined;
     dispatch?.("spotify_state", np);
   };
   (window as any).__mockLyrics = (trackId: string, lyrics: Lyrics | null) => {
