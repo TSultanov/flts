@@ -54,11 +54,13 @@ afterEach(() => {
 
 describe("TauriEventHub eager catalog", () => {
   it("installs a native listener for every known event at construction", () => {
+    // Vitest 5 clears mock call history before each test, so assert on the
+    // listeners the eager construction actually registered.
     for (const name of KNOWN_EVENTS) {
       expect(
-        listenMock,
+        nativeListeners.get(name),
         `expected eager listen("${name}")`,
-      ).toHaveBeenCalledWith(name, expect.any(Function));
+      ).toHaveLength(1);
     }
   });
 
@@ -178,6 +180,11 @@ describe("weak subscribers", () => {
     const hub = new TauriEventHub([]);
     const handler = vi.fn();
     hub.subscribeWeak("no_weakref_evt", () => true, handler);
+
+    // The fallback is chosen inside subscribeWeak; restore WeakRef before
+    // dispatching because @vitest/spy itself constructs WeakRefs when a mock
+    // is invoked.
+    vi.unstubAllGlobals();
 
     fireNative("no_weakref_evt", "y");
     expect(handler).toHaveBeenCalledTimes(1);
