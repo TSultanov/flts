@@ -3,6 +3,13 @@
   "testRunner": "vitest",
   "reporters": ["html", "clear-text", "progress"],
   "coverageAnalysis": "off",
+  "ignorePatterns": [
+    "src-tauri",
+    "dist",
+    "coverage",
+    "playwright-report*",
+    "test-results"
+  ],
   "plugins": [
     "@stryker-mutator/vitest-runner",
     "@stryker-mutator/typescript-checker"
