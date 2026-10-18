@@ -606,7 +606,7 @@ pub fn is_transient_translation_error(err: &anyhow::Error) -> bool {
             OpenAIError::Reqwest(re) => is_reqwest_transient(re),
             OpenAIError::StreamError(_) => true,
             OpenAIError::ApiError(api) => {
-                let t = api.api_error.r#type.as_deref().unwrap_or("").to_lowercase();
+                let t = api.r#type.as_deref().unwrap_or("").to_lowercase();
                 t.contains("server_error")
                     || t.contains("rate_limit")
                     || t.contains("overloaded")
@@ -618,17 +618,9 @@ pub fn is_transient_translation_error(err: &anyhow::Error) -> bool {
 
     if let Some(ge) = err.downcast_ref::<gemini_rust::ClientError>() {
         return match ge {
-            // gemini-rust still uses reqwest 0.12 while the workspace is on
-            // 0.13, so the error type cannot be passed to `is_reqwest_transient`.
-            gemini_rust::ClientError::PerformRequest { source, .. } => {
-                source.is_timeout() || source.is_connect() || source.is_request()
-            }
-            gemini_rust::ClientError::PerformRequestNew { source } => {
-                source.is_timeout() || source.is_connect() || source.is_request()
-            }
-            gemini_rust::ClientError::DecodeResponse { source } => {
-                source.is_timeout() || source.is_connect() || source.is_request()
-            }
+            gemini_rust::ClientError::PerformRequest { source, .. } => is_reqwest_transient(source),
+            gemini_rust::ClientError::PerformRequestNew { source } => is_reqwest_transient(source),
+            gemini_rust::ClientError::DecodeResponse { source } => is_reqwest_transient(source),
             gemini_rust::ClientError::BadPart { .. } => true,
             gemini_rust::ClientError::BadResponse { code, .. } => {
                 *code == 408 || *code == 429 || (500..=599).contains(code)

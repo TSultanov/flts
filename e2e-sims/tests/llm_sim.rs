@@ -1,7 +1,3 @@
-// gemini-rust 2.1 deprecates the generate_content API in favour of the
-// Interactions API. Keep the existing API until the migration is done.
-#![allow(deprecated)]
-
 use async_openai::types::chat::{
     CreateChatCompletionResponse, CreateChatCompletionStreamResponse, FinishReason as OaFinish,
 };
