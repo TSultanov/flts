@@ -2,7 +2,7 @@ name: app
 options:
   bundleIdPrefix: com.TS.FLTS
   deploymentTarget:
-    iOS: 14.0
+    iOS: 15.0
   # Default xcodebuild configuration when none is passed (and Xcode's project default).
   defaultConfig: release
 fileGroups: [../../src]
