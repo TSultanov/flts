@@ -1737,7 +1737,7 @@ dependencies = [
  "regex",
  "thiserror 2.0.21",
  "xml-rs",
- "zip",
+ "zip 3.0.0",
 ]
 
 [[package]]
@@ -3207,7 +3207,7 @@ dependencies = [
  "trash",
  "unicode-normalization",
  "uuid",
- "zip",
+ "zip 9.0.5",
  "zstd",
 ]
 
@@ -6385,6 +6385,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "typed-path"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e28f89b80c87b8fb0cf04ab448d5dd0dd0ade2f8891bae878de66a75a28600e"
+
+[[package]]
 name = "typeid"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7520,6 +7526,21 @@ dependencies = [
  "flate2",
  "indexmap 2.14.2",
  "memchr",
+ "zopfli",
+]
+
+[[package]]
+name = "zip"
+version = "9.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e04976da629d3b04204ba8105b396a193af8ad2583b2c79bfb3ab8af580a11e"
+dependencies = [
+ "crc32fast",
+ "flate2",
+ "indexmap 2.14.2",
+ "memchr",
+ "nix",
+ "typed-path",
  "zopfli",
 ]
 
