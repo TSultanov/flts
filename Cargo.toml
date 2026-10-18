@@ -17,6 +17,7 @@ isolang = "2.4.0"
 log = "0.4.29"
 rand = "0.10.3"
 reqwest = { version = "0.13", default-features = false, features = [
+  "form",
   "json",
   "rustls",
 ] }
