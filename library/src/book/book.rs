@@ -546,7 +546,9 @@ mod book_tests {
         let mut buffer: Vec<u8> = vec![];
         book.serialize(&mut buffer).unwrap();
 
-        buffer[12] = 0xae;
+        // Byte 12 is the last byte of the metadata hash, which depends on the
+        // random UUID. XOR so the mutation is never a no-op.
+        buffer[12] ^= 0xff;
 
         let mut cursor = Cursor::new(buffer);
         let book2 = Book::deserialize(&mut cursor);

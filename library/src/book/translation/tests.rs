@@ -405,7 +405,9 @@ fn translation_serialize_deserialize_corruption() {
     let mut buf: Vec<u8> = vec![];
     translation.serialize(&mut buf).unwrap();
 
-    buf[12] = 0xae;
+    // Byte 12 is the last byte of the metadata hash, which depends on the
+    // random UUID. XOR so the mutation is never a no-op.
+    buf[12] ^= 0xff;
 
     let mut cursor = Cursor::new(buf);
     let translation2 = Translation::deserialize(&mut cursor);
