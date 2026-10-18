@@ -39,8 +39,8 @@ importers:
         specifier: ^1.5.4
         version: 1.5.4
       sv-router:
-        specifier: ^0.16.3
-        version: 0.16.3(svelte@5.57.2(@typescript-eslint/types@8.58.1))
+        specifier: ^0.19.0
+        version: 0.19.0(svelte@5.57.2(@typescript-eslint/types@8.58.1))
       svelte-fa:
         specifier: ^4.0.4
         version: 4.0.4(svelte@5.57.2(@typescript-eslint/types@8.58.1))
@@ -1583,8 +1583,8 @@ packages:
     resolution: {integrity: sha512-aulFJcD6YK8V1G7iRB5tigAP4TsHBZZrOV8pjV++zdUwmeV8uzbY7yn6h9MswN62adStNZFuCIx4haBnRuMDaw==}
     engines: {node: '>=18'}
 
-  sv-router@0.16.3:
-    resolution: {integrity: sha512-nne8keA2GKZRdRE8r7HFx7wcR2ruqVPf/RZ9De5webNgaDbfKHEeh5qpAe0Hg0cczXnZh/qcgRsSNDphbVd0Gw==}
+  sv-router@0.19.0:
+    resolution: {integrity: sha512-aP3QwqZ/PStVFOLYTr+9zkvmqQUpOEA169kgIRBcKp4kDGCZIQ4+o1/qoFT5U1xvnm7hpUw6OC3vraQ0/pWlXQ==}
     hasBin: true
     peerDependencies:
       svelte: ^5
@@ -3258,7 +3258,7 @@ snapshots:
 
   strip-final-newline@4.0.0: {}
 
-  sv-router@0.16.3(svelte@5.57.2(@typescript-eslint/types@8.58.1)):
+  sv-router@0.19.0(svelte@5.57.2(@typescript-eslint/types@8.58.1)):
     dependencies:
       esm-env: 1.2.2
       svelte: 5.57.2(@typescript-eslint/types@8.58.1)

@@ -58,7 +58,7 @@
     "@tauri-apps/plugin-window-state": "~2.5.0",
     "dexie": "^4.4.6",
     "qrcode": "^1.5.4",
-    "sv-router": "^0.16.3",
+    "sv-router": "^0.19.0",
     "svelte-fa": "^4.0.4"
   },
   "pnpm": {
