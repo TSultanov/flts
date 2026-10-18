@@ -605,10 +605,10 @@ pub fn is_transient_translation_error(err: &anyhow::Error) -> bool {
 
     if let Some(oe) = err.downcast_ref::<OpenAIError>() {
         return match oe {
-            OpenAIError::Reqwest(re) => is_reqwest_transient(re),
+            OpenAIError::Reqwest(re) => re.is_timeout() || re.is_connect() || re.is_request(),
             OpenAIError::StreamError(_) => true,
             OpenAIError::ApiError(api) => {
-                let t = api.r#type.as_deref().unwrap_or("").to_lowercase();
+                let t = api.api_error.r#type.as_deref().unwrap_or("").to_lowercase();
                 t.contains("server_error")
                     || t.contains("rate_limit")
                     || t.contains("overloaded")
@@ -857,6 +857,34 @@ mod tests {
             short,
             super::TRANSLATION_TOTAL_TIMEOUT_BASE + super::TRANSLATION_TOTAL_TIMEOUT_PER_CHAR * 100
         );
+    }
+
+    #[test]
+    fn classifier_handles_openai_api_error_response() {
+        use async_openai::error::{ApiError, ApiErrorResponse, OpenAIError};
+
+        for (status, error_type, expected) in [
+            (429, "rate_limit_error", true),
+            (503, "server_error", true),
+            (400, "invalid_request_error", false),
+            (429, "insufficient_quota", false),
+        ] {
+            let err = anyhow::Error::from(OpenAIError::ApiError(ApiErrorResponse {
+                status_code: status.try_into().unwrap(),
+                api_error: ApiError {
+                    message: "provider error".into(),
+                    r#type: Some(error_type.into()),
+                    param: None,
+                    code: None,
+                    misalignment: None,
+                },
+            }));
+            assert_eq!(
+                is_transient_translation_error(&err),
+                expected,
+                "{error_type}"
+            );
+        }
     }
 
     #[test]
