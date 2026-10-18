@@ -63,7 +63,7 @@ webbrowser = "1"
 rand = { workspace = true }
 axum = { version = "0.8", features = ["ws"], optional = true }
 # CDP WebSocket client for the Spotify lyrics bridge (app/spotify/cdp.rs).
-tokio-tungstenite = "0.29"
+tokio-tungstenite = "0.30"
 futures-util = "0.3"
 
 [target.'cfg(unix)'.dependencies]
