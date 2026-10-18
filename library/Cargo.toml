@@ -29,7 +29,7 @@ futures-util = { version = "0.3.34", default-features = false, features = [
   "std",
 ] }
 isolang = { workspace = true, features = ["local_names"] }
-itertools = "0.14.0"
+itertools = "0.15.0"
 log = { workspace = true }
 notify = "8.2.0"
 notify-debouncer-full = "0.7.0"
