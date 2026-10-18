@@ -53,7 +53,7 @@ tokio = { workspace = true, features = [
 ] }
 unicode-normalization = { workspace = true }
 uuid = { workspace = true }
-zstd = { version = "0.13.3", default-features = false, features = ["arrays"] }
+zstd = { version = "0.14.3", default-features = false, features = ["arrays"] }
 
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
 trash = "5.2.9"
