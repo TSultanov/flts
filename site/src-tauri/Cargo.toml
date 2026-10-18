@@ -52,8 +52,8 @@ htmlentity = "1.3.2"
 tauri-plugin-os = "2.4.0"
 ahash = { workspace = true, features = ["serde"] }
 reqwest = { workspace = true }
-sha2 = "0.10"
-base64 = "0.22"
+sha2 = "0.11"
+base64 = "0.23"
 keyring = { version = "3", features = [
   "apple-native",
   "windows-native",
