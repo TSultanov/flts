@@ -54,11 +54,7 @@ ahash = { workspace = true, features = ["serde"] }
 reqwest = { workspace = true }
 sha2 = "0.11"
 base64 = "0.23"
-keyring = { version = "3", features = [
-  "apple-native",
-  "windows-native",
-  "sync-secret-service",
-] }
+keyring = "4"
 webbrowser = "1"
 rand = { workspace = true }
 axum = { version = "0.8", features = ["ws"], optional = true }
