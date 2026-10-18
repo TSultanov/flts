@@ -941,6 +941,22 @@ const mockProviders: ProviderMeta[] = [
 
 export type InvokeArgs = Record<string, unknown>;
 
+export type PermissionState =
+  "granted" | "denied" | "prompt" | "prompt-with-rationale";
+
+// @tauri-apps/plugin-barcode-scanner imports these from the core package even
+// when only its `scan`/`cancel` exports are used. Scanning has no headless
+// equivalent, so report the camera as granted.
+export async function checkPermissions<T>(plugin: string): Promise<T> {
+  console.log(`[Tauri Mock] checkPermissions: ${plugin}`);
+  return { camera: "granted" } as unknown as T;
+}
+
+export async function requestPermissions<T>(plugin: string): Promise<T> {
+  console.log(`[Tauri Mock] requestPermissions: ${plugin}`);
+  return { camera: "granted" } as unknown as T;
+}
+
 /** Playwright stand-in for Rust `parse_language_id`. Isolang is not imported. */
 function mockParseLanguageId(code: unknown): string | null {
   if (typeof code !== "string") return null;
