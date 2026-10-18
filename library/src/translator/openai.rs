@@ -194,7 +194,7 @@ impl Translator for OpenAITranslator {
                 json_schema: ResponseFormatJsonSchema {
                     description: Some("Paragraph translation".to_string()),
                     name: "paragraph_translation".to_string(),
-                    schema: Some((*self.schema).clone()),
+                    schema: (*self.schema).clone(),
                     strict: Some(true),
                 },
             }

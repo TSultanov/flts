@@ -229,7 +229,7 @@ impl LyricsTranslator for LyricsOpenAITranslator {
                         json_schema: ResponseFormatJsonSchema {
                             description: Some("Per-line song lyrics translation".to_string()),
                             name: "lyrics_translation".to_string(),
-                            schema: Some((*self.schema).clone()),
+                            schema: (*self.schema).clone(),
                             strict: Some(true),
                         },
                     }
