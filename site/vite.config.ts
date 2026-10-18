@@ -7,33 +7,42 @@ export default defineConfig({
   resolve: {
     alias: {
       ...(process.env.PLAYWRIGHT && {
-        "@tauri-apps/api/core": resolve(__dirname, "tests/mocks/tauri-api.ts"),
+        "@tauri-apps/api/core": resolve(
+          import.meta.dirname,
+          "tests/mocks/tauri-api.ts",
+        ),
         "@tauri-apps/api/event": resolve(
-          __dirname,
+          import.meta.dirname,
           "tests/mocks/tauri-event.ts",
         ),
         "@tauri-apps/plugin-dialog": resolve(
-          __dirname,
+          import.meta.dirname,
           "tests/mocks/tauri-dialog.ts",
         ),
-        "@tauri-apps/plugin-os": resolve(__dirname, "tests/mocks/tauri-os.ts"),
+        "@tauri-apps/plugin-os": resolve(
+          import.meta.dirname,
+          "tests/mocks/tauri-os.ts",
+        ),
       }),
       // Real tier: core/event go over the WS bridge; dialog/os stay mocked —
       // native pickers have no headless equivalent.
       ...(process.env.PLAYWRIGHT_REAL && {
         "@tauri-apps/api/core": resolve(
-          __dirname,
+          import.meta.dirname,
           "tests/real/tauri-shim-core.ts",
         ),
         "@tauri-apps/api/event": resolve(
-          __dirname,
+          import.meta.dirname,
           "tests/real/tauri-shim-event.ts",
         ),
         "@tauri-apps/plugin-dialog": resolve(
-          __dirname,
+          import.meta.dirname,
           "tests/mocks/tauri-dialog.ts",
         ),
-        "@tauri-apps/plugin-os": resolve(__dirname, "tests/mocks/tauri-os.ts"),
+        "@tauri-apps/plugin-os": resolve(
+          import.meta.dirname,
+          "tests/mocks/tauri-os.ts",
+        ),
       }),
     },
   },
