@@ -39,7 +39,9 @@ impl SummaryGenerationQueue {
         let model = library::translator::catalog::effective_model_id(provider, &config.model);
         let key = config.api_keys().for_provider(provider).map(str::to_owned);
         let (enqueue, mut requests) = mpsc::channel(256);
+        let keepalive = enqueue.clone();
         let task = ManagedTask::spawn(move |mut stop| async move {
+            let _keepalive = keepalive;
             let Some(key) = key else {
                 return;
             };

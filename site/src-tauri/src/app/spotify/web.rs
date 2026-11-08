@@ -152,7 +152,7 @@ struct Inner {
     client_id: Option<String>,
     premium_required: bool,
     last_error: Option<String>,
-    /// Bumped by connect()/disconnect() while holding the write lock. A token
+    /// Bumped by connect()/disconnect() in the controller. A token
     /// refresh in `access_token` captures this before awaiting the network and
     /// re-checks it before writing back, so a refresh that races a disconnect
     /// can't resurrect a torn-down session. See `accepts_generation`.
@@ -177,6 +177,38 @@ enum WebRequest {
     Start(oneshot::Sender<()>),
     Stop(oneshot::Sender<()>),
 }
+#[derive(Default)]
+struct AuthQueue {
+    pending: VecDeque<(String, Reply<()>)>,
+    active: bool,
+}
+impl AuthQueue {
+    fn push(&mut self, id: String, reply: Reply<()>) {
+        if self.pending.len() >= 256 {
+            let _ = reply.send(Err("Spotify authentication queue busy".into()));
+            return;
+        }
+        self.pending.push_back((id, reply));
+    }
+    fn start_next(&mut self) -> Option<(String, Reply<()>)> {
+        if self.active {
+            return None;
+        }
+        let next = self.pending.pop_front()?;
+        self.active = true;
+        Some(next)
+    }
+    fn start_resume(&mut self) -> bool {
+        if self.active {
+            return false;
+        }
+        self.active = true;
+        true
+    }
+    fn finish(&mut self) {
+        self.active = false;
+    }
+}
 #[derive(Clone)]
 pub struct SpotifyWebState {
     requests: mpsc::Sender<WebRequest>,
@@ -196,8 +228,10 @@ impl SpotifyWebState {
             last_error: None,
         });
         let (tx, queue) = watch::channel(None);
-        let owner = ManagedTask::spawn(move |stop| {
-            serve_web(app, config, lyrics, receiver, status, tx, stop)
+        let keepalive = requests.clone();
+        let owner = ManagedTask::spawn(move |stop| async move {
+            let _keepalive = keepalive;
+            serve_web(app, config, lyrics, receiver, status, tx, stop).await;
         });
         (
             Self {
@@ -561,8 +595,7 @@ async fn serve_web(
     let mut inner = Inner::default();
     let mut network: FuturesUnordered<BoxFuture<'_, Finished>> = FuturesUnordered::new();
     let mut resolutions = FuturesUnordered::new();
-    let mut connects: VecDeque<(String, Reply<()>)> = VecDeque::new();
-    let mut auth_busy = false;
+    let mut auth = AuthQueue::default();
     let mut auth_abort: Option<AbortHandle> = None;
     let mut poll_busy = false;
     let mut poll_abort: Option<AbortHandle> = None;
@@ -577,14 +610,15 @@ async fn serve_web(
     #[cfg(not(target_os = "macos"))]
     let mut native = watch::channel::<Option<()>>(None).1;
     let mut last_track: Option<String> = None;
+    let mut config_open = true;
+    let mut native_open = true;
     loop {
-        if !auth_busy && let Some((client_id, reply)) = connects.pop_front() {
+        if let Some((client_id, reply)) = auth.start_next() {
             inner.generation = inner.generation.wrapping_add(1);
             inner.client_id = Some(client_id.clone());
             inner.last_error = None;
             let generation = inner.generation;
             let io = &io;
-            auth_busy = true;
             let (abort, registration) = AbortHandle::new_pair();
             auth_abort = Some(abort);
             network.push(
@@ -675,11 +709,11 @@ async fn serve_web(
             _ = stop.changed() => break,
             request = requests.recv() => match request {
                 None => break,
-                Some(WebRequest::Connect(id, reply)) => { connects.push_back((id, reply)); }
+                Some(WebRequest::Connect(id, reply)) => { auth.push(id, reply); }
                 Some(WebRequest::Resume(id, reply)) => {
                     let Some(client_id) = id else { let _ = reply.send(()); continue; };
-                    if auth_busy { let _ = reply.send(()); continue; }
-                    auth_busy = true; inner.client_id = Some(client_id.clone()); let generation = inner.generation; let io = &io;
+                    if !auth.start_resume() { let _ = reply.send(()); continue; }
+                    inner.client_id = Some(client_id.clone()); let generation = inner.generation; let io = &io;
                     network.push(async move {
                         let result = match load_refresh_token().await { Some(refresh) => io.refresh_with(&client_id, &refresh).await.map(Some), None => Ok(None) };
                         Finished::Auth { generation, client_id, reply: None, resume: Some(reply), result }
@@ -699,8 +733,9 @@ async fn serve_web(
                     resolutions.clear(); claims.clear(); list = PlaybackList::default(); tx.send_replace(None); let _ = reply.send(());
                 }
             },
-            changed = config.changed() => { if changed.is_ok() { config.borrow_and_update(); resolutions.clear(); claims.clear(); next_poll = time::Instant::now(); } }
-            changed = native.changed(), if polling => {
+            changed = config.changed(), if config_open => { if changed.is_ok() { config.borrow_and_update(); resolutions.clear(); claims.clear(); next_poll = time::Instant::now(); } else { config_open = false; } }
+            changed = native.changed(), if polling && native_open => {
+                if changed.is_err() { native_open = false; continue; }
                 if changed.is_ok() {
                     #[cfg(target_os = "macos")] let track = native.borrow_and_update().as_ref().and_then(|n| n.track_id.clone());
                     #[cfg(not(target_os = "macos"))] let track: Option<String> = None;
@@ -714,7 +749,7 @@ async fn serve_web(
             _ = time::sleep_until(next_poll), if polling && !poll_busy => {}
             Some(finished) = network.next(), if !network.is_empty() => match finished {
                 Finished::Auth { generation, client_id, reply, resume, result } => {
-                    auth_busy = false; auth_abort = None;
+                    auth.finish(); auth_abort = None;
                     let accepted = inner.accepts_generation(generation);
                     let outcome = if !accepted { Err("Spotify session changed".into()) } else {
                         match result {
@@ -1099,6 +1134,52 @@ pub async fn open_external_url(url: String) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn status_remains_readable_while_connect_is_waiting() {
+        let (requests, mut receiver) = mpsc::channel(4);
+        let status = watch::channel(SpotifyWebStatus {
+            connected: false,
+            premium_required: false,
+            last_error: None,
+        })
+        .1;
+        let tx = watch::channel(None).1;
+        let client = SpotifyWebState {
+            requests,
+            status,
+            tx,
+        };
+        let pending = tokio::spawn({
+            let client = client.clone();
+            async move { client.connect("test".into()).await }
+        });
+        let Some(WebRequest::Connect(_, reply)) = receiver.recv().await else {
+            panic!("expected connect");
+        };
+        let status = time::timeout(Duration::from_millis(100), client.status())
+            .await
+            .unwrap();
+        assert!(!status.connected);
+        reply.send(Err("cancelled".into())).unwrap();
+        assert_eq!(pending.await.unwrap(), Err("cancelled".into()));
+    }
+    #[test]
+    fn oauth_requests_wait_in_order_and_share_one_active_flow() {
+        let mut queue = AuthQueue::default();
+        let (first, _first) = oneshot::channel();
+        let (second, _second) = oneshot::channel();
+        queue.push("first".into(), first);
+        queue.push("second".into(), second);
+        assert_eq!(queue.start_next().unwrap().0, "first");
+        assert!(queue.start_next().is_none());
+        assert!(!queue.start_resume());
+        queue.finish();
+        assert_eq!(queue.start_next().unwrap().0, "second");
+        assert!(queue.start_next().is_none());
+        queue.finish();
+        assert!(queue.start_resume());
+    }
+
     #[test]
     fn only_exactly_1_disables_the_keyring() {
         assert!(keyring_disabled_from(Some("1")));
@@ -1150,7 +1231,7 @@ mod tests {
         let mut inner = Inner::default();
         // A refresh started at generation 0 is accepted while still on gen 0.
         assert!(inner.accepts_generation(0));
-        // disconnect()/connect() bump the generation while holding the lock.
+        // disconnect()/connect() advance the controller generation.
         inner.generation = inner.generation.wrapping_add(1);
         // The in-flight refresh (captured gen 0) is now stale and rejected...
         assert!(!inner.accepts_generation(0));

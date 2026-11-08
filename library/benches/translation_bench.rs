@@ -1,3 +1,6 @@
+mod support {
+    pub mod allocations;
+}
 use criterion::{Criterion, criterion_group, criterion_main};
 use library::book::serialization::Serializable;
 use library::book::translation::Translation;
@@ -6,6 +9,7 @@ use rand::distr::Alphanumeric;
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use std::io::Cursor;
+use support::allocations::measure;
 
 fn random_string(rng: &mut StdRng, len: usize) -> String {
     rng.sample_iter(&Alphanumeric)
@@ -117,7 +121,10 @@ fn bench_translation_deserialization(c: &mut Criterion) {
 
 fn bench_snapshot_and_cow_update(c: &mut Criterion) {
     use std::{hint::black_box, sync::Arc};
-    let original = Arc::new(generate_translation(5000));
+    let original = Arc::new(measure("build 5000 paragraphs", || {
+        generate_translation(5000)
+    }));
+    std::hint::black_box(measure("retain translation snapshot", || original.clone()));
     c.bench_function("retain translation snapshot (5000 paragraphs)", |b| {
         b.iter(|| black_box(original.clone()))
     });
@@ -139,6 +146,16 @@ fn bench_snapshot_and_cow_update(c: &mut Criterion) {
             })
         },
     );
+    std::hint::black_box(measure("update paragraph with retained snapshot", || {
+        let mut updated = (*original).clone();
+        updated.add_paragraph_translation(2500, &paragraph, "benchmark");
+        updated
+    }));
+    let mut serialized = Vec::new();
+    original.serialize(&mut serialized).unwrap();
+    std::hint::black_box(measure("load 5000 paragraphs", || {
+        Translation::deserialize(&mut Cursor::new(&serialized)).unwrap()
+    }));
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let directory = tempfile::tempdir().unwrap();
     let id = uuid::Uuid::new_v4();
@@ -162,6 +179,7 @@ fn bench_snapshot_and_cow_update(c: &mut Criterion) {
         ))
         .unwrap();
     let handle = runtime.block_on(library.get_book(&id)).unwrap();
+    std::hint::black_box(measure("read book snapshot", || handle.snapshot()));
     c.bench_function("read book snapshot (5000 paragraphs)", |b| {
         b.iter(|| black_box(handle.snapshot()))
     });

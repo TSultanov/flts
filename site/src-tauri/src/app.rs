@@ -24,7 +24,7 @@ use library::{
     },
 };
 use log::{info, warn};
-use tokio::sync::{Mutex, watch};
+use tokio::sync::watch;
 use uuid::Uuid;
 
 use tauri::Emitter;
@@ -500,20 +500,20 @@ struct BackendState {
     gated: crate::app::gated_state::GatedState,
     translation_queue: watch::Sender<Option<TranslationQueue>>,
     summary_generation_queue: watch::Sender<Option<SummaryGenerationQueue>>,
-    watcher: Mutex<LibraryWatcher>,
-    translation_owner: std::sync::Mutex<Option<task::ManagedTask>>,
-    summary_owner: std::sync::Mutex<Option<task::ManagedTask>>,
-    anki_owner: std::sync::Mutex<Option<task::ManagedTask>>,
-    sync_owner: std::sync::Mutex<Option<task::ManagedTask>>,
-    catalog_prefetch: std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    watcher: LibraryWatcher,
+    translation_owner: Option<task::ManagedTask>,
+    summary_owner: Option<task::ManagedTask>,
+    anki_owner: Option<task::ManagedTask>,
+    sync_owner: Option<task::ManagedTask>,
+    catalog_prefetch: Option<tauri::async_runtime::JoinHandle<()>>,
     /// Stable across `eval_config` re-spawns. The transient `AnkiSyncTask`
     /// holds a clone and pushes status into it on every tick.
     anki_sync_status: watch::Sender<crate::app::anki_sync::AnkiSyncStatus>,
     /// Stable across re-spawns, like `anki_sync_status`.
     sync_status: watch::Sender<crate::app::sync_daemon::SyncStatus>,
-    translations_cache: tokio::sync::OnceCell<(TranslationsCache, library::task::TaskOwner)>,
-    stats_cache: tokio::sync::OnceCell<(TranslationSizeCache, library::task::TaskOwner)>,
-    gemini_prompt_cache: tokio::sync::OnceCell<(GeminiPromptCache, library::task::TaskOwner)>,
+    translations_cache: Option<(TranslationsCache, library::task::TaskOwner)>,
+    stats_cache: Option<(TranslationSizeCache, library::task::TaskOwner)>,
+    gemini_prompt_cache: Option<(GeminiPromptCache, library::task::TaskOwner)>,
     model_catalog: (ModelCatalog, library::task::TaskOwner),
     pub lyrics_state: crate::app::lyrics::LyricsState,
     lyrics_owner: task::ManagedTask,
@@ -571,17 +571,17 @@ impl BackendState {
             gated: crate::app::gated_state::GatedState::new(),
             translation_queue: watch::channel(None).0,
             summary_generation_queue: watch::channel(None).0,
-            watcher: Mutex::new(watcher),
-            translation_owner: std::sync::Mutex::new(None),
-            summary_owner: std::sync::Mutex::new(None),
-            anki_owner: std::sync::Mutex::new(None),
-            sync_owner: std::sync::Mutex::new(None),
-            catalog_prefetch: std::sync::Mutex::new(Some(catalog_prefetch)),
+            watcher,
+            translation_owner: None,
+            summary_owner: None,
+            anki_owner: None,
+            sync_owner: None,
+            catalog_prefetch: Some(catalog_prefetch),
             anki_sync_status: watch::channel(initial_anki_status).0,
             sync_status: watch::channel(crate::app::sync_daemon::SyncStatus::default()).0,
-            translations_cache: tokio::sync::OnceCell::new(),
-            stats_cache: tokio::sync::OnceCell::new(),
-            gemini_prompt_cache: tokio::sync::OnceCell::new(),
+            translations_cache: None,
+            stats_cache: None,
+            gemini_prompt_cache: None,
             model_catalog,
             lyrics_state,
             lyrics_owner,
@@ -590,7 +590,7 @@ impl BackendState {
         })
     }
 
-    pub fn publish_ready(&self, outcome: Result<(), String>) {
+    pub fn publish_ready(&mut self, outcome: Result<(), String>) {
         self.gated.publish_ready(outcome);
     }
 
@@ -600,7 +600,7 @@ impl BackendState {
     /// Call on foreground. iOS tears down the engine's sockets (incl. its
     /// loopback REST listener) during suspension and doesn't reliably rebind, so
     /// an unreachable engine is restarted; a healthy one is left alone.
-    async fn restart_sync_if_needed(&self) {
+    async fn restart_sync_if_needed(&mut self) {
         if !self.config.borrow().sync_enabled {
             return;
         }
@@ -631,7 +631,7 @@ impl BackendState {
     }
 
     /// Persists the display name and applies it live, without an engine restart.
-    async fn rename_sync_device(&self, name: String) -> anyhow::Result<()> {
+    async fn rename_sync_device(&mut self, name: String) -> anyhow::Result<()> {
         let trimmed = name.trim().to_string();
         let mut config = self.config.borrow().clone();
         config.sync_device_name = Some(trimmed.clone()).filter(|s| !s.is_empty());
@@ -646,22 +646,22 @@ impl BackendState {
         Ok(())
     }
 
-    pub fn subscribe_library(&self) -> watch::Receiver<Option<Library>> {
+    pub fn subscribe_library(&mut self) -> watch::Receiver<Option<Library>> {
         self.gated.subscribe_library()
     }
 
-    /// Every command reaches the library through here.
-
-    pub fn library_sender(&self) -> watch::Sender<Option<Library>> {
+    pub fn library_sender(&mut self) -> watch::Sender<Option<Library>> {
         self.gated.library_sender()
     }
 
     /// The running sync engine, if a task is installed.
-    pub async fn sync_engine(&self) -> Result<Option<crate::app::sync_daemon::SyncTask>, String> {
+    pub async fn sync_engine(
+        &mut self,
+    ) -> Result<Option<crate::app::sync_daemon::SyncTask>, String> {
         self.gated.sync_engine().await
     }
 
-    fn set_anki_sync_unreachable(&self, reason: &str) {
+    fn set_anki_sync_unreachable(&mut self, reason: &str) {
         self.anki_sync_status
             .send_replace(crate::app::anki_sync::AnkiSyncStatus {
                 state: crate::app::anki_sync::AnkiSyncStatusState::Unreachable,
@@ -675,7 +675,7 @@ impl BackendState {
     /// reading it, so it waits out a startup in flight yet still runs on a
     /// *failed* one — the repair path — and republishes its own outcome.
     /// Called only by the lifecycle owner.
-    async fn apply_config(&self, config: Config) -> anyhow::Result<()> {
+    async fn apply_config(&mut self, config: Config) -> anyhow::Result<()> {
         // The lifecycle owner serializes queue construction with this transition.
         let (config, library_root) = {
             // Queues capture translator/summarizer settings at creation.
@@ -701,7 +701,7 @@ impl BackendState {
             info!("Applying configuration");
             config.save(&self.config_path)?;
             self.config.send_replace(config.clone());
-            *self.catalog_prefetch.lock().unwrap() = Some(spawn_catalog_prefetch(
+            self.catalog_prefetch = Some(spawn_catalog_prefetch(
                 self.model_catalog.0.clone(),
                 &config,
             ));
@@ -711,13 +711,13 @@ impl BackendState {
         Ok(())
     }
 
-    async fn restore_configuration(&self, previous: Config) {
+    async fn restore_configuration(&mut self, previous: Config) {
         self.config.send_replace(previous.clone());
         if let Err(error) = previous.save(&self.config_path) {
             log::warn!("restoring configuration file failed: {error:#}");
         }
         self.stop_catalog_prefetch().await;
-        *self.catalog_prefetch.lock().unwrap() = Some(spawn_catalog_prefetch(
+        self.catalog_prefetch = Some(spawn_catalog_prefetch(
             self.model_catalog.0.clone(),
             &previous,
         ));
@@ -727,7 +727,7 @@ impl BackendState {
         }
     }
 
-    async fn initialize_session(&self) -> anyhow::Result<()> {
+    async fn initialize_session(&mut self) -> anyhow::Result<()> {
         let (config, library_root) = self.eval_library_config().await?;
         self.eval_sync(&config, &library_root).await;
         Ok(())
@@ -735,7 +735,7 @@ impl BackendState {
 
     /// Migrates + opens the library, (re)spawns the Anki task, points the
     /// watcher. Called only by the lifecycle owner.
-    async fn eval_library_config(&self) -> anyhow::Result<(Config, PathBuf)> {
+    async fn eval_library_config(&mut self) -> anyhow::Result<(Config, PathBuf)> {
         let config = self.config.borrow().clone();
 
         let library_root = resolve_library_root(Some(&self.app))?;
@@ -780,22 +780,18 @@ impl BackendState {
                 Duration::from_secs(interval_secs),
                 self.anki_sync_status.clone(),
             );
-            *self.anki_owner.lock().unwrap() = Some(owner);
+            self.anki_owner = Some(owner);
             self.gated.install_anki_task(task);
             info!("Anki sync task spawned (interval = {interval_secs}s)");
         }
 
-        self.watcher
-            .lock()
-            .await
-            .set_path(&library_root)
-            .unwrap_or_else(|err| {
-                warn!(
-                    "Failed to set watcher path to {}: {}",
-                    library_root.display(),
-                    err
-                )
-            });
+        self.watcher.set_path(&library_root).unwrap_or_else(|err| {
+            warn!(
+                "Failed to set watcher path to {}: {}",
+                library_root.display(),
+                err
+            )
+        });
 
         Ok((config, library_root))
     }
@@ -805,7 +801,7 @@ impl BackendState {
     /// Opt-in via `syncEnabled`; `FLTS_DISABLE_SYNC` / `FLTS_MOCK_SYNC` force it
     /// off (CI / E2E); `FLTS_SYNC_HERMETIC` keeps it local (tests / Docker).
     /// Never fails `eval_config` — a sync start error is surfaced via status.
-    async fn eval_sync(&self, config: &Config, library_root: &Path) {
+    async fn eval_sync(&mut self, config: &Config, library_root: &Path) {
         use crate::app::sync_daemon::{SyncStatus, SyncTask, sync_disabled};
 
         let prior = self.gated.take_sync_task().await;
@@ -854,7 +850,7 @@ impl BackendState {
         .await
         {
             Ok((task, owner)) => {
-                *self.sync_owner.lock().unwrap() = Some(owner);
+                self.sync_owner = Some(owner);
                 self.gated.install_sync_task(task).await;
                 info!("Sync task spawned");
             }
@@ -869,7 +865,11 @@ impl BackendState {
     /// Idempotent migration of a `config.library_path` library into the
     /// app-managed root. Never clobbers a populated destination; clears the
     /// pointer so subsequent runs are no-ops.
-    async fn migrate_legacy_library(&self, config: &Config, new_root: &Path) -> anyhow::Result<()> {
+    async fn migrate_legacy_library(
+        &mut self,
+        config: &Config,
+        new_root: &Path,
+    ) -> anyhow::Result<()> {
         let Some(old) = config
             .library_path
             .as_deref()
@@ -892,7 +892,7 @@ impl BackendState {
     }
 
     /// Drops `library_path` from the persisted config; no-op if already cleared.
-    async fn clear_library_path(&self) -> anyhow::Result<()> {
+    async fn clear_library_path(&mut self) -> anyhow::Result<()> {
         let mut config = self.config.borrow().clone();
         if config.library_path.is_some() {
             config.library_path = None;
@@ -902,61 +902,69 @@ impl BackendState {
         Ok(())
     }
 
-    pub async fn stop_translation_queue(&self) {
+    pub async fn stop_translation_queue(&mut self) {
         if let Some(queue) = self.translation_queue.send_replace(None) {
             info!("Stopping translation queue");
             queue.shutdown().await;
             info!("Translation queue stopped");
         }
+        if let Some(owner) = self.translation_owner.as_ref() {
+            let _ = owner.shutdown().await;
+        }
+        self.translation_owner.take();
     }
 
-    pub async fn stop_summary_generation_queue(&self) {
+    pub async fn stop_summary_generation_queue(&mut self) {
         if let Some(queue) = self.summary_generation_queue.send_replace(None) {
             info!("Stopping summary generation queue");
             queue.shutdown().await;
             info!("Summary generation queue stopped");
         }
+        if let Some(owner) = self.summary_owner.as_ref() {
+            let _ = owner.shutdown().await;
+        }
+        self.summary_owner.take();
     }
 
-    async fn get_translations_cache(&self) -> anyhow::Result<TranslationsCache> {
-        self.translations_cache
-            .get_or_try_init(|| async {
-                let cache_dir = resolve_cache_dir(Some(&self.app))?;
-                TranslationsCache::create(&cache_dir).await
-            })
-            .await
-            .map(|(handle, _)| handle.clone())
+    async fn get_translations_cache(&mut self) -> anyhow::Result<TranslationsCache> {
+        if self.translations_cache.is_none() {
+            let cache_dir = resolve_cache_dir(Some(&self.app))?;
+            self.translations_cache = Some(TranslationsCache::create(&cache_dir).await?);
+        }
+        Ok(self.translations_cache.as_ref().unwrap().0.clone())
     }
 
-    async fn get_stats_cache(&self) -> anyhow::Result<TranslationSizeCache> {
-        self.stats_cache
-            .get_or_try_init(|| async {
-                let cache_dir = resolve_cache_dir(Some(&self.app))?;
-                TranslationSizeCache::create(&cache_dir).await
-            })
-            .await
-            .map(|(handle, _)| handle.clone())
+    async fn get_stats_cache(&mut self) -> anyhow::Result<TranslationSizeCache> {
+        if self.stats_cache.is_none() {
+            let cache_dir = resolve_cache_dir(Some(&self.app))?;
+            self.stats_cache = Some(TranslationSizeCache::create(&cache_dir).await?);
+        }
+        Ok(self.stats_cache.as_ref().unwrap().0.clone())
     }
 
-    async fn get_gemini_prompt_cache(&self) -> anyhow::Result<GeminiPromptCache> {
-        self.gemini_prompt_cache
-            .get_or_try_init(|| async {
-                let cache_dir = resolve_cache_dir(Some(&self.app))?.join("gemini_caches");
-                GeminiPromptCache::open(&cache_dir, GEMINI_PROMPT_CACHE_CAPACITY).await
-            })
-            .await
-            .map(|(handle, _)| handle.clone())
+    async fn get_gemini_prompt_cache(&mut self) -> anyhow::Result<GeminiPromptCache> {
+        if self.gemini_prompt_cache.is_none() {
+            let cache_dir = resolve_cache_dir(Some(&self.app))?;
+            self.gemini_prompt_cache = Some(
+                GeminiPromptCache::open(
+                    &cache_dir.join("gemini_caches"),
+                    GEMINI_PROMPT_CACHE_CAPACITY,
+                )
+                .await?,
+            );
+        }
+        Ok(self.gemini_prompt_cache.as_ref().unwrap().0.clone())
     }
 
-    async fn stop_catalog_prefetch(&self) {
-        let prior = self.catalog_prefetch.lock().unwrap().take();
+    async fn stop_catalog_prefetch(&mut self) {
+        let prior = self.catalog_prefetch.take();
         if let Some(prior) = prior {
             prior.abort();
             let _ = prior.await;
         }
     }
 
-    async fn perform_shutdown(&self) {
+    async fn perform_shutdown(&mut self) {
         // This work is owned by the lifecycle task even if its caller times out.
         self.stop_catalog_prefetch().await;
         self.stop_summary_generation_queue().await;
@@ -970,9 +978,8 @@ impl BackendState {
             self.stop_translation_queue(),
         )
         .await;
-        // Take the task out of its slot before awaiting, so a long tick can't
-        // block inside the mutex. No final sync_pass: a flush against a slow
-        // AnkiConnect would stall exit, and the next launch syncs immediately.
+        self.stop_translation_queue().await;
+        // The controller retains every owner until its accepted work has drained.
         let anki_task = self.gated.take_anki_task();
         if let Some(task) = anki_task {
             run_exit_step(
@@ -982,6 +989,10 @@ impl BackendState {
             )
             .await;
         }
+        if let Some(owner) = self.anki_owner.as_ref() {
+            let _ = owner.shutdown().await;
+        }
+        self.anki_owner.take();
         let sync_task = self.gated.take_sync_task().await;
         if let Some(task) = sync_task {
             run_exit_step(
@@ -993,6 +1004,10 @@ impl BackendState {
             // A slow Go stop stays owned; do not release the library lease.
             task.shutdown().await;
         }
+        if let Some(owner) = self.sync_owner.as_ref() {
+            let _ = owner.shutdown().await;
+        }
+        self.sync_owner.take();
         if let Some(library) = self.gated.library_unchecked() {
             if let Err(err) = library.close().await {
                 log::warn!("library shutdown retained dirty state: {err:#}");
@@ -1004,13 +1019,12 @@ impl BackendState {
         self.close_caches_for_exit().await;
     }
 
-    async fn build_translation_queue(&self) -> anyhow::Result<TranslationQueue> {
+    async fn build_translation_queue(&mut self) -> anyhow::Result<TranslationQueue> {
         if let Some(queue) = self.translation_queue.borrow().clone() {
             return Ok(queue);
         }
 
-        // Before the lock: waiting for startup while holding an init lock would
-        // invert the lock order against anything startup may come to need.
+        // Public queue requests pass the readiness gate before reaching this controller.
         self.gated
             .await_ready()
             .await
@@ -1021,8 +1035,7 @@ impl BackendState {
             return Ok(queue);
         }
 
-        // Read under the init lock: update_config holds it across the Library
-        // swap, so this can never be the outgoing instance.
+        // Service construction and library replacement are serialized by the controller.
         let library = self
             .gated
             .library_unchecked()
@@ -1050,12 +1063,12 @@ impl BackendState {
         )
         .ok_or(AppError::NoTranslationQueueError)?;
 
-        *self.translation_owner.lock().unwrap() = Some(owner);
+        self.translation_owner = Some(owner);
         self.translation_queue.send_replace(Some(queue.clone()));
         Ok(queue)
     }
 
-    async fn build_summary_queue(&self) -> anyhow::Result<SummaryGenerationQueue> {
+    async fn build_summary_queue(&mut self) -> anyhow::Result<SummaryGenerationQueue> {
         if let Some(queue) = self.summary_generation_queue.borrow().clone() {
             return Ok(queue);
         }
@@ -1068,7 +1081,7 @@ impl BackendState {
         let (queue, owner) =
             SummaryGenerationQueue::init(self.subscribe_library(), &config, self.app.clone());
 
-        *self.summary_owner.lock().unwrap() = Some(owner);
+        self.summary_owner = Some(owner);
         self.summary_generation_queue
             .send_replace(Some(queue.clone()));
         Ok(queue)
@@ -1089,8 +1102,8 @@ where
 }
 
 impl BackendState {
-    async fn close_caches_for_exit(&self) {
-        if let Some((cache, _)) = self.translations_cache.get() {
+    async fn close_caches_for_exit(&mut self) {
+        if let Some((cache, owner)) = self.translations_cache.as_ref() {
             info!("Closing translations cache");
             if run_exit_step(
                 "translations cache close",
@@ -1101,8 +1114,9 @@ impl BackendState {
             {
                 info!("Translations cache closed");
             }
+            let _ = owner.shutdown().await;
         }
-        if let Some((cache, _)) = self.stats_cache.get() {
+        if let Some((cache, owner)) = self.stats_cache.as_ref() {
             info!("Closing translation stats cache");
             if run_exit_step(
                 "translation stats cache close",
@@ -1113,8 +1127,9 @@ impl BackendState {
             {
                 info!("Translation stats cache closed");
             }
+            let _ = owner.shutdown().await;
         }
-        if let Some((cache, _)) = self.gemini_prompt_cache.get() {
+        if let Some((cache, owner)) = self.gemini_prompt_cache.as_ref() {
             info!("Closing Gemini prompt cache");
             if run_exit_step(
                 "gemini prompt cache close",
@@ -1125,6 +1140,7 @@ impl BackendState {
             {
                 info!("Gemini prompt cache closed");
             }
+            let _ = owner.shutdown().await;
         }
     }
 }

@@ -21,9 +21,11 @@ pub(super) struct Lifecycle {
     control: library::task::TaskControl,
 }
 impl Lifecycle {
-    pub fn new(state: BackendState) -> (Self, ManagedTask) {
+    pub fn new(mut state: BackendState) -> (Self, ManagedTask) {
         let (requests, mut receiver) = mpsc::channel(256);
+        let keepalive = requests.clone();
         let task = ManagedTask::spawn(move |mut stop| async move {
+            let _keepalive = keepalive;
             loop {
                 tokio::select! {
                     biased;

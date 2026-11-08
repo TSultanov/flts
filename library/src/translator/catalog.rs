@@ -136,7 +136,11 @@ impl ModelCatalog {
             now_secs,
         };
         let (requests, rx) = mpsc::channel(256);
-        let owner = TaskOwner::spawn(move |stop| serve_fetches(io, rx, stop));
+        let keepalive = requests.clone();
+        let owner = TaskOwner::spawn(move |stop| async move {
+            let _keepalive = keepalive;
+            serve_fetches(io, rx, stop).await;
+        });
         (
             Self {
                 requests,

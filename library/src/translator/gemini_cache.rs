@@ -107,7 +107,9 @@ impl GeminiPromptCache {
         let (requests, receiver) = mpsc::channel(256);
         #[cfg(test)]
         let test_disk = disk.clone();
+        let keepalive = requests.clone();
         let owner = crate::task::TaskOwner::spawn(move |stop| async move {
+            let _keepalive = keepalive;
             serve_prompt_cache(disk, receiver, stop).await;
             let _ = disk_owner.shutdown().await;
         });

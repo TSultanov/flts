@@ -170,7 +170,9 @@ impl SpotifyWatcher {
     pub fn new() -> (Self, ManagedTask) {
         let (commands, mut requests) = mpsc::channel(32);
         let (tx, current) = watch::channel(None);
+        let keepalive = commands.clone();
         let task = ManagedTask::spawn(move |mut stop| async move {
+            let _keepalive = keepalive;
             let mut app: Option<AppHandle> = None;
             let mut ticker = time::interval(POLL_INTERVAL);
             ticker.set_missed_tick_behavior(time::MissedTickBehavior::Delay);

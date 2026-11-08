@@ -172,7 +172,9 @@ impl TranslationQueue {
         let concurrency = config.translation_concurrency.max(1) as usize;
         let (requests, receiver) = mpsc::channel(256);
         let (publish, activity) = watch::channel(Arc::new(HashMap::new()));
-        let task = ManagedTask::spawn(move |stop| {
+        let keepalive = requests.clone();
+        let task = ManagedTask::spawn(move |stop| async move {
+            let _keepalive = keepalive;
             scheduler(
                 worker,
                 concurrency,
@@ -182,6 +184,7 @@ impl TranslationQueue {
                 app,
                 library_tx,
             )
+            .await;
         });
         Some((
             Self {
@@ -287,6 +290,16 @@ fn admit(
             expected_chars: 0,
         },
     );
+    make_job(request_id, book, snapshot, paragraph, model, use_cache)
+}
+fn make_job(
+    request_id: usize,
+    book: BookHandle,
+    snapshot: Arc<BookSnapshot>,
+    paragraph: usize,
+    model: String,
+    use_cache: bool,
+) -> Job {
     Job {
         request_id,
         book,
@@ -297,6 +310,27 @@ fn admit(
         attempt: 0,
     }
 }
+
+#[cfg(feature = "ownership-bench")]
+pub fn benchmark_pending_jobs(
+    book: &BookHandle,
+    snapshot: &Arc<BookSnapshot>,
+    count: usize,
+) -> impl Sized {
+    (0..count)
+        .map(|id| {
+            make_job(
+                id,
+                book.clone(),
+                snapshot.clone(),
+                id,
+                "benchmark".to_owned(),
+                false,
+            )
+        })
+        .collect::<VecDeque<_>>()
+}
+
 async fn scheduler(
     context: WorkerContext,
     concurrency: usize,

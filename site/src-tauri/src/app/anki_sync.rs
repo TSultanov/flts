@@ -96,8 +96,10 @@ impl AnkiSyncTask {
         status_tx: watch::Sender<AnkiSyncStatus>,
     ) -> (Self, crate::app::task::ManagedTask) {
         let (commands, rx) = mpsc::channel(256);
-        let task = crate::app::task::ManagedTask::spawn(move |stop| {
-            run_sync_loop(client, library, status_tx, interval, rx, stop)
+        let keepalive = commands.clone();
+        let task = crate::app::task::ManagedTask::spawn(move |stop| async move {
+            let _keepalive = keepalive;
+            run_sync_loop(client, library, status_tx, interval, rx, stop).await;
         });
         (
             Self {
@@ -581,29 +583,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dropping_the_handle_stops_the_task() {
+    async fn client_drop_does_not_stop_the_task_but_owner_drop_does() {
         let (_tmp, library) = seed_library_with_card("flts_anki_sync_drop").await;
-        tokio::task::yield_now().await;
-        let metrics = tokio::runtime::Handle::current().metrics();
-        let baseline = metrics.num_alive_tasks();
         let mock: Box<dyn AnkiConnect> = Box::new(MockAnkiConnect::new());
-        let (task, _owner) = AnkiSyncTask::init(
+        let (task, owner) = AnkiSyncTask::init(
             library.clone(),
             mock,
             Duration::from_secs(3600),
             make_status_tx(),
         );
-        assert_eq!(metrics.num_alive_tasks(), baseline + 1);
-
+        let completion = owner.control();
         drop(task);
-        let deadline = std::time::Instant::now() + Duration::from_secs(1);
-        while metrics.num_alive_tasks() != baseline {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "sync loop must exit once its handle is dropped"
-            );
-            tokio::task::yield_now().await;
-        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), completion.wait())
+                .await
+                .is_err()
+        );
+        drop(owner);
+        tokio::time::timeout(Duration::from_secs(1), completion.wait())
+            .await
+            .unwrap()
+            .unwrap();
+        library.close().await.unwrap();
     }
 
     struct StalledAnki;

@@ -88,7 +88,9 @@ where
         let (tx, rx) = channel::<WriteOp<V>>(256);
         let writer_dir = dir.to_path_buf();
         let writer_index = index.clone();
+        let keepalive = tx.clone();
         let owner = TaskOwner::spawn(move |stop| async move {
+            let _keepalive = keepalive;
             writer_loop(writer_dir, capacity_bytes, writer_index, rx, stop).await;
         });
         let cache = Self {
@@ -432,6 +434,22 @@ mod tests {
             .unwrap();
         assert_eq!(retained.get("key").await.unwrap().as_deref(), Some("value"));
         assert!(retained.flush().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn dropping_the_last_client_keeps_the_writer_owned_until_shutdown() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cache, owner) = super::DiskCache::<String>::open(dir.path(), 4096)
+            .await
+            .unwrap();
+        let completion = owner.control();
+        drop(cache);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), completion.wait())
+                .await
+                .is_err()
+        );
+        owner.shutdown().await.unwrap();
     }
 
     use super::*;

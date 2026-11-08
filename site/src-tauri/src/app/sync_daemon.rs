@@ -129,7 +129,9 @@ impl SyncTask {
         }
         push_status(engine.client(), &status_tx, &my_id).await;
         let (commands, mut requests) = mpsc::channel(256);
+        let keepalive = commands.clone();
         let owner = ManagedTask::spawn(move |mut stop| async move {
+            let _keepalive = keepalive;
             let mut ticker = tokio::time::interval(DEFAULT_POLL_INTERVAL);
             loop {
                 tokio::select! {

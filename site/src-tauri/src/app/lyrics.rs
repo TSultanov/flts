@@ -64,7 +64,9 @@ impl LyricsState {
         let (configuration, configured) = watch::channel(None);
         #[cfg(target_os = "macos")]
         let (watcher, watcher_owner) = SpotifyWatcher::new();
+        let keepalive = requests.clone();
         let owner = ManagedTask::spawn(move |stop| async move {
+            let _keepalive = keepalive;
             serve(cache, app, receiver, generation, configuration, stop).await;
             #[cfg(target_os = "macos")]
             let _ = watcher_owner.shutdown().await;

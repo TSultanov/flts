@@ -264,3 +264,56 @@ test.describe("LRClib search ranking", () => {
     expect(await hitsFor(harness.lrclib, track, "/api/search")).toBe(1);
   });
 });
+
+test("settings changes cancel stalled lyrics without blocking cached reads", async ({
+  harness,
+}) => {
+  const original = await harness.invoke<Record<string, unknown>>("get_config");
+  const track = nonceTrack();
+  await harness.lrclib.addRule({
+    matcher: { pathGlob: GET_GLOB },
+    action: { type: "stall" },
+  });
+  const old = harness.invoke("e2e_resolve_track", resolve(track)).then(
+    () => null,
+    (error) => String(error),
+  );
+  try {
+    await expect.poll(() => hitsFor(harness.lrclib, track)).toBe(1);
+    const cached = await test.step(
+      "cached read progresses during stalled network work",
+      () =>
+        harness.invoke<LyricsState>(
+          "get_track_lyrics_state",
+          lyricsStateArgs(track),
+        ),
+      { timeout: 2000 },
+    );
+    expect(cached.lyrics).toBeNull();
+    await harness.invoke("update_config", {
+      config: {
+        ...original,
+        translationConcurrency: Number(original.translationConcurrency) + 1,
+      },
+    });
+    expect(await old).toMatch(/closed|session changed/);
+    await harness.lrclib.reset();
+    await harness.lrclib.seed([
+      {
+        artist: track.artist,
+        title: track.name,
+        album: track.album,
+        syncedLyrics: LRC,
+      },
+    ]);
+    await harness.invoke("e2e_resolve_track", resolve(track));
+    const current = await harness.invoke<LyricsState>(
+      "get_track_lyrics_state",
+      lyricsStateArgs(track),
+    );
+    expect(current.lyrics?.synced).toBe(true);
+  } finally {
+    await harness.lrclib.reset();
+    await harness.invoke("update_config", { config: original });
+  }
+});

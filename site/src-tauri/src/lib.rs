@@ -270,3 +270,6 @@ pub fn run() {
             }
         });
 }
+
+#[cfg(feature = "ownership-bench")]
+pub use app::translation_queue::benchmark_pending_jobs;

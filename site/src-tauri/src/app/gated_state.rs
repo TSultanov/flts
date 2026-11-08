@@ -140,7 +140,7 @@ impl GatedState {
         self.sync_task.send_replace(Some(task));
     }
 
-    /// Take standalone: the slot mutex must not span the caller's shutdown await.
+    /// Remove the published handle before the controller shuts down its owner.
     pub async fn take_sync_task(&self) -> Option<SyncTask> {
         self.sync_task.send_replace(None)
     }
