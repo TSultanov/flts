@@ -273,7 +273,7 @@ async fn trace_interaction_concurrent() {
     let lib_root = temp.path.join("lib");
 
     // === Setup ===
-    let library = Arc::new(Library::open(lib_root.clone()).await.unwrap());
+    let library = Library::open(lib_root.clone()).await.unwrap();
     let mut new_book = Book::create(uuid::Uuid::new_v4(), "Concurrent Book", &en());
     new_book.push_chapter(Some("Ch1"));
     new_book.push_paragraph(0, "First paragraph.", None);

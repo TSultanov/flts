@@ -55,15 +55,16 @@ impl TranslationSizeStats {
 }
 
 /// Translation size statistics per language pair.
+#[derive(Clone)]
 pub struct TranslationSizeCache {
     cache: DiskCache<TranslationSizeStats>,
 }
 
 impl TranslationSizeCache {
-    pub async fn create(cache_dir: &Path) -> anyhow::Result<Self> {
+    pub async fn create(cache_dir: &Path) -> anyhow::Result<(Self, crate::task::TaskOwner)> {
         let stats_dir = cache_dir.join("translation_stats");
-        let cache = DiskCache::open(&stats_dir, 16 * 1024 * 1024).await?;
-        Ok(Self { cache })
+        let (cache, owner) = DiskCache::open(&stats_dir, 16 * 1024 * 1024).await?;
+        Ok((Self { cache }, owner))
     }
 
     pub async fn close(&self) {

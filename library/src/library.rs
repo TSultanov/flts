@@ -2,7 +2,6 @@ use std::{
     error::Error,
     fmt::Display,
     path::{Path, PathBuf},
-    sync::Arc,
 };
 
 use isolang::Language;
@@ -256,10 +255,13 @@ impl LibraryBookMetadata {
 }
 
 use registry::{BookRequest, serve_books};
+#[cfg(test)]
+use std::sync::Arc;
 
+#[derive(Clone)]
 pub struct Library {
     library_root: PathBuf,
-    card_store: Arc<LibraryCardStore>,
+    card_store: LibraryCardStore,
     books: mpsc::Sender<BookRequest>,
     close_control: tokio::sync::watch::Sender<u64>,
     closed: tokio::sync::watch::Receiver<(u64, Option<Result<(), String>>)>,
@@ -284,7 +286,7 @@ impl Library {
             .join("flts/library-locks");
         let lease = session::LibraryLease::acquire(&library_root, &locks)?;
         let library_root = lease.root.clone();
-        let card_store = Arc::new(LibraryCardStore::new(&library_root));
+        let card_store = LibraryCardStore::new(&library_root);
         let (books, requests) = mpsc::channel(256);
         let (close_control, close_requests) = tokio::sync::watch::channel(0);
         let (completion, closed) = tokio::sync::watch::channel((0, None));
@@ -306,7 +308,7 @@ impl Library {
         })
     }
 
-    pub fn card_store(&self) -> &Arc<LibraryCardStore> {
+    pub fn card_store(&self) -> &LibraryCardStore {
         &self.card_store
     }
 
@@ -850,11 +852,9 @@ mod library_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_get_book_single_flight_after_eviction() {
         let temp_dir = TempDir::new("flts_test");
-        let library = Arc::new(
-            Library::open_with_capacity(temp_dir.path.join("lib"), 1)
-                .await
-                .unwrap(),
-        );
+        let library = Library::open_with_capacity(temp_dir.path.join("lib"), 1)
+            .await
+            .unwrap();
 
         let id = make_saved_book(&library, "Raced").await;
 
@@ -958,7 +958,7 @@ mod library_tests {
     #[tokio::test]
     async fn get_book_error_reaches_every_waiter() {
         let temp_dir = TempDir::new("flts_test");
-        let library = Arc::new(Library::open(temp_dir.path.join("lib")).await.unwrap());
+        let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
         let missing = Uuid::new_v4();
 
         let gets: Vec<_> = (0..4)
@@ -977,7 +977,7 @@ mod library_tests {
     async fn remove_during_load_caches_nothing() {
         let temp_dir = TempDir::new("flts_test");
         let root = temp_dir.path.join("lib");
-        let library = Arc::new(Library::open_with_capacity(root.clone(), 1).await.unwrap());
+        let library = Library::open_with_capacity(root.clone(), 1).await.unwrap();
         let (id, book_dir) = saved_book_with_conflict_sibling(&library, &root).await;
 
         let get = {
@@ -1004,7 +1004,7 @@ mod library_tests {
     async fn cancelled_get_book_does_not_abort_load() {
         let temp_dir = TempDir::new("flts_test");
         let root = temp_dir.path.join("lib");
-        let library = Arc::new(Library::open_with_capacity(root.clone(), 1).await.unwrap());
+        let library = Library::open_with_capacity(root.clone(), 1).await.unwrap();
         let (id, book_dir) = saved_book_with_conflict_sibling(&library, &root).await;
 
         let get = {

@@ -225,7 +225,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> anyhow::Result<()> {
 }
 
 fn spawn_catalog_prefetch(
-    catalog: Arc<ModelCatalog>,
+    catalog: ModelCatalog,
     config: &Config,
 ) -> tauri::async_runtime::JoinHandle<()> {
     let keys = config.api_keys();
@@ -291,33 +291,236 @@ async fn invalidate_changed_api_keys(
     Ok(())
 }
 
+#[derive(Clone)]
 pub struct AppState {
+    app: tauri::AppHandle,
+    config: watch::Receiver<Config>,
+    gated: gated_state::GatedState,
+    lifecycle: lifecycle::Lifecycle,
+    translation_queue: watch::Receiver<Option<TranslationQueue>>,
+    anki_sync_status: watch::Receiver<anki_sync::AnkiSyncStatus>,
+    sync_status: watch::Receiver<sync_daemon::SyncStatus>,
+    model_catalog: ModelCatalog,
+    pub lyrics_state: Arc<lyrics::LyricsState>,
+    pub spotify_web: Arc<spotify::web::SpotifyWebState>,
+}
+impl AppState {
+    pub fn new(
+        app: tauri::AppHandle,
+        watcher: LibraryWatcher,
+    ) -> anyhow::Result<(Self, task::ManagedTask)> {
+        let backend = BackendState::new(app.clone(), watcher)?;
+        let config = backend.config.subscribe();
+        let gated = backend.gated.clone();
+        let translation_queue = backend.translation_queue.subscribe();
+        let anki_sync_status = backend.anki_sync_status.subscribe();
+        let sync_status = backend.sync_status.subscribe();
+        let model_catalog = backend.model_catalog.0.clone();
+        let lyrics_state = backend.lyrics_state.clone();
+        let spotify_web = backend.spotify_web.clone();
+        let (lifecycle, owner) = lifecycle::Lifecycle::new(backend);
+        Ok((
+            Self {
+                app,
+                config,
+                gated,
+                lifecycle,
+                translation_queue,
+                anki_sync_status,
+                sync_status,
+                model_catalog,
+                lyrics_state,
+                spotify_web,
+            },
+            owner,
+        ))
+    }
+    async fn get_gemini_prompt_cache(&self) -> anyhow::Result<GeminiPromptCache> {
+        self.lifecycle.request(lifecycle::Command::Gemini).await
+    }
+    pub fn publish_ready(&self, outcome: Result<(), String>) {
+        self.gated.publish_ready(outcome);
+    }
+    pub fn subscribe_config(&self) -> watch::Receiver<Config> {
+        self.config.clone()
+    }
+    pub fn config_borrow_client_id(&self) -> Option<String> {
+        self.config
+            .borrow()
+            .spotify_client_id
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+    }
+    pub fn config_borrow_sync_device_name(&self) -> Option<String> {
+        self.config
+            .borrow()
+            .sync_device_name
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+    }
+    pub async fn set_sync_enabled(&self, enabled: bool) -> anyhow::Result<()> {
+        let mut config = self.config.borrow().clone();
+        config.sync_enabled = enabled;
+        self.update_config(config).await
+    }
+    pub fn subscribe_library(&self) -> watch::Receiver<Option<Library>> {
+        self.gated.subscribe_library()
+    }
+    pub fn notify_library_changed(&self) {
+        self.gated.notify_library_changed();
+    }
+    pub async fn library(&self) -> Result<Library, String> {
+        self.gated.library().await
+    }
+    pub fn library_sender(&self) -> watch::Sender<Option<Library>> {
+        self.gated.library_sender()
+    }
+    pub fn subscribe_anki_sync_status(
+        &self,
+    ) -> watch::Receiver<crate::app::anki_sync::AnkiSyncStatus> {
+        self.anki_sync_status.clone()
+    }
+    pub fn anki_sync_status(&self) -> crate::app::anki_sync::AnkiSyncStatus {
+        self.anki_sync_status.borrow().clone()
+    }
+    pub async fn sync_anki_now(&self) -> anyhow::Result<crate::app::anki_sync::SyncReportDto> {
+        self.gated.sync_anki_now().await
+    }
+    pub fn subscribe_sync_status(&self) -> watch::Receiver<crate::app::sync_daemon::SyncStatus> {
+        self.sync_status.clone()
+    }
+    pub fn sync_status(&self) -> crate::app::sync_daemon::SyncStatus {
+        self.sync_status.borrow().clone()
+    }
+    pub async fn sync_engine(
+        &self,
+    ) -> Result<Option<Arc<library::sync::engine::SyncEngine>>, String> {
+        self.gated.sync_engine().await
+    }
+    pub async fn handle_file_change_event(&self, event: &LibraryFileChange) -> anyhow::Result<()> {
+        let library = self.gated.library_unchecked();
+        let Some(library) = library else {
+            return Ok(());
+        };
+
+        let had_effect = library.handle_file_change_event(event).await?;
+
+        // `had_effect` gates per arm, not the whole match: the library has no
+        // card cache, so CardChanged is always false yet must still notify.
+        match event {
+            LibraryFileChange::SummariesChanged { uuid }
+            | LibraryFileChange::BookChanged { modified: _, uuid }
+                if had_effect =>
+            {
+                info!("Emitting \"book_updated\" for {uuid}");
+                self.app.emit("book_updated", uuid)?;
+                self.notify_library_changed();
+            }
+            LibraryFileChange::TranslationChanged {
+                modified: _,
+                from: _,
+                to,
+                uuid,
+            } if had_effect => {
+                let target_language_id = { self.config.borrow().target_language_id.clone() };
+                let target_language = Language::from_639_3(&target_language_id);
+
+                if target_language == Some(*to) {
+                    info!("Emitting \"book_updated\" for {uuid}");
+                    self.app.emit("book_updated", uuid)?;
+                    self.notify_library_changed();
+                }
+            }
+            LibraryFileChange::CardChanged { .. } => {
+                // Unconditional: the frontend invalidates its translation cache here.
+                info!("Emitting \"cards_updated\"");
+                self.app.emit("cards_updated", ())?;
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+    pub async fn translate_paragraph(
+        &self,
+        book_id: Uuid,
+        paragraph_id: usize,
+        model: String,
+        use_cache: bool,
+    ) -> anyhow::Result<usize> {
+        let model = self.config.borrow().resolved_model_id(&model);
+        let queue = self.get_or_init_translation_queue().await?;
+        queue
+            .translate(book_id, paragraph_id, model, use_cache)
+            .await
+    }
+    pub async fn translate_chapter(
+        &self,
+        book_id: Uuid,
+        chapter_id: usize,
+        model: String,
+        use_cache: bool,
+    ) -> anyhow::Result<usize> {
+        let model = self.config.borrow().resolved_model_id(&model);
+        self.get_or_init_translation_queue()
+            .await?
+            .translate_chapter(book_id, chapter_id, model, use_cache)
+            .await
+    }
+    pub async fn get_paragraph_translation_activity(
+        &self,
+        book_id: Uuid,
+        paragraph_id: usize,
+    ) -> anyhow::Result<Option<translation_queue::ParagraphTranslationActivity>> {
+        // Pure read: initializing the queue here could pin a stale Library inside
+        // update_config's stop→eval window. Bind first, so no read-guard crosses
+        // the await.
+        let queue = self.translation_queue.borrow().clone();
+        match queue {
+            Some(queue) => Ok(queue.get_active_translation(book_id, paragraph_id).await),
+            None => Ok(None),
+        }
+    }
+    pub async fn list_paragraph_translation_activity(
+        &self,
+    ) -> anyhow::Result<Vec<translation_queue::ActiveParagraphTranslation>> {
+        // Pure read; see get_paragraph_translation_activity.
+        let queue = self.translation_queue.borrow().clone();
+        match queue {
+            Some(queue) => Ok(queue.list_active_translations().await),
+            None => Ok(Vec::new()),
+        }
+    }
+}
+
+struct BackendState {
     app: tauri::AppHandle,
     config_path: PathBuf,
     config: watch::Sender<Config>,
     /// Everything `eval_config` installs; see `gated_state`.
     gated: crate::app::gated_state::GatedState,
-    translation_queue: watch::Sender<Option<Arc<TranslationQueue>>>,
-    summary_generation_queue: watch::Sender<Option<Arc<SummaryGenerationQueue>>>,
-    watcher: Arc<Mutex<LibraryWatcher>>,
-    /// Owns configuration transitions and service replacement.
-    lifecycle: tokio::sync::OnceCell<lifecycle::Lifecycle>,
+    translation_queue: watch::Sender<Option<TranslationQueue>>,
+    summary_generation_queue: watch::Sender<Option<SummaryGenerationQueue>>,
+    watcher: Mutex<LibraryWatcher>,
+    translation_owner: std::sync::Mutex<Option<task::ManagedTask>>,
+    summary_owner: std::sync::Mutex<Option<task::ManagedTask>>,
+    anki_owner: std::sync::Mutex<Option<task::ManagedTask>>,
     catalog_prefetch: std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     /// Stable across `eval_config` re-spawns. The transient `AnkiSyncTask`
     /// holds a clone and pushes status into it on every tick.
-    anki_sync_status: Arc<watch::Sender<crate::app::anki_sync::AnkiSyncStatus>>,
+    anki_sync_status: watch::Sender<crate::app::anki_sync::AnkiSyncStatus>,
     /// Stable across re-spawns, like `anki_sync_status`.
-    sync_status: Arc<watch::Sender<crate::app::sync_daemon::SyncStatus>>,
-    translations_cache: tokio::sync::OnceCell<Arc<TranslationsCache>>,
-    stats_cache: tokio::sync::OnceCell<Arc<TranslationSizeCache>>,
-    gemini_prompt_cache: tokio::sync::OnceCell<Arc<GeminiPromptCache>>,
-    model_catalog: Arc<ModelCatalog>,
-    pub lyrics_state: crate::app::lyrics::LyricsState,
+    sync_status: watch::Sender<crate::app::sync_daemon::SyncStatus>,
+    translations_cache: tokio::sync::OnceCell<(TranslationsCache, library::task::TaskOwner)>,
+    stats_cache: tokio::sync::OnceCell<(TranslationSizeCache, library::task::TaskOwner)>,
+    gemini_prompt_cache: tokio::sync::OnceCell<(GeminiPromptCache, library::task::TaskOwner)>,
+    model_catalog: (ModelCatalog, library::task::TaskOwner),
+    pub lyrics_state: Arc<crate::app::lyrics::LyricsState>,
     pub spotify_web: Arc<crate::app::spotify::web::SpotifyWebState>,
 }
 
-impl AppState {
-    pub fn new(app: tauri::AppHandle, watcher: Arc<Mutex<LibraryWatcher>>) -> anyhow::Result<Self> {
+impl BackendState {
+    pub fn new(app: tauri::AppHandle, watcher: LibraryWatcher) -> anyhow::Result<Self> {
         info!("Startup!");
 
         let config_dir = resolve_config_dir(Some(&app))?;
@@ -338,12 +541,12 @@ impl AppState {
         let model_catalog = {
             let runtime = tauri::async_runtime::handle();
             let _enter = runtime.inner().enter();
-            Arc::new(ModelCatalog::new(
+            ModelCatalog::new(
                 resolve_cache_dir(Some(&app))?,
-                Arc::new(ReqwestListTransport::new()),
-            ))
+                Box::new(ReqwestListTransport::new()),
+            )
         };
-        let catalog_prefetch = spawn_catalog_prefetch(model_catalog.clone(), &config);
+        let catalog_prefetch = spawn_catalog_prefetch(model_catalog.0.clone(), &config);
 
         // Unreachable until a tick proves otherwise: the UI hides the sync
         // button in that state, so it stays hidden until we know.
@@ -359,16 +562,18 @@ impl AppState {
             gated: crate::app::gated_state::GatedState::new(),
             translation_queue: watch::channel(None).0,
             summary_generation_queue: watch::channel(None).0,
-            watcher,
-            lifecycle: tokio::sync::OnceCell::new(),
+            watcher: Mutex::new(watcher),
+            translation_owner: std::sync::Mutex::new(None),
+            summary_owner: std::sync::Mutex::new(None),
+            anki_owner: std::sync::Mutex::new(None),
             catalog_prefetch: std::sync::Mutex::new(Some(catalog_prefetch)),
-            anki_sync_status: Arc::new(watch::channel(initial_anki_status).0),
-            sync_status: Arc::new(watch::channel(crate::app::sync_daemon::SyncStatus::default()).0),
+            anki_sync_status: watch::channel(initial_anki_status).0,
+            sync_status: watch::channel(crate::app::sync_daemon::SyncStatus::default()).0,
             translations_cache: tokio::sync::OnceCell::new(),
             stats_cache: tokio::sync::OnceCell::new(),
             gemini_prompt_cache: tokio::sync::OnceCell::new(),
             model_catalog,
-            lyrics_state: crate::app::lyrics::LyricsState::new(),
+            lyrics_state: Arc::new(crate::app::lyrics::LyricsState::new()),
             spotify_web: Arc::new(crate::app::spotify::web::SpotifyWebState::new()),
         })
     }
@@ -377,33 +582,8 @@ impl AppState {
         self.gated.publish_ready(outcome);
     }
 
-    pub fn subscribe_config(&self) -> watch::Receiver<Config> {
-        self.config.subscribe()
-    }
-
-    pub fn config_borrow_client_id(&self) -> Option<String> {
-        self.config
-            .borrow()
-            .spotify_client_id
-            .clone()
-            .filter(|s| !s.trim().is_empty())
-    }
-
-    pub fn config_borrow_sync_device_name(&self) -> Option<String> {
-        self.config
-            .borrow()
-            .sync_device_name
-            .clone()
-            .filter(|s| !s.trim().is_empty())
-    }
-
     /// Persists `syncEnabled` and re-evaluates config, starting/stopping the
     /// embedded engine.
-    pub async fn set_sync_enabled(self: &Arc<Self>, enabled: bool) -> anyhow::Result<()> {
-        let mut config = self.config.borrow().clone();
-        config.sync_enabled = enabled;
-        self.update_config(config).await
-    }
 
     /// Call on foreground. iOS tears down the engine's sockets (incl. its
     /// loopback REST listener) during suspension and doesn't reliably rebind, so
@@ -464,43 +644,14 @@ impl AppState {
         Ok(())
     }
 
-    pub fn subscribe_library(&self) -> watch::Receiver<Option<Arc<Library>>> {
+    pub fn subscribe_library(&self) -> watch::Receiver<Option<Library>> {
         self.gated.subscribe_library()
     }
 
-    pub fn notify_library_changed(&self) {
-        self.gated.notify_library_changed();
-    }
-
     /// Every command reaches the library through here.
-    pub async fn library(&self) -> Result<Arc<Library>, String> {
-        self.gated.library().await
-    }
 
-    pub fn library_sender(&self) -> Arc<watch::Sender<Option<Arc<Library>>>> {
+    pub fn library_sender(&self) -> watch::Sender<Option<Library>> {
         self.gated.library_sender()
-    }
-
-    pub fn subscribe_anki_sync_status(
-        &self,
-    ) -> watch::Receiver<crate::app::anki_sync::AnkiSyncStatus> {
-        self.anki_sync_status.subscribe()
-    }
-
-    pub fn anki_sync_status(&self) -> crate::app::anki_sync::AnkiSyncStatus {
-        self.anki_sync_status.borrow().clone()
-    }
-
-    pub async fn sync_anki_now(&self) -> anyhow::Result<crate::app::anki_sync::SyncReportDto> {
-        self.gated.sync_anki_now().await
-    }
-
-    pub fn subscribe_sync_status(&self) -> watch::Receiver<crate::app::sync_daemon::SyncStatus> {
-        self.sync_status.subscribe()
-    }
-
-    pub fn sync_status(&self) -> crate::app::sync_daemon::SyncStatus {
-        self.sync_status.borrow().clone()
     }
 
     /// The running sync engine, if a task is installed.
@@ -545,13 +696,15 @@ impl AppState {
             self.stop_catalog_prefetch().await;
 
             let old = self.config.borrow().clone();
-            invalidate_changed_api_keys(&self.model_catalog, &old, &config).await?;
+            invalidate_changed_api_keys(&self.model_catalog.0, &old, &config).await?;
 
             info!("Applying configuration");
             config.save(&self.config_path)?;
             self.config.send_replace(config.clone());
-            *self.catalog_prefetch.lock().unwrap() =
-                Some(spawn_catalog_prefetch(self.model_catalog.clone(), &config));
+            *self.catalog_prefetch.lock().unwrap() = Some(spawn_catalog_prefetch(
+                self.model_catalog.0.clone(),
+                &config,
+            ));
             self.eval_library_config().await?
         };
         self.eval_sync(&config, &library_root).await;
@@ -565,7 +718,7 @@ impl AppState {
         }
         self.stop_catalog_prefetch().await;
         *self.catalog_prefetch.lock().unwrap() = Some(spawn_catalog_prefetch(
-            self.model_catalog.clone(),
+            self.model_catalog.0.clone(),
             &previous,
         ));
         match self.eval_library_config().await {
@@ -593,11 +746,11 @@ impl AppState {
         let library = match self.gated.library_unchecked() {
             Some(current) if canonical.as_deref() == Some(current.root()) => current,
             Some(current) => {
-                let next = Arc::new(Library::open(library_root.clone()).await?);
+                let next = Library::open(library_root.clone()).await?;
                 current.close().await?;
                 next
             }
-            None => Arc::new(Library::open(library_root.clone()).await?),
+            None => Library::open(library_root.clone()).await?,
         };
         self.gated.install_library(library.clone());
 
@@ -621,12 +774,13 @@ impl AppState {
                 .ok()
                 .and_then(|s| s.parse::<u64>().ok())
                 .unwrap_or(DEFAULT_ANKI_SYNC_INTERVAL_SECS);
-            let task = AnkiSyncTask::init(
+            let (task, owner) = AnkiSyncTask::init(
                 library.clone(),
                 client,
                 Duration::from_secs(interval_secs),
                 self.anki_sync_status.clone(),
             );
+            *self.anki_owner.lock().unwrap() = Some(owner);
             self.gated.install_anki_task(task);
             info!("Anki sync task spawned (interval = {interval_secs}s)");
         }
@@ -763,42 +917,34 @@ impl AppState {
         }
     }
 
-    pub async fn save_all(&self) {
-        let library = self.gated.library_unchecked();
-        if let Some(library) = library {
-            info!("Saving all dirty books before shutdown");
-            library.save_all().await;
-        }
-    }
-
-    async fn get_translations_cache(&self) -> anyhow::Result<Arc<TranslationsCache>> {
+    async fn get_translations_cache(&self) -> anyhow::Result<TranslationsCache> {
         self.translations_cache
             .get_or_try_init(|| async {
                 let cache_dir = resolve_cache_dir(Some(&self.app))?;
-                Ok(Arc::new(TranslationsCache::create(&cache_dir).await?))
+                TranslationsCache::create(&cache_dir).await
             })
             .await
-            .cloned()
+            .map(|(handle, _)| handle.clone())
     }
 
-    async fn get_stats_cache(&self) -> anyhow::Result<Arc<TranslationSizeCache>> {
+    async fn get_stats_cache(&self) -> anyhow::Result<TranslationSizeCache> {
         self.stats_cache
             .get_or_try_init(|| async {
                 let cache_dir = resolve_cache_dir(Some(&self.app))?;
-                Ok(Arc::new(TranslationSizeCache::create(&cache_dir).await?))
+                TranslationSizeCache::create(&cache_dir).await
             })
             .await
-            .cloned()
+            .map(|(handle, _)| handle.clone())
     }
 
-    async fn get_gemini_prompt_cache(&self) -> anyhow::Result<Arc<GeminiPromptCache>> {
+    async fn get_gemini_prompt_cache(&self) -> anyhow::Result<GeminiPromptCache> {
         self.gemini_prompt_cache
             .get_or_try_init(|| async {
                 let cache_dir = resolve_cache_dir(Some(&self.app))?.join("gemini_caches");
                 GeminiPromptCache::open(&cache_dir, GEMINI_PROMPT_CACHE_CAPACITY).await
             })
             .await
-            .cloned()
+            .map(|(handle, _)| handle.clone())
     }
 
     async fn stop_catalog_prefetch(&self) {
@@ -851,56 +997,11 @@ impl AppState {
                 log::warn!("library shutdown retained dirty state: {err:#}");
             }
         }
-        self.model_catalog.close().await;
+        self.model_catalog.0.close().await;
         self.close_caches_for_exit().await;
     }
 
-    pub async fn handle_file_change_event(&self, event: &LibraryFileChange) -> anyhow::Result<()> {
-        let library = self.gated.library_unchecked();
-        let Some(library) = library else {
-            return Ok(());
-        };
-
-        let had_effect = library.handle_file_change_event(event).await?;
-
-        // `had_effect` gates per arm, not the whole match: the library has no
-        // card cache, so CardChanged is always false yet must still notify.
-        match event {
-            LibraryFileChange::SummariesChanged { uuid }
-            | LibraryFileChange::BookChanged { modified: _, uuid }
-                if had_effect =>
-            {
-                info!("Emitting \"book_updated\" for {uuid}");
-                self.app.emit("book_updated", uuid)?;
-                self.notify_library_changed();
-            }
-            LibraryFileChange::TranslationChanged {
-                modified: _,
-                from: _,
-                to,
-                uuid,
-            } if had_effect => {
-                let target_language_id = { self.config.borrow().target_language_id.clone() };
-                let target_language = Language::from_639_3(&target_language_id);
-
-                if target_language == Some(*to) {
-                    info!("Emitting \"book_updated\" for {uuid}");
-                    self.app.emit("book_updated", uuid)?;
-                    self.notify_library_changed();
-                }
-            }
-            LibraryFileChange::CardChanged { .. } => {
-                // Unconditional: the frontend invalidates its translation cache here.
-                info!("Emitting \"cards_updated\"");
-                self.app.emit("cards_updated", ())?;
-            }
-            _ => {}
-        }
-
-        Ok(())
-    }
-
-    async fn build_translation_queue(&self) -> anyhow::Result<Arc<TranslationQueue>> {
+    async fn build_translation_queue(&self) -> anyhow::Result<TranslationQueue> {
         if let Some(queue) = self.translation_queue.borrow().clone() {
             return Ok(queue);
         }
@@ -929,12 +1030,12 @@ impl AppState {
         let stats_cache = self.get_stats_cache().await?;
         let gemini_prompt_cache = self.get_gemini_prompt_cache().await?;
         let summary_queue = self.build_summary_queue().await?;
-        let context_provider: Arc<dyn library::translator::ChapterContextProvider> =
-            Arc::new(SummaryBackedChapterContext {
+        let context_provider: Box<dyn library::translator::ChapterContextProvider> =
+            Box::new(SummaryBackedChapterContext {
                 queue: summary_queue,
                 library_rx: self.subscribe_library(),
             });
-        let queue = TranslationQueue::init(
+        let (queue, owner) = TranslationQueue::init(
             library,
             cache,
             stats_cache,
@@ -946,11 +1047,12 @@ impl AppState {
         )
         .ok_or(AppError::NoTranslationQueueError)?;
 
+        *self.translation_owner.lock().unwrap() = Some(owner);
         self.translation_queue.send_replace(Some(queue.clone()));
         Ok(queue)
     }
 
-    async fn build_summary_queue(&self) -> anyhow::Result<Arc<SummaryGenerationQueue>> {
+    async fn build_summary_queue(&self) -> anyhow::Result<SummaryGenerationQueue> {
         if let Some(queue) = self.summary_generation_queue.borrow().clone() {
             return Ok(queue);
         }
@@ -960,66 +1062,13 @@ impl AppState {
         }
 
         let config = self.config.borrow().clone();
-        let queue =
+        let (queue, owner) =
             SummaryGenerationQueue::init(self.subscribe_library(), &config, self.app.clone());
 
+        *self.summary_owner.lock().unwrap() = Some(owner);
         self.summary_generation_queue
             .send_replace(Some(queue.clone()));
         Ok(queue)
-    }
-
-    pub async fn translate_paragraph(
-        self: &Arc<Self>,
-        book_id: Uuid,
-        paragraph_id: usize,
-        model: String,
-        use_cache: bool,
-    ) -> anyhow::Result<usize> {
-        let model = self.config.borrow().resolved_model_id(&model);
-        let queue = self.get_or_init_translation_queue().await?;
-        queue
-            .translate(book_id, paragraph_id, model, use_cache)
-            .await
-    }
-
-    pub async fn translate_chapter(
-        self: &Arc<Self>,
-        book_id: Uuid,
-        chapter_id: usize,
-        model: String,
-        use_cache: bool,
-    ) -> anyhow::Result<usize> {
-        let model = self.config.borrow().resolved_model_id(&model);
-        self.get_or_init_translation_queue()
-            .await?
-            .translate_chapter(book_id, chapter_id, model, use_cache)
-            .await
-    }
-
-    pub async fn get_paragraph_translation_activity(
-        self: &Arc<Self>,
-        book_id: Uuid,
-        paragraph_id: usize,
-    ) -> anyhow::Result<Option<translation_queue::ParagraphTranslationActivity>> {
-        // Pure read: initializing the queue here could pin a stale Library inside
-        // update_config's stop→eval window. Bind first, so no read-guard crosses
-        // the await.
-        let queue = self.translation_queue.borrow().clone();
-        match queue {
-            Some(queue) => Ok(queue.get_active_translation(book_id, paragraph_id).await),
-            None => Ok(None),
-        }
-    }
-
-    pub async fn list_paragraph_translation_activity(
-        self: &Arc<Self>,
-    ) -> anyhow::Result<Vec<translation_queue::ActiveParagraphTranslation>> {
-        // Pure read; see get_paragraph_translation_activity.
-        let queue = self.translation_queue.borrow().clone();
-        match queue {
-            Some(queue) => Ok(queue.list_active_translations().await),
-            None => Ok(Vec::new()),
-        }
     }
 }
 
@@ -1036,9 +1085,9 @@ where
     }
 }
 
-impl AppState {
+impl BackendState {
     async fn close_caches_for_exit(&self) {
-        if let Some(cache) = self.translations_cache.get() {
+        if let Some((cache, _)) = self.translations_cache.get() {
             info!("Closing translations cache");
             if run_exit_step(
                 "translations cache close",
@@ -1050,7 +1099,7 @@ impl AppState {
                 info!("Translations cache closed");
             }
         }
-        if let Some(cache) = self.stats_cache.get() {
+        if let Some((cache, _)) = self.stats_cache.get() {
             info!("Closing translation stats cache");
             if run_exit_step(
                 "translation stats cache close",
@@ -1062,7 +1111,7 @@ impl AppState {
                 info!("Translation stats cache closed");
             }
         }
-        if let Some(cache) = self.gemini_prompt_cache.get() {
+        if let Some((cache, _)) = self.gemini_prompt_cache.get() {
             info!("Closing Gemini prompt cache");
             if run_exit_step(
                 "gemini prompt cache close",
@@ -1222,21 +1271,21 @@ mod tests {
 
 #[tauri::command]
 pub async fn get_anki_sync_status(
-    state: tauri::State<'_, Arc<AppState>>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<crate::app::anki_sync::AnkiSyncStatus, String> {
     Ok(state.anki_sync_status())
 }
 
 #[tauri::command]
 pub async fn sync_anki_now(
-    state: tauri::State<'_, Arc<AppState>>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<crate::app::anki_sync::SyncReportDto, String> {
     state.sync_anki_now().await.map_err(|err| err.to_string())
 }
 
 #[tauri::command]
 pub async fn update_config(
-    state: tauri::State<'_, Arc<AppState>>,
+    state: tauri::State<'_, AppState>,
     config: Config,
 ) -> Result<(), String> {
     info!("Update config request");
@@ -1249,7 +1298,7 @@ pub async fn update_config(
 }
 
 #[tauri::command]
-pub async fn get_config(state: tauri::State<'_, Arc<AppState>>) -> Result<Config, String> {
+pub async fn get_config(state: tauri::State<'_, AppState>) -> Result<Config, String> {
     Ok(state.config.borrow().clone())
 }
 
@@ -1257,7 +1306,7 @@ pub async fn get_config(state: tauri::State<'_, Arc<AppState>>) -> Result<Config
 /// prefix "flts-") and clears the local pointers; returns the count. Safe during
 /// active translation: chapters self-heal via the 403/404 evict-and-retry path.
 #[tauri::command]
-pub async fn purge_gemini_caches(state: tauri::State<'_, Arc<AppState>>) -> Result<usize, String> {
+pub async fn purge_gemini_caches(state: tauri::State<'_, AppState>) -> Result<usize, String> {
     let api_key = state
         .config
         .borrow()
@@ -1337,7 +1386,7 @@ fn reveal_in_file_manager(path: &Path) -> anyhow::Result<()> {
 
 #[tauri::command]
 pub async fn translate_paragraph(
-    state: tauri::State<'_, Arc<AppState>>,
+    state: tauri::State<'_, AppState>,
     book_id: Uuid,
     paragraph_id: usize,
     model: String,
@@ -1351,7 +1400,7 @@ pub async fn translate_paragraph(
 
 #[tauri::command]
 pub async fn translate_chapter(
-    state: tauri::State<'_, Arc<AppState>>,
+    state: tauri::State<'_, AppState>,
     book_id: Uuid,
     chapter_id: usize,
     model: String,
@@ -1365,7 +1414,7 @@ pub async fn translate_chapter(
 
 #[tauri::command]
 pub async fn get_paragraph_translation_activity(
-    state: tauri::State<'_, Arc<AppState>>,
+    state: tauri::State<'_, AppState>,
     book_id: Uuid,
     paragraph_id: usize,
 ) -> Result<Option<translation_queue::ParagraphTranslationActivity>, String> {
@@ -1377,7 +1426,7 @@ pub async fn get_paragraph_translation_activity(
 
 #[tauri::command]
 pub async fn list_paragraph_translation_activity(
-    state: tauri::State<'_, Arc<AppState>>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<translation_queue::ActiveParagraphTranslation>, String> {
     state
         .list_paragraph_translation_activity()

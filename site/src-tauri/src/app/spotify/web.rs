@@ -177,7 +177,7 @@ impl Inner {
 
 pub struct SpotifyWebState {
     inner: RwLock<Inner>,
-    tx: Arc<watch::Sender<Option<QueueSnapshot>>>,
+    tx: watch::Sender<Option<QueueSnapshot>>,
     client: reqwest::Client,
     /// Serializes the OAuth flow so two simultaneous Connect clicks don't
     /// fight over the loopback listener.
@@ -199,7 +199,7 @@ impl SpotifyWebState {
             .expect("reqwest client builds with default config");
         Self {
             inner: RwLock::new(Inner::default()),
-            tx: Arc::new(tx),
+            tx,
             client,
             auth_lock: Mutex::new(()),
         }
@@ -360,7 +360,7 @@ impl SpotifyWebState {
         self: &Arc<Self>,
         app: AppHandle,
         watcher: Arc<SpotifyWatcher>,
-        state: Arc<crate::app::AppState>,
+        state: crate::app::AppState,
     ) {
         let mut inner = self.inner.write().await;
         if inner.poll_handle.is_some() {
@@ -695,8 +695,8 @@ async fn poll_loop(
     web: Arc<SpotifyWebState>,
     app: AppHandle,
     watcher: Arc<SpotifyWatcher>,
-    tx: Arc<watch::Sender<Option<QueueSnapshot>>>,
-    app_state: Arc<crate::app::AppState>,
+    tx: watch::Sender<Option<QueueSnapshot>>,
+    app_state: crate::app::AppState,
 ) {
     info!("poll_loop: entered");
     let mut ticker = time::interval(QUEUE_POLL_INTERVAL);
@@ -870,7 +870,7 @@ fn np_to_track_meta(np: crate::app::spotify::applescript::NowPlaying) -> Option<
 /// context — for radio/autoplay the "next track" is a guess.
 #[cfg(target_os = "macos")]
 async fn resolve_playback_list(
-    state: &Arc<crate::app::AppState>,
+    state: &crate::app::AppState,
     app: &AppHandle,
     list: &PlaybackList,
     resolved: &Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
@@ -1173,7 +1173,7 @@ async fn delete_refresh_token() -> anyhow::Result<()> {
 
 #[tauri::command]
 pub async fn spotify_web_connect(
-    state: tauri::State<'_, Arc<crate::app::AppState>>,
+    state: tauri::State<'_, crate::app::AppState>,
     client_id: String,
 ) -> Result<(), String> {
     state.spotify_web.connect(client_id).await
@@ -1181,7 +1181,7 @@ pub async fn spotify_web_connect(
 
 #[tauri::command]
 pub async fn spotify_web_disconnect(
-    state: tauri::State<'_, Arc<crate::app::AppState>>,
+    state: tauri::State<'_, crate::app::AppState>,
 ) -> Result<(), String> {
     state.spotify_web.disconnect().await;
     Ok(())
@@ -1189,14 +1189,14 @@ pub async fn spotify_web_disconnect(
 
 #[tauri::command]
 pub async fn spotify_web_status(
-    state: tauri::State<'_, Arc<crate::app::AppState>>,
+    state: tauri::State<'_, crate::app::AppState>,
 ) -> Result<SpotifyWebStatus, String> {
     Ok(state.spotify_web.status().await)
 }
 
 #[tauri::command]
 pub async fn spotify_web_get_queue(
-    state: tauri::State<'_, Arc<crate::app::AppState>>,
+    state: tauri::State<'_, crate::app::AppState>,
 ) -> Result<Option<QueueSnapshot>, String> {
     Ok(state.spotify_web.tx.borrow().clone())
 }

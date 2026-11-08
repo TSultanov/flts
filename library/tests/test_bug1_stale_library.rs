@@ -1,6 +1,6 @@
 //! Reproduction test for Bug F1: Stale Library Reference
 //!
-//! Demonstrates that translation queue workers capture an Arc<Library> at init
+//! Demonstrates that translation queue workers capture an Library at init
 //! time, and continue using it even after AppState replaces the library.
 //! This causes translations to be saved to the WRONG library directory.
 //!
@@ -36,21 +36,21 @@ impl Drop for TempDir {
     }
 }
 
-/// Mimics AppState's library field: `library: RwLock<Option<Arc<Library>>>`
+/// Mimics AppState's library field: `library: RwLock<Option<Library>>`
 struct MockAppState {
-    library: RwLock<Option<(Arc<Library>, PathBuf)>>,
+    library: RwLock<Option<(Library, PathBuf)>>,
 }
 
 /// Mimics TranslationQueue: captures library Arc at init, uses it for all work.
 /// Now also stores task handles and aborts them on Drop (F1 fix).
 struct MockTranslationQueue {
-    captured_library: Arc<Library>,
+    captured_library: Library,
     captured_root: PathBuf,
     task_handle: tokio::task::JoinHandle<()>,
 }
 
 impl MockTranslationQueue {
-    fn init(library: Arc<Library>, root: PathBuf, work_flag: Arc<AtomicBool>) -> Self {
+    fn init(library: Library, root: PathBuf, work_flag: Arc<AtomicBool>) -> Self {
         let task_lib = library.clone();
         let task_handle = tokio::spawn(async move {
             loop {
@@ -79,7 +79,7 @@ async fn test_bug1_stale_library_ref() {
     // 1. Create library A
     let dir_a = TempDir::new("flts_repro_f1_a");
     let lib_a_root = dir_a.path.join("lib_a");
-    let library_a = Arc::new(Library::open(lib_a_root.clone()).await.unwrap());
+    let library_a = Library::open(lib_a_root.clone()).await.unwrap();
 
     // 2. Simulate AppState holding library A
     let app_state = MockAppState {
@@ -95,7 +95,7 @@ async fn test_bug1_stale_library_ref() {
     // 4. Simulate update_config → create library B and replace in AppState
     let dir_b = TempDir::new("flts_repro_f1_b");
     let lib_b_root = dir_b.path.join("lib_b");
-    let library_b = Arc::new(Library::open(lib_b_root.clone()).await.unwrap());
+    let library_b = Library::open(lib_b_root.clone()).await.unwrap();
     *app_state.library.write().await = Some((library_b.clone(), lib_b_root.clone()));
 
     // 5. Verify: AppState now points to library B
@@ -128,12 +128,10 @@ async fn test_bug1_stale_library_ref() {
     assert!(stale_books.iter().any(|b| b.id == book_a_id));
     assert!(current_books.iter().any(|b| b.id == book_b_id));
 
-    // Stale library is kept alive by the queue's Arc
-    let stale_strong_count = Arc::strong_count(&queue.captured_library);
-    assert!(
-        stale_strong_count >= 2,
-        "Stale library has {} strong references (queue + local var)",
-        stale_strong_count
+    assert_eq!(
+        queue.captured_library.root(),
+        library_a.root(),
+        "the queue still holds the old session handle"
     );
 
     println!("BUG F1 REPRODUCED:");
@@ -154,7 +152,7 @@ async fn test_bug1_stale_library_ref() {
 async fn test_bug1_fix_drop_aborts_tasks() {
     let dir = TempDir::new("flts_f1_fix");
     let lib_root = dir.path.join("lib");
-    let library = Arc::new(Library::open(lib_root.clone()).await.unwrap());
+    let library = Library::open(lib_root.clone()).await.unwrap();
 
     let work_flag = Arc::new(AtomicBool::new(false));
     let queue = MockTranslationQueue::init(library.clone(), lib_root.clone(), work_flag.clone());

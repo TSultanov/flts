@@ -2,7 +2,7 @@
 //! library. Both dependencies are app-scoped, so it lives here rather than in
 //! the library crate.
 
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use library::{library::Library, translator::ChapterContextProvider};
@@ -17,14 +17,14 @@ use crate::app::summary_generation_queue::{SummaryGenerationQueue, concat_prior_
 const WAIT_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct SummaryBackedChapterContext {
-    pub queue: Arc<SummaryGenerationQueue>,
+    pub queue: SummaryGenerationQueue,
     /// Borrowed per operation, so a config change swapping in a fresh `Library`
     /// is picked up rather than pinned at construction.
-    pub library_rx: watch::Receiver<Option<Arc<Library>>>,
+    pub library_rx: watch::Receiver<Option<Library>>,
 }
 
 impl SummaryBackedChapterContext {
-    fn current_library(&self) -> anyhow::Result<Arc<Library>> {
+    fn current_library(&self) -> anyhow::Result<Library> {
         self.library_rx
             .borrow()
             .clone()

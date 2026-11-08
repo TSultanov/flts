@@ -2,6 +2,7 @@ use crate::app::{
     config::{ApiKeys, Config},
     task::ManagedTask,
 };
+use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
 use isolang::Language;
 use library::{
     cache::TranslationsCache,
@@ -12,19 +13,14 @@ use library::{
         get_translator, is_transient_translation_error,
     },
 };
+use std::panic::AssertUnwindSafe;
 use std::{
     collections::{HashMap, VecDeque},
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::Arc,
     time::Duration,
 };
 use tauri::Emitter;
-use tokio::{
-    sync::{mpsc, oneshot, watch},
-    task::JoinSet,
-};
+use tokio::sync::{mpsc, oneshot, watch};
 use uuid::Uuid;
 const MAX_TRANSLATION_ATTEMPTS: u32 = 4;
 const MAX_PENDING: usize = 1024;
@@ -97,6 +93,11 @@ pub struct ActiveParagraphTranslation {
 }
 
 type Activities = HashMap<(Uuid, usize), ParagraphTranslationActivity>;
+#[derive(Clone, Copy, Default)]
+struct Progress {
+    chars: usize,
+    expected: usize,
+}
 struct Job {
     request_id: usize,
     book: BookHandle,
@@ -105,8 +106,6 @@ struct Job {
     model: String,
     use_cache: bool,
     attempt: u32,
-    progress: Arc<AtomicUsize>,
-    expected: Arc<AtomicUsize>,
 }
 struct ChapterJob {
     book: BookHandle,
@@ -132,33 +131,33 @@ enum Request {
         reply: oneshot::Sender<anyhow::Result<usize>>,
     },
 }
-#[derive(Clone)]
 struct WorkerContext {
-    library: Arc<Library>,
-    cache: Arc<TranslationsCache>,
-    stats: Arc<TranslationSizeCache>,
-    gemini: Arc<GeminiPromptCache>,
-    context: Arc<dyn ChapterContextProvider>,
+    library: Library,
+    cache: TranslationsCache,
+    stats: TranslationSizeCache,
+    gemini: GeminiPromptCache,
+    context: Box<dyn ChapterContextProvider>,
     provider: library::translator::TranslationProvider,
     keys: ApiKeys,
     target: Language,
 }
+#[derive(Clone)]
 pub struct TranslationQueue {
     requests: mpsc::Sender<Request>,
     activity: watch::Receiver<Arc<Activities>>,
-    task: ManagedTask,
+    control: library::task::TaskControl,
 }
 impl TranslationQueue {
     pub fn init(
-        library: Arc<Library>,
-        cache: Arc<TranslationsCache>,
-        stats: Arc<TranslationSizeCache>,
-        gemini: Arc<GeminiPromptCache>,
-        context: Arc<dyn ChapterContextProvider>,
+        library: Library,
+        cache: TranslationsCache,
+        stats: TranslationSizeCache,
+        gemini: GeminiPromptCache,
+        context: Box<dyn ChapterContextProvider>,
         config: &Config,
         app: tauri::AppHandle,
-        library_tx: Arc<watch::Sender<Option<Arc<Library>>>>,
-    ) -> Option<Arc<Self>> {
+        library_tx: watch::Sender<Option<Library>>,
+    ) -> Option<(Self, ManagedTask)> {
         let target = Language::from_639_3(&config.target_language_id)?;
         let worker = WorkerContext {
             library,
@@ -184,11 +183,14 @@ impl TranslationQueue {
                 library_tx,
             )
         });
-        Some(Arc::new(Self {
-            requests,
-            activity,
+        Some((
+            Self {
+                requests,
+                activity,
+                control: task.control(),
+            },
             task,
-        }))
+        ))
     }
     pub async fn translate(
         &self,
@@ -231,7 +233,7 @@ impl TranslationQueue {
         result.await?
     }
     pub async fn shutdown(&self) {
-        if let Err(err) = self.task.shutdown().await {
+        if let Err(err) = self.control.shutdown().await {
             log::warn!("translation shutdown: {err}");
         }
     }
@@ -293,8 +295,6 @@ fn admit(
         model,
         use_cache,
         attempt: 0,
-        progress: Arc::new(AtomicUsize::new(0)),
-        expected: Arc::new(AtomicUsize::new(0)),
     }
 }
 async fn scheduler(
@@ -304,17 +304,14 @@ async fn scheduler(
     mut stop: watch::Receiver<bool>,
     publish: watch::Sender<Arc<Activities>>,
     app: tauri::AppHandle,
-    library_tx: Arc<watch::Sender<Option<Arc<Library>>>>,
+    library_tx: watch::Sender<Option<Library>>,
 ) {
     let mut activities = HashMap::new();
     let mut next_id = 0;
     let mut pending: VecDeque<Job> = VecDeque::new();
     let mut chapters: VecDeque<ChapterJob> = VecDeque::new();
-    let mut workers = JoinSet::new();
-    let mut running: HashMap<
-        tokio::task::Id,
-        (Uuid, usize, usize, Arc<AtomicUsize>, Arc<AtomicUsize>),
-    > = HashMap::new();
+    let mut workers = FuturesUnordered::new();
+    let mut running: HashMap<usize, (Uuid, usize, watch::Receiver<Progress>)> = HashMap::new();
     let mut ticker = tokio::time::interval(Duration::from_millis(500));
     loop {
         while pending.len() < MAX_PENDING && !chapters.is_empty() {
@@ -349,43 +346,38 @@ async fn scheduler(
             let Some(job) = pending.pop_front() else {
                 break;
             };
-            let key = (
-                job.snapshot.book.id,
-                job.paragraph,
+            let (progress, observed) = watch::channel(Progress::default());
+            running.insert(
                 job.request_id,
-                job.progress.clone(),
-                job.expected.clone(),
+                (job.snapshot.book.id, job.paragraph, observed),
             );
-            let context = context.clone();
-            let task = workers.spawn(async move {
-                let result = execute(&job, &context).await;
+            let context = &context;
+            workers.push(async move {
+                let result = AssertUnwindSafe(execute(&job, context, &progress))
+                    .catch_unwind()
+                    .await
+                    .unwrap_or_else(|_| Err(anyhow::anyhow!("translation worker panicked")));
                 (job, result)
             });
-            running.insert(task.id(), key);
         }
         publish.send_replace(Arc::new(activities.clone()));
         tokio::select! {
             biased;
             _ = stop.changed() => break,
-            Some(result) = workers.join_next_with_id(), if !workers.is_empty() => {
-                match result {
-                    Ok((task, (mut job, result))) => {
-                        running.remove(&task);
-                        let id = job.snapshot.book.id;
-                        if let Err(error) = &result {
-                            if should_requeue(error, job.attempt) {
-                                job.attempt += 1; job.progress.store(0, Ordering::Relaxed);
-                                if let Some(activity) = activities.get_mut(&(id, job.paragraph)) { activity.progress_chars = 0; }
-                                pending.push_front(job); continue;
-                            }
-                        }
-                        activities.remove(&(id, job.paragraph));
-                        let _ = app.emit("paragraph_updated", ParagraphUpdatedEvent {book_id: id, paragraph_id: job.paragraph});
-                        let _ = app.emit("book_updated", id); library_tx.send_modify(|_| {});
-                        let _ = app.emit("paragraph_translation_finished", ParagraphTranslationFinishedEvent {book_id: id, paragraph_id: job.paragraph, request_id: job.request_id, error: result.err().map(|e| e.to_string())});
+            Some((mut job, result)) = workers.next(), if !workers.is_empty() => {
+                running.remove(&job.request_id);
+                let id = job.snapshot.book.id;
+                if let Err(error) = &result {
+                    if should_requeue(error, job.attempt) {
+                        job.attempt += 1;
+                        if let Some(activity) = activities.get_mut(&(id, job.paragraph)) { activity.progress_chars = 0; }
+                        pending.push_front(job); continue;
                     }
-                    Err(error) => { if let Some((id, paragraph, request, _, _)) = running.remove(&error.id()) { activities.remove(&(id, paragraph)); let _ = app.emit("paragraph_translation_finished", ParagraphTranslationFinishedEvent {book_id: id, paragraph_id: paragraph, request_id: request, error: Some(error.to_string())}); } }
                 }
+                activities.remove(&(id, job.paragraph));
+                let _ = app.emit("paragraph_updated", ParagraphUpdatedEvent {book_id: id, paragraph_id: job.paragraph});
+                let _ = app.emit("book_updated", id); library_tx.send_modify(|_| {});
+                let _ = app.emit("paragraph_translation_finished", ParagraphTranslationFinishedEvent {book_id: id, paragraph_id: job.paragraph, request_id: job.request_id, error: result.err().map(|e| e.to_string())});
             }
             request = requests.recv() => {
                 let Some(request) = request else { break; };
@@ -417,8 +409,8 @@ async fn scheduler(
                 }
             }
             _ = ticker.tick() => {
-                for (id, paragraph, request_id, progress, expected) in running.values() {
-                    let chars = progress.load(Ordering::Relaxed); let estimate = expected.load(Ordering::Relaxed);
+                for (request_id, (id, paragraph, progress)) in &running {
+                    let latest = *progress.borrow(); let chars = latest.chars; let estimate = latest.expected;
                     if let Some(activity) = activities.get_mut(&(*id, *paragraph)) {
                         if activity.request_id != *request_id || (activity.progress_chars == chars && activity.expected_chars == estimate) { continue; }
                         activity.progress_chars = chars; activity.expected_chars = estimate;
@@ -429,8 +421,7 @@ async fn scheduler(
         }
     }
     requests.close();
-    workers.abort_all();
-    while workers.join_next().await.is_some() {}
+    workers.clear();
     for ((book_id, paragraph_id), activity) in activities {
         let _ = app.emit(
             "paragraph_translation_finished",
@@ -444,7 +435,11 @@ async fn scheduler(
     }
     publish.send_replace(Arc::new(HashMap::new()));
 }
-async fn execute(job: &Job, context: &WorkerContext) -> anyhow::Result<()> {
+async fn execute(
+    job: &Job,
+    context: &WorkerContext,
+    progress: &watch::Sender<Progress>,
+) -> anyhow::Result<()> {
     let source = Language::from_639_3(&job.snapshot.book.language)
         .ok_or_else(|| anyhow::anyhow!("invalid source language"))?;
     let text = job
@@ -458,9 +453,9 @@ async fn execute(job: &Job, context: &WorkerContext) -> anyhow::Result<()> {
         .for_provider(context.provider)
         .ok_or_else(|| anyhow::anyhow!("no API key configured"))?;
     let translator = get_translator(
-        context.cache.clone(),
-        context.context.clone(),
-        context.gemini.clone(),
+        &context.cache,
+        context.context.as_ref(),
+        &context.gemini,
         context.provider,
         &job.model,
         api_key.into(),
@@ -472,8 +467,7 @@ async fn execute(job: &Job, context: &WorkerContext) -> anyhow::Result<()> {
         .get(&source, &context.target)
         .await
         .estimate(text.len());
-    job.expected.store(estimate, Ordering::Relaxed);
-    let progress = job.progress.clone();
+    progress.send_modify(|p| p.expected = estimate);
     let translation = translator
         .get_translation(TranslationContext {
             paragraph_text: &text,
@@ -485,7 +479,7 @@ async fn execute(job: &Job, context: &WorkerContext) -> anyhow::Result<()> {
                 .unwrap_or(0),
             use_cache: job.use_cache,
             callback: Some(Box::new(move |chars| {
-                progress.store(chars, Ordering::Relaxed);
+                progress.send_modify(|p| p.chars = chars);
             })),
         })
         .await?;

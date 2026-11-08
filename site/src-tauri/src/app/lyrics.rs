@@ -153,7 +153,7 @@ pub struct TrackLyricsState {
 #[tauri::command]
 pub async fn start_spotify_watcher(
     #[allow(unused_variables)] app: AppHandle,
-    #[allow(unused_variables)] state: tauri::State<'_, Arc<AppState>>,
+    #[allow(unused_variables)] state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -177,7 +177,7 @@ pub async fn start_spotify_watcher(
 
 #[tauri::command]
 pub async fn stop_spotify_watcher(
-    #[allow(unused_variables)] state: tauri::State<'_, Arc<AppState>>,
+    #[allow(unused_variables)] state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -190,7 +190,7 @@ pub async fn stop_spotify_watcher(
 #[cfg(target_os = "macos")]
 #[tauri::command]
 pub async fn get_now_playing(
-    state: tauri::State<'_, Arc<AppState>>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<Option<NowPlaying>, String> {
     if let Some(np) = state.lyrics_state.watcher.current() {
         return Ok(Some(np));
@@ -204,13 +204,13 @@ pub async fn get_now_playing(
 #[cfg(not(target_os = "macos"))]
 #[tauri::command]
 pub async fn get_now_playing(
-    _state: tauri::State<'_, Arc<AppState>>,
+    _state: tauri::State<'_, AppState>,
 ) -> Result<Option<serde_json::Value>, String> {
     Ok(None)
 }
 
 pub(crate) async fn fetch_lyrics_inner(
-    state: &Arc<AppState>,
+    state: &AppState,
     track: &TrackMeta,
 ) -> anyhow::Result<Option<Lyrics>> {
     let track_id = track.id.as_str();
@@ -289,7 +289,7 @@ pub(crate) async fn fetch_lyrics_inner(
 /// translation.
 #[tauri::command]
 pub async fn get_track_lyrics_state(
-    state: tauri::State<'_, Arc<AppState>>,
+    state: tauri::State<'_, AppState>,
     track_id: String,
     target_lang: String,
     model: String,
@@ -317,7 +317,7 @@ pub async fn get_track_lyrics_state(
 }
 
 pub(crate) async fn dispatch_translation_inner(
-    state: &Arc<AppState>,
+    state: &AppState,
     app: &AppHandle,
     track_id: &str,
     target_lang: &str,
@@ -386,7 +386,7 @@ pub(crate) async fn dispatch_translation_inner(
 
     let app_for_progress = app.clone();
     let app_for_result = app.clone();
-    let state_arc: Arc<AppState> = state.clone();
+    let state_arc: AppState = state.clone();
     let track_id_progress = track_id.to_string();
     let progress: Box<dyn Fn(usize) + Send + Sync> = {
         let throttle = Arc::new(std::sync::Mutex::new((Instant::now(), 0usize)));
@@ -476,7 +476,7 @@ pub(crate) async fn dispatch_translation_inner(
 /// lyrics, then translates. Emits `lyrics_resolved`, then
 /// `lyrics_translation_done` when lyrics exist.
 pub(crate) async fn resolve_track(
-    state: &Arc<AppState>,
+    state: &AppState,
     app: &AppHandle,
     track: &TrackMeta,
     target_lang: &str,

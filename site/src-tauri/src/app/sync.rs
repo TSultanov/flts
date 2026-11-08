@@ -1,7 +1,5 @@
 //! Tauri commands for native device sync.
 
-use std::sync::Arc;
-
 use serde::Serialize;
 
 use crate::app::{AppState, sync_daemon::SyncStatus};
@@ -32,14 +30,14 @@ pub struct PendingEntry {
 }
 
 #[tauri::command]
-pub async fn get_sync_status(state: tauri::State<'_, Arc<AppState>>) -> Result<SyncStatus, String> {
+pub async fn get_sync_status(state: tauri::State<'_, AppState>) -> Result<SyncStatus, String> {
     Ok(state.sync_status())
 }
 
 /// This device's Syncthing ID + name; `None` while the engine isn't running.
 #[tauri::command]
 pub async fn sync_get_this_device(
-    state: tauri::State<'_, Arc<AppState>>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<Option<ThisDevice>, String> {
     let Some(engine) = state.sync_engine().await? else {
         return Ok(None);
@@ -67,9 +65,7 @@ pub async fn sync_get_this_device(
 /// Loopback URL of Syncthing's dashboard. `Some` only in debug builds with the
 /// engine up: release ships `-tags noassets`, so `None` hides the UI button.
 #[tauri::command]
-pub async fn sync_web_ui_url(
-    state: tauri::State<'_, Arc<AppState>>,
-) -> Result<Option<String>, String> {
+pub async fn sync_web_ui_url(state: tauri::State<'_, AppState>) -> Result<Option<String>, String> {
     if !cfg!(debug_assertions) {
         return Ok(None);
     }
@@ -79,7 +75,7 @@ pub async fn sync_web_ui_url(
 /// Call on mobile foreground: restarts an engine that went unreachable while
 /// suspended. No-op when sync is off or healthy.
 #[tauri::command]
-pub async fn sync_wake(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
+pub async fn sync_wake(state: tauri::State<'_, AppState>) -> Result<(), String> {
     state.wake_sync().await;
     Ok(())
 }
@@ -87,7 +83,7 @@ pub async fn sync_wake(state: tauri::State<'_, Arc<AppState>>) -> Result<(), Str
 /// Renames this device across config, the running engine, and the roster.
 #[tauri::command]
 pub async fn sync_set_device_name(
-    state: tauri::State<'_, Arc<AppState>>,
+    state: tauri::State<'_, AppState>,
     name: String,
 ) -> Result<(), String> {
     state
@@ -99,7 +95,7 @@ pub async fn sync_set_device_name(
 /// Persists the flag and re-evaluates config, starting or stopping the engine.
 #[tauri::command]
 pub async fn sync_set_enabled(
-    state: tauri::State<'_, Arc<AppState>>,
+    state: tauri::State<'_, AppState>,
     enabled: bool,
 ) -> Result<(), String> {
     state
@@ -112,7 +108,7 @@ pub async fn sync_set_enabled(
 /// running.
 #[tauri::command]
 pub async fn sync_list_devices(
-    state: tauri::State<'_, Arc<AppState>>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<DeviceEntry>, String> {
     let Some(engine) = state.sync_engine().await? else {
         return Ok(Vec::new());
@@ -132,7 +128,7 @@ pub async fn sync_list_devices(
 /// device too, which the roster mesh propagates once either side pairs.
 #[tauri::command]
 pub async fn sync_add_device(
-    state: tauri::State<'_, Arc<AppState>>,
+    state: tauri::State<'_, AppState>,
     device_id: String,
     name: String,
 ) -> Result<(), String> {
@@ -150,7 +146,7 @@ pub async fn sync_add_device(
 /// `sync_add_device` completes pairing. Empty when sync isn't running.
 #[tauri::command]
 pub async fn sync_list_pending(
-    state: tauri::State<'_, Arc<AppState>>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<PendingEntry>, String> {
     let Some(engine) = state.sync_engine().await? else {
         return Ok(Vec::new());
@@ -172,7 +168,7 @@ pub async fn sync_list_pending(
 /// Unpair a peer device and stop sharing the library with it.
 #[tauri::command]
 pub async fn sync_remove_device(
-    state: tauri::State<'_, Arc<AppState>>,
+    state: tauri::State<'_, AppState>,
     device_id: String,
 ) -> Result<(), String> {
     let engine = state

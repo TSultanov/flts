@@ -844,3 +844,43 @@ fn clone_shares_chunks_and_write_isolates() {
     translation.serialize(&mut written_bytes).unwrap();
     assert_eq!(fresh_bytes, written_bytes);
 }
+
+#[test]
+fn model_names_are_interned_across_versions_snapshots_and_loading() {
+    let mut current = Translation::create("eng", "rus");
+    for id in 0..5000 {
+        current.add_paragraph_translation(id, &make_paragraph(1, "word"), "model-a");
+    }
+    assert_eq!(current.models.index.len(), 1);
+    assert_eq!(current.models.strings.len(), "model-a".len());
+    let old = current.clone();
+    current.add_paragraph_translation(0, &make_paragraph(2, "new"), "model-b");
+    assert_eq!(old.paragraph_view(0).unwrap().model, "model-a");
+    assert_eq!(current.paragraph_view(0).unwrap().model, "model-b");
+    assert_eq!(
+        current
+            .paragraph_view(0)
+            .unwrap()
+            .get_previous_version()
+            .unwrap()
+            .model,
+        "model-a"
+    );
+    let mut bytes = Vec::new();
+    current.serialize(&mut bytes).unwrap();
+    let loaded = Translation::deserialize(&mut Cursor::new(&bytes)).unwrap();
+    assert_eq!(loaded.models.index.len(), 3); // includes the legacy empty default
+    assert_eq!(loaded.paragraph_view(0).unwrap().model, "model-b");
+    assert_eq!(
+        loaded
+            .paragraph_view(0)
+            .unwrap()
+            .get_previous_version()
+            .unwrap()
+            .model,
+        "model-a"
+    );
+    let mut roundtrip = Vec::new();
+    loaded.serialize(&mut roundtrip).unwrap();
+    assert_eq!(bytes, roundtrip);
+}

@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 
 use htmlentity::entity::{ICodedDataTrait, decode};
 use isolang::Language;
@@ -180,13 +179,13 @@ pub struct GrammarView {
     other: Option<String>,
 }
 
-pub struct LibraryView {
-    state: Arc<AppState>,
-    library: Arc<Library>,
+pub struct LibraryView<'a> {
+    state: &'a AppState,
+    library: Library,
 }
 
-impl LibraryView {
-    pub fn create(state: Arc<AppState>, library: Arc<Library>) -> Self {
+impl<'a> LibraryView<'a> {
+    pub fn create(state: &'a AppState, library: Library) -> Self {
         Self { state, library }
     }
 

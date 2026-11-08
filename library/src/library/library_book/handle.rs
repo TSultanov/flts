@@ -644,7 +644,7 @@ mod tests {
             .unwrap();
         drop(first);
         let get = tokio::spawn({
-            let library = Arc::new(library);
+            let library = library;
             async move {
                 let result = library.get_book(&id).await.unwrap();
                 (library, result)

@@ -1,7 +1,4 @@
-use std::{
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_openai::types::chat::{
     ChatCompletionRequestMessage, ChatCompletionRequestUserMessageArgs,
@@ -28,12 +25,12 @@ use super::{
     total_stream_timeout,
 };
 
-pub struct OpenAITranslator {
-    cache: Arc<TranslationsCache>,
-    context_provider: Arc<dyn ChapterContextProvider>,
+pub struct OpenAITranslator<'a> {
+    cache: &'a TranslationsCache,
+    context_provider: &'a dyn ChapterContextProvider,
     client: Client<OpenAIConfig>,
-    schema: Arc<Value>,
-    model: Arc<str>,
+    schema: Value,
+    model: String,
     provider: TranslationProvider,
     from: Language,
     to: Language,
@@ -99,10 +96,10 @@ pub(crate) fn translation_instructions(
     instructions
 }
 
-impl OpenAITranslator {
+impl<'a> OpenAITranslator<'a> {
     pub fn create(
-        cache: Arc<TranslationsCache>,
-        context_provider: Arc<dyn ChapterContextProvider>,
+        cache: &'a TranslationsCache,
+        context_provider: &'a dyn ChapterContextProvider,
         provider: TranslationProvider,
         model: &str,
         api_key: String,
@@ -117,8 +114,8 @@ impl OpenAITranslator {
             cache,
             context_provider,
             client,
-            schema: Arc::new(schema),
-            model: Arc::from(model),
+            schema,
+            model: model.to_owned(),
             provider,
             from: *from,
             to: *to,
@@ -127,7 +124,7 @@ impl OpenAITranslator {
 }
 
 #[async_trait]
-impl Translator for OpenAITranslator {
+impl Translator for OpenAITranslator<'_> {
     fn get_model(&self) -> String {
         self.model.to_string()
     }
@@ -203,7 +200,7 @@ impl Translator for OpenAITranslator {
                 json_schema: ResponseFormatJsonSchema {
                     description: Some("Paragraph translation".to_string()),
                     name: "paragraph_translation".to_string(),
-                    schema: (*self.schema).clone(),
+                    schema: self.schema.clone(),
                     strict: Some(true),
                 },
             }
@@ -214,7 +211,7 @@ impl Translator for OpenAITranslator {
         let (full_content, finish_reason) = if is_zai {
             // z.AI's SSE streaming is unreliable, so make one blocking call.
             let request = CreateChatCompletionRequestArgs::default()
-                .model(self.model.as_ref())
+                .model(self.model.as_str())
                 .messages(messages)
                 .response_format(response_format)
                 .build()?;
@@ -232,7 +229,7 @@ impl Translator for OpenAITranslator {
             (content, finish)
         } else {
             let request = CreateChatCompletionRequestArgs::default()
-                .model(self.model.as_ref())
+                .model(self.model.as_str())
                 .messages(messages)
                 .response_format(response_format)
                 .stream(true)

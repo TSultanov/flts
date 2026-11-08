@@ -5,22 +5,32 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::SystemTime;
 
+use crate::task::{TaskControl, TaskOwner};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tokio::sync::{
     mpsc::{Receiver, Sender, channel},
     oneshot, watch,
 };
-use tokio::task::JoinHandle;
 
 const ZSTD_LEVEL: i32 = 3;
 
 pub struct DiskCache<V> {
     dir: PathBuf,
     index: Arc<StdMutex<Index>>,
-    writer_tx: StdMutex<Option<Sender<WriteOp<V>>>>,
-    writer_handle: tokio::sync::Mutex<Option<JoinHandle<()>>>,
-    completion: watch::Receiver<bool>,
+    writer_tx: Sender<WriteOp<V>>,
+    control: TaskControl,
+}
+
+impl<V> Clone for DiskCache<V> {
+    fn clone(&self) -> Self {
+        Self {
+            dir: self.dir.clone(),
+            index: self.index.clone(),
+            writer_tx: self.writer_tx.clone(),
+            control: self.control.clone(),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -68,7 +78,7 @@ impl<V> DiskCache<V>
 where
     V: Serialize + DeserializeOwned + Send + 'static,
 {
-    pub async fn open(dir: &Path, capacity_bytes: u64) -> anyhow::Result<Self> {
+    pub async fn open(dir: &Path, capacity_bytes: u64) -> anyhow::Result<(Self, TaskOwner)> {
         tokio::fs::create_dir_all(dir).await?;
 
         let dir_owned = dir.to_path_buf();
@@ -76,21 +86,18 @@ where
         let index = Arc::new(StdMutex::new(index));
 
         let (tx, rx) = channel::<WriteOp<V>>(256);
-        let (done, completion) = watch::channel(false);
         let writer_dir = dir.to_path_buf();
         let writer_index = index.clone();
-        let writer_handle = tokio::spawn(async move {
-            writer_loop(writer_dir, capacity_bytes, writer_index, rx).await;
-            done.send_replace(true);
+        let owner = TaskOwner::spawn(move |stop| async move {
+            writer_loop(writer_dir, capacity_bytes, writer_index, rx, stop).await;
         });
-
-        Ok(Self {
+        let cache = Self {
             dir: dir.to_path_buf(),
             index,
-            writer_tx: StdMutex::new(Some(tx)),
-            writer_handle: tokio::sync::Mutex::new(Some(writer_handle)),
-            completion,
-        })
+            writer_tx: tx,
+            control: owner.control(),
+        };
+        Ok((cache, owner))
     }
 
     pub async fn get(&self, key: &str) -> anyhow::Result<Option<V>> {
@@ -128,9 +135,10 @@ where
 
     pub fn insert(&self, key: String, value: V) {
         let hash = hash_key(&key);
-        let tx = self.writer_tx.lock().unwrap();
-        if let Some(tx) = tx.as_ref() {
-            let _ = tx.try_send(WriteOp::Insert { hash, key, value });
+        {
+            let _ = self
+                .writer_tx
+                .try_send(WriteOp::Insert { hash, key, value });
         }
     }
 
@@ -138,28 +146,21 @@ where
     /// orders after a pending `insert`. No-op once the writer is down.
     pub fn remove(&self, key: &str) {
         let hash = hash_key(key);
-        let tx = self.writer_tx.lock().unwrap();
-        if let Some(tx) = tx.as_ref() {
-            let _ = tx.try_send(WriteOp::Remove { hash });
+        {
+            let _ = self.writer_tx.try_send(WriteOp::Remove { hash });
         }
     }
 
     /// Removes every entry, through the writer channel so it orders after
     /// pending `insert`s; later ones survive. No-op once the writer is down.
     pub fn clear(&self) {
-        let tx = self.writer_tx.lock().unwrap();
-        if let Some(tx) = tx.as_ref() {
-            let _ = tx.try_send(WriteOp::Clear);
+        {
+            let _ = self.writer_tx.try_send(WriteOp::Clear);
         }
     }
 
     async fn acknowledged(&self, op: WriteOp<V>) -> anyhow::Result<()> {
-        let tx = self
-            .writer_tx
-            .lock()
-            .unwrap()
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("disk cache closed"))?;
+        let tx = &self.writer_tx;
         let (reply, result) = oneshot::channel();
         tx.send(WriteOp::Acknowledged {
             op: Box::new(op),
@@ -182,19 +183,7 @@ where
         self.acknowledged(WriteOp::Flush).await
     }
     pub async fn close(&self) {
-        self.writer_tx.lock().unwrap().take();
-        let mut completion = self.completion.clone();
-        while !*completion.borrow_and_update() {
-            if completion.changed().await.is_err() {
-                break;
-            }
-        }
-        let handle = self.writer_handle.lock().await.take();
-        if let Some(handle) = handle {
-            if let Err(err) = handle.await {
-                log::warn!("disk cache writer failed: {err}");
-            }
-        }
+        let _ = self.control.shutdown().await;
     }
 }
 
@@ -259,9 +248,19 @@ async fn writer_loop<V: Serialize + Send + 'static>(
     capacity_bytes: u64,
     index: Arc<StdMutex<Index>>,
     mut rx: Receiver<WriteOp<V>>,
+    mut stop: watch::Receiver<bool>,
 ) {
     let mut last_error: Option<String> = None;
-    while let Some(op) = rx.recv().await {
+    let mut closing = false;
+    loop {
+        let op = tokio::select! {
+            biased;
+            _ = stop.changed(), if !closing => { closing = true; rx.close(); continue; }
+            op = rx.recv() => op,
+        };
+        let Some(op) = op else {
+            break;
+        };
         let (op, reply) = match op {
             WriteOp::Acknowledged { op, reply } => (*op, Some(reply)),
             op => (op, None),
@@ -404,7 +403,7 @@ mod tests {
     #[tokio::test]
     async fn acknowledged_remove_and_concurrent_close_are_ordered() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = super::DiskCache::<String>::open(dir.path(), 4096)
+        let (cache, _owner) = super::DiskCache::<String>::open(dir.path(), 4096)
             .await
             .unwrap();
         cache.insert("removed".into(), "old".into());
@@ -412,11 +411,27 @@ mod tests {
         assert!(cache.get("removed").await.unwrap().is_none());
         cache.insert("kept".into(), "new".into());
         tokio::join!(cache.close(), cache.close());
-        let reopened = super::DiskCache::<String>::open(dir.path(), 4096)
+        let (reopened, _owner) = super::DiskCache::<String>::open(dir.path(), 4096)
             .await
             .unwrap();
         assert_eq!(reopened.get("kept").await.unwrap().as_deref(), Some("new"));
         reopened.close().await;
+    }
+
+    #[tokio::test]
+    async fn close_drains_with_live_client_clones_and_rejects_new_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cache, owner) = super::DiskCache::<String>::open(dir.path(), 4096)
+            .await
+            .unwrap();
+        let retained = cache.clone();
+        cache.insert("key".into(), "value".into());
+        tokio::time::timeout(std::time::Duration::from_secs(2), owner.shutdown())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(retained.get("key").await.unwrap().as_deref(), Some("value"));
+        assert!(retained.flush().await.is_err());
     }
 
     use super::*;
@@ -445,7 +460,7 @@ mod tests {
     #[tokio::test]
     async fn roundtrip() {
         let dir = tmpdir("roundtrip");
-        let cache = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
+        let (cache, _owner) = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
         let v = V {
             s: "hello".into(),
             n: 7,
@@ -453,7 +468,7 @@ mod tests {
         cache.insert("k1".into(), v.clone());
         drain_close(cache).await;
 
-        let cache = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
+        let (cache, _owner) = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
         let got = cache.get("k1").await.unwrap();
         assert_eq!(got, Some(v));
         let _ = std::fs::remove_dir_all(&dir);
@@ -462,7 +477,7 @@ mod tests {
     #[tokio::test]
     async fn miss_returns_none() {
         let dir = tmpdir("miss");
-        let cache = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
+        let (cache, _owner) = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
         assert!(cache.get("absent").await.unwrap().is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -470,7 +485,7 @@ mod tests {
     #[tokio::test]
     async fn survives_reopen() {
         let dir = tmpdir("reopen");
-        let cache = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
+        let (cache, _owner) = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
         for i in 0..5 {
             cache.insert(
                 format!("key-{i}"),
@@ -482,7 +497,7 @@ mod tests {
         }
         cache.close().await;
 
-        let cache = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
+        let (cache, _owner) = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
         for i in 0..5 {
             let got = cache.get(&format!("key-{i}")).await.unwrap();
             assert_eq!(
@@ -499,7 +514,7 @@ mod tests {
     #[tokio::test]
     async fn remove_deletes_file_and_decrements_index() {
         let dir = tmpdir("remove");
-        let cache = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
+        let (cache, _owner) = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
         cache.insert(
             "doomed".into(),
             V {
@@ -516,13 +531,13 @@ mod tests {
         );
         cache.close().await;
 
-        let cache = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
+        let (cache, _owner) = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
         assert!(cache.get("doomed").await.unwrap().is_some());
         let bytes_before = cache.index.lock().unwrap().total_bytes;
         cache.remove("doomed");
         cache.close().await;
 
-        let cache = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
+        let (cache, _owner) = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
         assert!(cache.get("doomed").await.unwrap().is_none());
         assert!(cache.get("kept").await.unwrap().is_some());
         let bytes_after = cache.index.lock().unwrap().total_bytes;
@@ -537,10 +552,10 @@ mod tests {
     #[tokio::test]
     async fn remove_missing_key_is_noop() {
         let dir = tmpdir("remove-missing");
-        let cache = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
+        let (cache, _owner) = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
         cache.remove("never-inserted");
         cache.close().await;
-        let cache = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
+        let (cache, _owner) = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
         assert!(cache.get("never-inserted").await.unwrap().is_none());
         cache.close().await;
         let _ = std::fs::remove_dir_all(&dir);
@@ -549,7 +564,7 @@ mod tests {
     #[tokio::test]
     async fn clear_removes_all_entries_and_resets_index() {
         let dir = tmpdir("clear-all");
-        let cache = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
+        let (cache, _owner) = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
         for i in 0..5 {
             cache.insert(
                 format!("key-{i}"),
@@ -562,7 +577,7 @@ mod tests {
         cache.clear();
         cache.close().await;
 
-        let cache = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
+        let (cache, _owner) = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
         for i in 0..5 {
             assert!(cache.get(&format!("key-{i}")).await.unwrap().is_none());
         }
@@ -574,7 +589,7 @@ mod tests {
     #[tokio::test]
     async fn clear_orders_after_pending_inserts() {
         let dir = tmpdir("clear-ordering");
-        let cache = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
+        let (cache, _owner) = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
         cache.insert(
             "a".into(),
             V {
@@ -592,7 +607,7 @@ mod tests {
         );
         cache.close().await;
 
-        let cache = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
+        let (cache, _owner) = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
         assert!(cache.get("a").await.unwrap().is_none());
         assert!(cache.get("b").await.unwrap().is_some());
         cache.close().await;
@@ -602,11 +617,11 @@ mod tests {
     #[tokio::test]
     async fn clear_on_empty_is_noop() {
         let dir = tmpdir("clear-empty");
-        let cache = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
+        let (cache, _owner) = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
         cache.clear();
         cache.close().await;
 
-        let cache = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
+        let (cache, _owner) = DiskCache::<V>::open(&dir, 10 * 1024 * 1024).await.unwrap();
         assert_eq!(cache.index.lock().unwrap().total_bytes, 0);
         cache.close().await;
         let _ = std::fs::remove_dir_all(&dir);
@@ -616,7 +631,7 @@ mod tests {
     async fn eviction_under_capacity() {
         let dir = tmpdir("evict");
         let cap: u64 = 4 * 1024;
-        let cache = DiskCache::<V>::open(&dir, cap).await.unwrap();
+        let (cache, _owner) = DiskCache::<V>::open(&dir, cap).await.unwrap();
         for i in 0..40 {
             cache.insert(
                 format!("key-{i:03}"),
@@ -629,7 +644,7 @@ mod tests {
         }
         cache.close().await;
 
-        let cache = DiskCache::<V>::open(&dir, cap).await.unwrap();
+        let (cache, _owner) = DiskCache::<V>::open(&dir, cap).await.unwrap();
         let total = cache.index.lock().unwrap().total_bytes;
         assert!(
             total <= cap,

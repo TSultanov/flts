@@ -993,6 +993,7 @@ dependencies = [
  "display-error-chain",
  "file-format",
  "flume",
+ "futures-util",
  "isolang",
  "library",
  "log",

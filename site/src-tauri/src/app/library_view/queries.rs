@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use isolang::Language;
 use uuid::Uuid;
 
@@ -12,13 +10,13 @@ use super::{
 
 #[tauri::command]
 pub async fn list_books(
-    state: tauri::State<'_, Arc<AppState>>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<LibraryBookMetadataView>, String> {
     let target_language_id = { state.config.borrow().target_language_id.clone() };
     let target_language = Language::from_639_3(&target_language_id);
     let library = state.library().await?;
 
-    LibraryView::create(state.inner().clone(), library)
+    LibraryView::create(state.inner(), library)
         .list_books(target_language.as_ref())
         .await
         .map_err(|err| err.to_string())
@@ -26,14 +24,14 @@ pub async fn list_books(
 
 #[tauri::command]
 pub async fn list_book_chapters(
-    state: tauri::State<'_, Arc<AppState>>,
+    state: tauri::State<'_, AppState>,
     book_id: Uuid,
 ) -> Result<Vec<ChapterView>, String> {
     let target_language_id = { state.config.borrow().target_language_id.clone() };
     let target_language = Language::from_639_3(&target_language_id);
     let library = state.library().await?;
 
-    let mut library_view = LibraryView::create(state.inner().clone(), library);
+    let mut library_view = LibraryView::create(state.inner(), library);
     library_view
         .list_book_chapters(book_id, target_language.as_ref())
         .await
@@ -42,13 +40,13 @@ pub async fn list_book_chapters(
 
 #[tauri::command]
 pub async fn get_book_chapter_paragraph_ids(
-    state: tauri::State<'_, Arc<AppState>>,
+    state: tauri::State<'_, AppState>,
     book_id: Uuid,
     chapter_id: usize,
 ) -> Result<Vec<usize>, String> {
     let library = state.library().await?;
 
-    LibraryView::create(state.inner().clone(), library)
+    LibraryView::create(state.inner(), library)
         .list_book_chapter_paragraph_ids(book_id, chapter_id)
         .await
         .map_err(|err| err.to_string())
@@ -56,7 +54,7 @@ pub async fn get_book_chapter_paragraph_ids(
 
 #[tauri::command]
 pub async fn get_word_info(
-    state: tauri::State<'_, Arc<AppState>>,
+    state: tauri::State<'_, AppState>,
     book_id: Uuid,
     paragraph_id: usize,
     sentence_id: usize,
@@ -69,7 +67,7 @@ pub async fn get_word_info(
         return Ok(None);
     };
 
-    let mut library_view = LibraryView::create(state.inner().clone(), library);
+    let mut library_view = LibraryView::create(state.inner(), library);
     library_view
         .get_word_info(
             book_id,
@@ -84,7 +82,7 @@ pub async fn get_word_info(
 
 #[tauri::command]
 pub async fn get_paragraph_view(
-    state: tauri::State<'_, Arc<AppState>>,
+    state: tauri::State<'_, AppState>,
     book_id: Uuid,
     paragraph_id: usize,
 ) -> Result<ParagraphView, String> {
@@ -95,7 +93,7 @@ pub async fn get_paragraph_view(
         return Err("Library is not configured".into());
     };
 
-    let library_view = LibraryView::create(state.inner().clone(), library);
+    let library_view = LibraryView::create(state.inner(), library);
     library_view
         .get_paragraph_view(book_id, paragraph_id, &target_language)
         .await
@@ -104,13 +102,13 @@ pub async fn get_paragraph_view(
 
 #[tauri::command]
 pub async fn get_paragraph_originals_batch(
-    state: tauri::State<'_, Arc<AppState>>,
+    state: tauri::State<'_, AppState>,
     book_id: Uuid,
     paragraph_ids: Vec<usize>,
 ) -> Result<Vec<ParagraphOriginal>, String> {
     let library = state.library().await?;
 
-    let library_view = LibraryView::create(state.inner().clone(), library);
+    let library_view = LibraryView::create(state.inner(), library);
     library_view
         .get_paragraph_originals_batch(book_id, paragraph_ids)
         .await
@@ -119,7 +117,7 @@ pub async fn get_paragraph_originals_batch(
 
 #[tauri::command]
 pub async fn get_paragraph_translations_batch(
-    state: tauri::State<'_, Arc<AppState>>,
+    state: tauri::State<'_, AppState>,
     book_id: Uuid,
     paragraph_ids: Vec<usize>,
 ) -> Result<Vec<ParagraphTranslationSlice>, String> {
@@ -130,7 +128,7 @@ pub async fn get_paragraph_translations_batch(
         return Err("Library is not configured".into());
     };
 
-    let library_view = LibraryView::create(state.inner().clone(), library);
+    let library_view = LibraryView::create(state.inner(), library);
     library_view
         .get_paragraph_translations_batch(book_id, paragraph_ids, &target_language)
         .await
@@ -139,7 +137,7 @@ pub async fn get_paragraph_translations_batch(
 
 #[tauri::command]
 pub async fn get_book_summary_status(
-    state: tauri::State<'_, Arc<AppState>>,
+    state: tauri::State<'_, AppState>,
     book_id: Uuid,
 ) -> Result<BookSummaryStatusView, String> {
     let library = state.library().await?;
@@ -160,12 +158,12 @@ pub async fn get_book_summary_status(
 
 #[tauri::command]
 pub async fn get_book_reading_state(
-    state: tauri::State<'_, Arc<AppState>>,
+    state: tauri::State<'_, AppState>,
     book_id: Uuid,
 ) -> Result<Option<BookReadingStateView>, String> {
     let library = state.library().await?;
 
-    LibraryView::create(state.inner().clone(), library)
+    LibraryView::create(state.inner(), library)
         .get_book_reading_state(book_id)
         .await
         .map_err(|err| err.to_string())

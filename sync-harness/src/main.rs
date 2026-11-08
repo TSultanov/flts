@@ -17,7 +17,7 @@ use library::sync::engine::{EngineConfig, SyncEngine};
 
 struct Node {
     engine: Arc<SyncEngine>,
-    library: Arc<Library>,
+    library: Library,
     bep_port: u16,
     name: String,
 }
@@ -76,7 +76,7 @@ fn main() -> Result<()> {
 
 async fn setup(name: String, library_root: PathBuf, home: PathBuf, bep_port: u16) -> Result<Node> {
     std::fs::create_dir_all(&library_root)?;
-    let library = Arc::new(Library::open(library_root.clone()).await?);
+    let library = Library::open(library_root.clone()).await?;
 
     let options = OptionsPatch {
         global_discovery: false,

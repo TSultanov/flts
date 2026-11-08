@@ -5,7 +5,6 @@
 //! because Tauri's IPC produces that from snake_case Rust params.
 
 use std::io::Write;
-use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::Response;
@@ -247,7 +246,7 @@ macro_rules! args {
 }
 
 async fn dispatch(app: &AppHandle, cmd: &str, args: Value) -> Result<Value, Value> {
-    let state = app.state::<Arc<crate::app::AppState>>();
+    let state = app.state::<crate::app::AppState>();
 
     match cmd {
         // --- config ---

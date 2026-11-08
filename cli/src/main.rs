@@ -6,7 +6,6 @@ use std::{
     path::{Path, PathBuf},
     process::ExitCode,
     str::FromStr,
-    sync::Arc,
     time::Instant,
 };
 
@@ -14,6 +13,7 @@ use clap::{Parser, Subcommand};
 use directories::ProjectDirs;
 use display_error_chain::DisplayErrorChain;
 use file_format::FileFormat;
+use futures_util::{StreamExt, stream::FuturesUnordered};
 use isolang::Language;
 use library::{
     book::chapter_summaries::ChapterSummaries,
@@ -21,14 +21,12 @@ use library::{
     epub_importer::EpubBook,
     library::Library,
     translator::{
-        ChapterContextProvider, NoChapterContext, TranslationContext, TranslationProvider,
-        Translator,
+        NoChapterContext, TranslationContext, TranslationProvider, Translator,
         catalog::{FALLBACK_GOOGLE, effective_model_id},
         gemini_cache::GeminiPromptCache,
         get_translator,
     },
 };
-use tokio::task::JoinSet;
 use tokio::time::{Duration, sleep};
 use uuid::Uuid;
 
@@ -111,7 +109,7 @@ impl Display for CliError {
 }
 
 async fn add_book(
-    library: &Arc<Library>,
+    library: &Library,
     title: &str,
     path: &PathBuf,
     lang: &str,
@@ -135,7 +133,7 @@ async fn add_book(
     Ok(())
 }
 
-async fn add_epub(library: &Arc<Library>, path: &Path, lang: &str) -> anyhow::Result<()> {
+async fn add_epub(library: &Library, path: &Path, lang: &str) -> anyhow::Result<()> {
     let epub = EpubBook::load(path)?;
 
     let book_id = library
@@ -148,7 +146,7 @@ async fn add_epub(library: &Arc<Library>, path: &Path, lang: &str) -> anyhow::Re
 }
 
 async fn dump_summaries(
-    library: &Arc<Library>,
+    library: &Library,
     book_id: Uuid,
     chapter_filter: Option<usize>,
     headers_only: bool,
@@ -230,7 +228,7 @@ async fn dump_summaries(
     Ok(())
 }
 
-async fn list_books(library: &Arc<Library>) -> anyhow::Result<()> {
+async fn list_books(library: &Library) -> anyhow::Result<()> {
     let books = library.list_books().await?;
     println!("id                                \ttitle\tchapters\tparagraphs");
     for book in books {
@@ -254,7 +252,7 @@ async fn list_books(library: &Arc<Library>) -> anyhow::Result<()> {
 }
 
 async fn translate_paragraph(
-    library: Arc<Library>,
+    library: &Library,
     translator: &dyn Translator,
     book_id: Uuid,
     tgt_lang: &Language,
@@ -304,9 +302,9 @@ async fn translate_paragraph(
 }
 
 async fn translate_book(
-    library: Arc<Library>,
-    cache: Arc<TranslationsCache>,
-    gemini_prompt_cache: Arc<GeminiPromptCache>,
+    library: Library,
+    cache: TranslationsCache,
+    gemini_prompt_cache: GeminiPromptCache,
     api_key: &str,
     book_id: Uuid,
     tgt_lang: &str,
@@ -359,29 +357,29 @@ async fn translate_book(
 
     let (tx, rx) = flume::unbounded();
 
-    let mut set = JoinSet::new();
+    let context_provider = NoChapterContext;
+    let mut set = FuturesUnordered::new();
     for i in 0..n_workers {
-        let library1 = library.clone();
+        let library1 = &library;
         let rx = rx.clone();
-        let context_provider: Arc<dyn ChapterContextProvider> = Arc::new(NoChapterContext);
         let translator = get_translator(
-            cache.clone(),
-            context_provider,
-            gemini_prompt_cache.clone(),
+            &cache,
+            &context_provider,
+            &gemini_prompt_cache,
             TranslationProvider::Google,
             &model,
             api_key.to_owned(),
             source_lang,
             target_lang,
         )?;
-        set.spawn(async move {
+        set.push(async move {
             println!("Worker {}: spawning...", i);
             let target_lang1 = target_lang;
             while let Ok(p_id) = rx.recv_async().await {
                 let mut attempt = 1u32;
                 loop {
                     let result = translate_paragraph(
-                        library1.clone(),
+                        library1,
                         translator.as_ref(),
                         book_id,
                         &target_lang1,
@@ -425,7 +423,7 @@ async fn translate_book(
 
     drop(tx);
 
-    set.join_all().await;
+    while set.next().await.is_some() {}
 
     library.flush_all().await?;
 
@@ -435,13 +433,14 @@ async fn translate_book(
     Ok(())
 }
 
-async fn get_cache() -> anyhow::Result<TranslationsCache> {
+async fn get_cache() -> anyhow::Result<(TranslationsCache, library::task::TaskOwner)> {
     let dirs = ProjectDirs::from("", "TS", "FLTS").unwrap();
     let cache_dir = dirs.cache_dir();
     TranslationsCache::create(cache_dir).await
 }
 
-async fn get_gemini_prompt_cache() -> anyhow::Result<Arc<GeminiPromptCache>> {
+async fn get_gemini_prompt_cache() -> anyhow::Result<(GeminiPromptCache, library::task::TaskOwner)>
+{
     let dirs = ProjectDirs::from("", "TS", "FLTS").unwrap();
     let cache_dir = dirs.cache_dir().join("gemini_caches");
     GeminiPromptCache::open(&cache_dir, GEMINI_PROMPT_CACHE_CAPACITY).await
@@ -469,7 +468,7 @@ async fn do_main() -> anyhow::Result<()> {
         create_dir(library_path.clone())?;
     }
 
-    let library = Arc::new(Library::open(library_path).await?);
+    let library = Library::open(library_path).await?;
 
     match &cli.command {
         Some(cmd) => match cmd {
@@ -500,8 +499,8 @@ async fn do_main() -> anyhow::Result<()> {
                 n_parallel,
                 model,
             } => {
-                let cache = Arc::new(get_cache().await?);
-                let gemini_prompt_cache = get_gemini_prompt_cache().await?;
+                let (cache, cache_owner) = get_cache().await?;
+                let (gemini_prompt_cache, gemini_owner) = get_gemini_prompt_cache().await?;
                 let model = model.as_deref().unwrap_or(FALLBACK_GOOGLE);
                 translate_book(
                     library,
@@ -514,6 +513,8 @@ async fn do_main() -> anyhow::Result<()> {
                     model,
                 )
                 .await?;
+                cache_owner.shutdown().await.map_err(anyhow::Error::msg)?;
+                gemini_owner.shutdown().await.map_err(anyhow::Error::msg)?;
             }
         },
         None => {

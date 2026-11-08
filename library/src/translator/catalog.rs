@@ -1,11 +1,16 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::task::{TaskControl, TaskOwner};
+use futures_util::{
+    FutureExt, StreamExt,
+    future::{AbortHandle, Abortable},
+    stream::FuturesUnordered,
+};
 use serde::{Deserialize, Serialize};
+use std::panic::AssertUnwindSafe;
 use tokio::sync::{mpsc, oneshot};
-use tokio::task::JoinSet;
 
 use super::TranslationProvider;
 
@@ -20,6 +25,18 @@ pub trait ModelListTransport: Send + Sync {
         url: &str,
         headers: &[(&str, &str)],
     ) -> anyhow::Result<serde_json::Value>;
+}
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl<T: ModelListTransport + ?Sized> ModelListTransport for std::sync::Arc<T> {
+    async fn get_json(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+    ) -> anyhow::Result<serde_json::Value> {
+        (**self).get_json(url, headers).await
+    }
 }
 
 pub struct ReqwestListTransport {
@@ -68,16 +85,16 @@ enum CatalogRequest {
     },
 }
 
+#[derive(Clone)]
 pub struct ModelCatalog {
     requests: mpsc::Sender<CatalogRequest>,
-    actor: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
-    done: tokio::sync::watch::Receiver<bool>,
+    control: TaskControl,
 }
 
 struct CatalogIo {
     cache_dir: PathBuf,
-    transport: Arc<dyn ModelListTransport>,
-    now_secs: Arc<dyn Fn() -> u64 + Send + Sync>,
+    transport: Box<dyn ModelListTransport>,
+    now_secs: Box<dyn Fn() -> u64 + Send + Sync>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -94,11 +111,11 @@ struct CachedModel {
 }
 
 impl ModelCatalog {
-    pub fn new(cache_dir: PathBuf, transport: Arc<dyn ModelListTransport>) -> Self {
+    pub fn new(cache_dir: PathBuf, transport: Box<dyn ModelListTransport>) -> (Self, TaskOwner) {
         Self::new_with_clock(
             cache_dir,
             transport,
-            Arc::new(|| {
+            Box::new(|| {
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .map(|d| d.as_secs())
@@ -110,26 +127,23 @@ impl ModelCatalog {
     /// `now_secs` is unix seconds; tests inject a `AtomicU64`.
     pub fn new_with_clock(
         cache_dir: PathBuf,
-        transport: Arc<dyn ModelListTransport>,
-        now_secs: Arc<dyn Fn() -> u64 + Send + Sync>,
-    ) -> Self {
-        let io = Arc::new(CatalogIo {
+        transport: Box<dyn ModelListTransport>,
+        now_secs: Box<dyn Fn() -> u64 + Send + Sync>,
+    ) -> (Self, TaskOwner) {
+        let io = CatalogIo {
             cache_dir,
             transport,
             now_secs,
-        });
+        };
         let (requests, rx) = mpsc::channel(256);
-        let (done, completion) = tokio::sync::watch::channel(false);
-        let actor_io = io.clone();
-        let actor = tokio::spawn(async move {
-            serve_fetches(actor_io, rx).await;
-            done.send_replace(true);
-        });
-        Self {
-            requests,
-            actor: tokio::sync::Mutex::new(Some(actor)),
-            done: completion,
-        }
+        let owner = TaskOwner::spawn(move |stop| serve_fetches(io, rx, stop));
+        (
+            Self {
+                requests,
+                control: owner.control(),
+            },
+            owner,
+        )
     }
 
     pub async fn models_for(
@@ -172,31 +186,11 @@ impl ModelCatalog {
         {
             let _ = result.await;
         }
-        let mut done = self.done.clone();
-        while !*done.borrow_and_update() {
-            if done.changed().await.is_err() {
-                break;
-            }
-        }
-        if let Some(actor) = self.actor.lock().await.take() {
-            let _ = actor.await;
-        }
+        let _ = self.control.wait().await;
     }
 }
 
 impl CatalogIo {
-    async fn fetch(
-        self: Arc<Self>,
-        provider: TranslationProvider,
-        api_key: String,
-        list_base_url: String,
-    ) -> (TranslationProvider, anyhow::Result<Vec<ListedModel>>) {
-        (
-            provider,
-            self.fetch_live(provider, &api_key, &list_base_url).await,
-        )
-    }
-
     fn cache_path(&self, provider: TranslationProvider) -> PathBuf {
         self.cache_dir
             .join("model_catalog")
@@ -226,13 +220,6 @@ impl CatalogIo {
             })
             .collect();
         Some((parsed.fetched_at, models))
-    }
-
-    fn write_cache(&self, provider: TranslationProvider, models: &[ListedModel]) {
-        let path = self.cache_path(provider);
-        if let Err(err) = write_cache_file(&path, (self.now_secs)(), models) {
-            log::warn!("failed to write model catalog cache: {err:#}");
-        }
     }
 
     async fn fetch_live(
@@ -284,18 +271,22 @@ impl CatalogIo {
     }
 }
 
-async fn serve_fetches(io: Arc<CatalogIo>, mut requests: mpsc::Receiver<CatalogRequest>) {
-    let mut fetches: JoinSet<(TranslationProvider, anyhow::Result<Vec<ListedModel>>)> =
-        JoinSet::new();
-    let mut current: HashMap<TranslationProvider, tokio::task::Id> = HashMap::new();
+async fn serve_fetches(
+    io: CatalogIo,
+    mut requests: mpsc::Receiver<CatalogRequest>,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+) {
+    let mut fetches = FuturesUnordered::new();
+    let mut next_id = 0u64;
+    let mut current: HashMap<TranslationProvider, u64> = HashMap::new();
     let mut invalidated = std::collections::HashSet::new();
     let mut ready: HashMap<TranslationProvider, (u64, Vec<ListedModel>)> = HashMap::new();
-    let mut aborts: HashMap<tokio::task::Id, tokio::task::AbortHandle> = HashMap::new();
-    let mut waiters: HashMap<tokio::task::Id, Vec<oneshot::Sender<Vec<ListedModel>>>> =
-        HashMap::new();
-
-    loop {
+    let mut aborts: HashMap<u64, AbortHandle> = HashMap::new();
+    let mut waiters: HashMap<u64, Vec<oneshot::Sender<Vec<ListedModel>>>> = HashMap::new();
+    let close_reply = loop {
         tokio::select! {
+            biased;
+            _ = stop.changed() => break None,
             request = requests.recv() => match request {
                 Some(CatalogRequest::Models { provider, api_key, list_base_url, reply }) => {
                     if let Some((at, models)) = ready.get(&provider) {
@@ -307,10 +298,15 @@ async fn serve_fetches(io: Arc<CatalogIo>, mut requests: mpsc::Receiver<CatalogR
                     let id = match current.get(&provider) {
                         Some(id) => *id,
                         None => {
-                            let task = fetches.spawn(io.clone().fetch(provider, api_key, list_base_url));
-                            let id = task.id(); aborts.insert(id, task);
-                            current.insert(provider, id);
-                            id
+                            let id = next_id; next_id += 1;
+                            let (abort, registration) = AbortHandle::new_pair();
+                            let io = &io;
+                            fetches.push(async move {
+                                let result = Abortable::new(AssertUnwindSafe(io.fetch_live(provider, &api_key, &list_base_url)).catch_unwind(), registration).await.ok()
+                                    .map(|result| result.unwrap_or_else(|_| Err(anyhow::anyhow!("catalog worker panicked"))));
+                                (id, provider, result)
+                            });
+                            aborts.insert(id, abort); current.insert(provider, id); id
                         }
                     };
                     waiters.entry(id).or_default().push(reply);
@@ -321,45 +317,39 @@ async fn serve_fetches(io: Arc<CatalogIo>, mut requests: mpsc::Receiver<CatalogR
                         if let Some(task) = aborts.remove(&id) { task.abort(); }
                         if let Some(replies) = waiters.remove(&id) { for reply in replies { let _ = reply.send(vec![fallback_for(provider)]); } }
                     }
-                    let io = io.clone();
-                    let result = tokio::task::spawn_blocking(move || match std::fs::remove_file(io.cache_path(provider)) {Ok(()) => Ok(()), Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()), Err(error) => Err(error.to_string())}).await.map_err(|error| error.to_string()).and_then(|result| result);
+                    let path = io.cache_path(provider);
+                    let result = tokio::task::spawn_blocking(move || match std::fs::remove_file(path) {Ok(()) => Ok(()), Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()), Err(error) => Err(error.to_string())}).await.map_err(|error| error.to_string()).and_then(|result| result);
                     let _ = reply.send(result);
                 }
-                Some(CatalogRequest::Close {reply}) => {
-                    fetches.abort_all(); while fetches.join_next().await.is_some() {}
-                    let _ = reply.send(()); return;
-                }
-                None => { fetches.abort_all(); while fetches.join_next().await.is_some() {} return; },
+                Some(CatalogRequest::Close {reply}) => break Some(reply),
+                None => break None,
             },
-            Some(done) = fetches.join_next_with_id(), if !fetches.is_empty() => {
-                let (id, models) = match done {
-                    Ok((id, (provider, Ok(models)))) => {
-                        if current.get(&provider) != Some(&id) { continue; }
-                        ready.insert(provider, ((io.now_secs)(), models.clone()));
-                        let io = io.clone(); let cached = models.clone();
-                        let _ = tokio::task::spawn_blocking(move || io.write_cache(provider, &cached)).await;
-                        (id, Some(models))
-                    }
-                    Ok((id, (provider, Err(err)))) => {
-                        if current.get(&provider) != Some(&id) { continue; }
-                        log::warn!("model list fetch failed for {provider:?}: {err:#}");
-                        let models = if invalidated.contains(&provider) { vec![fallback_for(provider)] } else { io.read_cache(provider).unwrap_or_else(|| vec![fallback_for(provider)]) };
-                        (id, Some(models))
-                    }
-                    Err(err) => {
-                        log::error!("model list fetch task failed: {err}");
-                        (err.id(), None)
-                    }
-                };
+            Some((id, provider, result)) = fetches.next(), if !fetches.is_empty() => {
                 aborts.remove(&id);
-                current.retain(|_, running| *running != id);
-                if let (Some(senders), Some(models)) = (waiters.remove(&id), models) {
-                    for reply in senders {
-                        let _ = reply.send(models.clone());
+                if current.get(&provider) != Some(&id) { continue; }
+                current.remove(&provider);
+                let models = match result {
+                    Some(Ok(models)) => {
+                        ready.insert(provider, ((io.now_secs)(), models.clone()));
+                        let path = io.cache_path(provider); let at = (io.now_secs)(); let cached = models.clone();
+                        let _ = tokio::task::spawn_blocking(move || write_cache_file(&path, at, &cached)).await;
+                        models
                     }
-                }
+                    Some(Err(err)) => {
+                        log::warn!("model list fetch failed for {provider:?}: {err:#}");
+                        if invalidated.contains(&provider) { vec![fallback_for(provider)] } else { io.read_cache(provider).unwrap_or_else(|| vec![fallback_for(provider)]) }
+                    }
+                    None => vec![fallback_for(provider)],
+                };
+                if let Some(senders) = waiters.remove(&id) { for reply in senders { let _ = reply.send(models.clone()); } }
             }
         }
+    };
+    requests.close();
+    fetches.clear();
+    drop(waiters);
+    if let Some(reply) = close_reply {
+        let _ = reply.send(());
     }
 }
 
@@ -750,17 +740,17 @@ mod tests {
 
     const NOW: u64 = 1_710_000_000;
 
-    fn clock(now: &Arc<AtomicU64>) -> Arc<dyn Fn() -> u64 + Send + Sync> {
+    fn clock(now: &Arc<AtomicU64>) -> Box<dyn Fn() -> u64 + Send + Sync> {
         let now = now.clone();
-        Arc::new(move || now.load(Ordering::SeqCst))
+        Box::new(move || now.load(Ordering::SeqCst))
     }
 
     fn catalog(
         cache_dir: std::path::PathBuf,
         transport: Arc<dyn ModelListTransport>,
         now: &Arc<AtomicU64>,
-    ) -> ModelCatalog {
-        ModelCatalog::new_with_clock(cache_dir, transport, clock(now))
+    ) -> (ModelCatalog, TaskOwner) {
+        ModelCatalog::new_with_clock(cache_dir, Box::new(transport), clock(now))
     }
 
     fn cache_path(dir: &std::path::Path, provider: TranslationProvider) -> std::path::PathBuf {
@@ -895,7 +885,7 @@ mod tests {
         let tmp = crate::test_utils::TempDir::new("catalog");
         let transport = FakeTransport::new(|_| panic!("http should not be called"));
         let now = Arc::new(AtomicU64::new(NOW));
-        let cat = catalog(tmp.path.clone(), transport.clone(), &now);
+        let (cat, _owner) = catalog(tmp.path.clone(), transport.clone(), &now);
 
         let none = cat
             .models_for(TranslationProvider::Google, None, "https://example/v1beta")
@@ -924,7 +914,7 @@ mod tests {
         );
         let transport = FakeTransport::new(|_| panic!("http should not be called"));
         let now = Arc::new(AtomicU64::new(NOW));
-        let cat = catalog(tmp.path.clone(), transport.clone(), &now);
+        let (cat, _owner) = catalog(tmp.path.clone(), transport.clone(), &now);
 
         let got = cat
             .models_for(
@@ -950,7 +940,7 @@ mod tests {
         );
         let transport = FakeTransport::new(|_| Ok(json!({"data": [{"id": "gpt-new"}]})));
         let now = Arc::new(AtomicU64::new(NOW));
-        let cat = catalog(tmp.path.clone(), transport.clone(), &now);
+        let (cat, _owner) = catalog(tmp.path.clone(), transport.clone(), &now);
 
         let got = cat
             .models_for(
@@ -988,7 +978,7 @@ mod tests {
         );
         let transport = FakeTransport::new(|_| Err(anyhow::anyhow!("network down")));
         let now = Arc::new(AtomicU64::new(NOW));
-        let cat = catalog(tmp.path.clone(), transport.clone(), &now);
+        let (cat, _owner) = catalog(tmp.path.clone(), transport.clone(), &now);
 
         let got = cat
             .models_for(
@@ -1013,7 +1003,7 @@ mod tests {
         );
         let transport = FakeTransport::new(|_| Err(anyhow::anyhow!("401 unauthorized")));
         let now = Arc::new(AtomicU64::new(NOW));
-        let cat = catalog(tmp.path.clone(), transport.clone(), &now);
+        let (cat, _owner) = catalog(tmp.path.clone(), transport.clone(), &now);
 
         let _got = cat
             .models_for(
@@ -1031,7 +1021,7 @@ mod tests {
         let tmp = crate::test_utils::TempDir::new("catalog");
         let transport = FakeTransport::new(|_| Err(anyhow::anyhow!("no route")));
         let now = Arc::new(AtomicU64::new(NOW));
-        let cat = catalog(tmp.path.clone(), transport.clone(), &now);
+        let (cat, _owner) = catalog(tmp.path.clone(), transport.clone(), &now);
 
         let got = cat
             .models_for(
@@ -1066,7 +1056,7 @@ mod tests {
                 }))
             }
         });
-        let cat = catalog(tmp.path.clone(), gemini.clone(), &now);
+        let (cat, _owner) = catalog(tmp.path.clone(), gemini.clone(), &now);
         let got = cat
             .models_for(
                 TranslationProvider::Google,
@@ -1086,7 +1076,7 @@ mod tests {
                 "nextPageToken": "more"
             }))
         });
-        let cat = catalog(tmp.path.clone(), cap.clone(), &now);
+        let (cat, _owner) = catalog(tmp.path.clone(), cap.clone(), &now);
         let _got = cat
             .models_for(
                 TranslationProvider::Google,
@@ -1107,7 +1097,7 @@ mod tests {
                 Ok(json!({"data": [{"id": "gpt-page-a"}], "has_more": true}))
             }
         });
-        let cat = catalog(tmp.path.clone(), openai.clone(), &now);
+        let (cat, _owner) = catalog(tmp.path.clone(), openai.clone(), &now);
         let got = cat
             .models_for(
                 TranslationProvider::Openai,
@@ -1128,7 +1118,7 @@ mod tests {
             Ok(json!({"data": [{"id": "gpt-9-ultra"}]}))
         });
         let now = Arc::new(AtomicU64::new(NOW));
-        let cat = Arc::new(catalog(tmp.path.clone(), transport.clone(), &now));
+        let (cat, _owner) = catalog(tmp.path.clone(), transport.clone(), &now);
 
         let (a, b) = tokio::join!(
             cat.models_for(
@@ -1168,7 +1158,7 @@ mod tests {
             },
         );
         let now = Arc::new(AtomicU64::new(NOW));
-        let cat = Arc::new(catalog(tmp.path.clone(), transport.clone(), &now));
+        let (cat, _owner) = catalog(tmp.path.clone(), transport.clone(), &now);
         let base = "https://generativelanguage.googleapis.com/v1beta/";
 
         let first = {
@@ -1204,7 +1194,7 @@ mod tests {
         let tmp = crate::test_utils::TempDir::new("catalog");
         let transport = FakeTransport::new(|_| panic!("transport exploded"));
         let now = Arc::new(AtomicU64::new(NOW));
-        let cat = catalog(tmp.path.clone(), transport.clone(), &now);
+        let (cat, _owner) = catalog(tmp.path.clone(), transport.clone(), &now);
 
         for _ in 0..2 {
             let got = tokio::time::timeout(
@@ -1227,7 +1217,7 @@ mod tests {
         let tmp = crate::test_utils::TempDir::new("catalog");
         let transport = FakeTransport::new(|_| Ok(json!({"data": []})));
         let now = Arc::new(AtomicU64::new(NOW));
-        let cat = catalog(tmp.path.clone(), transport, &now);
+        let (cat, _owner) = catalog(tmp.path.clone(), transport, &now);
         cat.close().await;
         cat.close().await;
     }
@@ -1237,7 +1227,7 @@ mod tests {
         let tmp = crate::test_utils::TempDir::new("catalog");
         let transport = FakeTransport::new(|_| Ok(json!({"data": [{"id": "gpt-9-ultra"}]})));
         let now = Arc::new(AtomicU64::new(NOW));
-        let cat = catalog(tmp.path.clone(), transport.clone(), &now);
+        let (cat, _owner) = catalog(tmp.path.clone(), transport.clone(), &now);
 
         let got = cat
             .models_for(

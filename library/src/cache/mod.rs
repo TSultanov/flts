@@ -20,15 +20,16 @@ const TRANSLATIONS_CACHE_STORAGE_CAPACITY: u64 = 1024 * MIB;
 /// bytes after zstd, so this holds tens of thousands.
 pub const GEMINI_PROMPT_CACHE_CAPACITY: u64 = 4 * MIB;
 
+#[derive(Clone)]
 pub struct TranslationsCache {
     cache: DiskCache<ParagraphTranslation>,
 }
 
 impl TranslationsCache {
-    pub async fn create(cache_dir: &Path) -> anyhow::Result<Self> {
+    pub async fn create(cache_dir: &Path) -> anyhow::Result<(Self, crate::task::TaskOwner)> {
         let dir = cache_dir.join("translations");
-        let cache = DiskCache::open(&dir, TRANSLATIONS_CACHE_STORAGE_CAPACITY).await?;
-        Ok(Self { cache })
+        let (cache, owner) = DiskCache::open(&dir, TRANSLATIONS_CACHE_STORAGE_CAPACITY).await?;
+        Ok((Self { cache }, owner))
     }
 
     /// Bump whenever the prompt text, PoS vocabulary, or output schema

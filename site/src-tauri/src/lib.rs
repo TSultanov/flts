@@ -1,9 +1,6 @@
-use std::sync::Arc;
-
 use library::library::file_watcher::LibraryWatcher;
 use log::{info, warn};
 use tauri::{Builder, Emitter, Manager, RunEvent};
-use tokio::sync::Mutex;
 
 pub mod app;
 #[cfg(feature = "e2e-bridge")]
@@ -109,15 +106,13 @@ pub fn run() {
             info!("{fd_limit}");
 
             info!("Creating watcher");
-            let watcher = Arc::new(Mutex::new(LibraryWatcher::new()?));
-            info!("Watcher created");
-            app.manage(watcher.clone());
-            info!("Creating app");
-            let app_state = Arc::new(crate::app::AppState::new(
-                app.handle().clone(),
-                watcher.clone(),
-            )?);
-            info!("App created");
+            let mut watcher = LibraryWatcher::new()?;
+            let mut recv = watcher
+                .take_recv()
+                .expect("LibraryWatcher receiver already taken");
+            let (app_state, runtime_owner) =
+                crate::app::AppState::new(app.handle().clone(), watcher)?;
+            app.manage(runtime_owner);
             app.manage(app_state.clone());
 
             info!("Spawning watch->emit bridges");
@@ -184,13 +179,6 @@ pub fn run() {
                 // is in hand when start_spotify_watcher begins polling.
                 let client_id = resume_state.config_borrow_client_id();
                 resume_state.spotify_web.try_resume(client_id).await;
-
-                let mut recv = {
-                    let mut watcher = watcher.lock().await;
-                    watcher
-                        .take_recv()
-                        .expect("LibraryWatcher receiver already taken")
-                };
 
                 while let Some(event) = recv.recv().await {
                     app_state
@@ -271,7 +259,7 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app_handle, event| {
             if let RunEvent::Exit = event {
-                let app_state = app_handle.state::<Arc<crate::app::AppState>>();
+                let app_state = app_handle.state::<crate::app::AppState>();
                 let app_state = app_state.inner().clone();
                 tauri::async_runtime::block_on(async move {
                     app_state.shutdown().await;

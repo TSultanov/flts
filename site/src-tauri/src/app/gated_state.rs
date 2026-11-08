@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use library::library::Library;
 use library::sync::engine::SyncEngine;
-use tokio::sync::{Mutex, watch};
+use tokio::sync::watch;
 
 use crate::app::anki_sync::{AnkiSyncTask, SyncReportDto, sync_now_or_err};
 use crate::app::sync_daemon::SyncTask;
@@ -25,13 +25,14 @@ use crate::app::sync_daemon::SyncTask;
 /// an error instead of an unbounded hang.
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
 
+#[derive(Clone)]
 pub struct GatedState {
     /// `None` = startup still running, `Some(Ok)` = installed, `Some(Err)` =
     /// startup failed (the message is handed to every waiting command).
     ready: watch::Sender<Option<Result<(), String>>>,
-    library: Arc<watch::Sender<Option<Arc<Library>>>>,
-    anki_sync_task: watch::Sender<Option<Arc<AnkiSyncTask>>>,
-    sync_task: Mutex<Option<Arc<SyncTask>>>,
+    library: watch::Sender<Option<Library>>,
+    anki_sync_task: watch::Sender<Option<AnkiSyncTask>>,
+    sync_task: watch::Sender<Option<Arc<SyncTask>>>,
 }
 
 impl Default for GatedState {
@@ -44,9 +45,9 @@ impl GatedState {
     pub fn new() -> Self {
         Self {
             ready: watch::channel(None).0,
-            library: Arc::new(watch::channel(None).0),
+            library: watch::channel(None).0,
             anki_sync_task: watch::channel(None).0,
-            sync_task: Mutex::new(None),
+            sync_task: watch::channel(None).0,
         }
     }
 
@@ -79,7 +80,7 @@ impl GatedState {
 
     // --- gated accessors: the only way in for commands ---
 
-    pub async fn library(&self) -> Result<Arc<Library>, String> {
+    pub async fn library(&self) -> Result<Library, String> {
         self.await_ready().await?;
         // Ready implies installed: `eval_library_config` either sets it or fails.
         self.library
@@ -92,12 +93,7 @@ impl GatedState {
     /// unlike "not started yet", which the gate absorbs.
     pub async fn sync_engine(&self) -> Result<Option<Arc<SyncEngine>>, String> {
         self.await_ready().await?;
-        Ok(self
-            .sync_task
-            .lock()
-            .await
-            .as_ref()
-            .map(|task| task.engine()))
+        Ok(self.sync_task.borrow().as_ref().map(|task| task.engine()))
     }
 
     pub async fn sync_anki_now(&self) -> anyhow::Result<SyncReportDto> {
@@ -110,18 +106,18 @@ impl GatedState {
 
     // --- startup / shutdown plumbing: no readiness wait ---
 
-    pub fn install_library(&self, library: Arc<Library>) {
+    pub fn install_library(&self, library: Library) {
         self.library.send_replace(Some(library));
     }
 
     /// Ungated — commands must use [`GatedState::library`]. For paths that must
     /// not block on readiness: shutdown flushes and the file-watcher loop.
     /// Owned clone, so no watch read-guard can cross a caller's await.
-    pub fn library_unchecked(&self) -> Option<Arc<Library>> {
+    pub fn library_unchecked(&self) -> Option<Library> {
         self.library.borrow().clone()
     }
 
-    pub fn subscribe_library(&self) -> watch::Receiver<Option<Arc<Library>>> {
+    pub fn subscribe_library(&self) -> watch::Receiver<Option<Library>> {
         self.library.subscribe()
     }
 
@@ -130,25 +126,25 @@ impl GatedState {
     }
 
     /// Ungated: `TranslationQueue` construction needs the raw sender.
-    pub fn library_sender(&self) -> Arc<watch::Sender<Option<Arc<Library>>>> {
-        Arc::clone(&self.library)
+    pub fn library_sender(&self) -> watch::Sender<Option<Library>> {
+        self.library.clone()
     }
 
-    pub fn install_anki_task(&self, task: Arc<AnkiSyncTask>) {
+    pub fn install_anki_task(&self, task: AnkiSyncTask) {
         self.anki_sync_task.send_replace(Some(task));
     }
 
-    pub fn take_anki_task(&self) -> Option<Arc<AnkiSyncTask>> {
+    pub fn take_anki_task(&self) -> Option<AnkiSyncTask> {
         self.anki_sync_task.send_replace(None)
     }
 
     pub async fn install_sync_task(&self, task: Arc<SyncTask>) {
-        *self.sync_task.lock().await = Some(task);
+        self.sync_task.send_replace(Some(task));
     }
 
     /// Take standalone: the slot mutex must not span the caller's shutdown await.
     pub async fn take_sync_task(&self) -> Option<Arc<SyncTask>> {
-        self.sync_task.lock().await.take()
+        self.sync_task.send_replace(None)
     }
 }
 

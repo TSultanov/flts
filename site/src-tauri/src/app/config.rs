@@ -1,4 +1,4 @@
-use std::{fs::File, path::Path, str::FromStr, sync::Arc};
+use std::{fs::File, path::Path, str::FromStr};
 
 use library::translator::{
     TranslationProvider,
@@ -44,7 +44,7 @@ pub struct ProviderMeta {
 }
 
 #[tauri::command]
-pub async fn get_models(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<Model>, String> {
+pub async fn get_models(state: tauri::State<'_, AppState>) -> Result<Vec<Model>, String> {
     let config = state.config.borrow().clone();
     let keys = config.api_keys();
     let catalog = state.model_catalog.clone();

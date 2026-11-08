@@ -21,41 +21,48 @@ const FAM_CACHE_MAX_ENTRIES: usize = 100_000;
 
 #[derive(Clone)]
 pub struct LibraryCardStore {
+    inner: Arc<CardStoreInner>,
+}
+
+struct CardStoreInner {
     root: PathBuf,
-    locks: Arc<StdMutex<HashMap<String, Weak<Mutex<()>>>>>,
-    fence: Arc<tokio::sync::RwLock<bool>>,
-    generation: Arc<AtomicU64>,
-    change_notify: Arc<Notify>,
+    locks: StdMutex<HashMap<String, Weak<Mutex<()>>>>,
+    fence: tokio::sync::RwLock<bool>,
+    generation: AtomicU64,
+    change_notify: Notify,
     /// [`familiarity_from`] per `card_id`, so page renders never re-parse card
     /// JSON. `None` is dormant, `Some(0.0)` never-synced. Kept fresh by
     /// `save_inner` and `invalidate_familiarity`. The lock is never held across
     /// an `.await`.
-    fam_cache: Arc<RwLock<HashMap<String, Option<f32>>>>,
+    fam_cache: RwLock<HashMap<String, Option<f32>>>,
 }
 
 impl LibraryCardStore {
     pub fn new(library_root: &Path) -> Self {
         Self {
-            root: library_root.join("cards"),
-            locks: Arc::new(StdMutex::new(HashMap::new())),
-            fence: Arc::new(tokio::sync::RwLock::new(false)),
-            generation: Arc::new(AtomicU64::new(0)),
-            change_notify: Arc::new(Notify::new()),
-            fam_cache: Arc::new(RwLock::new(HashMap::new())),
+            inner: Arc::new(CardStoreInner {
+                root: library_root.join("cards"),
+                locks: StdMutex::new(HashMap::new()),
+                fence: tokio::sync::RwLock::new(false),
+                generation: AtomicU64::new(0),
+                change_notify: Notify::new(),
+                fam_cache: RwLock::new(HashMap::new()),
+            }),
         }
     }
 
     /// Wake signal fired by `save`, but not `save_without_wake`.
-    pub fn change_notify(&self) -> Arc<Notify> {
-        self.change_notify.clone()
+    pub fn change_notify(&self) -> &Notify {
+        &self.inner.change_notify
     }
 
     pub fn root(&self) -> &Path {
-        &self.root
+        &self.inner.root
     }
 
     pub fn deck_dir(&self, source_language: &str, target_language: &str) -> PathBuf {
-        self.root
+        self.inner
+            .root
             .join(format!("{source_language}-{target_language}"))
     }
 
@@ -123,7 +130,7 @@ impl LibraryCardStore {
         .await?
     }
     async fn lock_for(&self, id: &str) -> Arc<Mutex<()>> {
-        let mut locks = self.locks.lock().unwrap();
+        let mut locks = self.inner.locks.lock().unwrap();
         if let Some(lock) = locks.get(id).and_then(Weak::upgrade) {
             return lock;
         }
@@ -135,7 +142,7 @@ impl LibraryCardStore {
         lock
     }
     pub(crate) async fn close(&self) {
-        *self.fence.write().await = true;
+        *self.inner.fence.write().await = true;
     }
     async fn create_transaction(
         &self,
@@ -143,7 +150,7 @@ impl LibraryCardStore {
         source: &str,
         target: &str,
     ) -> anyhow::Result<bool> {
-        let fence = self.fence.read().await;
+        let fence = self.inner.fence.read().await;
         anyhow::ensure!(!*fence, "library session closed");
         let slug = lemma_slug(&card.lemma.to_lowercase());
         let lock = self.lock_for(&card_id(source, target, &slug)).await;
@@ -162,7 +169,7 @@ impl LibraryCardStore {
         expected: Option<crate::card::AnkiData>,
         data: crate::card::AnkiData,
     ) -> anyhow::Result<bool> {
-        let fence = self.fence.read().await;
+        let fence = self.inner.fence.read().await;
         anyhow::ensure!(!*fence, "library session closed");
         let lock = self.lock_for(&card_id(source, target, slug)).await;
         let _guard = lock.lock().await;
@@ -200,7 +207,7 @@ impl LibraryCardStore {
         target: &str,
         slug: &str,
     ) -> anyhow::Result<Option<Card>> {
-        let fence = self.fence.read().await;
+        let fence = self.inner.fence.read().await;
         anyhow::ensure!(!*fence, "library session closed");
         let lock = self.lock_for(&card_id(source, target, slug)).await;
         let _guard = lock.lock().await;
@@ -269,8 +276,8 @@ impl LibraryCardStore {
         let mut misses: Vec<String> = Vec::new();
         let generation;
         {
-            let cache = self.fam_cache.read().unwrap();
-            generation = self.generation.load(Ordering::Relaxed);
+            let cache = self.inner.fam_cache.read().unwrap();
+            generation = self.inner.generation.load(Ordering::Relaxed);
             for slug in slugs {
                 let id = card_id(source_language, target_language, slug);
                 match cache.get(&id) {
@@ -301,13 +308,13 @@ impl LibraryCardStore {
                 }))
                 .await;
 
-            let mut cache = self.fam_cache.write().unwrap();
+            let mut cache = self.inner.fam_cache.write().unwrap();
             if cache.len() >= FAM_CACHE_MAX_ENTRIES {
-                self.generation.fetch_add(1, Ordering::Relaxed);
+                self.inner.generation.fetch_add(1, Ordering::Relaxed);
                 cache.clear();
             }
             for (slug, fam, cacheable) in loaded {
-                if cacheable && generation == self.generation.load(Ordering::Relaxed) {
+                if cacheable && generation == self.inner.generation.load(Ordering::Relaxed) {
                     let id = card_id(source_language, target_language, &slug);
                     cache.insert(id, fam);
                 }
@@ -330,8 +337,8 @@ impl LibraryCardStore {
         lemma_slug: &str,
     ) {
         let id = card_id(source_language, target_language, lemma_slug);
-        let mut cache = self.fam_cache.write().unwrap();
-        self.generation.fetch_add(1, Ordering::Relaxed);
+        let mut cache = self.inner.fam_cache.write().unwrap();
+        self.inner.generation.fetch_add(1, Ordering::Relaxed);
         cache.remove(&id);
     }
 
@@ -402,7 +409,7 @@ impl LibraryCardStore {
 
     /// Sorted `<src>-<tgt>` deck directories; names lacking a `-` are skipped.
     pub async fn list_pairs(&self) -> anyhow::Result<Vec<(String, String)>> {
-        let mut read_dir = match tokio::fs::read_dir(&self.root).await {
+        let mut read_dir = match tokio::fs::read_dir(&self.inner.root).await {
             Ok(rd) => rd,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
             Err(err) => return Err(err.into()),
@@ -496,7 +503,7 @@ impl LibraryCardStore {
         target: &str,
         wake: bool,
     ) -> anyhow::Result<()> {
-        let fence = self.fence.read().await;
+        let fence = self.inner.fence.read().await;
         anyhow::ensure!(!*fence, "library session closed");
         let lock = self
             .lock_for(&card_id(
@@ -532,13 +539,13 @@ impl LibraryCardStore {
         // We hold the authoritative card, so refresh without a re-read.
         let id = card_id(source_language, target_language, &slug);
         {
-            let mut cache = self.fam_cache.write().unwrap();
-            self.generation.fetch_add(1, Ordering::Relaxed);
+            let mut cache = self.inner.fam_cache.write().unwrap();
+            self.inner.generation.fetch_add(1, Ordering::Relaxed);
             cache.insert(id, familiarity_from(card.anki_data.as_ref()));
         }
 
         if notify {
-            self.change_notify.notify_one();
+            self.inner.change_notify.notify_one();
         }
         Ok(())
     }
@@ -665,8 +672,9 @@ mod tests {
     async fn save_fires_change_notify() {
         let tmp = TempDir::new("flts_card_notify");
         let store = LibraryCardStore::new(&tmp.path);
-        let notify = store.change_notify();
+        let waiter_store = store.clone();
         let waiter = tokio::spawn(async move {
+            let notify = waiter_store.change_notify();
             tokio::time::timeout(std::time::Duration::from_secs(2), notify.notified())
                 .await
                 .expect("change_notify must fire within timeout")

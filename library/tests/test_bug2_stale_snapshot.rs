@@ -42,7 +42,7 @@ impl Drop for TempDir {
 #[tokio::test]
 async fn test_bug2_stale_snapshot_overwrites() {
     let dir = TempDir::new("flts_repro_f2");
-    let library = Arc::new(Library::open(dir.path.join("lib")).await.unwrap());
+    let library = Library::open(dir.path.join("lib")).await.unwrap();
     let en = Language::from_str("en").unwrap();
 
     let _book_id = library

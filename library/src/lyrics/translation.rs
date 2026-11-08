@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 use async_openai::types::chat::{
     ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
@@ -43,10 +43,10 @@ struct LyricsResponse {
 
 #[async_trait]
 pub trait LyricsTranslator: Send + Sync {
-    async fn translate_song(
-        &self,
+    async fn translate_song<'a>(
+        &'a self,
         lines: &[LyricsLine],
-        progress: Option<Box<ProgressCallback>>,
+        progress: Option<Box<ProgressCallback<'a>>>,
     ) -> anyhow::Result<Vec<LyricsLineTranslation>>;
 }
 
@@ -160,8 +160,8 @@ fn stream_budget_chars(lines: &[LyricsLine]) -> usize {
 
 pub struct LyricsOpenAITranslator {
     client: Client<OpenAIConfig>,
-    schema: Arc<Value>,
-    model_name: Arc<str>,
+    schema: Value,
+    model_name: String,
     is_deepseek: bool,
     is_zai: bool,
     to: Language,
@@ -181,8 +181,8 @@ impl LyricsOpenAITranslator {
         let client = Client::with_config(config);
         Ok(Self {
             client,
-            schema: Arc::new(lyrics_schema()),
-            model_name: Arc::from(model),
+            schema: lyrics_schema(),
+            model_name: model.to_owned(),
             is_deepseek: matches!(
                 provider,
                 TranslationProvider::Deepseek
@@ -197,10 +197,10 @@ impl LyricsOpenAITranslator {
 
 #[async_trait]
 impl LyricsTranslator for LyricsOpenAITranslator {
-    async fn translate_song(
-        &self,
+    async fn translate_song<'a>(
+        &'a self,
         lines: &[LyricsLine],
-        progress: Option<Box<ProgressCallback>>,
+        progress: Option<Box<ProgressCallback<'a>>>,
     ) -> anyhow::Result<Vec<LyricsLineTranslation>> {
         // Re-borrow per attempt so the retry closure stays `FnMut`.
         let progress = progress.as_deref();
@@ -215,7 +215,7 @@ impl LyricsTranslator for LyricsOpenAITranslator {
                     system_prompt(self.to.to_name())
                 );
                 if self.is_deepseek {
-                    if let Ok(schema_text) = serde_json::to_string_pretty(&*self.schema) {
+                    if let Ok(schema_text) = serde_json::to_string_pretty(&self.schema) {
                         system.push_str("\n\nJSON schema for the response:\n");
                         system.push_str(&schema_text);
                     }
@@ -229,7 +229,7 @@ impl LyricsTranslator for LyricsOpenAITranslator {
                         json_schema: ResponseFormatJsonSchema {
                             description: Some("Per-line song lyrics translation".to_string()),
                             name: "lyrics_translation".to_string(),
-                            schema: (*self.schema).clone(),
+                            schema: self.schema.clone(),
                             strict: Some(true),
                         },
                     }
@@ -257,7 +257,7 @@ impl LyricsTranslator for LyricsOpenAITranslator {
                 let full = if self.is_zai {
                     // z.AI's SSE streaming is unreliable, so make one call.
                     let request = CreateChatCompletionRequestArgs::default()
-                        .model(self.model_name.as_ref())
+                        .model(self.model_name.as_str())
                         .messages(messages)
                         .response_format(response_format)
                         .build()?;
@@ -274,7 +274,7 @@ impl LyricsTranslator for LyricsOpenAITranslator {
                         .unwrap_or_default()
                 } else {
                     let request = CreateChatCompletionRequestArgs::default()
-                        .model(self.model_name.as_ref())
+                        .model(self.model_name.as_str())
                         .messages(messages)
                         .response_format(response_format)
                         .stream(true)
@@ -342,7 +342,7 @@ fn gemini_lyrics_schema() -> Value {
 
 pub struct LyricsGeminiTranslator {
     client: Gemini,
-    schema: Arc<Value>,
+    schema: Value,
     model_id: String,
     to: Language,
 }
@@ -353,7 +353,7 @@ impl LyricsGeminiTranslator {
         let client = crate::translator::gemini::gemini_client(api_key, gemini_model)?;
         Ok(Self {
             client,
-            schema: Arc::new(gemini_lyrics_schema()),
+            schema: gemini_lyrics_schema(),
             model_id: model.to_string(),
             to,
         })
@@ -362,10 +362,10 @@ impl LyricsGeminiTranslator {
 
 #[async_trait]
 impl LyricsTranslator for LyricsGeminiTranslator {
-    async fn translate_song(
-        &self,
+    async fn translate_song<'a>(
+        &'a self,
         lines: &[LyricsLine],
-        progress: Option<Box<ProgressCallback>>,
+        progress: Option<Box<ProgressCallback<'a>>>,
     ) -> anyhow::Result<Vec<LyricsLineTranslation>> {
         let progress = progress.as_deref();
 
@@ -405,7 +405,7 @@ impl LyricsTranslator for LyricsGeminiTranslator {
                         .with_system_prompt(system)
                         .with_user_message(user)
                         .with_response_mime_type("application/json")
-                        .with_response_schema((*self.schema).clone())
+                        .with_response_schema(self.schema.clone())
                         .with_thinking_config(thinking_config)
                         .with_safety_settings(
                             crate::translator::gemini::permissive_safety_settings(),

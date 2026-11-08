@@ -82,7 +82,7 @@ pub(crate) async fn probe_healthy(
 
 pub struct SyncTask {
     engine: Arc<SyncEngine>,
-    status_tx: Arc<watch::Sender<SyncStatus>>,
+    status_tx: watch::Sender<SyncStatus>,
     task_handle: Mutex<Option<JoinHandle<()>>>,
     stopping: tokio::sync::OnceCell<crate::app::task::ManagedTask>,
 }
@@ -96,7 +96,7 @@ impl SyncTask {
         library_root: PathBuf,
         device_name: String,
         hermetic: bool,
-        status_tx: Arc<watch::Sender<SyncStatus>>,
+        status_tx: watch::Sender<SyncStatus>,
     ) -> anyhow::Result<Arc<Self>> {
         status_tx.send_replace(SyncStatus {
             state: SyncState::Starting,

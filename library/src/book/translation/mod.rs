@@ -21,12 +21,31 @@ use std::{
 };
 
 use super::soa_helpers::*;
-use std::sync::Arc;
 
 /// Struct-of-arrays translation store. The arenas are copy-on-write, so a
 /// clone shares every chunk and costs a few refcount bumps; the string
 /// dedup cache is write-side scratch and is not carried into clones.
+#[derive(Clone, Default)]
+struct ModelNames {
+    strings: Arena<u8>,
+    index: AHashMap<String, VecSlice<u8>>,
+}
+impl ModelNames {
+    fn intern(&mut self, model: &str) -> VecSlice<u8> {
+        if let Some(offset) = self.index.get(model) {
+            return *offset;
+        }
+        let offset = self.strings.push_str(model);
+        self.index.insert(model.to_owned(), offset);
+        offset
+    }
+    fn get(&self, offset: VecSlice<u8>) -> Cow<'_, str> {
+        self.strings.str_at(offset)
+    }
+}
+
 pub struct Translation {
+    models: ModelNames,
     strings_cache: AHashMap<String, VecSlice<u8>>,
 
     pub id: Uuid,
@@ -45,6 +64,7 @@ pub struct Translation {
 impl Clone for Translation {
     fn clone(&self) -> Self {
         Self {
+            models: self.models.clone(),
             strings_cache: AHashMap::new(),
             id: self.id,
             source_language: self.source_language.clone(),
@@ -122,7 +142,7 @@ struct ParagraphTranslation {
     timestamp: u64,
     previous_version: Option<usize>,
     sentences: VecSlice<Sentence>,
-    model: Arc<str>,
+    model: VecSlice<u8>,
     total_tokens: Option<u64>,
     visible_words: AHashSet<usize>,
 }
@@ -202,6 +222,7 @@ pub struct WordContextualTranslationView<'a> {
 impl Translation {
     pub fn create(source_language: &str, target_language: &str) -> Self {
         Translation {
+            models: ModelNames::default(),
             strings_cache: AHashMap::new(),
             id: Uuid::new_v4(),
             source_language: source_language.to_owned(),
@@ -235,7 +256,7 @@ impl Translation {
             timestamp: p.timestamp,
             previous_version: p.previous_version,
             sentences: self.sentences.slice(p.sentences),
-            model: p.model.to_string(),
+            model: self.models.get(p.model).into_owned(),
             total_tokens: p.total_tokens,
             visible_words: &p.visible_words,
         })
@@ -282,7 +303,7 @@ impl Translation {
             timestamp: translation.timestamp,
             previous_version: new_prev_version,
             sentences: VecSlice::empty(),
-            model: Arc::from(model),
+            model: self.models.intern(model),
             total_tokens: translation.total_tokens,
             visible_words: AHashSet::new(),
         };
@@ -363,7 +384,7 @@ impl Translation {
             timestamp,
             previous_version: new_prev_version,
             sentences: VecSlice::empty(),
-            model: Arc::from(translation.model.as_str()),
+            model: self.models.intern(&translation.model),
             total_tokens: translation.total_tokens,
             visible_words: translation.visible_words().clone(),
         };
@@ -872,7 +893,7 @@ impl Translation {
             };
             write_vec_slice(&mut hashing_stream, &pt.sentences)?;
 
-            let translation_model_field = write_model_field(&pt.model);
+            let translation_model_field = write_model_field(&self.models.get(pt.model));
 
             let tokens_count_field = {
                 let buf = Vec::new();
@@ -1091,6 +1112,7 @@ impl Translation {
         let t_pt = Instant::now();
         let pt_len = read_var_u64(input_stream)? as usize;
         let mut paragraph_translations = Vec::with_capacity(pt_len);
+        let mut models = ModelNames::default();
         for _ in 0..pt_len {
             let timestamp = read_var_u64(input_stream)?;
             let has_prev = read_u8(input_stream)?;
@@ -1105,7 +1127,7 @@ impl Translation {
                 timestamp,
                 previous_version,
                 sentences: sentences_slice,
-                model: Arc::from(""),
+                model: models.intern(""),
                 total_tokens: None,
                 visible_words: AHashSet::new(),
             };
@@ -1150,6 +1172,7 @@ impl Translation {
         );
 
         Ok(Translation {
+            models,
             strings_cache,
             id,
             source_language,
@@ -1276,6 +1299,7 @@ impl Translation {
         let t_pt = Instant::now();
         let pt_len = read_var_u64(input_stream)? as usize;
         let mut paragraph_translations = Vec::with_capacity(pt_len);
+        let mut models = ModelNames::default();
         for _ in 0..pt_len {
             let timestamp = read_var_u64(input_stream)?;
             let has_prev = read_u8(input_stream)?;
@@ -1290,7 +1314,7 @@ impl Translation {
                 timestamp,
                 previous_version,
                 sentences: sentences_slice,
-                model: Arc::from(""),
+                model: models.intern(""),
                 total_tokens: None,
                 visible_words: AHashSet::new(),
             };
@@ -1311,7 +1335,7 @@ impl Translation {
 
                 match tag {
                     FieldTag::TranslationModel => {
-                        translation.model = Arc::from(read_model_field(&buf)?);
+                        translation.model = models.intern(&read_model_field(&buf)?);
                     }
                     FieldTag::TotalTokens => {
                         let tokens = read_opt_var_u64(&mut cursor)?;
@@ -1369,6 +1393,7 @@ impl Translation {
         );
 
         Ok(Translation {
+            models,
             strings_cache,
             id,
             source_language,
@@ -1412,7 +1437,7 @@ impl<'a> ParagraphTranslationView<'a> {
             timestamp: p.timestamp,
             previous_version: p.previous_version,
             sentences: self.translation.sentences.slice(p.sentences),
-            model: p.model.to_string(),
+            model: self.translation.models.get(p.model).into_owned(),
             total_tokens: p.total_tokens,
             visible_words: &p.visible_words,
         })

@@ -5,7 +5,7 @@ pub(crate) mod gemini;
 pub mod gemini_cache;
 pub(crate) mod openai;
 
-use std::{fmt::Display, sync::Arc, time::Duration};
+use std::{fmt::Display, time::Duration};
 
 use async_trait::async_trait;
 use isolang::Language;
@@ -25,7 +25,7 @@ const TRANSLATION_TOTAL_TIMEOUT_PER_CHAR: Duration = Duration::from_millis(100);
 /// input length until the watchdog is useless.
 const TRANSLATION_TOTAL_TIMEOUT_MAX: Duration = Duration::from_secs(3600);
 
-pub type ProgressCallback = dyn Fn(usize) + Send + Sync;
+pub type ProgressCallback<'a> = dyn Fn(usize) + Send + Sync + 'a;
 
 pub fn total_stream_timeout(input_len: usize) -> Duration {
     let scaled =
@@ -197,7 +197,7 @@ impl StreamChunkAccumulator {
     pub fn handle_result(
         &mut self,
         result: anyhow::Result<Option<String>>,
-        callback: Option<&ProgressCallback>,
+        callback: Option<&ProgressCallback<'_>>,
     ) -> anyhow::Result<bool> {
         // Any chunk, even an empty one, proves the server is alive: reasoning
         // models stream content the typed delta drops, so those arrive empty
@@ -328,7 +328,7 @@ pub struct TranslationContext<'a> {
     pub book_id: Uuid,
     pub chapter_id: usize,
     pub use_cache: bool,
-    pub callback: Option<Box<ProgressCallback>>,
+    pub callback: Option<Box<ProgressCallback<'a>>>,
 }
 
 /// Translator-facing view onto book-level chapter context. Real translations
@@ -541,16 +541,16 @@ pub(crate) fn paragraph_translation_schema() -> serde_json::Value {
     })
 }
 
-pub fn get_translator(
-    cache: Arc<TranslationsCache>,
-    context_provider: Arc<dyn ChapterContextProvider>,
-    gemini_prompt_cache: Arc<gemini_cache::GeminiPromptCache>,
+pub fn get_translator<'a>(
+    cache: &'a TranslationsCache,
+    context_provider: &'a dyn ChapterContextProvider,
+    gemini_prompt_cache: &'a gemini_cache::GeminiPromptCache,
     provider: TranslationProvider,
     model: &str,
     api_key: String,
     from: Language,
     to: Language,
-) -> anyhow::Result<Box<dyn Translator>> {
+) -> anyhow::Result<Box<dyn Translator + 'a>> {
     match provider {
         TranslationProvider::Google => Ok(Box::new(GeminiTranslator::create(
             cache,

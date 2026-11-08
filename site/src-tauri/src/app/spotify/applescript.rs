@@ -4,7 +4,6 @@
 //! `spotify_state` Tauri event whenever the player state changes (track id,
 //! play/pause, or non-trivial position jump).
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use log::{debug, info, warn};
@@ -159,7 +158,7 @@ fn is_significant_change(prev: &NowPlaying, next: &NowPlaying) -> bool {
 
 pub struct SpotifyWatcher {
     handle: Mutex<Option<JoinHandle<()>>>,
-    tx: Arc<watch::Sender<Option<NowPlaying>>>,
+    tx: watch::Sender<Option<NowPlaying>>,
 }
 
 impl Default for SpotifyWatcher {
@@ -173,7 +172,7 @@ impl SpotifyWatcher {
         let (tx, _rx) = watch::channel(None);
         Self {
             handle: Mutex::new(None),
-            tx: Arc::new(tx),
+            tx,
         }
     }
 

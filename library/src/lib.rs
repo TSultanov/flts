@@ -9,6 +9,7 @@ pub mod retry;
 pub mod summary_generator;
 pub mod sync;
 pub mod system_dictionary;
+pub mod task;
 pub mod tla_trace;
 pub mod translation_stats;
 pub mod translator;

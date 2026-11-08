@@ -1,19 +1,17 @@
 use crate::app::{config::Config, task::ManagedTask};
+use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
 use library::{
     book::chapter_summaries::{ChapterSummaries, ChapterSummary},
     library::{BookHandle, Library},
     summary_generator::ChapterSummarizer,
 };
+use std::panic::AssertUnwindSafe;
 use std::{
     collections::{HashSet, VecDeque},
-    sync::Arc,
     time::SystemTime,
 };
 use tauri::Emitter;
-use tokio::{
-    sync::{mpsc, watch},
-    task::JoinSet,
-};
+use tokio::sync::{mpsc, watch};
 use uuid::Uuid;
 
 #[derive(Clone, serde::Serialize)]
@@ -26,16 +24,17 @@ struct SummaryGenerationProgress {
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
+#[derive(Clone)]
 pub struct SummaryGenerationQueue {
     enqueue: mpsc::Sender<Uuid>,
-    task: ManagedTask,
+    control: library::task::TaskControl,
 }
 impl SummaryGenerationQueue {
     pub fn init(
-        library_rx: watch::Receiver<Option<Arc<Library>>>,
+        library_rx: watch::Receiver<Option<Library>>,
         config: &Config,
         app: tauri::AppHandle,
-    ) -> Arc<Self> {
+    ) -> (Self, ManagedTask) {
         let provider = config.translation_provider;
         let model = library::translator::catalog::effective_model_id(provider, &config.model);
         let key = config.api_keys().for_provider(provider).map(str::to_owned);
@@ -45,7 +44,7 @@ impl SummaryGenerationQueue {
                 return;
             };
             let summarizer = match ChapterSummarizer::create(provider, &model, &key) {
-                Ok(s) => Arc::new(s),
+                Ok(s) => s,
                 Err(err) => {
                     log::warn!("summary setup failed: {err:#}");
                     return;
@@ -53,16 +52,23 @@ impl SummaryGenerationQueue {
             };
             let mut pending = VecDeque::new();
             let mut admitted = HashSet::new();
-            let mut workers = JoinSet::new();
+            let mut workers = FuturesUnordered::new();
             loop {
                 if workers.is_empty() {
                     if let Some(id) = pending.pop_front() {
                         let library = library_rx.borrow().clone();
                         let app = app.clone();
-                        let summarizer = summarizer.clone();
-                        workers.spawn(async move {
+                        let summarizer = &summarizer;
+                        workers.push(async move {
                             let result = match library {
-                                Some(library) => process_book(id, library, summarizer, &app).await,
+                                Some(library) => {
+                                    AssertUnwindSafe(process_book(id, &library, summarizer, &app))
+                                        .catch_unwind()
+                                        .await
+                                        .unwrap_or_else(|_| {
+                                            Err(anyhow::anyhow!("summary worker panicked"))
+                                        })
+                                }
                                 None => Err(anyhow::anyhow!("library closed")),
                             };
                             if let Err(err) = result {
@@ -75,15 +81,20 @@ impl SummaryGenerationQueue {
                 tokio::select! {
                     biased;
                     _ = stop.changed() => break,
-                    Some(result) = workers.join_next(), if !workers.is_empty() => { if let Ok(id) = result { admitted.remove(&id); } }
+                    Some(id) = workers.next(), if !workers.is_empty() => { admitted.remove(&id); }
                     request = requests.recv(), if pending.len() < 1024 => match request {Some(id) => { if admitted.insert(id) { pending.push_back(id); } }, None => break}
                 }
             }
             requests.close();
-            workers.abort_all();
-            while workers.join_next().await.is_some() {}
+            workers.clear();
         });
-        Arc::new(Self { enqueue, task })
+        (
+            Self {
+                enqueue,
+                control: task.control(),
+            },
+            task,
+        )
     }
     pub async fn enqueue(&self, id: Uuid) -> anyhow::Result<()> {
         self.enqueue
@@ -92,15 +103,15 @@ impl SummaryGenerationQueue {
             .map_err(|_| anyhow::anyhow!("summary queue closed"))
     }
     pub async fn shutdown(&self) {
-        if let Err(err) = self.task.shutdown().await {
+        if let Err(err) = self.control.shutdown().await {
             log::warn!("summary shutdown: {err}");
         }
     }
 }
 async fn process_book(
     id: Uuid,
-    library: Arc<Library>,
-    summarizer: Arc<ChapterSummarizer>,
+    library: &Library,
+    summarizer: &ChapterSummarizer,
     app: &tauri::AppHandle,
 ) -> anyhow::Result<()> {
     let handle: BookHandle = library.get_book(&id).await?;

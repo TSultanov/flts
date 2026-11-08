@@ -170,7 +170,7 @@ pub(super) async fn serve_books(
     lease: LibraryLease,
     capacity: usize,
     mut requests: mpsc::Receiver<BookRequest>,
-    card_store: Arc<super::library_card::LibraryCardStore>,
+    card_store: super::library_card::LibraryCardStore,
     mut close_control: watch::Receiver<u64>,
     completion: watch::Sender<(u64, Option<Result<(), String>>)>,
 ) {

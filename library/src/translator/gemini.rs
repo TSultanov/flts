@@ -110,27 +110,27 @@ fn add_property_ordering_for_gemini(schema: &mut Value) {
         serde_json::json!(["lf", "lt", "pos", "pl", "pe", "te", "ca", "ot"]);
 }
 
-pub struct GeminiTranslator {
-    cache: Arc<TranslationsCache>,
-    context_provider: Arc<dyn ChapterContextProvider>,
-    prompt_cache: Arc<GeminiPromptCache>,
+pub struct GeminiTranslator<'a> {
+    cache: &'a TranslationsCache,
+    context_provider: &'a dyn ChapterContextProvider,
+    prompt_cache: &'a GeminiPromptCache,
     client: Gemini,
-    schema: Arc<Value>,
+    schema: Value,
     translation_model: String,
     from: Language,
     to: Language,
 }
 
-impl GeminiTranslator {
+impl<'a> GeminiTranslator<'a> {
     pub fn create(
-        cache: Arc<TranslationsCache>,
-        context_provider: Arc<dyn ChapterContextProvider>,
-        prompt_cache: Arc<GeminiPromptCache>,
+        cache: &'a TranslationsCache,
+        context_provider: &'a dyn ChapterContextProvider,
+        prompt_cache: &'a GeminiPromptCache,
         translation_model: &str,
         api_key: String,
         from: &Language,
         to: &Language,
-    ) -> anyhow::Result<GeminiTranslator> {
+    ) -> anyhow::Result<GeminiTranslator<'a>> {
         let model = Model::Custom(translation_model.to_string());
         let client = gemini_client(api_key, model)?;
 
@@ -139,7 +139,7 @@ impl GeminiTranslator {
             context_provider,
             prompt_cache,
             client,
-            schema: Arc::new(gemini_paragraph_schema()),
+            schema: gemini_paragraph_schema(),
             translation_model: translation_model.to_string(),
             from: *from,
             to: *to,
@@ -181,7 +181,7 @@ impl GeminiTranslator {
         chapter_id: usize,
         prior_summaries: String,
         chapter_text: String,
-        callback: Option<&ProgressCallback>,
+        callback: Option<&ProgressCallback<'_>>,
     ) -> anyhow::Result<ParagraphTranslation> {
         let from = self.from;
         let to = self.to;
@@ -209,7 +209,7 @@ impl GeminiTranslator {
                 .with_cached_content(&cache_handle)
                 .with_user_message(user_message)
                 .with_response_mime_type("application/json")
-                .with_response_schema((*self.schema).clone())
+                .with_response_schema(self.schema.clone())
                 .with_thinking_config(self.thinking_config())
                 .with_safety_settings(permissive_safety_settings())
                 .execute_stream(),
@@ -310,7 +310,7 @@ impl GeminiTranslator {
 }
 
 #[async_trait]
-impl Translator for GeminiTranslator {
+impl Translator for GeminiTranslator<'_> {
     fn get_model(&self) -> String {
         self.translation_model.clone()
     }
