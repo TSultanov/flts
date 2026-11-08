@@ -576,7 +576,7 @@ impl AppState {
         let library = Arc::new(Library::open(library_root.clone()).await?);
         self.gated.install_library(library.clone());
 
-        let prior = self.gated.take_anki_task().await;
+        let prior = self.gated.take_anki_task();
         if let Some(task) = prior {
             info!("Stopping prior Anki sync task before re-spawn");
             task.shutdown().await;
@@ -591,8 +591,7 @@ impl AppState {
                 .clone()
                 .unwrap_or_else(|| "http://127.0.0.1:8765".to_owned());
             let api_key = config.anki_api_key.clone();
-            let client: Arc<dyn library::anki::connect::AnkiConnect> =
-                library::anki::connect::get_anki_connect(endpoint, api_key).into();
+            let client = library::anki::connect::get_anki_connect(endpoint, api_key);
             let interval_secs = std::env::var("FLTS_ANKI_SYNC_INTERVAL_SECS")
                 .ok()
                 .and_then(|s| s.parse::<u64>().ok())
@@ -603,7 +602,7 @@ impl AppState {
                 Duration::from_secs(interval_secs),
                 self.anki_sync_status.clone(),
             );
-            self.gated.install_anki_task(task).await;
+            self.gated.install_anki_task(task);
             info!("Anki sync task spawned (interval = {interval_secs}s)");
         }
 
@@ -788,7 +787,7 @@ impl AppState {
         // Take the task out of its slot before awaiting, so a long tick can't
         // block inside the mutex. No final sync_pass: a flush against a slow
         // AnkiConnect would stall exit, and the next launch syncs immediately.
-        let anki_task = self.gated.take_anki_task().await;
+        let anki_task = self.gated.take_anki_task();
         if let Some(task) = anki_task {
             run_exit_step(
                 "anki sync shutdown",

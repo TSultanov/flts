@@ -1,7 +1,10 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::{Arc, RwLock},
+    sync::{
+        Arc, Mutex as StdMutex, RwLock, Weak,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use tokio::sync::{Mutex, Notify};
@@ -16,24 +19,29 @@ use crate::{
 /// in a very long-lived process.
 const FAM_CACHE_MAX_ENTRIES: usize = 100_000;
 
+#[derive(Clone)]
 pub struct LibraryCardStore {
     root: PathBuf,
-    locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    locks: Arc<StdMutex<HashMap<String, Weak<Mutex<()>>>>>,
+    fence: Arc<tokio::sync::RwLock<bool>>,
+    generation: Arc<AtomicU64>,
     change_notify: Arc<Notify>,
     /// [`familiarity_from`] per `card_id`, so page renders never re-parse card
     /// JSON. `None` is dormant, `Some(0.0)` never-synced. Kept fresh by
     /// `save_inner` and `invalidate_familiarity`. The lock is never held across
     /// an `.await`.
-    fam_cache: RwLock<HashMap<String, Option<f32>>>,
+    fam_cache: Arc<RwLock<HashMap<String, Option<f32>>>>,
 }
 
 impl LibraryCardStore {
     pub fn new(library_root: &Path) -> Self {
         Self {
             root: library_root.join("cards"),
-            locks: Mutex::new(HashMap::new()),
+            locks: Arc::new(StdMutex::new(HashMap::new())),
+            fence: Arc::new(tokio::sync::RwLock::new(false)),
+            generation: Arc::new(AtomicU64::new(0)),
             change_notify: Arc::new(Notify::new()),
-            fam_cache: RwLock::new(HashMap::new()),
+            fam_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -61,14 +69,113 @@ impl LibraryCardStore {
             .join(format!("{lemma_slug}.json"))
     }
 
-    pub async fn lock_for(&self, id: &str) -> Arc<Mutex<()>> {
-        let mut locks = self.locks.lock().await;
-        locks
-            .entry(id.to_owned())
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
+    pub async fn load(
+        &self,
+        source: &str,
+        target: &str,
+        slug: &str,
+    ) -> anyhow::Result<Option<Card>> {
+        let store = self.clone();
+        let (source, target, slug) = (source.to_owned(), target.to_owned(), slug.to_owned());
+        tokio::spawn(async move { store.load_transaction(&source, &target, &slug).await }).await?
     }
-
+    pub async fn create_if_absent(
+        &self,
+        card: &Card,
+        source: &str,
+        target: &str,
+    ) -> anyhow::Result<bool> {
+        let store = self.clone();
+        let (card, source, target) = (card.clone(), source.to_owned(), target.to_owned());
+        tokio::spawn(async move { store.create_transaction(&card, &source, &target).await }).await?
+    }
+    pub async fn update_anki_data(
+        &self,
+        source: &str,
+        target: &str,
+        slug: &str,
+        expected: Option<crate::card::AnkiData>,
+        data: crate::card::AnkiData,
+    ) -> anyhow::Result<bool> {
+        let store = self.clone();
+        let (source, target, slug) = (source.to_owned(), target.to_owned(), slug.to_owned());
+        tokio::spawn(async move {
+            store
+                .update_transaction(&source, &target, &slug, expected, data)
+                .await
+        })
+        .await?
+    }
+    async fn save_transaction(
+        &self,
+        card: &Card,
+        source: &str,
+        target: &str,
+        wake: bool,
+    ) -> anyhow::Result<()> {
+        let store = self.clone();
+        let (card, source, target) = (card.clone(), source.to_owned(), target.to_owned());
+        tokio::spawn(async move {
+            store
+                .save_transaction_inner(&card, &source, &target, wake)
+                .await
+        })
+        .await?
+    }
+    async fn lock_for(&self, id: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.locks.lock().unwrap();
+        if let Some(lock) = locks.get(id).and_then(Weak::upgrade) {
+            return lock;
+        }
+        if locks.len() >= 1024 {
+            locks.retain(|_, value| value.strong_count() > 0);
+        }
+        let lock = Arc::new(Mutex::new(()));
+        locks.insert(id.to_string(), Arc::downgrade(&lock));
+        lock
+    }
+    pub(crate) async fn close(&self) {
+        *self.fence.write().await = true;
+    }
+    async fn create_transaction(
+        &self,
+        card: &Card,
+        source: &str,
+        target: &str,
+    ) -> anyhow::Result<bool> {
+        let fence = self.fence.read().await;
+        anyhow::ensure!(!*fence, "library session closed");
+        let slug = lemma_slug(&card.lemma.to_lowercase());
+        let lock = self.lock_for(&card_id(source, target, &slug)).await;
+        let _guard = lock.lock().await;
+        if self.load_merged(source, target, &slug).await?.is_some() {
+            return Ok(false);
+        }
+        self.save_inner(card, source, target, true).await?;
+        Ok(true)
+    }
+    async fn update_transaction(
+        &self,
+        source: &str,
+        target: &str,
+        slug: &str,
+        expected: Option<crate::card::AnkiData>,
+        data: crate::card::AnkiData,
+    ) -> anyhow::Result<bool> {
+        let fence = self.fence.read().await;
+        anyhow::ensure!(!*fence, "library session closed");
+        let lock = self.lock_for(&card_id(source, target, slug)).await;
+        let _guard = lock.lock().await;
+        let Some(mut card) = self.load_merged(source, target, slug).await? else {
+            return Ok(false);
+        };
+        if card.anki_data != expected {
+            return Ok(false);
+        }
+        card.anki_data = Some(data);
+        self.save_inner(&card, source, target, false).await?;
+        Ok(true)
+    }
     /// The canonical card file alone — one file, no deck-dir scan, no
     /// writeback. Use [`load`] where conflict reconciliation is required.
     pub async fn load_canonical(
@@ -87,7 +194,19 @@ impl LibraryCardStore {
 
     /// Load a card, merging any `.sync-conflict-*.json` siblings back into the
     /// canonical file. Callers must hold the per-card-id lock: this writes.
-    pub async fn load(
+    async fn load_transaction(
+        &self,
+        source: &str,
+        target: &str,
+        slug: &str,
+    ) -> anyhow::Result<Option<Card>> {
+        let fence = self.fence.read().await;
+        anyhow::ensure!(!*fence, "library session closed");
+        let lock = self.lock_for(&card_id(source, target, slug)).await;
+        let _guard = lock.lock().await;
+        self.load_merged(source, target, slug).await
+    }
+    async fn load_merged(
         &self,
         source_language: &str,
         target_language: &str,
@@ -125,7 +244,7 @@ impl LibraryCardStore {
         }
 
         // Normalization, not a user-driven change: don't wake sync.
-        self.save_without_wake(&base, source_language, target_language)
+        self.save_inner(&base, source_language, target_language, false)
             .await?;
 
         for (path, _) in accepted {
@@ -148,8 +267,10 @@ impl LibraryCardStore {
     ) -> HashMap<String, f32> {
         let mut resolved: HashMap<String, Option<f32>> = HashMap::with_capacity(slugs.len());
         let mut misses: Vec<String> = Vec::new();
+        let generation;
         {
             let cache = self.fam_cache.read().unwrap();
+            generation = self.generation.load(Ordering::Relaxed);
             for slug in slugs {
                 let id = card_id(source_language, target_language, slug);
                 match cache.get(&id) {
@@ -182,10 +303,11 @@ impl LibraryCardStore {
 
             let mut cache = self.fam_cache.write().unwrap();
             if cache.len() >= FAM_CACHE_MAX_ENTRIES {
+                self.generation.fetch_add(1, Ordering::Relaxed);
                 cache.clear();
             }
             for (slug, fam, cacheable) in loaded {
-                if cacheable {
+                if cacheable && generation == self.generation.load(Ordering::Relaxed) {
                     let id = card_id(source_language, target_language, &slug);
                     cache.insert(id, fam);
                 }
@@ -208,7 +330,9 @@ impl LibraryCardStore {
         lemma_slug: &str,
     ) {
         let id = card_id(source_language, target_language, lemma_slug);
-        self.fam_cache.write().unwrap().remove(&id);
+        let mut cache = self.fam_cache.write().unwrap();
+        self.generation.fetch_add(1, Ordering::Relaxed);
+        cache.remove(&id);
     }
 
     async fn scan_conflict_siblings(
@@ -349,7 +473,7 @@ impl LibraryCardStore {
         source_language: &str,
         target_language: &str,
     ) -> anyhow::Result<()> {
-        self.save_inner(card, source_language, target_language, true)
+        self.save_transaction(card, source_language, target_language, true)
             .await
     }
 
@@ -361,10 +485,29 @@ impl LibraryCardStore {
         source_language: &str,
         target_language: &str,
     ) -> anyhow::Result<()> {
-        self.save_inner(card, source_language, target_language, false)
+        self.save_transaction(card, source_language, target_language, false)
             .await
     }
 
+    async fn save_transaction_inner(
+        &self,
+        card: &Card,
+        source: &str,
+        target: &str,
+        wake: bool,
+    ) -> anyhow::Result<()> {
+        let fence = self.fence.read().await;
+        anyhow::ensure!(!*fence, "library session closed");
+        let lock = self
+            .lock_for(&card_id(
+                source,
+                target,
+                &lemma_slug(&card.lemma.to_lowercase()),
+            ))
+            .await;
+        let _guard = lock.lock().await;
+        self.save_inner(card, source, target, wake).await
+    }
     async fn save_inner(
         &self,
         card: &Card,
@@ -388,10 +531,11 @@ impl LibraryCardStore {
 
         // We hold the authoritative card, so refresh without a re-read.
         let id = card_id(source_language, target_language, &slug);
-        self.fam_cache
-            .write()
-            .unwrap()
-            .insert(id, familiarity_from(card.anki_data.as_ref()));
+        {
+            let mut cache = self.fam_cache.write().unwrap();
+            self.generation.fetch_add(1, Ordering::Relaxed);
+            cache.insert(id, familiarity_from(card.anki_data.as_ref()));
+        }
 
         if notify {
             self.change_notify.notify_one();
@@ -405,6 +549,83 @@ mod tests {
     use super::*;
     use crate::{card::Card, test_utils::TempDir};
 
+    #[tokio::test]
+    async fn anki_patch_preserves_new_content_and_newer_opt_out() {
+        use crate::card::{AnkiData, AnkiState};
+        let directory = tempfile::tempdir().unwrap();
+        let store = LibraryCardStore::new(directory.path());
+        let mut card = sample_card();
+        store.save(&card, "spa", "rus").await.unwrap();
+        card.translations
+            .entry("noun".into())
+            .or_default()
+            .push("concurrent content".into());
+        store.save(&card, "spa", "rus").await.unwrap();
+        let data = AnkiData {
+            state: AnkiState::Active,
+            interval_days: Some(5.0),
+            ease_factor: None,
+            fsrs_difficulty: None,
+            fsrs_stability: None,
+        };
+        assert!(
+            store
+                .update_anki_data("spa", "rus", "poder", None, data.clone())
+                .await
+                .unwrap()
+        );
+        let mut current = store.load("spa", "rus", "poder").await.unwrap().unwrap();
+        assert!(current.translations.contains_key("noun"));
+        current.anki_data.as_mut().unwrap().state = AnkiState::Suspended;
+        store.save(&current, "spa", "rus").await.unwrap();
+        assert!(
+            !store
+                .update_anki_data("spa", "rus", "poder", Some(data.clone()), data)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            store
+                .load("spa", "rus", "poder")
+                .await
+                .unwrap()
+                .unwrap()
+                .anki_data
+                .unwrap()
+                .state,
+            AnkiState::Suspended
+        );
+    }
+    #[tokio::test]
+    async fn cancelled_card_caller_does_not_cancel_its_accepted_transaction() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = LibraryCardStore::new(directory.path());
+        let lock = store.lock_for("flts_spa_rus_poder").await;
+        let guard = lock.lock().await;
+        let pending = tokio::spawn({
+            let store = store.clone();
+            async move { store.save(&sample_card(), "spa", "rus").await }
+        });
+        tokio::task::yield_now().await;
+        pending.abort();
+        let _ = pending.await;
+        let closing = tokio::spawn({
+            let store = store.clone();
+            async move { store.close().await }
+        });
+        tokio::task::yield_now().await;
+        assert!(!closing.is_finished());
+        drop(guard);
+        closing.await.unwrap();
+        assert!(
+            store
+                .load_canonical("spa", "rus", "poder")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(store.save(&sample_card(), "spa", "rus").await.is_err());
+    }
     fn sample_card() -> Card {
         let mut translations: std::collections::BTreeMap<String, Vec<String>> =
             std::collections::BTreeMap::new();

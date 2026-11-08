@@ -992,8 +992,7 @@ pub fn get_anki_connect(endpoint: String, api_key: Option<String>) -> Box<dyn An
     if std::env::var_os("FLTS_MOCK_ANKICONNECT").is_some_and(|v| !v.is_empty()) {
         Box::new(MockAnkiConnect::new())
     } else {
-        let http: Arc<dyn AnkiConnect> = Arc::new(HttpAnkiConnect::new(endpoint, api_key));
-        Box::new(SerializedAnkiConnect::new(http))
+        Box::new(HttpAnkiConnect::new(endpoint, api_key))
     }
 }
 

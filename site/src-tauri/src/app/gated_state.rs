@@ -30,7 +30,7 @@ pub struct GatedState {
     /// startup failed (the message is handed to every waiting command).
     ready: watch::Sender<Option<Result<(), String>>>,
     library: Arc<watch::Sender<Option<Arc<Library>>>>,
-    anki_sync_task: Mutex<Option<Arc<AnkiSyncTask>>>,
+    anki_sync_task: watch::Sender<Option<Arc<AnkiSyncTask>>>,
     sync_task: Mutex<Option<Arc<SyncTask>>>,
 }
 
@@ -45,7 +45,7 @@ impl GatedState {
         Self {
             ready: watch::channel(None).0,
             library: Arc::new(watch::channel(None).0),
-            anki_sync_task: Mutex::new(None),
+            anki_sync_task: watch::channel(None).0,
             sync_task: Mutex::new(None),
         }
     }
@@ -100,7 +100,8 @@ impl GatedState {
         self.await_ready()
             .await
             .map_err(|err| anyhow::anyhow!(err))?;
-        sync_now_or_err(&self.anki_sync_task).await
+        let task = self.anki_sync_task.borrow().clone();
+        sync_now_or_err(task).await
     }
 
     // --- startup / shutdown plumbing: no readiness wait ---
@@ -129,20 +130,19 @@ impl GatedState {
         Arc::clone(&self.library)
     }
 
-    pub async fn install_anki_task(&self, task: Arc<AnkiSyncTask>) {
-        *self.anki_sync_task.lock().await = Some(task);
+    pub fn install_anki_task(&self, task: Arc<AnkiSyncTask>) {
+        self.anki_sync_task.send_replace(Some(task));
     }
 
-    /// Take standalone: the slot mutex must not span the caller's shutdown await.
-    pub async fn take_anki_task(&self) -> Option<Arc<AnkiSyncTask>> {
-        self.anki_sync_task.lock().await.take()
+    pub fn take_anki_task(&self) -> Option<Arc<AnkiSyncTask>> {
+        self.anki_sync_task.send_replace(None)
     }
 
     pub async fn install_sync_task(&self, task: Arc<SyncTask>) {
         *self.sync_task.lock().await = Some(task);
     }
 
-    /// See [`GatedState::take_anki_task`].
+    /// Take standalone: the slot mutex must not span the caller's shutdown await.
     pub async fn take_sync_task(&self) -> Option<Arc<SyncTask>> {
         self.sync_task.lock().await.take()
     }
@@ -208,6 +208,11 @@ mod tests {
         tokio::task::yield_now().await;
         state.publish_ready(Ok(()));
         assert_eq!(waiter.await.unwrap(), Ok(()));
+    }
+
+    #[test]
+    fn take_anki_task_is_none_when_nothing_installed() {
+        assert!(GatedState::new().take_anki_task().is_none());
     }
 
     #[tokio::test]

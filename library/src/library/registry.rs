@@ -166,8 +166,10 @@ pub(super) async fn serve_books(
     lease: LibraryLease,
     capacity: usize,
     mut requests: mpsc::Receiver<BookRequest>,
+    card_store: Arc<super::library_card::LibraryCardStore>,
 ) {
     let root: PathBuf = lease.root.clone();
+    let mut lease = Some(lease);
     let session = Uuid::new_v4();
     let mut entries: HashMap<Uuid, Entry> = HashMap::new();
     let mut warm = VecDeque::new();
@@ -302,6 +304,8 @@ pub(super) async fn serve_books(
             }
         }
         if closing && jobs.is_empty() {
+            card_store.close().await;
+            drop(lease.take());
             for reply in close_replies.drain(..) {
                 let _ = reply.send(Ok(()));
             }

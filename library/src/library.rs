@@ -283,7 +283,12 @@ impl Library {
         let library_root = lease.root.clone();
         let card_store = Arc::new(LibraryCardStore::new(&library_root));
         let (books, requests) = mpsc::channel(256);
-        tokio::spawn(serve_books(lease, cache_capacity, requests));
+        tokio::spawn(serve_books(
+            lease,
+            cache_capacity,
+            requests,
+            card_store.clone(),
+        ));
 
         Ok(Library {
             library_root,
@@ -414,28 +419,19 @@ impl Library {
 
         drop(book);
 
-        let lock = self.card_store.lock_for(&update.key.id()).await;
-        let _guard = lock.lock().await;
-        if self
+        let created = self
             .card_store
-            .load(
-                &update.key.source_language,
-                &update.key.target_language,
-                &update.key.slug,
-            )
-            .await?
-            .is_some()
-        {
-            return Ok(CardCreationOutcome::AlreadyExists);
-        }
-        self.card_store
-            .save(
+            .create_if_absent(
                 &Card::new_from_update(&update),
                 &update.key.source_language,
                 &update.key.target_language,
             )
             .await?;
-        Ok(CardCreationOutcome::Created)
+        Ok(if created {
+            CardCreationOutcome::Created
+        } else {
+            CardCreationOutcome::AlreadyExists
+        })
     }
 
     pub async fn list_books(&self) -> anyhow::Result<Vec<LibraryBookMetadata>> {
