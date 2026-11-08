@@ -118,6 +118,9 @@ pub async fn emit_book_event(
     translation_save_stage: &'static str,
     state_op_kind: &'static str,
 ) -> anyhow::Result<()> {
+    if sink().lock().unwrap().writer.is_none() {
+        return Ok(());
+    }
     let library_root = book_dir
         .parent()
         .map(Path::to_path_buf)
@@ -143,6 +146,9 @@ pub async fn emit_translation_event(
     translation_save_stage: &'static str,
     state_op_kind: &'static str,
 ) -> anyhow::Result<()> {
+    if sink().lock().unwrap().writer.is_none() {
+        return Ok(());
+    }
     let library_root = book_dir
         .parent()
         .map(Path::to_path_buf)

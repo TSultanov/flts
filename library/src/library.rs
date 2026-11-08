@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     error::Error,
     fmt::Display,
     path::{Path, PathBuf},
@@ -9,12 +8,14 @@ use std::{
 use isolang::Language;
 use itertools::Itertools;
 use log::{info, trace};
-use tokio::io::AsyncReadExt;
+use tokio::{
+    io::AsyncReadExt,
+    sync::{mpsc, oneshot},
+};
 use uuid::Uuid;
 
 use crate::{
-    book::{book_metadata::BookMetadata, translation_metadata::TranslationMetadata},
-    cache::WeakLruCache,
+    book::{book::Book, book_metadata::BookMetadata, translation_metadata::TranslationMetadata},
     card::{Card, CardWordFields, card_update_from_word},
     epub_importer::EpubBook,
     library::{
@@ -22,12 +23,14 @@ use crate::{
         library_book::{LibraryBook, load_book_user_state},
         library_card::LibraryCardStore,
     },
-    tla_trace::mutex::TracedMutex,
 };
+
+pub use library_book::{BookHandle, BookRef, BookSnapshot, BookStatus, BookToken, MutationReceipt};
 
 pub mod file_watcher;
 pub mod library_book;
 pub mod library_card;
+mod registry;
 mod session;
 
 /// Books pinned in the warm LRU. Beyond it a book stays reachable through the
@@ -251,14 +254,12 @@ impl LibraryBookMetadata {
     }
 }
 
+use registry::{BookRequest, serve_books};
+
 pub struct Library {
     library_root: PathBuf,
-    pub(crate) books_cache: WeakLruCache<Uuid, TracedMutex<LibraryBook>>,
     card_store: Arc<LibraryCardStore>,
-    /// Single-flight guards per book id: `load_from_metadata` mutates the book
-    /// directory, so it must not run twice for one id. Pruned once the last
-    /// interested caller finishes.
-    load_flights: tokio::sync::Mutex<HashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>,
+    books: mpsc::Sender<BookRequest>,
 }
 
 impl Library {
@@ -274,18 +275,81 @@ impl Library {
             tokio::fs::create_dir_all(&library_root).await?;
         }
 
+        let locks = directories::BaseDirs::new()
+            .ok_or_else(|| anyhow::anyhow!("local data directory unavailable"))?
+            .data_local_dir()
+            .join("flts/library-locks");
+        let lease = session::LibraryLease::acquire(&library_root, &locks)?;
+        let library_root = lease.root.clone();
         let card_store = Arc::new(LibraryCardStore::new(&library_root));
+        let (books, requests) = mpsc::channel(256);
+        tokio::spawn(serve_books(lease, cache_capacity, requests));
 
         Ok(Library {
             library_root,
-            books_cache: WeakLruCache::new(cache_capacity),
             card_store,
-            load_flights: tokio::sync::Mutex::new(HashMap::new()),
+            books,
         })
     }
 
     pub fn card_store(&self) -> &Arc<LibraryCardStore> {
         &self.card_store
+    }
+
+    async fn request<T>(
+        &self,
+        build: impl FnOnce(oneshot::Sender<T>) -> BookRequest,
+    ) -> anyhow::Result<T> {
+        let (reply, response) = oneshot::channel();
+        self.books
+            .send(build(reply))
+            .await
+            .map_err(|_| anyhow::anyhow!("book registry closed"))?;
+        response
+            .await
+            .map_err(|_| anyhow::anyhow!("book registry dropped reply"))
+    }
+
+    pub async fn get_book(&self, uuid: &Uuid) -> anyhow::Result<BookHandle> {
+        let id = *uuid;
+        self.request(|reply| BookRequest::Get { id, reply }).await?
+    }
+
+    /// The book if it is already loaded; never touches disk.
+    async fn cached_book(&self, id: Uuid) -> Option<BookHandle> {
+        self.request(|reply| BookRequest::Cached { id, reply })
+            .await
+            .ok()
+            .flatten()
+    }
+
+    pub(crate) async fn insert_book(
+        &self,
+        id: Uuid,
+        book: LibraryBook,
+    ) -> anyhow::Result<BookHandle> {
+        self.request(|reply| BookRequest::Insert { id, book, reply })
+            .await?
+    }
+
+    /// Resolves once no load for `id` is in flight, so the caller can delete
+    /// the directory without racing a conflict merge.
+    pub(crate) async fn remove_book(&self, id: Uuid) -> anyhow::Result<()> {
+        self.request(|reply| BookRequest::Remove { id, reply })
+            .await?
+    }
+
+    pub(crate) async fn cached_books(&self) -> Vec<BookHandle> {
+        self.request(|reply| BookRequest::Live { reply })
+            .await
+            .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    async fn inflight_loads(&self) -> usize {
+        self.request(|reply| BookRequest::Inflight { reply })
+            .await
+            .unwrap()
     }
 
     /// Create the card for one word in a translated paragraph, or report that
@@ -299,8 +363,7 @@ impl Library {
         word_id: usize,
         target_language: Language,
     ) -> anyhow::Result<CardCreationOutcome> {
-        let book_arc = self.get_book(&book_id).await?;
-        let book = book_arc.lock().await;
+        let book = self.get_book(&book_id).await?.snapshot();
 
         let source_language = Language::from_639_3(&book.book.language).ok_or_else(|| {
             anyhow::anyhow!(
@@ -313,15 +376,11 @@ impl Library {
                 anyhow::anyhow!("paragraph {paragraph_id} is not attached to any chapter")
             })?;
 
-        let translation_arc = book
-            .get_translation(&target_language)
-            .await
-            .ok_or_else(|| {
-                anyhow::anyhow!("book {book_id} has no translation to {target_language}")
-            })?;
+        let translation = book.translation(&target_language).ok_or_else(|| {
+            anyhow::anyhow!("book {book_id} has no translation to {target_language}")
+        })?;
 
         let update = {
-            let translation = translation_arc.lock().await;
             let paragraph = translation
                 .paragraph_view(paragraph_id)
                 .ok_or_else(|| anyhow::anyhow!("paragraph {paragraph_id} is not translated"))?;
@@ -357,28 +416,25 @@ impl Library {
 
         let lock = self.card_store.lock_for(&update.key.id()).await;
         let _guard = lock.lock().await;
-
-        let existing = self
+        if self
             .card_store
             .load(
                 &update.key.source_language,
                 &update.key.target_language,
                 &update.key.slug,
             )
-            .await?;
-        if existing.is_some() {
+            .await?
+            .is_some()
+        {
             return Ok(CardCreationOutcome::AlreadyExists);
         }
-
-        let card = Card::new_from_update(&update);
         self.card_store
             .save(
-                &card,
+                &Card::new_from_update(&update),
                 &update.key.source_language,
                 &update.key.target_language,
             )
             .await?;
-
         Ok(CardCreationOutcome::Created)
     }
 
@@ -405,73 +461,21 @@ impl Library {
         Ok(books)
     }
 
-    pub async fn get_book(&self, uuid: &Uuid) -> anyhow::Result<Arc<TracedMutex<LibraryBook>>> {
-        if let Some(book) = self.books_cache.get(uuid).await {
-            return Ok(book);
-        }
-
-        // `load_from_metadata` rewrites the book directory, so two cache-miss
-        // loads for one id would race; late arrivals re-check under the lock.
-        let flight = {
-            let mut flights = self.load_flights.lock().await;
-            flights.entry(*uuid).or_default().clone()
-        };
-
-        let result = {
-            let _guard = flight.lock().await;
-            // A concurrent loader may have filled the cache while we waited.
-            if let Some(book) = self.books_cache.get(uuid).await {
-                Ok(book)
-            } else {
-                async {
-                    let path = self.library_root.join(uuid.to_string());
-                    let metadata = LibraryBookMetadata::load(&path).await?;
-                    let book = Arc::new(TracedMutex::new(
-                        LibraryBook::load_from_metadata(metadata).await?,
-                    ));
-                    anyhow::Ok(self.books_cache.insert(*uuid, book).await)
-                }
-                .await
-            }
-        };
-
-        // Prune once no caller holds the guard: our clone drops first, so only
-        // the last finisher sees strong_count == 1. A waiter's clone pins the
-        // count, so an entry can't vanish under it. (Address as usize: a raw
-        // pointer across the .await would make this future !Send.)
-        let flight_addr = Arc::as_ptr(&flight) as usize;
-        drop(flight);
-        {
-            let mut flights = self.load_flights.lock().await;
-            if let Some(entry) = flights.get(uuid)
-                && Arc::as_ptr(entry) as usize == flight_addr
-                && Arc::strong_count(entry) <= 1
-            {
-                flights.remove(uuid);
-            }
-        }
-
-        result
-    }
-
     pub async fn create_book_plain(
         &self,
         title: &str,
         text: &str,
         language: &Language,
     ) -> anyhow::Result<Uuid> {
-        let book = self.create_book(title, language).await?;
-        let mut book = book.lock().await;
-        let chapter_index = book.book.push_chapter(None);
-        let paragraphs = split_paragraphs(text);
-
-        for paragraph in paragraphs {
-            book.book.push_paragraph(chapter_index, paragraph, None);
+        let mut book = Book::create(Uuid::new_v4(), title, language);
+        let chapter_index = book.push_chapter(None);
+        for paragraph in split_paragraphs(text) {
+            book.push_paragraph(chapter_index, paragraph, None);
         }
 
-        book.save().await?;
-
-        Ok(book.book.id)
+        let id = book.id;
+        self.create_book(book).await?.save().await?;
+        Ok(id)
     }
 
     pub async fn create_book_epub(
@@ -479,31 +483,42 @@ impl Library {
         epub: &EpubBook,
         language: &Language,
     ) -> anyhow::Result<Uuid> {
-        let book = self.create_book(&epub.title, language).await?;
-        let mut book = book.lock().await;
-
+        let mut book = Book::create(Uuid::new_v4(), &epub.title, language);
         for ch in &epub.chapters {
-            let ch_idx = book.book.push_chapter(Some(&ch.title));
+            let ch_idx = book.push_chapter(Some(&ch.title));
             for p in &ch.paragraphs {
-                book.book.push_paragraph(ch_idx, &p.text, Some(&p.html));
+                book.push_paragraph(ch_idx, &p.text, Some(&p.html));
             }
         }
 
-        book.save().await?;
-
-        Ok(book.book.id)
+        let id = book.id;
+        self.create_book(book).await?.save().await?;
+        Ok(id)
     }
 
-    pub async fn save_all(&self) {
-        let books = self.books_cache.live_values().await;
-        for book_arc in books {
-            let mut book = book_arc.lock().await;
-            if book.has_unsaved_changes().await
-                && let Err(err) = book.save().await
-            {
-                log::warn!("Failed to save book on shutdown: {err}");
-            }
+    pub async fn flush_all(&self) -> anyhow::Result<()> {
+        let results = futures_util::future::join_all(
+            self.cached_books().await.iter().map(|book| book.save()),
+        )
+        .await;
+        for result in results {
+            result?;
         }
+        Ok(())
+    }
+    pub async fn save_all(&self) {
+        if let Err(err) = self.flush_all().await {
+            log::warn!("library flush failed: {err:#}");
+        }
+    }
+    pub async fn close(&self) -> anyhow::Result<()> {
+        if self.books.is_closed() {
+            return Ok(());
+        }
+        self.request(|reply| BookRequest::Close { reply }).await?
+    }
+    pub fn root(&self) -> &Path {
+        &self.library_root
     }
 
     pub async fn handle_file_change_event(
@@ -513,11 +528,9 @@ impl Library {
         trace!("Starting file change event handling: {:?}...", event);
         let result = Ok(match event {
             LibraryFileChange::BookChanged { modified, uuid } => {
-                let book = self.books_cache.get(uuid).await;
-                if let Some(book) = book {
-                    book.lock().await.reload_book(*modified).await?
-                } else {
-                    false
+                match self.cached_book(*uuid).await {
+                    Some(book) => book.reload_book(*modified).await?,
+                    None => false,
                 }
             }
             LibraryFileChange::TranslationChanged {
@@ -525,17 +538,10 @@ impl Library {
                 from,
                 to,
                 uuid,
-            } => {
-                let book = self.books_cache.get(uuid).await;
-                if let Some(book) = book {
-                    book.lock()
-                        .await
-                        .reload_translations(*modified, *from, *to)
-                        .await?
-                } else {
-                    false
-                }
-            }
+            } => match self.cached_book(*uuid).await {
+                Some(book) => book.reload_translations(*modified, *from, *to).await?,
+                None => false,
+            },
             // Invalidate so the next read repopulates from disk. False: there
             // is no in-memory book or translation state to reload.
             LibraryFileChange::CardChanged {
@@ -612,18 +618,36 @@ mod library_tests {
         paragraph_text: &str,
     ) -> (Library, Uuid) {
         let library = Library::open(library_path).await.unwrap();
-        let book = library
-            .create_book("Test Book", &Language::from_639_3("spa").unwrap())
+        let book_id = create_saved_book(&library, "Test Book", "spa", &[paragraph_text]).await;
+        (library, book_id)
+    }
+
+    async fn create_saved_book(
+        library: &Library,
+        title: &str,
+        language: &str,
+        paragraphs: &[&str],
+    ) -> Uuid {
+        let mut book = Book::create(
+            Uuid::new_v4(),
+            title,
+            &Language::from_639_3(language).unwrap(),
+        );
+        if !paragraphs.is_empty() {
+            let chapter = book.push_chapter(Some("Intro"));
+            for paragraph in paragraphs {
+                book.push_paragraph(chapter, paragraph, None);
+            }
+        }
+        let id = book.id;
+        library
+            .create_book(book)
+            .await
+            .unwrap()
+            .save()
             .await
             .unwrap();
-        let book_id = {
-            let mut b = book.lock().await;
-            b.book.push_chapter(Some("Intro"));
-            b.book.push_paragraph(0, paragraph_text, None);
-            b.save().await.unwrap();
-            b.book.id
-        };
-        (library, book_id)
+        id
     }
 
     #[tokio::test]
@@ -652,16 +676,8 @@ mod library_tests {
         let library_path = temp_dir.path.join("lib");
         let library = Library::open(library_path.clone()).await.unwrap();
 
-        let book1 = library
-            .create_book("First Book", &Language::from_639_3("eng").unwrap())
-            .await
-            .unwrap();
-        book1.lock().await.save().await.unwrap();
-        let book2 = library
-            .create_book("Second Book", &Language::from_639_3("eng").unwrap())
-            .await
-            .unwrap();
-        book2.lock().await.save().await.unwrap();
+        create_saved_book(&library, "First Book", "eng", &[]).await;
+        create_saved_book(&library, "Second Book", "eng", &[]).await;
 
         let mut books = library.list_books().await.unwrap();
         assert_eq!(books.len(), 2);
@@ -680,17 +696,14 @@ mod library_tests {
         let library_path = temp_dir.path.join("lib");
         let library = Library::open(library_path.clone()).await.unwrap();
 
-        let book = library
-            .create_book("Categorized", &Language::from_639_3("eng").unwrap())
+        let id = create_saved_book(&library, "Categorized", "eng", &[]).await;
+        library
+            .get_book(&id)
+            .await
+            .unwrap()
+            .update_folder_path(vec!["Shelf".into(), "Modern".into()])
             .await
             .unwrap();
-        {
-            let mut book = book.lock().await;
-            book.save().await.unwrap();
-            book.update_folder_path(vec!["Shelf".into(), "Modern".into()])
-                .await
-                .unwrap();
-        }
 
         let books = library.list_books().await.unwrap();
         assert_eq!(books.len(), 1);
@@ -715,16 +728,7 @@ mod library_tests {
     }
 
     async fn make_saved_book(library: &Library, title: &str) -> Uuid {
-        let book = library
-            .create_book(title, &Language::from_639_3("eng").unwrap())
-            .await
-            .unwrap();
-        let id = {
-            let mut guard = book.lock().await;
-            guard.save().await.unwrap();
-            guard.book.id
-        };
-        id
+        create_saved_book(library, title, "eng", &[]).await
     }
 
     #[tokio::test]
@@ -757,7 +761,7 @@ mod library_tests {
 
         let id = make_saved_book(&library, "Dropped").await;
         let first = library.get_book(&id).await.unwrap();
-        let first_ptr = Arc::as_ptr(&first);
+        let first_ptr = first.token;
 
         for i in 0..4 {
             let _ = make_saved_book(&library, &format!("Filler {i}")).await;
@@ -767,8 +771,7 @@ mod library_tests {
 
         let reloaded = library.get_book(&id).await.unwrap();
         assert_ne!(
-            Arc::as_ptr(&reloaded),
-            first_ptr,
+            reloaded.token, first_ptr,
             "expected a fresh Arc after the last holder dropped",
         );
     }
@@ -781,7 +784,7 @@ mod library_tests {
             .unwrap();
 
         let id = make_saved_book(&library, "Ephemeral").await;
-        let first_ptr = Arc::as_ptr(&library.get_book(&id).await.unwrap());
+        let first_ptr = library.get_book(&id).await.unwrap().token;
 
         for i in 0..3 {
             let _ = make_saved_book(&library, &format!("Other {i}")).await;
@@ -789,8 +792,7 @@ mod library_tests {
 
         let reloaded = library.get_book(&id).await.unwrap();
         assert_ne!(
-            Arc::as_ptr(&reloaded),
-            first_ptr,
+            reloaded.token, first_ptr,
             "evicted book without holder must reload as a fresh instance",
         );
         assert_eq!(
@@ -852,10 +854,126 @@ mod library_tests {
             !book_dir.join("book.sync-conflict-race.dat").exists(),
             "conflict sibling must be merged away exactly once",
         );
-        assert!(
-            library.load_flights.lock().await.is_empty(),
-            "flight guards must be pruned once all callers finish",
+        assert_eq!(
+            library.inflight_loads().await,
+            0,
+            "flights must be pruned once all callers are answered",
         );
+    }
+
+    async fn saved_book_with_conflict_sibling(library: &Library, root: &Path) -> (Uuid, PathBuf) {
+        let id = make_saved_book(library, "Raced").await;
+        let book_dir = root.join(id.to_string());
+        tokio::fs::copy(
+            book_dir.join("book.dat"),
+            book_dir.join("book.sync-conflict-race.dat"),
+        )
+        .await
+        .unwrap();
+        // Capacity 1: the filler evicts the target, so the next get_book loads.
+        let _ = make_saved_book(library, "Filler").await;
+        (id, book_dir)
+    }
+
+    async fn wait_for_inflight_load(library: &Library) {
+        for _ in 0..1000 {
+            if library.inflight_loads().await > 0 {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("load never became visible as in flight");
+    }
+
+    #[tokio::test]
+    async fn book_registry_exits_when_library_drops() {
+        let temp_dir = TempDir::new("flts_test");
+        let baseline = tokio::runtime::Handle::current()
+            .metrics()
+            .num_alive_tasks();
+        let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
+        let id = make_saved_book(&library, "Short-lived").await;
+        library.get_book(&id).await.unwrap();
+
+        drop(library);
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while tokio::runtime::Handle::current()
+                .metrics()
+                .num_alive_tasks()
+                > baseline
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("registry task must exit once the library drops");
+    }
+
+    #[tokio::test]
+    async fn get_book_error_reaches_every_waiter() {
+        let temp_dir = TempDir::new("flts_test");
+        let library = Arc::new(Library::open(temp_dir.path.join("lib")).await.unwrap());
+        let missing = Uuid::new_v4();
+
+        let gets: Vec<_> = (0..4)
+            .map(|_| {
+                let library = library.clone();
+                tokio::spawn(async move { library.get_book(&missing).await })
+            })
+            .collect();
+        for get in gets {
+            assert!(get.await.unwrap().is_err());
+        }
+        assert_eq!(library.inflight_loads().await, 0);
+    }
+
+    #[tokio::test]
+    async fn remove_during_load_caches_nothing() {
+        let temp_dir = TempDir::new("flts_test");
+        let root = temp_dir.path.join("lib");
+        let library = Arc::new(Library::open_with_capacity(root.clone(), 1).await.unwrap());
+        let (id, book_dir) = saved_book_with_conflict_sibling(&library, &root).await;
+
+        let get = {
+            let library = library.clone();
+            tokio::spawn(async move { library.get_book(&id).await })
+        };
+        wait_for_inflight_load(&library).await;
+
+        library.remove_book(id).await.unwrap();
+
+        assert!(
+            get.await.unwrap().is_err(),
+            "a get racing a remove must not hand out a book that is being deleted",
+        );
+        assert!(library.cached_book(id).await.is_none());
+        assert_eq!(library.inflight_loads().await, 0);
+        assert!(
+            !book_dir.join("book.sync-conflict-race.dat").exists(),
+            "remove must resolve only after the in-flight load finished its merge",
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_get_book_does_not_abort_load() {
+        let temp_dir = TempDir::new("flts_test");
+        let root = temp_dir.path.join("lib");
+        let library = Arc::new(Library::open_with_capacity(root.clone(), 1).await.unwrap());
+        let (id, book_dir) = saved_book_with_conflict_sibling(&library, &root).await;
+
+        let get = {
+            let library = library.clone();
+            tokio::spawn(async move { library.get_book(&id).await })
+        };
+        wait_for_inflight_load(&library).await;
+        get.abort();
+
+        library.get_book(&id).await.unwrap();
+
+        assert!(book_dir.join("book.dat").exists());
+        assert!(!book_dir.join("book.sync-conflict-race.dat").exists());
+        assert_eq!(library.inflight_loads().await, 0);
     }
 
     fn spanish_paragraph() -> translation_import::ParagraphTranslation {
@@ -1189,7 +1307,7 @@ mod library_tests {
         }
 
         assert_eq!(
-            library.books_cache.live_values().await.len(),
+            library.cached_books().await.len(),
             capacity,
             "warm LRU must not exceed capacity",
         );
@@ -1202,17 +1320,15 @@ mod library_tests {
         paragraph: &translation_import::ParagraphTranslation,
         target_language: Language,
     ) {
-        let book_arc = library.get_book(&book_id).await.unwrap();
-        let mut book = book_arc.lock().await;
-        let translation_arc = book
-            .get_or_create_translation(&target_language)
-            .await
-            .unwrap();
-        translation_arc.lock().await.add_paragraph_translation(
-            paragraph_id,
-            paragraph,
-            "models/gemini-2.5-flash",
-        );
+        let book = library.get_book(&book_id).await.unwrap();
+        let paragraph = paragraph.clone();
+        book.modify(move |book| {
+            book.get_or_create_translation(&target_language)
+                .unwrap()
+                .add_paragraph_translation(paragraph_id, &paragraph, "models/gemini-2.5-flash");
+        })
+        .await
+        .unwrap();
         book.save().await.unwrap();
     }
 }

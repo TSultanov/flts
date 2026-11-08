@@ -12,6 +12,7 @@
 use std::{path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 
 use isolang::Language;
+use library::book::book::Book;
 use library::{
     book::translation_import,
     library::Library,
@@ -90,20 +91,22 @@ async fn trace_interaction_baseline() {
     let span = TraceSpan::begin("t1", "ConfigChange")
         .field("task", "t1")
         .field("newLib", 2);
-    let _library2 = Library::open(lib_root.clone()).await.unwrap();
+    let library = Library::open(lib_root.clone()).await.unwrap();
     span.end();
 
-    // === Setup: create library + book + paragraph ===
-    let library = Library::open(lib_root.clone()).await.unwrap();
-    let book = library.create_book("Baseline Book", &en()).await.unwrap();
-    let book_id = {
-        let mut b = book.lock().await;
-        b.book.push_chapter(Some("Intro"));
-        b.book
-            .push_paragraph(0, "Hello world, this is a test.", None);
-        b.save().await.unwrap();
-        b.book.id
-    };
+    // === Setup: reuse the session for the same canonical root ===
+    let mut new_book = Book::create(uuid::Uuid::new_v4(), "Baseline Book", &en());
+    new_book.push_chapter(Some("Intro"));
+    new_book.push_paragraph(0, "Hello world, this is a test.", None);
+
+    let book_id = new_book.id;
+    library
+        .create_book(new_book)
+        .await
+        .unwrap()
+        .save()
+        .await
+        .unwrap();
 
     // === Worker lifecycle (t1) ===
 
@@ -117,12 +120,9 @@ async fn trace_interaction_baseline() {
 
     // WorkerReadParagraph: get_or_create_translation + paragraph_view
     let span = TraceSpan::begin("t1", "WorkerReadParagraph").field("task", "t1");
-    let translation = {
-        let mut b = book_handle.lock().await;
-        let tr = b.get_or_create_translation(&ru()).await.unwrap();
-        let _pv = b.book.paragraph_view(0);
-        tr
-    };
+    {
+        let _ = book_handle.snapshot().book.paragraph_view(0);
+    }
     span.end();
 
     // WorkerCallAPI: simulated external call
@@ -132,11 +132,14 @@ async fn trace_interaction_baseline() {
 
     // WorkerStoreResult: add_paragraph_translation
     let span = TraceSpan::begin("t1", "WorkerStoreResult").field("task", "t1");
-    translation.lock().await.add_paragraph_translation(
+    apply_fixture(
+        &book_handle,
+        ru(),
         0,
-        &make_paragraph(100, "Привет мир"),
+        make_paragraph(100, "Привет мир"),
         "models/gemini-2.5-flash",
-    );
+    )
+    .await;
     span.end();
 
     // WorkerSave: book.save()
@@ -144,8 +147,7 @@ async fn trace_interaction_baseline() {
         .field("task", "t1")
         .field("lib", 2);
     {
-        let mut b = book_handle.lock().await;
-        b.save().await.unwrap();
+        book_handle.save().await.unwrap();
     }
     span.end();
 
@@ -238,17 +240,21 @@ async fn trace_interaction_baseline() {
 
     // === MarkWordVisible ===
     // Live writes from the click path are gone, but the trace spec still
-    // models a fast translation-lock mutation under this name. The legacy
-    // merge-path helper `add_visible_word` is the surviving handle that
-    // performs an equivalent under-lock write.
+    // models a fast translation mutation under the book lock under this name;
+    // any small in-memory translation write stands in for it.
     let span = TraceSpan::begin("t2", "MarkWordVisible")
         .field("task", "t2")
         .field("book", "b1");
     {
-        let mut b = book_handle.lock().await;
-        let tr = b.get_or_create_translation(&ru()).await.unwrap();
-        tr.lock().await.add_visible_word(0, 0);
-        b.save().await.unwrap();
+        apply_fixture(
+            &book_handle,
+            ru(),
+            0,
+            make_paragraph(101, "Привет мир"),
+            "models/gemini-2.5-flash",
+        )
+        .await;
+        book_handle.save().await.unwrap();
     }
     span.end();
 
@@ -268,15 +274,19 @@ async fn trace_interaction_concurrent() {
 
     // === Setup ===
     let library = Arc::new(Library::open(lib_root.clone()).await.unwrap());
-    let book = library.create_book("Concurrent Book", &en()).await.unwrap();
-    let book_id = {
-        let mut b = book.lock().await;
-        b.book.push_chapter(Some("Ch1"));
-        b.book.push_paragraph(0, "First paragraph.", None);
-        b.book.push_paragraph(0, "Second paragraph.", None);
-        b.save().await.unwrap();
-        b.book.id
-    };
+    let mut new_book = Book::create(uuid::Uuid::new_v4(), "Concurrent Book", &en());
+    new_book.push_chapter(Some("Ch1"));
+    new_book.push_paragraph(0, "First paragraph.", None);
+    new_book.push_paragraph(0, "Second paragraph.", None);
+
+    let book_id = new_book.id;
+    library
+        .create_book(new_book)
+        .await
+        .unwrap()
+        .save()
+        .await
+        .unwrap();
 
     let barrier = Arc::new(Barrier::new(3));
 
@@ -297,12 +307,9 @@ async fn trace_interaction_concurrent() {
 
         // WorkerReadParagraph
         let span = TraceSpan::begin("t1", "WorkerReadParagraph").field("task", "t1");
-        let tr = {
-            let mut b = bh.lock().await;
-            let tr = b.get_or_create_translation(&ru()).await.unwrap();
-            let _pv = b.book.paragraph_view(0);
-            tr
-        };
+        {
+            let _ = bh.snapshot().book.paragraph_view(0);
+        }
         span.end();
 
         // WorkerCallAPI — long async call, other tasks interleave here
@@ -312,18 +319,21 @@ async fn trace_interaction_concurrent() {
 
         // WorkerStoreResult
         let span = TraceSpan::begin("t1", "WorkerStoreResult").field("task", "t1");
-        tr.lock().await.add_paragraph_translation(
+        apply_fixture(
+            &bh,
+            ru(),
             0,
-            &make_paragraph(200, "Первый абзац"),
+            make_paragraph(200, "Первый абзац"),
             "models/gemini-2.5-flash",
-        );
+        )
+        .await;
         span.end();
 
         // WorkerSave
         let span = TraceSpan::begin("t1", "WorkerSave")
             .field("task", "t1")
             .field("lib", 1);
-        bh.lock().await.save().await.unwrap();
+        bh.save().await.unwrap();
         span.end();
 
         // WorkerComputeSnapshot
@@ -431,4 +441,30 @@ async fn trace_interaction_concurrent() {
     TraceSpan::begin("ui", "DeliverEvent")
         .field("version", 3)
         .end();
+}
+
+async fn apply_fixture(
+    handle: &library::library::BookHandle,
+    target: Language,
+    paragraph: usize,
+    translation: library::book::translation_import::ParagraphTranslation,
+    model: &str,
+) {
+    let snapshot = handle.snapshot();
+    handle
+        .apply_translation(
+            snapshot.token,
+            paragraph,
+            snapshot
+                .book
+                .paragraph_view(paragraph)
+                .original_text
+                .to_string(),
+            Language::from_639_3(&snapshot.book.language).unwrap(),
+            target,
+            translation,
+            model.into(),
+        )
+        .await
+        .unwrap();
 }

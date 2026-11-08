@@ -1,12 +1,14 @@
 use std::{
     io::Write,
     str::FromStr,
-    sync::Arc,
     time::{Duration, SystemTime},
 };
 
-use crate::tla_trace::mutex::TracedMutex;
 use isolang::Language;
+use uuid::Uuid;
+
+use crate::library::LibraryBookMetadata;
+use std::sync::Arc;
 
 use crate::{
     book::{book::Book, serialization::Serializable, translation::Translation, translation_import},
@@ -14,21 +16,52 @@ use crate::{
     test_utils::TempDir,
 };
 
+fn plain_book(library: &Library, title: &str, language: &Language) -> super::LibraryBook {
+    let id = Uuid::new_v4();
+    super::LibraryBook::create(
+        library.library_root.join(id.to_string()),
+        Book::create(id, title, language),
+    )
+}
+
+async fn saved_book(library: &Library, title: &str) -> Uuid {
+    let book = Book::create(Uuid::new_v4(), title, &Language::from_639_3("eng").unwrap());
+    let id = book.id;
+    library
+        .create_book(book)
+        .await
+        .unwrap()
+        .save()
+        .await
+        .unwrap();
+    id
+}
+
+async fn load_book(library: &Library, id: Uuid) -> super::LibraryBook {
+    let metadata = LibraryBookMetadata::load(&library.library_root.join(id.to_string()))
+        .await
+        .unwrap();
+    super::LibraryBook::load_from_metadata(metadata)
+        .await
+        .unwrap()
+}
+
 #[tokio::test]
 async fn list_books_conflicting_versions() {
     let temp_dir = TempDir::new("flts_test_book");
     let library_path = temp_dir.path.join("lib");
     let library = Library::open(library_path.clone()).await.unwrap();
 
-    let book1 = library
-        .create_book("First Book", &Language::from_639_3("eng").unwrap())
-        .await
-        .unwrap();
-    book1.lock().await.save().await.unwrap();
+    let mut book1 = plain_book(
+        &library,
+        "First Book",
+        &Language::from_639_3("eng").unwrap(),
+    );
+    book1.save().await.unwrap();
 
-    let book_file = book1.lock().await.path.join("book.dat");
+    let book_file = book1.path.join("book.dat");
 
-    let conflict_path = book1.lock().await.path.join(
+    let conflict_path = book1.path.join(
         book_file
             .file_name()
             .unwrap()
@@ -56,25 +89,23 @@ async fn list_books_conflicting_translation_versions() {
     let library_path = temp_dir.path.join("lib");
     let library = Library::open(library_path.clone()).await.unwrap();
 
-    let book1 = library
-        .create_book("First Book", &Language::from_639_3("spa").unwrap())
-        .await
-        .unwrap();
-    let _translation = book1
-        .lock()
-        .await
+    let mut book1 = plain_book(
+        &library,
+        "First Book",
+        &Language::from_639_3("spa").unwrap(),
+    );
+    book1
         .get_or_create_translation(&Language::from_str("en").unwrap())
-        .await
         .unwrap();
-    book1.lock().await.save().await.unwrap();
+    book1.save().await.unwrap();
 
-    let translation_file = book1.lock().await.path.join(format!(
+    let translation_file = book1.path.join(format!(
         "translation_{}_{}.dat",
         Language::from_str("es").unwrap().to_639_3(),
         Language::from_str("en").unwrap().to_639_3()
     ));
 
-    let conflict_path = book1.lock().await.path.join(
+    let conflict_path = book1.path.join(
         translation_file
             .file_name()
             .unwrap()
@@ -112,17 +143,18 @@ async fn save_after_load_trivial_book_change() {
     let library_path = temp_dir.path.join("lib");
     let library = Library::open(library_path.clone()).await.unwrap();
 
-    let book = library
-        .create_book("First Title", &Language::from_639_3("eng").unwrap())
-        .await
-        .unwrap();
-    book.lock().await.save().await.unwrap();
+    let mut book = plain_book(
+        &library,
+        "First Title",
+        &Language::from_639_3("eng").unwrap(),
+    );
+    book.save().await.unwrap();
 
-    let book_file = book.lock().await.path.join("book.dat");
-    book.lock().await.last_modified = std::fs::metadata(&book_file).unwrap().modified().ok();
+    let book_file = book.path.join("book.dat");
+    book.last_modified = std::fs::metadata(&book_file).unwrap().modified().ok();
 
-    book.lock().await.book.title = "Updated Title".into();
-    book.lock().await.save().await.unwrap();
+    Arc::make_mut(&mut book.book).title = "Updated Title".into();
+    book.save().await.unwrap();
 
     let f = std::fs::File::open(&book_file).unwrap();
     let mut reader = std::io::BufReader::new(f);
@@ -140,11 +172,7 @@ async fn save_after_load_book_and_translation_changed() {
     let target_language = Language::from_str("en").unwrap();
 
     let book_id = {
-        let book = library
-            .create_book("First Book", &source_language)
-            .await
-            .unwrap();
-        let mut book = book.lock().await;
+        let mut book = plain_book(&library, "First Book", &source_language);
         let mut tr = Translation::create(source_language.to_639_3(), target_language.to_639_3());
         let initial_pt = translation_import::ParagraphTranslation {
             total_tokens: None,
@@ -170,24 +198,23 @@ async fn save_after_load_book_and_translation_changed() {
             }],
         };
         tr.add_paragraph_translation(0, &initial_pt, "models/gemini-2.5-flash");
-        book.translations
-            .push(Arc::new(TracedMutex::new(super::LibraryTranslation {
-                translation: tr,
-                source_language,
-                target_language,
-                last_modified: None,
-                last_saved_hash: None,
-                changed: true,
-            })));
+        book.translations.push(super::LibraryTranslation {
+            translation: tr,
+            source_language,
+            target_language,
+            last_modified: None,
+            last_saved_hash: None,
+            changed: true,
+            published: None,
+        });
         book.save().await.unwrap();
         book.book.id
     };
 
     let path = {
-        let book = library.get_book(&book_id).await.unwrap();
-        let mut book = book.lock().await;
+        let mut book = load_book(&library, book_id).await;
 
-        book.book.title = "Second Edition".into();
+        Arc::make_mut(&mut book.book).title = "Second Edition".into();
         let new_pt = translation_import::ParagraphTranslation {
             total_tokens: None,
             timestamp: 2,
@@ -213,11 +240,7 @@ async fn save_after_load_book_and_translation_changed() {
         };
         // Go through the wrapper so the dirty flag is set; the inner
         // Translation has no dirty tracking of its own.
-        book.translations[0].lock().await.add_paragraph_translation(
-            0,
-            &new_pt,
-            "models/gemini-2.5-flash",
-        );
+        book.translations[0].add_paragraph_translation(0, &new_pt, "models/gemini-2.5-flash");
 
         book.save().await.unwrap();
         book.path.clone()
@@ -252,11 +275,11 @@ async fn save_merges_translation_with_concurrent_on_disk_change() {
     let source_language = Language::from_str("en").unwrap();
     let target_language = Language::from_str("ru").unwrap();
 
-    let book = library
-        .create_book("Merge Book", &Language::from_639_3("eng").unwrap())
-        .await
-        .unwrap();
-    let mut book = book.lock().await;
+    let mut book = plain_book(
+        &library,
+        "Merge Book",
+        &Language::from_639_3("eng").unwrap(),
+    );
     let mut tr = Translation::create(source_language.to_639_3(), target_language.to_639_3());
     let pt1 = translation_import::ParagraphTranslation {
         total_tokens: None,
@@ -282,15 +305,15 @@ async fn save_merges_translation_with_concurrent_on_disk_change() {
         }],
     };
     tr.add_paragraph_translation(0, &pt1, "models/gemini-2.5-flash");
-    book.translations
-        .push(Arc::new(TracedMutex::new(super::LibraryTranslation {
-            translation: tr,
-            source_language,
-            target_language,
-            last_modified: None,
-            last_saved_hash: None,
-            changed: true,
-        })));
+    book.translations.push(super::LibraryTranslation {
+        translation: tr,
+        source_language,
+        target_language,
+        last_modified: None,
+        last_saved_hash: None,
+        changed: true,
+        published: None,
+    });
     book.save().await.unwrap();
 
     let book_file = book.path.join("book.dat");
@@ -302,8 +325,7 @@ async fn save_merges_translation_with_concurrent_on_disk_change() {
     book.last_modified = std::fs::metadata(&book_file).unwrap().modified().ok();
     book.translations.clear();
     let loaded_tr = super::LibraryTranslation::load(&tr_path).await.unwrap();
-    book.translations
-        .push(Arc::new(TracedMutex::new(loaded_tr)));
+    book.translations.push(loaded_tr);
 
     let mem_pt = translation_import::ParagraphTranslation {
         total_tokens: None,
@@ -328,11 +350,11 @@ async fn save_merges_translation_with_concurrent_on_disk_change() {
             }],
         }],
     };
-    book.translations[0]
-        .lock()
-        .await
-        .translation
-        .add_paragraph_translation(0, &mem_pt, "models/gemini-2.5-flash");
+    book.translations[0].translation.add_paragraph_translation(
+        0,
+        &mem_pt,
+        "models/gemini-2.5-flash",
+    );
 
     {
         let mut on_disk = {
@@ -391,25 +413,16 @@ async fn reading_state_roundtrip() {
     let library_path = temp_dir.path.join("lib");
     let library = Library::open(library_path.clone()).await.unwrap();
 
-    let book = library
-        .create_book("Stateful", &Language::from_639_3("eng").unwrap())
-        .await
-        .unwrap();
-    let book_id = {
-        let mut book = book.lock().await;
-        book.save().await.unwrap();
-        book.update_reading_state(BookReadingState {
-            chapter_id: 2,
-            paragraph_id: 15,
-            page_offset: 0,
-        })
-        .await
-        .unwrap();
-        book.book.id
-    };
-
+    let book_id = saved_book(&library, "Stateful").await;
     let book = library.get_book(&book_id).await.unwrap();
-    let mut book = book.lock().await;
+    book.update_reading_state(BookReadingState {
+        chapter_id: 2,
+        paragraph_id: 15,
+        page_offset: 0,
+    })
+    .await
+    .unwrap();
+
     let state = book.reading_state().await.unwrap();
     assert_eq!(state.as_ref().map(|s| s.chapter_id), Some(2));
     assert_eq!(state.as_ref().map(|s| s.paragraph_id), Some(15));
@@ -421,21 +434,12 @@ async fn folder_path_roundtrip() {
     let library_path = temp_dir.path.join("lib");
     let library = Library::open(library_path.clone()).await.unwrap();
 
-    let book = library
-        .create_book("Shelved", &Language::from_639_3("eng").unwrap())
+    let book_id = saved_book(&library, "Shelved").await;
+    let book = library.get_book(&book_id).await.unwrap();
+    book.update_folder_path(vec!["Shelf".into(), "Favorites".into()])
         .await
         .unwrap();
-    let book_id = {
-        let mut book = book.lock().await;
-        book.save().await.unwrap();
-        book.update_folder_path(vec!["Shelf".into(), "Favorites".into()])
-            .await
-            .unwrap();
-        book.book.id
-    };
 
-    let book = library.get_book(&book_id).await.unwrap();
-    let mut book = book.lock().await;
     let folder_path = book.folder_path().await.unwrap();
     assert_eq!(
         folder_path,
@@ -449,27 +453,24 @@ async fn reading_state_prefers_latest_conflict() {
     let library_root = temp_dir.path.join("lib");
     let library = Library::open(library_root.clone()).await.unwrap();
 
-    let book = library
-        .create_book("Conflicted", &Language::from_639_3("eng").unwrap())
+    let book_id = saved_book(&library, "Conflicted").await;
+    library
+        .get_book(&book_id)
         .await
-        .unwrap();
-    let book_id = {
-        let mut book = book.lock().await;
-        book.save().await.unwrap();
-        book.update_reading_state(BookReadingState {
+        .unwrap()
+        .update_reading_state(BookReadingState {
             chapter_id: 1,
             paragraph_id: 1,
             page_offset: 0,
         })
         .await
         .unwrap();
-        book.book.id
-    };
 
     {
-        let book = library.get_book(&book_id).await.unwrap();
-        let book = book.lock().await;
-        let conflict_path = book.path.join("state (conflict copy).json");
+        let conflict_path = library
+            .library_root
+            .join(book_id.to_string())
+            .join("state (conflict copy).json");
         std::thread::sleep(std::time::Duration::from_millis(5));
         let serialized = serde_json::to_vec(&BookReadingState {
             chapter_id: 4,
@@ -481,11 +482,11 @@ async fn reading_state_prefers_latest_conflict() {
         file.write_all(&serialized).unwrap();
     }
 
+    library.close().await.unwrap();
     drop(library);
 
     let library = Library::open(library_root).await.unwrap();
     let book = library.get_book(&book_id).await.unwrap();
-    let mut book = book.lock().await;
     let state = book.reading_state().await.unwrap();
     assert_eq!(state.as_ref().map(|s| s.chapter_id), Some(4));
     assert_eq!(state.as_ref().map(|s| s.paragraph_id), Some(8));
@@ -724,11 +725,11 @@ async fn library_book_load_from_metadata_no_conflicts() {
     let library_path = temp_dir.path.join("lib");
     let library = Library::open(library_path.clone()).await.unwrap();
 
-    let book = library
-        .create_book("Original Title", &Language::from_639_3("eng").unwrap())
-        .await
-        .unwrap();
-    let mut book = book.lock().await;
+    let mut book = plain_book(
+        &library,
+        "Original Title",
+        &Language::from_639_3("eng").unwrap(),
+    );
     book.save().await.unwrap();
 
     let mut books = library.list_books().await.unwrap();
@@ -749,11 +750,7 @@ async fn library_book_load_from_metadata_selects_newest_conflict_and_cleans() {
     let library_path = temp_dir.path.join("lib");
     let library = Library::open(library_path.clone()).await.unwrap();
 
-    let book = library
-        .create_book("Main V1", &Language::from_639_3("eng").unwrap())
-        .await
-        .unwrap();
-    let mut book = book.lock().await;
+    let mut book = plain_book(&library, "Main V1", &Language::from_639_3("eng").unwrap());
     book.save().await.unwrap();
 
     let book_file = book.path.join("book.dat");
@@ -800,11 +797,7 @@ async fn library_book_load_from_metadata_keeps_main_if_newest_and_cleans() {
     let library_path = temp_dir.path.join("lib");
     let library = Library::open(library_path.clone()).await.unwrap();
 
-    let book = library
-        .create_book("V1", &Language::from_639_3("eng").unwrap())
-        .await
-        .unwrap();
-    let mut book = book.lock().await;
+    let mut book = plain_book(&library, "V1", &Language::from_639_3("eng").unwrap());
     book.save().await.unwrap();
 
     let book_file = book.path.join("book.dat");
@@ -849,15 +842,7 @@ async fn delete_book_removes_directory() {
     let library_path = temp_dir.path.join("lib");
     let library = Library::open(library_path.clone()).await.unwrap();
 
-    let book = library
-        .create_book("Disposable", &Language::from_639_3("eng").unwrap())
-        .await
-        .unwrap();
-    let book_id = {
-        let mut book = book.lock().await;
-        book.save().await.unwrap();
-        book.book.id
-    };
+    let book_id = saved_book(&library, "Disposable").await;
 
     let book_dir = library_path.join(book_id.to_string());
     assert!(book_dir.exists());
@@ -910,36 +895,27 @@ fn bump_mtime_future(path: &std::path::Path) -> SystemTime {
 async fn book_with_saved_translation(
     library: &Library,
     title: &str,
-) -> (Arc<TracedMutex<super::LibraryBook>>, std::path::PathBuf) {
+) -> (super::LibraryBook, std::path::PathBuf) {
     let source_language = Language::from_str("en").unwrap();
     let target_language = Language::from_str("ru").unwrap();
-    let book = library
-        .create_book(title, &Language::from_639_3("eng").unwrap())
-        .await
-        .unwrap();
-    {
-        let mut book = book.lock().await;
-        let mut tr = Translation::create(source_language.to_639_3(), target_language.to_639_3());
-        tr.add_paragraph_translation(0, &simple_paragraph("v1", 1), "models/gemini-2.5-flash");
-        book.translations
-            .push(Arc::new(TracedMutex::new(super::LibraryTranslation {
-                translation: tr,
-                source_language,
-                target_language,
-                last_modified: None,
-                last_saved_hash: None,
-                changed: true,
-            })));
-        book.save().await.unwrap();
-    }
-    let tr_path = {
-        let book = book.lock().await;
-        book.path.join(format!(
-            "translation_{}_{}.dat",
-            source_language.to_639_3(),
-            target_language.to_639_3()
-        ))
-    };
+    let mut book = plain_book(library, title, &Language::from_639_3("eng").unwrap());
+    let mut tr = Translation::create(source_language.to_639_3(), target_language.to_639_3());
+    tr.add_paragraph_translation(0, &simple_paragraph("v1", 1), "models/gemini-2.5-flash");
+    book.translations.push(super::LibraryTranslation {
+        translation: tr,
+        source_language,
+        target_language,
+        last_modified: None,
+        last_saved_hash: None,
+        changed: true,
+        published: None,
+    });
+    book.save().await.unwrap();
+    let tr_path = book.path.join(format!(
+        "translation_{}_{}.dat",
+        source_language.to_639_3(),
+        target_language.to_639_3()
+    ));
     (book, tr_path)
 }
 
@@ -976,9 +952,8 @@ async fn save_clears_changed_flag() {
     let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
     let (book, _tr_path) = book_with_saved_translation(&library, "Clean").await;
 
-    let book = book.lock().await;
     assert!(
-        !book.has_unsaved_changes().await,
+        !book.has_unsaved_changes(),
         "translation should be clean after a successful save"
     );
 }
@@ -987,19 +962,14 @@ async fn save_clears_changed_flag() {
 async fn reload_translations_skips_same_content_echo() {
     let temp_dir = TempDir::new("flts_test_book");
     let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
-    let (book, tr_path) = book_with_saved_translation(&library, "Echo Tr").await;
+    let (mut book, tr_path) = book_with_saved_translation(&library, "Echo Tr").await;
 
     let before = std::fs::read(&tr_path).unwrap();
     let future = bump_mtime_future(&tr_path);
 
     let from = Language::from_str("en").unwrap();
     let to = Language::from_str("ru").unwrap();
-    let saved = book
-        .lock()
-        .await
-        .reload_translations(future, from, to)
-        .await
-        .unwrap();
+    let saved = book.reload_translations(future, from, to).await.unwrap();
 
     assert!(!saved, "same-content echo must not trigger a re-save");
     assert_eq!(
@@ -1013,7 +983,7 @@ async fn reload_translations_skips_same_content_echo() {
 async fn reload_translations_saves_on_external_change() {
     let temp_dir = TempDir::new("flts_test_book");
     let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
-    let (book, tr_path) = book_with_saved_translation(&library, "Ext Tr").await;
+    let (mut book, tr_path) = book_with_saved_translation(&library, "Ext Tr").await;
 
     {
         let f = std::fs::File::open(&tr_path).unwrap();
@@ -1032,12 +1002,7 @@ async fn reload_translations_saves_on_external_change() {
 
     let from = Language::from_str("en").unwrap();
     let to = Language::from_str("ru").unwrap();
-    let saved = book
-        .lock()
-        .await
-        .reload_translations(future, from, to)
-        .await
-        .unwrap();
+    let saved = book.reload_translations(future, from, to).await.unwrap();
 
     assert!(
         saved,
@@ -1049,13 +1014,13 @@ async fn reload_translations_saves_on_external_change() {
 async fn reload_book_skips_same_content_echo() {
     let temp_dir = TempDir::new("flts_test_book");
     let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
-    let (book, _tr_path) = book_with_saved_translation(&library, "Echo Bk").await;
+    let (mut book, _tr_path) = book_with_saved_translation(&library, "Echo Bk").await;
 
-    let book_file = book.lock().await.path.join("book.dat");
+    let book_file = book.path.join("book.dat");
     let before = std::fs::read(&book_file).unwrap();
     let future = bump_mtime_future(&book_file);
 
-    let saved = book.lock().await.reload_book(future).await.unwrap();
+    let saved = book.reload_book(future).await.unwrap();
 
     assert!(!saved, "same-content book echo must not trigger a re-save");
     assert_eq!(
@@ -1069,15 +1034,15 @@ async fn reload_book_skips_same_content_echo() {
 async fn reload_book_saves_on_external_change() {
     let temp_dir = TempDir::new("flts_test_book");
     let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
-    let (book_a, _tr_a) = book_with_saved_translation(&library, "Bk A").await;
+    let (mut book_a, _tr_a) = book_with_saved_translation(&library, "Bk A").await;
     let (book_b, _tr_b) = book_with_saved_translation(&library, "Bk B").await;
 
-    let a_file = book_a.lock().await.path.join("book.dat");
-    let b_file = book_b.lock().await.path.join("book.dat");
+    let a_file = book_a.path.join("book.dat");
+    let b_file = book_b.path.join("book.dat");
     std::fs::copy(&b_file, &a_file).unwrap();
     let future = bump_mtime_future(&a_file);
 
-    let saved = book_a.lock().await.reload_book(future).await.unwrap();
+    let saved = book_a.reload_book(future).await.unwrap();
     assert!(saved, "a genuine external book change must trigger a save");
 }
 
@@ -1087,14 +1052,13 @@ async fn failed_save_keeps_in_memory_translations() {
     // translation_*.dat) must not blank the cached book's translations.
     let temp_dir = TempDir::new("flts_test_book");
     let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
-    let (book, _tr_path) = book_with_saved_translation(&library, "Drain Book").await;
-    let mut book = book.lock().await;
+    let (mut book, _tr_path) = book_with_saved_translation(&library, "Drain Book").await;
 
     let garbage = book.path.join("translation_zzz_yyy.dat");
     std::fs::write(&garbage, b"not a translation file").unwrap();
 
     // Dirty it so the failing save exercises the write path, not just rescan.
-    book.translations[0].lock().await.add_paragraph_translation(
+    book.translations[0].add_paragraph_translation(
         1,
         &simple_paragraph("v2", 2),
         "models/gemini-2.5-flash",
@@ -1110,10 +1074,9 @@ async fn failed_save_keeps_in_memory_translations() {
     let target_language = Language::from_str("ru").unwrap();
     let translation = book
         .get_translation(&target_language)
-        .await
         .expect("translation must survive a failed save");
     assert_eq!(
-        translation.lock().await.translated_paragraphs_count(),
+        translation.translated_paragraphs_count(),
         2,
         "paragraph translations must survive a failed save"
     );
@@ -1123,10 +1086,7 @@ async fn failed_save_keeps_in_memory_translations() {
     assert_eq!(book.translations.len(), 1);
     assert_eq!(
         book.get_translation(&target_language)
-            .await
             .unwrap()
-            .lock()
-            .await
             .translated_paragraphs_count(),
         2
     );
@@ -1138,13 +1098,12 @@ async fn save_repairs_corrupt_translation_file() {
     // would lose the in-memory state, the only surviving copy.
     let temp_dir = TempDir::new("flts_test_book");
     let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
-    let (book, tr_path) = book_with_saved_translation(&library, "Corrupt Tr").await;
+    let (mut book, tr_path) = book_with_saved_translation(&library, "Corrupt Tr").await;
 
     let bytes = std::fs::read(&tr_path).unwrap();
     std::fs::write(&tr_path, &bytes[..bytes.len() / 2]).unwrap();
 
-    let mut book = book.lock().await;
-    book.translations[0].lock().await.add_paragraph_translation(
+    book.translations[0].add_paragraph_translation(
         1,
         &simple_paragraph("v2", 2),
         "models/gemini-2.5-flash",
@@ -1164,15 +1123,13 @@ async fn save_repairs_corrupt_book_file() {
     // As above for book.dat: an unparseable copy is rewritten from memory.
     let temp_dir = TempDir::new("flts_test_book");
     let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
-    let (book, _tr_path) = book_with_saved_translation(&library, "Corrupt Bk").await;
+    let (mut book, _tr_path) = book_with_saved_translation(&library, "Corrupt Bk").await;
 
-    let book_file = book.lock().await.path.join("book.dat");
+    let book_file = book.path.join("book.dat");
     let bytes = std::fs::read(&book_file).unwrap();
     std::fs::write(&book_file, &bytes[..bytes.len() / 2]).unwrap();
 
-    book.lock()
-        .await
-        .save()
+    book.save()
         .await
         .expect("save must repair a corrupt book.dat, not wedge");
 
@@ -1189,7 +1146,7 @@ async fn reload_translations_absorbs_older_mtime_remote_change() {
     // arrive with an mtime <= our last save and must still be absorbed.
     let temp_dir = TempDir::new("flts_test_book");
     let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
-    let (book, tr_path) = book_with_saved_translation(&library, "Remote Book").await;
+    let (mut book, tr_path) = book_with_saved_translation(&library, "Remote Book").await;
 
     let source_language = Language::from_str("en").unwrap();
     let target_language = Language::from_str("ru").unwrap();
@@ -1210,8 +1167,6 @@ async fn reload_translations_absorbs_older_mtime_remote_change() {
         .unwrap();
 
     let had_effect = book
-        .lock()
-        .await
         .reload_translations(past, source_language, target_language)
         .await
         .unwrap();
@@ -1220,14 +1175,9 @@ async fn reload_translations_absorbs_older_mtime_remote_change() {
         "an older-mtime remote change must not be dropped"
     );
 
-    let translation = book
-        .lock()
-        .await
-        .get_translation(&target_language)
-        .await
-        .unwrap();
+    let translation = book.get_translation(&target_language).unwrap();
     assert_eq!(
-        translation.lock().await.translated_paragraphs_count(),
+        translation.translated_paragraphs_count(),
         2,
         "the remote paragraph must be merged into the in-memory translation"
     );

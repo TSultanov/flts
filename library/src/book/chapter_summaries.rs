@@ -186,25 +186,15 @@ impl ChapterSummaries {
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("chapter_summaries.dat");
-        loop {
+        for attempt in 0..5 {
             let pre_modified = if tokio::fs::try_exists(main_path).await? {
                 tokio::fs::metadata(main_path).await?.modified().ok()
             } else {
                 None
             };
 
-            // Merge in a disk copy newer than what we last saw.
-            if let Some(last_modified) = self.last_modified
-                && tokio::fs::try_exists(main_path).await?
-            {
-                let on_disk_modified = tokio::fs::metadata(main_path).await?.modified().ok();
-                if let Some(on_disk_modified) = on_disk_modified
-                    && on_disk_modified > last_modified
-                {
-                    let on_disk = Self::load(main_path).await?;
-                    *self = self.merge(&on_disk)?;
-                }
-            } else if tokio::fs::try_exists(main_path).await? {
+            // Remote clocks may run behind ours: merge by content, not age.
+            if tokio::fs::try_exists(main_path).await? {
                 let on_disk = Self::load(main_path).await?;
                 *self = self.merge(&on_disk)?;
             }
@@ -233,7 +223,9 @@ impl ChapterSummaries {
             // Someone wrote since the pre-check: re-merge. Drop our temp or
             // the next load treats it as a conflict file.
             let _ = tokio::fs::remove_file(&temp_path).await;
+            tokio::time::sleep(std::time::Duration::from_millis(50 * (attempt + 1))).await;
         }
+        anyhow::bail!("chapter summaries kept changing during save")
     }
 }
 

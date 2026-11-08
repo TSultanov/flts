@@ -9,6 +9,12 @@ pub(crate) struct LibraryLease {
     pub(crate) root: PathBuf,
 }
 
+impl Drop for LibraryLease {
+    fn drop(&mut self) {
+        let _ = self._file.unlock();
+    }
+}
+
 impl LibraryLease {
     pub(crate) fn acquire(root: &Path, locks_dir: &Path) -> anyhow::Result<Self> {
         let root = root.canonicalize()?;

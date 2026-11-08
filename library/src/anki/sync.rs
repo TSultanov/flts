@@ -1591,14 +1591,10 @@ mod tests {
         paragraph_text: &str,
     ) -> (Library, Uuid) {
         let library = Library::open(library_path).await.unwrap();
-        let book = library.create_book("Test Book", &spa()).await.unwrap();
-        let book_id = {
-            let mut b = book.lock().await;
-            b.book.push_chapter(Some("Intro"));
-            b.book.push_paragraph(0, paragraph_text, None);
-            b.save().await.unwrap();
-            b.book.id
-        };
+        let book_id = library
+            .create_book_plain("Test Book", paragraph_text, &spa())
+            .await
+            .unwrap();
         (library, book_id)
     }
 
@@ -1609,18 +1605,25 @@ mod tests {
         paragraph: &translation_import::ParagraphTranslation,
         target_language: Language,
     ) {
-        let book_arc = library.get_book(&book_id).await.unwrap();
-        let mut book = book_arc.lock().await;
-        let translation_arc = book
-            .get_or_create_translation(&target_language)
+        let book = library.get_book(&book_id).await.unwrap();
+        let snapshot = book.snapshot();
+        let receipt = book
+            .apply_translation(
+                snapshot.token,
+                paragraph_id,
+                snapshot
+                    .book
+                    .paragraph_view(paragraph_id)
+                    .original_text
+                    .to_string(),
+                Language::from_639_3(&snapshot.book.language).unwrap(),
+                target_language,
+                paragraph.clone(),
+                "models/test".into(),
+            )
             .await
             .unwrap();
-        translation_arc.lock().await.add_paragraph_translation(
-            paragraph_id,
-            paragraph,
-            "models/test",
-        );
-        book.save().await.unwrap();
+        book.flush_through(receipt.revision).await.unwrap();
     }
 
     #[tokio::test]

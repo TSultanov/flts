@@ -6,9 +6,8 @@ use std::{
     time::SystemTime,
 };
 
-use log::{info, warn};
+use log::warn;
 
-use crate::tla_trace::mutex::{TracedLock, TracedMutex};
 use isolang::Language;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -25,9 +24,13 @@ use crate::{
     tla_trace,
 };
 
+mod handle;
 mod reading_state;
 #[cfg(test)]
 mod tests;
+
+pub use handle::{BookHandle, BookRef, BookSnapshot, BookStatus, BookToken, MutationReceipt};
+pub(crate) use handle::{StopFailed, StopMode, owner, serve_book};
 
 pub use reading_state::load_book_user_state;
 use reading_state::{load_user_state_from_dir, persist_user_state};
@@ -64,9 +67,15 @@ pub struct LibraryBook {
     /// Trailing FNV hash of the last `book.dat` read or written; drops
     /// file-watcher echoes of our own writes.
     last_saved_hash: Option<u64>,
-    pub book: Book,
-    translations: Vec<Arc<TracedMutex<LibraryTranslation>>>,
+    pub book: Arc<Book>,
+    translations: Vec<LibraryTranslation>,
     user_state: BookUserState,
+    summaries: crate::book::chapter_summaries::ChapterSummaries,
+    summaries_dirty: bool,
+    revision: u64,
+    persisted_revision: u64,
+    token: BookToken,
+    status: BookStatus,
 }
 
 pub struct LibraryTranslation {
@@ -78,6 +87,9 @@ pub struct LibraryTranslation {
     /// file-watcher echoes of our own writes.
     last_saved_hash: Option<u64>,
     changed: bool,
+    /// The translation as last handed to a snapshot; dropped by every
+    /// mutation so the next snapshot clones again.
+    published: Option<Arc<Translation>>,
 }
 
 /// The trailing 8-byte FNV hash the `.dat` format appends, if present.
@@ -89,25 +101,81 @@ fn trailing_hash(buffer: &[u8]) -> Option<u64> {
     Some(u64::from_le_bytes(buffer[len - 8..len].try_into().ok()?))
 }
 
-impl TracedLock for LibraryBook {
-    fn lock_name(&self) -> String {
-        format!("book:{}", self.book.id)
-    }
-}
-
-impl TracedLock for LibraryTranslation {
-    fn lock_name(&self) -> String {
-        format!(
-            "trans:{}_{}",
-            self.source_language.to_639_3(),
-            self.target_language.to_639_3()
-        )
-    }
-}
-
 impl LibraryBook {
+    pub(crate) fn create(path: PathBuf, book: Book) -> Self {
+        Self {
+            path,
+            last_modified: None,
+            last_saved_hash: None,
+            book: Arc::new(book.clone()),
+            translations: vec![],
+            user_state: BookUserState::default(),
+            summaries: crate::book::chapter_summaries::ChapterSummaries::empty_for(
+                book.id,
+                book.chapter_count(),
+            ),
+            summaries_dirty: false,
+            revision: 0,
+            persisted_revision: 0,
+            token: BookToken {
+                session: Uuid::nil(),
+                incarnation: Uuid::nil(),
+            },
+            status: BookStatus::Active,
+        }
+    }
+
+    async fn reload_summaries(&mut self) -> anyhow::Result<bool> {
+        use crate::book::chapter_summaries::{ChapterSummaries, chapter_summaries_path};
+        let metadata = LibraryBookMetadata::load(&self.path).await?;
+        let path = chapter_summaries_path(&self.path);
+        if !tokio::fs::try_exists(&path).await? {
+            return Ok(false);
+        }
+        let loaded = ChapterSummaries::load_from_metadata(
+            &path,
+            &metadata.chapter_summaries_conflicting_paths,
+        )
+        .await?;
+        self.summaries = self.summaries.merge(&loaded)?;
+        Ok(true)
+    }
+
+    async fn persist(&mut self) -> anyhow::Result<()> {
+        self.save().await?;
+        if self.summaries_dirty {
+            let path = crate::book::chapter_summaries::chapter_summaries_path(&self.path);
+            self.summaries.save(&path).await?;
+            self.summaries_dirty = false;
+        }
+        Ok(())
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub(crate) fn snapshot(&mut self) -> Arc<BookSnapshot> {
+        let translations = self
+            .translations
+            .iter_mut()
+            .map(|t| {
+                t.published
+                    .get_or_insert_with(|| Arc::new(t.translation.clone()))
+                    .clone()
+            })
+            .collect();
+        Arc::new(BookSnapshot {
+            path: self.path.clone(),
+            book: self.book.clone(),
+            translations,
+            summaries: Arc::new(self.summaries.clone()),
+            user_state: self.user_state.clone(),
+            revision: self.revision,
+            persisted_revision: self.persisted_revision,
+            status: self.status,
+            token: self.token,
+        })
     }
 }
 
@@ -124,6 +192,7 @@ impl LibraryTranslation {
         self.translation = merged_translation;
         self.last_modified = self.last_modified.max(other.last_modified);
         self.changed = true;
+        self.published = None;
     }
 
     async fn load(path: &Path) -> anyhow::Result<Self> {
@@ -145,6 +214,7 @@ impl LibraryTranslation {
             last_modified,
             last_saved_hash,
             changed: false,
+            published: None,
         })
     }
 
@@ -197,6 +267,7 @@ impl LibraryTranslation {
         self.translation
             .add_paragraph_translation(paragraph_index, translation, model);
         self.changed = true;
+        self.published = None;
     }
 
     pub fn translated_paragraphs_count(&self) -> usize {
@@ -209,13 +280,10 @@ impl LibraryTranslation {
 }
 
 impl LibraryBook {
-    pub async fn has_unsaved_changes(&self) -> bool {
-        for t_arc in &self.translations {
-            if t_arc.lock().await.is_changed() {
-                return true;
-            }
-        }
-        false
+    pub fn has_unsaved_changes(&self) -> bool {
+        self.revision > self.persisted_revision
+            || self.summaries_dirty
+            || self.translations.iter().any(LibraryTranslation::is_changed)
     }
 
     async fn reload_user_state(&mut self) -> anyhow::Result<()> {
@@ -289,66 +357,47 @@ impl LibraryBook {
         Ok(self.user_state.folder_path.clone())
     }
 
-    pub async fn get_translation(
-        &self,
-        target_language: &Language,
-    ) -> Option<Arc<TracedMutex<LibraryTranslation>>> {
+    fn translation_index(&self, target_language: &Language) -> Option<usize> {
         let source_language = &self.book.language;
-        for t in self.translations.iter() {
-            let guard = t.lock().await;
-            if &guard.translation.source_language == source_language
-                && guard.translation.target_language == target_language.to_639_3()
-            {
-                drop(guard);
-                return Some(t.clone());
-            }
-        }
-        None
+        let target_language = target_language.to_639_3();
+        self.translations.iter().position(|t| {
+            &t.translation.source_language == source_language
+                && t.translation.target_language == target_language
+        })
     }
 
-    pub async fn get_or_create_translation(
+    pub fn get_translation(&self, target_language: &Language) -> Option<&LibraryTranslation> {
+        self.translation_index(target_language)
+            .map(|idx| &self.translations[idx])
+    }
+
+    pub fn get_or_create_translation(
         &mut self,
         target_language: &Language,
-    ) -> anyhow::Result<Arc<TracedMutex<LibraryTranslation>>> {
-        let source_language = &self.book.language;
-
-        for (t_idx, t) in self.translations.iter().enumerate() {
-            // Two independent lock acquisitions, so TracedMutex emits a
-            // matched Acq/Rel pair for each.
-            let src_match = {
-                let guard = t.lock().await;
-                &guard.translation.source_language == source_language
-            };
-
-            if src_match {
-                let tgt_match = {
-                    let guard = t.lock().await;
-                    guard.translation.target_language == target_language.to_639_3()
-                };
-
-                if tgt_match {
-                    return Ok(self.translations[t_idx].clone());
-                }
+    ) -> anyhow::Result<&mut LibraryTranslation> {
+        let idx = match self.translation_index(target_language) {
+            Some(idx) => idx,
+            None => {
+                let source_language = &self.book.language;
+                // A corrupted or foreign-tool book.dat can carry a bad language
+                // code; error out rather than panic, since panic aborts the
+                // whole app.
+                let parsed_source = Language::from_639_3(source_language).ok_or_else(|| {
+                    anyhow::anyhow!("book has invalid ISO-639-3 language code: {source_language:?}")
+                })?;
+                self.translations.push(LibraryTranslation {
+                    translation: Translation::create(source_language, target_language.to_639_3()),
+                    source_language: parsed_source,
+                    target_language: *target_language,
+                    last_modified: None,
+                    last_saved_hash: None,
+                    changed: true,
+                    published: None,
+                });
+                self.translations.len() - 1
             }
-        }
-
-        // A corrupted or foreign-tool book.dat can carry a bad language code;
-        // error out rather than panic, since panic aborts the whole app.
-        let parsed_source = Language::from_639_3(source_language).ok_or_else(|| {
-            anyhow::anyhow!("book has invalid ISO-639-3 language code: {source_language:?}")
-        })?;
-        self.translations
-            .push(Arc::new(TracedMutex::new(LibraryTranslation {
-                translation: Translation::create(source_language, target_language.to_639_3()),
-                source_language: parsed_source,
-                target_language: *target_language,
-                last_modified: None,
-                last_saved_hash: None,
-                changed: true,
-            })));
-
-        let last = self.translations.len() - 1;
-        Ok(self.translations[last].clone())
+        };
+        Ok(&mut self.translations[idx])
     }
 
     pub async fn load_from_metadata(metadata: LibraryBookMetadata) -> anyhow::Result<Self> {
@@ -399,13 +448,12 @@ impl LibraryBook {
         let mut book = Self::load(&metadata.main_path).await?;
 
         for tm in metadata.translations_metadata {
-            let translation = Arc::new(TracedMutex::new(
-                LibraryTranslation::load_from_metadata(tm).await?,
-            ));
-            book.translations.push(translation);
+            book.translations
+                .push(LibraryTranslation::load_from_metadata(tm).await?);
         }
 
         book.reload_user_state().await?;
+        book.reload_summaries().await?;
         tla_trace::emit_book_event(
             &book.path,
             "LoadBookFromMetadata",
@@ -426,15 +474,27 @@ impl LibraryBook {
         file.read_to_end(&mut buffer).await?;
         let last_saved_hash = trailing_hash(&buffer);
         let mut cursor = std::io::Cursor::new(buffer);
-        let book = Book::deserialize(&mut cursor)?;
+        let book = Arc::new(Book::deserialize(&mut cursor)?);
 
         Ok(Self {
             path: path.parent().unwrap().to_path_buf(),
             last_modified,
             last_saved_hash,
-            book,
+            book: book.clone(),
             translations: vec![],
             user_state: BookUserState::default(),
+            summaries: crate::book::chapter_summaries::ChapterSummaries::empty_for(
+                book.id,
+                book.chapter_count(),
+            ),
+            summaries_dirty: false,
+            revision: 0,
+            persisted_revision: 0,
+            token: BookToken {
+                session: Uuid::nil(),
+                incarnation: Uuid::nil(),
+            },
+            status: BookStatus::Active,
         })
     }
 
@@ -464,8 +524,7 @@ impl LibraryBook {
     ) -> anyhow::Result<bool> {
         let mut needs_save = false;
 
-        for translation in &self.translations {
-            let mut t = translation.lock().await;
+        for t in &mut self.translations {
             if t.source_language != from || t.target_language != to {
                 continue;
             }
@@ -502,8 +561,8 @@ impl LibraryBook {
         }
 
         // Sweep temps leaked by failed saves. Only the names this function
-        // creates: the book mutex makes a match a leftover, while other
-        // writers share the `~` convention without holding that lock.
+        // creates: the owning task runs one save at a time, so a match is a
+        // leftover, while other writers share the `~` convention.
         if let Ok(mut entries) = tokio::fs::read_dir(&self.path).await {
             while let Ok(Some(entry)) = entries.next_entry().await {
                 let name = entry.file_name();
@@ -518,13 +577,9 @@ impl LibraryBook {
 
         let book = self;
 
-        // Snapshot rather than drain: an early `?` must not leave the cached
-        // book without its translations, blanking them in the UI.
-        let translation_arcs = book.translations.clone();
-        let mut merged_translations = Vec::new();
-
-        for translation_arc in translation_arcs {
-            let mut translation = translation_arc.lock().await;
+        // Translations are mutated in place and only ever appended, so an
+        // early `?` leaves the cached book's set intact for the UI.
+        for translation in &mut book.translations {
             let source_language = translation.translation.source_language.clone();
             let target_language = translation.translation.target_language.clone();
             let translation_file_name =
@@ -564,6 +619,7 @@ impl LibraryBook {
                                 translation_path.display()
                             );
                             translation.changed = true;
+                            translation.published = None;
                         }
                     }
                 }
@@ -617,12 +673,10 @@ impl LibraryBook {
                             "idle",
                         )
                         .await?;
-                        merged_translations.push(translation_arc.clone());
                         saved = true;
                         break;
                     }
                 } else {
-                    merged_translations.push(translation_arc.clone());
                     saved = true;
                     break;
                 }
@@ -735,20 +789,15 @@ impl LibraryBook {
         }
 
         let all_book_translations = LibraryBookMetadata::load(&book.path).await?;
-        let mut loaded_translations = HashSet::new();
-        for t in &merged_translations {
-            loaded_translations.insert(t.lock().await.translation.id);
-        }
+        let loaded_translations: HashSet<_> =
+            book.translations.iter().map(|t| t.translation.id).collect();
 
         for translation_metadata in all_book_translations.translations_metadata {
             if !loaded_translations.contains(&translation_metadata.id) {
-                merged_translations.push(Arc::new(TracedMutex::new(
-                    LibraryTranslation::load_from_metadata(translation_metadata).await?,
-                )));
+                book.translations
+                    .push(LibraryTranslation::load_from_metadata(translation_metadata).await?);
             }
         }
-
-        book.translations = merged_translations;
 
         Ok(())
     }
@@ -790,52 +839,35 @@ fn try_move_to_trash(_path: &std::path::Path) -> anyhow::Result<bool> {
 }
 
 impl Library {
-    pub async fn create_book(
-        &self,
-        title: &str,
-        language: &Language,
-    ) -> anyhow::Result<Arc<TracedMutex<LibraryBook>>> {
+    pub async fn create_book(&self, book: Book) -> anyhow::Result<BookHandle> {
         let books = self.list_books().await?;
-        if books.iter().any(|b| b.title == title) {
-            Err(LibraryError::DuplicateTitle(title.to_owned()))?
+        if books.iter().any(|b| b.title == book.title) {
+            Err(LibraryError::DuplicateTitle(book.title.clone()))?
         }
 
-        let guid = Uuid::new_v4();
-        let book_root = self.library_root.join(guid.to_string());
-
-        let book = Arc::new(TracedMutex::new(LibraryBook {
-            path: book_root,
-            last_modified: None,
-            last_saved_hash: None,
-            book: Book::create(guid, title, language),
-            translations: vec![],
-            user_state: BookUserState::default(),
-        }));
-
-        let book = self.books_cache.insert(guid, book).await;
-
-        Ok(book)
+        let id = book.id;
+        self.insert_book(
+            id,
+            LibraryBook::create(self.library_root.join(id.to_string()), book),
+        )
+        .await
     }
 
     pub async fn delete_book(&self, uuid: &Uuid) -> anyhow::Result<()> {
-        self.books_cache.remove(uuid).await;
-        let book_path = self.library_root.join(uuid.to_string());
+        self.remove_book(*uuid).await
+    }
+}
 
-        if !tokio::fs::try_exists(&book_path).await? {
+pub(super) async fn delete_directory(book_path: &Path) -> anyhow::Result<()> {
+    if !tokio::fs::try_exists(book_path).await? {
+        return Ok(());
+    }
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    {
+        let path = book_path.to_path_buf();
+        if tokio::task::spawn_blocking(move || try_move_to_trash(&path)).await?? {
             return Ok(());
         }
-
-        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-        {
-            info!("Attempting to move {:?} to trash", book_path);
-            if try_move_to_trash(&book_path)? {
-                info!("Book at {:?} moved to system recycle bin", book_path);
-                return Ok(());
-            }
-        }
-
-        remove_dir_recursive(&book_path).await?;
-        info!("Book at {:?} removed completely", book_path);
-        Ok(())
     }
+    remove_dir_recursive(book_path).await
 }
