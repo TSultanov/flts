@@ -230,10 +230,10 @@ impl SpotifyWatcher {
     }
 
     pub async fn stop(&self) {
-        let mut handle_guard = self.handle.lock().await;
-        if let Some(task) = handle_guard.take() {
-            task.abort();
-            info!("SpotifyWatcher stopped");
+        let handle = self.handle.lock().await.take();
+        if let Some(handle) = handle {
+            handle.abort();
+            let _ = handle.await;
         }
     }
 }

@@ -61,7 +61,7 @@ enum CatalogRequest {
     },
     Invalidate {
         provider: TranslationProvider,
-        reply: oneshot::Sender<()>,
+        reply: oneshot::Sender<Result<(), String>>,
     },
     Close {
         reply: oneshot::Sender<()>,
@@ -154,16 +154,13 @@ impl ModelCatalog {
         };
         fetched.unwrap_or_else(|| vec![fallback_for(provider)])
     }
-    pub async fn invalidate(&self, provider: TranslationProvider) {
+    pub async fn invalidate(&self, provider: TranslationProvider) -> anyhow::Result<()> {
         let (reply, result) = oneshot::channel();
-        if self
-            .requests
+        self.requests
             .send(CatalogRequest::Invalidate { provider, reply })
             .await
-            .is_ok()
-        {
-            let _ = result.await;
-        }
+            .map_err(|_| anyhow::anyhow!("catalog closed"))?;
+        result.await?.map_err(anyhow::Error::msg)
     }
     pub async fn close(&self) {
         let (reply, result) = oneshot::channel();
@@ -325,8 +322,8 @@ async fn serve_fetches(io: Arc<CatalogIo>, mut requests: mpsc::Receiver<CatalogR
                         if let Some(replies) = waiters.remove(&id) { for reply in replies { let _ = reply.send(vec![fallback_for(provider)]); } }
                     }
                     let io = io.clone();
-                    let _ = tokio::task::spawn_blocking(move || std::fs::remove_file(io.cache_path(provider))).await;
-                    let _ = reply.send(());
+                    let result = tokio::task::spawn_blocking(move || match std::fs::remove_file(io.cache_path(provider)) {Ok(()) => Ok(()), Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()), Err(error) => Err(error.to_string())}).await.map_err(|error| error.to_string()).and_then(|result| result);
+                    let _ = reply.send(result);
                 }
                 Some(CatalogRequest::Close {reply}) => {
                     fetches.abort_all(); while fetches.join_next().await.is_some() {}
@@ -1081,7 +1078,7 @@ mod tests {
         assert!(got_ids.contains(&"models/gemini-page-one"), "{got_ids:?}");
         assert!(got_ids.contains(&"models/gemini-page-two"), "{got_ids:?}");
         assert_eq!(gemini.hits.load(Ordering::SeqCst), 2);
-        cat.invalidate(TranslationProvider::Google).await;
+        cat.invalidate(TranslationProvider::Google).await.unwrap();
 
         let cap = FakeTransport::new(|_| {
             Ok(json!({
@@ -1184,7 +1181,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(10)).await;
         assert_eq!(transport.hits.load(Ordering::SeqCst), 1);
 
-        cat.invalidate(TranslationProvider::Google).await;
+        cat.invalidate(TranslationProvider::Google).await.unwrap();
         let second = cat
             .models_for(TranslationProvider::Google, Some("new"), base)
             .await;

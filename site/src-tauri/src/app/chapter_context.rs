@@ -49,7 +49,7 @@ impl ChapterContextProvider for SummaryBackedChapterContext {
         let mut rx = handle.subscribe();
         let wait = async {
             loop {
-                let snapshot = rx.borrow_and_update().clone();
+                let snapshot = rx.snapshot();
                 anyhow::ensure!(
                     snapshot.status == library::library::BookStatus::Active,
                     "book closed while waiting for summaries"

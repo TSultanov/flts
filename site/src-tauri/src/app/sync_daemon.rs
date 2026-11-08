@@ -84,6 +84,7 @@ pub struct SyncTask {
     engine: Arc<SyncEngine>,
     status_tx: Arc<watch::Sender<SyncStatus>>,
     task_handle: Mutex<Option<JoinHandle<()>>>,
+    stopping: tokio::sync::OnceCell<crate::app::task::ManagedTask>,
 }
 
 impl SyncTask {
@@ -148,6 +149,7 @@ impl SyncTask {
             engine,
             status_tx,
             task_handle: Mutex::new(Some(handle)),
+            stopping: tokio::sync::OnceCell::new(),
         }))
     }
 
@@ -158,14 +160,27 @@ impl SyncTask {
 
     /// Aborts the poller, stops the engine, and resets status to disabled.
     pub async fn shutdown(&self) {
-        if let Some(handle) = self.task_handle.lock().await.take() {
-            handle.abort();
-            let _ = handle.await;
+        let stopping = self
+            .stopping
+            .get_or_init(|| async {
+                let prior = self.task_handle.lock().await.take();
+                let engine = self.engine.clone();
+                let status = self.status_tx.clone();
+                crate::app::task::ManagedTask::spawn(move |_| async move {
+                    if let Some(prior) = prior {
+                        prior.abort();
+                        let _ = prior.await;
+                    }
+                    if let Err(err) = engine.stop().await {
+                        log::warn!("sync engine stop failed: {err}");
+                    }
+                    status.send_replace(SyncStatus::disabled());
+                })
+            })
+            .await;
+        if let Err(err) = stopping.shutdown().await {
+            log::warn!("sync shutdown failed: {err}");
         }
-        if let Err(err) = self.engine.stop().await {
-            warn!("Sync engine stop failed: {err}");
-        }
-        self.status_tx.send_replace(SyncStatus::disabled());
     }
 }
 

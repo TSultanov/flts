@@ -243,8 +243,8 @@ impl TranslationQueue {
         self.activity.borrow().get(&(book_id, paragraph)).copied()
     }
     pub async fn list_active_translations(&self) -> Vec<ActiveParagraphTranslation> {
-        self.activity
-            .borrow()
+        let snapshot = self.activity.borrow().clone();
+        snapshot
             .iter()
             .map(
                 |(&(book_id, paragraph_id), &activity)| ActiveParagraphTranslation {
@@ -399,6 +399,7 @@ async fn scheduler(
                             let job = admit(book, snapshot, paragraph, model, use_cache, &mut next_id, &mut activities, &app);
                             let id = job.request_id; pending.push_back(job); Ok(id)
                         }.await;
+                        publish.send_replace(Arc::new(activities.clone()));
                         let _ = reply.send(result);
                     }
                     Request::Chapter {book_id, chapter, model, use_cache, reply} => {
@@ -410,6 +411,7 @@ async fn scheduler(
                             if !chapters.iter().any(|c| c.snapshot.book.id == book_id && c.chapter == chapter) { chapters.push_back(ChapterJob {book, snapshot, chapter, offset: 0, model, use_cache}); }
                             Ok(count)
                         }.await;
+                        publish.send_replace(Arc::new(activities.clone()));
                         let _ = reply.send(result);
                     }
                 }

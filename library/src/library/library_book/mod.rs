@@ -29,7 +29,9 @@ mod reading_state;
 #[cfg(test)]
 mod tests;
 
-pub use handle::{BookHandle, BookRef, BookSnapshot, BookStatus, BookToken, MutationReceipt};
+pub use handle::{
+    BookHandle, BookRef, BookSnapshot, BookStatus, BookSubscription, BookToken, MutationReceipt,
+};
 pub(crate) use handle::{StopFailed, StopMode, owner, serve_book};
 
 pub use reading_state::load_book_user_state;
@@ -70,7 +72,11 @@ pub struct LibraryBook {
     pub book: Arc<Book>,
     translations: Vec<LibraryTranslation>,
     user_state: BookUserState,
-    summaries: crate::book::chapter_summaries::ChapterSummaries,
+    pending_reading_state: Option<BookReadingState>,
+    pending_folder_path: Option<Vec<String>>,
+    #[cfg(test)]
+    fail_next_user_write: bool,
+    summaries: Arc<crate::book::chapter_summaries::ChapterSummaries>,
     summaries_dirty: bool,
     revision: u64,
     persisted_revision: u64,
@@ -103,17 +109,22 @@ fn trailing_hash(buffer: &[u8]) -> Option<u64> {
 
 impl LibraryBook {
     pub(crate) fn create(path: PathBuf, book: Book) -> Self {
+        let summaries = Arc::new(crate::book::chapter_summaries::ChapterSummaries::empty_for(
+            book.id,
+            book.chapter_count(),
+        ));
         Self {
             path,
             last_modified: None,
             last_saved_hash: None,
-            book: Arc::new(book.clone()),
+            book: Arc::new(book),
             translations: vec![],
             user_state: BookUserState::default(),
-            summaries: crate::book::chapter_summaries::ChapterSummaries::empty_for(
-                book.id,
-                book.chapter_count(),
-            ),
+            pending_reading_state: None,
+            pending_folder_path: None,
+            #[cfg(test)]
+            fail_next_user_write: false,
+            summaries,
             summaries_dirty: false,
             revision: 0,
             persisted_revision: 0,
@@ -137,15 +148,19 @@ impl LibraryBook {
             &metadata.chapter_summaries_conflicting_paths,
         )
         .await?;
-        self.summaries = self.summaries.merge(&loaded)?;
-        Ok(true)
+        let changed = self.summaries.entries != loaded.entries;
+        self.summaries = Arc::new(self.summaries.merge(&loaded)?);
+        Ok(changed)
     }
 
     async fn persist(&mut self) -> anyhow::Result<()> {
         self.save().await?;
+        if self.pending_reading_state.is_some() || self.pending_folder_path.is_some() {
+            self.persist_user_updates().await?;
+        }
         if self.summaries_dirty {
             let path = crate::book::chapter_summaries::chapter_summaries_path(&self.path);
-            self.summaries.save(&path).await?;
+            Arc::make_mut(&mut self.summaries).save(&path).await?;
             self.summaries_dirty = false;
         }
         Ok(())
@@ -169,7 +184,7 @@ impl LibraryBook {
             path: self.path.clone(),
             book: self.book.clone(),
             translations,
-            summaries: Arc::new(self.summaries.clone()),
+            summaries: self.summaries.clone(),
             user_state: self.user_state.clone(),
             revision: self.revision,
             persisted_revision: self.persisted_revision,
@@ -288,6 +303,30 @@ impl LibraryBook {
 
     async fn reload_user_state(&mut self) -> anyhow::Result<()> {
         self.user_state = load_user_state_from_dir(&self.path).await?;
+        if let Some(state) = &self.pending_reading_state {
+            self.user_state.reading_state = Some(state.clone());
+        }
+        if let Some(path) = &self.pending_folder_path {
+            self.user_state.folder_path = path.clone();
+        }
+        Ok(())
+    }
+
+    async fn persist_user_updates(&mut self) -> anyhow::Result<()> {
+        self.reload_user_state().await?;
+        #[cfg(test)]
+        if std::mem::take(&mut self.fail_next_user_write) {
+            anyhow::bail!("injected user state write failure");
+        }
+        persist_user_state(&self.path, &self.user_state).await?;
+        self.pending_reading_state = None;
+        self.pending_folder_path = None;
+        if self.last_saved_hash.is_some()
+            && !self.summaries_dirty
+            && !self.translations.iter().any(LibraryTranslation::is_changed)
+        {
+            self.persisted_revision = self.revision;
+        }
         Ok(())
     }
 
@@ -310,8 +349,10 @@ impl LibraryBook {
             "reading",
         )
         .await?;
+        self.pending_reading_state = Some(state.clone());
         self.user_state.reading_state = Some(state);
-        persist_user_state(&self.path, &self.user_state).await?;
+        self.revision += 1;
+        self.persist_user_updates().await?;
         tla_trace::emit_book_event(
             &self.path,
             "UpdateReadingStatePersist",
@@ -338,8 +379,10 @@ impl LibraryBook {
             "folder",
         )
         .await?;
+        self.pending_folder_path = Some(folder_path.clone());
         self.user_state.folder_path = folder_path;
-        persist_user_state(&self.path, &self.user_state).await?;
+        self.revision += 1;
+        self.persist_user_updates().await?;
         tla_trace::emit_book_event(
             &self.path,
             "UpdateFolderPathPersist",
@@ -483,10 +526,14 @@ impl LibraryBook {
             book: book.clone(),
             translations: vec![],
             user_state: BookUserState::default(),
-            summaries: crate::book::chapter_summaries::ChapterSummaries::empty_for(
+            pending_reading_state: None,
+            pending_folder_path: None,
+            #[cfg(test)]
+            fail_next_user_write: false,
+            summaries: Arc::new(crate::book::chapter_summaries::ChapterSummaries::empty_for(
                 book.id,
                 book.chapter_count(),
-            ),
+            )),
             summaries_dirty: false,
             revision: 0,
             persisted_revision: 0,
@@ -522,7 +569,10 @@ impl LibraryBook {
         from: Language,
         to: Language,
     ) -> anyhow::Result<bool> {
-        let mut needs_save = false;
+        let mut needs_save = !self
+            .translations
+            .iter()
+            .any(|t| t.source_language == from && t.target_language == to);
 
         for t in &mut self.translations {
             if t.source_language != from || t.target_language != to {
@@ -641,6 +691,7 @@ impl LibraryBook {
                     let mut buffer = Vec::new();
                     translation.translation.serialize(&mut buffer)?;
                     translation_file.write_all(&buffer).await?;
+                    translation_file.flush().await?;
 
                     if (if tokio::fs::try_exists(&translation_path).await? {
                         tokio::fs::metadata(&translation_path)
@@ -748,6 +799,7 @@ impl LibraryBook {
 
             let mut file = tokio::fs::File::create(&book_path_temp).await?;
             file.write_all(&buffer).await?;
+            file.flush().await?;
 
             tla_trace::emit_book_event(&book.path, "SaveBookBegin", None, "ready", "idle", "idle")
                 .await?;

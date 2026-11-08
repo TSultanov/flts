@@ -1182,3 +1182,27 @@ async fn reload_translations_absorbs_older_mtime_remote_change() {
         "the remote paragraph must be merged into the in-memory translation"
     );
 }
+
+#[tokio::test]
+async fn reload_discovers_a_new_remote_translation_language() {
+    let directory = TempDir::new("flts_new_translation");
+    let library = Library::open(directory.path.join("library")).await.unwrap();
+    let id = library
+        .create_book_plain("New remote language", "hello", &Language::Eng)
+        .await
+        .unwrap();
+    let handle = library.get_book(&id).await.unwrap();
+    let before = handle.snapshot();
+    let mut remote = Translation::create("eng", "rus");
+    remote.add_paragraph_translation(0, &simple_paragraph("remote", 1), "test");
+    let mut bytes = Vec::new();
+    remote.serialize(&mut bytes).unwrap();
+    std::fs::write(before.path.join("translation_eng_rus.dat"), bytes).unwrap();
+    handle
+        .reload_translations(SystemTime::UNIX_EPOCH, Language::Eng, Language::Rus)
+        .await
+        .unwrap();
+    assert!(before.translation(&Language::Rus).is_none());
+    assert!(handle.snapshot().translation(&Language::Rus).is_some());
+    library.close().await.unwrap();
+}

@@ -261,8 +261,10 @@ async fn translate_paragraph(
     paragraph_id: usize,
     worker_id: usize,
 ) -> anyhow::Result<()> {
+    let book_handle = library.get_book(&book_id).await?;
+    let source_snapshot = book_handle.snapshot();
     let (paragraph_text, chapter_id) = {
-        let book = library.get_book(&book_id).await?.snapshot();
+        let book = &source_snapshot;
         let paragraph = book.book.paragraph_view(paragraph_id);
         let chapter_id = book.book.chapter_for_paragraph(paragraph_id).unwrap_or(0);
         (paragraph.original_text.to_string(), chapter_id)
@@ -283,13 +285,13 @@ async fn translate_paragraph(
         .await?;
     println!("Worker {worker_id}: Translated paragraph {}", paragraph_id);
 
-    let handle = library.get_book(&book_id).await?;
+    let handle = book_handle;
     let receipt = handle
         .apply_translation(
             handle.token,
             paragraph_id,
             paragraph_text,
-            Language::from_639_3(&handle.snapshot().book.language)
+            Language::from_639_3(&source_snapshot.book.language)
                 .ok_or_else(|| anyhow::anyhow!("invalid source language"))?,
             *tgt_lang,
             p_translation,

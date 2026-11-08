@@ -231,7 +231,8 @@ impl LibraryBookMetadata {
         while let Some(entry) = summaries_dir.next_entry().await? {
             let p = entry.path();
             if let Some(name) = p.file_name().and_then(|n| n.to_str())
-                && name.starts_with("chapter_summaries~")
+                && name.starts_with("chapter_summaries")
+                && name != "chapter_summaries.dat"
                 && name.ends_with(".dat")
             {
                 chapter_summaries_conflicting_paths.push(p);
@@ -260,6 +261,8 @@ pub struct Library {
     library_root: PathBuf,
     card_store: Arc<LibraryCardStore>,
     books: mpsc::Sender<BookRequest>,
+    close_control: tokio::sync::watch::Sender<u64>,
+    closed: tokio::sync::watch::Receiver<(u64, Option<Result<(), String>>)>,
 }
 
 impl Library {
@@ -283,17 +286,23 @@ impl Library {
         let library_root = lease.root.clone();
         let card_store = Arc::new(LibraryCardStore::new(&library_root));
         let (books, requests) = mpsc::channel(256);
+        let (close_control, close_requests) = tokio::sync::watch::channel(0);
+        let (completion, closed) = tokio::sync::watch::channel((0, None));
         tokio::spawn(serve_books(
             lease,
             cache_capacity,
             requests,
             card_store.clone(),
+            close_requests,
+            completion,
         ));
 
         Ok(Library {
             library_root,
             card_store,
             books,
+            close_control,
+            closed,
         })
     }
 
@@ -344,6 +353,7 @@ impl Library {
             .await?
     }
 
+    #[cfg(test)]
     pub(crate) async fn cached_books(&self) -> Vec<BookHandle> {
         self.request(|reply| BookRequest::Live { reply })
             .await
@@ -493,9 +503,30 @@ impl Library {
     }
 
     pub async fn flush_all(&self) -> anyhow::Result<()> {
-        let results = futures_util::future::join_all(
-            self.cached_books().await.iter().map(|book| book.save()),
-        )
+        let books = self.request(|reply| BookRequest::All { reply }).await?;
+        let results = futures_util::future::join_all(books.iter().map(|book| async move {
+            let mut updates = book.subscribe();
+            loop {
+                let status = *book.admission.lock().unwrap();
+                match status {
+                    BookStatus::Active => match book.save().await {
+                        Ok(()) => return Ok(()),
+                        Err(error) => {
+                            if *book.admission.lock().unwrap() == BookStatus::Active {
+                                return Err(error);
+                            }
+                        }
+                    },
+                    BookStatus::Closed | BookStatus::Deleting => return Ok(()),
+                    BookStatus::Retiring => {
+                        updates
+                            .changed()
+                            .await
+                            .map_err(|_| anyhow::anyhow!("book retirement interrupted"))?;
+                    }
+                }
+            }
+        }))
         .await;
         for result in results {
             result?;
@@ -508,10 +539,24 @@ impl Library {
         }
     }
     pub async fn close(&self) -> anyhow::Result<()> {
-        if self.books.is_closed() {
+        if self.closed.borrow().1.as_ref().is_some_and(Result::is_ok) {
             return Ok(());
         }
-        self.request(|reply| BookRequest::Close { reply }).await?
+        let mut done = self.closed.clone();
+        self.close_control
+            .send_modify(|epoch| *epoch = epoch.wrapping_add(1));
+        let epoch = *self.close_control.borrow();
+        loop {
+            let (completed, result) = done.borrow_and_update().clone();
+            if completed >= epoch {
+                if let Some(result) = result {
+                    return result.map_err(anyhow::Error::msg);
+                }
+            }
+            done.changed()
+                .await
+                .map_err(|_| anyhow::anyhow!("library closed without completion"))?;
+        }
     }
     pub fn root(&self) -> &Path {
         &self.library_root
@@ -523,6 +568,10 @@ impl Library {
     ) -> anyhow::Result<bool> {
         trace!("Starting file change event handling: {:?}...", event);
         let result = Ok(match event {
+            LibraryFileChange::SummariesChanged { uuid } => match self.cached_book(*uuid).await {
+                Some(book) => book.reload_summaries().await?,
+                None => false,
+            },
             LibraryFileChange::BookChanged { modified, uuid } => {
                 match self.cached_book(*uuid).await {
                     Some(book) => book.reload_book(*modified).await?,

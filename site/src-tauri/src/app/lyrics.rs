@@ -17,8 +17,8 @@ use library::{
 };
 use log::{info, warn};
 use serde::Serialize;
+use std::sync::Mutex;
 use tauri::{AppHandle, Emitter};
-use tokio::sync::Mutex;
 
 use crate::app::{AppState, config::Config, spotify::web::TrackMeta};
 
@@ -36,6 +36,9 @@ pub struct LyricsState {
     /// (track_id, src, tgt, model) → in-flight request id (for dedup).
     inflight: Mutex<HashMap<TranslationKey, usize>>,
     next_request: AtomicUsize,
+    generation: AtomicUsize,
+    jobs: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    closed: std::sync::atomic::AtomicBool,
 
     #[cfg(target_os = "macos")]
     pub watcher: Arc<SpotifyWatcher>,
@@ -56,12 +59,38 @@ impl Default for LyricsState {
 }
 
 impl LyricsState {
+    pub(super) fn generation(&self) -> usize {
+        self.generation.load(Ordering::SeqCst)
+    }
+    pub async fn cancel_all(&self) {
+        let jobs = {
+            let mut jobs = self.jobs.lock().unwrap();
+            self.closed.store(true, Ordering::SeqCst);
+            self.generation.fetch_add(1, Ordering::SeqCst);
+            std::mem::take(&mut *jobs)
+        };
+        for job in &jobs {
+            job.abort();
+        }
+        for job in jobs {
+            let _ = job.await;
+        }
+        self.inflight.lock().unwrap().clear();
+        self.closed.store(false, Ordering::SeqCst);
+    }
+    pub async fn shutdown(&self) {
+        self.cancel_all().await;
+        self.closed.store(true, Ordering::SeqCst);
+    }
     pub fn new() -> Self {
         Self {
             cache: tokio::sync::OnceCell::new(),
             lyrics: WeakLruCache::new(LYRICS_MEM_CACHE_CAPACITY),
             inflight: Mutex::new(HashMap::new()),
             next_request: AtomicUsize::new(0),
+            generation: AtomicUsize::new(0),
+            jobs: std::sync::Mutex::new(Vec::new()),
+            closed: std::sync::atomic::AtomicBool::new(false),
 
             #[cfg(target_os = "macos")]
             watcher: Arc::new(SpotifyWatcher::new()),
@@ -296,7 +325,10 @@ pub(crate) async fn dispatch_translation_inner(
 ) -> Result<(), String> {
     let tgt = Language::from_639_3(target_lang)
         .ok_or_else(|| format!("unknown target lang: {target_lang}"))?;
-    let cfg: Config = state.config.borrow().clone();
+    let (cfg, generation): (Config, usize) = state
+        .configuration()
+        .await
+        .map_err(|error| error.to_string())?;
     let model = cfg.resolved_model_id(&model);
     let provider = cfg.translation_provider;
 
@@ -325,23 +357,11 @@ pub(crate) async fn dispatch_translation_inner(
         return Ok(());
     }
 
-    // Dedup: an in-flight task for this key will emit the event itself.
-    let mut inflight = state.lyrics_state.inflight.lock().await;
-    if inflight.contains_key(&key) {
-        return Ok(());
-    }
-    let request_id = state
-        .lyrics_state
-        .next_request
-        .fetch_add(1, Ordering::SeqCst);
-    inflight.insert(key.clone(), request_id);
-    drop(inflight);
-
     let lyrics = state.lyrics_state.lyrics.get(&track_id.to_string()).await;
     let lyrics = match lyrics {
         Some(l) => l,
         None => {
-            state.lyrics_state.inflight.lock().await.remove(&key);
+            state.lyrics_state.inflight.lock().unwrap().remove(&key);
             return Err(format!(
                 "lyrics not loaded for track_id={track_id} — call get_lyrics first"
             ));
@@ -355,7 +375,14 @@ pub(crate) async fn dispatch_translation_inner(
         TranslationProvider::Zai => cfg.zai_api_key,
         TranslationProvider::Openrouter => cfg.openrouter_api_key,
     }
-    .ok_or_else(|| "no API key configured for selected provider".to_string())?;
+    .ok_or_else(|| "no API key configured for selected provider".to_string());
+    let api_key = match api_key {
+        Ok(key) => key,
+        Err(error) => {
+            state.lyrics_state.inflight.lock().unwrap().remove(&key);
+            return Err(error);
+        }
+    };
 
     let app_for_progress = app.clone();
     let app_for_result = app.clone();
@@ -381,9 +408,35 @@ pub(crate) async fn dispatch_translation_inner(
     };
 
     let track_id_for_task = track_id.to_string();
-    tokio::spawn(async move {
+    // Dedup: an in-flight task for this key will emit the event itself.
+    let mut inflight = state.lyrics_state.inflight.lock().unwrap();
+    if inflight.contains_key(&key) {
+        return Ok(());
+    }
+    let request_id = state
+        .lyrics_state
+        .next_request
+        .fetch_add(1, Ordering::SeqCst);
+    inflight.insert(key.clone(), request_id);
+    drop(inflight);
+
+    let mut jobs = state.lyrics_state.jobs.lock().unwrap();
+    if state.lyrics_state.closed.load(Ordering::SeqCst)
+        || generation != state.lyrics_state.generation.load(Ordering::SeqCst)
+    {
+        drop(jobs);
+        state.lyrics_state.inflight.lock().unwrap().remove(&key);
+        return Err("lyrics session changed".into());
+    }
+    jobs.retain(|job| !job.is_finished());
+    if jobs.len() >= 256 {
+        drop(jobs);
+        state.lyrics_state.inflight.lock().unwrap().remove(&key);
+        return Err("lyrics queue busy".into());
+    }
+    let job = tokio::spawn(async move {
         let result = run_translation(&key, lyrics, api_key, cache, progress).await;
-        state_arc.lyrics_state.inflight.lock().await.remove(&key);
+        state_arc.lyrics_state.inflight.lock().unwrap().remove(&key);
         match result {
             Ok(translation) => {
                 info!(
@@ -414,6 +467,7 @@ pub(crate) async fn dispatch_translation_inner(
             }
         }
     });
+    jobs.push(job);
 
     Ok(())
 }
@@ -428,7 +482,11 @@ pub(crate) async fn resolve_track(
     target_lang: &str,
     model: String,
 ) -> anyhow::Result<()> {
+    let generation = state.lyrics_state.generation();
     let lyrics = fetch_lyrics_inner(state, track).await?;
+    if generation != state.lyrics_state.generation() {
+        return Ok(());
+    }
 
     // The UI acts on either verdict, so emit even when absent.
     let _ = app.emit(

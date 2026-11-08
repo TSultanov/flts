@@ -115,9 +115,63 @@ fn bench_translation_deserialization(c: &mut Criterion) {
     });
 }
 
+fn bench_snapshot_and_cow_update(c: &mut Criterion) {
+    use std::{hint::black_box, sync::Arc};
+    let original = Arc::new(generate_translation(5000));
+    c.bench_function("retain translation snapshot (5000 paragraphs)", |b| {
+        b.iter(|| black_box(original.clone()))
+    });
+    let paragraph = ParagraphTranslation {
+        timestamp: 999999,
+        sentences: vec![Sentence {
+            full_translation: "updated paragraph".into(),
+            words: vec![],
+        }],
+        total_tokens: None,
+    };
+    c.bench_function(
+        "copy-on-write one paragraph (5000 paragraphs, old snapshot retained)",
+        |b| {
+            b.iter(|| {
+                let mut updated = (*original).clone();
+                updated.add_paragraph_translation(2500, &paragraph, "benchmark");
+                black_box(updated);
+            })
+        },
+    );
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let id = uuid::Uuid::new_v4();
+    let path = directory.path().join(id.to_string());
+    std::fs::create_dir_all(&path).unwrap();
+    let mut source =
+        library::book::book::Book::create(id, "Snapshot benchmark", &isolang::Language::Eng);
+    source.push_chapter(None);
+    for _ in 0..5000 {
+        source.push_paragraph(0, "source", None);
+    }
+    let mut bytes = Vec::new();
+    source.serialize(&mut bytes).unwrap();
+    std::fs::write(path.join("book.dat"), &bytes).unwrap();
+    bytes.clear();
+    original.serialize(&mut bytes).unwrap();
+    std::fs::write(path.join("translation_eng_spa.dat"), &bytes).unwrap();
+    let library = runtime
+        .block_on(library::library::Library::open(
+            directory.path().to_path_buf(),
+        ))
+        .unwrap();
+    let handle = runtime.block_on(library.get_book(&id)).unwrap();
+    c.bench_function("read book snapshot (5000 paragraphs)", |b| {
+        b.iter(|| black_box(handle.snapshot()))
+    });
+    runtime.block_on(library.close()).unwrap();
+}
+
 criterion_group!(
     benches,
     bench_translation_serialization,
-    bench_translation_deserialization
+    bench_translation_deserialization,
+    bench_snapshot_and_cow_update
 );
 criterion_main!(benches);

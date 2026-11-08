@@ -57,3 +57,35 @@ impl Drop for ManagedTask {
         self.stop.send_replace(true);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    #[tokio::test]
+    async fn every_shutdown_caller_waits_for_the_same_completion() {
+        let (release, blocked) = tokio::sync::oneshot::channel();
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let task = Arc::new(ManagedTask::spawn(move |mut stop| async move {
+            stop.changed().await.unwrap();
+            entered.send(()).unwrap();
+            let _ = blocked.await;
+        }));
+        let first = tokio::spawn({
+            let task = task.clone();
+            async move { task.shutdown().await }
+        });
+        started.await.unwrap();
+        let second = tokio::spawn({
+            let task = task.clone();
+            async move { task.shutdown().await }
+        });
+        tokio::task::yield_now().await;
+        assert!(!first.is_finished());
+        assert!(!second.is_finished());
+        release.send(()).unwrap();
+        first.await.unwrap().unwrap();
+        second.await.unwrap().unwrap();
+        task.shutdown().await.unwrap();
+    }
+}

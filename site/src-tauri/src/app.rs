@@ -45,6 +45,7 @@ pub mod chapter_context;
 pub mod config;
 pub mod gated_state;
 pub mod library_view;
+mod lifecycle;
 pub mod lyrics;
 pub mod spotify;
 pub mod summary_generation_queue;
@@ -223,7 +224,10 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn spawn_catalog_prefetch(catalog: Arc<ModelCatalog>, config: &Config) {
+fn spawn_catalog_prefetch(
+    catalog: Arc<ModelCatalog>,
+    config: &Config,
+) -> tauri::async_runtime::JoinHandle<()> {
     let keys = config.api_keys();
     tauri::async_runtime::spawn(async move {
         for provider in [
@@ -240,14 +244,18 @@ fn spawn_catalog_prefetch(catalog: Arc<ModelCatalog>, config: &Config) {
             let base = list_base_url_from_env(provider);
             catalog.models_for(provider, Some(&key), &base).await;
         }
-    });
+    })
 }
 
 fn api_key_changed(old: Option<&str>, new: Option<&str>) -> bool {
     old.unwrap_or("") != new.unwrap_or("")
 }
 
-async fn invalidate_changed_api_keys(catalog: &ModelCatalog, old: &Config, new: &Config) {
+async fn invalidate_changed_api_keys(
+    catalog: &ModelCatalog,
+    old: &Config,
+    new: &Config,
+) -> anyhow::Result<()> {
     let pairs = [
         (
             TranslationProvider::Google,
@@ -277,9 +285,10 @@ async fn invalidate_changed_api_keys(catalog: &ModelCatalog, old: &Config, new: 
     ];
     for (provider, old_key, new_key) in pairs {
         if api_key_changed(old_key, new_key) {
-            catalog.invalidate(provider).await;
+            catalog.invalidate(provider).await?;
         }
     }
+    Ok(())
 }
 
 pub struct AppState {
@@ -289,14 +298,11 @@ pub struct AppState {
     /// Everything `eval_config` installs; see `gated_state`.
     gated: crate::app::gated_state::GatedState,
     translation_queue: watch::Sender<Option<Arc<TranslationQueue>>>,
-    translation_queue_init_lock: Mutex<()>,
     summary_generation_queue: watch::Sender<Option<Arc<SummaryGenerationQueue>>>,
-    summary_generation_queue_init_lock: Mutex<()>,
     watcher: Arc<Mutex<LibraryWatcher>>,
-    /// Serializes config/sync evaluation: the Go engine is one-per-process.
-    /// Lock order: eval_lock → translation_queue_init_lock →
-    /// summary_generation_queue_init_lock. Task-slot mutexes are leaves.
-    eval_lock: Mutex<()>,
+    /// Owns configuration transitions and service replacement.
+    lifecycle: tokio::sync::OnceCell<lifecycle::Lifecycle>,
+    catalog_prefetch: std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     /// Stable across `eval_config` re-spawns. The transient `AnkiSyncTask`
     /// holds a clone and pushes status into it on every tick.
     anki_sync_status: Arc<watch::Sender<crate::app::anki_sync::AnkiSyncStatus>>,
@@ -337,7 +343,7 @@ impl AppState {
                 Arc::new(ReqwestListTransport::new()),
             ))
         };
-        spawn_catalog_prefetch(model_catalog.clone(), &config);
+        let catalog_prefetch = spawn_catalog_prefetch(model_catalog.clone(), &config);
 
         // Unreachable until a tick proves otherwise: the UI hides the sync
         // button in that state, so it stays hidden until we know.
@@ -352,11 +358,10 @@ impl AppState {
             config: watch::channel(config).0,
             gated: crate::app::gated_state::GatedState::new(),
             translation_queue: watch::channel(None).0,
-            translation_queue_init_lock: Mutex::new(()),
             summary_generation_queue: watch::channel(None).0,
-            summary_generation_queue_init_lock: Mutex::new(()),
             watcher,
-            eval_lock: Mutex::new(()),
+            lifecycle: tokio::sync::OnceCell::new(),
+            catalog_prefetch: std::sync::Mutex::new(Some(catalog_prefetch)),
             anki_sync_status: Arc::new(watch::channel(initial_anki_status).0),
             sync_status: Arc::new(watch::channel(crate::app::sync_daemon::SyncStatus::default()).0),
             translations_cache: tokio::sync::OnceCell::new(),
@@ -394,7 +399,7 @@ impl AppState {
 
     /// Persists `syncEnabled` and re-evaluates config, starting/stopping the
     /// embedded engine.
-    pub async fn set_sync_enabled(&self, enabled: bool) -> anyhow::Result<()> {
+    pub async fn set_sync_enabled(self: &Arc<Self>, enabled: bool) -> anyhow::Result<()> {
         let mut config = self.config.borrow().clone();
         config.sync_enabled = enabled;
         self.update_config(config).await
@@ -403,7 +408,7 @@ impl AppState {
     /// Call on foreground. iOS tears down the engine's sockets (incl. its
     /// loopback REST listener) during suspension and doesn't reliably rebind, so
     /// an unreachable engine is restarted; a healthy one is left alone.
-    pub async fn wake_sync(&self) {
+    async fn restart_sync_if_needed(&self) {
         if !self.config.borrow().sync_enabled {
             return;
         }
@@ -426,7 +431,6 @@ impl AppState {
             return;
         }
         info!("Sync engine unreachable after wake; restarting");
-        let _eval = self.eval_lock.lock().await;
         // Don't bounce an engine another evaluation just restarted.
         if let Some(engine) = self.sync_engine().await.ok().flatten()
             && crate::app::sync_daemon::probe_healthy(
@@ -445,7 +449,7 @@ impl AppState {
     }
 
     /// Persists the display name and applies it live, without an engine restart.
-    pub async fn set_sync_device_name(&self, name: String) -> anyhow::Result<()> {
+    async fn rename_sync_device(&self, name: String) -> anyhow::Result<()> {
         let trimmed = name.trim().to_string();
         let mut config = self.config.borrow().clone();
         config.sync_device_name = Some(trimmed.clone()).filter(|s| !s.is_empty());
@@ -519,55 +523,65 @@ impl AppState {
     /// Persists and applies a new config. Rebuilds gated state rather than
     /// reading it, so it waits out a startup in flight yet still runs on a
     /// *failed* one — the repair path — and republishes its own outcome.
-    pub async fn update_config(&self, config: Config) -> anyhow::Result<()> {
-        self.gated
-            .await_settled()
-            .await
-            .map_err(|err| anyhow::anyhow!(err))?;
-        let _eval = self.eval_lock.lock().await;
-        let outcome = self.apply_config(config).await;
-        self.gated
-            .publish_ready(outcome.as_ref().map(|_| ()).map_err(|err| err.to_string()));
-        outcome
-    }
-
-    /// Caller must hold `eval_lock`.
+    /// Called only by the lifecycle owner.
     async fn apply_config(&self, config: Config) -> anyhow::Result<()> {
-        // Hold the init locks across stop → library swap so no queue is built
-        // against the outgoing Library; drop them before the slow eval_sync
-        // tail so translates don't wait on an engine restart.
+        // The lifecycle owner serializes queue construction with this transition.
         let (config, library_root) = {
-            let _tq_init = self.translation_queue_init_lock.lock().await;
-            let _sq_init = self.summary_generation_queue_init_lock.lock().await;
-
             // Queues capture translator/summarizer settings at creation.
             self.stop_translation_queue().await;
             self.stop_summary_generation_queue().await;
+            self.lyrics_state.cancel_all().await;
+            if let Some(task) = self.gated.take_anki_task() {
+                task.shutdown().await;
+            }
+            if let Some(task) = self.gated.take_sync_task().await {
+                task.shutdown().await;
+            }
 
-            // Flush unsaved books before the Library swap.
-            self.save_all().await;
+            // A failed flush keeps the old config and session installed.
+            if let Some(library) = self.gated.library_unchecked() {
+                library.flush_all().await?;
+            }
+            self.stop_catalog_prefetch().await;
 
             let old = self.config.borrow().clone();
-            invalidate_changed_api_keys(&self.model_catalog, &old, &config).await;
+            invalidate_changed_api_keys(&self.model_catalog, &old, &config).await?;
 
-            info!("config = {:?}", config);
+            info!("Applying configuration");
             config.save(&self.config_path)?;
-            self.config.send_replace(config);
+            self.config.send_replace(config.clone());
+            *self.catalog_prefetch.lock().unwrap() =
+                Some(spawn_catalog_prefetch(self.model_catalog.clone(), &config));
             self.eval_library_config().await?
         };
         self.eval_sync(&config, &library_root).await;
         Ok(())
     }
 
-    pub async fn eval_config(&self) -> anyhow::Result<()> {
-        let _eval = self.eval_lock.lock().await;
+    async fn restore_configuration(&self, previous: Config) {
+        self.config.send_replace(previous.clone());
+        if let Err(error) = previous.save(&self.config_path) {
+            log::warn!("restoring configuration file failed: {error:#}");
+        }
+        self.stop_catalog_prefetch().await;
+        *self.catalog_prefetch.lock().unwrap() = Some(spawn_catalog_prefetch(
+            self.model_catalog.clone(),
+            &previous,
+        ));
+        match self.eval_library_config().await {
+            Ok((config, root)) => self.eval_sync(&config, &root).await,
+            Err(error) => log::warn!("restoring session services failed: {error:#}"),
+        }
+    }
+
+    async fn initialize_session(&self) -> anyhow::Result<()> {
         let (config, library_root) = self.eval_library_config().await?;
         self.eval_sync(&config, &library_root).await;
         Ok(())
     }
 
     /// Migrates + opens the library, (re)spawns the Anki task, points the
-    /// watcher. Caller must hold `eval_lock`.
+    /// watcher. Called only by the lifecycle owner.
     async fn eval_library_config(&self) -> anyhow::Result<(Config, PathBuf)> {
         let config = self.config.borrow().clone();
 
@@ -575,7 +589,16 @@ impl AppState {
         info!("library_root = {library_root:?}");
         self.migrate_legacy_library(&config, &library_root).await?;
 
-        let library = Arc::new(Library::open(library_root.clone()).await?);
+        let canonical = tokio::fs::canonicalize(&library_root).await.ok();
+        let library = match self.gated.library_unchecked() {
+            Some(current) if canonical.as_deref() == Some(current.root()) => current,
+            Some(current) => {
+                let next = Arc::new(Library::open(library_root.clone()).await?);
+                current.close().await?;
+                next
+            }
+            None => Arc::new(Library::open(library_root.clone()).await?),
+        };
         self.gated.install_library(library.clone());
 
         let prior = self.gated.take_anki_task();
@@ -624,7 +647,7 @@ impl AppState {
     }
 
     /// (Re)starts or tears down the native sync task to match config + env.
-    /// Caller must hold `eval_lock`.
+    /// Called only by the lifecycle owner.
     /// Opt-in via `syncEnabled`; `FLTS_DISABLE_SYNC` / `FLTS_MOCK_SYNC` force it
     /// off (CI / E2E); `FLTS_SYNC_HERMETIC` keeps it local (tests / Docker).
     /// Never fails `eval_config` — a sync start error is surfaced via status.
@@ -778,8 +801,22 @@ impl AppState {
             .cloned()
     }
 
-    pub async fn shutdown(&self) {
-        // Best effort: no shutdown step may hang app exit.
+    async fn stop_catalog_prefetch(&self) {
+        let prior = self.catalog_prefetch.lock().unwrap().take();
+        if let Some(prior) = prior {
+            prior.abort();
+            let _ = prior.await;
+        }
+    }
+
+    async fn perform_shutdown(&self) {
+        // This work is owned by the lifecycle task even if its caller times out.
+        self.stop_catalog_prefetch().await;
+        self.stop_summary_generation_queue().await;
+        self.lyrics_state.shutdown().await;
+        self.spotify_web.stop_polling().await;
+        #[cfg(target_os = "macos")]
+        self.lyrics_state.watcher.stop().await;
         run_exit_step(
             "translation queue shutdown",
             EXIT_STOP_QUEUE_TIMEOUT,
@@ -806,8 +843,15 @@ impl AppState {
                 task.shutdown(),
             )
             .await;
+            // A slow Go stop stays owned; do not release the library lease.
+            task.shutdown().await;
         }
-        run_exit_step("save all", EXIT_SAVE_ALL_TIMEOUT, self.save_all()).await;
+        if let Some(library) = self.gated.library_unchecked() {
+            if let Err(err) = library.close().await {
+                log::warn!("library shutdown retained dirty state: {err:#}");
+            }
+        }
+        self.model_catalog.close().await;
         self.close_caches_for_exit().await;
     }
 
@@ -822,7 +866,10 @@ impl AppState {
         // `had_effect` gates per arm, not the whole match: the library has no
         // card cache, so CardChanged is always false yet must still notify.
         match event {
-            LibraryFileChange::BookChanged { modified: _, uuid } if had_effect => {
+            LibraryFileChange::SummariesChanged { uuid }
+            | LibraryFileChange::BookChanged { modified: _, uuid }
+                if had_effect =>
+            {
                 info!("Emitting \"book_updated\" for {uuid}");
                 self.app.emit("book_updated", uuid)?;
                 self.notify_library_changed();
@@ -853,7 +900,7 @@ impl AppState {
         Ok(())
     }
 
-    async fn get_or_init_translation_queue(&self) -> anyhow::Result<Arc<TranslationQueue>> {
+    async fn build_translation_queue(&self) -> anyhow::Result<Arc<TranslationQueue>> {
         if let Some(queue) = self.translation_queue.borrow().clone() {
             return Ok(queue);
         }
@@ -864,8 +911,6 @@ impl AppState {
             .await_ready()
             .await
             .map_err(|err| anyhow::anyhow!(err))?;
-
-        let _guard = self.translation_queue_init_lock.lock().await;
 
         // Another caller may have populated the queue while we waited.
         if let Some(queue) = self.translation_queue.borrow().clone() {
@@ -883,7 +928,7 @@ impl AppState {
         let cache = self.get_translations_cache().await?;
         let stats_cache = self.get_stats_cache().await?;
         let gemini_prompt_cache = self.get_gemini_prompt_cache().await?;
-        let summary_queue = self.get_or_init_summary_generation_queue().await?;
+        let summary_queue = self.build_summary_queue().await?;
         let context_provider: Arc<dyn library::translator::ChapterContextProvider> =
             Arc::new(SummaryBackedChapterContext {
                 queue: summary_queue,
@@ -905,14 +950,10 @@ impl AppState {
         Ok(queue)
     }
 
-    pub async fn get_or_init_summary_generation_queue(
-        &self,
-    ) -> anyhow::Result<Arc<SummaryGenerationQueue>> {
+    async fn build_summary_queue(&self) -> anyhow::Result<Arc<SummaryGenerationQueue>> {
         if let Some(queue) = self.summary_generation_queue.borrow().clone() {
             return Ok(queue);
         }
-
-        let _guard = self.summary_generation_queue_init_lock.lock().await;
 
         if let Some(queue) = self.summary_generation_queue.borrow().clone() {
             return Ok(queue);
@@ -928,7 +969,7 @@ impl AppState {
     }
 
     pub async fn translate_paragraph(
-        &self,
+        self: &Arc<Self>,
         book_id: Uuid,
         paragraph_id: usize,
         model: String,
@@ -942,7 +983,7 @@ impl AppState {
     }
 
     pub async fn translate_chapter(
-        &self,
+        self: &Arc<Self>,
         book_id: Uuid,
         chapter_id: usize,
         model: String,
@@ -956,7 +997,7 @@ impl AppState {
     }
 
     pub async fn get_paragraph_translation_activity(
-        &self,
+        self: &Arc<Self>,
         book_id: Uuid,
         paragraph_id: usize,
     ) -> anyhow::Result<Option<translation_queue::ParagraphTranslationActivity>> {
@@ -971,7 +1012,7 @@ impl AppState {
     }
 
     pub async fn list_paragraph_translation_activity(
-        &self,
+        self: &Arc<Self>,
     ) -> anyhow::Result<Vec<translation_queue::ActiveParagraphTranslation>> {
         // Pure read; see get_paragraph_translation_activity.
         let queue = self.translation_queue.borrow().clone();

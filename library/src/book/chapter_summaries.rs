@@ -10,7 +10,7 @@ use std::{
     time::SystemTime,
 };
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
 use uuid::Uuid;
 
 use crate::book::{
@@ -161,10 +161,7 @@ impl ChapterSummaries {
             merged = merged.merge(&other)?;
         }
         // Delete the conflict files only after the main write succeeds.
-        let mut buf = Vec::new();
-        merged.serialize(&mut buf)?;
-        tokio::fs::write(main_path, &buf).await?;
-        merged.last_modified = tokio::fs::metadata(main_path).await?.modified().ok();
+        merged.save(main_path).await?;
         for conflict in conflicts {
             if let Err(err) = tokio::fs::remove_file(conflict).await {
                 log::warn!(
@@ -202,10 +199,7 @@ impl ChapterSummaries {
             let temp_path = dir.join(format!("{file_name}~{}", create_random_string(8)));
             let mut buf = Vec::new();
             self.serialize(&mut buf)?;
-            tokio::fs::File::create(&temp_path)
-                .await?
-                .write_all(&buf)
-                .await?;
+            tokio::fs::write(&temp_path, &buf).await?;
 
             // An unmoved mtime means our write is the canonical one.
             let post_modified = if tokio::fs::try_exists(main_path).await? {

@@ -53,6 +53,10 @@ impl GatedState {
     /// Records the startup outcome. `send_replace`, not `send`: with zero live
     /// receivers `send` errors and leaves the stored value untouched, so later
     /// subscribers would read `None` forever.
+    pub fn publish_reconfiguring(&self) {
+        self.ready.send_replace(None);
+    }
+
     pub fn publish_ready(&self, outcome: Result<(), String>) {
         self.ready.send_replace(Some(outcome));
     }

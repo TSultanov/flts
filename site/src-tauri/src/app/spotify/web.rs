@@ -342,11 +342,12 @@ impl SpotifyWebState {
     }
 
     pub async fn stop_polling(&self) {
-        let mut inner = self.inner.write().await;
-        if let Some(h) = inner.poll_handle.take() {
-            h.abort();
+        let handle = self.inner.write().await.poll_handle.take();
+        if let Some(handle) = handle {
+            handle.abort();
+            let _ = handle.await;
         }
-        let _ = self.tx.send(None);
+        self.tx.send_replace(None);
     }
 
     /// Spawns the queue poller. Idempotent; subsequent calls are no-ops while

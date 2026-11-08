@@ -44,6 +44,9 @@ fn watch_config() -> notify::Config {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LibraryFileChange {
+    SummariesChanged {
+        uuid: Uuid,
+    },
     BookChanged {
         modified: SystemTime,
         uuid: Uuid,
@@ -82,6 +85,9 @@ fn change_handler(
 
             for change in deduplicated_changes {
                 match &change {
+                    LibraryFileChange::SummariesChanged { uuid } => {
+                        info!("Book {uuid} summaries changed")
+                    }
                     LibraryFileChange::BookChanged { modified: _, uuid } => {
                         info!("Book {uuid} change detected")
                     }
@@ -178,6 +184,11 @@ impl LibraryWatcher {
 
             // {uuid}/book<conflict junk>.dat
             // {uuid}/translation_{src}_{tgt}<conflict junk>.dat
+            if filename.starts_with("chapter_summaries") && filename.ends_with(".dat") {
+                return Some(LibraryFileChange::SummariesChanged {
+                    uuid: Uuid::from_str(path.parent()?.file_name()?.to_str()?).ok()?,
+                });
+            }
             if filename.starts_with("book") && filename.ends_with(".dat") {
                 let uuid = path.parent()?.file_name()?.to_str()?;
                 return Some(LibraryFileChange::BookChanged {

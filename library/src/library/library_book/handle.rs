@@ -110,6 +110,18 @@ pub(crate) enum BookCommand {
     },
 }
 
+pub struct BookSubscription {
+    receiver: watch::Receiver<Arc<BookSnapshot>>,
+}
+impl BookSubscription {
+    pub fn snapshot(&mut self) -> Arc<BookSnapshot> {
+        self.receiver.borrow_and_update().clone()
+    }
+    pub async fn changed(&mut self) -> anyhow::Result<()> {
+        self.receiver.changed().await.map_err(Into::into)
+    }
+}
+
 pub struct BookRef {
     pub(super) commands: mpsc::Sender<BookCommand>,
     snapshot: watch::Receiver<Arc<BookSnapshot>>,
@@ -134,8 +146,10 @@ impl BookRef {
     pub fn snapshot(&self) -> Arc<BookSnapshot> {
         self.snapshot.borrow().clone()
     }
-    pub fn subscribe(&self) -> watch::Receiver<Arc<BookSnapshot>> {
-        self.snapshot.clone()
+    pub fn subscribe(&self) -> BookSubscription {
+        BookSubscription {
+            receiver: self.snapshot.clone(),
+        }
     }
     pub fn is_alive(&self) -> bool {
         !self.commands.is_closed()
@@ -144,6 +158,7 @@ impl BookRef {
         &self,
         build: impl FnOnce(ResultReply<T>) -> BookCommand,
     ) -> anyhow::Result<T> {
+        let queued_at = tokio::time::Instant::now();
         let (reply, response) = oneshot::channel();
         let permit = self
             .commands
@@ -155,6 +170,11 @@ impl BookRef {
             anyhow::ensure!(*gate == BookStatus::Active, "book is {:?}", *gate);
             permit.send(build(reply));
         }
+        log::trace!(
+            "book {:?} mailbox admission waited {:?}",
+            self.token,
+            queued_at.elapsed()
+        );
         response
             .await
             .map_err(|_| anyhow::anyhow!("book deleted or session closed"))?
@@ -187,6 +207,10 @@ impl BookRef {
         chapter: usize,
         summary: ChapterSummary,
     ) -> anyhow::Result<MutationReceipt> {
+        anyhow::ensure!(
+            chapter < snapshot.summaries.entries.len(),
+            "summary chapter out of range"
+        );
         let expected_prior = snapshot.summaries.entries[..chapter].to_vec();
         self.request(|reply| BookCommand::ApplySummary {
             token: snapshot.token,
@@ -296,7 +320,15 @@ async fn persist(
     book: &mut LibraryBook,
     tx: &watch::Sender<Arc<BookSnapshot>>,
 ) -> anyhow::Result<()> {
-    book.persist().await?;
+    let mut result = book.persist().await;
+    for _ in 1..3 {
+        if result.is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        result = book.persist().await;
+    }
+    result?;
     book.persisted_revision = book.revision;
     publish(book, tx, BookStatus::Active);
     Ok(())
@@ -349,6 +381,11 @@ pub(crate) async fn serve_book(
             }
         }
     }
+    log::debug!(
+        "book {:?} exited at persisted revision {}",
+        book.token,
+        book.persisted_revision
+    );
     (book.book.id, book.token)
 }
 
@@ -403,7 +440,7 @@ async fn run(book: &mut LibraryBook, command: BookCommand, tx: &watch::Sender<Ar
                         && book.summaries.entries[..chapter] == expected_prior,
                     "summary context changed"
                 );
-                book.summaries.entries[chapter] = summary;
+                Arc::make_mut(&mut book.summaries).entries[chapter] = summary;
                 book.summaries_dirty = true;
                 book.revision += 1;
                 Ok(MutationReceipt {
@@ -504,6 +541,58 @@ mod tests {
             .unwrap();
         start.await.unwrap();
         release
+    }
+    #[tokio::test]
+    async fn failed_reading_state_write_is_retained_and_retried_on_close() {
+        let (_dir, library, handle) = fixture(2).await;
+        let path = handle.snapshot().path.clone();
+        handle
+            .modify(|book| book.fail_next_user_write = true)
+            .await
+            .unwrap();
+        let expected = BookReadingState {
+            chapter_id: 0,
+            paragraph_id: 0,
+            page_offset: 3,
+        };
+        let result = handle.update_reading_state(expected.clone()).await;
+        assert!(result.is_err());
+        assert_eq!(
+            handle.snapshot().user_state.reading_state,
+            Some(expected.clone())
+        );
+        library.close().await.unwrap();
+        let state = super::super::load_book_user_state(&path).await.unwrap();
+        assert_eq!(state.reading_state, Some(expected));
+    }
+    #[tokio::test]
+    async fn summaries_share_snapshots_until_changed() {
+        let (_dir, library, handle) = fixture(2).await;
+        let before = handle.snapshot();
+        let receipt = handle
+            .apply_summary(
+                &before,
+                0,
+                ChapterSummary {
+                    generated: true,
+                    model: "test".into(),
+                    timestamp: 1,
+                    text: "summary".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let after = handle.snapshot();
+        assert!(!before.summaries.entries[0].generated);
+        assert!(after.summaries.entries[0].generated);
+        handle.flush_through(receipt.revision).await.unwrap();
+        assert!(
+            handle
+                .apply_summary(&after, usize::MAX, after.summaries.entries[0].clone())
+                .await
+                .is_err()
+        );
+        library.close().await.unwrap();
     }
     #[tokio::test]
     async fn snapshots_and_other_books_progress_while_owner_is_blocked() {

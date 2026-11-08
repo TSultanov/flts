@@ -156,15 +156,13 @@
 
 ### 3.2 Do Not Model (with rationale)
 
-| What                                               | Why                                                                           |
-| -------------------------------------------------- | ----------------------------------------------------------------------------- |
-| Lock ordering / deadlock                           | Already covered in existing `spec/mutex/` spec with exhaustive model checking |
-| File merge semantics (book.dat conflicts)          | Already covered in existing `spec/base.tla` (file sync spec)                  |
-| Translation API internals                          | External service call; no lock interaction; idempotent                        |
-| Platform-specific commands (macOS dictionary, iOS) | No shared state, no concurrency concerns                                      |
-| Translation progress polling (500ms interval)      | Read-only status queries; no state modification; trivially safe               |
-| RwLock read-write upgrade windows                  | Covered in mutex spec (Family 4); double-check pattern is correct             |
-| Individual lock acquisition/release                | Covered in mutex spec; this spec operates at command/event granularity        |
+| What                                               | Why                                                                    |
+| -------------------------------------------------- | ---------------------------------------------------------------------- |
+| File merge semantics (book.dat conflicts)          | Already covered in existing `spec/base.tla` (file sync spec)           |
+| Translation API internals                          | External service call; no lock interaction; idempotent                 |
+| Platform-specific commands (macOS dictionary, iOS) | No shared state, no concurrency concerns                               |
+| Translation progress polling (500ms interval)      | Read-only status queries; no state modification; trivially safe        |
+| Individual lock acquisition/release                | Covered in mutex spec; this spec operates at command/event granularity |
 
 ## 4. Proposed Extensions
 
@@ -232,8 +230,6 @@
   - `library/src/library/library_book.rs:381-420,512-545` — get_or_create_translation, reload_book/translations
 - **Existing specs** (do not duplicate):
   - `spec/base.tla` — File sync / persistence model (Category A)
-  - `spec/mutex/base.tla` — Lock hierarchy / deadlock freedom (Category B)
-  - `spec/mutex-modeling-brief.md` — Mutex lock safety analysis
 - **Historical bug fixes**:
   - `ea80c0c` — "Fix deadlock at config change" (partial fix, addressed blocking but not stale reference)
   - `d15e3aa` — "Replace global App mutex with internal locks" (architectural improvement)
