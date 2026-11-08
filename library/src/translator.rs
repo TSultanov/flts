@@ -637,6 +637,7 @@ pub fn is_transient_translation_error(err: &anyhow::Error) -> bool {
     }
 
     const TRANSIENT_SIGS: &[&str] = &[
+        "cache invalidated",
         "timeout",
         "timed out",
         "connection",

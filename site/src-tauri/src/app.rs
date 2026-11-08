@@ -247,7 +247,7 @@ fn api_key_changed(old: Option<&str>, new: Option<&str>) -> bool {
     old.unwrap_or("") != new.unwrap_or("")
 }
 
-fn invalidate_changed_api_keys(catalog: &ModelCatalog, old: &Config, new: &Config) {
+async fn invalidate_changed_api_keys(catalog: &ModelCatalog, old: &Config, new: &Config) {
     let pairs = [
         (
             TranslationProvider::Google,
@@ -277,7 +277,7 @@ fn invalidate_changed_api_keys(catalog: &ModelCatalog, old: &Config, new: &Confi
     ];
     for (provider, old_key, new_key) in pairs {
         if api_key_changed(old_key, new_key) {
-            catalog.invalidate(provider);
+            catalog.invalidate(provider).await;
         }
     }
 }
@@ -329,10 +329,14 @@ impl AppState {
             Config::default()
         };
 
-        let model_catalog = Arc::new(ModelCatalog::new(
-            resolve_cache_dir(Some(&app))?,
-            Arc::new(ReqwestListTransport::new()),
-        ));
+        let model_catalog = {
+            let runtime = tauri::async_runtime::handle();
+            let _enter = runtime.inner().enter();
+            Arc::new(ModelCatalog::new(
+                resolve_cache_dir(Some(&app))?,
+                Arc::new(ReqwestListTransport::new()),
+            ))
+        };
         spawn_catalog_prefetch(model_catalog.clone(), &config);
 
         // Unreachable until a tick proves otherwise: the UI hides the sync
@@ -543,10 +547,8 @@ impl AppState {
             // Flush unsaved books before the Library swap.
             self.save_all().await;
 
-            {
-                let old = self.config.borrow();
-                invalidate_changed_api_keys(&self.model_catalog, &old, &config);
-            }
+            let old = self.config.borrow().clone();
+            invalidate_changed_api_keys(&self.model_catalog, &old, &config).await;
 
             info!("config = {:?}", config);
             config.save(&self.config_path)?;

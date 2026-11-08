@@ -7,7 +7,10 @@ use std::time::SystemTime;
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::{
+    mpsc::{Receiver, Sender, channel},
+    oneshot, watch,
+};
 use tokio::task::JoinHandle;
 
 const ZSTD_LEVEL: i32 = 3;
@@ -15,14 +18,16 @@ const ZSTD_LEVEL: i32 = 3;
 pub struct DiskCache<V> {
     dir: PathBuf,
     index: Arc<StdMutex<Index>>,
-    writer_tx: StdMutex<Option<UnboundedSender<WriteOp<V>>>>,
+    writer_tx: StdMutex<Option<Sender<WriteOp<V>>>>,
     writer_handle: tokio::sync::Mutex<Option<JoinHandle<()>>>,
+    completion: watch::Receiver<bool>,
 }
 
 #[derive(Default)]
 struct Index {
     entries: HashMap<u64, EntryMeta>,
     total_bytes: u64,
+    generation: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -32,9 +37,20 @@ struct EntryMeta {
 }
 
 enum WriteOp<V> {
-    Insert { hash: u64, key: String, value: V },
-    Remove { hash: u64 },
+    Insert {
+        hash: u64,
+        key: String,
+        value: V,
+    },
+    Remove {
+        hash: u64,
+    },
     Clear,
+    Acknowledged {
+        op: Box<WriteOp<V>>,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    Flush,
 }
 
 fn hash_key(key: &str) -> u64 {
@@ -59,30 +75,33 @@ where
         let index = tokio::task::spawn_blocking(move || scan_dir(&dir_owned)).await??;
         let index = Arc::new(StdMutex::new(index));
 
-        let (tx, rx) = unbounded_channel::<WriteOp<V>>();
-        let writer_handle = tokio::spawn(writer_loop(
-            dir.to_path_buf(),
-            capacity_bytes,
-            index.clone(),
-            rx,
-        ));
+        let (tx, rx) = channel::<WriteOp<V>>(256);
+        let (done, completion) = watch::channel(false);
+        let writer_dir = dir.to_path_buf();
+        let writer_index = index.clone();
+        let writer_handle = tokio::spawn(async move {
+            writer_loop(writer_dir, capacity_bytes, writer_index, rx).await;
+            done.send_replace(true);
+        });
 
         Ok(Self {
             dir: dir.to_path_buf(),
             index,
             writer_tx: StdMutex::new(Some(tx)),
             writer_handle: tokio::sync::Mutex::new(Some(writer_handle)),
+            completion,
         })
     }
 
     pub async fn get(&self, key: &str) -> anyhow::Result<Option<V>> {
         let hash = hash_key(key);
-        {
+        let generation = {
             let idx = self.index.lock().unwrap();
             if !idx.entries.contains_key(&hash) {
                 return Ok(None);
             }
-        }
+            idx.generation
+        };
 
         let path = entry_path(&self.dir, hash);
         let bytes = match tokio::fs::read(&path).await {
@@ -97,6 +116,9 @@ where
 
         if decoded.is_some() {
             let mut idx = self.index.lock().unwrap();
+            if generation != idx.generation {
+                return Ok(None);
+            }
             if let Some(meta) = idx.entries.get_mut(&hash) {
                 meta.last_access = SystemTime::now();
             }
@@ -108,7 +130,7 @@ where
         let hash = hash_key(&key);
         let tx = self.writer_tx.lock().unwrap();
         if let Some(tx) = tx.as_ref() {
-            let _ = tx.send(WriteOp::Insert { hash, key, value });
+            let _ = tx.try_send(WriteOp::Insert { hash, key, value });
         }
     }
 
@@ -118,7 +140,7 @@ where
         let hash = hash_key(key);
         let tx = self.writer_tx.lock().unwrap();
         if let Some(tx) = tx.as_ref() {
-            let _ = tx.send(WriteOp::Remove { hash });
+            let _ = tx.try_send(WriteOp::Remove { hash });
         }
     }
 
@@ -127,18 +149,51 @@ where
     pub fn clear(&self) {
         let tx = self.writer_tx.lock().unwrap();
         if let Some(tx) = tx.as_ref() {
-            let _ = tx.send(WriteOp::Clear);
+            let _ = tx.try_send(WriteOp::Clear);
         }
     }
 
+    async fn acknowledged(&self, op: WriteOp<V>) -> anyhow::Result<()> {
+        let tx = self
+            .writer_tx
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("disk cache closed"))?;
+        let (reply, result) = oneshot::channel();
+        tx.send(WriteOp::Acknowledged {
+            op: Box::new(op),
+            reply,
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("disk cache writer closed"))?;
+        result.await?.map_err(anyhow::Error::msg)
+    }
+    pub async fn remove_and_wait(&self, key: &str) -> anyhow::Result<()> {
+        self.acknowledged(WriteOp::Remove {
+            hash: hash_key(key),
+        })
+        .await
+    }
+    pub async fn clear_and_wait(&self) -> anyhow::Result<()> {
+        self.acknowledged(WriteOp::Clear).await
+    }
+    pub async fn flush(&self) -> anyhow::Result<()> {
+        self.acknowledged(WriteOp::Flush).await
+    }
     pub async fn close(&self) {
-        {
-            let mut tx = self.writer_tx.lock().unwrap();
-            tx.take();
+        self.writer_tx.lock().unwrap().take();
+        let mut completion = self.completion.clone();
+        while !*completion.borrow_and_update() {
+            if completion.changed().await.is_err() {
+                break;
+            }
         }
         let handle = self.writer_handle.lock().await.take();
-        if let Some(h) = handle {
-            let _ = h.await;
+        if let Some(handle) = handle {
+            if let Err(err) = handle.await {
+                log::warn!("disk cache writer failed: {err}");
+            }
         }
     }
 }
@@ -203,9 +258,14 @@ async fn writer_loop<V: Serialize + Send + 'static>(
     dir: PathBuf,
     capacity_bytes: u64,
     index: Arc<StdMutex<Index>>,
-    mut rx: UnboundedReceiver<WriteOp<V>>,
+    mut rx: Receiver<WriteOp<V>>,
 ) {
+    let mut last_error: Option<String> = None;
     while let Some(op) = rx.recv().await {
+        let (op, reply) = match op {
+            WriteOp::Acknowledged { op, reply } => (*op, Some(reply)),
+            op => (op, None),
+        };
         let dir = dir.clone();
         let index = index.clone();
         let result = tokio::task::spawn_blocking(move || match op {
@@ -214,12 +274,21 @@ async fn writer_loop<V: Serialize + Send + 'static>(
             }
             WriteOp::Remove { hash } => remove_entry(&dir, &index, hash),
             WriteOp::Clear => clear_all(&dir, &index),
+            WriteOp::Flush => Ok(()),
+            WriteOp::Acknowledged { .. } => unreachable!(),
         })
-        .await;
-        if let Err(e) = result {
-            log::warn!("disk_cache writer task panicked: {e}");
-        } else if let Ok(Err(e)) = result {
-            log::warn!("disk_cache write failed: {e}");
+        .await
+        .map_err(|err| err.to_string())
+        .and_then(|result| result.map_err(|err| format!("{err:#}")));
+        if let Err(err) = &result {
+            log::warn!("disk cache write failed: {err}");
+            last_error = Some(err.clone());
+        }
+        if let Some(reply) = reply {
+            let _ = reply.send(match last_error.take() {
+                Some(err) => Err(err),
+                None => result,
+            });
         }
     }
 }
@@ -246,6 +315,7 @@ fn write_entry<V: Serialize>(
     let now = SystemTime::now();
     let victims: Vec<u64> = {
         let mut idx = index.lock().unwrap();
+        idx.generation = idx.generation.wrapping_add(1);
         if let Some(prev) = idx.entries.get(&hash).copied() {
             idx.total_bytes = idx.total_bytes.saturating_sub(prev.size);
         }
@@ -290,6 +360,7 @@ fn write_entry<V: Serialize>(
 fn clear_all(dir: &Path, index: &StdMutex<Index>) -> anyhow::Result<()> {
     {
         let mut idx = index.lock().unwrap();
+        idx.generation = idx.generation.wrapping_add(1);
         idx.entries.clear();
         idx.total_bytes = 0;
     }
@@ -315,6 +386,7 @@ fn clear_all(dir: &Path, index: &StdMutex<Index>) -> anyhow::Result<()> {
 fn remove_entry(dir: &Path, index: &StdMutex<Index>, hash: u64) -> anyhow::Result<()> {
     {
         let mut idx = index.lock().unwrap();
+        idx.generation = idx.generation.wrapping_add(1);
         if let Some(prev) = idx.entries.remove(&hash) {
             idx.total_bytes = idx.total_bytes.saturating_sub(prev.size);
         }
@@ -329,6 +401,24 @@ fn remove_entry(dir: &Path, index: &StdMutex<Index>, hash: u64) -> anyhow::Resul
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn acknowledged_remove_and_concurrent_close_are_ordered() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = super::DiskCache::<String>::open(dir.path(), 4096)
+            .await
+            .unwrap();
+        cache.insert("removed".into(), "old".into());
+        cache.remove_and_wait("removed").await.unwrap();
+        assert!(cache.get("removed").await.unwrap().is_none());
+        cache.insert("kept".into(), "new".into());
+        tokio::join!(cache.close(), cache.close());
+        let reopened = super::DiskCache::<String>::open(dir.path(), 4096)
+            .await
+            .unwrap();
+        assert_eq!(reopened.get("kept").await.unwrap().as_deref(), Some("new"));
+        reopened.close().await;
+    }
+
     use super::*;
     use serde::Deserialize;
 

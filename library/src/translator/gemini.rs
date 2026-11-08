@@ -190,7 +190,7 @@ impl GeminiTranslator {
         let cache_handle: Arc<CachedContentHandle> = timeout(
             CACHE_CREATE_TIMEOUT,
             self.prompt_cache
-                .get_or_create(&self.client, key.clone(), || {
+                .get_or_create(&self.client, key.clone(), move || {
                     let reference = build_reference_material(&prior_summaries, &chapter_text);
                     CacheContent {
                         instructions: Self::get_prompt(from.to_name(), to.to_name()),
@@ -369,7 +369,7 @@ impl Translator for GeminiTranslator {
                 warn!("Gemini cache appears expired/missing; evicting and retrying. ({err})");
                 self.prompt_cache
                     .evict(&self.cache_key(book_id, chapter_id))
-                    .await;
+                    .await?;
                 self.attempt_translation(
                     paragraph,
                     book_id,

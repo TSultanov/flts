@@ -9,9 +9,12 @@ use std::{
 use futures_util::StreamExt;
 use gemini_rust::{CacheExpirationRequest, CachedContentHandle, Gemini};
 use isolang::Language;
-use log::{info, warn};
+use log::info;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, OnceCell};
+use tokio::{
+    sync::{mpsc, oneshot, watch},
+    task::JoinSet,
+};
 use uuid::Uuid;
 
 use crate::cache::DiskCache;
@@ -70,43 +73,107 @@ struct DiskEntry {
 /// Maps a chapter-scoped [`CacheKey`] to its server-side cache name, so a
 /// launch doesn't re-upload the prompt and reference material. A per-key
 /// [`OnceCell`] dedupes concurrent first-callers in one session.
-pub struct GeminiPromptCache {
-    disk: Arc<DiskCache<DiskEntry>>,
-    inflight: Mutex<HashMap<CacheKey, Arc<OnceCell<Arc<CachedContentHandle>>>>>,
-    /// Last TTL-refresh time per key, throttling refreshes on repeat hits.
-    last_refresh: Mutex<HashMap<CacheKey, u64>>,
+type CacheReply = oneshot::Sender<Result<Arc<CachedContentHandle>, String>>;
+enum CacheRequest {
+    Get {
+        key: CacheKey,
+        client: Gemini,
+        build: Box<dyn FnOnce() -> CacheContent + Send>,
+        reply: CacheReply,
+    },
+    Invalidate {
+        key: Option<CacheKey>,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    Close {
+        reply: oneshot::Sender<()>,
+    },
+    #[cfg(test)]
+    Size(oneshot::Sender<usize>),
 }
-
+pub struct GeminiPromptCache {
+    #[cfg(test)]
+    disk: Arc<DiskCache<DiskEntry>>,
+    requests: mpsc::Sender<CacheRequest>,
+    task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    done: watch::Receiver<bool>,
+}
 impl GeminiPromptCache {
     pub async fn open(dir: &Path, capacity_bytes: u64) -> anyhow::Result<Arc<Self>> {
-        let disk = Arc::new(DiskCache::<DiskEntry>::open(dir, capacity_bytes).await?);
+        let disk = Arc::new(DiskCache::open(dir, capacity_bytes).await?);
+        let (requests, receiver) = mpsc::channel(256);
+        let (done, completion) = watch::channel(false);
+        let owner_disk = disk.clone();
+        let task = tokio::spawn(async move {
+            serve_prompt_cache(owner_disk, receiver).await;
+            done.send_replace(true);
+        });
         Ok(Arc::new(Self {
+            #[cfg(test)]
             disk,
-            inflight: Mutex::new(HashMap::new()),
-            last_refresh: Mutex::new(HashMap::new()),
+            requests,
+            task: tokio::sync::Mutex::new(Some(task)),
+            done: completion,
         }))
     }
-
     pub async fn close(&self) {
-        self.disk.close().await;
-    }
-
-    /// Local counterpart of [`purge_all`]: once the server-side caches are
-    /// gone, keeping their names costs a failing request per chapter.
-    pub async fn clear_local(&self) {
+        let (reply, result) = oneshot::channel();
+        if self
+            .requests
+            .send(CacheRequest::Close { reply })
+            .await
+            .is_ok()
         {
-            let mut guard = self.inflight.lock().await;
-            guard.clear();
+            let _ = result.await;
         }
-        self.last_refresh.lock().await.clear();
-        self.disk.clear();
+        let mut done = self.done.clone();
+        while !*done.borrow_and_update() {
+            if done.changed().await.is_err() {
+                break;
+            }
+        }
+        if let Some(task) = self.task.lock().await.take() {
+            let _ = task.await;
+        }
     }
-
-    /// Deletes every FLTS-prefixed cache on the account behind `api_key`, then
-    /// clears the local pointers. Listing completes before any delete so a
-    /// listing failure leaves both sides untouched; individual delete failures
-    /// only land in [`PurgeReport::failures`]. Safe during translation — live
-    /// tasks recover through the 403/404 evict-and-retry path.
+    async fn invalidate(&self, key: Option<CacheKey>) -> anyhow::Result<()> {
+        let (reply, result) = oneshot::channel();
+        self.requests
+            .send(CacheRequest::Invalidate { key, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("prompt cache closed"))?;
+        result.await?.map_err(anyhow::Error::msg)
+    }
+    pub async fn clear_local(&self) -> anyhow::Result<()> {
+        self.invalidate(None).await
+    }
+    pub async fn evict(&self, key: &CacheKey) -> anyhow::Result<()> {
+        self.invalidate(Some(key.clone())).await
+    }
+    pub async fn get_or_create<F: FnOnce() -> CacheContent + Send + 'static>(
+        &self,
+        client: &Gemini,
+        key: CacheKey,
+        build: F,
+    ) -> anyhow::Result<Arc<CachedContentHandle>> {
+        let (reply, result) = oneshot::channel();
+        self.requests
+            .send(CacheRequest::Get {
+                key,
+                client: client.clone(),
+                build: Box::new(build),
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("prompt cache closed"))?;
+        result.await?.map_err(anyhow::Error::msg)
+    }
+    #[cfg(test)]
+    async fn cached_len(&self) -> usize {
+        let (reply, result) = oneshot::channel();
+        self.requests.send(CacheRequest::Size(reply)).await.unwrap();
+        result.await.unwrap()
+    }
     pub async fn purge_all(&self, api_key: &str) -> anyhow::Result<PurgeReport> {
         let client = Gemini::new(api_key)?;
 
@@ -134,138 +201,109 @@ impl GeminiPromptCache {
             }
         }
 
-        self.clear_local().await;
+        self.clear_local().await?;
         Ok(PurgeReport { deleted, failures })
     }
-
-    /// Drops both the in-memory slot and the disk entry for `key`, so the next
-    /// [`get_or_create`] rebuilds. Recovers from an expired/deleted cache.
-    pub async fn evict(&self, key: &CacheKey) {
-        {
-            let mut guard = self.inflight.lock().await;
-            guard.remove(key);
-        }
-        self.last_refresh.lock().await.remove(key);
-        self.disk.remove(&disk_key(key));
-    }
-
-    /// A cache handle for `key`: a fingerprint-matching disk entry is
-    /// reconstituted and TTL-refreshed, otherwise `build_content` runs and the
-    /// new cache is persisted. Concurrent first-callers share one init future.
-    pub async fn get_or_create<F>(
-        &self,
-        client: &Gemini,
-        key: CacheKey,
-        build_content: F,
-    ) -> anyhow::Result<Arc<CachedContentHandle>>
-    where
-        F: FnOnce() -> CacheContent,
-    {
-        let cell = {
-            let mut guard = self.inflight.lock().await;
-            guard
-                .entry(key.clone())
-                .or_insert_with(|| Arc::new(OnceCell::new()))
-                .clone()
-        };
-        let existed_before_in_memory = cell.get().is_some();
-
-        let disk = self.disk.clone();
-        let key_for_init = key.clone();
-        let handle = cell
-            .get_or_try_init(|| async move {
-                let content = build_content();
-                let fingerprint = fingerprint_of(&content);
-                let dk = disk_key(&key_for_init);
-
-                if let Ok(Some(entry)) = disk.get(&dk).await
-                    && entry.fingerprint == fingerprint
-                {
-                    info!(
-                        "Reusing persisted Gemini cache {dk} ({})",
-                        entry.name
-                    );
-                    let handle = Arc::new(client.get_cached_content(&entry.name));
-                    spawn_ttl_refresh(handle.clone());
-                    return anyhow::Ok(handle);
-                }
-
-                let display = cache_display_name(&key_for_init);
-                info!(
-                    "Creating Gemini cache {display} (instructions {} chars, reference {} chars, ttl {}s)",
-                    content.instructions.len(),
-                    content
-                        .user_reference_material
-                        .as_deref()
-                        .map(str::len)
-                        .unwrap_or(0),
-                    DEFAULT_CACHE_TTL.as_secs()
-                );
-                // Instructions go after the reference as a user turn, not as the
-                // system instruction: read before a famous book's text and
-                // summaries, they let Gemini refuse long passages as copyrighted.
-                let mut builder = client
-                    .create_cache()
-                    .with_display_name(display)?
-                    .with_ttl(DEFAULT_CACHE_TTL);
-                if let Some(reference) = content.user_reference_material {
-                    builder = builder.with_user_message(reference);
-                }
-                let handle = builder
-                    .with_user_message(content.instructions)
-                    .execute()
-                    .await?;
-                info!("Created Gemini cache: {}", handle.name());
-                disk.insert(
-                    dk,
-                    DiskEntry {
-                        name: handle.name().to_string(),
-                        fingerprint,
-                        created_at: now_secs(),
-                    },
-                );
-                Ok(Arc::new(handle))
-            })
-            .await?;
-
-        let handle = handle.clone();
-        if existed_before_in_memory {
-            self.maybe_refresh_ttl(&key, handle.clone()).await;
-        }
-
-        Ok(handle)
-    }
-
-    /// Refreshes only if the last one was over [`REFRESH_MIN_INTERVAL_SECS`]
-    /// ago, recording the new time.
-    async fn maybe_refresh_ttl(&self, key: &CacheKey, handle: Arc<CachedContentHandle>) {
-        let now = now_secs();
-        let due = {
-            let mut guard = self.last_refresh.lock().await;
-            match guard.get(key) {
-                Some(&last) if now.saturating_sub(last) < REFRESH_MIN_INTERVAL_SECS => false,
-                _ => {
-                    guard.insert(key.clone(), now);
-                    true
-                }
-            }
-        };
-        if due {
-            spawn_ttl_refresh(handle);
-        }
-    }
 }
-
-fn spawn_ttl_refresh(handle: Arc<CachedContentHandle>) {
-    tokio::spawn(async move {
-        let req = CacheExpirationRequest::from_ttl(DEFAULT_CACHE_TTL);
-        if let Err(err) = handle.update(req).await {
-            warn!(
-                "Failed to refresh Gemini cache TTL ({}): {err}",
-                handle.name()
-            );
+enum CacheFinished {
+    Created(
+        CacheKey,
+        anyhow::Result<(Arc<CachedContentHandle>, Option<DiskEntry>)>,
+    ),
+    Refreshed,
+}
+async fn create_cached(
+    disk: Arc<DiskCache<DiskEntry>>,
+    key: CacheKey,
+    client: Gemini,
+    build: Box<dyn FnOnce() -> CacheContent + Send>,
+) -> anyhow::Result<(Arc<CachedContentHandle>, Option<DiskEntry>)> {
+    let content = build();
+    let fingerprint = fingerprint_of(&content);
+    if let Some(entry) = disk.get(&disk_key(&key)).await? {
+        if entry.fingerprint == fingerprint {
+            return Ok((Arc::new(client.get_cached_content(&entry.name)), None));
         }
-    });
+    }
+    let mut builder = client
+        .create_cache()
+        .with_display_name(cache_display_name(&key))?
+        .with_ttl(DEFAULT_CACHE_TTL);
+    if let Some(reference) = content.user_reference_material {
+        builder = builder.with_user_message(reference);
+    }
+    let handle = Arc::new(
+        builder
+            .with_user_message(content.instructions)
+            .execute()
+            .await?,
+    );
+    let entry = DiskEntry {
+        name: handle.name().to_owned(),
+        fingerprint,
+        created_at: now_secs(),
+    };
+    Ok((handle, Some(entry)))
+}
+async fn serve_prompt_cache(
+    disk: Arc<DiskCache<DiskEntry>>,
+    mut requests: mpsc::Receiver<CacheRequest>,
+) {
+    let mut jobs = JoinSet::new();
+    let mut current: HashMap<CacheKey, tokio::task::Id> = HashMap::new();
+    let mut waiters: HashMap<tokio::task::Id, Vec<CacheReply>> = HashMap::new();
+    let mut ready: HashMap<CacheKey, Arc<CachedContentHandle>> = HashMap::new();
+    let mut refreshed: HashMap<CacheKey, u64> = HashMap::new();
+    loop {
+        tokio::select! {
+            request = requests.recv() => match request {
+                Some(CacheRequest::Get {key, client, build, reply}) => {
+                    if let Some(handle) = ready.get(&key) {
+                        let now = now_secs();
+                        if now.saturating_sub(refreshed.get(&key).copied().unwrap_or(0)) >= REFRESH_MIN_INTERVAL_SECS {
+                            refreshed.insert(key.clone(), now); let handle = handle.clone();
+                            jobs.spawn(async move { let _ = handle.update(CacheExpirationRequest::from_ttl(DEFAULT_CACHE_TTL)).await; CacheFinished::Refreshed });
+                        }
+                        let _ = reply.send(Ok(handle.clone())); continue;
+                    }
+                    let task = match current.get(&key) {Some(id) => *id, None => {
+                        let disk = disk.clone(); let issued = key.clone();
+                        let task = jobs.spawn(async move { let result = create_cached(disk, issued.clone(), client, build).await; CacheFinished::Created(issued, result) });
+                        current.insert(key.clone(), task.id()); task.id()
+                    }};
+                    waiters.entry(task).or_default().push(reply);
+                }
+                Some(CacheRequest::Invalidate {key, reply}) => {
+                    let keys: Vec<_> = match &key {Some(key) => vec![key.clone()], None => current.keys().chain(ready.keys()).cloned().collect()};
+                    for key in keys { ready.remove(&key); refreshed.remove(&key); if let Some(id) = current.remove(&key) { if let Some(replies) = waiters.remove(&id) { for reply in replies { let _ = reply.send(Err("prompt cache invalidated; retry request".into())); } } } }
+                    let result = match key {Some(key) => disk.remove_and_wait(&disk_key(&key)).await, None => disk.clear_and_wait().await};
+                    let _ = reply.send(result.map_err(|err| err.to_string()));
+                }
+                Some(CacheRequest::Close {reply}) => {
+                    jobs.abort_all(); while jobs.join_next().await.is_some() {}
+                    drop(waiters); disk.close().await; let _ = reply.send(()); return;
+                }
+                #[cfg(test)] Some(CacheRequest::Size(reply)) => { let _ = reply.send(ready.len() + current.len()); }
+                None => { jobs.abort_all(); while jobs.join_next().await.is_some() {} disk.close().await; return; }
+            },
+            Some(result) = jobs.join_next_with_id(), if !jobs.is_empty() => {
+                let (id, result) = match result {
+                    Ok((id, CacheFinished::Created(key, result))) => {
+                        if current.get(&key) != Some(&id) { continue; }
+                        current.remove(&key);
+                        let result = result.map(|(handle, entry)| {
+                            if let Some(entry) = entry { disk.insert(disk_key(&key), entry); }
+                            ready.insert(key, handle.clone()); handle
+                        }).map_err(|err| err.to_string());
+                        (id, result)
+                    }
+                    Ok((_, CacheFinished::Refreshed)) => continue,
+                    Err(err) => { current.retain(|_, id| *id != err.id()); (err.id(), Err(err.to_string())) }
+                };
+                if let Some(replies) = waiters.remove(&id) { for reply in replies { let _ = reply.send(result.clone()); } }
+            }
+        }
+    }
 }
 
 fn now_secs() -> u64 {
@@ -437,6 +475,50 @@ mod tests {
         GeminiPromptCache::open(dir, 1024 * 1024).await.unwrap()
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+    async fn invalidate_resolves_waiters_and_rejects_obsolete_creation() {
+        let dir = tmpdir("invalidate-creation");
+        let content = make_content("a");
+        let key = key("models/gemini-2.5-flash", Language::Eng, Language::Rus, 0);
+        let cache = seed_then_open(&dir, &[(key.clone(), &content, "cachedContents/seeded")]).await;
+        let entered = StdArc::new(tokio::sync::Notify::new());
+        let (release, blocked) = std::sync::mpsc::channel();
+        let old = tokio::spawn({
+            let cache = cache.clone();
+            let key = key.clone();
+            let entered = entered.clone();
+            async move {
+                cache
+                    .get_or_create(&fake_client(), key, move || {
+                        entered.notify_one();
+                        blocked.recv().unwrap();
+                        make_content("a")
+                    })
+                    .await
+            }
+        });
+        entered.notified().await;
+        cache.evict(&key).await.unwrap();
+        assert!(old.await.unwrap().is_err());
+        cache.disk.insert(
+            disk_key(&key),
+            DiskEntry {
+                name: "cachedContents/new".into(),
+                fingerprint: fingerprint_of(&content),
+                created_at: 0,
+            },
+        );
+        cache.disk.flush().await.unwrap();
+        release.send(()).unwrap();
+        let fresh = cache
+            .get_or_create(&fake_client(), key, || make_content("a"))
+            .await
+            .unwrap();
+        assert_eq!(fresh.name(), "cachedContents/new");
+        cache.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[tokio::test]
     async fn single_concurrent_create_for_same_key() {
         let dir = tmpdir("dedup");
@@ -530,7 +612,7 @@ mod tests {
         assert_eq!(h.name(), "cachedContents/seeded");
         assert_eq!(counter.load(Ordering::SeqCst), 1);
 
-        cache.evict(&k).await;
+        cache.evict(&k).await.unwrap();
         cache.close().await;
 
         let cache = GeminiPromptCache::open(&dir, 1024 * 1024).await.unwrap();
@@ -601,10 +683,10 @@ mod tests {
             .get_or_create(&client, k1.clone(), || make_content("a"))
             .await
             .unwrap();
-        assert!(!cache.inflight.lock().await.is_empty());
+        assert!(cache.cached_len().await > 0);
 
-        cache.clear_local().await;
-        assert!(cache.inflight.lock().await.is_empty());
+        cache.clear_local().await.unwrap();
+        assert!(cache.cached_len().await == 0);
         cache.close().await;
 
         let cache = GeminiPromptCache::open(&dir, 1024 * 1024).await.unwrap();
