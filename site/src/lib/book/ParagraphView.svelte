@@ -109,33 +109,23 @@
         </button>
     {/if}
     {#if vm.segments}
-        <!-- Both branches render the same segments under the same wrappers,
-             so a paragraph's height cannot change when it virtualizes. Write
-             the tags without gaps: whitespace here becomes text. -->
+        <!-- Word spans preserve line breaks around punctuation even when their controls unmount. -->
         <p>
-            {#if !mounted}{#each vm.runs ?? [] as run, i (i)}{#snippet runBody()}{run.kind ===
-                        "text"
-                            ? run.text
-                            : ""}{/snippet}{#if run.kind === "break"}<br
-                        />{:else}{@render marked(
-                            run.marks,
-                            runBody,
-                        )}{/if}{/each}{:else}
-                {#each vm.segments as seg, i (i)}
-                    {#snippet body()}{#if seg.kind === "gap"}{seg.text}{:else if seg.kind === "word"}<WordSpan
-                                text={seg.text}
-                                sentence={seg.sentence}
-                                word={seg.word}
-                                flatIndex={seg.flatIndex}
-                                translation={seg.translation}
-                                manualShown={isWordRevealed(seg.flatIndex)}
-                                familiarity={seg.familiarity}
-                                selected={vm.isSelected(seg.sentence, seg.word)}
-                                onClick={(w) =>
-                                    onWordClick({ paragraphId, ...w })}
-                            />{/if}{/snippet}{#if seg.kind === "break"}<br
-                        />{:else}{@render marked(seg.marks, body)}{/if}
-                {/each}{/if}
+            {#each vm.segments as seg, i (i)}
+                {#snippet body()}{#if seg.kind === "word" && mounted}<WordSpan
+                            text={seg.text}
+                            sentence={seg.sentence}
+                            word={seg.word}
+                            flatIndex={seg.flatIndex}
+                            translation={seg.translation}
+                            manualShown={isWordRevealed(seg.flatIndex)}
+                            familiarity={seg.familiarity}
+                            selected={vm.isSelected(seg.sentence, seg.word)}
+                            onClick={(w) => onWordClick({ paragraphId, ...w })}
+                        />{:else if seg.kind === "word"}<span>{seg.text}</span
+                        >{:else if seg.kind === "gap"}{seg.text}{/if}{/snippet}{#if seg.kind === "break"}<br
+                    />{:else}{@render marked(seg.marks, body)}{/if}
+            {/each}
         </p>
     {:else}
         <p class="original">

@@ -122,13 +122,9 @@ test.describe("Paragraph marks (chromium only)", () => {
         const para = el.querySelector("p")!;
         return {
           text: para.textContent,
-          tags: Array.from(para.querySelectorAll("*"))
-            .filter(
-              (e) =>
-                !e.classList.contains("word-span") &&
-                !e.classList.contains("translation-overlay"),
-            )
-            .map((e) => e.tagName.toLowerCase()),
+          marks: Array.from(para.querySelectorAll("strong, em, br")).map(
+            (el) => ({ tag: el.localName, text: el.textContent }),
+          ),
         };
       });
 
