@@ -45,7 +45,6 @@ pub async fn sync_get_this_device(
     let my_id = engine.my_id().to_string();
     // Syncthing's own device entry is authoritative; config is the fallback.
     let name = engine
-        .client()
         .list_devices()
         .await
         .ok()
@@ -152,7 +151,6 @@ pub async fn sync_list_pending(
         return Ok(Vec::new());
     };
     let pending = engine
-        .client()
         .pending_devices()
         .await
         .map_err(|err| err.to_string())?;

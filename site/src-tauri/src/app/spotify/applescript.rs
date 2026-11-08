@@ -6,12 +6,13 @@
 
 use std::time::Duration;
 
-use log::{debug, info, warn};
+use crate::app::task::ManagedTask;
+use futures_util::{StreamExt, stream::FuturesUnordered};
+use log::{debug, warn};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use tokio::process::Command;
-use tokio::sync::{Mutex, watch};
-use tokio::task::JoinHandle;
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -156,83 +157,80 @@ fn is_significant_change(prev: &NowPlaying, next: &NowPlaying) -> bool {
     }
 }
 
+enum WatcherCommand {
+    Start(AppHandle, oneshot::Sender<()>),
+    Stop(oneshot::Sender<()>),
+}
+#[derive(Clone)]
 pub struct SpotifyWatcher {
-    handle: Mutex<Option<JoinHandle<()>>>,
-    tx: watch::Sender<Option<NowPlaying>>,
+    commands: mpsc::Sender<WatcherCommand>,
+    current: watch::Receiver<Option<NowPlaying>>,
 }
-
-impl Default for SpotifyWatcher {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl SpotifyWatcher {
-    pub fn new() -> Self {
-        let (tx, _rx) = watch::channel(None);
-        Self {
-            handle: Mutex::new(None),
-            tx,
-        }
-    }
-
-    pub fn current(&self) -> Option<NowPlaying> {
-        self.tx.borrow().clone()
-    }
-
-    /// Significant-change notifications, which let the Spotify Web poller
-    /// refresh its queue on track change instead of on its own schedule.
-    pub fn subscribe(&self) -> watch::Receiver<Option<NowPlaying>> {
-        self.tx.subscribe()
-    }
-
-    pub async fn start(&self, app: AppHandle) {
-        let mut handle_guard = self.handle.lock().await;
-        if handle_guard.is_some() {
-            debug!("SpotifyWatcher already running");
-            return;
-        }
-
-        let tx = self.tx.clone();
-        let task = tokio::spawn(async move {
+    pub fn new() -> (Self, ManagedTask) {
+        let (commands, mut requests) = mpsc::channel(32);
+        let (tx, current) = watch::channel(None);
+        let task = ManagedTask::spawn(move |mut stop| async move {
+            let mut app: Option<AppHandle> = None;
             let mut ticker = time::interval(POLL_INTERVAL);
             ticker.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+            let mut queries = FuturesUnordered::new();
             loop {
-                ticker.tick().await;
-                let next = match query_once().await {
-                    Ok(np) => np,
-                    Err(err) => {
-                        debug!("Spotify poll failed: {err}");
-                        continue;
+                tokio::select! {
+                    biased;
+                    _ = stop.changed() => break,
+                    request = requests.recv() => match request {
+                        Some(WatcherCommand::Start(handle, reply)) => { if app.is_none() { app = Some(handle); ticker.reset_immediately(); } let _ = reply.send(()); }
+                        Some(WatcherCommand::Stop(reply)) => { app = None; queries.clear(); let _ = reply.send(()); }
+                        None => break,
+                    },
+                    _ = ticker.tick(), if app.is_some() && queries.is_empty() => { queries.push(query_once()); }
+                    Some(result) = queries.next(), if !queries.is_empty() => {
+                        match result {
+                            Ok(next) => {
+                                let significant = tx.send_if_modified(|cur: &mut Option<NowPlaying>| {
+                                    let changed = cur.as_ref().is_none_or(|prev| is_significant_change(prev, &next));
+                                    *cur = Some(next); changed
+                                });
+                                if significant && let (Some(app), Some(payload)) = (&app, tx.borrow().as_ref()) {
+                                    if let Err(err) = app.emit("spotify_state", payload) { warn!("Failed to emit spotify_state: {err}"); }
+                                }
+                            }
+                            Err(err) => debug!("Spotify poll failed: {err}"),
+                        }
                     }
-                };
-
-                let significant = tx.send_if_modified(|cur| {
-                    let sig = cur
-                        .as_ref()
-                        .map(|prev| is_significant_change(prev, &next))
-                        .unwrap_or(true);
-                    *cur = Some(next);
-                    sig
-                });
-
-                if significant
-                    && let Some(payload) = tx.borrow().as_ref()
-                    && let Err(err) = app.emit("spotify_state", payload)
-                {
-                    warn!("Failed to emit spotify_state: {err}");
                 }
             }
+            queries.clear();
         });
-        *handle_guard = Some(task);
-        info!("SpotifyWatcher started");
+        (Self { commands, current }, task)
     }
-
+    pub fn current(&self) -> Option<NowPlaying> {
+        self.current.borrow().clone()
+    }
+    pub fn subscribe(&self) -> watch::Receiver<Option<NowPlaying>> {
+        self.current.clone()
+    }
+    pub async fn start(&self, app: AppHandle) {
+        let (reply, result) = oneshot::channel();
+        if self
+            .commands
+            .send(WatcherCommand::Start(app, reply))
+            .await
+            .is_ok()
+        {
+            let _ = result.await;
+        }
+    }
     pub async fn stop(&self) {
-        let handle = self.handle.lock().await.take();
-        if let Some(handle) = handle {
-            handle.abort();
-            let _ = handle.await;
+        let (reply, result) = oneshot::channel();
+        if self
+            .commands
+            .send(WatcherCommand::Stop(reply))
+            .await
+            .is_ok()
+        {
+            let _ = result.await;
         }
     }
 }

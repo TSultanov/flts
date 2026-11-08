@@ -4,12 +4,13 @@
 //! `eval_config` and shut down on app exit, like
 //! [`AnkiSyncTask`](crate::app::anki_sync::AnkiSyncTask).
 
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{path::PathBuf, time::Duration};
 
+use crate::app::task::ManagedTask;
 use library::sync::engine::{EngineConfig, SyncEngine};
-use log::{info, warn};
+use log::warn;
 use serde::Serialize;
-use tokio::{sync::Mutex, sync::watch, task::JoinHandle};
+use tokio::sync::{mpsc, oneshot, watch};
 
 /// Coarse sync state for the UI. Lowercase to match the frontend.
 #[derive(Debug, Clone, Copy, Serialize, Default, PartialEq, Eq)]
@@ -80,105 +81,143 @@ pub(crate) async fn probe_healthy(
         .unwrap_or(false)
 }
 
-pub struct SyncTask {
-    engine: Arc<SyncEngine>,
-    status_tx: watch::Sender<SyncStatus>,
-    task_handle: Mutex<Option<JoinHandle<()>>>,
-    stopping: tokio::sync::OnceCell<crate::app::task::ManagedTask>,
+type Reply<T> = oneshot::Sender<anyhow::Result<T>>;
+enum SyncCommand {
+    Probe(Reply<bool>),
+    Devices(Reply<Vec<library::sync::control::DeviceInfo>>),
+    Pending(Reply<Vec<library::sync::control::PendingDevice>>),
+    Peers(Reply<Vec<library::sync::engine::PeerInfo>>),
+    Pair(String, String, Reply<()>),
+    Unpair(String, Reply<()>),
+    Rename(String, Reply<()>),
 }
-
+#[derive(Clone)]
+pub struct SyncTask {
+    commands: mpsc::Sender<SyncCommand>,
+    my_id: String,
+    gui_url: String,
+    control: library::task::TaskControl,
+}
 impl SyncTask {
-    /// Starts the engine (pointing the `flts-library` folder at `library_root`,
-    /// home under `home`) and spawns the status poller. Returns an error if the
-    /// engine fails to come up; the caller reflects that as `SyncState::Error`.
     pub async fn init(
         home: PathBuf,
         library_root: PathBuf,
         device_name: String,
         hermetic: bool,
         status_tx: watch::Sender<SyncStatus>,
-    ) -> anyhow::Result<Arc<Self>> {
+    ) -> anyhow::Result<(Self, ManagedTask)> {
         status_tx.send_replace(SyncStatus {
             state: SyncState::Starting,
             ..Default::default()
         });
-
-        // Hermetic (tests/E2E): stay fully local. Otherwise reach peers anywhere
-        // on dynamic ports.
         let options = if hermetic {
             library::sync::control::OptionsPatch::loopback()
         } else {
             library::sync::control::OptionsPatch::default()
         };
-        let engine = Arc::new(
-            SyncEngine::start(EngineConfig {
-                home,
-                library_root,
-                options,
-                loopback_only: hermetic,
-            })
-            .await?,
-        );
+        let engine = SyncEngine::start(EngineConfig {
+            home,
+            library_root,
+            options,
+            loopback_only: hermetic,
+        })
+        .await?;
         let my_id = engine.my_id().to_string();
-        info!("Sync engine online; device id = {my_id}");
-
-        // Names the roster entry as well, which is how peers add this device back.
+        let gui_url = engine.gui_url().to_string();
         if let Err(err) = engine.set_device_name(&device_name).await {
             warn!("Could not set this device's name: {err}");
         }
-
-        push_status(engine.client().as_ref(), &status_tx, &my_id).await;
-        let handle = {
-            let engine = engine.clone();
-            let status_tx = status_tx.clone();
-            let my_id = my_id.clone();
-            tokio::spawn(async move {
-                let mut ticker = tokio::time::interval(DEFAULT_POLL_INTERVAL);
-                loop {
-                    ticker.tick().await;
-                    // Picks up devices paired on other nodes.
-                    if let Err(err) = engine.reconcile_once().await {
-                        warn!("Sync reconcile failed: {err}");
+        push_status(engine.client(), &status_tx, &my_id).await;
+        let (commands, mut requests) = mpsc::channel(256);
+        let owner = ManagedTask::spawn(move |mut stop| async move {
+            let mut ticker = tokio::time::interval(DEFAULT_POLL_INTERVAL);
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = stop.changed() => break,
+                    request = requests.recv() => match request {
+                        None => break,
+                        Some(SyncCommand::Probe(reply)) => { let _ = reply.send(Ok(probe_healthy(engine.client(), WAKE_PROBE_TIMEOUT).await)); }
+                        Some(SyncCommand::Devices(reply)) => { let _ = reply.send(engine.client().list_devices().await); }
+                        Some(SyncCommand::Pending(reply)) => { let _ = reply.send(engine.client().pending_devices().await); }
+                        Some(SyncCommand::Peers(reply)) => { let _ = reply.send(engine.list_peers().await); }
+                        Some(SyncCommand::Pair(id, name, reply)) => { let _ = reply.send(engine.pair_device(&id, &name).await); }
+                        Some(SyncCommand::Unpair(id, reply)) => { let _ = reply.send(engine.unpair_device(&id).await); }
+                        Some(SyncCommand::Rename(name, reply)) => { let _ = reply.send(engine.set_device_name(&name).await); }
+                    },
+                    _ = ticker.tick() => {
+                        if let Err(err) = engine.reconcile_once().await { warn!("Sync reconcile failed: {err}"); }
+                        push_status(engine.client(), &status_tx, engine.my_id()).await;
                     }
-                    push_status(engine.client().as_ref(), &status_tx, &my_id).await;
                 }
-            })
-        };
-
-        Ok(Arc::new(Self {
-            engine,
-            status_tx,
-            task_handle: Mutex::new(Some(handle)),
-            stopping: tokio::sync::OnceCell::new(),
-        }))
+            }
+            requests.close();
+            if let Err(err) = engine.stop().await {
+                log::warn!("sync engine stop failed: {err}");
+            }
+            status_tx.send_replace(SyncStatus::disabled());
+        });
+        Ok((
+            Self {
+                commands,
+                my_id,
+                gui_url,
+                control: owner.control(),
+            },
+            owner,
+        ))
     }
-
-    /// The running engine (for Tauri commands: this-device id, add/remove peer).
-    pub fn engine(&self) -> Arc<SyncEngine> {
-        self.engine.clone()
+    async fn request<T>(&self, build: impl FnOnce(Reply<T>) -> SyncCommand) -> anyhow::Result<T> {
+        let (reply, result) = oneshot::channel();
+        self.commands
+            .send(build(reply))
+            .await
+            .map_err(|_| anyhow::anyhow!("sync engine stopped"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("sync engine stopped"))?
     }
-
-    /// Aborts the poller, stops the engine, and resets status to disabled.
+    pub fn engine(&self) -> Self {
+        self.clone()
+    }
+    pub fn my_id(&self) -> &str {
+        &self.my_id
+    }
+    pub fn gui_url(&self) -> &str {
+        &self.gui_url
+    }
+    pub async fn healthy(&self) -> bool {
+        tokio::time::timeout(WAKE_PROBE_TIMEOUT, self.request(SyncCommand::Probe))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or(false)
+    }
+    pub async fn list_devices(&self) -> anyhow::Result<Vec<library::sync::control::DeviceInfo>> {
+        self.request(SyncCommand::Devices).await
+    }
+    pub async fn pending_devices(
+        &self,
+    ) -> anyhow::Result<Vec<library::sync::control::PendingDevice>> {
+        self.request(SyncCommand::Pending).await
+    }
+    pub async fn list_peers(&self) -> anyhow::Result<Vec<library::sync::engine::PeerInfo>> {
+        self.request(SyncCommand::Peers).await
+    }
+    pub async fn pair_device(&self, id: &str, name: &str) -> anyhow::Result<()> {
+        self.request(|reply| SyncCommand::Pair(id.into(), name.into(), reply))
+            .await
+    }
+    pub async fn unpair_device(&self, id: &str) -> anyhow::Result<()> {
+        self.request(|reply| SyncCommand::Unpair(id.into(), reply))
+            .await
+    }
+    pub async fn set_device_name(&self, name: &str) -> anyhow::Result<()> {
+        self.request(|reply| SyncCommand::Rename(name.into(), reply))
+            .await
+    }
     pub async fn shutdown(&self) {
-        let stopping = self
-            .stopping
-            .get_or_init(|| async {
-                let prior = self.task_handle.lock().await.take();
-                let engine = self.engine.clone();
-                let status = self.status_tx.clone();
-                crate::app::task::ManagedTask::spawn(move |_| async move {
-                    if let Some(prior) = prior {
-                        prior.abort();
-                        let _ = prior.await;
-                    }
-                    if let Err(err) = engine.stop().await {
-                        log::warn!("sync engine stop failed: {err}");
-                    }
-                    status.send_replace(SyncStatus::disabled());
-                })
-            })
-            .await;
-        if let Err(err) = stopping.shutdown().await {
+        if let Err(err) = self.control.shutdown().await {
             log::warn!("sync shutdown failed: {err}");
         }
     }

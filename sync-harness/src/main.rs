@@ -16,7 +16,7 @@ use library::sync::control::OptionsPatch;
 use library::sync::engine::{EngineConfig, SyncEngine};
 
 struct Node {
-    engine: Arc<SyncEngine>,
+    engine: SyncEngine,
     library: Library,
     bep_port: u16,
     name: String,
@@ -85,15 +85,13 @@ async fn setup(name: String, library_root: PathBuf, home: PathBuf, bep_port: u16
         nat: false,
         listen_addresses: vec![format!("tcp://0.0.0.0:{bep_port}")],
     };
-    let engine = Arc::new(
-        SyncEngine::start(EngineConfig {
-            home,
-            library_root,
-            options,
-            loopback_only: false,
-        })
-        .await?,
-    );
+    let engine = SyncEngine::start(EngineConfig {
+        home,
+        library_root,
+        options,
+        loopback_only: false,
+    })
+    .await?;
     engine.set_device_name(&name).await?;
 
     Ok(Node {

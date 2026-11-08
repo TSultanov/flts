@@ -11,6 +11,7 @@ pub(super) enum Command {
     Rename(String, Reply<()>),
     Translation(Reply<TranslationQueue>),
     Summary(Reply<SummaryGenerationQueue>),
+    #[cfg(feature = "e2e-bridge")]
     Configuration(Reply<(Config, usize)>),
     Gemini(Reply<library::translator::gemini_cache::GeminiPromptCache>),
 }
@@ -30,12 +31,14 @@ impl Lifecycle {
                     command = receiver.recv() => {
                         let Some(command) = command else { state.perform_shutdown().await; return; };
                         match command {
-                            Command::Initialize(reply) => { let result = state.initialize_session().await; state.publish_ready(result.as_ref().map(|_| ()).map_err(|e| e.to_string())); let _ = reply.send(result); }
+                            Command::Initialize(reply) => { let result = state.initialize_session().await; let config = state.config.borrow().clone(); state.lyrics_state.configure(config).await; state.publish_ready(result.as_ref().map(|_| ()).map_err(|e| e.to_string())); let _ = reply.send(result); }
                             Command::Configure(config, reply) => {
                                 state.gated.publish_reconfiguring();
                                 let previous = state.config.borrow().clone();
                                 let result = state.apply_config(config).await;
                                 if result.is_err() { state.restore_configuration(previous).await; }
+                                let config = state.config.borrow().clone();
+                                state.lyrics_state.configure(config).await;
                                 // Failed changes leave the previous working session usable.
                                 let readiness = if state.gated.library_unchecked().is_some() {Ok(())} else {result.as_ref().map(|_| ()).map_err(|e| e.to_string())};
                                 state.publish_ready(readiness); let _ = reply.send(result);
@@ -45,6 +48,7 @@ impl Lifecycle {
                             Command::Translation(reply) => { let _ = reply.send(state.build_translation_queue().await); }
                             Command::Summary(reply) => { let _ = reply.send(state.build_summary_queue().await); }
                             Command::Gemini(reply) => { let _ = reply.send(state.get_gemini_prompt_cache().await); }
+                            #[cfg(feature = "e2e-bridge")]
                             Command::Configuration(reply) => { let _ = reply.send(Ok((state.config.borrow().clone(), state.lyrics_state.generation()))); }
                         }
                     }
@@ -92,6 +96,7 @@ impl AppState {
             .request(|reply| Command::Configure(config, reply))
             .await
     }
+    #[cfg(feature = "e2e-bridge")]
     pub(super) async fn configuration(&self) -> anyhow::Result<(Config, usize)> {
         self.lifecycle().await.request(Command::Configuration).await
     }

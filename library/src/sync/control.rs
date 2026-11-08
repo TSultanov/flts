@@ -129,6 +129,44 @@ pub trait SyncthingApi: Send + Sync {
     async fn folder_completion(&self, folder_id: &str) -> Result<f64>;
 }
 
+#[cfg(test)]
+#[async_trait]
+impl<T: SyncthingApi + ?Sized> SyncthingApi for std::sync::Arc<T> {
+    async fn my_id(&self) -> Result<String> {
+        (**self).my_id().await
+    }
+    async fn list_devices(&self) -> Result<Vec<DeviceInfo>> {
+        (**self).list_devices().await
+    }
+    async fn add_device(&self, device_id: &str, name: &str) -> Result<()> {
+        (**self).add_device(device_id, name).await
+    }
+    async fn remove_device(&self, device_id: &str) -> Result<()> {
+        (**self).remove_device(device_id).await
+    }
+    async fn rename_device(&self, device_id: &str, name: &str) -> Result<()> {
+        (**self).rename_device(device_id, name).await
+    }
+    async fn set_device_addresses(&self, device_id: &str, addresses: Vec<String>) -> Result<()> {
+        (**self).set_device_addresses(device_id, addresses).await
+    }
+    async fn connections(&self) -> Result<HashMap<String, bool>> {
+        (**self).connections().await
+    }
+    async fn ensure_folder(&self, spec: FolderSpec) -> Result<()> {
+        (**self).ensure_folder(spec).await
+    }
+    async fn set_options(&self, opts: OptionsPatch) -> Result<()> {
+        (**self).set_options(opts).await
+    }
+    async fn pending_devices(&self) -> Result<Vec<PendingDevice>> {
+        (**self).pending_devices().await
+    }
+    async fn folder_completion(&self, folder_id: &str) -> Result<f64> {
+        (**self).folder_completion(folder_id).await
+    }
+}
+
 // ---------- HTTP implementation ----------
 
 /// Talks to a running engine's localhost REST API.

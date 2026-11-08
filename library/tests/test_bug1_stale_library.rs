@@ -143,7 +143,6 @@ async fn test_bug1_stale_library_ref() {
         "  AppState library root: {:?} (current — library B)",
         current_root
     );
-    println!("  Stale Arc strong count: {}", stale_strong_count);
 }
 
 /// Verify that the fix works: dropping the queue aborts background tasks,

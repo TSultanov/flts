@@ -11,23 +11,29 @@
 //! Polling cadence: when AppleScript reports `Playing`, we poll
 //! `GET /me/player/queue` every ~10s; we stop while paused/stopped.
 
-use std::sync::Arc;
+use crate::app::{config::Config, lyrics::LyricsState, task::ManagedTask};
+use futures_util::{
+    FutureExt, StreamExt,
+    future::{AbortHandle, Abortable, BoxFuture},
+    stream::FuturesUnordered,
+};
+use std::collections::{HashMap, VecDeque};
+use std::panic::AssertUnwindSafe;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
-use log::{debug, info, warn};
+use log::{debug, warn};
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
-use tokio::sync::{Mutex, RwLock, watch};
-use tokio::task::JoinHandle;
+use tokio::sync::{Mutex, mpsc, oneshot, watch};
 use tokio::time;
 
 #[cfg(target_os = "macos")]
-use crate::app::spotify::applescript::{PlayerState, SpotifyWatcher};
+use crate::app::spotify::applescript::PlayerState;
 
 const SPOTIFY_AUTH_URL: &str = "https://accounts.spotify.com/authorize";
 const SPOTIFY_TOKEN_URL: &str = "https://accounts.spotify.com/api/token";
@@ -91,17 +97,6 @@ struct PlaybackList {
 }
 
 impl PlaybackList {
-    /// Order-preserving sequence of track ids; used as the dedup key for
-    /// "has the list changed?" comparisons.
-    fn track_ids(&self) -> Vec<String> {
-        let mut ids = Vec::with_capacity(self.next.len() + 1);
-        if let Some(c) = &self.current {
-            ids.push(c.id.clone());
-        }
-        ids.extend(self.next.iter().map(|t| t.id.clone()));
-        ids
-    }
-
     /// Emit-friendly view for the frontend's "Up next" UI and the
     /// `spotify_web_get_queue` Tauri command.
     fn as_snapshot(&self) -> QueueSnapshot {
@@ -141,7 +136,7 @@ impl std::fmt::Display for RefreshError {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct TokenInfo {
     access_token: String,
     refresh_token: Option<String>,
@@ -155,7 +150,6 @@ struct Inner {
     /// each public client_id is tied to a specific developer's quota; the user
     /// supplies their own from https://developer.spotify.com/dashboard.
     client_id: Option<String>,
-    poll_handle: Option<JoinHandle<()>>,
     premium_required: bool,
     last_error: Option<String>,
     /// Bumped by connect()/disconnect() while holding the write lock. A token
@@ -175,213 +169,162 @@ impl Inner {
     }
 }
 
+type Reply<T> = oneshot::Sender<Result<T, String>>;
+enum WebRequest {
+    Resume(Option<String>, oneshot::Sender<()>),
+    Connect(String, Reply<()>),
+    Disconnect(oneshot::Sender<()>),
+    Start(oneshot::Sender<()>),
+    Stop(oneshot::Sender<()>),
+}
+#[derive(Clone)]
 pub struct SpotifyWebState {
-    inner: RwLock<Inner>,
-    tx: watch::Sender<Option<QueueSnapshot>>,
-    client: reqwest::Client,
-    /// Serializes the OAuth flow so two simultaneous Connect clicks don't
-    /// fight over the loopback listener.
-    auth_lock: Mutex<()>,
+    requests: mpsc::Sender<WebRequest>,
+    status: watch::Receiver<SpotifyWebStatus>,
+    tx: watch::Receiver<Option<QueueSnapshot>>,
 }
-
-impl Default for SpotifyWebState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl SpotifyWebState {
-    pub fn new() -> Self {
-        let (tx, _rx) = watch::channel(None);
-        let client = reqwest::Client::builder()
-            .timeout(HTTP_TIMEOUT)
-            .build()
-            .expect("reqwest client builds with default config");
-        Self {
-            inner: RwLock::new(Inner::default()),
-            tx,
-            client,
-            auth_lock: Mutex::new(()),
-        }
+    pub fn new(
+        app: AppHandle,
+        config: watch::Receiver<Config>,
+        lyrics: LyricsState,
+    ) -> (Self, ManagedTask) {
+        let (requests, receiver) = mpsc::channel(256);
+        let (status, observed) = watch::channel(SpotifyWebStatus {
+            connected: false,
+            premium_required: false,
+            last_error: None,
+        });
+        let (tx, queue) = watch::channel(None);
+        let owner = ManagedTask::spawn(move |stop| {
+            serve_web(app, config, lyrics, receiver, status, tx, stop)
+        });
+        (
+            Self {
+                requests,
+                status: observed,
+                tx: queue,
+            },
+            owner,
+        )
     }
-
     pub async fn status(&self) -> SpotifyWebStatus {
-        let inner = self.inner.read().await;
-        SpotifyWebStatus {
-            connected: inner.token.is_some(),
-            premium_required: inner.premium_required,
-            last_error: inner.last_error.clone(),
+        self.status.borrow().clone()
+    }
+    pub async fn try_resume(&self, id: Option<String>) {
+        let (reply, result) = oneshot::channel();
+        if self
+            .requests
+            .send(WebRequest::Resume(id, reply))
+            .await
+            .is_ok()
+        {
+            let _ = result.await;
         }
     }
-
-    /// Restore session from keyring on app start. Best-effort: a failure here
-    /// just means the user will see "Not connected" and can reconnect manually.
-    /// Polling is owned by the watcher lifecycle (start_spotify_watcher), not
-    /// by connection state — so this method only restores credentials.
-    pub async fn try_resume(self: &Arc<Self>, client_id: Option<String>) {
-        let Some(client_id) = client_id else {
-            return;
-        };
-        let Some(refresh) = load_refresh_token().await else {
-            return;
-        };
+    pub async fn connect(&self, id: String) -> Result<(), String> {
+        let (reply, result) = oneshot::channel();
+        self.requests
+            .send(WebRequest::Connect(id, reply))
+            .await
+            .map_err(|_| "Spotify service closed".to_string())?;
+        result
+            .await
+            .map_err(|_| "Spotify service closed".to_string())?
+    }
+    pub async fn disconnect(&self) {
+        let (reply, result) = oneshot::channel();
+        if self
+            .requests
+            .send(WebRequest::Disconnect(reply))
+            .await
+            .is_ok()
         {
-            let mut inner = self.inner.write().await;
-            inner.client_id = Some(client_id.clone());
-        }
-        match self.refresh_with(&client_id, &refresh).await {
-            Ok(token) => {
-                let mut inner = self.inner.write().await;
-                inner.token = Some(token);
-                info!("Spotify Web: resumed from stored refresh token");
-            }
-            Err(RefreshError::InvalidGrant(_)) => {
-                warn!(
-                    "Spotify Web: stored refresh token is no longer valid \
-                     (revoked or expired); clearing keychain entry"
-                );
-                if let Err(err) = delete_refresh_token().await {
-                    debug!("Keyring delete after invalid_grant: {err}");
-                }
-                let mut inner = self.inner.write().await;
-                inner.last_error =
-                    Some("Spotify access was revoked — please reconnect.".to_string());
-            }
-            Err(RefreshError::Transient(err)) => {
-                warn!("Spotify Web: refresh on resume failed (transient): {err}");
-            }
+            let _ = result.await;
         }
     }
-
-    /// Run the PKCE auth flow. Blocks until the browser callback arrives (or
-    /// timeout) and stores the refresh token in the keyring on success.
-    /// Polling itself is tied to the watcher lifecycle and runs independently;
-    /// connecting just gives that loop a valid token to use.
-    pub async fn connect(self: &Arc<Self>, client_id: String) -> Result<(), String> {
-        let _guard = self.auth_lock.lock().await;
-
-        // Persist client_id immediately so polling can use it after a restart.
-        {
-            let mut inner = self.inner.write().await;
-            inner.client_id = Some(client_id.clone());
-            inner.last_error = None;
-            // Invalidate any in-flight token refresh from a prior session so it
-            // can't clobber the fresh token we're about to obtain.
-            inner.generation = inner.generation.wrapping_add(1);
+    pub async fn start_polling(&self) {
+        let (reply, result) = oneshot::channel();
+        if self.requests.send(WebRequest::Start(reply)).await.is_ok() {
+            let _ = result.await;
         }
-
+    }
+    pub async fn stop_polling(&self) {
+        let (reply, result) = oneshot::channel();
+        if self.requests.send(WebRequest::Stop(reply)).await.is_ok() {
+            let _ = result.await;
+        }
+    }
+}
+struct WebIo {
+    client: reqwest::Client,
+}
+enum QueueResult {
+    Snapshot(QueueSnapshot),
+    Premium,
+    Empty,
+}
+enum Finished {
+    Auth {
+        generation: u64,
+        client_id: String,
+        reply: Option<Reply<()>>,
+        resume: Option<oneshot::Sender<()>>,
+        result: Result<Option<TokenInfo>, RefreshError>,
+    },
+    Poll {
+        generation: u64,
+        epoch: u64,
+        result: Result<(Option<TokenInfo>, QueueResult), RefreshError>,
+    },
+}
+impl WebIo {
+    async fn authorize(&self, client_id: &str) -> Result<TokenInfo, RefreshError> {
         let verifier = generate_verifier();
         let challenge = code_challenge(&verifier);
-
-        let listener = TcpListener::bind(REDIRECT_BIND)
-            .await
-            .map_err(|e| format!("Could not bind loopback {REDIRECT_BIND}: {e}"))?;
-
+        let listener = TcpListener::bind(REDIRECT_BIND).await.map_err(|e| {
+            RefreshError::Transient(format!("Could not bind loopback {REDIRECT_BIND}: {e}"))
+        })?;
         let auth_url = format!(
-            "{SPOTIFY_AUTH_URL}?response_type=code&client_id={cid}&redirect_uri={uri}&code_challenge_method=S256&code_challenge={challenge}&scope={scope}",
-            cid = urlencode(&client_id),
-            uri = urlencode(REDIRECT_URI),
-            challenge = urlencode(&challenge),
-            scope = urlencode(SCOPES),
+            "{SPOTIFY_AUTH_URL}?response_type=code&client_id={}&redirect_uri={}&code_challenge_method=S256&code_challenge={}&scope={}",
+            urlencode(client_id),
+            urlencode(REDIRECT_URI),
+            urlencode(&challenge),
+            urlencode(SCOPES)
         );
-
         if let Err(err) = webbrowser::open(&auth_url) {
-            warn!("Failed to open browser: {err}. Auth URL: {auth_url}");
+            warn!("Failed to open browser: {err}");
         }
-
         let code = time::timeout(AUTH_TIMEOUT, wait_for_callback(listener))
             .await
-            .map_err(|_| "OAuth timed out — try again".to_string())?
-            .map_err(|e| format!("OAuth callback error: {e}"))?;
-
-        let token = self
-            .exchange_code(&client_id, &code, &verifier)
+            .map_err(|_| RefreshError::Transient("OAuth timed out — try again".into()))?
+            .map_err(|e| RefreshError::Transient(format!("OAuth callback error: {e}")))?;
+        self.exchange_code(client_id, &code, &verifier)
             .await
-            .map_err(|e| {
-                let msg = format!("Token exchange failed: {e}");
-                warn!("{msg}");
-                msg
-            })?;
-
-        if let Some(refresh) = token.refresh_token.as_deref()
-            && let Err(err) = save_refresh_token(refresh.to_string()).await
-        {
-            warn!("Could not persist refresh token to keyring: {err}");
-        }
-
-        {
-            let mut inner = self.inner.write().await;
-            inner.token = Some(token);
-            inner.premium_required = false;
-            inner.last_error = None;
-        }
-        info!("Spotify Web: connected");
-        Ok(())
+            .map_err(|e| RefreshError::Transient(format!("Token exchange failed: {e}")))
     }
-
-    pub async fn disconnect(&self) {
-        {
-            let mut inner = self.inner.write().await;
-            inner.token = None;
-            inner.premium_required = false;
-            inner.last_error = None;
-            // Bump the generation so any token refresh currently awaiting the
-            // network (started before this disconnect) discards its result
-            // instead of re-setting `token` and resurrecting the session.
-            inner.generation = inner.generation.wrapping_add(1);
-            // Poll loop stays alive — its job is to keep resolving the
-            // current track from AppleScript signals. Without a token its
-            // queue fetches become no-ops, which is exactly what we want.
+    async fn poll(
+        &self,
+        client_id: String,
+        token: TokenInfo,
+    ) -> Result<(Option<TokenInfo>, QueueResult), RefreshError> {
+        if Instant::now() + TOKEN_SLACK < token.expires_at {
+            let queue = self
+                .fetch_queue(&token.access_token)
+                .await
+                .map_err(|e| RefreshError::Transient(e.to_string()))?;
+            return Ok((None, queue));
         }
-        if let Err(err) = delete_refresh_token().await {
-            debug!("Keyring delete: {err}");
-        }
-        // Clear queue snapshot so the UI hides Up Next.
-        let _ = self.tx.send(None);
-        info!("Spotify Web: disconnected");
+        let Some(refresh) = token.refresh_token else {
+            return Ok((None, QueueResult::Empty));
+        };
+        let token = self.refresh_with(&client_id, &refresh).await?;
+        let queue = self
+            .fetch_queue(&token.access_token)
+            .await
+            .map_err(|e| RefreshError::Transient(e.to_string()))?;
+        Ok((Some(token), queue))
     }
-
-    pub async fn stop_polling(&self) {
-        let handle = self.inner.write().await.poll_handle.take();
-        if let Some(handle) = handle {
-            handle.abort();
-            let _ = handle.await;
-        }
-        self.tx.send_replace(None);
-    }
-
-    /// Spawns the queue poller. Idempotent; subsequent calls are no-ops while
-    /// a poller is running. The poller exits silently when `disconnect()` is
-    /// called (handle is aborted). The `state` reference lets the loop call
-    /// into the lyrics module to preload upcoming tracks after each queue
-    /// refresh.
-    #[cfg(target_os = "macos")]
-    pub async fn start_polling(
-        self: &Arc<Self>,
-        app: AppHandle,
-        watcher: Arc<SpotifyWatcher>,
-        state: crate::app::AppState,
-    ) {
-        let mut inner = self.inner.write().await;
-        if inner.poll_handle.is_some() {
-            info!("Spotify Web: start_polling called but loop already running");
-            return;
-        }
-        let connected = inner.token.is_some();
-        info!(
-            "Spotify Web: starting poll loop (connected={connected}, has_client_id={})",
-            inner.client_id.is_some()
-        );
-        let me = self.clone();
-        let tx = self.tx.clone();
-        let handle = tokio::spawn(async move {
-            poll_loop(me, app, watcher, tx, state).await;
-        });
-        inner.poll_handle = Some(handle);
-    }
-
-    // ----- HTTP helpers ---------------------------------------------------
-
     async fn exchange_code(
         &self,
         client_id: &str,
@@ -457,87 +400,7 @@ impl SpotifyWebState {
 
     /// Returns a valid access token, refreshing if expired (with a small slack
     /// window to avoid races near the boundary). Returns None if not connected.
-    async fn access_token(&self) -> Option<String> {
-        let now = Instant::now();
-        {
-            let inner = self.inner.read().await;
-            if let Some(tok) = &inner.token
-                && tok.expires_at > now + TOKEN_SLACK
-            {
-                return Some(tok.access_token.clone());
-            }
-        }
-        // Need refresh. Capture the current generation alongside the
-        // credentials so we can detect a disconnect/reconnect that lands while
-        // we're awaiting the token endpoint below.
-        let (client_id, refresh, captured_gen) = {
-            let inner = self.inner.read().await;
-            let cid = inner.client_id.clone()?;
-            let r = inner.token.as_ref().and_then(|t| t.refresh_token.clone())?;
-            (cid, r, inner.generation)
-        };
-        match self.refresh_with(&client_id, &refresh).await {
-            Ok(token) => {
-                let mut inner = self.inner.write().await;
-                if !inner.accepts_generation(captured_gen) {
-                    // disconnect()/connect() ran during the refresh await. The
-                    // session this token belonged to is gone; writing it back
-                    // would resurrect it. Drop the token silently.
-                    warn!(
-                        "Spotify Web: token refresh completed after disconnect/reconnect; discarding stale token"
-                    );
-                    return None;
-                }
-                let access = token.access_token.clone();
-                inner.token = Some(token);
-                // A successful refresh means we're healthy again — clear any
-                // stale transient error banner from a previous failed attempt.
-                inner.last_error = None;
-                Some(access)
-            }
-            Err(RefreshError::InvalidGrant(_)) => {
-                let mut inner = self.inner.write().await;
-                if !inner.accepts_generation(captured_gen) {
-                    // The revoked token belonged to a session that was torn
-                    // down while we awaited the endpoint. The keyring now
-                    // holds the NEW session's token — deleting it here would
-                    // wipe that session's credentials.
-                    warn!(
-                        "Spotify Web: stale refresh failed with invalid_grant after disconnect/reconnect; ignoring"
-                    );
-                    return None;
-                }
-                // Token was revoked or expired mid-session. Drop it so future
-                // fetch_queue calls silently no-op (the poll loop keeps
-                // running for current-track resolution either way).
-                warn!("Spotify Web: refresh token revoked mid-session; clearing");
-                if let Err(err) = delete_refresh_token().await {
-                    debug!("Keyring delete after invalid_grant: {err}");
-                }
-                inner.token = None;
-                inner.last_error =
-                    Some("Spotify access was revoked — please reconnect.".to_string());
-                None
-            }
-            Err(RefreshError::Transient(err)) => {
-                warn!("Spotify Web: refresh failed (transient): {err}");
-                let mut inner = self.inner.write().await;
-                if !inner.accepts_generation(captured_gen) {
-                    // Stale session's failure — don't surface an error banner
-                    // on the session that replaced it.
-                    return None;
-                }
-                inner.last_error = Some(err);
-                None
-            }
-        }
-    }
-
-    async fn fetch_queue(&self) -> anyhow::Result<Option<QueueSnapshot>> {
-        let Some(token) = self.access_token().await else {
-            debug!("fetch_queue: no access token (not connected) — returning None");
-            return Ok(None);
-        };
+    async fn fetch_queue(&self, token: &str) -> anyhow::Result<QueueResult> {
         debug!("fetch_queue: calling /me/player");
 
         // /me/player tells us the playback context (playlist/album/...). We
@@ -577,9 +440,7 @@ impl SpotifyWebState {
             .await?;
         let status = resp.status();
         if status == reqwest::StatusCode::FORBIDDEN {
-            let mut inner = self.inner.write().await;
-            inner.premium_required = true;
-            return Ok(None);
+            return Ok(QueueResult::Premium);
         }
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
@@ -592,17 +453,7 @@ impl SpotifyWebState {
             .filter_map(|t| t.into_meta())
             .collect();
 
-        // Reset the "premium required" flag now that we got a real response.
-        // A successful fetch also means any earlier transient error has cleared,
-        // so drop the stale `last_error` banner instead of letting one blip
-        // persist for the rest of the session.
-        {
-            let mut inner = self.inner.write().await;
-            inner.premium_required = false;
-            inner.last_error = None;
-        }
-
-        Ok(Some(QueueSnapshot {
+        Ok(QueueResult::Snapshot(QueueSnapshot {
             context_type,
             currently_playing_id,
             upcoming,
@@ -610,6 +461,307 @@ impl SpotifyWebState {
     }
 }
 
+fn publish_status(inner: &Inner, status: &watch::Sender<SpotifyWebStatus>) {
+    status.send_replace(SpotifyWebStatus {
+        connected: inner.token.is_some(),
+        premium_required: inner.premium_required,
+        last_error: inner.last_error.clone(),
+    });
+}
+
+fn release_failed_claim(claims: &mut HashMap<String, u64>, key: &str, id: u64) -> bool {
+    if claims.get(key) != Some(&id) {
+        return false;
+    }
+    claims.remove(key);
+    true
+}
+
+type Resolution = (u64, String, String, anyhow::Result<()>);
+fn publish_playback<'a>(
+    list: &PlaybackList,
+    tx: &watch::Sender<Option<QueueSnapshot>>,
+    app: &'a AppHandle,
+    lyrics: &'a LyricsState,
+    _config: &Config,
+    claims: &mut HashMap<String, u64>,
+    next_id: &mut u64,
+    resolutions: &mut FuturesUnordered<BoxFuture<'a, Resolution>>,
+) {
+    let snapshot = list.as_snapshot();
+    tx.send_replace(Some(snapshot.clone()));
+    let _ = app.emit("spotify_queue", snapshot);
+    let Some((config, generation)) = lyrics.configuration() else {
+        return;
+    };
+    if config.target_language_id.is_empty() {
+        return;
+    }
+    let mut tracks = Vec::new();
+    if let Some(track) = &list.current {
+        tracks.push(track);
+    }
+    if matches!(
+        list.context_type.as_deref(),
+        Some("playlist") | Some("album")
+    ) {
+        tracks.extend(
+            list.next
+                .iter()
+                .take(config.spotify_preload_count.min(3) as usize),
+        );
+    }
+    for track in tracks {
+        let key = format!(
+            "{}|{}|{}|{:?}",
+            track.id, config.target_language_id, config.model, config.translation_provider
+        );
+        if claims.contains_key(&key) {
+            continue;
+        }
+        let id = *next_id;
+        *next_id += 1;
+        claims.insert(key.clone(), id);
+        let cfg = config.clone();
+        let track = track.clone();
+        resolutions.push(
+            async move {
+                let result = AssertUnwindSafe(lyrics.resolve(
+                    &cfg,
+                    generation,
+                    app,
+                    &track,
+                    &cfg.target_language_id,
+                    cfg.model.clone(),
+                ))
+                .catch_unwind()
+                .await
+                .unwrap_or_else(|_| Err(anyhow::anyhow!("lyrics resolver panicked")));
+                (id, key, track.id, result)
+            }
+            .boxed(),
+        );
+    }
+}
+async fn serve_web(
+    app: AppHandle,
+    mut config: watch::Receiver<Config>,
+    lyrics: LyricsState,
+    mut requests: mpsc::Receiver<WebRequest>,
+    status: watch::Sender<SpotifyWebStatus>,
+    tx: watch::Sender<Option<QueueSnapshot>>,
+    mut stop: watch::Receiver<bool>,
+) {
+    let io = WebIo {
+        client: reqwest::Client::builder()
+            .timeout(HTTP_TIMEOUT)
+            .build()
+            .expect("reqwest client"),
+    };
+    let mut inner = Inner::default();
+    let mut network: FuturesUnordered<BoxFuture<'_, Finished>> = FuturesUnordered::new();
+    let mut resolutions = FuturesUnordered::new();
+    let mut connects: VecDeque<(String, Reply<()>)> = VecDeque::new();
+    let mut auth_busy = false;
+    let mut auth_abort: Option<AbortHandle> = None;
+    let mut poll_busy = false;
+    let mut poll_abort: Option<AbortHandle> = None;
+    let mut polling = false;
+    let mut epoch = 0u64;
+    let mut next_poll = time::Instant::now();
+    let mut list = PlaybackList::default();
+    let mut claims = HashMap::new();
+    let mut next_resolution = 0u64;
+    #[cfg(target_os = "macos")]
+    let mut native = lyrics.watcher.subscribe();
+    #[cfg(not(target_os = "macos"))]
+    let mut native = watch::channel::<Option<()>>(None).1;
+    let mut last_track: Option<String> = None;
+    loop {
+        if !auth_busy && let Some((client_id, reply)) = connects.pop_front() {
+            inner.generation = inner.generation.wrapping_add(1);
+            inner.client_id = Some(client_id.clone());
+            inner.last_error = None;
+            let generation = inner.generation;
+            let io = &io;
+            auth_busy = true;
+            let (abort, registration) = AbortHandle::new_pair();
+            auth_abort = Some(abort);
+            network.push(
+                async move {
+                    let result = Abortable::new(
+                        AssertUnwindSafe(io.authorize(&client_id)).catch_unwind(),
+                        registration,
+                    )
+                    .await
+                    .map_err(|_| RefreshError::Transient("Spotify session changed".into()))
+                    .and_then(|r| {
+                        r.unwrap_or_else(|_| {
+                            Err(RefreshError::Transient("OAuth worker panicked".into()))
+                        })
+                    })
+                    .map(Some);
+                    Finished::Auth {
+                        generation,
+                        client_id,
+                        reply: Some(reply),
+                        resume: None,
+                        result,
+                    }
+                }
+                .boxed(),
+            );
+        }
+        if polling && !poll_busy && next_poll <= time::Instant::now() {
+            #[cfg(target_os = "macos")]
+            {
+                list.current = lyrics
+                    .watcher
+                    .current()
+                    .filter(|n| matches!(n.state, PlayerState::Playing | PlayerState::Paused))
+                    .and_then(np_to_track_meta);
+            }
+            if list.current.is_none() {
+                list.next.clear();
+                list.context_type = None;
+            }
+            publish_playback(
+                &list,
+                &tx,
+                &app,
+                &lyrics,
+                &config.borrow(),
+                &mut claims,
+                &mut next_resolution,
+                &mut resolutions,
+            );
+            if list.current.is_some()
+                && let (Some(client_id), Some(token)) =
+                    (inner.client_id.clone(), inner.token.clone())
+            {
+                let generation = inner.generation;
+                let epoch = epoch;
+                let io = &io;
+                poll_busy = true;
+                let (abort, registration) = AbortHandle::new_pair();
+                poll_abort = Some(abort);
+                network.push(
+                    async move {
+                        let result = Abortable::new(
+                            AssertUnwindSafe(io.poll(client_id, token)).catch_unwind(),
+                            registration,
+                        )
+                        .await
+                        .map_err(|_| RefreshError::Transient("poll stopped".into()))
+                        .and_then(|r| {
+                            r.unwrap_or_else(|_| {
+                                Err(RefreshError::Transient("Spotify poll panicked".into()))
+                            })
+                        });
+                        Finished::Poll {
+                            generation,
+                            epoch,
+                            result,
+                        }
+                    }
+                    .boxed(),
+                );
+            }
+            next_poll = time::Instant::now() + QUEUE_POLL_INTERVAL;
+        }
+        publish_status(&inner, &status);
+        tokio::select! {
+            biased;
+            _ = stop.changed() => break,
+            request = requests.recv() => match request {
+                None => break,
+                Some(WebRequest::Connect(id, reply)) => { connects.push_back((id, reply)); }
+                Some(WebRequest::Resume(id, reply)) => {
+                    let Some(client_id) = id else { let _ = reply.send(()); continue; };
+                    if auth_busy { let _ = reply.send(()); continue; }
+                    auth_busy = true; inner.client_id = Some(client_id.clone()); let generation = inner.generation; let io = &io;
+                    network.push(async move {
+                        let result = match load_refresh_token().await { Some(refresh) => io.refresh_with(&client_id, &refresh).await.map(Some), None => Ok(None) };
+                        Finished::Auth { generation, client_id, reply: None, resume: Some(reply), result }
+                    }.boxed());
+                }
+                Some(WebRequest::Disconnect(reply)) => {
+                    inner.generation = inner.generation.wrapping_add(1); inner.token = None; inner.last_error = None; inner.premium_required = false;
+                    if let Some(abort) = auth_abort.take() { abort.abort(); }
+                    if let Some(abort) = poll_abort.take() { abort.abort(); }
+                    if let Err(err) = delete_refresh_token().await { debug!("Keyring delete: {err}"); }
+                    list.next.clear(); list.context_type = None; tx.send_replace(None); let _ = reply.send(());
+                }
+                Some(WebRequest::Start(reply)) => { if !polling { polling = true; next_poll = time::Instant::now(); } let _ = reply.send(()); }
+                Some(WebRequest::Stop(reply)) => {
+                    polling = false; epoch = epoch.wrapping_add(1); poll_busy = false;
+                    if let Some(abort) = poll_abort.take() { abort.abort(); }
+                    resolutions.clear(); claims.clear(); list = PlaybackList::default(); tx.send_replace(None); let _ = reply.send(());
+                }
+            },
+            changed = config.changed() => { if changed.is_ok() { config.borrow_and_update(); resolutions.clear(); claims.clear(); next_poll = time::Instant::now(); } }
+            changed = native.changed(), if polling => {
+                if changed.is_ok() {
+                    #[cfg(target_os = "macos")] let track = native.borrow_and_update().as_ref().and_then(|n| n.track_id.clone());
+                    #[cfg(not(target_os = "macos"))] let track: Option<String> = None;
+                    if track != last_track {
+                        #[cfg(target_os = "macos")] let delay = if last_track.is_none() { Duration::ZERO } else { QUEUE_REFRESH_DELAY };
+                        #[cfg(not(target_os = "macos"))] let delay = Duration::ZERO;
+                        last_track = track; next_poll = time::Instant::now() + delay;
+                    }
+                }
+            }
+            _ = time::sleep_until(next_poll), if polling && !poll_busy => {}
+            Some(finished) = network.next(), if !network.is_empty() => match finished {
+                Finished::Auth { generation, client_id, reply, resume, result } => {
+                    auth_busy = false; auth_abort = None;
+                    let accepted = inner.accepts_generation(generation);
+                    let outcome = if !accepted { Err("Spotify session changed".into()) } else {
+                        match result {
+                            Ok(token) => {
+                                if let Some(token) = token {
+                                    if let Some(refresh) = &token.refresh_token { if let Err(err) = save_refresh_token(refresh.clone()).await { warn!("Could not persist refresh token: {err}"); } }
+                                    inner.token = Some(token); inner.client_id = Some(client_id); inner.premium_required = false; inner.last_error = None; next_poll = time::Instant::now();
+                                } Ok(())
+                            }
+                            Err(RefreshError::InvalidGrant(err)) => { let _ = delete_refresh_token().await; inner.token = None; inner.last_error = Some("Spotify access was revoked — please reconnect.".into()); Err(err) }
+                            Err(RefreshError::Transient(err)) => { inner.last_error = Some(err.clone()); Err(err) }
+                        }
+                    };
+                    if let Some(reply) = reply { let _ = reply.send(outcome); } if let Some(reply) = resume { let _ = reply.send(()); }
+                }
+                Finished::Poll { generation, epoch: issued, result } => {
+                    if issued != epoch { continue; } poll_busy = false; poll_abort = None;
+                    if !inner.accepts_generation(generation) { continue; }
+                    match result {
+                        Ok((token, result)) => {
+                            if let Some(token) = token { inner.token = Some(token); }
+                            match result {
+                                QueueResult::Snapshot(snapshot) => { inner.premium_required = false; inner.last_error = None; let current_id = list.current.as_ref().map(|t| &t.id); list.next = snapshot.upcoming.into_iter().filter(|t| Some(&t.id) != current_id).collect(); list.context_type = snapshot.context_type; }
+                                QueueResult::Premium => { inner.premium_required = true; list.next.clear(); list.context_type = None; }
+                                QueueResult::Empty => { list.next.clear(); list.context_type = None; }
+                            }
+                        }
+                        Err(RefreshError::InvalidGrant(_)) => { let _ = delete_refresh_token().await; inner.token = None; inner.last_error = Some("Spotify access was revoked — please reconnect.".into()); }
+                        Err(RefreshError::Transient(err)) => { inner.last_error = Some(err); }
+                    }
+                    publish_playback(&list, &tx, &app, &lyrics, &config.borrow(), &mut claims, &mut next_resolution, &mut resolutions);
+                }
+            },
+            Some((id, key, track_id, result)) = resolutions.next(), if !resolutions.is_empty() => {
+                if claims.get(&key) != Some(&id) { continue; }
+                if let Err(err) = result {
+                    release_failed_claim(&mut claims, &key, id);
+                    let _ = app.emit("lyrics_translation_error", crate::app::lyrics::LyricsTranslationError { track_id, error: err.to_string() });
+                }
+            }
+        }
+    }
+    requests.close();
+    network.clear();
+    resolutions.clear();
+    tx.send_replace(None);
+}
 // ----- Spotify API response types ---------------------------------------
 
 #[derive(Deserialize)]
@@ -688,169 +840,6 @@ impl ApiTrack {
     }
 }
 
-// ----- Polling loop ------------------------------------------------------
-
-#[cfg(target_os = "macos")]
-async fn poll_loop(
-    web: Arc<SpotifyWebState>,
-    app: AppHandle,
-    watcher: Arc<SpotifyWatcher>,
-    tx: watch::Sender<Option<QueueSnapshot>>,
-    app_state: crate::app::AppState,
-) {
-    info!("poll_loop: entered");
-    let mut ticker = time::interval(QUEUE_POLL_INTERVAL);
-    ticker.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
-
-    // Single source of truth for "tracks to keep resolved". Updated by both
-    // the AppleScript watcher (current) and Spotify Web (next + context).
-    let mut list = PlaybackList::default();
-    let mut last_ids: Vec<String> = Vec::new();
-    // Shared with the per-track resolve tasks so they can evict a track's key
-    // on failure, letting a later poll pass re-attempt it (see BUG A fix in
-    // resolve_playback_list). Held only for the brief insert/remove — never
-    // across an await — so a std Mutex is correct here.
-    let resolved: Arc<std::sync::Mutex<std::collections::HashSet<String>>> =
-        Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
-
-    let mut state_rx = watcher.subscribe();
-    // None means we haven't seen the watcher emit yet. The first emit is
-    // treated as "initial" (not a track change) so we don't pay the Spotify-
-    // API-settle delay before our first queue fetch.
-    let mut last_track_id: Option<String> = None;
-
-    loop {
-        // Wake on either a scheduled tick or a track-change from the watcher.
-        // play/pause and position jumps also wake us up but we filter them
-        // here — only a real track_id transition is structurally interesting.
-        let was_initial = last_track_id.is_none();
-        let wake_reason: &'static str;
-        tokio::select! {
-            _ = ticker.tick() => { wake_reason = "tick"; }
-            res = state_rx.changed() => {
-                if res.is_err() {
-                    info!("poll_loop: watcher channel closed, exiting");
-                    return;
-                }
-                let new_id = state_rx
-                    .borrow_and_update()
-                    .as_ref()
-                    .and_then(|np| np.track_id.clone());
-                if new_id == last_track_id {
-                    // Same track — must be play/pause or position seek. Not
-                    // structurally interesting; wait for the next signal.
-                    continue;
-                }
-                info!(
-                    "poll_loop: track_id changed {:?} -> {:?} (initial={})",
-                    last_track_id, new_id, was_initial
-                );
-                last_track_id = new_id;
-                if !was_initial {
-                    time::sleep(QUEUE_REFRESH_DELAY).await;
-                }
-                wake_reason = if was_initial { "initial" } else { "track_change" };
-            }
-        }
-        info!("poll_loop: iteration begin (reason={wake_reason})");
-
-        // Pull current track from the watcher. Both Playing and Paused are
-        // valid "has-a-current-track" states — Spotify keeps the queue
-        // context across pauses, and so should we. Only Stopped / NotRunning
-        // mean there's nothing playing-or-pending to look at.
-        let np = watcher.current();
-        let has_current_track = matches!(
-            np.as_ref().map(|n| &n.state),
-            Some(PlayerState::Playing) | Some(PlayerState::Paused)
-        );
-        list.current = if has_current_track {
-            np.and_then(np_to_track_meta)
-        } else {
-            None
-        };
-
-        // Refresh next + context from the Spotify Web API. On error we keep
-        // the previous next so a transient hiccup doesn't blank "Up next".
-        if has_current_track {
-            let has_token = web.inner.read().await.token.is_some();
-            info!(
-                "poll_loop: current={:?}, fetching queue (web_connected={has_token})",
-                list.current.as_ref().map(|c| &c.name)
-            );
-            match web.fetch_queue().await {
-                Ok(Some(snap)) => {
-                    let raw_upcoming = snap.upcoming.len();
-                    info!(
-                        "poll_loop: queue ok: context={:?}, currently_playing={:?}, raw_upcoming={raw_upcoming}",
-                        snap.context_type, snap.currently_playing_id
-                    );
-                    // Defensive: drop the current track from `next` in case
-                    // the API hasn't propagated the advance yet and still
-                    // lists it as upcoming.
-                    let current_id = list.current.as_ref().map(|c| c.id.clone());
-                    list.next = snap
-                        .upcoming
-                        .into_iter()
-                        .filter(|t| Some(&t.id) != current_id.as_ref())
-                        .collect();
-                    list.context_type = snap.context_type;
-                }
-                Ok(None) => {
-                    info!(
-                        "poll_loop: fetch_queue returned None (not connected, no playback context, or Premium required) — clearing next/context"
-                    );
-                    list.next.clear();
-                    list.context_type = None;
-                }
-                Err(err) => {
-                    warn!("poll_loop: queue fetch error: {err}");
-                    let mut inner = web.inner.write().await;
-                    inner.last_error = Some(err.to_string());
-                    // Leave `next` and `context_type` as-is.
-                }
-            }
-        } else {
-            // Stopped / NotRunning — no track, no queue, nothing to show.
-            info!("poll_loop: watcher reports no current track — clearing list");
-            list.next.clear();
-            list.context_type = None;
-        }
-
-        // Has the set of tracks-to-resolve actually changed? This gates the
-        // resolver — we don't want to re-spawn work for an unchanged list.
-        // We always emit the snapshot below, even when unchanged, so the
-        // frontend's `receivedAt` keeps advancing; the timestamp is part of
-        // the data ("yes, this is still current as of now"), and without
-        // that heartbeat a paused user would see "Up next" disappear once
-        // their snapshot crossed the frontend's staleness threshold.
-        let new_ids = list.track_ids();
-        let list_changed = new_ids != last_ids;
-        if list_changed {
-            info!(
-                "poll_loop: playback list changed: {} -> {} tracks (current={:?}, next_count={})",
-                last_ids.len(),
-                new_ids.len(),
-                list.current.as_ref().map(|c| &c.name),
-                list.next.len()
-            );
-            last_ids = new_ids;
-        }
-
-        let snapshot = list.as_snapshot();
-        let _ = tx.send(Some(snapshot.clone()));
-        if let Err(err) = app.emit("spotify_queue", &snapshot) {
-            warn!("Failed to emit spotify_queue: {err}");
-        }
-
-        if list_changed {
-            // Resolve lyrics+translation for everything in the list. Dedup'd
-            // across the whole session — once a track has been kicked off,
-            // it's done whether it appears as current or as a future "next".
-            resolve_playback_list(&app_state, &app, &list, &resolved).await;
-        }
-    }
-}
-
 #[cfg(target_os = "macos")]
 fn np_to_track_meta(np: crate::app::spotify::applescript::NowPlaying) -> Option<TrackMeta> {
     Some(TrackMeta {
@@ -860,114 +849,6 @@ fn np_to_track_meta(np: crate::app::spotify::applescript::NowPlaying) -> Option<
         album: np.album,
         duration_ms: np.duration_ms?,
     })
-}
-
-/// Single resolver covering [current, ...next]. The dedup set spans the whole
-/// session so a track that was preloaded as "next" doesn't get re-resolved
-/// when it later becomes "current". Current is always considered (so an app
-/// open that goes straight to a cached track still warms its caches and any
-/// follow-up bookkeeping happens). Next is gated on a real playlist/album
-/// context — for radio/autoplay the "next track" is a guess.
-#[cfg(target_os = "macos")]
-async fn resolve_playback_list(
-    state: &crate::app::AppState,
-    app: &AppHandle,
-    list: &PlaybackList,
-    resolved: &Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
-) {
-    let cfg = state.config.borrow().clone();
-    let target_lang = cfg.target_language_id.clone();
-    if target_lang.is_empty() {
-        info!("resolve_playback_list: skipped — targetLanguageId is empty");
-        return;
-    }
-    let model = cfg.model;
-    let preload_count = cfg.spotify_preload_count.min(3) as usize;
-
-    let mut to_resolve: Vec<&TrackMeta> = Vec::new();
-    if let Some(c) = &list.current {
-        to_resolve.push(c);
-    }
-    let next_eligible = matches!(
-        list.context_type.as_deref(),
-        Some("playlist") | Some("album")
-    );
-    if next_eligible {
-        to_resolve.extend(list.next.iter().take(preload_count));
-    }
-
-    if to_resolve.is_empty() {
-        info!(
-            "resolve_playback_list: nothing to resolve (current={}, context={:?}, next_eligible={next_eligible}, next_count={}, preload_count={preload_count})",
-            list.current.is_some(),
-            list.context_type,
-            list.next.len()
-        );
-        return;
-    }
-
-    info!(
-        "resolve_playback_list: {} candidate(s) (next_eligible={next_eligible}, preload_count={preload_count})",
-        to_resolve.len()
-    );
-
-    for (idx, track) in to_resolve.iter().enumerate() {
-        let dedup_key = format!("{}|{}|{}", track.id, target_lang, model);
-        {
-            // Claim the key under the lock. If it was already claimed (a task is
-            // in flight or succeeded this session), skip. Cloned so we retain
-            // ownership of `dedup_key` for the eviction path below.
-            let mut r = resolved.lock().unwrap();
-            if !r.insert(dedup_key.clone()) {
-                debug!(
-                    "Resolve skip (already done): #{} {} — {}",
-                    idx, track.name, track.artist
-                );
-                continue;
-            }
-        }
-        let role = if idx == 0 { "current" } else { "next" };
-        info!(
-            "Resolve initiate ({role} #{}): {} — {} (track_id={}, lang={}, model={})",
-            idx, track.name, track.artist, track.id, target_lang, model
-        );
-        let state = state.clone();
-        let app = app.clone();
-        let track = (*track).clone();
-        let target_lang = target_lang.clone();
-        let resolved = resolved.clone();
-        let model = model.clone();
-        tokio::spawn(async move {
-            if let Err(err) =
-                crate::app::lyrics::resolve_track(&state, &app, &track, &target_lang, model).await
-            {
-                warn!(
-                    "Resolve failed for track={} ({}): {err}",
-                    track.id, track.name
-                );
-                // BUG A: a transient failure (e.g. LRClib retries exhausted, or
-                // a translation dispatch error on a preloaded track) is NOT
-                // terminal. Evict the dedup key so the next poll pass whose list
-                // changes re-dispatches this track instead of leaving it wedged
-                // on a spinner for the rest of the session.
-                resolved.lock().unwrap().remove(&dedup_key);
-                // BUG A complement: the currently-playing track's list doesn't
-                // change on failure, so eviction alone wouldn't re-dispatch it
-                // until the next track change. Emit a terminal error keyed on
-                // track.id so the frontend leaves the "Fetching lyrics…" /
-                // "Translating…" spinner. resolve_track has a single caller
-                // (this one), so emitting here is equivalent to emitting inside
-                // it — and keeps the change within this file's ownership.
-                let _ = app.emit(
-                    "lyrics_translation_error",
-                    crate::app::lyrics::LyricsTranslationError {
-                        track_id: track.id.clone(),
-                        error: err.to_string(),
-                    },
-                );
-            }
-        });
-    }
 }
 
 // ----- PKCE helpers ------------------------------------------------------
@@ -1277,23 +1158,16 @@ mod tests {
         assert!(inner.accepts_generation(1));
     }
 
-    // BUG A: claiming a track dedups concurrent/repeat work, but evicting the
-    // key on failure lets a later poll pass re-attempt it. Exercises the exact
-    // Arc<Mutex<HashSet>> claim/release contract resolve_playback_list relies on.
     #[test]
-    fn dedup_claim_then_evict_allows_retry() {
-        use std::collections::HashSet;
-        use std::sync::Mutex;
-        let resolved: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
-        let key = "spotify:track:abc|eng|1".to_string();
-
-        // First claim wins (dispatch happens).
-        assert!(resolved.lock().unwrap().insert(key.clone()));
-        // A second claim while the first is outstanding is deduped (skipped).
-        assert!(!resolved.lock().unwrap().insert(key.clone()));
-        // On failure the task evicts the key...
-        resolved.lock().unwrap().remove(&key);
-        // ...so the next poll pass can re-dispatch instead of wedging forever.
-        assert!(resolved.lock().unwrap().insert(key.clone()));
+    fn failed_claim_can_retry_and_stale_completion_cannot_release_successor() {
+        let mut claims = HashMap::new();
+        let key = "track|eng|model".to_string();
+        claims.insert(key.clone(), 1u64);
+        assert!(claims.contains_key(&key));
+        assert!(release_failed_claim(&mut claims, &key, 1));
+        claims.insert(key.clone(), 2);
+        assert!(!release_failed_claim(&mut claims, &key, 1));
+        assert_eq!(claims.get(&key), Some(&2));
+        assert!(release_failed_claim(&mut claims, &key, 2));
     }
 }

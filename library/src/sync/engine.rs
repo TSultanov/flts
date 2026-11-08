@@ -4,11 +4,12 @@
 //! configures the FLTS folder + discovery options. The Go side holds global
 //! state, so there must be exactly one engine per process.
 
+#[cfg(test)]
+use std::sync::Arc;
 use std::{
     collections::BTreeSet,
     net::TcpListener,
     path::PathBuf,
-    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -53,7 +54,7 @@ pub struct SyncEngine {
     /// Loopback origin of the REST/GUI endpoint; debug builds serve
     /// Syncthing's web dashboard here.
     gui_url: String,
-    client: Arc<dyn SyncthingApi>,
+    client: Box<dyn SyncthingApi>,
     my_id: String,
     /// Kept so the folder can be re-shared when the peer set changes.
     library_root: String,
@@ -89,7 +90,7 @@ impl SyncEngine {
         }
 
         let gui_url = format!("http://{addr}");
-        let client: Arc<dyn SyncthingApi> = Arc::new(HttpSyncthing::new(gui_url.clone(), api_key));
+        let client: Box<dyn SyncthingApi> = Box::new(HttpSyncthing::new(gui_url.clone(), api_key));
         match Self::bootstrap(gui_url, client, cfg).await {
             Ok(engine) => Ok(engine),
             Err(err) => {
@@ -105,7 +106,7 @@ impl SyncEngine {
 
     async fn bootstrap(
         gui_url: String,
-        client: Arc<dyn SyncthingApi>,
+        client: Box<dyn SyncthingApi>,
         cfg: EngineConfig,
     ) -> Result<Self> {
         let my_id = wait_until_up(client.as_ref()).await?;
@@ -307,14 +308,14 @@ impl SyncEngine {
     /// running Syncthing or valid device IDs.
     #[cfg(test)]
     pub(crate) fn for_test(
-        client: Arc<dyn SyncthingApi>,
+        client: std::sync::Arc<dyn SyncthingApi>,
         my_id: String,
         library_root: String,
     ) -> Self {
         let roster = RosterStore::new(std::path::Path::new(&library_root), &my_id);
         Self {
             gui_url: "http://127.0.0.1:0".to_string(),
-            client,
+            client: Box::new(client),
             my_id,
             library_root,
             roster,
@@ -322,8 +323,8 @@ impl SyncEngine {
     }
 
     /// The control client, for the daemon and Tauri commands.
-    pub fn client(&self) -> Arc<dyn SyncthingApi> {
-        self.client.clone()
+    pub fn client(&self) -> &dyn SyncthingApi {
+        self.client.as_ref()
     }
 
     /// This device's Syncthing ID (the QR/pairing payload).

@@ -11,11 +11,9 @@
 //! The `pub` escape hatches (`library_unchecked`, the install/take pair) are
 //! for startup and shutdown plumbing, which runs before or after readiness.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use library::library::Library;
-use library::sync::engine::SyncEngine;
 use tokio::sync::watch;
 
 use crate::app::anki_sync::{AnkiSyncTask, SyncReportDto, sync_now_or_err};
@@ -32,7 +30,7 @@ pub struct GatedState {
     ready: watch::Sender<Option<Result<(), String>>>,
     library: watch::Sender<Option<Library>>,
     anki_sync_task: watch::Sender<Option<AnkiSyncTask>>,
-    sync_task: watch::Sender<Option<Arc<SyncTask>>>,
+    sync_task: watch::Sender<Option<SyncTask>>,
 }
 
 impl Default for GatedState {
@@ -91,7 +89,7 @@ impl GatedState {
 
     /// `None` means sync is off or its engine failed to start — a real answer,
     /// unlike "not started yet", which the gate absorbs.
-    pub async fn sync_engine(&self) -> Result<Option<Arc<SyncEngine>>, String> {
+    pub async fn sync_engine(&self) -> Result<Option<SyncTask>, String> {
         self.await_ready().await?;
         Ok(self.sync_task.borrow().as_ref().map(|task| task.engine()))
     }
@@ -138,12 +136,12 @@ impl GatedState {
         self.anki_sync_task.send_replace(None)
     }
 
-    pub async fn install_sync_task(&self, task: Arc<SyncTask>) {
+    pub async fn install_sync_task(&self, task: SyncTask) {
         self.sync_task.send_replace(Some(task));
     }
 
     /// Take standalone: the slot mutex must not span the caller's shutdown await.
-    pub async fn take_sync_task(&self) -> Option<Arc<SyncTask>> {
+    pub async fn take_sync_task(&self) -> Option<SyncTask> {
         self.sync_task.send_replace(None)
     }
 }
@@ -199,7 +197,7 @@ mod tests {
 
     #[tokio::test]
     async fn await_ready_waits_for_a_pending_startup() {
-        let state = Arc::new(GatedState::new());
+        let state = GatedState::new();
         let waiter = tokio::spawn({
             let state = state.clone();
             async move { state.await_ready().await }

@@ -4,7 +4,6 @@ use std::{
     fs,
     future::Future,
     path::{Path, PathBuf},
-    sync::Arc,
     time::Duration,
 };
 
@@ -301,14 +300,16 @@ pub struct AppState {
     anki_sync_status: watch::Receiver<anki_sync::AnkiSyncStatus>,
     sync_status: watch::Receiver<sync_daemon::SyncStatus>,
     model_catalog: ModelCatalog,
-    pub lyrics_state: Arc<lyrics::LyricsState>,
-    pub spotify_web: Arc<spotify::web::SpotifyWebState>,
+    pub lyrics_state: lyrics::LyricsState,
+    pub spotify_web: spotify::web::SpotifyWebState,
 }
 impl AppState {
     pub fn new(
         app: tauri::AppHandle,
         watcher: LibraryWatcher,
     ) -> anyhow::Result<(Self, task::ManagedTask)> {
+        let runtime = tauri::async_runtime::handle();
+        let _enter = runtime.inner().enter();
         let backend = BackendState::new(app.clone(), watcher)?;
         let config = backend.config.subscribe();
         let gated = backend.gated.clone();
@@ -392,9 +393,7 @@ impl AppState {
     pub fn sync_status(&self) -> crate::app::sync_daemon::SyncStatus {
         self.sync_status.borrow().clone()
     }
-    pub async fn sync_engine(
-        &self,
-    ) -> Result<Option<Arc<library::sync::engine::SyncEngine>>, String> {
+    pub async fn sync_engine(&self) -> Result<Option<crate::app::sync_daemon::SyncTask>, String> {
         self.gated.sync_engine().await
     }
     pub async fn handle_file_change_event(&self, event: &LibraryFileChange) -> anyhow::Result<()> {
@@ -505,6 +504,7 @@ struct BackendState {
     translation_owner: std::sync::Mutex<Option<task::ManagedTask>>,
     summary_owner: std::sync::Mutex<Option<task::ManagedTask>>,
     anki_owner: std::sync::Mutex<Option<task::ManagedTask>>,
+    sync_owner: std::sync::Mutex<Option<task::ManagedTask>>,
     catalog_prefetch: std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     /// Stable across `eval_config` re-spawns. The transient `AnkiSyncTask`
     /// holds a clone and pushes status into it on every tick.
@@ -515,8 +515,10 @@ struct BackendState {
     stats_cache: tokio::sync::OnceCell<(TranslationSizeCache, library::task::TaskOwner)>,
     gemini_prompt_cache: tokio::sync::OnceCell<(GeminiPromptCache, library::task::TaskOwner)>,
     model_catalog: (ModelCatalog, library::task::TaskOwner),
-    pub lyrics_state: Arc<crate::app::lyrics::LyricsState>,
-    pub spotify_web: Arc<crate::app::spotify::web::SpotifyWebState>,
+    pub lyrics_state: crate::app::lyrics::LyricsState,
+    lyrics_owner: task::ManagedTask,
+    spotify_owner: task::ManagedTask,
+    pub spotify_web: crate::app::spotify::web::SpotifyWebState,
 }
 
 impl BackendState {
@@ -555,10 +557,17 @@ impl BackendState {
             ..Default::default()
         };
 
+        let (lyrics_state, lyrics_owner) = crate::app::lyrics::LyricsState::new(app.clone())?;
+        let config = watch::channel(config).0;
+        let (spotify_web, spotify_owner) = crate::app::spotify::web::SpotifyWebState::new(
+            app.clone(),
+            config.subscribe(),
+            lyrics_state.clone(),
+        );
         Ok(Self {
             app,
             config_path,
-            config: watch::channel(config).0,
+            config,
             gated: crate::app::gated_state::GatedState::new(),
             translation_queue: watch::channel(None).0,
             summary_generation_queue: watch::channel(None).0,
@@ -566,6 +575,7 @@ impl BackendState {
             translation_owner: std::sync::Mutex::new(None),
             summary_owner: std::sync::Mutex::new(None),
             anki_owner: std::sync::Mutex::new(None),
+            sync_owner: std::sync::Mutex::new(None),
             catalog_prefetch: std::sync::Mutex::new(Some(catalog_prefetch)),
             anki_sync_status: watch::channel(initial_anki_status).0,
             sync_status: watch::channel(crate::app::sync_daemon::SyncStatus::default()).0,
@@ -573,8 +583,10 @@ impl BackendState {
             stats_cache: tokio::sync::OnceCell::new(),
             gemini_prompt_cache: tokio::sync::OnceCell::new(),
             model_catalog,
-            lyrics_state: Arc::new(crate::app::lyrics::LyricsState::new()),
-            spotify_web: Arc::new(crate::app::spotify::web::SpotifyWebState::new()),
+            lyrics_state,
+            lyrics_owner,
+            spotify_web,
+            spotify_owner,
         })
     }
 
@@ -598,13 +610,7 @@ impl BackendState {
             return;
         }
         let healthy = match self.sync_engine().await.ok().flatten() {
-            Some(engine) => {
-                crate::app::sync_daemon::probe_healthy(
-                    engine.client().as_ref(),
-                    crate::app::sync_daemon::WAKE_PROBE_TIMEOUT,
-                )
-                .await
-            }
+            Some(engine) => engine.healthy().await,
             None => false,
         };
         if healthy {
@@ -613,11 +619,7 @@ impl BackendState {
         info!("Sync engine unreachable after wake; restarting");
         // Don't bounce an engine another evaluation just restarted.
         if let Some(engine) = self.sync_engine().await.ok().flatten()
-            && crate::app::sync_daemon::probe_healthy(
-                engine.client().as_ref(),
-                crate::app::sync_daemon::WAKE_PROBE_TIMEOUT,
-            )
-            .await
+            && engine.healthy().await
         {
             return;
         }
@@ -655,9 +657,7 @@ impl BackendState {
     }
 
     /// The running sync engine, if a task is installed.
-    pub async fn sync_engine(
-        &self,
-    ) -> Result<Option<Arc<library::sync::engine::SyncEngine>>, String> {
+    pub async fn sync_engine(&self) -> Result<Option<crate::app::sync_daemon::SyncTask>, String> {
         self.gated.sync_engine().await
     }
 
@@ -853,7 +853,8 @@ impl BackendState {
         )
         .await
         {
-            Ok(task) => {
+            Ok((task, owner)) => {
+                *self.sync_owner.lock().unwrap() = Some(owner);
                 self.gated.install_sync_task(task).await;
                 info!("Sync task spawned");
             }
@@ -997,6 +998,8 @@ impl BackendState {
                 log::warn!("library shutdown retained dirty state: {err:#}");
             }
         }
+        let _ = self.spotify_owner.shutdown().await;
+        let _ = self.lyrics_owner.shutdown().await;
         self.model_catalog.0.close().await;
         self.close_caches_for_exit().await;
     }
@@ -1134,7 +1137,7 @@ mod tests {
 
     #[tokio::test]
     async fn exit_step_completes_when_future_finishes() {
-        let completed = Arc::new(AtomicBool::new(false));
+        let completed = std::sync::Arc::new(AtomicBool::new(false));
         let completed_flag = completed.clone();
 
         let success = run_exit_step("quick step", Duration::from_secs(1), async move {
