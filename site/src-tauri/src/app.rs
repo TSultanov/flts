@@ -50,6 +50,7 @@ pub mod spotify;
 pub mod summary_generation_queue;
 pub mod sync;
 pub mod sync_daemon;
+mod task;
 pub mod translation_queue;
 #[derive(Debug)]
 pub enum AppError {
@@ -946,46 +947,11 @@ impl AppState {
         model: String,
         use_cache: bool,
     ) -> anyhow::Result<usize> {
-        let library = self.library().await.map_err(|err| anyhow::anyhow!(err))?;
-
-        let target_language_id = { self.config.borrow().target_language_id.clone() };
-        let target_language = Language::from_639_3(&target_language_id)
-            .ok_or_else(|| anyhow::anyhow!("invalid target language: {target_language_id}"))?;
-
-        // Drop the book lock before enqueueing: queue.translate re-acquires it.
-        let untranslated: Vec<usize> = {
-            let book = library.get_book(&book_id).await?;
-            let book = book.lock().await;
-            let translation_arc = book.get_translation(&target_language).await;
-            let translation_guard = match &translation_arc {
-                Some(arc) => Some(arc.lock().await),
-                None => None,
-            };
-            let chapter = book.book.chapter_view(chapter_id);
-            chapter
-                .paragraphs()
-                .filter(|p| {
-                    translation_guard
-                        .as_ref()
-                        .map(|t| t.paragraph_view(p.id).is_none())
-                        .unwrap_or(true)
-                })
-                .map(|p| p.id)
-                .collect()
-        };
-
         let model = self.config.borrow().resolved_model_id(&model);
-        let queue = self.get_or_init_translation_queue().await?;
-        for paragraph_id in &untranslated {
-            // Swallow per-item errors so one bad paragraph doesn't abandon the rest.
-            if let Err(err) = queue
-                .translate(book_id, *paragraph_id, model.clone(), use_cache)
-                .await
-            {
-                warn!("translate_chapter: failed to enqueue paragraph {paragraph_id}: {err}");
-            }
-        }
-        Ok(untranslated.len())
+        self.get_or_init_translation_queue()
+            .await?
+            .translate_chapter(book_id, chapter_id, model, use_cache)
+            .await
     }
 
     pub async fn get_paragraph_translation_activity(

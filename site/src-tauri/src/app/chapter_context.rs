@@ -42,26 +42,26 @@ impl ChapterContextProvider for SummaryBackedChapterContext {
         let needed = chapter_index - 1;
 
         // No-op when already processing or complete.
-        self.queue.enqueue(book_id);
+        self.queue.enqueue(book_id).await?;
 
         let library = self.current_library()?;
-        let state = self.queue.get_or_init_book_state(&library, book_id).await?;
-        let mut rx = state.subscribe_ready();
-        // The summaries map is authoritative; the watch only signals changes.
-        if let Some(ready_through) = state.summaries.lock().await.ready_through()
-            && ready_through >= needed
-        {
-            return Ok(());
-        }
-
+        let handle = library.get_book(&book_id).await?;
+        let mut rx = handle.subscribe();
         let wait = async {
             loop {
-                rx.changed().await?;
-                if let Some(ready_through) = *rx.borrow()
-                    && ready_through >= needed
+                let snapshot = rx.borrow_and_update().clone();
+                anyhow::ensure!(
+                    snapshot.status == library::library::BookStatus::Active,
+                    "book closed while waiting for summaries"
+                );
+                if snapshot
+                    .summaries
+                    .ready_through()
+                    .is_some_and(|ready| ready >= needed)
                 {
                     return Ok::<(), anyhow::Error>(());
                 }
+                rx.changed().await?;
             }
         };
         // "timed out" must stay in the message: it is what makes
@@ -78,14 +78,12 @@ impl ChapterContextProvider for SummaryBackedChapterContext {
 
     async fn prior_summaries(&self, book_id: Uuid, chapter_index: usize) -> anyhow::Result<String> {
         let library = self.current_library()?;
-        let state = self.queue.get_or_init_book_state(&library, book_id).await?;
-        let summaries = state.summaries.lock().await;
-        Ok(concat_prior_summaries(&summaries, chapter_index))
+        let snapshot = library.get_book(&book_id).await?.snapshot();
+        Ok(concat_prior_summaries(&snapshot.summaries, chapter_index))
     }
 
     async fn chapter_text(&self, book_id: Uuid, chapter_index: usize) -> anyhow::Result<String> {
-        let book = self.current_library()?.get_book(&book_id).await?;
-        let book = book.lock().await;
+        let book = self.current_library()?.get_book(&book_id).await?.snapshot();
         if chapter_index >= book.book.chapter_count() {
             anyhow::bail!("chapter index {chapter_index} out of range for book {book_id}");
         }

@@ -1,5 +1,4 @@
 use std::{
-    collections::VecDeque,
     error::Error,
     fmt::Display,
     fs::{File, create_dir},
@@ -29,8 +28,8 @@ use library::{
         get_translator,
     },
 };
+use tokio::task::JoinSet;
 use tokio::time::{Duration, sleep};
-use tokio::{sync::Mutex, task::JoinSet};
 use uuid::Uuid;
 
 #[derive(Parser)]
@@ -127,8 +126,7 @@ async fn add_book(
         let book_id = library
             .create_book_plain(title, &text, &Language::from_str(lang)?)
             .await?;
-        let book = library.get_book(&book_id).await?;
-        let book = book.lock().await;
+        let book = library.get_book(&book_id).await?.snapshot();
         println!("Created book {} (id: {})", book.book.title, book.book.id);
     } else {
         Err(CliError::UnsupportedFormat(fmt.media_type().to_owned()))?
@@ -143,8 +141,7 @@ async fn add_epub(library: &Arc<Library>, path: &Path, lang: &str) -> anyhow::Re
     let book_id = library
         .create_book_epub(&epub, &Language::from_str(lang)?)
         .await?;
-    let book = library.get_book(&book_id).await?;
-    let book = book.lock().await;
+    let book = library.get_book(&book_id).await?.snapshot();
     println!("Created book {} (id: {})", book.book.title, book.book.id);
 
     Ok(())
@@ -175,8 +172,7 @@ async fn dump_summaries(
             .await?;
 
     let titles: Vec<Option<String>> = {
-        let book = library.get_book(&book_id).await?;
-        let book = book.lock().await;
+        let book = library.get_book(&book_id).await?.snapshot();
         (0..summaries.entries.len())
             .map(|i| {
                 book.book
@@ -265,13 +261,11 @@ async fn translate_paragraph(
     paragraph_id: usize,
     worker_id: usize,
 ) -> anyhow::Result<()> {
-    let (translation, paragraph_text, chapter_id) = {
-        let book = library.get_book(&book_id).await?;
-        let mut book = book.lock().await;
-        let translation = book.get_or_create_translation(tgt_lang).await?;
+    let (paragraph_text, chapter_id) = {
+        let book = library.get_book(&book_id).await?.snapshot();
         let paragraph = book.book.paragraph_view(paragraph_id);
         let chapter_id = book.book.chapter_for_paragraph(paragraph_id).unwrap_or(0);
-        (translation, paragraph.original_text.to_string(), chapter_id)
+        (paragraph.original_text.to_string(), chapter_id)
     };
     println!(
         "Worker {worker_id}: Translating paragraph {}: \"{}...\"",
@@ -289,41 +283,22 @@ async fn translate_paragraph(
         .await?;
     println!("Worker {worker_id}: Translated paragraph {}", paragraph_id);
 
-    translation.lock().await.add_paragraph_translation(
-        paragraph_id,
-        &p_translation,
-        &translator.get_model(),
-    );
+    let handle = library.get_book(&book_id).await?;
+    let receipt = handle
+        .apply_translation(
+            handle.token,
+            paragraph_id,
+            paragraph_text,
+            Language::from_639_3(&handle.snapshot().book.language)
+                .ok_or_else(|| anyhow::anyhow!("invalid source language"))?,
+            *tgt_lang,
+            p_translation,
+            translator.get_model(),
+        )
+        .await?;
+    handle.flush_through(receipt.revision).await?;
 
     Ok(())
-}
-
-async fn save_book(library: &Arc<Library>, book_id: Uuid) -> anyhow::Result<()> {
-    let book = library.get_book(&book_id).await?;
-    let mut book = book.lock().await;
-    book.save().await?;
-    Ok(())
-}
-
-async fn run_saver(library: Arc<Library>, book_id: Uuid, rx: flume::Receiver<()>) {
-    let mut last_save = Instant::now() - Duration::from_secs(1);
-    let mut pending = false;
-
-    while rx.recv_async().await.is_ok() {
-        pending = true;
-        let now = Instant::now();
-        if now.duration_since(last_save) >= Duration::from_secs(1) {
-            if let Err(err) = save_book(&library, book_id).await {
-                eprintln!("Autosave error: {err}");
-            }
-            last_save = now;
-            pending = false;
-        }
-    }
-
-    if pending && let Err(err) = save_book(&library, book_id).await {
-        eprintln!("Final save error: {err}");
-    }
 }
 
 async fn translate_book(
@@ -338,18 +313,17 @@ async fn translate_book(
 ) -> anyhow::Result<()> {
     let target_lang = isolang::Language::from_str(tgt_lang)?;
 
-    let queue = Arc::new(Mutex::new(VecDeque::new()));
+    let queue;
 
     let source_lang = {
-        let book = library.get_book(&book_id).await?;
-        let mut book = book.lock().await;
+        let book = library.get_book(&book_id).await?.snapshot();
         let source_lang = Language::from_639_3(&book.book.language).unwrap();
 
         let paragraph_count = book.book.paragraphs_count();
 
-        let translation = book.get_or_create_translation(&target_lang).await?;
-        let untranslated_paragraphs_count =
-            paragraph_count.saturating_sub(translation.lock().await.translated_paragraphs_count());
+        let translation = book.translation(&target_lang);
+        let untranslated_paragraphs_count = paragraph_count
+            .saturating_sub(translation.map_or(0, |t| t.translated_paragraphs_count()));
         println!(
             "Translating book {} from {} to {}",
             book.book.title,
@@ -362,23 +336,17 @@ async fn translate_book(
         );
 
         let untranslated_ids: Vec<usize> = {
-            let t = translation.lock().await;
             let mut ids = Vec::new();
             for chapter in book.book.chapter_views() {
                 for paragraph in chapter.paragraphs() {
-                    if t.paragraph_view(paragraph.id).is_none() {
+                    if translation.is_none_or(|t| t.paragraph_view(paragraph.id).is_none()) {
                         ids.push(paragraph.id);
                     }
                 }
             }
             ids
         };
-        {
-            let mut q = queue.lock().await;
-            for id in untranslated_ids {
-                q.push_back(id);
-            }
-        }
+        queue = untranslated_ids;
 
         source_lang
     };
@@ -389,17 +357,10 @@ async fn translate_book(
 
     let (tx, rx) = flume::unbounded();
 
-    let (tx_save, rx_save) = flume::unbounded::<()>();
-    let saver_library = library.clone();
-    let saver_handle = tokio::spawn(async move {
-        run_saver(saver_library, book_id, rx_save).await;
-    });
-
     let mut set = JoinSet::new();
     for i in 0..n_workers {
         let library1 = library.clone();
         let rx = rx.clone();
-        let tx_save_w = tx_save.clone();
         let context_provider: Arc<dyn ChapterContextProvider> = Arc::new(NoChapterContext);
         let translator = get_translator(
             cache.clone(),
@@ -429,7 +390,6 @@ async fn translate_book(
 
                     match result {
                         Ok(_) => {
-                            let _ = tx_save_w.send_async(()).await;
                             break
                         },
                         Err(err) => {
@@ -457,17 +417,15 @@ async fn translate_book(
         });
     }
 
-    while let Some(p_id) = queue.lock().await.pop_front() {
+    for p_id in queue {
         tx.send_async(p_id).await?;
     }
 
     drop(tx);
-    // Closes the saver channel once workers finish.
-    drop(tx_save);
 
     set.join_all().await;
 
-    let _ = saver_handle.await;
+    library.flush_all().await?;
 
     let elapsed_time = start_time.elapsed();
     println!("Translated in: {:?}", elapsed_time);
