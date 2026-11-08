@@ -15,6 +15,43 @@ import {
   wordSpan,
 } from "./helpers/paragraph";
 
+test("page flips only offer translation after the lookup confirms it is missing", async ({
+  page,
+}) => {
+  const translatedId = 40;
+  const untranslatedId = 41;
+  const { promise: pending, resolve: release } = Promise.withResolvers<void>();
+  const requested = new Set<number>();
+  await page.exposeFunction("__waitForTranslationBatch", (ids: number[]) => {
+    if (ids.includes(translatedId) || ids.includes(untranslatedId)) {
+      ids.forEach((id) => requested.add(id));
+      return pending;
+    }
+  });
+  await seedAndOpen(
+    page,
+    multipageSpec(80, {
+      [translatedId]: { segments: fillerSegments(translatedId) },
+    }),
+  );
+  await expect(page.locator(".paragraphs-container.is-ready")).toBeVisible();
+  const translated = paragraphLocator(page, translatedId);
+  const untranslated = paragraphLocator(page, untranslatedId);
+  try {
+    await scrollToParagraph(page, translatedId);
+    await expect
+      .poll(() => requested.has(translatedId) && requested.has(untranslatedId))
+      .toBe(true);
+    expect(await translateButton(translated).count()).toBe(0);
+    expect(await translateButton(untranslated).count()).toBe(0);
+  } finally {
+    release();
+  }
+  await expectWordSpansMounted(page, translatedId);
+  await expect(translateButton(translated)).toHaveCount(0);
+  await expect(translateButton(untranslated)).toBeEnabled();
+});
+
 // Lazy-loading regressions: everything a user must still see when paragraphs
 // virtualize on scroll.
 test.describe("ParagraphView (multipage, chromium only)", () => {

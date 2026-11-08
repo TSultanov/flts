@@ -1184,6 +1184,12 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
         const p = book.paragraphsById.get(id);
         return p ? [{ id, segments: p.segments }] : [];
       });
+      const wait = (
+        window as Window & {
+          __waitForTranslationBatch?: (ids: number[]) => Promise<void>;
+        }
+      ).__waitForTranslationBatch;
+      if (wait) return wait(paragraphIds).then(() => rows as T);
       return Promise.resolve(rows as T);
     }
 

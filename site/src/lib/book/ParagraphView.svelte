@@ -86,7 +86,7 @@
         >{:else}{@render kids()}{/if}{/snippet}
 
 <div class="paragraph-wrapper" data-paragraph-id={paragraphId}>
-    {#if mounted && !vm.segments}
+    {#if mounted && vm.isUntranslated}
         <button
             class="translate"
             aria-label="Translate paragraph"
