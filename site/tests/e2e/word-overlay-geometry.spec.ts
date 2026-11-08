@@ -194,14 +194,14 @@ test.describe("Word overlay geometry (chromium only)", () => {
     expect((await measureSplit(page)).fragmentCount).toBe(2);
 
     await page.setViewportSize({ width: 1280, height: 720 });
+    // Overlay anchoring follows the resize on the next animation frame.
     await expect
-      .poll(async () => (await measureSplit(page)).fragmentCount)
-      .toBe(1);
-    expect(await measureSplit(page)).toEqual({
-      fragmentCount: 1,
-      leftFromWidest: 0,
-      topFromWidest: 0,
-      widthRatio: 1,
-    });
+      .poll(() => measureSplit(page))
+      .toEqual({
+        fragmentCount: 1,
+        leftFromWidest: 0,
+        topFromWidest: 0,
+        widthRatio: 1,
+      });
   });
 });

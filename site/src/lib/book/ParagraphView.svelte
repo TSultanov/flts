@@ -107,8 +107,6 @@
                 <Fa icon={faLanguage} />
             {/if}
         </button>
-    {:else}
-        <div></div>
     {/if}
     {#if vm.segments}
         <!-- Both branches render the same segments under the same wrappers,
@@ -156,19 +154,20 @@
     }
 
     .paragraph-wrapper {
+        --paragraph-gutter: 1.5cm;
+        position: relative;
         margin-top: 0;
         margin-bottom: 0.5em;
-        display: grid;
-        grid-template-columns: 1.5cm auto 1.5cm;
-        break-inside: avoid;
-        -webkit-column-break-inside: avoid;
+        padding-inline: var(--paragraph-gutter);
     }
 
     button.translate {
+        position: absolute;
+        top: 0;
+        left: calc((var(--paragraph-gutter) - 2 * var(--font-size)) / 2);
         width: calc(2 * var(--font-size));
         height: calc(2 * var(--font-size));
         padding: 0;
-        justify-self: center;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -176,7 +175,7 @@
 
     @media (max-width: 576px) {
         .paragraph-wrapper {
-            grid-template-columns: 8mm auto 8mm;
+            --paragraph-gutter: 8mm;
         }
 
         button.translate {
