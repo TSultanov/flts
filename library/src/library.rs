@@ -28,6 +28,7 @@ use crate::{
 pub mod file_watcher;
 pub mod library_book;
 pub mod library_card;
+mod session;
 
 /// Books pinned in the warm LRU. Beyond it a book stays reachable through the
 /// weak index until its last holder drops.
