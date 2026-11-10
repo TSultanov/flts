@@ -689,9 +689,10 @@ impl BackendState {
                 task.shutdown().await;
             }
 
-            // A failed flush keeps the old config and session installed.
+            // Unsaved books stay dirty in their owners and retry; one bad
+            // book must not block every settings change.
             if let Some(library) = self.gated.library_unchecked() {
-                library.flush_all().await?;
+                library.save_all().await;
             }
             self.stop_catalog_prefetch().await;
 

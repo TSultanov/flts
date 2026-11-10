@@ -191,9 +191,23 @@ impl ChapterSummaries {
             };
 
             // Remote clocks may run behind ours: merge by content, not age.
+            // An unusable copy has nothing to merge; erroring would wedge
+            // every future save of the book.
+            // Only undecodable content is overwritten: a transient read
+            // failure must not replace good summaries with ours.
             if tokio::fs::try_exists(main_path).await? {
-                let on_disk = Self::load(main_path).await?;
-                *self = self.merge(&on_disk)?;
+                let bytes = tokio::fs::read(main_path).await?;
+                match Self::deserialize(&mut Cursor::new(bytes)) {
+                    Ok(on_disk) => match self.merge(&on_disk) {
+                        Ok(merged) => *self = merged,
+                        Err(err) => log::warn!(
+                            "Overwriting mismatched chapter summaries {main_path:?}: {err:#}"
+                        ),
+                    },
+                    Err(err) => log::warn!(
+                        "Overwriting undecodable chapter summaries {main_path:?}: {err:#}"
+                    ),
+                }
             }
 
             let temp_path = dir.join(format!("{file_name}~{}", create_random_string(8)));

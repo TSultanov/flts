@@ -297,6 +297,8 @@ impl LibraryTranslation {
 impl LibraryBook {
     pub fn has_unsaved_changes(&self) -> bool {
         self.revision > self.persisted_revision
+            // Never written: a new book must reach disk even at revision 0.
+            || self.last_saved_hash.is_none()
             || self.summaries_dirty
             || self.translations.iter().any(LibraryTranslation::is_changed)
     }
@@ -496,7 +498,13 @@ impl LibraryBook {
         }
 
         book.reload_user_state().await?;
-        book.reload_summaries().await?;
+        // Summaries are regenerable; a bad sidecar must not make the book unopenable.
+        if let Err(err) = book.reload_summaries().await {
+            warn!(
+                "Ignoring unusable chapter summaries for {}: {err:#}",
+                book.path.display()
+            );
+        }
         tla_trace::emit_book_event(
             &book.path,
             "LoadBookFromMetadata",

@@ -3190,7 +3190,6 @@ dependencies = [
  "async-trait",
  "core-foundation 0.10.1",
  "criterion",
- "directories",
  "epub",
  "fnv",
  "futures-util",

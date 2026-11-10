@@ -79,11 +79,11 @@ impl Entry {
     }
     fn stop(&mut self, mode: StopMode) {
         if let Some(handle) = &self.handle {
-            *handle.admission.lock().unwrap() = match mode {
+            handle.admission.send_replace(match mode {
                 StopMode::Delete => BookStatus::Deleting,
                 StopMode::Retire => BookStatus::Retiring,
                 _ => BookStatus::Closed,
-            };
+            });
         }
         if let Some(stop) = &self.stop {
             stop.send_replace(mode);
@@ -245,10 +245,11 @@ pub(super) async fn serve_books(
                     log::warn!("book {} retirement retained dirty state: {}", failure.id, failure.error);
                     entry.phase = Phase::Active;
                     entry.retry_after = Some(tokio::time::Instant::now() + Duration::from_secs(30));
-                    *entry.handle.as_ref().unwrap().admission.lock().unwrap() = BookStatus::Active;
+                    entry.handle.as_ref().unwrap().admission.send_replace(BookStatus::Active);
                     entry.stop.as_ref().unwrap().send_replace(StopMode::Running);
                     for waiter in entry.waiters.drain(..) { let _ = waiter.send(Ok(entry.handle.as_ref().unwrap().clone())); }
-                    if closing {
+                    // With no handles left nobody can re-request the close; the sweep retries it.
+                    if closing && !disconnected {
                         closing = false;
                         let epoch = *close_control.borrow_and_update();
                         completion.send_replace((epoch, Some(Err(format!("flush failed: {}", failure.error)))));
@@ -266,7 +267,8 @@ pub(super) async fn serve_books(
                             for reply in entry.deletes.drain(..) { let _ = reply.send(Err(anyhow::anyhow!("library task failed: {err}"))); }
                         }
                         completion.send_replace((*close_control.borrow(), Some(Err(format!("library task failed: {err}")))));
-                        closing = false;
+                        // Nobody is left to re-request a close once disconnected.
+                        closing = disconnected;
                         continue;
                     }
                 };
@@ -297,8 +299,12 @@ pub(super) async fn serve_books(
                     }
                 }
             }
-            _ = sweep.tick(), if !closing => {
+            _ = sweep.tick(), if !closing || disconnected => {
                 for (id, entry) in &mut entries {
+                    if closing {
+                        if entry.phase == Phase::Active && entry.retry_after.is_some_and(|at| at <= tokio::time::Instant::now()) { entry.retry_after = None; entry.stop(StopMode::Close); }
+                        continue;
+                    }
                     if entry.phase == Phase::Active && entry.retry_after.is_none_or(|at| at <= tokio::time::Instant::now()) && !warm.contains(id) && entry.handle.as_ref().is_some_and(|h| Arc::strong_count(h) == 1) {
                         entry.phase = Phase::Retiring; entry.stop(StopMode::Retire);
                     }

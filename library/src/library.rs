@@ -280,11 +280,7 @@ impl Library {
             tokio::fs::create_dir_all(&library_root).await?;
         }
 
-        let locks = directories::BaseDirs::new()
-            .ok_or_else(|| anyhow::anyhow!("local data directory unavailable"))?
-            .data_local_dir()
-            .join("flts/library-locks");
-        let lease = session::LibraryLease::acquire(&library_root, &locks)?;
+        let lease = session::LibraryLease::acquire(&library_root)?;
         let library_root = lease.root.clone();
         let card_store = LibraryCardStore::new(&library_root);
         let (books, requests) = mpsc::channel(256);
@@ -507,25 +503,24 @@ impl Library {
     pub async fn flush_all(&self) -> anyhow::Result<()> {
         let books = self.request(|reply| BookRequest::All { reply }).await?;
         let results = futures_util::future::join_all(books.iter().map(|book| async move {
-            let mut updates = book.subscribe();
+            let mut admission = book.admission.subscribe();
             loop {
-                let status = *book.admission.lock().unwrap();
+                let status = *admission.borrow_and_update();
                 match status {
-                    BookStatus::Active => match book.save().await {
+                    BookStatus::Active => match book.flush_through(0).await {
                         Ok(()) => return Ok(()),
                         Err(error) => {
-                            if *book.admission.lock().unwrap() == BookStatus::Active {
+                            if *admission.borrow() == BookStatus::Active {
                                 return Err(error);
                             }
                         }
                     },
                     BookStatus::Closed | BookStatus::Deleting => return Ok(()),
-                    BookStatus::Retiring => {
-                        updates
-                            .changed()
-                            .await
-                            .map_err(|_| anyhow::anyhow!("book retirement interrupted"))?;
-                    }
+                    // Resolves to Closed, or back to Active if the persist failed.
+                    BookStatus::Retiring => admission
+                        .changed()
+                        .await
+                        .map_err(|_| anyhow::anyhow!("book retirement interrupted"))?,
                 }
             }
         }))

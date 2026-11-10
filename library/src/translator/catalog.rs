@@ -336,7 +336,9 @@ async fn serve_fetches(
                     Some(Ok(models)) => {
                         ready.insert(provider, ((io.now_secs)(), models.clone()));
                         let path = io.cache_path(provider); let at = (io.now_secs)(); let cached = models.clone();
-                        let _ = tokio::task::spawn_blocking(move || write_cache_file(&path, at, &cached)).await;
+                        let written = tokio::task::spawn_blocking(move || write_cache_file(&path, at, &cached)).await;
+                        // The disk cache is trustworthy again only once it holds the refetched list.
+                        if matches!(written, Ok(Ok(()))) { invalidated.remove(&provider); }
                         models
                     }
                     Some(Err(err)) => {
@@ -1037,6 +1039,40 @@ mod tests {
 
         assert!(transport.hits.load(Ordering::SeqCst) >= 1);
         assert_eq!(got, vec![fallback_for(TranslationProvider::Deepseek)]);
+    }
+
+    #[tokio::test]
+    async fn refetch_after_invalidation_restores_the_disk_cache_fallback() {
+        let tmp = crate::test_utils::TempDir::new("catalog");
+        let now = Arc::new(AtomicU64::new(NOW));
+        let online = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let transport = FakeTransport::new({
+            let online = online.clone();
+            move |_| {
+                if online.load(Ordering::SeqCst) {
+                    Ok(json!({"models": [gemini_chat("models/gemini-refetched")]}))
+                } else {
+                    Err(anyhow::anyhow!("offline"))
+                }
+            }
+        });
+        let (cat, _owner) = catalog(tmp.path.clone(), transport, &now);
+        let base = "https://generativelanguage.googleapis.com/v1beta";
+        cat.invalidate(TranslationProvider::Google).await.unwrap();
+        let fresh = cat
+            .models_for(TranslationProvider::Google, Some("k"), base)
+            .await;
+        assert!(ids(&fresh).contains(&"models/gemini-refetched"));
+
+        online.store(false, Ordering::SeqCst);
+        now.store(NOW + LIST_TTL_SECS + 1, Ordering::SeqCst);
+        let stale = cat
+            .models_for(TranslationProvider::Google, Some("k"), base)
+            .await;
+        assert!(
+            ids(&stale).contains(&"models/gemini-refetched"),
+            "{stale:?}"
+        );
     }
 
     #[tokio::test]

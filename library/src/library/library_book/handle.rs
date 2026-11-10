@@ -8,7 +8,7 @@ use crate::book::{
 use isolang::Language;
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{Duration, SystemTime},
 };
 use tokio::sync::{mpsc, oneshot, watch};
@@ -70,8 +70,10 @@ pub(crate) enum BookCommand {
         summary: ChapterSummary,
         reply: ResultReply<MutationReceipt>,
     },
+    /// `force` persists even when clean, adopting newer on-disk content.
     Flush {
         revision: u64,
+        force: bool,
         reply: ResultReply<()>,
     },
     ReloadBook {
@@ -125,7 +127,8 @@ impl BookSubscription {
 pub struct BookRef {
     pub(super) commands: mpsc::Sender<BookCommand>,
     snapshot: watch::Receiver<Arc<BookSnapshot>>,
-    pub(crate) admission: Arc<Mutex<BookStatus>>,
+    /// Admission gate; a watch so waiters observe every status change.
+    pub(crate) admission: Arc<watch::Sender<BookStatus>>,
     pub token: BookToken,
 }
 pub type BookHandle = Arc<BookRef>;
@@ -166,7 +169,8 @@ impl BookRef {
             .await
             .map_err(|_| anyhow::anyhow!("book deleted or session closed"))?;
         {
-            let gate = self.admission.lock().unwrap();
+            // The borrow blocks a status change until the command is queued.
+            let gate = self.admission.borrow();
             anyhow::ensure!(*gate == BookStatus::Active, "book is {:?}", *gate);
             permit.send(build(reply));
         }
@@ -222,15 +226,22 @@ impl BookRef {
         })
         .await
     }
+    /// Durable through `revision`; a no-op when nothing is unsaved.
     pub async fn flush_through(&self, revision: u64) -> anyhow::Result<()> {
-        self.request(|reply| BookCommand::Flush { revision, reply })
-            .await
+        self.request(|reply| BookCommand::Flush {
+            revision,
+            force: false,
+            reply,
+        })
+        .await
     }
     pub async fn save(&self) -> anyhow::Result<()> {
-        self.flush_through(0).await
-    }
-    pub async fn save_if_dirty(&self) -> anyhow::Result<()> {
-        self.save().await
+        self.request(|reply| BookCommand::Flush {
+            revision: 0,
+            force: true,
+            reply,
+        })
+        .await
     }
     pub async fn reload_book(&self, modified: SystemTime) -> anyhow::Result<bool> {
         self.request(|reply| BookCommand::ReloadBook { modified, reply })
@@ -306,7 +317,7 @@ pub(crate) fn owner(
     let reference = Arc::new(BookRef {
         commands,
         snapshot,
-        admission: Arc::new(Mutex::new(BookStatus::Active)),
+        admission: Arc::new(watch::channel(BookStatus::Active).0),
         token: book.token,
     });
     (reference, receiver, publish, stop, stopped)
@@ -339,7 +350,7 @@ pub(crate) async fn serve_book(
     tx: watch::Sender<Arc<BookSnapshot>>,
     mut stop: watch::Receiver<StopMode>,
     failures: mpsc::UnboundedSender<StopFailed>,
-    admission: Arc<Mutex<BookStatus>>,
+    admission: Arc<watch::Sender<BookStatus>>,
 ) -> (Uuid, BookToken) {
     let mut retry = Duration::from_secs(1);
     let mut next_retry = tokio::time::Instant::now() + retry;
@@ -360,7 +371,7 @@ pub(crate) async fn serve_book(
                 // Every queued reply is resolved by closing its sender.
                 while commands.recv().await.is_some() {}
                 publish(&mut book, &tx, BookStatus::Closed);
-                *admission.lock().unwrap() = BookStatus::Closed;
+                admission.send_replace(BookStatus::Closed);
                 break;
             }
             command = commands.recv() => {
@@ -450,11 +461,17 @@ async fn run(book: &mut LibraryBook, command: BookCommand, tx: &watch::Sender<Ar
             publish(book, tx, BookStatus::Active);
             let _ = reply.send(result);
         }
-        BookCommand::Flush { revision, reply } => {
+        BookCommand::Flush {
+            revision,
+            force,
+            reply,
+        } => {
             let result = if revision > book.revision {
                 Err(anyhow::anyhow!("unknown book revision"))
-            } else {
+            } else if force || book.has_unsaved_changes() {
                 persist(book, tx).await
+            } else {
+                Ok(())
             };
             let _ = reply.send(result);
         }
@@ -660,6 +677,116 @@ mod tests {
             replacement.snapshot().user_state.folder_path,
             vec!["accepted"]
         );
+        library.close().await.unwrap();
+    }
+    #[tokio::test(start_paused = true)]
+    async fn implicit_close_retries_a_failed_flush_and_releases_the_lease() {
+        let (dir, library, first) = fixture(2).await;
+        let root = library.root().to_path_buf();
+        let bad = first.snapshot().path.join("translation_zzz_yyy.dat");
+        std::fs::write(&bad, b"bad").unwrap();
+        first
+            .apply_translation(
+                first.token,
+                0,
+                "hello".into(),
+                Language::from_639_3("eng").unwrap(),
+                Language::from_639_3("rus").unwrap(),
+                ParagraphTranslation {
+                    timestamp: 1,
+                    sentences: vec![],
+                    total_tokens: None,
+                },
+                "test".into(),
+            )
+            .await
+            .unwrap();
+        drop(first);
+        drop(library);
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        assert!(Library::open(root.clone()).await.is_err());
+        std::fs::remove_file(bad).unwrap();
+        let mut reopened = None;
+        for _ in 0..120 {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            if let Ok(library) = Library::open(root.clone()).await {
+                reopened = Some(library);
+                break;
+            }
+        }
+        let library = reopened.expect("lease released after the flush recovered");
+        let id = library.list_books().await.unwrap()[0].id;
+        let book = library.get_book(&id).await.unwrap();
+        assert!(
+            book.snapshot()
+                .translation(&Language::from_639_3("rus").unwrap())
+                .is_some()
+        );
+        drop(book);
+        library.close().await.unwrap();
+        drop(dir);
+    }
+    #[tokio::test]
+    async fn unreadable_summaries_sidecar_neither_blocks_load_nor_save() {
+        let (_dir, library, handle) = fixture(2).await;
+        let id = handle.snapshot().book.id;
+        let sidecar = handle.snapshot().path.join("chapter_summaries.dat");
+        let root = library.root().to_path_buf();
+        drop(handle);
+        library.close().await.unwrap();
+        std::fs::write(&sidecar, b"garbage").unwrap();
+
+        let library = Library::open(root).await.unwrap();
+        let handle = library.get_book(&id).await.unwrap();
+        let snapshot = handle.snapshot();
+        assert!(!snapshot.summaries.entries[0].generated);
+        let receipt = handle
+            .apply_summary(
+                &snapshot,
+                0,
+                ChapterSummary {
+                    generated: true,
+                    model: "test".into(),
+                    timestamp: 1,
+                    text: "summary".into(),
+                },
+            )
+            .await
+            .unwrap();
+        handle.flush_through(receipt.revision).await.unwrap();
+        let repaired = ChapterSummaries::load(&sidecar).await.unwrap();
+        assert!(repaired.entries[0].generated);
+        library.close().await.unwrap();
+    }
+    #[tokio::test]
+    async fn flush_of_a_persisted_revision_does_not_rewrite() {
+        let (_dir, library, handle) = fixture(2).await;
+        let receipt = handle
+            .apply_translation(
+                handle.token,
+                0,
+                "hello".into(),
+                Language::from_639_3("eng").unwrap(),
+                Language::from_639_3("rus").unwrap(),
+                ParagraphTranslation {
+                    timestamp: 1,
+                    sentences: vec![],
+                    total_tokens: None,
+                },
+                "test".into(),
+            )
+            .await
+            .unwrap();
+        handle.flush_through(receipt.revision).await.unwrap();
+        // A second persist would fail on this file; a clean flush must not run one.
+        std::fs::write(
+            handle.snapshot().path.join("translation_zzz_yyy.dat"),
+            b"bad",
+        )
+        .unwrap();
+        handle.flush_through(receipt.revision).await.unwrap();
+        library.flush_all().await.unwrap();
+        std::fs::remove_file(handle.snapshot().path.join("translation_zzz_yyy.dat")).unwrap();
         library.close().await.unwrap();
     }
     #[tokio::test]
