@@ -1,0 +1,97 @@
+# Mutants that survive for a reason, one description per line.
+#
+# scripts/mutants.sh fails on a survivor missing from this list AND on an entry
+# here that no longer survives, so a reason that has gone stale is caught rather
+# than quietly kept.
+
+# The cfg(windows) positioned-read and positioned-write loops. Mutating them
+# changes nothing on this platform because they are never compiled here, so no
+# test can reach them -- they are unkillable by construction, not untested.
+#
+# They do now compile: cargo check --target x86_64-pc-windows-msvc passes, which
+# it did not before this list existed (8 errors -- a missing io import, two
+# io::Error values returned where crate::Result was expected, and a borrow the
+# reader could not have satisfied). Verify it that way before trusting them.
+#
+# A Windows CI job would make every one of these killable, and the staleness
+# check would then say so.
+src/storage/column_file/file_source.rs:100:25: replace match guard err.kind() == ErrorKind::Interrupted with false in read_exact_at
+src/storage/column_file/file_source.rs:100:25: replace match guard err.kind() == ErrorKind::Interrupted with true in read_exact_at
+src/storage/column_file/file_source.rs:100:36: replace == with != in read_exact_at
+src/storage/column_file/file_source.rs:56:5: replace write_all_at -> Result<()> with Err(crate::error::Error::invalid("mutant"))
+src/storage/column_file/file_source.rs:56:5: replace write_all_at -> Result<()> with Ok(())
+src/storage/column_file/file_source.rs:61:11: delete ! in write_all_at
+src/storage/column_file/file_source.rs:68:20: replace += with *= in write_all_at
+src/storage/column_file/file_source.rs:68:20: replace += with -= in write_all_at
+src/storage/column_file/file_source.rs:70:25: replace match guard err.kind() == ErrorKind::Interrupted with false in write_all_at
+src/storage/column_file/file_source.rs:70:25: replace match guard err.kind() == ErrorKind::Interrupted with true in write_all_at
+src/storage/column_file/file_source.rs:70:36: replace == with != in write_all_at
+src/storage/column_file/file_source.rs:85:5: replace read_exact_at -> Result<()> with Err(crate::error::Error::invalid("mutant"))
+src/storage/column_file/file_source.rs:85:5: replace read_exact_at -> Result<()> with Ok(())
+src/storage/column_file/file_source.rs:90:11: delete ! in read_exact_at
+src/storage/column_file/file_source.rs:98:20: replace += with *= in read_exact_at
+src/storage/column_file/file_source.rs:98:20: replace += with -= in read_exact_at
+
+# Provably equivalent, not untested. new_file_uuid is
+#     ((entropy() as u128) << 64) | entropy() as u128
+# and the left operand has all sixty-four low bits clear while the right fits in
+# sixty-four bits, so OR and XOR agree on every input. No test can distinguish
+# them because no input distinguishes them.
+#
+# Rewriting the expression to make the mutant non-equivalent would mean picking
+# a worse way to say "high half, low half" purely to give a tool something to
+# kill, so it stays and this entry explains why.
+src/storage/column_file/header.rs:45:33: replace | with ^ in new_file_uuid
+
+# The #[proc_macro_attribute] entry points. A proc-macro crate cannot expand its
+# own macros inside its own test harness -- the proc_macro API panics outside an
+# expansion context -- so no test in this workspace can observe the shim
+# returning an empty TokenStream. The shim is one call into field_enum::expand,
+# which is swept and has nineteen tests of its own; what survives here is the
+# TokenStream conversion around it, not the logic.
+#
+# A crate that *uses* the macro would kill it. dbsync is that crate, but
+# cargo mutants mutates dbsync-macros and runs dbsync-macros's tests, never
+# dbsync's. If that ever changes, the staleness half of scripts/mutants.sh will
+# say so.
+dbsync-macros/src/lib.rs:13:5: replace container -> TokenStream with Default::default()
+dbsync-macros/src/lib.rs:21:5: replace entity -> TokenStream with Default::default()
+dbsync-macros/src/lib.rs:29:5: replace field_enum -> TokenStream with Default::default()
+
+# Provably equivalent, the same way new_file_uuid's OR above is. v7_at masks
+# every field to its own width before shifting it into place, so no two operands
+# of these ORs have a set bit in common and OR and XOR agree on every input.
+# The masks are what make the mutants equivalent, and the masks are the point --
+# a_field_wider_than_its_place_does_not_reach_into_the_next is the test that
+# holds them. Saying "place these disjoint fields" with addition instead would
+# give the tool something to kill at the cost of meaning what it says.
+src/id/uuid.rs:72:17: replace | with ^ in Uuid::v7_at
+src/id/uuid.rs:73:17: replace | with ^ in Uuid::v7_at
+src/id/uuid.rs:74:17: replace | with ^ in Uuid::v7_at
+src/id/uuid.rs:75:17: replace | with ^ in Uuid::v7_at
+
+# Provably equivalent, not untested. KNOWN is
+#     const KNOWN: u64 = SUPERSEDED | REMOVED;
+# over the disjoint single bits 1 and 2, so OR and XOR agree on every input.
+# Same shape as the new_file_uuid and v7_at entries above.
+src/schema/version.rs:17:31: replace | with ^
+
+# Provably equivalent. observe raises an entry only when the incoming count is
+# higher:
+#     Ok(at) if self.seen[at].counter() < dot.counter() => self.seen[at] = dot,
+# The arm was reached by a binary search on the writer, so at equal counts the
+# held dot and the incoming one are the same value and the assignment writes
+# what is already there. No input distinguishes < from <=.
+src/schema/clock.rs:56:47: replace < with <= in VersionVector::observe
+
+# Two arms of the code-shape helpers that only a downstream crate can observe.
+# A mutant in dbsync-macros changes what the macro emits, and the sweep records
+# "0s build" against both of these -- the crate that expands the macro was not
+# rebuilt, so the tests ran against artifacts from before the mutation. Verified
+# by hand instead: deleting either arm makes `cargo test --lib` fail to compile,
+# seven errors for owned and eight for lent, because Option<Cow<str>> is not
+# Option<String> and neither is Option<&str>. The compiler refuses them; the
+# sweep simply cannot see them, the same blind spot as the proc-macro shims
+# above.
+dbsync-macros/src/field.rs:392:13: delete match arm Kind::NullableText in Kind::owned
+dbsync-macros/src/field.rs:402:13: delete match arm Kind::NullableText in Kind::lent

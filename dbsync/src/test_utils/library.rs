@@ -1,0 +1,1657 @@
+use std::borrow::Cow;
+use std::ops::{Deref, DerefMut};
+
+use crate::error::{Error, Result};
+use crate::id::Id;
+use crate::schema::{
+    Across, AnyTable, Audited, Child, Children, Entity, Entry, EntryMut, EnumColumn, Field,
+    FieldMut, Holds, NullableColumn, NullableTextColumn, RefColumn, Removed, Rows, Store,
+    StoreState, Table, TextColumn, UnitEnum,
+};
+use crate::schema::{IdColumn, Indexed, VersionColumn};
+use crate::storage::Arena;
+
+pub struct Book;
+pub struct Chapter;
+pub struct Paragraph;
+pub struct Edition;
+pub struct Author;
+pub struct Authorship;
+
+impl Entity for Book {
+    const NAME: &'static str = "book";
+
+    type Value = ();
+
+    type Table = Books;
+
+    type Row<'a, S>
+        = BookRow<'a, S>
+    where
+        S: Holds<Book> + 'a;
+
+    type RowMut<'a, S>
+        = BookRowMut<'a, S>
+    where
+        S: Holds<Book> + 'a;
+}
+
+impl Entity for Chapter {
+    const NAME: &'static str = "chapter";
+
+    type Value = ();
+
+    type Table = Chapters;
+
+    type Row<'a, S>
+        = ChapterRow<'a, S>
+    where
+        S: Holds<Chapter> + 'a;
+
+    type RowMut<'a, S>
+        = ChapterRowMut<'a, S>
+    where
+        S: Holds<Chapter> + 'a;
+}
+
+impl Entity for Paragraph {
+    const NAME: &'static str = "paragraph";
+
+    type Value = ();
+
+    type Table = Paragraphs;
+
+    type Row<'a, S>
+        = ParagraphRow<'a, S>
+    where
+        S: Holds<Paragraph> + 'a;
+
+    type RowMut<'a, S>
+        = ParagraphRowMut<'a, S>
+    where
+        S: Holds<Paragraph> + 'a;
+}
+
+impl Entity for Edition {
+    const NAME: &'static str = "edition";
+
+    type Value = ();
+
+    type Table = Editions;
+
+    type Row<'a, S>
+        = EditionRow<'a, S>
+    where
+        S: Holds<Edition> + 'a;
+
+    type RowMut<'a, S>
+        = EditionRowMut<'a, S>
+    where
+        S: Holds<Edition> + 'a;
+}
+
+impl Entity for Author {
+    const NAME: &'static str = "author";
+
+    type Value = ();
+
+    type Table = Authors;
+
+    type Row<'a, S>
+        = AuthorRow<'a, S>
+    where
+        S: Holds<Author> + 'a;
+
+    type RowMut<'a, S>
+        = AuthorRowMut<'a, S>
+    where
+        S: Holds<Author> + 'a;
+}
+
+impl Entity for Authorship {
+    const NAME: &'static str = "authorship";
+
+    type Value = ();
+
+    type Table = Authorships;
+
+    type Row<'a, S>
+        = AuthorshipRow<'a, S>
+    where
+        S: Holds<Authorship> + 'a;
+
+    type RowMut<'a, S>
+        = AuthorshipRowMut<'a, S>
+    where
+        S: Holds<Authorship> + 'a;
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Binding {
+    Cloth,
+    Paper,
+    Leather,
+}
+
+impl UnitEnum for Binding {
+    const NAME: &'static str = "binding";
+    const VARIANTS: &'static [(&'static str, u8)] = &[("Cloth", 0), ("Paper", 1), ("Leather", 2)];
+
+    fn to_u8(self) -> u8 {
+        match self {
+            Binding::Cloth => 0,
+            Binding::Paper => 1,
+            Binding::Leather => 2,
+        }
+    }
+
+    fn from_u8(code: u8) -> Result<Self> {
+        match code {
+            0 => Ok(Binding::Cloth),
+            1 => Ok(Binding::Paper),
+            2 => Ok(Binding::Leather),
+            other => Err(Error::unsupported(format!("unknown binding {other}"))),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct Books {
+    ids: IdColumn<Book>,
+    versions: VersionColumn<Book>,
+    title: Indexed<TextColumn>,
+    author: TextColumn,
+}
+
+impl Default for Books {
+    fn default() -> Self {
+        Self {
+            ids: IdColumn::default(),
+            versions: VersionColumn::default(),
+            title: Indexed::named("book.title"),
+            author: TextColumn::default(),
+        }
+    }
+}
+
+impl Table for Books {
+    type Of = Book;
+
+    fn ids(&self) -> &IdColumn<Book> {
+        &self.ids
+    }
+
+    fn ids_mut(&mut self) -> &mut IdColumn<Book> {
+        &mut self.ids
+    }
+
+    fn versions(&self) -> &VersionColumn<Book> {
+        &self.versions
+    }
+
+    fn versions_mut(&mut self) -> &mut VersionColumn<Book> {
+        &mut self.versions
+    }
+
+    fn fields(&self) -> Vec<Field<'_>> {
+        vec![
+            Field::new("id", &self.ids),
+            Field::new("version", &self.versions),
+            Field::new("title", &self.title),
+            Field::new("author", &self.author),
+        ]
+    }
+
+    fn fields_mut(&mut self) -> Vec<FieldMut<'_>> {
+        vec![
+            FieldMut::new("id", &mut self.ids),
+            FieldMut::new("version", &mut self.versions),
+            FieldMut::new("title", &mut self.title),
+            FieldMut::new("author", &mut self.author),
+        ]
+    }
+}
+
+impl Books {
+    pub fn push(&mut self, title: &str, author: &str) -> Result<Id<Book>> {
+        self.reserve()?;
+        self.title.reach(title)?;
+        let id = self.mint()?;
+        self.title.push(title)?;
+        self.author.push(author)?;
+        self.refresh_one(id)?;
+        Ok(id)
+    }
+
+    pub fn title(&self, book: Id<Book>) -> Result<String> {
+        Ok(self.title.column().get(self.row_of(book)?)?.into_owned())
+    }
+
+    pub fn find_by_title(&self, title: &str) -> Result<Vec<Id<Book>>> {
+        self.live_among(self.title.find(title)?)?
+            .into_iter()
+            .map(|row| self.id_at(row))
+            .collect()
+    }
+
+    pub fn write_over(&mut self, book: Id<Book>, title: &str, author: &str) -> Result<()> {
+        self.reserve()?;
+        self.title.reach(title)?;
+        let row = self.revise(book)?;
+        self.title.push(title)?;
+        self.author.push(author)?;
+        debug_assert_eq!(row.index() + 1, Table::rows(self));
+        self.refresh_one(book)
+    }
+
+    pub fn author(&self, book: Id<Book>) -> Result<String> {
+        Ok(self.author.get(self.row_of(book)?)?.into_owned())
+    }
+
+    pub fn remove(&mut self, of: Id<Book>) -> Result<()> {
+        let row = self.row_of(of)?;
+        let title = self.title.column().get(row)?.into_owned();
+        let author = self.author.get(row)?.into_owned();
+        self.write_over(of, &title, &author)?;
+        self.withdraw(of)
+    }
+
+    pub fn title_at(&self, row: crate::schema::Row) -> Result<String> {
+        Ok(self.title.column().get(row)?.into_owned())
+    }
+
+    pub fn quietly_name(&mut self, book: Id<Book>, row: crate::schema::Row) -> Result<()> {
+        self.versions.view().upsert(crate::schema::Candidate {
+            entity: "book",
+            id: book.uuid(),
+            winner: row.index(),
+            deleted: false,
+            combined: false,
+            references: Vec::new(),
+        })
+    }
+
+    pub fn set_title(&mut self, book: Id<Book>, title: &str) -> Result<()> {
+        let author = self.author.get(self.row_of(book)?)?.into_owned();
+        self.write_over(book, title, &author)
+    }
+}
+
+pub struct BookRow<'a, S: Holds<Book>>(Entry<'a, S, Book>);
+
+impl<'a, S: Holds<Book>> From<Entry<'a, S, Book>> for BookRow<'a, S> {
+    fn from(entry: Entry<'a, S, Book>) -> Self {
+        Self(entry)
+    }
+}
+
+impl<'a, S: Holds<Book>> Deref for BookRow<'a, S> {
+    type Target = Entry<'a, S, Book>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a, S: Holds<Book>> BookRow<'a, S> {
+    pub fn title(&self) -> Result<Cow<'a, str>> {
+        self.0.table().title.column().get(self.0.row())
+    }
+
+    pub fn author(&self) -> Result<Cow<'a, str>> {
+        self.0.table().author.get(self.0.row())
+    }
+
+    pub fn chapters(&self) -> Result<Children<'a, S, Chapter>>
+    where
+        S: Holds<Chapter>,
+    {
+        self.0.children::<Chapter>()
+    }
+
+    pub fn editions(&self) -> Result<Children<'a, S, Edition>>
+    where
+        S: Holds<Edition>,
+    {
+        self.0.children::<Edition>()
+    }
+
+    pub fn authorships(&self) -> Result<Children<'a, S, Authorship>>
+    where
+        S: Holds<Authorship>,
+    {
+        self.0.children::<Authorship>()
+    }
+
+    pub fn authors(&self) -> Result<Across<'a, S, Author>>
+    where
+        S: Holds<Authorship> + Holds<Author>,
+    {
+        self.0.across::<Authorship, Author>()
+    }
+}
+
+pub struct BookRowMut<'a, S: Holds<Book>>(EntryMut<'a, S, Book>);
+
+impl<'a, S: Holds<Book>> From<EntryMut<'a, S, Book>> for BookRowMut<'a, S> {
+    fn from(entry: EntryMut<'a, S, Book>) -> Self {
+        Self(entry)
+    }
+}
+
+impl<'a, S: Holds<Book>> Deref for BookRowMut<'a, S> {
+    type Target = EntryMut<'a, S, Book>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a, S: Holds<Book>> DerefMut for BookRowMut<'a, S> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<S: Holds<Book>> BookRowMut<'_, S> {
+    pub fn set_title(&mut self, value: &str) -> Result<()> {
+        let of = self.0.id()?;
+        let table = self.0.table_mut();
+        table.set_title(of, value)
+    }
+
+    pub fn write_over(&mut self, title: &str, author: &str) -> Result<()> {
+        let book = self.0.id()?;
+        let table = self.0.table_mut();
+        table.write_over(book, title, author)
+    }
+}
+
+#[derive(Clone)]
+pub struct Chapters {
+    ids: IdColumn<Chapter>,
+    versions: VersionColumn<Chapter>,
+    book: RefColumn<Book, Chapter>,
+    title: TextColumn,
+}
+
+impl Default for Chapters {
+    fn default() -> Self {
+        Self {
+            ids: IdColumn::default(),
+            versions: VersionColumn::default(),
+            book: RefColumn::named("chapter.book"),
+            title: TextColumn::default(),
+        }
+    }
+}
+
+impl Table for Chapters {
+    fn reference_columns(&self) -> Vec<(&'static str, &'static str)> {
+        vec![("chapter.book", "book")]
+    }
+
+    fn references(&self, row: crate::schema::Row) -> Result<Vec<crate::schema::Reference>> {
+        Ok(vec![crate::schema::Reference {
+            column: "chapter.book",
+            entity: Book::NAME,
+            id: self.book.get(row)?.uuid(),
+        }])
+    }
+    type Of = Chapter;
+
+    fn ids(&self) -> &IdColumn<Chapter> {
+        &self.ids
+    }
+
+    fn ids_mut(&mut self) -> &mut IdColumn<Chapter> {
+        &mut self.ids
+    }
+
+    fn versions(&self) -> &VersionColumn<Chapter> {
+        &self.versions
+    }
+
+    fn versions_mut(&mut self) -> &mut VersionColumn<Chapter> {
+        &mut self.versions
+    }
+
+    fn fields(&self) -> Vec<Field<'_>> {
+        vec![
+            Field::new("id", &self.ids),
+            Field::new("version", &self.versions),
+            Field::new("book", &self.book),
+            Field::new("title", &self.title),
+        ]
+    }
+
+    fn fields_mut(&mut self) -> Vec<FieldMut<'_>> {
+        vec![
+            FieldMut::new("id", &mut self.ids),
+            FieldMut::new("version", &mut self.versions),
+            FieldMut::new("book", &mut self.book),
+            FieldMut::new("title", &mut self.title),
+        ]
+    }
+}
+
+impl Child<Book> for Chapter {
+    fn parents(table: &Chapters) -> &RefColumn<Book, Chapter> {
+        &table.book
+    }
+}
+
+impl Chapters {
+    pub fn push(&mut self, book: Id<Book>, title: &str) -> Result<Id<Chapter>> {
+        self.reserve()?;
+        self.book.reach(book)?;
+        let id = self.mint()?;
+        self.book.push(book)?;
+        self.title.push(title)?;
+        self.refresh_one(id)?;
+        Ok(id)
+    }
+
+    pub fn title(&self, chapter: Id<Chapter>) -> Result<String> {
+        Ok(self.title.get(self.row_of(chapter)?)?.into_owned())
+    }
+
+    pub fn book(&self, chapter: Id<Chapter>) -> Result<Id<Book>> {
+        self.book.get(self.row_of(chapter)?)
+    }
+
+    pub fn write_over(&mut self, chapter: Id<Chapter>, book: Id<Book>, title: &str) -> Result<()> {
+        self.reserve()?;
+        self.book.reach(book)?;
+        self.revise(chapter)?;
+        self.book.push(book)?;
+        self.title.push(title)?;
+        self.refresh_one(chapter)
+    }
+
+    pub fn remove(&mut self, of: Id<Chapter>) -> Result<()> {
+        let row = self.row_of(of)?;
+        let (book, title) = (self.book.get(row)?, self.title.get(row)?.into_owned());
+        self.write_over(of, book, &title)?;
+        self.withdraw(of)
+    }
+
+    pub fn of_book(&self, book: Id<Book>) -> Result<Vec<Id<Chapter>>> {
+        self.live_among(self.book.child_rows_of(book)?)?
+            .into_iter()
+            .map(|row| self.id_at(row))
+            .collect()
+    }
+}
+
+pub struct ChapterRow<'a, S: Holds<Chapter>>(Entry<'a, S, Chapter>);
+
+impl<'a, S: Holds<Chapter>> From<Entry<'a, S, Chapter>> for ChapterRow<'a, S> {
+    fn from(entry: Entry<'a, S, Chapter>) -> Self {
+        Self(entry)
+    }
+}
+
+impl<'a, S: Holds<Chapter>> Deref for ChapterRow<'a, S> {
+    type Target = Entry<'a, S, Chapter>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a, S: Holds<Chapter>> ChapterRow<'a, S> {
+    pub fn title(&self) -> Result<Cow<'a, str>> {
+        self.0.table().title.get(self.0.row())
+    }
+
+    pub fn book(&self) -> Result<<Book as Entity>::Row<'a, S>>
+    where
+        S: Holds<Book>,
+    {
+        let table = self.0.table();
+        let row = self.0.row();
+        self.0.at(table.book.get(row)?)
+    }
+
+    pub fn paragraphs(&self) -> Result<Children<'a, S, Paragraph>>
+    where
+        S: Holds<Paragraph>,
+    {
+        self.0.children::<Paragraph>()
+    }
+}
+
+pub struct ChapterRowMut<'a, S: Holds<Chapter>>(EntryMut<'a, S, Chapter>);
+
+impl<'a, S: Holds<Chapter>> From<EntryMut<'a, S, Chapter>> for ChapterRowMut<'a, S> {
+    fn from(entry: EntryMut<'a, S, Chapter>) -> Self {
+        Self(entry)
+    }
+}
+
+impl<'a, S: Holds<Chapter>> Deref for ChapterRowMut<'a, S> {
+    type Target = EntryMut<'a, S, Chapter>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a, S: Holds<Chapter>> DerefMut for ChapterRowMut<'a, S> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<S: Holds<Chapter>> ChapterRowMut<'_, S> {
+    pub fn set_book(&mut self, value: Id<Book>) -> Result<()> {
+        let of = self.0.id()?;
+        let table = self.0.table_mut();
+        let title = table.title.get(table.row_of(of)?)?.into_owned();
+        table.write_over(of, value, &title)
+    }
+}
+
+#[derive(Clone)]
+pub struct Paragraphs {
+    ids: IdColumn<Paragraph>,
+    versions: VersionColumn<Paragraph>,
+    chapter: RefColumn<Chapter, Paragraph>,
+    text: TextColumn,
+}
+
+impl Default for Paragraphs {
+    fn default() -> Self {
+        Self {
+            ids: IdColumn::default(),
+            versions: VersionColumn::default(),
+            chapter: RefColumn::named("paragraph.chapter"),
+            text: TextColumn::default(),
+        }
+    }
+}
+
+impl Table for Paragraphs {
+    fn reference_columns(&self) -> Vec<(&'static str, &'static str)> {
+        vec![("paragraph.chapter", "chapter")]
+    }
+
+    fn references(&self, row: crate::schema::Row) -> Result<Vec<crate::schema::Reference>> {
+        Ok(vec![crate::schema::Reference {
+            column: "paragraph.chapter",
+            entity: Chapter::NAME,
+            id: self.chapter.get(row)?.uuid(),
+        }])
+    }
+    type Of = Paragraph;
+
+    fn ids(&self) -> &IdColumn<Paragraph> {
+        &self.ids
+    }
+
+    fn ids_mut(&mut self) -> &mut IdColumn<Paragraph> {
+        &mut self.ids
+    }
+
+    fn versions(&self) -> &VersionColumn<Paragraph> {
+        &self.versions
+    }
+
+    fn versions_mut(&mut self) -> &mut VersionColumn<Paragraph> {
+        &mut self.versions
+    }
+
+    fn fields(&self) -> Vec<Field<'_>> {
+        vec![
+            Field::new("id", &self.ids),
+            Field::new("version", &self.versions),
+            Field::new("chapter", &self.chapter),
+            Field::new("text", &self.text),
+        ]
+    }
+
+    fn fields_mut(&mut self) -> Vec<FieldMut<'_>> {
+        vec![
+            FieldMut::new("id", &mut self.ids),
+            FieldMut::new("version", &mut self.versions),
+            FieldMut::new("chapter", &mut self.chapter),
+            FieldMut::new("text", &mut self.text),
+        ]
+    }
+}
+
+impl Child<Chapter> for Paragraph {
+    fn parents(table: &Paragraphs) -> &RefColumn<Chapter, Paragraph> {
+        &table.chapter
+    }
+}
+
+impl Paragraphs {
+    pub fn push(&mut self, chapter: Id<Chapter>, text: &str) -> Result<Id<Paragraph>> {
+        self.reserve()?;
+        self.chapter.reach(chapter)?;
+        let id = self.mint()?;
+        self.chapter.push(chapter)?;
+        self.text.push(text)?;
+        self.refresh_one(id)?;
+        Ok(id)
+    }
+
+    pub fn text(&self, paragraph: Id<Paragraph>) -> Result<String> {
+        Ok(self.text.get(self.row_of(paragraph)?)?.into_owned())
+    }
+
+    pub fn write_over(
+        &mut self,
+        paragraph: Id<Paragraph>,
+        chapter: Id<Chapter>,
+        text: &str,
+    ) -> Result<()> {
+        self.reserve()?;
+        self.chapter.reach(chapter)?;
+        self.revise(paragraph)?;
+        self.chapter.push(chapter)?;
+        self.text.push(text)?;
+        self.refresh_one(paragraph)
+    }
+
+    pub fn remove(&mut self, of: Id<Paragraph>) -> Result<()> {
+        let row = self.row_of(of)?;
+        let (chapter, text) = (self.chapter.get(row)?, self.text.get(row)?.into_owned());
+        self.write_over(of, chapter, &text)?;
+        self.withdraw(of)
+    }
+
+    pub fn of_chapter(&self, chapter: Id<Chapter>) -> Result<Vec<Id<Paragraph>>> {
+        self.live_among(self.chapter.child_rows_of(chapter)?)?
+            .into_iter()
+            .map(|row| self.id_at(row))
+            .collect()
+    }
+}
+
+pub struct ParagraphRow<'a, S: Holds<Paragraph>>(Entry<'a, S, Paragraph>);
+
+impl<'a, S: Holds<Paragraph>> From<Entry<'a, S, Paragraph>> for ParagraphRow<'a, S> {
+    fn from(entry: Entry<'a, S, Paragraph>) -> Self {
+        Self(entry)
+    }
+}
+
+impl<'a, S: Holds<Paragraph>> Deref for ParagraphRow<'a, S> {
+    type Target = Entry<'a, S, Paragraph>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a, S: Holds<Paragraph>> ParagraphRow<'a, S> {
+    pub fn text(&self) -> Result<Cow<'a, str>> {
+        self.0.table().text.get(self.0.row())
+    }
+
+    pub fn chapter(&self) -> Result<<Chapter as Entity>::Row<'a, S>>
+    where
+        S: Holds<Chapter>,
+    {
+        let table = self.0.table();
+        let row = self.0.row();
+        self.0.at(table.chapter.get(row)?)
+    }
+}
+
+pub struct ParagraphRowMut<'a, S: Holds<Paragraph>>(EntryMut<'a, S, Paragraph>);
+
+impl<'a, S: Holds<Paragraph>> From<EntryMut<'a, S, Paragraph>> for ParagraphRowMut<'a, S> {
+    fn from(entry: EntryMut<'a, S, Paragraph>) -> Self {
+        Self(entry)
+    }
+}
+
+impl<'a, S: Holds<Paragraph>> Deref for ParagraphRowMut<'a, S> {
+    type Target = EntryMut<'a, S, Paragraph>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a, S: Holds<Paragraph>> DerefMut for ParagraphRowMut<'a, S> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<S: Holds<Paragraph>> ParagraphRowMut<'_, S> {
+    pub fn set_text(&mut self, value: &str) -> Result<()> {
+        let of = self.0.id()?;
+        let table = self.0.table_mut();
+        table.write_over(of, table.chapter.get(table.row_of(of)?)?, value)
+    }
+}
+
+#[derive(Clone)]
+pub struct Editions {
+    ids: IdColumn<Edition>,
+    versions: VersionColumn<Edition>,
+    book: RefColumn<Book, Edition>,
+    isbn: NullableTextColumn,
+    year: Arena<u32>,
+    pages: NullableColumn<u32>,
+    binding: EnumColumn<Binding>,
+}
+
+impl Default for Editions {
+    fn default() -> Self {
+        Self {
+            ids: IdColumn::default(),
+            versions: VersionColumn::default(),
+            book: RefColumn::named("edition.book"),
+            isbn: NullableTextColumn::default(),
+            year: Arena::new(),
+            pages: NullableColumn::default(),
+            binding: EnumColumn::default(),
+        }
+    }
+}
+
+impl Table for Editions {
+    fn reference_columns(&self) -> Vec<(&'static str, &'static str)> {
+        vec![("edition.book", "book")]
+    }
+
+    fn references(&self, row: crate::schema::Row) -> Result<Vec<crate::schema::Reference>> {
+        Ok(vec![crate::schema::Reference {
+            column: "edition.book",
+            entity: Book::NAME,
+            id: self.book.get(row)?.uuid(),
+        }])
+    }
+    type Of = Edition;
+
+    fn ids(&self) -> &IdColumn<Edition> {
+        &self.ids
+    }
+
+    fn ids_mut(&mut self) -> &mut IdColumn<Edition> {
+        &mut self.ids
+    }
+
+    fn versions(&self) -> &VersionColumn<Edition> {
+        &self.versions
+    }
+
+    fn versions_mut(&mut self) -> &mut VersionColumn<Edition> {
+        &mut self.versions
+    }
+
+    fn fields(&self) -> Vec<Field<'_>> {
+        vec![
+            Field::new("id", &self.ids),
+            Field::new("version", &self.versions),
+            Field::new("book", &self.book),
+            Field::new("isbn", &self.isbn),
+            Field::new("year", &self.year),
+            Field::new("pages", &self.pages),
+            Field::new("binding", &self.binding),
+        ]
+    }
+
+    fn fields_mut(&mut self) -> Vec<FieldMut<'_>> {
+        vec![
+            FieldMut::new("id", &mut self.ids),
+            FieldMut::new("version", &mut self.versions),
+            FieldMut::new("book", &mut self.book),
+            FieldMut::new("isbn", &mut self.isbn),
+            FieldMut::new("year", &mut self.year),
+            FieldMut::new("pages", &mut self.pages),
+            FieldMut::new("binding", &mut self.binding),
+        ]
+    }
+}
+
+impl Child<Book> for Edition {
+    fn parents(table: &Editions) -> &RefColumn<Book, Edition> {
+        &table.book
+    }
+}
+
+impl Editions {
+    pub fn push(
+        &mut self,
+        book: Id<Book>,
+        isbn: Option<&str>,
+        year: u32,
+        pages: Option<u32>,
+        binding: Binding,
+    ) -> Result<Id<Edition>> {
+        self.reserve()?;
+        self.book.reach(book)?;
+        let id = self.mint()?;
+        self.book.push(book)?;
+        self.isbn.push(isbn)?;
+        self.year.push(year)?;
+        self.pages.push(pages)?;
+        self.binding.push(binding)?;
+        self.refresh_one(id)?;
+        Ok(id)
+    }
+
+    pub fn book(&self, of: Id<Edition>) -> Result<Id<Book>> {
+        self.book.get(self.row_of(of)?)
+    }
+
+    pub fn isbn(&self, of: Id<Edition>) -> Result<Option<Cow<'_, str>>> {
+        self.isbn.get(self.row_of(of)?)
+    }
+
+    pub fn year(&self, of: Id<Edition>) -> Result<u32> {
+        self.year.row(self.row_of(of)?.index()).copied()
+    }
+
+    pub fn pages(&self, of: Id<Edition>) -> Result<Option<u32>> {
+        self.pages.get(self.row_of(of)?)
+    }
+
+    pub fn binding(&self, of: Id<Edition>) -> Result<Binding> {
+        self.binding.get(self.row_of(of)?)
+    }
+
+    pub fn remove(&mut self, of: Id<Edition>) -> Result<()> {
+        let held = self.held(of)?;
+        self.write_over(of, held.0, held.1.as_deref(), held.2, held.3, held.4)?;
+        self.withdraw(of)
+    }
+
+    #[allow(clippy::type_complexity)]
+    pub fn held(
+        &self,
+        of: Id<Edition>,
+    ) -> Result<(Id<Book>, Option<String>, u32, Option<u32>, Binding)> {
+        let row = self.row_of(of)?;
+        Ok((
+            self.book.get(row)?,
+            self.isbn.get(row)?.map(|held| held.into_owned()),
+            *self.year.row(row.index())?,
+            self.pages.get(row)?,
+            self.binding.get(row)?,
+        ))
+    }
+
+    pub fn write_over(
+        &mut self,
+        of: Id<Edition>,
+        book: Id<Book>,
+        isbn: Option<&str>,
+        year: u32,
+        pages: Option<u32>,
+        binding: Binding,
+    ) -> Result<()> {
+        self.reserve()?;
+        self.book.reach(book)?;
+        self.revise(of)?;
+        self.book.push(book)?;
+        self.isbn.push(isbn)?;
+        self.year.push(year)?;
+        self.pages.push(pages)?;
+        self.binding.push(binding)?;
+        self.refresh_one(of)
+    }
+}
+
+pub struct EditionRow<'a, S: Holds<Edition>>(Entry<'a, S, Edition>);
+
+impl<'a, S: Holds<Edition>> From<Entry<'a, S, Edition>> for EditionRow<'a, S> {
+    fn from(entry: Entry<'a, S, Edition>) -> Self {
+        Self(entry)
+    }
+}
+
+impl<'a, S: Holds<Edition>> Deref for EditionRow<'a, S> {
+    type Target = Entry<'a, S, Edition>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a, S: Holds<Edition>> EditionRow<'a, S> {
+    pub fn book(&self) -> Result<<Book as Entity>::Row<'a, S>>
+    where
+        S: Holds<Book>,
+    {
+        let table = self.0.table();
+        let row = self.0.row();
+        self.0.at(table.book.get(row)?)
+    }
+
+    pub fn isbn(&self) -> Result<Option<Cow<'a, str>>> {
+        self.0.table().isbn.get(self.0.row())
+    }
+
+    pub fn year(&self) -> Result<u32> {
+        self.0.table().year.row(self.0.row().index()).copied()
+    }
+
+    pub fn pages(&self) -> Result<Option<u32>> {
+        self.0.table().pages.get(self.0.row())
+    }
+
+    pub fn binding(&self) -> Result<Binding> {
+        self.0.table().binding.get(self.0.row())
+    }
+}
+
+pub struct EditionRowMut<'a, S: Holds<Edition>>(EntryMut<'a, S, Edition>);
+
+impl<'a, S: Holds<Edition>> From<EntryMut<'a, S, Edition>> for EditionRowMut<'a, S> {
+    fn from(entry: EntryMut<'a, S, Edition>) -> Self {
+        Self(entry)
+    }
+}
+
+impl<'a, S: Holds<Edition>> Deref for EditionRowMut<'a, S> {
+    type Target = EntryMut<'a, S, Edition>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a, S: Holds<Edition>> DerefMut for EditionRowMut<'a, S> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<S: Holds<Edition>> EditionRowMut<'_, S> {
+    pub fn set_book(&mut self, value: Id<Book>) -> Result<()> {
+        let of = self.0.id()?;
+        let table = self.0.table_mut();
+        let held = table.held(of)?;
+        table.write_over(of, value, held.1.as_deref(), held.2, held.3, held.4)
+    }
+
+    pub fn set_isbn(&mut self, value: Option<&str>) -> Result<()> {
+        let of = self.0.id()?;
+        let table = self.0.table_mut();
+        let held = table.held(of)?;
+        table.write_over(of, held.0, value, held.2, held.3, held.4)
+    }
+
+    pub fn set_year(&mut self, value: u32) -> Result<()> {
+        let of = self.0.id()?;
+        let table = self.0.table_mut();
+        let held = table.held(of)?;
+        table.write_over(of, held.0, held.1.as_deref(), value, held.3, held.4)
+    }
+
+    pub fn set_pages(&mut self, value: Option<u32>) -> Result<()> {
+        let of = self.0.id()?;
+        let table = self.0.table_mut();
+        let held = table.held(of)?;
+        table.write_over(of, held.0, held.1.as_deref(), held.2, value, held.4)
+    }
+
+    pub fn set_binding(&mut self, value: Binding) -> Result<()> {
+        let of = self.0.id()?;
+        let table = self.0.table_mut();
+        let held = table.held(of)?;
+        table.write_over(of, held.0, held.1.as_deref(), held.2, held.3, value)
+    }
+}
+
+#[derive(Clone)]
+pub struct Authors {
+    ids: IdColumn<Author>,
+    versions: VersionColumn<Author>,
+    name: Indexed<TextColumn>,
+}
+
+impl Default for Authors {
+    fn default() -> Self {
+        Self {
+            ids: IdColumn::default(),
+            versions: VersionColumn::default(),
+            name: Indexed::named("author.name"),
+        }
+    }
+}
+
+impl Table for Authors {
+    type Of = Author;
+
+    fn ids(&self) -> &IdColumn<Author> {
+        &self.ids
+    }
+
+    fn ids_mut(&mut self) -> &mut IdColumn<Author> {
+        &mut self.ids
+    }
+
+    fn versions(&self) -> &VersionColumn<Author> {
+        &self.versions
+    }
+
+    fn versions_mut(&mut self) -> &mut VersionColumn<Author> {
+        &mut self.versions
+    }
+
+    fn fields(&self) -> Vec<Field<'_>> {
+        vec![
+            Field::new("id", &self.ids),
+            Field::new("version", &self.versions),
+            Field::new("name", &self.name),
+        ]
+    }
+
+    fn fields_mut(&mut self) -> Vec<FieldMut<'_>> {
+        vec![
+            FieldMut::new("id", &mut self.ids),
+            FieldMut::new("version", &mut self.versions),
+            FieldMut::new("name", &mut self.name),
+        ]
+    }
+}
+
+impl Authors {
+    pub fn push(&mut self, name: &str) -> Result<Id<Author>> {
+        self.reserve()?;
+        self.name.reach(name)?;
+        let id = self.mint()?;
+        self.name.push(name)?;
+        self.refresh_one(id)?;
+        Ok(id)
+    }
+
+    pub fn name(&self, author: Id<Author>) -> Result<String> {
+        Ok(self.name.column().get(self.row_of(author)?)?.into_owned())
+    }
+
+    pub fn write_over(&mut self, author: Id<Author>, name: &str) -> Result<()> {
+        self.reserve()?;
+        self.name.reach(name)?;
+        self.revise(author)?;
+        self.name.push(name)?;
+        self.refresh_one(author)
+    }
+
+    pub fn remove(&mut self, of: Id<Author>) -> Result<()> {
+        let name = self.name.column().get(self.row_of(of)?)?.into_owned();
+        self.write_over(of, &name)?;
+        self.withdraw(of)
+    }
+
+    pub fn find_by_name(&self, name: &str) -> Result<Vec<Id<Author>>> {
+        self.live_among(self.name.find(name)?)?
+            .into_iter()
+            .map(|row| self.id_at(row))
+            .collect()
+    }
+}
+
+pub struct AuthorRow<'a, S: Holds<Author>>(Entry<'a, S, Author>);
+
+impl<'a, S: Holds<Author>> From<Entry<'a, S, Author>> for AuthorRow<'a, S> {
+    fn from(entry: Entry<'a, S, Author>) -> Self {
+        Self(entry)
+    }
+}
+
+impl<'a, S: Holds<Author>> Deref for AuthorRow<'a, S> {
+    type Target = Entry<'a, S, Author>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a, S: Holds<Author>> AuthorRow<'a, S> {
+    pub fn name(&self) -> Result<Cow<'a, str>> {
+        self.0.table().name.column().get(self.0.row())
+    }
+
+    pub fn authorships(&self) -> Result<Children<'a, S, Authorship>>
+    where
+        S: Holds<Authorship>,
+    {
+        self.0.children::<Authorship>()
+    }
+
+    pub fn books(&self) -> Result<Across<'a, S, Book>>
+    where
+        S: Holds<Authorship> + Holds<Book>,
+    {
+        self.0.across::<Authorship, Book>()
+    }
+}
+
+pub struct AuthorRowMut<'a, S: Holds<Author>>(EntryMut<'a, S, Author>);
+
+impl<'a, S: Holds<Author>> From<EntryMut<'a, S, Author>> for AuthorRowMut<'a, S> {
+    fn from(entry: EntryMut<'a, S, Author>) -> Self {
+        Self(entry)
+    }
+}
+
+impl<'a, S: Holds<Author>> Deref for AuthorRowMut<'a, S> {
+    type Target = EntryMut<'a, S, Author>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a, S: Holds<Author>> DerefMut for AuthorRowMut<'a, S> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+#[derive(Clone)]
+pub struct Authorships {
+    ids: IdColumn<Authorship>,
+    versions: VersionColumn<Authorship>,
+    book: RefColumn<Book, Authorship>,
+    author: RefColumn<Author, Authorship>,
+}
+
+impl Default for Authorships {
+    fn default() -> Self {
+        Self {
+            ids: IdColumn::default(),
+            versions: VersionColumn::default(),
+            book: RefColumn::named("authorship.book"),
+            author: RefColumn::named("authorship.author"),
+        }
+    }
+}
+
+impl Table for Authorships {
+    fn reference_columns(&self) -> Vec<(&'static str, &'static str)> {
+        vec![("authorship.book", "book"), ("authorship.author", "author")]
+    }
+
+    fn references(&self, row: crate::schema::Row) -> Result<Vec<crate::schema::Reference>> {
+        Ok(vec![
+            crate::schema::Reference {
+                column: "authorship.book",
+                entity: Book::NAME,
+                id: self.book.get(row)?.uuid(),
+            },
+            crate::schema::Reference {
+                column: "authorship.author",
+                entity: Author::NAME,
+                id: self.author.get(row)?.uuid(),
+            },
+        ])
+    }
+    type Of = Authorship;
+
+    fn ids(&self) -> &IdColumn<Authorship> {
+        &self.ids
+    }
+
+    fn ids_mut(&mut self) -> &mut IdColumn<Authorship> {
+        &mut self.ids
+    }
+
+    fn versions(&self) -> &VersionColumn<Authorship> {
+        &self.versions
+    }
+
+    fn versions_mut(&mut self) -> &mut VersionColumn<Authorship> {
+        &mut self.versions
+    }
+
+    fn fields(&self) -> Vec<Field<'_>> {
+        vec![
+            Field::new("id", &self.ids),
+            Field::new("version", &self.versions),
+            Field::new("book", &self.book),
+            Field::new("author", &self.author),
+        ]
+    }
+
+    fn fields_mut(&mut self) -> Vec<FieldMut<'_>> {
+        vec![
+            FieldMut::new("id", &mut self.ids),
+            FieldMut::new("version", &mut self.versions),
+            FieldMut::new("book", &mut self.book),
+            FieldMut::new("author", &mut self.author),
+        ]
+    }
+}
+
+impl Child<Book> for Authorship {
+    fn parents(table: &Authorships) -> &RefColumn<Book, Authorship> {
+        &table.book
+    }
+}
+
+impl Child<Author> for Authorship {
+    fn parents(table: &Authorships) -> &RefColumn<Author, Authorship> {
+        &table.author
+    }
+}
+
+impl Authorships {
+    pub fn push(&mut self, book: Id<Book>, author: Id<Author>) -> Result<Id<Authorship>> {
+        self.reserve()?;
+        self.book.reach(book)?;
+        self.author.reach(author)?;
+        let id = self.mint()?;
+        self.book.push(book)?;
+        self.author.push(author)?;
+        self.refresh_one(id)?;
+        Ok(id)
+    }
+
+    pub fn book(&self, authorship: Id<Authorship>) -> Result<Id<Book>> {
+        self.book.get(self.row_of(authorship)?)
+    }
+
+    pub fn author(&self, authorship: Id<Authorship>) -> Result<Id<Author>> {
+        self.author.get(self.row_of(authorship)?)
+    }
+
+    pub fn write_over(
+        &mut self,
+        link: Id<Authorship>,
+        book: Id<Book>,
+        author: Id<Author>,
+    ) -> Result<()> {
+        self.reserve()?;
+        self.book.reach(book)?;
+        self.author.reach(author)?;
+        self.revise(link)?;
+        self.book.push(book)?;
+        self.author.push(author)?;
+        self.refresh_one(link)
+    }
+
+    pub fn remove(&mut self, of: Id<Authorship>) -> Result<()> {
+        let row = self.row_of(of)?;
+        let (book, author) = (self.book.get(row)?, self.author.get(row)?);
+        self.write_over(of, book, author)?;
+        self.withdraw(of)
+    }
+
+    pub fn of_book(&self, book: Id<Book>) -> Result<Vec<Id<Authorship>>> {
+        self.live_among(self.book.child_rows_of(book)?)?
+            .into_iter()
+            .map(|row| self.id_at(row))
+            .collect()
+    }
+
+    pub fn of_author(&self, author: Id<Author>) -> Result<Vec<Id<Authorship>>> {
+        self.live_among(self.author.child_rows_of(author)?)?
+            .into_iter()
+            .map(|row| self.id_at(row))
+            .collect()
+    }
+
+    pub fn quietly_repoint_author(&mut self, row: crate::schema::Row, author: Id<Author>) {
+        self.author.set(row, author).unwrap();
+    }
+}
+
+pub struct AuthorshipRow<'a, S: Holds<Authorship>>(Entry<'a, S, Authorship>);
+
+impl<'a, S: Holds<Authorship>> From<Entry<'a, S, Authorship>> for AuthorshipRow<'a, S> {
+    fn from(entry: Entry<'a, S, Authorship>) -> Self {
+        Self(entry)
+    }
+}
+
+impl<'a, S: Holds<Authorship>> Deref for AuthorshipRow<'a, S> {
+    type Target = Entry<'a, S, Authorship>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a, S: Holds<Authorship>> AuthorshipRow<'a, S> {
+    pub fn book(&self) -> Result<BookRow<'a, S>>
+    where
+        S: Holds<Book>,
+    {
+        let table = self.0.table();
+        let row = self.0.row();
+        self.0.at(table.book.get(row)?)
+    }
+
+    pub fn author(&self) -> Result<AuthorRow<'a, S>>
+    where
+        S: Holds<Author>,
+    {
+        let table = self.0.table();
+        let row = self.0.row();
+        self.0.at(table.author.get(row)?)
+    }
+}
+
+pub struct AuthorshipRowMut<'a, S: Holds<Authorship>>(EntryMut<'a, S, Authorship>);
+
+impl<'a, S: Holds<Authorship>> From<EntryMut<'a, S, Authorship>> for AuthorshipRowMut<'a, S> {
+    fn from(entry: EntryMut<'a, S, Authorship>) -> Self {
+        Self(entry)
+    }
+}
+
+impl<'a, S: Holds<Authorship>> Deref for AuthorshipRowMut<'a, S> {
+    type Target = EntryMut<'a, S, Authorship>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a, S: Holds<Authorship>> DerefMut for AuthorshipRowMut<'a, S> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<S: Holds<Authorship>> AuthorshipRowMut<'_, S> {
+    pub fn set_book(&mut self, value: Id<Book>) -> Result<()> {
+        let of = self.0.id()?;
+        let table = self.0.table_mut();
+        let author = table.author.get(table.row_of(of)?)?;
+        table.write_over(of, value, author)
+    }
+
+    pub fn set_author(&mut self, value: Id<Author>) -> Result<()> {
+        let of = self.0.id()?;
+        let table = self.0.table_mut();
+        let book = table.book.get(table.row_of(of)?)?;
+        table.write_over(of, book, value)
+    }
+}
+
+pub struct Library {
+    state: StoreState,
+    pub books: Books,
+    pub chapters: Chapters,
+    pub paragraphs: Paragraphs,
+    pub editions: Editions,
+    pub authors: Authors,
+    pub authorships: Authorships,
+}
+
+impl Default for Library {
+    fn default() -> Self {
+        let mut store = Self {
+            state: StoreState::default(),
+            books: Books::default(),
+            chapters: Chapters::default(),
+            paragraphs: Paragraphs::default(),
+            editions: Editions::default(),
+            authors: Authors::default(),
+            authorships: Authorships::default(),
+        };
+        store.bind_tables();
+        store
+    }
+}
+
+impl Clone for Library {
+    fn clone(&self) -> Self {
+        let mut store = Self {
+            state: self.state.clone(),
+            books: self.books.clone(),
+            chapters: self.chapters.clone(),
+            paragraphs: self.paragraphs.clone(),
+            editions: self.editions.clone(),
+            authors: self.authors.clone(),
+            authorships: self.authorships.clone(),
+        };
+        store.bind_tables();
+        store
+    }
+}
+
+impl Store for Library {
+    const SCHEMA_NAME: &'static str = "library";
+    const SCHEMA_VERSION: u64 = 1;
+    fn merge_rows_from(
+        &mut self,
+        theirs: &Self,
+        report: &mut crate::schema::MergeReport,
+    ) -> Result<()> {
+        self.books.merge_rows(&theirs.books, report)?;
+        self.chapters.merge_rows(&theirs.chapters, report)?;
+        self.paragraphs.merge_rows(&theirs.paragraphs, report)?;
+        self.editions.merge_rows(&theirs.editions, report)?;
+        self.authors.merge_rows(&theirs.authors, report)?;
+        self.authorships.merge_rows(&theirs.authorships, report)
+    }
+
+    fn state(&self) -> &StoreState {
+        &self.state
+    }
+
+    fn state_mut(&mut self) -> &mut StoreState {
+        &mut self.state
+    }
+
+    fn tables(&self) -> Vec<&dyn AnyTable> {
+        vec![
+            &self.books,
+            &self.chapters,
+            &self.paragraphs,
+            &self.editions,
+            &self.authors,
+            &self.authorships,
+        ]
+    }
+
+    fn tables_mut(&mut self) -> Vec<&mut dyn AnyTable> {
+        vec![
+            &mut self.books,
+            &mut self.chapters,
+            &mut self.paragraphs,
+            &mut self.editions,
+            &mut self.authors,
+            &mut self.authorships,
+        ]
+    }
+
+    fn audit(&self) -> Result<()> {
+        <Book as Audited<Self>>::audit_in(self)?;
+        <Chapter as Audited<Self>>::audit_in(self)?;
+        <Paragraph as Audited<Self>>::audit_in(self)?;
+        <Edition as Audited<Self>>::audit_in(self)?;
+        <Author as Audited<Self>>::audit_in(self)?;
+        <Authorship as Audited<Self>>::audit_in(self)
+    }
+}
+
+impl<S: Holds<Book>> Removed<S> for Book {
+    fn remove_in(store: &mut S, of: Id<Book>) -> Result<()> {
+        Holds::<Book>::table_mut(store).remove(of)
+    }
+}
+
+impl<S: Holds<Chapter>> Removed<S> for Chapter {
+    fn remove_in(store: &mut S, of: Id<Chapter>) -> Result<()> {
+        Holds::<Chapter>::table_mut(store).remove(of)
+    }
+}
+
+impl<S: Holds<Paragraph>> Removed<S> for Paragraph {
+    fn remove_in(store: &mut S, of: Id<Paragraph>) -> Result<()> {
+        Holds::<Paragraph>::table_mut(store).remove(of)
+    }
+}
+
+impl<S: Holds<Edition>> Removed<S> for Edition {
+    fn remove_in(store: &mut S, of: Id<Edition>) -> Result<()> {
+        Holds::<Edition>::table_mut(store).remove(of)
+    }
+}
+
+impl<S: Holds<Author>> Removed<S> for Author {
+    fn remove_in(store: &mut S, of: Id<Author>) -> Result<()> {
+        Holds::<Author>::table_mut(store).remove(of)
+    }
+}
+
+impl<S: Holds<Authorship>> Removed<S> for Authorship {
+    fn remove_in(store: &mut S, of: Id<Authorship>) -> Result<()> {
+        Holds::<Authorship>::table_mut(store).remove(of)
+    }
+}
+
+impl<S: Holds<Book>> Audited<S> for Book {
+    fn audit_in(store: &S) -> Result<()> {
+        Table::audit(Holds::<Book>::table(store))
+    }
+}
+
+impl<S: Holds<Chapter> + Holds<Book>> Audited<S> for Chapter {
+    fn audit_in(store: &S) -> Result<()> {
+        Table::audit(Holds::<Chapter>::table(store))
+    }
+}
+
+impl<S: Holds<Paragraph> + Holds<Chapter>> Audited<S> for Paragraph {
+    fn audit_in(store: &S) -> Result<()> {
+        Table::audit(Holds::<Paragraph>::table(store))
+    }
+}
+
+impl<S: Holds<Edition> + Holds<Book>> Audited<S> for Edition {
+    fn audit_in(store: &S) -> Result<()> {
+        Table::audit(Holds::<Edition>::table(store))
+    }
+}
+
+impl<S: Holds<Author>> Audited<S> for Author {
+    fn audit_in(store: &S) -> Result<()> {
+        Table::audit(Holds::<Author>::table(store))
+    }
+}
+
+impl<S: Holds<Authorship> + Holds<Book> + Holds<Author>> Audited<S> for Authorship {
+    fn audit_in(store: &S) -> Result<()> {
+        let links = Holds::<Authorship>::table(store);
+        Table::audit(links)
+    }
+}
+
+impl Holds<Book> for Library {
+    fn table(&self) -> &Books {
+        &self.books
+    }
+
+    fn table_mut(&mut self) -> &mut Books {
+        &mut self.books
+    }
+}
+
+impl Holds<Chapter> for Library {
+    fn table(&self) -> &Chapters {
+        &self.chapters
+    }
+
+    fn table_mut(&mut self) -> &mut Chapters {
+        &mut self.chapters
+    }
+}
+
+impl Holds<Paragraph> for Library {
+    fn table(&self) -> &Paragraphs {
+        &self.paragraphs
+    }
+
+    fn table_mut(&mut self) -> &mut Paragraphs {
+        &mut self.paragraphs
+    }
+}
+
+impl Holds<Edition> for Library {
+    fn table(&self) -> &Editions {
+        &self.editions
+    }
+
+    fn table_mut(&mut self) -> &mut Editions {
+        &mut self.editions
+    }
+}
+
+impl Holds<Author> for Library {
+    fn table(&self) -> &Authors {
+        &self.authors
+    }
+
+    fn table_mut(&mut self) -> &mut Authors {
+        &mut self.authors
+    }
+}
+
+impl Holds<Authorship> for Library {
+    fn table(&self) -> &Authorships {
+        &self.authorships
+    }
+
+    fn table_mut(&mut self) -> &mut Authorships {
+        &mut self.authorships
+    }
+}
+
+impl Library {
+    pub fn remove<E>(&mut self, of: Id<E>) -> Result<()>
+    where
+        Self: Holds<E>,
+        E: Removed<Self>,
+    {
+        let kept = Store::snapshot(self);
+        <E as Removed<Self>>::remove_in(self, of)?;
+        match Store::audit(self) {
+            Ok(()) => Ok(()),
+            Err(said) => {
+                *self = kept;
+                Err(crate::error::Error::invalid(format!(
+                    "{} {of} cannot be taken out while something still names it: {said}",
+                    E::NAME
+                )))
+            }
+        }
+    }
+
+    pub fn at<E>(&self, id: Id<E>) -> Result<E::Row<'_, Self>>
+    where
+        Self: Holds<E>,
+        E: Entity,
+    {
+        Ok(Entry::of(self, id)?.into())
+    }
+
+    pub fn at_mut<E>(&mut self, id: Id<E>) -> Result<E::RowMut<'_, Self>>
+    where
+        Self: Holds<E>,
+        E: Entity,
+    {
+        Ok(EntryMut::of(self, id)?.into())
+    }
+
+    pub fn all<E>(&self) -> Rows<'_, Self, E>
+    where
+        Self: Holds<E>,
+        E: Entity,
+    {
+        Rows::all(self)
+    }
+
+    pub fn chapters_of(&self, book: Id<Book>) -> Result<Vec<Id<Chapter>>> {
+        self.chapters.of_book(book)
+    }
+
+    pub fn paragraphs_of(&self, chapter: Id<Chapter>) -> Result<Vec<Id<Paragraph>>> {
+        self.paragraphs.of_chapter(chapter)
+    }
+}

@@ -1,0 +1,5 @@
+[env]
+PROPTEST_RNG_ALGORITHM = { value = "cc", force = false }
+PROPTEST_RNG_SEED = { value = "20260916", force = false }
+PROPTEST_CASES = { value = "256", force = false }
+PROPTEST_DISABLE_FAILURE_PERSISTENCE = { value = "1", force = false }
