@@ -315,10 +315,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             where Self: ::dbsync::schema::Holds<E>, E: ::dbsync::schema::Entity {
                 <Self as ::dbsync::schema::Store>::check_mutable(self)?;
                 let kept = <Self as ::dbsync::schema::Store>::snapshot(self);
-                let result = (|| {
-                    ::dbsync::schema::Table::recover_row(::dbsync::schema::Holds::<E>::table_mut(self), id, dot, restore)?;
-                    <Self as ::dbsync::schema::Store>::audit(self)
-                })();
+                let result = ::dbsync::schema::Table::recover_row(::dbsync::schema::Holds::<E>::table_mut(self), id, dot, restore);
                 if result.is_err() { *self = kept; }
                 result
             }
@@ -330,8 +327,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             {
                 <Self as ::dbsync::schema::Store>::check_mutable(self)?;
                 let kept = <Self as ::dbsync::schema::Store>::snapshot(self);
-                let result = <E as ::dbsync::schema::Removed<Self>>::remove_in(self, of)
-                    .and_then(|()| <Self as ::dbsync::schema::Store>::audit(self));
+                let result = <E as ::dbsync::schema::Removed<Self>>::remove_in(self, of);
                 match result {
                     ::core::result::Result::Ok(()) => ::core::result::Result::Ok(()),
                     ::core::result::Result::Err(said) => {

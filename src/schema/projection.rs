@@ -26,6 +26,7 @@ struct Projection {
     entities: BTreeSet<&'static str>,
     nodes: BTreeMap<(&'static str, Uuid), Candidate>,
     statuses: BTreeMap<(&'static str, Uuid), RowStatus>,
+    wanted: BTreeSet<(&'static str, Uuid)>,
     dirty: bool,
     blocked: bool,
 }
@@ -68,9 +69,59 @@ impl View {
 
     pub fn upsert(&self, candidate: Candidate) {
         let mut held = self.0.write().expect("view lock");
-        held.nodes
-            .insert((candidate.entity, candidate.id), candidate);
-        held.dirty = true;
+        let key = (candidate.entity, candidate.id);
+        if held.dirty {
+            held.nodes.insert(key, candidate);
+            return;
+        }
+        match held.nodes.get(&key) {
+            Some(known) if *known == candidate => return,
+            Some(_) => {
+                held.nodes.insert(key, candidate);
+                held.dirty = true;
+                return;
+            }
+            None => {}
+        }
+        if held.wanted.contains(&key) {
+            held.nodes.insert(key, candidate);
+            held.dirty = true;
+            return;
+        }
+        let mut reasons = Vec::new();
+        for parent in &candidate.references {
+            if parent.id.is_nil() {
+                continue;
+            }
+            let named = (parent.entity, parent.id);
+            let absent =
+                held.entities.contains(parent.entity) && !held.nodes.contains_key(&named);
+            let hidden = held
+                .statuses
+                .get(&named)
+                .is_some_and(|status| *status != RowStatus::Visible);
+            if absent {
+                held.wanted.insert(named);
+            }
+            if absent || hidden {
+                reasons.push(ReferenceConflict {
+                    entity: candidate.entity,
+                    id: candidate.id,
+                    column: parent.column,
+                    parent_entity: parent.entity,
+                    parent: parent.id,
+                });
+            }
+        }
+        reasons.sort();
+        reasons.dedup();
+        let status = match (candidate.deleted, reasons.is_empty()) {
+            (true, _) => RowStatus::Deleted,
+            (false, true) => RowStatus::Visible,
+            (false, false) => RowStatus::Suppressed(reasons),
+        };
+        held.statuses.insert(key, status);
+        held.nodes.insert(key, candidate);
     }
 
     fn resolve(held: &mut Projection) {
@@ -78,6 +129,18 @@ impl View {
             return;
         }
         held.statuses.clear();
+        let mut wanted = BTreeSet::new();
+        for node in held.nodes.values() {
+            for parent in &node.references {
+                if !parent.id.is_nil()
+                    && held.entities.contains(parent.entity)
+                    && !held.nodes.contains_key(&(parent.entity, parent.id))
+                {
+                    wanted.insert((parent.entity, parent.id));
+                }
+            }
+        }
+        held.wanted = wanted;
         for node in held.nodes.values() {
             held.statuses.insert(
                 (node.entity, node.id),
