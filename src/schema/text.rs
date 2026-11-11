@@ -192,6 +192,10 @@ impl Column for TextColumn {
         Ok(out)
     }
 
+    fn schema_type(&self) -> String {
+        "text".to_owned()
+    }
+
     fn rows(&self) -> usize {
         self.blobs.len()
     }
@@ -335,6 +339,14 @@ impl Column for NullableTextColumn {
             super::encode_text(&value, &mut out);
         }
         Ok(out)
+    }
+
+    fn absent_value_bytes(&self) -> Option<Vec<u8>> {
+        Some(vec![0])
+    }
+
+    fn schema_type(&self) -> String {
+        "optional text".to_owned()
     }
 
     fn rows(&self) -> usize {

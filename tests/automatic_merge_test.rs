@@ -329,12 +329,13 @@ mod named_policy {
 }
 
 #[test]
-fn a_custom_function_named_newest_is_not_the_builtin_policy() -> Result<()> {
+fn how_an_entity_merges_is_the_readers_business_and_not_part_of_what_is_stored() -> Result<()> {
     let dir = Directory::new();
-    named_policy::Database::create(dir.path("custom"), writer(1))?;
-    let err = plain_policy::Database::open(dir.path("custom"))
-        .err()
-        .unwrap();
-    assert!(err.is_unsupported(), "{err}");
+    let mut custom = named_policy::Database::create(dir.path("custom"), writer(1))?;
+    let id = custom.items.push(7)?;
+    custom.commit(writer(1))?;
+
+    let plain = plain_policy::Database::open(dir.path("custom"))?;
+    assert_eq!(plain.items.value(id.cast())?, 7);
     Ok(())
 }

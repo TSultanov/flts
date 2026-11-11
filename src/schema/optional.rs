@@ -61,6 +61,10 @@ impl<P: Entity, C: Entity> Column for OptionalRefColumn<P, C> {
         format!("optional reference {}", P::NAME)
     }
 
+    fn absent_value_bytes(&self) -> Option<Vec<u8>> {
+        Some(vec![0; <Id<P> as Record>::SIZE])
+    }
+
     fn rows(&self) -> usize {
         self.0.rows()
     }
@@ -144,7 +148,18 @@ impl<E: UnitEnum> Column for OptionalEnumColumn<E> {
     }
 
     fn schema_type(&self) -> String {
-        format!("optional enum {} {:?}", E::NAME, E::VARIANTS)
+        format!("optional {}", super::enums::enum_type::<E>())
+    }
+
+    fn absent_value_bytes(&self) -> Option<Vec<u8>> {
+        Some(vec![0])
+    }
+
+    fn understands(&self, bytes: &[u8]) -> bool {
+        match bytes {
+            [1, code] => E::from_u8(*code).is_ok(),
+            _ => true,
+        }
     }
 
     fn rows(&self) -> usize {

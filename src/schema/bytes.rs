@@ -218,6 +218,10 @@ impl Column for NullableBytesColumn {
         Ok(out)
     }
 
+    fn absent_value_bytes(&self) -> Option<Vec<u8>> {
+        Some(vec![0])
+    }
+
     fn schema_type(&self) -> String {
         "optional bytes".to_owned()
     }

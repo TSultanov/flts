@@ -13,19 +13,10 @@ pub enum Error {
         expected: Box<crate::schema::SchemaMetadata>,
         actual: Box<crate::schema::SchemaMetadata>,
     },
-    MigrationUncertain {
-        expected: CommitToken,
-        attempted: CommitToken,
-        source: io::Error,
-    },
     CompactionUncertain {
         expected: CommitToken,
         attempted: CommitToken,
         source: io::Error,
-    },
-    RetryExhausted {
-        attempts: usize,
-        source: Box<Error>,
     },
 
     CommitUncertain {
@@ -86,17 +77,9 @@ impl fmt::Display for Error {
                     ""
                 }
             ),
-            Self::MigrationUncertain { source, .. } => write!(
-                f,
-                "migration was replaced but durability is uncertain: {source}"
-            ),
             Self::CompactionUncertain { source, .. } => write!(
                 f,
                 "compaction was replaced but durability is uncertain: {source}"
-            ),
-            Self::RetryExhausted { attempts, source } => write!(
-                f,
-                "could not complete after {attempts} publication attempts: {source}"
             ),
             Self::CommitUncertain { attempt, source } => write!(
                 f,
@@ -119,12 +102,9 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::RetryExhausted { source, .. } => Some(source.as_ref()),
             Self::CommitUncertain { source, .. } => Some(source),
             Self::Io(err) => Some(err),
-            Self::CompactionUncertain { source, .. } | Self::MigrationUncertain { source, .. } => {
-                Some(source)
-            }
+            Self::CompactionUncertain { source, .. } => Some(source),
             _ => None,
         }
     }

@@ -33,6 +33,80 @@ impl SchemaMetadata {
         Self::decode(&bytes)
     }
 
+    pub fn describe(fields: &[(String, String, String)]) -> Vec<u8> {
+        let mut lines: Vec<String> = fields
+            .iter()
+            .map(|(entity, field, held)| format!("{entity}\t{field}\t{held}\n"))
+            .collect();
+        lines.sort();
+        lines.concat().into_bytes()
+    }
+
+    pub fn fields(&self) -> Result<Vec<(String, String, String)>> {
+        let bad = || Error::corrupt("schema", "malformed field description");
+        let text = std::str::from_utf8(&self.descriptor).map_err(|_| bad())?;
+        text.lines()
+            .map(|line| {
+                let mut parts = line.splitn(3, '\t');
+                match (parts.next(), parts.next(), parts.next()) {
+                    (Some(entity), Some(field), Some(held)) => {
+                        Ok((entity.to_owned(), field.to_owned(), held.to_owned()))
+                    }
+                    _ => Err(bad()),
+                }
+            })
+            .collect()
+    }
+
+    pub fn reads(reader: &str, writer: &str) -> bool {
+        if reader == writer {
+            return true;
+        }
+        let (Some((ours, known)), Some((theirs, told))) =
+            (reader.split_once('|'), writer.split_once('|'))
+        else {
+            return false;
+        };
+        let known: Vec<(&str, &str)> = known
+            .split(',')
+            .filter_map(|variant| variant.split_once('='))
+            .collect();
+        ours == theirs
+            && told
+                .split(',')
+                .filter_map(|variant| variant.split_once('='))
+                .all(|(name, code)| {
+                    known
+                        .iter()
+                        .all(|(held, at)| (*held == name) == (*at == code))
+                })
+    }
+
+    pub fn can_read(&self, written: &Self) -> Result<bool> {
+        if self.name != written.name || self.version != written.version {
+            return Ok(false);
+        }
+        let ours = self.fields()?;
+        for (entity, field, told) in written.fields()? {
+            let held = ours
+                .iter()
+                .find(|(table, name, _)| *table == entity && *name == field);
+            if let Some((_, _, known)) = held
+                && !Self::reads(known, &told)
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    pub fn names(&self, entity: &str, field: &str) -> Result<bool> {
+        Ok(self
+            .fields()?
+            .iter()
+            .any(|(table, name, _)| table == entity && name == field))
+    }
+
     pub(crate) fn validate(&self) -> Result<()> {
         if self.format_version != 1 {
             return Err(Error::unsupported(format!(
@@ -75,7 +149,7 @@ impl SchemaMetadata {
         Ok(bytes)
     }
 
-    fn decode(bytes: &[u8]) -> Result<Self> {
+    pub(crate) fn decode(bytes: &[u8]) -> Result<Self> {
         if bytes.get(..8) != Some(MAGIC.as_slice()) {
             return Err(Error::unsupported("unrecognized schema metadata format"));
         }

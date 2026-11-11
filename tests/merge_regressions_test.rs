@@ -156,16 +156,24 @@ mod newer {
 }
 
 #[test]
-fn old_schema_must_not_acknowledge_unmerged_entities() -> Result<()> {
+fn an_old_schema_working_beside_an_entity_it_does_not_know_leaves_it_intact() -> Result<()> {
     let dir = directory("unknown-entity");
     let mut a = newer::Library::create(dir.join("a"), writer(1))?;
+    let note = a.notes.push("must survive")?;
+    let doc = a.docs.push("key", "title", "body")?;
     commit(&mut a, 1)?;
-    support::copy_store(dir.join("a"), dir.join("b"))?;
-    let mut b = newer::Library::open(dir.join("b"))?;
-    b.notes.push("must survive")?;
-    commit(&mut b, 2)?;
+    drop(a);
 
-    assert!(Library::open(dir.join("a")).is_err());
+    let mut old = Library::open(dir.join("a"))?;
+    old.docs
+        .set_title(doc.cast(), "retitled by the old schema")?;
+    commit(&mut old, 2)?;
+    drop(old);
+
+    let reopened = newer::Library::open(dir.join("a"))?;
+    assert_eq!(reopened.notes.text(note)?, "must survive");
+    assert_eq!(reopened.docs.title(doc)?, "retitled by the old schema");
+    reopened.verify()?;
     Ok(())
 }
 
@@ -185,16 +193,31 @@ mod added_field {
 }
 
 #[test]
-fn old_schema_merge_must_not_break_new_schema_row_alignment() -> Result<()> {
+fn an_old_schema_is_refused_a_writer_whose_required_field_it_could_not_supply() -> Result<()> {
     let dir = directory("unknown-field");
     let mut a = added_field::Library::create(dir.join("a"), writer(1))?;
-    a.docs.push("first", "", "", 42)?;
+    let first = a.docs.push("first", "", "", 42)?;
     commit(&mut a, 1)?;
-    support::copy_store(dir.join("a"), dir.join("b"))?;
-    let mut b = added_field::Library::open(dir.join("b"))?;
-    b.docs.push("second", "", "", 99)?;
-    commit(&mut b, 2)?;
-    assert!(Library::open(dir.join("a")).is_err());
+    drop(a);
+
+    let mut old = Library::open(dir.join("a"))?;
+    assert_eq!(old.docs.key(first.cast())?, "first");
+    let second = old.docs.push("second", "", "")?;
+    old.docs.set_title(first.cast(), "retitled")?;
+    commit(&mut old, 2)?;
+    drop(old);
+
+    let mut reopened = added_field::Library::open(dir.join("a"))?;
+    assert_eq!(reopened.docs.extra(first)?, 42);
+    assert_eq!(reopened.docs.title(first)?, "");
+    assert!(reopened.docs.key(second.cast()).is_err());
+    let told = reopened.refresh_peers()?;
+    assert_eq!(
+        told.incompatible.len(),
+        1,
+        "a writer that cannot say what a required field holds is left out whole: {told:?}"
+    );
+    reopened.verify()?;
     Ok(())
 }
 

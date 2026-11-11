@@ -81,11 +81,15 @@ pub trait Column {
         ))
     }
 
-    fn schema_type(&self) -> String {
-        let mut columns = Vec::new();
-        self.describe("", "", &mut columns);
-        format!("{columns:?}")
+    fn absent_value_bytes(&self) -> Option<Vec<u8>> {
+        None
     }
+
+    fn understands(&self, _bytes: &[u8]) -> bool {
+        true
+    }
+
+    fn schema_type(&self) -> String;
 
     fn rows(&self) -> usize;
 

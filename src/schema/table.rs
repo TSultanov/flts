@@ -14,6 +14,13 @@ use crate::id::Id;
 use crate::storage::{ColumnFile, ColumnFileUpdater, WriterId};
 use std::collections::BTreeSet;
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Adoption {
+    Taken,
+    Known,
+    Waiting,
+}
+
 pub trait Table: Default + Clone {
     type Of: Entity;
 
@@ -203,13 +210,12 @@ pub trait Table: Default + Clone {
         Ok(out)
     }
 
-    fn schema(&self) -> String {
-        let fields: Vec<_> = self
-            .fields()
+    fn field_types(&self) -> Vec<(&'static str, String)> {
+        self.fields()
             .iter()
+            .filter(|field| field.name != "id" && field.name != "version")
             .map(|field| (field.name, field.column.schema_type()))
-            .collect();
-        format!("{} {fields:?}", Self::Of::NAME)
+            .collect()
     }
 
     fn refresh(&self) -> Result<()> {
@@ -604,7 +610,7 @@ pub trait Table: Default + Clone {
         })
     }
 
-    fn adopt_shard_row(&mut self, theirs: &ShardRow) -> Result<bool> {
+    fn adopt_shard_row(&mut self, theirs: &ShardRow) -> Result<Adoption> {
         let id = Id::from_uuid(theirs.id);
         let parents: Vec<Parent> = theirs
             .parents
@@ -623,8 +629,12 @@ pub trait Table: Default + Clone {
                 && self.versions().raw_at(held)? == theirs.version
                 && self.versions().parents(held)? == parents.as_slice();
             for field in self.fields() {
-                if same && field.name != "id" && field.name != "version" {
-                    same = theirs.value(field.name) == Some(&field.column.value_bytes(held)?);
+                if same
+                    && field.name != "id"
+                    && field.name != "version"
+                    && let Some(told) = theirs.value(field.name)
+                {
+                    same = told == field.column.value_bytes(held)?;
                 }
             }
             if !same {
@@ -633,24 +643,66 @@ pub trait Table: Default + Clone {
                     "a dot identifies different revisions",
                 ));
             }
-            return Ok(false);
+            return Ok(Adoption::Known);
         }
-        for field in self.fields() {
-            if field.name != "id" && field.name != "version" && theirs.value(field.name).is_none() {
-                return Err(Error::corrupt("schema", "missing field during merge"));
+
+        let foreign = self.fields().iter().any(|field| {
+            theirs
+                .value(field.name)
+                .is_some_and(|told| !field.column.understands(told))
+        });
+        if foreign {
+            return Ok(Adoption::Waiting);
+        }
+        let mut inherited: Option<Row> = None;
+        let lacking = self.fields().iter().any(|field| {
+            field.name != "id" && field.name != "version" && theirs.value(field.name).is_none()
+        });
+        if lacking {
+            for dot in &theirs.parents {
+                let Some(row) = self.versions().row_for_dot(*dot) else {
+                    return Ok(Adoption::Waiting);
+                };
+                let newer = match inherited {
+                    Some(held) => {
+                        self.versions().raw_at(held)?.dot() < self.versions().raw_at(row)?.dot()
+                    }
+                    None => true,
+                };
+                if newer {
+                    inherited = Some(row);
+                }
             }
+        }
+        let mut values = Vec::new();
+        for field in self.fields() {
+            if field.name == "id" || field.name == "version" {
+                continue;
+            }
+            values.push(match (theirs.value(field.name), inherited) {
+                (Some(told), _) => told.to_vec(),
+                (None, Some(from)) => field.column.value_bytes(from)?,
+                (None, None) => field.column.absent_value_bytes().ok_or_else(|| {
+                    Error::unsupported(format!(
+                        "{}.{} was not written and has no absent value",
+                        Self::Of::NAME,
+                        field.name
+                    ))
+                })?,
+            });
         }
         self.reserve()?;
         self.adopt_revision(id, theirs.version, parents)?;
+        let mut values = values.into_iter();
         for field in self.fields_mut() {
             if field.name != "id" && field.name != "version" {
-                let bytes = theirs
-                    .value(field.name)
+                let bytes = values
+                    .next()
                     .ok_or_else(|| Error::corrupt("schema", "missing field during merge"))?;
-                field.column.append_value_bytes(bytes)?;
+                field.column.append_value_bytes(&bytes)?;
             }
         }
-        Ok(true)
+        Ok(Adoption::Taken)
     }
 
     fn check_versions(&self) -> Result<()> {
@@ -779,7 +831,9 @@ pub trait AnyTable {
 
     fn bind_view(&mut self, view: View);
     fn refresh_view(&self) -> Result<()>;
-    fn schema_descriptor(&self) -> String;
+    fn described(&self) -> Vec<(String, String, String)>;
+
+    fn optional_fields(&self) -> Vec<&'static str>;
     fn row_conflicts(&self) -> Result<Vec<Conflict>>;
     fn revision_owners(&self) -> Result<Vec<(Dot, crate::Uuid)>>;
 
@@ -813,7 +867,7 @@ pub trait AnyTable {
         writer: WriterId,
     ) -> Result<Vec<ShardRow>>;
 
-    fn adopt_rows(&mut self, rows: &[ShardRow]) -> Result<Vec<crate::Uuid>>;
+    fn adopt_row(&mut self, row: &ShardRow) -> Result<Adoption>;
 
     fn refresh_rows(&self, ids: &[crate::Uuid]) -> Result<()>;
 
@@ -886,8 +940,19 @@ impl<T: Table> AnyTable for T {
         self.refresh()
     }
 
-    fn schema_descriptor(&self) -> String {
-        self.schema()
+    fn described(&self) -> Vec<(String, String, String)> {
+        Table::field_types(self)
+            .into_iter()
+            .map(|(field, held)| (T::Of::NAME.to_owned(), field.to_owned(), held))
+            .collect()
+    }
+
+    fn optional_fields(&self) -> Vec<&'static str> {
+        self.fields()
+            .iter()
+            .filter(|field| field.column.absent_value_bytes().is_some())
+            .map(|field| field.name)
+            .collect()
     }
 
     fn row_conflicts(&self) -> Result<Vec<Conflict>> {
@@ -973,14 +1038,8 @@ impl<T: Table> AnyTable for T {
             .collect()
     }
 
-    fn adopt_rows(&mut self, rows: &[ShardRow]) -> Result<Vec<crate::Uuid>> {
-        let mut touched = BTreeSet::new();
-        for row in rows {
-            if Table::adopt_shard_row(self, row)? {
-                touched.insert(row.id);
-            }
-        }
-        Ok(touched.into_iter().collect())
+    fn adopt_row(&mut self, row: &ShardRow) -> Result<Adoption> {
+        Table::adopt_shard_row(self, row)
     }
 
     fn refresh_rows(&self, ids: &[crate::Uuid]) -> Result<()> {

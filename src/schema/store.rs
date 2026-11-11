@@ -8,7 +8,7 @@ use super::clock::VersionVector;
 use super::column::{ColumnKind, ColumnSpec, Residency};
 use super::diff::SchemaDiff;
 use super::shard::{self, ShardFile, ShardRow};
-use super::table::AnyTable;
+use super::table::{Adoption, AnyTable};
 use super::version::Dot;
 use super::{Conflict, MergeReport, Reference, RowStatus, View, VisibilityChange};
 use crate::error::{Error, Result};
@@ -143,6 +143,7 @@ impl Record for ShardMark {
 #[derive(Clone, Debug)]
 pub struct Batch {
     pub table: usize,
+    pub first: usize,
     pub rows: Vec<ShardRow>,
     pub mark: Option<ShardMark>,
 }
@@ -271,13 +272,12 @@ pub trait Store: Default + Clone + Sized {
     }
 
     fn schema_descriptor(&self) -> Vec<u8> {
-        let mut schemas: Vec<_> = self
+        let fields: Vec<_> = self
             .tables()
             .iter()
-            .map(|t| t.schema_descriptor())
+            .flat_map(|table| table.described())
             .collect();
-        schemas.sort();
-        format!("row ancestry 1 {:?}", schemas).into_bytes()
+        super::SchemaMetadata::describe(&fields)
     }
 
     fn audit_dots(&self) -> Result<()> {
@@ -703,6 +703,11 @@ pub trait Store: Default + Clone + Sized {
                 (Self::with_fresh_cache(layout)?, true)
             }
             Err(err) if err.is_corrupt() => (Self::with_fresh_cache(layout)?, true),
+            Err(Error::SchemaMismatch { expected, actual })
+                if expected.can_read(&actual)? && actual.can_read(&expected)? =>
+            {
+                (Self::with_fresh_cache(layout)?, true)
+            }
             Err(err) => return Err(err),
         };
         let mut report = MergeReport::default();
@@ -741,7 +746,7 @@ pub trait Store: Default + Clone + Sized {
         report: &mut MergeReport,
     ) -> Result<Vec<Batch>> {
         let layout = self.state().placed()?;
-        let schema = self.schema_metadata().encode()?;
+        let schema = self.schema_metadata();
         let mut batches = Vec::new();
         for (index, table) in self.tables().into_iter().enumerate() {
             let (shards, strangers) = shard::discover(&layout.shared, table.entity())?;
@@ -783,12 +788,29 @@ pub trait Store: Default + Clone + Sized {
                     }
                     Err(err) => return Err(err),
                 };
-                if read.rows > 0 && read.schema != schema {
-                    report.incompatible.push(found.path);
-                    continue;
+                if read.rows > 0 {
+                    let required = table
+                        .field_names()
+                        .into_iter()
+                        .filter(|field| !table.optional_fields().contains(field));
+                    let readable = match super::SchemaMetadata::decode(&read.schema) {
+                        Ok(written) => {
+                            let mut readable = schema.can_read(&written)?;
+                            for field in required {
+                                readable &= written.names(table.entity(), field)?;
+                            }
+                            readable
+                        }
+                        Err(_) => false,
+                    };
+                    if !readable {
+                        report.incompatible.push(found.path);
+                        continue;
+                    }
                 }
                 batches.push(Batch {
                     table: index,
+                    first: from,
                     mark: Some(ShardMark::of(&found, read.token, read.rows)),
                     rows: read.read,
                 });
@@ -800,7 +822,9 @@ pub trait Store: Default + Clone + Sized {
                 continue;
             }
             for found in shard::discover(&layout.shared, &entity)?.0 {
-                if !self.state().marks.iter().any(|mark| mark.names(&found)) {
+                if found.schema_version != Self::SCHEMA_VERSION
+                    && !self.state().marks.iter().any(|mark| mark.names(&found))
+                {
                     report.incompatible.push(found.path);
                 }
             }
@@ -853,13 +877,21 @@ pub trait Store: Default + Clone + Sized {
             }
         }
         order.sort_unstable();
+        let mut stalled: Vec<Option<usize>> = vec![None; batches.len()];
         for (dot, at, row) in order {
+            if stalled[at].is_some() {
+                report.waiting += 1;
+                continue;
+            }
             let batch = &batches[at];
-            let held = std::slice::from_ref(&batch.rows[row]);
-            let taken = self.tables_mut()[batch.table].adopt_rows(held)?;
-            match taken.is_empty() {
-                true => report.known += 1,
-                false => report.taken += 1,
+            match self.tables_mut()[batch.table].adopt_row(&batch.rows[row])? {
+                Adoption::Taken => report.taken += 1,
+                Adoption::Known => report.known += 1,
+                Adoption::Waiting => {
+                    stalled[at] = Some(row);
+                    report.waiting += 1;
+                    continue;
+                }
             }
             self.state_mut().clock.observe(dot);
         }
@@ -867,7 +899,14 @@ pub trait Store: Default + Clone + Sized {
             self.tables()[*table].refresh_rows(ids)?;
         }
         self.audit_dots()?;
-        for mark in batches.into_iter().filter_map(|batch| batch.mark) {
+        for (batch, stalled) in batches.into_iter().zip(stalled) {
+            let Some(mut mark) = batch.mark else {
+                continue;
+            };
+            if let Some(row) = stalled {
+                mark.rows = (batch.first + row) as u64;
+                mark.generation = 0;
+            }
             self.state_mut().mark(mark);
         }
 

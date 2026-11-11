@@ -62,6 +62,7 @@ pub struct VisibilityChange {
 pub struct MergeReport {
     pub taken: usize,
     pub known: usize,
+    pub waiting: usize,
     pub concurrent: Vec<Concurrent>,
     pub combined: Vec<Combined>,
     pub references: Vec<ReferenceConflict>,

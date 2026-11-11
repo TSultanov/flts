@@ -475,23 +475,6 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             id: self.#field_name #held.get(row)?.uuid(),
         }); })
     });
-    let schema_fields = stored.iter().map(|field| {
-        let field_name = field.name.to_string();
-        let ty = match &field.kind {
-            Kind::Text => generated! { "text".to_owned() },
-            Kind::NullableText => generated! { "optional text".to_owned() },
-            Kind::Scalar(ty) => generated! { stringify!(#ty).to_owned() },
-            Kind::NullableScalar(ty) => generated! { ::std::format!("optional {}", stringify!(#ty)) },
-            Kind::Reference(ty) => generated! { ::std::format!("reference {}", <#ty as ::dbsync::schema::Entity>::NAME) },
-            Kind::Enum(ty) => generated! { ::std::format!("enum {} {:?}", <#ty as ::dbsync::schema::UnitEnum>::NAME, <#ty as ::dbsync::schema::UnitEnum>::VARIANTS) },
-            Kind::Bytes => generated! { "bytes".to_owned() },
-            Kind::NullableBytes => generated! { "optional bytes".to_owned() },
-            Kind::NullableReference(ty) => generated! { ::std::format!("optional reference {}", <#ty as ::dbsync::schema::Entity>::NAME) },
-            Kind::NullableEnum(ty) => generated! { ::std::format!("optional enum {} {:?}", <#ty as ::dbsync::schema::UnitEnum>::NAME, <#ty as ::dbsync::schema::UnitEnum>::VARIANTS) },
-            Kind::Many(_) => unreachable!(),
-        };
-        generated! { fields.push((#field_name, #ty)); }
-    });
     let resolved_references: Vec<_> = stored
         .iter()
         .filter_map(|field| {
@@ -519,12 +502,6 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             _ => None,
         }
     });
-    let policy_name = match &resolver {
-        Some(path) => {
-            generated! { ::core::concat!("function ", ::core::module_path!(), "::", ::core::stringify!(#path)) }
-        }
-        None => generated! { "builtin newest" },
-    };
     let resolution = resolver.as_ref().map(|function| generated! {
         fn resolve(&self, id: ::dbsync::Id<#name>) -> ::dbsync::Result<()> {
             let rows = <Self as ::dbsync::schema::Table>::eligible_heads(self, id)?;
@@ -755,12 +732,6 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 let _ = row;
                 #(#references)*
                 ::core::result::Result::Ok(references)
-            }
-
-            fn schema(&self) -> ::std::string::String {
-                let mut fields = ::std::vec::Vec::new();
-                #(#schema_fields)*
-                ::std::format!("{} {:?} merge {}", #label, fields, #policy_name)
             }
 
             fn recover_row(&mut self, of: ::dbsync::Id<#name>, dot: ::dbsync::schema::Dot, restore: bool) -> ::dbsync::Result<()> {

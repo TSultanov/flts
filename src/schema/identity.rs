@@ -71,6 +71,10 @@ impl<E: Entity> IdColumn<E> {
 }
 
 impl<E: Entity> Column for IdColumn<E> {
+    fn schema_type(&self) -> String {
+        "identity".to_owned()
+    }
+
     fn rows(&self) -> usize {
         self.ids.len()
     }

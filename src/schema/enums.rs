@@ -19,6 +19,14 @@ pub trait UnitEnum: Copy + 'static {
     fn from_u8(code: u8) -> Result<Self>;
 }
 
+pub fn enum_type<E: UnitEnum>() -> String {
+    let variants: Vec<String> = E::VARIANTS
+        .iter()
+        .map(|(name, code)| format!("{name}={code}"))
+        .collect();
+    format!("enum {}|{}", E::NAME, variants.join(","))
+}
+
 #[derive(Clone)]
 pub struct EnumColumn<E: UnitEnum> {
     codes: Arena<u8>,
@@ -60,8 +68,12 @@ impl<E: UnitEnum> Column for EnumColumn<E> {
         Ok(vec![self.get(row)?.to_u8()])
     }
 
+    fn understands(&self, bytes: &[u8]) -> bool {
+        matches!(bytes, [code] if E::from_u8(*code).is_ok())
+    }
+
     fn schema_type(&self) -> String {
-        format!("enum {} {:?}", E::NAME, E::VARIANTS)
+        enum_type::<E>()
     }
 
     fn rows(&self) -> usize {

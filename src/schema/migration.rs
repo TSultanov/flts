@@ -334,6 +334,7 @@ impl<L: Store + 'static> Migrations<L> {
             for (table, held) in converted.tables().into_iter().enumerate() {
                 batches.push(Batch {
                     table,
+                    first: 0,
                     rows: held.export_rows()?,
                     mark: None,
                 });

@@ -156,6 +156,14 @@ impl<C: Keyed> Column for Indexed<C> {
         self.column.value_bytes(row)
     }
 
+    fn absent_value_bytes(&self) -> Option<Vec<u8>> {
+        self.column.absent_value_bytes()
+    }
+
+    fn understands(&self, bytes: &[u8]) -> bool {
+        self.column.understands(bytes)
+    }
+
     fn schema_type(&self) -> String {
         self.column.schema_type()
     }

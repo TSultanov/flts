@@ -502,6 +502,10 @@ impl<E: Entity> VersionColumn<E> {
 }
 
 impl<E: Entity> Column for VersionColumn<E> {
+    fn schema_type(&self) -> String {
+        "version".to_owned()
+    }
+
     fn rows(&self) -> usize {
         self.versions.len()
     }

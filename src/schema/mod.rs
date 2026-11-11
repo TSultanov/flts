@@ -34,7 +34,7 @@ pub use entity::{
     Audited, Child, Entity, Holds, Removed, Retention, across_rows_of, child_rows_of, children_of,
 };
 pub use entry::{Across, Children, Entry, EntryMut, Rows};
-pub use enums::{EnumColumn, UnitEnum};
+pub use enums::{EnumColumn, UnitEnum, enum_type};
 pub use identity::IdColumn;
 pub use index::{HashIndex, IndexKey, Keys};
 pub use indexed::{Indexed, Keyed};
@@ -55,7 +55,7 @@ pub use resolved::{MergeCandidate, MergeInput, Resolved, RevisionAncestry};
 pub use shard::{ShardFile, ShardRow};
 pub use sorted::{Prefix, SortEntry, SortKey, Sorted, SortedRun, key_bounds};
 pub use store::{Batch, CLOCK, Layout, SCHEMA, SHARDS, ShardMark, Store, StoreState};
-pub use table::{AnyTable, Table};
+pub use table::{Adoption, AnyTable, Table};
 pub use text::{NullableTextColumn, TextColumn, TextKey};
 pub use version::{Dot, Parent, Version, VersionColumn};
 
@@ -74,6 +74,10 @@ mod kinds_test;
 #[cfg(all(test, feature = "macros"))]
 #[path = "sync_test.rs"]
 mod sync_test;
+
+#[cfg(all(test, feature = "macros"))]
+#[path = "evolve_test.rs"]
+mod evolve_test;
 
 #[cfg(all(test, feature = "macros"))]
 #[path = "ordered_test.rs"]

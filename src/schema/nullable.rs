@@ -74,6 +74,10 @@ impl<T: Record + Default> Column for NullableColumn<T> {
         Ok(out)
     }
 
+    fn absent_value_bytes(&self) -> Option<Vec<u8>> {
+        Some(vec![0])
+    }
+
     fn schema_type(&self) -> String {
         format!("optional {}", std::any::type_name::<T>())
     }

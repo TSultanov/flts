@@ -96,6 +96,10 @@ impl<P: Entity, C: Entity> Column for RefColumn<P, C> {
         Ok(out)
     }
 
+    fn schema_type(&self) -> String {
+        format!("reference {}", P::NAME)
+    }
+
     fn rows(&self) -> usize {
         self.ids.len()
     }
