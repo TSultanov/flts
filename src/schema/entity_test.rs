@@ -162,19 +162,23 @@ fn a_join_is_walked_from_either_end_without_either_table_holding_a_column_for_it
 }
 
 #[test]
-fn an_audit_holds_a_join_to_both_of_the_tables_it_names() {
+fn a_join_to_a_row_nobody_holds_is_named_as_dangling_at_either_end() {
     let (library, atlas, _, ada, _) = credited();
     Store::audit(&library).unwrap();
 
     let mut lost_book = library.clone();
     lost_book.authorships.push(Id::mint(), ada).unwrap();
-    let err = Store::audit(&lost_book).unwrap_err();
-    assert!(err.to_string().contains("authorship.book row 3"), "{err}");
+    Store::audit(&lost_book).unwrap();
+    let dangling = lost_book.dangling().unwrap();
+    assert_eq!(dangling.len(), 1);
+    assert_eq!(dangling[0].column, "authorship.book");
 
     let mut lost_author = library.clone();
     lost_author.authorships.push(atlas, Id::mint()).unwrap();
-    let err = Store::audit(&lost_author).unwrap_err();
-    assert!(err.to_string().contains("authorship.author row 3"), "{err}");
+    let dangling = lost_author.dangling().unwrap();
+    assert_eq!(dangling.len(), 1);
+    assert_eq!(dangling[0].column, "authorship.author");
+    Store::audit(&lost_author).unwrap();
 }
 
 #[test]
@@ -253,14 +257,15 @@ fn a_pair_a_link_gave_up_may_be_taken_by_another() {
 }
 
 #[test]
-fn an_audit_refuses_a_link_changed_to_an_unknown_parent() {
+fn a_link_changed_to_an_unknown_parent_is_named_as_dangling() {
     let (mut library, _, _, _, _) = credited();
     library
         .authorships
         .quietly_repoint_author(Row::trusted(0), Id::mint());
-    let err = Store::audit(&library).unwrap_err();
-    assert!(err.is_corrupt(), "{err}");
-    assert!(err.to_string().contains("authorship.author"), "{err}");
+    Store::audit(&library).unwrap();
+    let dangling = library.dangling().unwrap();
+    assert_eq!(dangling.len(), 1);
+    assert_eq!(dangling[0].column, "authorship.author");
 }
 
 #[test]

@@ -326,32 +326,9 @@ fn a_child_naming_a_parent_the_table_does_not_hold_is_under_no_parent_it_holds()
 }
 
 #[test]
-fn an_audit_refuses_a_reference_that_names_no_parent_of_the_table() {
-    let mut shelf = Shelf::of(1, &[Some(0)]);
-    let stranger = Id::<Book>::mint();
-    shelf.chapters.push(Id::mint()).unwrap();
-    shelf.column.push(stranger).unwrap();
-
-    let err = shelf.column.check_parents(&shelf.books).unwrap_err();
-    assert!(err.is_corrupt(), "{err}");
-    assert!(err.to_string().contains("chapter.book row 1"), "{err}");
-    assert!(err.to_string().contains(&stranger.to_string()), "{err}");
-    assert!(
-        err.to_string().contains("which is not a row of book"),
-        "{err}"
-    );
-}
-
-#[test]
 fn a_reference_is_named_for_the_field_that_holds_it_not_the_parent_it_names() {
     let mut credited = RefColumn::<Book, Chapter>::named("chapter.credited_to");
     credited.push(Id::mint()).unwrap();
-
-    let err = credited.check_parents(&IdColumn::default()).unwrap_err();
-    assert!(
-        err.to_string().contains("chapter.credited_to row 0"),
-        "{err}"
-    );
 
     credited.ids.push(Id::mint()).unwrap();
     let err = credited.audit().unwrap_err();
@@ -388,7 +365,6 @@ fn an_audit_refuses_an_index_that_files_children_under_parents_the_column_never_
 fn an_audit_passes_a_column_whose_parents_the_table_all_hold() {
     let shelf = Shelf::of(2, &[Some(0), None, Some(1)]);
 
-    shelf.column.check_parents(&shelf.books).unwrap();
     shelf.column.audit().unwrap();
 }
 

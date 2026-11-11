@@ -423,3 +423,39 @@ fn a_nullable_text_column_tells_an_absent_string_from_an_empty_one() {
         "nullability costs no bytes and no second column"
     );
 }
+
+#[test]
+fn a_file_cut_off_before_its_newest_directory_opens_at_the_commit_before_it() {
+    let dir = TempDir::new("cut_off");
+    let path = dir.join("numbers.dbs");
+
+    let mut values = Arena::<u32>::with_chunk_rows(4);
+    values.extend_from_slice(&[1, 2, 3]).unwrap();
+    let mut writer = ColumnFileWriter::create(&path, WriterId::ANONYMOUS).unwrap();
+    writer.column("values", &values).unwrap();
+    writer.finish().unwrap();
+    let whole = std::fs::metadata(&path).unwrap().len();
+    let before = ColumnFile::open(&path).unwrap();
+
+    let mut grown = before.column::<u32>("values").unwrap();
+    grown.push(4).unwrap();
+    let mut updater = before.update(WriterId::ANONYMOUS).unwrap();
+    updater.column("values", &grown).unwrap();
+    updater.commit().unwrap();
+    assert_eq!(
+        ColumnFile::open(&path).unwrap().generation(),
+        before.generation() + 1
+    );
+
+    OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_len(whole)
+        .unwrap();
+
+    let cut = ColumnFile::open(&path).unwrap();
+    assert_eq!(cut.generation(), before.generation());
+    assert_eq!(cut.column::<u32>("values").unwrap().len(), 3);
+    cut.verify().unwrap();
+}

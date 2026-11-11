@@ -80,23 +80,6 @@ impl<P: Entity, C: Entity> RefColumn<P, C> {
     pub fn name(&self) -> &str {
         &self.name
     }
-
-    pub fn check_parents(&self, parents: &IdColumn<P>) -> Result<()> {
-        for child in 0..self.ids.len() {
-            let parent = *self.ids.row(child)?;
-            if !parent.is_nil() && parents.find(parent)?.is_none() {
-                return Err(Error::corrupt(
-                    "reference",
-                    format!(
-                        "{} row {child} names parent {parent}, which is not a row of {}",
-                        self.name,
-                        P::NAME
-                    ),
-                ));
-            }
-        }
-        Ok(())
-    }
 }
 
 impl<P: Entity, C: Entity> Column for RefColumn<P, C> {

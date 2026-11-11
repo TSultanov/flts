@@ -116,20 +116,6 @@ where
     Ok(reached)
 }
 
-pub fn audit_reference<S, P, C>(store: &S) -> Result<()>
-where
-    S: Holds<P> + Holds<C>,
-    P: Entity,
-    C: Child<P>,
-{
-    let parents = Holds::<P>::table(store);
-    let mine = Holds::<C>::table(store);
-    let column = C::parents(mine);
-    column.check_parents(Table::ids(parents))?;
-
-    Ok(())
-}
-
 #[cfg(test)]
 #[path = "entity_test.rs"]
 mod entity_test;

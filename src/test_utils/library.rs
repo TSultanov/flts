@@ -6,7 +6,7 @@ use crate::id::Id;
 use crate::schema::{
     Across, AnyTable, Audited, Child, Children, Entity, Entry, EntryMut, EnumColumn, Field,
     FieldMut, Holds, NullableColumn, NullableTextColumn, RefColumn, Removed, Rows, Store,
-    StoreState, Table, TextColumn, UnitEnum, audit_reference,
+    StoreState, Table, TextColumn, UnitEnum,
 };
 use crate::schema::{IdColumn, Indexed, VersionColumn};
 use crate::storage::Arena;
@@ -1495,22 +1495,19 @@ impl<S: Holds<Book>> Audited<S> for Book {
 
 impl<S: Holds<Chapter> + Holds<Book>> Audited<S> for Chapter {
     fn audit_in(store: &S) -> Result<()> {
-        Table::audit(Holds::<Chapter>::table(store))?;
-        audit_reference::<S, Book, Chapter>(store)
+        Table::audit(Holds::<Chapter>::table(store))
     }
 }
 
 impl<S: Holds<Paragraph> + Holds<Chapter>> Audited<S> for Paragraph {
     fn audit_in(store: &S) -> Result<()> {
-        Table::audit(Holds::<Paragraph>::table(store))?;
-        audit_reference::<S, Chapter, Paragraph>(store)
+        Table::audit(Holds::<Paragraph>::table(store))
     }
 }
 
 impl<S: Holds<Edition> + Holds<Book>> Audited<S> for Edition {
     fn audit_in(store: &S) -> Result<()> {
-        Table::audit(Holds::<Edition>::table(store))?;
-        audit_reference::<S, Book, Edition>(store)
+        Table::audit(Holds::<Edition>::table(store))
     }
 }
 
@@ -1523,9 +1520,7 @@ impl<S: Holds<Author>> Audited<S> for Author {
 impl<S: Holds<Authorship> + Holds<Book> + Holds<Author>> Audited<S> for Authorship {
     fn audit_in(store: &S) -> Result<()> {
         let links = Holds::<Authorship>::table(store);
-        Table::audit(links)?;
-        audit_reference::<S, Book, Authorship>(store)?;
-        audit_reference::<S, Author, Authorship>(store)
+        Table::audit(links)
     }
 }
 

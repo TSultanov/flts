@@ -199,8 +199,10 @@ fn a_half_delivered_shard_is_reported_and_taken_once_it_is_whole() -> Result<()>
     std::fs::write(&arriving, &bytes[..bytes.len() - 7])?;
 
     let told = ours.refresh_peers()?;
-    assert_eq!(told.unreadable, std::slice::from_ref(&arriving));
-    assert_eq!(told.taken, 0);
+    assert_eq!(
+        told.taken, 0,
+        "the commit whose directory is cut off is not read"
+    );
     assert!(titles(&ours)?.is_empty());
 
     std::fs::write(&arriving, &bytes[..4000])?;
@@ -208,6 +210,7 @@ fn a_half_delivered_shard_is_reported_and_taken_once_it_is_whole() -> Result<()>
         ours.refresh_peers()?.unreadable,
         std::slice::from_ref(&arriving)
     );
+    assert!(titles(&ours)?.is_empty());
 
     std::fs::write(&arriving, &bytes)?;
     let told = ours.refresh_peers()?;

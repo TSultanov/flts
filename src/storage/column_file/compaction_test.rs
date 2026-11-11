@@ -203,7 +203,7 @@ fn directory_deltas_and_their_bases_are_checksummed_on_open() -> Result<()> {
     for byte in 0..loc.physical_len() {
         crate::test_utils::flip_byte(&path, loc.offset + byte);
         assert!(
-            ColumnFile::open(&path).is_err(),
+            !ColumnFile::open(&path).is_ok_and(|file| file.generation() == changed.generation()),
             "directory delta byte {byte}"
         );
         assert!(changed.verify().is_err());

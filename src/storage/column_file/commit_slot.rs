@@ -105,6 +105,19 @@ pub(super) fn newest_slot(file: &File, file_uuid: u128) -> Result<FoundSlot> {
     Ok(newest)
 }
 
+pub(super) fn slots_newest_first(file: &File, file_uuid: u128) -> Result<Vec<CommitSlot>> {
+    let mut held = Vec::new();
+    for at in [SLOT_A, SLOT_B] {
+        let mut bytes = [0u8; CommitSlot::SIZE];
+        read_exact_at(file, &mut bytes, at)?;
+        if let Some(slot) = CommitSlot::from_bytes(&bytes, file_uuid) {
+            held.push(slot);
+        }
+    }
+    held.sort_by_key(|slot| std::cmp::Reverse(slot.generation));
+    Ok(held)
+}
+
 impl Record for CommitSlot {
     const SIZE: usize = size_of::<Self>();
 

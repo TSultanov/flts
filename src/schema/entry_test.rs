@@ -219,7 +219,7 @@ fn walking_the_children_of_a_row_hands_back_only_that_row_s_children() {
 }
 
 #[test]
-fn an_audit_refuses_a_reference_no_parent_answers_for_that_no_walk_can_see() {
+fn a_reference_no_parent_answers_for_is_named_as_dangling_though_no_walk_can_see_it() {
     let mut library = Library::default();
     let alice = library.books.push("Alice", "Lewis Carroll").unwrap();
     library
@@ -232,9 +232,10 @@ fn an_audit_refuses_a_reference_no_parent_answers_for_that_no_walk_can_see() {
         0,
         "a chapter under a book nobody holds is under no book, and a walk cannot say so"
     );
-    let err = library.audit().unwrap_err();
-    assert!(err.is_corrupt(), "{err}");
-    assert!(err.to_string().contains("chapter.book"), "{err}");
+    library.audit().unwrap();
+    let dangling = library.dangling().unwrap();
+    assert_eq!(dangling.len(), 1);
+    assert_eq!(dangling[0].column, "chapter.book");
 }
 
 #[test]

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use super::HEAD_LEN;
 use super::codec::Codec;
 use super::column_meta::{ColumnMeta, read_directory};
-use super::commit_slot::{CommitSlot, newest_slot};
+use super::commit_slot::{CommitSlot, newest_slot, slots_newest_first};
 use super::commit_token::CommitToken;
 use super::file_source::FileSource;
 use super::header::Header;
@@ -56,12 +56,25 @@ impl ColumnFile {
         if total < HEAD_LEN {
             return Err(Error::corrupt("file", "too short to be a column file"));
         }
-
         let file_uuid = read_header(&source)?.file_uuid();
+        let mut said = Error::corrupt("commit slot", "no valid commit slot");
+        for slot in slots_newest_first(source.file(), file_uuid)? {
+            match Self::at_slot(&source, slot, total) {
+                Ok(columns) => {
+                    return Ok(Self {
+                        source,
+                        columns,
+                        slot,
+                    });
+                }
+                Err(err) if err.is_corrupt() => said = err,
+                Err(err) => return Err(err),
+            }
+        }
+        Err(said)
+    }
 
-        let (_, slot) = newest_slot(source.file(), file_uuid)?
-            .ok_or_else(|| Error::corrupt("commit slot", "no valid commit slot"))?;
-
+    fn at_slot(source: &FileSource, slot: CommitSlot, total: u64) -> Result<Vec<ColumnMeta>> {
         let (dir_offset, dir_len) = (slot.dir_offset, slot.dir_len);
         let dir_end = dir_offset
             .checked_add(dir_len)
@@ -69,15 +82,21 @@ impl ColumnFile {
         if dir_offset < HEAD_LEN || dir_end > total {
             return Err(Error::corrupt("directory", "extends outside the file"));
         }
-        let loc = directory_loc(&source, slot)?;
+        let loc = directory_loc(source, slot)?;
         let directory = source.read_chunk(loc)?;
-
         let columns = read_directory(&directory, dir_offset)?;
-        Ok(Self {
-            source,
-            columns,
-            slot,
-        })
+        for column in &columns {
+            for loc in &column.chunks {
+                if loc
+                    .offset
+                    .checked_add(loc.physical_len())
+                    .is_none_or(|end| end > total)
+                {
+                    return Err(Error::corrupt("chunk", "extends outside the file"));
+                }
+            }
+        }
+        Ok(columns)
     }
 
     pub(super) fn directory_loc(&self) -> Result<crate::ChunkLoc> {
