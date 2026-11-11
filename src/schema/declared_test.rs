@@ -213,6 +213,7 @@ fn the_declared_schema_names_every_column_the_file_will_hold() {
             "dbsync.view.credit.ref.editor.links",
             "dbsync.clock",
             "dbsync.shards",
+            "dbsync.durable",
             "dbsync.schema",
         ]
     );

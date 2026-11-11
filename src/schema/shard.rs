@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use super::version::{Dot, Version};
 use crate::error::{Error, Result};
 use crate::id::Uuid;
-use crate::storage::{Arena, ColumnFile, ColumnFileWriter, CommitToken, WriterId};
+use crate::storage::{Arena, ColumnFile, ColumnFileWriter, CommitToken, Flush, WriterId};
 
 const IDS: &str = "id";
 const VERSIONS: &str = "version";
@@ -163,7 +163,7 @@ fn floor_in(file: &ColumnFile) -> Result<u64> {
 }
 
 pub fn schema_of(path: &Path) -> Result<Vec<u8>> {
-    bytes_of(&ColumnFile::open(path)?, SCHEMA)
+    bytes_of(&ColumnFile::open_checked(path)?, SCHEMA)
 }
 
 fn epoch_in(file: &ColumnFile) -> Result<u64> {
@@ -174,11 +174,11 @@ fn epoch_in(file: &ColumnFile) -> Result<u64> {
 }
 
 pub fn epoch_of(path: &Path) -> Result<u64> {
-    epoch_in(&ColumnFile::open(path)?)
+    epoch_in(&ColumnFile::open_checked(path)?)
 }
 
 pub fn read(path: &Path, from: usize) -> Result<ShardRead> {
-    let file = ColumnFile::open(path)?;
+    let file = ColumnFile::open_checked(path)?;
     let token = file.commit_token();
     let schema = bytes_of(&file, SCHEMA)?;
     let floor = floor_in(&file)?;
@@ -269,11 +269,11 @@ pub fn append(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let file = match ColumnFile::open(path) {
+    let file = match ColumnFile::open_checked(path) {
         Ok(file) => file,
         Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {
             ColumnFileWriter::create(path, writer)?.finish()?;
-            ColumnFile::open(path)?
+            ColumnFile::open_checked(path)?
         }
         Err(err) => return Err(err),
     };
@@ -354,6 +354,7 @@ pub fn append(
     }
 
     let mut updater = file.update(writer)?;
+    updater.flushing(Flush::Once);
     updater.column(IDS, &ids)?;
     updater.column(VERSIONS, &versions)?;
     updater.column(PARENT_COUNTS, &counts)?;
@@ -389,14 +390,14 @@ pub fn rewrite(
         .ok_or_else(|| Error::invalid("a shard has a table directory"))?;
     std::fs::create_dir_all(folder)?;
     let fresh = folder.join(format!(".dbsync-{}.tmp", Uuid::now_v7()));
-    let epoch = match ColumnFile::open(path) {
+    let epoch = match ColumnFile::open_checked(path) {
         Ok(held) => epoch_in(&held)?,
         Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => 0,
         Err(err) => return Err(err),
     };
     let written = (|| {
         append(&fresh, writer, schema, fields, rows)?;
-        let file = ColumnFile::open(&fresh)?;
+        let file = ColumnFile::open_checked(&fresh)?;
         let mut held = Arena::<u64>::new();
         held.push(floor)?;
         held.push(epoch + 1)?;

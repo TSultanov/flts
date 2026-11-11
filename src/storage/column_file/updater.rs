@@ -60,6 +60,14 @@ impl std::fmt::Debug for ColumnFileUpdater {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Flush {
+    #[default]
+    Ordered,
+    Once,
+    Never,
+}
+
 pub struct ColumnFileUpdater {
     file: File,
     source: Arc<dyn ChunkSource>,
@@ -72,6 +80,7 @@ pub struct ColumnFileUpdater {
     columns: Vec<ColumnMeta>,
     original: ColumnFile,
     rewriting: bool,
+    flush: Flush,
 }
 
 #[derive(Clone)]
@@ -151,7 +160,16 @@ impl ColumnFileUpdater {
             columns: Vec::new(),
             original: reader.clone(),
             rewriting: false,
+            flush: Flush::Ordered,
         })
+    }
+
+    pub fn flushing(&mut self, flush: Flush) {
+        self.flush = flush;
+    }
+
+    pub fn starts_at(&self) -> u64 {
+        self.cursor
     }
 
     pub(crate) fn prepare_rewrite(&mut self, generation: u64) -> Result<()> {
@@ -232,7 +250,7 @@ impl ColumnFileUpdater {
                 .find(|column| column.name == name)
                 .and_then(|column| column.chunks.get(index))
                 .copied();
-            let mut payload = super::compression::encode(&bytes, byte_len, 0)?;
+            let mut payload = None;
             if let Some(base) = previous {
                 let before = self.source.read_chunk(base)?;
                 if before == bytes {
@@ -251,12 +269,24 @@ impl ColumnFileUpdater {
                 }
                 if let Some(delta) = super::delta::encode(full_base, &full, &bytes, T::SIZE) {
                     let compressed = super::compression::encode(&delta, byte_len, 1)?;
-                    if compressed.len() * 2 < payload.len() {
+                    if (compressed.len() as u64) * 2 < full_base.physical_len() {
                         loc.depth = 1;
-                        payload = compressed;
+                        payload = Some(compressed);
+                    } else {
+                        let whole = super::compression::encode(&bytes, byte_len, 0)?;
+                        if compressed.len() * 2 < whole.len() {
+                            loc.depth = 1;
+                            payload = Some(compressed);
+                        } else {
+                            payload = Some(whole);
+                        }
                     }
                 }
             }
+            let payload = match payload {
+                Some(payload) => payload,
+                None => super::compression::encode(&bytes, byte_len, 0)?,
+            };
             loc.stored_len = payload.len() as u32;
             self.file.write_payload(&payload, self.cursor)?;
             self.cursor += payload.len() as u64;
@@ -316,7 +346,9 @@ impl ColumnFileUpdater {
                 .iter()
                 .all(|column| self.original.column_meta(&column.name) == Some(column))
         {
-            self.file.sync_slot()?;
+            if self.flush == Flush::Ordered {
+                self.file.sync_slot()?;
+            }
             return Ok(self.original);
         }
 
@@ -340,7 +372,9 @@ impl ColumnFileUpdater {
         }
         let dir_len = payload.len() as u64;
         write_all_at(&self.file, &payload, dir_offset)?;
-        self.file.sync_directory()?;
+        if self.flush == Flush::Ordered {
+            self.file.sync_directory()?;
+        }
 
         let generation = self
             .expected_generation
@@ -371,7 +405,10 @@ impl ColumnFileUpdater {
                     Error::Io(e) => e,
                     other => std::io::Error::other(other.to_string()),
                 })?;
-            self.file.sync_slot()
+            match self.flush {
+                Flush::Never => Ok(()),
+                Flush::Ordered | Flush::Once => self.file.sync_slot(),
+            }
         })();
         if let Err(source) = publication {
             let _ = self.file.unlock();

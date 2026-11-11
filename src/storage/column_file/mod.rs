@@ -36,7 +36,7 @@ pub use codec::Codec;
 pub use column_meta::ColumnMeta;
 pub use commit_token::CommitToken;
 pub use reader::ColumnFile;
-pub use updater::{ColumnFileUpdater, CommitAttempt};
+pub use updater::{ColumnFileUpdater, CommitAttempt, Flush};
 
 #[cfg(all(test, feature = "macros"))]
 pub(crate) use updater::{CommitFault, fail_commit_at};

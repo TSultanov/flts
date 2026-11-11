@@ -15,12 +15,16 @@ use super::{Conflict, MergeReport, PruneReport, Reference, RowStatus, View, Visi
 use crate::error::{Error, Result};
 use crate::record::Record;
 use crate::storage::{
-    Arena, ColumnFile, ColumnFileUpdater, ColumnFileWriter, CommitToken, WriterId, fnv1a,
+    Arena, ColumnFile, ColumnFileUpdater, ColumnFileWriter, CommitToken, Flush, WriterId, fnv1a,
 };
 
 pub const CLOCK: &str = "dbsync.clock";
 pub const SCHEMA: &str = "dbsync.schema";
 pub const SHARDS: &str = "dbsync.shards";
+pub const DURABLE: &str = "dbsync.durable";
+const SETTLED: u64 = u64::MAX;
+const UNFLUSHED_FOR: std::time::Duration = std::time::Duration::from_secs(1);
+const UNFLUSHED_BYTES: u64 = 256 * 1024;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Layout {
@@ -173,6 +177,8 @@ pub struct StoreState {
     held_marks: Arena<ShardMark>,
     outbox: Vec<Outgoing>,
     said: Option<Peer>,
+    unflushed_from: Option<u64>,
+    flushed_at: Option<std::time::Instant>,
     view: View,
     compaction_policy: crate::CompactionPolicy,
     maintenance: Option<crate::MaintenanceOutcome>,
@@ -192,6 +198,8 @@ impl Clone for StoreState {
             held_marks: self.held_marks.clone(),
             outbox: self.outbox.clone(),
             said: self.said.clone(),
+            unflushed_from: self.unflushed_from,
+            flushed_at: self.flushed_at,
             view: self.view.fork(),
             compaction_policy: self.compaction_policy,
             maintenance: self.maintenance.clone(),
@@ -429,6 +437,12 @@ pub trait Store: Default + Clone + Sized {
             counts_rows: false,
         });
         out.push(ColumnSpec {
+            name: DURABLE.to_owned(),
+            elem_size: <u64 as Record>::SIZE,
+            kind: ColumnKind::Clock,
+            counts_rows: false,
+        });
+        out.push(ColumnSpec {
             name: SCHEMA.to_owned(),
             elem_size: 1,
             kind: ColumnKind::Scalar,
@@ -447,6 +461,11 @@ pub trait Store: Default + Clone + Sized {
         self.clock().residency(CLOCK, &mut out);
         out.push(Residency {
             name: SHARDS.to_owned(),
+            resident: 1,
+            chunks: 1,
+        });
+        out.push(Residency {
+            name: DURABLE.to_owned(),
             resident: 1,
             chunks: 1,
         });
@@ -623,7 +642,13 @@ pub trait Store: Default + Clone + Sized {
             .iter()
             .map(|mark| mark.copied())
             .collect::<Result<Vec<_>>>()?;
+        let unflushed_from = file
+            .column::<u64>(DURABLE)?
+            .get(0)?
+            .copied()
+            .filter(|from| *from != SETTLED);
         let state = self.state_mut();
+        state.unflushed_from = unflushed_from;
         state.clock = clock;
         state.dots = dots;
         state.marks = marks;
@@ -651,6 +676,9 @@ pub trait Store: Default + Clone + Sized {
             marks.extend_from_slice(&self.state().marks)?;
             updater.column(SHARDS, &marks)?;
         }
+        let mut durable = Arena::new();
+        durable.push(self.state().unflushed_from.unwrap_or(SETTLED))?;
+        updater.column(DURABLE, &durable)?;
         let mut schema = Arena::new();
         schema.extend_from_slice(&self.schema_metadata().encode()?)?;
         updater.column(
@@ -680,7 +708,7 @@ pub trait Store: Default + Clone + Sized {
         let mut report = MergeReport::default();
         let batches = store.collect(|_| true, &mut report)?;
         store.apply(batches, &mut report)?;
-        store.write_cache(writer_id)?;
+        store.write_cache(writer_id, true)?;
         Ok(store)
     }
 
@@ -716,6 +744,9 @@ pub trait Store: Default + Clone + Sized {
         let held = ColumnFile::open(&cache).and_then(|file| {
             let mut store = Self::default();
             store.read(&file)?;
+            if let Some(from) = store.state().unflushed_from {
+                file.verify_from(from)?;
+            }
             store.state_mut().file = Some(file);
             store.state_mut().layout = Some(layout.clone());
             Ok(store)
@@ -738,7 +769,7 @@ pub trait Store: Default + Clone + Sized {
         let moved = batches.iter().any(|batch| batch.mark.is_some());
         store.apply(batches, &mut report)?;
         if rebuilt || moved {
-            store.write_cache(WriterId::ANONYMOUS)?;
+            store.write_cache(WriterId::ANONYMOUS, true)?;
         }
         Ok(store)
     }
@@ -771,7 +802,7 @@ pub trait Store: Default + Clone + Sized {
         let mut report = MergeReport::default();
         let batches = rebuilt.collect(|_| true, &mut report)?;
         rebuilt.apply(batches, &mut report)?;
-        rebuilt.write_cache(WriterId::ANONYMOUS)?;
+        rebuilt.write_cache(WriterId::ANONYMOUS, true)?;
         let state = rebuilt.state_mut();
         state.compaction_policy = self.state().compaction_policy;
         state.maintenance = self.state().maintenance.clone();
@@ -1048,10 +1079,10 @@ pub trait Store: Default + Clone + Sized {
         for mark in marks {
             self.state_mut().mark(mark);
         }
-        self.write_cache(WriterId::ANONYMOUS)
+        self.write_cache(WriterId::ANONYMOUS, false)
     }
 
-    fn write_cache(&mut self, writer_id: WriterId) -> Result<()> {
+    fn write_cache(&mut self, writer_id: WriterId, settled: bool) -> Result<()> {
         for table in self.tables_mut() {
             table.fold_indexes(false)?;
         }
@@ -1062,6 +1093,23 @@ pub trait Store: Default + Clone + Sized {
             _ => ColumnFile::open(&cache)?,
         };
         let mut updater = current.update(writer_id)?;
+        let due = self
+            .state()
+            .flushed_at
+            .is_none_or(|at| at.elapsed() >= UNFLUSHED_FOR);
+        let flush = match settled || due {
+            true => Flush::Ordered,
+            false => Flush::Never,
+        };
+        updater.flushing(flush);
+        self.state_mut().unflushed_from = match flush {
+            Flush::Never => Some(
+                self.state()
+                    .unflushed_from
+                    .map_or(updater.starts_at(), |from| from.min(updater.starts_at())),
+            ),
+            _ => None,
+        };
         self.offer_to(&mut updater)?;
         let published = updater.commit_file()?;
         for table in self.tables_mut() {
@@ -1069,12 +1117,21 @@ pub trait Store: Default + Clone + Sized {
         }
         self.state().view.rebase(&published)?;
         let state = self.state_mut();
+        if flush != Flush::Never {
+            state.flushed_at = Some(std::time::Instant::now());
+        }
         state.dots = published.column(CLOCK)?;
         state.held_marks = published.column(SHARDS)?;
         state.schema_bytes = published.column(SCHEMA)?;
         state.dropped.clear();
+        let written = published.file_bytes()?;
         state.file = Some(published);
-        Ok(())
+        match self.state().unflushed_from {
+            Some(from) if written.saturating_sub(from) > UNFLUSHED_BYTES => {
+                self.write_cache(writer_id, true)
+            }
+            _ => Ok(()),
+        }
     }
 
     fn flush_outbox(&mut self) -> Result<()> {
@@ -1143,7 +1200,7 @@ pub trait Store: Default + Clone + Sized {
         self.apply(own, &mut report)?;
         self.flush_outbox()?;
         self.say_what_was_seen(writer_id, false)?;
-        self.write_cache(writer_id)?;
+        self.write_cache(writer_id, false)?;
         self.auto_compact();
         let policy = self.compaction_policy();
         if policy != crate::CompactionPolicy::Disabled
@@ -1261,7 +1318,7 @@ pub trait Store: Default + Clone + Sized {
             for mark in marks {
                 self.state_mut().mark(mark);
             }
-            self.write_cache(writer_id)?;
+            self.write_cache(writer_id, false)?;
         }
         Ok(report)
     }
@@ -1360,7 +1417,7 @@ pub trait Store: Default + Clone + Sized {
         let mut read = MergeReport::default();
         let batches = rebuilt.collect(|_| true, &mut read)?;
         rebuilt.apply(batches, &mut read)?;
-        rebuilt.write_cache(writer_id)?;
+        rebuilt.write_cache(writer_id, true)?;
         let state = rebuilt.state_mut();
         state.compaction_policy = self.state().compaction_policy;
         state.maintenance = self.state().maintenance.clone();
@@ -1381,7 +1438,7 @@ pub trait Store: Default + Clone + Sized {
         let moved = batches.iter().any(|batch| batch.mark.is_some());
         self.apply(batches, &mut report)?;
         if moved {
-            self.write_cache(WriterId::ANONYMOUS)?;
+            self.write_cache(WriterId::ANONYMOUS, false)?;
         }
         Ok(report)
     }

@@ -51,6 +51,48 @@ impl ColumnFile {
         Self::from_source(Arc::new(FileSource::open(path)?))
     }
 
+    pub fn open_checked(path: impl AsRef<Path>) -> Result<Self> {
+        let source = Arc::new(FileSource::open(path)?);
+        let total = source.len()?;
+        if total < HEAD_LEN {
+            return Err(Error::corrupt("file", "too short to be a column file"));
+        }
+        let file_uuid = read_header(&source)?.file_uuid();
+        let slots = slots_newest_first(source.file(), file_uuid)?;
+        let mut said = Error::corrupt("commit slot", "no valid commit slot");
+        for (at, slot) in slots.iter().enumerate() {
+            let earlier = slots.get(at + 1).and_then(|older| older.dir_end());
+            let opened = Self::at_slot(&source, *slot, total).and_then(|columns| {
+                let file = Self {
+                    source: source.clone(),
+                    columns,
+                    slot: *slot,
+                };
+                if at == 0 {
+                    file.verify_from(earlier.unwrap_or(HEAD_LEN))?;
+                }
+                Ok(file)
+            });
+            match opened {
+                Ok(file) => return Ok(file),
+                Err(err) if err.is_corrupt() => said = err,
+                Err(err) => return Err(err),
+            }
+        }
+        Err(said)
+    }
+
+    pub fn verify_from(&self, offset: u64) -> Result<()> {
+        for meta in &self.columns {
+            for loc in &meta.chunks {
+                if loc.offset >= offset {
+                    self.source.read_chunk(*loc)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn from_source(source: Arc<FileSource>) -> Result<Self> {
         let total = source.len()?;
         if total < HEAD_LEN {

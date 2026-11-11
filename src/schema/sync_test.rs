@@ -443,7 +443,15 @@ fn opening_a_store_reads_no_row_of_any_table_and_a_snapshot_copies_none() -> Res
         .filter(|column| column.resident > 0)
         .map(|column| column.name)
         .collect();
-    assert_eq!(read, ["dbsync.clock", "dbsync.shards", "dbsync.schema"]);
+    assert_eq!(
+        read,
+        [
+            "dbsync.clock",
+            "dbsync.shards",
+            "dbsync.durable",
+            "dbsync.schema"
+        ]
+    );
 
     let copy = opened.snapshot();
     assert!(
@@ -468,5 +476,33 @@ fn opening_a_store_reads_no_row_of_any_table_and_a_snapshot_copies_none() -> Res
     assert_eq!(touched("chapter.book").0, 0);
     assert_eq!(touched("book.title.bytes"), (1, 1));
     opened.verify()?;
+    Ok(())
+}
+
+#[test]
+fn a_cache_whose_unflushed_tail_did_not_land_is_rebuilt_from_the_shards() -> Result<()> {
+    let dir = TempDir::new("sync_torn_cache");
+    let (mut ours, our_dir, _, _) = two_shelves(&dir)?;
+    let emma = ours.books.push("Emma")?;
+    ours.commit(here())?;
+    ours.books.set_title(emma, "Emma, second edition")?;
+    ours.commit(here())?;
+    drop(ours);
+
+    let file = ColumnFile::open(cache(&our_dir))?;
+    let newest = file
+        .columns()
+        .iter()
+        .flat_map(|column| column.chunks.iter())
+        .max_by_key(|chunk| chunk.offset)
+        .copied()
+        .unwrap();
+    drop(file);
+    crate::test_utils::flip_byte(&cache(&our_dir), newest.offset + newest.physical_len() - 1);
+
+    let reopened = Shelf::open(&our_dir)?;
+    assert_eq!(reopened.books.title(emma)?, "Emma, second edition");
+    assert_eq!(Table::versions_of(&reopened.books, emma)?.len(), 2);
+    reopened.verify()?;
     Ok(())
 }

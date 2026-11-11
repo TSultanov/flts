@@ -459,3 +459,40 @@ fn a_file_cut_off_before_its_newest_directory_opens_at_the_commit_before_it() {
     assert_eq!(cut.column::<u32>("values").unwrap().len(), 3);
     cut.verify().unwrap();
 }
+
+#[test]
+fn a_checked_open_falls_back_when_the_newest_commit_wrote_a_chunk_that_did_not_land() {
+    let dir = TempDir::new("checked_open");
+    let path = dir.join("numbers.dbs");
+
+    let mut values = Arena::<u32>::with_chunk_rows(4);
+    values.extend_from_slice(&[1, 2, 3, 4]).unwrap();
+    let mut writer = ColumnFileWriter::create(&path, WriterId::ANONYMOUS).unwrap();
+    writer.column("values", &values).unwrap();
+    writer.finish().unwrap();
+    let before = ColumnFile::open_checked(&path).unwrap();
+
+    let mut grown = before.column::<u32>("values").unwrap();
+    grown.extend_from_slice(&[5, 6, 7, 8]).unwrap();
+    let mut updater = before.update(WriterId::ANONYMOUS).unwrap();
+    updater.flushing(crate::storage::Flush::Once);
+    updater.column("values", &grown).unwrap();
+    let after = updater.commit_file().unwrap();
+    let added = after.column_meta("values").unwrap().chunks[1];
+    assert_eq!(
+        ColumnFile::open_checked(&path).unwrap().generation(),
+        after.generation()
+    );
+
+    flip_byte(&path, added.offset + added.physical_len() - 1);
+
+    assert_eq!(
+        ColumnFile::open(&path).unwrap().generation(),
+        after.generation(),
+        "an unchecked open trusts the slot and finds the damage when it reads"
+    );
+    let checked = ColumnFile::open_checked(&path).unwrap();
+    assert_eq!(checked.generation(), before.generation());
+    assert_eq!(checked.column::<u32>("values").unwrap().len(), 4);
+    checked.verify().unwrap();
+}
