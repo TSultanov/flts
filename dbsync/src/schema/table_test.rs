@@ -735,3 +735,74 @@ fn equal_values_on_distinct_ids_remain_visible() {
         assert!(books.live_row_of(id).unwrap().is_some());
     }
 }
+
+#[derive(Default, Clone)]
+struct Twinned {
+    ids: IdColumn<Book>,
+    versions: VersionColumn<Book>,
+    twin: IdColumn<Book>,
+}
+
+impl Table for Twinned {
+    type Of = Book;
+
+    fn ids(&self) -> &IdColumn<Book> {
+        &self.ids
+    }
+
+    fn ids_mut(&mut self) -> &mut IdColumn<Book> {
+        &mut self.ids
+    }
+
+    fn versions(&self) -> &VersionColumn<Book> {
+        &self.versions
+    }
+
+    fn versions_mut(&mut self) -> &mut VersionColumn<Book> {
+        &mut self.versions
+    }
+
+    fn fields(&self) -> Vec<Field<'_>> {
+        vec![Field::new("twin", &self.twin)]
+    }
+
+    fn fields_mut(&mut self) -> Vec<FieldMut<'_>> {
+        vec![FieldMut::new("twin", &mut self.twin)]
+    }
+}
+
+#[test]
+fn a_table_with_a_column_that_cannot_be_left_blank_refuses_a_purge_and_writes_nothing() {
+    let mut table = Twinned::default();
+    let id = table.mint().unwrap();
+    table.twin.push(id).unwrap();
+
+    let err = table.purge_row(id).unwrap_err();
+
+    assert!(err.is_unsupported(), "{err}");
+    assert!(err.to_string().contains("book.twin"), "{err}");
+    assert_eq!(Table::rows(&table), 1);
+    assert_eq!(Column::rows(&table.twin), 1);
+    assert!(!table.purged(id).unwrap());
+    assert!(table.cascades_from().is_empty());
+}
+
+#[test]
+fn a_hand_built_table_purges_a_row_by_leaving_every_column_blank() {
+    let mut table = Ragged::default();
+    let id = table.mint().unwrap();
+    table.title.push("a title to forget").unwrap();
+    table.year.push(1911).unwrap();
+
+    assert!(table.purge_row(id).unwrap());
+    assert!(!table.purge_row(id).unwrap());
+
+    assert_eq!(Table::rows(&table), 2);
+    assert_eq!(table.title.get(Row::trusted(1)).unwrap(), "");
+    assert_eq!(*table.year.row(1).unwrap(), 0);
+    assert_eq!(table.purge_of(id).unwrap(), Some(Row::trusted(1)));
+    assert_eq!(table.winner(id).unwrap(), Some(Row::trusted(1)));
+    assert_eq!(table.purged_ids().unwrap(), [id]);
+    assert_eq!(table.purged_payload().unwrap(), [Row::trusted(0)]);
+    assert!(table.purge_row(Id::mint()).is_err());
+}

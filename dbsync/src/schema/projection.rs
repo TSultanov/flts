@@ -421,6 +421,30 @@ impl View {
         }
     }
 
+    pub fn naming(
+        &self,
+        entity: &str,
+        id: Uuid,
+    ) -> Result<Vec<(&'static str, &'static str, Uuid)>> {
+        let held = self.0.read().expect("view lock");
+        let mut found = Vec::new();
+        if id.is_nil() {
+            return Ok(found);
+        }
+        for shelf in &held.shelves {
+            for named in shelf.refs.iter().filter(|named| named.parent == entity) {
+                for slot in named.index.rows_of(id.to_u128())? {
+                    found.push((
+                        shelf.entity,
+                        named.column,
+                        Uuid::from_u128(*shelf.ids.row(slot)?),
+                    ));
+                }
+            }
+        }
+        Ok(found)
+    }
+
     pub fn status(&self, entity: &str, id: Uuid) -> Result<Option<RowStatus>> {
         let held = self.0.read().expect("view lock");
         let Some(at) = held.shelf(entity) else {

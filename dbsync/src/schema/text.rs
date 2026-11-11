@@ -192,6 +192,12 @@ impl Column for TextColumn {
         Ok(out)
     }
 
+    fn blank_value_bytes(&self) -> Option<Vec<u8>> {
+        let mut out = Vec::new();
+        super::encode_text("", &mut out);
+        Some(out)
+    }
+
     fn schema_type(&self) -> String {
         "text".to_owned()
     }

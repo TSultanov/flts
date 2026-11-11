@@ -72,6 +72,10 @@ impl<E: UnitEnum> Column for EnumColumn<E> {
         matches!(bytes, [code] if E::from_u8(*code).is_ok())
     }
 
+    fn blank_value_bytes(&self) -> Option<Vec<u8>> {
+        E::VARIANTS.first().map(|(_, code)| vec![*code])
+    }
+
     fn schema_type(&self) -> String {
         enum_type::<E>()
     }

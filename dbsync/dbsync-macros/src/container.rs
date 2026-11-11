@@ -321,6 +321,20 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 result
             }
 
+            pub fn purge<E>(&mut self, of: ::dbsync::Id<E>) -> ::dbsync::Result<usize>
+            where Self: ::dbsync::schema::Holds<E>, E: ::dbsync::schema::Entity {
+                <Self as ::dbsync::schema::Store>::check_mutable(self)?;
+                let kept = <Self as ::dbsync::schema::Store>::snapshot(self);
+                let result = <Self as ::dbsync::schema::Store>::purge_cascading(self, E::NAME, of.uuid());
+                if result.is_err() { *self = kept; }
+                result
+            }
+
+            pub fn is_purged<E>(&self, id: ::dbsync::Id<E>) -> ::dbsync::Result<bool>
+            where Self: ::dbsync::schema::Holds<E>, E: ::dbsync::schema::Entity {
+                ::dbsync::schema::Table::purged(::dbsync::schema::Holds::<E>::table(self), id)
+            }
+
             pub fn remove<E>(&mut self, of: ::dbsync::Id<E>) -> ::dbsync::Result<()>
             where
                 Self: ::dbsync::schema::Holds<E>,

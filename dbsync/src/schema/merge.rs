@@ -89,6 +89,12 @@ pub struct PruneReport {
     pub waiting_for: Vec<crate::WriterId>,
 }
 
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub struct PurgeReport {
+    pub purged: usize,
+    pub dropped: usize,
+}
+
 #[cfg(test)]
 #[path = "merge_test.rs"]
 mod merge_test;

@@ -6,11 +6,13 @@ mod copy_dir;
 mod flip_byte;
 pub mod library;
 pub mod props;
+mod scan;
 mod temp_dir;
 
 pub use committed::committed;
 pub use copy_dir::{cache, copy_dir, copy_store, shared_files};
 pub use flip_byte::flip_byte;
+pub use scan::files_holding;
 pub use temp_dir::TempDir;
 
 pub fn is_merge_metadata<S: crate::schema::Store>(store: &S, name: &str) -> bool {

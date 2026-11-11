@@ -11,7 +11,9 @@ use super::peers::{self, Peer};
 use super::shard::{self, ShardFile, ShardRow};
 use super::table::{Adoption, AnyTable};
 use super::version::Dot;
-use super::{Conflict, MergeReport, PruneReport, Reference, RowStatus, View, VisibilityChange};
+use super::{
+    Conflict, MergeReport, PruneReport, PurgeReport, Reference, RowStatus, View, VisibilityChange,
+};
 use crate::error::{Error, Result};
 use crate::record::Record;
 use crate::storage::{
@@ -184,6 +186,8 @@ pub struct StoreState {
     view: View,
     compaction_policy: crate::CompactionPolicy,
     maintenance: Option<crate::MaintenanceOutcome>,
+    pub(super) shedding: bool,
+    pub(super) purges_settled: Vec<usize>,
 }
 
 impl Clone for StoreState {
@@ -206,6 +210,8 @@ impl Clone for StoreState {
             view: self.view.fork(),
             compaction_policy: self.compaction_policy,
             maintenance: self.maintenance.clone(),
+            shedding: self.shedding,
+            purges_settled: self.purges_settled.clone(),
         }
     }
 }
@@ -983,14 +989,45 @@ pub trait Store: Default + Clone + Sized {
                 *floor = (*floor).max(mark.floor);
             }
         }
+        // Purges go first: none waits for anything, so a batch stalled ahead of one cannot hold it.
+        let mut purges = BTreeSet::new();
+        for (dot, at, row) in &order {
+            let batch = &batches[*at];
+            if !batch.rows[*row].version.is_purged() {
+                continue;
+            }
+            match self.tables_mut()[batch.table].adopt_row(&batch.rows[*row], &|_| true)? {
+                Adoption::Taken => report.taken += 1,
+                _ => report.known += 1,
+            }
+            self.state_mut().clock.observe(*dot);
+            purges.insert((*at, *row));
+        }
+        let mut shed: HashMap<usize, BTreeSet<crate::Uuid>> = HashMap::new();
+        if self.state().shedding {
+            for (table, held) in self.tables().into_iter().enumerate() {
+                shed.insert(table, held.purged_identities()?.into_iter().collect());
+            }
+        }
         let mut stalled: Vec<Option<usize>> = vec![None; batches.len()];
         for (dot, at, row) in order {
+            if purges.contains(&(at, row)) {
+                continue;
+            }
             if stalled[at].is_some() {
                 report.waiting += 1;
                 continue;
             }
             let batch = &batches[at];
             let table = batch.table;
+            if shed
+                .get(&table)
+                .is_some_and(|purged| purged.contains(&batch.rows[row].id))
+            {
+                report.known += 1;
+                self.state_mut().clock.observe(dot);
+                continue;
+            }
             let gone = |dot: Dot| {
                 floors
                     .get(&(table, dot.writer()))
@@ -1367,15 +1404,12 @@ pub trait Store: Default + Clone + Sized {
         }
         report.waiting_for.sort();
         report.waiting_for.dedup();
-        if !report.waiting_for.is_empty() {
-            return Ok(report);
-        }
         let settled = |dot: Dot| heard.iter().all(|seen| seen.dominates(dot));
 
         let ours = self.schema_metadata();
-        let mut rewrites = Vec::new();
-        for table in self.tables() {
-            if table.keeps_history() {
+        let mut superseded = vec![Vec::new(); self.tables().len()];
+        for (at, table) in self.tables().into_iter().enumerate() {
+            if table.keeps_history() || !report.waiting_for.is_empty() {
                 continue;
             }
             let fields = table.field_names();
@@ -1400,10 +1434,32 @@ pub trait Store: Default + Clone + Sized {
                     .entry(author)
                     .or_insert_with(|| whole(author))
             };
-            let dropped = table.prunable_rows(writer_id, &settled, &asked)?;
-            if dropped.is_empty() {
+            superseded[at] = table.prunable_rows(writer_id, &settled, &asked)?;
+        }
+        report.dropped = self.rewrite_without(writer_id, &layout, superseded)?;
+        Ok(report)
+    }
+
+    // Drops `superseded` and whatever a purge outranked from this writer's shards, then
+    // rebuilds the cache without any purged row's payload, whoever wrote it.
+    fn rewrite_without(
+        &mut self,
+        writer_id: WriterId,
+        layout: &Layout,
+        superseded: Vec<Vec<usize>>,
+    ) -> Result<usize> {
+        let ours = self.schema_metadata();
+        let mut dropped = 0;
+        let mut stale = false;
+        let mut rewrites = Vec::new();
+        for (table, mut gone) in self.tables().into_iter().zip(superseded) {
+            let purged = table.purged_payload_rows()?;
+            stale |= !purged.is_empty();
+            gone.extend(purged);
+            if gone.is_empty() {
                 continue;
             }
+            let gone: BTreeSet<usize> = gone.into_iter().collect();
             let mut floor = self
                 .state()
                 .marks
@@ -1415,17 +1471,21 @@ pub trait Store: Default + Clone + Sized {
                 })
                 .map_or(0, |mark| mark.floor);
             let mut kept = Vec::new();
-            for (row, held) in table.authored_rows(writer_id)? {
-                match dropped.contains(&row) {
+            let authored = table.authored_rows(writer_id)?;
+            let held = authored.len();
+            for (row, held) in authored {
+                match gone.contains(&row) {
                     true => floor = floor.max(held.version.dot().counter()),
                     false => kept.push(held),
                 }
             }
-            report.dropped += dropped.len();
-            rewrites.push((table.entity(), fields, kept, floor));
+            if kept.len() < held {
+                dropped += held - kept.len();
+                rewrites.push((table.entity(), table.field_names(), kept, floor));
+            }
         }
-        if rewrites.is_empty() {
-            return Ok(report);
+        if rewrites.is_empty() && !stale {
+            return Ok(dropped);
         }
 
         let schema = ours.encode()?;
@@ -1441,10 +1501,12 @@ pub trait Store: Default + Clone + Sized {
                 self.durability(),
             )?;
         }
-        let mut rebuilt = Self::with_fresh_cache(layout)?;
+        let mut rebuilt = Self::with_fresh_cache(layout.clone())?;
+        rebuilt.state_mut().shedding = true;
         let mut read = MergeReport::default();
         let batches = rebuilt.collect(|_| true, &mut read)?;
         rebuilt.apply(batches, &mut read)?;
+        rebuilt.state_mut().shedding = false;
         rebuilt.write_cache(writer_id, true)?;
         let state = rebuilt.state_mut();
         state.compaction_policy = self.state().compaction_policy;
@@ -1452,6 +1514,93 @@ pub trait Store: Default + Clone + Sized {
         state.maintenance = self.state().maintenance.clone();
         state.said = self.state().said.clone();
         *self = rebuilt;
+        Ok(dropped)
+    }
+
+    fn purge_cascading(&mut self, entity: &str, id: crate::Uuid) -> Result<usize> {
+        self.check_mutable()?;
+        let Some(at) = self
+            .tables()
+            .iter()
+            .position(|table| table.entity() == entity)
+        else {
+            return Err(Error::invalid(format!("this store holds no {entity}")));
+        };
+        let entity = self.tables()[at].entity();
+        let purged = usize::from(self.tables_mut()[at].purge_one(id)?);
+        Ok(purged + self.purge_dependants(vec![(entity, id)])?)
+    }
+
+    fn purge_dependants(&mut self, mut walk: Vec<(&'static str, crate::Uuid)>) -> Result<usize> {
+        let cascading: BTreeSet<&'static str> = self
+            .tables()
+            .iter()
+            .flat_map(|table| table.cascading_columns())
+            .collect();
+        let mut reached: BTreeSet<_> = walk.iter().copied().collect();
+        let mut purged = 0;
+        while let Some((entity, id)) = walk.pop() {
+            for (child, column, held) in self.state().view.naming(entity, id)? {
+                if !cascading.contains(column) || !reached.insert((child, held)) {
+                    continue;
+                }
+                if let Some(at) = self
+                    .tables()
+                    .iter()
+                    .position(|table| table.entity() == child)
+                {
+                    purged += usize::from(self.tables_mut()[at].purge_one(held)?);
+                    walk.push((child, held));
+                }
+            }
+        }
+        Ok(purged)
+    }
+
+    fn reclaim_purged(&mut self, writer_id: WriterId) -> Result<PurgeReport> {
+        self.check_published()?;
+        if writer_id.is_anonymous() {
+            return Err(Error::invalid(
+                "only a named writer reclaims from its own shards",
+            ));
+        }
+        if !self.state().outbox.is_empty() {
+            return Err(Error::invalid("commit pending changes before reclaiming"));
+        }
+        let layout = self.state().attached()?.1.clone();
+        let _lease = layout.lease()?;
+        let mut report = PurgeReport::default();
+        let settled = &self.state().purges_settled;
+        let mut news = false;
+        for (at, table) in self.tables().into_iter().enumerate() {
+            news = news || table.has_purge_news(settled.get(at).copied().unwrap_or(0))?;
+        }
+        if !news {
+            return self.settle_purges(report);
+        }
+
+        let mut purged = Vec::new();
+        for table in self.tables() {
+            for id in table.purged_identities()? {
+                purged.push((table.entity(), id));
+            }
+        }
+        report.purged = self.purge_dependants(purged)?;
+        if report.purged > 0 {
+            self.commit_held(writer_id)?;
+        }
+        let untouched = vec![Vec::new(); self.tables().len()];
+        report.dropped = self.rewrite_without(writer_id, &layout, untouched)?;
+        self.settle_purges(report)
+    }
+
+    fn settle_purges(&mut self, report: PurgeReport) -> Result<PurgeReport> {
+        let rows = self
+            .tables()
+            .iter()
+            .map(|table| table.row_count())
+            .collect();
+        self.state_mut().purges_settled = rows;
         Ok(report)
     }
 

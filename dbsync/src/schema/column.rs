@@ -85,6 +85,10 @@ pub trait Column {
         None
     }
 
+    fn blank_value_bytes(&self) -> Option<Vec<u8>> {
+        self.absent_value_bytes()
+    }
+
     fn understands(&self, _bytes: &[u8]) -> bool {
         true
     }
@@ -129,6 +133,10 @@ impl<T: Record> Column for Arena<T> {
         let mut out = Vec::new();
         super::encode_record(self.row(row.index())?, &mut out);
         Ok(out)
+    }
+
+    fn blank_value_bytes(&self) -> Option<Vec<u8>> {
+        Some(vec![0; T::SIZE])
     }
 
     fn schema_type(&self) -> String {

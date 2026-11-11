@@ -1013,3 +1013,29 @@ fn an_optional_parent_is_read_as_a_row_that_may_not_be_there() {
     assert!(out.contains("& table . series . references ()"), "{out}");
     assert!(out.contains("if parent . is_nil ()"), "{out}");
 }
+
+#[test]
+fn every_table_can_purge_a_row_and_names_the_references_a_purge_follows() {
+    let out = expanded(quote! {
+        struct Credit { book: One<Book>, editor: Option<One<Author>>, role: String }
+    });
+
+    let purges = out.split("pub fn purge").nth(1).unwrap();
+    assert!(
+        purges.contains(":: purge_row (self , of)"),
+        "a purge copies no field forward: {out}"
+    );
+    assert!(out.contains("pub fn is_purged"), "{out}");
+    assert!(
+        out.contains("fn cascades_from (& self) -> :: std :: vec :: Vec < & 'static str > { :: std :: vec ! [\"credit.book\" ,] }"),
+        "only a reference a row cannot stand without carries a purge down: {out}"
+    );
+    let recovers = out.split("fn recover_row").nth(1).unwrap();
+    let (guard, read) = (
+        recovers.find(":: check_unpurged (self , of) ?").unwrap(),
+        recovers
+            .find(":: revision_row (self , of , dot) ?")
+            .unwrap(),
+    );
+    assert!(guard < read, "a purged row says so before anything else");
+}

@@ -485,6 +485,27 @@ fn main() -> Result<()> {
         library.all::<Book>().count()
     );
 
+    let prince = library.books.find_by_title("Le Petit Prince")?[0];
+    let written = library.at(prince)?.version()?.dot();
+    let purged = library.purge(prince)?;
+    library.commit(this_device())?;
+    let reclaimed = library.reclaim_purged(this_device())?;
+    assert!(library.is_purged(prince)?);
+    assert!(library.restore(prince, written).is_err());
+    assert!(library.books.find_by_title("Le Petit Prince")?.is_empty());
+    assert_eq!(library.all::<Book>().count(), 6);
+    assert_eq!(library.history(prince)?.len(), 1);
+    library.verify()?;
+    println!("\n15. purged Le Petit Prince, and unlike a removal that cannot be undone");
+    println!("     {purged} rows went with it: the book, and the credit, chapters and paragraphs");
+    println!("     that cannot stand without it; its author stayed");
+    println!(
+        "     reclaiming then dropped the {} revisions this device wrote for them from",
+        reclaimed.dropped
+    );
+    println!("     its shards and rebuilt the cache, so the text is gone from the directory");
+    println!("     and each row is left one empty revision that says it was purged");
+
     std::fs::remove_dir_all(&path)?;
     std::fs::remove_dir_all(&elsewhere)?;
     Ok(())

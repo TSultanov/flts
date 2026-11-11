@@ -18,7 +18,8 @@ const SUPERSEDED: u64 = 1;
 const REMOVED: u64 = 1 << 1;
 const RESTORED: u64 = 1 << 2;
 const HIDDEN: u64 = 1 << 3;
-const KNOWN: u64 = SUPERSEDED | REMOVED | RESTORED;
+const PURGED: u64 = 1 << 4;
+const KNOWN: u64 = SUPERSEDED | REMOVED | RESTORED | PURGED;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Dot {
@@ -116,6 +117,10 @@ impl Version {
         self.flags & REMOVED != 0
     }
 
+    pub const fn is_purged(self) -> bool {
+        self.flags & PURGED != 0
+    }
+
     pub const fn is_current(self) -> bool {
         !self.is_superseded()
     }
@@ -132,6 +137,14 @@ impl Version {
         Self {
             dot: self.dot,
             flags: RESTORED,
+        }
+    }
+
+    // Also removed, so a build that predates purging still hides the row.
+    pub const fn purge(self) -> Self {
+        Self {
+            dot: self.dot,
+            flags: REMOVED | PURGED,
         }
     }
 
@@ -185,6 +198,9 @@ impl fmt::Debug for Version {
         }
         if self.is_restoration() {
             f.write_str(" restored")?;
+        }
+        if self.is_purged() {
+            f.write_str(" purged")?;
         }
         if self.flags & HIDDEN != 0 {
             f.write_str(" hidden")?;

@@ -96,6 +96,10 @@ impl<P: Entity, C: Entity> Column for RefColumn<P, C> {
         Ok(out)
     }
 
+    fn blank_value_bytes(&self) -> Option<Vec<u8>> {
+        Some(vec![0; <Id<P> as Record>::SIZE])
+    }
+
     fn schema_type(&self) -> String {
         format!("reference {}", P::NAME)
     }

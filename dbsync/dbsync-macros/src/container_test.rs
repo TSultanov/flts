@@ -270,6 +270,29 @@ fn a_store_takes_a_row_out_and_puts_it_back_if_the_audit_refuses() {
 }
 
 #[test]
+fn a_store_purges_a_row_with_all_that_needs_it_or_purges_nothing() {
+    let out = expanded(quote! {
+        struct Library { books: Set<Book>, chapters: Set<Chapter> }
+    });
+
+    let purges = out.split("pub fn purge < E >").nth(1).unwrap();
+    let purges = purges.split("pub fn is_purged").next().unwrap();
+    assert!(purges.contains(":: check_mutable (self) ?"), "{purges}");
+    assert!(
+        purges.contains(":: purge_cascading (self , E :: NAME , of . uuid ())"),
+        "{purges}"
+    );
+    assert!(
+        purges.contains("if result . is_err () { * self = kept ; }"),
+        "{purges}"
+    );
+    assert!(
+        out.contains("pub fn is_purged < E > (& self , id : :: dbsync :: Id < E >) -> :: dbsync :: Result < bool >"),
+        "{out}"
+    );
+}
+
+#[test]
 fn container_emits_explicit_schema_identity() {
     let out = expand(
         quote! { schema = "catalog", version = 42 },

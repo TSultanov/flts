@@ -93,7 +93,11 @@ pub trait Table: Default + Clone {
         let rows = self.versions_of(id)?;
         let mut deletes = Vec::new();
         for row in &rows {
-            if self.versions().raw_at(*row)?.is_removed() {
+            let version = self.versions().raw_at(*row)?;
+            if version.is_purged() {
+                return Ok(Vec::new());
+            }
+            if version.is_removed() {
                 deletes.push(*row);
             }
         }
@@ -125,12 +129,19 @@ pub trait Table: Default + Clone {
     fn winner(&self, id: Id<Self::Of>) -> Result<Option<Row>> {
         let mut eligible = self.eligible_heads(id)?;
         let mut deletes = Vec::new();
+        let mut purges = Vec::new();
         for row in self.versions_of(id)? {
-            if self.versions().raw_at(row)?.is_removed() {
+            let version = self.versions().raw_at(row)?;
+            if version.is_purged() {
+                purges.push(row);
+            } else if version.is_removed() {
                 deletes.push(row);
             }
         }
-        if eligible.is_empty() {
+        // A purge outranks every other revision, whatever it descends from.
+        if !purges.is_empty() {
+            eligible = purges;
+        } else if eligible.is_empty() {
             for deletion in &deletes {
                 let mut superseded = false;
                 for other in &deletes {
@@ -159,6 +170,27 @@ pub trait Table: Default + Clone {
         self.winner(id)
     }
 
+    fn purge_of(&self, id: Id<Self::Of>) -> Result<Option<Row>> {
+        match self.winner(id)? {
+            Some(row) if self.versions().raw_at(row)?.is_purged() => Ok(Some(row)),
+            _ => Ok(None),
+        }
+    }
+
+    fn purged(&self, id: Id<Self::Of>) -> Result<bool> {
+        Ok(self.purge_of(id)?.is_some())
+    }
+
+    fn check_unpurged(&self, id: Id<Self::Of>) -> Result<()> {
+        match self.purged(id)? {
+            true => Err(Error::invalid(format!(
+                "{} {id} was purged; a purge is final",
+                Self::Of::NAME
+            ))),
+            false => Ok(()),
+        }
+    }
+
     fn logical_row_of(&self, id: Id<Self::Of>) -> Result<Row> {
         let (row, removed) = match self.standing(id)? {
             Some(held) => (Row::trusted(held.winner), held.deleted),
@@ -170,6 +202,7 @@ pub trait Table: Default + Clone {
             }
         };
         if removed {
+            self.check_unpurged(id)?;
             return Err(Error::invalid("the row is deleted; restore it explicitly"));
         }
         Ok(row)
@@ -301,6 +334,9 @@ pub trait Table: Default + Clone {
             return Ok(conflicts);
         };
         let version = self.versions().raw_at(winner)?;
+        if version.is_purged() {
+            return Ok(conflicts);
+        }
         if self.is_derived(id) {
             conflicts.push(Conflict::Combined(super::Combined {
                 entity: Self::Of::NAME,
@@ -430,6 +466,7 @@ pub trait Table: Default + Clone {
             ))
         })?;
         if self.versions().raw_at(held)?.is_removed() {
+            self.check_unpurged(id)?;
             return Err(Error::invalid("restore deleted rows explicitly"));
         }
         let parents = self
@@ -542,6 +579,9 @@ pub trait Table: Default + Clone {
         }
         let mut dropped = Vec::new();
         for id in ids {
+            if self.purged(id)? {
+                continue;
+            }
             let heads = self.heads(id)?;
             let [head] = heads.as_slice() else {
                 continue;
@@ -561,6 +601,131 @@ pub trait Table: Default + Clone {
         Ok(dropped)
     }
 
+    fn purged_ids(&self) -> Result<Vec<Id<Self::Of>>> {
+        let mut ids = BTreeSet::new();
+        for index in 0..Table::rows(self) {
+            let row = Row::trusted(index);
+            if self.versions().raw_at(row)?.is_purged() {
+                ids.insert(self.id_at(row)?);
+            }
+        }
+        Ok(ids.into_iter().collect())
+    }
+
+    // What a purge left behind: it outranks these whoever has seen them, so nobody is waited for.
+    fn purged_payload(&self) -> Result<Vec<Row>> {
+        let mut held = Vec::new();
+        for id in self.purged_ids()? {
+            for row in self.versions_of(id)? {
+                if !self.versions().raw_at(row)?.is_purged() {
+                    held.push(row);
+                }
+            }
+        }
+        held.sort();
+        Ok(held)
+    }
+
+    // A hidden row counts: what hides it may be a purge it has yet to follow.
+    fn purge_news(&self, from: usize) -> Result<bool> {
+        for index in from..Table::rows(self) {
+            let id = self.id_at(Row::trusted(index))?;
+            let Some(held) = self.standing(id)? else {
+                continue;
+            };
+            let winner = self.versions().raw_at(Row::trusted(held.winner))?;
+            if held.suppressed || winner.is_purged() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn cascades_from(&self) -> Vec<&'static str> {
+        Vec::new()
+    }
+
+    fn blank_values(&self) -> Result<Vec<Vec<u8>>> {
+        let mut blanks = Vec::new();
+        for field in self.fields() {
+            if field.name == "id" || field.name == "version" {
+                continue;
+            }
+            blanks.push(field.column.blank_value_bytes().ok_or_else(|| {
+                Error::unsupported(format!(
+                    "{}.{} has no blank value for a purge to leave",
+                    Self::Of::NAME,
+                    field.name
+                ))
+            })?);
+        }
+        Ok(blanks)
+    }
+
+    fn append_blank(
+        &mut self,
+        id: Id<Self::Of>,
+        version: Version,
+        parents: Vec<Parent>,
+    ) -> Result<()> {
+        let blanks = self.blank_values()?;
+        self.reserve()?;
+        self.adopt_revision(id, version, parents)?;
+        let mut blanks = blanks.into_iter();
+        for field in self.fields_mut() {
+            if field.name != "id" && field.name != "version" {
+                let bytes = blanks
+                    .next()
+                    .ok_or_else(|| Error::corrupt("schema", "missing field during purge"))?;
+                field.column.append_value_bytes(&bytes)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn purge_row(&mut self, id: Id<Self::Of>) -> Result<bool> {
+        self.versions().view().check_mutable()?;
+        if self.versions_of(id)?.is_empty() {
+            return Err(Error::invalid(format!(
+                "{} has no row with id {id} to purge",
+                Self::Of::NAME
+            )));
+        }
+        if self.purged(id)? {
+            return Ok(false);
+        }
+        let parents = self
+            .heads(id)?
+            .into_iter()
+            .map(|row| self.versions().parent_of(row))
+            .collect::<Result<_>>()?;
+        self.append_blank(id, Version::UNSTAMPED.purge(), parents)?;
+        self.refresh_one(id)?;
+        Ok(true)
+    }
+
+    fn adopt_purge(
+        &mut self,
+        id: Id<Self::Of>,
+        version: Version,
+        parents: Vec<Parent>,
+    ) -> Result<Adoption> {
+        if let Some(held) = self.versions().row_for_dot(version.dot())? {
+            if self.id_at(held)? != id
+                || self.versions().raw_at(held)? != version
+                || self.versions().parents(held)? != parents
+            {
+                return Err(Error::corrupt(
+                    "revision",
+                    "a dot identifies different revisions",
+                ));
+            }
+            return Ok(Adoption::Known);
+        }
+        self.append_blank(id, version, parents)?;
+        Ok(Adoption::Taken)
+    }
+
     fn recover_row(&mut self, _id: Id<Self::Of>, _dot: Dot, _restore: bool) -> Result<()> {
         Err(Error::unsupported(
             "this table does not implement revision recovery",
@@ -572,6 +737,7 @@ pub trait Table: Default + Clone {
         let current = self
             .winner(id)?
             .ok_or_else(|| Error::invalid("unknown entity id"))?;
+        self.check_unpurged(id)?;
         if self.versions().raw_at(current)?.is_removed() != restore {
             return Err(Error::invalid(
                 "use restore for deleted rows and resolve for live rows",
@@ -678,6 +844,10 @@ pub trait Table: Default + Clone {
                 "a shard holds an unpublished row",
             ));
         }
+        // A purge says everything it has to by itself: no value is read, no parent waited for.
+        if theirs.version.is_purged() {
+            return self.adopt_purge(id, theirs.version, parents);
+        }
         if let Some(held) = self.versions().row_for_dot(theirs.version.dot())? {
             let mut same = self.id_at(held)? == id
                 && self.versions().raw_at(held)? == theirs.version
@@ -712,13 +882,14 @@ pub trait Table: Default + Clone {
         let lacking = self.fields().iter().any(|field| {
             field.name != "id" && field.name != "version" && theirs.value(field.name).is_none()
         });
+        let purged = lacking && self.purged(id)?;
         if lacking {
             let mut candidates = Vec::new();
             let mut orphaned = false;
             for dot in &theirs.parents {
                 match self.versions().row_for_dot(*dot)? {
                     Some(row) => candidates.push(row),
-                    None if gone(*dot) => orphaned = true,
+                    None if purged || gone(*dot) => orphaned = true,
                     None => return Ok(Adoption::Waiting),
                 }
             }
@@ -780,7 +951,10 @@ pub trait Table: Default + Clone {
             let id = self.id_at(row)?;
             let version = self.versions().raw_at(row)?;
             let parents = self.versions().parent_rows(row)?;
-            if version.is_superseded() || (version.is_removed() && version.is_restoration()) {
+            if version.is_superseded()
+                || (version.is_removed() && version.is_restoration())
+                || (version.is_purged() && !version.is_removed())
+            {
                 return Err(Error::corrupt(
                     "revision",
                     "invalid persisted operation flags",
@@ -950,6 +1124,18 @@ pub trait AnyTable {
     ) -> Result<Vec<usize>>;
 
     fn authored_rows(&self, writer: WriterId) -> Result<Vec<(usize, ShardRow)>>;
+
+    fn purge_one(&mut self, id: crate::Uuid) -> Result<bool>;
+
+    fn holds_purged(&self, id: crate::Uuid) -> Result<bool>;
+
+    fn purged_identities(&self) -> Result<Vec<crate::Uuid>>;
+
+    fn purged_payload_rows(&self) -> Result<Vec<usize>>;
+
+    fn has_purge_news(&self, from: usize) -> Result<bool>;
+
+    fn cascading_columns(&self) -> Vec<&'static str>;
 
     fn refresh_rows(&self, ids: &[crate::Uuid]) -> Result<()>;
 
@@ -1177,6 +1363,36 @@ impl<T: Table> AnyTable for T {
             }
         }
         Ok(authored)
+    }
+
+    fn purge_one(&mut self, id: crate::Uuid) -> Result<bool> {
+        Table::purge_row(self, Id::from_uuid(id))
+    }
+
+    fn holds_purged(&self, id: crate::Uuid) -> Result<bool> {
+        Table::purged(self, Id::from_uuid(id))
+    }
+
+    fn purged_identities(&self) -> Result<Vec<crate::Uuid>> {
+        Ok(Table::purged_ids(self)?
+            .into_iter()
+            .map(|id| id.uuid())
+            .collect())
+    }
+
+    fn purged_payload_rows(&self) -> Result<Vec<usize>> {
+        Ok(Table::purged_payload(self)?
+            .into_iter()
+            .map(Row::index)
+            .collect())
+    }
+
+    fn has_purge_news(&self, from: usize) -> Result<bool> {
+        Table::purge_news(self, from)
+    }
+
+    fn cascading_columns(&self) -> Vec<&'static str> {
+        Table::cascades_from(self)
     }
 
     fn refresh_rows(&self, ids: &[crate::Uuid]) -> Result<()> {

@@ -71,6 +71,7 @@ fn state(db: &Database) -> Result<String> {
             version.dot(),
             version.is_removed(),
             version.is_restoration(),
+            version.is_purged(),
             parents,
             db.nodes.payload(row)?,
         ));
@@ -81,8 +82,9 @@ fn state(db: &Database) -> Result<String> {
         visible.push((row.id()?.uuid(), row.key()?, row.value()?, row.parent_id::<Node>()?.uuid(), row.sources()?));
     }
     visible.sort();
+    let purged: Vec<_> = db.nodes.purged_ids()?.into_iter().map(|id| id.uuid()).collect();
     Ok(format!(
-        "{revisions:?} {:?} {:?} {visible:?}",
+        "{revisions:?} {:?} {:?} {visible:?} {purged:?}",
         db.statuses()?,
         db.conflicts()?
     ))
@@ -125,7 +127,8 @@ fn exercise(operations: &[(usize, usize, u8, usize, u32)]) -> Result<()> {
                 let _ = db.remove(id);
             }
             4 if db.status(id)? == RowStatus::Deleted => {
-                db.restore(id, originals[selected])?;
+                let said = db.restore(id, originals[selected]);
+                assert_eq!(said.is_err(), db.is_purged(id)?);
             }
             5 => {
                 db.merge_from(dir.path(other), WriterId::from_raw(actor as u64 + 10))?;
@@ -142,6 +145,10 @@ fn exercise(operations: &[(usize, usize, u8, usize, u32)]) -> Result<()> {
             }
             7 => {
                 let _ = db.nodes.push(Some(value), id, value);
+            }
+            9 => {
+                db.purge(id)?;
+                assert!(db.is_purged(id)? && db.at(id).is_err());
             }
             _ => {}
         }
@@ -192,7 +199,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]
     fn replicas_converge_through_mutations_partitions_and_reopens(
-        operations in prop::collection::vec((0usize..3, 0usize..3, 0u8..9, 0usize..2, 0u32..4), 0..30)
+        operations in prop::collection::vec((0usize..3, 0usize..3, 0u8..10, 0usize..2, 0u32..4), 0..30)
     ) {
         exercise(&operations).unwrap();
     }

@@ -1,6 +1,6 @@
 #![cfg(feature = "macros")]
 
-use dbsync::schema::{Dot, RowStatus, Store};
+use dbsync::schema::{Dot, RowStatus, Store, Table};
 use dbsync::{ColumnFile, Id, Result, Uuid, WriterId};
 use proptest::prelude::*;
 use std::path::{Path, PathBuf};
@@ -91,8 +91,11 @@ fn seen(journal: &Journal) -> Result<String> {
         ));
     }
     pages.sort();
+    let mut purged: Vec<Uuid> = Vec::new();
+    purged.extend(journal.pages.purged_ids()?.into_iter().map(|id| id.uuid()));
+    purged.extend(journal.notes.purged_ids()?.into_iter().map(|id| id.uuid()));
     Ok(format!(
-        "{pages:?} {:?} {:?}",
+        "{pages:?} {:?} {:?} {purged:?}",
         journal.statuses()?,
         journal.conflicts()?
     ))
@@ -204,11 +207,42 @@ fn exercise(operations: &[(usize, usize, u8, usize, u32)]) -> Result<()> {
             11 => {
                 world.journals[actor] = Journal::open(&world.dirs[actor])?;
             }
+            12 if known.is_some() => {
+                world.journals[actor].purge(page)?;
+                world.committed(actor)?;
+            }
+            13 | 14 => {
+                let report = world.journals[actor].reclaim_purged(writer(actor))?;
+                world.journals[actor].verify()?;
+                assert!(world.journals[actor].pages.purged_payload()?.is_empty());
+                assert!(world.journals[actor].notes.purged_payload()?.is_empty());
+                if report.purged > 0 {
+                    carry(
+                        &world.dirs[actor],
+                        &world.witness_dir,
+                        &world.dirs[actor],
+                        writer(actor),
+                    );
+                    world.witness.refresh_peers()?;
+                }
+            }
             _ => {}
         }
     }
 
     for _ in 0..3 {
+        for actor in 0..3 {
+            for other in 0..3 {
+                if other != actor {
+                    world.hears(actor, other)?;
+                }
+            }
+        }
+        for actor in 0..3 {
+            world.journals[actor].reclaim_purged(writer(actor))?;
+        }
+    }
+    for _ in 0..2 {
         for actor in 0..3 {
             for other in 0..3 {
                 if other != actor {
@@ -240,6 +274,10 @@ fn exercise(operations: &[(usize, usize, u8, usize, u32)]) -> Result<()> {
         expected,
         "a cache rebuilt from pruned shards"
     );
+    assert!(
+        rebuilt.pages.purged_payload()?.is_empty() && rebuilt.notes.purged_payload()?.is_empty(),
+        "no shard still holds what a purge outranked"
+    );
 
     for actor in 0..3 {
         world.journals[actor].prune(writer(actor), &everyone())?;
@@ -257,7 +295,7 @@ proptest! {
     #[test]
     fn pruning_never_changes_what_any_replica_ends_up_seeing(
         operations in prop::collection::vec(
-            (0usize..3, 0usize..3, 0u8..12, 0usize..4, 0u32..5),
+            (0usize..3, 0usize..3, 0u8..15, 0usize..4, 0u32..5),
             0..40,
         )
     ) {

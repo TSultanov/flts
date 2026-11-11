@@ -482,6 +482,12 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         let column = format!("{label}.{}", field.name);
         Some(generated! { (#column, <#parent as ::dbsync::schema::Entity>::NAME) })
     });
+    let cascading_columns = stored.iter().filter_map(|field| {
+        let Kind::Reference(_) = &field.kind else {
+            return None;
+        };
+        Some(format!("{label}.{}", field.name))
+    });
     let resolved_references: Vec<_> = stored
         .iter()
         .filter_map(|field| {
@@ -738,6 +744,10 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 ::std::vec![#(#reference_columns,)*]
             }
 
+            fn cascades_from(&self) -> ::std::vec::Vec<&'static str> {
+                ::std::vec![#(#cascading_columns,)*]
+            }
+
             fn references(&self, row: ::dbsync::schema::Row) -> ::dbsync::Result<::std::vec::Vec<::dbsync::schema::Reference>> {
                 let mut references = ::std::vec::Vec::new();
                 let _ = row;
@@ -746,6 +756,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             }
 
             fn recover_row(&mut self, of: ::dbsync::Id<#name>, dot: ::dbsync::schema::Dot, restore: bool) -> ::dbsync::Result<()> {
+                <Self as ::dbsync::schema::Table>::check_unpurged(self, of)?;
                 let row = <Self as ::dbsync::schema::Table>::revision_row(self, of, dot)?;
                 #(#carried_whole)*
                 <Self as ::dbsync::schema::Table>::reserve(self)?;
@@ -842,6 +853,14 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 <Self as ::dbsync::schema::Table>::begin_recovery(self, of, false)?;
                 #(#pushes_theirs)*
                 <Self as ::dbsync::schema::Table>::withdraw(self, of)
+            }
+
+            pub fn purge(&mut self, of: ::dbsync::Id<#name>) -> ::dbsync::Result<bool> {
+                <Self as ::dbsync::schema::Table>::purge_row(self, of)
+            }
+
+            pub fn is_purged(&self, of: ::dbsync::Id<#name>) -> ::dbsync::Result<bool> {
+                <Self as ::dbsync::schema::Table>::purged(self, of)
             }
 
             #(#accessors)*

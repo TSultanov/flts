@@ -117,6 +117,32 @@ fn a_version_this_build_did_write_passes_the_check_whatever_it_is_marked_with() 
 }
 
 #[test]
+fn a_purge_is_a_removal_that_also_says_it_is_final() {
+    let dot = wrote(1, 7);
+    let held = Version::of(dot).purge();
+
+    assert!(held.is_purged() && held.is_removed());
+    assert!(held.is_current() && !held.is_live() && !held.is_restoration());
+    assert_eq!(held.dot(), dot);
+    assert!(!Version::of(dot).is_purged());
+    assert!(!Version::of(dot).withdraw().is_purged());
+    assert_eq!(Version::of(dot).restoration().purge(), held);
+    assert_eq!(round_trip(held), held);
+    assert_ne!(held, Version::of(dot).withdraw());
+    held.check("book.version", 0).unwrap();
+    assert_eq!(format!("{held:?}"), "0x0000000000000001@7 removed purged");
+
+    let mut bytes = vec![0u8; <Version as Record>::SIZE];
+    held.encode(&mut bytes);
+    assert_eq!(
+        bytes[16], 0b1_0010,
+        "a build that predates purging reads a removal, and refuses the other bit when it audits"
+    );
+    bytes[16] = 0b10_0000;
+    assert!(Version::decode(&bytes).check("book.version", 0).is_err());
+}
+
+#[test]
 fn a_mark_put_on_a_version_twice_says_no_more_than_it_did_once() {
     let held = Version::of(wrote(1, 7));
 

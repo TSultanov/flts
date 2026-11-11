@@ -444,6 +444,10 @@ where
         self.column.absent_value_bytes()
     }
 
+    fn blank_value_bytes(&self) -> Option<Vec<u8>> {
+        self.column.blank_value_bytes()
+    }
+
     fn understands(&self, bytes: &[u8]) -> bool {
         self.column.understands(bytes)
     }
