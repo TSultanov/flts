@@ -19,7 +19,7 @@ in `library/tests/trace_interaction_harness.rs`, wrapping real Library API calls
 └──────────┬──────────────────────────┘
            │ uses
 ┌──────────▼──────────────────────────┐
-│  library/src/tla_trace_interaction.rs│  Trace emission module
+│  library/src/tla_trace/interaction.rs│  Trace emission module
 │  ├── InteractionTraceGuard          │   RAII: open/close trace file
 │  └── TraceSpan                      │   RAII: begin/end timing
 └──────────┬──────────────────────────┘
@@ -37,7 +37,7 @@ in `library/tests/trace_interaction_harness.rs`, wrapping real Library API calls
 
 | File                                         | Purpose                                   |
 | -------------------------------------------- | ----------------------------------------- |
-| `library/src/tla_trace_interaction.rs`       | Trace emission (global writer, TraceSpan) |
+| `library/src/tla_trace/interaction.rs`       | Trace emission (global writer, TraceSpan) |
 | `library/tests/trace_interaction_harness.rs` | Test scenarios                            |
 | `harness/interaction/preprocess.py`          | NDJSON → Trace.tla JSON                   |
 | `harness/interaction/run.sh`                 | End-to-end runner                         |
@@ -127,7 +127,7 @@ All 19 TLA+ actions are covered by the baseline scenario:
 | 11  | TauriComputeSnapshot   | t2    | `library.list_books()`                         |
 | 12  | TauriEmit              | t2    | protocol event only                            |
 | 13  | BeginWatcher           | t1    | `library.get_book(&id)`                        |
-| 14  | WatcherReload          | t1    | fs write + reload                              |
+| 14  | WatcherReload          | t1    | `refresh_from_peers`                           |
 | 15  | WatcherComputeSnapshot | t1    | `library.list_books()`                         |
 | 16  | WatcherEmit            | t1    | protocol event only                            |
 | 17  | DeliverEvent           | ui    | protocol event only                            |

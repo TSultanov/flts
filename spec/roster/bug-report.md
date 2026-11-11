@@ -56,7 +56,7 @@ The merge is convergent (all nodes agree) but **not causal**: agreement on the _
 
 ### Recommendation
 
-This is the open design question flagged as **C1** in `../modeling-brief.md`; the model
+This is the open design question flagged as **C1** in the roster modeling brief; the model
 confirms it is reachable. Wall-clock LWW cannot express causal "remove-after-add".
 Options, strongest first:
 

@@ -106,8 +106,8 @@ Frontend events use actor `"ui"`:
 
 ### WatcherReload
 
-- **Source**: `library/src/library.rs:308-316` → `library_book.rs:512-519`
-- **Emit at**: After reload_book/reload_translations completes
+- **Source**: `library/src/library.rs` (`Library::handle_file_change_event` → `refresh_from_peers`)
+- **Emit at**: After `refresh_from_peers` returns (other devices' rows adopted, loaded books reloaded)
 - **Fields**: `{"event":"WatcherReload","task":"<thread>","start":...,"end":...}`
 
 ### WatcherComputeSnapshot

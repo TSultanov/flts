@@ -80,37 +80,30 @@
 
 ---
 
-### Family 3: Unsaved In-Memory Modifications / No Shutdown Persistence (MEDIUM)
+### Family 3: Unsaved In-Memory Modifications / Shutdown Persistence (MEDIUM)
 
-**Mechanism**: `mark_word_visible` DOES call `save()` immediately after marking (verified). However, `get_or_create_translation` creates translation state in memory without saving; persistence depends on a later trigger (translation completion, file watcher). More critically, **no shutdown handler exists** — if the app terminates abnormally between any dirty-state modification and its save trigger, changes are lost. Additionally, during file watcher reloads, `save()` triggers a merge with on-disk state via `translation.merge()`; the merge's preservation of `visible_words` depends on the `Translation::merge()` implementation which unions visible_words sets (verified safe). The `changed` flag is never reset to `false` after save, which inadvertently ensures dirty state survives across multiple save cycles.
+**Mechanism**: A book's owner task applies each batch of commands in memory and then hands the changes to the library store as one `BookDelta`: `LibraryBook::persist()` stages the rows and commits. Once staged, the rows are the store's: if the commit fails, the caller is told, the store keeps them staged, and they are committed by the next successful commit of anything, by a `flush`, by the store's periodic retry, or at `Library::close()`. Every part of a delta is idempotent. A reading position that is the only pending change waits up to two seconds for other changes before it is committed alone. There is no merge against on-disk files: concurrent writes from other devices are merged by the store and adopted by `Library::refresh_from_peers()`. On `RunEvent::Exit` the backend runs `AppState::shutdown()`; an abnormal termination loses what was not yet committed.
 
 **Evidence**:
 
-- Code analysis: `library_view.rs:355-377` — `mark_word_visible` command DOES call `book.save().await?` immediately after marking (verified)
-- Code analysis: `library_book.rs:187-193` — `mark_word_visible` sets `self.changed = true` in the translation object
-- Code analysis: `library_book.rs:381-420` — `get_or_create_translation` creates translation in memory, not saved until explicit save trigger
-- Code analysis: `library_book.rs:521-544` — `reload_translations()` triggers `save()` if disk is newer, which merges disk state with memory
-- Code analysis: `library_book.rs:581-602` — save's merge path: if disk file is newer, loads and merges via `translation.merge()`
-- Code analysis: `translation.rs:399-479` — `Translation::merge()` unions `visible_words` sets — marked words ARE preserved through merges
-- Code analysis: `lib.rs:1-100` — NO `on_exit()`, `close_requested`, or shutdown handler found in Tauri setup
-- Code analysis: `changed` flag is set at `library_book.rs:90,173,190` but never reset to `false` after save
-- Historical: `2e1db60` / `44c28d7` — book save overwrite semantics debated; disk-wins was chosen by design
+- Code analysis: `library/src/library/library_book/mod.rs` — `persist()` stages the delta, clears pending state, commits; `flush()` = `persist()` + store publish
+- Code analysis: `library/src/library/library_book/handle.rs` — the owner settles each command batch with one commit; `flush()` / `reload()` go through the book's mailbox
+- Code analysis: `library/src/library.rs` — `republish` retries a failed commit while the library is open; `close()` publishes last
+- Code analysis: `site/src-tauri/src/lib.rs` — `RunEvent::Exit` → `AppState::shutdown()` (`site/src-tauri/src/app/lifecycle.rs`)
 
 **Affected code paths**:
 
-- `mark_word_visible` → `LibraryBook::save()` (library_view.rs:355-377) — saves immediately ✓
-- `get_or_create_translation` (library_book.rs:381-420) — creates in memory, no immediate save
-- `reload_translations` (library_book.rs:521-544) → `save()` → merge with disk
-- App shutdown — no flush mechanism (lib.rs)
+- `BookHandle::apply_translation()` / `apply_summary()` / `flush()` → `LibraryBook::persist()` → store commit
+- `Library::refresh_from_peers()` → `BookHandle::reload()` — adopts other devices' rows
+- App shutdown — `AppState::shutdown()` → `Library::close()`
 
 **Suggested modeling approach**:
 
-- Variables: `memDirty[book]` (whether in-memory state has unsaved changes), `diskVersion[book]` (logical timestamp of on-disk file), `appAlive` (boolean)
-- Actions: `MarkWordVisible(b)` (sets memDirty, triggers SaveBook), `CreateTranslation(b)` (sets memDirty, no save), `SaveBook(b)` (persists, updates diskVersion — note: does NOT clear memDirty due to never-reset bug), `AppClose` (sets appAlive=false, check memDirty), `FileWatcherReload(b)` (triggers merge+save if disk newer)
-- Invariant: `NoPersistenceLoss` — all memDirty state is eventually persisted before AppClose
+- See `spec/ownership/Ownership.tla`: `unstaged[book]` (held only by the owner), `staged[book]` (held by the store, uncommitted), `disk[book]`
+- Invariant: `UnstagedPinned` — an owner is never let go while it alone holds a change
 
 **Priority**: Medium
-**Rationale**: The immediate `mark_word_visible` persistence gap is closed (it calls save). The remaining risks are: (1) `get_or_create_translation` not saving immediately — but this is always followed by a translation that triggers save via saver task; (2) **no shutdown persistence** — abnormal termination loses all dirty state; (3) the `changed` flag never resetting is benign (causes redundant saves) but indicates incomplete state management.
+**Rationale**: The remaining risk is the window between an in-memory modification and its commit; abnormal termination loses whatever is still uncommitted.
 
 ---
 
@@ -123,15 +116,14 @@
 - Code analysis: `translation_queue.rs:227-237` — handler acquires book lock, reads paragraph text, drops book lock
 - Code analysis: `translation_queue.rs:330-334` — acquires translation lock, adds paragraph translation by index
 - Code analysis: `translation_queue.rs:428-431` — saver acquires book lock again to save
-- Code analysis: `library_book.rs:512-519` — `reload_book()` can reload book content between steps 2 and 5
-- Code analysis: `library.rs:309-316` — `handle_file_change_event` → `reload_book` can fire asynchronously
+- Code analysis: `library/src/library.rs` — `handle_file_change_event` → `refresh_from_peers` → `BookHandle::reload()` can fire asynchronously between steps 2 and 5
 
 **Affected code paths**:
 
 - `handle_request()` (translation_queue.rs:216-346) — steps 1-4
 - `save_book()` (translation_queue.rs:428-432) — step 5
 - `emit_updates()` (translation_queue.rs:446-472) — step 6
-- `LibraryBook::reload_book()` (library_book.rs:512-519) — concurrent modifier
+- `BookHandle::reload()` (library/src/library/library_book/handle.rs) — concurrent modifier
 
 **Suggested modeling approach**:
 
@@ -140,7 +132,9 @@
 - Invariant: `NoStaleTranslation` — translation is not stored if `translationTargetVersion /= currentBookVersion`
 
 **Priority**: Medium
-**Rationale**: The paragraph index is an integer position. If the book is reloaded with different content (e.g., sync conflict resolution replaces the book), the index could point to a different paragraph. However, this requires a specific sequence: external modification + file watcher reload + in-flight translation, which is uncommon. The translation result itself is idempotent (same paragraph text → same translation).
+**Status**: Not reachable in the current design. A book's content is immutable once stored, and a reload replaces only its translations, summaries and reading state, so a paragraph index always names the same paragraph.
+
+**Original rationale**: The paragraph index is an integer position. If the book is reloaded with different content, the index could point to a different paragraph. However, this requires a specific sequence: a write from another device + file watcher reload + in-flight translation, which is uncommon. The translation result itself is idempotent (same paragraph text → same translation).
 
 ## 3. Modeling Recommendations
 
@@ -158,7 +152,7 @@
 
 | What                                               | Why                                                                    |
 | -------------------------------------------------- | ---------------------------------------------------------------------- |
-| File merge semantics (book.dat conflicts)          | Already covered in existing `spec/base.tla` (file sync spec)           |
+| Merging of concurrent writes across devices        | Done by the store (dbsync), whose own tests cover it                   |
 | Translation API internals                          | External service call; no lock interaction; idempotent                 |
 | Platform-specific commands (macOS dictionary, iOS) | No shared state, no concurrency concerns                               |
 | Translation progress polling (500ms interval)      | Read-only status queries; no state modification; trivially safe        |
@@ -171,7 +165,7 @@
 | Library lifecycle    | `currentLibrary`, `taskLibrary[t]`, `libraryPath[lib]` | Track stale Library references after config change | Family 1   |
 | Event delivery model | `uiState`, `pendingEvents`, `eventSeq`                 | Model nondeterministic event delivery order        | Family 2   |
 | Task lifecycle       | `taskAlive[t]`, `taskQueue[t]`                         | Model background task spawning and termination     | Family 1   |
-| Dirty state tracking | `memDirty[b]`, `diskVersion[b]`                        | Track unsaved in-memory modifications              | Family 3   |
+| Dirty state tracking | `memDirty[b]`, `storeVersion[b]`                       | Track unsaved in-memory modifications              | Family 3   |
 | Translation pipeline | `pipelineStage[t]`, `capturedVersion[t]`               | Track multi-step translation with interleaving     | Family 4   |
 
 ## 5. Proposed Invariants
@@ -206,7 +200,6 @@
 | ---- | ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
 | TV-1 | Config change during active translation: verify translation appears in new library | Start translation, change config mid-flight, check new library has the translation |
 | TV-2 | Concurrent `library_updated` events: verify UI shows latest state                  | Trigger import + delete concurrently, check final UI matches disk state            |
-| TV-3 | `mark_word_visible` persistence: verify marks survive app restart                  | Mark words, close app without triggering save, reopen, check marks                 |
 | TV-4 | Rapid config changes: verify no orphaned background tasks                          | Change config 5 times rapidly, check task count doesn't grow                       |
 
 ### 6.3 Code-Review-Only
@@ -227,9 +220,8 @@
   - `site/src-tauri/src/lib.rs:48-71` — Event loop startup, watcher integration
   - `site/src/lib/data/tauri.ts:7-202` — eventToReadable, getterToReadableWithEventsAndPatches
   - `site/src/lib/data/library.ts` — Frontend store bindings and command wrappers
-  - `library/src/library/library_book.rs:381-420,512-545` — get_or_create_translation, reload_book/translations
-- **Existing specs** (do not duplicate):
-  - `spec/base.tla` — File sync / persistence model (Category A)
+  - `library/src/library/library_book/mod.rs`, `handle.rs` — get_or_create_translation, persist/save/reload
+  - `library/src/store/mod.rs` — `LibraryStore`, the dbsync-backed persistence
 - **Historical bug fixes**:
   - `ea80c0c` — "Fix deadlock at config change" (partial fix, addressed blocking but not stale reference)
   - `d15e3aa` — "Replace global App mutex with internal locks" (architectural improvement)
