@@ -10,7 +10,7 @@ use log::warn;
 
 use isolang::Language;
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
 use uuid::Uuid;
 
 use crate::{
@@ -70,12 +70,18 @@ pub struct LibraryBook {
     /// file-watcher echoes of our own writes.
     last_saved_hash: Option<u64>,
     pub book: Arc<Book>,
+    /// The book whose serialized bytes `last_saved_hash` describes; while it
+    /// is still `book`, a save has nothing to serialize.
+    synced_book: Option<Arc<Book>>,
     translations: Vec<LibraryTranslation>,
     user_state: BookUserState,
     pending_reading_state: Option<BookReadingState>,
     pending_folder_path: Option<Vec<String>>,
     #[cfg(test)]
     fail_next_user_write: bool,
+    /// Saves run, and how many of them serialized `book.dat`.
+    #[cfg(test)]
+    save_counts: (usize, usize),
     summaries: Arc<crate::book::chapter_summaries::ChapterSummaries>,
     summaries_dirty: bool,
     revision: u64,
@@ -118,12 +124,15 @@ impl LibraryBook {
             last_modified: None,
             last_saved_hash: None,
             book: Arc::new(book),
+            synced_book: None,
             translations: vec![],
             user_state: BookUserState::default(),
             pending_reading_state: None,
             pending_folder_path: None,
             #[cfg(test)]
             fail_next_user_write: false,
+            #[cfg(test)]
+            save_counts: (0, 0),
             summaries,
             summaries_dirty: false,
             revision: 0,
@@ -156,6 +165,7 @@ impl LibraryBook {
     async fn persist(&mut self) -> anyhow::Result<()> {
         self.save().await?;
         if self.pending_reading_state.is_some() || self.pending_folder_path.is_some() {
+            self.reload_user_state().await?;
             self.persist_user_updates().await?;
         }
         if self.summaries_dirty {
@@ -186,6 +196,8 @@ impl LibraryBook {
             translations,
             summaries: self.summaries.clone(),
             user_state: self.user_state.clone(),
+            reading_state_pending: self.pending_reading_state.is_some(),
+            folder_path_pending: self.pending_folder_path.is_some(),
             revision: self.revision,
             persisted_revision: self.persisted_revision,
             status: self.status,
@@ -195,6 +207,13 @@ impl LibraryBook {
 }
 
 impl LibraryTranslation {
+    fn file_name(&self) -> String {
+        format!(
+            "translation_{}_{}.dat",
+            self.translation.source_language, self.translation.target_language
+        )
+    }
+
     pub fn is_changed(&self) -> bool {
         self.changed
     }
@@ -314,8 +333,8 @@ impl LibraryBook {
         Ok(())
     }
 
+    /// The caller has just reloaded, so disk-side changes are already merged.
     async fn persist_user_updates(&mut self) -> anyhow::Result<()> {
-        self.reload_user_state().await?;
         #[cfg(test)]
         if std::mem::take(&mut self.fail_next_user_write) {
             anyhow::bail!("injected user state write failure");
@@ -330,11 +349,6 @@ impl LibraryBook {
             self.persisted_revision = self.revision;
         }
         Ok(())
-    }
-
-    pub async fn reading_state(&mut self) -> anyhow::Result<Option<BookReadingState>> {
-        self.reload_user_state().await?;
-        Ok(self.user_state.reading_state.clone())
     }
 
     pub async fn update_reading_state(&mut self, state: BookReadingState) -> anyhow::Result<()> {
@@ -395,11 +409,6 @@ impl LibraryBook {
         )
         .await?;
         Ok(())
-    }
-
-    pub async fn folder_path(&mut self) -> anyhow::Result<Vec<String>> {
-        self.reload_user_state().await?;
-        Ok(self.user_state.folder_path.clone())
     }
 
     fn translation_index(&self, target_language: &Language) -> Option<usize> {
@@ -532,12 +541,15 @@ impl LibraryBook {
             last_modified,
             last_saved_hash,
             book: book.clone(),
+            synced_book: None,
             translations: vec![],
             user_state: BookUserState::default(),
             pending_reading_state: None,
             pending_folder_path: None,
             #[cfg(test)]
             fail_next_user_write: false,
+            #[cfg(test)]
+            save_counts: (0, 0),
             summaries: Arc::new(crate::book::chapter_summaries::ChapterSummaries::empty_for(
                 book.id,
                 book.chapter_count(),
@@ -589,11 +601,7 @@ impl LibraryBook {
 
             // Content-gate only: a delivered remote edit can carry an mtime
             // <= ours, so only a differing hash warrants reload+merge+save.
-            let file_name = format!(
-                "translation_{}_{}.dat",
-                t.translation.source_language, t.translation.target_language
-            );
-            let translation_path = self.path.join(file_name);
+            let translation_path = self.path.join(t.file_name());
             if let Some(saved_hash) = t.last_saved_hash
                 && let Ok(disk_hash) = read_stored_hash_from_path(&translation_path)
                 && disk_hash == saved_hash
@@ -614,23 +622,36 @@ impl LibraryBook {
     }
 
     pub async fn save(&mut self) -> anyhow::Result<()> {
-        if !tokio::fs::try_exists(&self.path).await? {
-            tokio::fs::create_dir_all(&self.path).await?;
+        // One directory pass: sweep temps leaked by failed saves, and spot
+        // translation files that are not loaded yet. Only the temp names this
+        // function creates: the owning task runs one save at a time, so a
+        // match is a leftover, while other writers share the `~` convention.
+        let mut unloaded_translation = false;
+        #[cfg(test)]
+        {
+            self.save_counts.0 += 1;
         }
-
-        // Sweep temps leaked by failed saves. Only the names this function
-        // creates: the owning task runs one save at a time, so a match is a
-        // leftover, while other writers share the `~` convention.
-        if let Ok(mut entries) = tokio::fs::read_dir(&self.path).await {
-            while let Ok(Some(entry)) = entries.next_entry().await {
-                let name = entry.file_name();
-                let name = name.to_string_lossy();
-                if name.starts_with("book.dat~")
-                    || (name.starts_with("translation_") && name.contains(".dat~"))
-                {
-                    let _ = tokio::fs::remove_file(entry.path()).await;
+        match tokio::fs::read_dir(&self.path).await {
+            Ok(mut entries) => {
+                while let Ok(Some(entry)) = entries.next_entry().await {
+                    let name = entry.file_name();
+                    let name = name.to_string_lossy();
+                    if name.starts_with("book.dat~")
+                        || (name.starts_with("translation_") && name.contains(".dat~"))
+                    {
+                        let _ = tokio::fs::remove_file(entry.path()).await;
+                    } else if name.starts_with("translation_")
+                        && name.ends_with(".dat")
+                        && !self.translations.iter().any(|t| t.file_name() == name)
+                    {
+                        unloaded_translation = true;
+                    }
                 }
             }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                tokio::fs::create_dir_all(&self.path).await?;
+            }
+            Err(_) => {}
         }
 
         let book = self;
@@ -638,10 +659,7 @@ impl LibraryBook {
         // Translations are mutated in place and only ever appended, so an
         // early `?` leaves the cached book's set intact for the UI.
         for translation in &mut book.translations {
-            let source_language = translation.translation.source_language.clone();
-            let target_language = translation.translation.target_language.clone();
-            let translation_file_name =
-                format!("translation_{}_{}.dat", source_language, target_language);
+            let translation_file_name = translation.file_name();
             let translation_path = book.path.join(&translation_file_name);
             let translation_path_temp = book.path.join(format!(
                 "{translation_file_name}~{}",
@@ -650,20 +668,12 @@ impl LibraryBook {
 
             let mut saved = false;
             for attempt in 1..=MAX_SAVE_ATTEMPTS {
-                let translation_path_modified_pre_save =
-                    if tokio::fs::try_exists(&translation_path).await? {
-                        tokio::fs::metadata(&translation_path)
-                            .await?
-                            .modified()
-                            .ok()
-                    } else {
-                        None
-                    };
+                let (exists, modified_pre_save) = file_state(&translation_path).await?;
 
                 // Absorb any on-disk copy whose content differs from what we
                 // persisted; mtime is unreliable across devices, and merge is
                 // an additive union so this cannot lose local translations.
-                if tokio::fs::try_exists(&translation_path).await?
+                if exists
                     && read_stored_hash_from_path(&translation_path).ok()
                         != translation.last_saved_hash
                 {
@@ -694,30 +704,17 @@ impl LibraryBook {
                 .await?;
 
                 if translation.changed {
-                    let mut translation_file =
-                        tokio::fs::File::create(&translation_path_temp).await?;
                     let mut buffer = Vec::new();
                     translation.translation.serialize(&mut buffer)?;
-                    translation_file.write_all(&buffer).await?;
-                    translation_file.flush().await?;
+                    tokio::fs::write(&translation_path_temp, &buffer).await?;
 
-                    if (if tokio::fs::try_exists(&translation_path).await? {
-                        tokio::fs::metadata(&translation_path)
-                            .await?
-                            .modified()
-                            .ok()
-                    } else {
-                        None
-                    }) == translation_path_modified_pre_save
-                        || translation_path_modified_pre_save.is_none()
+                    if modified_pre_save.is_none()
+                        || file_state(&translation_path).await?.1 == modified_pre_save
                     {
                         // Rename over the destination: remove+rename would
                         // leave a window where concurrent readers see no file.
                         tokio::fs::rename(&translation_path_temp, &translation_path).await?;
-                        translation.last_modified = tokio::fs::metadata(&translation_path)
-                            .await?
-                            .modified()
-                            .ok();
+                        translation.last_modified = file_state(&translation_path).await?.1;
                         // Record what we wrote so this write's watcher echo
                         // is recognised and dropped.
                         translation.last_saved_hash = trailing_hash(&buffer);
@@ -759,8 +756,9 @@ impl LibraryBook {
             .join(format!("book.dat~{}", create_random_string(8)));
         let mut saved = false;
         for attempt in 1..=MAX_SAVE_ATTEMPTS {
-            let book_path_modified_pre_save = if tokio::fs::try_exists(&book_path).await? {
-                tokio::fs::metadata(&book_path).await?.modified().ok()
+            let (exists, modified_pre_save) = file_state(&book_path).await?;
+            let disk_hash = if exists {
+                read_stored_hash_from_path(&book_path).ok()
             } else {
                 None
             };
@@ -769,16 +767,14 @@ impl LibraryBook {
             // would drop a remote edit carrying an older clock and then
             // overwrite it mesh-wide. book.dat is immutable after import, so
             // adopting disk cannot lose a local edit.
-            if tokio::fs::try_exists(&book_path).await?
-                && read_stored_hash_from_path(&book_path).ok() != book.last_saved_hash
-            {
+            if exists && disk_hash != book.last_saved_hash {
                 match Self::load(&book_path).await {
                     Ok(saved_book) => {
                         book.book = saved_book.book;
                         book.last_modified = saved_book.last_modified;
                         book.last_saved_hash = saved_book.last_saved_hash;
                     }
-                    // Nothing to adopt: clear the echo hash so the skip below
+                    // Nothing to adopt: clear the echo hash so the skips below
                     // can't fire and the write repairs the file from memory.
                     Err(err) => {
                         warn!(
@@ -790,40 +786,53 @@ impl LibraryBook {
                 }
             }
 
+            // Disk still holds the bytes this very book produced: nothing to
+            // serialize, let alone write.
+            if exists
+                && book.last_saved_hash.is_some()
+                && disk_hash == book.last_saved_hash
+                && book
+                    .synced_book
+                    .as_ref()
+                    .is_some_and(|synced| Arc::ptr_eq(synced, &book.book))
+            {
+                book.last_modified = modified_pre_save;
+                saved = true;
+                break;
+            }
+
             let mut buffer = Vec::new();
             book.book.serialize(&mut buffer)?;
+            #[cfg(test)]
+            {
+                book.save_counts.1 += 1;
+            }
             let new_hash = trailing_hash(&buffer);
 
             // Skip a byte-identical rewrite; it would only emit a spurious
             // BookChanged event and feed the save/reload loop.
             if let Some(new_hash) = new_hash
                 && book.last_saved_hash == Some(new_hash)
-                && tokio::fs::try_exists(&book_path).await?
+                && exists
             {
-                book.last_modified = tokio::fs::metadata(&book_path).await?.modified().ok();
+                book.last_modified = modified_pre_save;
+                book.synced_book = Some(book.book.clone());
                 saved = true;
                 break;
             }
 
-            let mut file = tokio::fs::File::create(&book_path_temp).await?;
-            file.write_all(&buffer).await?;
-            file.flush().await?;
+            tokio::fs::write(&book_path_temp, &buffer).await?;
 
             tla_trace::emit_book_event(&book.path, "SaveBookBegin", None, "ready", "idle", "idle")
                 .await?;
 
-            if (if tokio::fs::try_exists(&book_path).await? {
-                tokio::fs::metadata(&book_path).await?.modified().ok()
-            } else {
-                None
-            }) == book_path_modified_pre_save
-                || book_path_modified_pre_save.is_none()
-            {
+            if modified_pre_save.is_none() || file_state(&book_path).await?.1 == modified_pre_save {
                 // Atomic replace; see the translation rename above.
                 tokio::fs::rename(&book_path_temp, &book_path).await?;
 
-                book.last_modified = tokio::fs::metadata(&book_path).await?.modified().ok();
+                book.last_modified = file_state(&book_path).await?.1;
                 book.last_saved_hash = new_hash;
+                book.synced_book = Some(book.book.clone());
                 tla_trace::emit_book_event(
                     &book.path,
                     "SaveBookFinish",
@@ -848,18 +857,29 @@ impl LibraryBook {
             );
         }
 
-        let all_book_translations = LibraryBookMetadata::load(&book.path).await?;
-        let loaded_translations: HashSet<_> =
-            book.translations.iter().map(|t| t.translation.id).collect();
+        if unloaded_translation {
+            let all_book_translations = LibraryBookMetadata::load(&book.path).await?;
+            let loaded_translations: HashSet<_> =
+                book.translations.iter().map(|t| t.translation.id).collect();
 
-        for translation_metadata in all_book_translations.translations_metadata {
-            if !loaded_translations.contains(&translation_metadata.id) {
-                book.translations
-                    .push(LibraryTranslation::load_from_metadata(translation_metadata).await?);
+            for translation_metadata in all_book_translations.translations_metadata {
+                if !loaded_translations.contains(&translation_metadata.id) {
+                    book.translations
+                        .push(LibraryTranslation::load_from_metadata(translation_metadata).await?);
+                }
             }
         }
 
         Ok(())
+    }
+}
+
+/// Whether `path` exists, and its mtime where the platform reports one.
+async fn file_state(path: &Path) -> std::io::Result<(bool, Option<SystemTime>)> {
+    match tokio::fs::metadata(path).await {
+        Ok(metadata) => Ok((true, metadata.modified().ok())),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok((false, None)),
+        Err(err) => Err(err),
     }
 }
 

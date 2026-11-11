@@ -347,6 +347,10 @@ async fn scheduler(
     let mut workers = FuturesUnordered::new();
     let mut running: HashMap<usize, (Uuid, usize, watch::Receiver<Progress>)> = HashMap::new();
     let mut ticker = tokio::time::interval(Duration::from_millis(500));
+    // Idle while nothing runs; the first tick after that must not replay the gap.
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Set by every edit of `activities`; cleared when the copy is published.
+    let mut changed = false;
     loop {
         while pending.len() < MAX_PENDING && !chapters.is_empty() {
             let chapter = chapters.front_mut().unwrap();
@@ -357,14 +361,22 @@ async fn scheduler(
             }
             let paragraph = view.paragraph_view(chapter.offset).id;
             chapter.offset += 1;
+            // Paragraphs translated since the request must not be paid for
+            // again; a reloaded book renumbers them, so only the same one counts.
+            let latest = chapter.book.snapshot();
+            let current = if Arc::ptr_eq(&latest.book, &chapter.snapshot.book) {
+                &latest
+            } else {
+                &chapter.snapshot
+            };
             if activities.contains_key(&(chapter.snapshot.book.id, paragraph))
-                || chapter
-                    .snapshot
+                || current
                     .translation(&context.target)
-                    .is_some_and(|t| t.paragraph_view(paragraph).is_some())
+                    .is_some_and(|t| t.is_paragraph_translated(paragraph))
             {
                 continue;
             }
+            changed = true;
             pending.push_back(admit(
                 chapter.book.clone(),
                 chapter.snapshot.clone(),
@@ -394,24 +406,39 @@ async fn scheduler(
                 (job, result)
             });
         }
-        publish.send_replace(Arc::new(activities.clone()));
+        if std::mem::take(&mut changed) {
+            publish.send_replace(Arc::new(activities.clone()));
+        }
         tokio::select! {
             biased;
             _ = stop.changed() => break,
-            Some((mut job, result)) = workers.next(), if !workers.is_empty() => {
-                running.remove(&job.request_id);
-                let id = job.snapshot.book.id;
-                if let Err(error) = &result {
-                    if should_requeue(error, job.attempt) {
-                        job.attempt += 1;
-                        if let Some(activity) = activities.get_mut(&(id, job.paragraph)) { activity.progress_chars = 0; }
-                        pending.push_front(job); continue;
+            Some(first) = workers.next(), if !workers.is_empty() => {
+                // Workers sharing one save finish together; the listeners of
+                // `book_updated` and the library watch re-read whole books, so
+                // each batch raises them once.
+                let mut books: Vec<Uuid> = Vec::new();
+                let mut finished = Vec::new();
+                let mut next = Some(first);
+                while let Some((mut job, result)) = next {
+                    next = workers.next().now_or_never().flatten();
+                    changed = true;
+                    running.remove(&job.request_id);
+                    let id = job.snapshot.book.id;
+                    if let Err(error) = &result {
+                        if should_requeue(error, job.attempt) {
+                            job.attempt += 1;
+                            if let Some(activity) = activities.get_mut(&(id, job.paragraph)) { activity.progress_chars = 0; }
+                            pending.push_front(job); continue;
+                        }
                     }
+                    activities.remove(&(id, job.paragraph));
+                    let _ = app.emit("paragraph_updated", ParagraphUpdatedEvent {book_id: id, paragraph_id: job.paragraph});
+                    if !books.contains(&id) { books.push(id); }
+                    finished.push(ParagraphTranslationFinishedEvent {book_id: id, paragraph_id: job.paragraph, request_id: job.request_id, error: result.err().map(|e| e.to_string())});
                 }
-                activities.remove(&(id, job.paragraph));
-                let _ = app.emit("paragraph_updated", ParagraphUpdatedEvent {book_id: id, paragraph_id: job.paragraph});
-                let _ = app.emit("book_updated", id); library_tx.send_modify(|_| {});
-                let _ = app.emit("paragraph_translation_finished", ParagraphTranslationFinishedEvent {book_id: id, paragraph_id: job.paragraph, request_id: job.request_id, error: result.err().map(|e| e.to_string())});
+                for id in &books { let _ = app.emit("book_updated", id); }
+                if !books.is_empty() { library_tx.send_modify(|_| {}); }
+                for event in finished { let _ = app.emit("paragraph_translation_finished", event); }
             }
             request = requests.recv() => {
                 let Some(request) = request else { break; };
@@ -425,7 +452,7 @@ async fn scheduler(
                             let job = admit(book, snapshot, paragraph, model, use_cache, &mut next_id, &mut activities, &app);
                             let id = job.request_id; pending.push_back(job); Ok(id)
                         }.await;
-                        publish.send_replace(Arc::new(activities.clone()));
+                        if result.is_ok() { publish.send_replace(Arc::new(activities.clone())); }
                         let _ = reply.send(result);
                     }
                     Request::Chapter {book_id, chapter, model, use_cache, reply} => {
@@ -433,21 +460,21 @@ async fn scheduler(
                             anyhow::ensure!(chapters.len() < 256, "translation queue busy");
                             let book = context.library.get_book(&book_id).await?; let snapshot = book.snapshot();
                             anyhow::ensure!(chapter < snapshot.book.chapter_count(), "chapter out of range");
-                            let count = snapshot.book.chapter_view(chapter).paragraphs().filter(|p| snapshot.translation(&context.target).is_none_or(|t| t.paragraph_view(p.id).is_none())).count();
+                            let translation = snapshot.translation(&context.target);
+                            let count = snapshot.book.chapter_view(chapter).paragraphs().filter(|p| translation.is_none_or(|t| !t.is_paragraph_translated(p.id))).count();
                             if !chapters.iter().any(|c| c.snapshot.book.id == book_id && c.chapter == chapter) { chapters.push_back(ChapterJob {book, snapshot, chapter, offset: 0, model, use_cache}); }
                             Ok(count)
                         }.await;
-                        publish.send_replace(Arc::new(activities.clone()));
                         let _ = reply.send(result);
                     }
                 }
             }
-            _ = ticker.tick() => {
+            _ = ticker.tick(), if !running.is_empty() => {
                 for (request_id, (id, paragraph, progress)) in &running {
                     let latest = *progress.borrow(); let chars = latest.chars; let estimate = latest.expected;
                     if let Some(activity) = activities.get_mut(&(*id, *paragraph)) {
                         if activity.request_id != *request_id || (activity.progress_chars == chars && activity.expected_chars == estimate) { continue; }
-                        activity.progress_chars = chars; activity.expected_chars = estimate;
+                        activity.progress_chars = chars; activity.expected_chars = estimate; changed = true;
                         let _ = app.emit("paragraph_translation_progress", ParagraphTranslationProgressEvent {book_id: *id, paragraph_id: *paragraph, request_id: *request_id, progress_chars: chars, expected_chars: estimate});
                     }
                 }
@@ -468,6 +495,17 @@ async fn scheduler(
         );
     }
     publish.send_replace(Arc::new(HashMap::new()));
+}
+/// Measures a serialization without keeping it.
+struct ByteCount(usize);
+impl std::io::Write for ByteCount {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0 += buf.len();
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 async fn execute(
     job: &Job,
@@ -517,7 +555,9 @@ async fn execute(
             })),
         })
         .await?;
-    let actual = serde_json::to_vec(&translation)?.len();
+    let mut actual = ByteCount(0);
+    serde_json::to_writer(&mut actual, &translation)?;
+    let actual = actual.0;
     context
         .stats
         .record_observation(&source, &context.target, text.len(), actual)

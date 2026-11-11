@@ -236,6 +236,23 @@ impl Translation {
         }
     }
 
+    /// `paragraph_view(..).is_some()` without building the view.
+    pub fn is_paragraph_translated(&self, paragraph: usize) -> bool {
+        self.paragraphs
+            .get(paragraph)
+            .copied()
+            .flatten()
+            .is_some_and(|p| self.paragraph_translations[p].sentences.len > 0)
+    }
+
+    fn encode_strings(&self) -> io::Result<Vec<u8>> {
+        let mut encoder = zstd::stream::Encoder::new(Vec::new(), -7)?;
+        for chunk in self.strings.chunks() {
+            encoder.write_all(chunk)?;
+        }
+        encoder.finish()
+    }
+
     /// Current translation of `paragraph`. An empty latest version (e.g. an LLM
     /// refusal) counts as untranslated, so the reader offers translating it again.
     pub fn paragraph_view(&'_ self, paragraph: usize) -> Option<ParagraphTranslationView<'_>> {
@@ -646,7 +663,7 @@ impl Translation {
         let d_meta_write = t_meta_write.elapsed();
 
         let t_compress = Instant::now();
-        let encoded = zstd::stream::encode_all(&*self.strings.contiguous(), -7)?;
+        let encoded = self.encode_strings()?;
         let d_compress = t_compress.elapsed();
 
         let t_write_strings = Instant::now();
@@ -830,7 +847,7 @@ impl Translation {
         let d_meta_write = t_meta_write.elapsed();
 
         let t_compress = Instant::now();
-        let encoded = zstd::stream::encode_all(&*self.strings.contiguous(), -7)?;
+        let encoded = self.encode_strings()?;
         let d_compress = t_compress.elapsed();
 
         let t_write_strings = Instant::now();
@@ -1036,7 +1053,7 @@ impl Translation {
         let encoded_data = read_len_prefixed_vec(input_stream)?;
         let d_strings_read = t_strings_read.elapsed();
         let t_strings_decompress = Instant::now();
-        let strings = zstd::stream::decode_all(encoded_data.as_slice())?;
+        let strings = Arena::read_from(zstd::stream::Decoder::new(encoded_data.as_slice())?)?;
         let d_strings_decompress = t_strings_decompress.elapsed();
 
         let mut seen_slices = AHashSet::default();
@@ -1045,14 +1062,14 @@ impl Translation {
             if !seen_slices.insert(slice) {
                 return slice;
             }
-            let string = String::from_utf8_lossy(slice.slice(&strings)).into_owned();
+            let string = strings.str_at(slice).into_owned();
             strings_cache.insert(string, slice);
             slice
         };
 
         let t_ct = Instant::now();
         let ct_len = read_var_u64(input_stream)? as usize;
-        let mut word_contextual_translations = Vec::with_capacity(ct_len);
+        let mut word_contextual_translations = Arena::new();
         for _ in 0..ct_len {
             let slice = cache_vec_slice(read_vec_slice::<u8>(input_stream)?);
             word_contextual_translations.push(WordContextualTranslation { translation: slice });
@@ -1061,7 +1078,7 @@ impl Translation {
 
         let t_words = Instant::now();
         let words_len = read_var_u64(input_stream)? as usize;
-        let mut words = Vec::with_capacity(words_len);
+        let mut words = Arena::new();
         for _ in 0..words_len {
             let original = cache_vec_slice(read_vec_slice::<u8>(input_stream)?);
             let note = cache_vec_slice(read_vec_slice::<u8>(input_stream)?);
@@ -1098,7 +1115,7 @@ impl Translation {
 
         let t_sentences = Instant::now();
         let sentences_len = read_var_u64(input_stream)? as usize;
-        let mut sentences = Vec::with_capacity(sentences_len);
+        let mut sentences = Arena::new();
         for _ in 0..sentences_len {
             let full_translation = cache_vec_slice(read_vec_slice::<u8>(input_stream)?);
             let words_slice = read_vec_slice::<Word>(input_stream)?;
@@ -1111,7 +1128,7 @@ impl Translation {
 
         let t_pt = Instant::now();
         let pt_len = read_var_u64(input_stream)? as usize;
-        let mut paragraph_translations = Vec::with_capacity(pt_len);
+        let mut paragraph_translations = Arena::new();
         let mut models = ModelNames::default();
         for _ in 0..pt_len {
             let timestamp = read_var_u64(input_stream)?;
@@ -1137,7 +1154,7 @@ impl Translation {
 
         let t_paragraphs = Instant::now();
         let paragraphs_len = read_var_u64(input_stream)? as usize;
-        let mut paragraphs = Vec::with_capacity(paragraphs_len);
+        let mut paragraphs = Arena::new();
         for _ in 0..paragraphs_len {
             let has = read_u8(input_stream)?;
             let val = if has == 1 {
@@ -1177,12 +1194,12 @@ impl Translation {
             id,
             source_language,
             target_language,
-            strings: strings.into(),
-            paragraphs: paragraphs.into(),
-            paragraph_translations: paragraph_translations.into(),
-            sentences: sentences.into(),
-            words: words.into(),
-            word_contextual_translations: word_contextual_translations.into(),
+            strings,
+            paragraphs,
+            paragraph_translations,
+            sentences,
+            words,
+            word_contextual_translations,
         })
     }
 
@@ -1223,7 +1240,7 @@ impl Translation {
         let encoded_data = read_len_prefixed_vec(input_stream)?;
         let d_strings_read = t_strings_read.elapsed();
         let t_strings_decompress = Instant::now();
-        let strings = zstd::stream::decode_all(encoded_data.as_slice())?;
+        let strings = Arena::read_from(zstd::stream::Decoder::new(encoded_data.as_slice())?)?;
         let d_strings_decompress = t_strings_decompress.elapsed();
 
         let mut seen_slices = AHashSet::default();
@@ -1232,14 +1249,14 @@ impl Translation {
             if !seen_slices.insert(slice) {
                 return slice;
             }
-            let string = String::from_utf8_lossy(slice.slice(&strings)).into_owned();
+            let string = strings.str_at(slice).into_owned();
             strings_cache.insert(string, slice);
             slice
         };
 
         let t_ct = Instant::now();
         let ct_len = read_var_u64(input_stream)? as usize;
-        let mut word_contextual_translations = Vec::with_capacity(ct_len);
+        let mut word_contextual_translations = Arena::new();
         for _ in 0..ct_len {
             let slice = cache_vec_slice(read_vec_slice::<u8>(input_stream)?);
             word_contextual_translations.push(WordContextualTranslation { translation: slice });
@@ -1248,7 +1265,7 @@ impl Translation {
 
         let t_words = Instant::now();
         let words_len = read_var_u64(input_stream)? as usize;
-        let mut words = Vec::with_capacity(words_len);
+        let mut words = Arena::new();
         for _ in 0..words_len {
             let original = cache_vec_slice(read_vec_slice::<u8>(input_stream)?);
             let note = cache_vec_slice(read_vec_slice::<u8>(input_stream)?);
@@ -1285,7 +1302,7 @@ impl Translation {
 
         let t_sentences = Instant::now();
         let sentences_len = read_var_u64(input_stream)? as usize;
-        let mut sentences = Vec::with_capacity(sentences_len);
+        let mut sentences = Arena::new();
         for _ in 0..sentences_len {
             let full_translation = cache_vec_slice(read_vec_slice::<u8>(input_stream)?);
             let words_slice = read_vec_slice::<Word>(input_stream)?;
@@ -1298,7 +1315,7 @@ impl Translation {
 
         let t_pt = Instant::now();
         let pt_len = read_var_u64(input_stream)? as usize;
-        let mut paragraph_translations = Vec::with_capacity(pt_len);
+        let mut paragraph_translations = Arena::new();
         let mut models = ModelNames::default();
         for _ in 0..pt_len {
             let timestamp = read_var_u64(input_stream)?;
@@ -1358,7 +1375,7 @@ impl Translation {
 
         let t_paragraphs = Instant::now();
         let paragraphs_len = read_var_u64(input_stream)? as usize;
-        let mut paragraphs = Vec::with_capacity(paragraphs_len);
+        let mut paragraphs = Arena::new();
         for _ in 0..paragraphs_len {
             let has = read_u8(input_stream)?;
             let val = if has == 1 {
@@ -1398,12 +1415,12 @@ impl Translation {
             id,
             source_language,
             target_language,
-            strings: strings.into(),
-            paragraphs: paragraphs.into(),
-            paragraph_translations: paragraph_translations.into(),
-            sentences: sentences.into(),
-            words: words.into(),
-            word_contextual_translations: word_contextual_translations.into(),
+            strings,
+            paragraphs,
+            paragraph_translations,
+            sentences,
+            words,
+            word_contextual_translations,
         })
     }
 }

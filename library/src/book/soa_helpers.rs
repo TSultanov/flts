@@ -101,6 +101,11 @@ impl<T> Arena<T> {
         Some(&self.chunks[index / Self::CHUNK][index % Self::CHUNK])
     }
 
+    /// The backing chunks in order; all but the last are full.
+    pub fn chunks(&self) -> impl Iterator<Item = &[T]> {
+        self.chunks.iter().map(|chunk| chunk.as_slice())
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = &T> {
         self.chunks.iter().flat_map(|chunk| chunk.iter())
     }
@@ -111,23 +116,32 @@ impl<T> Arena<T> {
 }
 
 impl<T: Clone> Arena<T> {
-    pub fn push(&mut self, item: T) {
+    /// The last chunk, unshared and with room for at least one more item.
+    /// `Arc::make_mut` would copy a shared tail at `capacity == len`, so the
+    /// very next push reallocates it; copy into a full-size chunk instead.
+    fn tail_mut(&mut self) -> &mut Vec<T> {
         if self.len.is_multiple_of(Self::CHUNK) {
             self.chunks.push(Arc::new(Vec::with_capacity(Self::CHUNK)));
         }
-        Arc::make_mut(self.chunks.last_mut().unwrap()).push(item);
+        let tail = self.chunks.last_mut().unwrap();
+        if Arc::get_mut(tail).is_none_or(|chunk| chunk.capacity() < Self::CHUNK) {
+            let mut copy = Vec::with_capacity(Self::CHUNK);
+            copy.extend_from_slice(tail);
+            *tail = Arc::new(copy);
+        }
+        Arc::get_mut(tail).unwrap()
+    }
+
+    pub fn push(&mut self, item: T) {
+        self.tail_mut().push(item);
         self.len += 1;
     }
 
     pub fn extend_from_slice(&mut self, mut items: &[T]) {
         while !items.is_empty() {
-            let used = self.len % Self::CHUNK;
-            if used == 0 {
-                self.chunks.push(Arc::new(Vec::with_capacity(Self::CHUNK)));
-            }
-            let room = Self::CHUNK - used;
+            let room = Self::CHUNK - self.len % Self::CHUNK;
             let (now, rest) = items.split_at(room.min(items.len()));
-            Arc::make_mut(self.chunks.last_mut().unwrap()).extend_from_slice(now);
+            self.tail_mut().extend_from_slice(now);
             self.len += now.len();
             items = rest;
         }
@@ -166,14 +180,6 @@ impl<T: Clone> Arena<T> {
         }
     }
 
-    pub fn contiguous(&self) -> Cow<'_, [T]> {
-        match self.chunks.as_slice() {
-            [] => Cow::Borrowed(&[]),
-            [only] => Cow::Borrowed(only.as_slice()),
-            _ => Cow::Owned(self.iter().cloned().collect()),
-        }
-    }
-
     /// Appends `item` to `slice`, relocating the slice to the tail first if
     /// something else was pushed after it; `None` if the slice is invalid.
     pub fn push_to_slice(&mut self, slice: &VecSlice<T>, item: T) -> Option<VecSlice<T>> {
@@ -193,6 +199,27 @@ impl<T: Clone> Arena<T> {
 }
 
 impl Arena<u8> {
+    /// Reads to the end of `reader` straight into chunks.
+    pub fn read_from(mut reader: impl std::io::Read) -> std::io::Result<Self> {
+        use std::io::Read;
+        let mut arena = Self::new();
+        loop {
+            let mut chunk = Vec::with_capacity(Self::CHUNK);
+            reader
+                .by_ref()
+                .take(Self::CHUNK as u64)
+                .read_to_end(&mut chunk)?;
+            let read = chunk.len();
+            if read > 0 {
+                arena.len += read;
+                arena.chunks.push(Arc::new(chunk));
+            }
+            if read < Self::CHUNK {
+                return Ok(arena);
+            }
+        }
+    }
+
     pub fn push_str(&mut self, string: &str) -> VecSlice<u8> {
         let start = self.len;
         self.extend_from_slice(string.as_bytes());
@@ -363,15 +390,46 @@ mod tests {
     }
 
     #[test]
-    fn arena_str_at_and_contiguous_roundtrip() {
+    fn arena_str_at_and_chunks_roundtrip() {
         let mut arena: Arena<u8> = Arena::new();
         let hello = arena.push_str("hello");
         arena.extend_from_slice(&vec![b'x'; Arena::<u8>::CHUNK]);
         let world = arena.push_str("world");
         assert_eq!(arena.str_at(hello), "hello");
         assert_eq!(arena.str_at(world), "world");
-        let flat = arena.contiguous();
+        let flat = arena.chunks().collect::<Vec<_>>().concat();
         assert_eq!(flat.len(), arena.len());
         assert_eq!(&flat[..5], b"hello");
+    }
+
+    #[test]
+    fn arena_read_from_fills_chunks_like_extend() {
+        let chunk = Arena::<u8>::CHUNK;
+        for len in [0, 1, chunk - 1, chunk, chunk + 1, 3 * chunk, 3 * chunk + 7] {
+            let bytes: Vec<u8> = (0..len).map(|i| i as u8).collect();
+            let arena = Arena::read_from(bytes.as_slice()).unwrap();
+            assert_eq!(arena.len(), len);
+            assert_eq!(arena.chunks.len(), len.div_ceil(chunk));
+            assert_eq!(arena.chunks().collect::<Vec<_>>().concat(), bytes);
+        }
+    }
+
+    #[test]
+    fn arena_shared_tail_is_copied_once_at_full_chunk_capacity() {
+        let chunk = Arena::<u32>::CHUNK;
+        let mut arena: Arena<u32> = Arena::new();
+        arena.extend(0..10);
+        let snapshot = arena.clone();
+        arena.push(10);
+        let tail = arena.chunks[0].as_ptr();
+        assert_eq!(arena.chunks[0].capacity(), chunk);
+        arena.extend(11..chunk as u32);
+        assert_eq!(
+            arena.chunks[0].as_ptr(),
+            tail,
+            "no reallocation while filling"
+        );
+        assert_eq!(snapshot.len(), 10);
+        assert_eq!(arena.len(), chunk);
     }
 }

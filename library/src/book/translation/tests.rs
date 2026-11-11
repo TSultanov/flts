@@ -884,3 +884,58 @@ fn model_names_are_interned_across_versions_snapshots_and_loading() {
     loaded.serialize(&mut roundtrip).unwrap();
     assert_eq!(bytes, roundtrip);
 }
+
+#[test]
+fn strings_spanning_chunks_round_trip_and_encode_like_a_flat_buffer() {
+    let mut translation = Translation::create("eng", "rus");
+    // Unique strings, so dedup cannot keep the arena inside one chunk.
+    for id in 0..4000 {
+        let text = format!("paragraph {id} {}", "x".repeat(60));
+        translation.add_paragraph_translation(id, &make_paragraph(1, &text), "m");
+    }
+    assert!(translation.strings.chunks().count() > 2);
+    let flat = translation.strings.chunks().collect::<Vec<_>>().concat();
+    assert_eq!(
+        translation.encode_strings().unwrap(),
+        zstd::stream::encode_all(flat.as_slice(), -7).unwrap()
+    );
+
+    let mut bytes = Vec::new();
+    translation.serialize(&mut bytes).unwrap();
+    let loaded = Translation::deserialize(&mut Cursor::new(&bytes)).unwrap();
+    assert_eq!(loaded.strings.chunks().collect::<Vec<_>>().concat(), flat);
+    for id in [0, 1999, 3999] {
+        assert_eq!(
+            loaded
+                .paragraph_view(id)
+                .unwrap()
+                .sentence_view(0)
+                .full_translation,
+            translation
+                .paragraph_view(id)
+                .unwrap()
+                .sentence_view(0)
+                .full_translation
+        );
+    }
+    let mut roundtrip = Vec::new();
+    loaded.serialize(&mut roundtrip).unwrap();
+    assert_eq!(bytes, roundtrip);
+}
+
+#[test]
+fn is_paragraph_translated_matches_paragraph_view() {
+    let mut translation = Translation::create("eng", "rus");
+    translation.add_paragraph_translation(0, &make_paragraph(1, "real"), "m");
+    translation.add_paragraph_translation(2, &make_paragraph(1, "hidden"), "m");
+    translation.add_paragraph_translation(2, &make_empty_paragraph(2), "m");
+    for id in 0..5 {
+        assert_eq!(
+            translation.is_paragraph_translated(id),
+            translation.paragraph_view(id).is_some(),
+            "paragraph {id}"
+        );
+    }
+    assert!(translation.is_paragraph_translated(0));
+    assert!(!translation.is_paragraph_translated(2));
+}

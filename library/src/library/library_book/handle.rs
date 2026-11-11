@@ -37,6 +37,9 @@ pub struct BookSnapshot {
     pub(super) translations: Vec<Arc<Translation>>,
     pub summaries: Arc<ChapterSummaries>,
     pub user_state: BookUserState,
+    /// Unwritten local updates that the on-disk state does not carry yet.
+    pub(super) reading_state_pending: bool,
+    pub(super) folder_path_pending: bool,
     pub revision: u64,
     pub persisted_revision: u64,
     pub status: BookStatus,
@@ -89,15 +92,9 @@ pub(crate) enum BookCommand {
     ReloadSummaries {
         reply: ResultReply<bool>,
     },
-    ReadingState {
-        reply: ResultReply<Option<BookReadingState>>,
-    },
     UpdateReadingState {
         state: BookReadingState,
         reply: ResultReply<()>,
-    },
-    FolderPath {
-        reply: ResultReply<Vec<String>>,
     },
     UpdateFolderPath {
         path: Vec<String>,
@@ -265,17 +262,36 @@ impl BookRef {
         self.request(|reply| BookCommand::ReloadSummaries { reply })
             .await
     }
+    /// Reads bypass the mailbox so they never queue behind a save.
+    async fn user_state(
+        &self,
+        pending: impl Fn(&BookSnapshot) -> bool,
+    ) -> anyhow::Result<BookUserState> {
+        {
+            let gate = self.admission.borrow();
+            anyhow::ensure!(*gate == BookStatus::Active, "book is {:?}", *gate);
+        }
+        let snapshot = self.snapshot();
+        if pending(&snapshot) {
+            return Ok(snapshot.user_state.clone());
+        }
+        super::load_book_user_state(&snapshot.path).await
+    }
     pub async fn reading_state(&self) -> anyhow::Result<Option<BookReadingState>> {
-        self.request(|reply| BookCommand::ReadingState { reply })
-            .await
+        Ok(self
+            .user_state(|s| s.reading_state_pending)
+            .await?
+            .reading_state)
     }
     pub async fn update_reading_state(&self, state: BookReadingState) -> anyhow::Result<()> {
         self.request(|reply| BookCommand::UpdateReadingState { state, reply })
             .await
     }
     pub async fn folder_path(&self) -> anyhow::Result<Vec<String>> {
-        self.request(|reply| BookCommand::FolderPath { reply })
-            .await
+        Ok(self
+            .user_state(|s| s.folder_path_pending)
+            .await?
+            .folder_path)
     }
     pub async fn update_folder_path(&self, path: Vec<String>) -> anyhow::Result<()> {
         self.request(|reply| BookCommand::UpdateFolderPath { path, reply })
@@ -354,6 +370,7 @@ pub(crate) async fn serve_book(
 ) -> (Uuid, BookToken) {
     let mut retry = Duration::from_secs(1);
     let mut next_retry = tokio::time::Instant::now() + retry;
+    let mut flushes = Flushes::new();
     loop {
         tokio::select! {
             biased;
@@ -361,8 +378,12 @@ pub(crate) async fn serve_book(
                 let mode = if changed.is_err() { StopMode::Close } else { *stop.borrow_and_update() };
                 if mode == StopMode::Running { continue; }
                 if mode != StopMode::Delete {
-                    while let Ok(command) = commands.try_recv() { run(&mut book, command, &tx).await; }
-                    if let Err(err) = persist(&mut book, &tx).await {
+                    let mut force = false;
+                    while let Ok(command) = commands.try_recv() { run(&mut book, command, &tx, &mut flushes, &mut force).await; }
+                    // A clean book has nothing to write on its way out.
+                    let result = if force || book.has_unsaved_changes() { persist(&mut book, &tx).await } else { Ok(()) };
+                    settle(&mut flushes, &result);
+                    if let Err(err) = result {
                         let _ = failures.send(StopFailed {id: book.book.id, token: book.token, error: format!("{err:#}")});
                         continue;
                     }
@@ -376,15 +397,20 @@ pub(crate) async fn serve_book(
             }
             command = commands.recv() => {
                 let Some(command) = command else { break; };
-                run(&mut book, command, &tx).await;
+                let mut force = false;
+                run(&mut book, command, &tx, &mut flushes, &mut force).await;
                 for _ in 1..32 {
-                    if !book.has_unsaved_changes() { break; }
-                    match commands.try_recv() { Ok(command) => run(&mut book, command, &tx).await, Err(_) => break }
+                    if !force && !book.has_unsaved_changes() { break; }
+                    match commands.try_recv() { Ok(command) => run(&mut book, command, &tx, &mut flushes, &mut force).await, Err(_) => break }
                 }
-                if book.has_unsaved_changes() {
-                    if let Err(err) = persist(&mut book, &tx).await { log::warn!("book {} revision {} autosave failed: {err:#}", book.book.id, book.revision); }
+                if force || book.has_unsaved_changes() {
+                    let result = persist(&mut book, &tx).await;
+                    if let Err(err) = &result { log::warn!("book {} revision {} autosave failed: {err:#}", book.book.id, book.revision); }
+                    settle(&mut flushes, &result);
                     next_retry = tokio::time::Instant::now() + retry;
                 }
+                // Parked only while dirty; a command that saved on its own leaves these satisfied.
+                settle(&mut flushes, &Ok(()));
             }
             _ = tokio::time::sleep_until(next_retry), if book.has_unsaved_changes() => {
                 if persist(&mut book, &tx).await.is_err() { retry = (retry * 2).min(Duration::from_secs(30)); } else { retry = Duration::from_secs(1); }
@@ -400,7 +426,23 @@ pub(crate) async fn serve_book(
     (book.book.id, book.token)
 }
 
-async fn run(book: &mut LibraryBook, command: BookCommand, tx: &watch::Sender<Arc<BookSnapshot>>) {
+/// Flush replies parked until the batch's single persist.
+type Flushes = Vec<ResultReply<()>>;
+fn settle(flushes: &mut Flushes, result: &anyhow::Result<()>) {
+    for reply in flushes.drain(..) {
+        let _ = reply.send(match result {
+            Ok(()) => Ok(()),
+            Err(err) => Err(anyhow::anyhow!("{err:#}")),
+        });
+    }
+}
+async fn run(
+    book: &mut LibraryBook,
+    command: BookCommand,
+    tx: &watch::Sender<Arc<BookSnapshot>>,
+    flushes: &mut Flushes,
+    force: &mut bool,
+) {
     match command {
         BookCommand::ApplyTranslation {
             token,
@@ -463,17 +505,17 @@ async fn run(book: &mut LibraryBook, command: BookCommand, tx: &watch::Sender<Ar
         }
         BookCommand::Flush {
             revision,
-            force,
+            force: flush_forced,
             reply,
         } => {
-            let result = if revision > book.revision {
-                Err(anyhow::anyhow!("unknown book revision"))
-            } else if force || book.has_unsaved_changes() {
-                persist(book, tx).await
+            if revision > book.revision {
+                let _ = reply.send(Err(anyhow::anyhow!("unknown book revision")));
+            } else if flush_forced || book.has_unsaved_changes() {
+                *force |= flush_forced;
+                flushes.push(reply);
             } else {
-                Ok(())
-            };
-            let _ = reply.send(result);
+                let _ = reply.send(Ok(()));
+            }
         }
         BookCommand::ReloadBook { modified, reply } => {
             let result = book.reload_book(modified).await;
@@ -492,16 +534,6 @@ async fn run(book: &mut LibraryBook, command: BookCommand, tx: &watch::Sender<Ar
         }
         BookCommand::ReloadSummaries { reply } => {
             let result = book.reload_summaries().await;
-            publish(book, tx, BookStatus::Active);
-            let _ = reply.send(result);
-        }
-        BookCommand::ReadingState { reply } => {
-            let result = book.reading_state().await;
-            publish(book, tx, BookStatus::Active);
-            let _ = reply.send(result);
-        }
-        BookCommand::FolderPath { reply } => {
-            let result = book.folder_path().await;
             publish(book, tx, BookStatus::Active);
             let _ = reply.send(result);
         }
@@ -787,6 +819,122 @@ mod tests {
         handle.flush_through(receipt.revision).await.unwrap();
         library.flush_all().await.unwrap();
         std::fs::remove_file(handle.snapshot().path.join("translation_zzz_yyy.dat")).unwrap();
+        library.close().await.unwrap();
+    }
+    fn apply(book: &BookHandle, reply: ResultReply<MutationReceipt>) -> BookCommand {
+        BookCommand::ApplyTranslation {
+            token: book.token,
+            paragraph: 0,
+            expected_text: "hello".into(),
+            source: Language::from_639_3("eng").unwrap(),
+            target: Language::from_639_3("rus").unwrap(),
+            translation: ParagraphTranslation {
+                timestamp: 1,
+                sentences: vec![],
+                total_tokens: None,
+            },
+            model: "test".into(),
+            reply,
+        }
+    }
+    #[tokio::test]
+    async fn queued_flushes_share_one_save_with_the_writes_around_them() {
+        let (_dir, library, book) = fixture(2).await;
+        book.save().await.unwrap();
+        // Reading through `modify` dirties the book, so it costs one save itself.
+        let (saves_before, serialized_before) = book.modify(|book| book.save_counts).await.unwrap();
+        let release = pause(&book).await;
+        let mut applied = Vec::new();
+        let mut flushed = Vec::new();
+        for revision in [2, 3] {
+            let (reply, done) = oneshot::channel();
+            book.commands.send(apply(&book, reply)).await.unwrap();
+            applied.push(done);
+            let (reply, done) = oneshot::channel();
+            book.commands
+                .send(BookCommand::Flush {
+                    revision,
+                    force: false,
+                    reply,
+                })
+                .await
+                .unwrap();
+            flushed.push(done);
+        }
+        release.send(()).unwrap();
+        for done in applied {
+            done.await.unwrap().unwrap();
+        }
+        for done in flushed {
+            done.await.unwrap().unwrap();
+        }
+        assert_eq!(book.snapshot().persisted_revision, 3);
+        let (saves, serialized) = book.modify(|book| book.save_counts).await.unwrap();
+        assert_eq!(
+            saves,
+            saves_before + 2,
+            "one for `modify`, one for the batch"
+        );
+        assert_eq!(
+            serialized, serialized_before,
+            "an unchanged book.dat is never re-serialized"
+        );
+        library.close().await.unwrap();
+    }
+    #[tokio::test]
+    async fn deferred_flush_reports_the_batch_save_failure() {
+        let (_dir, library, book) = fixture(2).await;
+        let bad = book.snapshot().path.join("translation_zzz_yyy.dat");
+        let release = pause(&book).await;
+        std::fs::write(&bad, b"bad").unwrap();
+        let (reply, applied) = oneshot::channel();
+        book.commands.send(apply(&book, reply)).await.unwrap();
+        let (reply, flushed) = oneshot::channel();
+        book.commands
+            .send(BookCommand::Flush {
+                revision: 1,
+                force: false,
+                reply,
+            })
+            .await
+            .unwrap();
+        release.send(()).unwrap();
+        applied.await.unwrap().unwrap();
+        assert!(flushed.await.unwrap().is_err());
+        std::fs::remove_file(bad).unwrap();
+        book.flush_through(1).await.unwrap();
+        library.close().await.unwrap();
+    }
+    #[tokio::test]
+    async fn closing_a_clean_book_does_not_save_it() {
+        let (_dir, library, book) = fixture(2).await;
+        book.save().await.unwrap();
+        // Any save would trip over this file.
+        std::fs::write(book.snapshot().path.join("translation_zzz_yyy.dat"), b"bad").unwrap();
+        drop(book);
+        library.close().await.unwrap();
+    }
+    #[tokio::test]
+    async fn user_state_reads_do_not_wait_for_the_owner() {
+        let (_dir, library, book) = fixture(2).await;
+        let state = BookReadingState {
+            chapter_id: 0,
+            paragraph_id: 0,
+            page_offset: 2,
+        };
+        book.update_reading_state(state.clone()).await.unwrap();
+        book.update_folder_path(vec!["shelf".into()]).await.unwrap();
+        let release = pause(&book).await;
+        let read = tokio::time::timeout(Duration::from_secs(5), async {
+            (
+                book.reading_state().await.unwrap(),
+                book.folder_path().await.unwrap(),
+            )
+        })
+        .await
+        .expect("reads must not queue behind the blocked owner");
+        assert_eq!(read, (Some(state), vec!["shelf".to_string()]));
+        release.send(()).unwrap();
         library.close().await.unwrap();
     }
     #[tokio::test]

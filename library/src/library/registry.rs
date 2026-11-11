@@ -183,10 +183,22 @@ pub(super) async fn serve_books(
     let mut ids = HashMap::new();
     let (failures, mut failed) = mpsc::unbounded_channel();
     let mut sweep = tokio::time::interval(Duration::from_secs(1));
+    // The sweep sleeps while nothing can retire; it must not replay those ticks.
+    sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut closing = false;
     let mut disconnected = false;
 
     loop {
+        // Only a dropped handle or an elapsed retry is invisible to the other
+        // branches, so the timer runs only while one of those can happen.
+        let sweepable = entries.iter().any(|(id, entry)| {
+            entry.phase == Phase::Active
+                && if closing {
+                    entry.retry_after.is_some()
+                } else {
+                    !warm.contains(id)
+                }
+        });
         tokio::select! {
             changed = close_control.changed(), if !closing => {
                 if changed.is_ok() { close_control.borrow_and_update(); }
@@ -299,7 +311,7 @@ pub(super) async fn serve_books(
                     }
                 }
             }
-            _ = sweep.tick(), if !closing || disconnected => {
+            _ = sweep.tick(), if sweepable && (!closing || disconnected) => {
                 for (id, entry) in &mut entries {
                     if closing {
                         if entry.phase == Phase::Active && entry.retry_after.is_some_and(|at| at <= tokio::time::Instant::now()) { entry.retry_after = None; entry.stop(StopMode::Close); }

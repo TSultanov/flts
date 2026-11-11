@@ -369,7 +369,7 @@ impl<'a> LibraryView<'a> {
                     let translated = if let Some(t) = translation_guard.as_ref() {
                         chapter
                             .paragraphs()
-                            .filter(|p| t.paragraph_view(p.id).is_some())
+                            .filter(|p| t.is_paragraph_translated(p.id))
                             .count()
                     } else {
                         0
