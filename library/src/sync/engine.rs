@@ -22,6 +22,11 @@ use super::roster::RosterStore;
 /// Fixed app folder ID for the synced library. Stable across devices.
 pub const LIBRARY_FOLDER_ID: &str = "flts-library";
 
+/// Never synced: dbsync's rewrite temporaries anywhere, and the device-local
+/// state when it had to fall back inside the root. `(?d)` lets a directory
+/// that holds only temporaries still be deleted.
+pub const LIBRARY_IGNORES: [&str; 3] = ["(?d).dbsync-*.tmp", "/.flts-local", "/.flts-lock"];
+
 /// A paired peer as shown in the device-management UI.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct PeerInfo {
@@ -58,7 +63,7 @@ pub struct SyncEngine {
     my_id: String,
     /// Kept so the folder can be re-shared when the peer set changes.
     library_root: String,
-    /// `<library_root>/.flts/devices.json`: the mesh's source of truth.
+    /// The mesh's source of truth, synced under `<library_root>/.flts/roster`.
     roster: RosterStore,
 }
 
@@ -127,8 +132,18 @@ impl SyncEngine {
         // `ensure_folder` PUTs the whole device list, so sharing with self
         // alone would un-share persisted peers that reconcile won't re-add.
         engine.reshare_library().await?;
+        engine.apply_ignores().await;
 
         Ok(engine)
+    }
+
+    /// Needs the folder configured, so it follows the first share. Rewriting
+    /// the same `.stignore` each start is harmless; failing must not stop sync.
+    async fn apply_ignores(&self) {
+        let patterns = LIBRARY_IGNORES.iter().map(|p| p.to_string()).collect();
+        if let Err(err) = self.client.set_ignores(LIBRARY_FOLDER_ID, patterns).await {
+            log::warn!("Could not set sync ignore patterns: {err:#}");
+        }
     }
 
     /// Loopback origin of the engine's REST/GUI endpoint.
@@ -215,22 +230,32 @@ impl SyncEngine {
         Ok(())
     }
 
+    /// Store writers of devices that left the mesh for good.
+    pub fn retired_writers(&self) -> anyhow::Result<Vec<u64>> {
+        self.roster.retired_writers()
+    }
+
     /// Bring this engine's device set in line with the roster. This is what
     /// turns a single pairing into a full mesh.
     pub async fn reconcile_once(&self) -> anyhow::Result<()> {
-        // Peek before `load` clears the siblings, so RosterSync can be emitted
-        // per sibling that actually changed the roster.
+        // Peek before `load` adopts peers' shards, so RosterSync is emitted
+        // only for a delivery that changed the roster.
         #[cfg(feature = "tla_trace")]
-        let sibling_srcs = self.roster.pending_sibling_sources();
+        let delivered_from = self.roster.take_delivery_sources();
         #[cfg(feature = "tla_trace")]
         let pre_roster = self.roster.snapshot_for_trace();
 
         let roster = self.roster.load()?;
 
+        // `src` is known only when the deliverer named it (the trace harness);
+        // a real delivery is one RosterSync without it.
         #[cfg(feature = "tla_trace")]
         if roster != pre_roster {
-            for src in &sibling_srcs {
+            for src in &delivered_from {
                 self.trace_emit("RosterSync", None, Some(src)).await;
+            }
+            if delivered_from.is_empty() {
+                self.trace_emit("RosterSync", None, None).await;
             }
         }
 
@@ -322,6 +347,12 @@ impl SyncEngine {
         }
     }
 
+    /// Names the device whose roster shards were just copied in. Trace-only.
+    #[cfg(all(test, feature = "tla_trace"))]
+    pub(crate) fn trace_delivered_from(&self, src: &str) {
+        self.roster.note_delivery_from(src);
+    }
+
     /// The control client, for the daemon and Tauri commands.
     pub fn client(&self) -> &dyn SyncthingApi {
         self.client.as_ref()
@@ -335,6 +366,24 @@ impl SyncEngine {
     pub async fn stop(&self) -> Result<()> {
         stop_engine().await
     }
+}
+
+/// Forgets the sync identity kept in `home`, so the next start mints a new
+/// one. The engine must be stopped. The device is then unknown to every
+/// other and has to be paired again.
+pub async fn forget_identity(home: &std::path::Path) -> Result<()> {
+    // A stopped engine goes on closing its database for a moment, and a
+    // file it writes meanwhile leaves the directory not empty.
+    const ATTEMPTS: u32 = 40;
+    for attempt in 1..=ATTEMPTS {
+        match tokio::fs::remove_dir_all(home).await {
+            Ok(()) => return Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(err) if attempt == ATTEMPTS => return Err(err.into()),
+            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+        }
+    }
+    Ok(())
 }
 
 /// Idempotent on the Go side. Runs on the blocking pool so exit-path timeouts
@@ -440,12 +489,94 @@ mod tests {
         }
     }
 
+    fn test_config(root: &str) -> EngineConfig {
+        EngineConfig {
+            home: PathBuf::from("/tmp/flts-unused-home"),
+            library_root: PathBuf::from(root),
+            options: OptionsPatch::loopback(),
+            loopback_only: true,
+        }
+    }
+
+    async fn bootstrap_with(mock: &Arc<MockSyncthing>) -> Result<SyncEngine> {
+        SyncEngine::bootstrap(
+            "http://127.0.0.1:0".into(),
+            Box::new(mock.clone()),
+            test_config("/tmp/flts-lib"),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn bootstrap_sets_ignores_once_the_folder_exists() {
+        // The mock, like the engine, rejects ignores for an unknown folder.
+        let mock = Arc::new(MockSyncthing::new("SELF"));
+
+        bootstrap_with(&mock).await.unwrap();
+
+        assert_eq!(mock.folders().len(), 1);
+        assert_eq!(
+            mock.ignores(LIBRARY_FOLDER_ID).unwrap(),
+            ["(?d).dbsync-*.tmp", "/.flts-local", "/.flts-lock"]
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_reapplies_the_same_ignores_on_every_start() {
+        let mock = Arc::new(MockSyncthing::new("SELF"));
+
+        bootstrap_with(&mock).await.unwrap();
+        let first = mock.ignores(LIBRARY_FOLDER_ID);
+        bootstrap_with(&mock).await.unwrap();
+
+        assert_eq!(mock.ignores(LIBRARY_FOLDER_ID), first);
+        assert_eq!(mock.ignore_writes(), 2);
+    }
+
+    #[tokio::test]
+    async fn reshare_does_not_rewrite_ignores() {
+        let mock = Arc::new(MockSyncthing::new("SELF"));
+        let engine = bootstrap_with(&mock).await.unwrap();
+
+        engine.add_peer("PEER1", "Laptop").await.unwrap();
+        engine.remove_peer("PEER1").await.unwrap();
+
+        assert_eq!(mock.ignore_writes(), 1);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_survives_an_ignores_failure() {
+        let mock = Arc::new(MockSyncthing::new("SELF"));
+        mock.fail_ignores();
+
+        let engine = bootstrap_with(&mock).await.expect("sync still starts");
+
+        assert_eq!(engine.my_id(), "SELF");
+        assert_eq!(mock.folders().len(), 1, "folder shared regardless");
+        assert_eq!(mock.ignores(LIBRARY_FOLDER_ID), None);
+    }
+
     fn scratch_root(tag: &str) -> std::path::PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("flts-mesh-{tag}-{nanos}"))
+        // Nested, so the device-local directory beside the root goes with it.
+        std::env::temp_dir()
+            .join(format!("flts-mesh-{tag}-{nanos}"))
+            .join("library")
+    }
+
+    /// What Syncthing would deliver after `op` ran on another device: that
+    /// device's roster shards, copied into `root`.
+    fn deliver_from_peer(
+        root: &std::path::Path,
+        op: impl FnOnce(&RosterStore) -> Result<crate::sync::roster::Roster>,
+    ) {
+        let peer_root = scratch_root("peer");
+        op(&RosterStore::new(&peer_root, "OTHER")).unwrap();
+        crate::test_utils::copy_shards(&peer_root.join(".flts/roster"), &root.join(".flts/roster"));
+        let _ = std::fs::remove_dir_all(peer_root.parent().unwrap());
     }
 
     #[tokio::test]
@@ -457,7 +588,7 @@ mod tests {
         engine.set_device_name("My Mac").await.unwrap();
         engine.pair_device("PEER1", "Laptop").await.unwrap();
 
-        let roster = RosterStore::new(&root, "SELF").load().unwrap();
+        let roster = engine.roster.load().unwrap();
         assert_eq!(roster.devices.get("SELF").unwrap().name, "My Mac");
         assert!(
             roster.devices.contains_key("PEER1"),
@@ -467,7 +598,7 @@ mod tests {
         assert_eq!(peers.len(), 1);
         assert_eq!(peers[0].device_id, "PEER1");
 
-        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
     }
 
     #[tokio::test]
@@ -478,9 +609,7 @@ mod tests {
             SyncEngine::for_test(mock.clone(), "SELF".into(), root.to_string_lossy().into());
 
         // Paired on another node: in the roster, unknown to this engine.
-        RosterStore::new(&root, "PEERX")
-            .add_device("PEERX", "Other")
-            .unwrap();
+        deliver_from_peer(&root, |peer| peer.add_device("PEERX", "Other"));
         assert!(engine.list_peers().await.unwrap().is_empty());
 
         engine.reconcile_once().await.unwrap();
@@ -496,7 +625,7 @@ mod tests {
                 .contains(&"PEERX".to_string())
         );
 
-        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
     }
 
     #[tokio::test]
@@ -508,13 +637,11 @@ mod tests {
         engine.add_peer("PEER1", "x").await.unwrap();
         assert_eq!(engine.list_peers().await.unwrap().len(), 1);
 
-        RosterStore::new(&root, "OTHER")
-            .remove_device("PEER1")
-            .unwrap();
+        deliver_from_peer(&root, |peer| peer.remove_device("PEER1"));
         engine.reconcile_once().await.unwrap();
 
         assert!(engine.list_peers().await.unwrap().is_empty());
-        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
     }
 
     /// Hermetic run against the real Go engine; a successful `start` proves the
@@ -547,6 +674,13 @@ mod tests {
 
         let devices_self = engine.client().my_id().await.unwrap();
         assert_eq!(devices_self, id, "client talks to the same engine");
+
+        let stignore = std::fs::read_to_string(library.join(".stignore")).unwrap();
+        assert_eq!(
+            stignore.lines().collect::<Vec<_>>(),
+            LIBRARY_IGNORES,
+            "the engine accepted and wrote the ignore patterns"
+        );
 
         engine.stop().await.expect("engine stops cleanly");
         let _ = std::fs::remove_dir_all(&base);

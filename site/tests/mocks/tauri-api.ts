@@ -201,8 +201,52 @@ let mockConfig: Config = {
   targetLanguageId: "spa",
 };
 let mockAnkiSyncStatus: AnkiSyncStatus = { state: "idle" };
+type MockSyncStatus = {
+  state: "disabled" | "starting" | "online" | "syncing" | "error";
+  deviceCount: number;
+  connectedCount: number;
+  storeIssues?: {
+    newerVersion: number;
+    unreadable: number;
+    strangers: number;
+    sharedIdentity?: boolean;
+  };
+};
+const SYNC_OFF: MockSyncStatus = {
+  state: "disabled",
+  deviceCount: 0,
+  connectedCount: 0,
+};
+let mockSyncStatus: MockSyncStatus = SYNC_OFF;
+let identityResets = 0;
+function clearSharedIdentity() {
+  if (mockSyncStatus.storeIssues)
+    mockSyncStatus = {
+      ...mockSyncStatus,
+      storeIssues: { ...mockSyncStatus.storeIssues, sharedIdentity: false },
+    };
+}
+let identityResetHeld: Promise<void> | null = null;
+let identityResetError: string | null = null;
+let releaseHeldIdentityReset: (() => void) | null = null;
 const syncAnkiNowCalls: Array<{ at: number }> = [];
 let mockReadingStates: Map<UUID, BookReadingState> = new Map();
+
+// While set, list_books waits, as it does behind a first-start import.
+let importGate: { done: Promise<void>; release: () => void } | null = null;
+
+function holdImport() {
+  if (importGate) return;
+  let release = () => {};
+  const done = new Promise<void>((r) => (release = r));
+  importGate = { done, release };
+}
+
+function releaseImport() {
+  importGate?.release();
+  importGate = null;
+}
+
 let bookIdCounter = 0;
 let requestIdCounter = 0;
 
@@ -559,6 +603,7 @@ export function resetMockState() {
     targetLanguageId: "spa",
   };
   mockReadingStates.clear();
+  releaseImport();
   bookIdCounter = 0;
   requestIdCounter = 0;
   translateConfigs.clear();
@@ -576,6 +621,11 @@ export function resetMockState() {
   mockLyricsByTrack.clear();
   mockTranslationCache.clear();
   mockAnkiSyncStatus = { state: "idle" };
+  mockSyncStatus = SYNC_OFF;
+  identityResets = 0;
+  identityResetError = null;
+  releaseHeldIdentityReset?.();
+  identityResetHeld = null;
   syncAnkiNowCalls.length = 0;
   summaryStatusByBook.clear();
 }
@@ -669,6 +719,8 @@ if (typeof window !== "undefined") {
     applyPendingSeed(pending);
     (window as any).__pendingSeed = undefined;
   }
+  // Set from addInitScript, so the app's first list_books already waits.
+  if ((window as any).__importPending) holdImport();
 
   // Test control surface, driven from Playwright via page.evaluate.
   (window as any).__test = {
@@ -750,6 +802,18 @@ if (typeof window !== "undefined") {
       if (!p) return;
       p.segments = segments;
     },
+    // A deletion synced in from another device.
+    deleteBookRemotely(bookId: UUID) {
+      mockLibrary.delete(bookId);
+      mockReadingStates.delete(bookId);
+      emit("library_updated", Array.from(mockLibrary.values()));
+      emit("book_deleted", bookId);
+    },
+    emitImportProgress(done: number, total: number) {
+      if (done < total) holdImport();
+      else releaseImport();
+      emit("library_import_progress", { done, total });
+    },
     emitCardsUpdated() {
       emit("cards_updated", null);
     },
@@ -774,6 +838,25 @@ if (typeof window !== "undefined") {
     setAnkiSyncStatus(status: AnkiSyncStatus) {
       mockAnkiSyncStatus = { ...status };
       emit("anki_sync_status_changed", undefined);
+    },
+    setSyncStatus(status: MockSyncStatus) {
+      mockSyncStatus = { ...status };
+      emit("sync_status_changed", undefined);
+    },
+    /// Makes the next identity resets wait for `releaseIdentityReset`, and
+    /// fail with `error` if one is given.
+    holdIdentityReset(error?: string) {
+      identityResetError = error ?? null;
+      identityResetHeld = new Promise((resolve) => {
+        releaseHeldIdentityReset = resolve;
+      });
+    },
+    releaseIdentityReset() {
+      releaseHeldIdentityReset?.();
+      identityResetHeld = null;
+    },
+    identityResets(): number {
+      return identityResets;
     },
     getAnkiSyncStatus(): AnkiSyncStatus {
       return { ...mockAnkiSyncStatus };
@@ -1014,15 +1097,16 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
     }
 
     case "list_books": {
-      const books = Array.from(mockLibrary.values()).map((book) => ({
-        id: book.id,
-        title: book.title,
-        chaptersCount: book.chaptersCount,
-        paragraphsCount: book.paragraphsCount,
-        translationRatio: book.translationRatio,
-        path: book.path,
-      }));
-      return Promise.resolve(books as T);
+      const list = () =>
+        Array.from(mockLibrary.values()).map((book) => ({
+          id: book.id,
+          title: book.title,
+          chaptersCount: book.chaptersCount,
+          paragraphsCount: book.paragraphsCount,
+          translationRatio: book.translationRatio,
+          path: book.path,
+        })) as T;
+      return importGate ? importGate.done.then(list) : Promise.resolve(list());
     }
 
     case "parse_epub": {
@@ -1398,6 +1482,26 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
       }, 10);
       return Promise.resolve(report as T);
     }
+
+    case "get_sync_status":
+      return Promise.resolve({ ...mockSyncStatus } as T);
+
+    case "sync_list_devices":
+    case "sync_list_pending":
+      return Promise.resolve([] as T);
+
+    // No event: the real flag also clears only at the next status push.
+    case "sync_reset_identity": {
+      identityResets += 1;
+      return (identityResetHeld ?? Promise.resolve()).then(() => {
+        if (identityResetError) throw identityResetError;
+        clearSharedIdentity();
+        return undefined as T;
+      });
+    }
+    case "sync_keep_identity":
+      clearSharedIdentity();
+      return Promise.resolve(undefined as T);
 
     case "spotify_web_status":
       return Promise.resolve({

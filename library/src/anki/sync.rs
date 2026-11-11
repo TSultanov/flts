@@ -9,7 +9,7 @@ use crate::anki::connect::{
 };
 use crate::anki::model::{FLTS_MODEL_NAME, bootstrap, deck_name};
 use crate::card::{AnkiData, AnkiState, Card};
-use crate::library::Library;
+use crate::library::{Library, library_card::AnkiUpdate};
 
 /// Spec cap on sub-actions per `multi` call.
 const MULTI_BATCH_SIZE: usize = 50;
@@ -111,7 +111,7 @@ impl Default for AnkiSyncState {
     }
 }
 
-/// Run one sync pass over every card on disk, bootstrapping model+decks on the
+/// Run one sync pass over every stored card, bootstrapping model+decks on the
 /// first call. Phase 1 loads eligible cards and batches their `findNotes`;
 /// phase 2 classifies and applies the batched writes.
 #[allow(dead_code)]
@@ -135,7 +135,7 @@ pub async fn sync_pass(
 
     let mut report = SyncReport::default();
 
-    // Phase 1a: walk disk, load, filter.
+    // Phase 1a: load every pair, filter.
     let mut eligible: Vec<Eligible> = Vec::new();
 
     for (src_str, tgt_str) in &pairs {
@@ -144,14 +144,10 @@ pub async fn sync_pass(
             continue;
         };
 
-        let card_files = card_store.list_cards_in_pair(src_str, tgt_str).await?;
-        for lemma_slug in card_files {
+        for (lemma_slug, card) in card_store.load_pair(src_str, tgt_str).await? {
             report.total_cards += 1;
 
             let card_id = crate::card::card_id(src_str, tgt_str, &lemma_slug);
-            let Some(card) = card_store.load(src_str, tgt_str, &lemma_slug).await? else {
-                continue;
-            };
 
             // Opt-out: counted as total, not attempted.
             if matches!(
@@ -258,6 +254,7 @@ pub async fn sync_pass(
     let (notes_by_id, cards_by_id) =
         batch_pull_state(client, &actions, &mut write_outcomes, state).await;
 
+    let mut updates: Vec<AnkiUpdate> = Vec::new();
     for (idx, e) in eligible.into_iter().enumerate() {
         let mut new_anki: Option<AnkiData> = None;
         let outcome: Result<()> = match &actions[idx] {
@@ -315,18 +312,18 @@ pub async fn sync_pass(
 
         match outcome {
             Ok(()) => {
-                // Silent save: only `anki_data` changed, from our own
-                // round-trip; waking the watcher would self-trigger a pass.
-                if let Some(data) = new_anki {
-                    card_store
-                        .update_anki_data(
-                            &e.src_str,
-                            &e.tgt_str,
-                            &e.slug,
-                            e.card.anki_data.clone(),
-                            data,
-                        )
-                        .await?;
+                // Applied silently in one batch below: waking the watcher
+                // for our own round-trip would self-trigger a pass.
+                if let Some(data) = new_anki
+                    && e.card.anki_data.as_ref() != Some(&data)
+                {
+                    updates.push(AnkiUpdate {
+                        source: e.src_str,
+                        target: e.tgt_str,
+                        slug: e.slug,
+                        expected: e.card.anki_data,
+                        data,
+                    });
                 }
                 state.record_success(&e.card_id);
                 report.succeeded += 1;
@@ -344,6 +341,8 @@ pub async fn sync_pass(
             }
         }
     }
+
+    card_store.update_anki_data_batch(updates).await?;
 
     // HashSet order varies; sort for a run-to-run deterministic report.
     let mut persistent_failures: Vec<String> = state.persistent_set.iter().cloned().collect();
@@ -918,9 +917,15 @@ mod tests {
 
     async fn seed_library_with_cards(tmp_prefix: &str, cards: &[Card]) -> (TempDir, Library) {
         let tmp = TempDir::new(tmp_prefix);
-        let library = Library::open(tmp.path.clone()).await.unwrap();
+        let library = Library::open(tmp.path.join("lib")).await.unwrap();
         for card in cards {
-            library.card_store().save(card, "spa", "rus").await.unwrap();
+            assert!(
+                library
+                    .card_store()
+                    .create_if_absent(card, "spa", "rus")
+                    .await
+                    .unwrap()
+            );
         }
         (tmp, library)
     }
@@ -1609,24 +1614,15 @@ mod tests {
         target_language: Language,
     ) {
         let book = library.get_book(&book_id).await.unwrap();
-        let snapshot = book.snapshot();
-        let receipt = book
-            .apply_translation(
-                snapshot.token,
-                paragraph_id,
-                snapshot
-                    .book
-                    .paragraph_view(paragraph_id)
-                    .original_text
-                    .to_string(),
-                Language::from_639_3(&snapshot.book.language).unwrap(),
-                target_language,
-                paragraph.clone(),
-                "models/test".into(),
-            )
-            .await
-            .unwrap();
-        book.flush_through(receipt.revision).await.unwrap();
+        book.apply_translation(
+            paragraph_id,
+            target_language,
+            paragraph.clone(),
+            "models/test".into(),
+        )
+        .await
+        .unwrap();
+        book.flush().await.unwrap();
     }
 
     #[tokio::test]
@@ -1768,8 +1764,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn e2e_sync_conflict_sibling_merges_then_syncs_union_to_anki() {
-        let tmp = TempDir::new("flts_e2e_conflict_sync");
+    async fn e2e_card_extended_on_another_device_syncs_the_union_to_anki() {
+        let tmp = TempDir::new("flts_e2e_peer_card_sync");
         let (library, book_id) =
             library_with_one_paragraph_book(tmp.path.join("lib"), "Yo puedo.").await;
 
@@ -1790,16 +1786,15 @@ mod tests {
             .await
             .unwrap();
 
-        // Syncthing-style conflict sibling with a divergent translation.
-        let deck = tmp.path.join("lib").join("cards").join("spa-rus");
-        let conflict_path = deck.join("poder.sync-conflict-20260520-153912-XYZ.json");
-        let mut conflict_translations: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        conflict_translations.insert("verb".into(), vec!["иметь возможность".into()]);
-        let conflict_card = Card {
+        // Another device holds the same card with a divergent translation.
+        let other = Library::open(tmp.path.join("other/lib")).await.unwrap();
+        let mut divergent: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        divergent.insert("verb".into(), vec!["иметь возможность".into()]);
+        let peer_card = Card {
             version: 2,
             id: "flts_spa_rus_poder".into(),
             lemma: "poder".into(),
-            translations: conflict_translations,
+            translations: divergent,
             examples: vec![Example {
                 source: "Tu puedes.".into(),
                 translation: "Ты можешь.".into(),
@@ -1809,8 +1804,13 @@ mod tests {
             }],
             anki_data: None,
         };
-        let bytes = serde_json::to_vec_pretty(&conflict_card).unwrap();
-        tokio::fs::write(&conflict_path, bytes).await.unwrap();
+        other
+            .card_store()
+            .create_if_absent(&peer_card, "spa", "rus")
+            .await
+            .unwrap();
+        crate::test_utils::copy_shards(other.store().shared_dir(), library.store().shared_dir());
+        assert!(library.refresh_from_peers().await.unwrap().cards);
 
         let mock = MockAnkiConnect::new();
         let mut state = AnkiSyncState::new();
@@ -1819,20 +1819,17 @@ mod tests {
             .unwrap();
         assert_eq!(report.succeeded, 1);
 
-        assert!(
-            !conflict_path.exists(),
-            "conflict sibling consumed by merge during sync_pass"
-        );
         let merged = library
             .card_store()
             .load("spa", "rus", "poder")
             .await
             .unwrap()
-            .expect("merged card on disk");
-        assert_eq!(
-            merged.translations_flat(),
-            vec!["мочь", "иметь возможность"]
-        );
+            .expect("merged card stored");
+        // Two devices each wrote a first translation; their order is the
+        // store's, the same on every device.
+        let mut translations = merged.translations_flat();
+        translations.sort();
+        assert_eq!(translations, vec!["иметь возможность", "мочь"]);
         assert_eq!(
             merged.examples.len(),
             2,
@@ -1845,7 +1842,7 @@ mod tests {
         let (fields, _) = mock.peek_note(note_id).unwrap();
         assert_eq!(
             fields.get("Target"),
-            Some(&"мочь; иметь возможность".to_owned())
+            Some(&merged.translations_flat().join("; "))
         );
         // Examples sort by source: uppercase 'T' precedes lowercase 'p'.
         assert_eq!(

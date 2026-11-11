@@ -11,6 +11,8 @@
         syncAddDevice,
         syncRemoveDevice,
         syncSetDeviceName,
+        syncResetIdentity,
+        syncKeepIdentity,
         canScan,
         isIos,
         ensureCameraPermission,
@@ -22,12 +24,29 @@
         type DeviceEntry,
         type PendingEntry,
     } from "./store.svelte";
+    import {
+        SHARED_IDENTITY_MESSAGE,
+        sharesIdentity,
+        storeIssueMessages,
+    } from "./syncStatusHelpers";
+    import ConfirmDialog from "../dialogs/ConfirmDialog.svelte";
 
     const scanAvailable = canScan();
     const onIos = isIos();
 
     let status = $derived(syncStatus.current);
     let enabled = $derived(!!status && status.state !== "disabled");
+    let issueMessages = $derived(storeIssueMessages(status));
+
+    // The flag only clears at the backend's next status push, so the notice
+    // is hidden locally until then.
+    let identityDismissed = $state(false);
+    let sharedIdentity = $derived(sharesIdentity(status));
+    $effect(() => {
+        if (!sharedIdentity) identityDismissed = false;
+    });
+    let confirmingReset = $state(false);
+    let resetting = $state(false);
 
     let thisDevice = $state<ThisDevice | null>(null);
     let qrDataUrl = $state("");
@@ -62,7 +81,8 @@
         }
     }
 
-    async function refresh() {
+    // `background` is the poll: it must not wipe what a user action reported.
+    async function refresh(background = false) {
         try {
             thisDevice = await syncGetThisDevice();
             webUiUrl = await syncWebUiUrl();
@@ -78,9 +98,9 @@
                 : "";
             // Cleared here, not at entry: that would flicker and would wipe a
             // message a mutating handler set just before its own refresh.
-            error = "";
+            if (!background) error = "";
         } catch (e) {
-            error = errMessage(e);
+            if (!background || !error) error = errMessage(e);
         }
     }
 
@@ -102,14 +122,14 @@
     let refreshKey = $derived(`${status?.state}:${status?.deviceCount}`);
     $effect(() => {
         void refreshKey;
-        refresh();
+        refresh(true);
     });
 
     // Pending devices and connection changes don't move deviceCount, so the
     // key above can't catch them.
     $effect(() => {
         if (!enabled) return;
-        const id = setInterval(refresh, 4000);
+        const id = setInterval(() => refresh(true), 4000);
         return () => clearInterval(id);
     });
 
@@ -236,6 +256,33 @@
         busy = false;
     }
 
+    async function resetIdentity() {
+        busy = true;
+        resetting = true;
+        error = "";
+        try {
+            await syncResetIdentity();
+            identityDismissed = true;
+            await refresh();
+        } catch (e) {
+            error = errMessage(e);
+        }
+        resetting = false;
+        busy = false;
+    }
+
+    async function keepIdentity() {
+        busy = true;
+        error = "";
+        try {
+            await syncKeepIdentity();
+            identityDismissed = true;
+        } catch (e) {
+            error = errMessage(e);
+        }
+        busy = false;
+    }
+
     async function copyId() {
         if (thisDevice?.deviceId) {
             await navigator.clipboard.writeText(thisDevice.deviceId);
@@ -275,6 +322,35 @@
 
         {#if status?.state === "error" && status?.lastError}
             <p class="err">{status.lastError}</p>
+        {/if}
+
+        {#each issueMessages as message (message)}
+            <p class="err" data-testid="sync-store-issue">{message}</p>
+        {/each}
+
+        {#if sharedIdentity && !identityDismissed}
+            <div class="shared-identity" data-testid="sync-shared-identity">
+                <p class="err">{SHARED_IDENTITY_MESSAGE}</p>
+                <div class="add-actions">
+                    <button
+                        onclick={() => (confirmingReset = true)}
+                        disabled={busy}
+                        aria-busy={resetting}
+                        data-testid="sync-reset-identity"
+                    >
+                        {resetting
+                            ? "Giving this device a new identity…"
+                            : "Give this device a new identity"}
+                    </button>
+                    <button
+                        onclick={keepIdentity}
+                        disabled={busy}
+                        data-testid="sync-keep-identity"
+                    >
+                        Keep this device's identity
+                    </button>
+                </div>
+            </div>
         {/if}
 
         {#if webUiUrl}
@@ -391,6 +467,13 @@
     {/if}
 </div>
 
+<ConfirmDialog
+    bind:isOpen={confirmingReset}
+    title="New sync identity"
+    message="This device will get a new sync identity and sync will restart. It then has to be paired with your other devices again, where it shows up as a new device."
+    onConfirm={resetIdentity}
+/>
+
 <style>
     .sync {
         display: flex;
@@ -471,6 +554,13 @@
 
     .add-actions {
         display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .shared-identity {
+        display: flex;
+        flex-direction: column;
         gap: 8px;
     }
 

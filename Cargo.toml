@@ -8,6 +8,9 @@ members = [
   "sync-harness",
   "syncthing-sys",
 ]
+# Keeps its own workspace: its pinned proptest env in dbsync/.cargo only
+# applies to runs started inside dbsync/.
+exclude = ["dbsync"]
 
 [workspace.dependencies]
 ahash = "0.8.12"
@@ -22,7 +25,6 @@ reqwest = { version = "0.12", default-features = false, features = [
 ] }
 serde = "1.0.228"
 serde_json = "1.0.149"
-strum = { version = "0.28.0", features = ["derive"] }
 tokio = "1.52.3"
 unicode-normalization = "0.1.24"
 uuid = { version = "1.23.0", features = ["serde", "v4"] }

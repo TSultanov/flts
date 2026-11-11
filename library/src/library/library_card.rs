@@ -1,22 +1,18 @@
 use std::{
     collections::HashMap,
-    path::{Path, PathBuf},
-    sync::{
-        Arc, Mutex as StdMutex, RwLock, Weak,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{Arc, RwLock},
 };
 
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::Notify;
 
 use crate::{
-    book::serialization::create_random_string,
-    card::{Card, card_id, familiarity_from, lemma_slug},
+    card::{AnkiData, Card, card_id, familiarity_from, lemma_slug},
+    store::LibraryStore,
 };
 
 /// Entry cap before `fam_cache` is cleared wholesale. It's a derived index
-/// repopulated on miss, so clearing is always safe; the cap only bounds growth
-/// in a very long-lived process.
+/// repopulated on miss, so clearing is always safe; with every looked-up word
+/// cached, card or not, the cap is some 10 MB.
 const FAM_CACHE_MAX_ENTRIES: usize = 100_000;
 
 #[derive(Clone)]
@@ -25,55 +21,78 @@ pub struct LibraryCardStore {
 }
 
 struct CardStoreInner {
-    root: PathBuf,
-    locks: StdMutex<HashMap<String, Weak<Mutex<()>>>>,
-    fence: tokio::sync::RwLock<bool>,
-    generation: AtomicU64,
+    store: LibraryStore,
     change_notify: Notify,
-    /// [`familiarity_from`] per `card_id`, so page renders never re-parse card
-    /// JSON. `None` is dormant, `Some(0.0)` never-synced. Kept fresh by
-    /// `save_inner` and `invalidate_familiarity`. The lock is never held across
-    /// an `.await`.
+    /// [`familiarity_from`] per `card_id`, so page renders never rebuild
+    /// cards. `None` is dormant or no card at all, `Some(0.0)` never-synced.
+    /// Written only under the store's lock, so it follows the store's order;
+    /// cleared when cards changed behind this type's back.
     fam_cache: RwLock<HashMap<String, Option<f32>>>,
 }
 
+/// One compare-and-set of a card's retention data.
+#[derive(Debug, Clone)]
+pub struct AnkiUpdate {
+    pub source: String,
+    pub target: String,
+    pub slug: String,
+    /// What the data was when it was read.
+    pub expected: Option<AnkiData>,
+    pub data: AnkiData,
+}
+
 impl LibraryCardStore {
-    pub fn new(library_root: &Path) -> Self {
+    pub fn new(store: LibraryStore) -> Self {
         Self {
             inner: Arc::new(CardStoreInner {
-                root: library_root.join("cards"),
-                locks: StdMutex::new(HashMap::new()),
-                fence: tokio::sync::RwLock::new(false),
-                generation: AtomicU64::new(0),
+                store,
                 change_notify: Notify::new(),
                 fam_cache: RwLock::new(HashMap::new()),
             }),
         }
     }
 
-    /// Wake signal fired by `save`, but not `save_without_wake`.
+    /// Wake signal fired when `create_if_absent` adds a card; retention
+    /// updates are silent.
     pub fn change_notify(&self) -> &Notify {
         &self.inner.change_notify
     }
 
-    pub fn root(&self) -> &Path {
-        &self.inner.root
+    fn cache(&self, entries: impl ExactSizeIterator<Item = (String, Option<f32>)>) {
+        let mut cache = self.inner.fam_cache.write().unwrap();
+        if cache.len() + entries.len() > FAM_CACHE_MAX_ENTRIES {
+            cache.clear();
+        }
+        cache.extend(entries);
     }
 
-    pub fn deck_dir(&self, source_language: &str, target_language: &str) -> PathBuf {
-        self.inner
-            .root
-            .join(format!("{source_language}-{target_language}"))
+    fn remember(&self, source: &str, target: &str, slug: &str, data: Option<&AnkiData>) {
+        self.cache(std::iter::once((
+            card_id(source, target, slug),
+            familiarity_from(data),
+        )));
     }
 
-    pub fn card_path(
+    fn forget(&self, source: &str, target: &str, slug: &str) {
+        let mut cache = self.inner.fam_cache.write().unwrap();
+        cache.remove(&card_id(source, target, slug));
+    }
+
+    /// One store transaction. Once on the blocking pool it runs to the end
+    /// even when the caller is cancelled; the store refuses it after closing.
+    async fn transaction<T: Send + 'static>(
         &self,
-        source_language: &str,
-        target_language: &str,
-        lemma_slug: &str,
-    ) -> PathBuf {
-        self.deck_dir(source_language, target_language)
-            .join(format!("{lemma_slug}.json"))
+        f: impl FnOnce(&mut crate::store::Inner) -> anyhow::Result<T> + Send + 'static,
+    ) -> anyhow::Result<T> {
+        self.inner.store.run(f).await
+    }
+
+    /// Like `transaction`, under the store's read lock.
+    async fn read<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&crate::store::Inner) -> anyhow::Result<T> + Send + 'static,
+    ) -> anyhow::Result<T> {
+        self.inner.store.read(f).await
     }
 
     pub async fn load(
@@ -82,1303 +101,828 @@ impl LibraryCardStore {
         target: &str,
         slug: &str,
     ) -> anyhow::Result<Option<Card>> {
-        let store = self.clone();
         let (source, target, slug) = (source.to_owned(), target.to_owned(), slug.to_owned());
-        tokio::spawn(async move { store.load_transaction(&source, &target, &slug).await }).await?
+        self.read(move |db| db.card(&source, &target, &slug)).await
     }
+
+    /// Every card of one pair with its slug, sorted by slug.
+    pub async fn load_pair(
+        &self,
+        source: &str,
+        target: &str,
+    ) -> anyhow::Result<Vec<(String, Card)>> {
+        let (source, target) = (source.to_owned(), target.to_owned());
+        self.read(move |db| db.cards_in_pair(&source, &target))
+            .await
+    }
+
+    /// `Ok(false)` when the card already exists; it is left as it is.
     pub async fn create_if_absent(
         &self,
         card: &Card,
         source: &str,
         target: &str,
     ) -> anyhow::Result<bool> {
-        let store = self.clone();
-        let (card, source, target) = (card.clone(), source.to_owned(), target.to_owned());
-        tokio::spawn(async move { store.create_transaction(&card, &source, &target).await }).await?
+        let slug = lemma_slug(&card.lemma.to_lowercase());
+        let (this, card) = (self.clone(), card.clone());
+        let (source, target) = (source.to_owned(), target.to_owned());
+        self.transaction(move |db| {
+            if db.card_anki_data(&source, &target, &slug)?.is_some() {
+                // It may be staged by a create whose commit failed.
+                db.publish()?;
+                return Ok(false);
+            }
+            let staged = db.stage_card(&source, &target, &slug, &card, Some(&card.anki_data));
+            // Staged rows are read from now on, whatever the commit does.
+            match &staged {
+                Ok(_) => this.remember(&source, &target, &slug, card.anki_data.as_ref()),
+                Err(_) => this.forget(&source, &target, &slug),
+            }
+            staged?;
+            let published = db.publish();
+            this.inner.change_notify.notify_one();
+            published?;
+            Ok(true)
+        })
+        .await
     }
+
+    /// Compare-and-set on the retention data, so a sync pass never overwrites
+    /// a change it did not see.
     pub async fn update_anki_data(
         &self,
         source: &str,
         target: &str,
         slug: &str,
-        expected: Option<crate::card::AnkiData>,
-        data: crate::card::AnkiData,
+        expected: Option<AnkiData>,
+        data: AnkiData,
     ) -> anyhow::Result<bool> {
-        let store = self.clone();
-        let (source, target, slug) = (source.to_owned(), target.to_owned(), slug.to_owned());
-        tokio::spawn(async move {
-            store
-                .update_transaction(&source, &target, &slug, expected, data)
-                .await
-        })
-        .await?
-    }
-    async fn save_transaction(
-        &self,
-        card: &Card,
-        source: &str,
-        target: &str,
-        wake: bool,
-    ) -> anyhow::Result<()> {
-        let store = self.clone();
-        let (card, source, target) = (card.clone(), source.to_owned(), target.to_owned());
-        tokio::spawn(async move {
-            store
-                .save_transaction_inner(&card, &source, &target, wake)
-                .await
-        })
-        .await?
-    }
-    async fn lock_for(&self, id: &str) -> Arc<Mutex<()>> {
-        let mut locks = self.inner.locks.lock().unwrap();
-        if let Some(lock) = locks.get(id).and_then(Weak::upgrade) {
-            return lock;
-        }
-        if locks.len() >= 1024 {
-            locks.retain(|_, value| value.strong_count() > 0);
-        }
-        let lock = Arc::new(Mutex::new(()));
-        locks.insert(id.to_string(), Arc::downgrade(&lock));
-        lock
-    }
-    pub(crate) async fn close(&self) {
-        *self.inner.fence.write().await = true;
-    }
-    async fn create_transaction(
-        &self,
-        card: &Card,
-        source: &str,
-        target: &str,
-    ) -> anyhow::Result<bool> {
-        let fence = self.inner.fence.read().await;
-        anyhow::ensure!(!*fence, "library session closed");
-        let slug = lemma_slug(&card.lemma.to_lowercase());
-        let lock = self.lock_for(&card_id(source, target, &slug)).await;
-        let _guard = lock.lock().await;
-        if self.load_merged(source, target, &slug).await?.is_some() {
-            return Ok(false);
-        }
-        self.save_inner(card, source, target, true).await?;
-        Ok(true)
-    }
-    async fn update_transaction(
-        &self,
-        source: &str,
-        target: &str,
-        slug: &str,
-        expected: Option<crate::card::AnkiData>,
-        data: crate::card::AnkiData,
-    ) -> anyhow::Result<bool> {
-        let fence = self.inner.fence.read().await;
-        anyhow::ensure!(!*fence, "library session closed");
-        let lock = self.lock_for(&card_id(source, target, slug)).await;
-        let _guard = lock.lock().await;
-        let Some(mut card) = self.load_merged(source, target, slug).await? else {
-            return Ok(false);
+        let update = AnkiUpdate {
+            source: source.to_owned(),
+            target: target.to_owned(),
+            slug: slug.to_owned(),
+            expected,
+            data,
         };
-        if card.anki_data != expected {
-            return Ok(false);
-        }
-        card.anki_data = Some(data);
-        self.save_inner(&card, source, target, false).await?;
-        Ok(true)
-    }
-    /// The canonical card file alone — one file, no deck-dir scan, no
-    /// writeback. Use [`load`] where conflict reconciliation is required.
-    pub async fn load_canonical(
-        &self,
-        source_language: &str,
-        target_language: &str,
-        lemma_slug: &str,
-    ) -> anyhow::Result<Option<Card>> {
-        let canonical_path = self.card_path(source_language, target_language, lemma_slug);
-        if !tokio::fs::try_exists(&canonical_path).await? {
-            return Ok(None);
-        }
-        let canonical_bytes = tokio::fs::read(&canonical_path).await?;
-        Ok(Some(serde_json::from_slice(&canonical_bytes)?))
+        Ok(self.update_anki_data_batch(vec![update]).await?[0])
     }
 
-    /// Load a card, merging any `.sync-conflict-*.json` siblings back into the
-    /// canonical file. Callers must hold the per-card-id lock: this writes.
-    async fn load_transaction(
+    /// `update_anki_data` for many cards under one commit; one answer per
+    /// update, in order.
+    pub async fn update_anki_data_batch(
         &self,
-        source: &str,
-        target: &str,
-        slug: &str,
-    ) -> anyhow::Result<Option<Card>> {
-        let fence = self.inner.fence.read().await;
-        anyhow::ensure!(!*fence, "library session closed");
-        let lock = self.lock_for(&card_id(source, target, slug)).await;
-        let _guard = lock.lock().await;
-        self.load_merged(source, target, slug).await
-    }
-    async fn load_merged(
-        &self,
-        source_language: &str,
-        target_language: &str,
-        lemma_slug: &str,
-    ) -> anyhow::Result<Option<Card>> {
-        let Some(mut base) = self
-            .load_canonical(source_language, target_language, lemma_slug)
-            .await?
-        else {
-            return Ok(None);
-        };
-
-        let deck_dir = self.deck_dir(source_language, target_language);
-        let canonical_file_name = format!("{lemma_slug}.json");
-        let file_name_prefix = format!("{lemma_slug}.");
-        let expected_id = card_id(source_language, target_language, lemma_slug);
-
-        let accepted = self
-            .scan_conflict_siblings(
-                &deck_dir,
-                &canonical_file_name,
-                &file_name_prefix,
-                source_language,
-                target_language,
-                &expected_id,
-            )
-            .await;
-
-        if accepted.is_empty() {
-            return Ok(Some(base));
+        updates: Vec<AnkiUpdate>,
+    ) -> anyhow::Result<Vec<bool>> {
+        if updates.is_empty() {
+            return Ok(Vec::new());
         }
-
-        for (_, card) in &accepted {
-            base.merge(card.clone());
-        }
-
-        // Normalization, not a user-driven change: don't wake sync.
-        self.save_inner(&base, source_language, target_language, false)
-            .await?;
-
-        for (path, _) in accepted {
-            if let Err(err) = tokio::fs::remove_file(&path).await {
-                log::warn!("Failed to delete conflict sibling {path:?}: {err}");
+        let this = self.clone();
+        self.transaction(move |db| {
+            let mut applied = Vec::with_capacity(updates.len());
+            let mut failure = None;
+            for update in &updates {
+                let (source, target, slug) = (&update.source, &update.target, &update.slug);
+                match db.set_card_anki_data(source, target, slug, &update.expected, &update.data) {
+                    Ok(set) => {
+                        if set {
+                            this.remember(source, target, slug, Some(&update.data));
+                        }
+                        applied.push(set);
+                    }
+                    Err(err) => {
+                        this.forget(source, target, slug);
+                        failure = Some(err);
+                        break;
+                    }
+                }
             }
-        }
-
-        Ok(Some(base))
+            // What was staged before a failure is committed all the same.
+            let published = db.publish();
+            if let Some(err) = failure {
+                return Err(err);
+            }
+            // Rows some other write left staged are not this call's failure.
+            if applied.contains(&true) {
+                published?;
+            }
+            Ok(applied)
+        })
+        .await
     }
 
-    /// Familiarity scalars for many slugs. Only renderable slugs appear; an
-    /// absent slug is dormant. Cold slugs are read concurrently from their
-    /// canonical file and memoized. Pure reads, so no per-card lock.
+    /// Familiarity for the requested slugs; dormant and unknown ones are
+    /// omitted.
     pub async fn familiarities(
         &self,
-        source_language: &str,
-        target_language: &str,
+        source: &str,
+        target: &str,
         slugs: &[String],
     ) -> HashMap<String, f32> {
-        let mut resolved: HashMap<String, Option<f32>> = HashMap::with_capacity(slugs.len());
-        let mut misses: Vec<String> = Vec::new();
-        let generation;
+        let mut found = HashMap::new();
+        let mut misses = Vec::new();
         {
             let cache = self.inner.fam_cache.read().unwrap();
-            generation = self.inner.generation.load(Ordering::Relaxed);
             for slug in slugs {
-                let id = card_id(source_language, target_language, slug);
-                match cache.get(&id) {
-                    Some(fam) => {
-                        resolved.insert(slug.clone(), *fam);
+                match cache.get(&card_id(source, target, slug)) {
+                    Some(Some(familiarity)) => {
+                        found.insert(slug.clone(), *familiarity);
                     }
+                    Some(None) => {}
                     None => misses.push(slug.clone()),
                 }
             }
         }
-
-        if !misses.is_empty() {
-            let loaded =
-                futures_util::future::join_all(misses.into_iter().map(|slug| async move {
-                    match self
-                        .load_canonical(source_language, target_language, &slug)
-                        .await
-                    {
-                        Ok(card) => {
-                            let fam =
-                                familiarity_from(card.as_ref().and_then(|c| c.anki_data.as_ref()));
-                            (slug, fam, true)
-                        }
-                        // Leave a read error uncached so the next render
-                        // retries from disk.
-                        Err(_) => (slug, Some(0.0), false),
+        if misses.is_empty() {
+            return found;
+        }
+        let read = {
+            let (this, source, target) = (self.clone(), source.to_owned(), target.to_owned());
+            self.inner
+                .store
+                .read(move |db| {
+                    let mut read = Vec::with_capacity(misses.len());
+                    for slug in misses {
+                        let familiarity = db
+                            .card_anki_data(&source, &target, &slug)?
+                            .and_then(|data| familiarity_from(data.as_ref()));
+                        read.push((slug, familiarity));
                     }
-                }))
-                .await;
-
-            let mut cache = self.inner.fam_cache.write().unwrap();
-            if cache.len() >= FAM_CACHE_MAX_ENTRIES {
-                self.inner.generation.fetch_add(1, Ordering::Relaxed);
-                cache.clear();
-            }
-            for (slug, fam, cacheable) in loaded {
-                if cacheable && generation == self.inner.generation.load(Ordering::Relaxed) {
-                    let id = card_id(source_language, target_language, &slug);
-                    cache.insert(id, fam);
-                }
-                resolved.insert(slug, fam);
-            }
-        }
-
-        resolved
-            .into_iter()
-            .filter_map(|(slug, fam)| fam.map(|f| (slug, f)))
-            .collect()
-    }
-
-    /// Drops one cached familiarity, for card files changed outside our own
-    /// `save` (e.g. a Syncthing delivery).
-    pub fn invalidate_familiarity(
-        &self,
-        source_language: &str,
-        target_language: &str,
-        lemma_slug: &str,
-    ) {
-        let id = card_id(source_language, target_language, lemma_slug);
-        let mut cache = self.inner.fam_cache.write().unwrap();
-        self.inner.generation.fetch_add(1, Ordering::Relaxed);
-        cache.remove(&id);
-    }
-
-    async fn scan_conflict_siblings(
-        &self,
-        deck_dir: &Path,
-        canonical_file_name: &str,
-        file_name_prefix: &str,
-        source_language: &str,
-        target_language: &str,
-        expected_id: &str,
-    ) -> Vec<(PathBuf, Card)> {
-        let mut accepted: Vec<(PathBuf, Card)> = Vec::new();
-        let mut read_dir = match tokio::fs::read_dir(deck_dir).await {
-            Ok(rd) => rd,
-            Err(err) => {
-                log::warn!("Failed to read deck dir {deck_dir:?} for conflict scan: {err}");
-                return accepted;
-            }
+                    // Still under the store's lock: no write can be missed.
+                    this.cache(read.iter().map(|(slug, familiarity)| {
+                        (card_id(&source, &target, slug), *familiarity)
+                    }));
+                    Ok(read)
+                })
+                .await
         };
-
-        loop {
-            let entry = match read_dir.next_entry().await {
-                Ok(Some(e)) => e,
-                Ok(None) => break,
-                Err(err) => {
-                    log::warn!("Error iterating deck dir {deck_dir:?}: {err}");
-                    break;
-                }
-            };
-            let path = entry.path();
-            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            if name == canonical_file_name {
-                continue;
+        for (slug, familiarity) in read.unwrap_or_default() {
+            if let Some(familiarity) = familiarity {
+                found.insert(slug, familiarity);
             }
-            if !name.starts_with(file_name_prefix) || !name.ends_with(".json") {
-                continue;
-            }
-            let bytes = match tokio::fs::read(&path).await {
-                Ok(b) => b,
-                Err(err) => {
-                    log::warn!("Failed to read conflict sibling {path:?}: {err}");
-                    continue;
-                }
-            };
-            let card: Card = match serde_json::from_slice(&bytes) {
-                Ok(c) => c,
-                Err(err) => {
-                    log::warn!("Failed to parse conflict sibling {path:?} as Card: {err}");
-                    continue;
-                }
-            };
-            let sibling_id = card_id(source_language, target_language, &lemma_slug(&card.lemma));
-            if sibling_id != expected_id {
-                log::warn!(
-                    "Conflict sibling {path:?} has derived id {sibling_id}, expected {expected_id}; skipping"
-                );
-                continue;
-            }
-            accepted.push((path, card));
         }
-
-        accepted.sort_by(|a, b| a.0.cmp(&b.0));
-        accepted
+        found
     }
 
-    /// Sorted `<src>-<tgt>` deck directories; names lacking a `-` are skipped.
+    /// Forget every cached familiarity: cards changed without going through
+    /// this type (another device's writes, an import).
+    pub fn invalidate_all(&self) {
+        self.inner.fam_cache.write().unwrap().clear();
+    }
+
+    /// Language pairs that have cards, as `(source, target)`.
     pub async fn list_pairs(&self) -> anyhow::Result<Vec<(String, String)>> {
-        let mut read_dir = match tokio::fs::read_dir(&self.inner.root).await {
-            Ok(rd) => rd,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
-            Err(err) => return Err(err.into()),
-        };
-
-        let mut pairs: Vec<(String, String)> = Vec::new();
-        loop {
-            let entry = match read_dir.next_entry().await? {
-                Some(e) => e,
-                None => break,
-            };
-            if !entry.file_type().await?.is_dir() {
-                continue;
-            }
-            let name = match entry.file_name().into_string() {
-                Ok(n) => n,
-                Err(_) => continue,
-            };
-            let Some((src, tgt)) = name.split_once('-') else {
-                continue;
-            };
-            pairs.push((src.to_owned(), tgt.to_owned()));
-        }
-        pairs.sort();
-        Ok(pairs)
+        let pairs = self.inner.store.read(|db| db.card_pairs()).await?;
+        Ok(pairs
+            .into_iter()
+            .filter_map(|pair| {
+                pair.split_once('-')
+                    .map(|(source, target)| (source.to_owned(), target.to_owned()))
+            })
+            .collect())
     }
 
-    /// Sorted lemma slugs in the pair's deck dir, skipping conflict siblings
-    /// and non-`.json` files.
+    /// Slugs of every card in one pair, sorted.
     pub async fn list_cards_in_pair(
         &self,
-        source_language: &str,
-        target_language: &str,
-    ) -> anyhow::Result<Vec<String>> {
-        let deck = self.deck_dir(source_language, target_language);
-        let mut read_dir = match tokio::fs::read_dir(&deck).await {
-            Ok(rd) => rd,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
-            Err(err) => return Err(err.into()),
-        };
-
-        let mut out: Vec<String> = Vec::new();
-        loop {
-            let entry = match read_dir.next_entry().await? {
-                Some(e) => e,
-                None => break,
-            };
-            let name = match entry.file_name().into_string() {
-                Ok(n) => n,
-                Err(_) => continue,
-            };
-            if name.contains(".sync-conflict-") {
-                continue;
-            }
-            let Some(stem) = name.strip_suffix(".json") else {
-                continue;
-            };
-            out.push(stem.to_owned());
-        }
-        out.sort();
-        Ok(out)
-    }
-
-    /// Persist and wake `change_notify`. For user-driven write paths.
-    pub async fn save(
-        &self,
-        card: &Card,
-        source_language: &str,
-        target_language: &str,
-    ) -> anyhow::Result<()> {
-        self.save_transaction(card, source_language, target_language, true)
-            .await
-    }
-
-    /// Persist without the wake, for paths that run inside a sync pass and
-    /// must not self-trigger another.
-    pub async fn save_without_wake(
-        &self,
-        card: &Card,
-        source_language: &str,
-        target_language: &str,
-    ) -> anyhow::Result<()> {
-        self.save_transaction(card, source_language, target_language, false)
-            .await
-    }
-
-    async fn save_transaction_inner(
-        &self,
-        card: &Card,
         source: &str,
         target: &str,
-        wake: bool,
-    ) -> anyhow::Result<()> {
-        let fence = self.inner.fence.read().await;
-        anyhow::ensure!(!*fence, "library session closed");
-        let lock = self
-            .lock_for(&card_id(
-                source,
-                target,
-                &lemma_slug(&card.lemma.to_lowercase()),
-            ))
-            .await;
-        let _guard = lock.lock().await;
-        self.save_inner(card, source, target, wake).await
-    }
-    async fn save_inner(
-        &self,
-        card: &Card,
-        source_language: &str,
-        target_language: &str,
-        notify: bool,
-    ) -> anyhow::Result<()> {
-        let deck = self.deck_dir(source_language, target_language);
-        tokio::fs::create_dir_all(&deck).await?;
-
-        // `card.lemma` is normalized but case-preserving; lowercase so the
-        // filename matches the slug pipeline.
-        let slug = lemma_slug(&card.lemma.to_lowercase());
-        let file_name = format!("{slug}.json");
-        let canonical = deck.join(&file_name);
-        let temp = deck.join(format!("{file_name}~{}", create_random_string(8)));
-
-        let bytes = serde_json::to_vec_pretty(card)?;
-        tokio::fs::write(&temp, bytes).await?;
-        tokio::fs::rename(&temp, &canonical).await?;
-
-        // We hold the authoritative card, so refresh without a re-read.
-        let id = card_id(source_language, target_language, &slug);
-        {
-            let mut cache = self.inner.fam_cache.write().unwrap();
-            self.inner.generation.fetch_add(1, Ordering::Relaxed);
-            cache.insert(id, familiarity_from(card.anki_data.as_ref()));
-        }
-
-        if notify {
-            self.inner.change_notify.notify_one();
-        }
-        Ok(())
+    ) -> anyhow::Result<Vec<String>> {
+        let (source, target) = (source.to_owned(), target.to_owned());
+        self.inner
+            .store
+            .read(move |db| db.card_slugs(&source, &target))
+            .await
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::{card::Card, test_utils::TempDir};
+    use std::{collections::BTreeMap, time::Duration};
 
-    #[tokio::test]
-    async fn anki_patch_preserves_new_content_and_newer_opt_out() {
-        use crate::card::{AnkiData, AnkiState};
-        let directory = tempfile::tempdir().unwrap();
-        let store = LibraryCardStore::new(directory.path());
-        let mut card = sample_card();
-        store.save(&card, "spa", "rus").await.unwrap();
-        card.translations
-            .entry("noun".into())
-            .or_default()
-            .push("concurrent content".into());
-        store.save(&card, "spa", "rus").await.unwrap();
-        let data = AnkiData {
-            state: AnkiState::Active,
-            interval_days: Some(5.0),
-            ease_factor: None,
-            fsrs_difficulty: None,
-            fsrs_stability: None,
-        };
-        assert!(
-            store
-                .update_anki_data("spa", "rus", "poder", None, data.clone())
-                .await
-                .unwrap()
-        );
-        let mut current = store.load("spa", "rus", "poder").await.unwrap().unwrap();
-        assert!(current.translations.contains_key("noun"));
-        current.anki_data.as_mut().unwrap().state = AnkiState::Suspended;
-        store.save(&current, "spa", "rus").await.unwrap();
-        assert!(
-            !store
-                .update_anki_data("spa", "rus", "poder", Some(data.clone()), data)
-                .await
-                .unwrap()
-        );
-        assert_eq!(
-            store
-                .load("spa", "rus", "poder")
-                .await
-                .unwrap()
-                .unwrap()
-                .anki_data
-                .unwrap()
-                .state,
-            AnkiState::Suspended
-        );
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::{
+        card::{AnkiState, Example},
+        test_utils::TempDir,
+    };
+
+    fn fixture() -> (TempDir, LibraryCardStore) {
+        let dir = TempDir::new("flts_cards");
+        let store = LibraryCardStore::new(LibraryStore::open(&dir.path.join("library")).unwrap());
+        (dir, store)
     }
-    #[tokio::test]
-    async fn cancelled_card_caller_does_not_cancel_its_accepted_transaction() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = LibraryCardStore::new(directory.path());
-        let lock = store.lock_for("flts_spa_rus_poder").await;
-        let guard = lock.lock().await;
-        let pending = tokio::spawn({
-            let store = store.clone();
-            async move { store.save(&sample_card(), "spa", "rus").await }
-        });
-        tokio::task::yield_now().await;
-        pending.abort();
-        let _ = pending.await;
-        let closing = tokio::spawn({
-            let store = store.clone();
-            async move { store.close().await }
-        });
-        tokio::task::yield_now().await;
-        assert!(!closing.is_finished());
-        drop(guard);
-        closing.await.unwrap();
-        assert!(
-            store
-                .load_canonical("spa", "rus", "poder")
-                .await
-                .unwrap()
-                .is_some()
-        );
-        assert!(store.save(&sample_card(), "spa", "rus").await.is_err());
-    }
-    fn sample_card() -> Card {
-        let mut translations: std::collections::BTreeMap<String, Vec<String>> =
-            std::collections::BTreeMap::new();
-        translations.insert("verb".into(), vec!["мочь".into()]);
-        Card {
-            version: 2,
-            id: "flts_spa_rus_poder".into(),
-            lemma: "poder".into(),
-            translations,
-            examples: vec![],
-            anki_data: None,
+
+    fn example(paragraph: usize) -> Example {
+        Example {
+            source: format!("source {paragraph}"),
+            translation: format!("translation {paragraph}"),
+            book_id: Uuid::nil(),
+            chapter: 0,
+            paragraph,
         }
     }
 
-    #[tokio::test]
-    async fn save_creates_file_at_expected_path() {
-        let tmp = TempDir::new("flts_card_save");
-        let store = LibraryCardStore::new(&tmp.path);
-        store.save(&sample_card(), "spa", "rus").await.unwrap();
-        let expected = tmp.path.join("cards").join("spa-rus").join("poder.json");
-        assert!(expected.exists(), "expected card at {expected:?}");
-    }
-
-    #[tokio::test]
-    async fn save_writes_pretty_json() {
-        let tmp = TempDir::new("flts_card_pretty");
-        let store = LibraryCardStore::new(&tmp.path);
-        store.save(&sample_card(), "spa", "rus").await.unwrap();
-        let path = tmp.path.join("cards").join("spa-rus").join("poder.json");
-        let body = std::fs::read_to_string(&path).unwrap();
-        assert!(body.starts_with("{\n"), "expected pretty JSON, got: {body}");
-        assert!(body.contains("\"version\": 2"));
-        assert!(body.contains("\"anki_data\": null"));
-    }
-
-    #[tokio::test]
-    async fn save_fires_change_notify() {
-        let tmp = TempDir::new("flts_card_notify");
-        let store = LibraryCardStore::new(&tmp.path);
-        let waiter_store = store.clone();
-        let waiter = tokio::spawn(async move {
-            let notify = waiter_store.change_notify();
-            tokio::time::timeout(std::time::Duration::from_secs(2), notify.notified())
-                .await
-                .expect("change_notify must fire within timeout")
-        });
-        store.save(&sample_card(), "spa", "rus").await.unwrap();
-        waiter.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn save_without_wake_does_not_fire_change_notify() {
-        let tmp = TempDir::new("flts_card_silent");
-        let store = LibraryCardStore::new(&tmp.path);
-        let notify = store.change_notify();
-        store
-            .save_without_wake(&sample_card(), "spa", "rus")
-            .await
-            .unwrap();
-        // A queued permit would make notified() return immediately.
-        let pending =
-            tokio::time::timeout(std::time::Duration::from_millis(100), notify.notified()).await;
-        assert!(
-            pending.is_err(),
-            "save_without_wake must not fire change_notify"
-        );
-    }
-
-    #[tokio::test]
-    async fn save_leaves_no_temp_files() {
-        let tmp = TempDir::new("flts_card_no_temp");
-        let store = LibraryCardStore::new(&tmp.path);
-        store.save(&sample_card(), "spa", "rus").await.unwrap();
-        let deck = tmp.path.join("cards").join("spa-rus");
-        let entries: Vec<_> = std::fs::read_dir(&deck)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().into_string().unwrap())
-            .collect();
-        assert!(
-            entries.iter().all(|n| !n.contains('~')),
-            "found stray temp file in {entries:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn load_returns_none_for_missing() {
-        let tmp = TempDir::new("flts_card_missing");
-        let store = LibraryCardStore::new(&tmp.path);
-        let card = store.load("spa", "rus", "poder").await.unwrap();
-        assert!(card.is_none());
-    }
-
-    #[tokio::test]
-    async fn load_round_trips_saved_card() {
-        let tmp = TempDir::new("flts_card_roundtrip");
-        let store = LibraryCardStore::new(&tmp.path);
-        let original = sample_card();
-        store.save(&original, "spa", "rus").await.unwrap();
-        let loaded = store
-            .load("spa", "rus", "poder")
-            .await
-            .unwrap()
-            .expect("card present");
-        assert_eq!(original, loaded);
-    }
-
-    #[tokio::test]
-    async fn per_card_lock_is_per_id() {
-        let tmp = TempDir::new("flts_card_lock");
-        let store = LibraryCardStore::new(&tmp.path);
-        let a1 = store.lock_for("flts_spa_rus_poder").await;
-        let a2 = store.lock_for("flts_spa_rus_poder").await;
-        let b = store.lock_for("flts_spa_rus_comer").await;
-        assert!(Arc::ptr_eq(&a1, &a2), "same id should yield same Arc");
-        assert!(
-            !Arc::ptr_eq(&a1, &b),
-            "different ids should yield distinct Arcs"
-        );
-    }
-
-    use crate::card::Example;
-    use uuid::Uuid;
-
-    fn card_with(
-        lemma: &str,
-        part_of_speech: &str,
-        translations: Vec<&str>,
-        examples: Vec<Example>,
-    ) -> Card {
-        let slug = lemma_slug(lemma);
-        let mut by_pos: std::collections::BTreeMap<String, Vec<String>> =
-            std::collections::BTreeMap::new();
-        by_pos.insert(
-            part_of_speech.into(),
-            translations.into_iter().map(String::from).collect(),
-        );
+    fn card(lemma: &str, translation: &str, examples: Vec<Example>) -> Card {
         Card {
             version: 2,
-            id: format!("flts_spa_rus_{slug}"),
+            id: card_id("spa", "rus", &lemma_slug(lemma)),
             lemma: lemma.into(),
-            translations: by_pos,
+            translations: BTreeMap::from([("verb".to_string(), vec![translation.to_string()])]),
             examples,
             anki_data: None,
         }
     }
 
-    fn example(
-        book: Uuid,
-        chapter: usize,
-        paragraph: usize,
-        source: &str,
-        translation: &str,
-    ) -> Example {
-        Example {
-            source: source.into(),
-            translation: translation.into(),
-            book_id: book,
-            chapter,
-            paragraph,
+    fn anki(state: AnkiState, stability: Option<f64>) -> AnkiData {
+        AnkiData {
+            state,
+            interval_days: None,
+            ease_factor: None,
+            fsrs_difficulty: None,
+            fsrs_stability: stability,
         }
     }
 
-    async fn write_pretty(path: &Path, card: &Card) {
-        let bytes = serde_json::to_vec_pretty(card).unwrap();
-        tokio::fs::write(path, bytes).await.unwrap();
+    fn with_anki(mut card: Card, data: AnkiData) -> Card {
+        card.anki_data = Some(data);
+        card
     }
 
-    fn deck_entries(deck: &Path) -> Vec<String> {
-        let mut names: Vec<String> = std::fs::read_dir(deck)
+    async fn woken(store: &LibraryCardStore) -> bool {
+        tokio::time::timeout(Duration::from_millis(50), store.change_notify().notified())
+            .await
+            .is_ok()
+    }
+
+    async fn create(store: &LibraryCardStore, card: Card) {
+        assert!(store.create_if_absent(&card, "spa", "rus").await.unwrap());
+    }
+
+    fn fail_commits(store: &LibraryCardStore, count: usize) {
+        let failing = |db: &mut crate::store::Inner| {
+            db.fail_commits = count;
+            Ok(())
+        };
+        store.inner.store.run_blocking(failing).unwrap();
+    }
+
+    fn unpublished(store: &LibraryCardStore) -> bool {
+        let store = &store.inner.store;
+        store.run_blocking(|db| Ok(db.has_unpublished())).unwrap()
+    }
+
+    fn stored(store: &LibraryCardStore, slug: &str) -> Option<Card> {
+        let store = &store.inner.store;
+        store
+            .run_blocking(|db| db.card("spa", "rus", slug))
             .unwrap()
-            .map(|e| e.unwrap().file_name().into_string().unwrap())
-            .collect();
-        names.sort();
-        names
     }
 
-    #[tokio::test]
-    async fn load_returns_canonical_when_no_siblings() {
-        let tmp = TempDir::new("flts_load_no_siblings");
-        let store = LibraryCardStore::new(&tmp.path);
-        store.save(&sample_card(), "spa", "rus").await.unwrap();
-
-        let loaded = store
-            .load("spa", "rus", "poder")
-            .await
+    /// What a closed store left on disk.
+    fn on_disk(store: &LibraryCardStore, slug: &str) -> Option<Card> {
+        let root = store.inner.store.shared_dir().parent().unwrap();
+        LibraryStore::open(root)
             .unwrap()
-            .expect("card present");
-        assert_eq!(loaded, sample_card());
-
-        let deck = tmp.path.join("cards").join("spa-rus");
-        assert_eq!(deck_entries(&deck), vec!["poder.json"]);
-    }
-
-    #[tokio::test]
-    async fn load_merges_single_sync_conflict_sibling() {
-        let tmp = TempDir::new("flts_load_single_conflict");
-        let store = LibraryCardStore::new(&tmp.path);
-        let book = Uuid::new_v4();
-        let canonical = card_with(
-            "poder",
-            "verb",
-            vec!["мочь"],
-            vec![example(book, 0, 0, "puedo", "могу")],
-        );
-        store.save(&canonical, "spa", "rus").await.unwrap();
-
-        let deck = tmp.path.join("cards").join("spa-rus");
-        let conflict_path = deck.join("poder.sync-conflict-20260520-153912-XYZ.json");
-        let conflict = card_with(
-            "poder",
-            "verb",
-            vec!["уметь"],
-            vec![example(book, 1, 5, "pueden", "могут")],
-        );
-        write_pretty(&conflict_path, &conflict).await;
-
-        let merged = store
-            .load("spa", "rus", "poder")
-            .await
+            .run_blocking(|db| db.card("spa", "rus", slug))
             .unwrap()
-            .expect("card present");
-        assert_eq!(merged.translations_flat(), vec!["мочь", "уметь"]);
-        assert_eq!(merged.examples.len(), 2);
-
-        assert!(!conflict_path.exists(), "conflict sibling must be deleted");
-        assert_eq!(deck_entries(&deck), vec!["poder.json"]);
-
-        let on_disk: Card =
-            serde_json::from_slice(&tokio::fs::read(deck.join("poder.json")).await.unwrap())
-                .unwrap();
-        assert_eq!(on_disk, merged);
     }
 
-    #[tokio::test]
-    async fn load_merges_multiple_sync_conflict_siblings() {
-        let tmp = TempDir::new("flts_load_many_conflicts");
-        let store = LibraryCardStore::new(&tmp.path);
-        let book = Uuid::new_v4();
-        let canonical = card_with(
-            "poder",
-            "verb",
-            vec!["мочь"],
-            vec![example(book, 0, 0, "a", "1")],
-        );
-        store.save(&canonical, "spa", "rus").await.unwrap();
-        let deck = tmp.path.join("cards").join("spa-rus");
-
-        for (suffix, t, p) in [
-            ("alpha", "уметь", 1usize),
-            ("beta", "иметь возможность", 2usize),
-            ("gamma", "сметь", 3usize),
-        ] {
-            let p_card = card_with(
-                "poder",
-                "verb",
-                vec![t],
-                vec![example(book, 0, p, &format!("s{p}"), &format!("t{p}"))],
-            );
-            write_pretty(
-                &deck.join(format!("poder.sync-conflict-20260520-{suffix}.json")),
-                &p_card,
-            )
-            .await;
-        }
-
-        let merged = store
-            .load("spa", "rus", "poder")
-            .await
-            .unwrap()
-            .expect("card present");
-        assert_eq!(
-            merged.translations_flat(),
-            vec!["мочь", "уметь", "иметь возможность", "сметь"]
-        );
-        assert_eq!(merged.examples.len(), 4);
-        assert_eq!(deck_entries(&deck), vec!["poder.json"]);
-    }
-
-    #[tokio::test]
-    async fn load_ignores_sibling_with_mismatched_derived_id() {
-        let tmp = TempDir::new("flts_load_mismatch_id");
-        let store = LibraryCardStore::new(&tmp.path);
-        let book = Uuid::new_v4();
+    async fn familiarity(store: &LibraryCardStore, slug: &str) -> Option<f32> {
         store
-            .save(
-                &card_with(
-                    "poder",
-                    "verb",
-                    vec!["мочь"],
-                    vec![example(book, 0, 0, "a", "1")],
-                ),
-                "spa",
-                "rus",
-            )
+            .familiarities("spa", "rus", &[slug.to_string()])
             .await
-            .unwrap();
-
-        let deck = tmp.path.join("cards").join("spa-rus");
-        let foreign_path = deck.join("poder.sync-conflict-X.json");
-        // A sibling whose lemma derives a different id must be skipped.
-        let foreign = card_with(
-            "comer",
-            "verb",
-            vec!["есть"],
-            vec![example(book, 9, 9, "como", "ем")],
-        );
-        write_pretty(&foreign_path, &foreign).await;
-
-        let loaded = store
-            .load("spa", "rus", "poder")
-            .await
-            .unwrap()
-            .expect("card present");
-        assert_eq!(loaded.translations_flat(), vec!["мочь"]);
-        assert_eq!(loaded.examples.len(), 1);
-
-        assert!(
-            foreign_path.exists(),
-            "mismatched sibling must NOT be deleted"
-        );
+            .get(slug)
+            .copied()
     }
 
     #[tokio::test]
-    async fn load_ignores_unrelated_files_in_deck() {
-        let tmp = TempDir::new("flts_load_unrelated");
-        let store = LibraryCardStore::new(&tmp.path);
-        let book = Uuid::new_v4();
-        store
-            .save(
-                &card_with(
-                    "poder",
-                    "verb",
-                    vec!["мочь"],
-                    vec![example(book, 0, 0, "a", "1")],
-                ),
-                "spa",
-                "rus",
-            )
-            .await
-            .unwrap();
-        store
-            .save(
-                &card_with(
-                    "comer",
-                    "verb",
-                    vec!["есть"],
-                    vec![example(book, 0, 1, "b", "2")],
-                ),
-                "spa",
-                "rus",
-            )
-            .await
-            .unwrap();
-
-        let deck = tmp.path.join("cards").join("spa-rus");
-        let comer_conflict = deck.join("comer.sync-conflict-X.json");
-        write_pretty(
-            &comer_conflict,
-            &card_with(
-                "comer",
-                "verb",
-                vec!["кушать"],
-                vec![example(book, 1, 1, "c", "3")],
-            ),
-        )
-        .await;
-
-        store.load("spa", "rus", "poder").await.unwrap();
-        assert!(
-            comer_conflict.exists(),
-            "comer's conflict file must be untouched by poder load"
-        );
-        let poder: Card =
-            serde_json::from_slice(&tokio::fs::read(deck.join("poder.json")).await.unwrap())
-                .unwrap();
-        assert_eq!(poder.translations_flat(), vec!["мочь"]);
+    async fn load_returns_none_for_a_missing_card() {
+        let (_dir, store) = fixture();
+        assert!(store.load("spa", "rus", "poder").await.unwrap().is_none());
     }
 
     #[tokio::test]
-    async fn load_skips_corrupt_sibling_without_deleting() {
-        let tmp = TempDir::new("flts_load_corrupt");
-        let store = LibraryCardStore::new(&tmp.path);
-        let book = Uuid::new_v4();
-        store
-            .save(
-                &card_with(
-                    "poder",
-                    "verb",
-                    vec!["мочь"],
-                    vec![example(book, 0, 0, "a", "1")],
-                ),
-                "spa",
-                "rus",
-            )
-            .await
-            .unwrap();
+    async fn create_if_absent_creates_once_and_leaves_the_card_alone_after() {
+        let (_dir, store) = fixture();
+        let first = card("poder", "мочь", vec![example(0)]);
+        assert!(store.create_if_absent(&first, "spa", "rus").await.unwrap());
+        let second = card("poder", "уметь", vec![example(1)]);
+        assert!(!store.create_if_absent(&second, "spa", "rus").await.unwrap());
 
-        let deck = tmp.path.join("cards").join("spa-rus");
-        let corrupt_path = deck.join("poder.sync-conflict-corrupt.json");
-        tokio::fs::write(&corrupt_path, b"{not valid json")
-            .await
-            .unwrap();
-
-        let loaded = store
-            .load("spa", "rus", "poder")
-            .await
-            .unwrap()
-            .expect("card present");
-        assert_eq!(loaded.translations_flat(), vec!["мочь"]);
-        assert_eq!(loaded.examples.len(), 1);
-        assert!(corrupt_path.exists(), "corrupt sibling must NOT be deleted");
+        let stored = store.load("spa", "rus", "poder").await.unwrap().unwrap();
+        assert_eq!(stored, first);
     }
 
     #[tokio::test]
-    async fn load_leaves_no_stray_temp_files_after_merge() {
-        let tmp = TempDir::new("flts_load_no_temp");
-        let store = LibraryCardStore::new(&tmp.path);
-        let book = Uuid::new_v4();
-        store
-            .save(
-                &card_with(
-                    "poder",
-                    "verb",
-                    vec!["мочь"],
-                    vec![example(book, 0, 0, "a", "1")],
-                ),
-                "spa",
-                "rus",
-            )
-            .await
-            .unwrap();
-        let deck = tmp.path.join("cards").join("spa-rus");
-        write_pretty(
-            &deck.join("poder.sync-conflict-X.json"),
-            &card_with(
-                "poder",
-                "verb",
-                vec!["уметь"],
-                vec![example(book, 1, 1, "b", "2")],
-            ),
-        )
-        .await;
-
-        store.load("spa", "rus", "poder").await.unwrap();
-
-        let entries = deck_entries(&deck);
-        assert!(
-            entries.iter().all(|n| !n.contains('~')),
-            "found stray temp file in {entries:?}"
-        );
-        assert_eq!(entries, vec!["poder.json"]);
-    }
-
-    #[tokio::test]
-    async fn load_returns_none_when_canonical_absent_even_with_siblings() {
-        let tmp = TempDir::new("flts_load_canonical_absent");
-        let store = LibraryCardStore::new(&tmp.path);
-        let book = Uuid::new_v4();
-        store
-            .save(
-                &card_with(
-                    "poder",
-                    "verb",
-                    vec!["мочь"],
-                    vec![example(book, 0, 0, "a", "1")],
-                ),
-                "spa",
-                "rus",
-            )
-            .await
-            .unwrap();
-        let deck = tmp.path.join("cards").join("spa-rus");
-        let canonical = deck.join("poder.json");
-        let conflict_path = deck.join("poder.sync-conflict-X.json");
-        write_pretty(
-            &conflict_path,
-            &card_with(
-                "poder",
-                "verb",
-                vec!["уметь"],
-                vec![example(book, 1, 1, "b", "2")],
-            ),
-        )
-        .await;
-        tokio::fs::remove_file(&canonical).await.unwrap();
-
-        let loaded = store.load("spa", "rus", "poder").await.unwrap();
-        assert!(loaded.is_none(), "expected None when canonical is absent");
-        assert!(
-            conflict_path.exists(),
-            "sibling must be untouched when canonical is absent"
-        );
-    }
-
-    #[tokio::test]
-    async fn list_cards_in_pair_returns_empty_when_deck_missing() {
-        let tmp = TempDir::new("flts_list_cards_empty");
-        let store = LibraryCardStore::new(&tmp.path);
-        let cards = store.list_cards_in_pair("spa", "rus").await.unwrap();
-        assert!(cards.is_empty(), "missing deck dir must yield empty list");
-    }
-
-    #[tokio::test]
-    async fn list_cards_in_pair_returns_lemma_slugs() {
-        let tmp = TempDir::new("flts_list_cards");
-        let store = LibraryCardStore::new(&tmp.path);
-        store
-            .save(
-                &card_with("poder", "verb", vec!["мочь"], vec![]),
-                "spa",
-                "rus",
-            )
-            .await
-            .unwrap();
-        store
-            .save(
-                &card_with("comer", "verb", vec!["есть"], vec![]),
-                "spa",
-                "rus",
-            )
-            .await
-            .unwrap();
-
-        let deck = tmp.path.join("cards").join("spa-rus");
-        std::fs::write(deck.join("poder.sync-conflict-20260520-X.json"), b"{}").unwrap();
-        std::fs::write(deck.join("README"), b"ignore").unwrap();
-
-        let cards = store.list_cards_in_pair("spa", "rus").await.unwrap();
-        assert_eq!(
-            cards,
-            vec!["comer".to_owned(), "poder".to_owned()],
-            "expected sorted lemma slugs, got {cards:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn list_pairs_returns_empty_when_root_missing() {
-        let tmp = TempDir::new("flts_list_pairs_empty");
-        let store = LibraryCardStore::new(&tmp.path);
-        let pairs = store.list_pairs().await.unwrap();
-        assert!(
-            pairs.is_empty(),
-            "expected empty list when cards dir is missing"
-        );
-    }
-
-    #[tokio::test]
-    async fn list_pairs_returns_pair_for_each_deck_dir() {
-        let tmp = TempDir::new("flts_list_pairs");
-        let store = LibraryCardStore::new(&tmp.path);
-        store.save(&sample_card(), "spa", "rus").await.unwrap();
-        store
-            .save(
-                &card_with("hello", "noun", vec!["привет"], vec![]),
-                "eng",
-                "rus",
-            )
-            .await
-            .unwrap();
-        std::fs::create_dir(tmp.path.join("cards").join("not_a_pair")).unwrap();
-        std::fs::write(tmp.path.join("cards").join("README"), b"ignore me").unwrap();
-
-        let pairs = store.list_pairs().await.unwrap();
-        assert_eq!(
-            pairs,
-            vec![
-                ("eng".to_owned(), "rus".to_owned()),
-                ("spa".to_owned(), "rus".to_owned()),
-            ],
-            "expected sorted pairs, got {pairs:?}"
-        );
-    }
-
-    use crate::card::{AnkiData, AnkiState};
-
-    fn card_with_anki(lemma: &str, state: AnkiState, fsrs_stability: Option<f64>) -> Card {
-        let slug = lemma_slug(lemma);
-        let mut translations: std::collections::BTreeMap<String, Vec<String>> =
-            std::collections::BTreeMap::new();
-        translations.insert("verb".into(), vec!["x".into()]);
-        Card {
-            version: 2,
-            id: format!("flts_spa_rus_{slug}"),
-            lemma: lemma.into(),
-            translations,
-            examples: vec![],
-            anki_data: Some(AnkiData {
-                state,
-                interval_days: None,
-                ease_factor: None,
-                fsrs_difficulty: None,
-                fsrs_stability,
-            }),
-        }
-    }
-
-    fn never_synced_card(lemma: &str) -> Card {
-        let slug = lemma_slug(lemma);
-        let mut translations: std::collections::BTreeMap<String, Vec<String>> =
-            std::collections::BTreeMap::new();
-        translations.insert("verb".into(), vec!["x".into()]);
-        Card {
-            version: 2,
-            id: format!("flts_spa_rus_{slug}"),
-            lemma: lemma.into(),
-            translations,
-            examples: vec![],
-            anki_data: None,
-        }
-    }
-
-    // Stability == MATURE_DAYS collapses to exactly 1.0.
-    #[tokio::test]
-    async fn familiarities_maps_states_like_per_word_path() {
-        let tmp = TempDir::new("flts_fam_states");
-        // A fresh store starts with an empty cache, so this reads cold.
+    async fn a_create_whose_commit_failed_lands_on_retry() {
+        let dir = TempDir::new("flts_cards");
+        let root = dir.path.join("library");
+        let new = card("poder", "мочь", vec![example(0)]);
         {
-            let writer = LibraryCardStore::new(&tmp.path);
-            writer
-                .save_without_wake(&never_synced_card("poder"), "spa", "rus")
-                .await
-                .unwrap();
-            writer
-                .save_without_wake(
-                    &card_with_anki("comer", AnkiState::Active, Some(90.0)),
-                    "spa",
-                    "rus",
-                )
-                .await
-                .unwrap();
-            writer
-                .save_without_wake(
-                    &card_with_anki("vivir", AnkiState::Suspended, None),
-                    "spa",
-                    "rus",
-                )
-                .await
-                .unwrap();
+            let store = LibraryCardStore::new(LibraryStore::open(&root).unwrap());
+            assert_eq!(familiarity(&store, "poder").await, None);
+            fail_commits(&store, 1);
+            assert!(store.create_if_absent(&new, "spa", "rus").await.is_err());
+            assert!(unpublished(&store));
+            assert_eq!(
+                familiarity(&store, "poder").await,
+                Some(0.0),
+                "the cache follows what the store now reads"
+            );
+            assert!(woken(&store).await, "the staged card is there to sync");
+
+            assert!(!store.create_if_absent(&new, "spa", "rus").await.unwrap());
+            assert!(!unpublished(&store), "the retry committed the card");
+        }
+        let store = LibraryCardStore::new(LibraryStore::open(&root).unwrap());
+        assert_eq!(store.load("spa", "rus", "poder").await.unwrap(), Some(new));
+    }
+
+    #[tokio::test]
+    async fn a_retry_that_still_cannot_commit_fails_too() {
+        let (_dir, store) = fixture();
+        let new = card("poder", "мочь", vec![]);
+        fail_commits(&store, 2);
+        assert!(store.create_if_absent(&new, "spa", "rus").await.is_err());
+        assert!(store.create_if_absent(&new, "spa", "rus").await.is_err());
+        assert!(unpublished(&store));
+        assert!(!store.create_if_absent(&new, "spa", "rus").await.unwrap());
+        assert!(!unpublished(&store));
+    }
+
+    #[tokio::test]
+    async fn a_card_survives_a_reopen() {
+        let dir = TempDir::new("flts_cards");
+        let root = dir.path.join("library");
+        let data = anki(AnkiState::Active, Some(12.5));
+        let saved = with_anki(card("poder", "мочь", vec![example(3)]), data);
+        {
+            let store = LibraryCardStore::new(LibraryStore::open(&root).unwrap());
+            create(&store, saved.clone()).await;
+        }
+        let store = LibraryCardStore::new(LibraryStore::open(&root).unwrap());
+        assert_eq!(
+            store.load("spa", "rus", "poder").await.unwrap(),
+            Some(saved)
+        );
+    }
+
+    #[tokio::test]
+    async fn two_devices_union_a_card_and_agree_on_its_order() {
+        let dir = TempDir::new("flts_cards");
+        let a = LibraryStore::open(&dir.path.join("a/library")).unwrap();
+        let b = LibraryStore::open(&dir.path.join("b/library")).unwrap();
+        let (cards_a, cards_b) = (
+            LibraryCardStore::new(a.clone()),
+            LibraryCardStore::new(b.clone()),
+        );
+        create(&cards_a, card("poder", "a1", vec![example(0)])).await;
+        create(&cards_b, card("poder", "b1", vec![example(1)])).await;
+        crate::test_utils::copy_shards(a.shared_dir(), b.shared_dir());
+        crate::test_utils::copy_shards(b.shared_dir(), a.shared_dir());
+        for store in [&a, &b] {
+            store.run_blocking(|db| db.refresh().map(drop)).unwrap();
         }
 
-        let store = LibraryCardStore::new(&tmp.path);
-        let slugs = vec![
-            "poder".to_string(),
-            "comer".to_string(),
-            "vivir".to_string(),
-            "ausente".to_string(),
-        ];
-        let fam = store.familiarities("spa", "rus", &slugs).await;
-
-        assert_eq!(fam.get("poder").copied(), Some(0.0), "never-synced → 0.0");
-        assert_eq!(fam.get("comer").copied(), Some(1.0), "mature active → 1.0");
-        assert!(!fam.contains_key("vivir"), "suspended → dormant → absent");
-        assert_eq!(fam.get("ausente").copied(), Some(0.0), "no file → 0.0");
-    }
-
-    #[tokio::test]
-    async fn save_populates_cache_and_invalidate_forces_reread() {
-        let tmp = TempDir::new("flts_fam_cache");
-        let store = LibraryCardStore::new(&tmp.path);
-
-        store
-            .save_without_wake(
-                &card_with_anki("poder", AnkiState::Active, Some(90.0)),
-                "spa",
-                "rus",
-            )
-            .await
-            .unwrap();
-        let fam = store
-            .familiarities("spa", "rus", &["poder".to_string()])
-            .await;
-        assert_eq!(fam.get("poder").copied(), Some(1.0));
-
-        write_pretty(
-            &store.card_path("spa", "rus", "poder"),
-            &card_with_anki("poder", AnkiState::Suspended, None),
-        )
-        .await;
-        let fam = store
-            .familiarities("spa", "rus", &["poder".to_string()])
-            .await;
+        let on_a = cards_a.load("spa", "rus", "poder").await.unwrap().unwrap();
+        let on_b = cards_b.load("spa", "rus", "poder").await.unwrap().unwrap();
+        assert_eq!(on_a, on_b);
+        let mut translations = on_a.translations["verb"].clone();
+        translations.sort();
+        assert_eq!(translations, ["a1", "b1"]);
+        assert_eq!(on_a.examples.len(), 2);
         assert_eq!(
-            fam.get("poder").copied(),
-            Some(1.0),
-            "cache hit should not re-read disk"
-        );
-
-        store.invalidate_familiarity("spa", "rus", "poder");
-        let fam = store
-            .familiarities("spa", "rus", &["poder".to_string()])
-            .await;
-        assert!(
-            !fam.contains_key("poder"),
-            "invalidated entry must re-read and show dormant"
+            cards_a.list_cards_in_pair("spa", "rus").await.unwrap(),
+            ["poder"]
         );
     }
 
     #[tokio::test]
-    async fn load_canonical_ignores_conflict_siblings() {
-        let tmp = TempDir::new("flts_load_canonical");
-        let store = LibraryCardStore::new(&tmp.path);
-        let book = Uuid::new_v4();
+    async fn update_anki_data_is_a_compare_and_set() {
+        let (_dir, store) = fixture();
+        let first = anki(AnkiState::Active, Some(5.0));
+        let second = anki(AnkiState::Suspended, None);
+
+        assert!(
+            !store
+                .update_anki_data("spa", "rus", "poder", None, first.clone())
+                .await
+                .unwrap(),
+            "a missing card is not created"
+        );
+        assert!(store.load("spa", "rus", "poder").await.unwrap().is_none());
+
+        create(&store, card("poder", "мочь", vec![example(0)])).await;
+        assert!(
+            store
+                .update_anki_data("spa", "rus", "poder", None, first.clone())
+                .await
+                .unwrap()
+        );
+        assert!(
+            !store
+                .update_anki_data("spa", "rus", "poder", None, second.clone())
+                .await
+                .unwrap(),
+            "a stale expectation must not overwrite"
+        );
+        let stored = store.load("spa", "rus", "poder").await.unwrap().unwrap();
+        assert_eq!(stored.anki_data, Some(first.clone()));
+        assert_eq!(stored.translations["verb"], ["мочь"]);
+        assert_eq!(stored.examples.len(), 1);
+
+        assert!(
+            store
+                .update_anki_data("spa", "rus", "poder", Some(first), second.clone())
+                .await
+                .unwrap()
+        );
+        let stored = store.load("spa", "rus", "poder").await.unwrap().unwrap();
+        assert_eq!(stored.anki_data, Some(second));
+    }
+
+    #[tokio::test]
+    async fn a_failed_commit_keeps_the_cache_in_step_with_the_store() {
+        let (_dir, store) = fixture();
+        create(&store, card("poder", "мочь", vec![])).await;
+        assert_eq!(familiarity(&store, "poder").await, Some(0.0));
+
+        let active = anki(AnkiState::Active, Some(90.0));
+        fail_commits(&store, 1);
+        assert!(
+            store
+                .update_anki_data("spa", "rus", "poder", None, active.clone())
+                .await
+                .is_err()
+        );
+        assert!(unpublished(&store));
+        assert_eq!(stored(&store, "poder").unwrap().anki_data, Some(active));
+        assert_eq!(familiarity(&store, "poder").await, Some(1.0));
+    }
+
+    #[tokio::test]
+    async fn a_pair_loads_whole_and_sorted() {
+        let (_dir, store) = fixture();
+        assert!(store.load_pair("spa", "rus").await.unwrap().is_empty());
+        let poder = with_anki(
+            card("poder", "мочь", vec![example(0)]),
+            anki(AnkiState::Active, Some(5.0)),
+        );
+        let comer = card("comer", "есть", vec![]);
+        create(&store, poder.clone()).await;
+        create(&store, comer.clone()).await;
         store
-            .save(
-                &card_with(
-                    "poder",
-                    "verb",
-                    vec!["мочь"],
-                    vec![example(book, 0, 0, "a", "1")],
-                ),
-                "spa",
-                "rus",
-            )
+            .create_if_absent(&card("house", "дом", vec![]), "eng", "rus")
             .await
             .unwrap();
 
-        let deck = tmp.path.join("cards").join("spa-rus");
-        let conflict_path = deck.join("poder.sync-conflict-20260520-XYZ.json");
-        write_pretty(
-            &conflict_path,
-            &card_with(
-                "poder",
-                "verb",
-                vec!["уметь"],
-                vec![example(book, 1, 5, "b", "2")],
-            ),
+        assert_eq!(
+            store.load_pair("spa", "rus").await.unwrap(),
+            [("comer".to_string(), comer), ("poder".to_string(), poder)]
+        );
+        let other = store.load_pair("eng", "rus").await.unwrap();
+        assert_eq!(other.len(), 1);
+        assert_eq!(other[0].1.id, card_id("eng", "rus", "house"));
+    }
+
+    #[tokio::test]
+    async fn a_batch_is_a_compare_and_set_per_card() {
+        let (_dir, store) = fixture();
+        let held = anki(AnkiState::Suspended, None);
+        create(&store, card("poder", "мочь", vec![example(0)])).await;
+        create(
+            &store,
+            with_anki(card("comer", "есть", vec![]), held.clone()),
         )
         .await;
+        for slug in ["poder", "comer", "ausente"] {
+            familiarity(&store, slug).await;
+        }
+        assert!(woken(&store).await, "the creates' wake is spent here");
 
-        let only = store
-            .load_canonical("spa", "rus", "poder")
-            .await
-            .unwrap()
-            .expect("card present");
-        assert_eq!(only.translations_flat(), vec!["мочь"]);
+        let active = anki(AnkiState::Active, Some(90.0));
+        let update = |slug: &str| AnkiUpdate {
+            source: "spa".into(),
+            target: "rus".into(),
+            slug: slug.into(),
+            expected: None,
+            data: active.clone(),
+        };
+        let updates = vec![update("poder"), update("comer"), update("ausente")];
+        assert_eq!(
+            store.update_anki_data_batch(updates).await.unwrap(),
+            [true, false, false]
+        );
+        assert!(!unpublished(&store));
+
+        let poder = stored(&store, "poder").unwrap();
+        assert_eq!(poder.anki_data, Some(active));
+        assert_eq!(poder.examples.len(), 1, "the rest of the card is kept");
+        assert_eq!(stored(&store, "comer").unwrap().anki_data, Some(held));
+        assert!(stored(&store, "ausente").is_none());
+        assert_eq!(familiarity(&store, "poder").await, Some(1.0));
+        assert_eq!(familiarity(&store, "comer").await, None);
+        assert!(!woken(&store).await, "retention updates are silent");
+    }
+
+    #[tokio::test]
+    async fn a_batch_whose_commit_failed_stays_staged_and_cached() {
+        let (_dir, store) = fixture();
+        create(&store, card("poder", "мочь", vec![])).await;
+        create(&store, card("comer", "есть", vec![])).await;
+        let active = anki(AnkiState::Active, Some(90.0));
+        let updates = ["poder", "comer"]
+            .map(|slug| AnkiUpdate {
+                source: "spa".into(),
+                target: "rus".into(),
+                slug: slug.into(),
+                expected: None,
+                data: active.clone(),
+            })
+            .to_vec();
+
+        fail_commits(&store, 1);
+        assert!(store.update_anki_data_batch(updates).await.is_err());
+        assert!(unpublished(&store));
+        for slug in ["poder", "comer"] {
+            assert_eq!(familiarity(&store, slug).await, Some(1.0));
+        }
+    }
+
+    #[tokio::test]
+    async fn familiarities_follow_the_stored_retention_data() {
+        let (_dir, store) = fixture();
+        create(&store, card("poder", "x", vec![])).await;
+        // Stability == MATURE_DAYS is exactly 1.0.
+        let mature = anki(AnkiState::Active, Some(90.0));
+        create(&store, with_anki(card("comer", "x", vec![]), mature)).await;
+        let dormant = anki(AnkiState::Suspended, None);
+        create(&store, with_anki(card("vivir", "x", vec![]), dormant)).await;
+
+        // A second store on the same data starts with a cold cache.
+        for store in [
+            store.clone(),
+            LibraryCardStore::new(store.inner.store.clone()),
+        ] {
+            let slugs: Vec<String> = ["poder", "comer", "vivir", "ausente"]
+                .map(String::from)
+                .to_vec();
+            let found = store.familiarities("spa", "rus", &slugs).await;
+            assert_eq!(found.get("poder").copied(), Some(0.0), "never synced");
+            assert_eq!(found.get("comer").copied(), Some(1.0), "mature");
+            assert!(!found.contains_key("vivir"), "dormant");
+            assert!(!found.contains_key("ausente"), "unknown");
+            assert_eq!(found.len(), 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn an_absent_card_is_cached_until_it_is_created() {
+        let (_dir, store) = fixture();
+        assert_eq!(familiarity(&store, "poder").await, None);
+        assert_eq!(familiarity(&store, "comer").await, None);
+        let cached = store.inner.fam_cache.read().unwrap().clone();
+        assert_eq!(cached.get(&card_id("spa", "rus", "poder")), Some(&None));
+
+        create(&store, card("poder", "мочь", vec![])).await;
+        assert_eq!(familiarity(&store, "poder").await, Some(0.0));
+
+        // Written behind the cache's back: the cached absence answers.
+        let behind = LibraryCardStore::new(store.inner.store.clone());
+        create(&behind, card("comer", "есть", vec![])).await;
+        assert_eq!(familiarity(&store, "comer").await, None);
+        store.invalidate_all();
+        assert_eq!(familiarity(&store, "comer").await, Some(0.0));
+    }
+
+    #[tokio::test]
+    async fn the_cache_is_emptied_at_its_cap() {
+        let (_dir, store) = fixture();
+        let filler = (0..FAM_CACHE_MAX_ENTRIES).map(|i| (format!("filler{i}"), None));
+        store.cache(filler);
+        assert_eq!(familiarity(&store, "poder").await, None);
+        assert_eq!(store.inner.fam_cache.read().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn familiarity_follows_update_anki_data() {
+        let (_dir, store) = fixture();
+        create(&store, card("poder", "мочь", vec![])).await;
+        assert_eq!(familiarity(&store, "poder").await, Some(0.0));
+
+        let active = anki(AnkiState::Active, Some(90.0));
         assert!(
-            conflict_path.exists(),
-            "load_canonical must not touch conflict siblings"
+            store
+                .update_anki_data("spa", "rus", "poder", None, active.clone())
+                .await
+                .unwrap()
+        );
+        assert_eq!(familiarity(&store, "poder").await, Some(1.0));
+
+        assert!(
+            store
+                .update_anki_data(
+                    "spa",
+                    "rus",
+                    "poder",
+                    Some(active),
+                    anki(AnkiState::Deleted, None)
+                )
+                .await
+                .unwrap()
+        );
+        assert_eq!(familiarity(&store, "poder").await, None);
+    }
+
+    #[tokio::test]
+    async fn invalidate_all_forces_a_reread() {
+        let (_dir, store) = fixture();
+        let active = anki(AnkiState::Active, Some(90.0));
+        create(
+            &store,
+            with_anki(card("poder", "x", vec![]), active.clone()),
+        )
+        .await;
+        assert_eq!(familiarity(&store, "poder").await, Some(1.0));
+
+        // Another device's write, as far as this cache can tell.
+        let behind = LibraryCardStore::new(store.inner.store.clone());
+        let dormant = anki(AnkiState::Suspended, None);
+        assert!(
+            behind
+                .update_anki_data("spa", "rus", "poder", Some(active), dormant)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            familiarity(&store, "poder").await,
+            Some(1.0),
+            "a cache hit does not re-read"
         );
 
-        let merged = store
-            .load("spa", "rus", "poder")
+        store.invalidate_all();
+        assert_eq!(familiarity(&store, "poder").await, None);
+    }
+
+    #[tokio::test]
+    async fn pairs_and_cards_are_listed_sorted() {
+        let (_dir, store) = fixture();
+        assert!(store.list_pairs().await.unwrap().is_empty());
+        assert!(
+            store
+                .list_cards_in_pair("spa", "rus")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        for lemma in ["poder", "comer"] {
+            create(&store, card(lemma, "x", vec![])).await;
+        }
+        store
+            .create_if_absent(&card("house", "x", vec![]), "eng", "rus")
             .await
-            .unwrap()
-            .expect("card present");
-        assert_eq!(merged.translations_flat(), vec!["мочь", "уметь"]);
-        assert!(!conflict_path.exists(), "load must reconcile siblings");
+            .unwrap();
+
+        assert_eq!(
+            store.list_pairs().await.unwrap(),
+            [
+                ("eng".to_string(), "rus".to_string()),
+                ("spa".to_string(), "rus".to_string())
+            ]
+        );
+        assert_eq!(
+            store.list_cards_in_pair("spa", "rus").await.unwrap(),
+            ["comer", "poder"]
+        );
+        assert_eq!(
+            store.list_cards_in_pair("eng", "rus").await.unwrap(),
+            ["house"]
+        );
+        assert!(
+            store
+                .list_cards_in_pair("fra", "rus")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn only_user_writes_wake_the_sync_pass() {
+        let (_dir, store) = fixture();
+
+        assert!(
+            store
+                .create_if_absent(&card("comer", "есть", vec![]), "spa", "rus")
+                .await
+                .unwrap()
+        );
+        assert!(woken(&store).await, "create wakes");
+
+        assert!(
+            !store
+                .create_if_absent(&card("comer", "есть", vec![]), "spa", "rus")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !woken(&store).await,
+            "a create that found the card is silent"
+        );
+
+        assert!(
+            store
+                .update_anki_data("spa", "rus", "comer", None, anki(AnkiState::Active, None))
+                .await
+                .unwrap()
+        );
+        assert!(!woken(&store).await, "update_anki_data is silent");
+    }
+
+    #[tokio::test]
+    async fn writes_fail_after_close() {
+        let (_dir, store) = fixture();
+        create(&store, card("poder", "мочь", vec![])).await;
+        store.inner.store.close().await;
+
+        let other = card("comer", "есть", vec![]);
+        assert!(store.create_if_absent(&other, "spa", "rus").await.is_err());
+        assert!(
+            store
+                .update_anki_data("spa", "rus", "poder", None, anki(AnkiState::Active, None))
+                .await
+                .is_err()
+        );
+        assert!(store.load("spa", "rus", "poder").await.is_err());
+        assert!(store.load_pair("spa", "rus").await.is_err());
+        assert!(
+            on_disk(&store, "comer").is_none(),
+            "nothing was written after the close"
+        );
+        assert!(on_disk(&store, "poder").unwrap().anki_data.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_caller_does_not_cancel_its_accepted_write() {
+        let (_dir, store) = fixture();
+        // Holding the store keeps the write parked on the blocking pool.
+        let blocker = store.inner.store.clone();
+        let (entered, held) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let parked = tokio::task::spawn_blocking(move || {
+            blocker
+                .run_blocking(|_| {
+                    entered.send(()).unwrap();
+                    let _ = released.recv();
+                    Ok(())
+                })
+                .unwrap()
+        });
+        tokio::task::spawn_blocking(move || held.recv().unwrap())
+            .await
+            .unwrap();
+
+        let pending = tokio::spawn({
+            let store = store.clone();
+            async move {
+                store
+                    .create_if_absent(&card("poder", "мочь", vec![]), "spa", "rus")
+                    .await
+            }
+        });
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        pending.abort();
+        let _ = pending.await;
+        let closing = tokio::spawn({
+            let store = store.clone();
+            async move { store.inner.store.close().await }
+        });
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!closing.is_finished(), "close waits for the accepted write");
+        release.send(()).unwrap();
+        parked.await.unwrap();
+        closing.await.unwrap();
+
+        assert!(
+            on_disk(&store, "poder").is_some(),
+            "the accepted write still landed"
+        );
+        assert_eq!(
+            store.inner.fam_cache.read().unwrap()[&card_id("spa", "rus", "poder")],
+            Some(0.0),
+            "and reached the cache"
+        );
+        assert!(
+            store
+                .create_if_absent(&card("comer", "есть", vec![]), "spa", "rus")
+                .await
+                .is_err()
+        );
     }
 }

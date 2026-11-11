@@ -161,7 +161,7 @@ async fn process_book(
                 if prior.is_empty() { None } else { Some(&prior) },
             )
             .await?;
-        let receipt = handle
+        handle
             .apply_summary(
                 &snapshot,
                 index,
@@ -176,7 +176,7 @@ async fn process_book(
                 },
             )
             .await?;
-        handle.flush_through(receipt.revision).await?;
+        handle.flush().await?;
         emit_progress(
             app,
             id,

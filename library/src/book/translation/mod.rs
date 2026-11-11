@@ -2,23 +2,23 @@ use ahash::{AHashMap, AHashSet};
 use log::info;
 use uuid::Uuid;
 
+#[cfg(test)]
+use crate::book::serialization::{
+    ChecksumedWriter, write_len_prefixed_bytes, write_len_prefixed_str, write_opt,
+    write_opt_var_u64, write_u64, write_var_u64, write_vec_slice,
+};
 use crate::book::{
     serialization::{
-        ChecksumedWriter, Magic, Serializable, Version, read_exact_array, read_len_prefixed_string,
+        Magic, Serializable, Version, read_exact_array, read_len_prefixed_string,
         read_len_prefixed_vec, read_opt, read_opt_var_u64, read_u8, read_u64, read_var_u64,
-        read_vec_slice, validate_hash, write_len_prefixed_bytes, write_len_prefixed_str, write_opt,
-        write_opt_var_u64, write_u64, write_var_u64, write_vec_slice,
+        read_vec_slice, validate_hash,
     },
     translation_import,
 };
-use std::io::{self, Write};
-use std::{
-    borrow::Cow,
-    fmt::Display,
-    io::{BufWriter, Cursor},
-    iter,
-    time::Instant,
-};
+use std::io;
+#[cfg(test)]
+use std::io::{BufWriter, Write};
+use std::{borrow::Cow, fmt::Display, io::Cursor, iter, time::Instant};
 
 use super::soa_helpers::*;
 
@@ -114,6 +114,7 @@ impl TryFrom<u64> for FieldTag {
 }
 
 // Old peers consume the legacy varint and ignore trailing bytes in this field.
+#[cfg(test)]
 pub(crate) fn write_model_field(model: &str) -> Vec<u8> {
     let mut buf = Vec::new();
     write_var_u64(&mut buf, FieldTag::TranslationModel as u64).unwrap();
@@ -245,6 +246,7 @@ impl Translation {
             .is_some_and(|p| self.paragraph_translations[p].sentences.len > 0)
     }
 
+    #[cfg(test)]
     fn encode_strings(&self) -> io::Result<Vec<u8>> {
         let mut encoder = zstd::stream::Encoder::new(Vec::new(), -7)?;
         for chunk in self.strings.chunks() {
@@ -260,8 +262,30 @@ impl Translation {
             .filter(|view| view.sentence_count() > 0)
     }
 
-    /// Latest version regardless of content; merge must see empty heads to keep
-    /// the history behind them.
+    /// Slots that may hold a translation; the highest translated index + 1.
+    pub fn paragraph_slots(&self) -> usize {
+        self.paragraphs.len()
+    }
+
+    /// Every stored version of `paragraph`, oldest first.
+    pub fn versions(&'_ self, paragraph: usize) -> Vec<ParagraphTranslationView<'_>> {
+        let mut versions = Vec::new();
+        let mut current = self.latest_version_view(paragraph);
+        while let Some(view) = current {
+            current = view.get_previous_version();
+            versions.push(view);
+        }
+        versions.reverse();
+        versions
+    }
+
+    pub(crate) fn latest_timestamp(&self, paragraph: usize) -> Option<u64> {
+        self.latest_version_view(paragraph)
+            .map(|view| view.timestamp)
+    }
+
+    /// Latest version regardless of content; an empty head still carries the
+    /// history behind it.
     fn latest_version_view(&'_ self, paragraph: usize) -> Option<ParagraphTranslationView<'_>> {
         if paragraph >= self.paragraphs.len() {
             return None;
@@ -382,90 +406,7 @@ impl Translation {
             .sentences = sentences;
     }
 
-    fn add_paragraph_translation_from_view(
-        &mut self,
-        paragraph_index: usize,
-        translation: &ParagraphTranslationView,
-        timestamp: u64,
-    ) {
-        if paragraph_index >= self.paragraphs.len() {
-            self.paragraphs.extend(iter::repeat_n(
-                None,
-                paragraph_index - self.paragraphs.len() + 1,
-            ));
-        }
-
-        let new_prev_version = self.paragraphs[paragraph_index];
-
-        let new_paragraph = ParagraphTranslation {
-            timestamp,
-            previous_version: new_prev_version,
-            sentences: VecSlice::empty(),
-            model: self.models.intern(&translation.model),
-            total_tokens: translation.total_tokens,
-            visible_words: translation.visible_words().clone(),
-        };
-
-        let new_index = self.paragraph_translations.len();
-        self.paragraph_translations.push(new_paragraph);
-        self.paragraphs.set(paragraph_index, Some(new_index));
-
-        let mut sentences = VecSlice::empty();
-        for sentence in translation.sentences() {
-            let full_translation = self.push_string(&sentence.full_translation);
-            let mut words = VecSlice::empty();
-            for word in sentence.words() {
-                let original = self.push_string(&word.original);
-                let note = self.push_string(&word.note);
-                let grammar = Grammar {
-                    original_initial_form: self
-                        .strings
-                        .push_str(&word.grammar.original_initial_form),
-                    target_initial_form: self.strings.push_str(&word.grammar.target_initial_form),
-                    part_of_speech: self.push_string(&word.grammar.part_of_speech),
-                    plurality: word.grammar.plurality.as_ref().map(|s| self.push_string(s)),
-                    person: word.grammar.person.as_ref().map(|s| self.push_string(s)),
-                    tense: word.grammar.tense.as_ref().map(|s| self.push_string(s)),
-                    case: word.grammar.case.as_ref().map(|s| self.push_string(s)),
-                    other: word.grammar.other.as_ref().map(|s| self.push_string(s)),
-                };
-                let mut contextual_translations = VecSlice::empty();
-                for contextual_translation in word.contextual_translations() {
-                    let contextual_translation = WordContextualTranslation {
-                        translation: self.strings.push_str(&contextual_translation.translation),
-                    };
-                    contextual_translations = self
-                        .word_contextual_translations
-                        .push_to_slice(&contextual_translations, contextual_translation)
-                        .unwrap();
-                }
-                let new_word = Word {
-                    original,
-                    contextual_translations,
-                    is_punctuation: word.is_punctuation,
-                    note,
-                    grammar,
-                };
-                words = self.words.push_to_slice(&words, new_word).unwrap();
-            }
-            let new_sentence = Sentence {
-                full_translation,
-                words,
-            };
-            sentences = self
-                .sentences
-                .push_to_slice(&sentences, new_sentence)
-                .unwrap();
-        }
-
-        self.paragraph_translations
-            .get_mut(new_index)
-            .unwrap()
-            .sentences = sentences;
-    }
-
-    /// Idempotent insert; the merge path unions clicks from diverged stores,
-    /// and the TLA+ harnesses use it to simulate concurrent locked writes.
+    /// Idempotent; no-op for a paragraph without a version.
     pub fn add_visible_word(&mut self, paragraph: usize, word_index: usize) {
         if paragraph >= self.paragraphs.len() {
             return;
@@ -478,125 +419,6 @@ impl Translation {
             .unwrap()
             .visible_words
             .insert(word_index);
-    }
-
-    fn paragraph_content_matches(
-        a: &ParagraphTranslationView,
-        b: &ParagraphTranslationView,
-    ) -> bool {
-        if a.sentence_count() != b.sentence_count() {
-            return false;
-        }
-        for i in 0..a.sentence_count() {
-            if a.sentence_view(i).full_translation != b.sentence_view(i).full_translation {
-                return false;
-            }
-        }
-        true
-    }
-
-    pub fn merge(&self, other: &Self) -> Self {
-        let mut merged_translation = Self::create(&self.source_language, &self.target_language);
-        merged_translation.id = self.id;
-        for paragraph_idx in 0..self.paragraphs.len().max(other.paragraphs.len()) {
-            if let Some(paragarph) = self.latest_version_view(paragraph_idx)
-                && let Some(other_paragraph) = other.latest_version_view(paragraph_idx)
-            {
-                let mut versions = Vec::new();
-                let mut curr_paragraph = paragarph;
-                loop {
-                    let prev_paragraph = curr_paragraph.get_previous_version();
-                    versions.push((curr_paragraph.timestamp, curr_paragraph));
-                    match prev_paragraph {
-                        Some(prev) => curr_paragraph = prev,
-                        None => break,
-                    }
-                }
-
-                let mut other_visible_words: AHashSet<usize> = AHashSet::new();
-                curr_paragraph = other_paragraph;
-
-                loop {
-                    let prev_paragraph = curr_paragraph.get_previous_version();
-                    // Same timestamp + same content is a true duplicate (union
-                    // visible_words); differing content is a collision, keep both.
-                    let is_true_dup = versions
-                        .iter()
-                        .find(|(ts, _)| *ts == curr_paragraph.timestamp)
-                        .map(|(_, self_view)| {
-                            Self::paragraph_content_matches(self_view, &curr_paragraph)
-                        })
-                        .unwrap_or(false);
-
-                    if is_true_dup {
-                        other_visible_words.extend(curr_paragraph.visible_words().iter().copied());
-                    } else {
-                        versions.push((curr_paragraph.timestamp, curr_paragraph));
-                    }
-                    match prev_paragraph {
-                        Some(prev) => curr_paragraph = prev,
-                        None => break,
-                    }
-                }
-
-                versions.sort_by_key(|(timestamp, _)| *timestamp);
-
-                // Resolve timestamp collisions: bump later entries by +1, cascading.
-                for i in 1..versions.len() {
-                    if versions[i].0 <= versions[i - 1].0 {
-                        versions[i].0 = versions[i - 1].0 + 1;
-                    }
-                }
-
-                for (ts, translation) in versions {
-                    merged_translation.add_paragraph_translation_from_view(
-                        paragraph_idx,
-                        &translation,
-                        ts,
-                    );
-                    for word_idx in &other_visible_words {
-                        merged_translation.add_visible_word(paragraph_idx, *word_idx);
-                    }
-                }
-            } else if let Some(paragarph) = self.latest_version_view(paragraph_idx)
-                && other.latest_version_view(paragraph_idx).is_none()
-            {
-                let mut versions = Vec::new();
-                let mut curr = Some(paragarph);
-                while let Some(p) = curr {
-                    let prev = p.get_previous_version();
-                    versions.push((p.timestamp, p));
-                    curr = prev;
-                }
-                versions.sort_by_key(|(ts, _)| *ts);
-                for (_, v) in versions {
-                    merged_translation.add_paragraph_translation_from_view(
-                        paragraph_idx,
-                        &v,
-                        v.timestamp,
-                    );
-                }
-            } else if self.latest_version_view(paragraph_idx).is_none()
-                && let Some(other_paragraph) = other.latest_version_view(paragraph_idx)
-            {
-                let mut versions = Vec::new();
-                let mut curr = Some(other_paragraph);
-                while let Some(p) = curr {
-                    let prev = p.get_previous_version();
-                    versions.push((p.timestamp, p));
-                    curr = prev;
-                }
-                versions.sort_by_key(|(ts, _)| *ts);
-                for (_, v) in versions {
-                    merged_translation.add_paragraph_translation_from_view(
-                        paragraph_idx,
-                        &v,
-                        v.timestamp,
-                    );
-                }
-            }
-        }
-        merged_translation
     }
 
     #[cfg(test)]
@@ -776,7 +598,7 @@ impl Translation {
         Ok(())
     }
 
-    #[inline(never)]
+    #[cfg(test)]
     fn serialize_v2<TWriter: io::Write>(&self, output_stream: &mut TWriter) -> std::io::Result<()> {
         // Binary format TR01 v2 (little endian):
         // magic[4] = TR01
@@ -1426,6 +1248,7 @@ impl Translation {
 }
 
 impl Serializable for Translation {
+    #[cfg(test)]
     fn serialize<TWriter: io::Write>(&self, output_stream: &mut TWriter) -> io::Result<()> {
         self.serialize_v2(output_stream)
     }

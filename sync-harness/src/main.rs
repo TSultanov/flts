@@ -128,6 +128,8 @@ async fn handle(node: &Node, method: &str, url: &str, body: &str) -> Result<Stri
         }
 
         ("GET", "/books") => {
+            // No watcher here: adopt what Syncthing delivered since last asked.
+            node.library.refresh_from_peers().await?;
             let books = node.library.list_books().await?;
             let titles: Vec<String> = books.into_iter().map(|b| b.title).collect();
             Ok(serde_json::to_string(&titles)?)

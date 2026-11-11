@@ -1,7 +1,7 @@
 //! TLA+ trace emission.
 //!
-//! The `tla_trace` feature enables persistence and interaction events.
-//! Production builds retain zero-cost persistence event emitters.
+//! The `tla_trace` feature enables roster and interaction events; without it
+//! the roster emitter is a no-op.
 
 #[cfg(feature = "tla_trace")]
 mod trace;

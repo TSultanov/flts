@@ -1,13 +1,18 @@
 use log::info;
 use uuid::Uuid;
 
+#[cfg(test)]
 use crate::book::serialization::{
-    ChecksumedWriter, Magic, Serializable, Version, read_exact_array, read_len_prefixed_vec,
-    read_opt, read_u8, read_u64, read_var_u64, read_vec_slice, validate_hash, write_opt, write_u64,
-    write_var_u64, write_vec_slice,
+    ChecksumedWriter, write_opt, write_u64, write_var_u64, write_vec_slice,
+};
+use crate::book::serialization::{
+    Magic, Serializable, Version, read_exact_array, read_len_prefixed_vec, read_opt, read_u8,
+    read_u64, read_var_u64, read_vec_slice, validate_hash,
 };
 use std::borrow::Cow;
-use std::io::{self, BufWriter, Write};
+use std::io;
+#[cfg(test)]
+use std::io::{BufWriter, Write};
 use std::time::Instant;
 
 use super::soa_helpers::*;
@@ -171,6 +176,7 @@ impl<'a> ChapterView<'a> {
 }
 
 impl Serializable for Book {
+    #[cfg(test)]
     fn serialize<TWriter: io::Write>(&self, output_stream: &mut TWriter) -> std::io::Result<()> {
         // Binary format (little-endian):
         // magic[4] = BK01

@@ -150,6 +150,20 @@ describe("activeTranslations lifecycle", () => {
   });
 });
 
+describe("book_deleted", () => {
+  it("drops the deleted book's entries and keeps other books'", () => {
+    started(BOOK_A, 1, 10);
+    started(BOOK_A, 2, 11);
+    started(BOOK_B, 1, 12);
+
+    hub.emit("book_deleted", BOOK_A);
+
+    expect(store.get(BOOK_A, 1)).toBeNull();
+    expect(store.get(BOOK_A, 2)).toBeNull();
+    expect(store.get(BOOK_B, 1)).not.toBeNull();
+  });
+});
+
 describe("reconciliation on visibilitychange", () => {
   it("replaces entries wholesale: deletes stale, updates tracked, adopts unknown", async () => {
     started(BOOK_D, 1, 40);

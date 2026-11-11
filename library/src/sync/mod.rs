@@ -4,8 +4,8 @@
 //! - [`engine`] — brings up the embedded engine via FFI and configures it.
 //!   Behind `sync-engine` so the core library test loop stays Go-free.
 //!
-//! Transport only: conflict merging lives in the persistence layer (see
-//! [`crate::library::library_card`], [`crate::card::Card::merge`]).
+//! Transport only: concurrent writes are merged by the store (see
+//! [`crate::store`]).
 
 pub mod control;
 pub mod reconcile;

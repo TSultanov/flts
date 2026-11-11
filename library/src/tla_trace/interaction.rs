@@ -6,7 +6,7 @@
 //! # Usage (in test harnesses)
 //!
 //! ```ignore
-//! tla_trace_interaction::init(&path)?;
+//! interaction::init(&path)?;
 //!
 //! let span = TraceSpan::begin("t1", "BeginWorker")
 //!     .field("task", "t1")
@@ -15,7 +15,7 @@
 //! // ... real operation ...
 //! span.end();
 //!
-//! tla_trace_interaction::close()?;
+//! interaction::close()?;
 //! ```
 
 use std::{

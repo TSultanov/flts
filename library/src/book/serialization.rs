@@ -1,12 +1,12 @@
-use rand::{RngExt, distr::Alphanumeric};
-
 use super::soa_helpers::VecSlice;
 use std::{
     hash::Hasher,
     io::{self},
 };
 
+/// The file-per-book format. Only tests write it: they build import fixtures.
 pub trait Serializable {
+    #[cfg(test)]
     fn serialize<TWriter: io::Write>(&self, output_stream: &mut TWriter) -> io::Result<()>;
     fn deserialize<TReader: io::Seek + io::Read>(input_stream: &mut TReader) -> io::Result<Self>
     where
@@ -14,12 +14,15 @@ pub trait Serializable {
 }
 
 // Common binary helpers (little-endian)
+#[cfg(test)]
 pub fn write_u8(w: &mut dyn io::Write, v: u8) -> io::Result<()> {
     w.write_all(&[v])
 }
+#[cfg(test)]
 pub fn write_u64(w: &mut dyn io::Write, v: u64) -> io::Result<()> {
     w.write_all(&v.to_le_bytes())
 }
+#[cfg(test)]
 #[inline(always)]
 pub fn write_var_u64(w: &mut dyn io::Write, mut v: u64) -> io::Result<()> {
     while v >= 0x80 {
@@ -30,13 +33,16 @@ pub fn write_var_u64(w: &mut dyn io::Write, mut v: u64) -> io::Result<()> {
     w.write_all(&[v as u8])?;
     Ok(())
 }
+#[cfg(test)]
 pub fn write_len_prefixed_bytes(w: &mut dyn io::Write, bytes: &[u8]) -> io::Result<()> {
     write_var_u64(w, bytes.len() as u64)?;
     w.write_all(bytes)
 }
+#[cfg(test)]
 pub fn write_len_prefixed_str(w: &mut dyn io::Write, s: &str) -> io::Result<()> {
     write_len_prefixed_bytes(w, s.as_bytes())
 }
+#[cfg(test)]
 pub fn write_opt(w: &mut dyn io::Write, slice: &Option<VecSlice<u8>>) -> io::Result<()> {
     match slice {
         Some(s) => {
@@ -50,6 +56,7 @@ pub fn write_opt(w: &mut dyn io::Write, slice: &Option<VecSlice<u8>>) -> io::Res
     }
     Ok(())
 }
+#[cfg(test)]
 pub fn write_opt_var_u64(w: &mut dyn io::Write, value: Option<u64>) -> io::Result<()> {
     match value {
         Some(v) => {
@@ -127,6 +134,7 @@ pub fn read_opt_var_u64(r: &mut dyn io::Read) -> io::Result<Option<u64>> {
 }
 
 // Generic slice helpers (for VecSlice<T>)
+#[cfg(test)]
 pub fn write_vec_slice<T>(w: &mut dyn io::Write, slice: &VecSlice<T>) -> io::Result<()> {
     write_var_u64(w, slice.start as u64)?;
     write_var_u64(w, slice.len as u64)
@@ -135,14 +143,6 @@ pub fn read_vec_slice<T>(r: &mut dyn io::Read) -> io::Result<VecSlice<T>> {
     let start = read_var_u64(r)? as usize;
     let len = read_var_u64(r)? as usize;
     Ok(VecSlice::new(start, len))
-}
-
-pub fn create_random_string(len: usize) -> String {
-    rand::rng()
-        .sample_iter(&Alphanumeric)
-        .take(len)
-        .map(char::from)
-        .collect()
 }
 
 // Magic identifiers for binary blobs (4 bytes)
@@ -161,6 +161,7 @@ impl Magic {
         }
     }
 
+    #[cfg(test)]
     pub fn write(&self, w: &mut dyn io::Write) -> io::Result<()> {
         w.write_all(self.as_bytes())
     }
@@ -182,6 +183,7 @@ pub enum Version {
 }
 
 impl Version {
+    #[cfg(test)]
     pub fn write_version(&self, w: &mut dyn io::Write) -> io::Result<()> {
         match self {
             Version::V1 => write_u8(w, 1),
@@ -201,11 +203,13 @@ impl Version {
     }
 }
 
+#[cfg(test)]
 pub struct ChecksumedWriter<'a> {
     backing_writer: &'a mut dyn io::Write,
     hasher: fnv::FnvHasher,
 }
 
+#[cfg(test)]
 impl<'a> ChecksumedWriter<'a> {
     pub fn create(backing_writer: &'a mut dyn io::Write) -> Self {
         ChecksumedWriter {
@@ -219,6 +223,7 @@ impl<'a> ChecksumedWriter<'a> {
     }
 }
 
+#[cfg(test)]
 impl<'a> io::Write for ChecksumedWriter<'a> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.hasher.write(buf);
@@ -243,13 +248,6 @@ pub fn read_stored_hash<T: io::Seek + io::Read>(reader: &mut T) -> io::Result<(u
 
     reader.seek(io::SeekFrom::Start(0))?;
     Ok((read_hash, end))
-}
-
-/// The trailing FNV hash of `path`, without deserializing the body. Detects
-/// same-content file-watcher echoes.
-pub fn read_stored_hash_from_path(path: &std::path::Path) -> io::Result<u64> {
-    let mut file = std::fs::File::open(path)?;
-    Ok(read_stored_hash(&mut file)?.0)
 }
 
 pub fn validate_hash<T: io::Seek + io::Read>(reader: &mut T) -> io::Result<bool> {

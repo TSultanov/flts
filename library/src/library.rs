@@ -5,26 +5,21 @@ use std::{
 };
 
 use isolang::Language;
-use itertools::Itertools;
-use log::{info, trace};
-use tokio::{
-    io::AsyncReadExt,
-    sync::{mpsc, oneshot},
-};
+use log::trace;
+use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
 use crate::{
-    book::{book::Book, book_metadata::BookMetadata, translation_metadata::TranslationMetadata},
+    book::book::Book,
     card::{Card, CardWordFields, card_update_from_word},
     epub_importer::EpubBook,
     library::{
-        file_watcher::LibraryFileChange,
-        library_book::{LibraryBook, load_book_user_state},
-        library_card::LibraryCardStore,
+        file_watcher::LibraryFileChange, library_book::LibraryBook, library_card::LibraryCardStore,
     },
+    store::LibraryStore,
 };
 
-pub use library_book::{BookHandle, BookRef, BookSnapshot, BookStatus, BookToken, MutationReceipt};
+pub use library_book::{BookHandle, BookRef, BookSnapshot, BookStatus};
 
 pub mod file_watcher;
 pub mod library_book;
@@ -75,182 +70,99 @@ pub struct LibraryTranslationMetadata {
     pub source_langugage: String,
     pub target_language: String,
     pub translated_paragraphs_count: usize,
-    pub main_path: PathBuf,
-    pub conflicting_paths: Vec<PathBuf>,
 }
 
 pub struct LibraryBookMetadata {
     pub id: Uuid,
     pub title: String,
-    pub main_path: PathBuf,
-    pub conflicting_paths: Vec<PathBuf>,
     pub chapters_count: usize,
     pub paragraphs_count: usize,
     pub translations_metadata: Vec<LibraryTranslationMetadata>,
     pub folder_path: Vec<String>,
-    /// `chapter_summaries.dat`, if present; the generation queue creates one
-    /// on first enqueue.
-    pub chapter_summaries_main_path: Option<PathBuf>,
-    /// `chapter_summaries~*.dat` left by an interrupted save; merged on load.
-    pub chapter_summaries_conflicting_paths: Vec<PathBuf>,
 }
 
-impl LibraryBookMetadata {
-    pub async fn load(path: &Path) -> anyhow::Result<Self> {
-        let book_dat = path.join("book.dat");
+/// What adopting other devices' writes changed here.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PeerChanges {
+    /// The shelf may differ: books, their folders or their translation counts.
+    pub library: bool,
+    /// Loaded books whose summaries, position or folder changed, or whose
+    /// changed paragraphs are not known one by one.
+    pub books: Vec<Uuid>,
+    /// Paragraphs of loaded books that gained a translation.
+    pub paragraphs: Vec<(Uuid, usize)>,
+    /// Books deleted on another device.
+    pub deleted: Vec<Uuid>,
+    pub cards: bool,
+}
 
-        let book_metadata = {
-            let mut file = tokio::fs::File::open(&book_dat).await?;
-            let mut buffer = vec![0u8; 65536];
-            let n = file.read(&mut buffer).await?;
-            buffer.truncate(n);
-            let mut cursor = std::io::Cursor::new(buffer);
-            BookMetadata::read_metadata(&mut cursor)?
-        };
+impl PeerChanges {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
 
-        let conflicting_paths = {
-            let mut conflicting_paths = Vec::new();
-            let mut read_dir = tokio::fs::read_dir(path).await?;
+/// Housekeeping waits until startup is well over, then recurs rarely: it
+/// rewrites whole files and nothing reads better for it.
+const MAINTAIN_AFTER: std::time::Duration = std::time::Duration::from_secs(120);
+const MAINTAIN_EVERY: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
 
-            while let Some(entry) = read_dir.next_entry().await? {
-                let p = entry.path();
-                if let Some(name) = p.file_name().and_then(|n| n.to_str())
-                    && name.starts_with("book")
-                    && name.ends_with(".dat")
-                    && name != "book.dat"
-                {
-                    conflicting_paths.push(p);
-                }
-            }
+type Closed = tokio::sync::watch::Receiver<(u64, Option<Result<(), String>>)>;
+type Retired = std::sync::Arc<std::sync::Mutex<Vec<u64>>>;
 
-            let mut result = Vec::new();
+/// True once the library has closed, or was dropped.
+async fn closed_within(closed: &mut Closed, wait: std::time::Duration) -> bool {
+    let done = |closed: &Closed| closed.borrow().1.as_ref().is_some_and(Result::is_ok);
+    if done(closed) {
+        return true;
+    }
+    tokio::select! {
+        _ = tokio::time::sleep(wait) => false,
+        changed = closed.changed() => changed.is_err() || done(closed),
+    }
+}
 
-            for path in conflicting_paths {
-                let metadata = {
-                    let mut file = tokio::fs::File::open(&path).await?;
-                    let mut buffer = vec![0u8; 65536];
-                    let n = file.read(&mut buffer).await?;
-                    buffer.truncate(n);
-                    let mut cursor = std::io::Cursor::new(buffer);
-                    BookMetadata::read_metadata(&mut cursor)
-                };
-
-                match metadata {
-                    Ok(metadata) => {
-                        if metadata.id == book_metadata.id {
-                            result.push(path);
-                        } else {
-                            println!(
-                                "Conflicting version ({:?}) with different book id, skipping...",
-                                path
-                            );
-                        }
-                    }
-                    Err(err) => {
-                        println!("Failed to read metadata from {:?}, skipping: {}", path, err);
-                    }
-                }
-            }
-
-            result
-        };
-
-        let mut all_translations = Vec::new();
-
-        let mut read_dir = tokio::fs::read_dir(path).await?;
-
-        while let Some(entry) = read_dir.next_entry().await? {
-            let path = entry.path();
-            if path.is_file()
-                && let Some(name) = path.file_name().and_then(|n| n.to_str())
-                && name.starts_with("translation_")
-                && name.ends_with(".dat")
-            {
-                let metadata = {
-                    let mut file = tokio::fs::File::open(&path).await?;
-                    let mut buffer = vec![0u8; 65536];
-                    let n = file.read(&mut buffer).await?;
-                    buffer.truncate(n);
-                    let mut cursor = std::io::Cursor::new(buffer);
-                    TranslationMetadata::read_metadata(&mut cursor)?
-                };
-                all_translations.push((path, metadata));
-            }
+async fn maintain_periodically(store: LibraryStore, retired: Retired, mut closed: Closed) {
+    let mut wait = MAINTAIN_AFTER;
+    while !closed_within(&mut closed, wait).await {
+        wait = MAINTAIN_EVERY;
+        let retired = retired.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        match store.run(move |db| db.maintain(&retired)).await {
+            Ok(done) => log::debug!("library store maintained: {done:?}"),
+            Err(err) => log::warn!("library store maintenance skipped: {err:#}"),
         }
+    }
+}
 
-        // chunk_by groups only consecutive equal keys, so sort by translation
-        // id first or a non-adjacent conflict sibling forms its own group.
-        all_translations.sort_by_key(|(_, translation)| translation.id);
+/// Compaction is looked into this often, and done only once nothing was
+/// written for a while: writers wait for it while it runs.
+const COMPACT_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+const COMPACT_IDLE: std::time::Duration = std::time::Duration::from_secs(30);
 
-        let grouped_translations = all_translations
-            .into_iter()
-            .chunk_by(|(_, translation)| translation.id);
-        let grouped_translations = grouped_translations
-            .into_iter()
-            .map(|(id, chunk)| (id, chunk.sorted_by_key(|(p, _)| p.as_os_str().len())));
-
-        let mut translations_metadata = Vec::new();
-
-        for (_, mut translations) in grouped_translations {
-            // A chunk always holds at least one translation.
-            let (main_path, main_translation) = translations.next().unwrap();
-
-            let conflicting_iterations = translations.map(|(p, _)| p).collect();
-
-            translations_metadata.push(LibraryTranslationMetadata {
-                id: main_translation.id,
-                source_langugage: main_translation.source_language,
-                target_language: main_translation.target_language,
-                translated_paragraphs_count: main_translation.translated_paragraphs_count,
-                main_path,
-                conflicting_paths: conflicting_iterations,
-            })
+async fn compact_when_idle(store: LibraryStore, mut closed: Closed) {
+    while !closed_within(&mut closed, COMPACT_EVERY).await {
+        let compacting = store.clone();
+        match tokio::task::spawn_blocking(move || compacting.compact_if_idle(COMPACT_IDLE)).await {
+            Ok(Err(err)) => log::debug!("library store compaction skipped: {err:#}"),
+            Ok(Ok(_)) | Err(_) => {}
         }
+    }
+}
 
-        let folder_path = match load_book_user_state(path).await {
-            Ok(state) => state.folder_path,
-            Err(err) => {
-                println!(
-                    "Failed to load state for {:?}, continuing with empty folder path: {}",
-                    path, err
-                );
-                Vec::new()
-            }
-        };
+/// How often a commit that failed is tried again on its own.
+const REPUBLISH_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
 
-        // chapter_summaries.dat plus any `~` siblings, as above.
-        let chapter_summaries_path = path.join("chapter_summaries.dat");
-        let chapter_summaries_main_path = if tokio::fs::try_exists(&chapter_summaries_path).await? {
-            Some(chapter_summaries_path)
-        } else {
-            None
-        };
-        let mut chapter_summaries_conflicting_paths = Vec::new();
-        let mut summaries_dir = tokio::fs::read_dir(path).await?;
-        while let Some(entry) = summaries_dir.next_entry().await? {
-            let p = entry.path();
-            if let Some(name) = p.file_name().and_then(|n| n.to_str())
-                && name.starts_with("chapter_summaries")
-                && name != "chapter_summaries.dat"
-                && name.ends_with(".dat")
-            {
-                chapter_summaries_conflicting_paths.push(p);
-            }
+/// Lands what a failed commit left staged, for as long as the library is open.
+async fn republish(store: LibraryStore, mut closed: Closed) {
+    while !closed_within(&mut closed, REPUBLISH_EVERY).await {
+        if store
+            .read(|db| Ok(db.has_unpublished()))
+            .await
+            .unwrap_or(false)
+            && let Err(err) = store.run(|db| db.publish()).await
+        {
+            log::debug!("library store still cannot commit: {err:#}");
         }
-
-        info!("Loaded metadata for {path:?}");
-        Ok(LibraryBookMetadata {
-            id: book_metadata.id,
-            title: book_metadata.title,
-            main_path: book_dat,
-            conflicting_paths,
-            chapters_count: book_metadata.chapters_count,
-            paragraphs_count: book_metadata.paragraphs_count,
-            translations_metadata,
-            folder_path,
-            chapter_summaries_main_path,
-            chapter_summaries_conflicting_paths,
-        })
     }
 }
 
@@ -261,10 +173,12 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct Library {
     library_root: PathBuf,
+    store: LibraryStore,
     card_store: LibraryCardStore,
     books: mpsc::Sender<BookRequest>,
     close_control: tokio::sync::watch::Sender<u64>,
-    closed: tokio::sync::watch::Receiver<(u64, Option<Result<(), String>>)>,
+    closed: Closed,
+    retired: Retired,
 }
 
 impl Library {
@@ -272,9 +186,26 @@ impl Library {
         Self::open_with_capacity(library_root, DEFAULT_BOOKS_CACHE_CAPACITY).await
     }
 
+    /// `open`, telling `progress` how far the import of old-format files is.
+    /// On a large library that import is most of the first start.
+    pub async fn open_reporting(
+        library_root: PathBuf,
+        progress: crate::legacy::Progress,
+    ) -> anyhow::Result<Self> {
+        Self::open_inner(library_root, DEFAULT_BOOKS_CACHE_CAPACITY, Some(progress)).await
+    }
+
     pub async fn open_with_capacity(
         library_root: PathBuf,
         cache_capacity: usize,
+    ) -> anyhow::Result<Self> {
+        Self::open_inner(library_root, cache_capacity, None).await
+    }
+
+    async fn open_inner(
+        library_root: PathBuf,
+        cache_capacity: usize,
+        progress: Option<crate::legacy::Progress>,
     ) -> anyhow::Result<Self> {
         if !tokio::fs::try_exists(&library_root).await? {
             tokio::fs::create_dir_all(&library_root).await?;
@@ -282,25 +213,40 @@ impl Library {
 
         let lease = session::LibraryLease::acquire(&library_root)?;
         let library_root = lease.root.clone();
-        let card_store = LibraryCardStore::new(&library_root);
+        let store = {
+            let root = library_root.clone();
+            tokio::task::spawn_blocking(move || LibraryStore::open(&root)).await??
+        };
+        import_legacy(&library_root, &store, progress).await;
+        let card_store = LibraryCardStore::new(store.clone());
         let (books, requests) = mpsc::channel(256);
         let (close_control, close_requests) = tokio::sync::watch::channel(0);
         let (completion, closed) = tokio::sync::watch::channel((0, None));
         tokio::spawn(serve_books(
             lease,
+            store.clone(),
             cache_capacity,
             requests,
-            card_store.clone(),
             close_requests,
             completion,
+        ));
+        tokio::spawn(republish(store.clone(), closed.clone()));
+        tokio::spawn(compact_when_idle(store.clone(), closed.clone()));
+        let retired = Retired::default();
+        tokio::spawn(maintain_periodically(
+            store.clone(),
+            retired.clone(),
+            closed.clone(),
         ));
 
         Ok(Library {
             library_root,
+            store,
             card_store,
             books,
             close_control,
             closed,
+            retired,
         })
     }
 
@@ -328,6 +274,7 @@ impl Library {
     }
 
     /// The book if it is already loaded; never touches disk.
+    #[cfg(test)]
     async fn cached_book(&self, id: Uuid) -> Option<BookHandle> {
         self.request(|reply| BookRequest::Cached { id, reply })
             .await
@@ -335,17 +282,7 @@ impl Library {
             .flatten()
     }
 
-    pub(crate) async fn insert_book(
-        &self,
-        id: Uuid,
-        book: LibraryBook,
-    ) -> anyhow::Result<BookHandle> {
-        self.request(|reply| BookRequest::Insert { id, book, reply })
-            .await?
-    }
-
-    /// Resolves once no load for `id` is in flight, so the caller can delete
-    /// the directory without racing a conflict merge.
+    /// Resolves once no load for `id` is in flight and the book is deleted.
     pub(crate) async fn remove_book(&self, id: Uuid) -> anyhow::Result<()> {
         self.request(|reply| BookRequest::Remove { id, reply })
             .await?
@@ -366,8 +303,7 @@ impl Library {
     }
 
     /// Create the card for one word in a translated paragraph, or report that
-    /// it already exists. This is the manual counterpart of the old
-    /// paragraph-wide write: one user action, one file.
+    /// it already exists.
     pub async fn create_card_for_word(
         &self,
         book_id: Uuid,
@@ -443,26 +379,154 @@ impl Library {
     }
 
     pub async fn list_books(&self) -> anyhow::Result<Vec<LibraryBookMetadata>> {
-        let mut library_root_content = tokio::fs::read_dir(&self.library_root).await?;
+        let books = self.store.read(|db| db.list_books()).await?;
+        Ok(books
+            .into_iter()
+            .map(|book| LibraryBookMetadata {
+                id: book.id,
+                title: book.title,
+                chapters_count: book.chapters_count,
+                paragraphs_count: book.paragraphs_count,
+                translations_metadata: book
+                    .translations
+                    .into_iter()
+                    .map(|t| LibraryTranslationMetadata {
+                        id: t.id,
+                        source_langugage: t.source_language,
+                        target_language: t.target_language,
+                        translated_paragraphs_count: t.translated_paragraphs_count,
+                    })
+                    .collect(),
+                folder_path: book.folder_path,
+            })
+            .collect())
+    }
 
-        let mut books = Vec::new();
+    pub fn store(&self) -> &LibraryStore {
+        &self.store
+    }
 
-        while let Some(entry) = library_root_content.next_entry().await? {
-            let path = entry.path();
-            if !path.is_dir() {
+    /// Adopts what other devices' shards (or their leftover legacy files) now
+    /// hold, and brings every loaded book that is behind up to date.
+    pub async fn refresh_from_peers(&self) -> anyhow::Result<PeerChanges> {
+        let imported = import_legacy(&self.library_root, &self.store, None).await;
+        let adopted = match self.store.run(|db| db.refresh()).await {
+            Ok(adopted) => adopted,
+            Err(err) => {
+                // Whatever got in before the failure may include cards.
+                self.card_store.invalidate_all();
+                return Err(err);
+            }
+        };
+        let mut changes = PeerChanges {
+            library: imported.books > 0 || adopted.shelf,
+            cards: imported.cards || adopted.cards,
+            deleted: adopted.purged.clone(),
+            ..PeerChanges::default()
+        };
+        if changes.cards {
+            self.card_store.invalidate_all();
+        }
+        if !adopted.purged.is_empty() {
+            // The set-aside old-format copy holds the same text.
+            let (local, purged) = (self.store.local_dir().to_owned(), adopted.purged.clone());
+            let swept = tokio::task::spawn_blocking(move || {
+                purged
+                    .into_iter()
+                    .try_for_each(|id| crate::legacy::remove_backups_of(&local, id))
+            });
+            if let Ok(Err(err)) = swept.await {
+                log::warn!("could not remove the old copy of a deleted book: {err}");
+            }
+        }
+        let loaded = self.request(|reply| BookRequest::All { reply }).await?;
+        let ids: Vec<Uuid> = loaded.iter().map(|b| b.snapshot().book.id).collect();
+        let states = self
+            .store
+            .read(move |db| {
+                ids.iter()
+                    .map(|id| Ok((db.is_purged(*id)?, db.book_generation(*id))))
+                    .collect::<anyhow::Result<Vec<_>>>()
+            })
+            .await?;
+        for (book, (purged, generation)) in loaded.into_iter().zip(states) {
+            let snapshot = book.snapshot();
+            let id = snapshot.book.id;
+            if purged {
+                // Deleted elsewhere: only the owner and our leftovers remain.
+                let _ = self.remove_book(id).await;
+                if !changes.deleted.contains(&id) {
+                    changes.deleted.push(id);
+                }
                 continue;
             }
-
-            let book = LibraryBookMetadata::load(&path).await;
-            match book {
-                Ok(book) => books.push(book),
-                Err(err) => {
-                    println!("Failed to load book at path {:?}: error {}", path, err)
-                }
-            };
+            // Behind for any reason, an earlier failed reload included.
+            if snapshot.store_generation >= generation {
+                continue;
+            }
+            match book.reload().await {
+                Ok(false) => {}
+                Ok(true) => match adopted.books.get(&id) {
+                    Some(change) if !change.summaries && !change.user_state => {
+                        if change.paragraphs.is_empty() {
+                            changes.books.push(id);
+                        }
+                        changes
+                            .paragraphs
+                            .extend(change.paragraphs.iter().map(|paragraph| (id, *paragraph)));
+                    }
+                    Some(change) => {
+                        changes.books.push(id);
+                        changes
+                            .paragraphs
+                            .extend(change.paragraphs.iter().map(|paragraph| (id, *paragraph)));
+                    }
+                    None => changes.books.push(id),
+                },
+                Err(err) => log::debug!("book {id} is not up to date yet: {err:#}"),
+            }
         }
+        Ok(changes)
+    }
 
-        Ok(books)
+    /// Names the store writers of devices that left for good, so that
+    /// housekeeping stops waiting for them.
+    pub fn set_retired_writers(&self, retired: Vec<u64>) {
+        *self.retired.lock().unwrap_or_else(|e| e.into_inner()) = retired;
+    }
+
+    /// What `maintain_periodically` does on its own schedule.
+    pub async fn maintain(&self) -> anyhow::Result<crate::store::Maintained> {
+        let retired = self
+            .retired
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        self.store.run(move |db| db.maintain(&retired)).await
+    }
+
+    /// See [`crate::store::Inner::note_shared_identity`].
+    pub async fn note_shared_identity(&self) -> anyhow::Result<()> {
+        self.store.run(|db| db.note_shared_identity()).await
+    }
+
+    /// The user keeps this installation's sync identity as it is.
+    pub async fn settle_shared_identity(&self) -> anyhow::Result<()> {
+        self.store.run(|db| db.settle_shared_identity()).await
+    }
+
+    /// The user gives this installation an identity of its own: a new store
+    /// writer here, and a new sync identity by the caller, who must have
+    /// stopped the sync engine first.
+    pub async fn take_new_identity(&self) -> anyhow::Result<()> {
+        let store = self.store.clone();
+        tokio::task::spawn_blocking(move || store.start_over_as_new_writer()).await??;
+        self.card_store.invalidate_all();
+        self.settle_shared_identity().await
+    }
+
+    pub async fn store_health(&self) -> anyhow::Result<crate::store::StoreHealth> {
+        self.store.read(|db| Ok(db.health())).await
     }
 
     pub async fn create_book_plain(
@@ -477,9 +541,7 @@ impl Library {
             book.push_paragraph(chapter_index, paragraph, None);
         }
 
-        let id = book.id;
-        self.create_book(book).await?.save().await?;
-        Ok(id)
+        Ok(self.create_book(book).await?.snapshot().book.id)
     }
 
     pub async fn create_book_epub(
@@ -495,45 +557,24 @@ impl Library {
             }
         }
 
-        let id = book.id;
-        self.create_book(book).await?.save().await?;
-        Ok(id)
+        Ok(self.create_book(book).await?.snapshot().book.id)
     }
 
-    pub async fn flush_all(&self) -> anyhow::Result<()> {
+    /// Ok once nothing of this device's is waiting for a commit.
+    pub async fn flush(&self) -> anyhow::Result<()> {
         let books = self.request(|reply| BookRequest::All { reply }).await?;
         let results = futures_util::future::join_all(books.iter().map(|book| async move {
-            let mut admission = book.admission.subscribe();
-            loop {
-                let status = *admission.borrow_and_update();
-                match status {
-                    BookStatus::Active => match book.flush_through(0).await {
-                        Ok(()) => return Ok(()),
-                        Err(error) => {
-                            if *admission.borrow() == BookStatus::Active {
-                                return Err(error);
-                            }
-                        }
-                    },
-                    BookStatus::Closed | BookStatus::Deleting => return Ok(()),
-                    // Resolves to Closed, or back to Active if the persist failed.
-                    BookStatus::Retiring => admission
-                        .changed()
-                        .await
-                        .map_err(|_| anyhow::anyhow!("book retirement interrupted"))?,
-                }
+            match book.flush().await {
+                // A book on its way out stages what it holds as it goes.
+                Err(_) if *book.admission.borrow() != BookStatus::Active => Ok(()),
+                result => result,
             }
         }))
         .await;
         for result in results {
             result?;
         }
-        Ok(())
-    }
-    pub async fn save_all(&self) {
-        if let Err(err) = self.flush_all().await {
-            log::warn!("library flush failed: {err:#}");
-        }
+        self.store.run(|db| db.publish()).await
     }
     pub async fn close(&self) -> anyhow::Result<()> {
         if self.closed.borrow().1.as_ref().is_some_and(Result::is_ok) {
@@ -562,47 +603,32 @@ impl Library {
     pub async fn handle_file_change_event(
         &self,
         event: &LibraryFileChange,
-    ) -> anyhow::Result<bool> {
+    ) -> anyhow::Result<PeerChanges> {
         trace!("Starting file change event handling: {:?}...", event);
-        let result = Ok(match event {
-            LibraryFileChange::SummariesChanged { uuid } => match self.cached_book(*uuid).await {
-                Some(book) => book.reload_summaries().await?,
-                None => false,
-            },
-            LibraryFileChange::BookChanged { modified, uuid } => {
-                match self.cached_book(*uuid).await {
-                    Some(book) => book.reload_book(*modified).await?,
-                    None => false,
-                }
-            }
-            LibraryFileChange::TranslationChanged {
-                modified,
-                from,
-                to,
-                uuid,
-            } => match self.cached_book(*uuid).await {
-                Some(book) => book.reload_translations(*modified, *from, *to).await?,
-                None => false,
-            },
-            // Invalidate so the next read repopulates from disk. False: there
-            // is no in-memory book or translation state to reload.
-            LibraryFileChange::CardChanged {
-                from,
-                to,
-                lemma_slug,
-                ..
-            } => {
-                self.card_store().invalidate_familiarity(
-                    from.to_639_3(),
-                    to.to_639_3(),
-                    lemma_slug,
-                );
-                false
-            }
-        });
+        let LibraryFileChange::StoreChanged { paths } = event;
+        // Our own commits echo back through the watcher.
+        if paths.iter().all(|path| self.store.is_own_file(path)) {
+            return Ok(PeerChanges::default());
+        }
+        let result = self.refresh_from_peers().await;
         trace!("Finish file change event handling");
         result
     }
+}
+
+/// Imports what old-format files are in the root. Never fatal: the store
+/// works without them, and they are looked at again on the next refresh.
+async fn import_legacy(
+    root: &Path,
+    store: &LibraryStore,
+    progress: Option<crate::legacy::Progress>,
+) -> crate::legacy::Imported {
+    crate::legacy::migrate_reporting(root, store, progress)
+        .await
+        .unwrap_or_else(|err| {
+            log::warn!("legacy import skipped: {err:#}");
+            crate::legacy::Imported::default()
+        })
 }
 
 fn split_paragraphs(text: &str) -> impl Iterator<Item = &str> {
@@ -682,13 +708,7 @@ mod library_tests {
             }
         }
         let id = book.id;
-        library
-            .create_book(book)
-            .await
-            .unwrap()
-            .save()
-            .await
-            .unwrap();
+        library.create_book(book).await.unwrap();
         id
     }
 
@@ -794,7 +814,7 @@ mod library_tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn evicted_uuid_reloads_after_holder_drops() {
         let temp_dir = TempDir::new("flts_test");
         let library = Library::open_with_capacity(temp_dir.path.join("lib"), 2)
@@ -803,18 +823,25 @@ mod library_tests {
 
         let id = make_saved_book(&library, "Dropped").await;
         let first = library.get_book(&id).await.unwrap();
-        let first_ptr = first.token;
+        let first_owner = first.incarnation;
 
         for i in 0..4 {
             let _ = make_saved_book(&library, &format!("Filler {i}")).await;
         }
 
         drop(first);
+        // The sweep is what notices a dropped handle.
+        for _ in 0..100 {
+            if library.cached_book(id).await.is_none() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
 
         let reloaded = library.get_book(&id).await.unwrap();
-        assert_ne!(
-            reloaded.token, first_ptr,
-            "expected a fresh Arc after the last holder dropped",
+        assert!(
+            reloaded.incarnation > first_owner,
+            "expected a fresh owner after the last holder dropped",
         );
     }
 
@@ -826,15 +853,15 @@ mod library_tests {
             .unwrap();
 
         let id = make_saved_book(&library, "Ephemeral").await;
-        let first_ptr = library.get_book(&id).await.unwrap().token;
+        let first_owner = library.get_book(&id).await.unwrap().incarnation;
 
         for i in 0..3 {
             let _ = make_saved_book(&library, &format!("Other {i}")).await;
         }
 
         let reloaded = library.get_book(&id).await.unwrap();
-        assert_ne!(
-            reloaded.token, first_ptr,
+        assert!(
+            reloaded.incarnation > first_owner,
             "evicted book without holder must reload as a fresh instance",
         );
         assert_eq!(
@@ -850,21 +877,7 @@ mod library_tests {
         let library = Library::open_with_capacity(temp_dir.path.join("lib"), 1)
             .await
             .unwrap();
-
-        let id = make_saved_book(&library, "Raced").await;
-
-        // A conflict sibling makes racing loaders fight over the merge if the
-        // single-flight guard ever regresses.
-        let book_dir = temp_dir.path.join("lib").join(id.to_string());
-        tokio::fs::copy(
-            book_dir.join("book.dat"),
-            book_dir.join("book.sync-conflict-race.dat"),
-        )
-        .await
-        .unwrap();
-
-        // Capacity 1 evicts the target, so the next get_book must load.
-        let _ = make_saved_book(&library, "Filler").await;
+        let id = evicted_book(&library).await;
 
         let mut handles = Vec::new();
         for _ in 0..8 {
@@ -888,12 +901,6 @@ mod library_tests {
                 "all concurrent callers must resolve to the same instance",
             );
         }
-
-        assert!(book_dir.join("book.dat").exists());
-        assert!(
-            !book_dir.join("book.sync-conflict-race.dat").exists(),
-            "conflict sibling must be merged away exactly once",
-        );
         assert_eq!(
             library.inflight_loads().await,
             0,
@@ -901,18 +908,29 @@ mod library_tests {
         );
     }
 
-    async fn saved_book_with_conflict_sibling(library: &Library, root: &Path) -> (Uuid, PathBuf) {
+    /// A saved book that capacity 1 has pushed out, so the next get loads it.
+    async fn evicted_book(library: &Library) -> Uuid {
         let id = make_saved_book(library, "Raced").await;
-        let book_dir = root.join(id.to_string());
-        tokio::fs::copy(
-            book_dir.join("book.dat"),
-            book_dir.join("book.sync-conflict-race.dat"),
-        )
-        .await
-        .unwrap();
-        // Capacity 1: the filler evicts the target, so the next get_book loads.
         let _ = make_saved_book(library, "Filler").await;
-        (id, book_dir)
+        id
+    }
+
+    /// Occupies the store until the returned sender fires, parking every load.
+    async fn hold_store(library: &Library) -> std::sync::mpsc::Sender<()> {
+        let store = library.store().clone();
+        let (entered, held) = oneshot::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        tokio::task::spawn_blocking(move || {
+            store
+                .run_blocking(|_| {
+                    let _ = entered.send(());
+                    let _ = released.recv();
+                    Ok(())
+                })
+                .unwrap()
+        });
+        held.await.unwrap();
+        release
     }
 
     async fn wait_for_inflight_load(library: &Library) {
@@ -973,26 +991,35 @@ mod library_tests {
         let temp_dir = TempDir::new("flts_test");
         let root = temp_dir.path.join("lib");
         let library = Library::open_with_capacity(root.clone(), 1).await.unwrap();
-        let (id, book_dir) = saved_book_with_conflict_sibling(&library, &root).await;
+        let id = evicted_book(&library).await;
 
+        let release = hold_store(&library).await;
         let get = {
             let library = library.clone();
             tokio::spawn(async move { library.get_book(&id).await })
         };
         wait_for_inflight_load(&library).await;
-
-        library.remove_book(id).await.unwrap();
+        let remove = {
+            let library = library.clone();
+            tokio::spawn(async move { library.remove_book(id).await })
+        };
 
         assert!(
             get.await.unwrap().is_err(),
             "a get racing a remove must not hand out a book that is being deleted",
         );
+        assert!(
+            !remove.is_finished(),
+            "remove must resolve only after the in-flight load finished",
+        );
+        release.send(()).unwrap();
+        remove.await.unwrap().unwrap();
+
         assert!(library.cached_book(id).await.is_none());
         assert_eq!(library.inflight_loads().await, 0);
-        assert!(
-            !book_dir.join("book.sync-conflict-race.dat").exists(),
-            "remove must resolve only after the in-flight load finished its merge",
-        );
+        assert!(library.get_book(&id).await.is_err());
+        let listed = library.list_books().await.unwrap();
+        assert!(listed.iter().all(|book| book.id != id));
     }
 
     #[tokio::test]
@@ -1000,19 +1027,29 @@ mod library_tests {
         let temp_dir = TempDir::new("flts_test");
         let root = temp_dir.path.join("lib");
         let library = Library::open_with_capacity(root.clone(), 1).await.unwrap();
-        let (id, book_dir) = saved_book_with_conflict_sibling(&library, &root).await;
+        let id = evicted_book(&library).await;
 
+        let release = hold_store(&library).await;
         let get = {
             let library = library.clone();
             tokio::spawn(async move { library.get_book(&id).await })
         };
         wait_for_inflight_load(&library).await;
         get.abort();
+        let _ = get.await;
+        assert_eq!(library.inflight_loads().await, 1);
+        release.send(()).unwrap();
 
-        library.get_book(&id).await.unwrap();
-
-        assert!(book_dir.join("book.dat").exists());
-        assert!(!book_dir.join("book.sync-conflict-race.dat").exists());
+        // The abandoned load still lands; this get finds its book.
+        for _ in 0..1000 {
+            if library.inflight_loads().await == 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+        let cached = library.cached_book(id).await.expect("the load completed");
+        let fetched = library.get_book(&id).await.unwrap();
+        assert!(Arc::ptr_eq(&cached, &fetched));
         assert_eq!(library.inflight_loads().await, 0);
     }
 
@@ -1045,14 +1082,7 @@ mod library_tests {
             .unwrap();
         assert_eq!(outcome, CardCreationOutcome::Created);
 
-        let card_path = tmp
-            .path
-            .join("lib")
-            .join("cards")
-            .join("spa-rus")
-            .join("poder.json");
-        let card: Card =
-            serde_json::from_str(&std::fs::read_to_string(&card_path).unwrap()).unwrap();
+        let card = stored_card(&library, "poder").await.unwrap();
         assert_eq!(card.lemma, "poder");
         assert_eq!(card.translations_flat(), vec!["мочь"]);
         let example = &card.examples[0];
@@ -1069,17 +1099,23 @@ mod library_tests {
             .await
             .unwrap();
         assert_eq!(outcome, CardCreationOutcome::AlreadyExists);
-        let card: Card =
-            serde_json::from_str(&std::fs::read_to_string(&card_path).unwrap()).unwrap();
+        let card = stored_card(&library, "poder").await.unwrap();
         assert_eq!(card.examples.len(), 1);
 
         // The other words were not touched by this one click.
-        let deck: Vec<String> =
-            std::fs::read_dir(tmp.path.join("lib").join("cards").join("spa-rus"))
-                .unwrap()
-                .map(|e| e.unwrap().file_name().into_string().unwrap())
-                .collect();
-        assert_eq!(deck, vec!["poder.json".to_string()]);
+        assert_eq!(deck(&library).await, vec!["poder".to_string()]);
+    }
+
+    async fn stored_card(library: &Library, slug: &str) -> Option<Card> {
+        library.card_store().load("spa", "rus", slug).await.unwrap()
+    }
+
+    async fn deck(library: &Library) -> Vec<String> {
+        library
+            .card_store()
+            .list_cards_in_pair("spa", "rus")
+            .await
+            .unwrap()
     }
 
     #[tokio::test]
@@ -1099,9 +1135,8 @@ mod library_tests {
             err.to_string().contains("punctuation"),
             "unexpected error: {err}"
         );
-        let deck = tmp.path.join("lib").join("cards").join("spa-rus");
         assert!(
-            !deck.exists() || std::fs::read_dir(&deck).unwrap().next().is_none(),
+            deck(&library).await.is_empty(),
             "ineligible words must not write a card"
         );
     }
@@ -1123,24 +1158,21 @@ mod library_tests {
     }
 
     #[tokio::test]
-    async fn create_card_for_word_merges_existing_conflict_file() {
+    async fn create_card_for_word_leaves_an_existing_card_unchanged() {
         use crate::card::Example;
-        let tmp = TempDir::new("flts_card_conflict_int");
+        let tmp = TempDir::new("flts_card_existing");
         let (library, book_id) =
             library_with_one_paragraph_book(tmp.path.join("lib"), "No puedo más.").await;
 
-        let deck = tmp.path.join("lib").join("cards").join("spa-rus");
-        tokio::fs::create_dir_all(&deck).await.unwrap();
-
         let other_book = Uuid::new_v4();
-        let mut canonical_translations: std::collections::BTreeMap<String, Vec<String>> =
-            std::collections::BTreeMap::new();
-        canonical_translations.insert("verb".into(), vec!["мочь".into()]);
-        let canonical = Card {
+        let existing = Card {
             version: 2,
             id: "flts_spa_rus_poder".into(),
             lemma: "poder".into(),
-            translations: canonical_translations,
+            translations: std::collections::BTreeMap::from([(
+                "verb".to_string(),
+                vec!["мочь".to_string(), "уметь".to_string()],
+            )]),
             examples: vec![Example {
                 source: "puedo".into(),
                 translation: "могу".into(),
@@ -1150,37 +1182,11 @@ mod library_tests {
             }],
             anki_data: None,
         };
-        tokio::fs::write(
-            deck.join("poder.json"),
-            serde_json::to_vec_pretty(&canonical).unwrap(),
-        )
-        .await
-        .unwrap();
-
-        let mut conflict_translations: std::collections::BTreeMap<String, Vec<String>> =
-            std::collections::BTreeMap::new();
-        conflict_translations.insert("verb".into(), vec!["уметь".into()]);
-        let conflict = Card {
-            version: 2,
-            id: "flts_spa_rus_poder".into(),
-            lemma: "poder".into(),
-            translations: conflict_translations,
-            examples: vec![Example {
-                source: "pueden".into(),
-                translation: "могут".into(),
-                book_id: other_book,
-                chapter: 1,
-                paragraph: 5,
-            }],
-            anki_data: None,
-        };
-        let conflict_path = deck.join("poder.sync-conflict-20260520-test.json");
-        tokio::fs::write(
-            &conflict_path,
-            serde_json::to_vec_pretty(&conflict).unwrap(),
-        )
-        .await
-        .unwrap();
+        library
+            .card_store()
+            .create_if_absent(&existing, "spa", "rus")
+            .await
+            .unwrap();
 
         let paragraph = paragraph_with(
             "Я больше не могу.",
@@ -1196,49 +1202,22 @@ mod library_tests {
         let tgt = Language::from_639_3("rus").unwrap();
         seed_translation(&library, book_id, 0, &paragraph, tgt).await;
 
-        // The canonical card already exists, so the manual path reports
-        // AlreadyExists; loading it still merges the conflict sibling.
         let outcome = library
             .create_card_for_word(book_id, 0, 0, 0, tgt)
             .await
             .unwrap();
         assert_eq!(outcome, CardCreationOutcome::AlreadyExists);
 
-        assert!(!conflict_path.exists(), "conflict sibling must be deleted");
-        let names: Vec<String> = std::fs::read_dir(&deck)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().into_string().unwrap())
-            .collect();
-        assert!(
-            names.iter().all(|n| !n.contains('~')),
-            "found stray temp file in {names:?}"
-        );
-        assert_eq!(names, vec!["poder.json".to_string()]);
-
-        let on_disk: Card =
-            serde_json::from_slice(&tokio::fs::read(deck.join("poder.json")).await.unwrap())
-                .unwrap();
-        assert_eq!(on_disk.translations_flat(), vec!["мочь", "уметь"]);
+        assert_eq!(deck(&library).await, vec!["poder".to_string()]);
         assert_eq!(
-            on_disk.examples.len(),
-            2,
+            stored_card(&library, "poder").await,
+            Some(existing),
             "the existing card is not given a new example"
         );
-
-        let provenances: std::collections::HashSet<_> = on_disk
-            .examples
-            .iter()
-            .map(|e| (e.book_id, e.chapter, e.paragraph))
-            .collect();
-        assert!(provenances.contains(&(other_book, 0, 0)));
-        assert!(provenances.contains(&(other_book, 1, 5)));
-        assert!(!provenances.contains(&(book_id, 0, 0)));
     }
 
     #[tokio::test]
     async fn create_card_for_word_persists_noisy_pos() {
-        // Slashes in multi-PoS values would read as path separators; cards are
-        // keyed by lemma alone so the filename stays safe.
         let tmp = TempDir::new("flts_card_noisy_pos");
         let (library, book_id) =
             library_with_one_paragraph_book(tmp.path.join("lib"), "good judge").await;
@@ -1275,23 +1254,14 @@ mod library_tests {
             .await
             .unwrap();
 
-        let deck = tmp.path.join("lib").join("cards").join("spa-rus");
-        let names: std::collections::HashSet<String> = std::fs::read_dir(&deck)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().into_string().unwrap())
-            .collect();
-        assert!(
-            names.contains("good.json"),
-            "expected the 'good' card at a lemma-only filename, got {names:?}"
-        );
-        assert!(
-            names.contains("judge.json"),
-            "expected the 'judge' card at a lemma-only filename, got {names:?}"
+        assert_eq!(
+            deck(&library).await,
+            vec!["good".to_string(), "judge".to_string()],
+            "cards are keyed by lemma alone"
         );
 
         // The noisy PoS strings survive as translations-map keys.
-        let good: Card =
-            serde_json::from_slice(&std::fs::read(deck.join("good.json")).unwrap()).unwrap();
+        let good = stored_card(&library, "good").await.unwrap();
         assert!(
             good.translations
                 .keys()
@@ -1299,8 +1269,7 @@ mod library_tests {
             "expected noisy PoS as a key inside translations, got {:?}",
             good.translations.keys().collect::<Vec<_>>()
         );
-        let judge: Card =
-            serde_json::from_slice(&std::fs::read(deck.join("judge.json")).unwrap()).unwrap();
+        let judge = stored_card(&library, "judge").await.unwrap();
         assert!(
             judge.translations.keys().any(|k| k.contains("глагол")),
             "expected noisy PoS as a key inside translations, got {:?}",
@@ -1309,8 +1278,8 @@ mod library_tests {
     }
 
     #[tokio::test]
-    async fn create_card_for_word_uses_dash_separator_for_directory() {
-        let tmp = TempDir::new("flts_card_dash");
+    async fn create_card_for_word_files_the_card_under_its_language_pair() {
+        let tmp = TempDir::new("flts_card_pair");
         let (library, book_id) =
             library_with_one_paragraph_book(tmp.path.join("lib"), "hola").await;
         let paragraph = paragraph_with(
@@ -1330,8 +1299,10 @@ mod library_tests {
             .create_card_for_word(book_id, 0, 0, 0, tgt)
             .await
             .unwrap();
-        assert!(tmp.path.join("lib").join("cards").join("spa-rus").exists());
-        assert!(!tmp.path.join("lib").join("cards").join("spa_rus").exists());
+        assert_eq!(
+            library.card_store().list_pairs().await.unwrap(),
+            [("spa".to_string(), "rus".to_string())]
+        );
     }
 
     #[tokio::test]
@@ -1364,11 +1335,10 @@ mod library_tests {
         let paragraph = paragraph.clone();
         book.modify(move |book| {
             book.get_or_create_translation(&target_language)
-                .unwrap()
                 .add_paragraph_translation(paragraph_id, &paragraph, "models/gemini-2.5-flash");
         })
         .await
         .unwrap();
-        book.save().await.unwrap();
+        book.flush().await.unwrap();
     }
 }

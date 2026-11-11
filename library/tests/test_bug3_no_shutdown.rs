@@ -14,12 +14,9 @@ async fn accepted_translation_survives_close_without_a_separate_saver() {
         .await
         .unwrap();
     let handle = library.get_book(&id).await.unwrap();
-    let receipt = handle
+    handle
         .apply_translation(
-            handle.token,
             0,
-            "hello".into(),
-            source,
             target,
             ParagraphTranslation {
                 timestamp: 1,
@@ -33,7 +30,6 @@ async fn accepted_translation_survives_close_without_a_separate_saver() {
         )
         .await
         .unwrap();
-    assert_eq!(handle.snapshot().revision, receipt.revision);
     library.close().await.unwrap();
     let reopened = Library::open(root).await.unwrap();
     assert!(
@@ -47,6 +43,6 @@ async fn accepted_translation_survives_close_without_a_separate_saver() {
             .paragraph_view(0)
             .is_some()
     );
-    assert!(handle.save().await.is_err());
+    assert!(handle.flush().await.is_err());
     reopened.close().await.unwrap();
 }

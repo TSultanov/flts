@@ -271,7 +271,7 @@ mod tests {
 
     async fn seed_library_with_card(tmp_prefix: &str) -> (TempDir, Library) {
         let tmp = TempDir::new(tmp_prefix);
-        let library = Library::open(tmp.path.clone()).await.unwrap();
+        let library = Library::open(tmp.path.join("lib")).await.unwrap();
         let mut translations: std::collections::BTreeMap<String, Vec<String>> =
             std::collections::BTreeMap::new();
         translations.insert("verb".into(), vec!["мочь".into()]);
@@ -285,7 +285,7 @@ mod tests {
         };
         library
             .card_store()
-            .save(&card, "spa", "rus")
+            .create_if_absent(&card, "spa", "rus")
             .await
             .unwrap();
         (tmp, library)
@@ -332,7 +332,7 @@ mod tests {
             make_status_tx(),
         );
 
-        // `save()` fires the wake, which must drive a pass syncing both cards.
+        // `create_if_absent()` fires the wake, which must drive a pass syncing both cards.
         let mut translations2: std::collections::BTreeMap<String, Vec<String>> =
             std::collections::BTreeMap::new();
         translations2.insert("verb".into(), vec!["есть".into()]);
@@ -346,7 +346,7 @@ mod tests {
         };
         library
             .card_store()
-            .save(&card2, "spa", "rus")
+            .create_if_absent(&card2, "spa", "rus")
             .await
             .unwrap();
 

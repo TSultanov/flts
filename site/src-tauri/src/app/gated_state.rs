@@ -28,6 +28,8 @@ pub struct GatedState {
     /// `None` = startup still running, `Some(Ok)` = installed, `Some(Err)` =
     /// startup failed (the message is handed to every waiting command).
     ready: watch::Sender<Option<Result<(), String>>>,
+    /// An import of old-format files is under way: startup is slow, not stuck.
+    importing: std::sync::Arc<std::sync::atomic::AtomicBool>,
     library: watch::Sender<Option<Library>>,
     anki_sync_task: watch::Sender<Option<AnkiSyncTask>>,
     sync_task: watch::Sender<Option<SyncTask>>,
@@ -43,6 +45,7 @@ impl GatedState {
     pub fn new() -> Self {
         Self {
             ready: watch::channel(None).0,
+            importing: Default::default(),
             library: watch::channel(None).0,
             anki_sync_task: watch::channel(None).0,
             sync_task: watch::channel(None).0,
@@ -63,17 +66,28 @@ impl GatedState {
     /// Waits for startup to settle. Startup's own error is propagated; a
     /// startup that never settles is bounded by [`READY_TIMEOUT`].
     pub async fn await_ready(&self) -> Result<(), String> {
-        settle_on(self.ready.subscribe(), READY_TIMEOUT)
-            .await
-            .unwrap_or_else(Err)
+        self.settled().await.unwrap_or_else(Err)
+    }
+
+    pub fn set_importing(&self, importing: bool) {
+        self.importing
+            .store(importing, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// [`settle_on`], waiting on for as long as an import is still going.
+    async fn settled(&self) -> Result<Result<(), String>, String> {
+        loop {
+            match settle_on(self.ready.subscribe(), READY_TIMEOUT).await {
+                Err(_) if self.importing.load(std::sync::atomic::Ordering::Relaxed) => {}
+                outcome => return outcome,
+            }
+        }
     }
 
     /// Waits only while startup is still *running*: a failed startup settles as
     /// Ok here, for the repair path (`update_config`) that republishes it.
     pub async fn await_settled(&self) -> Result<(), String> {
-        settle_on(self.ready.subscribe(), READY_TIMEOUT)
-            .await
-            .map(|_| ())
+        self.settled().await.map(|_| ())
     }
 
     // --- gated accessors: the only way in for commands ---

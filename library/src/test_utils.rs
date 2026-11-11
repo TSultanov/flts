@@ -61,3 +61,39 @@ pub fn one_sentence_paragraph(
         }],
     }
 }
+
+/// Copies one device's shard directory into another's, as a file sync would.
+pub fn copy_shards(from: &std::path::Path, to: &std::path::Path) {
+    copy_shards_where(from, to, &|_| true);
+}
+
+/// As [`copy_shards`], for the entities `wanted` accepts by directory name.
+pub fn copy_shards_where(
+    from: &std::path::Path,
+    to: &std::path::Path,
+    wanted: &dyn Fn(&str) -> bool,
+) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            if wanted(&entry.file_name().to_string_lossy()) {
+                copy_shards_where(&entry.path(), &target, &|_| true);
+            }
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+/// What another device would hold after syncing `store`'s shards: only what
+/// was really committed.
+pub fn peer_view(store: &crate::store::LibraryStore) -> (TempDir, crate::store::LibraryStore) {
+    let dir = TempDir::new("flts_peer_view");
+    let root = dir.path.join("library");
+    copy_shards(store.shared_dir(), &root.join(crate::store::SHARED_DIR));
+    let peer = crate::store::LibraryStore::open(&root).unwrap();
+    peer.run_blocking(|db| db.refresh().map(drop)).unwrap();
+    (dir, peer)
+}

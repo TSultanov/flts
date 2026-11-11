@@ -102,6 +102,7 @@ impl<T> Arena<T> {
     }
 
     /// The backing chunks in order; all but the last are full.
+    #[cfg(test)]
     pub fn chunks(&self) -> impl Iterator<Item = &[T]> {
         self.chunks.iter().map(|chunk| chunk.as_slice())
     }

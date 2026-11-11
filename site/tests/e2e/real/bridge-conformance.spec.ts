@@ -32,6 +32,8 @@ const ALL_COMMANDS = [
   "sync_list_pending",
   "sync_add_device",
   "sync_remove_device",
+  "sync_reset_identity",
+  "sync_keep_identity",
   "translate_paragraph",
   "translate_chapter",
   "get_paragraph_translation_activity",
@@ -44,6 +46,7 @@ const ALL_COMMANDS = [
   "get_paragraph_translations_batch",
   "get_translation_providers",
   "get_word_info",
+  "create_card_for_word",
   "import_plain_text",
   "parse_epub",
   "import_epub",
@@ -241,6 +244,18 @@ test.describe("bridge conformance", () => {
     const paragraphIds = (pids.raw as number[]) ?? [];
     const paragraphId = paragraphIds[0] ?? 0;
 
+    // Before any translation exists, so it settles in the library's own
+    // refusal and leaves no card behind for the specs sharing this worker.
+    const card = await call(page, "create_card_for_word", {
+      bookId,
+      paragraphId,
+      sentenceId: 0,
+      wordId: 0,
+    });
+    outcomes.push(card);
+    expect(card.status).toBe("rejected");
+    expect(card.value).toMatch(/no translation|not translated/);
+
     const table: Array<[string, Record<string, unknown>?, number?]> = [
       ["get_paragraph_view", { bookId, paragraphId }],
       ["get_paragraph_originals_batch", { bookId, paragraphIds }],
@@ -318,6 +333,8 @@ test.describe("bridge conformance", () => {
         { deviceId: "AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD", name: "peer" },
       ],
       ["sync_remove_device", { deviceId: "AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD" }],
+      ["sync_keep_identity"],
+      ["sync_reset_identity"],
       ["parse_epub", { epubBase64: "bm90IGFuIGVwdWI=" }], // "not an epub"
       ["move_book", { bookId, path: ["conformance"] }],
       ["delete_book", { bookId }],

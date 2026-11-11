@@ -103,6 +103,17 @@ class ActiveTranslationsStore {
         }
       },
     );
+    eventHub.subscribe<UUID>(
+      "book_deleted",
+      () => true,
+      (bookId) => {
+        // As with finished: a stale snapshot must not resurrect these.
+        this.#reconcileToken++;
+        for (const key of [...this.#entries.keys()]) {
+          if (key.startsWith(`${bookId}:`)) this.#entries.delete(key);
+        }
+      },
+    );
 
     // Guarded for non-browser (test) contexts.
     if (typeof document !== "undefined") {

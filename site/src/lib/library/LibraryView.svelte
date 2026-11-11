@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { getContext } from "svelte";
+    import { getContext, onDestroy } from "svelte";
     import {
         buildLibraryFolder,
         Library,
@@ -9,10 +9,22 @@
     import MoveFolderDialog from "../dialogs/MoveFolderDialog.svelte";
     import type { UUID } from "../data/uuid";
     import type { BookMeta } from "../data/library";
+    import { bookDeletedNotice } from "../book/bookDeleted";
+    import { importProgress } from "./importProgress";
 
     const library: Library = getContext("library");
     const books = library.getLibraryBooksMetadata();
     const rootFolder = $derived(buildLibraryFolder(books.current ?? []));
+
+    onDestroy(() => bookDeletedNotice.set(false));
+
+    // Only while the first list is pending: list_books waits for the import.
+    const importing = $derived(
+        books.current === undefined ? $importProgress : null,
+    );
+    $effect(() => {
+        if (books.current !== undefined) importProgress.set(null);
+    });
 
     let selectedBookUids = $state(new Set<UUID>());
     let showBatchDeleteDialog = $state(false);
@@ -147,6 +159,26 @@
                 </div>
             {/if}
         </div>
+        {#if $bookDeletedNotice}
+            <p class="notice" role="status" data-testid="book-deleted-notice">
+                <span
+                    >The book you were reading was deleted on another device.</span
+                >
+                <button
+                    class="secondary compact"
+                    onclick={() => bookDeletedNotice.set(false)}>Dismiss</button
+                >
+            </p>
+        {/if}
+        {#if importing}
+            <p class="import-status" role="status" data-testid="import-status">
+                <span
+                    >Updating your library… {importing.done} of {importing.total}</span
+                >
+                <progress value={importing.done} max={importing.total}
+                ></progress>
+            </p>
+        {/if}
         <div class="folders-container">
             {@render FolderComponent(rootFolder)}
         </div>
@@ -250,6 +282,24 @@
 
     .header h1 {
         margin: 0;
+    }
+
+    .notice {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin: 10px 0 0;
+        padding: 8px 10px;
+        border: 1px solid var(--warn-color);
+        border-radius: 4px;
+    }
+
+    .import-status {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 10px 0 0;
     }
 
     .batch-actions,

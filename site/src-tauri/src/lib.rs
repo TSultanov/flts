@@ -217,6 +217,8 @@ pub fn run() {
             app::sync::sync_list_pending,
             app::sync::sync_add_device,
             app::sync::sync_remove_device,
+            app::sync::sync_reset_identity,
+            app::sync::sync_keep_identity,
             app::translate_paragraph,
             app::translate_chapter,
             app::get_paragraph_translation_activity,

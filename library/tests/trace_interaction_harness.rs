@@ -91,7 +91,7 @@ async fn trace_interaction_baseline() {
     let span = TraceSpan::begin("t1", "ConfigChange")
         .field("task", "t1")
         .field("newLib", 2);
-    let library = Library::open(lib_root.clone()).await.unwrap();
+    let library = Library::open(lib_root).await.unwrap();
     span.end();
 
     // === Setup: reuse the session for the same canonical root ===
@@ -104,7 +104,7 @@ async fn trace_interaction_baseline() {
         .create_book(new_book)
         .await
         .unwrap()
-        .save()
+        .flush()
         .await
         .unwrap();
 
@@ -142,12 +142,12 @@ async fn trace_interaction_baseline() {
     .await;
     span.end();
 
-    // WorkerSave: book.save()
+    // WorkerSave: book.flush()
     let span = TraceSpan::begin("t1", "WorkerSave")
         .field("task", "t1")
         .field("lib", 2);
     {
-        book_handle.save().await.unwrap();
+        book_handle.flush().await.unwrap();
     }
     span.end();
 
@@ -199,19 +199,9 @@ async fn trace_interaction_baseline() {
     let _book_handle = library.get_book(&book_id).await.unwrap();
     span.end();
 
-    // WatcherReload: simulate external file modification + reload
+    // WatcherReload: adopt whatever other devices wrote
     let span = TraceSpan::begin("t1", "WatcherReload").field("task", "t1");
-    {
-        // Modify book file on disk to simulate sync conflict
-        let book_dir = lib_root.join(book_id.to_string());
-        let book_file = book_dir.join("book.dat");
-        if book_file.exists() {
-            // Touch the file to trigger reload detection
-            let content = tokio::fs::read(&book_file).await.unwrap();
-            tokio::time::sleep(Duration::from_millis(5)).await;
-            tokio::fs::write(&book_file, &content).await.unwrap();
-        }
-    }
+    library.refresh_from_peers().await.unwrap();
     span.end();
 
     // WatcherComputeSnapshot
@@ -254,7 +244,7 @@ async fn trace_interaction_baseline() {
             "models/gemini-2.5-flash",
         )
         .await;
-        book_handle.save().await.unwrap();
+        book_handle.flush().await.unwrap();
     }
     span.end();
 
@@ -273,7 +263,7 @@ async fn trace_interaction_concurrent() {
     let lib_root = temp.path.join("lib");
 
     // === Setup ===
-    let library = Library::open(lib_root.clone()).await.unwrap();
+    let library = Library::open(lib_root).await.unwrap();
     let mut new_book = Book::create(uuid::Uuid::new_v4(), "Concurrent Book", &en());
     new_book.push_chapter(Some("Ch1"));
     new_book.push_paragraph(0, "First paragraph.", None);
@@ -284,7 +274,7 @@ async fn trace_interaction_concurrent() {
         .create_book(new_book)
         .await
         .unwrap()
-        .save()
+        .flush()
         .await
         .unwrap();
 
@@ -333,7 +323,7 @@ async fn trace_interaction_concurrent() {
         let span = TraceSpan::begin("t1", "WorkerSave")
             .field("task", "t1")
             .field("lib", 1);
-        bh.save().await.unwrap();
+        bh.flush().await.unwrap();
         span.end();
 
         // WorkerComputeSnapshot
@@ -386,7 +376,6 @@ async fn trace_interaction_concurrent() {
     let lib3 = library.clone();
     let bar3 = barrier.clone();
     let bid3 = book_id;
-    let lib_root3 = lib_root.clone();
     let t3 = tokio::spawn(async move {
         bar3.wait().await; // synchronize start
 
@@ -401,16 +390,9 @@ async fn trace_interaction_concurrent() {
         let _bh = lib3.get_book(&bid3).await.unwrap();
         span.end();
 
-        // WatcherReload (simulate file modification)
+        // WatcherReload (adopt whatever other devices wrote)
         let span = TraceSpan::begin("t3", "WatcherReload").field("task", "t3");
-        // Touch the book file to simulate external sync
-        let book_dir = lib_root3.join(bid3.to_string());
-        let book_file = book_dir.join("book.dat");
-        if book_file.exists() {
-            let content = tokio::fs::read(&book_file).await.unwrap();
-            tokio::time::sleep(Duration::from_millis(2)).await;
-            tokio::fs::write(&book_file, &content).await.unwrap();
-        }
+        lib3.refresh_from_peers().await.unwrap();
         span.end();
 
         // WatcherComputeSnapshot
@@ -450,21 +432,8 @@ async fn apply_fixture(
     translation: library::book::translation_import::ParagraphTranslation,
     model: &str,
 ) {
-    let snapshot = handle.snapshot();
     handle
-        .apply_translation(
-            snapshot.token,
-            paragraph,
-            snapshot
-                .book
-                .paragraph_view(paragraph)
-                .original_text
-                .to_string(),
-            Language::from_639_3(&snapshot.book.language).unwrap(),
-            target,
-            translation,
-            model.into(),
-        )
+        .apply_translation(paragraph, target, translation, model.into())
         .await
         .unwrap();
 }

@@ -13,6 +13,8 @@ export default defineConfig({
     "anki-sync.spec.ts", // __test.setAnkiSyncStatus / getSyncAnkiNowCalls
     "dialogs.spec.ts", // __test.seedBook
     "lyrics.spec.ts", // __mockSpotifyState / __mockLyrics / __mockPlatform
+    "appearance.spec.ts", // __test.seedBook
+    "config-scroll.spec.ts", // __test.getConfig
     "chapter-initial-translation-batch.spec.ts", // __test.getTranslationsBatchCalls
     // Seed fields the real pipeline cannot forge.
     "chapter-reading-state.spec.ts", // readingState

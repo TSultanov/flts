@@ -1,22 +1,18 @@
-//! Per-chapter source-language summary sidecar for a book.
-//!
-//! Stored as `chapter_summaries.dat` next to `book.dat`; generated chapters
-//! give per-paragraph translation requests their context. Merging is
-//! "fullest wins" — see [`ChapterSummaries::merge`].
+//! Per-chapter source-language summaries of a book; generated chapters give
+//! per-paragraph translation requests their context.
 
-use std::{
-    io::{self, BufWriter, Cursor, Read, Seek, Write},
-    path::{Path, PathBuf},
-    time::SystemTime,
-};
+use std::io::{self, Read, Seek};
+#[cfg(test)]
+use std::io::{BufWriter, Write};
 
-use tokio::io::AsyncReadExt;
 use uuid::Uuid;
 
+#[cfg(test)]
+use crate::book::serialization::{ChecksumedWriter, write_u8, write_u64, write_var_u64};
 use crate::book::{
     serialization::{
-        ChecksumedWriter, Magic, Serializable, Version, create_random_string, read_exact_array,
-        read_u8, read_u64, read_var_u64, validate_hash, write_u8, write_u64, write_var_u64,
+        Magic, Serializable, Version, read_exact_array, read_u8, read_u64, read_var_u64,
+        validate_hash,
     },
     soa_helpers::VecSlice,
 };
@@ -46,23 +42,16 @@ impl ChapterSummary {
 pub struct ChapterSummaries {
     pub book_id: Uuid,
     pub entries: Vec<ChapterSummary>,
-    /// `mtime` last read, so the save loop can spot a concurrent writer.
-    pub last_modified: Option<SystemTime>,
-}
-
-pub fn chapter_summaries_path(book_path: &Path) -> PathBuf {
-    book_path.join("chapter_summaries.dat")
 }
 
 impl ChapterSummaries {
-    /// All-pending initial state, for when no sidecar exists yet.
+    /// All-pending initial state.
     pub fn empty_for(book_id: Uuid, chapter_count: usize) -> Self {
         Self {
             book_id,
             entries: (0..chapter_count)
                 .map(|_| ChapterSummary::pending())
                 .collect(),
-            last_modified: None,
         }
     }
 
@@ -82,162 +71,10 @@ impl ChapterSummaries {
         }
         last
     }
-
-    /// Per-chapter "fullest wins" union: generated beats pending, and between
-    /// two generated entries the newer timestamp is the deterministic
-    /// tiebreaker. Disagreeing chapter counts error rather than corrupt.
-    pub fn merge(&self, other: &Self) -> anyhow::Result<Self> {
-        if self.book_id != other.book_id {
-            anyhow::bail!(
-                "chapter summaries book_id mismatch: {} vs {}",
-                self.book_id,
-                other.book_id
-            );
-        }
-        if self.entries.len() != other.entries.len() {
-            anyhow::bail!(
-                "chapter summaries length mismatch: {} vs {}",
-                self.entries.len(),
-                other.entries.len()
-            );
-        }
-
-        let entries = self
-            .entries
-            .iter()
-            .zip(other.entries.iter())
-            .map(|(a, b)| match (a.generated, b.generated) {
-                (true, true) => {
-                    if a.timestamp >= b.timestamp {
-                        a.clone()
-                    } else {
-                        b.clone()
-                    }
-                }
-                (true, false) => a.clone(),
-                (false, true) => b.clone(),
-                (false, false) => a.clone(),
-            })
-            .collect();
-
-        Ok(Self {
-            book_id: self.book_id,
-            entries,
-            last_modified: match (self.last_modified, other.last_modified) {
-                (Some(a), Some(b)) => Some(a.max(b)),
-                (Some(a), None) => Some(a),
-                (None, Some(b)) => Some(b),
-                (None, None) => None,
-            },
-        })
-    }
-
-    /// One sidecar file; see [`load_from_metadata`] for conflict handling.
-    pub async fn load(main_path: &Path) -> anyhow::Result<Self> {
-        let last_modified = tokio::fs::metadata(main_path).await?.modified().ok();
-        let mut buffer = Vec::new();
-        tokio::fs::File::open(main_path)
-            .await?
-            .read_to_end(&mut buffer)
-            .await?;
-        let mut cursor = Cursor::new(buffer);
-        let mut s = Self::deserialize(&mut cursor)?;
-        s.last_modified = last_modified;
-        Ok(s)
-    }
-
-    /// Merges the main sidecar with any `chapter_summaries~*.dat` siblings,
-    /// writes the result back, and deletes the siblings.
-    pub async fn load_from_metadata(
-        main_path: &Path,
-        conflicts: &[PathBuf],
-    ) -> anyhow::Result<Self> {
-        let mut merged = Self::load(main_path).await?;
-        if conflicts.is_empty() {
-            return Ok(merged);
-        }
-        for conflict in conflicts {
-            let other = Self::load(conflict).await?;
-            merged = merged.merge(&other)?;
-        }
-        // Delete the conflict files only after the main write succeeds.
-        merged.save(main_path).await?;
-        for conflict in conflicts {
-            if let Err(err) = tokio::fs::remove_file(conflict).await {
-                log::warn!(
-                    "failed to delete merged chapter-summaries conflict file {:?}: {err}",
-                    conflict
-                );
-            }
-        }
-        Ok(merged)
-    }
-
-    /// Atomic write through a `chapter_summaries~<random>.dat` temp, with a
-    /// pre/post-mtime check and a merge-on-newer retry loop.
-    pub async fn save(&mut self, main_path: &Path) -> anyhow::Result<()> {
-        let dir = main_path.parent().ok_or_else(|| {
-            anyhow::anyhow!("chapter summaries path has no parent: {:?}", main_path)
-        })?;
-        let file_name = main_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("chapter_summaries.dat");
-        for attempt in 0..5 {
-            let pre_modified = if tokio::fs::try_exists(main_path).await? {
-                tokio::fs::metadata(main_path).await?.modified().ok()
-            } else {
-                None
-            };
-
-            // Remote clocks may run behind ours: merge by content, not age.
-            // An unusable copy has nothing to merge; erroring would wedge
-            // every future save of the book.
-            // Only undecodable content is overwritten: a transient read
-            // failure must not replace good summaries with ours.
-            if tokio::fs::try_exists(main_path).await? {
-                let bytes = tokio::fs::read(main_path).await?;
-                match Self::deserialize(&mut Cursor::new(bytes)) {
-                    Ok(on_disk) => match self.merge(&on_disk) {
-                        Ok(merged) => *self = merged,
-                        Err(err) => log::warn!(
-                            "Overwriting mismatched chapter summaries {main_path:?}: {err:#}"
-                        ),
-                    },
-                    Err(err) => log::warn!(
-                        "Overwriting undecodable chapter summaries {main_path:?}: {err:#}"
-                    ),
-                }
-            }
-
-            let temp_path = dir.join(format!("{file_name}~{}", create_random_string(8)));
-            let mut buf = Vec::new();
-            self.serialize(&mut buf)?;
-            tokio::fs::write(&temp_path, &buf).await?;
-
-            // An unmoved mtime means our write is the canonical one.
-            let post_modified = if tokio::fs::try_exists(main_path).await? {
-                tokio::fs::metadata(main_path).await?.modified().ok()
-            } else {
-                None
-            };
-            if post_modified == pre_modified || pre_modified.is_none() {
-                // Rename over the destination: remove+rename leaves a window
-                // where a crash or temp sweep destroys the main file.
-                tokio::fs::rename(&temp_path, main_path).await?;
-                self.last_modified = tokio::fs::metadata(main_path).await?.modified().ok();
-                return Ok(());
-            }
-            // Someone wrote since the pre-check: re-merge. Drop our temp or
-            // the next load treats it as a conflict file.
-            let _ = tokio::fs::remove_file(&temp_path).await;
-            tokio::time::sleep(std::time::Duration::from_millis(50 * (attempt + 1))).await;
-        }
-        anyhow::bail!("chapter summaries kept changing during save")
-    }
 }
 
 impl Serializable for ChapterSummaries {
+    #[cfg(test)]
     fn serialize<TWriter: Write>(&self, output_stream: &mut TWriter) -> io::Result<()> {
         // Binary format CS01 v1 (little endian):
         // magic[4] = CS01
@@ -343,17 +180,14 @@ impl Serializable for ChapterSummaries {
 
         let _ = read_u64(input_stream)?;
 
-        Ok(Self {
-            book_id,
-            entries,
-            last_modified: None,
-        })
+        Ok(Self { book_id, entries })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
 
     fn made(book_id: Uuid) -> ChapterSummaries {
         let mut s = ChapterSummaries::empty_for(book_id, 4);
@@ -416,143 +250,5 @@ mod tests {
                 assert_eq!(a.timestamp, b.timestamp);
             }
         }
-    }
-
-    #[test]
-    fn merge_takes_generated_over_pending() {
-        let book_id = Uuid::new_v4();
-        let mut a = ChapterSummaries::empty_for(book_id, 3);
-        a.entries[0] = ChapterSummary {
-            generated: true,
-            model: "models/gemini-2.5-flash".to_string(),
-            timestamp: 100,
-            text: "a0".into(),
-        };
-        let mut b = ChapterSummaries::empty_for(book_id, 3);
-        b.entries[1] = ChapterSummary {
-            generated: true,
-            model: "models/gemini-2.5-flash".to_string(),
-            timestamp: 200,
-            text: "b1".into(),
-        };
-
-        let merged = a.merge(&b).unwrap();
-        assert!(merged.entries[0].generated);
-        assert_eq!(merged.entries[0].text, "a0");
-        assert!(merged.entries[1].generated);
-        assert_eq!(merged.entries[1].text, "b1");
-        assert!(!merged.entries[2].generated);
-    }
-
-    #[test]
-    fn merge_newer_timestamp_wins_when_both_generated() {
-        let book_id = Uuid::new_v4();
-        let mut older = ChapterSummaries::empty_for(book_id, 2);
-        older.entries[0] = ChapterSummary {
-            generated: true,
-            model: "models/gemini-2.5-flash".to_string(),
-            timestamp: 100,
-            text: "older".into(),
-        };
-        let mut newer = ChapterSummaries::empty_for(book_id, 2);
-        newer.entries[0] = ChapterSummary {
-            generated: true,
-            model: "models/gemini-2.5-flash".to_string(),
-            timestamp: 200,
-            text: "newer".into(),
-        };
-
-        let merged = older.merge(&newer).unwrap();
-        assert_eq!(merged.entries[0].text, "newer");
-        let merged2 = newer.merge(&older).unwrap();
-        assert_eq!(merged2.entries[0].text, "newer");
-    }
-
-    #[test]
-    fn merge_rejects_book_id_mismatch() {
-        let a = ChapterSummaries::empty_for(Uuid::new_v4(), 2);
-        let b = ChapterSummaries::empty_for(Uuid::new_v4(), 2);
-        assert!(a.merge(&b).is_err());
-    }
-
-    #[test]
-    fn merge_rejects_chapter_count_mismatch() {
-        let book_id = Uuid::new_v4();
-        let a = ChapterSummaries::empty_for(book_id, 2);
-        let b = ChapterSummaries::empty_for(book_id, 3);
-        assert!(a.merge(&b).is_err());
-    }
-
-    #[tokio::test]
-    async fn save_and_load_roundtrip() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = chapter_summaries_path(dir.path());
-        let mut original = made(Uuid::new_v4());
-        original.save(&path).await.unwrap();
-
-        let loaded = ChapterSummaries::load(&path).await.unwrap();
-        assert_eq!(loaded.book_id, original.book_id);
-        for (a, b) in loaded.entries.iter().zip(original.entries.iter()) {
-            assert_eq!(a.generated, b.generated);
-            assert_eq!(a.text, b.text);
-        }
-    }
-
-    #[tokio::test]
-    async fn save_then_save_again_with_progress_persists_both() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = chapter_summaries_path(dir.path());
-        let book_id = Uuid::new_v4();
-        let mut s = ChapterSummaries::empty_for(book_id, 3);
-        s.save(&path).await.unwrap();
-
-        s.entries[0] = ChapterSummary {
-            generated: true,
-            model: "models/gemini-2.5-flash".to_string(),
-            timestamp: 1,
-            text: "ch0".into(),
-        };
-        s.save(&path).await.unwrap();
-
-        let loaded = ChapterSummaries::load(&path).await.unwrap();
-        assert!(loaded.entries[0].generated);
-        assert_eq!(loaded.entries[0].text, "ch0");
-        assert!(!loaded.entries[1].generated);
-    }
-
-    #[tokio::test]
-    async fn load_from_metadata_merges_and_cleans_conflicts() {
-        let dir = tempfile::tempdir().unwrap();
-        let main = chapter_summaries_path(dir.path());
-        let book_id = Uuid::new_v4();
-
-        let mut a = ChapterSummaries::empty_for(book_id, 3);
-        a.entries[0] = ChapterSummary {
-            generated: true,
-            model: "models/gemini-2.5-flash".to_string(),
-            timestamp: 10,
-            text: "from_main".into(),
-        };
-        a.save(&main).await.unwrap();
-
-        let mut b = ChapterSummaries::empty_for(book_id, 3);
-        b.entries[1] = ChapterSummary {
-            generated: true,
-            model: "models/gemini-2.5-flash".to_string(),
-            timestamp: 20,
-            text: "from_conflict".into(),
-        };
-        let conflict_path = dir.path().join("chapter_summaries~abcd1234.dat");
-        let mut buf = Vec::new();
-        b.serialize(&mut buf).unwrap();
-        tokio::fs::write(&conflict_path, &buf).await.unwrap();
-
-        let merged = ChapterSummaries::load_from_metadata(&main, &[conflict_path.clone()])
-            .await
-            .unwrap();
-        assert_eq!(merged.entries[0].text, "from_main");
-        assert_eq!(merged.entries[1].text, "from_conflict");
-        assert!(!merged.entries[2].generated);
-        assert!(!tokio::fs::try_exists(&conflict_path).await.unwrap());
     }
 }

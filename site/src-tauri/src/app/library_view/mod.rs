@@ -197,8 +197,8 @@ impl<'a> LibraryView<'a> {
     ) -> anyhow::Result<ParagraphView> {
         let book = self.library.get_book(&book_id).await?.snapshot();
 
-        // The frontend can hold paragraph ids from before a sync-triggered
-        // book reload; indexing past the end would panic the command.
+        // The id comes from the frontend; indexing past the end would
+        // panic the command.
         if paragraph_id >= book.book.paragraphs_count() {
             anyhow::bail!(
                 "paragraph {paragraph_id} out of range for book {book_id} ({} paragraphs)",
@@ -249,8 +249,7 @@ impl<'a> LibraryView<'a> {
         paragraph_ids: Vec<usize>,
     ) -> anyhow::Result<Vec<ParagraphOriginal>> {
         let book = self.library.get_book(&book_id).await?.snapshot();
-        // Skip ids past the end: the frontend may hold state from before a
-        // sync-triggered reload shrank the book.
+        // The ids come from the frontend; one past the end must not panic.
         Ok(paragraph_ids
             .into_iter()
             .filter(|id| *id < book.book.paragraphs_count())
@@ -500,7 +499,7 @@ impl<'a> LibraryView<'a> {
             view.has_card = match self
                 .library
                 .card_store()
-                .load_canonical(&key.source_language, &key.target_language, &key.slug)
+                .load(&key.source_language, &key.target_language, &key.slug)
                 .await
             {
                 Ok(card) => card.is_some(),
@@ -599,7 +598,7 @@ impl<'a> LibraryView<'a> {
     pub async fn handle_file_change_event(
         &mut self,
         event: &LibraryFileChange,
-    ) -> anyhow::Result<bool> {
+    ) -> anyhow::Result<library::library::PeerChanges> {
         self.library.handle_file_change_event(event).await
     }
 }

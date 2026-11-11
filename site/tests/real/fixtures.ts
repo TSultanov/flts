@@ -32,7 +32,11 @@ export type RealHarness = {
    * navigation, so a `page.goto` must follow. `SIGKILL` skips the graceful
    * wait, so nothing the app was mid-write on gets a chance to finish.
    */
-  restartApp: (opts?: { signal?: "SIGTERM" | "SIGKILL" }) => Promise<void>;
+  restartApp: (opts?: {
+    signal?: "SIGTERM" | "SIGKILL";
+    /** Over the launch environment, for this launch only. */
+    env?: Record<string, string>;
+  }) => Promise<void>;
   /** Re-inject the bridge port into `page` after a restart. */
   trackPage: (page: Page) => void;
 };
@@ -286,7 +290,9 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
         );
 
         const dir = configDir;
-        const launchApp = async (): Promise<number> => {
+        const launchApp = async (
+          extraEnv: Record<string, string> = {},
+        ): Promise<number> => {
           app = spawn(path.join(repoRoot, "target/debug/app"), {
             stdio: ["pipe", "pipe", "pipe"],
             env: {
@@ -305,6 +311,7 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
               FLTS_KEYRING_SERVICE: `FLTS-E2E-${path.basename(dir)}`,
               FLTS_DISABLE_KEYRING: "1",
               FLTS_ANKI_SYNC_INTERVAL_SECS: "3600",
+              ...extraEnv,
             },
           }) as ChildProcessWithoutNullStreams;
           app.on("error", () => {});
@@ -353,7 +360,7 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
             bridge?.close();
             bridge = undefined;
             if (app) await killTree(app, opts?.signal ?? "SIGTERM");
-            harness.bridgePort = await launchApp();
+            harness.bridgePort = await launchApp(opts?.env);
             bridge = new BridgeClient(harness.bridgePort);
             await injectPort(harness, [...pages], true);
             await healthCheck(harness, () => stderrBuf);

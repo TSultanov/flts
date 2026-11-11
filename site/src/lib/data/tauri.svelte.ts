@@ -12,7 +12,9 @@ export type UpdateEvent<TEvent = any> = {
 export const KNOWN_EVENTS: readonly string[] = [
   "paragraph_updated",
   "book_updated",
+  "book_deleted",
   "library_updated",
+  "library_import_progress",
   "cards_updated",
   "paragraph_translation_started",
   "paragraph_translation_progress",

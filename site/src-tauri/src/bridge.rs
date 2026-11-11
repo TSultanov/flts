@@ -42,6 +42,8 @@ pub const COMMANDS: &[&str] = &[
     "sync_list_pending",
     "sync_add_device",
     "sync_remove_device",
+    "sync_reset_identity",
+    "sync_keep_identity",
     "translate_paragraph",
     "translate_chapter",
     "get_paragraph_translation_activity",
@@ -85,9 +87,11 @@ pub const E2E_ONLY_COMMANDS: &[&str] = &["e2e_resolve_track"];
 /// call sites.
 pub const FORWARDED_EVENTS: &[&str] = &[
     "anki_sync_status_changed",
+    "book_deleted",
     "book_updated",
     "cards_updated",
     "config_updated",
+    "library_import_progress",
     "library_updated",
     "lyrics_resolved",
     "lyrics_translation_done",
@@ -299,6 +303,8 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: Value) -> Result<Value, Valu
             let device_id = args!(args, { device_id: String });
             wrap(crate::app::sync::sync_remove_device(state, device_id).await)
         }
+        "sync_reset_identity" => wrap(crate::app::sync::sync_reset_identity(state).await),
+        "sync_keep_identity" => wrap(crate::app::sync::sync_keep_identity(state).await),
 
         // --- translation ---
         "translate_paragraph" => {

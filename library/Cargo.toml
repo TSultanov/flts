@@ -22,6 +22,7 @@ async-openai = { version = "0.42.2", features = [
   "chat-completion-types",
 ] }
 async-trait = "0.1.92"
+dbsync = { path = "../dbsync" }
 epub = "=2.1.5"
 fnv = "1.0.7"
 gemini-rust = "1.7.1"
@@ -30,18 +31,15 @@ futures-util = { version = "0.3.34", default-features = false, features = [
   "std",
 ] }
 isolang = { workspace = true, features = ["local_names"] }
-itertools = "0.15.0"
 log = { workspace = true }
 notify = "8.2.0"
 notify-debouncer-full = "0.7.0"
 rand = { workspace = true }
 regex-lite = "0.1.7"
 reqwest = { workspace = true }
-ringbuffer = "0.16.0"
 scraper = { version = "0.27.0", default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
-strum = { workspace = true }
 syncthing-sys = { path = "../syncthing-sys", optional = true }
 tokio = { workspace = true, features = [
   "rt-multi-thread",
@@ -55,9 +53,6 @@ tokio = { workspace = true, features = [
 unicode-normalization = { workspace = true }
 uuid = { workspace = true }
 zstd = { version = "0.14.3", default-features = false, features = ["arrays"] }
-
-[target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
-trash = "5.2.9"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10.1"

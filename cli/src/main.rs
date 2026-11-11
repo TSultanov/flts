@@ -16,7 +16,6 @@ use file_format::FileFormat;
 use futures_util::{StreamExt, stream::FuturesUnordered};
 use isolang::Language;
 use library::{
-    book::chapter_summaries::ChapterSummaries,
     cache::{GEMINI_PROMPT_CACHE_CAPACITY, TranslationsCache},
     epub_importer::EpubBook,
     library::Library,
@@ -151,39 +150,25 @@ async fn dump_summaries(
     chapter_filter: Option<usize>,
     headers_only: bool,
 ) -> anyhow::Result<()> {
-    let books = library.list_books().await?;
-    let meta = books
-        .iter()
-        .find(|b| b.id == book_id)
-        .ok_or_else(|| anyhow::anyhow!("Book {book_id} not found in library"))?;
+    let book = library
+        .get_book(&book_id)
+        .await
+        .map_err(|err| anyhow::anyhow!("Book {book_id} not found in library: {err}"))?
+        .snapshot();
+    let summaries = &book.summaries;
 
-    let Some(main) = meta.chapter_summaries_main_path.as_ref() else {
-        println!(
-            "Book {} ({}): no chapter_summaries.dat sidecar yet",
-            meta.title, book_id
-        );
-        return Ok(());
-    };
-
-    let summaries =
-        ChapterSummaries::load_from_metadata(main, &meta.chapter_summaries_conflicting_paths)
-            .await?;
-
-    let titles: Vec<Option<String>> = {
-        let book = library.get_book(&book_id).await?.snapshot();
-        (0..summaries.entries.len())
-            .map(|i| {
-                book.book
-                    .chapter_view(i)
-                    .title
-                    .as_ref()
-                    .map(|t| t.to_string())
-            })
-            .collect()
-    };
+    let titles: Vec<Option<String>> = (0..summaries.entries.len())
+        .map(|i| {
+            book.book
+                .chapter_view(i)
+                .title
+                .as_ref()
+                .map(|t| t.to_string())
+        })
+        .collect();
 
     let generated = summaries.entries.iter().filter(|e| e.generated).count();
-    println!("Book: {} ({})", meta.title, meta.id);
+    println!("Book: {} ({})", book.book.title, book.book.id);
     println!(
         "Chapters: {} generated, {} pending",
         generated,
@@ -284,19 +269,15 @@ async fn translate_paragraph(
     println!("Worker {worker_id}: Translated paragraph {}", paragraph_id);
 
     let handle = book_handle;
-    let receipt = handle
+    handle
         .apply_translation(
-            handle.token,
             paragraph_id,
-            paragraph_text,
-            Language::from_639_3(&source_snapshot.book.language)
-                .ok_or_else(|| anyhow::anyhow!("invalid source language"))?,
             *tgt_lang,
             p_translation,
             translator.get_model(),
         )
         .await?;
-    handle.flush_through(receipt.revision).await?;
+    handle.flush().await?;
 
     Ok(())
 }
@@ -425,7 +406,7 @@ async fn translate_book(
 
     while set.next().await.is_some() {}
 
-    library.flush_all().await?;
+    library.flush().await?;
 
     let elapsed_time = start_time.elapsed();
     println!("Translated in: {:?}", elapsed_time);

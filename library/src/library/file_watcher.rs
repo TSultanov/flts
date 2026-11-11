@@ -1,68 +1,24 @@
-use isolang::Language;
-use itertools::Itertools;
 use log::{error, info, warn};
 use notify::{Event, EventKind, RecursiveMode};
 use notify_debouncer_full::{DebounceEventResult, Debouncer, RecommendedCache, new_debouncer_opt};
-use std::fs;
 use std::path::PathBuf;
-use std::str::FromStr;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use uuid::Uuid;
 
 /// The `notify` backend the library watch runs on.
 ///
-/// Platform-recommended everywhere but iOS, where it resolves to kqueue: one
-/// open descriptor per watched path, and a library of thousands of card JSONs
-/// blows past the 256-descriptor soft limit, after which every `open` in the
-/// process fails with EMFILE. Polling costs a stat sweep and no descriptors.
+/// None on iOS: the recommended one there is kqueue, an open descriptor per
+/// watched path against a 256-descriptor limit, and a polling one would only
+/// repeat the sync poll, which adopts what arrived every few seconds anyway.
 #[cfg(target_os = "ios")]
-type WatchBackend = notify::PollWatcher;
+type WatchBackend = notify::NullWatcher;
 #[cfg(not(target_os = "ios"))]
 type WatchBackend = notify::RecommendedWatcher;
 
-/// Poll period: long enough that thousands of stats stay negligible, short
-/// enough that a synced book appears while the reader is on the shelf.
-#[cfg(target_os = "ios")]
-const POLL_INTERVAL: Duration = Duration::from_secs(10);
-
-/// Read only by the polling watcher; event-driven backends ignore it.
-fn watch_config() -> notify::Config {
-    #[cfg(target_os = "ios")]
-    {
-        // `compare_contents` hashes every file per sweep; mtime+size is what
-        // the event-driven backends effectively report anyway.
-        notify::Config::default()
-            .with_poll_interval(POLL_INTERVAL)
-            .with_compare_contents(false)
-    }
-    #[cfg(not(target_os = "ios"))]
-    {
-        notify::Config::default()
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LibraryFileChange {
-    SummariesChanged {
-        uuid: Uuid,
-    },
-    BookChanged {
-        modified: SystemTime,
-        uuid: Uuid,
-    },
-    TranslationChanged {
-        modified: SystemTime,
-        from: Language,
-        to: Language,
-        uuid: Uuid,
-    },
-    CardChanged {
-        modified: SystemTime,
-        from: Language,
-        to: Language,
-        lemma_slug: String,
-    },
+    /// Shards (or a not-yet-upgraded device's legacy files) changed on disk.
+    StoreChanged { paths: Vec<PathBuf> },
 }
 
 pub struct LibraryWatcher {
@@ -71,50 +27,22 @@ pub struct LibraryWatcher {
     change_rx: Option<UnboundedReceiver<LibraryFileChange>>,
 }
 
-/// The debounced-event handler: classify, log, forward distinct changes.
-/// Shared with the polling-backend test so both backends classify identically.
+/// The debounced-event handler: one change per batch, naming every file that
+/// moved.
 fn change_handler(
     tx: UnboundedSender<LibraryFileChange>,
 ) -> impl FnMut(DebounceEventResult) + Send + 'static {
     move |result: DebounceEventResult| match result {
         Ok(events) => {
-            let deduplicated_changes = events
-                .into_iter()
-                .filter_map(|ev| LibraryWatcher::classify_event(&ev))
-                .unique();
-
-            for change in deduplicated_changes {
-                match &change {
-                    LibraryFileChange::SummariesChanged { uuid } => {
-                        info!("Book {uuid} summaries changed")
-                    }
-                    LibraryFileChange::BookChanged { modified: _, uuid } => {
-                        info!("Book {uuid} change detected")
-                    }
-                    LibraryFileChange::TranslationChanged {
-                        modified: _,
-                        from,
-                        to,
-                        uuid,
-                    } => info!(
-                        "Translation {} {}->{} change detected",
-                        uuid,
-                        from.to_639_3(),
-                        to.to_639_3()
-                    ),
-                    LibraryFileChange::CardChanged {
-                        modified: _,
-                        from,
-                        to,
-                        lemma_slug,
-                    } => info!(
-                        "Card {} {}->{} change detected",
-                        lemma_slug,
-                        from.to_639_3(),
-                        to.to_639_3()
-                    ),
-                }
-                let _ = tx.send(change);
+            let mut paths: Vec<PathBuf> = events
+                .iter()
+                .flat_map(|event| LibraryWatcher::changed_data_files(event))
+                .collect();
+            paths.sort();
+            paths.dedup();
+            if !paths.is_empty() {
+                info!("Library store change detected in {} files", paths.len());
+                let _ = tx.send(LibraryFileChange::StoreChanged { paths });
             }
         }
         Err(errors) => {
@@ -132,7 +60,7 @@ impl LibraryWatcher {
             None,
             change_handler(change_tx),
             RecommendedCache::new(),
-            watch_config(),
+            notify::Config::default(),
         )?;
 
         Ok(Self {
@@ -159,87 +87,35 @@ impl LibraryWatcher {
         self.change_rx.take()
     }
 
-    fn classify_event(event: &Event) -> Option<LibraryFileChange> {
+    /// The paths in `event` that carry library data: shards and peers files
+    /// (`*.dbs`), or the legacy `.dat`/`.json` files an old device syncs in.
+    /// Temporaries (`.syncthing.*.tmp`, `.dbsync-*.tmp`, `*~*`) are not data
+    /// until they are renamed into place.
+    fn changed_data_files(event: &Event) -> Vec<PathBuf> {
         if !matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_)) {
-            return None;
+            return Vec::new();
         }
-
-        for path in &event.paths {
-            let filename = path.file_name()?.to_str()?;
-
-            if filename.contains('~') {
-                continue;
-            }
-
-            let metadata = fs::metadata(path);
-            if metadata.is_err() {
-                warn!(
-                    "Failed to read metadata of {:?}: {}",
-                    path,
-                    &metadata.err().unwrap()
-                );
-                continue;
-            }
-            let metadata = metadata.unwrap();
-
-            // {uuid}/book<conflict junk>.dat
-            // {uuid}/translation_{src}_{tgt}<conflict junk>.dat
-            if filename.starts_with("chapter_summaries") && filename.ends_with(".dat") {
-                return Some(LibraryFileChange::SummariesChanged {
-                    uuid: Uuid::from_str(path.parent()?.file_name()?.to_str()?).ok()?,
-                });
-            }
-            if filename.starts_with("book") && filename.ends_with(".dat") {
-                let uuid = path.parent()?.file_name()?.to_str()?;
-                return Some(LibraryFileChange::BookChanged {
-                    modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-                    uuid: Uuid::from_str(uuid).ok()?,
-                });
-            }
-
-            if filename.starts_with("translation_") && filename.ends_with(".dat") {
-                let uuid = path.parent()?.file_name()?.to_str()?;
-                let parts: Vec<&str> = filename
-                    .trim_start_matches("translation_")
-                    .trim_end_matches(".dat")
-                    .split('_')
-                    .collect();
-
-                if parts.len() >= 2 {
-                    let from: String = parts[0].chars().take(3).collect();
-                    let to: String = parts[1].chars().take(3).collect();
-                    return Some(LibraryFileChange::TranslationChanged {
-                        modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-                        from: Language::from_639_3(&from)?,
-                        to: Language::from_639_3(&to)?,
-                        uuid: Uuid::from_str(uuid).ok()?,
-                    });
-                }
-            }
-
-            // <lib>/cards/<src>-<tgt>/<lemma>_<pos>.json. Conflict siblings
-            // are merged by LibraryCardStore::load, so they raise no event.
-            if filename.ends_with(".json") && !filename.contains(".sync-conflict-") {
-                let parent = path.parent()?;
-                let deck_dir = parent.file_name()?.to_str()?;
-                let grand = parent.parent()?.file_name()?.to_str()?;
-                if grand == "cards"
-                    && let Some((src, tgt)) = deck_dir.split_once('-')
-                    && let Some(from) = Language::from_639_3(src)
-                    && let Some(to) = Language::from_639_3(tgt)
-                    && let Some(stem) = filename.strip_suffix(".json")
-                {
-                    return Some(LibraryFileChange::CardChanged {
-                        modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-                        from,
-                        to,
-                        lemma_slug: stem.to_owned(),
-                    });
-                }
-            }
-        }
-
-        None
+        event
+            .paths
+            .iter()
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        !name.starts_with('.')
+                            && !name.contains('~')
+                            && (name.ends_with(".dbs")
+                                || name.ends_with(".dat")
+                                || name.ends_with(".json"))
+                    })
+                    && !path.components().any(|part| {
+                        part.as_os_str()
+                            .to_str()
+                            .is_some_and(|part| part.starts_with(".flts"))
+                    })
+            })
+            .cloned()
+            .collect()
     }
 }
 
@@ -250,9 +126,27 @@ mod tests {
     use std::time::Duration;
     use tokio::time::timeout;
 
+    async fn next_change(
+        rx: &mut UnboundedReceiver<LibraryFileChange>,
+        wanted: &std::path::Path,
+    ) -> bool {
+        timeout(Duration::from_secs(10), async {
+            while let Some(LibraryFileChange::StoreChanged { paths }) = rx.recv().await {
+                if paths.iter().any(|path| path.ends_with(wanted)) {
+                    return true;
+                }
+            }
+            false
+        })
+        .await
+        .unwrap_or(false)
+    }
+
     #[tokio::test(flavor = "multi_thread")]
-    async fn watcher_emits_card_changed_for_atomic_save() {
-        let tmp = TempDir::new("flts_watcher_card");
+    async fn watcher_reports_a_shard_renamed_into_place_and_no_temporaries() {
+        let tmp = TempDir::new("flts_watcher_shard");
+        let table = tmp.path.join("db").join("book");
+        std::fs::create_dir_all(&table).unwrap();
         let mut watcher = LibraryWatcher::new().expect("watcher init");
         let mut rx = watcher.take_recv().expect("receiver available");
         watcher.set_path(&tmp.path).expect("set_path ok");
@@ -260,129 +154,47 @@ mod tests {
         // Let the recursive watch install before writing.
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let deck = tmp.path.join("cards").join("spa-rus");
-        tokio::fs::create_dir_all(&deck).await.unwrap();
+        // Syncthing delivers a file under a temporary name, then renames it.
+        let arriving = table.join(".syncthing.00000000000000aa.v1.dbs.tmp");
+        std::fs::write(&arriving, b"shard").unwrap();
+        std::fs::rename(&arriving, table.join("00000000000000aa.v1.dbs")).unwrap();
 
-        // Mirror LibraryCardStore::save: temp~, then rename.
-        let canonical = deck.join("hola_noun.json");
-        let temp = deck.join("hola_noun.json~TEST1234");
-        tokio::fs::write(&temp, br#"{"version":1}"#).await.unwrap();
-        tokio::fs::rename(&temp, &canonical).await.unwrap();
-
-        let event = timeout(Duration::from_millis(2000), rx.recv())
-            .await
-            .expect("watcher fired in time")
-            .expect("channel still open");
-
-        match event {
-            LibraryFileChange::CardChanged {
-                from,
-                to,
-                lemma_slug,
-                ..
-            } => {
-                assert_eq!(from.to_639_3(), "spa");
-                assert_eq!(to.to_639_3(), "rus");
-                assert_eq!(lemma_slug, "hola_noun");
-            }
-            other => panic!("expected CardChanged, got {other:?}"),
-        }
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn watcher_skips_sync_conflict_card_sibling() {
-        let tmp = TempDir::new("flts_watcher_conflict");
-        let mut watcher = LibraryWatcher::new().expect("watcher init");
-        let mut rx = watcher.take_recv().expect("receiver available");
-        watcher.set_path(&tmp.path).expect("set_path ok");
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        let deck = tmp.path.join("cards").join("spa-rus");
-        tokio::fs::create_dir_all(&deck).await.unwrap();
-        let conflict = deck.join("hola_noun.sync-conflict-20260101-abc.json");
-        tokio::fs::write(&conflict, br#"{"version":1}"#)
-            .await
-            .unwrap();
-
-        // Well past the 500 ms debounce; no event should fire.
-        let result = timeout(Duration::from_millis(1500), rx.recv()).await;
         assert!(
-            result.is_err(),
-            "no event should fire for conflict sibling; got {result:?}"
+            next_change(
+                &mut rx,
+                std::path::Path::new("book/00000000000000aa.v1.dbs")
+            )
+            .await,
+            "a delivered shard must be reported"
         );
     }
 
-    /// No dev or CI host selects the polling backend, so drive it explicitly:
-    /// a saved card must classify the same from a stat sweep as from the
-    /// kernel.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn poll_backend_classifies_card_writes() {
-        let tmp = TempDir::new("flts_watcher_poll");
-        let (tx, mut rx) = unbounded_channel();
-
-        let mut debouncer = new_debouncer_opt::<_, notify::PollWatcher, RecommendedCache>(
-            Duration::from_millis(200),
-            None,
-            change_handler(tx),
-            RecommendedCache::new(),
-            notify::Config::default()
-                .with_poll_interval(Duration::from_millis(100))
-                .with_compare_contents(false),
-        )
-        .expect("poll debouncer init");
-        debouncer
-            .watch(&tmp.path, RecursiveMode::Recursive)
-            .expect("watch ok");
-
-        let deck = tmp.path.join("cards").join("spa-rus");
-        tokio::fs::create_dir_all(&deck).await.unwrap();
-        let canonical = deck.join("hola_noun.json");
-        let temp = deck.join("hola_noun.json~TEST1234");
-        tokio::fs::write(&temp, br#"{"version":1}"#).await.unwrap();
-        tokio::fs::rename(&temp, &canonical).await.unwrap();
-
-        // Detection is bounded by the poll interval, not the kernel.
-        let event = timeout(Duration::from_secs(5), rx.recv())
-            .await
-            .expect("poll watcher fired in time")
-            .expect("channel still open");
-
-        match event {
-            LibraryFileChange::CardChanged {
-                from,
-                to,
-                lemma_slug,
-                ..
-            } => {
-                assert_eq!(from.to_639_3(), "spa");
-                assert_eq!(to.to_639_3(), "rus");
-                assert_eq!(lemma_slug, "hola_noun");
-            }
-            other => panic!("expected CardChanged, got {other:?}"),
+    #[test]
+    fn temporaries_and_local_state_are_not_data() {
+        let event = |path: &str| Event {
+            kind: EventKind::Create(notify::event::CreateKind::File),
+            paths: vec![PathBuf::from(path)],
+            attrs: Default::default(),
+        };
+        for ignored in [
+            "/lib/db/book/.syncthing.00aa.v1.dbs.tmp",
+            "/lib/db/book/.dbsync-0198.tmp",
+            "/lib/.flts/devices.json",
+            "/lib/.flts-local/cache.v1.r2.dbs",
+            "/lib/1b4e28ba-2fa1-11d2-883f-0016d3cca427/book.dat~Ab12Cd34",
+        ] {
+            assert!(
+                LibraryWatcher::changed_data_files(&event(ignored)).is_empty(),
+                "{ignored} is not library data"
+            );
         }
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn watcher_still_classifies_translation_files() {
-        let tmp = TempDir::new("flts_watcher_translation");
-        let mut watcher = LibraryWatcher::new().expect("watcher init");
-        let mut rx = watcher.take_recv().expect("receiver available");
-        watcher.set_path(&tmp.path).expect("set_path ok");
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        let uuid = Uuid::new_v4();
-        let book_dir = tmp.path.join(uuid.to_string());
-        tokio::fs::create_dir_all(&book_dir).await.unwrap();
-        let path = book_dir.join("translation_spa_rus.dat");
-        tokio::fs::write(&path, b"x").await.unwrap();
-
-        let event = timeout(Duration::from_millis(2000), rx.recv())
-            .await
-            .expect("watcher fired in time")
-            .expect("channel still open");
-        assert!(
-            matches!(event, LibraryFileChange::TranslationChanged { .. }),
-            "expected TranslationChanged; got {event:?}"
-        );
+        for data in [
+            "/lib/db/book/00000000000000aa.v1.dbs",
+            "/lib/db/dbsync.meta/00000000000000aa.dbs",
+            "/lib/1b4e28ba-2fa1-11d2-883f-0016d3cca427/book.dat",
+            "/lib/cards/spa-rus/poder.json",
+        ] {
+            assert_eq!(LibraryWatcher::changed_data_files(&event(data)).len(), 1);
+        }
     }
 }

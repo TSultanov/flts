@@ -5,6 +5,14 @@ import { Resource } from "../data/tauri.svelte";
 export type SyncState =
   "disabled" | "starting" | "online" | "syncing" | "error";
 
+export type StoreIssues = {
+  newerVersion: number;
+  unreadable: number;
+  strangers: number;
+  stalled?: boolean;
+  sharedIdentity?: boolean;
+};
+
 export type SyncStatus = {
   state: SyncState;
   deviceId?: string;
@@ -12,6 +20,7 @@ export type SyncStatus = {
   connectedCount: number;
   completion?: number;
   lastError?: string;
+  storeIssues?: StoreIssues;
 };
 
 export type ThisDevice = { deviceId: string; name?: string };
@@ -96,6 +105,16 @@ export async function syncAddDevice(
 
 export async function syncRemoveDevice(deviceId: string): Promise<void> {
   await invoke("sync_remove_device", { deviceId });
+}
+
+/// Sync restarts under a new device id; every pairing has to be redone.
+export async function syncResetIdentity(): Promise<void> {
+  await invoke("sync_reset_identity");
+}
+
+/// For when the other copy is the one to be reset.
+export async function syncKeepIdentity(): Promise<void> {
+  await invoke("sync_keep_identity");
 }
 
 /// Mobile only; desktop pairs by paste.

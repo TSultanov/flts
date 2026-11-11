@@ -8,9 +8,9 @@ trace validation of `spec/roster/Trace.tla` reveals issues.
 The roster harness exercises the **real** roster CRDT, reconcile, and engine glue
 (`SyncEngine` over a `MockSyncthing` — no live Go engine) across a small simulated
 mesh, emitting one NDJSON event per membership transition for `spec/roster/`.
-Syncthing's file delivery is stood in by copying a node's `devices.json` into
-another node's `.flts/` as a `.sync-conflict-*` sibling — exactly the input
-`RosterStore::load` union-merges in production.
+Syncthing's file delivery is stood in by copying a node's roster shards
+(`.flts/roster`) into another node's library root — exactly the input
+`RosterStore::load` adopts in production.
 
 Instrumentation is **compiled into production code** behind the `tla_trace` Cargo
 feature (zero-cost no-op when off). There is no patch/apply step.
@@ -22,19 +22,19 @@ feature (zero-cost no-op when off). There is no patch/apply step.
 | `library/src/tla_trace/trace.rs`    | `emit_roster_event(...)` — writes the NDJSON envelope (real impl, `tla_trace` on) |
 | `library/src/tla_trace/noop.rs`     | zero-cost stand-in (`tla_trace` off)                                              |
 | `library/src/sync/engine.rs`        | emit call sites + `trace_emit` helper (gathers post-state)                        |
-| `library/src/sync/roster.rs`        | `pending_sibling_sources` / `snapshot_for_trace` (trace-only peeks)               |
+| `library/src/sync/roster.rs`        | `take_delivery_sources` / `snapshot_for_trace` (trace-only peeks)                 |
 | `library/src/sync/trace_harness.rs` | the two scenarios (`#[cfg(all(test, tla_trace, sync-engine))]`)                   |
 | `harness/roster/run.sh`             | build with the feature, run scenarios, check coverage                             |
 
 ## Event → emit site (post-`apply` = current source)
 
-| Event           | File:fn                       | Trigger                                 | Notes                                                                                                    |
-| --------------- | ----------------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `EnsureSelf`    | `engine.rs` `set_device_name` | after `ensure_self` + `rename_device`   | self's add vc                                                                                            |
-| `PairOn`        | `engine.rs` `pair_device`     | after `add_device` + `add_peer`         | target's add vc. **ApprovePending is folded in here** (identical effect)                                 |
-| `UnpairOn`      | `engine.rs` `unpair_device`   | after `remove_device` + `remove_peer`   | target's rem vc                                                                                          |
-| `RosterSync`    | `engine.rs` `reconcile_once`  | after `load`, IFF it changed the roster | one per merged sibling; `src` = sibling `modifiedBy`; emitted only when `snapshot_for_trace() != load()` |
-| `ReconcileNode` | `engine.rs` `reconcile_once`  | after the add/remove apply loop         | only when the plan was non-empty (engine changed)                                                        |
+| Event           | File:fn                       | Trigger                                 | Notes                                                                                                                                            |
+| --------------- | ----------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `EnsureSelf`    | `engine.rs` `set_device_name` | after `ensure_self` + `rename_device`   | self's add vc                                                                                                                                    |
+| `PairOn`        | `engine.rs` `pair_device`     | after `add_device` + `add_peer`         | target's add vc. **ApprovePending is folded in here** (identical effect)                                                                         |
+| `UnpairOn`      | `engine.rs` `unpair_device`   | after `remove_device` + `remove_peer`   | target's rem vc                                                                                                                                  |
+| `RosterSync`    | `engine.rs` `reconcile_once`  | after `load`, IFF it changed the roster | one per source the harness named via `trace_delivered_from` (shards carry writer ids, not device ids); without one, a single event with no `src` |
+| `ReconcileNode` | `engine.rs` `reconcile_once`  | after the add/remove apply loop         | only when the plan was non-empty (engine changed)                                                                                                |
 
 Every event carries the emitting node's POST-state: `node`, `roster`
 (`{id: {add: <vclock>, rem: <vclock>}}`, a vclock = `{deviceId: counter}`),

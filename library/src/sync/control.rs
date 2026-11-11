@@ -127,6 +127,10 @@ pub trait SyncthingApi: Send + Sync {
 
     /// This device's folder completion, 0–100; below 100 means still pulling.
     async fn folder_completion(&self, folder_id: &str) -> Result<f64>;
+
+    /// Replaces the folder's `.stignore`. The folder must be configured; it
+    /// need not be running or scanned.
+    async fn set_ignores(&self, folder_id: &str, patterns: Vec<String>) -> Result<()>;
 }
 
 #[cfg(test)]
@@ -164,6 +168,9 @@ impl<T: SyncthingApi + ?Sized> SyncthingApi for std::sync::Arc<T> {
     }
     async fn folder_completion(&self, folder_id: &str) -> Result<f64> {
         (**self).folder_completion(folder_id).await
+    }
+    async fn set_ignores(&self, folder_id: &str, patterns: Vec<String>) -> Result<()> {
+        (**self).set_ignores(folder_id, patterns).await
     }
 }
 
@@ -204,6 +211,12 @@ impl HttpSyncthing {
     async fn delete(&self, path: &str) -> Result<()> {
         self.send(reqwest::Method::DELETE, path, None).await?;
         Ok(())
+    }
+
+    async fn post(&self, path: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
+        let text = self.send(reqwest::Method::POST, path, Some(body)).await?;
+        serde_json::from_str(&text)
+            .map_err(|e| anyhow!("syncthing: decoding POST {path} failed: {e}"))
     }
 
     /// Retries only connection failures: the request never reached the engine,
@@ -374,6 +387,23 @@ impl SyncthingApi for HttpSyncthing {
             .unwrap_or(100.0))
     }
 
+    async fn set_ignores(&self, folder_id: &str, patterns: Vec<String>) -> Result<()> {
+        let reply = self
+            .post(
+                &format!("/rest/db/ignores?folder={folder_id}"),
+                &serde_json::json!({ "ignore": patterns }),
+            )
+            .await?;
+        // The file is written by now; a pattern that fails to parse comes back
+        // here under HTTP 200.
+        if let Some(err) = reply.get("error").and_then(|e| e.as_str())
+            && !err.is_empty()
+        {
+            bail!("syncthing: ignores for {folder_id} rejected: {err}");
+        }
+        Ok(())
+    }
+
     async fn pending_devices(&self) -> Result<Vec<PendingDevice>> {
         // `{ "<deviceID>": { "time": "...", "name": "...", "address": "..." } }`
         let value = self.get("/rest/cluster/pending/devices").await?;
@@ -407,6 +437,9 @@ struct MockState {
     addresses: HashMap<String, Vec<String>>,
     pending: Vec<PendingDevice>,
     completion: f64,
+    ignores: HashMap<String, Vec<String>>,
+    ignore_writes: usize,
+    fail_ignores: bool,
 }
 
 /// In-memory `SyncthingApi`: records mutations, serves configured state.
@@ -444,6 +477,19 @@ impl MockSyncthing {
 
     pub fn options(&self) -> Option<OptionsPatch> {
         self.state.lock().unwrap().options.clone()
+    }
+
+    pub fn ignores(&self, folder_id: &str) -> Option<Vec<String>> {
+        self.state.lock().unwrap().ignores.get(folder_id).cloned()
+    }
+
+    pub fn ignore_writes(&self) -> usize {
+        self.state.lock().unwrap().ignore_writes
+    }
+
+    /// Makes every later `set_ignores` fail.
+    pub fn fail_ignores(&self) {
+        self.state.lock().unwrap().fail_ignores = true;
     }
 
     pub fn set_pending(&self, device_id: &str, name: &str) {
@@ -530,6 +576,20 @@ impl SyncthingApi for MockSyncthing {
     async fn folder_completion(&self, _folder_id: &str) -> Result<f64> {
         Ok(self.state.lock().unwrap().completion)
     }
+
+    /// Like the engine, refuses a folder that is not configured.
+    async fn set_ignores(&self, folder_id: &str, patterns: Vec<String>) -> Result<()> {
+        let mut state = self.state.lock().unwrap();
+        if state.fail_ignores {
+            bail!("injected ignores failure");
+        }
+        if !state.folders.iter().any(|f| f.id == folder_id) {
+            bail!("folder {folder_id} does not exist");
+        }
+        state.ignore_writes += 1;
+        state.ignores.insert(folder_id.to_string(), patterns);
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -584,5 +644,110 @@ mod tests {
         assert_eq!(api.connections().await.unwrap().get("PEER"), Some(&true));
         api.set_connected("PEER", false);
         assert_eq!(api.connections().await.unwrap().get("PEER"), Some(&false));
+    }
+
+    #[tokio::test]
+    async fn mock_ignores_need_a_configured_folder_and_replace_wholesale() {
+        let api = MockSyncthing::new("ME");
+        assert!(
+            api.set_ignores("flts-library", vec!["/a".into()])
+                .await
+                .is_err(),
+            "no folder yet"
+        );
+        api.ensure_folder(FolderSpec {
+            id: "flts-library".into(),
+            label: "FLTS".into(),
+            path: "/tmp/lib".into(),
+            device_ids: vec!["ME".into()],
+        })
+        .await
+        .unwrap();
+        api.set_ignores("flts-library", vec!["/a".into(), "/b".into()])
+            .await
+            .unwrap();
+        api.set_ignores("flts-library", vec!["/c".into()])
+            .await
+            .unwrap();
+        assert_eq!(api.ignores("flts-library"), Some(vec!["/c".to_string()]));
+    }
+
+    /// One-request HTTP server: answers `reply`, hands back the raw request.
+    fn serve_once(reply: &'static str) -> (String, std::thread::JoinHandle<String>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                let n = stream.read(&mut buf).unwrap();
+                request.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&request);
+                let Some(head_end) = text.find("\r\n\r\n") else {
+                    continue;
+                };
+                let length = text
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().unwrap())
+                    })
+                    .unwrap_or(0);
+                if n == 0 || request.len() >= head_end + 4 + length {
+                    break;
+                }
+            }
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                reply.len()
+            )
+            .unwrap();
+            String::from_utf8(request).unwrap()
+        });
+        (url, handle)
+    }
+
+    #[tokio::test]
+    async fn http_set_ignores_posts_the_patterns_for_the_folder() {
+        let (url, server) = serve_once(r#"{"ignore":["/x"],"expanded":["/x"],"error":null}"#);
+        let api = HttpSyncthing::new(url, "KEY".into());
+
+        api.set_ignores(
+            "flts-library",
+            vec!["(?d).dbsync-*.tmp".into(), "/x".into()],
+        )
+        .await
+        .unwrap();
+
+        let request = server.join().unwrap();
+        assert!(
+            request.starts_with("POST /rest/db/ignores?folder=flts-library HTTP/1.1"),
+            "{request}"
+        );
+        assert!(request.to_ascii_lowercase().contains("x-api-key: key"));
+        let body: serde_json::Value =
+            serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({ "ignore": ["(?d).dbsync-*.tmp", "/x"] })
+        );
+    }
+
+    #[tokio::test]
+    async fn http_set_ignores_surfaces_a_rejected_pattern() {
+        let (url, server) = serve_once(r#"{"ignore":["["],"expanded":null,"error":"bad pattern"}"#);
+        let api = HttpSyncthing::new(url, "KEY".into());
+
+        let err = api
+            .set_ignores("flts-library", vec!["[".into()])
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("bad pattern"), "{err}");
+        server.join().unwrap();
     }
 }

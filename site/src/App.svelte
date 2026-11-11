@@ -12,7 +12,10 @@
         hasApiKeyForProvider,
         type ProviderMeta,
     } from "./lib/config/store";
-    import { navigate } from "./router";
+    import { navigate, route } from "./router";
+    import { watchBookDeleted } from "./lib/book/bookDeleted";
+    import { watchImportProgress } from "./lib/library/importProgress";
+    import type { UUID } from "./lib/data/uuid";
     import { platform } from "@tauri-apps/plugin-os";
     import { invoke } from "@tauri-apps/api/core";
 
@@ -70,8 +73,21 @@
             }
         };
         document.addEventListener("visibilitychange", onVisible);
-        return () =>
+
+        const unwatchBookDeleted = watchBookDeleted(
+            () =>
+                route.pathname.startsWith("/book/")
+                    ? ((route.params.bookId as UUID | undefined) ?? null)
+                    : null,
+            // Replace, so Back cannot return to the deleted book.
+            () => void navigate("/library", { replace: true }),
+        );
+        const unwatchImportProgress = watchImportProgress();
+        return () => {
             document.removeEventListener("visibilitychange", onVisible);
+            unwatchBookDeleted();
+            unwatchImportProgress();
+        };
     });
 
     const links = $derived.by(() => {

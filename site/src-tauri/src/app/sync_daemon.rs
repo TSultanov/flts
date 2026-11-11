@@ -4,7 +4,7 @@
 //! `eval_config` and shut down on app exit, like
 //! [`AnkiSyncTask`](crate::app::anki_sync::AnkiSyncTask).
 
-use std::{path::PathBuf, time::Duration};
+use std::{future::Future, path::PathBuf, pin::Pin, time::Duration};
 
 use crate::app::task::ManagedTask;
 use library::sync::engine::{EngineConfig, SyncEngine};
@@ -47,6 +47,24 @@ pub struct SyncStatus {
     pub completion: Option<f64>,
     #[serde(rename = "lastError")]
     pub last_error: Option<String>,
+    #[serde(rename = "storeIssues")]
+    pub store_issues: StoreIssues,
+}
+
+/// Other devices' data this one cannot show, as counts of shard files.
+#[derive(Debug, Clone, Copy, Serialize, Default, PartialEq, Eq)]
+pub struct StoreIssues {
+    /// Written by a newer version of the app.
+    #[serde(rename = "newerVersion")]
+    pub newer_version: usize,
+    pub unreadable: usize,
+    /// Not shards at all, such as sync conflict copies.
+    pub strangers: usize,
+    /// Rows of another device stay unapplied; it likely runs a newer version.
+    pub stalled: bool,
+    /// Another installation writes under this one's identity.
+    #[serde(rename = "sharedIdentity")]
+    pub shared_identity: bool,
 }
 
 impl SyncStatus {
@@ -81,6 +99,11 @@ pub(crate) async fn probe_healthy(
         .unwrap_or(false)
 }
 
+/// Adopts whatever peers delivered since the last call; run once per poll.
+/// Takes the store writers of devices that left, and says what it could not read.
+pub type PeerRefresh =
+    Box<dyn Fn(Vec<u64>) -> Pin<Box<dyn Future<Output = StoreIssues> + Send>> + Send + Sync>;
+
 type Reply<T> = oneshot::Sender<anyhow::Result<T>>;
 enum SyncCommand {
     Probe(Reply<bool>),
@@ -105,6 +128,7 @@ impl SyncTask {
         device_name: String,
         hermetic: bool,
         status_tx: watch::Sender<SyncStatus>,
+        refresh_peers: PeerRefresh,
     ) -> anyhow::Result<(Self, ManagedTask)> {
         status_tx.send_replace(SyncStatus {
             state: SyncState::Starting,
@@ -127,12 +151,15 @@ impl SyncTask {
         if let Err(err) = engine.set_device_name(&device_name).await {
             warn!("Could not set this device's name: {err}");
         }
-        push_status(engine.client(), &status_tx, &my_id).await;
+        push_status(engine.client(), &status_tx, &my_id, StoreIssues::default()).await;
         let (commands, mut requests) = mpsc::channel(256);
         let keepalive = commands.clone();
         let owner = ManagedTask::spawn(move |mut stop| async move {
             let _keepalive = keepalive;
             let mut ticker = tokio::time::interval(DEFAULT_POLL_INTERVAL);
+            // Polled beside the commands: a large adoption must not stall a wake probe.
+            let mut adopting: Option<Pin<Box<dyn Future<Output = StoreIssues> + Send>>> = None;
+            let mut issues = StoreIssues::default();
             loop {
                 tokio::select! {
                     biased;
@@ -147,13 +174,32 @@ impl SyncTask {
                         Some(SyncCommand::Unpair(id, reply)) => { let _ = reply.send(engine.unpair_device(&id).await); }
                         Some(SyncCommand::Rename(name, reply)) => { let _ = reply.send(engine.set_device_name(&name).await); }
                     },
+                    found = async { adopting.as_mut().expect("guarded").await }, if adopting.is_some() => {
+                        adopting = None;
+                        if found != issues {
+                            issues = found;
+                            status_tx.send_modify(|status| status.store_issues = issues);
+                        }
+                    }
                     _ = ticker.tick() => {
                         if let Err(err) = engine.reconcile_once().await { warn!("Sync reconcile failed: {err}"); }
-                        push_status(engine.client(), &status_tx, engine.my_id()).await;
+                        push_status(engine.client(), &status_tx, engine.my_id(), issues).await;
+                        if adopting.is_none() {
+                            let retired = engine.retired_writers().unwrap_or_else(|err| {
+                                warn!("Could not tell which devices left: {err:#}");
+                                Vec::new()
+                            });
+                            adopting = Some(refresh_peers(retired));
+                        }
                     }
                 }
             }
             requests.close();
+            // Dropping it between adopting shards and reloading books would
+            // leave loaded books stale.
+            if let Some(adopting) = adopting.take() {
+                adopting.await;
+            }
             if let Err(err) = engine.stop().await {
                 log::warn!("sync engine stop failed: {err}");
             }
@@ -237,6 +283,7 @@ async fn push_status(
     client: &dyn library::sync::control::SyncthingApi,
     status_tx: &watch::Sender<SyncStatus>,
     my_id: &str,
+    store_issues: StoreIssues,
 ) {
     let devices = client.list_devices().await;
     let connections = client.connections().await;
@@ -268,12 +315,14 @@ async fn push_status(
                 connected_count: connected,
                 completion: if syncing { completion } else { None },
                 last_error: None,
+                store_issues,
             });
         }
         (Err(err), _) | (_, Err(err)) => {
             warn!("Sync status poll failed: {err}");
             status_tx.send_replace(SyncStatus {
                 device_id: Some(my_id.to_string()),
+                store_issues,
                 ..SyncStatus::error(err.to_string())
             });
         }
@@ -295,7 +344,7 @@ mod tests {
         api.set_connected("PEER1", true);
 
         let (tx, rx) = watch::channel(SyncStatus::default());
-        push_status(&api, &tx, "SELF").await;
+        push_status(&api, &tx, "SELF", StoreIssues::default()).await;
 
         let status = rx.borrow();
         assert_eq!(status.state, SyncState::Online);
@@ -313,13 +362,13 @@ mod tests {
         api.set_completion(42.0);
 
         let (tx, rx) = watch::channel(SyncStatus::default());
-        push_status(&api, &tx, "SELF").await;
+        push_status(&api, &tx, "SELF", StoreIssues::default()).await;
         assert_eq!(rx.borrow().state, SyncState::Syncing);
         assert_eq!(rx.borrow().completion, Some(42.0));
 
         // Caught up → Online, no percentage.
         api.set_completion(100.0);
-        push_status(&api, &tx, "SELF").await;
+        push_status(&api, &tx, "SELF", StoreIssues::default()).await;
         assert_eq!(rx.borrow().state, SyncState::Online);
         assert_eq!(rx.borrow().completion, None);
     }
@@ -330,7 +379,7 @@ mod tests {
         api.add_device("PEER", "p").await.unwrap();
         api.set_completion(10.0); // behind, but nobody connected to catch up from
         let (tx, rx) = watch::channel(SyncStatus::default());
-        push_status(&api, &tx, "SELF").await;
+        push_status(&api, &tx, "SELF", StoreIssues::default()).await;
         assert_eq!(rx.borrow().state, SyncState::Online);
     }
 
@@ -395,6 +444,9 @@ mod tests {
                 unreachable!()
             }
             async fn folder_completion(&self, _: &str) -> anyhow::Result<f64> {
+                unreachable!()
+            }
+            async fn set_ignores(&self, _: &str, _: Vec<String>) -> anyhow::Result<()> {
                 unreachable!()
             }
         }

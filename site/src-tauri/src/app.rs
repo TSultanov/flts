@@ -9,11 +9,10 @@ use std::{
 
 #[cfg(not(target_os = "android"))]
 use directories::ProjectDirs;
-use isolang::Language;
 use library::{
     cache::{GEMINI_PROMPT_CACHE_CAPACITY, TranslationsCache},
     library::{
-        Library,
+        Library, PeerChanges,
         file_watcher::{LibraryFileChange, LibraryWatcher},
     },
     translation_stats::TranslationSizeCache,
@@ -183,29 +182,76 @@ enum MigrationOutcome {
     KeptExisting,
 }
 
-/// Moves a legacy library into `new_root` only when the destination is absent or
-/// empty. The source is removed only after a fully successful copy.
+/// True when `root` has at most what opening an empty library or starting sync
+/// leaves behind: a store without shards and device-local/sync markers.
+fn holds_no_library_data(root: &Path) -> bool {
+    fn has_files(dir: &Path) -> bool {
+        fs::read_dir(dir).map_or(true, |entries| {
+            entries.flatten().any(|entry| {
+                let path = entry.path();
+                if path.is_dir() {
+                    has_files(&path)
+                } else {
+                    true
+                }
+            })
+        })
+    }
+    let Ok(entries) = fs::read_dir(root) else {
+        return false;
+    };
+    entries.flatten().all(|entry| {
+        let name = entry.file_name();
+        match name.to_str() {
+            Some(library::store::SHARED_DIR) => !has_files(&entry.path()),
+            // The roster names devices, not books.
+            Some(".flts" | ".flts-local" | ".flts-lock" | ".stfolder" | ".stignore") => true,
+            _ => false,
+        }
+    })
+}
+
+/// Moves a library into `new_root` only when the destination holds no
+/// library data; `Library::open` then imports any old-format directories.
 fn migrate_library_files(old: &Path, new_root: &Path) -> anyhow::Result<MigrationOutcome> {
     if old == new_root || !old.exists() {
         return Ok(MigrationOutcome::NothingToDo);
     }
 
-    let new_is_empty = !new_root.exists()
-        || fs::read_dir(new_root)
-            .map(|mut d| d.next().is_none())
-            .unwrap_or(false);
-    if !new_is_empty {
+    if new_root.exists() && !holds_no_library_data(new_root) {
         return Ok(MigrationOutcome::KeptExisting);
     }
 
     if let Some(parent) = new_root.parent() {
         fs::create_dir_all(parent)?;
     }
-    if fs::rename(old, new_root).is_err() {
-        copy_dir_recursive(old, new_root)?;
-        fs::remove_dir_all(old)?;
+    move_dir(old, new_root)?;
+    // The device-local state goes along, or this device would return as a
+    // new writer and leave its old one for the others to wait on.
+    if let (Some(from), Some(to)) = (
+        library::store::sibling_local_dir(old),
+        library::store::sibling_local_dir(new_root),
+    ) && from.is_dir()
+        && let Err(err) = fs::remove_dir_all(&to)
+            .or_else(|err| match err.kind() {
+                std::io::ErrorKind::NotFound => Ok(()),
+                _ => Err(err),
+            })
+            .map_err(anyhow::Error::from)
+            .and_then(|()| move_dir(&from, &to))
+    {
+        warn!("Could not move the library's local state: {err:#}");
     }
     Ok(MigrationOutcome::Moved)
+}
+
+/// The source is removed only after a fully successful copy.
+fn move_dir(from: &Path, to: &Path) -> anyhow::Result<()> {
+    if fs::rename(from, to).is_err() {
+        copy_dir_recursive(from, to)?;
+        fs::remove_dir_all(from)?;
+    }
+    Ok(())
 }
 
 /// Cross-filesystem fallback for when `rename` cannot move the legacy library.
@@ -290,6 +336,84 @@ async fn invalidate_changed_api_keys(
     Ok(())
 }
 
+const MAX_PARAGRAPH_EVENTS: usize = 64;
+
+#[derive(Clone, Copy, serde::Serialize)]
+struct ImportProgress {
+    done: usize,
+    total: usize,
+}
+
+/// The one place `PeerChanges` become frontend events; the watcher and the
+/// sync poll both end here.
+fn emit_peer_changes(
+    app: &tauri::AppHandle,
+    gated: &gated_state::GatedState,
+    changes: &PeerChanges,
+) {
+    if changes.library {
+        // The library watch relays this as "library_updated".
+        gated.notify_library_changed();
+    }
+    for uuid in &changes.books {
+        info!("Emitting \"book_updated\" for {uuid}");
+        if let Err(err) = app.emit("book_updated", uuid) {
+            warn!("Failed to emit book_updated: {err}");
+        }
+    }
+    for uuid in &changes.deleted {
+        info!("Emitting \"book_deleted\" for {uuid}");
+        if let Err(err) = app.emit("book_deleted", uuid) {
+            warn!("Failed to emit book_deleted: {err}");
+        }
+    }
+    // Past this many, one refetch of what is on screen is cheaper.
+    let whole = changes.paragraphs.len() > MAX_PARAGRAPH_EVENTS;
+    if !whole {
+        for (book_id, paragraph_id) in &changes.paragraphs {
+            let event = translation_queue::ParagraphUpdatedEvent {
+                book_id: *book_id,
+                paragraph_id: *paragraph_id,
+            };
+            if let Err(err) = app.emit("paragraph_updated", event) {
+                warn!("Failed to emit paragraph_updated: {err}");
+            }
+        }
+    }
+    // The frontend refetches every cached paragraph on this one.
+    if changes.cards || whole || !changes.books.is_empty() {
+        info!("Emitting \"cards_updated\"");
+        if let Err(err) = app.emit("cards_updated", ()) {
+            warn!("Failed to emit cards_updated: {err}");
+        }
+    }
+}
+
+/// Watcher-independent adoption of peers' writes, for platforms whose watcher
+/// polls or misses events.
+async fn adopt_peer_changes(
+    app: tauri::AppHandle,
+    gated: gated_state::GatedState,
+    retired: Vec<u64>,
+) -> sync_daemon::StoreIssues {
+    let Some(library) = gated.library_unchecked() else {
+        return sync_daemon::StoreIssues::default();
+    };
+    library.set_retired_writers(retired);
+    match library.refresh_from_peers().await {
+        Ok(changes) => emit_peer_changes(&app, &gated, &changes),
+        Err(err) => warn!("Failed to adopt peer changes: {err:#}"),
+    }
+    let health = library.store_health().await.unwrap_or_default();
+    sync_daemon::StoreIssues {
+        newer_version: health.incompatible.len(),
+        unreadable: health.unreadable.len(),
+        strangers: health.strangers.len(),
+        stalled: health.stalled,
+        shared_identity: health.shared_identity,
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     app: tauri::AppHandle,
@@ -364,6 +488,45 @@ impl AppState {
         config.sync_enabled = enabled;
         self.update_config(config).await
     }
+    /// Gives this installation an identity of its own, when it shares one
+    /// with another, as a copy restored from a backup does: a new sync
+    /// identity and a new store writer. It then has to be paired again.
+    pub async fn reset_sync_identity(&self) -> anyhow::Result<()> {
+        let enabled = self.config.borrow().sync_enabled;
+        // Nothing may hold the sync home or the roster open while they go.
+        self.set_sync_enabled(false).await?;
+        let home = resolve_config_dir(Some(&self.app))?.join("syncthing");
+        library::sync::engine::forget_identity(&home).await?;
+        self.library()
+            .await
+            .map_err(anyhow::Error::msg)?
+            .take_new_identity()
+            .await?;
+        if enabled {
+            self.set_sync_enabled(true).await?;
+        }
+        Ok(())
+    }
+
+    /// The user keeps this installation's identity; the other copy is the
+    /// one that takes a new one.
+    pub async fn keep_sync_identity(&self) -> anyhow::Result<()> {
+        self.library()
+            .await
+            .map_err(anyhow::Error::msg)?
+            .settle_shared_identity()
+            .await
+    }
+
+    /// Pairing a device with this one's own id means the two are copies.
+    pub async fn note_shared_sync_identity(&self) -> anyhow::Result<()> {
+        self.library()
+            .await
+            .map_err(anyhow::Error::msg)?
+            .note_shared_identity()
+            .await
+    }
+
     pub fn subscribe_library(&self) -> watch::Receiver<Option<Library>> {
         self.gated.subscribe_library()
     }
@@ -397,47 +560,11 @@ impl AppState {
         self.gated.sync_engine().await
     }
     pub async fn handle_file_change_event(&self, event: &LibraryFileChange) -> anyhow::Result<()> {
-        let library = self.gated.library_unchecked();
-        let Some(library) = library else {
+        let Some(library) = self.gated.library_unchecked() else {
             return Ok(());
         };
-
-        let had_effect = library.handle_file_change_event(event).await?;
-
-        // `had_effect` gates per arm, not the whole match: the library has no
-        // card cache, so CardChanged is always false yet must still notify.
-        match event {
-            LibraryFileChange::SummariesChanged { uuid }
-            | LibraryFileChange::BookChanged { modified: _, uuid }
-                if had_effect =>
-            {
-                info!("Emitting \"book_updated\" for {uuid}");
-                self.app.emit("book_updated", uuid)?;
-                self.notify_library_changed();
-            }
-            LibraryFileChange::TranslationChanged {
-                modified: _,
-                from: _,
-                to,
-                uuid,
-            } if had_effect => {
-                let target_language_id = { self.config.borrow().target_language_id.clone() };
-                let target_language = Language::from_639_3(&target_language_id);
-
-                if target_language == Some(*to) {
-                    info!("Emitting \"book_updated\" for {uuid}");
-                    self.app.emit("book_updated", uuid)?;
-                    self.notify_library_changed();
-                }
-            }
-            LibraryFileChange::CardChanged { .. } => {
-                // Unconditional: the frontend invalidates its translation cache here.
-                info!("Emitting \"cards_updated\"");
-                self.app.emit("cards_updated", ())?;
-            }
-            _ => {}
-        }
-
+        let changes = library.handle_file_change_event(event).await?;
+        emit_peer_changes(&self.app, &self.gated, &changes);
         Ok(())
     }
     pub async fn translate_paragraph(
@@ -689,10 +816,12 @@ impl BackendState {
                 task.shutdown().await;
             }
 
-            // Unsaved books stay dirty in their owners and retry; one bad
-            // book must not block every settings change.
-            if let Some(library) = self.gated.library_unchecked() {
-                library.save_all().await;
+            // What cannot be saved now is retried by the store; one bad
+            // commit must not block every settings change.
+            if let Some(library) = self.gated.library_unchecked()
+                && let Err(err) = library.flush().await
+            {
+                log::warn!("library flush failed: {err:#}");
             }
             self.stop_catalog_prefetch().await;
 
@@ -715,7 +844,7 @@ impl BackendState {
     async fn restore_configuration(&mut self, previous: Config) {
         self.config.send_replace(previous.clone());
         if let Err(error) = previous.save(&self.config_path) {
-            log::warn!("restoring configuration file failed: {error:#}");
+            log::warn!("restoring config.json failed: {error:#}");
         }
         self.stop_catalog_prefetch().await;
         self.catalog_prefetch = Some(spawn_catalog_prefetch(
@@ -747,11 +876,11 @@ impl BackendState {
         let library = match self.gated.library_unchecked() {
             Some(current) if canonical.as_deref() == Some(current.root()) => current,
             Some(current) => {
-                let next = Library::open(library_root.clone()).await?;
+                let next = self.open_library(&library_root).await?;
                 current.close().await?;
                 next
             }
-            None => Library::open(library_root.clone()).await?,
+            None => self.open_library(&library_root).await?,
         };
         self.gated.install_library(library.clone());
 
@@ -847,6 +976,12 @@ impl BackendState {
             device_name,
             hermetic,
             self.sync_status.clone(),
+            {
+                let (app, gated) = (self.app.clone(), self.gated.clone());
+                Box::new(move |retired| {
+                    Box::pin(adopt_peer_changes(app.clone(), gated.clone(), retired))
+                })
+            },
         )
         .await
         {
@@ -880,7 +1015,12 @@ impl BackendState {
             return Ok(());
         };
 
-        match migrate_library_files(&old, new_root)? {
+        // A move across filesystems copies the whole library.
+        let moved = {
+            let (old, new_root) = (old.clone(), new_root.to_path_buf());
+            tokio::task::spawn_blocking(move || migrate_library_files(&old, &new_root)).await??
+        };
+        match moved {
             MigrationOutcome::Moved => info!("Migrated library {old:?} -> {new_root:?}"),
             MigrationOutcome::KeptExisting => warn!(
                 "Library destination {new_root:?} already has content; keeping it and leaving \
@@ -890,6 +1030,22 @@ impl BackendState {
         }
 
         self.clear_library_path().await
+    }
+
+    /// Opens the library, telling the frontend how an import of old-format
+    /// files is going and holding commands back until it is done.
+    async fn open_library(&self, root: &Path) -> anyhow::Result<Library> {
+        let (app, gated) = (self.app.clone(), self.gated.clone());
+        let progress: library::legacy::Progress = std::sync::Arc::new(move |done, total| {
+            gated.set_importing(done < total);
+            let event = ImportProgress { done, total };
+            if let Err(err) = app.emit("library_import_progress", event) {
+                warn!("Failed to emit library_import_progress: {err}");
+            }
+        });
+        let opened = Library::open_reporting(root.to_path_buf(), progress).await;
+        self.gated.set_importing(false);
+        opened
     }
 
     /// Drops `library_path` from the persisted config; no-op if already cleared.
@@ -1221,6 +1377,35 @@ mod tests {
     }
 
     #[test]
+    fn migration_takes_the_device_local_state_along() {
+        let base = scratch_dir("local");
+        let (old, new) = (base.join("old"), base.join("new"));
+        let local = |root: &Path| library::store::sibling_local_dir(root).unwrap();
+        fs::create_dir_all(old.join("db").join("book")).unwrap();
+        fs::write(old.join("db").join("book").join("shard"), b"rows").unwrap();
+        fs::create_dir_all(local(&old)).unwrap();
+        fs::write(local(&old).join("writer-id"), b"00000000000000aa").unwrap();
+        // What sync leaves in a destination it was started on first.
+        fs::create_dir_all(new.join(".flts").join("roster")).unwrap();
+        fs::write(new.join(".flts").join("roster").join("shard"), b"roster").unwrap();
+        fs::create_dir_all(local(&new)).unwrap();
+        fs::write(local(&new).join("writer-id"), b"00000000000000bb").unwrap();
+
+        let outcome = migrate_library_files(&old, &new).unwrap();
+
+        assert_eq!(outcome, MigrationOutcome::Moved);
+        assert!(!old.exists() && !local(&old).exists());
+        assert_eq!(
+            fs::read(local(&new).join("writer-id")).unwrap(),
+            b"00000000000000aa",
+            "the device stays the writer of the shards it brought"
+        );
+        assert_eq!(library::store::local_dir(&new), local(&new));
+        assert!(new.join(".flts").join("roster").join("shard").is_file());
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn migration_is_non_destructive_when_destination_populated() {
         let base = scratch_dir("keep");
         let old = base.join("old");
@@ -1235,6 +1420,52 @@ mod tests {
         assert_eq!(outcome, MigrationOutcome::KeptExisting);
         assert!(old.exists(), "legacy library left untouched");
         assert_eq!(fs::read(new.join("book.dat")).unwrap(), b"current");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn migration_moves_into_a_destination_holding_only_an_empty_store() {
+        let base = scratch_dir("scaffold");
+        let old = base.join("old");
+        let new = base.join("new");
+        let book = "1b4e28ba-2fa1-11d2-883f-0016d3cca427";
+        fs::create_dir_all(old.join(book)).unwrap();
+        fs::write(old.join(book).join("book.dat"), b"legacy").unwrap();
+        fs::create_dir_all(new.join("db").join("book")).unwrap();
+        fs::create_dir_all(new.join(".flts-local")).unwrap();
+        fs::write(new.join(".stignore"), b"/.flts-local\n").unwrap();
+
+        let outcome = migrate_library_files(&old, &new).unwrap();
+
+        assert_eq!(outcome, MigrationOutcome::Moved);
+        assert!(!old.exists(), "source removed after move");
+        assert_eq!(
+            fs::read(new.join(book).join("book.dat")).unwrap(),
+            b"legacy"
+        );
+        assert!(new.join("db").join("book").is_dir(), "store left in place");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn migration_keeps_a_destination_whose_store_has_shards() {
+        let base = scratch_dir("shards");
+        let old = base.join("old");
+        let new = base.join("new");
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join("book.dat"), b"legacy").unwrap();
+        let table = new.join("db").join("book");
+        fs::create_dir_all(&table).unwrap();
+        fs::write(table.join("00000000000000aa.v1.dbs"), b"shard").unwrap();
+
+        let outcome = migrate_library_files(&old, &new).unwrap();
+
+        assert_eq!(outcome, MigrationOutcome::KeptExisting);
+        assert!(
+            old.join("book.dat").exists(),
+            "legacy library left untouched"
+        );
+        assert!(!new.join("book.dat").exists());
         let _ = fs::remove_dir_all(&base);
     }
 

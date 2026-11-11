@@ -1,1208 +1,901 @@
-use std::{
-    io::Write,
-    str::FromStr,
-    time::{Duration, SystemTime},
-};
+use std::time::Duration;
 
 use isolang::Language;
 use uuid::Uuid;
 
-use crate::library::LibraryBookMetadata;
-use std::sync::Arc;
-
+use super::*;
 use crate::{
-    book::{book::Book, serialization::Serializable, translation::Translation, translation_import},
-    library::{Library, LibraryTranslationMetadata, library_book::BookReadingState},
-    test_utils::TempDir,
+    book::chapter_summaries::ChapterSummary,
+    library::{LibraryError, PeerChanges},
+    test_utils::{
+        TempDir, copy_shards, copy_shards_where, full_word, one_sentence_paragraph, peer_view,
+    },
 };
 
-fn plain_book(library: &Library, title: &str, language: &Language) -> super::LibraryBook {
-    let id = Uuid::new_v4();
-    super::LibraryBook::create(
-        library.library_root.join(id.to_string()),
-        Book::create(id, title, language),
-    )
+fn eng() -> Language {
+    Language::from_639_3("eng").unwrap()
 }
 
-async fn saved_book(library: &Library, title: &str) -> Uuid {
-    let book = Book::create(Uuid::new_v4(), title, &Language::from_639_3("eng").unwrap());
-    let id = book.id;
-    library
-        .create_book(book)
-        .await
-        .unwrap()
-        .save()
-        .await
-        .unwrap();
-    id
+fn rus() -> Language {
+    Language::from_639_3("rus").unwrap()
 }
 
-async fn load_book(library: &Library, id: Uuid) -> super::LibraryBook {
-    let metadata = LibraryBookMetadata::load(&library.library_root.join(id.to_string()))
-        .await
-        .unwrap();
-    super::LibraryBook::load_from_metadata(metadata)
-        .await
-        .unwrap()
+fn sample_book(title: &str) -> Book {
+    let mut book = Book::create(Uuid::new_v4(), title, &eng());
+    let first = book.push_chapter(Some("One"));
+    book.push_paragraph(first, "alpha", Some("<p>alpha</p>"));
+    book.push_paragraph(first, "beta", None);
+    let second = book.push_chapter(None);
+    book.push_paragraph(second, "gamma", None);
+    book
 }
 
-#[tokio::test]
-async fn list_books_conflicting_versions() {
-    let temp_dir = TempDir::new("flts_test_book");
-    let library_path = temp_dir.path.join("lib");
-    let library = Library::open(library_path.clone()).await.unwrap();
-
-    let mut book1 = plain_book(
-        &library,
-        "First Book",
-        &Language::from_639_3("eng").unwrap(),
+fn version(timestamp: u64, text: &str) -> translation_import::ParagraphTranslation {
+    let mut paragraph = one_sentence_paragraph(
+        text,
+        vec![full_word("alpha", "alpha", "альфа", "noun", &[text], false)],
     );
-    book1.save().await.unwrap();
-
-    let book_file = book1.path.join("book.dat");
-
-    let conflict_path = book1.path.join(
-        book_file
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .replace(".dat", ".syncconflict-foobar.dat"),
-    );
-
-    std::fs::copy(&book_file, &conflict_path).unwrap();
-
-    let library_books = library.list_books().await.unwrap();
-
-    assert_eq!(library_books.len(), 1);
-
-    assert_eq!(library_books[0].conflicting_paths.len(), 1);
-    assert_eq!(
-        library_books[0].conflicting_paths[0].file_name(),
-        conflict_path.file_name()
-    );
+    paragraph.timestamp = timestamp;
+    paragraph.total_tokens = Some(timestamp + 100);
+    paragraph
 }
 
-#[tokio::test]
-async fn list_books_conflicting_translation_versions() {
-    let temp_dir = TempDir::new("flts_test_book");
-    let library_path = temp_dir.path.join("lib");
-    let library = Library::open(library_path.clone()).await.unwrap();
-
-    let mut book1 = plain_book(
-        &library,
-        "First Book",
-        &Language::from_639_3("spa").unwrap(),
-    );
-    book1
-        .get_or_create_translation(&Language::from_str("en").unwrap())
-        .unwrap();
-    book1.save().await.unwrap();
-
-    let translation_file = book1.path.join(format!(
-        "translation_{}_{}.dat",
-        Language::from_str("es").unwrap().to_639_3(),
-        Language::from_str("en").unwrap().to_639_3()
-    ));
-
-    let conflict_path = book1.path.join(
-        translation_file
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .replace(".dat", ".syncconflict-foobar.dat"),
-    );
-
-    std::fs::copy(&translation_file, &conflict_path).unwrap();
-
-    let library_books = library.list_books().await.unwrap();
-
-    assert_eq!(library_books[0].translations_metadata.len(), 1);
-    assert_eq!(
-        library_books[0].translations_metadata[0]
-            .main_path
-            .file_name(),
-        translation_file.file_name()
-    );
-    assert_eq!(
-        library_books[0].translations_metadata[0]
-            .conflicting_paths
-            .len(),
-        1
-    );
-    assert_eq!(
-        library_books[0].translations_metadata[0].conflicting_paths[0].file_name(),
-        conflict_path.file_name()
-    );
-}
-
-#[tokio::test]
-async fn save_after_load_trivial_book_change() {
-    let temp_dir = TempDir::new("flts_test_book");
-    let library_path = temp_dir.path.join("lib");
-    let library = Library::open(library_path.clone()).await.unwrap();
-
-    let mut book = plain_book(
-        &library,
-        "First Title",
-        &Language::from_639_3("eng").unwrap(),
-    );
-    book.save().await.unwrap();
-
-    let book_file = book.path.join("book.dat");
-    book.last_modified = std::fs::metadata(&book_file).unwrap().modified().ok();
-
-    Arc::make_mut(&mut book.book).title = "Updated Title".into();
-    book.save().await.unwrap();
-
-    let f = std::fs::File::open(&book_file).unwrap();
-    let mut reader = std::io::BufReader::new(f);
-    let loaded_book = Book::deserialize(&mut reader).unwrap();
-    assert_eq!(loaded_book.title, "Updated Title");
-}
-
-#[tokio::test]
-async fn save_after_load_book_and_translation_changed() {
-    let temp_dir = TempDir::new("flts_test_book");
-    let library_path = temp_dir.path.join("lib");
-    let library = Library::open(library_path.clone()).await.unwrap();
-
-    let source_language = Language::from_str("es").unwrap();
-    let target_language = Language::from_str("en").unwrap();
-
-    let book_id = {
-        let mut book = plain_book(&library, "First Book", &source_language);
-        let mut tr = Translation::create(source_language.to_639_3(), target_language.to_639_3());
-        let initial_pt = translation_import::ParagraphTranslation {
-            total_tokens: None,
-            timestamp: 1,
-            sentences: vec![translation_import::Sentence {
-                full_translation: "Hola".into(),
-                words: vec![translation_import::Word {
-                    original: "Hola".into(),
-                    contextual_translations: vec!["Hello".into()],
-                    note: Some(String::new()),
-                    is_punctuation: false,
-                    grammar: translation_import::Grammar {
-                        original_initial_form: "hola".into(),
-                        target_initial_form: "hello".into(),
-                        part_of_speech: "interj".into(),
-                        plurality: None,
-                        person: None,
-                        tense: None,
-                        case: None,
-                        other: None,
-                    },
-                }],
-            }],
-        };
-        tr.add_paragraph_translation(0, &initial_pt, "models/gemini-2.5-flash");
-        book.translations.push(super::LibraryTranslation {
-            translation: tr,
-            source_language,
-            target_language,
-            last_modified: None,
-            last_saved_hash: None,
-            changed: true,
-            published: None,
-        });
-        book.save().await.unwrap();
-        book.book.id
-    };
-
-    let path = {
-        let mut book = load_book(&library, book_id).await;
-
-        Arc::make_mut(&mut book.book).title = "Second Edition".into();
-        let new_pt = translation_import::ParagraphTranslation {
-            total_tokens: None,
-            timestamp: 2,
-            sentences: vec![translation_import::Sentence {
-                full_translation: "Hola mundo".into(),
-                words: vec![translation_import::Word {
-                    original: "Hola".into(),
-                    contextual_translations: vec!["Hello".into()],
-                    note: Some(String::new()),
-                    is_punctuation: false,
-                    grammar: translation_import::Grammar {
-                        original_initial_form: "hola".into(),
-                        target_initial_form: "hello".into(),
-                        part_of_speech: "interj".into(),
-                        plurality: None,
-                        person: None,
-                        tense: None,
-                        case: None,
-                        other: None,
-                    },
-                }],
-            }],
-        };
-        // Go through the wrapper so the dirty flag is set; the inner
-        // Translation has no dirty tracking of its own.
-        book.translations[0].add_paragraph_translation(0, &new_pt, "models/gemini-2.5-flash");
-
-        book.save().await.unwrap();
-        book.path.clone()
-    };
-
-    let book_file = path.join("book.dat");
-    let tr_file = path.join(format!(
-        "translation_{}_{}.dat",
-        source_language.to_639_3(),
-        target_language.to_639_3()
-    ));
-
-    let bf = std::fs::File::open(&book_file).unwrap();
-    let mut reader = std::io::BufReader::new(bf);
-    let loaded_book = Book::deserialize(&mut reader).unwrap();
-    assert_eq!(loaded_book.title, "Second Edition");
-
-    let tf = std::fs::File::open(&tr_file).unwrap();
-    let mut reader = std::io::BufReader::new(tf);
-    let tr2 = Translation::deserialize(&mut reader).unwrap();
-    let latest = tr2.paragraph_view(0).unwrap();
-    assert_eq!(latest.timestamp, 2);
-    assert_eq!(latest.sentence_view(0).full_translation, "Hola mundo");
-}
-
-#[tokio::test]
-async fn save_merges_translation_with_concurrent_on_disk_change() {
-    let temp_dir = TempDir::new("flts_test_book");
-    let library_path = temp_dir.path.join("lib");
-    let library = Library::open(library_path.clone()).await.unwrap();
-
-    let source_language = Language::from_str("en").unwrap();
-    let target_language = Language::from_str("ru").unwrap();
-
-    let mut book = plain_book(
-        &library,
-        "Merge Book",
-        &Language::from_639_3("eng").unwrap(),
-    );
-    let mut tr = Translation::create(source_language.to_639_3(), target_language.to_639_3());
-    let pt1 = translation_import::ParagraphTranslation {
-        total_tokens: None,
-        timestamp: 1,
-        sentences: vec![translation_import::Sentence {
-            full_translation: "v1".into(),
-            words: vec![translation_import::Word {
-                original: "v1".into(),
-                contextual_translations: vec!["v1".into()],
-                note: Some(String::new()),
-                is_punctuation: false,
-                grammar: translation_import::Grammar {
-                    original_initial_form: "v1".into(),
-                    target_initial_form: "v1".into(),
-                    part_of_speech: "n".into(),
-                    plurality: None,
-                    person: None,
-                    tense: None,
-                    case: None,
-                    other: None,
-                },
-            }],
-        }],
-    };
-    tr.add_paragraph_translation(0, &pt1, "models/gemini-2.5-flash");
-    book.translations.push(super::LibraryTranslation {
-        translation: tr,
-        source_language,
-        target_language,
-        last_modified: None,
-        last_saved_hash: None,
-        changed: true,
-        published: None,
-    });
-    book.save().await.unwrap();
-
-    let book_file = book.path.join("book.dat");
-    let tr_path = book.path.join(format!(
-        "translation_{}_{}.dat",
-        source_language.to_639_3(),
-        target_language.to_639_3()
-    ));
-    book.last_modified = std::fs::metadata(&book_file).unwrap().modified().ok();
-    book.translations.clear();
-    let loaded_tr = super::LibraryTranslation::load(&tr_path).await.unwrap();
-    book.translations.push(loaded_tr);
-
-    let mem_pt = translation_import::ParagraphTranslation {
-        total_tokens: None,
-        timestamp: 2,
-        sentences: vec![translation_import::Sentence {
-            full_translation: "mem".into(),
-            words: vec![translation_import::Word {
-                original: "mem".into(),
-                contextual_translations: vec!["mem".into()],
-                note: Some(String::new()),
-                is_punctuation: false,
-                grammar: translation_import::Grammar {
-                    original_initial_form: "mem".into(),
-                    target_initial_form: "mem".into(),
-                    part_of_speech: "n".into(),
-                    plurality: None,
-                    person: None,
-                    tense: None,
-                    case: None,
-                    other: None,
-                },
-            }],
-        }],
-    };
-    book.translations[0].translation.add_paragraph_translation(
-        0,
-        &mem_pt,
-        "models/gemini-2.5-flash",
-    );
-
-    {
-        let mut on_disk = {
-            let f = std::fs::File::open(&tr_path).unwrap();
-            let mut reader = std::io::BufReader::new(f);
-            Translation::deserialize(&mut reader).unwrap()
-        };
-        let disk_pt = translation_import::ParagraphTranslation {
-            total_tokens: None,
-            timestamp: 3,
-            sentences: vec![translation_import::Sentence {
-                full_translation: "disk".into(),
-                words: vec![translation_import::Word {
-                    original: "disk".into(),
-                    contextual_translations: vec!["disk".into()],
-                    note: Some(String::new()),
-                    is_punctuation: false,
-                    grammar: translation_import::Grammar {
-                        original_initial_form: "disk".into(),
-                        target_initial_form: "disk".into(),
-                        part_of_speech: "n".into(),
-                        plurality: None,
-                        person: None,
-                        tense: None,
-                        case: None,
-                        other: None,
-                    },
-                }],
-            }],
-        };
-        on_disk.add_paragraph_translation(0, &disk_pt, "models/gemini-2.5-flash");
-        let wf = std::fs::File::create(&tr_path).unwrap();
-        let mut writer = std::io::BufWriter::new(wf);
-        on_disk.serialize(&mut writer).unwrap();
+fn summary(timestamp: u64, text: &str) -> ChapterSummary {
+    ChapterSummary {
+        generated: true,
+        model: "summary-model".into(),
+        timestamp,
+        text: text.into(),
     }
-
-    book.save().await.unwrap();
-    let tf = std::fs::File::open(&tr_path).unwrap();
-    let mut reader = std::io::BufReader::new(tf);
-    let merged_tr = Translation::deserialize(&mut reader).unwrap();
-    let latest = merged_tr.paragraph_view(0).unwrap();
-    assert_eq!(latest.timestamp, 3);
-    assert_eq!(latest.sentence_view(0).full_translation, "disk");
-    let prev = latest.get_previous_version().unwrap();
-    assert_eq!(prev.timestamp, 2);
-    assert_eq!(prev.sentence_view(0).full_translation, "mem");
-    let prev2 = prev.get_previous_version().unwrap();
-    assert_eq!(prev2.timestamp, 1);
-    assert_eq!(prev2.sentence_view(0).full_translation, "v1");
-    assert!(prev2.get_previous_version().is_none());
 }
 
-#[tokio::test]
-async fn reading_state_roundtrip() {
-    let temp_dir = TempDir::new("flts_test_book");
-    let library_path = temp_dir.path.join("lib");
-    let library = Library::open(library_path.clone()).await.unwrap();
-
-    let book_id = saved_book(&library, "Stateful").await;
-    let book = library.get_book(&book_id).await.unwrap();
-    book.update_reading_state(BookReadingState {
-        chapter_id: 2,
-        paragraph_id: 15,
-        page_offset: 0,
-    })
-    .await
-    .unwrap();
-
-    let state = book.reading_state().await.unwrap();
-    assert_eq!(state.as_ref().map(|s| s.chapter_id), Some(2));
-    assert_eq!(state.as_ref().map(|s| s.paragraph_id), Some(15));
+fn reading(page_offset: usize) -> BookReadingState {
+    BookReadingState {
+        chapter_id: 1,
+        paragraph_id: 2,
+        page_offset,
+    }
 }
 
-#[tokio::test]
-async fn folder_path_roundtrip() {
-    let temp_dir = TempDir::new("flts_test_book");
-    let library_path = temp_dir.path.join("lib");
-    let library = Library::open(library_path.clone()).await.unwrap();
-
-    let book_id = saved_book(&library, "Shelved").await;
-    let book = library.get_book(&book_id).await.unwrap();
-    book.update_folder_path(vec!["Shelf".into(), "Favorites".into()])
+async fn stored_book(store: &LibraryStore, source: Book) -> LibraryBook {
+    let id = source.id;
+    store
+        .run(move |db| db.create_book(Arc::new(source)))
         .await
         .unwrap();
-
-    let folder_path = book.folder_path().await.unwrap();
-    assert_eq!(
-        folder_path,
-        vec!["Shelf".to_string(), "Favorites".to_string()]
-    );
+    LibraryBook::load(store.clone(), id).await.unwrap()
 }
 
-#[tokio::test]
-async fn reading_state_prefers_latest_conflict() {
-    let temp_dir = TempDir::new("flts_test_book");
-    let library_root = temp_dir.path.join("lib");
-    let library = Library::open(library_root.clone()).await.unwrap();
-
-    let book_id = saved_book(&library, "Conflicted").await;
-    library
-        .get_book(&book_id)
-        .await
-        .unwrap()
-        .update_reading_state(BookReadingState {
-            chapter_id: 1,
-            paragraph_id: 1,
-            page_offset: 0,
-        })
-        .await
-        .unwrap();
-
-    {
-        let conflict_path = library
-            .library_root
-            .join(book_id.to_string())
-            .join("state (conflict copy).json");
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        let serialized = serde_json::to_vec(&BookReadingState {
-            chapter_id: 4,
-            paragraph_id: 8,
-            page_offset: 0,
+fn fail_commits(store: &LibraryStore, count: usize) {
+    store
+        .run_blocking(|db| {
+            db.fail_commits = count;
+            Ok(())
         })
         .unwrap();
-        let mut file = std::fs::File::create(&conflict_path).unwrap();
-        file.write_all(&serialized).unwrap();
+}
+
+async fn translate(book: &BookHandle, paragraph: usize, timestamp: u64, text: &str) {
+    book.apply_translation(paragraph, rus(), version(timestamp, text), "model-a".into())
+        .await
+        .unwrap();
+}
+
+/// Two libraries standing for two devices that sync one folder.
+struct Devices {
+    _dir: TempDir,
+    a: Library,
+    b: Library,
+}
+
+impl Devices {
+    async fn new() -> Self {
+        let dir = TempDir::new("flts_devices");
+        let a = Library::open(dir.path.join("a/library")).await.unwrap();
+        let b = Library::open(dir.path.join("b/library")).await.unwrap();
+        Self { _dir: dir, a, b }
     }
 
+    fn sync_a_to_b(&self) {
+        copy_shards(self.a.store().shared_dir(), self.b.store().shared_dir());
+    }
+
+    fn sync_b_to_a(&self) {
+        copy_shards(self.b.store().shared_dir(), self.a.store().shared_dir());
+    }
+}
+
+#[tokio::test]
+async fn everything_about_a_book_survives_a_reopen() {
+    let dir = TempDir::new("flts_book");
+    let root = dir.path.join("library");
+    let source = sample_book("Round trip");
+    let id = source.id;
+    {
+        let library = Library::open(root.clone()).await.unwrap();
+        let book = library.create_book(source.clone()).await.unwrap();
+        translate(&book, 0, 10, "старое").await;
+        translate(&book, 0, 20, "новое").await;
+        translate(&book, 2, 30, "гамма").await;
+        book.apply_summary(&book.snapshot(), 0, summary(5, "first chapter"))
+            .await
+            .unwrap();
+        book.update_reading_state(reading(3)).await.unwrap();
+        book.update_folder_path(vec!["Shelf".into(), "Modern".into()])
+            .await
+            .unwrap();
+        book.flush().await.unwrap();
+        drop(book);
+        library.close().await.unwrap();
+    }
+
+    let library = Library::open(root).await.unwrap();
+    let listed = library.list_books().await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, id);
+    assert_eq!(listed[0].title, "Round trip");
+    assert_eq!(
+        (listed[0].chapters_count, listed[0].paragraphs_count),
+        (2, 3)
+    );
+    assert_eq!(listed[0].folder_path, ["Shelf", "Modern"]);
+    let listed_translation = &listed[0].translations_metadata[0];
+    assert_eq!(listed_translation.source_langugage, "eng");
+    assert_eq!(listed_translation.target_language, "rus");
+    assert_eq!(listed_translation.translated_paragraphs_count, 2);
+
+    let book = library.get_book(&id).await.unwrap();
+    let snapshot = book.snapshot();
+    assert_eq!(snapshot.book.title, "Round trip");
+    assert_eq!(snapshot.book.language, "eng");
+    assert_eq!(snapshot.book.chapter_count(), 2);
+    assert_eq!(snapshot.book.chapter_view(0).title.as_deref(), Some("One"));
+    assert_eq!(snapshot.book.chapter_view(1).title, None);
+    for paragraph in 0..3 {
+        let (stored, original) = (
+            snapshot.book.paragraph_view(paragraph),
+            source.paragraph_view(paragraph),
+        );
+        assert_eq!(stored.original_text, original.original_text);
+        assert_eq!(stored.original_html, original.original_html);
+    }
+
+    let translation = snapshot.translation(&rus()).unwrap();
+    assert_eq!(translation.id, listed_translation.id);
+    assert_eq!(translation.version_count(), 3);
+    let latest = translation.paragraph_view(0).unwrap();
+    assert_eq!(latest.to_import(), version(20, "новое"));
+    assert_eq!(latest.model, "model-a");
+    let previous = latest.get_previous_version().unwrap();
+    assert_eq!(previous.to_import(), version(10, "старое"));
+    assert!(previous.get_previous_version().is_none());
+    assert!(translation.paragraph_view(1).is_none());
+    assert_eq!(
+        translation.paragraph_view(2).unwrap().to_import(),
+        version(30, "гамма")
+    );
+
+    assert_eq!(snapshot.summaries.entries[0], summary(5, "first chapter"));
+    assert!(!snapshot.summaries.entries[1].generated);
+    assert_eq!(book.reading_state().await.unwrap(), Some(reading(3)));
+    assert_eq!(book.folder_path().await.unwrap(), ["Shelf", "Modern"]);
+    library.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_new_book_is_listed_at_once() {
+    let dir = TempDir::new("flts_book");
+    let library = Library::open(dir.path.join("library")).await.unwrap();
+    library.create_book(sample_book("New")).await.unwrap();
+    assert_eq!(library.list_books().await.unwrap().len(), 1);
+    library.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_new_book_is_stored_by_its_creation_alone() {
+    let dir = TempDir::new("flts_book");
+    let root = dir.path.join("library");
+    let library = Library::open(root.clone()).await.unwrap();
+    let book = library.create_book(sample_book("Implicit")).await.unwrap();
+    let id = book.snapshot().book.id;
+    drop(book);
     library.close().await.unwrap();
     drop(library);
 
-    let library = Library::open(library_root).await.unwrap();
-    let book = library.get_book(&book_id).await.unwrap();
-    let state = book.reading_state().await.unwrap();
-    assert_eq!(state.as_ref().map(|s| s.chapter_id), Some(4));
-    assert_eq!(state.as_ref().map(|s| s.paragraph_id), Some(8));
+    let library = Library::open(root).await.unwrap();
+    assert_eq!(library.list_books().await.unwrap()[0].id, id);
+    library.close().await.unwrap();
 }
 
 #[tokio::test]
-async fn load_user_state_from_legacy_file() {
-    let temp_dir = TempDir::new("flts_test_book");
-    let book_dir = temp_dir.path.join("legacy");
-    std::fs::create_dir_all(&book_dir).unwrap();
+async fn duplicate_titles_are_rejected() {
+    let dir = TempDir::new("flts_book");
+    let library = Library::open(dir.path.join("library")).await.unwrap();
+    library.create_book(sample_book("Taken")).await.unwrap();
 
-    let state_path = book_dir.join("state.json");
-    {
-        let mut file = std::fs::File::create(&state_path).unwrap();
-        file.write_all(br#"{"chapterId":3,"paragraphId":9}"#)
+    let error = library
+        .create_book(sample_book("Taken"))
+        .await
+        .err()
+        .expect("a stored title is taken");
+    assert!(matches!(
+        error.downcast_ref::<LibraryError>(),
+        Some(LibraryError::DuplicateTitle(title)) if title == "Taken"
+    ));
+
+    assert!(
+        library
+            .create_book_plain("Taken", "text", &eng())
+            .await
+            .is_err()
+    );
+    assert_eq!(library.list_books().await.unwrap().len(), 1);
+    library.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_deleted_book_is_gone_for_good() {
+    let dir = TempDir::new("flts_book");
+    let root = dir.path.join("library");
+    let library = Library::open(root.clone()).await.unwrap();
+    let keep = library
+        .create_book_plain("Keep", "text", &eng())
+        .await
+        .unwrap();
+    let doomed = library
+        .create_book_plain("Doomed", "text", &eng())
+        .await
+        .unwrap();
+    let held = library.get_book(&doomed).await.unwrap();
+
+    library.delete_book(&doomed).await.unwrap();
+
+    assert_eq!(held.snapshot().status, BookStatus::Closed);
+    assert!(held.flush().await.is_err());
+    assert!(library.get_book(&doomed).await.is_err());
+    let listed = library.list_books().await.unwrap();
+    assert_eq!(listed.iter().map(|b| b.id).collect::<Vec<_>>(), [keep]);
+    // Deleting twice, or deleting what never existed, is not an error.
+    library.delete_book(&doomed).await.unwrap();
+    library.delete_book(&Uuid::new_v4()).await.unwrap();
+    // The title is free again.
+    library
+        .create_book_plain("Doomed", "again", &eng())
+        .await
+        .unwrap();
+    library.close().await.unwrap();
+    drop(library);
+
+    let library = Library::open(root).await.unwrap();
+    assert!(library.get_book(&doomed).await.is_err());
+    assert_eq!(library.list_books().await.unwrap().len(), 2);
+    library.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn deleting_a_book_that_is_not_loaded_removes_it() {
+    let dir = TempDir::new("flts_book");
+    let root = dir.path.join("library");
+    let id = {
+        let library = Library::open(root.clone()).await.unwrap();
+        let id = library
+            .create_book_plain("Cold", "text", &eng())
+            .await
             .unwrap();
-    }
-
-    let state = super::load_book_user_state(&book_dir).await.unwrap();
-    assert_eq!(state.folder_path, Vec::<String>::new());
-    assert_eq!(state.reading_state.as_ref().map(|s| s.chapter_id), Some(3));
-    assert_eq!(
-        state.reading_state.as_ref().map(|s| s.paragraph_id),
-        Some(9)
-    );
-}
-
-#[tokio::test]
-async fn load_from_metadata_no_conflicts() {
-    let temp_dir = TempDir::new("flts_test_book");
-    let dir = temp_dir.path.join("book");
-    std::fs::create_dir_all(&dir).unwrap();
-
-    let source_language = Language::from_str("en").unwrap();
-    let target_language = Language::from_str("ru").unwrap();
-
-    let main_path = dir.join("translation_en_ru.dat");
-    let mut t_main = Translation::create(source_language.to_639_3(), target_language.to_639_3());
-    let pt2 = translation_import::ParagraphTranslation {
-        total_tokens: None,
-        timestamp: 2,
-        sentences: vec![translation_import::Sentence {
-            full_translation: "m2".into(),
-            words: vec![translation_import::Word {
-                original: "m2".into(),
-                contextual_translations: vec!["m2".into()],
-                note: Some(String::new()),
-                is_punctuation: false,
-                grammar: translation_import::Grammar {
-                    original_initial_form: "m2".into(),
-                    target_initial_form: "m2".into(),
-                    part_of_speech: "n".into(),
-                    plurality: None,
-                    person: None,
-                    tense: None,
-                    case: None,
-                    other: None,
-                },
-            }],
-        }],
+        library.close().await.unwrap();
+        id
     };
-    t_main.add_paragraph_translation(0, &pt2, "models/gemini-2.5-flash");
-    {
-        let f = std::fs::File::create(&main_path).unwrap();
-        let mut writer = std::io::BufWriter::new(f);
-        t_main.serialize(&mut writer).unwrap();
-    }
-
-    let meta = LibraryTranslationMetadata {
-        id: t_main.id,
-        source_langugage: "en".into(),
-        target_language: "ru".into(),
-        translated_paragraphs_count: 1,
-        main_path: main_path.clone(),
-        conflicting_paths: vec![],
-    };
-
-    let loaded = super::LibraryTranslation::load_from_metadata(meta)
-        .await
-        .unwrap();
-
-    let latest = loaded.translation.paragraph_view(0).unwrap();
-    assert_eq!(latest.timestamp, 2);
-    assert_eq!(latest.sentence_view(0).full_translation, "m2");
-}
-
-#[tokio::test]
-async fn load_from_metadata_merges_conflicts_and_persists() {
-    let temp_dir = TempDir::new("flts_test_book");
-    let dir = temp_dir.path.join("book2");
-    std::fs::create_dir_all(&dir).unwrap();
-
-    let source_language = Language::from_str("en").unwrap();
-    let target_language = Language::from_str("ru").unwrap();
-
-    let main_path = dir.join(format!(
-        "translation_{}_{}.dat",
-        source_language.to_639_3(),
-        target_language.to_639_3()
-    ));
-    let conflict1 = dir.join(format!(
-        "translation_{}_{}.conflict1.dat",
-        source_language.to_639_3(),
-        target_language.to_639_3()
-    ));
-    let conflict2 = dir.join("translation_en_ru.conflict2.dat");
-
-    let mut t_main = Translation::create(source_language.to_639_3(), target_language.to_639_3());
-    let pt2 = translation_import::ParagraphTranslation {
-        total_tokens: None,
-        timestamp: 2,
-        sentences: vec![translation_import::Sentence {
-            full_translation: "m2".into(),
-            words: vec![translation_import::Word {
-                original: "m2".into(),
-                contextual_translations: vec!["m2".into()],
-                note: Some(String::new()),
-                is_punctuation: false,
-                grammar: translation_import::Grammar {
-                    original_initial_form: "m2".into(),
-                    target_initial_form: "m2".into(),
-                    part_of_speech: "n".into(),
-                    plurality: None,
-                    person: None,
-                    tense: None,
-                    case: None,
-                    other: None,
-                },
-            }],
-        }],
-    };
-    t_main.add_paragraph_translation(0, &pt2, "models/gemini-2.5-flash");
-    {
-        let f = std::fs::File::create(&main_path).unwrap();
-        let mut writer = std::io::BufWriter::new(f);
-        t_main.serialize(&mut writer).unwrap();
-    }
-
-    let mut t_c1 = Translation::create(source_language.to_639_3(), target_language.to_639_3());
-    let pt1 = translation_import::ParagraphTranslation {
-        total_tokens: None,
-        timestamp: 1,
-        sentences: vec![translation_import::Sentence {
-            full_translation: "c1".into(),
-            words: vec![translation_import::Word {
-                original: "c1".into(),
-                contextual_translations: vec!["c1".into()],
-                note: Some(String::new()),
-                is_punctuation: false,
-                grammar: translation_import::Grammar {
-                    original_initial_form: "c1".into(),
-                    target_initial_form: "c1".into(),
-                    part_of_speech: "n".into(),
-                    plurality: None,
-                    person: None,
-                    tense: None,
-                    case: None,
-                    other: None,
-                },
-            }],
-        }],
-    };
-    t_c1.add_paragraph_translation(0, &pt1, "models/gemini-2.5-flash");
-    {
-        let f = std::fs::File::create(&conflict1).unwrap();
-        let mut writer = std::io::BufWriter::new(f);
-        t_c1.serialize(&mut writer).unwrap();
-    }
-
-    let mut t_c2 = Translation::create("en", "ru");
-    let pt3 = translation_import::ParagraphTranslation {
-        total_tokens: None,
-        timestamp: 3,
-        sentences: vec![translation_import::Sentence {
-            full_translation: "c3".into(),
-            words: vec![translation_import::Word {
-                original: "c3".into(),
-                contextual_translations: vec!["c3".into()],
-                note: Some(String::new()),
-                is_punctuation: false,
-                grammar: translation_import::Grammar {
-                    original_initial_form: "c3".into(),
-                    target_initial_form: "c3".into(),
-                    part_of_speech: "n".into(),
-                    plurality: None,
-                    person: None,
-                    tense: None,
-                    case: None,
-                    other: None,
-                },
-            }],
-        }],
-    };
-    t_c2.add_paragraph_translation(0, &pt3, "models/gemini-2.5-flash");
-    {
-        let f = std::fs::File::create(&conflict2).unwrap();
-        let mut writer = std::io::BufWriter::new(f);
-        t_c2.serialize(&mut writer).unwrap();
-    }
-
-    let meta = LibraryTranslationMetadata {
-        id: t_main.id,
-        source_langugage: "en".into(),
-        target_language: "ru".into(),
-        translated_paragraphs_count: 1,
-        main_path: main_path.clone(),
-        conflicting_paths: vec![conflict1.clone(), conflict2.clone()],
-    };
-
-    let loaded = super::LibraryTranslation::load_from_metadata(meta)
-        .await
-        .unwrap();
-
-    let latest = loaded.translation.paragraph_view(0).unwrap();
-    assert_eq!(latest.timestamp, 3);
-    assert_eq!(latest.sentence_view(0).full_translation, "c3");
-    let prev = latest.get_previous_version().unwrap();
-    assert_eq!(prev.timestamp, 2);
-    assert_eq!(prev.sentence_view(0).full_translation, "m2");
-    let prev2 = prev.get_previous_version().unwrap();
-    assert_eq!(prev2.timestamp, 1);
-    assert_eq!(prev2.sentence_view(0).full_translation, "c1");
-    assert!(prev2.get_previous_version().is_none());
-
-    let f = std::fs::File::open(&main_path).unwrap();
-    let mut reader = std::io::BufReader::new(f);
-    let on_disk = Translation::deserialize(&mut reader).unwrap();
-    let on_disk_latest = on_disk.paragraph_view(0).unwrap();
-    assert_eq!(on_disk_latest.timestamp, 3);
-    assert_eq!(on_disk_latest.sentence_view(0).full_translation, "c3");
-}
-
-#[tokio::test]
-async fn library_book_load_from_metadata_no_conflicts() {
-    let temp_dir = TempDir::new("flts_test_book");
-    let library_path = temp_dir.path.join("lib");
-    let library = Library::open(library_path.clone()).await.unwrap();
-
-    let mut book = plain_book(
-        &library,
-        "Original Title",
-        &Language::from_639_3("eng").unwrap(),
-    );
-    book.save().await.unwrap();
-
-    let mut books = library.list_books().await.unwrap();
-    assert_eq!(books.len(), 1);
-    let meta = books.remove(0);
-    assert!(meta.conflicting_paths.is_empty());
-
-    let loaded = super::LibraryBook::load_from_metadata(meta).await.unwrap();
-
-    assert_eq!(loaded.book.title, "Original Title");
-}
-
-#[tokio::test]
-async fn library_book_load_from_metadata_selects_newest_conflict_and_cleans() {
-    use std::{thread::sleep, time::Duration};
-
-    let temp_dir = TempDir::new("flts_test_book");
-    let library_path = temp_dir.path.join("lib");
-    let library = Library::open(library_path.clone()).await.unwrap();
-
-    let mut book = plain_book(&library, "Main V1", &Language::from_639_3("eng").unwrap());
-    book.save().await.unwrap();
-
-    let book_file = book.path.join("book.dat");
-    let conflict_path = book.path.join(
-        book_file
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .replace(".dat", ".syncconflict-newer.dat"),
-    );
-
-    std::fs::copy(&book_file, &conflict_path).unwrap();
-
-    sleep(Duration::from_millis(5));
-    let rf = std::fs::File::open(&conflict_path).unwrap();
-    let mut reader = std::io::BufReader::new(rf);
-    let mut conflict_book = Book::deserialize(&mut reader).unwrap();
-    conflict_book.title = "From Conflict".into();
-    let wf = std::fs::File::create(&conflict_path).unwrap();
-    let mut writer = std::io::BufWriter::new(wf);
-    conflict_book.serialize(&mut writer).unwrap();
-
-    let mut books = library.list_books().await.unwrap();
-    assert_eq!(books.len(), 1);
-    assert_eq!(books[0].conflicting_paths.len(), 1);
-    let meta = books.remove(0);
-
-    let loaded = super::LibraryBook::load_from_metadata(meta).await.unwrap();
-
-    assert_eq!(loaded.book.title, "From Conflict");
-    let f = std::fs::File::open(&book_file).unwrap();
-    let mut reader = std::io::BufReader::new(f);
-    let on_disk = Book::deserialize(&mut reader).unwrap();
-    assert_eq!(on_disk.title, "From Conflict");
-    assert!(!conflict_path.exists());
-}
-
-#[tokio::test]
-async fn library_book_load_from_metadata_keeps_main_if_newest_and_cleans() {
-    use std::{thread::sleep, time::Duration};
-
-    let temp_dir = TempDir::new("flts_test_book");
-    let library_path = temp_dir.path.join("lib");
-    let library = Library::open(library_path.clone()).await.unwrap();
-
-    let mut book = plain_book(&library, "V1", &Language::from_639_3("eng").unwrap());
-    book.save().await.unwrap();
-
-    let book_file = book.path.join("book.dat");
-    let conflict_path = book.path.join(
-        book_file
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .replace(".dat", ".syncconflict-older.dat"),
-    );
-
-    std::fs::copy(&book_file, &conflict_path).unwrap();
-
-    sleep(Duration::from_millis(5));
-    let rf = std::fs::File::open(&book_file).unwrap();
-    let mut reader = std::io::BufReader::new(rf);
-    let mut main_book = Book::deserialize(&mut reader).unwrap();
-    main_book.title = "V2".into();
-    let wf = std::fs::File::create(&book_file).unwrap();
-    let mut writer = std::io::BufWriter::new(wf);
-    main_book.serialize(&mut writer).unwrap();
-
-    let mut books = library.list_books().await.unwrap();
-    assert_eq!(books.len(), 1);
-    assert_eq!(books[0].conflicting_paths.len(), 1);
-    let meta = books.remove(0);
-
-    let loaded = super::LibraryBook::load_from_metadata(meta).await.unwrap();
-
-    assert_eq!(loaded.book.title, "V2");
-    let f = std::fs::File::open(&book_file).unwrap();
-    let mut reader = std::io::BufReader::new(f);
-    let on_disk = Book::deserialize(&mut reader).unwrap();
-    assert_eq!(on_disk.title, "V2");
-    assert!(!conflict_path.exists());
-}
-
-#[tokio::test]
-async fn delete_book_removes_directory() {
-    let temp_dir = TempDir::new("flts_test_book");
-    let library_path = temp_dir.path.join("lib");
-    let library = Library::open(library_path.clone()).await.unwrap();
-
-    let book_id = saved_book(&library, "Disposable").await;
-
-    let book_dir = library_path.join(book_id.to_string());
-    assert!(book_dir.exists());
-
-    library.delete_book(&book_id).await.unwrap();
-
-    assert!(!book_dir.exists());
+    let library = Library::open(root).await.unwrap();
+    library.delete_book(&id).await.unwrap();
     assert!(library.list_books().await.unwrap().is_empty());
-}
-
-// ---- File-watcher echo suppression ----
-
-fn simple_paragraph(text: &str, timestamp: u64) -> translation_import::ParagraphTranslation {
-    translation_import::ParagraphTranslation {
-        total_tokens: None,
-        timestamp,
-        sentences: vec![translation_import::Sentence {
-            full_translation: text.into(),
-            words: vec![translation_import::Word {
-                original: text.into(),
-                contextual_translations: vec![text.into()],
-                note: Some(String::new()),
-                is_punctuation: false,
-                grammar: translation_import::Grammar {
-                    original_initial_form: text.into(),
-                    target_initial_form: text.into(),
-                    part_of_speech: "n".into(),
-                    plurality: None,
-                    person: None,
-                    tense: None,
-                    case: None,
-                    other: None,
-                },
-            }],
-        }],
-    }
-}
-
-/// Pushes the mtime forward without touching the bytes, as our own atomic save
-/// or a Syncthing re-touch does. Returns the time it set.
-fn bump_mtime_future(path: &std::path::Path) -> SystemTime {
-    let future = SystemTime::now() + Duration::from_secs(3600);
-    let file = std::fs::File::options().write(true).open(path).unwrap();
-    file.set_modified(future).unwrap();
-    future
-}
-
-/// A saved book with one en->ru translation, returned locked alongside the
-/// translation path; both carry their `last_saved_hash`.
-async fn book_with_saved_translation(
-    library: &Library,
-    title: &str,
-) -> (super::LibraryBook, std::path::PathBuf) {
-    let source_language = Language::from_str("en").unwrap();
-    let target_language = Language::from_str("ru").unwrap();
-    let mut book = plain_book(library, title, &Language::from_639_3("eng").unwrap());
-    let mut tr = Translation::create(source_language.to_639_3(), target_language.to_639_3());
-    tr.add_paragraph_translation(0, &simple_paragraph("v1", 1), "models/gemini-2.5-flash");
-    book.translations.push(super::LibraryTranslation {
-        translation: tr,
-        source_language,
-        target_language,
-        last_modified: None,
-        last_saved_hash: None,
-        changed: true,
-        published: None,
-    });
-    book.save().await.unwrap();
-    let tr_path = book.path.join(format!(
-        "translation_{}_{}.dat",
-        source_language.to_639_3(),
-        target_language.to_639_3()
-    ));
-    (book, tr_path)
+    assert!(library.get_book(&id).await.is_err());
+    library.close().await.unwrap();
 }
 
 #[tokio::test]
-async fn serialize_is_deterministic() {
-    // The echo gate assumes re-serializing identical state is byte-identical.
-    let source_language = Language::from_str("en").unwrap();
-    let target_language = Language::from_str("ru").unwrap();
-    let mut tr = Translation::create(source_language.to_639_3(), target_language.to_639_3());
-    tr.add_paragraph_translation(0, &simple_paragraph("hello", 1), "models/gemini-2.5-flash");
-    tr.add_paragraph_translation(1, &simple_paragraph("world", 2), "models/gemini-2.5-flash");
+async fn a_failed_commit_leaves_the_changes_staged_for_the_next_publish() {
+    let dir = TempDir::new("flts_book");
+    let store = LibraryStore::open(&dir.path.join("library")).unwrap();
+    let source = sample_book("Retry");
+    let id = source.id;
+    let mut book = stored_book(&store, source).await;
 
-    let mut a = Vec::new();
-    let mut b = Vec::new();
-    tr.serialize(&mut a).unwrap();
-    tr.serialize(&mut b).unwrap();
-    assert_eq!(a, b, "translation serialization must be byte-deterministic");
-
-    let book = Book::create(
-        uuid::Uuid::new_v4(),
-        "Det Book",
-        &Language::from_639_3("eng").unwrap(),
-    );
-    let mut ba = Vec::new();
-    let mut bb = Vec::new();
-    book.serialize(&mut ba).unwrap();
-    book.serialize(&mut bb).unwrap();
-    assert_eq!(ba, bb, "book serialization must be byte-deterministic");
-}
-
-#[tokio::test]
-async fn save_clears_changed_flag() {
-    let temp_dir = TempDir::new("flts_test_book");
-    let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
-    let (book, _tr_path) = book_with_saved_translation(&library, "Clean").await;
+    book.get_or_create_translation(&rus())
+        .add_paragraph_translation(0, &version(10, "первый"), "model-a");
+    book.set_summary(1, summary(7, "second chapter"));
+    fail_commits(&store, 1);
+    assert!(book.persist().await.is_err());
 
     assert!(
         !book.has_unsaved_changes(),
-        "translation should be clean after a successful save"
+        "staged changes are the store's to land"
     );
-}
-
-#[tokio::test]
-async fn reload_translations_skips_same_content_echo() {
-    let temp_dir = TempDir::new("flts_test_book");
-    let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
-    let (mut book, tr_path) = book_with_saved_translation(&library, "Echo Tr").await;
-
-    let before = std::fs::read(&tr_path).unwrap();
-    let future = bump_mtime_future(&tr_path);
-
-    let from = Language::from_str("en").unwrap();
-    let to = Language::from_str("ru").unwrap();
-    let saved = book.reload_translations(future, from, to).await.unwrap();
-
-    assert!(!saved, "same-content echo must not trigger a re-save");
-    assert_eq!(
-        std::fs::read(&tr_path).unwrap(),
-        before,
-        "file must be left untouched"
-    );
-}
-
-#[tokio::test]
-async fn reload_translations_saves_on_external_change() {
-    let temp_dir = TempDir::new("flts_test_book");
-    let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
-    let (mut book, tr_path) = book_with_saved_translation(&library, "Ext Tr").await;
-
     {
-        let f = std::fs::File::open(&tr_path).unwrap();
-        let mut reader = std::io::BufReader::new(f);
-        let mut on_disk = Translation::deserialize(&mut reader).unwrap();
-        on_disk.add_paragraph_translation(
-            0,
-            &simple_paragraph("external", 5),
-            "models/gemini-2.5-flash",
+        let (_dir, peer) = peer_view(&store);
+        let committed = LibraryBook::load(peer, id).await.unwrap();
+        assert!(
+            committed.get_translation(&rus()).is_none(),
+            "the failed commit published nothing"
         );
-        let wf = std::fs::File::create(&tr_path).unwrap();
-        let mut writer = std::io::BufWriter::new(wf);
-        on_disk.serialize(&mut writer).unwrap();
+        assert!(!committed.summaries.entries[1].generated);
     }
-    let future = bump_mtime_future(&tr_path);
 
-    let from = Language::from_str("en").unwrap();
-    let to = Language::from_str("ru").unwrap();
-    let saved = book.reload_translations(future, from, to).await.unwrap();
-
-    assert!(
-        saved,
-        "a genuine external content change must trigger a save"
+    // Staged rows read back, so a reload keeps what the book holds.
+    book.reload().await.unwrap();
+    let held = book.get_translation(&rus()).unwrap();
+    assert!(!held.is_changed());
+    assert_eq!(
+        held.paragraph_view(0).unwrap().to_import(),
+        version(10, "первый")
     );
+    assert_eq!(
+        book.snapshot().summaries.entries[1],
+        summary(7, "second chapter")
+    );
+
+    store.run(|db| db.publish()).await.unwrap();
+    let (_dir, peer) = peer_view(&store);
+    let stored = LibraryBook::load(peer, id).await.unwrap();
+    let translation = stored.get_translation(&rus()).unwrap();
+    assert_eq!(translation.translation.version_count(), 1);
+    assert_eq!(
+        translation.paragraph_view(0).unwrap().to_import(),
+        version(10, "первый")
+    );
+    assert_eq!(stored.summaries.entries[1], summary(7, "second chapter"));
 }
 
 #[tokio::test]
-async fn reload_book_skips_same_content_echo() {
-    let temp_dir = TempDir::new("flts_test_book");
-    let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
-    let (mut book, _tr_path) = book_with_saved_translation(&library, "Echo Bk").await;
+async fn a_new_book_whose_commit_fails_is_stored_whole_by_the_next_one() {
+    let dir = TempDir::new("flts_book");
+    let store = LibraryStore::open(&dir.path.join("library")).unwrap();
+    let source = Arc::new(sample_book("First save"));
+    let id = source.id;
 
-    let book_file = book.path.join("book.dat");
-    let before = std::fs::read(&book_file).unwrap();
-    let future = bump_mtime_future(&book_file);
+    fail_commits(&store, 1);
+    assert!(store.run(move |db| db.create_book(source)).await.is_err());
+    assert!(store.read(|db| Ok(db.has_unpublished())).await.unwrap());
+    store.run(|db| db.publish()).await.unwrap();
 
-    let saved = book.reload_book(future).await.unwrap();
-
-    assert!(!saved, "same-content book echo must not trigger a re-save");
+    let (_dir, peer) = peer_view(&store);
+    assert_eq!(peer.run_blocking(|db| db.list_books()).unwrap().len(), 1);
     assert_eq!(
-        std::fs::read(&book_file).unwrap(),
-        before,
-        "book.dat must be left untouched"
-    );
-}
-
-#[tokio::test]
-async fn reload_book_saves_on_external_change() {
-    let temp_dir = TempDir::new("flts_test_book");
-    let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
-    let (mut book_a, _tr_a) = book_with_saved_translation(&library, "Bk A").await;
-    let (book_b, _tr_b) = book_with_saved_translation(&library, "Bk B").await;
-
-    let a_file = book_a.path.join("book.dat");
-    let b_file = book_b.path.join("book.dat");
-    std::fs::copy(&b_file, &a_file).unwrap();
-    let future = bump_mtime_future(&a_file);
-
-    let saved = book_a.reload_book(future).await.unwrap();
-    assert!(saved, "a genuine external book change must trigger a save");
-}
-
-#[tokio::test]
-async fn failed_save_keeps_in_memory_translations() {
-    // A mid-save error (here the metadata rescan choking on an unparseable
-    // translation_*.dat) must not blank the cached book's translations.
-    let temp_dir = TempDir::new("flts_test_book");
-    let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
-    let (mut book, _tr_path) = book_with_saved_translation(&library, "Drain Book").await;
-
-    let garbage = book.path.join("translation_zzz_yyy.dat");
-    std::fs::write(&garbage, b"not a translation file").unwrap();
-
-    // Dirty it so the failing save exercises the write path, not just rescan.
-    book.translations[0].add_paragraph_translation(
-        1,
-        &simple_paragraph("v2", 2),
-        "models/gemini-2.5-flash",
-    );
-
-    let result = book.save().await;
-    assert!(
-        result.is_err(),
-        "planted garbage translation file must fail the save"
-    );
-
-    assert_eq!(book.translations.len(), 1);
-    let target_language = Language::from_str("ru").unwrap();
-    let translation = book
-        .get_translation(&target_language)
-        .expect("translation must survive a failed save");
-    assert_eq!(
-        translation.translated_paragraphs_count(),
-        2,
-        "paragraph translations must survive a failed save"
-    );
-
-    std::fs::remove_file(&garbage).unwrap();
-    book.save().await.unwrap();
-    assert_eq!(book.translations.len(), 1);
-    assert_eq!(
-        book.get_translation(&target_language)
+        peer.run_blocking(|db| db.load_book(id))
             .unwrap()
-            .translated_paragraphs_count(),
-        2
+            .book
+            .paragraphs_count(),
+        3
     );
 }
 
 #[tokio::test]
-async fn save_repairs_corrupt_translation_file() {
-    // A corrupt disk copy must be overwritten from memory; failing the save
-    // would lose the in-memory state, the only surviving copy.
-    let temp_dir = TempDir::new("flts_test_book");
-    let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
-    let (mut book, tr_path) = book_with_saved_translation(&library, "Corrupt Tr").await;
+async fn user_state_whose_commit_fails_is_published_by_the_next_commit() {
+    let dir = TempDir::new("flts_book");
+    let store = LibraryStore::open(&dir.path.join("library")).unwrap();
+    let source = sample_book("State");
+    let id = source.id;
+    let mut book = stored_book(&store, source).await;
 
-    let bytes = std::fs::read(&tr_path).unwrap();
-    std::fs::write(&tr_path, &bytes[..bytes.len() / 2]).unwrap();
+    fail_commits(&store, 1);
+    book.set_reading_state(reading(4));
+    assert!(book.has_unsaved_changes());
+    assert!(book.update_folder_path(vec!["Shelf".into()]).await.is_err());
+    assert_eq!(book.snapshot().user_state.reading_state, Some(reading(4)));
+    assert_eq!(book.snapshot().user_state.folder_path, ["Shelf"]);
+    assert!(!book.has_unsaved_changes());
+    let committed = |store: &LibraryStore| {
+        let (_dir, peer) = peer_view(store);
+        peer.run_blocking(|db| db.user_state(id)).unwrap()
+    };
+    assert_eq!(committed(&store), BookUserState::default());
 
-    book.translations[0].add_paragraph_translation(
-        1,
-        &simple_paragraph("v2", 2),
-        "models/gemini-2.5-flash",
-    );
-    book.save()
-        .await
-        .expect("save must repair a corrupt translation file, not wedge");
-
-    let f = std::fs::File::open(&tr_path).unwrap();
-    let mut reader = std::io::BufReader::new(f);
-    let on_disk = Translation::deserialize(&mut reader).unwrap();
-    assert_eq!(on_disk.translated_paragraphs_count(), 2);
+    store.run(|db| db.publish()).await.unwrap();
+    let stored = committed(&store);
+    assert_eq!(stored.reading_state, Some(reading(4)));
+    assert_eq!(stored.folder_path, ["Shelf"]);
 }
 
 #[tokio::test]
-async fn save_repairs_corrupt_book_file() {
-    // As above for book.dat: an unparseable copy is rewritten from memory.
-    let temp_dir = TempDir::new("flts_test_book");
-    let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
-    let (mut book, _tr_path) = book_with_saved_translation(&library, "Corrupt Bk").await;
+async fn a_reading_position_is_stored_by_the_next_persist() {
+    let dir = TempDir::new("flts_book");
+    let store = LibraryStore::open(&dir.path.join("library")).unwrap();
+    let source = sample_book("Position");
+    let id = source.id;
+    let mut book = stored_book(&store, source).await;
 
-    let book_file = book.path.join("book.dat");
-    let bytes = std::fs::read(&book_file).unwrap();
-    std::fs::write(&book_file, &bytes[..bytes.len() / 2]).unwrap();
-
-    book.save()
-        .await
-        .expect("save must repair a corrupt book.dat, not wedge");
-
-    let repaired = std::fs::read(&book_file).unwrap();
-    assert_eq!(
-        repaired, bytes,
-        "book.dat must be rewritten from the in-memory book"
-    );
+    book.set_reading_state(reading(1));
+    book.set_reading_state(reading(2));
+    assert!(book.only_position_unsaved());
+    book.persist().await.unwrap();
+    assert!(!book.has_unsaved_changes());
+    let stored = LibraryBook::load(store, id).await.unwrap();
+    assert_eq!(stored.user_state.reading_state, Some(reading(2)));
 }
 
 #[tokio::test]
-async fn reload_translations_absorbs_older_mtime_remote_change() {
-    // A delivered remote edit carries the source device's clock, so it can
-    // arrive with an mtime <= our last save and must still be absorbed.
-    let temp_dir = TempDir::new("flts_test_book");
-    let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
-    let (mut book, tr_path) = book_with_saved_translation(&library, "Remote Book").await;
+async fn the_newest_version_always_carries_the_newest_stamp() {
+    let dir = TempDir::new("flts_book");
+    let store = LibraryStore::open(&dir.path.join("library")).unwrap();
+    let source = sample_book("Stamps");
+    let id = source.id;
+    let mut book = stored_book(&store, source).await;
+    let translation = book.get_or_create_translation(&rus());
+    translation.add_paragraph_translation(0, &version(10, "first"), "model-a");
+    translation.add_paragraph_translation(0, &version(5, "older clock"), "model-a");
+    translation.add_paragraph_translation(0, &version(11, "same stamp"), "model-a");
+    translation.add_paragraph_translation(0, &version(50, "later"), "model-b");
+    // Another paragraph has its own history.
+    translation.add_paragraph_translation(1, &version(3, "beta"), "model-a");
+    book.reload().await.unwrap();
 
-    let source_language = Language::from_str("en").unwrap();
-    let target_language = Language::from_str("ru").unwrap();
+    for book in [book, LibraryBook::load(store, id).await.unwrap()] {
+        let translation = &book.get_translation(&rus()).unwrap().translation;
+        let history: Vec<(u64, String, String)> = translation
+            .versions(0)
+            .iter()
+            .map(|v| {
+                (
+                    v.timestamp,
+                    v.sentence_view(0).full_translation.to_string(),
+                    v.model.clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            history,
+            [
+                (10, "first".to_string(), "model-a".to_string()),
+                (11, "older clock".to_string(), "model-a".to_string()),
+                (12, "same stamp".to_string(), "model-a".to_string()),
+                (50, "later".to_string(), "model-b".to_string()),
+            ]
+        );
+        assert_eq!(translation.paragraph_view(1).unwrap().timestamp, 3);
+    }
+}
 
-    // A remote edit: same translation plus a paragraph, mtime an hour back.
-    let mut remote = Translation::create(source_language.to_639_3(), target_language.to_639_3());
-    remote.add_paragraph_translation(0, &simple_paragraph("v1", 1), "models/gemini-2.5-flash");
-    remote.add_paragraph_translation(1, &simple_paragraph("remote", 2), "models/gemini-2.5-flash");
-    let mut buf = Vec::new();
-    remote.serialize(&mut buf).unwrap();
-    std::fs::write(&tr_path, &buf).unwrap();
-    let past = SystemTime::now() - Duration::from_secs(3600);
-    std::fs::File::options()
-        .write(true)
-        .open(&tr_path)
-        .unwrap()
-        .set_modified(past)
-        .unwrap();
-
-    let had_effect = book
-        .reload_translations(past, source_language, target_language)
-        .await
-        .unwrap();
+#[tokio::test]
+async fn an_untranslated_translation_is_not_stored() {
+    let dir = TempDir::new("flts_book");
+    let store = LibraryStore::open(&dir.path.join("library")).unwrap();
+    let source = sample_book("Empty translation");
+    let id = source.id;
+    let mut book = stored_book(&store, source).await;
+    book.get_or_create_translation(&rus());
+    book.reload().await.unwrap();
+    assert!(book.get_translation(&rus()).is_none());
     assert!(
-        had_effect,
-        "an older-mtime remote change must not be dropped"
-    );
-
-    let translation = book.get_translation(&target_language).unwrap();
-    assert_eq!(
-        translation.translated_paragraphs_count(),
-        2,
-        "the remote paragraph must be merged into the in-memory translation"
+        LibraryBook::load(store, id)
+            .await
+            .unwrap()
+            .get_translation(&rus())
+            .is_none()
     );
 }
 
 #[tokio::test]
-async fn reload_discovers_a_new_remote_translation_language() {
-    let directory = TempDir::new("flts_new_translation");
-    let library = Library::open(directory.path.join("library")).await.unwrap();
-    let id = library
-        .create_book_plain("New remote language", "hello", &Language::Eng)
+async fn translations_to_several_languages_coexist() {
+    let dir = TempDir::new("flts_book");
+    let store = LibraryStore::open(&dir.path.join("library")).unwrap();
+    let source = sample_book("Polyglot");
+    let id = source.id;
+    let deu = Language::from_639_3("deu").unwrap();
+    let mut book = stored_book(&store, source).await;
+    book.get_or_create_translation(&rus())
+        .add_paragraph_translation(0, &version(1, "альфа"), "model-a");
+    book.get_or_create_translation(&deu)
+        .add_paragraph_translation(0, &version(1, "Alpha"), "model-a");
+    book.reload().await.unwrap();
+
+    let stored = LibraryBook::load(store, id).await.unwrap();
+    let text = |language: &Language| {
+        stored
+            .get_translation(language)
+            .unwrap()
+            .paragraph_view(0)
+            .unwrap()
+            .sentence_view(0)
+            .full_translation
+            .to_string()
+    };
+    assert_eq!(text(&rus()), "альфа");
+    assert_eq!(text(&deu), "Alpha");
+    assert_ne!(
+        stored.get_translation(&rus()).unwrap().translation.id,
+        stored.get_translation(&deu).unwrap().translation.id
+    );
+}
+
+#[tokio::test]
+async fn a_device_opening_on_synced_shards_sees_the_other_devices_books() {
+    let dir = TempDir::new("flts_devices");
+    let a = Library::open(dir.path.join("a/library")).await.unwrap();
+    let book = a.create_book(sample_book("Arrived")).await.unwrap();
+    let id = book.snapshot().book.id;
+    translate(&book, 0, 10, "альфа").await;
+    book.flush().await.unwrap();
+
+    // The shards synced in while this device was not running.
+    let b_root = dir.path.join("b/library");
+    copy_shards(
+        a.store().shared_dir(),
+        &b_root.join(crate::store::SHARED_DIR),
+    );
+    let b = Library::open(b_root).await.unwrap();
+
+    let listed = b.list_books().await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].title, "Arrived");
+    let loaded = b.get_book(&id).await.unwrap();
+    assert_eq!(
+        loaded
+            .snapshot()
+            .translation(&rus())
+            .unwrap()
+            .paragraph_view(0)
+            .unwrap()
+            .to_import(),
+        version(10, "альфа")
+    );
+    a.close().await.unwrap();
+    b.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_loaded_book_picks_up_another_devices_translation() {
+    let devices = Devices::new().await;
+    let on_a = devices.a.create_book(sample_book("Shared")).await.unwrap();
+    let id = on_a.snapshot().book.id;
+    let other = devices
+        .a
+        .create_book_plain("Bystander", "text", &eng())
         .await
         .unwrap();
-    let handle = library.get_book(&id).await.unwrap();
-    let before = handle.snapshot();
-    let mut remote = Translation::create("eng", "rus");
-    remote.add_paragraph_translation(0, &simple_paragraph("remote", 1), "test");
-    let mut bytes = Vec::new();
-    remote.serialize(&mut bytes).unwrap();
-    std::fs::write(before.path.join("translation_eng_rus.dat"), bytes).unwrap();
-    handle
-        .reload_translations(SystemTime::UNIX_EPOCH, Language::Eng, Language::Rus)
+    on_a.flush().await.unwrap();
+    devices.sync_a_to_b();
+    assert_eq!(
+        devices.b.refresh_from_peers().await.unwrap(),
+        PeerChanges {
+            library: true,
+            ..PeerChanges::default()
+        },
+        "nothing is loaded yet, so no loaded book changed"
+    );
+
+    let on_b = devices.b.get_book(&id).await.unwrap();
+    let bystander = devices.b.get_book(&other).await.unwrap();
+    assert!(on_b.snapshot().translation(&rus()).is_none());
+    let mut watching = on_b.subscribe();
+    watching.snapshot();
+
+    translate(&on_a, 0, 10, "с другого устройства").await;
+    on_a.apply_summary(&on_a.snapshot(), 1, summary(9, "remote summary"))
         .await
         .unwrap();
-    assert!(before.translation(&Language::Rus).is_none());
-    assert!(handle.snapshot().translation(&Language::Rus).is_some());
+    on_a.update_reading_state(reading(2)).await.unwrap();
+    on_a.flush().await.unwrap();
+    devices.sync_a_to_b();
+
+    let changes = devices.b.refresh_from_peers().await.unwrap();
+    assert_eq!(
+        changes,
+        PeerChanges {
+            library: true,
+            books: vec![id],
+            paragraphs: vec![(id, 0)],
+            ..PeerChanges::default()
+        }
+    );
+    tokio::time::timeout(Duration::from_secs(5), watching.changed())
+        .await
+        .expect("subscribers hear about the adopted change")
+        .unwrap();
+    let snapshot = on_b.snapshot();
+    assert_eq!(
+        snapshot
+            .translation(&rus())
+            .unwrap()
+            .paragraph_view(0)
+            .unwrap()
+            .to_import(),
+        version(10, "с другого устройства")
+    );
+    assert_eq!(snapshot.summaries.entries[1], summary(9, "remote summary"));
+    assert_eq!(on_b.reading_state().await.unwrap(), Some(reading(2)));
+    assert_eq!(snapshot.status, BookStatus::Active);
+    assert!(bystander.snapshot().translation(&rus()).is_none());
+    assert_eq!(
+        devices.b.list_books().await.unwrap().len(),
+        2,
+        "one book per id, not per device"
+    );
+
+    assert_eq!(
+        devices.b.refresh_from_peers().await.unwrap(),
+        PeerChanges::default(),
+        "a second refresh finds nothing new"
+    );
+    devices.a.close().await.unwrap();
+    devices.b.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn both_devices_translations_of_one_paragraph_are_kept() {
+    let devices = Devices::new().await;
+    let on_a = devices.a.create_book(sample_book("Both")).await.unwrap();
+    let id = on_a.snapshot().book.id;
+    on_a.flush().await.unwrap();
+    devices.sync_a_to_b();
+    devices.b.refresh_from_peers().await.unwrap();
+    let on_b = devices.b.get_book(&id).await.unwrap();
+
+    translate(&on_a, 0, 10, "from a").await;
+    translate(&on_a, 1, 15, "only a").await;
+    on_a.flush().await.unwrap();
+    translate(&on_b, 0, 20, "from b").await;
+    // Unsaved here when the other device's write arrives.
+    translate(&on_b, 2, 25, "only b").await;
+
+    devices.sync_a_to_b();
+    devices.sync_b_to_a();
+    let changes = devices.b.refresh_from_peers().await.unwrap();
+    assert_eq!(changes.paragraphs, [(id, 0), (id, 1)]);
+    devices.sync_b_to_a();
+    let changes = devices.a.refresh_from_peers().await.unwrap();
+    assert_eq!(changes.paragraphs, [(id, 0), (id, 2)]);
+
+    for book in [&on_a, &on_b] {
+        let snapshot = book.snapshot();
+        let translation = snapshot.translation(&rus()).unwrap();
+        assert_eq!(translation.version_count(), 4);
+        let history: Vec<(u64, String)> = translation
+            .versions(0)
+            .iter()
+            .map(|v| (v.timestamp, v.sentence_view(0).full_translation.to_string()))
+            .collect();
+        assert_eq!(
+            history,
+            [(10, "from a".to_string()), (20, "from b".to_string())]
+        );
+        assert!(translation.paragraph_view(1).is_some());
+        assert!(translation.paragraph_view(2).is_some());
+    }
+    devices.a.close().await.unwrap();
+    devices.b.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn another_devices_page_turn_touches_only_that_book() {
+    let devices = Devices::new().await;
+    let on_a = devices.a.create_book(sample_book("Read")).await.unwrap();
+    let id = on_a.snapshot().book.id;
+    let other = devices
+        .a
+        .create_book_plain("Bystander", "text", &eng())
+        .await
+        .unwrap();
+    devices.sync_a_to_b();
+    devices.b.refresh_from_peers().await.unwrap();
+    let on_b = devices.b.get_book(&id).await.unwrap();
+    let bystander = devices.b.get_book(&other).await.unwrap();
+    let before = bystander.snapshot();
+
+    on_a.update_reading_state(reading(2)).await.unwrap();
+    on_a.flush().await.unwrap();
+    devices.sync_a_to_b();
+    assert_eq!(
+        devices.b.refresh_from_peers().await.unwrap(),
+        PeerChanges {
+            books: vec![id],
+            ..PeerChanges::default()
+        },
+        "neither the shelf nor the cards changed"
+    );
+    assert_eq!(on_b.reading_state().await.unwrap(), Some(reading(2)));
+    assert!(Arc::ptr_eq(&before, &bystander.snapshot()));
+    devices.a.close().await.unwrap();
+    devices.b.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_book_that_missed_a_reload_catches_up_on_the_next_refresh() {
+    let devices = Devices::new().await;
+    let on_a = devices.a.create_book(sample_book("Behind")).await.unwrap();
+    let id = on_a.snapshot().book.id;
+    devices.sync_a_to_b();
+    devices.b.refresh_from_peers().await.unwrap();
+    let on_b = devices.b.get_book(&id).await.unwrap();
+
+    translate(&on_a, 0, 10, "с другого устройства").await;
+    on_a.flush().await.unwrap();
+    devices.sync_a_to_b();
+    // Adopted, but the reload that should follow never happened.
+    let adopted = devices.b.store().run(|db| db.refresh()).await.unwrap();
+    assert!(adopted.books.contains_key(&id));
+    assert!(on_b.snapshot().translation(&rus()).is_none());
+
+    let changes = devices.b.refresh_from_peers().await.unwrap();
+    assert_eq!(changes.books, [id], "which paragraphs is no longer known");
+    assert!(on_b.snapshot().translation(&rus()).is_some());
+    assert!(devices.b.refresh_from_peers().await.unwrap().is_empty());
+    devices.a.close().await.unwrap();
+    devices.b.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_remote_delete_closes_the_loaded_book() {
+    let devices = Devices::new().await;
+    let on_a = devices.a.create_book(sample_book("Doomed")).await.unwrap();
+    let id = on_a.snapshot().book.id;
+    on_a.flush().await.unwrap();
+    let kept = devices
+        .a
+        .create_book_plain("Kept", "text", &eng())
+        .await
+        .unwrap();
+    devices.sync_a_to_b();
+    devices.b.refresh_from_peers().await.unwrap();
+    let on_b = devices.b.get_book(&id).await.unwrap();
+    let kept_on_b = devices.b.get_book(&kept).await.unwrap();
+    // Work on a book that is gone has nowhere to go.
+    translate(&on_b, 0, 10, "напрасно").await;
+
+    drop(on_a);
+    devices.a.delete_book(&id).await.unwrap();
+    devices.sync_a_to_b();
+    let changes = devices.b.refresh_from_peers().await.unwrap();
+
+    assert!(changes.library);
+    assert!(!changes.books.contains(&id));
+    assert_eq!(changes.deleted, [id]);
+    assert_eq!(on_b.snapshot().status, BookStatus::Closed);
+    assert!(on_b.reading_state().await.is_err());
+    assert!(on_b.flush().await.is_err());
+    assert!(devices.b.get_book(&id).await.is_err());
+    let listed = devices.b.list_books().await.unwrap();
+    assert_eq!(listed.iter().map(|b| b.id).collect::<Vec<_>>(), [kept]);
+    assert_eq!(kept_on_b.snapshot().status, BookStatus::Active);
+    kept_on_b.flush().await.unwrap();
+
+    // The delete must not bounce back as a resurrection.
+    devices.sync_b_to_a();
+    devices.a.refresh_from_peers().await.unwrap();
+    assert_eq!(devices.a.list_books().await.unwrap().len(), 1);
+    devices.a.close().await.unwrap();
+    devices.b.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_book_whose_rows_arrived_only_in_part_fails_to_load_until_the_rest_does() {
+    let devices = Devices::new().await;
+    let id = devices
+        .a
+        .create_book(sample_book("Partial"))
+        .await
+        .unwrap()
+        .snapshot()
+        .book
+        .id;
+
+    let (from, to) = (
+        devices.a.store().shared_dir().to_owned(),
+        devices.b.store().shared_dir().to_owned(),
+    );
+    let mut entities: Vec<String> = std::fs::read_dir(&from)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    entities.sort();
+    let is_paragraphs = |name: &str| {
+        let name = name.to_lowercase();
+        name.contains("paragraph") && !name.contains("translation")
+    };
+    assert_eq!(
+        entities.iter().filter(|name| is_paragraphs(name)).count(),
+        1,
+        "expected one paragraph shard directory among {entities:?}"
+    );
+
+    // The book row is here; its paragraphs are still in transit.
+    copy_shards_where(&from, &to, &|name| !is_paragraphs(name));
+    devices.b.refresh_from_peers().await.unwrap();
+    assert!(
+        devices.b.list_books().await.unwrap().is_empty(),
+        "a book still arriving is not on the shelf"
+    );
+    let error = devices
+        .b
+        .get_book(&id)
+        .await
+        .err()
+        .expect("a partial book must not load");
+    assert!(
+        error.to_string().contains("has not fully arrived yet"),
+        "{error:#}"
+    );
+    assert!(
+        devices.b.list_books().await.is_ok(),
+        "the shelf still lists while a book is in transit"
+    );
+
+    copy_shards(&from, &to);
+    devices.b.refresh_from_peers().await.unwrap();
+    let loaded = devices.b.get_book(&id).await.unwrap();
+    assert_eq!(loaded.snapshot().book.paragraphs_count(), 3);
+    devices.a.close().await.unwrap();
+    devices.b.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn our_own_shard_changes_are_not_peer_changes() {
+    use crate::library::file_watcher::LibraryFileChange;
+    let devices = Devices::new().await;
+    let on_a = devices.a.create_book(sample_book("Echo")).await.unwrap();
+    on_a.flush().await.unwrap();
+
+    let own: Vec<_> = walk(devices.a.store().shared_dir());
+    assert!(!own.is_empty());
+    assert!(own.iter().all(|path| devices.a.store().is_own_file(path)));
+    let changes = devices
+        .a
+        .handle_file_change_event(&LibraryFileChange::StoreChanged { paths: own.clone() })
+        .await
+        .unwrap();
+    assert_eq!(changes, PeerChanges::default());
+
+    devices.sync_a_to_b();
+    let arrived: Vec<_> = walk(devices.b.store().shared_dir());
+    assert!(
+        arrived
+            .iter()
+            .any(|path| !devices.b.store().is_own_file(path))
+    );
+    let changes = devices
+        .b
+        .handle_file_change_event(&LibraryFileChange::StoreChanged { paths: arrived })
+        .await
+        .unwrap();
+    assert!(changes.library);
+    assert_eq!(devices.b.list_books().await.unwrap().len(), 1);
+    devices.a.close().await.unwrap();
+    devices.b.close().await.unwrap();
+}
+
+fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            files.extend(walk(&path));
+        } else {
+            files.push(path);
+        }
+    }
+    files
+}
+
+#[tokio::test]
+async fn open_books_go_on_after_the_library_takes_a_new_identity() {
+    let dir = TempDir::new("flts_book");
+    let root = dir.path.join("library");
+    let library = Library::open(root.clone()).await.unwrap();
+    let book = library.create_book(sample_book("Carried")).await.unwrap();
+    let id = book.snapshot().book.id;
+    translate(&book, 0, 10, "до").await;
+    book.flush().await.unwrap();
+    library.note_shared_identity().await.unwrap();
+    assert!(library.store_health().await.unwrap().shared_identity);
+
+    library.take_new_identity().await.unwrap();
+    assert!(!library.store_health().await.unwrap().shared_identity);
+    translate(&book, 1, 20, "после").await;
+    book.flush().await.unwrap();
+    library.close().await.unwrap();
+    drop((book, library));
+
+    let library = Library::open(root).await.unwrap();
+    let stored = library.get_book(&id).await.unwrap().snapshot();
+    assert_eq!(stored.translation(&rus()).unwrap().version_count(), 2);
+    assert!(!library.store_health().await.unwrap().shared_identity);
     library.close().await.unwrap();
 }

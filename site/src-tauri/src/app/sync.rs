@@ -135,10 +135,38 @@ pub async fn sync_add_device(
         .sync_engine()
         .await?
         .ok_or_else(|| "sync is not running; enable it first".to_string())?;
+    if device_id.trim() == engine.my_id() {
+        if let Err(err) = state.note_shared_sync_identity().await {
+            log::warn!("could not note the shared sync identity: {err:#}");
+        }
+        return Err(SAME_IDENTITY.to_string());
+    }
     engine
         .pair_device(device_id.trim(), name.trim())
         .await
         .map_err(|err| err.to_string())
+}
+
+const SAME_IDENTITY: &str = "That device has the same sync identity as this one, as happens \
+     when one was restored from the other's backup. Give one of them a new identity first.";
+
+/// Gives this installation a sync identity of its own; it must then be
+/// paired again.
+#[tauri::command]
+pub async fn sync_reset_identity(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    state
+        .reset_sync_identity()
+        .await
+        .map_err(|err| format!("{err:#}"))
+}
+
+/// Dismisses the shared-identity notice: the other copy takes the new one.
+#[tauri::command]
+pub async fn sync_keep_identity(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    state
+        .keep_sync_identity()
+        .await
+        .map_err(|err| format!("{err:#}"))
 }
 
 /// Devices that tried to connect but aren't paired; accepting one via

@@ -28,11 +28,11 @@ fn should_requeue(error: &anyhow::Error, attempt: u32) -> bool {
     attempt + 1 < MAX_TRANSLATION_ATTEMPTS && is_transient_translation_error(error)
 }
 #[derive(Clone, serde::Serialize)]
-struct ParagraphUpdatedEvent {
+pub(crate) struct ParagraphUpdatedEvent {
     #[serde(rename = "bookId")]
-    book_id: Uuid,
+    pub(crate) book_id: Uuid,
     #[serde(rename = "paragraphId")]
-    paragraph_id: usize,
+    pub(crate) paragraph_id: usize,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -361,14 +361,8 @@ async fn scheduler(
             }
             let paragraph = view.paragraph_view(chapter.offset).id;
             chapter.offset += 1;
-            // Paragraphs translated since the request must not be paid for
-            // again; a reloaded book renumbers them, so only the same one counts.
-            let latest = chapter.book.snapshot();
-            let current = if Arc::ptr_eq(&latest.book, &chapter.snapshot.book) {
-                &latest
-            } else {
-                &chapter.snapshot
-            };
+            // Paragraphs translated since the request must not be paid for again.
+            let current = chapter.book.snapshot();
             if activities.contains_key(&(chapter.snapshot.book.id, paragraph))
                 || current
                     .translation(&context.target)
@@ -562,20 +556,16 @@ async fn execute(
         .stats
         .record_observation(&source, &context.target, text.len(), actual)
         .await;
-    let receipt = job
-        .book
+    job.book
         .apply_translation(
-            job.snapshot.token,
             job.paragraph,
-            text,
-            source,
             context.target,
             translation,
             job.model.clone(),
         )
         .await?;
     job.book
-        .flush_through(receipt.revision)
+        .flush()
         .await
         .map_err(|err| anyhow::anyhow!("translated, but saving the book failed: {err}"))
 }

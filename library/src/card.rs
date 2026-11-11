@@ -84,9 +84,9 @@ impl CardKey {
     }
 }
 
-// Identity is the on-disk identity: same language pair + lemma slug = same
-// card, PoS excluded. `lemma` is display metadata outside equality, since
-// surface variants slug identically and would collide on disk.
+// Same language pair + lemma slug = same card, PoS excluded. `lemma` is
+// display metadata outside equality: surface variants slug identically and
+// must stay one card.
 impl PartialEq for CardKey {
     fn eq(&self, other: &Self) -> bool {
         self.source_language == other.source_language
@@ -98,7 +98,7 @@ impl Eq for CardKey {}
 
 /// NFC + apostrophe + whitespace collapse, keeping the emitted casing. Use for
 /// the user-visible lemma; pair with [`canonicalize_lemma`] + [`lemma_slug`]
-/// for the lowercased filesystem/id side.
+/// for the lowercased id side.
 pub fn canonicalize_lemma_display(raw: &str) -> String {
     let nfc: String = raw.nfc().collect();
     let apostrophe_normalized: String = nfc
@@ -323,7 +323,7 @@ fn compile_word(fields: CardWordFields<'_>) -> Result<CompiledWord, CardSkipReas
     }
 
     // Display form keeps the citation casing; the slug lowercases so
-    // filesystem identity and cross-occurrence dedup stay stable.
+    // card identity and cross-occurrence dedup stay stable.
     let lemma = canonicalize_lemma_display(raw_lemma);
     if lemma.is_empty() {
         return Err(CardSkipReason::EmptyLemma);
@@ -357,7 +357,7 @@ pub fn card_word_eligibility(fields: CardWordFields<'_>) -> Result<(), CardSkipR
     compile_word(fields).map(|_| ())
 }
 
-/// The on-disk identity for a lemma, used both to create a card and to answer
+/// The card identity for a lemma, used both to create a card and to answer
 /// whether one already exists. `None` when the lemma slugs to nothing.
 pub fn card_key_for_lemma(
     raw_lemma: &str,

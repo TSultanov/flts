@@ -1,8 +1,8 @@
-use super::library_book::{BookStatus, BookToken, StopMode, owner, serve_book};
-use super::{BookHandle, LibraryBook, LibraryBookMetadata, session::LibraryLease};
+use super::library_book::{BookStatus, StopMode, owner, serve_book};
+use super::{BookHandle, LibraryBook, session::LibraryLease};
+use crate::store::LibraryStore;
 use std::{
     collections::{HashMap, VecDeque},
-    path::PathBuf,
     sync::Arc,
     time::Duration,
 };
@@ -19,14 +19,10 @@ pub(super) enum BookRequest {
         id: Uuid,
         reply: BookReply,
     },
+    #[cfg(test)]
     Cached {
         id: Uuid,
         reply: oneshot::Sender<Option<BookHandle>>,
-    },
-    Insert {
-        id: Uuid,
-        book: LibraryBook,
-        reply: BookReply,
     },
     Remove {
         id: Uuid,
@@ -55,7 +51,6 @@ enum Phase {
 }
 struct Entry {
     phase: Phase,
-    retry_after: Option<tokio::time::Instant>,
     handle: Option<BookHandle>,
     stop: Option<watch::Sender<StopMode>>,
     waiters: Vec<BookReply>,
@@ -65,7 +60,6 @@ impl Entry {
     fn loading(reply: BookReply) -> Self {
         Self {
             phase: Phase::Loading,
-            retry_after: None,
             handle: None,
             stop: None,
             waiters: vec![reply],
@@ -92,7 +86,7 @@ impl Entry {
 }
 enum Completed {
     Loaded(Uuid, anyhow::Result<LibraryBook>),
-    Exited(Uuid, BookToken),
+    Exited(Uuid, u64),
     Deleted(Uuid, anyhow::Result<()>),
 }
 #[derive(Clone, Copy)]
@@ -101,54 +95,39 @@ enum Work {
     Owner(Uuid),
     Delete(Uuid),
 }
-fn load(
-    id: Uuid,
-    root: &std::path::Path,
-    jobs: &mut JoinSet<Completed>,
-    ids: &mut HashMap<Id, Work>,
-) {
-    let path = root.join(id.to_string());
-    let job = jobs.spawn(async move {
-        Completed::Loaded(
-            id,
-            async {
-                LibraryBook::load_from_metadata(LibraryBookMetadata::load(&path).await?).await
-            }
-            .await,
-        )
-    });
+fn load(id: Uuid, root: &LibraryStore, jobs: &mut JoinSet<Completed>, ids: &mut HashMap<Id, Work>) {
+    let store = root.clone();
+    let job = jobs.spawn(async move { Completed::Loaded(id, LibraryBook::load(store, id).await) });
     ids.insert(job.id(), Work::Load(id));
 }
 fn remove(
     id: Uuid,
-    root: &std::path::Path,
+    root: &LibraryStore,
     jobs: &mut JoinSet<Completed>,
     ids: &mut HashMap<Id, Work>,
 ) {
-    let path = root.join(id.to_string());
-    let job = jobs.spawn(async move {
-        Completed::Deleted(id, super::library_book::delete_directory(&path).await)
-    });
+    let store = root.clone();
+    let job = jobs.spawn(async move { Completed::Deleted(id, store.delete_book(id).await) });
     ids.insert(job.id(), Work::Delete(id));
 }
 fn start(
     entry: &mut Entry,
     mut book: LibraryBook,
-    session: Uuid,
-    failures: &mpsc::UnboundedSender<super::library_book::StopFailed>,
+    incarnation: &mut u64,
     jobs: &mut JoinSet<Completed>,
     ids: &mut HashMap<Id, Work>,
 ) {
     let id = book.book.id;
-    let (handle, commands, publish, stop, stopped) = owner(&mut book, session);
-    let admission = handle.admission.clone();
-    let failures = failures.clone();
+    *incarnation += 1;
+    let (handle, commands, publish, stop, stopped) = owner(&mut book, *incarnation);
+    let (admission, incarnation) = (handle.admission.clone(), *incarnation);
     let job = jobs.spawn(async move {
-        let (id, token) = serve_book(book, commands, publish, stopped, failures, admission).await;
-        Completed::Exited(id, token)
+        let (id, incarnation) =
+            serve_book(book, commands, publish, stopped, admission, incarnation).await;
+        Completed::Exited(id, incarnation)
     });
     ids.insert(job.id(), Work::Owner(id));
-    log::debug!("book {id} owner {:?} started", handle.token);
+    log::debug!("book {id} owner {incarnation} started");
     entry.phase = Phase::Active;
     entry.handle = Some(handle.clone());
     entry.stop = Some(stop);
@@ -168,20 +147,19 @@ fn touch(warm: &mut VecDeque<Uuid>, id: Uuid, capacity: usize) {
 
 pub(super) async fn serve_books(
     lease: LibraryLease,
+    store: LibraryStore,
     capacity: usize,
     mut requests: mpsc::Receiver<BookRequest>,
-    card_store: super::library_card::LibraryCardStore,
     mut close_control: watch::Receiver<u64>,
     completion: watch::Sender<(u64, Option<Result<(), String>>)>,
 ) {
-    let root: PathBuf = lease.root.clone();
+    let root = store;
     let mut lease = Some(lease);
-    let session = Uuid::new_v4();
+    let mut incarnation = 0;
     let mut entries: HashMap<Uuid, Entry> = HashMap::new();
     let mut warm = VecDeque::new();
     let mut jobs = JoinSet::new();
     let mut ids = HashMap::new();
-    let (failures, mut failed) = mpsc::unbounded_channel();
     let mut sweep = tokio::time::interval(Duration::from_secs(1));
     // The sweep sleeps while nothing can retire; it must not replay those ticks.
     sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -189,16 +167,12 @@ pub(super) async fn serve_books(
     let mut disconnected = false;
 
     loop {
-        // Only a dropped handle or an elapsed retry is invisible to the other
-        // branches, so the timer runs only while one of those can happen.
-        let sweepable = entries.iter().any(|(id, entry)| {
-            entry.phase == Phase::Active
-                && if closing {
-                    entry.retry_after.is_some()
-                } else {
-                    !warm.contains(id)
-                }
-        });
+        // Only a dropped handle is invisible to the other branches, so the
+        // timer runs only while one can be dropped.
+        let sweepable = !closing
+            && entries
+                .iter()
+                .any(|(id, entry)| entry.phase == Phase::Active && !warm.contains(id));
         tokio::select! {
             changed = close_control.changed(), if !closing => {
                 if changed.is_ok() { close_control.borrow_and_update(); }
@@ -211,25 +185,15 @@ pub(super) async fn serve_books(
                     if closing { let _ = reply.send(Err(anyhow::anyhow!("library session closing"))); continue; }
                     match entries.get_mut(&id) {
                         Some(entry) if entry.phase == Phase::Active => {
-                            if !warm.contains(&id) && entry.retry_after.is_none_or(|at| at <= tokio::time::Instant::now()) && Arc::strong_count(entry.handle.as_ref().unwrap()) == 1 {
-                                entry.phase = Phase::Retiring; entry.waiters.push(reply); entry.stop(StopMode::Retire);
-                            } else {
-                                let _ = reply.send(Ok(entry.handle.as_ref().unwrap().clone())); touch(&mut warm, id, capacity);
-                            }
+                            let _ = reply.send(Ok(entry.handle.as_ref().unwrap().clone())); touch(&mut warm, id, capacity);
                         }
                         Some(entry) if matches!(entry.phase, Phase::Loading | Phase::Retiring) => entry.waiters.push(reply),
                         Some(_) => { let _ = reply.send(Err(anyhow::anyhow!("book {id} deleted or unavailable"))); }
                         None => { entries.insert(id, Entry::loading(reply)); load(id, &root, &mut jobs, &mut ids); }
                     }
                 }
+                #[cfg(test)]
                 Some(BookRequest::Cached {id, reply}) => { let _ = reply.send(entries.get(&id).filter(|e| e.phase == Phase::Active).and_then(|e| e.handle.clone())); }
-                Some(BookRequest::Insert {id, book, reply}) => {
-                    if entries.values().filter_map(|entry| entry.handle.as_ref()).any(|handle| handle.snapshot().book.title == book.book.title) { let _ = reply.send(Err(super::LibraryError::DuplicateTitle(book.book.title.clone()).into())); continue; }
-                    if closing || entries.contains_key(&id) { let _ = reply.send(Err(anyhow::anyhow!("book already registered or library closing"))); continue; }
-                    let mut entry = Entry::loading(reply);
-                    start(&mut entry, book, session, &failures, &mut jobs, &mut ids);
-                    entries.insert(id, entry); touch(&mut warm, id, capacity);
-                }
                 Some(BookRequest::Remove {id, reply}) => {
                     warm.retain(|k| *k != id);
                     if let Some(entry) = entries.get_mut(&id) {
@@ -241,7 +205,7 @@ pub(super) async fn serve_books(
                         if entry.handle.is_some() { entry.stop(StopMode::Delete); }
                         else if !was_loading { remove(id, &root, &mut jobs, &mut ids); }
                     } else {
-                        entries.insert(id, Entry {phase: Phase::Deleting, retry_after: None, handle: None, stop: None, waiters: vec![], deletes: vec![reply]});
+                        entries.insert(id, Entry {phase: Phase::Deleting, handle: None, stop: None, waiters: vec![], deletes: vec![reply]});
                         remove(id, &root, &mut jobs, &mut ids);
                     }
                 }
@@ -251,23 +215,6 @@ pub(super) async fn serve_books(
                 #[cfg(test)]
                 Some(BookRequest::Inflight {reply}) => { let _ = reply.send(ids.values().filter(|w| matches!(w, Work::Load(_))).count()); }
             },
-            Some(failure) = failed.recv() => {
-                if let Some(entry) = entries.get_mut(&failure.id) {
-                    if entry.handle.as_ref().is_none_or(|h| h.token != failure.token) { continue; }
-                    log::warn!("book {} retirement retained dirty state: {}", failure.id, failure.error);
-                    entry.phase = Phase::Active;
-                    entry.retry_after = Some(tokio::time::Instant::now() + Duration::from_secs(30));
-                    entry.handle.as_ref().unwrap().admission.send_replace(BookStatus::Active);
-                    entry.stop.as_ref().unwrap().send_replace(StopMode::Running);
-                    for waiter in entry.waiters.drain(..) { let _ = waiter.send(Ok(entry.handle.as_ref().unwrap().clone())); }
-                    // With no handles left nobody can re-request the close; the sweep retries it.
-                    if closing && !disconnected {
-                        closing = false;
-                        let epoch = *close_control.borrow_and_update();
-                        completion.send_replace((epoch, Some(Err(format!("flush failed: {}", failure.error)))));
-                    }
-                }
-            }
             Some(result) = jobs.join_next_with_id(), if !jobs.is_empty() => {
                 let completed = match result {
                     Ok((task, completed)) => { ids.remove(&task); completed }
@@ -290,14 +237,13 @@ pub(super) async fn serve_books(
                         if entry.phase == Phase::Deleting { drop(loaded); remove(id, &root, &mut jobs, &mut ids); }
                         else if closing { entry.reject_waiters("library session closing"); entries.remove(&id); }
                         else { match loaded {
-                            Ok(book) if book.book.id != id => { entry.reject_waiters("book identity does not match directory"); entries.remove(&id); }
-                            Ok(book) => { start(entry, book, session, &failures, &mut jobs, &mut ids); touch(&mut warm, id, capacity); }
+                            Ok(book) => { start(entry, book, &mut incarnation, &mut jobs, &mut ids); touch(&mut warm, id, capacity); }
                             Err(err) => { entry.reject_waiters(&format!("{err:#}")); entries.remove(&id); }
                         } }
                     }
-                    Completed::Exited(id, token) => {
+                    Completed::Exited(id, exited) => {
                         let Some(entry) = entries.get_mut(&id) else { continue; };
-                        if entry.handle.as_ref().is_none_or(|h| h.token != token) { continue; }
+                        if entry.handle.as_ref().is_none_or(|h| h.incarnation != exited) { continue; }
                         entry.handle.take(); entry.stop.take();
                         if entry.phase == Phase::Deleting { remove(id, &root, &mut jobs, &mut ids); }
                         else if !closing && !entry.waiters.is_empty() { entry.phase = Phase::Loading; load(id, &root, &mut jobs, &mut ids); }
@@ -311,24 +257,11 @@ pub(super) async fn serve_books(
                     }
                 }
             }
-            _ = sweep.tick(), if sweepable && (!closing || disconnected) => {
-                for (id, entry) in &mut entries {
-                    if closing {
-                        if entry.phase == Phase::Active && entry.retry_after.is_some_and(|at| at <= tokio::time::Instant::now()) { entry.retry_after = None; entry.stop(StopMode::Close); }
-                        continue;
-                    }
-                    if entry.phase == Phase::Active && entry.retry_after.is_none_or(|at| at <= tokio::time::Instant::now()) && !warm.contains(id) && entry.handle.as_ref().is_some_and(|h| Arc::strong_count(h) == 1) {
-                        entry.phase = Phase::Retiring; entry.stop(StopMode::Retire);
-                    }
-                }
-            }
+            _ = sweep.tick(), if sweepable => {}
         }
         if !closing {
             for (id, entry) in &mut entries {
                 if entry.phase == Phase::Active
-                    && entry
-                        .retry_after
-                        .is_none_or(|at| at <= tokio::time::Instant::now())
                     && !warm.contains(id)
                     && entry
                         .handle
@@ -341,7 +274,20 @@ pub(super) async fn serve_books(
             }
         }
         if closing && jobs.is_empty() {
-            card_store.close().await;
+            // The owners staged what they held; this is its last chance to land.
+            if let Err(err) = root.run(|db| db.publish()).await {
+                log::warn!("library closing with unsaved changes: {err:#}");
+                if !disconnected {
+                    // Stays open, so the caller may try to close again.
+                    closing = false;
+                    completion.send_replace((
+                        *close_control.borrow_and_update(),
+                        Some(Err(format!("flush failed: {err:#}"))),
+                    ));
+                    continue;
+                }
+            }
+            root.close().await;
             drop(lease.take());
             requests.close();
             completion.send_replace((*close_control.borrow(), Some(Ok(()))));

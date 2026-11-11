@@ -146,12 +146,9 @@ export function buildLibraryFolder(
 
 export class Library {
   getLibraryBooksMetadata(): Resource<LibraryBookMetadataView[]> {
-    return new Resource<LibraryBookMetadataView[]>(
-      "list_books",
-      {},
-      [{ name: "library_updated", filter: () => true }],
-      [],
-    );
+    return new Resource<LibraryBookMetadataView[]>("list_books", {}, [
+      { name: "library_updated", filter: () => true },
+    ]);
   }
 
   getBookChapters(bookId: UUID): Resource<ChapterMetaView[]> {

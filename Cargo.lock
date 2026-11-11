@@ -37,7 +37,6 @@ dependencies = [
  "cfg-if",
  "getrandom 0.3.4",
  "once_cell",
- "serde",
  "version_check",
  "zerocopy",
 ]
@@ -167,7 +166,6 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 name = "app"
 version = "0.1.0"
 dependencies = [
- "ahash",
  "anyhow",
  "apple-native-keyring-store",
  "async-trait",
@@ -187,7 +185,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
- "strum 0.28.0",
  "tauri",
  "tauri-build",
  "tauri-plugin-barcode-scanner",
@@ -998,7 +995,6 @@ dependencies = [
  "futures-util",
  "isolang",
  "library",
- "log",
  "tokio",
  "uuid",
 ]
@@ -1160,7 +1156,7 @@ dependencies = [
  "ciborium",
  "clap",
  "criterion-plot",
- "itertools 0.13.0",
+ "itertools",
  "num-traits",
  "oorandom",
  "page_size",
@@ -1180,7 +1176,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8d80a2f4f5b554395e47b5d8305bc3d27813bacb73493eb1001e8f76dae29ea"
 dependencies = [
  "cast",
- "itertools 0.13.0",
+ "itertools",
 ]
 
 [[package]]
@@ -1354,6 +1350,26 @@ name = "data-encoding"
 version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
+
+[[package]]
+name = "dbsync"
+version = "0.1.0"
+dependencies = [
+ "dbsync-macros",
+ "rand 0.9.5",
+ "rustix",
+ "sha1 0.11.0",
+ "zstd",
+]
+
+[[package]]
+name = "dbsync-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
 
 [[package]]
 name = "dbus"
@@ -2182,8 +2198,8 @@ dependencies = [
  "serde",
  "serde_json",
  "snafu",
- "strum 0.27.2",
- "strum_macros 0.27.2",
+ "strum",
+ "strum_macros",
  "time",
  "tokio",
  "tracing",
@@ -2866,15 +2882,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "itertools"
-version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b4baf93f58d4425749ca49a51c50ebab072c5df6994d08fed93541c331481dc"
-dependencies = [
- "either",
-]
-
-[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3190,13 +3197,13 @@ dependencies = [
  "async-trait",
  "core-foundation 0.10.1",
  "criterion",
+ "dbsync",
  "epub",
  "fnv",
  "futures-util",
  "gemini-rust",
  "htmlentity",
  "isolang",
- "itertools 0.15.0",
  "log",
  "notify",
  "notify-debouncer-full",
@@ -3207,15 +3214,12 @@ dependencies = [
  "rand 0.10.3",
  "regex-lite",
  "reqwest 0.12.28",
- "ringbuffer",
  "scraper",
  "serde",
  "serde_json",
- "strum 0.28.0",
  "syncthing-sys",
  "tempfile",
  "tokio",
- "trash",
  "unicode-normalization",
  "uuid",
  "zip 9.0.5",
@@ -4600,12 +4604,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ringbuffer"
-version = "0.16.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57b0b88a509053cbfd535726dcaaceee631313cef981266119527a1d110f6d2b"
-
-[[package]]
 name = "rustc-demangle"
 version = "0.1.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4628,9 +4626,9 @@ dependencies = [
 
 [[package]]
 name = "rustix"
-version = "1.1.5"
+version = "1.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "891efababe418670775f199f0d233d84843c227a0949a883ce15b37c78d6629d"
+checksum = "e5e76742e5294153d4dde1207dbec5bdd81eef6fabdc0d2118babadabfd858aa"
 dependencies = [
  "bitflags 2.13.2",
  "errno",
@@ -5352,16 +5350,7 @@ version = "0.27.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af23d6f6c1a224baef9d3f61e287d2761385a5b88fdab4eb4c6f11aeb54c4bcf"
 dependencies = [
- "strum_macros 0.27.2",
-]
-
-[[package]]
-name = "strum"
-version = "0.28.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9628de9b8791db39ceda2b119bbe13134770b56c138ec1d3af810d045c04f9bd"
-dependencies = [
- "strum_macros 0.28.0",
+ "strum_macros",
 ]
 
 [[package]]
@@ -5369,18 +5358,6 @@ name = "strum_macros"
 version = "0.27.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7695ce3845ea4b33927c055a39dc438a45b059f7c1b3d91d38d10355fb8cbca7"
-dependencies = [
- "heck 0.5.0",
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
-name = "strum_macros"
-version = "0.28.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab85eea0270ee17587ed4156089e10b9e6880ee688791d45a905f5b1ca36f664"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -6309,24 +6286,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "trash"
-version = "5.2.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be89b3fe156965d29ac4f8522f3a640c655affdd9f21cb4f36857f0c92c00317"
-dependencies = [
- "chrono",
- "libc",
- "log",
- "objc2",
- "objc2-foundation",
- "once_cell",
- "percent-encoding",
- "scopeguard",
- "urlencoding",
- "windows",
-]
-
-[[package]]
 name = "tray-icon"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6466,12 +6425,6 @@ dependencies = [
  "serde",
  "serde_derive",
 ]
-
-[[package]]
-name = "urlencoding"
-version = "2.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "daf8dba3b7eb870caf1ddeed7bc9d2a049f3cfdfae7cb521b087cc33ae4c49da"
 
 [[package]]
 name = "urlpattern"

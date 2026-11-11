@@ -13,6 +13,7 @@
         BookSummaryStatusStore,
         SUMMARY_STATUS_KEY,
     } from "./BookSummaryStatusStore.svelte";
+    import { isBookDeleted } from "./bookDeleted";
 
     const params = $derived(route.params);
 
@@ -57,8 +58,9 @@
             readingState = null;
             positionByChapter.clear();
             const currentRequest = ++readingStateRequestId;
+            const requestedBookId = bookId;
             library
-                .getBookReadingState(bookId as UUID)
+                .getBookReadingState(requestedBookId)
                 .then((state) => {
                     if (currentRequest === readingStateRequestId) {
                         readingState = state;
@@ -70,9 +72,10 @@
                         }
                     }
                 })
-                .catch((err) =>
-                    console.error("Failed to load reading state", err),
-                );
+                .catch((err) => {
+                    if (isBookDeleted(requestedBookId)) return;
+                    console.error("Failed to load reading state", err);
+                });
         }
     });
 
@@ -85,9 +88,13 @@
         // on an A→B switch the derived is already B when A's teardown
         // flushes, which would file A's paragraph under chapter B.
         positionByChapter.set(chapterId, { paragraphId, pageOffset });
+        // Teardown after a remote delete still flushes a position; the
+        // save would only reject. The route's bookId may be gone by then.
+        const savedBookId = previousBookId ?? bookId;
+        if (isBookDeleted(savedBookId)) return;
         library
             .saveBookReadingState(
-                bookId as UUID,
+                savedBookId,
                 chapterId,
                 paragraphId,
                 pageOffset,
