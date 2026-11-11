@@ -68,6 +68,24 @@ pub enum Flush {
     Never,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Durability {
+    None,
+    Relaxed,
+    #[default]
+    Full,
+}
+
+impl Durability {
+    pub(crate) fn settle(self, file: &File) -> std::io::Result<()> {
+        match self {
+            Self::None => Ok(()),
+            Self::Relaxed => super::file_source::relaxed_sync(file),
+            Self::Full => file.sync_all(),
+        }
+    }
+}
+
 pub struct ColumnFileUpdater {
     file: File,
     source: Arc<dyn ChunkSource>,
@@ -81,6 +99,7 @@ pub struct ColumnFileUpdater {
     original: ColumnFile,
     rewriting: bool,
     flush: Flush,
+    durability: Durability,
 }
 
 #[derive(Clone)]
@@ -161,11 +180,23 @@ impl ColumnFileUpdater {
             original: reader.clone(),
             rewriting: false,
             flush: Flush::Ordered,
+            durability: Durability::Full,
         })
     }
 
     pub fn flushing(&mut self, flush: Flush) {
         self.flush = flush;
+    }
+
+    pub fn lasting(&mut self, durability: Durability) {
+        self.durability = durability;
+    }
+
+    fn settled(&self, full: impl FnOnce(&File) -> std::io::Result<()>) -> std::io::Result<()> {
+        match self.durability {
+            Durability::Full => full(&self.file),
+            relaxed => relaxed.settle(&self.file),
+        }
     }
 
     pub fn starts_at(&self) -> u64 {
@@ -347,7 +378,7 @@ impl ColumnFileUpdater {
                 .all(|column| self.original.column_meta(&column.name) == Some(column))
         {
             if self.flush == Flush::Ordered {
-                self.file.sync_slot()?;
+                self.settled(|file| file.sync_slot())?;
             }
             return Ok(self.original);
         }
@@ -373,7 +404,7 @@ impl ColumnFileUpdater {
         let dir_len = payload.len() as u64;
         write_all_at(&self.file, &payload, dir_offset)?;
         if self.flush == Flush::Ordered {
-            self.file.sync_directory()?;
+            self.settled(|file| file.sync_directory())?;
         }
 
         let generation = self
@@ -407,7 +438,7 @@ impl ColumnFileUpdater {
                 })?;
             match self.flush {
                 Flush::Never => Ok(()),
-                Flush::Ordered | Flush::Once => self.file.sync_slot(),
+                Flush::Ordered | Flush::Once => self.settled(|file| file.sync_slot()),
             }
         })();
         if let Err(source) = publication {

@@ -25,6 +25,9 @@ required-features = ["macros"]
 [dev-dependencies]
 proptest = { version = "1.11", default-features = false, features = ["std", "bit-set"] }
 
+[target."cfg(unix)".dependencies]
+rustix = { version = "1.1.6", features = ["fs"] }
+
 [[example]]
 name = "store_bench"
 required-features = ["macros"]

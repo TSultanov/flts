@@ -91,6 +91,16 @@ impl ChunkSource for FileSource {
 }
 
 #[cfg(unix)]
+pub(crate) fn relaxed_sync(file: &File) -> std::io::Result<()> {
+    Ok(rustix::fs::fsync(file)?)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn relaxed_sync(file: &File) -> std::io::Result<()> {
+    file.sync_data()
+}
+
+#[cfg(unix)]
 pub(super) fn write_all_at(file: &File, buf: &[u8], offset: u64) -> Result<()> {
     use std::os::unix::fs::FileExt;
     Ok(file.write_all_at(buf, offset)?)

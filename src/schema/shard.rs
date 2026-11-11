@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use super::version::{Dot, Version};
 use crate::error::{Error, Result};
 use crate::id::Uuid;
-use crate::storage::{Arena, ColumnFile, ColumnFileWriter, CommitToken, Flush, WriterId};
+use crate::storage::{
+    Arena, ColumnFile, ColumnFileWriter, CommitToken, Durability, Flush, WriterId,
+};
 
 const IDS: &str = "id";
 const VERSIONS: &str = "version";
@@ -265,6 +267,7 @@ pub fn append(
     schema: &[u8],
     fields: &[&str],
     rows: &[ShardRow],
+    durability: Durability,
 ) -> Result<(CommitToken, usize)> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -355,6 +358,7 @@ pub fn append(
 
     let mut updater = file.update(writer)?;
     updater.flushing(Flush::Once);
+    updater.lasting(durability);
     updater.column(IDS, &ids)?;
     updater.column(VERSIONS, &versions)?;
     updater.column(PARENT_COUNTS, &counts)?;
@@ -384,6 +388,7 @@ pub fn rewrite(
     fields: &[&str],
     rows: &[ShardRow],
     floor: u64,
+    durability: Durability,
 ) -> Result<(CommitToken, usize)> {
     let folder = path
         .parent()
@@ -396,21 +401,19 @@ pub fn rewrite(
         Err(err) => return Err(err),
     };
     let written = (|| {
-        append(&fresh, writer, schema, fields, rows)?;
+        append(&fresh, writer, schema, fields, rows, durability)?;
         let file = ColumnFile::open_checked(&fresh)?;
         let mut held = Arena::<u64>::new();
         held.push(floor)?;
         held.push(epoch + 1)?;
         let mut updater = file.update(writer)?;
+        updater.lasting(durability);
         for column in file.columns() {
             updater.keep_column(&column.name)?;
         }
         updater.column(FLOOR, &held)?;
         let published = updater.commit_file()?;
-        std::fs::File::options()
-            .write(true)
-            .open(&fresh)?
-            .sync_all()?;
+        durability.settle(&std::fs::File::options().write(true).open(&fresh)?)?;
         std::fs::rename(&fresh, path)?;
         Ok((published.commit_token(), rows.len()))
     })();

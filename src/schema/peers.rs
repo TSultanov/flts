@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use super::clock::VersionVector;
 use super::version::Dot;
 use crate::error::{Error, Result};
-use crate::storage::{Arena, ColumnFile, ColumnFileWriter, WriterId};
+use crate::storage::{Arena, ColumnFile, ColumnFileWriter, Durability, WriterId};
 
 pub const FOLDER: &str = "dbsync.meta";
 const SEEN: &str = "seen";
@@ -65,7 +65,7 @@ pub fn read_all(shared: &Path) -> Result<Vec<Peer>> {
     Ok(peers)
 }
 
-pub fn publish(shared: &Path, peer: &Peer) -> Result<()> {
+pub fn publish(shared: &Path, peer: &Peer, durability: Durability) -> Result<()> {
     let path = peer_path(shared, peer.writer);
     if let Some(folder) = path.parent() {
         std::fs::create_dir_all(folder)?;
@@ -81,6 +81,7 @@ pub fn publish(shared: &Path, peer: &Peer) -> Result<()> {
     let mut seen = Arena::<Dot>::new();
     seen.extend_from_slice(peer.seen.dots())?;
     let mut updater = file.update(peer.writer)?;
+    updater.lasting(durability);
     updater.column(SEEN, &seen)?;
     updater.commit()?;
     Ok(())

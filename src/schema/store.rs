@@ -15,7 +15,8 @@ use super::{Conflict, MergeReport, PruneReport, Reference, RowStatus, View, Visi
 use crate::error::{Error, Result};
 use crate::record::Record;
 use crate::storage::{
-    Arena, ColumnFile, ColumnFileUpdater, ColumnFileWriter, CommitToken, Flush, WriterId, fnv1a,
+    Arena, ColumnFile, ColumnFileUpdater, ColumnFileWriter, CommitToken, Durability, Flush,
+    WriterId, fnv1a,
 };
 
 pub const CLOCK: &str = "dbsync.clock";
@@ -177,6 +178,7 @@ pub struct StoreState {
     held_marks: Arena<ShardMark>,
     outbox: Vec<Outgoing>,
     said: Option<Peer>,
+    durability: Option<Durability>,
     unflushed_from: Option<u64>,
     flushed_at: Option<std::time::Instant>,
     view: View,
@@ -198,6 +200,7 @@ impl Clone for StoreState {
             held_marks: self.held_marks.clone(),
             outbox: self.outbox.clone(),
             said: self.said.clone(),
+            durability: self.durability,
             unflushed_from: self.unflushed_from,
             flushed_at: self.flushed_at,
             view: self.view.fork(),
@@ -489,6 +492,14 @@ pub trait Store: Default + Clone + Sized {
             .retained_value_bytes
             .saturating_sub(stats.unused_heap_bytes);
         Ok(stats)
+    }
+
+    fn durability(&self) -> Durability {
+        self.state().durability.unwrap_or(Durability::Relaxed)
+    }
+
+    fn set_durability(&mut self, durability: Durability) {
+        self.state_mut().durability = Some(durability);
     }
 
     fn compaction_policy(&self) -> crate::CompactionPolicy {
@@ -805,6 +816,7 @@ pub trait Store: Default + Clone + Sized {
         rebuilt.write_cache(WriterId::ANONYMOUS, true)?;
         let state = rebuilt.state_mut();
         state.compaction_policy = self.state().compaction_policy;
+        state.durability = self.state().durability;
         state.maintenance = self.state().maintenance.clone();
         state.said = self.state().said.clone();
         *self = rebuilt;
@@ -1102,6 +1114,7 @@ pub trait Store: Default + Clone + Sized {
             false => Flush::Never,
         };
         updater.flushing(flush);
+        updater.lasting(self.durability());
         self.state_mut().unflushed_from = match flush {
             Flush::Never => Some(
                 self.state()
@@ -1149,8 +1162,14 @@ pub trait Store: Default + Clone + Sized {
                 schema_version: Self::SCHEMA_VERSION,
                 path: layout.shard(entity, next.writer, Self::SCHEMA_VERSION),
             };
-            let (token, rows) =
-                shard::append(&found.path, next.writer, &schema, &fields, &next.rows)?;
+            let (token, rows) = shard::append(
+                &found.path,
+                next.writer,
+                &schema,
+                &fields,
+                &next.rows,
+                self.durability(),
+            )?;
             let floor = self
                 .state()
                 .marks
@@ -1248,7 +1267,7 @@ pub trait Store: Default + Clone + Sized {
             seen: self.clock().clone(),
         };
         if said.as_ref() != Some(&now) {
-            peers::publish(&shared, &now)?;
+            peers::publish(&shared, &now, self.durability())?;
         }
         self.state_mut().said = Some(now);
         Ok(())
@@ -1309,6 +1328,7 @@ pub trait Store: Default + Clone + Sized {
                 &fields,
                 &held.read,
                 held.floor,
+                self.durability(),
             )?;
             report.before_bytes += before;
             report.after_bytes += std::fs::metadata(&found.path)?.len();
@@ -1411,7 +1431,15 @@ pub trait Store: Default + Clone + Sized {
         let schema = ours.encode()?;
         for (entity, fields, kept, floor) in rewrites {
             let path = layout.shard(entity, writer_id, Self::SCHEMA_VERSION);
-            shard::rewrite(&path, writer_id, &schema, &fields, &kept, floor)?;
+            shard::rewrite(
+                &path,
+                writer_id,
+                &schema,
+                &fields,
+                &kept,
+                floor,
+                self.durability(),
+            )?;
         }
         let mut rebuilt = Self::with_fresh_cache(layout)?;
         let mut read = MergeReport::default();
@@ -1420,6 +1448,7 @@ pub trait Store: Default + Clone + Sized {
         rebuilt.write_cache(writer_id, true)?;
         let state = rebuilt.state_mut();
         state.compaction_policy = self.state().compaction_policy;
+        state.durability = self.state().durability;
         state.maintenance = self.state().maintenance.clone();
         state.said = self.state().said.clone();
         *self = rebuilt;

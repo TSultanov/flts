@@ -1,6 +1,27 @@
 use super::*;
 use crate::test_utils::TempDir;
 
+fn append(
+    path: &Path,
+    writer: WriterId,
+    schema: &[u8],
+    fields: &[&str],
+    rows: &[ShardRow],
+) -> Result<(CommitToken, usize)> {
+    super::append(path, writer, schema, fields, rows, Durability::Full)
+}
+
+fn rewrite(
+    path: &Path,
+    writer: WriterId,
+    schema: &[u8],
+    fields: &[&str],
+    rows: &[ShardRow],
+    floor: u64,
+) -> Result<(CommitToken, usize)> {
+    super::rewrite(path, writer, schema, fields, rows, floor, Durability::Full)
+}
+
 fn writer() -> WriterId {
     WriterId::from_raw(0xabc)
 }

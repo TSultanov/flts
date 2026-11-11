@@ -19,6 +19,6 @@ pub use record::Record;
 pub use dbsync_macros::{container, entity, field_enum};
 pub use storage::{
     Arena, Blob, ChunkLoc, ChunkSource, ColumnFile, ColumnFileUpdater, ColumnFileWriter,
-    ColumnMeta, CommitToken, CompactionPolicy, CompactionReport, MaintenanceOutcome, StorageStats,
-    WriterId, default_chunk_rows, fnv1a,
+    ColumnMeta, CommitToken, CompactionPolicy, CompactionReport, Durability, MaintenanceOutcome,
+    StorageStats, WriterId, default_chunk_rows, fnv1a,
 };

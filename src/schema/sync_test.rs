@@ -506,3 +506,34 @@ fn a_cache_whose_unflushed_tail_did_not_land_is_rebuilt_from_the_shards() -> Res
     reopened.verify()?;
     Ok(())
 }
+
+#[test]
+fn a_store_commits_and_reopens_the_same_under_every_durability() -> Result<()> {
+    use crate::storage::Durability;
+
+    let dir = TempDir::new("sync_durability");
+    assert_eq!(Shelf::default().durability(), Durability::Relaxed);
+    for (name, durability) in [
+        ("none", Durability::None),
+        ("relaxed", Durability::Relaxed),
+        ("full", Durability::Full),
+    ] {
+        let path = dir.join(name);
+        let mut shelf = Shelf::create(&path, here())?;
+        shelf.set_durability(durability);
+        let emma = shelf.books.push("Emma")?;
+        shelf.commit(here())?;
+        shelf.books.set_title(emma, "Emma, again")?;
+        shelf.commit(here())?;
+        assert_eq!(shelf.snapshot().durability(), durability);
+        assert!(shelf.compact_shards(here())?.before_bytes > 0);
+        drop(shelf);
+
+        let reopened = Shelf::open(&path)?;
+        assert_eq!(reopened.books.title(emma)?, "Emma, again");
+        reopened.verify()?;
+        std::fs::remove_dir_all(path.join("local"))?;
+        assert_eq!(Shelf::open(&path)?.books.title(emma)?, "Emma, again");
+    }
+    Ok(())
+}

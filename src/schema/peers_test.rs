@@ -21,7 +21,7 @@ fn what_a_writer_published_is_what_another_reads() {
         writer: writer(0xa),
         seen: seen(&[(0xa, 7), (0xb, 3)]),
     };
-    publish(&dir.path, &ours).unwrap();
+    publish(&dir.path, &ours, Durability::Full).unwrap();
 
     assert_eq!(read(&dir.path, writer(0xa)).unwrap(), Some(ours.clone()));
     assert_eq!(read(&dir.path, writer(0xb)).unwrap(), None);
@@ -35,9 +35,9 @@ fn publishing_again_replaces_what_was_said_before() {
         writer: writer(0xa),
         seen: seen(&[(0xa, 1)]),
     };
-    publish(&dir.path, &ours).unwrap();
+    publish(&dir.path, &ours, Durability::Full).unwrap();
     ours.seen = seen(&[(0xa, 9), (0xb, 4)]);
-    publish(&dir.path, &ours).unwrap();
+    publish(&dir.path, &ours, Durability::Full).unwrap();
 
     assert_eq!(read(&dir.path, writer(0xa)).unwrap(), Some(ours));
 }
@@ -49,7 +49,7 @@ fn files_that_are_not_a_writers_are_passed_over() {
         writer: writer(0xa),
         seen: seen(&[(0xa, 1)]),
     };
-    publish(&dir.path, &ours).unwrap();
+    publish(&dir.path, &ours, Durability::Full).unwrap();
     let folder = dir.path.join(FOLDER);
     std::fs::write(folder.join("000000000000000b.dbs"), b"cut short").unwrap();
     std::fs::write(folder.join("000000000000000a.sync-conflict.dbs"), b"junk").unwrap();
