@@ -214,10 +214,17 @@ fn two_copies_of_one_store_keep_what_each_wrote() -> Result<()> {
     // of a copy's own rows, that copy appends again.
     deliver(&first_dir, &second_dir, here(), &["book"]);
     let found = second.check_own_shards(here())?;
-    assert!(found.restored == 1 && !found.forked, "{found:?}");
+    assert!(
+        found.restored == 1 && found.forked && !found.collided,
+        "{found:?}"
+    );
     second.refresh_peers()?;
     deliver(&second_dir, &first_dir, here(), &["book"]);
-    assert_eq!(first.check_own_shards(here())?.restored, 0);
+    let found = first.check_own_shards(here())?;
+    assert!(
+        found.restored == 0 && found.forked,
+        "it sees the copy's row: {found:?}"
+    );
     first.refresh_peers()?;
     for copy in [&first, &second] {
         assert_eq!(titles(copy)?, ["Emma", "Persuasion", "Sanditon"]);

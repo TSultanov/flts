@@ -108,6 +108,9 @@ pub struct OwnShards {
     pub restored: usize,
     /// Another store writes under the same identity.
     pub forked: bool,
+    /// And one of its rows sits under a dot this store used, so nothing
+    /// was appended: the file is no longer one this store can add to.
+    pub collided: bool,
 }
 
 #[cfg(test)]

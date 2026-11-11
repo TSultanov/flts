@@ -1860,9 +1860,9 @@ pub trait Store: Default + Clone + Sized {
     /// rows written here since, as one another device rewrote with
     /// [`Store::scrub_purged`] does, they are appended again; rows at or under
     /// a shard's floor were dropped on purpose and stay dropped. If it holds
-    /// a different revision under a dot this store used, another store is
-    /// writing as `writer_id` too: nothing is appended, and the caller had
-    /// better become another writer.
+    /// rows of `writer_id` this store never wrote, another store is writing
+    /// as `writer_id` too, and the caller had better become another writer;
+    /// if one of them sits under a dot this store used, nothing is appended.
     fn check_own_shards(&mut self, writer_id: WriterId) -> Result<super::OwnShards> {
         self.check_published()?;
         if writer_id.is_anonymous() {
@@ -1894,6 +1894,7 @@ pub trait Store: Default + Clone + Sized {
             {
                 continue;
             }
+            let dropped = mark.map_or(0, |mark| mark.floor);
             let (held, floor) = match token {
                 None => (BTreeMap::new(), 0),
                 Some(_) => match shard::read(&found.path, 0) {
@@ -1909,20 +1910,32 @@ pub trait Store: Default + Clone + Sized {
                 },
             };
             let mut missing = Vec::new();
+            let mut collided = false;
             for (_, row) in table.authored_rows(writer_id)? {
                 let dot = row.version.dot();
                 match held.get(&dot) {
-                    Some(there) if *there != row => report.forked = true,
+                    Some(there) if *there != row => collided = true,
                     Some(_) => {}
                     None if dot.counter() > floor => missing.push(row),
                     None => {}
                 }
             }
+            // Rows this store dropped may come back in an older copy of the
+            // file; anything newer under its name it would know.
+            for dot in held.keys() {
+                if dot.writer() == writer_id && dot.counter() > dropped && !table.holds_dot(*dot)? {
+                    report.forked = true;
+                }
+            }
+            if collided {
+                report.forked = true;
+                report.collided = true;
+            }
             if !missing.is_empty() {
                 appends.push((found.path, table.field_names(), missing));
             }
         }
-        if report.forked {
+        if report.collided {
             return Ok(report);
         }
         for (path, fields, missing) in appends {
