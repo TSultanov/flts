@@ -7,6 +7,8 @@ use crate::storage::CommitToken;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+const FORKED: &str = "a dot identifies different revisions";
+
 #[derive(Debug)]
 pub enum Error {
     SchemaMismatch {
@@ -54,6 +56,15 @@ impl Error {
 
     pub fn is_corrupt(&self) -> bool {
         matches!(self, Self::Corrupt { .. })
+    }
+
+    /// Two revisions under one dot: two writers have used one identity.
+    pub(crate) fn forked() -> Self {
+        Self::corrupt("revision", FORKED)
+    }
+
+    pub fn is_fork(&self) -> bool {
+        matches!(self, Self::Corrupt { record: "revision", detail } if detail == FORKED)
     }
 
     pub fn is_unsupported(&self) -> bool {

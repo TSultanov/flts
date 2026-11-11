@@ -534,10 +534,7 @@ pub trait Table: Default + Clone {
                     || self.versions().parents(held)? != theirs.versions().parents(row)?
                     || self.payload(held)? != theirs.payload(row)?
                 {
-                    return Err(Error::corrupt(
-                        "revision",
-                        "a dot identifies different revisions",
-                    ));
+                    return Err(Error::forked());
                 }
                 report.known += 1;
                 continue;
@@ -715,10 +712,7 @@ pub trait Table: Default + Clone {
                 || self.versions().raw_at(held)? != version
                 || self.versions().parents(held)? != parents
             {
-                return Err(Error::corrupt(
-                    "revision",
-                    "a dot identifies different revisions",
-                ));
+                return Err(Error::forked());
             }
             return Ok(Adoption::Known);
         }
@@ -862,10 +856,7 @@ pub trait Table: Default + Clone {
                 }
             }
             if !same {
-                return Err(Error::corrupt(
-                    "revision",
-                    "a dot identifies different revisions",
-                ));
+                return Err(Error::forked());
             }
             return Ok(Adoption::Known);
         }
@@ -1125,6 +1116,8 @@ pub trait AnyTable {
 
     fn authored_rows(&self, writer: WriterId) -> Result<Vec<(usize, ShardRow)>>;
 
+    fn holds_dot(&self, dot: Dot) -> Result<bool>;
+
     fn purge_one(&mut self, id: crate::Uuid) -> Result<bool>;
 
     fn holds_purged(&self, id: crate::Uuid) -> Result<bool>;
@@ -1352,6 +1345,10 @@ impl<T: Table> AnyTable for T {
             .into_iter()
             .map(Row::index)
             .collect())
+    }
+
+    fn holds_dot(&self, dot: Dot) -> Result<bool> {
+        Ok(self.versions().row_for_dot(dot)?.is_some())
     }
 
     fn authored_rows(&self, writer: WriterId) -> Result<Vec<(usize, ShardRow)>> {

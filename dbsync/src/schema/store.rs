@@ -879,7 +879,26 @@ pub trait Store: Default + Clone + Sized {
                     Some(mark) if mark.file_uuid == token.file_uuid => mark.rows as usize,
                     _ => 0,
                 };
-                let read = match shard::read(&found.path, from) {
+                // The last row read before is read again: where files are
+                // synced, a file of the same lineage can arrive holding other
+                // rows at the places already read, and then all of it is news.
+                let read = match shard::read(&found.path, from.saturating_sub(1)) {
+                    Ok(mut read) if from > 0 => match read.read.first() {
+                        Some(last) if table.holds_dot(last.version.dot())? => {
+                            read.read.remove(0);
+                            Ok(read)
+                        }
+                        _ => shard::read(&found.path, 0),
+                    },
+                    // Shorter than what was read: not the file that was read.
+                    Err(Error::Corrupt { .. }) if from > 0 => shard::read(&found.path, 0),
+                    other => other,
+                };
+                let from = match &read {
+                    Ok(read) if read.read.len() == read.rows => 0,
+                    _ => from,
+                };
+                let read = match read {
                     Ok(read) => read,
                     Err(Error::Io(_) | Error::Corrupt { .. }) => {
                         report.unreadable.push(found.path);
@@ -990,6 +1009,7 @@ pub trait Store: Default + Clone + Sized {
             }
         }
         let mut taken = BTreeSet::new();
+        let mut stalled: Vec<Option<usize>> = vec![None; batches.len()];
         // Purges go first: none waits for anything, so a batch stalled ahead of one cannot hold it.
         let mut purges = BTreeSet::new();
         for (dot, at, row) in &order {
@@ -997,12 +1017,21 @@ pub trait Store: Default + Clone + Sized {
             if !batch.rows[*row].version.is_purged() {
                 continue;
             }
-            match self.tables_mut()[batch.table].adopt_row(&batch.rows[*row], &|_| true)? {
-                Adoption::Taken => {
+            if stalled[*at].is_some() {
+                continue;
+            }
+            match self.tables_mut()[batch.table].adopt_row(&batch.rows[*row], &|_| true) {
+                Ok(Adoption::Taken) => {
                     report.taken += 1;
                     taken.insert((batch.table, batch.rows[*row].id));
                 }
-                _ => report.known += 1,
+                Ok(_) => report.known += 1,
+                Err(err) if err.is_fork() => {
+                    stalled[*at] = Some(*row);
+                    report.forked.push(dot.writer());
+                    continue;
+                }
+                Err(err) => return Err(err),
             }
             self.state_mut().clock.observe(*dot);
             purges.insert((*at, *row));
@@ -1013,7 +1042,6 @@ pub trait Store: Default + Clone + Sized {
                 shed.insert(table, held.purged_identities()?.into_iter().collect());
             }
         }
-        let mut stalled: Vec<Option<usize>> = vec![None; batches.len()];
         for (dot, at, row) in order {
             if purges.contains(&(at, row)) {
                 continue;
@@ -1037,17 +1065,24 @@ pub trait Store: Default + Clone + Sized {
                     .get(&(table, dot.writer()))
                     .is_some_and(|floor| dot.counter() <= *floor)
             };
-            match self.tables_mut()[table].adopt_row(&batch.rows[row], &gone)? {
-                Adoption::Taken => {
+            match self.tables_mut()[table].adopt_row(&batch.rows[row], &gone) {
+                Ok(Adoption::Taken) => {
                     report.taken += 1;
                     taken.insert((table, batch.rows[row].id));
                 }
-                Adoption::Known => report.known += 1,
-                Adoption::Waiting => {
+                Ok(Adoption::Known) => report.known += 1,
+                Ok(Adoption::Waiting) => {
                     stalled[at] = Some(row);
                     report.waiting += 1;
                     continue;
                 }
+                // Not this store's damage to fail over: the rest still merges.
+                Err(err) if err.is_fork() => {
+                    stalled[at] = Some(row);
+                    report.forked.push(dot.writer());
+                    continue;
+                }
+                Err(err) => return Err(err),
             }
             self.state_mut().clock.observe(dot);
         }
@@ -1115,6 +1150,8 @@ pub trait Store: Default + Clone + Sized {
         }
         report.references.sort();
         report.references.dedup();
+        report.forked.sort();
+        report.forked.dedup();
         let tables = self.tables();
         report.adopted.extend(
             taken
@@ -1677,6 +1714,92 @@ pub trait Store: Default + Clone + Sized {
             self.write_cache(writer_id, false)?;
         }
         Ok(dropped)
+    }
+
+    /// Compares what `writer_id` published with what its shards hold now.
+    ///
+    /// A shard is one file, and where files are synced a file can be
+    /// replaced whole by a copy from elsewhere. If that copy merely lacks
+    /// rows written here since, as one another device rewrote with
+    /// [`Store::scrub_purged`] does, they are appended again; rows at or under
+    /// a shard's floor were dropped on purpose and stay dropped. If it holds
+    /// a different revision under a dot this store used, another store is
+    /// writing as `writer_id` too: nothing is appended, and the caller had
+    /// better become another writer.
+    fn check_own_shards(&mut self, writer_id: WriterId) -> Result<super::OwnShards> {
+        self.check_published()?;
+        if writer_id.is_anonymous() {
+            return Err(Error::invalid("only a named writer has shards of its own"));
+        }
+        let layout = self.state().attached()?.1.clone();
+        let _lease = layout.lease()?;
+        let schema = self.schema_metadata().encode()?;
+        let mut report = super::OwnShards::default();
+        let mut appends = Vec::new();
+        for table in self.tables() {
+            let found = ShardFile {
+                entity: table.entity().to_owned(),
+                writer: writer_id,
+                schema_version: Self::SCHEMA_VERSION,
+                path: layout.shard(table.entity(), writer_id, Self::SCHEMA_VERSION),
+            };
+            let token = match shard::token_of(&found.path) {
+                Ok(token) => Some(token),
+                Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => None,
+                // Mid-delivery; the next call sees it whole.
+                Err(Error::Io(_) | Error::Corrupt { .. }) => continue,
+                Err(err) => return Err(err),
+            };
+            let mark = self.state().marks.iter().find(|mark| mark.names(&found));
+            // As this store left it: nothing can differ.
+            if let (Some(token), Some(mark)) = (token, mark)
+                && mark.is_at(token)
+            {
+                continue;
+            }
+            let (held, floor) = match token {
+                None => (BTreeMap::new(), 0),
+                Some(_) => match shard::read(&found.path, 0) {
+                    Ok(read) => (
+                        read.read
+                            .into_iter()
+                            .map(|row| (row.version.dot(), row))
+                            .collect::<BTreeMap<Dot, ShardRow>>(),
+                        read.floor,
+                    ),
+                    Err(Error::Io(_) | Error::Corrupt { .. }) => continue,
+                    Err(err) => return Err(err),
+                },
+            };
+            let mut missing = Vec::new();
+            for (_, row) in table.authored_rows(writer_id)? {
+                let dot = row.version.dot();
+                match held.get(&dot) {
+                    Some(there) if *there != row => report.forked = true,
+                    Some(_) => {}
+                    None if dot.counter() > floor => missing.push(row),
+                    None => {}
+                }
+            }
+            if !missing.is_empty() {
+                appends.push((found.path, table.field_names(), missing));
+            }
+        }
+        if report.forked {
+            return Ok(report);
+        }
+        for (path, fields, missing) in appends {
+            report.restored += missing.len();
+            shard::append(
+                &path,
+                writer_id,
+                &schema,
+                &fields,
+                &missing,
+                self.durability(),
+            )?;
+        }
+        Ok(report)
     }
 
     fn settle_purges(&mut self, report: PurgeReport) -> Result<PurgeReport> {

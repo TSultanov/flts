@@ -181,6 +181,92 @@ fn a_refresh_names_the_rows_it_took_a_revision_of() -> Result<()> {
     Ok(())
 }
 
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap().flatten() {
+        let target = to.join(entry.file_name());
+        match entry.path().is_dir() {
+            true => copy_tree(&entry.path(), &target),
+            false => drop(std::fs::copy(entry.path(), target).unwrap()),
+        }
+    }
+}
+
+#[test]
+fn two_copies_of_one_store_keep_what_each_wrote() -> Result<()> {
+    let dir = TempDir::new("sync_copies");
+    let (first_dir, second_dir, reader_dir) =
+        (dir.join("first"), dir.join("second"), dir.join("reader"));
+    let mut first = Shelf::create(&first_dir, here())?;
+    first.books.push("Emma")?;
+    first.commit(here())?;
+    drop(first);
+    // A copy of the whole store, as a restored backup is: one writer, twice.
+    copy_tree(&first_dir, &second_dir);
+    let mut first = Shelf::open(&first_dir)?;
+    let mut second = Shelf::open(&second_dir)?;
+    first.books.push("Persuasion")?;
+    first.commit(here())?;
+    second.books.push("Sanditon")?;
+    second.commit(here())?;
+
+    // Each one's file replaces the other's in turn; what the file lacks
+    // of a copy's own rows, that copy appends again.
+    deliver(&first_dir, &second_dir, here(), &["book"]);
+    let found = second.check_own_shards(here())?;
+    assert!(found.restored == 1 && !found.forked, "{found:?}");
+    second.refresh_peers()?;
+    deliver(&second_dir, &first_dir, here(), &["book"]);
+    assert_eq!(first.check_own_shards(here())?.restored, 0);
+    first.refresh_peers()?;
+    for copy in [&first, &second] {
+        assert_eq!(titles(copy)?, ["Emma", "Persuasion", "Sanditon"]);
+        copy.verify()?;
+    }
+
+    let mut reader = Shelf::create(&reader_dir, there())?;
+    deliver(&first_dir, &reader_dir, here(), &["book"]);
+    let told = reader.refresh_peers()?;
+    assert!(told.forked.is_empty(), "{told:?}");
+    assert_eq!(titles(&reader)?, ["Emma", "Persuasion", "Sanditon"]);
+    Ok(())
+}
+
+#[test]
+fn rows_missing_from_a_replaced_shard_are_appended_again() -> Result<()> {
+    let dir = TempDir::new("sync_restore");
+    let (mut ours, our_dir, mut theirs, their_dir) = two_shelves(&dir)?;
+    ours.books.push("Emma")?;
+    ours.commit(here())?;
+    exchange(&our_dir, &their_dir);
+    theirs.refresh_peers()?;
+    assert_eq!(
+        ours.check_own_shards(here())?.restored,
+        0,
+        "nothing is missing"
+    );
+
+    // Written here while the copy elsewhere, still the old one, is on its
+    // way back to replace this file.
+    ours.books.push("Persuasion")?;
+    ours.commit(here())?;
+    deliver(&their_dir, &our_dir, here(), &["book"]);
+    let found = ours.check_own_shards(here())?;
+    assert!(found.restored == 1 && !found.forked, "{found:?}");
+    assert_eq!(ours.check_own_shards(here())?.restored, 0);
+    ours.refresh_peers()?;
+    ours.books.push("Sanditon")?;
+    ours.commit(here())?;
+    ours.verify()?;
+
+    exchange(&our_dir, &their_dir);
+    let told = theirs.refresh_peers()?;
+    assert!(told.forked.is_empty(), "{told:?}");
+    assert_eq!(titles(&theirs)?, ["Emma", "Persuasion", "Sanditon"]);
+    theirs.verify()?;
+    Ok(())
+}
+
 #[test]
 fn a_lost_cache_is_rebuilt_from_every_writers_shards() -> Result<()> {
     let dir = TempDir::new("sync_rebuild");

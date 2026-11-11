@@ -40,8 +40,8 @@ pub use identity::IdColumn;
 pub use index::{HashIndex, IndexKey, Keys};
 pub use indexed::{Indexed, Keyed};
 pub use merge::{
-    Combined, Concurrent, Conflict, MergeReport, PruneReport, PurgeReport, ReferenceConflict,
-    RevisionRecord, RowStatus, VisibilityChange,
+    Combined, Concurrent, Conflict, MergeReport, OwnShards, PruneReport, PurgeReport,
+    ReferenceConflict, RevisionRecord, RowStatus, VisibilityChange,
 };
 pub use metadata::SchemaMetadata;
 pub use migration::{Migration, MigrationReport, MigrationStepReport, MigrationTable, Migrations};

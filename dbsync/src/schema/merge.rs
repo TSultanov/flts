@@ -73,6 +73,10 @@ pub struct MergeReport {
     pub unreadable: Vec<std::path::PathBuf>,
     pub incompatible: Vec<std::path::PathBuf>,
     pub strangers: Vec<std::path::PathBuf>,
+    /// Writers whose shards hold two different revisions under one dot:
+    /// the identity is in use by more than one store. Their rows are taken
+    /// up to the first such revision and no further.
+    pub forked: Vec<crate::WriterId>,
 }
 
 impl MergeReport {
@@ -95,6 +99,15 @@ pub struct PruneReport {
 pub struct PurgeReport {
     pub purged: usize,
     pub dropped: usize,
+}
+
+/// What [`crate::schema::Store::check_own_shards`] found.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct OwnShards {
+    /// Rows appended again.
+    pub restored: usize,
+    /// Another store writes under the same identity.
+    pub forked: bool,
 }
 
 #[cfg(test)]
