@@ -1079,6 +1079,12 @@ pub trait Store: Default + Clone + Sized {
         self.say_what_was_seen(writer_id, false)?;
         self.write_cache(writer_id)?;
         self.auto_compact();
+        let policy = self.compaction_policy();
+        if policy != crate::CompactionPolicy::Disabled
+            && let Err(err) = self.rewrite_shards(writer_id, Some(policy))
+        {
+            self.state_mut().maintenance = Some(crate::MaintenanceOutcome::Failed(err.to_string()));
+        }
         self.generation()
             .ok_or_else(|| Error::invalid("commit did not attach a generation"))
     }
@@ -1123,6 +1129,75 @@ pub trait Store: Default + Clone + Sized {
         }
         self.state_mut().said = Some(now);
         Ok(())
+    }
+
+    fn compact_shards(&mut self, writer_id: WriterId) -> Result<crate::CompactionReport> {
+        self.check_published()?;
+        let _lease = self.state().attached()?.1.lease()?;
+        self.rewrite_shards(writer_id, None)
+    }
+
+    fn rewrite_shards(
+        &mut self,
+        writer_id: WriterId,
+        policy: Option<crate::CompactionPolicy>,
+    ) -> Result<crate::CompactionReport> {
+        let layout = self.state().attached()?.1.clone();
+        let mut report = crate::CompactionReport {
+            before_bytes: 0,
+            after_bytes: 0,
+        };
+        let mut marks = Vec::new();
+        for table in self.tables() {
+            let found = ShardFile {
+                entity: table.entity().to_owned(),
+                writer: writer_id,
+                schema_version: Self::SCHEMA_VERSION,
+                path: layout.shard(table.entity(), writer_id, Self::SCHEMA_VERSION),
+            };
+            let file = match ColumnFile::open(&found.path) {
+                Ok(file) => file,
+                Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(err) => return Err(err),
+            };
+            let before = file.file_bytes()?;
+            if let Some(policy) = policy {
+                let small = matches!(
+                    policy,
+                    crate::CompactionPolicy::Automatic { min_reclaim_bytes, .. }
+                        if before < min_reclaim_bytes
+                );
+                if small || !policy.should_compact(file.storage_stats()?) {
+                    continue;
+                }
+            }
+            drop(file);
+            let held = shard::read(&found.path, 0)?;
+            let mut fields: Vec<&str> = table.field_names();
+            for (name, _) in held.read.iter().flat_map(|row| &row.values) {
+                if !fields.contains(&name.as_str()) {
+                    fields.push(name);
+                }
+            }
+            let (token, rows) = shard::rewrite(
+                &found.path,
+                writer_id,
+                &held.schema,
+                &fields,
+                &held.read,
+                held.floor,
+            )?;
+            report.before_bytes += before;
+            report.after_bytes += std::fs::metadata(&found.path)?.len();
+            marks.push(ShardMark::of(&found, token, rows, held.floor));
+        }
+        if !marks.is_empty() {
+            for mark in marks {
+                self.state_mut().mark(mark);
+            }
+            self.write_cache(writer_id)?;
+        }
+        Ok(report)
     }
 
     fn prune(&mut self, writer_id: WriterId, others: &[WriterId]) -> Result<PruneReport> {
@@ -1275,8 +1350,8 @@ pub trait Store: Default + Clone + Sized {
                         ours.generation < told.generation
                     }
                     Ok(_) => {
-                        shard::floor_of(&found.path).unwrap_or(0)
-                            > shard::floor_of(&held).unwrap_or(0)
+                        shard::epoch_of(&found.path).unwrap_or(0)
+                            > shard::epoch_of(&held).unwrap_or(0)
                     }
                     Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => true,
                     Err(_) => true,

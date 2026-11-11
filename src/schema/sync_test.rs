@@ -377,3 +377,45 @@ fn a_writer_says_what_it_has_seen_when_that_is_news_to_the_others() -> Result<()
     assert_eq!(&said[0].seen, ours.clock());
     Ok(())
 }
+
+#[test]
+fn compacting_a_writers_shards_shrinks_them_without_anyone_reading_a_row_again() -> Result<()> {
+    let dir = TempDir::new("sync_compact_shards");
+    let (mut ours, our_dir, mut theirs, their_dir) = two_shelves(&dir)?;
+    let emma = ours.books.push("Emma")?;
+    ours.commit(here())?;
+    for draft in 0..30 {
+        ours.books
+            .set_title(emma, &format!("Emma, draft {draft}"))?;
+        ours.commit(here())?;
+    }
+    exchange(&our_dir, &their_dir);
+    assert_eq!(theirs.refresh_peers()?.taken, 31);
+    let shard = our_dir.join("book/0000000000000011.v1.dbs");
+    let before = std::fs::metadata(&shard)?.len();
+
+    let report = ours.compact_shards(here())?;
+
+    let after = std::fs::metadata(&shard)?.len();
+    assert!(after < before, "{after} < {before}");
+    assert_eq!((report.before_bytes, report.after_bytes), (before, after));
+    assert_eq!(ours.refresh_peers()?.taken + ours.refresh_peers()?.known, 0);
+    assert_eq!(Table::versions_of(&ours.books, emma)?.len(), 31);
+    ours.verify()?;
+
+    exchange(&our_dir, &their_dir);
+    let told = theirs.refresh_peers()?;
+    assert_eq!(
+        (told.taken, told.known),
+        (0, 31),
+        "the same rows in a new file"
+    );
+    assert!(!told.changed_anything());
+
+    ours.books.set_title(emma, "Emma")?;
+    ours.commit(here())?;
+    let merged = theirs.merge_from(&our_dir, there())?;
+    assert_eq!(merged.taken, 1);
+    assert_eq!(theirs.books.title(emma)?, "Emma");
+    Ok(())
+}

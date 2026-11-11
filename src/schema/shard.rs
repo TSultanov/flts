@@ -166,8 +166,15 @@ pub fn schema_of(path: &Path) -> Result<Vec<u8>> {
     bytes_of(&ColumnFile::open(path)?, SCHEMA)
 }
 
-pub fn floor_of(path: &Path) -> Result<u64> {
-    floor_in(&ColumnFile::open(path)?)
+fn epoch_in(file: &ColumnFile) -> Result<u64> {
+    if file.column_meta(FLOOR).is_none() {
+        return Ok(0);
+    }
+    Ok(file.column::<u64>(FLOOR)?.get(1)?.copied().unwrap_or(0))
+}
+
+pub fn epoch_of(path: &Path) -> Result<u64> {
+    epoch_in(&ColumnFile::open(path)?)
 }
 
 pub fn read(path: &Path, from: usize) -> Result<ShardRead> {
@@ -382,18 +389,27 @@ pub fn rewrite(
         .ok_or_else(|| Error::invalid("a shard has a table directory"))?;
     std::fs::create_dir_all(folder)?;
     let fresh = folder.join(format!(".dbsync-{}.tmp", Uuid::now_v7()));
+    let epoch = match ColumnFile::open(path) {
+        Ok(held) => epoch_in(&held)?,
+        Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(err) => return Err(err),
+    };
     let written = (|| {
         append(&fresh, writer, schema, fields, rows)?;
         let file = ColumnFile::open(&fresh)?;
         let mut held = Arena::<u64>::new();
         held.push(floor)?;
+        held.push(epoch + 1)?;
         let mut updater = file.update(writer)?;
         for column in file.columns() {
             updater.keep_column(&column.name)?;
         }
         updater.column(FLOOR, &held)?;
         let published = updater.commit_file()?;
-        std::fs::File::open(&fresh)?.sync_all()?;
+        std::fs::File::options()
+            .write(true)
+            .open(&fresh)?
+            .sync_all()?;
         std::fs::rename(&fresh, path)?;
         Ok((published.commit_token(), rows.len()))
     })();

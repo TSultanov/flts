@@ -175,7 +175,8 @@ fn a_rewritten_shard_is_a_new_file_that_remembers_how_far_it_was_pruned() {
         row(3, &[2], "three"),
     ];
     let (before, _) = append(&path, writer(), b"schema", &fields, &all).unwrap();
-    assert_eq!(floor_of(&path).unwrap(), 0);
+    assert_eq!(read(&path, 0).unwrap().floor, 0);
+    assert_eq!(epoch_of(&path).unwrap(), 0);
 
     let (after, held) = rewrite(&path, writer(), b"schema", &fields, &all[2..], 2).unwrap();
 
@@ -188,8 +189,18 @@ fn a_rewritten_shard_is_a_new_file_that_remembers_how_far_it_was_pruned() {
     assert_eq!(kept.schema, b"schema");
 
     append(&path, writer(), b"schema", &fields, &[row(4, &[3], "four")]).unwrap();
-    assert_eq!(floor_of(&path).unwrap(), 2, "an append keeps the floor");
-    assert_eq!(read(&path, 0).unwrap().rows, 2);
+    assert_eq!(
+        read(&path, 0).unwrap().floor,
+        2,
+        "an append keeps the floor"
+    );
+    assert_eq!(epoch_of(&path).unwrap(), 1);
+    rewrite(&path, writer(), b"schema", &fields, &all[2..], 2).unwrap();
+    assert_eq!(
+        epoch_of(&path).unwrap(),
+        2,
+        "every rewrite is a later epoch"
+    );
     let (_, strangers) = discover(&dir.path, "book").unwrap();
     assert!(strangers.is_empty(), "no temporary file is left behind");
 }
