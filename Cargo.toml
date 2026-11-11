@@ -32,3 +32,7 @@ required-features = ["macros"]
 [[example]]
 name = "library_migration"
 required-features = ["macros"]
+
+[[example]]
+name = "scale_bench"
+required-features = ["macros"]
