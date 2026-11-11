@@ -989,6 +989,7 @@ pub trait Store: Default + Clone + Sized {
                 *floor = (*floor).max(mark.floor);
             }
         }
+        let mut taken = BTreeSet::new();
         // Purges go first: none waits for anything, so a batch stalled ahead of one cannot hold it.
         let mut purges = BTreeSet::new();
         for (dot, at, row) in &order {
@@ -997,7 +998,10 @@ pub trait Store: Default + Clone + Sized {
                 continue;
             }
             match self.tables_mut()[batch.table].adopt_row(&batch.rows[*row], &|_| true)? {
-                Adoption::Taken => report.taken += 1,
+                Adoption::Taken => {
+                    report.taken += 1;
+                    taken.insert((batch.table, batch.rows[*row].id));
+                }
                 _ => report.known += 1,
             }
             self.state_mut().clock.observe(*dot);
@@ -1034,7 +1038,10 @@ pub trait Store: Default + Clone + Sized {
                     .is_some_and(|floor| dot.counter() <= *floor)
             };
             match self.tables_mut()[table].adopt_row(&batch.rows[row], &gone)? {
-                Adoption::Taken => report.taken += 1,
+                Adoption::Taken => {
+                    report.taken += 1;
+                    taken.insert((table, batch.rows[row].id));
+                }
                 Adoption::Known => report.known += 1,
                 Adoption::Waiting => {
                     stalled[at] = Some(row);
@@ -1108,6 +1115,13 @@ pub trait Store: Default + Clone + Sized {
         }
         report.references.sort();
         report.references.dedup();
+        let tables = self.tables();
+        report.adopted.extend(
+            taken
+                .into_iter()
+                .map(|(table, id)| (tables[table].entity(), id)),
+        );
+        report.adopted.sort_unstable();
         report.clock_changed = *self.clock() != clock;
         Ok(())
     }

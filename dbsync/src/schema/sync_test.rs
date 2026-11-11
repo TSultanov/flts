@@ -158,6 +158,30 @@ fn two_writers_converge_by_exchanging_files_and_then_fall_silent() -> Result<()>
 }
 
 #[test]
+fn a_refresh_names_the_rows_it_took_a_revision_of() -> Result<()> {
+    let dir = TempDir::new("sync_adopted");
+    let (mut ours, our_dir, mut theirs, their_dir) = two_shelves(&dir)?;
+    let emma = ours.books.push("Emma")?;
+    ours.commit(here())?;
+    exchange(&our_dir, &their_dir);
+    assert_eq!(theirs.refresh_peers()?.adopted, [("book", emma.uuid())]);
+
+    // An edit changes no row's visibility, and is named all the same.
+    ours.books.set_title(emma, "Emma, revised")?;
+    let chapter = ours.chapters.push(emma, 1, "text")?;
+    ours.commit(here())?;
+    exchange(&our_dir, &their_dir);
+    let told = theirs.refresh_peers()?;
+    let mut expected = vec![("book", emma.uuid()), ("chapter", chapter.uuid())];
+    expected.sort_unstable();
+    assert_eq!(told.adopted, expected);
+
+    exchange(&our_dir, &their_dir);
+    assert!(theirs.refresh_peers()?.adopted.is_empty());
+    Ok(())
+}
+
+#[test]
 fn a_lost_cache_is_rebuilt_from_every_writers_shards() -> Result<()> {
     let dir = TempDir::new("sync_rebuild");
     let (mut ours, our_dir, mut theirs, their_dir) = two_shelves(&dir)?;

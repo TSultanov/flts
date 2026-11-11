@@ -67,6 +67,8 @@ pub struct MergeReport {
     pub combined: Vec<Combined>,
     pub references: Vec<ReferenceConflict>,
     pub visibility: Vec<VisibilityChange>,
+    /// Rows that gained a revision, as (entity, id), sorted and distinct.
+    pub adopted: Vec<(&'static str, Uuid)>,
     pub clock_changed: bool,
     pub unreadable: Vec<std::path::PathBuf>,
     pub incompatible: Vec<std::path::PathBuf>,
