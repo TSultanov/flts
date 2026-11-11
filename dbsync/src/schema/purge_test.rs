@@ -818,6 +818,58 @@ fn a_purge_delivered_without_the_rows_it_follows_is_taken_at_once() -> Result<()
     Ok(())
 }
 
+#[test]
+fn another_writer_scrubs_the_shards_of_one_that_is_gone_for_good() -> Result<()> {
+    let dir = TempDir::new("purge_scrub");
+    let mut three = three(&dir)?;
+    drop(three.phone);
+    three.desk.purge(three.held.zuleika)?;
+    three.desk.commit(DESK)?;
+    three.desk.reclaim_purged(DESK)?;
+    assert!(
+        !traces(&three.desk_dir).is_empty(),
+        "the phone's shards hold it"
+    );
+
+    assert_eq!(three.desk.scrub_purged(DESK, PHONE)?, 7);
+    assert!(traces(&three.desk_dir).is_empty());
+    assert_eq!(
+        three.desk.scrub_purged(DESK, PHONE)?,
+        0,
+        "nothing is left to drop"
+    );
+    assert_eq!(three.desk.all::<Book>().count(), 1);
+    assert_eq!(three.desk.books.title(three.held.seven)?, KEPT);
+    three.desk.verify()?;
+    assert!(three.desk.scrub_purged(DESK, DESK).is_err(), "not its own");
+
+    // The tablet had read the phone's shards whole; now they arrive scrubbed.
+    carry(&three.desk_dir, &three.tablet_dir, DESK);
+    carry(&three.desk_dir, &three.tablet_dir, PHONE);
+    three.tablet.refresh_peers()?;
+    three.tablet.reclaim_purged(TABLET)?;
+    assert!(traces(&three.tablet_dir).is_empty());
+    assert_eq!(three.tablet.statuses()?, three.desk.statuses()?);
+    three.tablet.verify()?;
+
+    // And one that never saw them whole reads the same library.
+    let fresh_dir = dir.join("fresh");
+    let mut fresh = Library::create(&fresh_dir, WriterId::from_raw(0x54))?;
+    carry(&three.desk_dir, &fresh_dir, DESK);
+    carry(&three.desk_dir, &fresh_dir, PHONE);
+    let told = fresh.refresh_peers()?;
+    assert_eq!(told.waiting, 0);
+    assert_eq!(fresh.statuses()?, three.desk.statuses()?);
+    assert_eq!(fresh.books.title(three.held.seven)?, KEPT);
+    fresh.verify()?;
+
+    drop(three.desk);
+    let reopened = Library::open(&three.desk_dir)?;
+    assert_eq!(reopened.all::<Book>().count(), 1);
+    reopened.verify()?;
+    Ok(())
+}
+
 fn purged_by_the_desk_and_dropped_by_the_phone(three: &mut Three) -> Result<()> {
     three.desk.purge(three.held.zuleika)?;
     three.desk.commit(DESK)?;

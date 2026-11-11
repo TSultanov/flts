@@ -1608,6 +1608,77 @@ pub trait Store: Default + Clone + Sized {
         self.settle_purges(report)
     }
 
+    /// Drops the payload of purged rows from the shards of `retired`, a
+    /// writer that will never do it itself. Returns the rows dropped.
+    ///
+    /// A shard has one writer; this stands in for one that is gone for good.
+    /// Callers see to it that a single device does so for any writer, since
+    /// two rewrites of one file are a conflict wherever files are synced.
+    fn scrub_purged(&mut self, writer_id: WriterId, retired: WriterId) -> Result<usize> {
+        if retired.is_anonymous() || retired == writer_id {
+            return Err(Error::invalid("a scrub names another writer's shards"));
+        }
+        // Sheds the same rows from memory and the cache first.
+        self.reclaim_purged(writer_id)?;
+        let layout = self.state().attached()?.1.clone();
+        let _lease = layout.lease()?;
+        let mut dropped = 0;
+        let mut marks = Vec::new();
+        for table in self.tables() {
+            let purged: BTreeSet<crate::Uuid> = table.purged_identities()?.into_iter().collect();
+            if purged.is_empty() {
+                continue;
+            }
+            let found = ShardFile {
+                entity: table.entity().to_owned(),
+                writer: retired,
+                schema_version: Self::SCHEMA_VERSION,
+                path: layout.shard(table.entity(), retired, Self::SCHEMA_VERSION),
+            };
+            let held = match shard::read(&found.path, 0) {
+                Ok(held) => held,
+                Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(err) => return Err(err),
+            };
+            let mut floor = held.floor;
+            let mut kept = Vec::with_capacity(held.read.len());
+            for row in &held.read {
+                if purged.contains(&row.id) && !row.version.is_purged() {
+                    floor = floor.max(row.version.dot().counter());
+                } else {
+                    kept.push(row.clone());
+                }
+            }
+            if kept.len() == held.read.len() {
+                continue;
+            }
+            dropped += held.read.len() - kept.len();
+            let mut fields: Vec<&str> = table.field_names();
+            for (name, _) in held.read.iter().flat_map(|row| &row.values) {
+                if !fields.contains(&name.as_str()) {
+                    fields.push(name);
+                }
+            }
+            let (token, rows) = shard::rewrite(
+                &found.path,
+                retired,
+                &held.schema,
+                &fields,
+                &kept,
+                floor,
+                self.durability(),
+            )?;
+            marks.push(ShardMark::of(&found, token, rows, floor));
+        }
+        if !marks.is_empty() {
+            for mark in marks {
+                self.state_mut().mark(mark);
+            }
+            self.write_cache(writer_id, false)?;
+        }
+        Ok(dropped)
+    }
+
     fn settle_purges(&mut self, report: PurgeReport) -> Result<PurgeReport> {
         let rows = self
             .tables()
