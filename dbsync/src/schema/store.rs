@@ -568,16 +568,16 @@ pub trait Store: Default + Clone + Sized {
             return;
         }
         let result = (|| {
+            let file = self.state().attached()?.0;
+            let file_bytes = file.file_bytes()?;
             if let crate::CompactionPolicy::Automatic {
                 min_reclaim_bytes, ..
             } = policy
+                && file_bytes < min_reclaim_bytes
             {
-                let file = self.state().attached()?.0;
-                if file.file_bytes()? < min_reclaim_bytes {
-                    return Ok(None);
-                }
+                return Ok(None);
             }
-            if policy.should_compact(self.storage_stats()?) {
+            if policy.should_compact(file_bytes, file.obsolete_bytes()?) {
                 self.compact().map(Some)
             } else {
                 Ok(None)
@@ -1346,7 +1346,7 @@ pub trait Store: Default + Clone + Sized {
                     crate::CompactionPolicy::Automatic { min_reclaim_bytes, .. }
                         if before < min_reclaim_bytes
                 );
-                if small || !policy.should_compact(file.storage_stats()?) {
+                if small || !policy.should_compact(before, file.obsolete_bytes()?) {
                     continue;
                 }
             }

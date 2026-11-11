@@ -63,17 +63,19 @@ impl CompactionPolicy {
         Ok(())
     }
 
-    pub fn should_compact(self, stats: StorageStats) -> bool {
+    /// Decides from the bytes nothing refers to any more. That is what a
+    /// rewrite surely reclaims, and unlike its exact size it costs no chunk
+    /// reads, so it can be asked on every commit.
+    pub fn should_compact(self, file_bytes: u64, obsolete_bytes: u64) -> bool {
         match self {
             Self::Disabled => false,
             Self::Automatic {
                 min_reclaim_bytes,
                 min_reclaim_fraction,
             } => {
-                let saved = stats.estimated_savings();
-                saved > 0
-                    && saved >= min_reclaim_bytes
-                    && saved as f64 >= stats.file_bytes as f64 * min_reclaim_fraction
+                obsolete_bytes > 0
+                    && obsolete_bytes >= min_reclaim_bytes
+                    && obsolete_bytes as f64 >= file_bytes as f64 * min_reclaim_fraction
             }
         }
     }
@@ -104,7 +106,8 @@ impl Drop for Temporary {
 }
 
 impl ColumnFile {
-    pub fn storage_stats(&self) -> Result<StorageStats> {
+    /// Bytes the directory still leads to. Reads only the delta headers.
+    fn reachable_bytes(&self) -> Result<u64> {
         let mut ranges = BTreeMap::new();
         collect(self.file_source(), self.directory_loc()?, &mut ranges)?;
         for column in self.columns() {
@@ -118,6 +121,17 @@ impl ColumnFile {
             reachable_bytes += stop.saturating_sub(start.max(end));
             end = end.max(stop);
         }
+        Ok(reachable_bytes)
+    }
+
+    /// Bytes of superseded chunks: what a rewrite reclaims.
+    pub fn obsolete_bytes(&self) -> Result<u64> {
+        Ok(self.file_bytes()?.saturating_sub(self.reachable_bytes()?))
+    }
+
+    /// Exact, and as costly as a rewrite: every chunk is read and re-encoded.
+    pub fn storage_stats(&self) -> Result<StorageStats> {
+        let reachable_bytes = self.reachable_bytes()?;
         let file_bytes = self.file_source().len()?;
         let retained_value_bytes = self.live_bytes();
         let mut consolidated = self.columns().to_vec();

@@ -111,8 +111,10 @@ fn consolidation_bounds_chains_and_compaction_preserves_snapshots() -> Result<()
     let token = file.commit_token();
     let stats = file.storage_stats()?;
     assert!(stats.obsolete_bytes > 0);
+    assert_eq!(file.obsolete_bytes()?, stats.obsolete_bytes);
     let (packed, report) = file.compact()?;
-    assert!(report.reclaimed_bytes() > 0);
+    assert!(report.reclaimed_bytes() >= stats.obsolete_bytes);
+    assert_eq!(packed.obsolete_bytes()?, 0);
     assert_eq!(packed.storage_stats()?.obsolete_bytes, 0);
     assert_eq!(report.after_bytes, stats.consolidated_bytes);
     assert_eq!(packed.content_id(), file.content_id());
@@ -314,4 +316,17 @@ fn concurrent_writers_and_compaction_do_not_lose_updates() -> Result<()> {
     file.verify()?;
     assert_eq!(*file.column::<u64>("values")?.row(0)?, 16);
     Ok(())
+}
+
+#[test]
+fn the_policy_compacts_once_enough_of_the_file_is_obsolete() {
+    let policy = CompactionPolicy::Automatic {
+        min_reclaim_bytes: 100,
+        min_reclaim_fraction: 0.5,
+    };
+    assert!(!policy.should_compact(1000, 0));
+    assert!(!policy.should_compact(150, 99));
+    assert!(!policy.should_compact(1000, 499));
+    assert!(policy.should_compact(1000, 500));
+    assert!(!CompactionPolicy::Disabled.should_compact(1000, 1000));
 }
