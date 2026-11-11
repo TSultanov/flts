@@ -24,6 +24,15 @@ use crate::storage::{
 pub const CLOCK: &str = "dbsync.clock";
 pub const SCHEMA: &str = "dbsync.schema";
 pub const SHARDS: &str = "dbsync.shards";
+#[cfg(test)]
+thread_local! {
+    /// Makes the next commit stop after its first table's append.
+    pub(crate) static CUT_AFTER_APPEND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Directory, in the local half, of a commit's rows not yet in every shard.
+const STASH: &str = "pending";
+const STASH_READY: &str = "ready";
 pub const DURABLE: &str = "dbsync.durable";
 const SETTLED: u64 = u64::MAX;
 const UNFLUSHED_FOR: std::time::Duration = std::time::Duration::from_secs(1);
@@ -797,6 +806,7 @@ pub trait Store: Default + Clone + Sized {
             }
             Err(err) => return Err(err),
         };
+        store.finish_stashed()?;
         let mut report = MergeReport::default();
         let batches = store.collect(|_| true, &mut report)?;
         let moved = batches.iter().any(|batch| batch.mark.is_some());
@@ -805,6 +815,111 @@ pub trait Store: Default + Clone + Sized {
             store.write_cache(WriterId::ANONYMOUS, true)?;
         }
         Ok(store)
+    }
+
+    /// Where a commit across tables keeps its rows until every table has them.
+    fn stash_of(layout: &Layout, entity: &str) -> PathBuf {
+        layout.local.join(STASH).join(format!("{entity}.dbs"))
+    }
+
+    /// Makes the outbox last before the first of its appends. One table's
+    /// append lands whole or not at all; a commit to several can be cut
+    /// between them, leaving rows that name rows no shard holds.
+    fn stash_outbox(&self) -> Result<()> {
+        let outbox = &self.state().outbox;
+        let touched: BTreeSet<usize> = outbox.iter().map(|next| next.table).collect();
+        if touched.len() < 2 {
+            return Ok(());
+        }
+        let layout = self.state().attached()?.1;
+        let schema = self.schema_metadata().encode()?;
+        let ready = layout.local.join(STASH).join(STASH_READY);
+        match std::fs::remove_file(&ready) {
+            Err(err) if err.kind() != std::io::ErrorKind::NotFound => return Err(err.into()),
+            _ => {}
+        }
+        for at in touched {
+            let table = self.tables()[at];
+            let held = || outbox.iter().filter(|next| next.table == at);
+            let rows: Vec<ShardRow> = held().flat_map(|next| next.rows.iter().cloned()).collect();
+            let Some(writer) = held().map(|next| next.writer).next() else {
+                continue;
+            };
+            shard::rewrite(
+                &Self::stash_of(layout, table.entity()),
+                writer,
+                &schema,
+                &table.field_names(),
+                &rows,
+                0,
+                self.durability(),
+            )?;
+        }
+        // Only a stash that names every table may be replayed.
+        let done = std::fs::File::create(&ready)?;
+        self.durability().settle(&done)?;
+        Ok(())
+    }
+
+    fn drop_stash(&self) -> Result<()> {
+        let layout = self.state().attached()?.1;
+        match std::fs::remove_dir_all(layout.local.join(STASH)) {
+            Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err.into()),
+            _ => Ok(()),
+        }
+    }
+
+    /// Finishes a commit that was cut short: what it stashed and no shard
+    /// holds yet is appended to the shard it was on its way to.
+    fn finish_stashed(&mut self) -> Result<()> {
+        let layout = self.state().attached()?.1.clone();
+        if !layout.local.join(STASH).is_dir() {
+            return Ok(());
+        }
+        // Cut while stashing: no append had begun, so nothing is torn.
+        if !layout.local.join(STASH).join(STASH_READY).is_file() {
+            return self.drop_stash();
+        }
+        let schema = self.schema_metadata().encode()?;
+        for table in self.tables() {
+            let stashed = match shard::read(&Self::stash_of(&layout, table.entity()), 0) {
+                Ok(read) => read.read,
+                Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(err) => return Err(err),
+            };
+            let mut by_writer: BTreeMap<WriterId, Vec<ShardRow>> = BTreeMap::new();
+            for row in stashed {
+                by_writer
+                    .entry(row.version.dot().writer())
+                    .or_default()
+                    .push(row);
+            }
+            for (writer, rows) in by_writer {
+                let path = layout.shard(table.entity(), writer, Self::SCHEMA_VERSION);
+                let held: BTreeSet<Dot> = match shard::read(&path, 0) {
+                    Ok(read) => read.read.iter().map(|row| row.version.dot()).collect(),
+                    Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {
+                        BTreeSet::new()
+                    }
+                    Err(err) => return Err(err),
+                };
+                let missing: Vec<ShardRow> = rows
+                    .into_iter()
+                    .filter(|row| !held.contains(&row.version.dot()))
+                    .collect();
+                if !missing.is_empty() {
+                    shard::append(
+                        &path,
+                        writer,
+                        &schema,
+                        &table.field_names(),
+                        &missing,
+                        self.durability(),
+                    )?;
+                }
+            }
+        }
+        self.drop_stash()
     }
 
     fn with_fresh_cache(layout: Layout) -> Result<Self> {
@@ -1283,6 +1398,10 @@ pub trait Store: Default + Clone + Sized {
             let state = self.state_mut();
             state.mark(ShardMark::of(&found, token, rows, floor));
             state.outbox.remove(0);
+            #[cfg(test)]
+            if CUT_AFTER_APPEND.replace(false) {
+                return Err(Error::invalid("injected cut between appends"));
+            }
         }
         Ok(())
     }
@@ -1321,7 +1440,9 @@ pub trait Store: Default + Clone + Sized {
         state.clock = clock;
         state.outbox.extend(outgoing);
         self.apply(own, &mut report)?;
+        self.stash_outbox()?;
         self.flush_outbox()?;
+        self.drop_stash()?;
         self.say_what_was_seen(writer_id, false)?;
         self.write_cache(writer_id, false)?;
         self.auto_compact();

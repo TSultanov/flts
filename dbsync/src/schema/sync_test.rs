@@ -409,6 +409,55 @@ fn a_commit_that_failed_part_way_is_finished_by_the_next_one_without_a_second_re
 }
 
 #[test]
+fn a_commit_cut_between_tables_is_finished_when_the_store_opens_again() -> Result<()> {
+    let dir = TempDir::new("sync_cut");
+    let (mut ours, our_dir, mut theirs, their_dir) = two_shelves(&dir)?;
+    let pending = our_dir.join("local").join("pending");
+    let emma = ours.books.push("Emma")?;
+    ours.commit(here())?;
+    assert!(!pending.exists(), "one table needs no stash");
+
+    let persuasion = ours.books.push("Persuasion")?;
+    ours.chapters.push(persuasion, 1, "one")?;
+    ours.chapters.push(emma, 1, "first of Emma")?;
+    crate::schema::store::CUT_AFTER_APPEND.set(true);
+    let cut = ours.commit(here()).unwrap_err();
+    assert!(cut.to_string().contains("injected cut"), "{cut}");
+    assert!(pending.is_dir());
+    // The process dies here: what it held in memory is gone.
+    drop(ours);
+
+    let mut ours = Shelf::open(&our_dir)?;
+    assert!(!pending.exists());
+    assert_eq!(titles(&ours)?, ["Emma", "Persuasion"]);
+    assert_eq!(ours.children_of::<Book, Chapter>(persuasion)?.len(), 1);
+    assert_eq!(ours.children_of::<Book, Chapter>(emma)?.len(), 1);
+    assert_eq!(Table::versions_of(&ours.books, persuasion)?.len(), 1);
+    ours.verify()?;
+    ours.books.push("Sanditon")?;
+    ours.commit(here())?;
+
+    exchange(&our_dir, &their_dir);
+    let told = theirs.refresh_peers()?;
+    assert_eq!(told.waiting, 0);
+    assert_eq!(titles(&theirs)?, ["Emma", "Persuasion", "Sanditon"]);
+    assert_eq!(theirs.children_of::<Book, Chapter>(persuasion)?.len(), 1);
+    theirs.verify()?;
+
+    // A stash that was itself cut short names not every table: it is dropped.
+    let lady = ours.books.push("Lady Susan")?;
+    ours.chapters.push(lady, 1, "one")?;
+    crate::schema::store::CUT_AFTER_APPEND.set(true);
+    assert!(ours.commit(here()).is_err());
+    drop(ours);
+    std::fs::remove_file(pending.join("ready"))?;
+    let ours = Shelf::open(&our_dir)?;
+    assert!(!pending.exists());
+    assert!(ours.children_of::<Book, Chapter>(lady)?.is_empty());
+    Ok(())
+}
+
+#[test]
 fn a_failed_compaction_leaves_the_store_as_it_was() -> Result<()> {
     let dir = TempDir::new("sync_compact");
     let (mut ours, our_dir, _, _) = two_shelves(&dir)?;
