@@ -387,6 +387,10 @@ impl Default for Chapters {
 }
 
 impl Table for Chapters {
+    fn reference_columns(&self) -> Vec<(&'static str, &'static str)> {
+        vec![("chapter.book", "book")]
+    }
+
     fn references(&self, row: crate::schema::Row) -> Result<Vec<crate::schema::Reference>> {
         Ok(vec![crate::schema::Reference {
             column: "chapter.book",
@@ -569,6 +573,10 @@ impl Default for Paragraphs {
 }
 
 impl Table for Paragraphs {
+    fn reference_columns(&self) -> Vec<(&'static str, &'static str)> {
+        vec![("paragraph.chapter", "chapter")]
+    }
+
     fn references(&self, row: crate::schema::Row) -> Result<Vec<crate::schema::Reference>> {
         Ok(vec![crate::schema::Reference {
             column: "paragraph.chapter",
@@ -750,6 +758,10 @@ impl Default for Editions {
 }
 
 impl Table for Editions {
+    fn reference_columns(&self) -> Vec<(&'static str, &'static str)> {
+        vec![("edition.book", "book")]
+    }
+
     fn references(&self, row: crate::schema::Row) -> Result<Vec<crate::schema::Reference>> {
         Ok(vec![crate::schema::Reference {
             column: "edition.book",
@@ -1158,6 +1170,10 @@ impl Default for Authorships {
 }
 
 impl Table for Authorships {
+    fn reference_columns(&self) -> Vec<(&'static str, &'static str)> {
+        vec![("authorship.book", "book"), ("authorship.author", "author")]
+    }
+
     fn references(&self, row: crate::schema::Row) -> Result<Vec<crate::schema::Reference>> {
         Ok(vec![
             crate::schema::Reference {

@@ -252,7 +252,7 @@ fn stamping_counts_once_for_every_unstamped_row_and_leaves_the_rest_alone() {
         at(&held, 2).is_removed(),
         "stamping a row says when it was written, not what was written"
     );
-    assert_eq!(held.unstamped_from(), 3);
+    assert_eq!(held.unstamped_from().unwrap(), 3);
 }
 
 #[test]
@@ -261,7 +261,7 @@ fn a_column_of_versions_read_from_a_file_has_nothing_left_to_stamp() {
     held.push(Version::UNSTAMPED).unwrap();
 
     assert_eq!(
-        held.unstamped_from(),
+        held.unstamped_from().unwrap(),
         0,
         "a row pushed here has not been published yet"
     );
@@ -270,7 +270,7 @@ fn a_column_of_versions_read_from_a_file_has_nothing_left_to_stamp() {
     held.stamp(&mut clock, WriterId::from_raw(1)).unwrap();
 
     assert_eq!(
-        held.unstamped_from(),
+        held.unstamped_from().unwrap(),
         1,
         "a commit that stamped every row has nothing to walk on the next one"
     );

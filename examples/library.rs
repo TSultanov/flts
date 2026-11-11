@@ -259,9 +259,9 @@ fn main() -> Result<()> {
     let alice = book_called(&shelf, "Alice's Adventures in Wonderland")?;
     let alice_of = alice.id()?;
     assert_eq!(alice.chapters()?.count(), 2);
-    assert!(resident(&shelf, "chapter.book") > 0);
+    assert_eq!(resident(&shelf, "chapter.book"), 0);
     assert!(resident(&shelf, "chapter.book.buckets") > 0);
-    println!("     walking uses the parent index; parent references were loaded for visibility");
+    println!("     walking uses the parent index and never the column it indexes");
     for chapter in alice.chapters()? {
         println!("     {}", chapter.title()?);
         assert_eq!(chapter.book()?.id()?, alice.id()?);
@@ -276,7 +276,7 @@ fn main() -> Result<()> {
     let crossing = Library::open(&path)?;
     let looking = book_called(&crossing, "Through the Looking-Glass")?;
     assert_eq!(looking.authors()?.count(), 2);
-    assert!(resident(&crossing, "credit.book") > 0);
+    assert_eq!(resident(&crossing, "credit.book"), 0);
     assert!(resident(&crossing, "credit.book.buckets") > 0);
     assert!(resident(&crossing, "credit.author") > 0);
     assert_eq!(resident(&crossing, "author.name"), 0);

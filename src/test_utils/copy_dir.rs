@@ -47,5 +47,5 @@ pub fn copy_store(from: impl AsRef<Path>, to: impl AsRef<Path>) -> std::io::Resu
 }
 
 pub fn cache(store: impl AsRef<Path>) -> PathBuf {
-    store.as_ref().join("local").join("cache.v1.dbs")
+    store.as_ref().join("local").join("cache.v1.r2.dbs")
 }

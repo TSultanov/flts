@@ -44,7 +44,7 @@ impl Layout {
     }
 
     pub fn cache(&self, schema_version: u64) -> PathBuf {
-        self.local.join(format!("cache.v{schema_version}.dbs"))
+        self.local.join(format!("cache.v{schema_version}.r2.dbs"))
     }
 
     pub fn shard(&self, entity: &str, writer: WriterId, schema_version: u64) -> PathBuf {
@@ -420,6 +420,7 @@ pub trait Store: Default + Clone + Sized {
             .into_iter()
             .flat_map(|table| table.column_specs())
             .collect();
+        self.state().view.describe(&mut out);
         self.clock().describe(CLOCK, &mut out);
         out.push(ColumnSpec {
             name: SHARDS.to_owned(),
@@ -442,6 +443,7 @@ pub trait Store: Default + Clone + Sized {
             .into_iter()
             .flat_map(|table| table.column_residency())
             .collect();
+        self.state().view.residency(&mut out);
         self.clock().residency(CLOCK, &mut out);
         out.push(Residency {
             name: SHARDS.to_owned(),
@@ -609,6 +611,7 @@ pub trait Store: Default + Clone + Sized {
             )));
         }
         self.bind_tables();
+        self.state().view.read_from(file)?;
         for table in self.tables_mut() {
             table.read_columns(file)?;
         }
@@ -628,9 +631,7 @@ pub trait Store: Default + Clone + Sized {
         state.dropped = diff.to_drop();
         state.unknown = diff.unknown;
         state.schema_bytes = schema;
-        self.audit_dots()?;
-        self.check_published()?;
-        self.refresh()
+        Ok(())
     }
 
     fn offer_to(&self, updater: &mut ColumnFileUpdater) -> Result<()> {
@@ -641,6 +642,7 @@ pub trait Store: Default + Clone + Sized {
         for table in self.tables() {
             table.offer_columns(updater)?;
         }
+        self.state().view.offer_to(updater)?;
         self.clock().offer_to(CLOCK, &self.state().dots, updater)?;
         if self.state().marks_are_held()? {
             updater.column(SHARDS, &self.state().held_marks)?;
@@ -743,12 +745,39 @@ pub trait Store: Default + Clone + Sized {
 
     fn with_fresh_cache(layout: Layout) -> Result<Self> {
         std::fs::create_dir_all(&layout.local)?;
+        let earlier = layout
+            .local
+            .join(format!("cache.v{}.dbs", Self::SCHEMA_VERSION));
+        if earlier.exists() {
+            std::fs::remove_file(earlier)?;
+        }
         let cache = layout.cache(Self::SCHEMA_VERSION);
         ColumnFileWriter::create(&cache, WriterId::ANONYMOUS)?.finish()?;
         let mut store = Self::default();
         store.state_mut().file = Some(ColumnFile::open(&cache)?);
         store.state_mut().layout = Some(layout);
         Ok(store)
+    }
+
+    fn rebuild_cache(&mut self) -> Result<()> {
+        let layout = self.state().attached()?.1.clone();
+        if !self.state().outbox.is_empty() || !self.tables().iter().all(|table| table.published()) {
+            return Err(Error::invalid(
+                "commit pending changes before rebuilding the cache",
+            ));
+        }
+        let _lease = layout.lease()?;
+        let mut rebuilt = Self::with_fresh_cache(layout)?;
+        let mut report = MergeReport::default();
+        let batches = rebuilt.collect(|_| true, &mut report)?;
+        rebuilt.apply(batches, &mut report)?;
+        rebuilt.write_cache(WriterId::ANONYMOUS)?;
+        let state = rebuilt.state_mut();
+        state.compaction_policy = self.state().compaction_policy;
+        state.maintenance = self.state().maintenance.clone();
+        state.said = self.state().said.clone();
+        *self = rebuilt;
+        Ok(())
     }
 
     fn open_or_create(layout: impl Into<Layout>, writer_id: WriterId) -> Result<Self> {
@@ -1038,6 +1067,7 @@ pub trait Store: Default + Clone + Sized {
         for table in self.tables_mut() {
             table.rebase_columns(&published)?;
         }
+        self.state().view.rebase(&published)?;
         let state = self.state_mut();
         state.dots = published.column(CLOCK)?;
         state.held_marks = published.column(SHARDS)?;

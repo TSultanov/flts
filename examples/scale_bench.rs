@@ -69,7 +69,7 @@ fn ms(t: Instant) -> f64 {
 fn main() -> Result<()> {
     let w = WriterId::from_raw(1);
     println!(
-        "layout,paragraphs,words,build_ms,first_commit_ms,file_kib,open_ms,walk_ms,edit_commit_ms_avg,translate_commit_ms_avg,growth_kib_per_commit,merge_ms"
+        "layout,paragraphs,words,build_ms,first_commit_ms,file_kib,open_ms,walk_ms,edit_commit_ms_avg,translate_commit_ms_avg,growth_kib_per_commit,merge_ms,snapshot_ms,snapshot_edit_read_ms,remove_ms"
     );
     for (paras, words_per) in [
         (500usize, 0usize),
@@ -146,8 +146,28 @@ fn main() -> Result<()> {
         let t = Instant::now();
         db.merge_from(&peer_path, w)?;
         let merge = ms(t);
+        let t = Instant::now();
+        let mut kept = Vec::new();
+        for _ in 0..20 {
+            kept.push(db.snapshot());
+        }
+        let snapshot = ms(t) / 20.0;
+        drop(kept);
+        let t = Instant::now();
+        for (n, id) in ids.iter().take(20).enumerate() {
+            let held = db.snapshot();
+            db.paragraphs.set_number(*id, (paras + 100 + n) as u32)?;
+            let _ = db.at(*id)?.number()?;
+            drop(held);
+        }
+        let touched = ms(t) / 20.0;
+        let t = Instant::now();
+        for id in ids.iter().skip(30).take(10) {
+            db.remove(*id)?;
+        }
+        let removed = ms(t) / 10.0;
         println!(
-            "shards,{paras},{},{build:.0},{first:.0},{},{open:.0},{walk:.0},{edit:.0},{tr:.0},{growth:.1},{merge:.0}",
+            "shards,{paras},{},{build:.0},{first:.0},{},{open:.0},{walk:.0},{edit:.0},{tr:.0},{growth:.1},{merge:.0},{snapshot:.2},{touched:.2},{removed:.2}",
             paras * words_per,
             size0 / 1024
         );

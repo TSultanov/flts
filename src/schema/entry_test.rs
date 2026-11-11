@@ -1141,9 +1141,9 @@ proptest! {
         let warm = held_after_a_cold_crossing(&program, from);
 
         prop_assert_eq!(
-            held(&warm, "authorship.book") > 0,
-            program.iter().any(|step| matches!(step, Credit::Link(..))),
-            "parent references are loaded for visibility resolution"
+            held(&warm, "authorship.book"),
+            0,
+            "the index names the links and the shared view says they can be seen"
         );
         prop_assert_eq!(
             held(&warm, "author.name"),
@@ -1170,10 +1170,9 @@ proptest! {
                 .count()
         };
 
-        prop_assert_eq!(
-            held(&warm, "authorship.author") > 0,
-            linked(None) > 0,
-            "parent references are loaded for visibility resolution: {:?}",
+        prop_assert!(
+            held(&warm, "authorship.author") == 0 || linked(None) > 0,
+            "the far end is read only for links that exist: {:?}",
             warm
         );
         prop_assert_eq!(

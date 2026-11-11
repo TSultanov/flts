@@ -952,7 +952,7 @@ fn committing_one_new_row_reads_only_the_tail_of_the_version_column() -> Result<
     let mut reopened = Library::open(&path)?;
     let cold = held(&reopened, "book.version");
     assert!(cold.chunks > 1, "{cold:?}");
-    assert_eq!(cold.resident, cold.chunks);
+    assert_eq!(cold.resident, 0, "opening reads no revision");
 
     reopened.books.push("One More", "Nobody").unwrap();
     let mut clock = reopened.clock().clone();
@@ -963,8 +963,8 @@ fn committing_one_new_row_reads_only_the_tail_of_the_version_column() -> Result<
         .find(|held| held.name == "book.version")
         .expect("the table reports the column it stamps");
     assert_eq!(
-        warm.resident, cold.resident,
-        "stamping does not load additional revision metadata: {warm:?}"
+        warm.resident, 1,
+        "stamping reads the tail it writes and nothing before it: {warm:?}"
     );
     Ok(())
 }
@@ -984,14 +984,14 @@ fn making_room_for_a_row_reads_the_tail_of_the_version_column_and_no_more() -> R
     let reopened = Library::open(&path)?;
     let cold = held(&reopened, "book.version");
     assert!(cold.chunks > 1, "{cold:?}");
-    assert_eq!(cold.resident, cold.chunks);
+    assert_eq!(cold.resident, 0, "opening reads no revision");
 
     Table::reserve(&reopened.books)?;
 
     let warm = held(&reopened, "book.version");
     assert_eq!(
-        warm.resident, cold.resident,
-        "reserving does not load additional revision metadata: {warm:?}"
+        warm.resident, 1,
+        "reserving reads the tail a row would land in and nothing before it: {warm:?}"
     );
     Ok(())
 }

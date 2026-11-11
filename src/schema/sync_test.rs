@@ -419,3 +419,54 @@ fn compacting_a_writers_shards_shrinks_them_without_anyone_reading_a_row_again()
     assert_eq!(theirs.books.title(emma)?, "Emma");
     Ok(())
 }
+
+#[test]
+fn opening_a_store_reads_no_row_of_any_table_and_a_snapshot_copies_none() -> Result<()> {
+    let dir = TempDir::new("sync_cold_open");
+    let (mut ours, our_dir, _, _) = two_shelves(&dir)?;
+    let mut last = None;
+    for book in 0..40 {
+        let made = ours.books.push(&format!("Book {book}"))?;
+        for chapter in 0..60 {
+            ours.chapters
+                .push(made, chapter, "a chapter of some length")?;
+        }
+        last = Some(made);
+    }
+    ours.commit(here())?;
+    drop(ours);
+
+    let opened = Shelf::open(&our_dir)?;
+    let read: Vec<_> = opened
+        .residency()
+        .into_iter()
+        .filter(|column| column.resident > 0)
+        .map(|column| column.name)
+        .collect();
+    assert_eq!(read, ["dbsync.clock", "dbsync.shards", "dbsync.schema"]);
+
+    let copy = opened.snapshot();
+    assert!(
+        copy.residency()
+            .into_iter()
+            .all(|column| column.resident == 0 || column.name.starts_with("dbsync.")),
+        "a snapshot shares what it has not read"
+    );
+
+    let book = opened.at(last.unwrap())?;
+    assert_eq!(book.title()?, "Book 39");
+    assert_eq!(book.chapters()?.count(), 60);
+    let touched = |name: &str| {
+        opened
+            .residency()
+            .into_iter()
+            .find(|column| column.name == name)
+            .map(|column| (column.resident, column.chunks))
+            .unwrap()
+    };
+    assert_eq!(touched("chapter.text.bytes").0, 0);
+    assert_eq!(touched("chapter.book").0, 0);
+    assert_eq!(touched("book.title.bytes"), (1, 1));
+    opened.verify()?;
+    Ok(())
+}

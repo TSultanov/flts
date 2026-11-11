@@ -454,7 +454,9 @@ pub trait Table: Default + Clone {
     }
 
     fn is_published(&self) -> bool {
-        self.versions().unstamped_from() == Table::rows(self)
+        self.versions()
+            .unstamped_from()
+            .is_ok_and(|stamped| stamped == Table::rows(self))
     }
 
     fn rows_by_dot(&self) -> Result<Vec<Row>> {
@@ -604,13 +606,12 @@ pub trait Table: Default + Clone {
     }
 
     fn stamp_rows(&mut self, clock: &mut VersionVector, writer: WriterId) -> Result<()> {
-        self.versions_mut().stamp(clock, writer)?;
-        self.refresh()
+        self.publish(clock, writer).map(|_| ())
     }
 
     fn pending(&self) -> Result<Vec<Row>> {
         let mut pending = Vec::new();
-        for index in self.versions().unstamped_from()..Table::rows(self) {
+        for index in self.versions().unstamped_from()?..Table::rows(self) {
             let row = Row::trusted(index);
             if !self.versions().raw_at(row)?.is_stamped() {
                 pending.push(row);
@@ -876,8 +877,10 @@ pub trait Table: Default + Clone {
             field.column.read_from(Self::Of::NAME, field.name, file)?;
         }
         self.check_rows_agree()?;
-        self.check_versions()?;
-        self.refresh()
+        for id in self.versions().view().combined(Self::Of::NAME)? {
+            self.resolve(Id::from_uuid(id))?;
+        }
+        Ok(())
     }
 
     fn offer_to(&self, updater: &mut ColumnFileUpdater) -> Result<()> {

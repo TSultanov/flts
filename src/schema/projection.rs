@@ -77,6 +77,7 @@ struct Shelf {
     index: HashIndex<u128>,
     winners: Arena<u64>,
     states: Arena<u8>,
+    combined: Arena<u128>,
     refs: Vec<Named>,
 }
 
@@ -103,6 +104,7 @@ impl Shelf {
             index: HashIndex::new(qualified(&family(entity), "id")),
             winners: Arena::new(),
             states: Arena::new(),
+            combined: Arena::new(),
             refs: Vec::new(),
         }
     }
@@ -308,6 +310,9 @@ impl Projection {
             shelf.index.append(id)?;
             shelf.winners.push(candidate.winner as u64)?;
             shelf.states.push(flags)?;
+            if candidate.combined {
+                shelf.combined.push(id)?;
+            }
             for (named, held) in shelf.refs.iter_mut().enumerate() {
                 let parent = wanted
                     .iter()
@@ -344,6 +349,9 @@ impl Projection {
         let kept = state & SUPPRESSED;
         if state != flags | kept {
             shelf.states.set(slot, flags | kept)?;
+        }
+        if candidate.combined && state & COMBINED == 0 {
+            shelf.combined.push(id)?;
         }
         if moved || (state & DELETED) != (flags & DELETED) {
             self.settle_from(at, slot)?;
@@ -430,13 +438,16 @@ impl View {
             return Ok(Vec::new());
         };
         let shelf = &held.shelves[at];
-        let mut ids = Vec::new();
-        for slot in 0..shelf.ids.len() {
-            if shelf.state(slot)? & COMBINED != 0 {
-                ids.push(Uuid::from_u128(*shelf.ids.row(slot)?));
+        let mut ids = BTreeSet::new();
+        for listed in shelf.combined.iter() {
+            let id = *listed?;
+            if let Some(slot) = shelf.index.row_of(id)?
+                && shelf.state(slot)? & COMBINED != 0
+            {
+                ids.insert(Uuid::from_u128(id));
             }
         }
-        Ok(ids)
+        Ok(ids.into_iter().collect())
     }
 
     pub fn statuses(&self) -> Result<BTreeMap<(&'static str, Uuid), RowStatus>> {
@@ -503,6 +514,12 @@ impl View {
                 kind: ColumnKind::Version,
                 counts_rows: false,
             });
+            out.push(ColumnSpec {
+                name: qualified(&family, "combined"),
+                elem_size: <u128 as Record>::SIZE,
+                kind: ColumnKind::Version,
+                counts_rows: false,
+            });
             for named in &shelf.refs {
                 out.push(ColumnSpec {
                     name: qualified(&family, &named.field()),
@@ -542,6 +559,11 @@ impl View {
                 shelf.states.resident_chunks(),
                 shelf.states.chunk_count(),
             ));
+            out.push(told(
+                qualified(&family, "combined"),
+                shelf.combined.resident_chunks(),
+                shelf.combined.chunk_count(),
+            ));
             for named in &shelf.refs {
                 out.push(told(
                     qualified(&family, &named.field()),
@@ -561,6 +583,7 @@ impl View {
             shelf.index.read_from(&family, "id", file)?;
             shelf.winners = file.column(&qualified(&family, "winner"))?;
             shelf.states = file.column(&qualified(&family, "state"))?;
+            shelf.combined = file.column(&qualified(&family, "combined"))?;
             let slots = shelf.ids.len();
             if shelf.winners.len() != slots
                 || shelf.states.len() != slots
@@ -594,6 +617,7 @@ impl View {
             shelf.index.offer_to(&family, "id", updater)?;
             updater.column(&qualified(&family, "winner"), &shelf.winners)?;
             updater.column(&qualified(&family, "state"), &shelf.states)?;
+            updater.column(&qualified(&family, "combined"), &shelf.combined)?;
             for named in &shelf.refs {
                 updater.column(&qualified(&family, &named.field()), &named.ids)?;
                 named.index.offer_to(&family, &named.field(), updater)?;
@@ -610,6 +634,7 @@ impl View {
             shelf.index.rebase(&family, "id", file)?;
             file.rebase(&qualified(&family, "winner"), &mut shelf.winners)?;
             file.rebase(&qualified(&family, "state"), &mut shelf.states)?;
+            file.rebase(&qualified(&family, "combined"), &mut shelf.combined)?;
             for named in &mut shelf.refs {
                 let field = named.field();
                 file.rebase(&qualified(&family, &field), &mut named.ids)?;

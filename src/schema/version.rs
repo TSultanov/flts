@@ -216,7 +216,7 @@ pub struct VersionColumn<E: Entity> {
     unsettled: BTreeMap<usize, Vec<Parent>>,
     by_dot: HashIndex<Dot>,
     view: super::View,
-    stamped: usize,
+    stamped: Option<usize>,
     marker: PhantomData<fn() -> E>,
 }
 
@@ -224,6 +224,13 @@ pub struct VersionColumn<E: Entity> {
 pub enum Parent {
     Published(Dot),
     Pending(usize),
+}
+
+fn filed(dot: Dot, row: usize) -> Dot {
+    match dot.counter() {
+        0 => Dot::new(WriterId::ANONYMOUS, u64::MAX - row as u64),
+        _ => dot,
+    }
 }
 
 impl<E: Entity> Default for VersionColumn<E> {
@@ -235,7 +242,7 @@ impl<E: Entity> Default for VersionColumn<E> {
             unsettled: BTreeMap::new(),
             by_dot: HashIndex::new(qualified(E::NAME, "version")),
             view: super::View::default(),
-            stamped: 0,
+            stamped: Some(0),
             marker: PhantomData,
         }
     }
@@ -266,12 +273,15 @@ impl<E: Entity> VersionColumn<E> {
         if self.row_for_dot(version.dot())?.is_some() {
             return Err(Error::corrupt("revision", "duplicate revision dot"));
         }
-        self.by_dot.append(version.dot())?;
+        let stamped = self.unstamped_from()?;
+        self.by_dot
+            .append(filed(version.dot(), self.versions.len()))?;
         let row = self.versions.push(version)?;
         self.unsettled.insert(row, parents);
-        if version.is_stamped() && self.stamped == row {
-            self.stamped = row + 1;
-        }
+        self.stamped = Some(match version.is_stamped() && stamped == row {
+            true => row + 1,
+            false => stamped,
+        });
         self.settle_parents()?;
         Ok(row)
     }
@@ -312,7 +322,7 @@ impl<E: Entity> VersionColumn<E> {
     }
 
     pub fn row_for_dot(&self, dot: Dot) -> Result<Option<Row>> {
-        if dot.counter() == 0 {
+        if dot.counter() == 0 || dot.writer().is_anonymous() {
             return Ok(None);
         }
         Ok(self.by_dot.row_of(dot)?.map(Row::trusted))
@@ -431,13 +441,27 @@ impl<E: Entity> VersionColumn<E> {
         self.versions.set(row.index(), held.withdraw())
     }
 
-    pub fn unstamped_from(&self) -> usize {
-        self.stamped
+    pub fn unstamped_from(&self) -> Result<usize> {
+        if let Some(stamped) = self.stamped {
+            return Ok(stamped);
+        }
+        let rows = self.versions.len();
+        match rows.checked_sub(1) {
+            Some(last) if !self.versions.row(last)?.is_stamped() => {
+                for row in 0..rows {
+                    if !self.versions.row(row)?.is_stamped() {
+                        return Ok(row);
+                    }
+                }
+                Ok(rows)
+            }
+            _ => Ok(rows),
+        }
     }
 
     pub fn stamp(&mut self, clock: &mut VersionVector, writer: WriterId) -> Result<()> {
         self.view.check_mutable()?;
-        for row in self.stamped..self.versions.len() {
+        for row in self.unstamped_from()?..self.versions.len() {
             let held = *self.versions.row(row)?;
             if !held.is_stamped() {
                 let dot = clock.tick(writer)?;
@@ -471,14 +495,14 @@ impl<E: Entity> VersionColumn<E> {
             self.unsettled
                 .insert(row, published.into_iter().map(Parent::Published).collect());
         }
-        self.stamped = self.versions.len();
+        self.stamped = Some(self.versions.len());
         self.settle_parents()
     }
 
     fn index_every_dot(&mut self) -> Result<()> {
         let mut index = HashIndex::new(qualified(E::NAME, "version"));
         for row in 0..self.versions.len() {
-            index.append(self.versions.row(row)?.dot())?;
+            index.append(filed(self.versions.row(row)?.dot(), row))?;
         }
         self.by_dot = index;
         Ok(())
@@ -576,14 +600,7 @@ impl<E: Entity> Column for VersionColumn<E> {
         if !self.by_dot.agrees_with(self.versions.len()) {
             self.index_every_dot()?;
         }
-        self.stamped = self.versions.len();
-        if let Some(last) = self.versions.len().checked_sub(1)
-            && !self.versions.row(last)?.is_stamped()
-        {
-            self.stamped = (0..self.versions.len())
-                .find(|row| self.versions.row(*row).is_ok_and(|v| !v.is_stamped()))
-                .unwrap_or(self.versions.len());
-        }
+        self.stamped = None;
         Ok(())
     }
 

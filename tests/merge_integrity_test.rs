@@ -119,15 +119,19 @@ fn a_missing_parent_is_tolerated_and_a_damaged_cache_is_rebuilt_from_the_shards(
     let orphaned = Database::open(dir.path("missing"))?;
     assert_eq!(orphaned.items.text(id)?, "two");
     assert!(orphaned.conflicts()?.is_empty());
+    orphaned.verify()?;
 
     support::copy_store(dir.path("a"), dir.path("cycle"))?;
     replace(&dir.path("cycle"), "item.version.parent_ends", &[1u64, 2])?;
     replace(&dir.path("cycle"), "item.version.parents", &[second, first])?;
-    let rebuilt = Database::open(dir.path("cycle"))?;
-    rebuilt.verify()?;
-    assert_eq!(rebuilt.items.text(id)?, "two");
-    assert_eq!(rebuilt.history(id)?.len(), 2);
-    assert_eq!(rebuilt.at(id)?.version()?.dot(), second);
+    let mut damaged = Database::open(dir.path("cycle"))?;
+    assert!(damaged.verify().unwrap_err().is_corrupt());
+    damaged.rebuild_cache()?;
+    damaged.verify()?;
+    assert_eq!(damaged.items.text(id)?, "two");
+    assert_eq!(damaged.history(id)?.len(), 2);
+    assert_eq!(damaged.at(id)?.version()?.dot(), second);
+    assert_eq!(Database::open(dir.path("cycle"))?.items.text(id)?, "two");
     Ok(())
 }
 
@@ -303,24 +307,27 @@ mod references {
 fn a_reference_to_a_row_nobody_delivered_hides_the_child_until_it_arrives() -> Result<()> {
     let dir = Directory::new();
     let mut db = references::Database::create(dir.path("db"), WriterId::from_raw(1))?;
-    let child = db.items.push(dbsync::Id::NIL)?;
+    let absent = dbsync::Id::<references::Item>::mint();
+    let child = db.items.push(absent)?;
     db.commit(WriterId::from_raw(1))?;
-    replace(
-        &dir.path("db"),
-        "item.parent",
-        &[dbsync::Id::<references::Item>::mint()],
-    )?;
-    let opened = references::Database::open(dir.path("db"))?;
+
+    let mut opened = references::Database::open(dir.path("db"))?;
     assert!(matches!(
         opened.status(child)?,
         dbsync::schema::RowStatus::Suppressed(_)
     ));
     assert_eq!(opened.dangling()?.len(), 1);
+    opened.verify()?;
+
+    opened.items.insert(absent, dbsync::Id::NIL)?;
+    assert_eq!(opened.status(child)?, dbsync::schema::RowStatus::Visible);
+    assert!(opened.dangling()?.is_empty());
+    opened.verify()?;
     Ok(())
 }
 
 #[test]
-fn a_cache_holding_one_dot_twice_is_discarded_for_what_the_shards_say() -> Result<()> {
+fn a_cache_holding_one_dot_twice_fails_verification_and_is_rebuilt_from_the_shards() -> Result<()> {
     let dir = Directory::new();
     let mut db = Database::create(dir.path("db"), WriterId::from_raw(1))?;
     let first = db.items.push("first")?;
@@ -328,9 +335,12 @@ fn a_cache_holding_one_dot_twice_is_discarded_for_what_the_shards_say() -> Resul
     db.commit(WriterId::from_raw(1))?;
     let version = db.at(first)?.version()?;
     replace(&dir.path("db"), "item.version", &[version, version])?;
-    let rebuilt = Database::open(dir.path("db"))?;
-    rebuilt.verify()?;
-    assert_eq!(rebuilt.items.text(first)?, "first");
-    assert_eq!(rebuilt.items.text(second)?, "second");
+
+    let mut damaged = Database::open(dir.path("db"))?;
+    assert!(damaged.verify().unwrap_err().is_corrupt());
+    damaged.rebuild_cache()?;
+    damaged.verify()?;
+    assert_eq!(damaged.items.text(first)?, "first");
+    assert_eq!(damaged.items.text(second)?, "second");
     Ok(())
 }
