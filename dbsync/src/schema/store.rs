@@ -588,6 +588,22 @@ pub trait Store: Default + Clone + Sized {
         }
     }
 
+    /// Rewrites the cache and `writer_id`'s shards where `policy` says it
+    /// pays, whatever the store's own policy. A store whose policy is
+    /// `Disabled` never compacts inside a commit; this is how it compacts
+    /// at a time of its choosing.
+    fn compact_by(&mut self, writer_id: WriterId, policy: crate::CompactionPolicy) -> Result<()> {
+        self.check_published()?;
+        policy.validate()?;
+        let _lease = self.state().attached()?.1.lease()?;
+        let own = self.compaction_policy();
+        self.state_mut().compaction_policy = policy;
+        self.auto_compact();
+        let shards = self.rewrite_shards(writer_id, Some(policy));
+        self.state_mut().compaction_policy = own;
+        shards.map(|_| ())
+    }
+
     fn generation(&self) -> Option<u64> {
         self.state().file.as_ref().map(ColumnFile::generation)
     }

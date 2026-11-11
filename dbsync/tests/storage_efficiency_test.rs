@@ -136,3 +136,31 @@ fn automatic_compaction_is_configurable_and_explicit_compaction_rejects_pending_
     db.verify()?;
     Ok(())
 }
+
+#[test]
+fn a_store_that_never_compacts_in_a_commit_compacts_when_asked() -> Result<()> {
+    let dir = Directory::new();
+    let mut db = Database::create(dir.file("db"), writer(1))?;
+    db.set_compaction_policy(CompactionPolicy::Disabled)?;
+    let id = db.notes.push("first", None, 1)?;
+    db.commit(writer(1))?;
+    db.notes.set_title(id, "second")?;
+    db.commit(writer(1))?;
+    assert_eq!(db.maintenance_outcome(), None, "no commit compacted");
+
+    let eager = CompactionPolicy::Automatic {
+        min_reclaim_bytes: 0,
+        min_reclaim_fraction: 0.0,
+    };
+    db.compact_by(writer(1), eager)?;
+    assert!(matches!(
+        db.maintenance_outcome(),
+        Some(MaintenanceOutcome::Compacted(_))
+    ));
+    assert_eq!(db.compaction_policy(), CompactionPolicy::Disabled);
+    assert_eq!(db.notes.title(id)?.as_ref(), "second");
+    db.notes.set_title(id, "third")?;
+    db.commit(writer(1))?;
+    db.verify()?;
+    Ok(())
+}
