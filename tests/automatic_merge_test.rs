@@ -1,5 +1,7 @@
 #![cfg(feature = "macros")]
 
+mod support;
+
 use dbsync::schema::{MergeInput, Store, Table};
 use dbsync::{Result, Uuid, WriterId};
 use std::collections::BTreeSet;
@@ -79,7 +81,7 @@ fn one_call_combines_pending_edits_and_persists_the_derived_row() -> Result<()> 
     let b = local.folders.push("B")?;
     let id = local.notes.push("base", 0, a)?;
     local.commit(writer(1))?;
-    std::fs::copy(dir.path("local"), dir.path("peer"))?;
+    support::copy_store(dir.path("local"), dir.path("peer"))?;
     let mut peer = Database::open(dir.path("peer"))?;
     local.notes.set_title(id, "alpha")?;
     local.notes.set_score(id, 2)?;
@@ -164,7 +166,7 @@ fn deletion_precedes_the_custom_resolver_and_hidden_children_reappear() -> Resul
     let note = a.notes.push("base", 0, parent)?;
     a.commit(writer(1))?;
     let original = a.at(note)?.version()?.dot();
-    std::fs::copy(dir.path("a"), dir.path("b"))?;
+    support::copy_store(dir.path("a"), dir.path("b"))?;
     let mut b = Database::open(dir.path("b"))?;
     a.remove(note)?;
     b.notes.set_title(note, "edited")?;
@@ -222,11 +224,11 @@ fn excluded_old_writes_do_not_change_the_resolvers_ancestry_or_cached_result() -
     let id = a.counters.push(0)?;
     a.commit(writer(1))?;
     let original = a.at(id)?.version()?.dot();
-    std::fs::copy(dir.path("a"), dir.path("old"))?;
+    support::copy_store(dir.path("a"), dir.path("old"))?;
     let mut old = ancestry::Database::open(dir.path("old"))?;
     a.remove(id)?;
     a.commit(writer(1))?;
-    std::fs::copy(dir.path("a"), dir.path("b"))?;
+    support::copy_store(dir.path("a"), dir.path("b"))?;
     let mut b = ancestry::Database::open(dir.path("b"))?;
     a.restore(id, original)?;
     a.commit(writer(1))?;
@@ -270,24 +272,29 @@ mod invalid {
 }
 
 #[test]
-fn invalid_resolver_references_leave_the_destination_and_pending_edits_intact() -> Result<()> {
+fn a_resolver_that_names_a_missing_parent_hides_the_row_instead_of_refusing_the_merge() -> Result<()>
+{
     let dir = Directory::new();
     let mut a = invalid::Database::create(dir.path("a"), writer(1))?;
     let id = a.links.push(dbsync::Id::NIL, 0)?;
     a.commit(writer(1))?;
-    std::fs::copy(dir.path("a"), dir.path("b"))?;
+    support::copy_store(dir.path("a"), dir.path("b"))?;
     let mut b = invalid::Database::open(dir.path("b"))?;
     a.links.set_number(id, 1)?;
     b.links.set_number(id, 2)?;
     b.commit(writer(2))?;
-    let bytes = std::fs::read(dir.path("a"))?;
-    let clock = a.clock().clone();
-    assert!(a.merge_from(dir.path("b"), writer(1)).is_err());
-    assert_eq!(a.links.number(id)?, 1);
-    assert!(!a.links.is_published());
-    assert_eq!(*a.clock(), clock);
-    assert_eq!(std::fs::read(dir.path("a"))?, bytes);
-    assert!(a.recovery().is_none());
+
+    let report = a.merge_from(dir.path("b"), writer(1))?;
+
+    assert!(a.links.is_published(), "a merge publishes what was pending");
+    assert_eq!(report.combined.len(), 1);
+    assert_eq!(report.references.len(), 1);
+    assert!(matches!(
+        a.status(id)?,
+        dbsync::schema::RowStatus::Suppressed(_)
+    ));
+    assert!(a.at(id).is_err());
+    a.verify()?;
     Ok(())
 }
 

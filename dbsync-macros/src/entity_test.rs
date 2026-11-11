@@ -138,8 +138,20 @@ fn push_takes_one_argument_per_stored_field_in_the_order_they_were_written() {
         "a push touches every column or none: {out}"
     );
     assert!(
-        out.contains("let id = < Self as :: dbsync :: schema :: Table > :: mint (self) ? ;"),
+        out.contains(
+            "let id = :: dbsync :: Id :: mint () ; self . insert (id , book , title ,) ? ;"
+        ),
         "the new row is named by an id minted for it, not by where it landed: {out}"
+    );
+    assert!(
+        out.contains(
+            "fn insert (& mut self , id : :: dbsync :: Id < Chapter > , book : :: dbsync :: Id < Book > , title : & str ,)"
+        ),
+        "a caller that already has an id inserts under it: {out}"
+    );
+    assert!(
+        out.contains("mint_as (self , id) ?"),
+        "insert names the row by the id it was handed: {out}"
     );
     assert!(
         out.contains(":: core :: result :: Result :: Ok (id)"),
@@ -540,7 +552,7 @@ fn an_entity_audits_its_own_columns_even_when_it_answers_to_no_parent() {
 }
 
 #[test]
-fn an_entity_that_names_a_parent_has_that_reference_checked_by_the_audit() {
+fn an_entity_that_names_a_parent_needs_its_table_but_not_its_row() {
     let out = expanded(quote! {
         struct Chapter { book: One<Book>, title: String }
     });
@@ -550,11 +562,11 @@ fn an_entity_that_names_a_parent_has_that_reference_checked_by_the_audit() {
             "where S : :: dbsync :: schema :: Holds < Chapter > \
              + :: dbsync :: schema :: Holds < Book > ,"
         ),
-        "the audit needs both tables, so the bound names both: {out}"
+        "a store that holds chapters holds books too, so the bound names both: {out}"
     );
     assert!(
-        out.contains(":: dbsync :: schema :: audit_reference :: < S , Book , Chapter > (store) ?"),
-        "{out}"
+        !out.contains("audit_reference"),
+        "a parent another writer has not delivered yet is not damage: {out}"
     );
 }
 
@@ -664,11 +676,11 @@ fn a_push_reaches_for_every_index_before_it_mints() {
     let out = expanded(
         quote! { struct Chapter { book: One<Book>, #[index] title: String, #[index] slug: String, text: String } },
     );
-    let after = out.split("pub fn push").nth(1).unwrap();
+    let after = out.split("pub fn insert").nth(1).unwrap();
     let push = &after[..after.find("fn rewrite").unwrap()];
     for field in ["book", "title", "slug"] {
         let reach = format!("self . {field} . reach ({field}) ?");
-        assert!(push.find(&reach).unwrap() < push.find("mint (self)").unwrap());
+        assert!(push.find(&reach).unwrap() < push.find("mint_as (self , id)").unwrap());
     }
     assert!(!push.contains("self . text . reach"));
 }
@@ -982,4 +994,22 @@ fn a_resolved_position_orders_the_children_by_what_the_merge_function_chose() {
     );
     assert!(out.contains("fn parent_at"), "{out}");
     assert_eq!(out.matches("fn child_rows").count(), 1, "{out}");
+}
+
+#[test]
+fn an_optional_parent_is_read_as_a_row_that_may_not_be_there() {
+    let out = expanded(quote! {
+        struct Volume { series: Option<One<Series>>, title: String }
+    });
+
+    assert!(
+        out.contains(":: dbsync :: schema :: OptionalRefColumn < Series , Volume >"),
+        "{out}"
+    );
+    assert!(
+        out.contains("impl :: dbsync :: schema :: Child < Series > for Volume"),
+        "a Many still finds the children that do name a parent: {out}"
+    );
+    assert!(out.contains("& table . series . references ()"), "{out}");
+    assert!(out.contains("if parent . is_nil ()"), "{out}");
 }

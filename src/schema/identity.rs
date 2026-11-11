@@ -129,6 +129,11 @@ impl<E: Entity> Column for IdColumn<E> {
         updater.column(&qualified(entity, field), &self.ids)?;
         self.index.offer_to(entity, field, updater)
     }
+
+    fn rebase(&mut self, entity: &str, field: &str, file: &ColumnFile) -> Result<()> {
+        file.rebase(&qualified(entity, field), &mut self.ids)?;
+        self.index.rebase(entity, field, file)
+    }
 }
 
 #[cfg(test)]

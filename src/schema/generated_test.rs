@@ -1168,7 +1168,7 @@ fn repeated_indexed_values_on_different_ids_survive_merging() {
     let mut mine = Catalogue::create(&here, WriterId::from_device_id("here")).unwrap();
     mine.commit(WriterId::from_device_id("here")).unwrap();
 
-    std::fs::copy(&here, &there).unwrap();
+    crate::test_utils::copy_store(&here, &there).unwrap();
     let mut theirs = Catalogue::open(&there).unwrap();
     theirs.editions.push(Some("978-0"), 1914).unwrap();
     theirs.commit(WriterId::from_device_id("there")).unwrap();
@@ -1195,7 +1195,7 @@ fn a_merge_brings_every_kind_of_column_across_exactly_as_it_was_written() {
     let mut mine = Catalogue::create(&here, WriterId::from_device_id("here")).unwrap();
     mine.commit(WriterId::from_device_id("here")).unwrap();
 
-    std::fs::copy(&here, &there).unwrap();
+    crate::test_utils::copy_store(&here, &there).unwrap();
     let mut theirs = Catalogue::open(&there).unwrap();
     let soseki = theirs
         .authors

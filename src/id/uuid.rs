@@ -6,6 +6,7 @@ use std::sync::{Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rand::Rng;
+use sha1::{Digest, Sha1};
 
 use crate::error::{Error, Result};
 
@@ -40,6 +41,26 @@ impl Uuid {
 
     pub const fn to_u128(self) -> u128 {
         self.0
+    }
+
+    pub const fn from_bytes(bytes: [u8; 16]) -> Self {
+        Self(u128::from_be_bytes(bytes))
+    }
+
+    pub const fn to_bytes(self) -> [u8; 16] {
+        self.0.to_be_bytes()
+    }
+
+    pub fn derived(namespace: Uuid, name: &[u8]) -> Self {
+        let digest = Sha1::new()
+            .chain_update(namespace.to_bytes())
+            .chain_update(name)
+            .finalize();
+        let mut bytes = [0u8; 16];
+        bytes.copy_from_slice(&digest[..16]);
+        bytes[6] = (bytes[6] & 0x0f) | 0x50;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        Self::from_bytes(bytes)
     }
 
     pub const fn is_nil(self) -> bool {

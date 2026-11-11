@@ -1,4 +1,6 @@
 #![cfg(feature = "macros")]
+mod support;
+
 use dbsync::schema::{Store, Table};
 use dbsync::{Result, WriterId};
 use std::path::PathBuf;
@@ -55,7 +57,7 @@ fn commit(s: &mut impl Store, n: u64) -> Result<()> {
 }
 
 fn fork(dir: &std::path::Path, from: &str, to: &str) -> Result<Library> {
-    std::fs::copy(dir.join(from), dir.join(to))?;
+    support::copy_store(dir.join(from), dir.join(to))?;
     Library::open(dir.join(to))
 }
 
@@ -158,7 +160,7 @@ fn old_schema_must_not_acknowledge_unmerged_entities() -> Result<()> {
     let dir = directory("unknown-entity");
     let mut a = newer::Library::create(dir.join("a"), writer(1))?;
     commit(&mut a, 1)?;
-    std::fs::copy(dir.join("a"), dir.join("b"))?;
+    support::copy_store(dir.join("a"), dir.join("b"))?;
     let mut b = newer::Library::open(dir.join("b"))?;
     b.notes.push("must survive")?;
     commit(&mut b, 2)?;
@@ -188,7 +190,7 @@ fn old_schema_merge_must_not_break_new_schema_row_alignment() -> Result<()> {
     let mut a = added_field::Library::create(dir.join("a"), writer(1))?;
     a.docs.push("first", "", "", 42)?;
     commit(&mut a, 1)?;
-    std::fs::copy(dir.join("a"), dir.join("b"))?;
+    support::copy_store(dir.join("a"), dir.join("b"))?;
     let mut b = added_field::Library::open(dir.join("b"))?;
     b.docs.push("second", "", "", 99)?;
     commit(&mut b, 2)?;
@@ -298,7 +300,7 @@ mod relationships {
 fn repeated_parent_names_do_not_hide_parents_or_children() -> Result<()> {
     let dir = directory("parent-name");
     let mut a = relationships::Library::create(dir.join("a"), writer(1))?;
-    std::fs::copy(dir.join("a"), dir.join("b"))?;
+    support::copy_store(dir.join("a"), dir.join("b"))?;
     let mut b = relationships::Library::open(dir.join("b"))?;
     let first = a.parents.push("same")?;
     let child = a.children.push(first, "child")?;
@@ -477,7 +479,7 @@ fn parent_deletion_hides_concurrent_children() -> Result<()> {
     let mut a = relationships::Library::create(dir.join("a"), writer(1))?;
     let id = a.parents.push("parent")?;
     commit(&mut a, 1)?;
-    std::fs::copy(dir.join("a"), dir.join("b"))?;
+    support::copy_store(dir.join("a"), dir.join("b"))?;
     let mut b = relationships::Library::open(dir.join("b"))?;
     b.children.push(id, "child")?;
     commit(&mut b, 2)?;

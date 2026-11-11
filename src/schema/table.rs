@@ -6,6 +6,7 @@ use super::entity::Entity;
 use super::identity::IdColumn;
 use super::merge::{Concurrent, Conflict};
 use super::names::qualified;
+use super::shard::ShardRow;
 use super::version::{Dot, Version, VersionColumn};
 use super::{Candidate, Parent, Reference, View};
 use crate::error::{Error, Result};
@@ -39,15 +40,45 @@ pub trait Table: Default + Clone {
     fn heads(&self, id: Id<Self::Of>) -> Result<Vec<Row>> {
         let rows = self.versions_of(id)?;
         let mut ancestors = BTreeSet::new();
+        let mut cut: Option<Dot> = None;
         for row in &rows {
             for parent in self.versions().parent_rows(*row)? {
                 ancestors.insert(parent.index());
             }
+            if self.versions().lacks_a_parent(*row)? {
+                let dot = self.versions().raw_at(*row)?.dot();
+                cut = Some(cut.map_or(dot, |held| held.max(dot)));
+            }
         }
-        Ok(rows
-            .into_iter()
-            .filter(|row| !ancestors.contains(&row.index()))
-            .collect())
+        let mut heads = Vec::new();
+        for row in rows {
+            let version = self.versions().raw_at(row)?;
+            let below = cut.is_some_and(|cut| version.is_stamped() && version.dot() < cut);
+            if !ancestors.contains(&row.index()) && !below {
+                heads.push(row);
+            }
+        }
+        Ok(heads)
+    }
+
+    fn covers(&self, row: Row, other: Row) -> Result<bool> {
+        let ancestors = self.versions().ancestors(row)?;
+        if ancestors.contains(&other.index()) {
+            return Ok(true);
+        }
+        let sought = self.versions().raw_at(other)?;
+        if !sought.is_stamped() {
+            return Ok(false);
+        }
+        for held in ancestors.into_iter().chain([row.index()]) {
+            let held = Row::trusted(held);
+            if self.versions().lacks_a_parent(held)?
+                && sought.dot() < self.versions().raw_at(held)?.dot()
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     fn eligible_heads(&self, id: Id<Self::Of>) -> Result<Vec<Row>> {
@@ -63,11 +94,14 @@ pub trait Table: Default + Clone {
             if self.versions().raw_at(row)?.is_removed() {
                 continue;
             }
-            let ancestors = self.versions().ancestors(row)?;
-            if deletes
-                .iter()
-                .all(|deletion| ancestors.contains(&deletion.index()))
-            {
+            let mut covered = true;
+            for deletion in &deletes {
+                if !self.covers(row, *deletion)? {
+                    covered = false;
+                    break;
+                }
+            }
+            if covered {
                 eligible.push(row);
             }
         }
@@ -92,7 +126,7 @@ pub trait Table: Default + Clone {
             for deletion in &deletes {
                 let mut superseded = false;
                 for other in &deletes {
-                    if other != deletion && self.versions().descends(*other, *deletion)? {
+                    if other != deletion && self.covers(*other, *deletion)? {
                         superseded = true;
                         break;
                     }
@@ -230,39 +264,43 @@ pub trait Table: Default + Clone {
             ids.insert(self.id_at(Row::trusted(index))?.uuid());
         }
         for uuid in ids {
-            let id = Id::from_uuid(uuid);
-            let Some(winner) = self.winner(id)? else {
-                continue;
-            };
-            let version = self.versions().raw_at(winner)?;
-            if self.is_derived(id) {
-                conflicts.push(Conflict::Combined(super::Combined {
-                    entity: Self::Of::NAME,
-                    id: uuid,
-                    sources: self.source_dots(id)?,
-                }));
+            conflicts.extend(self.conflicts_of(Id::from_uuid(uuid))?);
+        }
+        conflicts.sort();
+        Ok(conflicts)
+    }
+
+    fn conflicts_of(&self, id: Id<Self::Of>) -> Result<Vec<Conflict>> {
+        let uuid = id.uuid();
+        let mut conflicts = Vec::new();
+        let Some(winner) = self.winner(id)? else {
+            return Ok(conflicts);
+        };
+        let version = self.versions().raw_at(winner)?;
+        if self.is_derived(id) {
+            conflicts.push(Conflict::Combined(super::Combined {
+                entity: Self::Of::NAME,
+                id: uuid,
+                sources: self.source_dots(id)?,
+            }));
+            return Ok(conflicts);
+        }
+        for row in self.heads(id)? {
+            if row == winner || self.covers(winner, row)? || self.covers(row, winner)? {
                 continue;
             }
-            for row in self.heads(id)? {
-                if row == winner
-                    || self.versions().descends(winner, row)?
-                    || self.versions().descends(row, winner)?
-                {
-                    continue;
-                }
-                let other = self.versions().raw_at(row)?;
-                if version.is_removed() == other.is_removed()
-                    && self.payload(winner)? == self.payload(row)?
-                {
-                    continue;
-                }
-                conflicts.push(Conflict::Concurrent(Concurrent {
-                    entity: Self::Of::NAME,
-                    id: uuid,
-                    kept: version.dot(),
-                    dropped: other.dot(),
-                }));
+            let other = self.versions().raw_at(row)?;
+            if version.is_removed() == other.is_removed()
+                && self.payload(winner)? == self.payload(row)?
+            {
+                continue;
             }
+            conflicts.push(Conflict::Concurrent(Concurrent {
+                entity: Self::Of::NAME,
+                id: uuid,
+                kept: version.dot(),
+                dropped: other.dot(),
+            }));
         }
         conflicts.sort();
         Ok(conflicts)
@@ -347,9 +385,14 @@ pub trait Table: Default + Clone {
 
     fn mint(&mut self) -> Result<Id<Self::Of>> {
         let id = Id::mint();
+        self.mint_as(id)?;
+        Ok(id)
+    }
+
+    fn mint_as(&mut self, id: Id<Self::Of>) -> Result<()> {
         self.ids_mut().push(id)?;
         self.versions_mut().push(Version::UNSTAMPED)?;
-        Ok(id)
+        Ok(())
     }
 
     fn revise(&mut self, id: Id<Self::Of>) -> Result<Row> {
@@ -510,6 +553,106 @@ pub trait Table: Default + Clone {
         self.refresh()
     }
 
+    fn pending(&self) -> Result<Vec<Row>> {
+        let mut pending = Vec::new();
+        for index in self.versions().unstamped_from()..Table::rows(self) {
+            let row = Row::trusted(index);
+            if !self.versions().raw_at(row)?.is_stamped() {
+                pending.push(row);
+            }
+        }
+        Ok(pending)
+    }
+
+    fn publish(&mut self, clock: &mut VersionVector, writer: WriterId) -> Result<Vec<Row>> {
+        let pending = self.pending()?;
+        if pending.is_empty() {
+            return Ok(pending);
+        }
+        self.versions_mut().stamp(clock, writer)?;
+        let mut touched = BTreeSet::new();
+        for row in &pending {
+            touched.insert(self.id_at(*row)?);
+        }
+        for id in touched {
+            self.refresh_one(id)?;
+        }
+        Ok(pending)
+    }
+
+    fn export(&self, row: Row) -> Result<ShardRow> {
+        let mut values = Vec::new();
+        for field in self.fields() {
+            if field.name != "id" && field.name != "version" {
+                values.push((field.name.to_owned(), field.column.value_bytes(row)?));
+            }
+        }
+        let mut parents = Vec::new();
+        for parent in self.versions().parents(row)? {
+            match parent {
+                Parent::Published(dot) => parents.push(*dot),
+                Parent::Pending(_) => {
+                    return Err(Error::invalid("pending revision has no published identity"));
+                }
+            }
+        }
+        Ok(ShardRow {
+            id: self.id_at(row)?.uuid(),
+            version: self.versions().raw_at(row)?,
+            parents,
+            values,
+        })
+    }
+
+    fn adopt_shard_row(&mut self, theirs: &ShardRow) -> Result<bool> {
+        let id = Id::from_uuid(theirs.id);
+        let parents: Vec<Parent> = theirs
+            .parents
+            .iter()
+            .copied()
+            .map(Parent::Published)
+            .collect();
+        if !theirs.version.is_stamped() {
+            return Err(Error::corrupt(
+                "revision",
+                "a shard holds an unpublished row",
+            ));
+        }
+        if let Some(held) = self.versions().row_for_dot(theirs.version.dot()) {
+            let mut same = self.id_at(held)? == id
+                && self.versions().raw_at(held)? == theirs.version
+                && self.versions().parents(held)? == parents.as_slice();
+            for field in self.fields() {
+                if same && field.name != "id" && field.name != "version" {
+                    same = theirs.value(field.name) == Some(&field.column.value_bytes(held)?);
+                }
+            }
+            if !same {
+                return Err(Error::corrupt(
+                    "revision",
+                    "a dot identifies different revisions",
+                ));
+            }
+            return Ok(false);
+        }
+        for field in self.fields() {
+            if field.name != "id" && field.name != "version" && theirs.value(field.name).is_none() {
+                return Err(Error::corrupt("schema", "missing field during merge"));
+            }
+        }
+        self.reserve()?;
+        self.adopt_revision(id, theirs.version, parents)?;
+        for field in self.fields_mut() {
+            if field.name != "id" && field.name != "version" {
+                let bytes = theirs
+                    .value(field.name)
+                    .ok_or_else(|| Error::corrupt("schema", "missing field during merge"))?;
+                field.column.append_value_bytes(bytes)?;
+            }
+        }
+        Ok(true)
+    }
+
     fn check_versions(&self) -> Result<()> {
         self.versions().audit_graph()?;
         for index in 0..Table::rows(self) {
@@ -659,6 +802,24 @@ pub trait AnyTable {
     fn fold_indexes(&mut self, force: bool) -> Result<()>;
 
     fn offer_columns(&self, updater: &mut ColumnFileUpdater) -> Result<()>;
+
+    fn rebase_columns(&mut self, file: &ColumnFile) -> Result<()>;
+
+    fn field_names(&self) -> Vec<&'static str>;
+
+    fn publish_rows(
+        &mut self,
+        clock: &mut VersionVector,
+        writer: WriterId,
+    ) -> Result<Vec<ShardRow>>;
+
+    fn adopt_rows(&mut self, rows: &[ShardRow]) -> Result<Vec<crate::Uuid>>;
+
+    fn refresh_rows(&self, ids: &[crate::Uuid]) -> Result<()>;
+
+    fn conflicts_among(&self, ids: &[crate::Uuid]) -> Result<Vec<Conflict>>;
+
+    fn export_rows(&self) -> Result<Vec<ShardRow>>;
 }
 
 impl<T: Table> AnyTable for T {
@@ -784,6 +945,64 @@ impl<T: Table> AnyTable for T {
     fn offer_columns(&self, updater: &mut ColumnFileUpdater) -> Result<()> {
         self.versions().view().check_mutable()?;
         Table::offer_to(self, updater)
+    }
+
+    fn rebase_columns(&mut self, file: &ColumnFile) -> Result<()> {
+        for field in self.fields_mut() {
+            field.column.rebase(T::Of::NAME, field.name, file)?;
+        }
+        Ok(())
+    }
+
+    fn field_names(&self) -> Vec<&'static str> {
+        self.fields()
+            .iter()
+            .map(|field| field.name)
+            .filter(|name| *name != "id" && *name != "version")
+            .collect()
+    }
+
+    fn publish_rows(
+        &mut self,
+        clock: &mut VersionVector,
+        writer: WriterId,
+    ) -> Result<Vec<ShardRow>> {
+        Table::publish(self, clock, writer)?
+            .into_iter()
+            .map(|row| Table::export(self, row))
+            .collect()
+    }
+
+    fn adopt_rows(&mut self, rows: &[ShardRow]) -> Result<Vec<crate::Uuid>> {
+        let mut touched = BTreeSet::new();
+        for row in rows {
+            if Table::adopt_shard_row(self, row)? {
+                touched.insert(row.id);
+            }
+        }
+        Ok(touched.into_iter().collect())
+    }
+
+    fn refresh_rows(&self, ids: &[crate::Uuid]) -> Result<()> {
+        for id in ids {
+            Table::refresh_one(self, Id::from_uuid(*id))?;
+        }
+        Ok(())
+    }
+
+    fn conflicts_among(&self, ids: &[crate::Uuid]) -> Result<Vec<Conflict>> {
+        let mut conflicts = Vec::new();
+        for id in ids {
+            conflicts.extend(Table::conflicts_of(self, Id::from_uuid(*id))?);
+        }
+        conflicts.sort();
+        Ok(conflicts)
+    }
+
+    fn export_rows(&self) -> Result<Vec<ShardRow>> {
+        (0..Table::rows(self))
+            .map(|index| Table::export(self, Row::trusted(index)))
+            .collect()
     }
 }
 

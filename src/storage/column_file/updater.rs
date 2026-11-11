@@ -48,7 +48,7 @@ trait CommitIo: std::borrow::Borrow<File> {
 impl CommitIo for File {}
 
 #[cfg(all(test, feature = "macros"))]
-pub(crate) use updater_test::{CommitFault, fail_commit_at, fail_commit_times};
+pub(crate) use updater_test::{CommitFault, fail_commit_at};
 
 impl std::fmt::Debug for ColumnFileUpdater {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -91,14 +91,6 @@ impl std::fmt::Debug for CommitAttempt {
 }
 
 impl CommitAttempt {
-    pub(crate) fn published(file: &ColumnFile, expected: CommitToken) -> Self {
-        Self {
-            expected,
-            attempted: file.commit_token(),
-            source: file.file_source().clone(),
-        }
-    }
-
     pub fn inspect(&self) -> Result<ColumnFile> {
         self.source.file().lock()?;
         let result: Result<ColumnFile> = (|| {

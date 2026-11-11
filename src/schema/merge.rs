@@ -67,6 +67,9 @@ pub struct MergeReport {
     pub references: Vec<ReferenceConflict>,
     pub visibility: Vec<VisibilityChange>,
     pub clock_changed: bool,
+    pub unreadable: Vec<std::path::PathBuf>,
+    pub incompatible: Vec<std::path::PathBuf>,
+    pub strangers: Vec<std::path::PathBuf>,
 }
 
 impl MergeReport {

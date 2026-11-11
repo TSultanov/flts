@@ -97,6 +97,18 @@ impl<T> ChunkCell<T> {
         }
     }
 
+    fn settled(loc: ChunkLoc, resident: Option<Vec<T>>) -> Self {
+        let rows = OnceLock::new();
+        if let Some(resident) = resident {
+            let _ = rows.set(Ok(resident));
+        }
+        Self::Clean {
+            loc,
+            rows,
+            loading: Mutex::new(()),
+        }
+    }
+
     fn owned_rows(&mut self) -> &mut Vec<T> {
         if let Self::Clean { rows, .. } = self {
             let taken = rows
@@ -276,6 +288,33 @@ impl<T: Record> Arena<T> {
             len,
             source: Some(source),
         })
+    }
+
+    pub fn rebase(&mut self, locations: &[ChunkLoc], source: Provenance) -> Result<()> {
+        if locations.len() != self.chunks.len() {
+            return Err(Error::invalid(format!(
+                "a column of {} chunks cannot settle onto {} locations",
+                self.chunks.len(),
+                locations.len()
+            )));
+        }
+        for (cell, loc) in self.chunks.iter_mut().zip(locations) {
+            if cell.reusable_loc() == Some(*loc) {
+                continue;
+            }
+            let resident = cell.resident_rows().map(<[T]>::to_vec);
+            if resident
+                .as_ref()
+                .is_some_and(|rows| rows.len() != loc.rows as usize)
+            {
+                return Err(Error::invalid(
+                    "a chunk cannot settle onto a location holding different rows",
+                ));
+            }
+            *cell = Arc::new(ChunkCell::settled(*loc, resident));
+        }
+        self.source = Some(source);
+        Ok(())
     }
 
     pub fn chunk(&self, index: usize) -> Result<&[T]> {

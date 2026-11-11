@@ -126,13 +126,12 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         #(#attrs)*
         #vis struct #name {
             dbsync_state: ::dbsync::schema::StoreState,
-            dbsync_recovery: ::core::option::Option<::std::boxed::Box<::dbsync::schema::Recovery<Self>>>,
             #(#fields,)*
         }
 
         impl ::core::default::Default for #name {
             fn default() -> Self {
-                let mut store = Self { dbsync_state: ::core::default::Default::default(), dbsync_recovery: None, #(#defaults,)* };
+                let mut store = Self { dbsync_state: ::core::default::Default::default(), #(#defaults,)* };
                 <Self as ::dbsync::schema::Store>::bind_tables(&mut store);
                 store
             }
@@ -140,7 +139,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
 
         impl ::core::clone::Clone for #name {
             fn clone(&self) -> Self {
-                let mut store = Self { dbsync_state: self.dbsync_state.clone(), dbsync_recovery: self.dbsync_recovery.clone(), #(#clones,)* };
+                let mut store = Self { dbsync_state: self.dbsync_state.clone(), #(#clones,)* };
                 <Self as ::dbsync::schema::Store>::bind_tables(&mut store);
                 store
             }
@@ -154,10 +153,6 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 #(#merges)*
                 Ok(())
             }
-
-            fn recovery(&self) -> ::core::option::Option<&::dbsync::schema::Recovery<Self>> { self.dbsync_recovery.as_deref() }
-
-            fn set_recovery(&mut self, recovery: ::core::option::Option<::dbsync::schema::Recovery<Self>>) { self.dbsync_recovery = recovery.map(::std::boxed::Box::new); }
 
             fn state(&self) -> &::dbsync::schema::StoreState {
                 &self.dbsync_state
@@ -177,7 +172,6 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
 
             fn audit(&self) -> ::dbsync::Result<()> {
                 <Self as ::dbsync::schema::Store>::audit_dots(self)?;
-                <Self as ::dbsync::schema::Store>::audit_references(self)?;
                 #(#audits)*
                 ::core::result::Result::Ok(())
             }
@@ -233,7 +227,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 ::dbsync::schema::children_of(self, parent)
             }
 
-            pub fn merge_from(&mut self, path: impl AsRef<::std::path::Path>, writer_id: ::dbsync::WriterId) -> ::dbsync::Result<::dbsync::schema::MergeReport> {
+            pub fn merge_from(&mut self, path: impl ::core::convert::Into<::dbsync::schema::Layout>, writer_id: ::dbsync::WriterId) -> ::dbsync::Result<::dbsync::schema::MergeReport> {
                 <Self as ::dbsync::schema::Store>::merge_from(self, path, writer_id)
             }
 

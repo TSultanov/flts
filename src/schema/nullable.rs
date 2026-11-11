@@ -121,6 +121,11 @@ impl<T: Record + Default> Column for NullableColumn<T> {
         updater.column(&qualified(entity, field), &self.values)?;
         updater.column(&presence_name(entity, field), &self.present)
     }
+
+    fn rebase(&mut self, entity: &str, field: &str, file: &ColumnFile) -> Result<()> {
+        file.rebase(&qualified(entity, field), &mut self.values)?;
+        file.rebase(&presence_name(entity, field), &mut self.present)
+    }
 }
 
 impl<T: IndexKey + Default> Keys for NullableColumn<T> {

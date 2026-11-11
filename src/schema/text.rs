@@ -235,6 +235,11 @@ impl Column for TextColumn {
         updater.column(&qualified(entity, field), &self.blobs)?;
         updater.column(&heap_name(entity, field), &self.heap)
     }
+
+    fn rebase(&mut self, entity: &str, field: &str, file: &ColumnFile) -> Result<()> {
+        file.rebase(&qualified(entity, field), &mut self.blobs)?;
+        file.rebase(&heap_name(entity, field), &mut self.heap)
+    }
 }
 
 #[derive(Clone, Default)]
@@ -375,6 +380,11 @@ impl Column for NullableTextColumn {
         updater.column(&qualified(entity, field), &self.blobs)?;
         updater.column(&heap_name(entity, field), &self.heap)
     }
+
+    fn rebase(&mut self, entity: &str, field: &str, file: &ColumnFile) -> Result<()> {
+        file.rebase(&qualified(entity, field), &mut self.blobs)?;
+        file.rebase(&heap_name(entity, field), &mut self.heap)
+    }
 }
 
 fn decode_text(bytes: &[u8]) -> Result<&str> {
@@ -489,7 +499,7 @@ fn perhaps(value: Option<&str>, blob: Option<Blob>) -> TextKey {
 #[path = "text_test.rs"]
 mod text_test;
 
-fn heap_garbage(length: usize, blobs: Vec<Blob>) -> Result<u64> {
+pub(super) fn heap_garbage(length: usize, blobs: Vec<Blob>) -> Result<u64> {
     let mut ranges = Vec::with_capacity(blobs.len());
     for blob in blobs {
         let end = blob

@@ -89,6 +89,8 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         let ty = match &field.kind {
             Kind::Text => generated! { ::std::string::String },
             Kind::NullableText => generated! { ::core::option::Option<::std::string::String> },
+            Kind::Bytes => generated! { ::std::vec::Vec<u8> },
+            Kind::NullableBytes => generated! { ::core::option::Option<::std::vec::Vec<u8>> },
             other => other.pushed(),
         };
         generated! { pub #field_name: #ty }
@@ -126,6 +128,9 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             (Kind::Reference(_), _) => {
                 generated! { #field_name: ::dbsync::schema::RefColumn::named(#column) }
             }
+            (Kind::NullableReference(_), _) => {
+                generated! { #field_name: ::dbsync::schema::OptionalRefColumn::named(#column) }
+            }
             _ if field.sorting != Sorting::None => {
                 generated! { #field_name: ::dbsync::schema::Sorted::named(#column) }
             }
@@ -156,7 +161,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     let reaches = stored.iter().filter_map(|field| {
         let field_name = &field.name;
         match (&field.kind, field.indexing) {
-            (Kind::Reference(_), _) | (_, Indexing::Shared) => {
+            (Kind::Reference(_) | Kind::NullableReference(_), _) | (_, Indexing::Shared) => {
                 Some(generated! { self.#field_name.reach(#field_name)?; })
             }
             _ => None,
@@ -180,6 +185,15 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         })
         .collect();
 
+    let arguments_given: Vec<_> = stored
+        .iter()
+        .map(|field| {
+            let field_name = &field.name;
+            let ty = field.kind.pushed();
+            generated! { #field_name: #ty }
+        })
+        .collect();
+    let given: Vec<_> = stored.iter().map(|field| &field.name).collect();
     let arguments_again = stored.iter().map(|field| {
         let field_name = &field.name;
         let ty = field.kind.pushed();
@@ -192,7 +206,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     let reaches_again = stored.iter().filter_map(|field| {
         let field_name = &field.name;
         match (&field.kind, field.indexing) {
-            (Kind::Reference(_), _) | (_, Indexing::Shared) => {
+            (Kind::Reference(_) | Kind::NullableReference(_), _) | (_, Indexing::Shared) => {
                 Some(generated! { self.#field_name.reach(#field_name)?; })
             }
             _ => None,
@@ -326,8 +340,8 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             else { generated! { let row = <Self as ::dbsync::schema::Table>::logical_row_of(self, of)?; } };
         let cached = resolver.as_ref().map(|_| {
             let value = match &field.kind {
-                Kind::Text => generated! { ::std::borrow::Cow::Owned(current.#field_name.clone()) },
-                Kind::NullableText => generated! { current.#field_name.clone().map(::std::borrow::Cow::Owned) },
+                Kind::Text | Kind::Bytes => generated! { ::std::borrow::Cow::Owned(current.#field_name.clone()) },
+                Kind::NullableText | Kind::NullableBytes => generated! { current.#field_name.clone().map(::std::borrow::Cow::Owned) },
                 _ => generated! { current.#field_name },
             };
             generated! { if let Some(current) = self.dbsync_resolved.get(of.uuid()) { return Ok(#value); } }
@@ -398,6 +412,20 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                     self.0.at(<#name as ::dbsync::schema::Child<#parent>>::parent_at(table, row, self.0.is_historical())?)
                 }
             },
+            Kind::NullableReference(parent) => generated! {
+                pub fn #field_name(
+                    &self,
+                ) -> ::dbsync::Result<::core::option::Option<<#parent as ::dbsync::schema::Entity>::Row<#held, S>>>
+                where
+                    S: ::dbsync::schema::Holds<#parent>,
+                {
+                    let table = self.0.table();
+                    let row = self.0.row();
+                    let parent = <#name as ::dbsync::schema::Child<#parent>>::parent_at(table, row, self.0.is_historical())?;
+                    if parent.is_nil() { return ::core::result::Result::Ok(::core::option::Option::None); }
+                    self.0.at(parent).map(::core::option::Option::Some)
+                }
+            },
             kind => {
                 let read = kind.read(&held);
                 let get = field.get(&generated! { table });
@@ -435,14 +463,16 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         generated! { { let value = #read?; #encoded } }
     });
     let references = stored.iter().filter_map(|field| {
-        let Kind::Reference(parent) = &field.kind else {
-            return None;
+        let (parent, held) = match &field.kind {
+            Kind::Reference(parent) => (parent, generated! {}),
+            Kind::NullableReference(parent) => (parent, generated! { .references() }),
+            _ => return None,
         };
         let field_name = &field.name;
         let column = format!("{label}.{field_name}");
         Some(generated! { references.push(::dbsync::schema::Reference {
             column: #column, entity: <#parent as ::dbsync::schema::Entity>::NAME,
-            id: self.#field_name.get(row)?.uuid(),
+            id: self.#field_name #held.get(row)?.uuid(),
         }); })
     });
     let schema_fields = stored.iter().map(|field| {
@@ -454,21 +484,40 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             Kind::NullableScalar(ty) => generated! { ::std::format!("optional {}", stringify!(#ty)) },
             Kind::Reference(ty) => generated! { ::std::format!("reference {}", <#ty as ::dbsync::schema::Entity>::NAME) },
             Kind::Enum(ty) => generated! { ::std::format!("enum {} {:?}", <#ty as ::dbsync::schema::UnitEnum>::NAME, <#ty as ::dbsync::schema::UnitEnum>::VARIANTS) },
+            Kind::Bytes => generated! { "bytes".to_owned() },
+            Kind::NullableBytes => generated! { "optional bytes".to_owned() },
+            Kind::NullableReference(ty) => generated! { ::std::format!("optional reference {}", <#ty as ::dbsync::schema::Entity>::NAME) },
+            Kind::NullableEnum(ty) => generated! { ::std::format!("optional enum {} {:?}", <#ty as ::dbsync::schema::UnitEnum>::NAME, <#ty as ::dbsync::schema::UnitEnum>::VARIANTS) },
             Kind::Many(_) => unreachable!(),
         };
         generated! { fields.push((#field_name, #ty)); }
     });
-    let resolved_references: Vec<_> = stored.iter().filter_map(|field| {
-        let Kind::Reference(parent) = &field.kind else { return None; };
-        let field_name = &field.name;
-        let column = format!("{label}.{field_name}");
-        Some(generated! { references.push(::dbsync::schema::Reference { column: #column,
-            entity: <#parent as ::dbsync::schema::Entity>::NAME, id: value.#field_name.uuid() }); })
-    }).collect();
+    let resolved_references: Vec<_> = stored
+        .iter()
+        .filter_map(|field| {
+            let field_name = &field.name;
+            let (parent, id) = match &field.kind {
+                Kind::Reference(parent) => (parent, generated! { value.#field_name.uuid() }),
+                Kind::NullableReference(parent) => (
+                    parent,
+                    generated! { value.#field_name.map_or(::dbsync::Uuid::NIL, |id| id.uuid()) },
+                ),
+                _ => return None,
+            };
+            let column = format!("{label}.{field_name}");
+            Some(
+                generated! { references.push(::dbsync::schema::Reference { column: #column,
+                entity: <#parent as ::dbsync::schema::Entity>::NAME, id: #id }); },
+            )
+        })
+        .collect();
     let checks = stored.iter().filter_map(|field| {
-        let Kind::Enum(ty) = &field.kind else { return None; };
         let field_name = &field.name;
-        Some(generated! { <#ty as ::dbsync::schema::UnitEnum>::from_u8(::dbsync::schema::UnitEnum::to_u8(value.#field_name))?; })
+        match &field.kind {
+            Kind::Enum(ty) => Some(generated! { <#ty as ::dbsync::schema::UnitEnum>::from_u8(::dbsync::schema::UnitEnum::to_u8(value.#field_name))?; }),
+            Kind::NullableEnum(ty) => Some(generated! { if let ::core::option::Option::Some(held) = value.#field_name { <#ty as ::dbsync::schema::UnitEnum>::from_u8(::dbsync::schema::UnitEnum::to_u8(held))?; } }),
+            _ => None,
+        }
     });
     let policy_name = match &resolver {
         Some(path) => {
@@ -543,22 +592,34 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     let owners: Vec<&syn::Type> = fields
         .iter()
         .filter_map(|field| match &field.kind {
-            Kind::Reference(parent) => Some(parent),
+            Kind::Reference(parent) | Kind::NullableReference(parent) => Some(parent),
             _ => None,
         })
         .collect();
     let held_by = owners.iter();
-    let checked = owners.iter();
 
     let children = fields.iter().filter_map(|field| match &field.kind {
-        Kind::Reference(parent) => {
+        Kind::Reference(parent) | Kind::NullableReference(parent) => {
             let field_name = &field.name;
+            let optional = matches!(field.kind, Kind::NullableReference(_));
+            let (column, named, same) = match optional {
+                true => (
+                    generated! { table.#field_name.references() },
+                    generated! { table.dbsync_value(id)?.#field_name.unwrap_or(::dbsync::Id::NIL) },
+                    generated! { value.#field_name == ::core::option::Option::Some(parent) },
+                ),
+                false => (
+                    generated! { table.#field_name },
+                    generated! { table.dbsync_value(id)?.#field_name },
+                    generated! { value.#field_name == parent },
+                ),
+            };
             let position = stored.iter().find(|other| other.sorting == Sorting::Within(field_name.clone()));
             let resolved_parent = resolver.as_ref().map(|_| generated! {
                 fn parent_at(table: &#table, row: ::dbsync::schema::Row, historical: bool) -> ::dbsync::Result<::dbsync::Id<#parent>> {
-                    if historical { return table.#field_name.get(row); }
+                    if historical { return #column.get(row); }
                     let id = <#table as ::dbsync::schema::Table>::id_at(table, row)?;
-                    Ok(table.dbsync_value(id)?.#field_name)
+                    Ok(#named)
                 }
             });
             let ordered = position.map(|position| {
@@ -567,7 +628,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 let patch = resolver.as_ref().map(|_| generated! {
                     keyed.retain(|(_, row)| <#table as ::dbsync::schema::Table>::id_at(table, *row).is_ok_and(|id| table.dbsync_resolved.get(id.uuid()).is_none()));
                     for (uuid, value) in table.dbsync_resolved.entries() {
-                        if value.#field_name == parent && let Some(row) = <#table as ::dbsync::schema::Table>::live_row_of(table, ::dbsync::Id::from_uuid(uuid))? { keyed.push((#key, row)); }
+                        if #same && let Some(row) = <#table as ::dbsync::schema::Table>::live_row_of(table, ::dbsync::Id::from_uuid(uuid))? { keyed.push((#key, row)); }
                     }
                 });
                 generated! {
@@ -585,10 +646,10 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 #resolved_parent
 
                 fn child_rows(table: &#table, parent: ::dbsync::Id<#parent>) -> ::dbsync::Result<::std::vec::Vec<::dbsync::schema::Row>> {
-                    let mut rows = <#table as ::dbsync::schema::Table>::live_among(table, table.#field_name.child_rows_of(parent)?)?;
+                    let mut rows = <#table as ::dbsync::schema::Table>::live_among(table, #column.child_rows_of(parent)?)?;
                     rows.retain(|row| <#table as ::dbsync::schema::Table>::id_at(table, *row).is_ok_and(|id| table.dbsync_resolved.get(id.uuid()).is_none()));
                     for (uuid, value) in table.dbsync_resolved.entries() {
-                        if value.#field_name == parent && let Some(row) = <#table as ::dbsync::schema::Table>::live_row_of(table, ::dbsync::Id::from_uuid(uuid))? { rows.push(row); }
+                        if #same && let Some(row) = <#table as ::dbsync::schema::Table>::live_row_of(table, ::dbsync::Id::from_uuid(uuid))? { rows.push(row); }
                     }
                     <#table as ::dbsync::schema::Table>::in_creation_order(table, &mut rows)?;
                     Ok(rows)
@@ -602,7 +663,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                     fn parents(
                         table: &#table,
                     ) -> &::dbsync::schema::RefColumn<#parent, #name> {
-                        &table.#field_name
+                        &#column
                     }
                 }
             })
@@ -762,13 +823,24 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 }
             }
 
-            pub fn push(&mut self, #(#arguments,)*) -> ::dbsync::Result<::dbsync::Id<#name>> {
+            pub fn push(&mut self, #(#arguments_given,)*) -> ::dbsync::Result<::dbsync::Id<#name>> {
+                let id = ::dbsync::Id::mint();
+                self.insert(id, #(#given,)*)?;
+                ::core::result::Result::Ok(id)
+            }
+
+            pub fn insert(&mut self, id: ::dbsync::Id<#name>, #(#arguments,)*) -> ::dbsync::Result<()> {
+                if !<Self as ::dbsync::schema::Table>::versions_of(self, id)?.is_empty() {
+                    return ::core::result::Result::Err(::dbsync::Error::invalid(::std::format!(
+                        "{} already has a row with id {id}",
+                        <#name as ::dbsync::schema::Entity>::NAME
+                    )));
+                }
                 <Self as ::dbsync::schema::Table>::reserve(self)?;
                 #(#reaches)*
-                let id = <Self as ::dbsync::schema::Table>::mint(self)?;
+                <Self as ::dbsync::schema::Table>::mint_as(self, id)?;
                 #(#pushes)*
-                <Self as ::dbsync::schema::Table>::refresh_one(self, id)?;
-                ::core::result::Result::Ok(id)
+                <Self as ::dbsync::schema::Table>::refresh_one(self, id)
             }
 
             fn rewrite(&mut self, of: ::dbsync::Id<#name>, #(#arguments_again,)*)
@@ -867,9 +939,6 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 <#table as ::dbsync::schema::Table>::audit(
                     ::dbsync::schema::Holds::<#name>::table(store),
                 )?;
-                #(
-                    ::dbsync::schema::audit_reference::<S, #checked, #name>(store)?;
-                )*
                 ::core::result::Result::Ok(())
             }
         }
@@ -1070,7 +1139,7 @@ fn check_one_parent_each(fields: &[Field]) -> syn::Result<()> {
     let mut seen: Vec<(String, &syn::Ident)> = Vec::new();
 
     for field in fields {
-        let Kind::Reference(parent) = &field.kind else {
+        let (Kind::Reference(parent) | Kind::NullableReference(parent)) = &field.kind else {
             continue;
         };
         let key = generated! { #parent }.to_string();
@@ -1105,6 +1174,18 @@ fn encode_value(kind: &Kind, value: TokenStream) -> TokenStream {
             if let ::core::option::Option::Some(value) = #value { ::dbsync::schema::encode_record(&value, &mut out); }
         },
         Kind::Enum(_) => generated! { out.push(::dbsync::schema::UnitEnum::to_u8(#value)); },
+        Kind::Bytes => generated! { ::dbsync::schema::encode_bytes(&#value, &mut out); },
+        Kind::NullableBytes => generated! {
+            out.push(u8::from(#value.is_some()));
+            if let ::core::option::Option::Some(value) = #value { ::dbsync::schema::encode_bytes(&value, &mut out); }
+        },
+        Kind::NullableReference(_) => generated! {
+            ::dbsync::schema::encode_record(&#value.unwrap_or(::dbsync::Id::NIL), &mut out);
+        },
+        Kind::NullableEnum(_) => generated! {
+            out.push(u8::from(#value.is_some()));
+            if let ::core::option::Option::Some(value) = #value { out.push(::dbsync::schema::UnitEnum::to_u8(value)); }
+        },
         _ => generated! { ::dbsync::schema::encode_record(&#value, &mut out); },
     }
 }

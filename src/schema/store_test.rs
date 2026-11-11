@@ -48,7 +48,7 @@ fn a_store_verifies_the_indexes_the_file_hands_it_and_not_only_its_checksums() {
     for _ in 0..Table::rows(&library.books) {
         foreign.append(Id::mint()).unwrap();
     }
-    let file = ColumnFile::open(&path).unwrap();
+    let file = ColumnFile::open(crate::test_utils::cache(&path)).unwrap();
     let kept: Vec<String> = file
         .columns()
         .iter()
@@ -87,7 +87,7 @@ fn a_store_verifies_the_index_over_a_value_and_not_only_the_one_over_an_id() {
             .append(TextKey::of(&format!("no book is called this {row}")))
             .unwrap();
     }
-    let file = ColumnFile::open(&path).unwrap();
+    let file = ColumnFile::open(crate::test_utils::cache(&path)).unwrap();
     let kept: Vec<String> = file
         .columns()
         .iter()
@@ -116,7 +116,10 @@ fn a_store_that_was_never_opened_says_so_rather_than_guessing() {
 
     assert_eq!(detached.generation(), None);
     let err = detached.commit(this_device()).unwrap_err();
-    assert!(err.to_string().contains("not attached to a file"), "{err}");
+    assert!(
+        err.to_string().contains("not attached to a directory"),
+        "{err}"
+    );
     assert!(detached.verify().is_err());
 }
 
@@ -137,7 +140,7 @@ fn a_created_store_holds_every_column_its_schema_names() {
     let library = Library::create(&path, this_device()).unwrap();
     library.verify().unwrap();
 
-    let file = ColumnFile::open(&path).unwrap();
+    let file = ColumnFile::open(crate::test_utils::cache(&path)).unwrap();
     for spec in library.specs() {
         assert!(
             file.column_meta(&spec.name).is_some(),
@@ -223,7 +226,7 @@ fn an_index_a_commit_wrote_is_the_index_the_next_commit_reuses() {
     let alice = stock(&mut library);
     library.commit(this_device()).unwrap();
 
-    let was = ColumnFile::open(&path).unwrap();
+    let was = ColumnFile::open(crate::test_utils::cache(&path)).unwrap();
     let chapters = was.column_meta("chapter.book.links").unwrap().chunks[0];
     let books = was.column_meta("book.id.links").unwrap().chunks[0];
     drop(was);
@@ -231,7 +234,7 @@ fn an_index_a_commit_wrote_is_the_index_the_next_commit_reuses() {
     library.books.push("Kokoro", "Natsume Soseki").unwrap();
     library.commit(this_device()).unwrap();
 
-    let now = ColumnFile::open(&path).unwrap();
+    let now = ColumnFile::open(crate::test_utils::cache(&path)).unwrap();
     assert_eq!(
         now.column_meta("chapter.book.links").unwrap().chunks[0],
         chapters,
@@ -288,7 +291,7 @@ fn a_second_commit_appends_only_the_chunks_that_changed() {
     let alice = stock(&mut library);
     library.commit(this_device()).unwrap();
 
-    let settled = ColumnFile::open(&path).unwrap();
+    let settled = ColumnFile::open(crate::test_utils::cache(&path)).unwrap();
     let first_paragraph_chunk = settled.column_meta("paragraph.text").unwrap().chunks[0];
     let book_title_chunk = settled.column_meta("book.title").unwrap().chunks[0];
     drop(settled);
@@ -296,7 +299,7 @@ fn a_second_commit_appends_only_the_chunks_that_changed() {
     library.books.push("Kokoro", "Natsume Soseki").unwrap();
     library.commit(this_device()).unwrap();
 
-    let grown = ColumnFile::open(&path).unwrap();
+    let grown = ColumnFile::open(crate::test_utils::cache(&path)).unwrap();
     assert_eq!(
         grown.column_meta("paragraph.text").unwrap().chunks[0],
         first_paragraph_chunk,
@@ -323,7 +326,7 @@ fn committing_twice_in_a_row_still_reuses_the_chunks_it_already_wrote() {
     library.books.push("Kokoro", "Natsume Soseki").unwrap();
     library.commit(this_device()).unwrap();
     let after_second = len_of(&path);
-    let paragraph_chunk = ColumnFile::open(&path)
+    let paragraph_chunk = ColumnFile::open(crate::test_utils::cache(&path))
         .unwrap()
         .column_meta("paragraph.text")
         .unwrap()
@@ -336,7 +339,7 @@ fn committing_twice_in_a_row_still_reuses_the_chunks_it_already_wrote() {
     library.commit(this_device()).unwrap();
 
     assert_eq!(
-        ColumnFile::open(&path)
+        ColumnFile::open(crate::test_utils::cache(&path))
             .unwrap()
             .column_meta("paragraph.text")
             .unwrap()
@@ -402,7 +405,7 @@ fn a_column_this_schema_does_not_know_prevents_opening_for_writes() {
     let library = Library::create(&path, this_device()).unwrap();
     drop(library);
 
-    let file = ColumnFile::open(&path).unwrap();
+    let file = ColumnFile::open(crate::test_utils::cache(&path)).unwrap();
     let mut newer = Arena::<u64>::with_chunk_rows(4);
     newer.extend_from_slice(&[7, 7, 7]).unwrap();
     let mut updater = file.update(this_device()).unwrap();
@@ -415,7 +418,7 @@ fn a_column_this_schema_does_not_know_prevents_opening_for_writes() {
     let err = refused(Library::open(&path));
     assert!(err.is_unsupported(), "{err}");
 
-    let after = ColumnFile::open(&path).unwrap();
+    let after = ColumnFile::open(crate::test_utils::cache(&path)).unwrap();
     assert_eq!(
         after
             .column::<u64>("book.isbn")
@@ -454,7 +457,7 @@ fn open_or_create_reports_a_file_it_cannot_read_rather_than_claiming_it_exists()
 }
 
 fn without(path: &std::path::Path, dropped: &[&str]) {
-    let file = ColumnFile::open(path).unwrap();
+    let file = ColumnFile::open(crate::test_utils::cache(path)).unwrap();
     let kept: Vec<String> = file
         .columns()
         .iter()
@@ -510,7 +513,7 @@ fn an_index_rebuilt_on_one_open_is_written_by_the_next_commit() {
     library.commit(this_device()).unwrap();
     without(&path, &["book.title.buckets", "book.title.links"]);
     assert!(
-        ColumnFile::open(&path)
+        ColumnFile::open(crate::test_utils::cache(&path))
             .unwrap()
             .column_meta("book.title.links")
             .is_none()
@@ -520,7 +523,7 @@ fn an_index_rebuilt_on_one_open_is_written_by_the_next_commit() {
     reopened.commit(this_device()).unwrap();
 
     assert!(
-        ColumnFile::open(&path)
+        ColumnFile::open(crate::test_utils::cache(&path))
             .unwrap()
             .column_meta("book.title.links")
             .is_some(),
@@ -554,7 +557,7 @@ fn an_index_a_file_wrote_to_another_shape_is_rebuilt_rather_than_read_wrongly() 
     let alice = stock(&mut library);
     library.commit(this_device()).unwrap();
 
-    let file = ColumnFile::open(&path).unwrap();
+    let file = ColumnFile::open(crate::test_utils::cache(&path)).unwrap();
     let kept: Vec<String> = file
         .columns()
         .iter()
@@ -572,7 +575,7 @@ fn an_index_a_file_wrote_to_another_shape_is_rebuilt_rather_than_read_wrongly() 
     updater.commit().unwrap();
 
     assert_eq!(
-        ColumnFile::open(&path)
+        ColumnFile::open(crate::test_utils::cache(&path))
             .unwrap()
             .column_meta("book.title.links")
             .unwrap()
@@ -598,13 +601,13 @@ fn an_index_a_file_wrote_to_another_shape_is_written_in_this_shape_by_the_next_c
     let mut library = Library::create(&path, this_device()).unwrap();
     let alice = stock(&mut library);
     library.commit(this_device()).unwrap();
-    let wanted = ColumnFile::open(&path)
+    let wanted = ColumnFile::open(crate::test_utils::cache(&path))
         .unwrap()
         .column_meta("book.title.links")
         .unwrap()
         .elem_size;
 
-    let file = ColumnFile::open(&path).unwrap();
+    let file = ColumnFile::open(crate::test_utils::cache(&path)).unwrap();
     let mut updater = file.update(this_device()).unwrap();
     for column in file.columns() {
         if column.name != "book.title.links" {
@@ -621,7 +624,7 @@ fn an_index_a_file_wrote_to_another_shape_is_written_in_this_shape_by_the_next_c
     reopened.commit(this_device()).unwrap();
 
     assert_eq!(
-        ColumnFile::open(&path)
+        ColumnFile::open(crate::test_utils::cache(&path))
             .unwrap()
             .column_meta("book.title.links")
             .unwrap()
@@ -643,7 +646,7 @@ fn an_index_no_field_asks_for_any_more_is_opened_past_and_dropped_by_the_next_co
     stock(&mut library);
     library.commit(this_device()).unwrap();
 
-    let file = ColumnFile::open(&path).unwrap();
+    let file = ColumnFile::open(crate::test_utils::cache(&path)).unwrap();
     let mut updater = file.update(this_device()).unwrap();
     for column in file.columns() {
         updater.keep_column(&column.name).unwrap();
@@ -661,7 +664,7 @@ fn an_index_no_field_asks_for_any_more_is_opened_past_and_dropped_by_the_next_co
     );
     reopened.commit(this_device()).unwrap();
 
-    let file = ColumnFile::open(&path).unwrap();
+    let file = ColumnFile::open(crate::test_utils::cache(&path)).unwrap();
     assert!(file.column_meta("book.author.buckets").is_none());
     assert!(file.column_meta("book.author.sorted").is_none());
     Library::open(&path).unwrap().verify().unwrap();
@@ -676,7 +679,7 @@ fn a_stored_column_no_field_asks_for_is_still_refused() {
     stock(&mut library);
     library.commit(this_device()).unwrap();
 
-    let file = ColumnFile::open(&path).unwrap();
+    let file = ColumnFile::open(crate::test_utils::cache(&path)).unwrap();
     let mut updater = file.update(this_device()).unwrap();
     for column in file.columns() {
         updater.keep_column(&column.name).unwrap();

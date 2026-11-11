@@ -1355,7 +1355,6 @@ impl<S: Holds<Authorship>> AuthorshipRowMut<'_, S> {
 
 pub struct Library {
     state: StoreState,
-    recovery: Option<Box<crate::schema::Recovery<Self>>>,
     pub books: Books,
     pub chapters: Chapters,
     pub paragraphs: Paragraphs,
@@ -1368,7 +1367,6 @@ impl Default for Library {
     fn default() -> Self {
         let mut store = Self {
             state: StoreState::default(),
-            recovery: None,
             books: Books::default(),
             chapters: Chapters::default(),
             paragraphs: Paragraphs::default(),
@@ -1385,7 +1383,6 @@ impl Clone for Library {
     fn clone(&self) -> Self {
         let mut store = Self {
             state: self.state.clone(),
-            recovery: self.recovery.clone(),
             books: self.books.clone(),
             chapters: self.chapters.clone(),
             paragraphs: self.paragraphs.clone(),
@@ -1412,14 +1409,6 @@ impl Store for Library {
         self.editions.merge_rows(&theirs.editions, report)?;
         self.authors.merge_rows(&theirs.authors, report)?;
         self.authorships.merge_rows(&theirs.authorships, report)
-    }
-
-    fn recovery(&self) -> Option<&crate::schema::Recovery<Self>> {
-        self.recovery.as_deref()
-    }
-
-    fn set_recovery(&mut self, recovery: Option<crate::schema::Recovery<Self>>) {
-        self.recovery = recovery.map(Box::new);
     }
 
     fn state(&self) -> &StoreState {

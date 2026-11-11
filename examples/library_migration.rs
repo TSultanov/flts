@@ -1,8 +1,8 @@
 //! Evolve the Library example while preserving every book's identity and revision history.
 //! Run with `cargo run --example library_migration`.
 
-use dbsync::schema::{Migration, Migrations, SchemaMetadata, Store, Table};
-use dbsync::{Error, Result, Uuid, WriterId};
+use dbsync::schema::{Migration, Migrations, Store, Table};
+use dbsync::{Result, Uuid, WriterId};
 
 mod v1 {
     #[dbsync::entity]
@@ -130,7 +130,7 @@ fn migrations() -> Migrations<v2::Library> {
 struct DemoFile(std::path::PathBuf);
 impl Drop for DemoFile {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
@@ -154,13 +154,10 @@ fn main() -> Result<()> {
     let clock = old.clock().clone();
     println!(
         "Version {}: {} book revisions",
-        SchemaMetadata::inspect(path)?.version,
+        old.schema_metadata().version,
         history.len()
     );
-    assert!(matches!(
-        v2::Library::open(path),
-        Err(Error::SchemaMismatch { .. })
-    ));
+    assert!(v2::Library::open(path).is_err_and(|err| err.is_unsupported()));
 
     let (mut library, report) = migrations().migrate(path)?;
     println!(
@@ -209,7 +206,7 @@ fn main() -> Result<()> {
     assert_eq!(Table::rows(&reopened.books), 3);
     println!(
         "Version {}: new edits work; repeating migration makes no changes",
-        SchemaMetadata::inspect(path)?.version
+        reopened.schema_metadata().version
     );
     Ok(())
 }

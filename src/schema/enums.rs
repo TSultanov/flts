@@ -93,6 +93,10 @@ impl<E: UnitEnum> Column for EnumColumn<E> {
     fn offer_to(&self, entity: &str, field: &str, updater: &mut ColumnFileUpdater) -> Result<()> {
         updater.column(&qualified(entity, field), &self.codes)
     }
+
+    fn rebase(&mut self, entity: &str, field: &str, file: &ColumnFile) -> Result<()> {
+        file.rebase(&qualified(entity, field), &mut self.codes)
+    }
 }
 
 impl<E: UnitEnum> Keys for EnumColumn<E> {

@@ -1,5 +1,7 @@
 #![cfg(feature = "macros")]
 
+mod support;
+
 use dbsync::schema::{Column, Dot, Store, TextColumn};
 use dbsync::{Arena, ColumnFile, Record, Result, Uuid, WriterId};
 use std::path::{Path, PathBuf};
@@ -35,7 +37,7 @@ impl Drop for Directory {
 }
 
 fn replace<T: Record>(path: &Path, name: &str, values: &[T]) -> Result<()> {
-    let file = ColumnFile::open(path)?;
+    let file = ColumnFile::open(support::cache(path))?;
     let mut update = file.update(WriterId::from_raw(99))?;
     for column in file.columns() {
         if column.name != name {
@@ -55,8 +57,8 @@ fn an_existing_dot_with_a_different_payload_is_rejected_without_mutation() -> Re
     let mut db = Database::create(dir.path("a"), WriterId::from_raw(1))?;
     let id = db.items.push("original")?;
     db.commit(WriterId::from_raw(1))?;
-    std::fs::copy(dir.path("a"), dir.path("b"))?;
-    let file = ColumnFile::open(dir.path("b"))?;
+    support::copy_store(dir.path("a"), dir.path("b"))?;
+    let file = ColumnFile::open(support::cache(dir.path("b")))?;
     let mut update = file.update(WriterId::from_raw(99))?;
     for column in file.columns() {
         if column.name != "item.text" && column.name != "item.text.bytes" {
@@ -88,7 +90,7 @@ fn an_existing_dot_with_different_valid_ancestry_is_rejected() -> Result<()> {
     db.commit(WriterId::from_raw(1))?;
     db.items.set_text(id, "three")?;
     db.commit(WriterId::from_raw(1))?;
-    std::fs::copy(dir.path("a"), dir.path("b"))?;
+    support::copy_store(dir.path("a"), dir.path("b"))?;
     replace(&dir.path("b"), "item.version.parents", &[first, first])?;
     let other = Database::open(dir.path("b"))?;
     assert!(db.merge_snapshot(&other).unwrap_err().is_corrupt());
@@ -98,7 +100,7 @@ fn an_existing_dot_with_different_valid_ancestry_is_rejected() -> Result<()> {
 }
 
 #[test]
-fn missing_revision_parents_and_ancestry_cycles_are_corruption() -> Result<()> {
+fn a_missing_parent_is_tolerated_and_a_damaged_cache_is_rebuilt_from_the_shards() -> Result<()> {
     let dir = Directory::new();
     let mut db = Database::create(dir.path("a"), WriterId::from_raw(1))?;
     let id = db.items.push("one")?;
@@ -107,19 +109,25 @@ fn missing_revision_parents_and_ancestry_cycles_are_corruption() -> Result<()> {
     db.items.set_text(id, "two")?;
     db.commit(WriterId::from_raw(1))?;
     let second = db.at(id)?.version()?.dot();
-    std::fs::copy(dir.path("a"), dir.path("missing"))?;
+
+    support::copy_store(dir.path("a"), dir.path("missing"))?;
     replace(
         &dir.path("missing"),
         "item.version.parents",
         &[Dot::new(WriterId::from_raw(99), 1)],
     )?;
-    let err = Database::open(dir.path("missing")).err().unwrap();
-    assert!(err.is_corrupt(), "{err}");
-    std::fs::copy(dir.path("a"), dir.path("cycle"))?;
+    let orphaned = Database::open(dir.path("missing"))?;
+    assert_eq!(orphaned.items.text(id)?, "two");
+    assert!(orphaned.conflicts()?.is_empty());
+
+    support::copy_store(dir.path("a"), dir.path("cycle"))?;
     replace(&dir.path("cycle"), "item.version.parent_ends", &[1u64, 2])?;
     replace(&dir.path("cycle"), "item.version.parents", &[second, first])?;
-    let err = Database::open(dir.path("cycle")).err().unwrap();
-    assert!(err.is_corrupt(), "{err}");
+    let rebuilt = Database::open(dir.path("cycle"))?;
+    rebuilt.verify()?;
+    assert_eq!(rebuilt.items.text(id)?, "two");
+    assert_eq!(rebuilt.history(id)?.len(), 2);
+    assert_eq!(rebuilt.at(id)?.version()?.dot(), second);
     Ok(())
 }
 
@@ -218,7 +226,7 @@ fn identical_concurrent_payloads_are_retained_without_a_value_conflict() -> Resu
     let mut a = Database::create(dir.path("a"), WriterId::from_raw(1))?;
     let id = a.items.push("base")?;
     a.commit(WriterId::from_raw(1))?;
-    std::fs::copy(dir.path("a"), dir.path("b"))?;
+    support::copy_store(dir.path("a"), dir.path("b"))?;
     let mut b = Database::open(dir.path("b"))?;
     a.items.set_text(id, "same")?;
     b.items.set_text(id, "same")?;
@@ -236,7 +244,7 @@ fn identical_concurrent_payloads_are_retained_without_a_value_conflict() -> Resu
 fn recording_ancestry_does_not_increment_the_unpublished_format_version() -> Result<()> {
     let dir = Directory::new();
     Database::create(dir.path("db"), WriterId::from_raw(1))?;
-    let bytes = std::fs::read(dir.path("db"))?;
+    let bytes = std::fs::read(support::cache(dir.path("db")))?;
     assert_eq!(u16::from_le_bytes(bytes[4..6].try_into().unwrap()), 1);
     Ok(())
 }
@@ -292,30 +300,37 @@ mod references {
 }
 
 #[test]
-fn references_to_ids_that_never_existed_are_corruption() -> Result<()> {
+fn a_reference_to_a_row_nobody_delivered_hides_the_child_until_it_arrives() -> Result<()> {
     let dir = Directory::new();
     let mut db = references::Database::create(dir.path("db"), WriterId::from_raw(1))?;
-    db.items.push(dbsync::Id::NIL)?;
+    let child = db.items.push(dbsync::Id::NIL)?;
     db.commit(WriterId::from_raw(1))?;
     replace(
         &dir.path("db"),
         "item.parent",
         &[dbsync::Id::<references::Item>::mint()],
     )?;
-    let err = references::Database::open(dir.path("db")).err().unwrap();
-    assert!(err.is_corrupt(), "{err}");
+    let opened = references::Database::open(dir.path("db"))?;
+    assert!(matches!(
+        opened.status(child)?,
+        dbsync::schema::RowStatus::Suppressed(_)
+    ));
+    assert_eq!(opened.dangling()?.len(), 1);
     Ok(())
 }
 
 #[test]
-fn duplicate_dots_for_different_entities_are_rejected() -> Result<()> {
+fn a_cache_holding_one_dot_twice_is_discarded_for_what_the_shards_say() -> Result<()> {
     let dir = Directory::new();
     let mut db = Database::create(dir.path("db"), WriterId::from_raw(1))?;
     let first = db.items.push("first")?;
-    db.items.push("second")?;
+    let second = db.items.push("second")?;
     db.commit(WriterId::from_raw(1))?;
     let version = db.at(first)?.version()?;
     replace(&dir.path("db"), "item.version", &[version, version])?;
-    assert!(Database::open(dir.path("db")).err().unwrap().is_corrupt());
+    let rebuilt = Database::open(dir.path("db"))?;
+    rebuilt.verify()?;
+    assert_eq!(rebuilt.items.text(first)?, "first");
+    assert_eq!(rebuilt.items.text(second)?, "second");
     Ok(())
 }

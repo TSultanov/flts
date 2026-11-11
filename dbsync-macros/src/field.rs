@@ -38,6 +38,10 @@ pub enum Kind {
     Scalar(Type),
     NullableScalar(Type),
     Enum(Type),
+    Bytes,
+    NullableBytes,
+    NullableReference(Type),
+    NullableEnum(Type),
 }
 
 pub struct Field {
@@ -167,9 +171,17 @@ fn asked_of(field: &syn::Field, kind: &Kind) -> syn::Result<(Indexing, Sorting, 
         return Ok((Indexing::None, sorting, crossed));
     };
     match kind {
-        Kind::Reference(_) => Err(syn::Error::new(
+        Kind::Reference(_) | Kind::NullableReference(_) => Err(syn::Error::new(
             attr.span(),
             "a parent is indexed already, which is how a Many finds its children",
+        )),
+        Kind::Bytes | Kind::NullableBytes => Err(syn::Error::new(
+            attr.span(),
+            "bytes are opaque to the schema, so a bytes field cannot be indexed",
+        )),
+        Kind::NullableEnum(_) => Err(syn::Error::new(
+            attr.span(),
+            "an optional enum is not indexed yet; index the enum without Option",
         )),
         Kind::Many(_) => Err(syn::Error::new(
             attr.span(),
@@ -222,7 +234,13 @@ fn sortable(attr: &syn::Attribute, sorting: &Sorting, kind: &Kind) -> syn::Resul
         (_, Kind::Text | Kind::NullableText) => {
             refused("text is not sorted yet; sort a number or an enum")
         }
-        (_, Kind::Reference(_)) => refused(
+        (_, Kind::Bytes | Kind::NullableBytes) => {
+            refused("bytes are opaque to the schema, so a bytes field cannot be sorted")
+        }
+        (_, Kind::NullableEnum(_)) => {
+            refused("an optional enum is not sorted yet; sort the enum without Option")
+        }
+        (_, Kind::Reference(_) | Kind::NullableReference(_)) => refused(
             "a parent is grouped by its own index; order the children beneath it with \
              #[order(..)] on a position field",
         ),
@@ -288,6 +306,9 @@ impl Kind {
         if let Some(child) = wrapped("Many", ty) {
             return Ok(Kind::Many(child.clone()));
         }
+        if is_bytes(ty) {
+            return Ok(Kind::Bytes);
+        }
         if is_scalar(ty) {
             return Ok(Kind::Scalar(ty.clone()));
         }
@@ -300,14 +321,14 @@ impl Kind {
         }
         unsized_text(inner)?;
         renamed(inner)?;
+        if is_bytes(inner) {
+            return Ok(Kind::NullableBytes);
+        }
         if is_scalar(inner) {
             return Ok(Kind::NullableScalar(inner.clone()));
         }
-        if wrapped("One", inner).is_some() {
-            return Err(syn::Error::new(
-                whole.span(),
-                "an optional parent is not supported yet; declare it One<..> for now",
-            ));
+        if let Some(parent) = wrapped("One", inner) {
+            return Ok(Kind::NullableReference(parent.clone()));
         }
         if wrapped("Many", inner).is_some() {
             return Err(syn::Error::new(
@@ -315,10 +336,7 @@ impl Kind {
                 "Many is already the absence of children when there are none, so it cannot be optional",
             ));
         }
-        Err(syn::Error::new(
-            whole.span(),
-            "an optional enum is not supported yet; declare it without Option for now",
-        ))
+        Ok(Kind::NullableEnum(inner.clone()))
     }
 
     pub fn column(
@@ -345,6 +363,12 @@ impl Kind {
             Kind::Scalar(ty) => generated! { ::dbsync::Arena<#ty> },
             Kind::NullableScalar(ty) => generated! { ::dbsync::schema::NullableColumn<#ty> },
             Kind::Enum(ty) => generated! { ::dbsync::schema::EnumColumn<#ty> },
+            Kind::Bytes => generated! { ::dbsync::schema::BytesColumn },
+            Kind::NullableBytes => generated! { ::dbsync::schema::NullableBytesColumn },
+            Kind::NullableReference(parent) => {
+                generated! { ::dbsync::schema::OptionalRefColumn<#parent, #child> }
+            }
+            Kind::NullableEnum(ty) => generated! { ::dbsync::schema::OptionalEnumColumn<#ty> },
             Kind::Many(_) => unreachable!("a Many field has no column"),
         }
     }
@@ -357,6 +381,12 @@ impl Kind {
             Kind::Scalar(ty) => generated! { #ty },
             Kind::NullableScalar(ty) => generated! { ::core::option::Option<#ty> },
             Kind::Enum(ty) => generated! { #ty },
+            Kind::Bytes => generated! { &[u8] },
+            Kind::NullableBytes => generated! { ::core::option::Option<&[u8]> },
+            Kind::NullableReference(parent) => {
+                generated! { ::core::option::Option<::dbsync::Id<#parent>> }
+            }
+            Kind::NullableEnum(ty) => generated! { ::core::option::Option<#ty> },
             Kind::Many(_) => unreachable!("a Many field is never pushed"),
         }
     }
@@ -371,6 +401,14 @@ impl Kind {
             Kind::Scalar(ty) => generated! { #ty },
             Kind::NullableScalar(ty) => generated! { ::core::option::Option<#ty> },
             Kind::Enum(ty) => generated! { #ty },
+            Kind::Bytes => generated! { ::std::borrow::Cow<#held, [u8]> },
+            Kind::NullableBytes => {
+                generated! { ::core::option::Option<::std::borrow::Cow<#held, [u8]>> }
+            }
+            Kind::NullableReference(parent) => {
+                generated! { ::core::option::Option<::dbsync::Id<#parent>> }
+            }
+            Kind::NullableEnum(ty) => generated! { ::core::option::Option<#ty> },
             Kind::Many(_) => unreachable!("a Many field is not read from a column"),
         }
     }
@@ -388,8 +426,8 @@ impl Kind {
 
     pub fn owned(&self) -> TokenStream {
         match self {
-            Kind::Text => generated! { .map(|held| held.into_owned()) },
-            Kind::NullableText => {
+            Kind::Text | Kind::Bytes => generated! { .map(|held| held.into_owned()) },
+            Kind::NullableText | Kind::NullableBytes => {
                 generated! { .map(|held| held.map(|text| text.into_owned())) }
             }
             _ => generated! {},
@@ -398,8 +436,8 @@ impl Kind {
 
     pub fn lent(&self, name: &syn::Ident) -> TokenStream {
         match self {
-            Kind::Text => generated! { &#name },
-            Kind::NullableText => generated! { #name.as_deref() },
+            Kind::Text | Kind::Bytes => generated! { &#name },
+            Kind::NullableText | Kind::NullableBytes => generated! { #name.as_deref() },
             _ => generated! { #name },
         }
     }
@@ -437,6 +475,10 @@ fn renamed(ty: &Type) -> syn::Result<()> {
         ));
     }
     Ok(())
+}
+
+fn is_bytes(ty: &Type) -> bool {
+    wrapped("Vec", ty).is_some_and(|inner| named(inner).is_some_and(|name| name == "u8"))
 }
 
 fn is_scalar(ty: &Type) -> bool {

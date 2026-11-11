@@ -349,6 +349,11 @@ impl<K: IndexKey> HashIndex<K> {
         updater.column(&link_name(entity, field), &self.links)
     }
 
+    pub fn rebase(&mut self, entity: &str, field: &str, file: &ColumnFile) -> Result<()> {
+        file.rebase(&bucket_name(entity, field), &mut self.buckets)?;
+        file.rebase(&link_name(entity, field), &mut self.links)
+    }
+
     fn walk(&self, key: K, mut visit: impl FnMut(usize, K) -> Result<bool>) -> Result<()> {
         if self.buckets.is_empty() {
             return Ok(());

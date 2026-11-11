@@ -24,6 +24,10 @@ impl<T: ?Sized> Id<T> {
         Self::from_uuid(Uuid::now_v7())
     }
 
+    pub fn derived(namespace: Uuid, name: &[u8]) -> Self {
+        Self::from_uuid(Uuid::derived(namespace, name))
+    }
+
     pub const fn from_uuid(uuid: Uuid) -> Self {
         Self {
             uuid,

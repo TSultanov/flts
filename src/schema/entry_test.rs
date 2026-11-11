@@ -1102,10 +1102,10 @@ fn held_after_a_cold_crossing(program: &[Credit], from: usize) -> Vec<Residency>
     let dir = TempDir::new("crossing");
     let path = dir.join("library.dbs");
 
-    let mut written = Library::create(&path, WriterId::ANONYMOUS).unwrap();
+    let mut written = Library::create(&path, WriterId::from_raw(1)).unwrap();
     let (held, _) = credited(&mut written, program);
     let crossing = held.books[from];
-    written.commit(WriterId::ANONYMOUS).unwrap();
+    written.commit(WriterId::from_raw(1)).unwrap();
     drop(written);
 
     let reopened = Library::open(&path).unwrap();

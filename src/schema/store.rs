@@ -1,30 +1,171 @@
-//! The container that owns the file: create, open, read, commit, snapshot.
+//! The container that owns a directory: every writer's shards, and the cache built from them.
 
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use super::clock::VersionVector;
 use super::column::{ColumnKind, ColumnSpec, Residency};
 use super::diff::SchemaDiff;
+use super::shard::{self, ShardFile, ShardRow};
 use super::table::AnyTable;
 use super::version::Dot;
-use super::{Conflict, MergeReport, RowStatus, View, VisibilityChange};
+use super::{Conflict, MergeReport, Reference, RowStatus, View, VisibilityChange};
 use crate::error::{Error, Result};
-use crate::storage::{Arena, ColumnFile, ColumnFileUpdater, ColumnFileWriter, WriterId};
-use std::collections::{BTreeMap, HashMap};
+use crate::record::Record;
+use crate::storage::{
+    Arena, ColumnFile, ColumnFileUpdater, ColumnFileWriter, CommitToken, WriterId, fnv1a,
+};
 
 pub const CLOCK: &str = "dbsync.clock";
 pub const SCHEMA: &str = "dbsync.schema";
+pub const SHARDS: &str = "dbsync.shards";
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Layout {
+    pub shared: PathBuf,
+    pub local: PathBuf,
+}
+
+impl Layout {
+    pub fn within(dir: impl AsRef<Path>) -> Self {
+        Self {
+            shared: dir.as_ref().to_owned(),
+            local: dir.as_ref().join("local"),
+        }
+    }
+
+    pub fn split(shared: impl AsRef<Path>, local: impl AsRef<Path>) -> Self {
+        Self {
+            shared: shared.as_ref().to_owned(),
+            local: local.as_ref().to_owned(),
+        }
+    }
+
+    pub fn cache(&self, schema_version: u64) -> PathBuf {
+        self.local.join(format!("cache.v{schema_version}.dbs"))
+    }
+
+    pub fn shard(&self, entity: &str, writer: WriterId, schema_version: u64) -> PathBuf {
+        shard::shard_path(&self.shared, entity, writer, schema_version)
+    }
+
+    fn lease(&self) -> Result<Lease> {
+        std::fs::create_dir_all(&self.local)?;
+        let file = File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.local.join("lock"))?;
+        file.lock()?;
+        Ok(Lease(file))
+    }
+}
+
+impl<P: AsRef<Path>> From<P> for Layout {
+    fn from(dir: P) -> Self {
+        Self::within(dir)
+    }
+}
+
+struct Lease(File);
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ShardMark {
+    pub entity: u64,
+    pub writer: WriterId,
+    pub schema_version: u64,
+    pub file_uuid: u128,
+    pub generation: u64,
+    pub content_id: u64,
+    pub rows: u64,
+}
+
+impl ShardMark {
+    fn of(shard: &ShardFile, token: CommitToken, rows: usize) -> Self {
+        Self {
+            entity: fnv1a(shard.entity.as_bytes()),
+            writer: shard.writer,
+            schema_version: shard.schema_version,
+            file_uuid: token.file_uuid,
+            generation: token.generation,
+            content_id: token.content_id,
+            rows: rows as u64,
+        }
+    }
+
+    fn names(&self, shard: &ShardFile) -> bool {
+        self.entity == fnv1a(shard.entity.as_bytes())
+            && self.writer == shard.writer
+            && self.schema_version == shard.schema_version
+    }
+
+    fn is_at(&self, token: CommitToken) -> bool {
+        self.file_uuid == token.file_uuid
+            && self.generation == token.generation
+            && self.content_id == token.content_id
+    }
+}
+
+impl Record for ShardMark {
+    const SIZE: usize = 6 * size_of::<u64>() + size_of::<u128>();
+
+    fn encode(&self, out: &mut [u8]) {
+        out[..8].copy_from_slice(&self.entity.to_le_bytes());
+        out[8..16].copy_from_slice(&self.writer.raw().to_le_bytes());
+        out[16..24].copy_from_slice(&self.schema_version.to_le_bytes());
+        out[24..40].copy_from_slice(&self.file_uuid.to_le_bytes());
+        out[40..48].copy_from_slice(&self.generation.to_le_bytes());
+        out[48..56].copy_from_slice(&self.content_id.to_le_bytes());
+        out[56..64].copy_from_slice(&self.rows.to_le_bytes());
+    }
+
+    fn decode(src: &[u8]) -> Self {
+        let word = |at: usize| u64::from_le_bytes(src[at..at + 8].try_into().expect("8 bytes"));
+        Self {
+            entity: word(0),
+            writer: WriterId::from_raw(word(8)),
+            schema_version: word(16),
+            file_uuid: u128::from_le_bytes(src[24..40].try_into().expect("16 bytes")),
+            generation: word(40),
+            content_id: word(48),
+            rows: word(56),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Batch {
+    pub table: usize,
+    pub rows: Vec<ShardRow>,
+    pub mark: Option<ShardMark>,
+}
+
+#[derive(Clone, Debug)]
+struct Outgoing {
+    table: usize,
+    writer: WriterId,
+    rows: Vec<ShardRow>,
+}
 
 #[derive(Default)]
 pub struct StoreState {
     file: Option<ColumnFile>,
-    path: Option<PathBuf>,
+    layout: Option<Layout>,
     unknown: Vec<String>,
     dropped: Vec<String>,
     clock: VersionVector,
     dots: Arena<Dot>,
     schema_bytes: Arena<u8>,
+    marks: Vec<ShardMark>,
+    held_marks: Arena<ShardMark>,
+    outbox: Vec<Outgoing>,
     view: View,
     compaction_policy: crate::CompactionPolicy,
     maintenance: Option<crate::MaintenanceOutcome>,
@@ -34,12 +175,15 @@ impl Clone for StoreState {
     fn clone(&self) -> Self {
         Self {
             file: self.file.clone(),
-            path: self.path.clone(),
+            layout: self.layout.clone(),
             unknown: self.unknown.clone(),
             dropped: self.dropped.clone(),
             clock: self.clock.clone(),
             dots: self.dots.clone(),
             schema_bytes: self.schema_bytes.clone(),
+            marks: self.marks.clone(),
+            held_marks: self.held_marks.clone(),
+            outbox: self.outbox.clone(),
             view: self.view.fork(),
             compaction_policy: self.compaction_policy,
             maintenance: self.maintenance.clone(),
@@ -47,27 +191,48 @@ impl Clone for StoreState {
     }
 }
 
-#[derive(Clone)]
-pub struct Recovery<S> {
-    pub pending: S,
-    pub prepared: S,
-    pub attempt: Option<crate::storage::CommitAttempt>,
-    pub known: std::collections::BTreeSet<Dot>,
-}
-
 impl StoreState {
-    pub(crate) fn attach(&mut self, file: ColumnFile, path: PathBuf) {
-        self.file = Some(file);
-        self.path = Some(path);
-    }
-
-    fn attached(&self) -> Result<(&ColumnFile, &Path)> {
-        match (&self.file, &self.path) {
-            (Some(file), Some(path)) => Ok((file, path.as_path())),
+    fn attached(&self) -> Result<(&ColumnFile, &Layout)> {
+        match (&self.file, &self.layout) {
+            (Some(file), Some(layout)) => Ok((file, layout)),
             _ => Err(Error::invalid(
-                "this store is not attached to a file; call create or open first",
+                "this store is not attached to a directory; call create or open first",
             )),
         }
+    }
+
+    fn mark(&mut self, mark: ShardMark) {
+        match self.marks.iter_mut().find(|held| {
+            held.entity == mark.entity
+                && held.writer == mark.writer
+                && held.schema_version == mark.schema_version
+        }) {
+            Some(held) => *held = mark,
+            None => self.marks.push(mark),
+        }
+    }
+
+    pub(crate) fn detached_at(&mut self, layout: Layout, marks: &[ShardMark]) {
+        self.layout = Some(layout);
+        self.marks = marks.to_vec();
+    }
+
+    fn placed(&self) -> Result<&Layout> {
+        self.layout.as_ref().ok_or_else(|| {
+            Error::invalid("this store is not attached to a directory; call create or open first")
+        })
+    }
+
+    fn marks_are_held(&self) -> Result<bool> {
+        if self.held_marks.len() != self.marks.len() {
+            return Ok(false);
+        }
+        for (row, mark) in self.marks.iter().enumerate() {
+            if self.held_marks.row(row)? != mark {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 }
 
@@ -85,9 +250,6 @@ pub trait Store: Default + Clone + Sized {
     }
 
     fn merge_rows_from(&mut self, theirs: &Self, report: &mut MergeReport) -> Result<()>;
-
-    fn recovery(&self) -> Option<&Recovery<Self>>;
-    fn set_recovery(&mut self, recovery: Option<Recovery<Self>>);
 
     fn bind_tables(&mut self) {
         let view = self.state().view.clone();
@@ -136,27 +298,24 @@ pub trait Store: Default + Clone + Sized {
         Ok(())
     }
 
-    fn audit_references(&self) -> Result<()> {
-        let mut identities = std::collections::BTreeSet::new();
+    fn dangling(&self) -> Result<Vec<Reference>> {
+        let mut identities = BTreeSet::new();
         for table in self.tables() {
             for id in table.identities()? {
                 identities.insert((table.entity(), id));
             }
         }
+        let mut dangling = Vec::new();
         for table in self.tables() {
             for parent in table.all_references()? {
                 if !parent.id.is_nil() && !identities.contains(&(parent.entity, parent.id)) {
-                    return Err(Error::corrupt(
-                        "reference",
-                        format!(
-                            "{} names missing {} {}",
-                            parent.column, parent.entity, parent.id
-                        ),
-                    ));
+                    dangling.push(parent);
                 }
             }
         }
-        Ok(())
+        dangling.sort();
+        dangling.dedup();
+        Ok(dangling)
     }
 
     fn conflicts(&self) -> Result<Vec<Conflict>> {
@@ -217,6 +376,14 @@ pub trait Store: Default + Clone + Sized {
         &self.state().clock
     }
 
+    fn layout(&self) -> Option<&Layout> {
+        self.state().layout.as_ref()
+    }
+
+    fn shard_marks(&self) -> &[ShardMark] {
+        &self.state().marks
+    }
+
     fn tick(&mut self, writer: WriterId) -> Result<Dot> {
         self.check_mutable()?;
         self.state_mut().clock.tick(writer)
@@ -233,7 +400,9 @@ pub trait Store: Default + Clone + Sized {
         for table in self.tables() {
             if !table.published() {
                 return Err(Error::invalid(format!(
-                    "{} holds a write nobody has published; commit before merging,                      because a write with no name of its own cannot be told apart                      from another copy's",
+                    "{} holds a write nobody has published; commit before merging, \
+                     because a write with no name of its own cannot be told apart \
+                     from another copy's",
                     table.entity()
                 )));
             }
@@ -248,6 +417,12 @@ pub trait Store: Default + Clone + Sized {
             .flat_map(|table| table.column_specs())
             .collect();
         self.clock().describe(CLOCK, &mut out);
+        out.push(ColumnSpec {
+            name: SHARDS.to_owned(),
+            elem_size: <ShardMark as Record>::SIZE,
+            kind: ColumnKind::Clock,
+            counts_rows: false,
+        });
         out.push(ColumnSpec {
             name: SCHEMA.to_owned(),
             elem_size: 1,
@@ -264,6 +439,11 @@ pub trait Store: Default + Clone + Sized {
             .flat_map(|table| table.column_residency())
             .collect();
         self.clock().residency(CLOCK, &mut out);
+        out.push(Residency {
+            name: SHARDS.to_owned(),
+            resident: 1,
+            chunks: 1,
+        });
         out.push(Residency {
             name: SCHEMA.to_owned(),
             resident: 1,
@@ -302,9 +482,12 @@ pub trait Store: Default + Clone + Sized {
 
     fn compact(&mut self) -> Result<crate::CompactionReport> {
         self.check_published()?;
-        let (file, path) = self.state().attached()?;
+        let (file, layout) = self.state().attached()?;
         let file = file.clone();
-        let path = path.to_owned();
+        let layout = layout.clone();
+        if !self.state().outbox.is_empty() {
+            return Err(Error::invalid("commit pending changes before compaction"));
+        }
         let mut disk = Self::default();
         disk.read(&file)?;
         if self.clock() != disk.clock() {
@@ -330,7 +513,7 @@ pub trait Store: Default + Clone + Sized {
             },
         )?;
         attached.state_mut().file = Some(published);
-        attached.state_mut().path = Some(path);
+        attached.state_mut().layout = Some(layout);
         attached.state_mut().compaction_policy = self.compaction_policy();
         attached.state_mut().maintenance = Some(crate::MaintenanceOutcome::Compacted(report));
         *self = attached;
@@ -411,14 +594,21 @@ pub trait Store: Default + Clone + Sized {
         let dots: Arena<Dot> = file.column(CLOCK)?;
         let mut clock = VersionVector::default();
         clock.read_from(&dots)?;
-        self.state_mut().clock = clock;
-        self.state_mut().dots = dots;
-        self.state_mut().dropped = diff.to_drop();
-        self.state_mut().unknown = diff.unknown;
-        self.state_mut().schema_bytes = schema;
+        let held_marks: Arena<ShardMark> = file.column(SHARDS)?;
+        let marks = held_marks
+            .iter()
+            .map(|mark| mark.copied())
+            .collect::<Result<Vec<_>>>()?;
+        let state = self.state_mut();
+        state.clock = clock;
+        state.dots = dots;
+        state.marks = marks;
+        state.held_marks = held_marks;
+        state.dropped = diff.to_drop();
+        state.unknown = diff.unknown;
+        state.schema_bytes = schema;
         self.audit_dots()?;
         self.check_published()?;
-        self.audit_references()?;
         self.refresh()
     }
 
@@ -431,6 +621,13 @@ pub trait Store: Default + Clone + Sized {
             table.offer_columns(updater)?;
         }
         self.clock().offer_to(CLOCK, &self.state().dots, updater)?;
+        if self.state().marks_are_held()? {
+            updater.column(SHARDS, &self.state().held_marks)?;
+        } else {
+            let mut marks = Arena::new();
+            marks.extend_from_slice(&self.state().marks)?;
+            updater.column(SHARDS, &marks)?;
+        }
         let mut schema = Arena::new();
         schema.extend_from_slice(&self.schema_metadata().encode()?)?;
         updater.column(
@@ -444,209 +641,438 @@ pub trait Store: Default + Clone + Sized {
         Ok(())
     }
 
-    fn create(path: impl AsRef<Path>, writer_id: WriterId) -> Result<Self> {
+    fn create(layout: impl Into<Layout>, writer_id: WriterId) -> Result<Self> {
         Self::default().schema_metadata().validate()?;
-        let path = path.as_ref();
-        let handle = File::options()
-            .write(true)
-            .read(true)
-            .create_new(true)
-            .open(path)?;
-        ColumnFileWriter::new(handle, writer_id)?.finish()?;
-
-        let mut store = Self::default();
-        store.state_mut().file = Some(ColumnFile::open(path)?);
-        store.state_mut().path = Some(path.to_owned());
-        store.commit(writer_id)?;
+        let layout = layout.into();
+        std::fs::create_dir_all(&layout.shared)?;
+        let _lease = layout.lease()?;
+        let cache = layout.cache(Self::SCHEMA_VERSION);
+        if cache.exists() {
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("{} already holds a store", layout.shared.display()),
+            )));
+        }
+        let mut store = Self::with_fresh_cache(layout)?;
+        let mut report = MergeReport::default();
+        let batches = store.collect(|_| true, &mut report)?;
+        store.apply(batches, &mut report)?;
+        store.write_cache(writer_id)?;
         Ok(store)
     }
 
-    fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let path = path.as_ref();
-        let file = ColumnFile::open(path)?;
-
-        let mut store = Self::default();
-        store.read(&file)?;
-        store.state_mut().file = Some(file);
-        store.state_mut().path = Some(path.to_owned());
+    fn open(layout: impl Into<Layout>) -> Result<Self> {
+        let store = Self::open_beside_older(layout)?;
+        let (_, placed) = store.state().attached()?;
+        for entity in shard::entities(&placed.shared, &placed.local)? {
+            for found in shard::discover(&placed.shared, &entity)?.0 {
+                if found.schema_version < Self::SCHEMA_VERSION
+                    && !store.state().marks.iter().any(|mark| mark.names(&found))
+                {
+                    return Err(Error::unsupported(format!(
+                        "{} was written by schema version {}; open this store through its                          migrations so those rows are converted",
+                        found.path.display(),
+                        found.schema_version
+                    )));
+                }
+            }
+        }
         Ok(store)
     }
 
-    fn open_or_create(path: impl AsRef<Path>, writer_id: WriterId) -> Result<Self> {
-        match Self::open(path.as_ref()) {
+    fn open_beside_older(layout: impl Into<Layout>) -> Result<Self> {
+        let layout = layout.into();
+        if !layout.shared.is_dir() {
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("{} is not a store directory", layout.shared.display()),
+            )));
+        }
+        let _lease = layout.lease()?;
+        let cache = layout.cache(Self::SCHEMA_VERSION);
+        let held = ColumnFile::open(&cache).and_then(|file| {
+            let mut store = Self::default();
+            store.read(&file)?;
+            store.state_mut().file = Some(file);
+            store.state_mut().layout = Some(layout.clone());
+            Ok(store)
+        });
+        let (mut store, rebuilt) = match held {
+            Ok(store) => (store, false),
+            Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {
+                (Self::with_fresh_cache(layout)?, true)
+            }
+            Err(err) if err.is_corrupt() => (Self::with_fresh_cache(layout)?, true),
+            Err(err) => return Err(err),
+        };
+        let mut report = MergeReport::default();
+        let batches = store.collect(|_| true, &mut report)?;
+        let moved = batches.iter().any(|batch| batch.mark.is_some());
+        store.apply(batches, &mut report)?;
+        if rebuilt || moved {
+            store.write_cache(WriterId::ANONYMOUS)?;
+        }
+        Ok(store)
+    }
+
+    fn with_fresh_cache(layout: Layout) -> Result<Self> {
+        std::fs::create_dir_all(&layout.local)?;
+        let cache = layout.cache(Self::SCHEMA_VERSION);
+        ColumnFileWriter::create(&cache, WriterId::ANONYMOUS)?.finish()?;
+        let mut store = Self::default();
+        store.state_mut().file = Some(ColumnFile::open(&cache)?);
+        store.state_mut().layout = Some(layout);
+        Ok(store)
+    }
+
+    fn open_or_create(layout: impl Into<Layout>, writer_id: WriterId) -> Result<Self> {
+        let layout = layout.into();
+        match Self::open(layout.clone()) {
             Err(Error::Io(io)) if io.kind() == std::io::ErrorKind::NotFound => {
-                Self::create(path, writer_id)
+                Self::create(layout, writer_id)
             }
             other => other,
         }
     }
 
+    fn collect(
+        &self,
+        wanted: impl Fn(WriterId) -> bool,
+        report: &mut MergeReport,
+    ) -> Result<Vec<Batch>> {
+        let layout = self.state().placed()?;
+        let schema = self.schema_metadata().encode()?;
+        let mut batches = Vec::new();
+        for (index, table) in self.tables().into_iter().enumerate() {
+            let (shards, strangers) = shard::discover(&layout.shared, table.entity())?;
+            report.strangers.extend(strangers);
+            for found in shards {
+                if !wanted(found.writer) {
+                    continue;
+                }
+                let held = self
+                    .state()
+                    .marks
+                    .iter()
+                    .find(|mark| mark.names(&found))
+                    .copied();
+                let token = match shard::token_of(&found.path) {
+                    Ok(token) => token,
+                    Err(Error::Io(_) | Error::Corrupt { .. }) => {
+                        report.unreadable.push(found.path);
+                        continue;
+                    }
+                    Err(err) => return Err(err),
+                };
+                if held.is_some_and(|mark| mark.is_at(token)) {
+                    continue;
+                }
+                if found.schema_version != Self::SCHEMA_VERSION {
+                    report.incompatible.push(found.path);
+                    continue;
+                }
+                let from = match held {
+                    Some(mark) if mark.file_uuid == token.file_uuid => mark.rows as usize,
+                    _ => 0,
+                };
+                let read = match shard::read(&found.path, from) {
+                    Ok(read) => read,
+                    Err(Error::Io(_) | Error::Corrupt { .. }) => {
+                        report.unreadable.push(found.path);
+                        continue;
+                    }
+                    Err(err) => return Err(err),
+                };
+                if read.rows > 0 && read.schema != schema {
+                    report.incompatible.push(found.path);
+                    continue;
+                }
+                batches.push(Batch {
+                    table: index,
+                    mark: Some(ShardMark::of(&found, read.token, read.rows)),
+                    rows: read.read,
+                });
+            }
+        }
+        let known: Vec<&str> = self.tables().iter().map(|table| table.entity()).collect();
+        for entity in shard::entities(&layout.shared, &layout.local)? {
+            if known.contains(&entity.as_str()) {
+                continue;
+            }
+            for found in shard::discover(&layout.shared, &entity)?.0 {
+                if !self.state().marks.iter().any(|mark| mark.names(&found)) {
+                    report.incompatible.push(found.path);
+                }
+            }
+        }
+        report.strangers.sort();
+        report.unreadable.sort();
+        report.incompatible.sort();
+        Ok(batches)
+    }
+
+    fn apply(&mut self, batches: Vec<Batch>, report: &mut MergeReport) -> Result<()> {
+        if batches.iter().all(|batch| batch.rows.is_empty()) {
+            for mark in batches.into_iter().filter_map(|batch| batch.mark) {
+                self.state_mut().mark(mark);
+            }
+            return Ok(());
+        }
+        let kept = self.snapshot();
+        let said = self.adopt(batches, report);
+        if said.is_err() {
+            *self = kept;
+        }
+        said
+    }
+
+    fn adopt(&mut self, batches: Vec<Batch>, report: &mut MergeReport) -> Result<()> {
+        let mut named: BTreeMap<usize, BTreeSet<crate::Uuid>> = BTreeMap::new();
+        for batch in &batches {
+            named
+                .entry(batch.table)
+                .or_default()
+                .extend(batch.rows.iter().map(|row| row.id));
+        }
+        let named: BTreeMap<usize, Vec<crate::Uuid>> = named
+            .into_iter()
+            .map(|(table, ids)| (table, ids.into_iter().collect()))
+            .collect();
+
+        let mut before = self.state().view.conflicts();
+        for (table, ids) in &named {
+            before.extend(self.tables()[*table].conflicts_among(ids)?);
+        }
+        let statuses = self.state().view.statuses();
+        let clock = self.clock().clone();
+
+        let mut order: Vec<(Dot, usize, usize)> = Vec::new();
+        for (at, batch) in batches.iter().enumerate() {
+            for (row, held) in batch.rows.iter().enumerate() {
+                order.push((held.version.dot(), at, row));
+            }
+        }
+        order.sort_unstable();
+        for (dot, at, row) in order {
+            let batch = &batches[at];
+            let held = std::slice::from_ref(&batch.rows[row]);
+            let taken = self.tables_mut()[batch.table].adopt_rows(held)?;
+            match taken.is_empty() {
+                true => report.known += 1,
+                false => report.taken += 1,
+            }
+            self.state_mut().clock.observe(dot);
+        }
+        for (table, ids) in &named {
+            self.tables()[*table].refresh_rows(ids)?;
+        }
+        self.audit_dots()?;
+        for mark in batches.into_iter().filter_map(|batch| batch.mark) {
+            self.state_mut().mark(mark);
+        }
+
+        let mut after = self.state().view.conflicts();
+        for (table, ids) in &named {
+            after.extend(self.tables()[*table].conflicts_among(ids)?);
+        }
+        after.sort();
+        after.dedup();
+        for conflict in after {
+            if before.contains(&conflict) {
+                continue;
+            }
+            match conflict {
+                Conflict::Concurrent(c) => report.concurrent.push(c),
+                Conflict::Combined(c) => report.combined.push(c),
+                Conflict::Reference(r) => report.references.push(r),
+            }
+        }
+        for ((entity, id), after) in self.state().view.statuses() {
+            let before = statuses.get(&(entity, id)).cloned();
+            if before.as_ref() != Some(&after) {
+                report.visibility.push(VisibilityChange {
+                    entity,
+                    id,
+                    before,
+                    after,
+                });
+            }
+        }
+        report.clock_changed = *self.clock() != clock;
+        Ok(())
+    }
+
+    fn adopt_converted(
+        &mut self,
+        batches: Vec<Batch>,
+        marks: Vec<ShardMark>,
+        told: &VersionVector,
+        report: &mut MergeReport,
+    ) -> Result<()> {
+        let _lease = self.state().attached()?.1.lease()?;
+        self.apply(batches, report)?;
+        if !self.clock().covers(told) {
+            self.state_mut().clock.absorb(told);
+            report.clock_changed = true;
+        }
+        for mark in marks {
+            self.state_mut().mark(mark);
+        }
+        self.write_cache(WriterId::ANONYMOUS)
+    }
+
+    fn write_cache(&mut self, writer_id: WriterId) -> Result<()> {
+        for table in self.tables_mut() {
+            table.fold_indexes(false)?;
+        }
+        let (held, layout) = self.state().attached()?;
+        let cache = layout.cache(Self::SCHEMA_VERSION);
+        let current = match ColumnFile::read_commit_token(&cache) {
+            Ok(found) if found == held.commit_token() => held.clone(),
+            _ => ColumnFile::open(&cache)?,
+        };
+        let mut updater = current.update(writer_id)?;
+        self.offer_to(&mut updater)?;
+        let published = updater.commit_file()?;
+        for table in self.tables_mut() {
+            table.rebase_columns(&published)?;
+        }
+        let state = self.state_mut();
+        state.dots = published.column(CLOCK)?;
+        state.held_marks = published.column(SHARDS)?;
+        state.schema_bytes = published.column(SCHEMA)?;
+        state.dropped.clear();
+        state.file = Some(published);
+        Ok(())
+    }
+
+    fn flush_outbox(&mut self) -> Result<()> {
+        let layout = self.state().attached()?.1.clone();
+        let schema = self.schema_metadata().encode()?;
+        while let Some(next) = self.state().outbox.first().cloned() {
+            let (entity, fields) = {
+                let tables = self.tables();
+                let table = tables[next.table];
+                (table.entity(), table.field_names())
+            };
+            let found = ShardFile {
+                entity: entity.to_owned(),
+                writer: next.writer,
+                schema_version: Self::SCHEMA_VERSION,
+                path: layout.shard(entity, next.writer, Self::SCHEMA_VERSION),
+            };
+            let (token, rows) =
+                shard::append(&found.path, next.writer, &schema, &fields, &next.rows)?;
+            let state = self.state_mut();
+            state.mark(ShardMark::of(&found, token, rows));
+            state.outbox.remove(0);
+        }
+        Ok(())
+    }
+
     fn commit(&mut self, writer_id: WriterId) -> Result<u64> {
-        self.synchronize(None, writer_id)?;
+        self.check_mutable()?;
+        if writer_id.is_anonymous() {
+            return Err(Error::invalid(
+                "a commit names the writer whose shards it appends to",
+            ));
+        }
+        let _lease = self.state().attached()?.1.lease()?;
+        self.commit_held(writer_id)
+    }
+
+    fn commit_held(&mut self, writer_id: WriterId) -> Result<u64> {
+        let mut report = MergeReport::default();
+        let own = self.collect(|writer| writer == writer_id, &mut report)?;
+
+        let mut clock = self.clock().clone();
+        for row in own.iter().flat_map(|batch| &batch.rows) {
+            clock.observe(row.version.dot());
+        }
+        let mut outgoing = Vec::new();
+        for (table, held) in self.tables_mut().into_iter().enumerate() {
+            let rows = held.publish_rows(&mut clock, writer_id)?;
+            if !rows.is_empty() {
+                outgoing.push(Outgoing {
+                    table,
+                    writer: writer_id,
+                    rows,
+                });
+            }
+        }
+        let state = self.state_mut();
+        state.clock = clock;
+        state.outbox.extend(outgoing);
+        self.apply(own, &mut report)?;
+        self.flush_outbox()?;
+        self.write_cache(writer_id)?;
+        self.auto_compact();
         self.generation()
             .ok_or_else(|| Error::invalid("commit did not attach a generation"))
     }
 
-    fn merge_from(&mut self, source: impl AsRef<Path>, writer_id: WriterId) -> Result<MergeReport> {
-        self.synchronize(Some(source.as_ref()), writer_id)
+    fn refresh_peers(&mut self) -> Result<MergeReport> {
+        self.check_published()?;
+        let _lease = self.state().attached()?.1.lease()?;
+        self.refresh_held()
     }
 
-    fn synchronize(&mut self, source: Option<&Path>, writer_id: WriterId) -> Result<MergeReport> {
-        if self.recovery().is_none() {
-            self.check_mutable()?;
+    fn refresh_held(&mut self) -> Result<MergeReport> {
+        let mut report = MergeReport::default();
+        let batches = self.collect(|_| true, &mut report)?;
+        let moved = batches.iter().any(|batch| batch.mark.is_some());
+        self.apply(batches, &mut report)?;
+        if moved {
+            self.write_cache(WriterId::ANONYMOUS)?;
         }
-        let path = self.state().attached()?.1.to_owned();
-        let peer = source.map(Self::open).transpose()?;
-        let mut before = self.snapshot();
-        before.set_recovery(None);
-        let (mut pending, mut carried, mut attempt, mut retained) = match self.recovery() {
-            Some(recovery) => (
-                recovery.pending.snapshot(),
-                recovery.prepared.snapshot(),
-                recovery.attempt.clone(),
-                true,
-            ),
-            None => (self.snapshot(), self.snapshot(), None, false),
-        };
-        pending.set_recovery(None);
-        carried.set_recovery(None);
-        pending.state().view.block(false);
-        carried.state().view.block(false);
-        let bootstrap = self
-            .state()
-            .file
-            .as_ref()
-            .is_some_and(|file| file.columns().is_empty());
-        let mut known = self.recovery().map(|recovery| recovery.known.clone());
-        for number in 1..=3 {
-            let result = (|| -> Result<(Self, MergeReport)> {
-                let file = ColumnFile::open(&path)?;
-                let mut latest = Self::default();
-                latest.state_mut().path = Some(path.clone());
-                if !(bootstrap
-                    && file.columns().is_empty()
-                    && file.commit_token().file_uuid
-                        == self.state().attached()?.0.commit_token().file_uuid)
-                {
-                    latest.read(&file)?;
+        Ok(report)
+    }
+
+    fn merge_from(
+        &mut self,
+        source: impl Into<Layout>,
+        writer_id: WriterId,
+    ) -> Result<MergeReport> {
+        self.check_mutable()?;
+        if writer_id.is_anonymous() {
+            return Err(Error::invalid(
+                "a merge names the writer whose shards stay its own",
+            ));
+        }
+        let source = source.into();
+        let layout = self.state().attached()?.1.clone();
+        let _lease = layout.lease()?;
+        self.commit_held(writer_id)?;
+        for entity in shard::entities(&source.shared, &source.local)? {
+            let (theirs, _) = shard::discover(&source.shared, &entity)?;
+            for found in theirs {
+                if found.writer == writer_id {
+                    continue;
                 }
-                latest.state_mut().file = Some(file.clone());
-                let expected = file.commit_token();
-                let mut updater = file.update(writer_id)?;
-                let mut clock = carried.clock().clone();
-                clock.absorb(latest.clock());
-                if let Some(peer) = &peer {
-                    clock.absorb(peer.clock());
-                }
-                for table in carried.tables() {
-                    table.rows_agree()?;
-                }
-                for table in carried.tables_mut() {
-                    table.stamp_unstamped(&mut clock, writer_id)?;
-                }
-                carried.state_mut().clock = clock;
-                if known.is_none() {
-                    let mut dots = std::collections::BTreeSet::new();
-                    for table in carried.tables() {
-                        for (dot, _) in table.revision_owners()? {
-                            dots.insert(dot);
-                        }
-                    }
-                    known = Some(dots);
-                }
-                let mut report = MergeReport::default();
-                latest.merge_rows_from(&carried, &mut report)?;
-                latest.absorb(carried.clock())?;
-                if let Some(peer) = &peer {
-                    latest.merge_rows_from(peer, &mut report)?;
-                    latest.absorb(peer.clock())?;
-                }
-                latest.refresh()?;
-                for table in latest.tables_mut() {
-                    table.fold_indexes(false)?;
-                }
-                latest.audit()?;
-                report.taken = 0;
-                for table in latest.tables() {
-                    for (dot, _) in table.revision_owners()? {
-                        if !known.as_ref().expect("prepared local dots").contains(&dot) {
-                            report.taken += 1;
-                        }
-                    }
-                }
-                carried = latest.snapshot();
-                retained = true;
-                latest.offer_to(&mut updater)?;
-                let published = match updater.commit_file() {
-                    Ok(file) => file,
-                    Err(Error::CommitUncertain {
-                        attempt: uncertain,
-                        source,
-                    }) => {
-                        attempt = Some((*uncertain).clone());
-                        return Err(Error::CommitUncertain {
-                            attempt: uncertain,
-                            source,
-                        });
-                    }
-                    Err(err) => return Err(err),
+                let held = layout.shard(&found.entity, found.writer, found.schema_version);
+                let Ok(told) = shard::token_of(&found.path) else {
+                    continue;
                 };
-                attempt = Some(crate::storage::CommitAttempt::published(
-                    &published, expected,
-                ));
-                let found = ColumnFile::read_commit_token(&path)?;
-                if found != published.commit_token() {
-                    return Err(Error::Conflict {
-                        expected: published.commit_token(),
-                        found,
-                    });
-                }
-                let mut attached = Self::default();
-                attached.read(&published)?;
-                attached.state_mut().file = Some(published);
-                attached.state_mut().path = Some(path.clone());
-                let report = attached.finish_report(&before, report)?;
-                Ok((attached, report))
-            })();
-            match result {
-                Ok((mut attached, report)) => {
-                    attached.state_mut().compaction_policy = self.compaction_policy();
-                    attached.state_mut().maintenance = self.state().maintenance.clone();
-                    *self = attached;
-                    self.auto_compact();
-                    return Ok(report);
-                }
-                Err(err) => {
-                    let retryable = matches!(
-                        err,
-                        Error::Io(_) | Error::Conflict { .. } | Error::CommitUncertain { .. }
-                    );
-                    if retryable && number < 3 {
-                        continue;
+                let newer = match shard::token_of(&held) {
+                    Ok(ours) => {
+                        ours.file_uuid == told.file_uuid && ours.generation < told.generation
                     }
-                    if retained {
-                        pending.state().view.block(true);
-                        carried.state().view.block(true);
-                        self.set_recovery(Some(Recovery {
-                            pending,
-                            prepared: carried,
-                            attempt,
-                            known: known.unwrap_or_default(),
-                        }));
-                        self.state().view.block(true);
-                    }
-                    return Err(if retryable {
-                        Error::RetryExhausted {
-                            attempts: number,
-                            source: Box::new(err),
-                        }
-                    } else {
-                        err
-                    });
+                    Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => true,
+                    Err(_) => true,
+                };
+                if !newer {
+                    continue;
                 }
+                let folder = held
+                    .parent()
+                    .ok_or_else(|| Error::invalid("a shard has a table directory"))?;
+                std::fs::create_dir_all(folder)?;
+                let arriving = folder.join(format!(".dbsync-{}.tmp", crate::Uuid::now_v7()));
+                std::fs::copy(&found.path, &arriving)?;
+                std::fs::rename(&arriving, &held)?;
             }
         }
-        unreachable!("three publication attempts return a result")
+        self.refresh_held()
     }
 }
 

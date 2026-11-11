@@ -1,4 +1,6 @@
 #![cfg(feature = "macros")]
+mod support;
+
 use dbsync::schema::{Store, Table};
 use dbsync::{CompactionPolicy, MaintenanceOutcome, Result, Uuid, WriterId};
 
@@ -62,7 +64,7 @@ fn compaction_preserves_history_indexes_resolvers_and_bidirectional_merge() -> R
         0,
     )?;
     local.commit(writer(1))?;
-    std::fs::copy(&path, dir.file("peer"))?;
+    support::copy_store(&path, dir.file("peer"))?;
     let mut peer = Database::open(dir.file("peer"))?;
     for n in 1..15 {
         local.notes.set_number(id, n)?;

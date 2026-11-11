@@ -115,12 +115,11 @@ fn the_column_a_field_asks_for_names_both_ends_of_a_reference() {
 }
 
 #[test]
-fn an_optional_parent_is_refused_with_a_way_forward() {
-    let err = refused(quote!(Option<One<Book>>));
-    assert!(
-        err.contains("optional parent is not supported yet"),
-        "{err}"
-    );
+fn an_optional_parent_remembers_the_parent_it_may_point_at() {
+    let Kind::NullableReference(parent) = kind(quote!(Option<One<Book>>)) else {
+        panic!("Option<One<Book>> is an optional reference");
+    };
+    assert_eq!(quote!(#parent).to_string(), "Book");
 }
 
 #[test]
@@ -143,9 +142,32 @@ fn an_optional_many_is_refused_because_it_is_already_possibly_empty() {
 }
 
 #[test]
-fn an_optional_enum_is_refused_with_a_way_forward() {
-    let err = refused(quote!(Option<Shelf>));
-    assert!(err.contains("optional enum is not supported yet"), "{err}");
+fn an_optional_enum_remembers_the_enum_it_may_hold() {
+    let Kind::NullableEnum(held) = kind(quote!(Option<Shelf>)) else {
+        panic!("Option<Shelf> is an optional enum");
+    };
+    assert_eq!(quote!(#held).to_string(), "Shelf");
+}
+
+#[test]
+fn a_byte_vector_becomes_a_bytes_column_and_nothing_else_does() {
+    assert!(matches!(kind(quote!(Vec<u8>)), Kind::Bytes));
+    assert!(matches!(kind(quote!(Option<Vec<u8>>)), Kind::NullableBytes));
+    assert!(matches!(kind(quote!(Vec<u16>)), Kind::Enum(_)));
+}
+
+#[test]
+fn opaque_and_optional_kinds_refuse_an_index_or_an_order() {
+    let indexed = refused_field(quote!(#[index] cover: Vec<u8>));
+    assert!(indexed.contains("cannot be indexed"), "{indexed}");
+    let sorted = refused_field(quote!(#[sorted] cover: Option<Vec<u8>>));
+    assert!(sorted.contains("cannot be sorted"), "{sorted}");
+    let parent = refused_field(quote!(#[index] series: Option<One<Series>>));
+    assert!(parent.contains("indexed already"), "{parent}");
+    let binding = refused_field(quote!(#[index] binding: Option<Binding>));
+    assert!(binding.contains("not indexed yet"), "{binding}");
+    let ordered = refused_field(quote!(#[sorted] binding: Option<Binding>));
+    assert!(ordered.contains("not sorted yet"), "{ordered}");
 }
 
 fn field_of(field: TokenStream) -> Field {

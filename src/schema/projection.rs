@@ -172,6 +172,10 @@ pub fn encode_record<T: crate::Record>(value: &T, out: &mut Vec<u8>) {
 }
 
 pub fn encode_text(value: &str, out: &mut Vec<u8>) {
+    encode_bytes(value.as_bytes(), out);
+}
+
+pub fn encode_bytes(value: &[u8], out: &mut Vec<u8>) {
     encode_record(&(value.len() as u64), out);
-    out.extend_from_slice(value.as_bytes());
+    out.extend_from_slice(value);
 }

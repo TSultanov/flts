@@ -1,5 +1,7 @@
 #![cfg(feature = "macros")]
 
+mod support;
+
 use dbsync::schema::{Parent, RowStatus, Store, Table};
 use dbsync::{Id, Result, Uuid, WriterId};
 use proptest::prelude::*;
@@ -98,7 +100,7 @@ fn exercise(operations: &[(usize, usize, u8, usize, u32)]) -> Result<()> {
         first.at(child)?.version()?.dot(),
     ];
     for actor in 1..3 {
-        std::fs::copy(dir.path(0), dir.path(actor))?;
+        support::copy_store(dir.path(0), dir.path(actor))?;
     }
     let mut replicas = [
         first,

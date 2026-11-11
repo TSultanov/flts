@@ -51,6 +51,10 @@ impl VersionVector {
         dot.counter() <= self.counter_of(dot.writer())
     }
 
+    pub fn covers(&self, other: &Self) -> bool {
+        other.seen.iter().all(|dot| self.dominates(*dot))
+    }
+
     pub fn observe(&mut self, dot: Dot) {
         match self.at(dot.writer()) {
             Ok(at) if self.seen[at].counter() < dot.counter() => self.seen[at] = dot,

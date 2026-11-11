@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use dbsync::schema::{Holds, Store, Table};
+use dbsync::schema::{Holds, Layout, Store, Table};
 use dbsync::{ColumnFile, Result, WriterId};
 
 #[dbsync::entity]
@@ -55,6 +55,32 @@ struct Library {
     credits: Set<Credit>,
     chapters: Set<Chapter>,
     paragraphs: Set<Paragraph>,
+}
+
+fn copy_store(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_store(&entry.path(), &target)?;
+        } else if entry.file_name() != "lock" {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
+
+fn bytes_in(dir: &std::path::Path) -> std::io::Result<u64> {
+    let mut bytes = 0;
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        bytes += match entry.file_type()?.is_dir() {
+            true => bytes_in(&entry.path())?,
+            false => entry.metadata()?.len(),
+        };
+    }
+    Ok(bytes)
 }
 
 fn this_device() -> WriterId {
@@ -144,7 +170,7 @@ fn resident(library: &Library, column: &str) -> usize {
 fn main() -> Result<()> {
     let path: PathBuf =
         std::env::temp_dir().join(format!("dbsync-library-{}.dbs", std::process::id()));
-    println!("a library in one column file");
+    println!("a library in one directory: a shard per table per writer, and a local cache");
     println!("  {}", path.display());
 
     let declared = Library::default();
@@ -181,7 +207,7 @@ fn main() -> Result<()> {
         Table::rows(&library.credits),
         Table::rows(&library.chapters),
         Table::rows(&library.paragraphs),
-        std::fs::metadata(&path)?.len()
+        bytes_in(&path)?
     );
     println!("     generation 1 was the empty file these columns were committed into");
 
@@ -292,8 +318,9 @@ fn main() -> Result<()> {
     assert_eq!(Table::rows(&again.credits), 7);
     again.verify()?;
 
-    let before = std::fs::metadata(&path)?.len();
-    let untouched = ColumnFile::open(&path)?
+    let before = bytes_in(&path)?;
+    let cache = Layout::within(&path).cache(1);
+    let untouched = ColumnFile::open(&cache)?
         .column_meta("paragraph.text")
         .expect("paragraph.text is in the file")
         .chunks[0];
@@ -307,7 +334,7 @@ fn main() -> Result<()> {
     assert_eq!(library.at(alice_of)?.authors()?.count(), 2);
 
     assert_eq!(
-        ColumnFile::open(&path)?
+        ColumnFile::open(&cache)?
             .column_meta("paragraph.text")
             .expect("paragraph.text is still in the file")
             .chunks[0],
@@ -318,7 +345,7 @@ fn main() -> Result<()> {
     );
     println!(
         "     the file grew by {} bytes; paragraph.text was never touched and did not move",
-        std::fs::metadata(&path)?.len() - before
+        bytes_in(&path)? - before
     );
     println!("     these columns hold thousands of rows per chunk, so at this size each is");
     println!("     one chunk; a real library appends to the tail of the column that grew");
@@ -353,18 +380,16 @@ fn main() -> Result<()> {
     println!("\n10. committing the older handle automatically incorporated the newer generation");
     library = stale;
 
-    let token = ColumnFile::read_commit_token(&path)?;
-    assert_eq!(token.generation, reconciled);
-    assert!(!token.is_echo_of(this_device(), generation));
+    assert_eq!(library.generation(), Some(reconciled));
     println!(
-        "     a peer polls read_commit_token for that: generation {}, not an echo of its own write",
-        token.generation
+        "     every writer appends only to shards named for it, so two handles never \
+         overwrite each other: the older one read what it had missed and added its own"
     );
 
     let annexe = WriterId::from_device_id("the annexe");
     let elsewhere: PathBuf =
         std::env::temp_dir().join(format!("dbsync-annexe-{}.dbs", std::process::id()));
-    std::fs::copy(&path, &elsewhere)?;
+    copy_store(&path, &elsewhere)?;
     let mut theirs = Library::open(&elsewhere)?;
 
     let calvino = theirs.authors.push("Italo Calvino")?;
@@ -460,7 +485,7 @@ fn main() -> Result<()> {
         library.all::<Book>().count()
     );
 
-    std::fs::remove_file(&path)?;
-    std::fs::remove_file(&elsewhere)?;
+    std::fs::remove_dir_all(&path)?;
+    std::fs::remove_dir_all(&elsewhere)?;
     Ok(())
 }

@@ -11,6 +11,7 @@ pub enum ColumnKind {
     Identity,
     Scalar,
     Text,
+    Bytes,
     Heap,
     Presence,
     Version,
@@ -105,6 +106,8 @@ pub trait Column {
     fn read_from(&mut self, entity: &str, field: &str, file: &ColumnFile) -> Result<()>;
 
     fn offer_to(&self, entity: &str, field: &str, updater: &mut ColumnFileUpdater) -> Result<()>;
+
+    fn rebase(&mut self, entity: &str, field: &str, file: &ColumnFile) -> Result<()>;
 }
 
 impl<T: Record> Column for Arena<T> {
@@ -163,6 +166,10 @@ impl<T: Record> Column for Arena<T> {
 
     fn offer_to(&self, entity: &str, field: &str, updater: &mut ColumnFileUpdater) -> Result<()> {
         updater.column(&qualified(entity, field), self)
+    }
+
+    fn rebase(&mut self, entity: &str, field: &str, file: &ColumnFile) -> Result<()> {
+        file.rebase(&qualified(entity, field), self)
     }
 }
 

@@ -171,6 +171,22 @@ impl ColumnFile {
         Ok(arena)
     }
 
+    pub fn rebase<T: Record>(&self, name: &str, arena: &mut Arena<T>) -> Result<()> {
+        match self.column_meta(name) {
+            Some(meta) if meta.elem_size as usize == T::SIZE && meta.rows == arena.len() as u64 => {
+                arena.rebase(
+                    &meta.chunks,
+                    Provenance::new(self.source.clone(), self.slot.generation),
+                )
+            }
+            Some(_) => Err(Error::invalid(format!(
+                "column {name:?} in the file is not the column held in memory"
+            ))),
+            None if arena.is_empty() => Ok(()),
+            None => Err(Error::invalid(format!("no column named {name:?}"))),
+        }
+    }
+
     pub fn verify(&self) -> Result<()> {
         self.source.read_chunk(self.directory_loc()?)?;
         for meta in &self.columns {

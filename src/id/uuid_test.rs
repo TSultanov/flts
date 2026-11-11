@@ -204,3 +204,25 @@ proptest! {
         prop_assert!(next.1 <= SEQUENCE_MASK);
     }
 }
+
+#[test]
+fn a_derived_uuid_is_the_version_5_every_other_library_computes() {
+    let dns: Uuid = "6ba7b810-9dad-11d1-80b4-00c04fd430c8".parse().unwrap();
+    let derived = Uuid::derived(dns, b"python.org");
+
+    assert_eq!(derived.to_string(), "886313e1-3b8a-5372-9b90-0c9aee199e5d");
+    assert_eq!(derived.version(), 5);
+    assert_eq!(derived.variant(), 0b10);
+    assert_eq!(derived, Uuid::derived(dns, b"python.org"));
+    assert_ne!(derived, Uuid::derived(dns, b"python.com"));
+}
+
+#[test]
+fn bytes_are_the_order_the_text_is_written_in() {
+    let uuid: Uuid = "00112233-4455-6677-8899-aabbccddeeff".parse().unwrap();
+    let bytes = uuid.to_bytes();
+
+    assert_eq!(bytes[0], 0x00);
+    assert_eq!(bytes[15], 0xff);
+    assert_eq!(Uuid::from_bytes(bytes), uuid);
+}

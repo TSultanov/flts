@@ -160,6 +160,7 @@ fn the_declared_schema_names_every_column_the_file_will_hold() {
             "credit.editor.buckets",
             "credit.editor.links",
             "dbsync.clock",
+            "dbsync.shards",
             "dbsync.schema",
         ]
     );
@@ -220,14 +221,14 @@ fn a_declared_library_appends_only_what_changed() -> Result<()> {
     let _ = stock(&mut library)?;
     library.commit(this_device())?;
 
-    let settled = crate::storage::ColumnFile::open(&path)?;
+    let settled = crate::storage::ColumnFile::open(crate::test_utils::cache(&path))?;
     let untouched = settled.column_meta("paragraph.text").unwrap().chunks[0];
     drop(settled);
 
     library.books.push("Il nome della rosa", "Umberto Eco")?;
     library.commit(this_device())?;
 
-    let grown = crate::storage::ColumnFile::open(&path)?;
+    let grown = crate::storage::ColumnFile::open(crate::test_utils::cache(&path))?;
     assert_eq!(
         grown.column_meta("paragraph.text").unwrap().chunks[0],
         untouched,
@@ -674,7 +675,7 @@ fn a_library_lives_its_whole_life_through_the_rows_it_hands_out() -> Result<()> 
     assert!(reconciled > published);
     assert_eq!(stale.at(alice)?.title()?, "Alice in Wonderland");
     assert_eq!(stale.all::<Book>().count(), 4);
-    let token = crate::storage::ColumnFile::read_commit_token(&path)?;
+    let token = crate::storage::ColumnFile::read_commit_token(crate::test_utils::cache(&path))?;
     assert_eq!(token.generation, reconciled);
     assert!(!token.is_echo_of(this_device(), shelved));
     Ok(())
@@ -1008,7 +1009,7 @@ fn shelving(books: &[(String, String)], title: &str) -> Vec<usize> {
 }
 
 fn without(path: &std::path::Path, dropped: &[&str]) {
-    let file = ColumnFile::open(path).unwrap();
+    let file = ColumnFile::open(crate::test_utils::cache(path)).unwrap();
     let kept: Vec<String> = file
         .columns()
         .iter()
@@ -1090,7 +1091,7 @@ proptest! {
             .map(|(name, _)| *name)
             .collect();
         without(&path, &dropped);
-        let after = ColumnFile::open(&path).unwrap();
+        let after = ColumnFile::open(crate::test_utils::cache(&path)).unwrap();
         for name in &dropped {
             prop_assert!(
                 after.column_meta(name).is_none(),
@@ -1276,7 +1277,7 @@ fn titles(library: &Library) -> Vec<String> {
 }
 
 fn copied(dir: &TempDir, from: &str, to: &str) -> Result<Library> {
-    std::fs::copy(dir.join(from), dir.join(to))?;
+    crate::test_utils::copy_store(dir.join(from), dir.join(to))?;
     Library::open(dir.join(to))
 }
 

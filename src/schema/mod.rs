@@ -1,5 +1,6 @@
 //! Typed tables over named columns: the runtime a generated schema wires itself into.
 
+mod bytes;
 mod clock;
 mod column;
 mod diff;
@@ -14,15 +15,18 @@ mod metadata;
 mod migration;
 mod names;
 mod nullable;
+mod optional;
 mod projection;
 mod reference;
 mod resolved;
+mod shard;
 mod sorted;
 mod store;
 mod table;
 mod text;
 mod version;
 
+pub use bytes::{BytesColumn, NullableBytesColumn};
 pub use clock::VersionVector;
 pub use column::{Column, ColumnKind, ColumnSpec, Field, FieldMut, Residency, Row};
 pub use diff::SchemaDiff;
@@ -45,11 +49,13 @@ pub use names::{
     bucket_name, heap_name, is_derived_name, link_name, presence_name, qualified, sorted_name,
 };
 pub use nullable::{Maybe, NullableColumn};
-pub use projection::{Candidate, Reference, View, encode_record, encode_text};
+pub use optional::{OptionalEnumColumn, OptionalRefColumn};
+pub use projection::{Candidate, Reference, View, encode_bytes, encode_record, encode_text};
 pub use reference::RefColumn;
 pub use resolved::{MergeCandidate, MergeInput, Resolved, RevisionAncestry};
+pub use shard::{ShardFile, ShardRow};
 pub use sorted::{Prefix, SortEntry, SortKey, Sorted, SortedRun, key_bounds};
-pub use store::{CLOCK, Recovery, SCHEMA, Store, StoreState};
+pub use store::{Batch, CLOCK, Layout, SCHEMA, SHARDS, ShardMark, Store, StoreState};
 pub use table::{AnyTable, Table};
 pub use text::{NullableTextColumn, TextColumn, TextKey};
 pub use version::{Dot, Parent, Version, VersionColumn};
@@ -63,7 +69,12 @@ mod generated_test;
 mod declared_test;
 
 #[cfg(all(test, feature = "macros"))]
-mod recovery_test;
+#[path = "kinds_test.rs"]
+mod kinds_test;
+
+#[cfg(all(test, feature = "macros"))]
+#[path = "sync_test.rs"]
+mod sync_test;
 
 #[cfg(all(test, feature = "macros"))]
 #[path = "ordered_test.rs"]

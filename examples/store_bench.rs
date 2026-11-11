@@ -14,6 +14,32 @@ struct Database {
     notes: Set<Note>,
 }
 
+fn copy_store(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_store(&entry.path(), &target)?;
+        } else if entry.file_name() != "lock" {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
+
+fn bytes_in(dir: &std::path::Path) -> std::io::Result<u64> {
+    let mut bytes = 0;
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        bytes += match entry.file_type()?.is_dir() {
+            true => bytes_in(&entry.path())?,
+            false => entry.metadata()?.len(),
+        };
+    }
+    Ok(bytes)
+}
+
 fn main() -> Result<()> {
     println!(
         "workload,commits,initial_bytes,added_bytes,update_us,read_us,compacted_bytes,compact_us"
@@ -32,10 +58,10 @@ fn main() -> Result<()> {
             ids.push(db.notes.push(&format!("note {n}"), &"x".repeat(512), 0)?);
         }
         db.commit(writer)?;
-        std::fs::copy(&path, &peer_path)?;
+        copy_store(&path, &peer_path)?;
         let mut peer = Database::open(&peer_path)?;
         peer.set_compaction_policy(CompactionPolicy::Disabled)?;
-        let initial = std::fs::metadata(&path)?.len();
+        let initial = bytes_in(&path)?;
         let rounds = if workload == "bulk" || workload == "merge" {
             8
         } else {
@@ -66,7 +92,7 @@ fn main() -> Result<()> {
             db.commit(writer)?;
         }
         let update_us = start.elapsed().as_micros();
-        let size = std::fs::metadata(&path)?.len();
+        let size = bytes_in(&path)?;
         let start = Instant::now();
         Database::open(&path)?.verify()?;
         let read_us = start.elapsed().as_micros();
@@ -77,8 +103,8 @@ fn main() -> Result<()> {
             "{workload},{rounds},{initial},{},{update_us},{read_us},{compacted_bytes},{compact_us}",
             size - initial
         );
-        std::fs::remove_file(path)?;
-        std::fs::remove_file(peer_path)?;
+        std::fs::remove_dir_all(path)?;
+        std::fs::remove_dir_all(peer_path)?;
     }
     Ok(())
 }

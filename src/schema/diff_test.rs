@@ -30,7 +30,7 @@ fn a_file_written_by_this_schema_diffs_clean() {
     let dir = TempDir::new("clean");
     let (path, library) = a_library(&dir);
 
-    let diff = library.diff(&ColumnFile::open(&path).unwrap());
+    let diff = library.diff(&ColumnFile::open(crate::test_utils::cache(&path)).unwrap());
 
     assert!(diff.is_clean(), "{diff:?}");
     assert!(diff.to_error().is_none());
@@ -40,7 +40,7 @@ fn a_file_written_by_this_schema_diffs_clean() {
 fn every_missing_column_is_named_in_one_message_not_one_at_a_time() {
     let dir = TempDir::new("missing");
     let (path, library) = a_library(&dir);
-    let file = ColumnFile::open(&path).unwrap();
+    let file = ColumnFile::open(crate::test_utils::cache(&path)).unwrap();
 
     let mut wanted = library.specs();
     wanted.push(spec("book.isbn", 8));
@@ -61,7 +61,7 @@ fn every_missing_column_is_named_in_one_message_not_one_at_a_time() {
 fn a_column_of_the_wrong_width_is_reported_with_both_widths() {
     let dir = TempDir::new("width");
     let (path, library) = a_library(&dir);
-    let file = ColumnFile::open(&path).unwrap();
+    let file = ColumnFile::open(crate::test_utils::cache(&path)).unwrap();
 
     let wanted: Vec<ColumnSpec> = library
         .specs()
@@ -90,7 +90,7 @@ fn a_column_the_schema_does_not_name_is_reported_but_is_not_a_mismatch() {
     let dir = TempDir::new("unknown");
     let (path, library) = a_library(&dir);
 
-    let file = ColumnFile::open(&path).unwrap();
+    let file = ColumnFile::open(crate::test_utils::cache(&path)).unwrap();
     let mut extra = Arena::<u64>::new();
     extra.extend_from_slice(&[1]).unwrap();
     let mut updater = file.update(this_device()).unwrap();
@@ -100,7 +100,7 @@ fn a_column_the_schema_does_not_name_is_reported_but_is_not_a_mismatch() {
     updater.column("book.isbn", &extra).unwrap();
     updater.commit().unwrap();
 
-    let diff = library.diff(&ColumnFile::open(&path).unwrap());
+    let diff = library.diff(&ColumnFile::open(crate::test_utils::cache(&path)).unwrap());
 
     assert_eq!(diff.unknown, ["book.isbn"]);
     assert!(!diff.is_clean());
@@ -114,7 +114,7 @@ fn a_column_the_schema_does_not_name_is_reported_but_is_not_a_mismatch() {
 fn one_message_reports_what_is_missing_what_changed_and_what_is_extra() {
     let dir = TempDir::new("everything");
     let (path, library) = a_library(&dir);
-    let file = ColumnFile::open(&path).unwrap();
+    let file = ColumnFile::open(crate::test_utils::cache(&path)).unwrap();
 
     let mut wanted: Vec<ColumnSpec> = library
         .specs()
@@ -149,11 +149,12 @@ fn opening_a_file_that_does_not_match_the_schema_says_so_before_reading_a_row() 
 
     let mut only_books = Arena::<u8>::new();
     only_books.push_str("Alice").unwrap();
-    crate::storage::ColumnFileWriter::create(&path, this_device())
+    std::fs::create_dir_all(path.join("local")).unwrap();
+    crate::storage::ColumnFileWriter::create(crate::test_utils::cache(&path), this_device())
         .unwrap()
         .finish()
         .unwrap();
-    let file = ColumnFile::open(&path).unwrap();
+    let file = ColumnFile::open(crate::test_utils::cache(&path)).unwrap();
     let mut updater = file.update(this_device()).unwrap();
     updater.column("book.title.bytes", &only_books).unwrap();
     updater.commit().unwrap();
@@ -185,7 +186,7 @@ fn derived(name: &str, kind: ColumnKind) -> ColumnSpec {
 fn a_column_an_index_derives_is_not_a_column_a_file_has_to_have() {
     let dir = TempDir::new("derived");
     let (path, _library) = a_library(&dir);
-    let file = ColumnFile::open(&path).unwrap();
+    let file = ColumnFile::open(crate::test_utils::cache(&path)).unwrap();
 
     let diff = SchemaDiff::of(
         &[
@@ -209,7 +210,7 @@ fn a_column_an_index_derives_is_not_a_column_a_file_has_to_have() {
 fn a_derived_column_of_the_wrong_width_is_rebuilt_where_a_stored_one_is_refused() {
     let dir = TempDir::new("derived_width");
     let (path, _library) = a_library(&dir);
-    let file = ColumnFile::open(&path).unwrap();
+    let file = ColumnFile::open(crate::test_utils::cache(&path)).unwrap();
 
     let diff = SchemaDiff::of(
         &[
@@ -234,7 +235,7 @@ fn an_index_the_schema_no_longer_asks_for_is_stale_rather_than_unknown() {
     let dir = TempDir::new("stale");
     let (path, library) = a_library(&dir);
 
-    let file = ColumnFile::open(&path).unwrap();
+    let file = ColumnFile::open(crate::test_utils::cache(&path)).unwrap();
     let mut leftover = Arena::<u64>::new();
     leftover.extend_from_slice(&[1]).unwrap();
     let mut updater = file.update(this_device()).unwrap();
@@ -250,7 +251,7 @@ fn an_index_the_schema_no_longer_asks_for_is_stale_rather_than_unknown() {
     }
     updater.commit().unwrap();
 
-    let diff = library.diff(&ColumnFile::open(&path).unwrap());
+    let diff = library.diff(&ColumnFile::open(crate::test_utils::cache(&path)).unwrap());
 
     assert_eq!(
         diff.stale,
@@ -273,7 +274,7 @@ fn an_index_the_schema_no_longer_asks_for_is_stale_rather_than_unknown() {
 fn a_sorted_run_is_derived_like_the_hash_index_columns() {
     let dir = TempDir::new("derived_sorted");
     let (path, library) = a_library(&dir);
-    let file = ColumnFile::open(&path).unwrap();
+    let file = ColumnFile::open(crate::test_utils::cache(&path)).unwrap();
 
     let mut wanted = library.specs();
     wanted.push(derived("book.title.sorted", ColumnKind::Sorted));

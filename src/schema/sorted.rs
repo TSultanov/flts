@@ -261,6 +261,10 @@ impl<P: Prefix> SortedRun<P> {
         updater.column(&sorted_name(entity, field), &self.run)
     }
 
+    pub fn rebase(&mut self, entity: &str, field: &str, file: &ColumnFile) -> Result<()> {
+        file.rebase(&sorted_name(entity, field), &mut self.run)
+    }
+
     fn first_at_least(&self, prefix: &P, low: u128) -> Result<usize> {
         let (mut from, mut to) = (0, self.run.len());
         while from < to {
@@ -477,6 +481,11 @@ where
     fn offer_to(&self, entity: &str, field: &str, updater: &mut ColumnFileUpdater) -> Result<()> {
         self.column.offer_to(entity, field, updater)?;
         self.run.offer_to(entity, field, updater)
+    }
+
+    fn rebase(&mut self, entity: &str, field: &str, file: &ColumnFile) -> Result<()> {
+        self.column.rebase(entity, field, file)?;
+        self.run.rebase(entity, field, file)
     }
 }
 

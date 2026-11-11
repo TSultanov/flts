@@ -201,6 +201,11 @@ impl<C: Keyed> Column for Indexed<C> {
         self.column.offer_to(entity, field, updater)?;
         self.index.offer_to(entity, field, updater)
     }
+
+    fn rebase(&mut self, entity: &str, field: &str, file: &ColumnFile) -> Result<()> {
+        self.column.rebase(entity, field, file)?;
+        self.index.rebase(entity, field, file)
+    }
 }
 
 #[cfg(test)]

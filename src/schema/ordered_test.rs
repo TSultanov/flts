@@ -318,7 +318,7 @@ fn a_run_folded_at_commit_serves_a_reopened_shelf_without_reading_the_text() -> 
     }
     shelf.commit(device("here"))?;
 
-    let file = ColumnFile::open(&path)?;
+    let file = ColumnFile::open(crate::test_utils::cache(&path))?;
     assert_eq!(
         file.column_meta("paragraph.pos.sorted")
             .map(|held| held.rows),
@@ -375,7 +375,7 @@ fn two_copies_that_ordered_one_book_apart_walk_it_the_same_way() -> Result<()> {
     let hole = here.chapters.push(10, alice, "Down the Rabbit-Hole")?;
     let tears = here.chapters.push(20, alice, "The Pool of Tears")?;
     here.commit(device("here"))?;
-    std::fs::copy(dir.join("here.dbs"), dir.join("there.dbs"))?;
+    crate::test_utils::copy_store(dir.join("here.dbs"), dir.join("there.dbs"))?;
     let mut there = Shelf::open(dir.join("there.dbs"))?;
 
     here.chapters.push(15, alice, "Written here")?;
@@ -386,7 +386,7 @@ fn two_copies_that_ordered_one_book_apart_walk_it_the_same_way() -> Result<()> {
     here.commit(device("here"))?;
     there.commit(device("there"))?;
 
-    std::fs::copy(dir.join("there.dbs"), dir.join("other.dbs"))?;
+    crate::test_utils::copy_store(dir.join("there.dbs"), dir.join("other.dbs"))?;
     let mut other = Shelf::open(dir.join("other.dbs"))?;
     here.merge_from(dir.join("there.dbs"), device("here"))?;
     other.merge_from(dir.join("here.dbs"), device("there"))?;
@@ -415,7 +415,7 @@ fn a_child_whose_position_a_merge_function_chose_is_ordered_by_that_choice() -> 
     here.steps.push(5, alice, "five")?;
     here.steps.push(8, alice, "eight")?;
     here.commit(device("here"))?;
-    std::fs::copy(dir.join("here.dbs"), dir.join("there.dbs"))?;
+    crate::test_utils::copy_store(dir.join("here.dbs"), dir.join("there.dbs"))?;
     let mut there = Shelf::open(dir.join("there.dbs"))?;
 
     here.steps.set_pos(summed, 3)?;
@@ -448,7 +448,7 @@ fn a_shelf_that_stopped_sorting_opens_the_file_and_drops_the_runs_it_left() -> R
     shelf.commit(device("here"))?;
     shelf.compact()?;
     assert!(
-        ColumnFile::open(&path)?
+        ColumnFile::open(crate::test_utils::cache(&path))?
             .column_meta("chapter.pos.sorted")
             .is_some()
     );
@@ -457,7 +457,7 @@ fn a_shelf_that_stopped_sorting_opens_the_file_and_drops_the_runs_it_left() -> R
     plain.books.push("Kokoro")?;
     plain.commit(device("here"))?;
 
-    let file = ColumnFile::open(&path)?;
+    let file = ColumnFile::open(crate::test_utils::cache(&path))?;
     assert!(file.column_meta("chapter.pos.sorted").is_none());
     assert!(file.column_meta("card.due.sorted").is_none());
     let mut again = sorting::Shelf::open(&path)?;
@@ -470,7 +470,7 @@ fn a_shelf_that_stopped_sorting_opens_the_file_and_drops_the_runs_it_left() -> R
     again.commit(device("here"))?;
     again.compact()?;
     assert!(
-        ColumnFile::open(&path)?
+        ColumnFile::open(crate::test_utils::cache(&path))?
             .column_meta("chapter.pos.sorted")
             .is_some()
     );

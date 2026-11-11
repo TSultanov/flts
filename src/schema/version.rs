@@ -267,7 +267,27 @@ impl<E: Entity> VersionColumn<E> {
         if version.is_stamped() && self.stamped == row {
             self.stamped = row + 1;
         }
+        self.settle_parents()?;
         Ok(row)
+    }
+
+    fn settle_parents(&mut self) -> Result<()> {
+        while self.held_ends.len() < self.versions.len() {
+            let row = self.held_ends.len();
+            if !self.versions.row(row)?.is_stamped() {
+                break;
+            }
+            let mut dots = Vec::with_capacity(self.parents[row].len());
+            for parent in &self.parents[row] {
+                match parent {
+                    Parent::Published(dot) => dots.push(*dot),
+                    Parent::Pending(_) => return Ok(()),
+                }
+            }
+            self.held_parents.extend_from_slice(&dots)?;
+            self.held_ends.push(self.held_parents.len() as u64)?;
+        }
+        Ok(())
     }
 
     pub fn at(&self, row: Row) -> Result<Version> {
@@ -329,14 +349,21 @@ impl<E: Entity> VersionColumn<E> {
     pub fn parent_rows(&self, row: Row) -> Result<Vec<Row>> {
         self.parents(row)?
             .iter()
-            .map(|parent| match parent {
-                Parent::Published(dot) => self
-                    .row_for_dot(*dot)
-                    .ok_or_else(|| Error::corrupt("revision", format!("missing parent {dot:?}"))),
-                Parent::Pending(at) if *at < self.versions.len() => Ok(Row::trusted(*at)),
-                Parent::Pending(_) => Err(Error::corrupt("revision", "missing pending parent")),
+            .filter_map(|parent| match parent {
+                Parent::Published(dot) => self.row_for_dot(*dot).map(Ok),
+                Parent::Pending(at) if *at < self.versions.len() => Some(Ok(Row::trusted(*at))),
+                Parent::Pending(_) => {
+                    Some(Err(Error::corrupt("revision", "missing pending parent")))
+                }
             })
             .collect()
+    }
+
+    pub fn lacks_a_parent(&self, row: Row) -> Result<bool> {
+        Ok(self.parents(row)?.iter().any(|parent| match parent {
+            Parent::Published(dot) => !self.by_dot.contains_key(dot),
+            Parent::Pending(_) => false,
+        }))
     }
 
     pub fn parent_of(&self, row: Row) -> Result<Parent> {
@@ -470,7 +497,7 @@ impl<E: Entity> VersionColumn<E> {
             self.parents[row] = published;
         }
         self.stamped = self.versions.len();
-        Ok(())
+        self.settle_parents()
     }
 }
 
@@ -576,9 +603,15 @@ impl<E: Entity> Column for VersionColumn<E> {
 
     fn offer_to(&self, entity: &str, field: &str, updater: &mut ColumnFileUpdater) -> Result<()> {
         self.versions.offer_to(entity, field, updater)?;
-        let mut ends = Arena::<u64>::new();
-        let mut parents = Arena::<Dot>::new();
-        for row in &self.parents {
+        let ends_name = qualified(entity, &format!("{field}.parent_ends"));
+        let parents_name = qualified(entity, &format!("{field}.parents"));
+        if self.held_ends.len() == self.versions.len() {
+            updater.column(&ends_name, &self.held_ends)?;
+            return updater.column(&parents_name, &self.held_parents);
+        }
+        let mut ends = self.held_ends.clone();
+        let mut parents = self.held_parents.clone();
+        for row in &self.parents[ends.len()..] {
             for parent in row {
                 let Parent::Published(dot) = parent else {
                     return Err(Error::invalid("cannot persist pending parents"));
@@ -587,21 +620,19 @@ impl<E: Entity> Column for VersionColumn<E> {
             }
             ends.push(parents.len() as u64)?;
         }
-        let same_ends = ends.len() == self.held_ends.len()
-            && (0..ends.len()).all(|at| ends.row(at).ok() == self.held_ends.row(at).ok());
-        let same_parents = parents.len() == self.held_parents.len()
-            && (0..parents.len()).all(|at| parents.row(at).ok() == self.held_parents.row(at).ok());
-        updater.column(
+        updater.column(&ends_name, &ends)?;
+        updater.column(&parents_name, &parents)
+    }
+
+    fn rebase(&mut self, entity: &str, field: &str, file: &ColumnFile) -> Result<()> {
+        file.rebase(&qualified(entity, field), &mut self.versions)?;
+        file.rebase(
             &qualified(entity, &format!("{field}.parent_ends")),
-            if same_ends { &self.held_ends } else { &ends },
+            &mut self.held_ends,
         )?;
-        updater.column(
+        file.rebase(
             &qualified(entity, &format!("{field}.parents")),
-            if same_parents {
-                &self.held_parents
-            } else {
-                &parents
-            },
+            &mut self.held_parents,
         )
     }
 }
