@@ -83,7 +83,7 @@ impl<'a, S: Holds<E>, E: Entity> Entry<'a, S, E> {
         })
     }
 
-    pub fn parents(&self) -> Result<&[super::Parent]> {
+    pub fn parents(&self) -> Result<Vec<super::Parent>> {
         if !self.historical && self.table().is_derived(self.id()?) {
             return Err(Error::invalid(
                 "a merged row has source revisions instead of a single parent list; use sources()",

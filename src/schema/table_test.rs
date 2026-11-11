@@ -176,6 +176,8 @@ fn a_table_names_every_column_it_needs_from_a_file() {
             "book.id.buckets",
             "book.id.links",
             "book.version",
+            "book.version.buckets",
+            "book.version.links",
             "book.version.parent_ends",
             "book.version.parents",
             "book.title",
@@ -232,7 +234,7 @@ fn a_table_erased_behind_any_table_still_names_its_entity() {
 
     assert_eq!(erased.entity(), "book");
     assert_eq!(erased.row_count(), 3);
-    assert_eq!(erased.column_specs().len(), 12);
+    assert_eq!(erased.column_specs().len(), 14);
     erased.rows_agree().unwrap();
 }
 

@@ -315,7 +315,7 @@ pub trait Table: Default + Clone {
     fn revision_row(&self, id: Id<Self::Of>, dot: Dot) -> Result<Row> {
         let row = self
             .versions()
-            .row_for_dot(dot)
+            .row_for_dot(dot)?
             .ok_or_else(|| Error::invalid("unknown revision"))?;
         if self.id_at(row)? != id {
             return Err(Error::invalid("revision belongs to a different entity id"));
@@ -469,7 +469,7 @@ pub trait Table: Default + Clone {
         for row in theirs.rows_by_dot()? {
             let version = theirs.versions().raw_at(row)?;
             let id = theirs.id_at(row)?;
-            if let Some(held) = self.versions().row_for_dot(version.dot()) {
+            if let Some(held) = self.versions().row_for_dot(version.dot())? {
                 if self.id_at(held)? != id
                     || self.versions().raw_at(held)? != version
                     || self.versions().parents(held)? != theirs.versions().parents(row)?
@@ -627,7 +627,7 @@ pub trait Table: Default + Clone {
         let mut parents = Vec::new();
         for parent in self.versions().parents(row)? {
             match parent {
-                Parent::Published(dot) => parents.push(*dot),
+                Parent::Published(dot) => parents.push(dot),
                 Parent::Pending(_) => {
                     return Err(Error::invalid("pending revision has no published identity"));
                 }
@@ -659,7 +659,7 @@ pub trait Table: Default + Clone {
                 "a shard holds an unpublished row",
             ));
         }
-        if let Some(held) = self.versions().row_for_dot(theirs.version.dot()) {
+        if let Some(held) = self.versions().row_for_dot(theirs.version.dot())? {
             let mut same = self.id_at(held)? == id
                 && self.versions().raw_at(held)? == theirs.version
                 && self.versions().parents(held)? == parents.as_slice();
@@ -697,7 +697,7 @@ pub trait Table: Default + Clone {
             let mut candidates = Vec::new();
             let mut orphaned = false;
             for dot in &theirs.parents {
-                match self.versions().row_for_dot(*dot) {
+                match self.versions().row_for_dot(*dot)? {
                     Some(row) => candidates.push(row),
                     None if gone(*dot) => orphaned = true,
                     None => return Ok(Adoption::Waiting),

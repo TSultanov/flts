@@ -18,6 +18,8 @@ pub fn is_merge_metadata<S: crate::schema::Store>(store: &S, name: &str) -> bool
     name == crate::schema::SCHEMA
         || name.ends_with(".id.buckets")
         || name.ends_with(".id.links")
+        || name.ends_with(".version.buckets")
+        || name.ends_with(".version.links")
         || store.specs().iter().any(|column| {
             column.name == name
                 && matches!(

@@ -1,7 +1,7 @@
 //! The write that made a row, and whether a later write has replaced it.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::marker::PhantomData;
 use std::sync::RwLock;
@@ -9,6 +9,7 @@ use std::sync::RwLock;
 use super::clock::VersionVector;
 use super::column::{Column, ColumnKind, ColumnSpec, Residency, Row};
 use super::entity::Entity;
+use super::index::{HashIndex, IndexKey};
 use super::names::qualified;
 use crate::error::{Error, Result};
 use crate::record::Record;
@@ -71,6 +72,12 @@ impl Record for Dot {
             writer: WriterId::from_raw(u64::from_le_bytes(src[..8].try_into().expect("8 bytes"))),
             counter: u64::from_le_bytes(src[8..].try_into().expect("8 bytes")),
         }
+    }
+}
+
+impl IndexKey for Dot {
+    fn raw(self) -> u128 {
+        (u128::from(self.writer.raw()) << 64) | u128::from(self.counter)
     }
 }
 
@@ -198,10 +205,10 @@ impl Record for Version {
 
 pub struct VersionColumn<E: Entity> {
     versions: Arena<Version>,
-    parents: Vec<Vec<Parent>>,
     held_parents: Arena<Dot>,
     held_ends: Arena<u64>,
-    by_dot: HashMap<Dot, usize>,
+    unsettled: BTreeMap<usize, Vec<Parent>>,
+    by_dot: HashIndex<Dot>,
     superseded: RwLock<BTreeSet<usize>>,
     row_ids: RwLock<Vec<crate::Uuid>>,
     view: super::View,
@@ -219,10 +226,10 @@ impl<E: Entity> Default for VersionColumn<E> {
     fn default() -> Self {
         Self {
             versions: Arena::new(),
-            parents: Vec::new(),
             held_parents: Arena::new(),
             held_ends: Arena::new(),
-            by_dot: HashMap::new(),
+            unsettled: BTreeMap::new(),
+            by_dot: HashIndex::new(qualified(E::NAME, "version")),
             superseded: RwLock::new(BTreeSet::new()),
             row_ids: RwLock::new(Vec::new()),
             view: super::View::default(),
@@ -236,9 +243,9 @@ impl<E: Entity> Clone for VersionColumn<E> {
     fn clone(&self) -> Self {
         Self {
             versions: self.versions.clone(),
-            parents: self.parents.clone(),
             held_parents: self.held_parents.clone(),
             held_ends: self.held_ends.clone(),
+            unsettled: self.unsettled.clone(),
             by_dot: self.by_dot.clone(),
             superseded: RwLock::new(self.superseded.read().expect("versions lock").clone()),
             row_ids: RwLock::new(self.row_ids.read().expect("versions lock").clone()),
@@ -256,14 +263,12 @@ impl<E: Entity> VersionColumn<E> {
 
     pub fn push_with(&mut self, version: Version, parents: Vec<Parent>) -> Result<usize> {
         self.view.check_mutable()?;
-        if version.is_stamped() && self.by_dot.contains_key(&version.dot()) {
+        if self.row_for_dot(version.dot())?.is_some() {
             return Err(Error::corrupt("revision", "duplicate revision dot"));
         }
+        self.by_dot.append(version.dot())?;
         let row = self.versions.push(version)?;
-        self.parents.push(parents);
-        if version.is_stamped() {
-            self.by_dot.insert(version.dot(), row);
-        }
+        self.unsettled.insert(row, parents);
         if version.is_stamped() && self.stamped == row {
             self.stamped = row + 1;
         }
@@ -277,8 +282,11 @@ impl<E: Entity> VersionColumn<E> {
             if !self.versions.row(row)?.is_stamped() {
                 break;
             }
-            let mut dots = Vec::with_capacity(self.parents[row].len());
-            for parent in &self.parents[row] {
+            let Some(parents) = self.unsettled.get(&row) else {
+                return Err(Error::corrupt("revision", "missing parent list"));
+            };
+            let mut dots = Vec::with_capacity(parents.len());
+            for parent in parents {
                 match parent {
                     Parent::Published(dot) => dots.push(*dot),
                     Parent::Pending(_) => return Ok(()),
@@ -286,6 +294,7 @@ impl<E: Entity> VersionColumn<E> {
             }
             self.held_parents.extend_from_slice(&dots)?;
             self.held_ends.push(self.held_parents.len() as u64)?;
+            self.unsettled.remove(&row);
         }
         Ok(())
     }
@@ -335,35 +344,63 @@ impl<E: Entity> VersionColumn<E> {
         }
     }
 
-    pub fn row_for_dot(&self, dot: Dot) -> Option<Row> {
-        self.by_dot.get(&dot).copied().map(Row::trusted)
+    pub fn row_for_dot(&self, dot: Dot) -> Result<Option<Row>> {
+        if dot.counter() == 0 {
+            return Ok(None);
+        }
+        Ok(self.by_dot.row_of(dot)?.map(Row::trusted))
     }
 
-    pub fn parents(&self, row: Row) -> Result<&[Parent]> {
-        self.parents
-            .get(row.index())
-            .map(Vec::as_slice)
-            .ok_or_else(|| Error::corrupt("revision", "missing parent list"))
+    pub fn parents(&self, row: Row) -> Result<Vec<Parent>> {
+        let at = row.index();
+        if at >= self.held_ends.len() {
+            return self
+                .unsettled
+                .get(&at)
+                .cloned()
+                .ok_or_else(|| Error::corrupt("revision", "missing parent list"));
+        }
+        let start = match at {
+            0 => 0,
+            _ => *self.held_ends.row(at - 1)?,
+        };
+        let end = *self.held_ends.row(at)?;
+        let (start, end) = (start as usize, end as usize);
+        if end < start || end > self.held_parents.len() {
+            return Err(Error::corrupt("revision", "invalid parent span"));
+        }
+        Ok(self
+            .held_parents
+            .range(start, end - start)?
+            .iter()
+            .copied()
+            .map(Parent::Published)
+            .collect())
     }
 
     pub fn parent_rows(&self, row: Row) -> Result<Vec<Row>> {
-        self.parents(row)?
-            .iter()
-            .filter_map(|parent| match parent {
-                Parent::Published(dot) => self.row_for_dot(*dot).map(Ok),
-                Parent::Pending(at) if *at < self.versions.len() => Some(Ok(Row::trusted(*at))),
+        let mut rows = Vec::new();
+        for parent in self.parents(row)? {
+            match parent {
+                Parent::Published(dot) => rows.extend(self.row_for_dot(dot)?),
+                Parent::Pending(at) if at < self.versions.len() => rows.push(Row::trusted(at)),
                 Parent::Pending(_) => {
-                    Some(Err(Error::corrupt("revision", "missing pending parent")))
+                    return Err(Error::corrupt("revision", "missing pending parent"));
                 }
-            })
-            .collect()
+            }
+        }
+        Ok(rows)
     }
 
     pub fn lacks_a_parent(&self, row: Row) -> Result<bool> {
-        Ok(self.parents(row)?.iter().any(|parent| match parent {
-            Parent::Published(dot) => !self.by_dot.contains_key(dot),
-            Parent::Pending(_) => false,
-        }))
+        for parent in self.parents(row)? {
+            if let Parent::Published(dot) = parent
+                && self.row_for_dot(dot)?.is_none()
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     pub fn parent_of(&self, row: Row) -> Result<Parent> {
@@ -467,19 +504,21 @@ impl<E: Entity> VersionColumn<E> {
             if !held.is_stamped() {
                 let dot = clock.tick(writer)?;
                 self.versions.set(row, held.stamped_with(dot))?;
-                self.by_dot.insert(dot, row);
+                self.by_dot.repoint_row(row, dot)?;
             }
-            let parents = self.parents[row].clone();
+            let Some(parents) = self.unsettled.get(&row).cloned() else {
+                continue;
+            };
             let mut published = Vec::new();
             for parent in parents {
                 published.push(match parent {
-                    Parent::Published(dot) => Parent::Published(dot),
+                    Parent::Published(dot) => dot,
                     Parent::Pending(at) if at < row => {
                         let dot = self.versions.row(at)?.dot();
                         if dot.counter() == 0 {
                             return Err(Error::corrupt("revision", "unstamped parent"));
                         }
-                        Parent::Published(dot)
+                        dot
                     }
                     _ => {
                         return Err(Error::corrupt(
@@ -489,15 +528,22 @@ impl<E: Entity> VersionColumn<E> {
                     }
                 });
             }
-            published.sort_by_key(|parent| match parent {
-                Parent::Published(dot) => *dot,
-                _ => unreachable!(),
-            });
+            published.sort();
             published.dedup();
-            self.parents[row] = published;
+            self.unsettled
+                .insert(row, published.into_iter().map(Parent::Published).collect());
         }
         self.stamped = self.versions.len();
         self.settle_parents()
+    }
+
+    fn index_every_dot(&mut self) -> Result<()> {
+        let mut index = HashIndex::new(qualified(E::NAME, "version"));
+        for row in 0..self.versions.len() {
+            index.append(self.versions.row(row)?.dot())?;
+        }
+        self.by_dot = index;
+        Ok(())
     }
 }
 
@@ -511,13 +557,29 @@ impl<E: Entity> Column for VersionColumn<E> {
     }
 
     fn touch_tail(&self) -> Result<()> {
-        self.versions.touch_tail()
+        self.versions.touch_tail()?;
+        self.by_dot.touch_tail()
+    }
+
+    fn make_room(&self, rows: usize) -> Result<()> {
+        self.versions.touch_tail()?;
+        self.by_dot.make_room(rows)
     }
 
     fn audit(&self) -> Result<()> {
         let column = qualified(E::NAME, "version");
+        if self.by_dot.rows() != self.versions.len() {
+            return Err(Error::corrupt(
+                "revision",
+                "dot index disagrees with revisions",
+            ));
+        }
         for row in 0..self.versions.len() {
-            self.versions.row(row)?.check(&column, row)?;
+            let held = self.versions.row(row)?;
+            held.check(&column, row)?;
+            if held.is_stamped() && self.row_for_dot(held.dot())? != Some(Row::trusted(row)) {
+                return Err(Error::corrupt("revision", "duplicated persisted dot"));
+            }
         }
         Ok(())
     }
@@ -529,6 +591,7 @@ impl<E: Entity> Column for VersionColumn<E> {
             kind: ColumnKind::Version,
             counts_rows: true,
         });
+        self.by_dot.describe(entity, field, out);
         out.push(ColumnSpec {
             name: qualified(entity, &format!("{field}.parent_ends")),
             elem_size: 8,
@@ -545,21 +608,17 @@ impl<E: Entity> Column for VersionColumn<E> {
 
     fn residency(&self, entity: &str, field: &str, out: &mut Vec<Residency>) {
         self.versions.residency(entity, field, out);
-        for (suffix, rows, width) in [
-            ("parent_ends", self.parents.len(), 8),
-            (
-                "parents",
-                self.parents.iter().map(Vec::len).sum(),
-                Dot::SIZE,
-            ),
-        ] {
-            let chunks = rows.div_ceil(crate::storage::default_chunk_rows(width));
-            out.push(Residency {
-                name: qualified(entity, &format!("{field}.{suffix}")),
-                resident: chunks,
-                chunks,
-            });
-        }
+        self.by_dot.residency(entity, field, out);
+        out.push(Residency {
+            name: qualified(entity, &format!("{field}.parent_ends")),
+            resident: self.held_ends.resident_chunks(),
+            chunks: self.held_ends.chunk_count(),
+        });
+        out.push(Residency {
+            name: qualified(entity, &format!("{field}.parents")),
+            resident: self.held_parents.resident_chunks(),
+            chunks: self.held_parents.chunk_count(),
+        });
     }
 
     fn read_from(&mut self, entity: &str, field: &str, file: &ColumnFile) -> Result<()> {
@@ -572,41 +631,29 @@ impl<E: Entity> Column for VersionColumn<E> {
                 "parent spans disagree with revisions",
             ));
         }
-        self.parents.clear();
-        self.by_dot.clear();
-        self.superseded.write().expect("versions lock").clear();
-        self.row_ids.write().expect("versions lock").clear();
-        let mut start = 0;
-        for row in 0..ends.len() {
-            let end = usize::try_from(*ends.row(row)?)
-                .map_err(|_| Error::corrupt("revision", "parent offset overflow"))?;
-            if end < start || end > parents.len() {
-                return Err(Error::corrupt("revision", "invalid parent span"));
-            }
-            self.parents.push(
-                (start..end)
-                    .map(|at| parents.row(at).copied().map(Parent::Published))
-                    .collect::<Result<_>>()?,
-            );
-            start = end;
-            let version = *self.versions.row(row)?;
-            if version.is_stamped() && self.by_dot.insert(version.dot(), row).is_some() {
-                return Err(Error::corrupt("revision", "duplicated persisted dot"));
-            }
-        }
-        if start != parents.len() {
-            return Err(Error::corrupt("revision", "unclaimed parent entries"));
-        }
         self.held_ends = ends;
         self.held_parents = parents;
-        self.stamped = (0..self.versions.len())
-            .find(|row| self.versions.row(*row).is_ok_and(|v| !v.is_stamped()))
-            .unwrap_or(self.versions.len());
+        self.unsettled.clear();
+        self.superseded.write().expect("versions lock").clear();
+        self.row_ids.write().expect("versions lock").clear();
+        self.by_dot.read_from(entity, field, file)?;
+        if !self.by_dot.agrees_with(self.versions.len()) {
+            self.index_every_dot()?;
+        }
+        self.stamped = self.versions.len();
+        if let Some(last) = self.versions.len().checked_sub(1)
+            && !self.versions.row(last)?.is_stamped()
+        {
+            self.stamped = (0..self.versions.len())
+                .find(|row| self.versions.row(*row).is_ok_and(|v| !v.is_stamped()))
+                .unwrap_or(self.versions.len());
+        }
         Ok(())
     }
 
     fn offer_to(&self, entity: &str, field: &str, updater: &mut ColumnFileUpdater) -> Result<()> {
         self.versions.offer_to(entity, field, updater)?;
+        self.by_dot.offer_to(entity, field, updater)?;
         let ends_name = qualified(entity, &format!("{field}.parent_ends"));
         let parents_name = qualified(entity, &format!("{field}.parents"));
         if self.held_ends.len() == self.versions.len() {
@@ -615,12 +662,12 @@ impl<E: Entity> Column for VersionColumn<E> {
         }
         let mut ends = self.held_ends.clone();
         let mut parents = self.held_parents.clone();
-        for row in &self.parents[ends.len()..] {
-            for parent in row {
+        for row in ends.len()..self.versions.len() {
+            for parent in self.parents(Row::trusted(row))? {
                 let Parent::Published(dot) = parent else {
                     return Err(Error::invalid("cannot persist pending parents"));
                 };
-                parents.push(*dot)?;
+                parents.push(dot)?;
             }
             ends.push(parents.len() as u64)?;
         }
@@ -630,6 +677,7 @@ impl<E: Entity> Column for VersionColumn<E> {
 
     fn rebase(&mut self, entity: &str, field: &str, file: &ColumnFile) -> Result<()> {
         file.rebase(&qualified(entity, field), &mut self.versions)?;
+        self.by_dot.rebase(entity, field, file)?;
         file.rebase(
             &qualified(entity, &format!("{field}.parent_ends")),
             &mut self.held_ends,

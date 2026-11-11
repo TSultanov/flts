@@ -94,8 +94,7 @@ impl View {
                 continue;
             }
             let named = (parent.entity, parent.id);
-            let absent =
-                held.entities.contains(parent.entity) && !held.nodes.contains_key(&named);
+            let absent = held.entities.contains(parent.entity) && !held.nodes.contains_key(&named);
             let hidden = held
                 .statuses
                 .get(&named)
