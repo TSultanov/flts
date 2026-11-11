@@ -631,20 +631,11 @@ fn derived_selection_does_not_change_the_revision_history() {
         .unwrap();
     let old = Row::of(0, 3, "book").unwrap();
     let original = books.versions().raw_at(old).unwrap();
-    books.quietly_unsupersede(old).unwrap();
+    books.quietly_name(alice, old).unwrap();
+    assert_eq!(books.title(alice).unwrap(), "Alice");
     books.refresh().unwrap();
     assert_eq!(books.title(alice).unwrap(), "Alice's Adventures");
     assert_eq!(books.versions().raw_at(old).unwrap(), original);
-    Table::audit(&books).unwrap();
-}
-
-#[test]
-fn refreshing_reconstructs_the_selected_revision() {
-    let (mut books, alice) = two_books();
-    let newest = books.row_of(alice).unwrap();
-    books.quietly_supersede(newest).unwrap();
-    books.refresh().unwrap();
-    assert_eq!(books.row_of(alice).unwrap(), newest);
     Table::audit(&books).unwrap();
 }
 
@@ -719,9 +710,8 @@ fn settling_an_id_makes_its_newest_version_the_one_it_names() {
     let newest = books.row_of(alice).unwrap();
     let older = Row::of(0, 3, "book").unwrap();
 
-    books.quietly_supersede(newest).unwrap();
-    books.quietly_unsupersede(older).unwrap();
-    assert_eq!(books.title_at(older).unwrap(), "Alice");
+    books.quietly_name(alice, older).unwrap();
+    assert_eq!(books.title(alice).unwrap(), "Alice");
 
     books.settle(alice).unwrap();
 

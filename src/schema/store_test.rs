@@ -868,7 +868,7 @@ fn committing_again_does_not_lose_the_count_the_store_had_reached() -> Result<()
 fn stamp_of(library: &Library, row: usize) -> Version {
     let rows = Table::rows(&library.books);
     Table::versions(&library.books)
-        .at(Row::of(row, rows, "book").unwrap())
+        .raw_at(Row::of(row, rows, "book").unwrap())
         .unwrap()
 }
 

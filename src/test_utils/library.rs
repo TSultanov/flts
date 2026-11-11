@@ -260,12 +260,15 @@ impl Books {
         Ok(self.title.column().get(row)?.into_owned())
     }
 
-    pub fn quietly_supersede(&mut self, row: crate::schema::Row) -> Result<()> {
-        self.versions.supersede(row)
-    }
-
-    pub fn quietly_unsupersede(&mut self, row: crate::schema::Row) -> Result<()> {
-        self.versions.restore(row)
+    pub fn quietly_name(&mut self, book: Id<Book>, row: crate::schema::Row) -> Result<()> {
+        self.versions.view().upsert(crate::schema::Candidate {
+            entity: "book",
+            id: book.uuid(),
+            winner: row.index(),
+            deleted: false,
+            combined: false,
+            references: Vec::new(),
+        })
     }
 
     pub fn set_title(&mut self, book: Id<Book>, title: &str) -> Result<()> {

@@ -6,6 +6,7 @@ use super::entity::Entity;
 use super::identity::IdColumn;
 use super::merge::{Concurrent, Conflict};
 use super::names::qualified;
+use super::projection::Standing;
 use super::shard::ShardRow;
 use super::version::{Dot, Version, VersionColumn};
 use super::{Candidate, Parent, Reference, View};
@@ -159,10 +160,16 @@ pub trait Table: Default + Clone {
     }
 
     fn logical_row_of(&self, id: Id<Self::Of>) -> Result<Row> {
-        let row = self
-            .winner(id)?
-            .ok_or_else(|| Error::invalid(format!("{} has no row with id {id}", Self::Of::NAME)))?;
-        if self.versions().raw_at(row)?.is_removed() {
+        let (row, removed) = match self.standing(id)? {
+            Some(held) => (Row::trusted(held.winner), held.deleted),
+            None => {
+                let row = self.winner(id)?.ok_or_else(|| {
+                    Error::invalid(format!("{} has no row with id {id}", Self::Of::NAME))
+                })?;
+                (row, self.versions().raw_at(row)?.is_removed())
+            }
+        };
+        if removed {
             return Err(Error::invalid("the row is deleted; restore it explicitly"));
         }
         Ok(row)
@@ -218,47 +225,58 @@ pub trait Table: Default + Clone {
             .collect()
     }
 
+    fn reference_columns(&self) -> Vec<(&'static str, &'static str)> {
+        Vec::new()
+    }
+
+    fn standing(&self, id: Id<Self::Of>) -> Result<Option<Standing>> {
+        self.versions().view().standing(Self::Of::NAME, id.uuid())
+    }
+
+    fn seen_at(&self, row: Row) -> Result<Version> {
+        let version = self.versions().raw_at(row)?;
+        let id = self.id_at(row)?;
+        Ok(match self.standing(id)? {
+            Some(held) => {
+                let seen = match held.winner == row.index() {
+                    true => version,
+                    false => version.supersede(),
+                };
+                match held.is_visible() {
+                    true => seen,
+                    false => seen.hide(),
+                }
+            }
+            None => match self.winner(id)? == Some(row) {
+                true => version,
+                false => version.supersede(),
+            },
+        })
+    }
+
     fn refresh(&self) -> Result<()> {
-        let mut ids = Vec::new();
         let mut unique = BTreeSet::new();
         for index in 0..Table::rows(self) {
-            let id = self.id_at(Row::trusted(index))?;
-            ids.push(id.uuid());
-            unique.insert(id.uuid());
+            unique.insert(self.id_at(Row::trusted(index))?);
         }
-        let mut candidates = Vec::new();
-        for uuid in unique {
-            let id = Id::from_uuid(uuid);
-            if let Some(row) = self.winner(id)? {
-                self.resolve(id)?;
-                let version = self.versions().raw_at(row)?;
-                self.versions().select(&self.versions_of(id)?, row);
-                candidates.push(Candidate {
-                    entity: Self::Of::NAME,
-                    id: uuid,
-                    deleted: version.is_removed(),
-                    references: self.current_references(id, row)?,
-                });
-            }
+        for id in unique {
+            self.refresh_one(id)?;
         }
-        self.versions().identify(ids);
-        self.versions().view().replace(Self::Of::NAME, candidates);
         Ok(())
     }
 
     fn refresh_one(&self, id: Id<Self::Of>) -> Result<()> {
         if let Some(row) = self.winner(id)? {
             self.resolve(id)?;
-            let rows = self.versions_of(id)?;
             let version = self.versions().raw_at(row)?;
-            self.versions().select(&rows, row);
-            self.versions().identify_rows(&rows, id.uuid());
             self.versions().view().upsert(Candidate {
                 entity: Self::Of::NAME,
                 id: id.uuid(),
+                winner: row.index(),
                 deleted: version.is_removed(),
+                combined: self.is_derived(id),
                 references: self.current_references(id, row)?,
-            });
+            })?;
         }
         Ok(())
     }
@@ -324,9 +342,12 @@ pub trait Table: Default + Clone {
     }
 
     fn live_row_of(&self, id: Id<Self::Of>) -> Result<Option<Row>> {
-        match self.current_row_of(id)? {
-            Some(row) if self.versions().at(row)?.is_live() => Ok(Some(row)),
-            _ => Ok(None),
+        match self.standing(id)? {
+            Some(held) => Ok(held.is_visible().then(|| Row::trusted(held.winner))),
+            None => match self.winner(id)? {
+                Some(row) if !self.versions().raw_at(row)?.is_removed() => Ok(Some(row)),
+                _ => Ok(None),
+            },
         }
     }
 
@@ -338,7 +359,7 @@ pub trait Table: Default + Clone {
     fn live_among(&self, rows: Vec<Row>) -> Result<Vec<Row>> {
         let mut kept = Vec::new();
         for row in rows {
-            if self.versions().at(row)?.is_live() {
+            if self.seen_at(row)?.is_live() {
                 kept.push(row);
             }
         }
@@ -360,7 +381,7 @@ pub trait Table: Default + Clone {
     fn live_in_key_order(&self, keyed: Vec<(u128, Row)>) -> Result<Vec<Row>> {
         let mut kept = Vec::with_capacity(keyed.len());
         for (key, row) in keyed {
-            if self.versions().at(row)?.is_live() {
+            if self.seen_at(row)?.is_live() {
                 kept.push((key, self.id_at(row)?, row));
             }
         }
@@ -378,7 +399,7 @@ pub trait Table: Default + Clone {
 
     fn live_one(&self, rows: Vec<Row>) -> Result<Option<Row>> {
         for row in rows {
-            if self.versions().at(row)?.is_live() {
+            if self.seen_at(row)?.is_live() {
                 return Ok(Some(row));
             }
         }
@@ -416,7 +437,6 @@ pub trait Table: Default + Clone {
             .into_iter()
             .map(|row| self.versions().parent_of(row))
             .collect::<Result<_>>()?;
-        self.versions_mut().supersede(held)?;
         self.ids_mut().push(id)?;
         let row = self.versions_mut().push_with(Version::UNSTAMPED, parents)?;
         Ok(Row::trusted(row))
@@ -443,7 +463,7 @@ pub trait Table: Default + Clone {
             .map(|index| Row::of(index, rows, Self::Of::NAME))
             .collect::<Result<_>>()?;
         let mut said = Ok(());
-        order.sort_by_key(|row| match self.versions().at(*row) {
+        order.sort_by_key(|row| match self.versions().raw_at(*row) {
             Ok(version) => version.dot(),
             Err(err) => {
                 said = Err(err);
@@ -578,11 +598,9 @@ pub trait Table: Default + Clone {
     }
 
     fn settle(&mut self, of: Id<Self::Of>) -> Result<()> {
-        let winner = self
-            .winner(of)?
+        self.winner(of)?
             .ok_or_else(|| Error::invalid("unknown entity id"))?;
-        self.versions().select(&self.versions_of(of)?, winner);
-        Ok(())
+        self.refresh_one(of)
     }
 
     fn stamp_rows(&mut self, clock: &mut VersionVector, writer: WriterId) -> Result<()> {
@@ -879,6 +897,7 @@ pub trait AnyTable {
     fn revision_records(&self) -> Result<Vec<super::RevisionRecord>>;
 
     fn bind_view(&mut self, view: View);
+    fn audit_standing(&self) -> Result<()>;
     fn refresh_view(&self) -> Result<()>;
     fn described(&self) -> Vec<(String, String, String)>;
 
@@ -993,7 +1012,35 @@ impl<T: Table> AnyTable for T {
     }
 
     fn bind_view(&mut self, view: View) {
+        let _ = view.register(T::Of::NAME, &Table::reference_columns(self));
         self.versions_mut().bind(view);
+    }
+
+    fn audit_standing(&self) -> Result<()> {
+        let mut unique = BTreeSet::new();
+        for index in 0..Table::rows(self) {
+            unique.insert(self.id_at(Row::trusted(index))?);
+        }
+        for id in unique {
+            let Some(row) = self.winner(id)? else {
+                continue;
+            };
+            let held = Table::standing(self, id)?;
+            let agrees = held.is_some_and(|held| {
+                held.winner == row.index()
+                    && self
+                        .versions()
+                        .raw_at(row)
+                        .is_ok_and(|version| version.is_removed() == held.deleted)
+            });
+            if !agrees {
+                return Err(Error::corrupt(
+                    "view",
+                    format!("{} {id} is not the row its table would choose", T::Of::NAME),
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn refresh_view(&self) -> Result<()> {

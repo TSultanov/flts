@@ -75,7 +75,7 @@ impl<'a, S: Holds<E>, E: Entity> Entry<'a, S, E> {
                 "a merged row has multiple source revisions; use sources()",
             ));
         }
-        let version = self.table().versions().at(self.row)?;
+        let version = Table::seen_at(self.table(), self.row)?;
         Ok(if self.historical && self.table().is_derived(self.id()?) {
             version.supersede()
         } else {
@@ -230,7 +230,7 @@ impl<'a, S: Holds<E> + 'a, E: Entity> Iterator for Rows<'a, S, E> {
         let table = Holds::<E>::table(self.store);
         loop {
             let row = Row::trusted(self.rows.next()?);
-            if table.versions().at(row).is_ok_and(Version::is_live) {
+            if Table::seen_at(table, row).is_ok_and(Version::is_live) {
                 return Some(Entry::current_at_row(self.store, row).into());
             }
         }

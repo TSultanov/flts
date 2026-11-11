@@ -125,7 +125,7 @@ fn report_must_identify_the_actual_conflict_winner() -> Result<()> {
     b.docs.set_title(id, "remote final")?;
     commit(&mut b, 2)?;
     let report = a.merge_snapshot(&b)?;
-    let winner = a.docs.versions().at(a.docs.row_of(id)?)?.dot();
+    let winner = a.docs.versions().raw_at(a.docs.row_of(id)?)?.dot();
     assert!(
         report
             .concurrent

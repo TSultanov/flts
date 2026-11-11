@@ -248,8 +248,8 @@ impl<L: Store + 'static> Migrations<L> {
                 }
                 target.absorb(source.clock())?;
                 target.check_published()?;
-                target.audit()?;
                 target.refresh()?;
+                target.audit()?;
                 Ok((Box::new(target), report))
             }),
         });

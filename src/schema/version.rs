@@ -4,7 +4,6 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::marker::PhantomData;
-use std::sync::RwLock;
 
 use super::clock::VersionVector;
 use super::column::{Column, ColumnKind, ColumnSpec, Residency, Row};
@@ -143,6 +142,13 @@ impl Version {
         }
     }
 
+    pub const fn hide(self) -> Self {
+        Self {
+            dot: self.dot,
+            flags: self.flags | HIDDEN,
+        }
+    }
+
     pub const fn restore(self) -> Self {
         Self {
             dot: self.dot,
@@ -209,8 +215,6 @@ pub struct VersionColumn<E: Entity> {
     held_ends: Arena<u64>,
     unsettled: BTreeMap<usize, Vec<Parent>>,
     by_dot: HashIndex<Dot>,
-    superseded: RwLock<BTreeSet<usize>>,
-    row_ids: RwLock<Vec<crate::Uuid>>,
     view: super::View,
     stamped: usize,
     marker: PhantomData<fn() -> E>,
@@ -230,8 +234,6 @@ impl<E: Entity> Default for VersionColumn<E> {
             held_ends: Arena::new(),
             unsettled: BTreeMap::new(),
             by_dot: HashIndex::new(qualified(E::NAME, "version")),
-            superseded: RwLock::new(BTreeSet::new()),
-            row_ids: RwLock::new(Vec::new()),
             view: super::View::default(),
             stamped: 0,
             marker: PhantomData,
@@ -247,8 +249,6 @@ impl<E: Entity> Clone for VersionColumn<E> {
             held_ends: self.held_ends.clone(),
             unsettled: self.unsettled.clone(),
             by_dot: self.by_dot.clone(),
-            superseded: RwLock::new(self.superseded.read().expect("versions lock").clone()),
-            row_ids: RwLock::new(self.row_ids.read().expect("versions lock").clone()),
             view: self.view.fork(),
             stamped: self.stamped,
             marker: PhantomData,
@@ -299,27 +299,6 @@ impl<E: Entity> VersionColumn<E> {
         Ok(())
     }
 
-    pub fn at(&self, row: Row) -> Result<Version> {
-        let mut version = self.raw_at(row)?;
-        if self
-            .superseded
-            .read()
-            .expect("versions lock")
-            .contains(&row.index())
-        {
-            version = version.supersede();
-        }
-        if let Some(id) = self.row_ids.read().expect("versions lock").get(row.index())
-            && self
-                .view
-                .status(E::NAME, *id)
-                .is_some_and(|s| s != super::RowStatus::Visible)
-        {
-            version.flags |= HIDDEN;
-        }
-        Ok(version)
-    }
-
     pub fn raw_at(&self, row: Row) -> Result<Version> {
         self.versions.row(row.index()).copied()
     }
@@ -330,18 +309,6 @@ impl<E: Entity> VersionColumn<E> {
 
     pub fn bind(&mut self, view: super::View) {
         self.view = view;
-    }
-
-    pub fn identify(&self, ids: Vec<crate::Uuid>) {
-        *self.row_ids.write().expect("versions lock") = ids;
-    }
-
-    pub fn identify_rows(&self, rows: &[Row], id: crate::Uuid) {
-        let mut ids = self.row_ids.write().expect("versions lock");
-        ids.resize(self.versions.len(), crate::Uuid::NIL);
-        for row in rows {
-            ids[row.index()] = id;
-        }
     }
 
     pub fn row_for_dot(&self, dot: Dot) -> Result<Option<Row>> {
@@ -452,35 +419,6 @@ impl<E: Entity> VersionColumn<E> {
                 }
             }
         }
-        Ok(())
-    }
-
-    pub fn select(&self, rows: &[Row], winner: Row) {
-        let mut superseded = self.superseded.write().expect("versions lock");
-        for row in rows {
-            if *row == winner {
-                superseded.remove(&row.index());
-            } else {
-                superseded.insert(row.index());
-            }
-        }
-    }
-
-    pub fn supersede(&mut self, row: Row) -> Result<()> {
-        self.raw_at(row)?;
-        self.superseded
-            .write()
-            .expect("versions lock")
-            .insert(row.index());
-        Ok(())
-    }
-
-    pub fn restore(&mut self, row: Row) -> Result<()> {
-        self.raw_at(row)?;
-        self.superseded
-            .write()
-            .expect("versions lock")
-            .remove(&row.index());
         Ok(())
     }
 
@@ -634,8 +572,6 @@ impl<E: Entity> Column for VersionColumn<E> {
         self.held_ends = ends;
         self.held_parents = parents;
         self.unsettled.clear();
-        self.superseded.write().expect("versions lock").clear();
-        self.row_ids.write().expect("versions lock").clear();
         self.by_dot.read_from(entity, field, file)?;
         if !self.by_dot.agrees_with(self.versions.len()) {
             self.index_every_dot()?;

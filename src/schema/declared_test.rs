@@ -1417,10 +1417,10 @@ fn a_row_two_copies_wrote_apart_is_kept_by_the_later_write_and_the_other_is_repo
     mine.commit(device("here"))?;
 
     let ours = Table::versions(&mine.books)
-        .at(mine.books.row_of(alice)?)?
+        .raw_at(mine.books.row_of(alice)?)?
         .dot();
     let theirs_dot = Table::versions(&theirs.books)
-        .at(theirs.books.row_of(alice)?)?
+        .raw_at(theirs.books.row_of(alice)?)?
         .dot();
 
     let report = mine.merge_snapshot(&theirs)?;

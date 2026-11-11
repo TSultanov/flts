@@ -172,6 +172,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
 
             fn audit(&self) -> ::dbsync::Result<()> {
                 <Self as ::dbsync::schema::Store>::audit_dots(self)?;
+                <Self as ::dbsync::schema::Store>::audit_view(self)?;
                 #(#audits)*
                 ::core::result::Result::Ok(())
             }

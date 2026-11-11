@@ -475,6 +475,13 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             id: self.#field_name #held.get(row)?.uuid(),
         }); })
     });
+    let reference_columns = stored.iter().filter_map(|field| {
+        let (Kind::Reference(parent) | Kind::NullableReference(parent)) = &field.kind else {
+            return None;
+        };
+        let column = format!("{label}.{}", field.name);
+        Some(generated! { (#column, <#parent as ::dbsync::schema::Entity>::NAME) })
+    });
     let resolved_references: Vec<_> = stored
         .iter()
         .filter_map(|field| {
@@ -542,7 +549,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         fn source_dots(&self, id: ::dbsync::Id<#name>) -> ::dbsync::Result<::std::vec::Vec<::dbsync::schema::Dot>> {
             if let Some(sources) = self.dbsync_resolved.sources(id.uuid()) { return Ok(sources); }
             <Self as ::dbsync::schema::Table>::versions_of(self, id)?.into_iter()
-                .filter(|row| self.dbsync_versions.at(*row).is_ok_and(|v| v.is_current()))
+                .filter(|row| <Self as ::dbsync::schema::Table>::seen_at(self, *row).is_ok_and(|v| v.is_current()))
                 .map(|row| self.dbsync_versions.raw_at(row).map(|v| v.dot())).collect()
         }
 
@@ -725,6 +732,10 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 let mut out = ::std::vec::Vec::new();
                 #(#payloads)*
                 ::core::result::Result::Ok(out)
+            }
+
+            fn reference_columns(&self) -> ::std::vec::Vec<(&'static str, &'static str)> {
+                ::std::vec![#(#reference_columns,)*]
             }
 
             fn references(&self, row: ::dbsync::schema::Row) -> ::dbsync::Result<::std::vec::Vec<::dbsync::schema::Reference>> {

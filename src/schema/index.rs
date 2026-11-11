@@ -34,6 +34,12 @@ macro_rules! whole_numbers_key_by_their_value {
 
 whole_numbers_key_by_their_value!(u8, u16, u32, u64, i8, i16, i32, i64);
 
+impl IndexKey for u128 {
+    fn raw(self) -> u128 {
+        self
+    }
+}
+
 impl IndexKey for bool {
     fn raw(self) -> u128 {
         u128::from(self)

@@ -262,7 +262,6 @@ pub trait Store: Default + Clone + Sized {
     fn bind_tables(&mut self) {
         let view = self.state().view.clone();
         for table in self.tables_mut() {
-            view.register(table.entity());
             table.bind_view(view.clone());
         }
     }
@@ -326,8 +325,7 @@ pub trait Store: Default + Clone + Sized {
     }
 
     fn conflicts(&self) -> Result<Vec<Conflict>> {
-        self.refresh()?;
-        let mut conflicts = self.state().view.conflicts();
+        let mut conflicts = self.state().view.conflicts()?;
         for table in self.tables() {
             conflicts.extend(table.row_conflicts()?);
         }
@@ -337,8 +335,7 @@ pub trait Store: Default + Clone + Sized {
     }
 
     fn statuses(&self) -> Result<BTreeMap<(&'static str, crate::Uuid), RowStatus>> {
-        self.refresh()?;
-        Ok(self.state().view.statuses())
+        self.state().view.statuses()
     }
 
     fn finish_report(&self, before: &Self, mut report: MergeReport) -> Result<MergeReport> {
@@ -564,6 +561,23 @@ pub trait Store: Default + Clone + Sized {
     fn verify(&self) -> Result<()> {
         self.state().attached()?.0.verify()?;
         self.audit()
+    }
+
+    fn audit_view(&self) -> Result<()> {
+        for table in self.tables() {
+            table.audit_standing()?;
+        }
+        let mut again = self.clone();
+        again.state_mut().view = View::default();
+        again.bind_tables();
+        again.refresh()?;
+        if again.state().view.statuses()? != self.state().view.statuses()? {
+            return Err(Error::corrupt(
+                "view",
+                "the visibility on record is not what the rows imply",
+            ));
+        }
+        Ok(())
     }
 
     fn snapshot(&self) -> Self {
@@ -870,12 +884,12 @@ pub trait Store: Default + Clone + Sized {
             .map(|(table, ids)| (table, ids.into_iter().collect()))
             .collect();
 
-        let mut before = self.state().view.conflicts();
+        let mut before = Vec::new();
         for (table, ids) in &named {
             before.extend(self.tables()[*table].conflicts_among(ids)?);
         }
-        let statuses = self.state().view.statuses();
         let clock = self.clock().clone();
+        self.state().view.watch();
 
         let mut order: Vec<(Dot, usize, usize)> = Vec::new();
         for (at, batch) in batches.iter().enumerate() {
@@ -936,7 +950,7 @@ pub trait Store: Default + Clone + Sized {
             self.state_mut().mark(mark);
         }
 
-        let mut after = self.state().view.conflicts();
+        let mut after = Vec::new();
         for (table, ids) in &named {
             after.extend(self.tables()[*table].conflicts_among(ids)?);
         }
@@ -952,17 +966,39 @@ pub trait Store: Default + Clone + Sized {
                 Conflict::Reference(r) => report.references.push(r),
             }
         }
-        for ((entity, id), after) in self.state().view.statuses() {
-            let before = statuses.get(&(entity, id)).cloned();
-            if before.as_ref() != Some(&after) {
-                report.visibility.push(VisibilityChange {
-                    entity,
-                    id,
-                    before,
-                    after,
-                });
-            }
+        let mut changed = BTreeMap::new();
+        for change in self.state().view.watched() {
+            changed
+                .entry((change.entity, change.id))
+                .or_insert(change.before);
         }
+        for ((entity, id), before) in changed {
+            let Some(after) = self.state().view.status(entity, id)? else {
+                continue;
+            };
+            if before.as_ref() == Some(&after) {
+                continue;
+            }
+            if let RowStatus::Suppressed(reasons) = &after {
+                let known = match &before {
+                    Some(RowStatus::Suppressed(known)) => known.as_slice(),
+                    _ => &[],
+                };
+                for reason in reasons {
+                    if !known.contains(reason) {
+                        report.references.push(*reason);
+                    }
+                }
+            }
+            report.visibility.push(VisibilityChange {
+                entity,
+                id,
+                before,
+                after,
+            });
+        }
+        report.references.sort();
+        report.references.dedup();
         report.clock_changed = *self.clock() != clock;
         Ok(())
     }

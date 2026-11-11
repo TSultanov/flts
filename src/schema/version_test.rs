@@ -200,7 +200,7 @@ fn column(versions: &[Version]) -> VersionColumn<crate::test_utils::library::Boo
 }
 
 fn at(held: &VersionColumn<crate::test_utils::library::Book>, row: usize) -> Version {
-    held.at(Row::of(row, Column::rows(held), "book").unwrap())
+    held.raw_at(Row::of(row, Column::rows(held), "book").unwrap())
         .unwrap()
 }
 
