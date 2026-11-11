@@ -331,6 +331,7 @@ fn a_schema_that_only_grew_reopens_its_own_directory_and_keeps_writing_the_same_
         files,
         [
             Path::new("book/000000000000001d.v1.dbs"),
+            Path::new("dbsync.meta/000000000000001d.dbs"),
             Path::new("note/000000000000001d.v1.dbs")
         ]
     );

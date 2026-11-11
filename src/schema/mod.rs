@@ -16,6 +16,7 @@ mod migration;
 mod names;
 mod nullable;
 mod optional;
+mod peers;
 mod projection;
 mod reference;
 mod resolved;
@@ -49,6 +50,7 @@ pub use names::{
 };
 pub use nullable::{Maybe, NullableColumn};
 pub use optional::{OptionalEnumColumn, OptionalRefColumn};
+pub use peers::Peer;
 pub use projection::{Candidate, Reference, View, encode_bytes, encode_record, encode_text};
 pub use reference::RefColumn;
 pub use resolved::{MergeCandidate, MergeInput, Resolved, RevisionAncestry};

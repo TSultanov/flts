@@ -115,6 +115,7 @@ pub fn entities(shared: &Path, local: &Path) -> Result<Vec<String>> {
         }
         if let Some(name) = entry.file_name().to_str()
             && !name.starts_with('.')
+            && !name.starts_with("dbsync.")
         {
             held.push(name.to_owned());
         }

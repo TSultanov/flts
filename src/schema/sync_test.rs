@@ -109,7 +109,8 @@ fn a_commit_appends_only_to_the_shards_named_for_its_writer() -> Result<()> {
         added,
         [
             Path::new("book/0000000000000011.v1.dbs"),
-            Path::new("chapter/0000000000000011.v1.dbs")
+            Path::new("chapter/0000000000000011.v1.dbs"),
+            Path::new("dbsync.meta/0000000000000011.dbs")
         ]
     );
     Ok(())
@@ -336,5 +337,65 @@ fn the_shared_and_local_halves_can_live_in_different_places() -> Result<()> {
     assert!(layout.cache(1).exists());
     assert!(!dir.join("synced/local").exists());
     assert_eq!(Shelf::open(layout)?.books.title(emma)?, "Emma");
+    Ok(())
+}
+
+#[test]
+fn a_writer_says_what_it_has_seen_when_that_is_news_to_the_others() -> Result<()> {
+    let dir = TempDir::new("sync_seen");
+    let (mut ours, our_dir, mut theirs, their_dir) = two_shelves(&dir)?;
+    let emma = ours.books.push("Emma")?;
+    ours.commit(here())?;
+    let said = ours.peers()?;
+    assert_eq!(said.len(), 1);
+    assert_eq!(said[0].writer, here());
+    assert_eq!(&said[0].seen, ours.clock());
+
+    let meta = Path::new("dbsync.meta/0000000000000011.dbs");
+    let first = shared_files(&our_dir)[meta].clone();
+    ours.books.set_title(emma, "Emma, again")?;
+    ours.commit(here())?;
+    assert_eq!(
+        shared_files(&our_dir)[meta],
+        first,
+        "a commit that learned nothing from anyone has nothing new to tell them"
+    );
+
+    theirs.books.push("Sanditon")?;
+    theirs.commit(there())?;
+    exchange(&our_dir, &their_dir);
+    ours.refresh_peers()?;
+    assert_eq!(
+        shared_files(&our_dir)[meta],
+        first,
+        "reading alone says nothing"
+    );
+    ours.acknowledge(here())?;
+    let said = ours.peers()?;
+    assert_eq!(said.len(), 1, "their own word has not been delivered here");
+    assert!(said[0].seen.counter_of(there()) > 0);
+    assert_eq!(&said[0].seen, ours.clock());
+    Ok(())
+}
+
+#[test]
+fn a_writer_another_has_retired_is_named_in_what_that_one_says() -> Result<()> {
+    let dir = TempDir::new("sync_retire");
+    let (mut ours, _, _, _) = two_shelves(&dir)?;
+    ours.books.push("Emma")?;
+    ours.commit(here())?;
+
+    assert!(ours.retire_writer(here(), here()).is_err());
+    ours.retire_writer(here(), there())?;
+    ours.retire_writer(here(), there())?;
+
+    assert_eq!(ours.peers()?[0].retired, [there()]);
+    ours.books.push("Sanditon")?;
+    ours.commit(here())?;
+    assert_eq!(
+        ours.peers()?[0].retired,
+        [there()],
+        "a later commit keeps it"
+    );
     Ok(())
 }

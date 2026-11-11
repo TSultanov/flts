@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use super::clock::VersionVector;
 use super::column::{ColumnKind, ColumnSpec, Residency};
 use super::diff::SchemaDiff;
+use super::peers::{self, Peer};
 use super::shard::{self, ShardFile, ShardRow};
 use super::table::{Adoption, AnyTable};
 use super::version::Dot;
@@ -167,6 +168,7 @@ pub struct StoreState {
     marks: Vec<ShardMark>,
     held_marks: Arena<ShardMark>,
     outbox: Vec<Outgoing>,
+    said: Option<Peer>,
     view: View,
     compaction_policy: crate::CompactionPolicy,
     maintenance: Option<crate::MaintenanceOutcome>,
@@ -185,6 +187,7 @@ impl Clone for StoreState {
             marks: self.marks.clone(),
             held_marks: self.held_marks.clone(),
             outbox: self.outbox.clone(),
+            said: self.said.clone(),
             view: self.view.fork(),
             compaction_policy: self.compaction_policy,
             maintenance: self.maintenance.clone(),
@@ -1044,10 +1047,81 @@ pub trait Store: Default + Clone + Sized {
         state.outbox.extend(outgoing);
         self.apply(own, &mut report)?;
         self.flush_outbox()?;
+        self.say_what_was_seen(writer_id, None, false)?;
         self.write_cache(writer_id)?;
         self.auto_compact();
         self.generation()
             .ok_or_else(|| Error::invalid("commit did not attach a generation"))
+    }
+
+    fn peers(&self) -> Result<Vec<Peer>> {
+        peers::read_all(&self.state().placed()?.shared)
+    }
+
+    fn acknowledge(&mut self, writer_id: WriterId) -> Result<()> {
+        self.check_published()?;
+        let _lease = self.state().attached()?.1.lease()?;
+        self.say_what_was_seen(writer_id, None, true)
+    }
+
+    fn retire_writer(&mut self, writer_id: WriterId, gone: WriterId) -> Result<()> {
+        if gone == writer_id {
+            return Err(Error::invalid("a writer cannot retire itself"));
+        }
+        self.check_published()?;
+        let _lease = self.state().attached()?.1.lease()?;
+        self.say_what_was_seen(writer_id, Some(gone), true)
+    }
+
+    fn say_what_was_seen(
+        &mut self,
+        writer_id: WriterId,
+        gone: Option<WriterId>,
+        always: bool,
+    ) -> Result<()> {
+        if writer_id.is_anonymous() {
+            return Err(Error::invalid("only a named writer says what it has seen"));
+        }
+        let shared = self.state().placed()?.shared.clone();
+        let said = match &self.state().said {
+            Some(said) if said.writer == writer_id => Some(said.clone()),
+            _ => peers::read(&shared, writer_id)?,
+        };
+        let mut retired = said
+            .as_ref()
+            .map(|said| said.retired.clone())
+            .unwrap_or_default();
+        if let Some(gone) = gone
+            && !retired.contains(&gone)
+        {
+            retired.push(gone);
+            retired.sort();
+        }
+        let news = match &said {
+            None => true,
+            Some(said) => {
+                said.retired != retired
+                    || self
+                        .clock()
+                        .dots()
+                        .iter()
+                        .any(|dot| dot.writer() != writer_id && !said.seen.dominates(*dot))
+            }
+        };
+        if !news && !always {
+            self.state_mut().said = said;
+            return Ok(());
+        }
+        let now = Peer {
+            writer: writer_id,
+            seen: self.clock().clone(),
+            retired,
+        };
+        if said.as_ref() != Some(&now) {
+            peers::publish(&shared, &now)?;
+        }
+        self.state_mut().said = Some(now);
+        Ok(())
     }
 
     fn refresh_peers(&mut self) -> Result<MergeReport> {
