@@ -508,6 +508,37 @@ pub trait Table: Default + Clone {
         self.refresh()
     }
 
+    fn prunable(
+        &self,
+        writer: WriterId,
+        settled: &dyn Fn(Dot) -> bool,
+        whole: &dyn Fn(WriterId) -> bool,
+    ) -> Result<Vec<Row>> {
+        let mut ids = BTreeSet::new();
+        for index in 0..Table::rows(self) {
+            ids.insert(self.id_at(Row::trusted(index))?);
+        }
+        let mut dropped = Vec::new();
+        for id in ids {
+            let heads = self.heads(id)?;
+            let [head] = heads.as_slice() else {
+                continue;
+            };
+            let kept = self.versions().raw_at(*head)?;
+            if !kept.is_stamped() || !settled(kept.dot()) || !whole(kept.dot().writer()) {
+                continue;
+            }
+            for row in self.versions_of(id)? {
+                let held = self.versions().raw_at(row)?;
+                if row != *head && held.is_stamped() && held.dot().writer() == writer {
+                    dropped.push(row);
+                }
+            }
+        }
+        dropped.sort();
+        Ok(dropped)
+    }
+
     fn recover_row(&mut self, _id: Id<Self::Of>, _dot: Dot, _restore: bool) -> Result<()> {
         Err(Error::unsupported(
             "this table does not implement revision recovery",
@@ -610,7 +641,11 @@ pub trait Table: Default + Clone {
         })
     }
 
-    fn adopt_shard_row(&mut self, theirs: &ShardRow) -> Result<Adoption> {
+    fn adopt_shard_row(
+        &mut self,
+        theirs: &ShardRow,
+        gone: &dyn Fn(Dot) -> bool,
+    ) -> Result<Adoption> {
         let id = Id::from_uuid(theirs.id);
         let parents: Vec<Parent> = theirs
             .parents
@@ -659,10 +694,24 @@ pub trait Table: Default + Clone {
             field.name != "id" && field.name != "version" && theirs.value(field.name).is_none()
         });
         if lacking {
+            let mut candidates = Vec::new();
+            let mut orphaned = false;
             for dot in &theirs.parents {
-                let Some(row) = self.versions().row_for_dot(*dot) else {
-                    return Ok(Adoption::Waiting);
-                };
+                match self.versions().row_for_dot(*dot) {
+                    Some(row) => candidates.push(row),
+                    None if gone(*dot) => orphaned = true,
+                    None => return Ok(Adoption::Waiting),
+                }
+            }
+            if orphaned {
+                for row in self.versions_of(id)? {
+                    let held = self.versions().raw_at(row)?;
+                    if held.is_stamped() && held.dot() < theirs.version.dot() {
+                        candidates.push(row);
+                    }
+                }
+            }
+            for row in candidates {
                 let newer = match inherited {
                     Some(held) => {
                         self.versions().raw_at(held)?.dot() < self.versions().raw_at(row)?.dot()
@@ -867,7 +916,18 @@ pub trait AnyTable {
         writer: WriterId,
     ) -> Result<Vec<ShardRow>>;
 
-    fn adopt_row(&mut self, row: &ShardRow) -> Result<Adoption>;
+    fn adopt_row(&mut self, row: &ShardRow, gone: &dyn Fn(Dot) -> bool) -> Result<Adoption>;
+
+    fn keeps_history(&self) -> bool;
+
+    fn prunable_rows(
+        &self,
+        writer: WriterId,
+        settled: &dyn Fn(Dot) -> bool,
+        whole: &dyn Fn(WriterId) -> bool,
+    ) -> Result<Vec<usize>>;
+
+    fn authored_rows(&self, writer: WriterId) -> Result<Vec<(usize, ShardRow)>>;
 
     fn refresh_rows(&self, ids: &[crate::Uuid]) -> Result<()>;
 
@@ -1038,8 +1098,35 @@ impl<T: Table> AnyTable for T {
             .collect()
     }
 
-    fn adopt_row(&mut self, row: &ShardRow) -> Result<Adoption> {
-        Table::adopt_shard_row(self, row)
+    fn adopt_row(&mut self, row: &ShardRow, gone: &dyn Fn(Dot) -> bool) -> Result<Adoption> {
+        Table::adopt_shard_row(self, row, gone)
+    }
+
+    fn keeps_history(&self) -> bool {
+        T::Of::KEEPS.keeps_what_was_written_over()
+    }
+
+    fn prunable_rows(
+        &self,
+        writer: WriterId,
+        settled: &dyn Fn(Dot) -> bool,
+        whole: &dyn Fn(WriterId) -> bool,
+    ) -> Result<Vec<usize>> {
+        Ok(Table::prunable(self, writer, settled, whole)?
+            .into_iter()
+            .map(Row::index)
+            .collect())
+    }
+
+    fn authored_rows(&self, writer: WriterId) -> Result<Vec<(usize, ShardRow)>> {
+        let mut authored = Vec::new();
+        for row in Table::rows_by_dot(self)? {
+            let held = self.versions().raw_at(row)?;
+            if held.is_stamped() && held.dot().writer() == writer {
+                authored.push((row.index(), Table::export(self, row)?));
+            }
+        }
+        Ok(authored)
     }
 
     fn refresh_rows(&self, ids: &[crate::Uuid]) -> Result<()> {

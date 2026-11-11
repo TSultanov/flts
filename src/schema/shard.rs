@@ -12,6 +12,7 @@ const VERSIONS: &str = "version";
 const PARENT_COUNTS: &str = "parent.counts";
 const PARENTS: &str = "parents";
 const SCHEMA: &str = "dbsync.schema";
+const FLOOR: &str = "dbsync.floor";
 const LENS: &str = ".lens";
 const VALUES: &str = ".values";
 const ABSENT: u32 = u32::MAX;
@@ -46,6 +47,7 @@ pub struct ShardFile {
 pub struct ShardRead {
     pub token: CommitToken,
     pub rows: usize,
+    pub floor: u64,
     pub schema: Vec<u8>,
     pub read: Vec<ShardRow>,
 }
@@ -153,14 +155,31 @@ pub fn token_of(path: &Path) -> Result<CommitToken> {
     ColumnFile::read_commit_token(path)
 }
 
+fn floor_in(file: &ColumnFile) -> Result<u64> {
+    if file.column_meta(FLOOR).is_none() {
+        return Ok(0);
+    }
+    Ok(file.column::<u64>(FLOOR)?.get(0)?.copied().unwrap_or(0))
+}
+
+pub fn schema_of(path: &Path) -> Result<Vec<u8>> {
+    bytes_of(&ColumnFile::open(path)?, SCHEMA)
+}
+
+pub fn floor_of(path: &Path) -> Result<u64> {
+    floor_in(&ColumnFile::open(path)?)
+}
+
 pub fn read(path: &Path, from: usize) -> Result<ShardRead> {
     let file = ColumnFile::open(path)?;
     let token = file.commit_token();
     let schema = bytes_of(&file, SCHEMA)?;
+    let floor = floor_in(&file)?;
     if file.column_meta(IDS).is_none() {
         return Ok(ShardRead {
             token,
             rows: 0,
+            floor,
             schema,
             read: Vec::new(),
         });
@@ -227,6 +246,7 @@ pub fn read(path: &Path, from: usize) -> Result<ShardRead> {
     Ok(ShardRead {
         token,
         rows,
+        floor,
         schema,
         read,
     })
@@ -342,8 +362,45 @@ pub fn append(
     } else {
         updater.column(SCHEMA, &described)?;
     }
+    if file.column_meta(FLOOR).is_some() {
+        updater.keep_column(FLOOR)?;
+    }
     let published = updater.commit_file()?;
     Ok((published.commit_token(), ids.len()))
+}
+
+pub fn rewrite(
+    path: &Path,
+    writer: WriterId,
+    schema: &[u8],
+    fields: &[&str],
+    rows: &[ShardRow],
+    floor: u64,
+) -> Result<(CommitToken, usize)> {
+    let folder = path
+        .parent()
+        .ok_or_else(|| Error::invalid("a shard has a table directory"))?;
+    std::fs::create_dir_all(folder)?;
+    let fresh = folder.join(format!(".dbsync-{}.tmp", Uuid::now_v7()));
+    let written = (|| {
+        append(&fresh, writer, schema, fields, rows)?;
+        let file = ColumnFile::open(&fresh)?;
+        let mut held = Arena::<u64>::new();
+        held.push(floor)?;
+        let mut updater = file.update(writer)?;
+        for column in file.columns() {
+            updater.keep_column(&column.name)?;
+        }
+        updater.column(FLOOR, &held)?;
+        let published = updater.commit_file()?;
+        std::fs::File::open(&fresh)?.sync_all()?;
+        std::fs::rename(&fresh, path)?;
+        Ok((published.commit_token(), rows.len()))
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&fresh);
+    }
+    written
 }
 
 #[cfg(test)]

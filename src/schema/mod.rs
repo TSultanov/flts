@@ -40,8 +40,8 @@ pub use identity::IdColumn;
 pub use index::{HashIndex, IndexKey, Keys};
 pub use indexed::{Indexed, Keyed};
 pub use merge::{
-    Combined, Concurrent, Conflict, MergeReport, ReferenceConflict, RevisionRecord, RowStatus,
-    VisibilityChange,
+    Combined, Concurrent, Conflict, MergeReport, PruneReport, ReferenceConflict, RevisionRecord,
+    RowStatus, VisibilityChange,
 };
 pub use metadata::SchemaMetadata;
 pub use migration::{Migration, MigrationReport, MigrationStepReport, MigrationTable, Migrations};
@@ -80,6 +80,10 @@ mod sync_test;
 #[cfg(all(test, feature = "macros"))]
 #[path = "evolve_test.rs"]
 mod evolve_test;
+
+#[cfg(all(test, feature = "macros"))]
+#[path = "prune_test.rs"]
+mod prune_test;
 
 #[cfg(all(test, feature = "macros"))]
 #[path = "ordered_test.rs"]

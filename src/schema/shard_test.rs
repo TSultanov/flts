@@ -163,3 +163,33 @@ fn discovery_separates_shards_from_whatever_else_is_in_the_directory() {
     assert_eq!(strangers, [conflict]);
     assert!(discover(&dir.path, "chapter").unwrap().0.is_empty());
 }
+
+#[test]
+fn a_rewritten_shard_is_a_new_file_that_remembers_how_far_it_was_pruned() {
+    let dir = TempDir::new("shard_rewrite");
+    let path = shard_path(&dir.path, "book", writer(), 1);
+    let fields = ["title", "pages"];
+    let all = [
+        row(1, &[], "one"),
+        row(2, &[1], "two"),
+        row(3, &[2], "three"),
+    ];
+    let (before, _) = append(&path, writer(), b"schema", &fields, &all).unwrap();
+    assert_eq!(floor_of(&path).unwrap(), 0);
+
+    let (after, held) = rewrite(&path, writer(), b"schema", &fields, &all[2..], 2).unwrap();
+
+    assert_eq!(held, 1);
+    assert_ne!(after.file_uuid, before.file_uuid);
+    assert_eq!(token_of(&path).unwrap(), after);
+    let kept = read(&path, 0).unwrap();
+    assert_eq!(kept.read, [row(3, &[2], "three")]);
+    assert_eq!(kept.floor, 2);
+    assert_eq!(kept.schema, b"schema");
+
+    append(&path, writer(), b"schema", &fields, &[row(4, &[3], "four")]).unwrap();
+    assert_eq!(floor_of(&path).unwrap(), 2, "an append keeps the floor");
+    assert_eq!(read(&path, 0).unwrap().rows, 2);
+    let (_, strangers) = discover(&dir.path, "book").unwrap();
+    assert!(strangers.is_empty(), "no temporary file is left behind");
+}

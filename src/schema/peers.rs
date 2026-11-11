@@ -9,13 +9,11 @@ use crate::storage::{Arena, ColumnFile, ColumnFileWriter, WriterId};
 
 pub const FOLDER: &str = "dbsync.meta";
 const SEEN: &str = "seen";
-const RETIRED: &str = "retired";
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Peer {
     pub writer: WriterId,
     pub seen: VersionVector,
-    pub retired: Vec<WriterId>,
 }
 
 pub fn peer_path(shared: &Path, writer: WriterId) -> PathBuf {
@@ -43,16 +41,7 @@ pub fn read(shared: &Path, writer: WriterId) -> Result<Option<Peer>> {
     let dots: Arena<Dot> = file.column(SEEN)?;
     let mut seen = VersionVector::default();
     seen.read_from(&dots)?;
-    let retired = file
-        .column::<u64>(RETIRED)?
-        .iter()
-        .map(|raw| raw.map(|raw| WriterId::from_raw(*raw)))
-        .collect::<Result<Vec<_>>>()?;
-    Ok(Some(Peer {
-        writer,
-        seen,
-        retired,
-    }))
+    Ok(Some(Peer { writer, seen }))
 }
 
 pub fn read_all(shared: &Path) -> Result<Vec<Peer>> {
@@ -91,13 +80,8 @@ pub fn publish(shared: &Path, peer: &Peer) -> Result<()> {
     };
     let mut seen = Arena::<Dot>::new();
     seen.extend_from_slice(peer.seen.dots())?;
-    let mut retired = Arena::<u64>::new();
-    for writer in &peer.retired {
-        retired.push(writer.raw())?;
-    }
     let mut updater = file.update(peer.writer)?;
     updater.column(SEEN, &seen)?;
-    updater.column(RETIRED, &retired)?;
     updater.commit()?;
     Ok(())
 }

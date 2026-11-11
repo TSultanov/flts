@@ -20,7 +20,6 @@ fn what_a_writer_published_is_what_another_reads() {
     let ours = Peer {
         writer: writer(0xa),
         seen: seen(&[(0xa, 7), (0xb, 3)]),
-        retired: vec![writer(0xc)],
     };
     publish(&dir.path, &ours).unwrap();
 
@@ -35,11 +34,9 @@ fn publishing_again_replaces_what_was_said_before() {
     let mut ours = Peer {
         writer: writer(0xa),
         seen: seen(&[(0xa, 1)]),
-        retired: Vec::new(),
     };
     publish(&dir.path, &ours).unwrap();
     ours.seen = seen(&[(0xa, 9), (0xb, 4)]);
-    ours.retired = vec![writer(0xd)];
     publish(&dir.path, &ours).unwrap();
 
     assert_eq!(read(&dir.path, writer(0xa)).unwrap(), Some(ours));
@@ -51,7 +48,6 @@ fn files_that_are_not_a_writers_are_passed_over() {
     let ours = Peer {
         writer: writer(0xa),
         seen: seen(&[(0xa, 1)]),
-        retired: Vec::new(),
     };
     publish(&dir.path, &ours).unwrap();
     let folder = dir.path.join(FOLDER);

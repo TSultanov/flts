@@ -377,25 +377,3 @@ fn a_writer_says_what_it_has_seen_when_that_is_news_to_the_others() -> Result<()
     assert_eq!(&said[0].seen, ours.clock());
     Ok(())
 }
-
-#[test]
-fn a_writer_another_has_retired_is_named_in_what_that_one_says() -> Result<()> {
-    let dir = TempDir::new("sync_retire");
-    let (mut ours, _, _, _) = two_shelves(&dir)?;
-    ours.books.push("Emma")?;
-    ours.commit(here())?;
-
-    assert!(ours.retire_writer(here(), here()).is_err());
-    ours.retire_writer(here(), there())?;
-    ours.retire_writer(here(), there())?;
-
-    assert_eq!(ours.peers()?[0].retired, [there()]);
-    ours.books.push("Sanditon")?;
-    ours.commit(here())?;
-    assert_eq!(
-        ours.peers()?[0].retired,
-        [there()],
-        "a later commit keeps it"
-    );
-    Ok(())
-}

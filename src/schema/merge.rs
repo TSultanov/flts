@@ -83,6 +83,12 @@ impl MergeReport {
     }
 }
 
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub struct PruneReport {
+    pub dropped: usize,
+    pub waiting_for: Vec<crate::WriterId>,
+}
+
 #[cfg(test)]
 #[path = "merge_test.rs"]
 mod merge_test;

@@ -11,7 +11,7 @@ use super::peers::{self, Peer};
 use super::shard::{self, ShardFile, ShardRow};
 use super::table::{Adoption, AnyTable};
 use super::version::Dot;
-use super::{Conflict, MergeReport, Reference, RowStatus, View, VisibilityChange};
+use super::{Conflict, MergeReport, PruneReport, Reference, RowStatus, View, VisibilityChange};
 use crate::error::{Error, Result};
 use crate::record::Record;
 use crate::storage::{
@@ -86,10 +86,11 @@ pub struct ShardMark {
     pub generation: u64,
     pub content_id: u64,
     pub rows: u64,
+    pub floor: u64,
 }
 
 impl ShardMark {
-    fn of(shard: &ShardFile, token: CommitToken, rows: usize) -> Self {
+    fn of(shard: &ShardFile, token: CommitToken, rows: usize, floor: u64) -> Self {
         Self {
             entity: fnv1a(shard.entity.as_bytes()),
             writer: shard.writer,
@@ -98,6 +99,7 @@ impl ShardMark {
             generation: token.generation,
             content_id: token.content_id,
             rows: rows as u64,
+            floor,
         }
     }
 
@@ -115,7 +117,7 @@ impl ShardMark {
 }
 
 impl Record for ShardMark {
-    const SIZE: usize = 6 * size_of::<u64>() + size_of::<u128>();
+    const SIZE: usize = 7 * size_of::<u64>() + size_of::<u128>();
 
     fn encode(&self, out: &mut [u8]) {
         out[..8].copy_from_slice(&self.entity.to_le_bytes());
@@ -125,6 +127,7 @@ impl Record for ShardMark {
         out[40..48].copy_from_slice(&self.generation.to_le_bytes());
         out[48..56].copy_from_slice(&self.content_id.to_le_bytes());
         out[56..64].copy_from_slice(&self.rows.to_le_bytes());
+        out[64..72].copy_from_slice(&self.floor.to_le_bytes());
     }
 
     fn decode(src: &[u8]) -> Self {
@@ -137,6 +140,7 @@ impl Record for ShardMark {
             generation: word(40),
             content_id: word(48),
             rows: word(56),
+            floor: word(64),
         }
     }
 }
@@ -814,7 +818,7 @@ pub trait Store: Default + Clone + Sized {
                 batches.push(Batch {
                     table: index,
                     first: from,
-                    mark: Some(ShardMark::of(&found, read.token, read.rows)),
+                    mark: Some(ShardMark::of(&found, read.token, read.rows, read.floor)),
                     rows: read.read,
                 });
             }
@@ -880,6 +884,19 @@ pub trait Store: Default + Clone + Sized {
             }
         }
         order.sort_unstable();
+        let mut floors: HashMap<(usize, WriterId), u64> = HashMap::new();
+        let entities: Vec<u64> = self
+            .tables()
+            .iter()
+            .map(|table| fnv1a(table.entity().as_bytes()))
+            .collect();
+        let marks = self.state().marks.iter();
+        for mark in marks.chain(batches.iter().filter_map(|batch| batch.mark.as_ref())) {
+            if let Some(table) = entities.iter().position(|entity| *entity == mark.entity) {
+                let floor = floors.entry((table, mark.writer)).or_default();
+                *floor = (*floor).max(mark.floor);
+            }
+        }
         let mut stalled: Vec<Option<usize>> = vec![None; batches.len()];
         for (dot, at, row) in order {
             if stalled[at].is_some() {
@@ -887,7 +904,13 @@ pub trait Store: Default + Clone + Sized {
                 continue;
             }
             let batch = &batches[at];
-            match self.tables_mut()[batch.table].adopt_row(&batch.rows[row])? {
+            let table = batch.table;
+            let gone = |dot: Dot| {
+                floors
+                    .get(&(table, dot.writer()))
+                    .is_some_and(|floor| dot.counter() <= *floor)
+            };
+            match self.tables_mut()[table].adopt_row(&batch.rows[row], &gone)? {
                 Adoption::Taken => report.taken += 1,
                 Adoption::Known => report.known += 1,
                 Adoption::Waiting => {
@@ -1005,8 +1028,14 @@ pub trait Store: Default + Clone + Sized {
             };
             let (token, rows) =
                 shard::append(&found.path, next.writer, &schema, &fields, &next.rows)?;
+            let floor = self
+                .state()
+                .marks
+                .iter()
+                .find(|mark| mark.names(&found))
+                .map_or(0, |mark| mark.floor);
             let state = self.state_mut();
-            state.mark(ShardMark::of(&found, token, rows));
+            state.mark(ShardMark::of(&found, token, rows, floor));
             state.outbox.remove(0);
         }
         Ok(())
@@ -1047,7 +1076,7 @@ pub trait Store: Default + Clone + Sized {
         state.outbox.extend(outgoing);
         self.apply(own, &mut report)?;
         self.flush_outbox()?;
-        self.say_what_was_seen(writer_id, None, false)?;
+        self.say_what_was_seen(writer_id, false)?;
         self.write_cache(writer_id)?;
         self.auto_compact();
         self.generation()
@@ -1061,24 +1090,10 @@ pub trait Store: Default + Clone + Sized {
     fn acknowledge(&mut self, writer_id: WriterId) -> Result<()> {
         self.check_published()?;
         let _lease = self.state().attached()?.1.lease()?;
-        self.say_what_was_seen(writer_id, None, true)
+        self.say_what_was_seen(writer_id, true)
     }
 
-    fn retire_writer(&mut self, writer_id: WriterId, gone: WriterId) -> Result<()> {
-        if gone == writer_id {
-            return Err(Error::invalid("a writer cannot retire itself"));
-        }
-        self.check_published()?;
-        let _lease = self.state().attached()?.1.lease()?;
-        self.say_what_was_seen(writer_id, Some(gone), true)
-    }
-
-    fn say_what_was_seen(
-        &mut self,
-        writer_id: WriterId,
-        gone: Option<WriterId>,
-        always: bool,
-    ) -> Result<()> {
+    fn say_what_was_seen(&mut self, writer_id: WriterId, always: bool) -> Result<()> {
         if writer_id.is_anonymous() {
             return Err(Error::invalid("only a named writer says what it has seen"));
         }
@@ -1087,26 +1102,13 @@ pub trait Store: Default + Clone + Sized {
             Some(said) if said.writer == writer_id => Some(said.clone()),
             _ => peers::read(&shared, writer_id)?,
         };
-        let mut retired = said
-            .as_ref()
-            .map(|said| said.retired.clone())
-            .unwrap_or_default();
-        if let Some(gone) = gone
-            && !retired.contains(&gone)
-        {
-            retired.push(gone);
-            retired.sort();
-        }
         let news = match &said {
             None => true,
-            Some(said) => {
-                said.retired != retired
-                    || self
-                        .clock()
-                        .dots()
-                        .iter()
-                        .any(|dot| dot.writer() != writer_id && !said.seen.dominates(*dot))
-            }
+            Some(said) => self
+                .clock()
+                .dots()
+                .iter()
+                .any(|dot| dot.writer() != writer_id && !said.seen.dominates(*dot)),
         };
         if !news && !always {
             self.state_mut().said = said;
@@ -1115,13 +1117,115 @@ pub trait Store: Default + Clone + Sized {
         let now = Peer {
             writer: writer_id,
             seen: self.clock().clone(),
-            retired,
         };
         if said.as_ref() != Some(&now) {
             peers::publish(&shared, &now)?;
         }
         self.state_mut().said = Some(now);
         Ok(())
+    }
+
+    fn prune(&mut self, writer_id: WriterId, others: &[WriterId]) -> Result<PruneReport> {
+        self.check_published()?;
+        if writer_id.is_anonymous() {
+            return Err(Error::invalid("only a named writer prunes its own shards"));
+        }
+        if !self.state().outbox.is_empty() {
+            return Err(Error::invalid("commit pending changes before pruning"));
+        }
+        let layout = self.state().attached()?.1.clone();
+        let _lease = layout.lease()?;
+        let mut report = PruneReport::default();
+
+        let told = peers::read_all(&layout.shared)?;
+        let mut heard = Vec::new();
+        for other in others.iter().copied().filter(|other| *other != writer_id) {
+            match told.iter().find(|peer| peer.writer == other) {
+                Some(peer) if self.clock().counter_of(other) >= peer.seen.counter_of(other) => {
+                    heard.push(peer.seen.clone());
+                }
+                _ => report.waiting_for.push(other),
+            }
+        }
+        report.waiting_for.sort();
+        report.waiting_for.dedup();
+        if !report.waiting_for.is_empty() {
+            return Ok(report);
+        }
+        let settled = |dot: Dot| heard.iter().all(|seen| seen.dominates(dot));
+
+        let ours = self.schema_metadata();
+        let mut rewrites = Vec::new();
+        for table in self.tables() {
+            if table.keeps_history() {
+                continue;
+            }
+            let fields = table.field_names();
+            let mut complete: HashMap<WriterId, bool> = HashMap::new();
+            let whole = |author: WriterId| {
+                let path = layout.shard(table.entity(), author, Self::SCHEMA_VERSION);
+                shard::schema_of(&path)
+                    .and_then(|bytes| super::SchemaMetadata::decode(&bytes))
+                    .and_then(|written| {
+                        let mut whole = ours.can_read(&written)?;
+                        for field in &fields {
+                            whole &= written.names(table.entity(), field)?;
+                        }
+                        Ok(whole)
+                    })
+                    .unwrap_or(false)
+            };
+            let known = std::cell::RefCell::new(&mut complete);
+            let asked = |author: WriterId| {
+                *known
+                    .borrow_mut()
+                    .entry(author)
+                    .or_insert_with(|| whole(author))
+            };
+            let dropped = table.prunable_rows(writer_id, &settled, &asked)?;
+            if dropped.is_empty() {
+                continue;
+            }
+            let mut floor = self
+                .state()
+                .marks
+                .iter()
+                .find(|mark| {
+                    mark.entity == fnv1a(table.entity().as_bytes())
+                        && mark.writer == writer_id
+                        && mark.schema_version == Self::SCHEMA_VERSION
+                })
+                .map_or(0, |mark| mark.floor);
+            let mut kept = Vec::new();
+            for (row, held) in table.authored_rows(writer_id)? {
+                match dropped.contains(&row) {
+                    true => floor = floor.max(held.version.dot().counter()),
+                    false => kept.push(held),
+                }
+            }
+            report.dropped += dropped.len();
+            rewrites.push((table.entity(), fields, kept, floor));
+        }
+        if rewrites.is_empty() {
+            return Ok(report);
+        }
+
+        let schema = ours.encode()?;
+        for (entity, fields, kept, floor) in rewrites {
+            let path = layout.shard(entity, writer_id, Self::SCHEMA_VERSION);
+            shard::rewrite(&path, writer_id, &schema, &fields, &kept, floor)?;
+        }
+        let mut rebuilt = Self::with_fresh_cache(layout)?;
+        let mut read = MergeReport::default();
+        let batches = rebuilt.collect(|_| true, &mut read)?;
+        rebuilt.apply(batches, &mut read)?;
+        rebuilt.write_cache(writer_id)?;
+        let state = rebuilt.state_mut();
+        state.compaction_policy = self.state().compaction_policy;
+        state.maintenance = self.state().maintenance.clone();
+        state.said = self.state().said.clone();
+        *self = rebuilt;
+        Ok(report)
     }
 
     fn refresh_peers(&mut self) -> Result<MergeReport> {
@@ -1167,8 +1271,12 @@ pub trait Store: Default + Clone + Sized {
                     continue;
                 };
                 let newer = match shard::token_of(&held) {
-                    Ok(ours) => {
-                        ours.file_uuid == told.file_uuid && ours.generation < told.generation
+                    Ok(ours) if ours.file_uuid == told.file_uuid => {
+                        ours.generation < told.generation
+                    }
+                    Ok(_) => {
+                        shard::floor_of(&found.path).unwrap_or(0)
+                            > shard::floor_of(&held).unwrap_or(0)
                     }
                     Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => true,
                     Err(_) => true,
