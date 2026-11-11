@@ -152,7 +152,18 @@ const fn ticks_of(unix_ms: u64) -> u64 {
     unix_ms << LOGICAL_BITS
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Stops the clock at this many milliseconds, for tests of what two
+    /// writers do when they stamp the same instant.
+    pub(crate) static FROZEN_AT_MS: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
 fn now_ticks() -> u64 {
+    #[cfg(test)]
+    if let Some(ms) = FROZEN_AT_MS.get() {
+        return ticks_of(ms);
+    }
     ticks_of(
         SystemTime::now()
             .duration_since(UNIX_EPOCH)

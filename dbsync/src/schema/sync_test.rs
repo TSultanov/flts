@@ -240,6 +240,58 @@ fn two_copies_of_one_store_keep_what_each_wrote() -> Result<()> {
 }
 
 #[test]
+fn two_copies_stamping_one_instant_are_told_and_fail_nobody() -> Result<()> {
+    let dir = TempDir::new("sync_collided");
+    let (first_dir, second_dir, reader_dir) =
+        (dir.join("first"), dir.join("second"), dir.join("reader"));
+    let mut first = Shelf::create(&first_dir, here())?;
+    first.books.push("Emma")?;
+    first.commit(here())?;
+    drop(first);
+    copy_tree(&first_dir, &second_dir);
+    let mut first = Shelf::open(&first_dir)?;
+    let mut second = Shelf::open(&second_dir)?;
+    // Far enough ahead that both take the clock's word for the stamp.
+    let later = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+        + 60_000;
+    crate::schema::clock::FROZEN_AT_MS.set(Some(later));
+    first.books.push("Persuasion")?;
+    first.commit(here())?;
+    second.books.push("Sanditon")?;
+    second.commit(here())?;
+    crate::schema::clock::FROZEN_AT_MS.set(None);
+
+    let mut reader = Shelf::create(&reader_dir, there())?;
+    deliver(&second_dir, &reader_dir, here(), &["book"]);
+    assert!(reader.refresh_peers()?.forked.is_empty());
+
+    // One dot, two revisions: the copy whose file lost appends nothing to
+    // a file that is no longer its alone.
+    let lost = crate::test_utils::shared_files(&first_dir);
+    deliver(&first_dir, &second_dir, here(), &["book"]);
+    let found = second.check_own_shards(here())?;
+    assert!(
+        found.collided && found.forked && found.restored == 0,
+        "{found:?}"
+    );
+    assert_eq!(crate::test_utils::shared_files(&second_dir), lost);
+    assert_eq!(second.refresh_peers()?.forked, [here()]);
+    assert_eq!(titles(&second)?, ["Emma", "Sanditon"], "what it had stays");
+
+    // Whoever reads both copies' files is told, and goes on.
+    deliver(&first_dir, &reader_dir, here(), &["book"]);
+    let told = reader.refresh_peers()?;
+    assert_eq!(told.forked, [here()]);
+    reader.books.push("Lady Susan")?;
+    reader.commit(there())?;
+    reader.verify()?;
+    Ok(())
+}
+
+#[test]
 fn rows_missing_from_a_replaced_shard_are_appended_again() -> Result<()> {
     let dir = TempDir::new("sync_restore");
     let (mut ours, our_dir, mut theirs, their_dir) = two_shelves(&dir)?;

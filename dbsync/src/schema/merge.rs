@@ -73,9 +73,9 @@ pub struct MergeReport {
     pub unreadable: Vec<std::path::PathBuf>,
     pub incompatible: Vec<std::path::PathBuf>,
     pub strangers: Vec<std::path::PathBuf>,
-    /// Writers whose shards hold two different revisions under one dot:
-    /// the identity is in use by more than one store. Their rows are taken
-    /// up to the first such revision and no further.
+    /// Writers whose shards hold a revision other than the one already
+    /// taken under its dot: the identity is in use by more than one store.
+    /// Such a revision is left out; the writer's other rows are taken.
     pub forked: Vec<crate::WriterId>,
 }
 

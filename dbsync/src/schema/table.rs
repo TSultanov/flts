@@ -1116,6 +1116,10 @@ pub trait AnyTable {
 
     fn authored_rows(&self, writer: WriterId) -> Result<Vec<(usize, ShardRow)>>;
 
+    /// Whether the revision held under `row`'s dot is `row`: `None` when
+    /// no revision is.
+    fn agrees_with(&self, row: &ShardRow) -> Result<Option<bool>>;
+
     fn holds_dot(&self, dot: Dot) -> Result<bool>;
 
     fn purge_one(&mut self, id: crate::Uuid) -> Result<bool>;
@@ -1345,6 +1349,26 @@ impl<T: Table> AnyTable for T {
             .into_iter()
             .map(Row::index)
             .collect())
+    }
+
+    fn agrees_with(&self, row: &ShardRow) -> Result<Option<bool>> {
+        let Some(held) = self.versions().row_for_dot(row.version.dot())? else {
+            return Ok(None);
+        };
+        let parents: Vec<Parent> = row.parents.iter().copied().map(Parent::Published).collect();
+        let mut same = self.id_at(held)?.uuid() == row.id
+            && self.versions().raw_at(held)? == row.version
+            && self.versions().parents(held)? == parents.as_slice();
+        for field in self.fields() {
+            if same
+                && field.name != "id"
+                && field.name != "version"
+                && let Some(told) = row.value(field.name)
+            {
+                same = told == field.column.value_bytes(held)?;
+            }
+        }
+        Ok(Some(same))
     }
 
     fn holds_dot(&self, dot: Dot) -> Result<bool> {

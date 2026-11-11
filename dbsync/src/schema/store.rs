@@ -1015,7 +1015,7 @@ pub trait Store: Default + Clone + Sized {
                 // rows at the places already read, and then all of it is news.
                 let read = match shard::read(&found.path, from.saturating_sub(1)) {
                     Ok(mut read) if from > 0 => match read.read.first() {
-                        Some(last) if table.holds_dot(last.version.dot())? => {
+                        Some(last) if table.agrees_with(last)? == Some(true) => {
                             read.read.remove(0);
                             Ok(read)
                         }
@@ -1148,20 +1148,14 @@ pub trait Store: Default + Clone + Sized {
             if !batch.rows[*row].version.is_purged() {
                 continue;
             }
-            if stalled[*at].is_some() {
-                continue;
-            }
             match self.tables_mut()[batch.table].adopt_row(&batch.rows[*row], &|_| true) {
                 Ok(Adoption::Taken) => {
                     report.taken += 1;
                     taken.insert((batch.table, batch.rows[*row].id));
                 }
                 Ok(_) => report.known += 1,
-                Err(err) if err.is_fork() => {
-                    stalled[*at] = Some(*row);
-                    report.forked.push(dot.writer());
-                    continue;
-                }
+                // That revision is never taken; the rows around it are.
+                Err(err) if err.is_fork() => report.forked.push(dot.writer()),
                 Err(err) => return Err(err),
             }
             self.state_mut().clock.observe(*dot);
@@ -1207,9 +1201,9 @@ pub trait Store: Default + Clone + Sized {
                     report.waiting += 1;
                     continue;
                 }
-                // Not this store's damage to fail over: the rest still merges.
+                // Not this store's damage to fail over: that revision is never
+                // taken, the rest still merges.
                 Err(err) if err.is_fork() => {
-                    stalled[at] = Some(row);
                     report.forked.push(dot.writer());
                     continue;
                 }
