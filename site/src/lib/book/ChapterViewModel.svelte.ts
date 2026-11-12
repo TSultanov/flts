@@ -677,7 +677,14 @@ export class ChapterViewModel {
     if (pageWidth <= 0) {
       return;
     }
-    const children = container.children;
+    // getBoundingClientRect, not offsetLeft: offsetLeft is unreliable
+    // across engines in a CSS multi-column flow.
+    const scrollLeft = container.scrollLeft;
+    const children = this.#wrappersNear(
+      container,
+      Math.round(scrollLeft / pageWidth),
+      Math.ceil(GEOM_UNMOUNT_THRESHOLD) + 1,
+    );
     if (children.length === 0) {
       if (this.#mountedParagraphIds.size !== 0) {
         this.#mountedParagraphIds = new Set();
@@ -685,9 +692,6 @@ export class ChapterViewModel {
       return;
     }
 
-    // getBoundingClientRect, not offsetLeft: offsetLeft is unreliable
-    // across engines in a CSS multi-column flow.
-    const scrollLeft = container.scrollLeft;
     const wrappers: Array<{ id: number; center: number; block: boolean }> = [];
     let visibleIdx = -1;
     for (let i = 0; i < children.length; i++) {
@@ -743,14 +747,19 @@ export class ChapterViewModel {
       }
     }
 
+    let changed = false;
     if (!setsEqual(next, this.#mountedParagraphIds)) {
       this.#mountedParagraphIds = next;
       // Sole driver of translation fetches; the store dedups.
       this.#store.enqueueTranslations([...next]);
+      changed = true;
     }
-
-    this.#layout.moveNear(Math.round(scrollLeft / pageWidth));
-    this.#scheduleAdvance();
+    if (this.#layout.moveNear(Math.round(scrollLeft / pageWidth))) {
+      changed = true;
+    }
+    // The frame after checks the blocks. Only after a change: this runs
+    // from that frame too, and would otherwise keep itself going.
+    if (changed) this.#scheduleAdvance();
   }
 
   #setVisibleParagraph(paragraphId: number, pageOffset: number): void {
@@ -783,6 +792,33 @@ export class ChapterViewModel {
     }, 400);
   }
 
+  // The wrappers with a part within `pages` of `page`, and the reader's
+  // paragraph with its neighbours. Every wrapper while their places are
+  // unknown; a scroll frame that asks each of them where it is spends
+  // itself on that.
+  #wrappersNear(
+    container: HTMLElement,
+    page: number,
+    pages: number,
+  ): Element[] {
+    const all = container.getElementsByClassName("paragraph-wrapper");
+    if (!this.#layout.whole) return Array.from(all);
+    let { from, to } = this.#layout.around(page, pages);
+    const reader =
+      this.#visibleParagraphId === null
+        ? undefined
+        : this.#indexOf.get(this.#visibleParagraphId);
+    if (reader !== undefined) {
+      from = Math.min(from, reader - SIBLING_RADIUS);
+      to = Math.max(to, reader + SIBLING_RADIUS);
+    }
+    const near: Element[] = [];
+    for (let i = Math.max(0, from); i <= to && i < all.length; i++) {
+      near.push(all[i]);
+    }
+    return near;
+  }
+
   #findVisibleParagraph(): { id: number; pageOffset: number } | null {
     const container = this.#props.container;
     if (!container) {
@@ -796,8 +832,10 @@ export class ChapterViewModel {
     const x = containerRect.left + 16;
     const y = containerRect.top + 16;
     let wrapper: HTMLElement | null = null;
-    for (const child of container.children) {
-      if (!child.classList.contains("paragraph-wrapper")) continue;
+    const page = Math.floor(
+      (container.scrollLeft + 16) / Math.max(1, containerRect.width),
+    );
+    for (const child of this.#wrappersNear(container, page, 0)) {
       const box = child.getBoundingClientRect();
       // In reading order, so nothing after this one reaches back to x.
       if (box.left > x) break;

@@ -324,18 +324,22 @@ export class ChapterLayout {
     return { from, to };
   }
 
-  /** Draw as text the measured paragraphs on the pages around `page`. */
-  moveNear(page: number): void {
+  /**
+   * Draw as text the measured paragraphs on the pages around `page`. True
+   * if that changed any.
+   */
+  moveNear(page: number): boolean {
     const { measured, near } = this.#shape;
-    if (this.off || measured === 0) return;
+    if (this.off || measured === 0) return false;
     let { from, to } = this.around(page, NEAR_PAGES);
     if (near !== null) {
       const kept = this.around(page, KEPT_PAGES);
       from = Math.min(from, Math.max(near.from, kept.from));
       to = Math.max(to, Math.min(near.to, kept.to));
     }
-    if (near !== null && near.from === from && near.to === to) return;
+    if (near !== null && near.from === from && near.to === to) return false;
     this.#shape = { ...this.#shape, near: { from, to } };
+    return true;
   }
 
   /**
