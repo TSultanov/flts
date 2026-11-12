@@ -39,6 +39,11 @@ impl ChunkLoc {
 
 pub trait ChunkSource: Send + Sync {
     fn read_chunk(&self, loc: ChunkLoc) -> Result<Vec<u8>>;
+
+    /// The record at `loc` as it is stored, where it stands by itself.
+    fn read_stored(&self, _loc: ChunkLoc) -> Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
 }
 
 #[derive(Clone)]
@@ -150,6 +155,10 @@ impl Provenance {
 
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    pub fn stored(&self, loc: ChunkLoc) -> Result<Option<Vec<u8>>> {
+        self.source.read_stored(loc)
     }
 
     pub fn is_from(&self, source: &Arc<dyn ChunkSource>, generation: u64) -> bool {

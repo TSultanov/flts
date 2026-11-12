@@ -1,10 +1,15 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use proptest::prelude::*;
+
 use crate::error::Result;
-use crate::id::Id;
-use crate::schema::{AnyTable, PurgeReport, RowStatus, Store, Table};
+use crate::id::{Id, Uuid};
+use crate::schema::{
+    AnyTable, Conflict, Dot, OwnShards, PurgeReport, Row, RowStatus, ShardRow, Store, Table,
+};
 use crate::storage::{ColumnFile, WriterId};
-use crate::test_utils::{TempDir, cache, files_holding};
+use crate::test_utils::{TempDir, cache, copy_dir, files_holding};
 
 #[crate::field_enum]
 #[derive(PartialEq, Eq, Debug)]
@@ -1270,7 +1275,7 @@ fn a_purge_from_a_shard_is_taken_whatever_values_it_claims() -> Result<()> {
 }
 
 #[test]
-fn a_cache_rebuilt_while_shedding_takes_no_row_a_purge_outranked() -> Result<()> {
+fn a_reclaim_sheds_from_the_cache_what_another_writer_wrote_and_a_purge_outranked() -> Result<()> {
     let dir = TempDir::new("purge_shed");
     let mut three = three(&dir)?;
     three.desk.purge(three.held.zuleika)?;
@@ -1279,29 +1284,340 @@ fn a_cache_rebuilt_while_shedding_takes_no_row_a_purge_outranked() -> Result<()>
     drop(three.tablet);
     std::fs::remove_dir_all(three.tablet_dir.join("local"))?;
 
-    let plain = Library::open(&three.tablet_dir)?;
-    assert_eq!(plain.books.purged_payload()?.len(), 1);
-    assert_eq!(plain.paragraphs.purged_payload()?.len(), 3);
+    let mut tablet = Library::open(&three.tablet_dir)?;
+    assert_eq!(tablet.books.purged_payload()?.len(), 1);
+    assert_eq!(tablet.paragraphs.purged_payload()?.len(), 3);
+    let held = cache(&three.tablet_dir);
+    let held = held.strip_prefix(&three.tablet_dir).unwrap().to_owned();
+    assert!(files_holding(&three.tablet_dir, TEXT.as_bytes()).contains(&held));
+    let shards = crate::test_utils::shared_files(&three.tablet_dir);
+
+    let report = tablet.reclaim_purged(TABLET)?;
+
+    assert_eq!(report.dropped, 0, "none of it is the tablet's to rewrite");
+    assert_eq!(crate::test_utils::shared_files(&three.tablet_dir), shards);
+    assert!(tablet.books.purged_payload()?.is_empty());
+    assert!(tablet.paragraphs.purged_payload()?.is_empty());
+    assert!(!files_holding(&three.tablet_dir, TEXT.as_bytes()).contains(&held));
+    assert!(tablet.is_purged(three.held.paragraphs[0])?);
+    assert_eq!(tablet.at(three.held.seven)?.title()?, KEPT);
+    assert_eq!(tablet.clock(), three.desk.clock());
+    tablet.verify()?;
+    drop(tablet);
+
+    let reopened = Library::open(&three.tablet_dir)?;
+    assert!(reopened.books.purged_payload()?.is_empty());
+    assert_eq!(reopened.at(three.held.seven)?.title()?, KEPT);
+    reopened.verify()?;
+    Ok(())
+}
+
+#[test]
+fn a_reclaim_cut_between_two_shards_is_finished_by_the_next_one() -> Result<()> {
+    let dir = TempDir::new("purge_cut");
+    let phone_dir = dir.join("phone");
+    let mut library = Library::create(&phone_dir, PHONE)?;
+    let held = stock(&mut library)?;
+    library.commit(PHONE)?;
+    library.purge(held.zuleika)?;
+    library.commit(PHONE)?;
+    let marks = library.shard_marks().to_vec();
+    let books = library.layout().unwrap().shard("book", PHONE, 1);
+    let chapters = library.layout().unwrap().shard("chapter", PHONE, 1);
+    let (book_token, chapter_token) = (
+        ColumnFile::read_commit_token(&books)?,
+        ColumnFile::read_commit_token(&chapters)?,
+    );
+
+    crate::schema::store::CUT_AFTER_REWRITE.set(true);
+    let cut = library.reclaim_purged(PHONE).unwrap_err();
+
+    assert!(cut.to_string().contains("injected cut"), "{cut}");
+    assert_ne!(ColumnFile::read_commit_token(&books)?, book_token);
+    assert_eq!(ColumnFile::read_commit_token(&chapters)?, chapter_token);
+    assert_eq!(
+        library.shard_marks(),
+        marks,
+        "a drop that failed holds nothing"
+    );
+    assert_eq!(library.books.purged_payload()?.len(), 1);
     assert!(
-        files_holding(&three.tablet_dir, TEXT.as_bytes())
+        files_holding(&phone_dir, TITLE.as_bytes())
             .contains(&PathBuf::from("local/cache.v1.r2.dbs"))
     );
-    drop(plain);
+    // The process dies here, with or without its cache.
+    let (warm, cold) = (dir.join("warm"), dir.join("cold"));
+    copy_dir(&phone_dir, &warm);
+    copy_dir(&phone_dir, &cold);
+    std::fs::remove_dir_all(cold.join("local"))?;
 
-    std::fs::remove_file(cache(&three.tablet_dir))?;
-    let mut shed = Library::with_fresh_cache(crate::schema::Layout::within(&three.tablet_dir))?;
-    shed.state_mut().shedding = true;
-    let mut report = crate::schema::MergeReport::default();
-    let batches = shed.collect(|_| true, &mut report)?;
-    shed.apply(batches, &mut report)?;
+    for (at, left) in [(&phone_dir, 7), (&warm, 7), (&cold, 6)] {
+        let mut library = match *at == phone_dir {
+            true => library.snapshot(),
+            false => Library::open(at)?,
+        };
+        library.verify()?;
+        assert_eq!(
+            library.check_own_shards(PHONE)?,
+            OwnShards::default(),
+            "what the cut shard gave up is not put back"
+        );
+        assert!(library.is_purged(held.zuleika)?);
 
-    assert_eq!(report.taken, 7 + 7);
-    assert_eq!(report.known, 7, "shed rows are passed over, not kept");
-    assert!(shed.books.purged_payload()?.is_empty());
-    assert!(shed.is_purged(three.held.paragraphs[0])?);
-    assert_eq!(shed.at(three.held.seven)?.title()?, KEPT);
-    assert_eq!(shed.clock(), three.desk.clock());
+        assert_eq!(library.reclaim_purged(PHONE)?.dropped, left);
+
+        assert_eq!(traces(at), Vec::<PathBuf>::new());
+        assert_eq!(library.at(held.seven)?.title()?, KEPT);
+        assert_eq!(library.check_own_shards(PHONE)?, OwnShards::default());
+        library.verify()?;
+        library.books.set_year(held.seven, 1920)?;
+        library.commit(PHONE)?;
+        drop(library);
+        let again = Library::open(at)?;
+        assert_eq!(again.at(held.seven)?.year()?, 1920);
+        assert!(again.books.purged_payload()?.is_empty());
+        again.verify()?;
+        std::fs::remove_dir_all(at.join("local"))?;
+        let rebuilt = Library::open(at)?;
+        assert_eq!(rebuilt.at(held.seven)?.year()?, 1920);
+        assert!(rebuilt.is_purged(held.zuleika)?);
+        rebuilt.verify()?;
+    }
     Ok(())
+}
+
+struct Seen {
+    statuses: BTreeMap<(&'static str, Uuid), RowStatus>,
+    conflicts: Vec<Conflict>,
+    winners: BTreeMap<(&'static str, Uuid), Dot>,
+    rows: Vec<Vec<ShardRow>>,
+    dated: Vec<Id<Book>>,
+    titled: BTreeMap<Id<Book>, BTreeSet<Id<Book>>>,
+    headed: BTreeMap<Id<Chapter>, BTreeSet<Id<Chapter>>>,
+    under: BTreeMap<Id<Book>, BTreeSet<Id<Chapter>>>,
+}
+
+impl Seen {
+    fn is_what(&self, other: &Self, how: &str) {
+        assert_eq!(self.statuses, other.statuses, "{how}");
+        assert_eq!(self.conflicts, other.conflicts, "{how}");
+        assert_eq!(self.winners, other.winners, "{how}");
+        for (ours, theirs) in self.rows.iter().zip(&other.rows) {
+            for row in ours {
+                assert!(theirs.contains(row), "{how}: only here {row:?}");
+            }
+            for row in theirs {
+                assert!(ours.contains(row), "{how}: only there {row:?}");
+            }
+        }
+        assert_eq!(self.dated, other.dated, "{how}");
+        assert_eq!(self.titled, other.titled, "{how}");
+        assert_eq!(self.headed, other.headed, "{how}");
+        assert_eq!(self.under, other.under, "{how}");
+    }
+}
+
+fn winners<T: Table>(table: &T, out: &mut BTreeMap<(&'static str, Uuid), Dot>) -> Result<()> {
+    for uuid in table.identities()? {
+        let held = Table::standing(table, Id::from_uuid(uuid))?.expect("every id stands");
+        let dot = table.versions().raw_at(Row::trusted(held.winner))?.dot();
+        out.insert((table.entity(), uuid), dot);
+    }
+    Ok(())
+}
+
+// What a store shows and holds, less what a purge outranked: a reclaim sheds
+// that from memory whoever wrote it, a rebuild reads it back from their shards.
+fn seen(library: &Library) -> Result<Seen> {
+    let mut found = BTreeMap::new();
+    winners(&library.books, &mut found)?;
+    winners(&library.authors, &mut found)?;
+    winners(&library.credits, &mut found)?;
+    winners(&library.chapters, &mut found)?;
+    winners(&library.paragraphs, &mut found)?;
+    winners(&library.notes, &mut found)?;
+    winners(&library.links, &mut found)?;
+    let mut rows = Vec::new();
+    for table in library.tables() {
+        let purged: BTreeSet<Uuid> = table.purged_identities()?.into_iter().collect();
+        let mut held = table.export_rows()?;
+        held.retain(|row| row.version.is_purged() || !purged.contains(&row.id));
+        held.sort_by_key(|row| row.version.dot());
+        rows.push(held);
+    }
+    // Rows are walked in the order they arrived, which no two stores share.
+    let mut titled = BTreeMap::new();
+    let mut under = BTreeMap::new();
+    for book in library.all::<Book>() {
+        let named = library.books.find_by_title(&book.title()?)?;
+        titled.insert(book.id()?, named.into_iter().collect());
+        under.insert(
+            book.id()?,
+            book.chapters()?
+                .map(|chapter| chapter.id())
+                .collect::<Result<_>>()?,
+        );
+    }
+    let mut headed = BTreeMap::new();
+    for chapter in library.all::<Chapter>() {
+        let named = library.chapters.find_by_heading(&chapter.heading()?)?;
+        headed.insert(chapter.id()?, named.into_iter().collect());
+    }
+    Ok(Seen {
+        statuses: library.statuses()?,
+        conflicts: library.conflicts()?,
+        winners: found,
+        rows,
+        dated: library.books.by_year(..)?,
+        titled,
+        headed,
+        under,
+    })
+}
+
+fn agrees_with_its_shards(library: &Library, dir: &Path) -> Result<()> {
+    library.verify()?;
+    let held = seen(library)?;
+    let scratch = TempDir::new("purge_agrees");
+
+    let warm = scratch.join("warm");
+    copy_dir(dir, &warm);
+    let reopened = Library::open(&warm)?;
+    held.is_what(&seen(&reopened)?, "opened from the cache");
+    assert_eq!(reopened.clock(), library.clock());
+    assert_eq!(reopened.shard_marks(), library.shard_marks());
+    for (ours, theirs) in library.tables().iter().zip(reopened.tables()) {
+        assert_eq!(ours.export_rows()?, theirs.export_rows()?);
+    }
+    drop(reopened);
+
+    std::fs::remove_dir_all(warm.join("local"))?;
+    let rebuilt = Library::open(&warm)?;
+    held.is_what(&seen(&rebuilt)?, "rebuilt from the shards");
+    // A writer's newest dot may be on a row it dropped: only who saw it knows of it.
+    assert!(library.clock().covers(rebuilt.clock()));
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+enum Step {
+    Retitle(usize, String),
+    Date(usize, u32),
+    Reword(usize, String),
+    Annotate(usize, String),
+    Pin(usize, Option<usize>),
+    Remove(usize),
+    Purge(usize),
+    Meet,
+    Prune,
+    Reclaim,
+}
+
+fn step() -> impl Strategy<Value = Step> {
+    let word = "[a-z]{1,8}";
+    prop_oneof![
+        3 => (0..2usize, word).prop_map(|(book, title)| Step::Retitle(book, title)),
+        2 => (0..2usize, 1900..1930u32).prop_map(|(book, year)| Step::Date(book, year)),
+        2 => (0..3usize, word).prop_map(|(paragraph, text)| Step::Reword(paragraph, text)),
+        2 => (0..2usize, word).prop_map(|(note, body)| Step::Annotate(note, body)),
+        1 => (0..2usize, proptest::option::of(0..2usize))
+            .prop_map(|(note, book)| Step::Pin(note, book)),
+        1 => (0..2usize).prop_map(Step::Remove),
+        1 => (0..2usize).prop_map(Step::Purge),
+        3 => Just(Step::Meet),
+        3 => Just(Step::Prune),
+        2 => Just(Step::Reclaim),
+    ]
+}
+
+fn meet(three: &mut Three) -> Result<()> {
+    for _ in 0..2 {
+        carry(&three.phone_dir, &three.desk_dir, PHONE);
+        carry(&three.desk_dir, &three.phone_dir, DESK);
+        three.phone.refresh_peers()?;
+        three.desk.refresh_peers()?;
+        three.phone.acknowledge(PHONE)?;
+        three.desk.acknowledge(DESK)?;
+    }
+    carry(&three.phone_dir, &three.desk_dir, PHONE);
+    carry(&three.desk_dir, &three.phone_dir, DESK);
+    Ok(())
+}
+
+// Writes to a row that was removed or purged are refused, and left out.
+fn played(steps: &[(bool, Step)]) -> Result<()> {
+    let dir = TempDir::new("purge_played");
+    let mut three = three(&dir)?;
+    let books = [three.held.zuleika, three.held.seven];
+    let notes = [three.held.pinned, three.held.loose];
+    let paragraphs = three.held.paragraphs;
+    for (on_phone, step) in steps {
+        if matches!(step, Step::Meet) {
+            meet(&mut three)?;
+            continue;
+        }
+        let (library, dir, writer, other) = match on_phone {
+            true => (&mut three.phone, &three.phone_dir, PHONE, DESK),
+            false => (&mut three.desk, &three.desk_dir, DESK, PHONE),
+        };
+        match step {
+            Step::Retitle(book, title) => drop(library.books.set_title(books[*book], title)),
+            Step::Date(book, year) => drop(library.books.set_year(books[*book], *year)),
+            Step::Reword(paragraph, text) => {
+                drop(library.paragraphs.set_text(paragraphs[*paragraph], text))
+            }
+            Step::Annotate(note, body) => drop(library.notes.set_body(notes[*note], body)),
+            Step::Pin(note, book) => drop(
+                library
+                    .notes
+                    .set_book(notes[*note], book.map(|book| books[book])),
+            ),
+            Step::Remove(note) => drop(library.remove(notes[*note])),
+            Step::Purge(book) => drop(library.purge(books[*book])),
+            Step::Prune => {
+                library.prune(writer, &[other])?;
+                agrees_with_its_shards(library, dir)?;
+            }
+            Step::Reclaim => {
+                library.reclaim_purged(writer)?;
+                agrees_with_its_shards(library, dir)?;
+            }
+            Step::Meet => {}
+        }
+        library.commit(writer)?;
+    }
+
+    meet(&mut three)?;
+    for (library, dir, writer, other) in [
+        (&mut three.phone, &three.phone_dir, PHONE, DESK),
+        (&mut three.desk, &three.desk_dir, DESK, PHONE),
+    ] {
+        library.reclaim_purged(writer)?;
+        library.prune(writer, &[other])?;
+        agrees_with_its_shards(library, dir)?;
+        assert_eq!(library.check_own_shards(writer)?, OwnShards::default());
+    }
+    meet(&mut three)?;
+    assert_eq!(three.phone.statuses()?, three.desk.statuses()?);
+    assert_eq!(three.phone.conflicts()?, three.desk.conflicts()?);
+    three.phone.verify()?;
+    three.desk.verify()
+}
+
+// Run by hand: the macro takes its number of cases from the environment, and
+// each of these opens a dozen stores.
+#[test]
+fn a_store_that_dropped_rows_is_the_store_its_cache_and_its_shards_open_as() {
+    let config = ProptestConfig {
+        cases: 48,
+        ..ProptestConfig::default()
+    };
+    let steps = proptest::collection::vec((any::<bool>(), step()), 1..28);
+    proptest::test_runner::TestRunner::new(config)
+        .run(&steps, |steps| {
+            played(&steps).map_err(|err| TestCaseError::fail(err.to_string()))
+        })
+        .unwrap();
 }
 
 mod older {

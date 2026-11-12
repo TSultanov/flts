@@ -58,7 +58,7 @@ impl FileSource {
         read_exact_at(&self.file, buf, offset)
     }
 
-    pub(super) fn read_payload(&self, loc: ChunkLoc) -> Result<Vec<u8>> {
+    fn read_record(&self, loc: ChunkLoc) -> Result<Vec<u8>> {
         if loc.depth > super::delta::MAX_DEPTH
             || loc.stored_len <= super::compression::HEADER_LEN as u32
             || loc
@@ -70,11 +70,30 @@ impl FileSource {
         }
         let mut buf = vec![0u8; loc.physical_len() as usize];
         self.read_at(&mut buf, loc.offset)?;
-        super::compression::decode(loc, &buf)
+        Ok(buf)
+    }
+
+    pub(super) fn read_payload(&self, loc: ChunkLoc) -> Result<Vec<u8>> {
+        super::compression::decode(loc, &self.read_record(loc)?)
     }
 }
 
 impl ChunkSource for FileSource {
+    fn read_stored(&self, loc: ChunkLoc) -> Result<Option<Vec<u8>>> {
+        if loc.depth != 0 {
+            return Ok(None);
+        }
+        let record = self.read_record(loc)?;
+        let (byte_len, _, depth) = super::compression::header(&record)?;
+        if byte_len != loc.byte_len || depth != 0 {
+            return Err(crate::Error::corrupt(
+                "compression",
+                "record header mismatch",
+            ));
+        }
+        Ok(Some(record))
+    }
+
     fn read_chunk(&self, loc: ChunkLoc) -> Result<Vec<u8>> {
         let buf = self.read_payload(loc)?;
         let bytes = if loc.depth == 0 {

@@ -264,6 +264,21 @@ impl ColumnFileUpdater {
                 continue;
             }
 
+            // A rewrite moves a chunk nobody has changed as it is stored.
+            if self.rewriting
+                && let Some(loc) = arena.reusable_loc(index)
+                && let Some(from) = arena.provenance()
+                && let Some(record) = from.stored(loc)?
+            {
+                self.file.write_payload(&record, self.cursor)?;
+                chunks.push(ChunkLoc {
+                    offset: self.cursor,
+                    ..loc
+                });
+                self.cursor += record.len() as u64;
+                continue;
+            }
+
             let bytes = arena.chunk_bytes(index)?;
             let byte_len =
                 u32::try_from(bytes.len()).map_err(|_| Error::invalid("chunk exceeds u32"))?;

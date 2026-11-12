@@ -395,6 +395,90 @@ fn listing_the_catalogue_leaves_every_paragraph_cold() -> Result<()> {
 }
 
 #[test]
+fn pruning_a_row_of_one_table_leaves_every_paragraph_cold_and_unwritten() -> Result<()> {
+    let dir = TempDir::new("declared_prune_cold");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device())?;
+    let on = stock(&mut library)?;
+    let editor = library.editors.push("Maxwell Perkins")?;
+    library.commit(this_device())?;
+    library.editors.set_name(editor, "Max Perkins")?;
+    library.commit(this_device())?;
+    drop(library);
+
+    let mut reopened = Library::open(&path)?;
+    let residency = |library: &Library, name: &str| {
+        library
+            .residency()
+            .into_iter()
+            .find(|column| column.name == name)
+            .expect("the schema names this column")
+            .resident
+    };
+    let payload = ["paragraph.text", "paragraph.text.bytes", "chapter.title"];
+    for name in payload {
+        assert_eq!(residency(&reopened, name), 0, "{name} before the prune");
+    }
+    let settled = ColumnFile::open(crate::test_utils::cache(&path))?;
+    let untouched = settled.column_meta("paragraph.text").unwrap().chunks[0];
+    drop(settled);
+
+    let report = reopened.prune(this_device(), &[])?;
+
+    assert_eq!(report.dropped, 1);
+    for name in payload {
+        assert_eq!(residency(&reopened, name), 0, "{name} after the prune");
+    }
+    let pruned = ColumnFile::open(crate::test_utils::cache(&path))?;
+    assert_eq!(
+        pruned.column_meta("paragraph.text").unwrap().chunks[0],
+        untouched,
+        "a table that lost nothing must not be rewritten"
+    );
+    assert_eq!(Table::versions_of(&reopened.editors, editor)?.len(), 1);
+    assert_eq!(reopened.editors.name(editor)?, "Max Perkins");
+    assert_eq!(reopened.at(on.alice)?.chapters()?.count(), 2);
+    reopened.verify()?;
+    Ok(())
+}
+
+#[test]
+fn pruning_where_nothing_was_written_over_reads_no_payload_and_writes_nothing() -> Result<()> {
+    let dir = TempDir::new("declared_prune_quiet");
+    let path = dir.join("library.dbs");
+
+    let mut library = Library::create(&path, this_device())?;
+    let _ = stock(&mut library)?;
+    library.commit(this_device())?;
+    drop(library);
+
+    let mut reopened = Library::open(&path)?;
+    let generation = reopened.generation();
+
+    assert_eq!(reopened.prune(this_device(), &[])?.dropped, 0);
+
+    assert_eq!(reopened.generation(), generation);
+    for column in reopened.residency() {
+        if crate::test_utils::is_merge_metadata(&reopened, &column.name) {
+            continue;
+        }
+        assert_eq!(
+            column.resident, 0,
+            "{} was read with nothing to drop",
+            column.name
+        );
+    }
+    let ids = reopened
+        .residency()
+        .into_iter()
+        .find(|column| column.name == "paragraph.id")
+        .unwrap();
+    assert_eq!(ids.resident, 0, "no id is written twice, so none is read");
+    Ok(())
+}
+
+#[test]
 fn walking_a_books_chapters_reads_the_index_and_never_the_column_it_indexes() -> Result<()> {
     let dir = TempDir::new("declared_walk");
     let path = dir.join("library.dbs");

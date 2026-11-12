@@ -178,6 +178,23 @@ impl ColumnFile {
         fill: impl FnOnce(&mut ColumnFileUpdater) -> Result<()>,
         validate: impl FnOnce(&ColumnFile) -> Result<()>,
     ) -> Result<(Self, CompactionReport)> {
+        self.rewritten(true, fill, validate)
+    }
+
+    /// A rewrite that reads no more of either file than a commit would.
+    pub(crate) fn replace(
+        &self,
+        fill: impl FnOnce(&mut ColumnFileUpdater) -> Result<()>,
+    ) -> Result<Self> {
+        Ok(self.rewritten(false, fill, |_| Ok(()))?.0)
+    }
+
+    fn rewritten(
+        &self,
+        checked: bool,
+        fill: impl FnOnce(&mut ColumnFileUpdater) -> Result<()>,
+        validate: impl FnOnce(&ColumnFile) -> Result<()>,
+    ) -> Result<(Self, CompactionReport)> {
         let path = self.file_source().path();
         let original = OpenOptions::new().read(true).write(true).open(path)?;
         original.lock()?;
@@ -188,7 +205,9 @@ impl ColumnFile {
                 found,
             });
         }
-        self.verify()?;
+        if checked {
+            self.verify()?;
+        }
         let before_bytes = original.metadata()?.len();
         let parent = path
             .parent()
@@ -207,7 +226,9 @@ impl ColumnFile {
         update.prepare_rewrite(self.generation())?;
         fill(&mut update)?;
         let ready = update.commit_file()?;
-        ready.verify()?;
+        if checked {
+            ready.verify()?;
+        }
         validate(&ready)?;
         let replacement = OpenOptions::new().read(true).write(true).open(&temp.0)?;
         replacement.lock()?;

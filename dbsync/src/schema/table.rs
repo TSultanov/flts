@@ -13,7 +13,7 @@ use super::{Candidate, Parent, Reference, View};
 use crate::error::{Error, Result};
 use crate::id::Id;
 use crate::storage::{ColumnFile, ColumnFileUpdater, WriterId};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Adoption {
@@ -570,11 +570,19 @@ pub trait Table: Default + Clone {
         settled: &dyn Fn(Dot) -> bool,
         whole: &dyn Fn(WriterId) -> bool,
     ) -> Result<Vec<Row>> {
+        let mut dropped = Vec::new();
+        if !self.repeats_an_id() {
+            return Ok(dropped);
+        }
+        // Only an id written more than once has a revision to give up.
+        let mut seen = HashSet::with_capacity(Table::rows(self));
         let mut ids = BTreeSet::new();
         for index in 0..Table::rows(self) {
-            ids.insert(self.id_at(Row::trusted(index))?);
+            let id = self.id_at(Row::trusted(index))?;
+            if !seen.insert(id) {
+                ids.insert(id);
+            }
         }
-        let mut dropped = Vec::new();
         for id in ids {
             if self.purged(id)? {
                 continue;
@@ -598,6 +606,76 @@ pub trait Table: Default + Clone {
         Ok(dropped)
     }
 
+    // Every id has a slot in the view, so as many slots as rows means one row each.
+    fn repeats_an_id(&self) -> bool {
+        self.versions().view().slots(Self::Of::NAME) < Table::rows(self)
+    }
+
+    /// The table as a rebuild from shards lacking `gone` would leave it:
+    /// purges first, then every other row in the order of its dot.
+    fn without(&self, gone: &BTreeSet<usize>) -> Result<Self> {
+        let mut kept = Self::default();
+        kept.versions_mut().bind(self.versions().view().clone());
+        let order = self.rows_by_dot()?;
+        for purges in [true, false] {
+            for row in &order {
+                let version = self.versions().raw_at(*row)?;
+                if gone.contains(&row.index()) || version.is_purged() != purges {
+                    continue;
+                }
+                let mut values = Vec::new();
+                for field in self.fields() {
+                    if field.name != "id" && field.name != "version" {
+                        values.push(field.column.value_bytes(*row)?);
+                    }
+                }
+                kept.reserve()?;
+                kept.adopt_revision(self.id_at(*row)?, version, self.versions().parents(*row)?)?;
+                let mut values = values.into_iter();
+                for field in kept.fields_mut() {
+                    if field.name != "id" && field.name != "version" {
+                        let bytes = values.next().ok_or_else(|| {
+                            Error::corrupt("schema", "missing field during prune")
+                        })?;
+                        field.column.append_value_bytes(&bytes)?;
+                    }
+                }
+            }
+        }
+        Ok(kept)
+    }
+
+    // What `writer` wrote at or under `floor` and its shard lacks: it dropped them. Kept
+    // where a purge has them to shed, and where an id would be left with no row at all.
+    fn dropped_by(
+        &self,
+        writer: WriterId,
+        floor: u64,
+        holds: &dyn Fn(Dot) -> bool,
+    ) -> Result<Vec<Row>> {
+        let mut lacking: BTreeMap<Id<Self::Of>, Vec<Row>> = BTreeMap::new();
+        for index in 0..Table::rows(self) {
+            let row = Row::trusted(index);
+            let held = self.versions().raw_at(row)?;
+            if held.is_stamped()
+                && held.dot().writer() == writer
+                && held.dot().counter() <= floor
+                && !held.is_purged()
+                && !holds(held.dot())
+            {
+                lacking.entry(self.id_at(row)?).or_default().push(row);
+            }
+        }
+        let mut dropped = Vec::new();
+        for (id, rows) in lacking {
+            if rows.len() < self.versions_of(id)?.len() && !self.purged(id)? {
+                dropped.extend(rows);
+            }
+        }
+        dropped.sort();
+        Ok(dropped)
+    }
+
     fn purged_ids(&self) -> Result<Vec<Id<Self::Of>>> {
         let mut ids = BTreeSet::new();
         for index in 0..Table::rows(self) {
@@ -612,6 +690,10 @@ pub trait Table: Default + Clone {
     // What a purge left behind: it outranks these whoever has seen them, so nobody is waited for.
     fn purged_payload(&self) -> Result<Vec<Row>> {
         let mut held = Vec::new();
+        // A purge with anything left behind is a second row of its id.
+        if !self.repeats_an_id() {
+            return Ok(held);
+        }
         for id in self.purged_ids()? {
             for row in self.versions_of(id)? {
                 if !self.versions().raw_at(row)?.is_purged() {
@@ -1130,6 +1212,17 @@ pub trait AnyTable {
 
     fn purged_payload_rows(&self) -> Result<Vec<usize>>;
 
+    fn rows_dropped_by(
+        &self,
+        writer: WriterId,
+        floor: u64,
+        holds: &dyn Fn(Dot) -> bool,
+    ) -> Result<Vec<usize>>;
+
+    /// Forgets the rows at `gone`, none of them the last of its id, and
+    /// has the view find again the row that speaks for each id.
+    fn drop_rows(&mut self, gone: &BTreeSet<usize>) -> Result<()>;
+
     fn has_purge_news(&self, from: usize) -> Result<bool>;
 
     fn cascading_columns(&self) -> Vec<&'static str>;
@@ -1406,6 +1499,29 @@ impl<T: Table> AnyTable for T {
             .into_iter()
             .map(Row::index)
             .collect())
+    }
+
+    fn rows_dropped_by(
+        &self,
+        writer: WriterId,
+        floor: u64,
+        holds: &dyn Fn(Dot) -> bool,
+    ) -> Result<Vec<usize>> {
+        Ok(Table::dropped_by(self, writer, floor, holds)?
+            .into_iter()
+            .map(Row::index)
+            .collect())
+    }
+
+    fn drop_rows(&mut self, gone: &BTreeSet<usize>) -> Result<()> {
+        // An unpublished row names its parents by where they stand.
+        if !Table::is_published(self) {
+            return Err(Error::invalid(
+                "commit pending changes before dropping rows",
+            ));
+        }
+        *self = Table::without(self, gone)?;
+        Table::refresh(self)
     }
 
     fn has_purge_news(&self, from: usize) -> Result<bool> {

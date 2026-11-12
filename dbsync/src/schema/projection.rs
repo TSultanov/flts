@@ -421,6 +421,12 @@ impl View {
         }
     }
 
+    pub fn slots(&self, entity: &str) -> usize {
+        let held = self.0.read().expect("view lock");
+        held.shelf(entity)
+            .map_or(0, |at| held.shelves[at].ids.len())
+    }
+
     pub fn naming(
         &self,
         entity: &str,

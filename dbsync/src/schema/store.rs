@@ -28,6 +28,8 @@ pub const SHARDS: &str = "dbsync.shards";
 thread_local! {
     /// Makes the next commit stop after its first table's append.
     pub(crate) static CUT_AFTER_APPEND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Makes the next drop of rows stop after its first shard is rewritten.
+    pub(crate) static CUT_AFTER_REWRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Directory, in the local half, of a commit's rows not yet in every shard.
@@ -195,7 +197,6 @@ pub struct StoreState {
     view: View,
     compaction_policy: crate::CompactionPolicy,
     maintenance: Option<crate::MaintenanceOutcome>,
-    pub(super) shedding: bool,
     pub(super) purges_settled: Vec<usize>,
 }
 
@@ -219,7 +220,6 @@ impl Clone for StoreState {
             view: self.view.fork(),
             compaction_policy: self.compaction_policy,
             maintenance: self.maintenance.clone(),
-            shedding: self.shedding,
             purges_settled: self.purges_settled.clone(),
         }
     }
@@ -1085,7 +1085,8 @@ pub trait Store: Default + Clone + Sized {
     }
 
     fn apply(&mut self, batches: Vec<Batch>, report: &mut MergeReport) -> Result<()> {
-        if batches.iter().all(|batch| batch.rows.is_empty()) {
+        let quiet = |batch: &Batch| batch.rows.is_empty() && !self.may_lack_rows(batch);
+        if batches.iter().all(quiet) {
             for mark in batches.into_iter().filter_map(|batch| batch.mark) {
                 self.state_mut().mark(mark);
             }
@@ -1097,6 +1098,20 @@ pub trait Store: Default + Clone + Sized {
             *self = kept;
         }
         said
+    }
+
+    // Whether `batch` is all of a file not read before, from a writer that drops rows: the
+    // floor tells how far its drops reach, not when the last one was.
+    fn may_lack_rows(&self, batch: &Batch) -> bool {
+        let Some(mark) = batch.mark.filter(|_| batch.first == 0) else {
+            return false;
+        };
+        let known = self.state().marks.iter().find(|held| {
+            held.entity == mark.entity
+                && held.writer == mark.writer
+                && held.schema_version == mark.schema_version
+        });
+        mark.floor > 0 && known.is_none_or(|held| held.file_uuid != mark.file_uuid)
     }
 
     fn adopt(&mut self, batches: Vec<Batch>, report: &mut MergeReport) -> Result<()> {
@@ -1161,12 +1176,6 @@ pub trait Store: Default + Clone + Sized {
             self.state_mut().clock.observe(*dot);
             purges.insert((*at, *row));
         }
-        let mut shed: HashMap<usize, BTreeSet<crate::Uuid>> = HashMap::new();
-        if self.state().shedding {
-            for (table, held) in self.tables().into_iter().enumerate() {
-                shed.insert(table, held.purged_identities()?.into_iter().collect());
-            }
-        }
         for (dot, at, row) in order {
             if purges.contains(&(at, row)) {
                 continue;
@@ -1177,14 +1186,6 @@ pub trait Store: Default + Clone + Sized {
             }
             let batch = &batches[at];
             let table = batch.table;
-            if shed
-                .get(&table)
-                .is_some_and(|purged| purged.contains(&batch.rows[row].id))
-            {
-                report.known += 1;
-                self.state_mut().clock.observe(dot);
-                continue;
-            }
             let gone = |dot: Dot| {
                 floors
                     .get(&(table, dot.writer()))
@@ -1210,6 +1211,26 @@ pub trait Store: Default + Clone + Sized {
                 Err(err) => return Err(err),
             }
             self.state_mut().clock.observe(dot);
+        }
+        // What a writer dropped from its shard is dropped here too.
+        for batch in &batches {
+            let Some(mark) = batch.mark else {
+                continue;
+            };
+            if !self.may_lack_rows(batch) || !self.tables()[batch.table].published() {
+                continue;
+            }
+            let held: BTreeSet<Dot> = batch.rows.iter().map(|row| row.version.dot()).collect();
+            let gone: BTreeSet<usize> = self.tables()[batch.table]
+                .rows_dropped_by(mark.writer, mark.floor, &|dot| held.contains(&dot))?
+                .into_iter()
+                .collect();
+            if !gone.is_empty() {
+                self.tables_mut()[batch.table].drop_rows(&gone)?;
+                if let Some(settled) = self.state_mut().purges_settled.get_mut(batch.table) {
+                    *settled = 0;
+                }
+            }
         }
         for (table, ids) in &named {
             self.tables()[*table].refresh_rows(ids)?;
@@ -1338,26 +1359,48 @@ pub trait Store: Default + Clone + Sized {
         };
         self.offer_to(&mut updater)?;
         let published = updater.commit_file()?;
-        for table in self.tables_mut() {
-            table.rebase_columns(&published)?;
-        }
-        self.state().view.rebase(&published)?;
-        let state = self.state_mut();
-        if flush != Flush::Never {
-            state.flushed_at = Some(std::time::Instant::now());
-        }
-        state.dots = published.column(CLOCK)?;
-        state.held_marks = published.column(SHARDS)?;
-        state.schema_bytes = published.column(SCHEMA)?;
-        state.dropped.clear();
         let written = published.file_bytes()?;
-        state.file = Some(published);
+        self.settle_onto(published, flush != Flush::Never)?;
         match self.state().unflushed_from {
             Some(from) if written.saturating_sub(from) > UNFLUSHED_BYTES => {
                 self.write_cache(writer_id, true)
             }
             _ => Ok(()),
         }
+    }
+
+    fn settle_onto(&mut self, published: ColumnFile, flushed: bool) -> Result<()> {
+        for table in self.tables_mut() {
+            table.rebase_columns(&published)?;
+        }
+        self.state().view.rebase(&published)?;
+        let state = self.state_mut();
+        if flushed {
+            state.flushed_at = Some(std::time::Instant::now());
+        }
+        state.dots = published.column(CLOCK)?;
+        state.held_marks = published.column(SHARDS)?;
+        state.schema_bytes = published.column(SCHEMA)?;
+        state.dropped.clear();
+        state.file = Some(published);
+        Ok(())
+    }
+
+    /// Writes the cache as a file of its own, so that no chunk written
+    /// before stays behind in it. Chunks nobody changed are copied undecoded.
+    fn replace_cache(&mut self) -> Result<()> {
+        for table in self.tables_mut() {
+            table.fold_indexes(false)?;
+        }
+        let (held, layout) = self.state().attached()?;
+        let cache = layout.cache(Self::SCHEMA_VERSION);
+        let current = match ColumnFile::read_commit_token(&cache) {
+            Ok(found) if found == held.commit_token() => held.clone(),
+            _ => ColumnFile::open(&cache)?,
+        };
+        let published = current.replace(|updater| self.offer_to(updater))?;
+        self.state_mut().unflushed_from = None;
+        self.settle_onto(published, true)
     }
 
     fn flush_outbox(&mut self) -> Result<()> {
@@ -1622,19 +1665,19 @@ pub trait Store: Default + Clone + Sized {
         Ok(report)
     }
 
-    // Drops `superseded` and whatever a purge outranked from this writer's shards, then
-    // rebuilds the cache without any purged row's payload, whoever wrote it.
+    // Drops `superseded` and whatever a purge outranked: from this writer's shards what it
+    // wrote, from memory and the cache every such row. Only tables that lose a row are read.
     fn rewrite_without(
         &mut self,
         writer_id: WriterId,
         layout: &Layout,
         superseded: Vec<Vec<usize>>,
     ) -> Result<usize> {
-        let ours = self.schema_metadata();
         let mut dropped = 0;
         let mut stale = false;
         let mut rewrites = Vec::new();
-        for (table, mut gone) in self.tables().into_iter().zip(superseded) {
+        let mut losing = Vec::new();
+        for (at, (table, mut gone)) in self.tables().into_iter().zip(superseded).enumerate() {
             let purged = table.purged_payload_rows()?;
             stale |= !purged.is_empty();
             gone.extend(purged);
@@ -1642,15 +1685,17 @@ pub trait Store: Default + Clone + Sized {
                 continue;
             }
             let gone: BTreeSet<usize> = gone.into_iter().collect();
+            let found = ShardFile {
+                entity: table.entity().to_owned(),
+                writer: writer_id,
+                schema_version: Self::SCHEMA_VERSION,
+                path: layout.shard(table.entity(), writer_id, Self::SCHEMA_VERSION),
+            };
             let mut floor = self
                 .state()
                 .marks
                 .iter()
-                .find(|mark| {
-                    mark.entity == fnv1a(table.entity().as_bytes())
-                        && mark.writer == writer_id
-                        && mark.schema_version == Self::SCHEMA_VERSION
-                })
+                .find(|mark| mark.names(&found))
                 .map_or(0, |mark| mark.floor);
             let mut kept = Vec::new();
             let authored = table.authored_rows(writer_id)?;
@@ -1663,18 +1708,26 @@ pub trait Store: Default + Clone + Sized {
             }
             if kept.len() < held {
                 dropped += held - kept.len();
-                rewrites.push((table.entity(), table.field_names(), kept, floor));
+                rewrites.push((found, table.field_names(), kept, floor));
             }
+            losing.push((at, gone));
         }
         if rewrites.is_empty() && !stale {
             return Ok(dropped);
         }
 
-        let schema = ours.encode()?;
-        for (entity, fields, kept, floor) in rewrites {
-            let path = layout.shard(entity, writer_id, Self::SCHEMA_VERSION);
-            shard::rewrite(
-                &path,
+        // Nothing is held of a drop that fails: a shard already rewritten is read again.
+        let mut next = self.snapshot();
+        for (at, gone) in &losing {
+            next.tables_mut()[*at].drop_rows(gone)?;
+            if let Some(settled) = next.state_mut().purges_settled.get_mut(*at) {
+                *settled = 0;
+            }
+        }
+        let schema = self.schema_metadata().encode()?;
+        for (found, fields, kept, floor) in rewrites {
+            let (token, rows) = shard::rewrite(
+                &found.path,
                 writer_id,
                 &schema,
                 &fields,
@@ -1682,20 +1735,19 @@ pub trait Store: Default + Clone + Sized {
                 floor,
                 self.durability(),
             )?;
+            next.state_mut()
+                .mark(ShardMark::of(&found, token, rows, floor));
+            #[cfg(test)]
+            if CUT_AFTER_REWRITE.replace(false) {
+                return Err(Error::invalid("injected cut between rewrites"));
+            }
         }
-        let mut rebuilt = Self::with_fresh_cache(layout.clone())?;
-        rebuilt.state_mut().shedding = true;
-        let mut read = MergeReport::default();
-        let batches = rebuilt.collect(|_| true, &mut read)?;
-        rebuilt.apply(batches, &mut read)?;
-        rebuilt.state_mut().shedding = false;
-        rebuilt.write_cache(writer_id, true)?;
-        let state = rebuilt.state_mut();
-        state.compaction_policy = self.state().compaction_policy;
-        state.durability = self.state().durability;
-        state.maintenance = self.state().maintenance.clone();
-        state.said = self.state().said.clone();
-        *self = rebuilt;
+        // A chunk written over stays in its file; what a purge shed must not.
+        match stale {
+            true => next.replace_cache()?,
+            false => next.write_cache(writer_id, true)?,
+        }
+        *self = next;
         Ok(dropped)
     }
 
