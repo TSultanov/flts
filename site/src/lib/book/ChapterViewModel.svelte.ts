@@ -2,6 +2,7 @@ import type { Library } from "../data/library";
 import type { UUID } from "../data/uuid";
 import type { WordSelection } from "./ParagraphViewModel.svelte";
 import { ChapterParagraphsStore } from "./ChapterParagraphsStore.svelte";
+import { ChapterLayout, columnsOf, type Extent } from "./ChapterLayout.svelte";
 
 export type ChapterVMProps = {
   bookId: UUID;
@@ -59,9 +60,23 @@ export class ChapterViewModel {
     this.#paragraphIdsResource.current ?? [],
   );
 
+  // Nothing is drawn before it is known how each paragraph is to be: a
+  // chapter drawn first one way and then another is drawn twice.
+  #openedFor = $state(-1);
+  drawnParagraphIds = $derived<readonly number[]>(
+    this.#openedFor === this.paragraphIds.length ? this.paragraphIds : [],
+  );
+
   // WordSpans render only for ids in this set. Empty means "not yet
   // measured" — render eagerly so initial load never flashes plain text.
   #mountedParagraphIds: Set<number> = $state(new Set());
+
+  #layout!: ChapterLayout;
+  #indexOf = new Map<number, number>();
+  #advanceRaf: number | null = null;
+  #advancedAt = 0;
+  #slice = 24;
+  #reanchor: { id: number; pageOffset: number } | null = null;
 
   #visibleParagraphId: number | null = null;
   #visiblePageOffset = 0;
@@ -100,7 +115,8 @@ export class ChapterViewModel {
     this.#props = props;
     this.#chapterId = props.chapterId;
     this.#store = new ChapterParagraphsStore(props.bookId, library);
-    // Lifts the opacity gate if neither reveal path ever fires.
+    this.#layout = new ChapterLayout(`${props.bookId}:${props.chapterId}`);
+    // Shows the chapter if neither reveal path ever fires.
     this.#initialRevealFallbackTimeout = setTimeout(() => {
       this.#initialRevealFallbackTimeout = null;
       this.#markInitiallyReady();
@@ -128,6 +144,93 @@ export class ChapterViewModel {
       this.#mountedParagraphIds.size === 0 ||
       this.#mountedParagraphIds.has(paragraphId)
     );
+  }
+
+  /** Drawn as bare text: off the mounted pages, and nothing to draw over it. */
+  isPlain(paragraphId: number): boolean {
+    return (
+      !this.isMounted(paragraphId) &&
+      this.#store.getTranslation(paragraphId)?.segments == null
+    );
+  }
+
+  /** The block to draw instead of the paragraph's text, if it is far. */
+  farExtent(paragraphId: number): Extent | null {
+    return this.#layout.blockFor(paragraphId);
+  }
+
+  get layoutMisses(): number {
+    return this.#layout.misses;
+  }
+
+  /** Every paragraph has been drawn: the chapter is as long as it gets. */
+  get isWhole(): boolean {
+    return (
+      this.#layout.whole ||
+      (this.#layout.off &&
+        this.paragraphIds.every((id) => this.#store.hasOriginal(id)))
+    );
+  }
+
+  // The chapter is measured and its rest drawn a few paragraphs a frame,
+  // and only while it is on screen and at rest.
+  #scheduleAdvance(): void {
+    if (this.#advanceRaf !== null || this.#disposed) return;
+    this.#advanceRaf = requestAnimationFrame(() => {
+      this.#advanceRaf = null;
+      this.#advance();
+    });
+  }
+
+  // Before anything else the frame changes: measuring needs the layout
+  // as it stands, and what follows is then laid out with blocks in place.
+  #advance(): void {
+    const container = this.#props.container;
+    if (
+      !container ||
+      !this.#isInitiallyReady ||
+      this.#isRestoring ||
+      this.#isResizing
+    ) {
+      return;
+    }
+    if (this.#reanchor !== null) {
+      const { id, pageOffset } = this.#reanchor;
+      this.#reanchor = null;
+      this.#restorePageOffset = pageOffset;
+      this.#anchorToParagraph(id);
+    }
+    if (!this.#layout.verify(container)) {
+      // Everything is drawn again and falls elsewhere: keep the reader
+      // on their paragraph, not on the page number it used to have.
+      if (this.#visibleParagraphId !== null) {
+        this.#reanchor = {
+          id: this.#visibleParagraphId,
+          pageOffset: this.#visiblePageOffset,
+        };
+      }
+      this.#scheduleAdvance();
+      return;
+    }
+    // As many paragraphs a frame as leave it a frame: fewer after a slow
+    // one, more after a quick one.
+    const now = performance.now();
+    const took = now - this.#advancedAt;
+    this.#advancedAt = now;
+    if (took > 24 && took < 200) {
+      this.#slice = Math.max(8, Math.round(this.#slice * 0.7));
+    } else if (took < 18) {
+      this.#slice = Math.min(80, Math.round(this.#slice * 1.25));
+    }
+    const ids = this.#paragraphIdsResource.current ?? [];
+    const more = this.#layout.advance(
+      container,
+      (i) => this.#store.hasOriginal(ids[i]),
+      this.#slice,
+    );
+    this.#recomputeMountWindow();
+    this.#recomputeColumnCount();
+    if (more) this.#scheduleAdvance();
   }
 
   handleScroll(): void {
@@ -161,10 +264,8 @@ export class ChapterViewModel {
     if (!this.#isInitiallyReady) return;
     const container = this.#props.container;
     if (!container) return;
-    const pageWidth = container.clientWidth;
-    if (pageWidth <= 0) return;
-    // ceil: a partial column still needs a snap target at its start.
-    const next = Math.max(1, Math.ceil(container.scrollWidth / pageWidth));
+    if (container.clientWidth <= 0) return;
+    const next = columnsOf(container);
     if (next !== this.#columnCount) {
       this.#columnCount = next;
     }
@@ -172,6 +273,7 @@ export class ChapterViewModel {
 
   handleResize(): void {
     this.#isResizing = true;
+    this.#layout.forget(null);
     if (this.#resizeTimeout) {
       clearTimeout(this.#resizeTimeout);
     }
@@ -188,6 +290,7 @@ export class ChapterViewModel {
       this.#isResizing = false;
       this.#recomputeMountWindow();
       this.#recomputeColumnCount();
+      this.#scheduleAdvance();
     }, 200);
   }
 
@@ -223,6 +326,7 @@ export class ChapterViewModel {
     // before the rest fills in. Keyed on id-count to stay idempotent.
     if (this.#originalsKickedFor !== ids.length) {
       this.#originalsKickedFor = ids.length;
+      this.#indexOf = new Map(ids.map((id, i) => [id, i]));
       const targetIdx =
         initialParagraphId != null ? ids.indexOf(initialParagraphId) : 0;
       const safeTargetIdx = Math.max(targetIdx, 0);
@@ -230,6 +334,13 @@ export class ChapterViewModel {
         safeTargetIdx + RESTORE_PREFIX_BUFFER,
         ids.length,
       );
+      const page = this.#props.container;
+      const remembered = this.#layout.open(ids, headEnd, page ?? null);
+      const targetPage =
+        (this.#layout.columnOf(ids[safeTargetIdx]) ?? 0) +
+        Math.max(0, this.#props.initialPageOffset | 0);
+      // Before anything is drawn: only the pages to be shown get text.
+      if (remembered) this.#layout.moveNear(targetPage);
       // With them, a viewport-sized window of translations on each side
       // of the target. The chapter's tail comes on its own: nothing
       // shown first depends on it.
@@ -238,16 +349,34 @@ export class ChapterViewModel {
         5,
         Math.ceil(pageHeight / ESTIMATED_PARAGRAPH_HEIGHT_PX),
       );
-      const eagerStart = Math.max(safeTargetIdx - paragraphsPerPage, 0);
-      const eagerEnd = Math.min(
+      let eagerStart = Math.max(safeTargetIdx - paragraphsPerPage, 0);
+      let eagerEnd = Math.min(
         safeTargetIdx + paragraphsPerPage + 1,
         ids.length,
       );
+      if (remembered) {
+        // No guessing: the pages that will be mounted are known, and what
+        // is mounted at the reveal then stays so after it.
+        const mount = this.#layout.around(targetPage, GEOM_MOUNT_THRESHOLD);
+        if (mount.to >= mount.from) {
+          eagerStart = mount.from;
+          eagerEnd = mount.to + 1;
+        }
+      }
+      // Text drawn without a component reports nothing itself.
+      const arrived = () => {
+        this.#scheduleColumnCountRecompute();
+        this.#scheduleAnchorRaf();
+        this.#scheduleAdvance();
+      };
+      // Until the first measure, only what is fetched to be drawn over.
+      this.#mountedParagraphIds = new Set(ids.slice(eagerStart, eagerEnd));
       this.#store.together(() => {
-        this.#store.fetchOriginals(ids.slice(0, headEnd));
+        void this.#store.fetchOriginals(ids.slice(0, headEnd)).then(arrived);
         this.#store.enqueueTranslations(ids.slice(eagerStart, eagerEnd));
       });
-      this.#store.fetchOriginals(ids.slice(headEnd));
+      void this.#store.fetchOriginals(ids.slice(headEnd)).then(arrived);
+      this.#openedFor = ids.length;
     }
 
     if (this.#initialParagraphSyncedFor === initialParagraphId) {
@@ -296,6 +425,19 @@ export class ChapterViewModel {
     }
 
     const paragraphIdToScrollTo = initialParagraphId;
+    // A position that came after the chapter opened may lie past what has
+    // been drawn so far.
+    this.#layout.drawThrough(
+      (this.#indexOf.get(initialParagraphId) ?? 0) + RESTORE_PREFIX_BUFFER,
+    );
+    // And, if the chapter is already blocks, as text: a block cannot say
+    // it is ready to be scrolled to.
+    const column = this.#layout.columnOf(initialParagraphId);
+    if (column !== null) {
+      this.#layout.moveNear(
+        column + Math.max(0, this.#props.initialPageOffset | 0),
+      );
+    }
     const pageOffsetToRestore = Math.max(0, this.#props.initialPageOffset | 0);
     this.#initialParagraphSyncedFor = paragraphIdToScrollTo;
 
@@ -368,7 +510,10 @@ export class ChapterViewModel {
     // shift the visible page.
     const ids = this.#paragraphIdsResource.current ?? [];
     for (const id of ids) {
-      if (!this.#readyParagraphIds.has(id)) return false;
+      // A block is in place as soon as it is drawn; text has to arrive.
+      if (this.#layout.blockFor(id) === null && !this.#store.hasOriginal(id)) {
+        return false;
+      }
       if (id === target) return true;
     }
     return false;
@@ -428,10 +573,14 @@ export class ChapterViewModel {
       this.#restoreResizeObserver.disconnect();
       this.#restoreResizeObserver = null;
     }
+    const late = this.#restoreTarget != null && this.#isInitiallyReady;
     this.#restoreTarget = null;
     this.#isRestoring = false;
 
     this.#markInitiallyReady();
+    // A position restored after the reveal: the frame that follows one
+    // has already been.
+    if (late && !this.#disposed) this.#scheduleAdvance();
   }
 
   #markInitiallyReady(): void {
@@ -452,11 +601,10 @@ export class ChapterViewModel {
     this.#settleRaf = requestAnimationFrame(() => {
       this.#settleRaf = requestAnimationFrame(() => {
         this.#settleRaf = null;
-        // A hidden chapter cannot be hit-tested, so a scroll made before
-        // the reveal is first seen here.
-        this.#updateVisibleParagraph();
-        this.#recomputeColumnCount();
         this.#snaps = true;
+        const seen = this.#findVisibleParagraph();
+        if (seen != null) this.#setVisibleParagraph(seen.id, seen.pageOffset);
+        this.#advance();
       });
     });
   }
@@ -466,6 +614,10 @@ export class ChapterViewModel {
     if (this.#settleRaf !== null) {
       cancelAnimationFrame(this.#settleRaf);
       this.#settleRaf = null;
+    }
+    if (this.#advanceRaf !== null) {
+      cancelAnimationFrame(this.#advanceRaf);
+      this.#advanceRaf = null;
     }
     this.#store.dispose();
     if (this.#scrollRaf !== null) {
@@ -536,7 +688,7 @@ export class ChapterViewModel {
     // getBoundingClientRect, not offsetLeft: offsetLeft is unreliable
     // across engines in a CSS multi-column flow.
     const scrollLeft = container.scrollLeft;
-    const wrappers: Array<{ id: number; center: number }> = [];
+    const wrappers: Array<{ id: number; center: number; block: boolean }> = [];
     let visibleIdx = -1;
     for (let i = 0; i < children.length; i++) {
       const child = children[i] as HTMLElement;
@@ -552,7 +704,9 @@ export class ChapterViewModel {
       // Content coordinates, independent of current scroll.
       const center =
         rect.left - containerRect.left + scrollLeft + rect.width / 2;
-      wrappers.push({ id, center });
+      // A block has no words to mount, and one not yet drawn sits at the
+      // end of what is, however far on its text will be.
+      wrappers.push({ id, center, block: child.classList.contains("far") });
       if (id === this.#visibleParagraphId) {
         visibleIdx = wrappers.length - 1;
       }
@@ -567,7 +721,8 @@ export class ChapterViewModel {
 
     const next = new Set<number>();
     for (let i = 0; i < wrappers.length; i++) {
-      const { id, center } = wrappers[i];
+      const { id, center, block } = wrappers[i];
+      if (block) continue;
       const siblingDist = Math.abs(i - visibleIdx);
       if (siblingDist <= SIBLING_RADIUS) {
         next.add(id);
@@ -593,6 +748,9 @@ export class ChapterViewModel {
       // Sole driver of translation fetches; the store dedups.
       this.#store.enqueueTranslations([...next]);
     }
+
+    this.#layout.moveNear(Math.round(scrollLeft / pageWidth));
+    this.#scheduleAdvance();
   }
 
   #setVisibleParagraph(paragraphId: number, pageOffset: number): void {
@@ -631,18 +789,34 @@ export class ChapterViewModel {
       return null;
     }
     const containerRect = container.getBoundingClientRect();
-    // Hit-test the visible column's top-left. A wrapper can span several
-    // columns, so pageOffset records which one, for restore.
+    // The paragraph at the visible column's top-left, found by its boxes:
+    // the browser's own hit test costs a scroll frame many times more. A
+    // wrapper can span several columns, so pageOffset records which one,
+    // for restore.
     const x = containerRect.left + 16;
     const y = containerRect.top + 16;
-    const hit = document.elementFromPoint(x, y) as HTMLElement | null;
-    const wrapper = hit?.closest<HTMLElement>(".paragraph-wrapper") ?? null;
-    const idAttr = wrapper?.dataset["paragraphId"];
-    if (!wrapper || !idAttr) {
-      return null;
+    let wrapper: HTMLElement | null = null;
+    for (const child of container.children) {
+      if (!child.classList.contains("paragraph-wrapper")) continue;
+      const box = child.getBoundingClientRect();
+      // In reading order, so nothing after this one reaches back to x.
+      if (box.left > x) break;
+      if (box.right <= x) continue;
+      for (const part of child.getClientRects()) {
+        if (
+          part.left <= x &&
+          x < part.right &&
+          part.top <= y &&
+          y < part.bottom
+        ) {
+          wrapper = child as HTMLElement;
+          break;
+        }
+      }
+      if (wrapper) break;
     }
-    const id = parseInt(idAttr, 10);
-    if (Number.isNaN(id)) {
+    const id = parseInt(wrapper?.dataset["paragraphId"] ?? "", 10);
+    if (!wrapper || Number.isNaN(id)) {
       return null;
     }
     const wrapperRect = wrapper.getBoundingClientRect();

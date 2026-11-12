@@ -239,6 +239,9 @@ export async function scrollToParagraph(
   page: Page,
   paragraphId: number,
 ): Promise<void> {
+  // A chapter's rest is drawn over the frames after it shows; before
+  // that a paragraph further on is not yet where it will be.
+  await page.waitForSelector(".paragraphs-container.is-whole");
   await page.evaluate((id) => {
     const el = document.querySelector(
       `.paragraph-wrapper[data-paragraph-id="${id}"]`,
@@ -250,6 +253,23 @@ export async function scrollToParagraph(
     });
   }, paragraphId);
   await page.waitForTimeout(50);
+}
+
+/**
+ * Leaves `paragraphId` drawn as text but out of the mount window: far enough
+ * for its WordSpans to go, too near for a placeholder block to replace it.
+ */
+export async function scrollJustPast(
+  page: Page,
+  paragraphId: number,
+): Promise<void> {
+  const target = paragraphLocator(page, paragraphId);
+  for (let step = 3; step < 12; step++) {
+    await scrollToParagraph(page, paragraphId + step);
+    await page.waitForTimeout(300);
+    if ((await target.locator(".word-span").count()) === 0) break;
+  }
+  await expect(target).not.toHaveClass(/far/);
 }
 
 /** Per-idx-stable sentence shape, so wrapped widths stay deterministic. */

@@ -10,6 +10,200 @@ import {
 } from "./helpers/paragraph";
 
 /**
+ * Far from the reader a paragraph is a block of the room its text took. A
+ * block that takes any other room moves every page after it, so wherever a
+ * paragraph is drawn as text it must be exactly where it was last time.
+ */
+test("pages stay where they are as far paragraphs come and go", async ({
+  page,
+  browserName,
+}) => {
+  // Firefox lays the blocks out a column longer; the view notices and goes
+  // back to drawing the whole chapter there.
+  test.skip(browserName === "firefox", "no far paragraphs in Firefox");
+  test.setTimeout(180000);
+  const COUNT = 160;
+  const overrides: Record<number, SeedParagraph> = {};
+  for (let i = 0; i < COUNT; i++) {
+    const html = htmlOfSize(i, 1 + ((i * 7) % 12));
+    overrides[i] =
+      i % 3 === 0 ? { html } : { html, segments: segmentsOfHtml(html) };
+  }
+  await seedAndOpen(page, multipageSpec(COUNT, overrides));
+
+  // Every page of the chapter, visited in three ways; `known` is where each
+  // paragraph was drawn before, by this walk or an earlier one.
+  const walk = (known: Record<string, string>) =>
+    page.evaluate(async (known) => {
+      const c = document.querySelector(".paragraphs-container") as HTMLElement;
+      const settle = () =>
+        new Promise((r) =>
+          requestAnimationFrame(() =>
+            requestAnimationFrame(() => setTimeout(r, 30)),
+          ),
+        );
+      const width = c.scrollWidth;
+      const seen = new Map<string, string>(Object.entries(known));
+      const moved: string[] = [];
+      let farSeen = 0;
+      const sample = () => {
+        const frame = c.getBoundingClientRect();
+        for (const el of c.querySelectorAll<HTMLElement>(
+          ".paragraph-wrapper",
+        )) {
+          if (el.classList.contains("far")) {
+            farSeen++;
+            continue;
+          }
+          const at = [...el.getClientRects()]
+            .map((r) =>
+              [
+                Math.round((r.left - frame.left + c.scrollLeft) / frame.width),
+                Math.round((r.top - frame.top) * 4) / 4,
+                Math.round(r.height * 4) / 4,
+              ].join(":"),
+            )
+            .join(" ");
+          const id = el.dataset["paragraphId"]!;
+          const before = seen.get(id);
+          if (before === undefined) seen.set(id, at);
+          else if (before !== at) moved.push(`${id}: ${before} -> ${at}`);
+        }
+        if (c.scrollWidth !== width)
+          moved.push(`width ${width} -> ${c.scrollWidth}`);
+      };
+      const pages = Math.round(width / c.clientWidth);
+      sample();
+      // Forward a page at a time, back in strides, forward again in jumps.
+      for (let p = 1; p < pages; p++) {
+        c.scrollLeft = p * c.clientWidth;
+        await settle();
+        sample();
+      }
+      for (let p = pages - 1; p >= 0; p -= 3) {
+        c.scrollLeft = p * c.clientWidth;
+        await settle();
+        sample();
+      }
+      for (let p = 0; p < pages; p += 11) {
+        c.scrollLeft = p * c.clientWidth;
+        await settle();
+        sample();
+      }
+      return {
+        moved: moved.slice(0, 10),
+        seen: Object.fromEntries(seen),
+        farSeen,
+        // Times the view found its blocks wrong and drew everything again.
+        misses: c.dataset["layoutMisses"],
+      };
+    }, known);
+
+  await page.waitForSelector(".paragraphs-container.is-whole");
+  const first = await walk({});
+  expect(first.farSeen).toBeGreaterThan(0);
+  expect(Object.keys(first.seen)).toHaveLength(COUNT);
+  expect(first.moved).toEqual([]);
+  expect(first.misses).toBe("0");
+
+  // Opened again, the chapter is drawn from what was measured, without
+  // being laid out whole: the same pages must come out.
+  await page.reload();
+  await page.waitForSelector(".paragraphs-container.is-ready");
+  expect(
+    await page.locator(".paragraphs-container").getAttribute("class"),
+  ).toContain("is-whole");
+  const again = await walk(first.seen);
+  expect(again.moved).toEqual([]);
+  expect(again.misses).toBe("0");
+});
+
+test("a remembered layout that no longer fits is dropped, and the reader stays put", async ({
+  page,
+  browserName,
+}) => {
+  test.skip(browserName === "firefox", "no far paragraphs in Firefox");
+  const COUNT = 160;
+  const SAVED = 100;
+  const overrides: Record<number, SeedParagraph> = {};
+  for (let i = 0; i < COUNT; i++) {
+    overrides[i] = { html: htmlOfSize(i, 1 + ((i * 7) % 12)) };
+  }
+  await seedAndOpen(
+    page,
+    multipageSpec(COUNT, overrides, {
+      readingState: { chapterId: 0, paragraphId: SAVED, pageOffset: 0 },
+    }),
+  );
+
+  // Where the text near the reader is, and whether their paragraph is on
+  // the page shown.
+  const look = () =>
+    page.locator(".paragraphs-container").evaluate((c, saved) => {
+      const frame = c.getBoundingClientRect();
+      const drawn: Record<string, string> = {};
+      let onPage = false;
+      for (const el of c.querySelectorAll<HTMLElement>(
+        ".paragraph-wrapper:not(.far)",
+      )) {
+        const id = el.dataset["paragraphId"]!;
+        const rects = [...el.getClientRects()];
+        drawn[id] = rects
+          .map((r) =>
+            [
+              Math.round((r.left - frame.left + c.scrollLeft) / frame.width),
+              Math.round((r.top - frame.top) * 4) / 4,
+              Math.round(r.height * 4) / 4,
+            ].join(":"),
+          )
+          .join(" ");
+        if (id === String(saved)) {
+          onPage = rects.some((r) => Math.abs(r.left - frame.left) < 1);
+        }
+      }
+      return {
+        drawn,
+        onPage,
+        misses: (c as HTMLElement).dataset["layoutMisses"],
+      };
+    }, SAVED);
+
+  await page.waitForSelector(".paragraphs-container.is-whole");
+  await page.waitForTimeout(300);
+  const before = await look();
+  expect(before.onPage).toBe(true);
+  expect(before.misses).toBe("0");
+
+  // As a change of font would leave it: the remembered sizes are off.
+  await page.evaluate(() => {
+    const key = "flts.chapterLayout.v2";
+    const kept = JSON.parse(localStorage.getItem(key)!) as Array<
+      [string, { extents: number[] }]
+    >;
+    for (const [, layout] of kept) {
+      // A column more for every seventh paragraph.
+      layout.extents = layout.extents.map((v, i) => (i % 14 ? v : v + 1));
+    }
+    localStorage.setItem(key, JSON.stringify(kept));
+  });
+  await page.reload();
+  await page.waitForSelector(".paragraphs-container.is-ready");
+  await expect(page.locator(".paragraphs-container")).toHaveAttribute(
+    "data-layout-misses",
+    "1",
+  );
+  await page.waitForSelector(".paragraphs-container.is-whole");
+  await page.waitForTimeout(300);
+
+  const after = await look();
+  expect(after.onPage).toBe(true);
+  for (const [id, at] of Object.entries(after.drawn)) {
+    if (before.drawn[id] !== undefined) expect(at, id).toBe(before.drawn[id]);
+  }
+  await expect(page.locator(".paragraph-wrapper.far").first()).toBeAttached();
+});
+
+/**
  * Virtualization must not change a paragraph's height. In the multi-column
  * page flow, a height delta repacks every column after it. A page flip then
  * pulls the incoming page's first paragraph back onto the page the reader
@@ -194,6 +388,9 @@ test.describe("Chapter paging vs virtualization (chromium only)", () => {
             c.querySelectorAll(".paragraph-wrapper"),
           )) {
             const e = el as HTMLElement;
+            // A far paragraph is a block of the room it took, margin and
+            // column slack included; its own test is below.
+            if (e.classList.contains("far")) continue;
             const id = Number(e.dataset["paragraphId"]);
             const h = Math.round(e.getBoundingClientRect().height * 10) / 10;
             let entry = seen.get(id);
@@ -268,6 +465,7 @@ test.describe("Chapter paging vs virtualization (chromium only)", () => {
           return {
             height: Math.round(e.getBoundingClientRect().height * 10) / 10,
             hasButton: !!e.querySelector("button.translate"),
+            far: e.classList.contains("far"),
           };
         };
         const scrollTo = async (id: number) => {
@@ -282,8 +480,9 @@ test.describe("Chapter paging vs virtualization (chromium only)", () => {
         };
         await scrollTo(120);
         const mounted = at(120);
-        await scrollTo(0);
-        await new Promise((r) => setTimeout(r, 400));
+        // Out of the mount window, still drawn as text.
+        c.scrollLeft += 3 * c.clientWidth;
+        await new Promise((r) => setTimeout(r, 600));
         const virtualized = at(120);
         return { mounted, virtualized };
       });
@@ -291,6 +490,7 @@ test.describe("Chapter paging vs virtualization (chromium only)", () => {
       // The button must be present when mounted, or the test proves nothing.
       expect(heights.mounted.hasButton).toBe(true);
       expect(heights.virtualized.hasButton).toBe(false);
+      expect(heights.virtualized.far).toBe(false);
       expect(heights.virtualized.height).toBe(heights.mounted.height);
     });
   }

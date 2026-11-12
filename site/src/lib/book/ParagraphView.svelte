@@ -135,22 +135,8 @@
 </div>
 
 <style>
-    .original {
-        color: var(--text-untranslated);
-    }
-
-    p {
-        margin: 0;
-    }
-
-    .paragraph-wrapper {
-        --paragraph-gutter: 1.5cm;
-        position: relative;
-        margin-top: 0;
-        margin-bottom: 0.5em;
-        padding-inline: var(--paragraph-gutter);
-    }
-
+    /* The wrapper and its paragraph are styled by ChapterView, which also
+       draws paragraphs without this component. */
     button.translate {
         position: absolute;
         top: 0;
@@ -164,10 +150,6 @@
     }
 
     @media (max-width: 576px) {
-        .paragraph-wrapper {
-            --paragraph-gutter: 8mm;
-        }
-
         button.translate {
             --font-size: 12px;
             font-size: var(--font-size);

@@ -127,6 +127,8 @@
             class="paragraphs-container"
             class:is-ready={vm.isInitiallyReady}
             class:snaps={vm.snaps}
+            class:is-whole={vm.isWhole}
+            data-layout-misses={vm.layoutMisses}
             style="column-width: {columnWidthHint}px"
             bind:clientHeight={columnWidthHint}
             bind:clientWidth={containerVisibleWidth}
@@ -140,18 +142,47 @@
                     aria-hidden="true"
                 ></i>
             {/each}
-            {#each vm.paragraphIds as paragraphId (paragraphId)}
-                <ParagraphView
-                    {bookId}
-                    {chapterId}
-                    {paragraphId}
-                    {selection}
-                    mounted={vm.isMounted(paragraphId)}
-                    onWordClick={handleWordClick}
-                    isWordRevealed={(flatIndex) =>
-                        vm.isWordRevealed(paragraphId, flatIndex)}
-                    onReady={() => vm.registerParagraphReady(paragraphId)}
-                />
+            {#each vm.drawnParagraphIds as paragraphId (paragraphId)}
+                {@const far = vm.farExtent(paragraphId)}
+                {#if far}
+                    <!-- Forced column ends, not one tall block: a block is
+                         moved whole to the next column where a paragraph
+                         would have been split. -->
+                    <div
+                        class="paragraph-wrapper far"
+                        class:leads={far.lead}
+                        data-paragraph-id={paragraphId}
+                    >
+                        {#each { length: far.breaks } as _, i (i)}<i
+                                class="column-end"
+                            ></i>{/each}<i style:height="{far.fill}px"></i>
+                    </div>
+                {:else if vm.isPlain(paragraphId)}
+                    <!-- What ParagraphView draws for a paragraph that is
+                         neither mounted nor translated, without the
+                         component: most of a chapter on its way in. -->
+                    <div
+                        class="paragraph-wrapper"
+                        data-paragraph-id={paragraphId}
+                    >
+                        <p class="original">
+                            {@html vm.store.getOriginal(paragraphId) ||
+                                "&nbsp;"}
+                        </p>
+                    </div>
+                {:else}
+                    <ParagraphView
+                        {bookId}
+                        {chapterId}
+                        {paragraphId}
+                        {selection}
+                        mounted={vm.isMounted(paragraphId)}
+                        onWordClick={handleWordClick}
+                        isWordRevealed={(flatIndex) =>
+                            vm.isWordRevealed(paragraphId, flatIndex)}
+                        onReady={() => vm.registerParagraphReady(paragraphId)}
+                    />
+                {/if}
             {/each}
         </div>
     </section>
@@ -236,6 +267,51 @@
 
     .paragraphs-container.snaps {
         scroll-snap-type: x mandatory;
+    }
+
+    /* One rule for a paragraph however it is drawn: its room must not
+       depend on which of the three ways that is. */
+    .paragraphs-container > :global(.paragraph-wrapper) {
+        --paragraph-gutter: 1.5cm;
+        position: relative;
+        margin-top: 0;
+        margin-bottom: 0.5em;
+        padding-inline: var(--paragraph-gutter);
+    }
+
+    .paragraphs-container > :global(.paragraph-wrapper > p) {
+        margin: 0;
+    }
+
+    .paragraphs-container > :global(.paragraph-wrapper > p.original) {
+        color: var(--text-untranslated);
+    }
+
+    .paragraphs-container > :global(.paragraph-wrapper.far) {
+        margin-bottom: 0;
+        padding-inline: 0;
+    }
+
+    @media (max-width: 576px) {
+        .paragraphs-container > :global(.paragraph-wrapper) {
+            --paragraph-gutter: 8mm;
+        }
+    }
+
+    .far.leads {
+        break-before: column;
+        -webkit-column-break-before: always;
+    }
+
+    .far > i {
+        display: block;
+    }
+
+    /* A height, or an engine drops the column it would leave empty. */
+    .far > .column-end {
+        height: 1px;
+        break-after: column;
+        -webkit-column-break-after: always;
     }
 
     /* One per column, absolute so they land on exact column boundaries

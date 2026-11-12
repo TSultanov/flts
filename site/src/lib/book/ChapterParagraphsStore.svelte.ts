@@ -177,19 +177,24 @@ export class ChapterParagraphsStore {
 
   // One request for all of `ids`: every arrival re-lays out the whole
   // chapter, so a chapter fetched in pieces is laid out once per piece.
-  fetchOriginals(ids: readonly number[]): void {
+  // Settles once what came has been applied.
+  fetchOriginals(ids: readonly number[]): Promise<void> {
     const wanted = ids.filter((id) => !this.#originalsRequested.has(id));
-    if (wanted.length === 0 || this.#disposed) return;
+    if (wanted.length === 0 || this.#disposed) return Promise.resolve();
     for (const id of wanted) this.#originalsRequested.add(id);
     const land = this.#together?.expect() ?? atOnce;
-    this.#library
+    return this.#library
       .getParagraphOriginalsBatch(this.#bookId, wanted)
-      .then((rows) =>
-        land(() => {
-          for (const row of rows) {
-            this.#originals.set(row.id, row.original);
-          }
-        }),
+      .then(
+        (rows) =>
+          new Promise<void>((applied) =>
+            land(() => {
+              for (const row of rows) {
+                this.#originals.set(row.id, row.original);
+              }
+              applied();
+            }),
+          ),
       )
       .catch((err) => {
         console.error("Failed to fetch paragraph originals", err);

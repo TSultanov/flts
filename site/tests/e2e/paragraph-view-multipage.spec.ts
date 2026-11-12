@@ -63,6 +63,7 @@ test.describe("ParagraphView (multipage, chromium only)", () => {
     page,
   }) => {
     await seedAndOpen(page, multipageSpec(COUNT));
+    await page.waitForSelector(".paragraphs-container.is-whole");
 
     const ids = await page.evaluate(() => {
       const wrappers = document.querySelectorAll(
