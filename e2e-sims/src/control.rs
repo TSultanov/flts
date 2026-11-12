@@ -7,7 +7,7 @@ use crate::{
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -18,7 +18,11 @@ pub fn router(state: Arc<SimState>) -> Router {
     Router::new()
         .route("/_sim/rules", post(add_rules).delete(clear_rules))
         .route("/_sim/reset", post(reset))
-        .route("/_sim/seed", post(seed))
+        // A whole chapter of scripted translations is one seed.
+        .route(
+            "/_sim/seed",
+            post(seed).layer(DefaultBodyLimit::max(256 << 20)),
+        )
         .route("/_sim/requests", get(requests))
         .with_state(state)
 }
