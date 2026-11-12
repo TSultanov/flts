@@ -15,7 +15,6 @@ export type ParagraphSegment =
       word: number;
       flatIndex: number;
       translation: string | null;
-      familiarity?: number;
     };
 
 export type SeedParagraph = {
@@ -80,7 +79,6 @@ export type SeedSpec = {
     generated: boolean[];
     activelyGenerating?: number | null;
   };
-  config?: { tapToRevealTranslations?: boolean };
 };
 
 let bookIdSeq = 0;
@@ -137,7 +135,6 @@ export async function seedAndOpen(
       })),
       readingState: s.readingState,
       summaryStatus: s.summaryStatus,
-      config: s.config,
     };
   }, fullSpec);
 
@@ -256,48 +253,33 @@ export async function scrollToParagraph(
 }
 
 /**
- * Leaves `paragraphId` drawn as text without its word spans. Those stay for
- * as long as the paragraph is text, so it is first sent far enough to become
- * a block, then brought back to a few pages from the reader.
+ * Sends `paragraphId` far enough from the reader to become a block, then
+ * brings it back: what comes back is drawn afresh from the backend's HTML.
  */
-export async function showUnmounted(
+export async function leaveAndReturn(
   page: Page,
   paragraphId: number,
 ): Promise<void> {
   await page.waitForSelector(".paragraphs-container.is-whole");
   const container = page.locator(".paragraphs-container");
   const target = paragraphLocator(page, paragraphId);
-  const goTo = async (column: number) => {
-    await container.evaluate((c, column) => {
-      c.scrollLeft = column * c.clientWidth;
-    }, column);
-    await page.waitForTimeout(400);
-  };
-  const where = () =>
-    container.evaluate((c, id) => {
-      const frame = c.getBoundingClientRect();
-      const rects = c
-        .querySelector(`.paragraph-wrapper[data-paragraph-id="${id}"]`)!
-        .getClientRects();
-      const column = (r: DOMRect) =>
-        Math.round((r.left - frame.left + c.scrollLeft) / frame.width);
-      return {
-        first: column(rects[0]),
-        last: column(rects[rects.length - 1]),
-        pages: Math.round(c.scrollWidth / frame.width),
-      };
-    }, paragraphId);
-
-  const { first, pages } = await where();
-  await goTo(first > pages / 2 ? 0 : pages - 1);
+  const far = await container.evaluate((c, id) => {
+    const frame = c.getBoundingClientRect();
+    const rect = c
+      .querySelector(`.paragraph-wrapper[data-paragraph-id="${id}"]`)!
+      .getClientRects()[0];
+    const column = Math.round(
+      (rect.left - frame.left + c.scrollLeft) / frame.width,
+    );
+    const pages = Math.round(c.scrollWidth / frame.width);
+    return column > pages / 2 ? 0 : pages - 1;
+  }, paragraphId);
+  await container.evaluate((c, column) => {
+    c.scrollLeft = column * c.clientWidth;
+  }, far);
   await expect(target).toHaveClass(/far/);
-  for (const away of [3, 4]) {
-    const { first, last, pages } = await where();
-    await goTo(last + away < pages ? last + away : first - away);
-    if ((await target.locator(".word-span").count()) === 0) break;
-  }
+  await scrollToParagraph(page, paragraphId);
   await expect(target).not.toHaveClass(/far/);
-  await expect(target.locator(".word-span")).toHaveCount(0);
 }
 
 /** Per-idx-stable sentence shape, so wrapped widths stay deterministic. */
@@ -359,9 +341,8 @@ export function wordSegment(opts: {
   word: number;
   text: string;
   translation: string | null;
-  familiarity?: number;
 }): ParagraphSegment {
-  const seg: ParagraphSegment = {
+  return {
     kind: "word",
     text: opts.text,
     sentence: opts.sentence,
@@ -369,34 +350,6 @@ export function wordSegment(opts: {
     flatIndex: opts.flatIndex,
     translation: opts.translation,
   };
-  if (opts.familiarity !== undefined) {
-    seg.familiarity = opts.familiarity;
-  }
-  return seg;
-}
-
-export async function emitCardsUpdated(page: Page): Promise<void> {
-  if (isRealMode()) realModeUnsupported("emitCardsUpdated");
-  await page.evaluate(() => (window as any).__test.emitCardsUpdated());
-}
-
-export async function setParagraphTranslationSilent(
-  page: Page,
-  bookId: string,
-  paragraphId: number,
-  segments: ParagraphSegment[] | undefined,
-): Promise<void> {
-  if (isRealMode()) realModeUnsupported("setParagraphTranslationSilent");
-  await page.evaluate(
-    ({ bookId, paragraphId, segments }) => {
-      (window as any).__test.setParagraphTranslationSilent(
-        bookId,
-        paragraphId,
-        segments,
-      );
-    },
-    { bookId, paragraphId, segments },
-  );
 }
 
 export async function setParagraphTranslation(
@@ -426,7 +379,6 @@ export async function setParagraphTranslation(
 export function segmentsOfHtml(
   html: string,
   translationOf: (token: string) => string | null = () => null,
-  familiarity?: number,
 ): ParagraphSegment[] {
   const segments: ParagraphSegment[] = [];
   let flatIdx = 0;
@@ -445,7 +397,6 @@ export function segmentsOfHtml(
         word: wordIdx++,
         text: token,
         translation: translationOf(token),
-        ...(familiarity !== undefined ? { familiarity } : {}),
       }),
     );
     if (/[.!?]$/.test(token)) {

@@ -28,8 +28,6 @@ export default defineConfig({
     "chapter-session-position.spec.ts", // readingState
     "chapter-summary-status.spec.ts", // summaryStatus + advanceSummaryGeneration
     "word-view-panel.spec.ts", // wordInfos
-    "tap-to-reveal.spec.ts", // config seeding + per-word familiarity
-    "anki-familiarity.spec.ts", // per-word familiarity + emitCardsUpdated
     // Segment text that deliberately diverges from the paragraph original;
     // real segments are sliced out of the original, so it cannot diverge.
     "paragraph-view.spec.ts", // + setTranslateConfig/inFlight in most cases

@@ -343,10 +343,9 @@ test.describe("ParagraphView (chromium only)", () => {
     await expect(peek.locator(".peek-translations")).toHaveText("hola");
   });
 
-  test("F1: a familiarity-0 word renders the translation overlay automatically", async ({
+  test("F1: a word shows its translation only when tapped, however unfamiliar", async ({
     page,
   }) => {
-    // Familiarity 0 auto-shows the overlay; familiarity 1 stays hidden.
     const segments = [
       wordSegment({
         flatIndex: 0,
@@ -354,7 +353,6 @@ test.describe("ParagraphView (chromium only)", () => {
         word: 0,
         text: "w0",
         translation: "t0",
-        familiarity: 0,
       }),
       { kind: "gap" as const, text: " " },
       wordSegment({
@@ -363,7 +361,6 @@ test.describe("ParagraphView (chromium only)", () => {
         word: 1,
         text: "w1",
         translation: "t1",
-        familiarity: 1,
       }),
       { kind: "gap" as const, text: " " },
       wordSegment({
@@ -372,7 +369,6 @@ test.describe("ParagraphView (chromium only)", () => {
         word: 2,
         text: "w2",
         translation: "t2",
-        familiarity: 0,
       }),
     ];
     await seedAndOpen(page, {
@@ -380,8 +376,12 @@ test.describe("ParagraphView (chromium only)", () => {
     });
 
     const p = paragraphLocator(page, 0);
+    await expect(wordSpan(p, 0)).toBeVisible();
+    await expect(p.locator(".translation-overlay")).toHaveCount(0);
+
+    await wordSpan(p, 0).click();
     await expect(wordSpan(p, 0).locator(".translation-overlay")).toHaveCount(1);
-    await expect(wordSpan(p, 2).locator(".translation-overlay")).toHaveCount(1);
+    await expect(wordSpan(p, 2).locator(".translation-overlay")).toHaveCount(0);
     await expect(wordSpan(p, 1).locator(".translation-overlay")).toHaveCount(0);
   });
 
@@ -440,10 +440,10 @@ test.describe("ParagraphView (chromium only)", () => {
     await expect.poll(() => isOverlayPainted(2)).toBe(false);
   });
 
-  test("F2: auto-shown translation overlays are actually painted (opacity > 0)", async ({
+  test("F2: tapped translation overlays are actually painted (opacity > 0)", async ({
     page,
   }) => {
-    // Words 0 and 2 auto-show; word 1 stays hidden.
+    // Words 0 and 2 are tapped; word 1 stays hidden.
     const segments = [0, 1, 2].flatMap((i) => [
       ...(i > 0 ? [{ kind: "gap" as const, text: " " }] : []),
       wordSegment({
@@ -452,12 +452,18 @@ test.describe("ParagraphView (chromium only)", () => {
         word: i,
         text: `w${i}`,
         translation: `t${i}`,
-        familiarity: i === 1 ? 1 : 0,
       }),
     ]);
     await seedAndOpen(page, {
       chapters: [{ paragraphs: [{ html: "orig", segments }] }],
     });
+
+    const p = paragraphLocator(page, 0);
+    await wordSpan(p, 0).click();
+    await wordSpan(p, 2).click();
+    await expect(p.locator(".translation-overlay")).toHaveCount(2);
+    // Past the fade-in.
+    await page.waitForTimeout(300);
 
     // The overlay is a ::before pseudo-element or a .translation-overlay child
     // depending on the render branch; either way require it painted.

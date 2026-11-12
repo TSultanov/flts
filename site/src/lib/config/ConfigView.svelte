@@ -75,7 +75,6 @@
     let ankiEndpoint: string = $state("");
     let ankiApiKey: string = $state("");
     let ankiSyncEnabled: boolean = $state(true);
-    let tapToRevealTranslations: boolean = $state(false);
 
     // `seeded` is deliberately non-reactive: later config_updated refetches
     // re-run this effect but bail, so unsaved edits survive. Sync settings
@@ -101,7 +100,6 @@
         ankiEndpoint = cfg.ankiEndpoint ?? "";
         ankiApiKey = cfg.ankiApiKey ?? "";
         ankiSyncEnabled = cfg.ankiSyncEnabled ?? true;
-        tapToRevealTranslations = cfg.tapToRevealTranslations ?? false;
         seeded = true;
     });
     let spotifyStatus: SpotifyWebStatus = $state({
@@ -221,7 +219,6 @@
                 // Sync settings are owned by the sync UI, not this form.
                 syncEnabled: configStore.current?.syncEnabled,
                 syncDeviceName: configStore.current?.syncDeviceName,
-                tapToRevealTranslations,
             });
             models = await getModels();
         } catch (e) {
@@ -495,20 +492,6 @@
                 bind:value={translationConcurrency}
             />
 
-            <label for="tapToRevealTranslations"
-                >Tap to reveal translations</label
-            >
-            <input
-                id="tapToRevealTranslations"
-                type="checkbox"
-                bind:checked={tapToRevealTranslations}
-                data-testid="tap-to-reveal"
-            />
-            <p class="hint tap-to-reveal-hint">
-                Hides unknown-word underlines and automatic translation
-                previews. Translations appear only after you tap a word.
-            </p>
-
             <label for="storage">Storage</label>
             <input
                 id="storage"
@@ -772,13 +755,6 @@
     input#translationConcurrency {
         grid-column: 2/4;
         max-width: 6em;
-    }
-    input#tapToRevealTranslations {
-        grid-column: 2/4;
-        justify-self: start;
-    }
-    p.hint.tap-to-reveal-hint {
-        grid-column: 1/4;
     }
     input#storage.full {
         grid-column: 2/4;

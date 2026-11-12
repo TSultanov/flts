@@ -376,23 +376,13 @@ impl Library {
     /// hold, and brings every loaded book that is behind up to date.
     pub async fn refresh_from_peers(&self) -> anyhow::Result<PeerChanges> {
         let imported = import_legacy(&self.library_root, &self.store, None).await;
-        let adopted = match self.store.run(|db| db.refresh()).await {
-            Ok(adopted) => adopted,
-            Err(err) => {
-                // Whatever got in before the failure may include cards.
-                self.card_store.invalidate_all();
-                return Err(err);
-            }
-        };
+        let adopted = self.store.run(|db| db.refresh()).await?;
         let mut changes = PeerChanges {
             library: imported.books > 0 || adopted.shelf,
             cards: imported.cards || adopted.cards,
             deleted: adopted.purged.clone(),
             ..PeerChanges::default()
         };
-        if changes.cards {
-            self.card_store.invalidate_all();
-        }
         if !adopted.purged.is_empty() {
             // The set-aside old-format copy holds the same text.
             let (local, purged) = (self.store.local_dir().to_owned(), adopted.purged.clone());
@@ -457,7 +447,6 @@ impl Library {
     pub async fn take_new_identity(&self) -> anyhow::Result<()> {
         let store = self.store.clone();
         tokio::task::spawn_blocking(move || store.start_over_as_new_writer()).await??;
-        self.card_store.invalidate_all();
         self.settle_shared_identity().await
     }
 

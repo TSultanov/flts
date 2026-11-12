@@ -1,19 +1,11 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, RwLock},
-};
+use std::sync::Arc;
 
 use tokio::sync::Notify;
 
 use crate::{
-    card::{AnkiData, Card, card_id, familiarity_from, lemma_slug},
+    card::{AnkiData, Card, lemma_slug},
     store::LibraryStore,
 };
-
-/// Entry cap before `fam_cache` is cleared wholesale. It's a derived index
-/// repopulated on miss, so clearing is always safe; with every looked-up word
-/// cached, card or not, the cap is some 10 MB.
-const FAM_CACHE_MAX_ENTRIES: usize = 100_000;
 
 #[derive(Clone)]
 pub struct LibraryCardStore {
@@ -23,11 +15,6 @@ pub struct LibraryCardStore {
 struct CardStoreInner {
     store: LibraryStore,
     change_notify: Notify,
-    /// [`familiarity_from`] per `card_id`, so page renders never rebuild
-    /// cards. `None` is dormant or no card at all, `Some(0.0)` never-synced.
-    /// Written only under the store's lock, so it follows the store's order;
-    /// cleared when cards changed behind this type's back.
-    fam_cache: RwLock<HashMap<String, Option<f32>>>,
 }
 
 /// One compare-and-set of a card's retention data.
@@ -47,7 +34,6 @@ impl LibraryCardStore {
             inner: Arc::new(CardStoreInner {
                 store,
                 change_notify: Notify::new(),
-                fam_cache: RwLock::new(HashMap::new()),
             }),
         }
     }
@@ -56,26 +42,6 @@ impl LibraryCardStore {
     /// updates are silent.
     pub fn change_notify(&self) -> &Notify {
         &self.inner.change_notify
-    }
-
-    fn cache(&self, entries: impl ExactSizeIterator<Item = (String, Option<f32>)>) {
-        let mut cache = self.inner.fam_cache.write().unwrap();
-        if cache.len() + entries.len() > FAM_CACHE_MAX_ENTRIES {
-            cache.clear();
-        }
-        cache.extend(entries);
-    }
-
-    fn remember(&self, source: &str, target: &str, slug: &str, data: Option<&AnkiData>) {
-        self.cache(std::iter::once((
-            card_id(source, target, slug),
-            familiarity_from(data),
-        )));
-    }
-
-    fn forget(&self, source: &str, target: &str, slug: &str) {
-        let mut cache = self.inner.fam_cache.write().unwrap();
-        cache.remove(&card_id(source, target, slug));
     }
 
     /// One store transaction. Once on the blocking pool it runs to the end
@@ -132,13 +98,7 @@ impl LibraryCardStore {
                 db.publish()?;
                 return Ok(false);
             }
-            let staged = db.stage_card(&source, &target, &slug, &card, Some(&card.anki_data));
-            // Staged rows are read from now on, whatever the commit does.
-            match &staged {
-                Ok(_) => this.remember(&source, &target, &slug, card.anki_data.as_ref()),
-                Err(_) => this.forget(&source, &target, &slug),
-            }
-            staged?;
+            db.stage_card(&source, &target, &slug, &card, Some(&card.anki_data))?;
             let published = db.publish();
             this.inner.change_notify.notify_one();
             published?;
@@ -176,21 +136,14 @@ impl LibraryCardStore {
         if updates.is_empty() {
             return Ok(Vec::new());
         }
-        let this = self.clone();
         self.transaction(move |db| {
             let mut applied = Vec::with_capacity(updates.len());
             let mut failure = None;
             for update in &updates {
                 let (source, target, slug) = (&update.source, &update.target, &update.slug);
                 match db.set_card_anki_data(source, target, slug, &update.expected, &update.data) {
-                    Ok(set) => {
-                        if set {
-                            this.remember(source, target, slug, Some(&update.data));
-                        }
-                        applied.push(set);
-                    }
+                    Ok(set) => applied.push(set),
                     Err(err) => {
-                        this.forget(source, target, slug);
                         failure = Some(err);
                         break;
                     }
@@ -208,65 +161,6 @@ impl LibraryCardStore {
             Ok(applied)
         })
         .await
-    }
-
-    /// Familiarity for the requested slugs; dormant and unknown ones are
-    /// omitted.
-    pub async fn familiarities(
-        &self,
-        source: &str,
-        target: &str,
-        slugs: &[String],
-    ) -> HashMap<String, f32> {
-        let mut found = HashMap::new();
-        let mut misses = Vec::new();
-        {
-            let cache = self.inner.fam_cache.read().unwrap();
-            for slug in slugs {
-                match cache.get(&card_id(source, target, slug)) {
-                    Some(Some(familiarity)) => {
-                        found.insert(slug.clone(), *familiarity);
-                    }
-                    Some(None) => {}
-                    None => misses.push(slug.clone()),
-                }
-            }
-        }
-        if misses.is_empty() {
-            return found;
-        }
-        let read = {
-            let (this, source, target) = (self.clone(), source.to_owned(), target.to_owned());
-            self.inner
-                .store
-                .read(move |db| {
-                    let mut read = Vec::with_capacity(misses.len());
-                    for slug in misses {
-                        let familiarity = db
-                            .card_anki_data(&source, &target, &slug)?
-                            .and_then(|data| familiarity_from(data.as_ref()));
-                        read.push((slug, familiarity));
-                    }
-                    // Still under the store's lock: no write can be missed.
-                    this.cache(read.iter().map(|(slug, familiarity)| {
-                        (card_id(&source, &target, slug), *familiarity)
-                    }));
-                    Ok(read)
-                })
-                .await
-        };
-        for (slug, familiarity) in read.unwrap_or_default() {
-            if let Some(familiarity) = familiarity {
-                found.insert(slug, familiarity);
-            }
-        }
-        found
-    }
-
-    /// Forget every cached familiarity: cards changed without going through
-    /// this type (another device's writes, an import).
-    pub fn invalidate_all(&self) {
-        self.inner.fam_cache.write().unwrap().clear();
     }
 
     /// Language pairs that have cards, as `(source, target)`.
@@ -303,7 +197,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        card::{AnkiState, Example},
+        card::{AnkiState, Example, card_id},
         test_utils::TempDir,
     };
 
@@ -388,14 +282,6 @@ mod tests {
             .unwrap()
     }
 
-    async fn familiarity(store: &LibraryCardStore, slug: &str) -> Option<f32> {
-        store
-            .familiarities("spa", "rus", &[slug.to_string()])
-            .await
-            .get(slug)
-            .copied()
-    }
-
     #[tokio::test]
     async fn load_returns_none_for_a_missing_card() {
         let (_dir, store) = fixture();
@@ -421,14 +307,14 @@ mod tests {
         let new = card("poder", "мочь", vec![example(0)]);
         {
             let store = LibraryCardStore::new(LibraryStore::open(&root).unwrap());
-            assert_eq!(familiarity(&store, "poder").await, None);
+            assert_eq!(store.load("spa", "rus", "poder").await.unwrap(), None);
             fail_commits(&store, 1);
             assert!(store.create_if_absent(&new, "spa", "rus").await.is_err());
             assert!(unpublished(&store));
             assert_eq!(
-                familiarity(&store, "poder").await,
-                Some(0.0),
-                "the cache follows what the store now reads"
+                store.load("spa", "rus", "poder").await.unwrap(),
+                Some(new.clone()),
+                "the staged card is read"
             );
             assert!(woken(&store).await, "the staged card is there to sync");
 
@@ -543,10 +429,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_failed_commit_keeps_the_cache_in_step_with_the_store() {
+    async fn an_update_whose_commit_failed_stays_staged_and_read() {
         let (_dir, store) = fixture();
         create(&store, card("poder", "мочь", vec![])).await;
-        assert_eq!(familiarity(&store, "poder").await, Some(0.0));
 
         let active = anki(AnkiState::Active, Some(90.0));
         fail_commits(&store, 1);
@@ -557,8 +442,8 @@ mod tests {
                 .is_err()
         );
         assert!(unpublished(&store));
-        assert_eq!(stored(&store, "poder").unwrap().anki_data, Some(active));
-        assert_eq!(familiarity(&store, "poder").await, Some(1.0));
+        let read = store.load("spa", "rus", "poder").await.unwrap().unwrap();
+        assert_eq!(read.anki_data, Some(active));
     }
 
     #[tokio::test]
@@ -596,9 +481,6 @@ mod tests {
             with_anki(card("comer", "есть", vec![]), held.clone()),
         )
         .await;
-        for slug in ["poder", "comer", "ausente"] {
-            familiarity(&store, slug).await;
-        }
         assert!(woken(&store).await, "the creates' wake is spent here");
 
         let active = anki(AnkiState::Active, Some(90.0));
@@ -621,13 +503,11 @@ mod tests {
         assert_eq!(poder.examples.len(), 1, "the rest of the card is kept");
         assert_eq!(stored(&store, "comer").unwrap().anki_data, Some(held));
         assert!(stored(&store, "ausente").is_none());
-        assert_eq!(familiarity(&store, "poder").await, Some(1.0));
-        assert_eq!(familiarity(&store, "comer").await, None);
         assert!(!woken(&store).await, "retention updates are silent");
     }
 
     #[tokio::test]
-    async fn a_batch_whose_commit_failed_stays_staged_and_cached() {
+    async fn a_batch_whose_commit_failed_stays_staged_and_read() {
         let (_dir, store) = fixture();
         create(&store, card("poder", "мочь", vec![])).await;
         create(&store, card("comer", "есть", vec![])).await;
@@ -646,123 +526,9 @@ mod tests {
         assert!(store.update_anki_data_batch(updates).await.is_err());
         assert!(unpublished(&store));
         for slug in ["poder", "comer"] {
-            assert_eq!(familiarity(&store, slug).await, Some(1.0));
+            let read = store.load("spa", "rus", slug).await.unwrap().unwrap();
+            assert_eq!(read.anki_data, Some(active.clone()));
         }
-    }
-
-    #[tokio::test]
-    async fn familiarities_follow_the_stored_retention_data() {
-        let (_dir, store) = fixture();
-        create(&store, card("poder", "x", vec![])).await;
-        // Stability == MATURE_DAYS is exactly 1.0.
-        let mature = anki(AnkiState::Active, Some(90.0));
-        create(&store, with_anki(card("comer", "x", vec![]), mature)).await;
-        let dormant = anki(AnkiState::Suspended, None);
-        create(&store, with_anki(card("vivir", "x", vec![]), dormant)).await;
-
-        // A second store on the same data starts with a cold cache.
-        for store in [
-            store.clone(),
-            LibraryCardStore::new(store.inner.store.clone()),
-        ] {
-            let slugs: Vec<String> = ["poder", "comer", "vivir", "ausente"]
-                .map(String::from)
-                .to_vec();
-            let found = store.familiarities("spa", "rus", &slugs).await;
-            assert_eq!(found.get("poder").copied(), Some(0.0), "never synced");
-            assert_eq!(found.get("comer").copied(), Some(1.0), "mature");
-            assert!(!found.contains_key("vivir"), "dormant");
-            assert!(!found.contains_key("ausente"), "unknown");
-            assert_eq!(found.len(), 2);
-        }
-    }
-
-    #[tokio::test]
-    async fn an_absent_card_is_cached_until_it_is_created() {
-        let (_dir, store) = fixture();
-        assert_eq!(familiarity(&store, "poder").await, None);
-        assert_eq!(familiarity(&store, "comer").await, None);
-        let cached = store.inner.fam_cache.read().unwrap().clone();
-        assert_eq!(cached.get(&card_id("spa", "rus", "poder")), Some(&None));
-
-        create(&store, card("poder", "мочь", vec![])).await;
-        assert_eq!(familiarity(&store, "poder").await, Some(0.0));
-
-        // Written behind the cache's back: the cached absence answers.
-        let behind = LibraryCardStore::new(store.inner.store.clone());
-        create(&behind, card("comer", "есть", vec![])).await;
-        assert_eq!(familiarity(&store, "comer").await, None);
-        store.invalidate_all();
-        assert_eq!(familiarity(&store, "comer").await, Some(0.0));
-    }
-
-    #[tokio::test]
-    async fn the_cache_is_emptied_at_its_cap() {
-        let (_dir, store) = fixture();
-        let filler = (0..FAM_CACHE_MAX_ENTRIES).map(|i| (format!("filler{i}"), None));
-        store.cache(filler);
-        assert_eq!(familiarity(&store, "poder").await, None);
-        assert_eq!(store.inner.fam_cache.read().unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn familiarity_follows_update_anki_data() {
-        let (_dir, store) = fixture();
-        create(&store, card("poder", "мочь", vec![])).await;
-        assert_eq!(familiarity(&store, "poder").await, Some(0.0));
-
-        let active = anki(AnkiState::Active, Some(90.0));
-        assert!(
-            store
-                .update_anki_data("spa", "rus", "poder", None, active.clone())
-                .await
-                .unwrap()
-        );
-        assert_eq!(familiarity(&store, "poder").await, Some(1.0));
-
-        assert!(
-            store
-                .update_anki_data(
-                    "spa",
-                    "rus",
-                    "poder",
-                    Some(active),
-                    anki(AnkiState::Deleted, None)
-                )
-                .await
-                .unwrap()
-        );
-        assert_eq!(familiarity(&store, "poder").await, None);
-    }
-
-    #[tokio::test]
-    async fn invalidate_all_forces_a_reread() {
-        let (_dir, store) = fixture();
-        let active = anki(AnkiState::Active, Some(90.0));
-        create(
-            &store,
-            with_anki(card("poder", "x", vec![]), active.clone()),
-        )
-        .await;
-        assert_eq!(familiarity(&store, "poder").await, Some(1.0));
-
-        // Another device's write, as far as this cache can tell.
-        let behind = LibraryCardStore::new(store.inner.store.clone());
-        let dormant = anki(AnkiState::Suspended, None);
-        assert!(
-            behind
-                .update_anki_data("spa", "rus", "poder", Some(active), dormant)
-                .await
-                .unwrap()
-        );
-        assert_eq!(
-            familiarity(&store, "poder").await,
-            Some(1.0),
-            "a cache hit does not re-read"
-        );
-
-        store.invalidate_all();
-        assert_eq!(familiarity(&store, "poder").await, None);
     }
 
     #[tokio::test]
@@ -912,11 +678,6 @@ mod tests {
         assert!(
             on_disk(&store, "poder").is_some(),
             "the accepted write still landed"
-        );
-        assert_eq!(
-            store.inner.fam_cache.read().unwrap()[&card_id("spa", "rus", "poder")],
-            Some(0.0),
-            "and reached the cache"
         );
         assert!(
             store

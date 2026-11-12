@@ -32,7 +32,6 @@ export type WordClickInfo = {
 };
 
 const SIBLING_RADIUS = 2;
-const MOUNTS_PER_FRAME = 2;
 const GEOM_MOUNT_THRESHOLD = 2.0;
 const GEOM_UNMOUNT_THRESHOLD = 2.5;
 // Restore normally settles when every paragraph reports loaded; these caps
@@ -114,8 +113,8 @@ export class ChapterViewModel {
   #settleRaf: number | null = null;
   #disposed = false;
 
-  // Click-to-reveal words keyed `${paragraphId}:${flatIndex}`; ephemeral —
-  // initial per-word visibility comes from card familiarity alone.
+  // Words tapped to show their translation, keyed
+  // `${paragraphId}:${flatIndex}`; for this visit to the chapter only.
   // Per key, so a tap redraws one word and not every word on the pages.
   #revealedWordKeys = new SvelteSet<string>();
 
@@ -159,12 +158,14 @@ export class ChapterViewModel {
     );
   }
 
-  /** Drawn as bare text: off the mounted pages, and nothing to draw over it. */
-  isPlain(paragraphId: number): boolean {
-    return (
-      !this.isMounted(paragraphId) &&
-      this.#store.getTranslation(paragraphId)?.segments == null
-    );
+  /** Flat indices of the paragraph's words tapped to show a translation. */
+  revealedIn(paragraphId: number): number[] {
+    const mine = `${paragraphId}:`;
+    const flat: number[] = [];
+    for (const key of this.#revealedWordKeys) {
+      if (key.startsWith(mine)) flat.push(Number(key.slice(mine.length)));
+    }
+    return flat;
   }
 
   /** The block to draw instead of the paragraph's text, if it is far. */
@@ -317,10 +318,6 @@ export class ChapterViewModel {
     };
   }
 
-  isWordRevealed(paragraphId: number, flatIndex: number): boolean {
-    return this.#revealedWordKeys.has(`${paragraphId}:${flatIndex}`);
-  }
-
   startInitialSync(): () => void {
     const ids = this.#paragraphIdsResource.current ?? [];
 
@@ -373,6 +370,7 @@ export class ChapterViewModel {
       }
       // Text drawn without a component reports nothing itself.
       const arrived = () => {
+        this.#noRestoreRevealHook?.();
         this.#scheduleColumnCountRecompute();
         this.#scheduleAnchorRaf();
         this.#scheduleAdvance();
@@ -416,7 +414,7 @@ export class ChapterViewModel {
         if (this.#isInitiallyReady || this.#initialRevealRaf !== null) {
           return;
         }
-        if (!this.#readyParagraphIds.has(firstId)) return;
+        if (!this.#store.hasOriginal(firstId)) return;
         this.#recomputeMountWindow();
         this.#initialRevealRaf = requestAnimationFrame(() => {
           this.#initialRevealRaf = null;
@@ -760,22 +758,7 @@ export class ChapterViewModel {
       }
     }
 
-    // A page's worth of word spans made at once is a late frame; a
-    // paragraph or two a frame is not, and they are two pages off yet.
     let changed = false;
-    if (stayMounted && this.#isInitiallyReady) {
-      const fresh = wrappers
-        .filter((w) => next.has(w.id) && !this.#mountedParagraphIds.has(w.id))
-        .sort(
-          (a, b) =>
-            Math.abs(a.center - visibleCenter) -
-            Math.abs(b.center - visibleCenter),
-        );
-      for (const later of fresh.slice(MOUNTS_PER_FRAME)) {
-        next.delete(later.id);
-        changed = true;
-      }
-    }
     if (!setsEqual(next, this.#mountedParagraphIds)) {
       this.#mountedParagraphIds = next;
       // Sole driver of translation fetches; the store dedups.

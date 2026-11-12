@@ -164,10 +164,11 @@ async function waitForTranslations(
   const harness = getHarness();
   const deadline = Date.now() + 30_000;
   for (;;) {
-    const rows = await harness.invoke<
-      Array<{ id: number; segments?: unknown }>
-    >("get_paragraph_translations_batch", { bookId, paragraphIds });
-    const done = new Set(rows.filter((r) => r.segments).map((r) => r.id));
+    const rows = await harness.invoke<Array<{ id: number; html?: unknown }>>(
+      "get_paragraph_html_batch",
+      { bookId, paragraphIds },
+    );
+    const done = new Set(rows.filter((r) => r.html).map((r) => r.id));
     if (paragraphIds.every((id) => done.has(id))) return;
     if (Date.now() > deadline) {
       throw new Error(

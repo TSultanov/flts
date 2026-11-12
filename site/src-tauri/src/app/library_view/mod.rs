@@ -1,5 +1,3 @@
-use std::collections::{HashMap, HashSet};
-
 use htmlentity::entity::{ICodedDataTrait, decode};
 use isolang::Language;
 use library::card;
@@ -16,6 +14,7 @@ use crate::app::AppState;
 pub mod imports;
 pub mod mutations;
 pub mod queries;
+mod render;
 
 pub use imports::*;
 pub use mutations::*;
@@ -68,10 +67,11 @@ pub struct ParagraphOriginal {
     original: String,
 }
 
+/// A paragraph ready to show; `html` is absent for one not translated.
 #[derive(Clone, serde::Serialize)]
-pub struct ParagraphTranslationSlice {
+pub struct ParagraphHtml {
     id: usize,
-    segments: Option<Vec<ParagraphSegment>>,
+    html: Option<String>,
 }
 
 /// Inline emphasis carried by a segment. The EPUB sanitizer allows only
@@ -108,8 +108,6 @@ pub enum ParagraphSegment {
         #[serde(rename = "flatIndex")]
         flat_index: usize,
         translation: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        familiarity: Option<f32>,
     },
 }
 
@@ -214,21 +212,7 @@ impl<'a> LibraryView<'a> {
             })
             .await?;
         let original = original.original().to_owned();
-        let src_lang = source_language(&info.language)?;
-        let segments = match words {
-            Some(words) => {
-                let mut slugs = HashSet::new();
-                collect_paragraph_slugs(&words, src_lang, &mut slugs);
-                let slugs: Vec<String> = slugs.into_iter().collect();
-                let fam = self
-                    .library
-                    .card_store()
-                    .familiarities(src_lang.to_639_3(), target_language.to_639_3(), &slugs)
-                    .await;
-                Some(paragraph_to_segments(&original, &words, &fam, src_lang))
-            }
-            None => None,
-        };
+        let segments = words.map(|words| paragraph_to_segments(&original, &words));
         Ok(ParagraphView {
             id: paragraph_id,
             original,
@@ -259,56 +243,33 @@ impl<'a> LibraryView<'a> {
         .await
     }
 
-    pub async fn get_paragraph_translations_batch(
+    pub async fn get_paragraph_html_batch(
         &self,
         book_id: Uuid,
         paragraph_ids: Vec<usize>,
         target_language: &Language,
-    ) -> anyhow::Result<Vec<ParagraphTranslationSlice>> {
+    ) -> anyhow::Result<Vec<ParagraphHtml>> {
         let book = self.library.get_book(&book_id).await?;
         let info = book.info().clone();
-        let src_lang = source_language(&info.language)?;
         let (count, target) = (info.paragraphs_count(), *target_language);
-        // An untranslated paragraph's text is not read: nothing is drawn from it.
-        let prepared = book
-            .read(move |book| {
-                paragraph_ids
-                    .into_iter()
-                    .filter(|id| *id < count)
-                    .map(|id| {
-                        Ok(match book.words(&target, id)? {
-                            Some(words) => {
-                                let original = book.paragraph(id)?.original().to_owned();
-                                (id, Some((original, words)))
-                            }
-                            None => (id, None),
-                        })
-                    })
-                    .collect::<anyhow::Result<Vec<_>>>()
-            })
-            .await?;
-
-        // Union the batch's lemma slugs first so the card store is hit once.
-        let mut slugs = HashSet::new();
-        for (_, words) in prepared.iter().filter_map(|(_, p)| p.as_ref()) {
-            collect_paragraph_slugs(words, src_lang, &mut slugs);
-        }
-        let slugs: Vec<String> = slugs.into_iter().collect();
-        let fam = self
-            .library
-            .card_store()
-            .familiarities(src_lang.to_639_3(), target_language.to_639_3(), &slugs)
-            .await;
-
-        Ok(prepared
-            .into_iter()
-            .map(|(id, translated)| ParagraphTranslationSlice {
-                id,
-                segments: translated.map(|(original, words)| {
-                    paragraph_to_segments(&original, &words, &fam, src_lang)
-                }),
-            })
-            .collect())
+        book.read(move |book| {
+            paragraph_ids
+                .into_iter()
+                .filter(|id| *id < count)
+                .map(|id| {
+                    let html = match book.words(&target, id)? {
+                        Some(words) => {
+                            let original = book.paragraph(id)?.original().to_owned();
+                            let segments = paragraph_to_segments(&original, &words);
+                            Some(render::paragraph_html(&segments))
+                        }
+                        None => None,
+                    };
+                    Ok(ParagraphHtml { id, html })
+                })
+                .collect()
+        })
+        .await
     }
 
     pub async fn list_books(
@@ -581,36 +542,6 @@ impl<'a> LibraryView<'a> {
     }
 }
 
-/// Adds every non-punctuation lemma slug to `out`; the caller's `HashSet` dedups
-/// across paragraphs so each slug is loaded once.
-fn source_language(code: &str) -> anyhow::Result<Language> {
-    Language::from_639_3(code)
-        .ok_or_else(|| anyhow::anyhow!("book has invalid ISO-639-3 language code: {code:?}"))
-}
-
-fn collect_paragraph_slugs(
-    translation: &ParagraphWords,
-    src_lang: Language,
-    out: &mut HashSet<String>,
-) {
-    for sentence in &translation.sentences {
-        for word in &sentence.words {
-            if word.is_punctuation {
-                continue;
-            }
-            let lemma_canonical = card::canonicalize_lemma(&word.lemma, src_lang);
-            if lemma_canonical.is_empty() {
-                continue;
-            }
-            let slug = card::lemma_slug(&lemma_canonical);
-            if slug.is_empty() {
-                continue;
-            }
-            out.insert(slug);
-        }
-    }
-}
-
 /// One decoded character with the emphasis active at that point. `<br>` becomes
 /// a `\n` flagged as a break so it neither matches word text nor is lost.
 struct ProjChar {
@@ -732,12 +663,7 @@ fn push_run(segments: &mut Vec<ParagraphSegment>, run: &[ProjChar]) {
     }
 }
 
-fn paragraph_to_segments(
-    original: &str,
-    translation: &ParagraphWords,
-    card_familiarity: &HashMap<String, f32>,
-    src_lang: Language,
-) -> Vec<ParagraphSegment> {
+fn paragraph_to_segments(original: &str, translation: &ParagraphWords) -> Vec<ParagraphSegment> {
     let mut segments: Vec<ParagraphSegment> = Vec::new();
 
     let decode_lossy = |value: &str| -> String {
@@ -811,20 +737,6 @@ fn paragraph_to_segments(
                     .map(sanitize_translation_text)
                     .filter(|t| !t.is_empty());
 
-                let lemma_canonical = card::canonicalize_lemma(&word.lemma, src_lang);
-                let familiarity = if lemma_canonical.is_empty() {
-                    None
-                } else {
-                    let slug = card::lemma_slug(&lemma_canonical);
-                    if slug.is_empty() {
-                        None
-                    } else {
-                        // Missing = dormant card (Suspended/Deleted); never-synced
-                        // maps to Some(0.0) in `LibraryCardStore::familiarities`.
-                        card_familiarity.get(&slug).copied()
-                    }
-                };
-
                 segments.push(ParagraphSegment::Word {
                     text,
                     marks: word_marks,
@@ -832,7 +744,6 @@ fn paragraph_to_segments(
                     word: word_idx,
                     flat_index: current_flat_index,
                     translation: translation_text,
-                    familiarity,
                 });
             }
 
@@ -918,9 +829,7 @@ fn levenshtein_distance_lt_2(str1: &str, str2: &str) -> bool {
 mod tests {
     use super::{Mark, ParagraphSegment, paragraph_to_segments};
 
-    use isolang::Language;
     use library::book::translation_import;
-    use std::collections::HashMap;
 
     fn grammar_stub(original: &str) -> translation_import::Grammar {
         translation_import::Grammar {
@@ -982,7 +891,6 @@ mod tests {
             word,
             flat_index,
             translation: translation.map(str::to_owned),
-            familiarity: None,
         }
     }
 
@@ -1008,7 +916,6 @@ mod tests {
             word,
             flat_index,
             translation: translation.map(str::to_owned),
-            familiarity: None,
         }
     }
 
@@ -1022,12 +929,7 @@ mod tests {
         }]);
 
         let view = view_from_import(&pt);
-        let segments = paragraph_to_segments(
-            original,
-            &view,
-            &HashMap::new(),
-            Language::from_639_3("spa").unwrap(),
-        );
+        let segments = paragraph_to_segments(original, &view);
 
         assert_eq!(
             segments,
@@ -1055,12 +957,7 @@ mod tests {
         }]);
 
         let view = view_from_import(&pt);
-        let segments = paragraph_to_segments(
-            original,
-            &view,
-            &HashMap::new(),
-            Language::from_639_3("spa").unwrap(),
-        );
+        let segments = paragraph_to_segments(original, &view);
 
         assert_eq!(
             segments,
@@ -1082,12 +979,7 @@ mod tests {
         }]);
 
         let view = view_from_import(&pt);
-        let segments = paragraph_to_segments(
-            original,
-            &view,
-            &HashMap::new(),
-            Language::from_639_3("spa").unwrap(),
-        );
+        let segments = paragraph_to_segments(original, &view);
 
         assert_eq!(
             segments,
@@ -1114,12 +1006,7 @@ mod tests {
         }]);
 
         let view = view_from_import(&pt);
-        let segments = paragraph_to_segments(
-            original,
-            &view,
-            &HashMap::new(),
-            Language::from_639_3("eng").unwrap(),
-        );
+        let segments = paragraph_to_segments(original, &view);
 
         // Raw translation text (no backend escaping), whitespace normalized.
         assert_eq!(
@@ -1143,12 +1030,7 @@ mod tests {
         }]);
 
         let view = view_from_import(&pt);
-        let segments = paragraph_to_segments(
-            original,
-            &view,
-            &HashMap::new(),
-            Language::from_639_3("eng").unwrap(),
-        );
+        let segments = paragraph_to_segments(original, &view);
 
         assert_eq!(
             segments,
@@ -1174,12 +1056,7 @@ mod tests {
         }]);
 
         let view = view_from_import(&pt);
-        let segments = paragraph_to_segments(
-            original,
-            &view,
-            &HashMap::new(),
-            Language::from_639_3("eng").unwrap(),
-        );
+        let segments = paragraph_to_segments(original, &view);
 
         assert_eq!(
             segments,
@@ -1204,12 +1081,7 @@ mod tests {
         }]);
 
         let view = view_from_import(&pt);
-        let segments = paragraph_to_segments(
-            original,
-            &view,
-            &HashMap::new(),
-            Language::from_639_3("eng").unwrap(),
-        );
+        let segments = paragraph_to_segments(original, &view);
 
         assert_eq!(
             segments,
@@ -1245,12 +1117,7 @@ mod tests {
         ]);
 
         let view = view_from_import(&pt);
-        let segments = paragraph_to_segments(
-            original,
-            &view,
-            &HashMap::new(),
-            Language::from_639_3("eng").unwrap(),
-        );
+        let segments = paragraph_to_segments(original, &view);
 
         assert_eq!(
             segments,
@@ -1282,12 +1149,7 @@ mod tests {
         }]);
 
         let view = view_from_import(&pt);
-        let segments = paragraph_to_segments(
-            original,
-            &view,
-            &HashMap::new(),
-            Language::from_639_3("eng").unwrap(),
-        );
+        let segments = paragraph_to_segments(original, &view);
 
         let texts: Vec<&str> = segments
             .iter()
@@ -1310,50 +1172,11 @@ mod tests {
         }]);
 
         let view = view_from_import(&pt);
-        let segments = paragraph_to_segments(
-            original,
-            &view,
-            &HashMap::new(),
-            Language::from_639_3("eng").unwrap(),
-        );
+        let segments = paragraph_to_segments(original, &view);
 
         assert_eq!(segments, vec![gap_seg("...")]);
     }
 
-    #[test]
-    fn paragraph_to_segments_threads_familiarity_from_map() {
-        let original = "hola mundo";
-
-        let pt = make_paragraph_translation(vec![translation_import::Sentence {
-            full_translation: "ignored".to_owned(),
-            words: vec![
-                word("hola", &["hi"], false),
-                word("mundo", &["world"], false),
-            ],
-        }]);
-
-        let view = view_from_import(&pt);
-
-        let mut fam = HashMap::new();
-        fam.insert("hola".to_string(), 0.5_f32);
-
-        let segments =
-            paragraph_to_segments(original, &view, &fam, Language::from_639_3("spa").unwrap());
-
-        let familiarities: Vec<Option<f32>> = segments
-            .iter()
-            .filter_map(|s| match s {
-                ParagraphSegment::Word { familiarity, .. } => Some(*familiarity),
-                _ => None,
-            })
-            .collect();
-
-        assert_eq!(familiarities, vec![Some(0.5), None]);
-    }
-
-    /// Every character of the paragraph must survive segmentation exactly once:
-    /// decoded gaps plus word texts reconstruct the decoded original. This is
-    /// what lets the mounted and virtualized renderings show the same text.
     #[test]
     fn segments_reconstruct_the_paragraph() {
         let corpus: Vec<(&str, Vec<&str>)> = vec![
@@ -1378,12 +1201,7 @@ mod tests {
                 words: words.iter().map(|w| word(w, &[], false)).collect(),
             }]);
             let view = view_from_import(&pt);
-            let segments = paragraph_to_segments(
-                original,
-                &view,
-                &HashMap::new(),
-                Language::from_639_3("fra").unwrap(),
-            );
+            let segments = paragraph_to_segments(original, &view);
 
             let chars: Vec<char> = original.chars().collect();
             let projection: String = super::flatten_original(&chars)
@@ -1417,12 +1235,7 @@ mod tests {
         }]);
 
         let view = view_from_import(&pt);
-        let segments = paragraph_to_segments(
-            original,
-            &view,
-            &HashMap::new(),
-            Language::from_639_3("fra").unwrap(),
-        );
+        let segments = paragraph_to_segments(original, &view);
 
         assert_eq!(
             segments,

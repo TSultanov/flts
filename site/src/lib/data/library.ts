@@ -37,37 +37,15 @@ export type SentenceWordTranslation = {
   readonly hasCard: boolean;
 };
 
-/** Inline emphasis, normalized backend-side from the sanitizer's `em, i, b`. */
-export type Mark = "emphasis" | "strong";
-
-/**
- * The single source of truth for the mounted and the virtualized rendering,
- * so the two show the same characters under the same wrappers. Marks are
- * structured, not raw tags: a tag that spans segments cannot survive parsing
- * as independent `{@html}` fragments.
- */
-export type ParagraphSegment =
-  | { kind: "gap"; text: string; marks?: Mark[] }
-  | { kind: "break"; marks?: Mark[] }
-  | {
-      kind: "word";
-      text: string;
-      marks?: Mark[];
-      sentence: number;
-      word: number;
-      flatIndex: number;
-      translation: string | null;
-      familiarity?: number;
-    };
-
 export type ParagraphOriginal = {
   id: number;
   original: string;
 };
 
-export type ParagraphTranslationSlice = {
+/** A paragraph ready to show; no `html` for one not translated. */
+export type ParagraphHtml = {
   id: number;
-  segments?: ParagraphSegment[];
+  html?: string;
 };
 
 export type ChapterMetaView = {
@@ -288,14 +266,14 @@ export class Library {
     });
   }
 
-  async getParagraphTranslationsBatch(
+  async getParagraphHtmlBatch(
     bookId: UUID,
     paragraphIds: number[],
-  ): Promise<ParagraphTranslationSlice[]> {
-    return await invoke<ParagraphTranslationSlice[]>(
-      "get_paragraph_translations_batch",
-      { bookId, paragraphIds },
-    );
+  ): Promise<ParagraphHtml[]> {
+    return await invoke<ParagraphHtml[]>("get_paragraph_html_batch", {
+      bookId,
+      paragraphIds,
+    });
   }
 
   async getBookReadingState(bookId: UUID): Promise<BookReadingState | null> {

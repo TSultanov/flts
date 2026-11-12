@@ -42,23 +42,6 @@ describe("Config type", () => {
     };
     void withoutAnki;
   });
-
-  it("accepts tapToRevealTranslations as an optional boolean", () => {
-    const withFlag: Config = {
-      translationProvider: "google",
-      model: "",
-      tapToRevealTranslations: true,
-    };
-    expectTypeOf(withFlag.tapToRevealTranslations).toEqualTypeOf<
-      boolean | undefined
-    >();
-
-    const withoutFlag: Config = {
-      translationProvider: "google",
-      model: "",
-    };
-    void withoutFlag;
-  });
 });
 
 describe("modelsForDropdown", () => {

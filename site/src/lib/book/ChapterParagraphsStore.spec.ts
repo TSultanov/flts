@@ -3,8 +3,7 @@ import { ChapterParagraphsStore } from "./ChapterParagraphsStore.svelte";
 import type {
   Library,
   ParagraphOriginal,
-  ParagraphSegment,
-  ParagraphTranslationSlice,
+  ParagraphHtml,
 } from "../data/library";
 import type { UUID } from "../data/uuid";
 
@@ -68,7 +67,7 @@ function makeLibraryStub() {
   }> = [];
   const translationCalls: Array<{
     ids: number[];
-    d: Deferred<ParagraphTranslationSlice[]>;
+    d: Deferred<ParagraphHtml[]>;
   }> = [];
   const library = {
     getParagraphOriginalsBatch: (_bookId: UUID, ids: number[]) => {
@@ -76,8 +75,8 @@ function makeLibraryStub() {
       originalCalls.push({ ids, d });
       return d.promise;
     },
-    getParagraphTranslationsBatch: (_bookId: UUID, ids: number[]) => {
-      const d = deferred<ParagraphTranslationSlice[]>();
+    getParagraphHtmlBatch: (_bookId: UUID, ids: number[]) => {
+      const d = deferred<ParagraphHtml[]>();
       translationCalls.push({ ids, d });
       return d.promise;
     },
@@ -86,8 +85,6 @@ function makeLibraryStub() {
 }
 
 const bookId = "test-book" as UUID;
-
-const seg = (text: string): ParagraphSegment[] => [{ kind: "gap", text }];
 
 const range = (start: number, end: number): number[] =>
   Array.from({ length: end - start }, (_, i) => start + i);
@@ -111,36 +108,25 @@ afterEach(() => {
 });
 
 describe("ChapterParagraphsStore.dispose", () => {
-  it("unsubscribes both events, cancels the cards-refresh timer, and quiets the pumps", async () => {
-    const { library, originalCalls, translationCalls } = makeLibraryStub();
+  it("unsubscribes its events and quiets the pumps", async () => {
+    const { library, translationCalls } = makeLibraryStub();
     const store = new ChapterParagraphsStore(bookId, library);
-    expect(hubState.subs.map((s) => s.name).sort()).toEqual([
-      "cards_updated",
-      "paragraph_updated",
-    ]);
+    expect(hubState.subs.map((s) => s.name)).toEqual(["paragraph_updated"]);
 
-    // Cache one translation so a cards refresh would have work to do.
     store.enqueueTranslations([1]);
-    translationCalls[0].d.resolve([{ id: 1, segments: seg("v1") }]);
+    translationCalls[0].d.resolve([{ id: 1, html: "v1" }]);
     await flush();
-    expect(store.getTranslation(1)?.segments).toEqual(seg("v1"));
+    expect(store.getTranslation(1)?.html).toBe("v1");
 
     // Leave a chunk queued to prove the pump goes quiet after dispose.
     store.enqueueTranslations(range(100, 220));
     expect(translationCalls.length).toBe(6);
 
-    // Schedule a cards refresh, then dispose before it fires.
-    hubState.fire("cards_updated", null);
     store.dispose();
     expect(hubState.subs.every((s) => !s.active)).toBe(true);
 
-    vi.advanceTimersByTime(1_000);
-    await flush();
-    expect(translationCalls.length).toBe(6); // canceled timer fetched nothing
-
     // Post-dispose events reach no handler and trigger no fetches.
     hubState.fire("paragraph_updated", { bookId, paragraphId: 1 });
-    hubState.fire("cards_updated", null);
     vi.advanceTimersByTime(1_000);
     await flush();
     expect(translationCalls.length).toBe(6);
@@ -201,14 +187,14 @@ describe("ChapterParagraphsStore.together", () => {
   it("applies nothing until every request of the group has answered", async () => {
     const { store, originalCalls, translationCalls } = opened();
 
-    translationCalls[0].d.resolve([{ id: 1, segments: seg("v1") }]);
+    translationCalls[0].d.resolve([{ id: 1, html: "v1" }]);
     await flush();
     expect(store.getTranslation(1)).toBeNull();
 
     originalCalls[0].d.resolve([{ id: 1, original: "one" }]);
     await flush();
     expect(store.getOriginal(1)).toBe("one");
-    expect(store.getTranslation(1)?.segments).toEqual(seg("v1"));
+    expect(store.getTranslation(1)?.html).toBe("v1");
     store.dispose();
   });
 
@@ -245,9 +231,9 @@ describe("ChapterParagraphsStore.together", () => {
     vi.advanceTimersByTime(30_000);
     expect(store.getOriginal(1)).toBe("one");
 
-    translationCalls[0].d.resolve([{ id: 1, segments: seg("late") }]);
+    translationCalls[0].d.resolve([{ id: 1, html: "late" }]);
     await flush();
-    expect(store.getTranslation(1)?.segments).toEqual(seg("late"));
+    expect(store.getTranslation(1)?.html).toBe("late");
     store.dispose();
   });
 });
@@ -265,13 +251,13 @@ describe("ChapterParagraphsStore translation staleness", () => {
     expect(translationCalls.length).toBe(2);
 
     // The superseded response resolves; it must not be applied.
-    translationCalls[0].d.resolve([{ id: 1, segments: seg("stale") }]);
+    translationCalls[0].d.resolve([{ id: 1, html: "stale" }]);
     await flush();
     expect(store.getTranslation(1)).toBeNull();
 
-    translationCalls[1].d.resolve([{ id: 1, segments: seg("fresh") }]);
+    translationCalls[1].d.resolve([{ id: 1, html: "fresh" }]);
     await flush();
-    expect(store.getTranslation(1)?.segments).toEqual(seg("fresh"));
+    expect(store.getTranslation(1)?.html).toBe("fresh");
     store.dispose();
   });
 
@@ -284,35 +270,35 @@ describe("ChapterParagraphsStore translation staleness", () => {
     expect(translationCalls.length).toBe(2);
 
     // Newer batch resolves first...
-    translationCalls[1].d.resolve([{ id: 1, segments: seg("new") }]);
+    translationCalls[1].d.resolve([{ id: 1, html: "new" }]);
     await flush();
-    expect(store.getTranslation(1)?.segments).toEqual(seg("new"));
+    expect(store.getTranslation(1)?.html).toBe("new");
 
     // ...then the older one arrives out of order and must be ignored.
-    translationCalls[0].d.resolve([{ id: 1, segments: seg("old") }]);
+    translationCalls[0].d.resolve([{ id: 1, html: "old" }]);
     await flush();
-    expect(store.getTranslation(1)?.segments).toEqual(seg("new"));
+    expect(store.getTranslation(1)?.html).toBe("new");
     store.dispose();
   });
 
-  it("keeps cached segments visible during a refetch and never clobbers them with a null row", async () => {
+  it("keeps a cached translation visible during a refetch and never clobbers them with a null row", async () => {
     const { library, translationCalls } = makeLibraryStub();
     const store = new ChapterParagraphsStore(bookId, library);
 
     store.enqueueTranslations([1]);
-    translationCalls[0].d.resolve([{ id: 1, segments: seg("v1") }]);
+    translationCalls[0].d.resolve([{ id: 1, html: "v1" }]);
     await flush();
-    expect(store.getTranslation(1)?.segments).toEqual(seg("v1"));
+    expect(store.getTranslation(1)?.html).toBe("v1");
 
     hubState.fire("paragraph_updated", { bookId, paragraphId: 1 });
-    // Old segments stay visible while the refetch is in flight.
-    expect(store.getTranslation(1)?.segments).toEqual(seg("v1"));
+    // The old translation stays visible while the refetch is in flight.
+    expect(store.getTranslation(1)?.html).toBe("v1");
     expect(translationCalls.length).toBe(2);
 
-    // Backend transiently reports no segments; the cache keeps v1.
+    // Backend transiently reports no translation; the cache keeps v1.
     translationCalls[1].d.resolve([{ id: 1 }]);
     await flush();
-    expect(store.getTranslation(1)?.segments).toEqual(seg("v1"));
+    expect(store.getTranslation(1)?.html).toBe("v1");
     store.dispose();
   });
 });
@@ -348,15 +334,15 @@ describe("ChapterParagraphsStore batch watchdog", () => {
     store.enqueueTranslations([1]);
     expect(translationCalls.length).toBe(2);
 
-    translationCalls[1].d.resolve([{ id: 1, segments: seg("v1") }]);
+    translationCalls[1].d.resolve([{ id: 1, html: "v1" }]);
     await flush();
-    expect(store.getTranslation(1)?.segments).toEqual(seg("v1"));
+    expect(store.getTranslation(1)?.html).toBe("v1");
 
     // The hung batch's null row has an unchanged epoch, so it reaches
     // the write path — where the null-clobber rule preserves v1.
     translationCalls[0].d.resolve([{ id: 1 }]);
     await flush();
-    expect(store.getTranslation(1)?.segments).toEqual(seg("v1"));
+    expect(store.getTranslation(1)?.html).toBe("v1");
     store.dispose();
   });
 });
@@ -382,9 +368,9 @@ describe("post-watchdog invalidation", () => {
     await flush();
     expect(store.getTranslation(7)).toBeNull();
 
-    // The refetch resolves with the real segments.
-    translationCalls[1].d.resolve([{ id: 7, segments: seg("v1") }]);
+    // The refetch resolves with the real translation.
+    translationCalls[1].d.resolve([{ id: 7, html: "v1" }]);
     await flush();
-    expect(store.getTranslation(7)?.segments).toEqual(seg("v1"));
+    expect(store.getTranslation(7)?.html).toBe("v1");
   });
 });

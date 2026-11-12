@@ -53,7 +53,7 @@ pub const COMMANDS: &[&str] = &[
     "get_book_chapter_paragraph_ids",
     "get_paragraph_view",
     "get_paragraph_originals_batch",
-    "get_paragraph_translations_batch",
+    "get_paragraph_html_batch",
     "get_translation_providers",
     "get_word_info",
     "create_card_for_word",
@@ -415,16 +415,12 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: Value) -> Result<Value, Valu
                 .await,
             )
         }
-        "get_paragraph_translations_batch" => {
+        "get_paragraph_html_batch" => {
             let (book_id, paragraph_ids) =
                 args!(args, { book_id: Uuid, paragraph_ids: Vec<usize> });
             wrap(
-                crate::app::library_view::get_paragraph_translations_batch(
-                    state,
-                    book_id,
-                    paragraph_ids,
-                )
-                .await,
+                crate::app::library_view::get_paragraph_html_batch(state, book_id, paragraph_ids)
+                    .await,
             )
         }
         "get_word_info" => {

@@ -25,7 +25,6 @@ test.describe("Word overlay geometry (chromium only)", () => {
                 word: 0,
                 text: "hola",
                 translation: "hello",
-                familiarity: 0,
               }),
               { kind: "gap" as const, text: " " },
               wordSegment({
@@ -34,7 +33,6 @@ test.describe("Word overlay geometry (chromium only)", () => {
                 word: 1,
                 text: "mundo",
                 translation: "world",
-                familiarity: 0,
               }),
             ],
           },
@@ -42,6 +40,18 @@ test.describe("Word overlay geometry (chromium only)", () => {
       },
     ],
   };
+
+  /**
+   * Taps the first word that has a translation. dispatchEvent: a word split
+   * over two lines has its middle, where a click would land, off it.
+   */
+  async function showTranslation(page: import("@playwright/test").Page) {
+    const p = paragraphLocator(page, 0);
+    await p.locator(".word-span[data-t]").first().dispatchEvent("click");
+    await expect(p.locator(".translation-overlay").first()).toBeVisible();
+    // Past the fade-in and the fitting that follows it.
+    await page.waitForTimeout(300);
+  }
 
   /** Overlay box measured against the word's glyph box, not against the span. */
   async function measure(page: import("@playwright/test").Page) {
@@ -73,9 +83,7 @@ test.describe("Word overlay geometry (chromium only)", () => {
   }) => {
     await page.setViewportSize({ width: 1280, height: 720 });
     await seedAndOpen(page, spec);
-    await expect(
-      paragraphLocator(page, 0).locator(".translation-overlay").first(),
-    ).toBeVisible();
+    await showTranslation(page);
 
     const m = await measure(page);
     // Overlay rides in the half-leading above the glyphs, exactly as wide.
@@ -92,9 +100,7 @@ test.describe("Word overlay geometry (chromium only)", () => {
   }) => {
     await page.setViewportSize({ width: 560, height: 720 });
     await seedAndOpen(page, spec);
-    await expect(
-      paragraphLocator(page, 0).locator(".translation-overlay").first(),
-    ).toBeVisible();
+    await showTranslation(page);
 
     const m = await measure(page);
     // Overlay rides in the half-leading above the glyphs, exactly as wide.
@@ -127,7 +133,6 @@ test.describe("Word overlay geometry (chromium only)", () => {
           word: i,
           text,
           translation: text === long ? "largo" : null,
-          familiarity: 0,
         }),
       ];
       if (i < words.length - 1) segs.push({ kind: "gap", text: " " });
@@ -167,9 +172,7 @@ test.describe("Word overlay geometry (chromium only)", () => {
     }) => {
       await page.setViewportSize({ width: 560, height: 720 });
       await seedAndOpen(page, hyphenatedSpec(fillerCount));
-      await expect(
-        paragraphLocator(page, 0).locator(".translation-overlay").first(),
-      ).toBeVisible();
+      await showTranslation(page);
 
       const m = await measureSplit(page);
       expect(m.fragmentCount).toBe(2);
@@ -188,9 +191,7 @@ test.describe("Word overlay geometry (chromium only)", () => {
   }) => {
     await page.setViewportSize({ width: 560, height: 720 });
     await seedAndOpen(page, hyphenatedSpec(12));
-    await expect(
-      paragraphLocator(page, 0).locator(".translation-overlay").first(),
-    ).toBeVisible();
+    await showTranslation(page);
     expect((await measureSplit(page)).fragmentCount).toBe(2);
 
     await page.setViewportSize({ width: 1280, height: 720 });

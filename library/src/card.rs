@@ -51,25 +51,6 @@ pub enum AnkiState {
     Deleted,
 }
 
-pub const MATURE_DAYS: f32 = 90.0;
-
-/// Anki retention state as a `[0.0, 1.0]` familiarity scalar for the reader.
-/// Unsynced means `Some(0.0)` (never studied); Suspended/Deleted mean `None`
-/// (retired, so no underline or overlay). See `.specs/ANKI_UI.md`.
-pub fn familiarity_from(anki_data: Option<&AnkiData>) -> Option<f32> {
-    let Some(data) = anki_data else {
-        return Some(0.0);
-    };
-    match data.state {
-        AnkiState::Suspended | AnkiState::Deleted => None,
-        AnkiState::Active => {
-            let days = data.fsrs_stability.or(data.interval_days).unwrap_or(0.0) as f32;
-            let raw = (1.0 + days.max(0.0)).log10() / (1.0 + MATURE_DAYS).log10();
-            Some(raw.clamp(0.0, 1.0))
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct CardKey {
     pub source_language: String,
@@ -1116,80 +1097,5 @@ mod tests {
         assert_eq!(card, back);
         assert!(json.contains("\"version\":2"));
         assert!(json.contains("\"anki_data\":null"));
-    }
-
-    fn active(
-        interval_days: Option<f64>,
-        ease: Option<f64>,
-        fsrs_d: Option<f64>,
-        fsrs_s: Option<f64>,
-    ) -> AnkiData {
-        AnkiData {
-            state: AnkiState::Active,
-            interval_days,
-            ease_factor: ease,
-            fsrs_difficulty: fsrs_d,
-            fsrs_stability: fsrs_s,
-        }
-    }
-
-    fn approx(actual: f32, expected: f32) {
-        assert!(
-            (actual - expected).abs() < 0.01,
-            "expected {expected}, got {actual}"
-        );
-    }
-
-    #[test]
-    fn familiarity_zero_when_no_anki_data() {
-        approx(familiarity_from(None).unwrap(), 0.0);
-    }
-
-    #[test]
-    fn familiarity_none_when_suspended() {
-        let d = AnkiData {
-            state: AnkiState::Suspended,
-            ..active(Some(30.0), Some(2.5), None, None)
-        };
-        assert_eq!(familiarity_from(Some(&d)), None);
-    }
-
-    #[test]
-    fn familiarity_none_when_deleted() {
-        let d = AnkiData {
-            state: AnkiState::Deleted,
-            ..active(Some(30.0), Some(2.5), None, None)
-        };
-        assert_eq!(familiarity_from(Some(&d)), None);
-    }
-
-    #[test]
-    fn familiarity_zero_for_active_with_no_retention() {
-        let d = active(None, None, None, None);
-        approx(familiarity_from(Some(&d)).unwrap(), 0.0);
-    }
-
-    #[test]
-    fn familiarity_uses_interval_days_when_fsrs_absent() {
-        let d = active(Some(7.0), Some(2.5), None, None);
-        approx(familiarity_from(Some(&d)).unwrap(), 0.46);
-    }
-
-    #[test]
-    fn familiarity_prefers_fsrs_stability_over_interval_days() {
-        let d = active(Some(99.0), Some(2.5), None, Some(7.0));
-        approx(familiarity_from(Some(&d)).unwrap(), 0.46);
-    }
-
-    #[test]
-    fn familiarity_clamped_to_one_above_mature_days() {
-        let d = active(Some(500.0), Some(2.5), None, None);
-        approx(familiarity_from(Some(&d)).unwrap(), 1.0);
-    }
-
-    #[test]
-    fn familiarity_clamped_to_zero_for_negative_interval() {
-        let d = active(Some(-5.0), Some(2.5), None, None);
-        approx(familiarity_from(Some(&d)).unwrap(), 0.0);
     }
 }

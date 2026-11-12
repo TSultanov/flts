@@ -364,7 +364,6 @@ function mockParagraph({ raw, translated }: Input): SeedParagraph {
         sentence: 0,
         word,
         flatIndex: word,
-        familiarity: 0,
       });
       word++;
     }

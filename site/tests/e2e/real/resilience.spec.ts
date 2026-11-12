@@ -98,11 +98,11 @@ async function storedSegments(
   bookId: string,
   paragraphId = 0,
 ): Promise<unknown> {
-  const rows = await h.invoke<Array<{ id: number; segments?: unknown }>>(
-    "get_paragraph_translations_batch",
+  const rows = await h.invoke<Array<{ id: number; html?: unknown }>>(
+    "get_paragraph_html_batch",
     { bookId, paragraphIds: [paragraphId] },
   );
-  return rows.find((r) => r.id === paragraphId)?.segments ?? null;
+  return rows.find((r) => r.id === paragraphId)?.html ?? null;
 }
 
 test.describe("cross-cutting resilience", () => {

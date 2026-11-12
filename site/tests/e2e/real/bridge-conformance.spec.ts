@@ -43,7 +43,7 @@ const ALL_COMMANDS = [
   "get_book_chapter_paragraph_ids",
   "get_paragraph_view",
   "get_paragraph_originals_batch",
-  "get_paragraph_translations_batch",
+  "get_paragraph_html_batch",
   "get_translation_providers",
   "get_word_info",
   "create_card_for_word",
@@ -259,7 +259,7 @@ test.describe("bridge conformance", () => {
     const table: Array<[string, Record<string, unknown>?, number?]> = [
       ["get_paragraph_view", { bookId, paragraphId }],
       ["get_paragraph_originals_batch", { bookId, paragraphIds }],
-      ["get_paragraph_translations_batch", { bookId, paragraphIds }],
+      ["get_paragraph_html_batch", { bookId, paragraphIds }],
       ["get_word_info", { bookId, paragraphId, sentenceId: 0, wordId: 0 }],
       ["get_book_reading_state", { bookId }],
       ["get_book_summary_status", { bookId }],

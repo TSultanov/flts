@@ -1,7 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import { devices, type Page } from "@playwright/test";
 import { expect, test } from "./helpers/test";
-import { seedAndOpen, showUnmounted } from "./helpers/paragraph";
+import { leaveAndReturn, seedAndOpen } from "./helpers/paragraph";
 import {
   pageFlipCases,
   pageFlipChapter,
@@ -198,9 +198,7 @@ test.describe("iPad final-paragraph page flips", () => {
         page.locator(".paragraphs-container.is-ready"),
       ).toBeVisible();
       await expect(
-        page
-          .locator(`[data-paragraph-id="${LAST}"] .translation-overlay`)
-          .first(),
+        page.locator(`[data-paragraph-id="${LAST}"] .word-span`).first(),
       ).toBeAttached();
       const layout = await lastParagraphLayout(page);
       expect(layout.firstPage).toBeGreaterThan(50);
@@ -236,9 +234,10 @@ test.describe("iPad final-paragraph page flips", () => {
       if (wrap) {
         expect(wrap.mounted).toBe(true);
         expect(wrap.starts.length).toBeGreaterThan(1);
-        await showUnmounted(page, punctuationId);
+        // Drawn again from the same HTML, it must wrap as it did.
+        await leaveAndReturn(page, punctuationId);
         expect(await paragraphWrap(page, punctuationId)).toEqual({
-          mounted: false,
+          mounted: true,
           starts: wrap.starts,
         });
       }

@@ -1,4 +1,4 @@
-import type { Library, ParagraphSegment } from "../data/library";
+import type { Library } from "../data/library";
 import type { UUID } from "../data/uuid";
 import type { ChapterParagraphsStore } from "./ChapterParagraphsStore.svelte";
 
@@ -11,7 +11,6 @@ export type WordSelection = {
 export type ParagraphVMProps = {
   bookId: UUID;
   paragraphId: number;
-  selection: WordSelection | null;
 };
 
 export class ParagraphViewModel {
@@ -33,10 +32,8 @@ export class ParagraphViewModel {
   originalText = $derived(
     this.#store.getOriginal(this.#props.paragraphId) ?? "",
   );
-  segments = $derived<ParagraphSegment[] | null>(
-    this.#translation?.segments ?? null,
-  );
-  isUntranslated = $derived(this.#translation?.segments === null);
+  // Known to have no translation; not merely not asked about yet.
+  isUntranslated = $derived(this.#translation?.html === null);
   isTranslating = $derived(this.#activity.current !== null);
   progressChars = $derived(this.#activity.current?.progressChars ?? 0);
   expectedChars = $derived(this.#activity.current?.expectedChars ?? 100);
@@ -49,16 +46,6 @@ export class ParagraphViewModel {
     this.#library = library;
     this.#store = store;
     this.#props = props;
-  }
-
-  isSelected(sentence: number, word: number): boolean {
-    const sel = this.#props.selection;
-    if (!sel) return false;
-    return (
-      sel.paragraphId === this.#props.paragraphId &&
-      sel.sentence === sentence &&
-      sel.word === word
-    );
   }
 
   async translate(useCache: boolean): Promise<void> {

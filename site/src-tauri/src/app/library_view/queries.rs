@@ -5,7 +5,7 @@ use crate::app::AppState;
 
 use super::{
     BookReadingStateView, BookSummaryStatusView, ChapterView, LibraryBookMetadataView, LibraryView,
-    ParagraphOriginal, ParagraphTranslationSlice, ParagraphView, WordView,
+    ParagraphHtml, ParagraphOriginal, ParagraphView, WordView,
 };
 
 #[tauri::command]
@@ -116,11 +116,11 @@ pub async fn get_paragraph_originals_batch(
 }
 
 #[tauri::command]
-pub async fn get_paragraph_translations_batch(
+pub async fn get_paragraph_html_batch(
     state: tauri::State<'_, AppState>,
     book_id: Uuid,
     paragraph_ids: Vec<usize>,
-) -> Result<Vec<ParagraphTranslationSlice>, String> {
+) -> Result<Vec<ParagraphHtml>, String> {
     let library = state.library().await?;
 
     let target_language_id = { state.config.borrow().target_language_id.clone() };
@@ -130,7 +130,7 @@ pub async fn get_paragraph_translations_batch(
 
     let library_view = LibraryView::create(state.inner(), library);
     library_view
-        .get_paragraph_translations_batch(book_id, paragraph_ids, &target_language)
+        .get_paragraph_html_batch(book_id, paragraph_ids, &target_language)
         .await
         .map_err(|err| err.to_string())
 }

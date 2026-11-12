@@ -1,17 +1,17 @@
 import { SvelteMap } from "svelte/reactivity";
 import { eventHub } from "../data/tauri.svelte";
-import type { Library, ParagraphSegment } from "../data/library";
+import type { Library } from "../data/library";
 import type { UUID } from "../data/uuid";
 
 export type ParagraphTranslationSliceCache = {
-  segments: ParagraphSegment[] | null;
+  /** The paragraph as the backend drew it; null for one not translated. */
+  html: string | null;
 };
 
 export const CHAPTER_STORE_KEY = Symbol("ChapterParagraphsStore");
 
 const BATCH_SIZE = 20;
 const MAX_INFLIGHT = 5;
-const CARDS_REFRESH_DEBOUNCE_MS = 500;
 // Past this a batch is presumed hung: its slot is released and its ids
 // become retryable. A late response still applies.
 const BATCH_WATCHDOG_MS = 30_000;
@@ -66,7 +66,6 @@ export class ChapterParagraphsStore {
   /** Called when translations have been put in: what is drawn may change size. */
   onTranslations: (() => void) | null = null;
 
-  #cardsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   #unsubscribers: Array<() => void> = [];
   #disposed = false;
 
@@ -96,19 +95,6 @@ export class ChapterParagraphsStore {
         },
       ),
     );
-
-    // Card-file changes shift per-word familiarity. Debounced so a long
-    // sync_pass burst coalesces into one refresh.
-    this.#unsubscribers.push(
-      eventHub.subscribe<null>(
-        "cards_updated",
-        () => true,
-        () => {
-          console.info("[cards_updated] event received; scheduling refresh");
-          this.#scheduleCardsRefresh();
-        },
-      ),
-    );
   }
 
   dispose(): void {
@@ -116,31 +102,9 @@ export class ChapterParagraphsStore {
     this.#disposed = true;
     for (const unsub of this.#unsubscribers) unsub();
     this.#unsubscribers = [];
-    if (this.#cardsRefreshTimer != null) {
-      clearTimeout(this.#cardsRefreshTimer);
-      this.#cardsRefreshTimer = null;
-    }
   }
 
-  #scheduleCardsRefresh(): void {
-    if (this.#cardsRefreshTimer != null) {
-      clearTimeout(this.#cardsRefreshTimer);
-    }
-    this.#cardsRefreshTimer = setTimeout(() => {
-      this.#cardsRefreshTimer = null;
-      const ids = [...this.#translations.keys()];
-      if (ids.length === 0) {
-        console.info("[cards_updated] no cached translations to refresh");
-        return;
-      }
-      console.info(
-        `[cards_updated] refreshing ${ids.length} cached translations`,
-      );
-      this.#softEnqueueTranslations(ids);
-    }, CARDS_REFRESH_DEBOUNCE_MS);
-  }
-
-  // Refetch in place, so no segments→original-text flicker. Must bypass
+  // Refetch in place, so no translation→original-text flicker. Must bypass
   // `#translationsEnqueued` (it never clears for fetched ids, and would
   // block every refresh); dedup against the live queue instead.
   #softEnqueueTranslations(ids: readonly number[]): void {
@@ -252,7 +216,7 @@ export class ChapterParagraphsStore {
         settle();
       }, BATCH_WATCHDOG_MS);
       this.#library
-        .getParagraphTranslationsBatch(this.#bookId, chunk)
+        .getParagraphHtmlBatch(this.#bookId, chunk)
         .then((rows) =>
           land(() => {
             for (const row of rows) {
@@ -262,7 +226,7 @@ export class ChapterParagraphsStore {
               ) {
                 continue;
               }
-              this.#applyTranslationRow(row.id, row.segments ?? null);
+              this.#applyTranslationRow(row.id, row.html ?? null);
             }
             this.onTranslations?.();
           }),
@@ -285,12 +249,12 @@ export class ChapterParagraphsStore {
     }
   }
 
-  // Sole write path. Translations are never removed, so a null-segments
-  // row over held segments is transient backend state, not a deletion.
-  #applyTranslationRow(id: number, segments: ParagraphSegment[] | null): void {
-    if (segments === null && this.#translations.get(id)?.segments != null) {
+  // Sole write path. Translations are never removed, so an untranslated
+  // row over a held translation is transient backend state, not a deletion.
+  #applyTranslationRow(id: number, html: string | null): void {
+    if (html === null && this.#translations.get(id)?.html != null) {
       return;
     }
-    this.#translations.set(id, { segments });
+    this.#translations.set(id, { html });
   }
 }

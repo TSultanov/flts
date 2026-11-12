@@ -3,7 +3,7 @@ import {
   fillerHtml,
   multipageSpec,
   paragraphLocator,
-  showUnmounted,
+  leaveAndReturn,
   scrollToParagraph,
   seedAndOpen,
   segmentsOfHtml,
@@ -94,7 +94,7 @@ test.describe("Paragraph marks (chromium only)", () => {
     expect(weights.breaks).toBe(1);
   });
 
-  test("virtualizing a paragraph changes nothing it renders", async ({
+  test("a paragraph that left and came back renders as it did", async ({
     page,
   }) => {
     const COUNT = 80;
@@ -117,7 +117,6 @@ test.describe("Paragraph marks (chromium only)", () => {
     await expect(p).toBeAttached();
 
     // Structure the reader can see: the text, and the wrappers around it.
-    // WordSpans exist only while mounted, so they are not part of the compare.
     const snapshot = () =>
       p.evaluate((el) => {
         const para = el.querySelector("p")!;
@@ -133,9 +132,9 @@ test.describe("Paragraph marks (chromium only)", () => {
     await page.waitForTimeout(300);
     const mounted = await snapshot();
 
-    await showUnmounted(page, MARKED);
-    const virtualized = await snapshot();
+    await leaveAndReturn(page, MARKED);
+    const drawnAgain = await snapshot();
 
-    expect(virtualized).toEqual(mounted);
+    expect(drawnAgain).toEqual(mounted);
   });
 });

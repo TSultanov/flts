@@ -678,14 +678,10 @@ test.describe("chapter open timing", () => {
     await timed("all originals", "get_paragraph_originals_batch", longIds);
     await timed(
       "20 translations",
-      "get_paragraph_translations_batch",
+      "get_paragraph_html_batch",
       longIds.slice(0, 20),
     );
-    await timed(
-      "all translations",
-      "get_paragraph_translations_batch",
-      longIds,
-    );
+    await timed("all translations", "get_paragraph_html_batch", longIds);
 
     await page.addInitScript(instrument);
     const cdp =

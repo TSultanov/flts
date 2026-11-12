@@ -5,6 +5,7 @@
  * `resetMockState()`.
  */
 
+import { paragraphHtml, type ParagraphSegment } from "./paragraph-html";
 import { parseEpub } from "./parse-epub";
 
 type UUID = string;
@@ -50,7 +51,6 @@ type Config = {
   ankiEndpoint?: string;
   ankiApiKey?: string;
   ankiSyncEnabled?: boolean;
-  tapToRevealTranslations?: boolean;
 };
 
 type AnkiSyncStatusState = "idle" | "syncing" | "ok" | "err" | "unreachable";
@@ -85,22 +85,6 @@ type MockChapter = {
   // Global paragraph ids, in order.
   paragraphIds: number[];
 };
-
-type Mark = "emphasis" | "strong";
-
-type ParagraphSegment =
-  | { kind: "gap"; text: string; marks?: Mark[] }
-  | { kind: "break"; marks?: Mark[] }
-  | {
-      kind: "word";
-      text: string;
-      marks?: Mark[];
-      sentence: number;
-      word: number;
-      flatIndex: number;
-      translation: string | null;
-      familiarity?: number;
-    };
 
 type MockParagraph = {
   html: string;
@@ -661,7 +645,6 @@ type PendingSeed = {
     generated: boolean[];
     activelyGenerating?: number | null;
   };
-  config?: { tapToRevealTranslations?: boolean };
 };
 
 function applyPendingSeed(seed: PendingSeed): void {
@@ -703,9 +686,6 @@ function applyPendingSeed(seed: PendingSeed): void {
           ? null
           : seed.summaryStatus.activelyGenerating,
     });
-  }
-  if (seed.config) {
-    mockConfig = { ...mockConfig, ...seed.config };
   }
 }
 
@@ -1254,7 +1234,7 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
       return Promise.resolve(rows as T);
     }
 
-    case "get_paragraph_translations_batch": {
+    case "get_paragraph_html_batch": {
       const bookId = args?.bookId as UUID;
       const paragraphIds = (args?.paragraphIds ?? []) as number[];
       translationsBatchCalls.push({
@@ -1266,7 +1246,14 @@ export function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
       if (!book) return Promise.reject(new Error("book not found"));
       const rows = paragraphIds.flatMap((id) => {
         const p = book.paragraphsById.get(id);
-        return p ? [{ id, segments: p.segments }] : [];
+        return p
+          ? [
+              {
+                id,
+                html: p.segments ? paragraphHtml(p.segments) : undefined,
+              },
+            ]
+          : [];
       });
       const wait = (
         window as Window & {

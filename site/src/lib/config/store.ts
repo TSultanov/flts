@@ -47,7 +47,6 @@ export type Config = {
   ankiSyncEnabled?: boolean;
   syncEnabled?: boolean;
   syncDeviceName?: string;
-  tapToRevealTranslations?: boolean;
 };
 
 export function modelsForDropdown(

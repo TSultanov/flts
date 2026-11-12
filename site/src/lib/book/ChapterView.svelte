@@ -4,6 +4,7 @@
     import { getContext, onDestroy, onMount, setContext } from "svelte";
     import type { UUID } from "../data/uuid";
     import ParagraphView from "./ParagraphView.svelte";
+    import { translatedParagraph } from "./translatedParagraph";
     import type { Library } from "../data/library";
     import type { WordSelection } from "./ParagraphViewModel.svelte";
     import {
@@ -87,10 +88,22 @@
         selection = vm.handleWordClick(info);
     }
 
+    // One handler for every word: they come as HTML, with where they are
+    // written on them.
     function handleBackgroundClick(e: MouseEvent) {
         const target = e.target instanceof Element ? e.target : null;
-        if (target?.closest(".word-span")) return;
-        selection = null;
+        const span = target?.closest<HTMLElement>(".word-span");
+        const wrapper = span?.closest<HTMLElement>(".paragraph-wrapper");
+        if (!span || !wrapper) {
+            selection = null;
+            return;
+        }
+        handleWordClick({
+            paragraphId: Number(wrapper.dataset["paragraphId"]),
+            sentence: Number(span.dataset["s"]),
+            word: Number(span.dataset["w"]),
+            flatIndex: Number(span.dataset["flatIndex"]),
+        });
     }
 
     $effect(() => vm.startInitialSync());
@@ -157,9 +170,26 @@
                                 class="column-end"
                             ></i>{/each}<i style:height="{far.fill}px"></i>
                     </div>
-                {:else if vm.isPlain(paragraphId)}
+                {:else if vm.store.getTranslation(paragraphId)?.html != null}
+                    <!-- Translated: the backend's HTML, with what only the
+                         page knows kept on it. -->
+                    <div
+                        class="paragraph-wrapper"
+                        data-paragraph-id={paragraphId}
+                        use:translatedParagraph={{
+                            html: vm.store.getTranslation(paragraphId)!.html!,
+                            selected:
+                                selection?.paragraphId === paragraphId
+                                    ? selection
+                                    : null,
+                            revealed: vm.revealedIn(paragraphId),
+                        }}
+                    >
+                        <p></p>
+                    </div>
+                {:else if !vm.isMounted(paragraphId)}
                     <!-- What ParagraphView draws for a paragraph that is
-                         neither mounted nor translated, without the
+                         neither near the reader nor translated, without the
                          component: most of a chapter on its way in. -->
                     <div
                         class="paragraph-wrapper"
@@ -175,13 +205,6 @@
                         {bookId}
                         {chapterId}
                         {paragraphId}
-                        selection={selection?.paragraphId === paragraphId
-                            ? selection
-                            : null}
-                        mounted={vm.isMounted(paragraphId)}
-                        onWordClick={handleWordClick}
-                        isWordRevealed={(flatIndex) =>
-                            vm.isWordRevealed(paragraphId, flatIndex)}
                         onReady={() => vm.registerParagraphReady(paragraphId)}
                     />
                 {/if}
@@ -297,6 +320,52 @@
     @media (max-width: 576px) {
         .paragraphs-container > :global(.paragraph-wrapper) {
             --paragraph-gutter: 8mm;
+        }
+    }
+
+    /* Words come as HTML from the backend, so their looks are set here. */
+    .paragraphs-container :global(.word-span) {
+        position: relative;
+        /* Not inline-block: an atomic per-word box breaks lines differently
+           from the same characters as one run. */
+        display: inline;
+        /* Vertical padding on an inline box does not affect line height. It
+           gives the tap target and the overlay anchor without moving text. */
+        padding: calc(var(--font-size) * 0.375) 0;
+    }
+
+    .paragraphs-container :global(.word-span.selected) {
+        outline: 1px dotted var(--selected-color);
+    }
+
+    .paragraphs-container :global(.translation-overlay) {
+        position: absolute;
+        left: 0;
+        right: 0;
+        /* Top of the span's padding box: the half-leading above the glyphs. */
+        top: 0;
+        width: 100%;
+        font-size: var(--word-translation-font-size, 0.55em);
+        text-align: center;
+        line-height: 1;
+        padding: 0.05em 0.1em;
+        box-sizing: border-box;
+        white-space: nowrap;
+        opacity: 0.9;
+        user-select: none;
+        -webkit-user-select: none;
+        pointer-events: none;
+        z-index: 2;
+        overflow: hidden;
+    }
+
+    .paragraphs-container :global(.translation-overlay.tapped) {
+        animation: translation-shown 150ms ease-out;
+    }
+
+    @keyframes -global-translation-shown {
+        from {
+            opacity: 0;
         }
     }
 

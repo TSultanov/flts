@@ -75,23 +75,37 @@ export async function seedBook(
 }
 
 export type WordSegment = {
-  kind: string;
+  kind: "word";
   text: string;
   translation: string | null;
 };
 
+const unescape = (s: string) =>
+  s
+    .replaceAll("&quot;", '"')
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&amp;", "&");
+
+/** The words of a stored translation, read out of the HTML the page gets. */
 export async function storedSegments(
   h: RealHarness,
   bookId: string,
   paragraphId: number,
 ): Promise<WordSegment[] | null> {
-  const rows = await h.invoke<
-    Array<{ id: number; segments?: WordSegment[] | null }>
-  >("get_paragraph_translations_batch", {
-    bookId,
-    paragraphIds: [paragraphId],
-  });
-  return rows.find((r) => r.id === paragraphId)?.segments ?? null;
+  const rows = await h.invoke<Array<{ id: number; html?: string | null }>>(
+    "get_paragraph_html_batch",
+    { bookId, paragraphIds: [paragraphId] },
+  );
+  const html = rows.find((r) => r.id === paragraphId)?.html;
+  if (html == null) return null;
+  const words =
+    /<span class="word-span"[^>]*?(?: data-t="([^"]*)")?>([^<]*)<\/span>/g;
+  return [...html.matchAll(words)].map((m) => ({
+    kind: "word",
+    text: unescape(m[2]),
+    translation: m[1] === undefined ? null : unescape(m[1]),
+  }));
 }
 
 /** Ids whose translation is on disk, ascending. */
@@ -100,12 +114,12 @@ export async function storedIds(
   bookId: string,
   count: number,
 ): Promise<number[]> {
-  const rows = await h.invoke<Array<{ id: number; segments?: unknown }>>(
-    "get_paragraph_translations_batch",
+  const rows = await h.invoke<Array<{ id: number; html?: unknown }>>(
+    "get_paragraph_html_batch",
     { bookId, paragraphIds: [...Array(count).keys()] },
   );
   return rows
-    .filter((r) => r.segments)
+    .filter((r) => r.html)
     .map((r) => r.id)
     .sort((a, b) => a - b);
 }

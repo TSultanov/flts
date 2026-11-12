@@ -229,10 +229,10 @@ test.describe("ParagraphView (multipage, chromium only)", () => {
     await expect(p40.getByText("finished while away")).toBeVisible();
   });
 
-  test("M5: auto-show annotations apply on scroll-into-view and persist across churn", async ({
+  test("M5: tapped translations persist across scroll churn", async ({
     page,
   }) => {
-    const segmentsFor = (prefix: string, autoShow: number[]) =>
+    const segmentsFor = (prefix: string) =>
       [0, 1, 2].flatMap((i) => [
         ...(i > 0 ? [{ kind: "gap" as const, text: " " }] : []),
         wordSegment({
@@ -241,11 +241,10 @@ test.describe("ParagraphView (multipage, chromium only)", () => {
           word: i,
           text: `${prefix}-${i}`,
           translation: `t${prefix.replace("w", "")}-${i}`,
-          familiarity: autoShow.includes(i) ? 0 : 1,
         }),
       ]);
-    const segments40 = segmentsFor("w40", [0, 2]);
-    const segments65 = segmentsFor("w65", [1]);
+    const segments40 = segmentsFor("w40");
+    const segments65 = segmentsFor("w65");
 
     await seedAndOpen(
       page,
@@ -261,13 +260,17 @@ test.describe("ParagraphView (multipage, chromium only)", () => {
     const overlay = (p: ReturnType<typeof paragraphLocator>, i: number) =>
       wordSpan(p, i).locator(".translation-overlay");
 
-    // Overlays only exist inside the mount window.
+    // dispatchEvent: a word can be split over two lines, and then its
+    // middle, where a click would land, is not on it.
     await scrollToParagraph(page, 40);
+    await wordSpan(p40, 0).dispatchEvent("click");
+    await wordSpan(p40, 2).dispatchEvent("click");
     await expect(overlay(p40, 0)).toHaveCount(1);
     await expect(overlay(p40, 2)).toHaveCount(1);
     await expect(overlay(p40, 1)).toHaveCount(0);
 
     await scrollToParagraph(page, 65);
+    await wordSpan(p65, 1).dispatchEvent("click");
     await expect(overlay(p65, 1)).toHaveCount(1);
     await expect(overlay(p65, 0)).toHaveCount(0);
     await expect(overlay(p65, 2)).toHaveCount(0);
@@ -469,17 +472,16 @@ test.describe("ParagraphView (multipage, chromium only)", () => {
     }
   });
 
-  test("L4: re-mounted paragraph restores its auto-shown overlays", async ({
+  test("L4: a paragraph that left and came back keeps its tapped translations", async ({
     page,
   }) => {
-    // Words 0 and 2 auto-show, word 1 stays hidden: a contrast that must
-    // survive the unmount/remount cycle.
+    // Words 0 and 2 are tapped, word 1 is not: a contrast that must survive
+    // the paragraph turning into a block and back.
     const segments50 = fillerSegments(50).map((seg) => {
       if (seg.kind === "word" && seg.flatIndex < 3) {
         return {
           ...seg,
           translation: `tr-${seg.flatIndex}`,
-          familiarity: seg.flatIndex === 1 ? 1 : 0,
         };
       }
       return seg;
@@ -491,9 +493,10 @@ test.describe("ParagraphView (multipage, chromium only)", () => {
       }),
     );
 
-    // Overlays must return after the unmount round trip.
     await scrollToParagraph(page, 50);
     const p50 = paragraphLocator(page, 50);
+    await wordSpan(p50, 0).dispatchEvent("click");
+    await wordSpan(p50, 2).dispatchEvent("click");
     await expect(wordSpan(p50, 0).locator(".translation-overlay")).toHaveCount(
       1,
     );

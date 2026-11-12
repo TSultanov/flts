@@ -1,15 +1,11 @@
 <script lang="ts">
     import Fa from "svelte-fa";
     import { faLanguage } from "@fortawesome/free-solid-svg-icons";
-    import { getContext, type Snippet } from "svelte";
+    import { getContext } from "svelte";
     import CircularProgress from "../widgets/CircularProgress.svelte";
-    import type { Library, Mark } from "../data/library";
+    import type { Library } from "../data/library";
     import type { UUID } from "../data/uuid";
-    import {
-        ParagraphViewModel,
-        type WordSelection,
-    } from "./ParagraphViewModel.svelte";
-    import WordSpan from "./WordSpan.svelte";
+    import { ParagraphViewModel } from "./ParagraphViewModel.svelte";
     import {
         CHAPTER_STORE_KEY,
         type ChapterParagraphsStore,
@@ -23,24 +19,11 @@
         bookId,
         chapterId,
         paragraphId,
-        selection = null,
-        mounted = true,
-        onWordClick,
-        isWordRevealed,
         onReady,
     }: {
         bookId: UUID;
         chapterId: number;
         paragraphId: number;
-        selection?: WordSelection | null;
-        mounted?: boolean;
-        onWordClick: (info: {
-            paragraphId: number;
-            sentence: number;
-            word: number;
-            flatIndex: number;
-        }) => void;
-        isWordRevealed: (flatIndex: number) => boolean;
         onReady?: () => void;
     } = $props();
 
@@ -59,9 +42,6 @@
         get paragraphId() {
             return paragraphId;
         },
-        get selection() {
-            return selection;
-        },
     });
 
     let firedReady = false;
@@ -74,19 +54,11 @@
     });
 </script>
 
-<!-- Wraps a segment in its emphasis. Marks arrive canonically ordered and are
-     empty for almost every segment, so the nesting stays flat. -->
-{#snippet marked(
-    marks: Mark[] | undefined,
-    kids: Snippet,
-)}{#if marks?.includes("strong")}<strong
-            >{#if marks.includes("emphasis")}<em>{@render kids()}</em
-                >{:else}{@render kids()}{/if}</strong
-        >{:else if marks?.includes("emphasis")}<em>{@render kids()}</em
-        >{:else}{@render kids()}{/if}{/snippet}
-
+<!-- A paragraph with no translation yet, where the reader is: its text and
+     the button that asks for one. A translated paragraph is drawn by
+     ChapterView from the backend's HTML. -->
 <div class="paragraph-wrapper" data-paragraph-id={paragraphId}>
-    {#if mounted && vm.isUntranslated}
+    {#if vm.isUntranslated}
         <button
             class="translate"
             aria-label="Translate paragraph"
@@ -108,30 +80,9 @@
             {/if}
         </button>
     {/if}
-    {#if vm.segments}
-        <!-- Word spans preserve line breaks around punctuation even when their controls unmount. -->
-        <p>
-            {#each vm.segments as seg, i (i)}
-                {#snippet body()}{#if seg.kind === "word" && mounted}<WordSpan
-                            text={seg.text}
-                            sentence={seg.sentence}
-                            word={seg.word}
-                            flatIndex={seg.flatIndex}
-                            translation={seg.translation}
-                            manualShown={isWordRevealed(seg.flatIndex)}
-                            familiarity={seg.familiarity}
-                            selected={vm.isSelected(seg.sentence, seg.word)}
-                            onClick={(w) => onWordClick({ paragraphId, ...w })}
-                        />{:else if seg.kind === "word"}<span>{seg.text}</span
-                        >{:else if seg.kind === "gap"}{seg.text}{/if}{/snippet}{#if seg.kind === "break"}<br
-                    />{:else}{@render marked(seg.marks, body)}{/if}
-            {/each}
-        </p>
-    {:else}
-        <p class="original">
-            {#if vm.originalText}{@html vm.originalText}{:else}&nbsp;{/if}
-        </p>
-    {/if}
+    <p class="original">
+        {#if vm.originalText}{@html vm.originalText}{:else}&nbsp;{/if}
+    </p>
 </div>
 
 <style>
