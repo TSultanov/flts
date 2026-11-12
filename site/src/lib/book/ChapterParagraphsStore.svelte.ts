@@ -16,6 +16,30 @@ const CARDS_REFRESH_DEBOUNCE_MS = 500;
 // become retryable. A late response still applies.
 const BATCH_WATCHDOG_MS = 30_000;
 
+// Holds the responses to a group of requests until the last has come.
+class Together {
+  #waiting = 0;
+  #held: Array<() => void> = [];
+
+  // One per request; a second call (a late response) applies at once.
+  expect(): Land {
+    this.#waiting++;
+    let landed = false;
+    return (apply) => {
+      if (landed) return apply();
+      landed = true;
+      this.#held.push(apply);
+      if (--this.#waiting > 0) return;
+      const held = this.#held;
+      this.#held = [];
+      for (const each of held) each();
+    };
+  }
+}
+
+type Land = (apply: () => void) => void;
+const atOnce: Land = (apply) => apply();
+
 export class ChapterParagraphsStore {
   #bookId: UUID;
   #library: Library;
@@ -37,6 +61,8 @@ export class ChapterParagraphsStore {
   // rows whose dispatch-time epoch is still current, so an update racing
   // an in-flight fetch always wins.
   #translationsEpoch = new Map<number, number>();
+
+  #together: Together | null = null;
 
   #cardsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   #unsubscribers: Array<() => void> = [];
@@ -137,23 +163,39 @@ export class ChapterParagraphsStore {
     return this.#translations.get(id) ?? null;
   }
 
+  // What `requests` asks for is applied in one go. Every change re-lays out
+  // the whole chapter, so text and its translations landing apart cost two
+  // layouts where one would do.
+  together(requests: () => void): void {
+    this.#together = new Together();
+    try {
+      requests();
+    } finally {
+      this.#together = null;
+    }
+  }
+
   // One request for all of `ids`: every arrival re-lays out the whole
   // chapter, so a chapter fetched in pieces is laid out once per piece.
   fetchOriginals(ids: readonly number[]): void {
     const wanted = ids.filter((id) => !this.#originalsRequested.has(id));
-    if (wanted.length === 0) return;
+    if (wanted.length === 0 || this.#disposed) return;
     for (const id of wanted) this.#originalsRequested.add(id);
+    const land = this.#together?.expect() ?? atOnce;
     this.#library
       .getParagraphOriginalsBatch(this.#bookId, wanted)
-      .then((rows) => {
-        for (const row of rows) {
-          this.#originals.set(row.id, row.original);
-        }
-      })
+      .then((rows) =>
+        land(() => {
+          for (const row of rows) {
+            this.#originals.set(row.id, row.original);
+          }
+        }),
+      )
       .catch((err) => {
         console.error("Failed to fetch paragraph originals", err);
         // Make these ids retryable.
         for (const id of wanted) this.#originalsRequested.delete(id);
+        land(() => {});
       });
   }
 
@@ -196,26 +238,31 @@ export class ChapterParagraphsStore {
         this.#translationsInflight--;
         this.#pumpTranslations();
       };
+      const land = this.#together?.expect() ?? atOnce;
       const watchdog = setTimeout(() => {
         for (const id of chunk) this.#translationsEnqueued.delete(id);
+        land(() => {});
         settle();
       }, BATCH_WATCHDOG_MS);
       this.#library
         .getParagraphTranslationsBatch(this.#bookId, chunk)
-        .then((rows) => {
-          for (const row of rows) {
-            if (
-              (this.#translationsEpoch.get(row.id) ?? 0) !==
-              dispatchEpochs.get(row.id)
-            ) {
-              continue;
+        .then((rows) =>
+          land(() => {
+            for (const row of rows) {
+              if (
+                (this.#translationsEpoch.get(row.id) ?? 0) !==
+                dispatchEpochs.get(row.id)
+              ) {
+                continue;
+              }
+              this.#applyTranslationRow(row.id, row.segments ?? null);
             }
-            this.#applyTranslationRow(row.id, row.segments ?? null);
-          }
-        })
+          }),
+        )
         .catch((err) => {
           console.error("Failed to fetch paragraph translations batch", err);
           for (const id of chunk) this.#translationsEnqueued.delete(id);
+          land(() => {});
         })
         .finally(() => {
           // Response side only — the watchdog must not drop the

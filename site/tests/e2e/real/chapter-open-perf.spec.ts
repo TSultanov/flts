@@ -232,6 +232,9 @@ function instrument(): void {
   const perf = {
     t0: 0,
     armed: false,
+    revealed: null as number | null,
+    // Geometry reads force layout; off when the layouts themselves are studied.
+    probe: true,
     oldContainer: null as Element | null,
     frames: [] as Array<Record<string, number | boolean>>,
     invokes: new Map<number, Record<string, number | string>>(),
@@ -302,6 +305,25 @@ function instrument(): void {
     /* unsupported */
   }
 
+  // The frame probe sees the reveal a frame late; this is when it was asked for.
+  new MutationObserver((records) => {
+    if (!perf.armed || perf.revealed !== null) return;
+    for (const r of records) {
+      const el = r.target as Element;
+      if (
+        el !== perf.oldContainer &&
+        el.classList.contains("paragraphs-container") &&
+        el.classList.contains("is-ready")
+      ) {
+        perf.revealed = performance.now() - perf.t0;
+      }
+    }
+  }).observe(document, {
+    subtree: true,
+    attributes: true,
+    attributeFilter: ["class"],
+  });
+
   const frame = () => {
     if (perf.armed) {
       const c = document.querySelector(".paragraphs-container");
@@ -317,11 +339,11 @@ function instrument(): void {
       if (fresh) {
         rec.ready = c.classList.contains("is-ready");
         rec.paragraphs = c.getElementsByClassName("paragraph-wrapper").length;
-        const r = c.getBoundingClientRect();
-        for (const fy of [0.2, 0.5, 0.8]) {
+        const r = perf.probe ? c.getBoundingClientRect() : null;
+        for (const fy of r ? [0.2, 0.5, 0.8] : []) {
           const hit = document.elementFromPoint(
-            r.left + r.width / 2,
-            r.top + r.height * fy,
+            r!.left + r.width / 2,
+            r!.top + r!.height * fy,
           );
           const wrapper = hit?.closest(".paragraph-wrapper");
           if (!wrapper || !c.contains(wrapper)) continue;
@@ -346,6 +368,7 @@ function instrument(): void {
       perf.invokes = new Map();
       perf.events = [];
       perf.longTasks = [];
+      perf.revealed = null;
       perf.t0 = performance.now();
       perf.armed = true;
     },
@@ -391,9 +414,10 @@ async function measureClick(
   await link.click();
   await page.waitForFunction(
     () => {
-      const f = (window as any).__perf.frames;
+      const p = (window as any).__perf;
+      const f = p.frames;
       const last = f[f.length - 1];
-      return last && last.ready && last.words;
+      return last && last.ready && (last.words || !p.probe);
     },
     undefined,
     { timeout: 30_000 },
@@ -406,6 +430,7 @@ async function measureClick(
     p.armed = false;
     return {
       frames: p.frames,
+      revealed: p.revealed as number | null,
       invokes: [...p.invokes.values()],
       events: p.events,
       longTasks: p.longTasks,
@@ -423,6 +448,7 @@ async function measureClick(
       container: first((f) => f.container === true),
       paragraphIds: first((f) => (f.paragraphs as number) > 0),
       textLaidOut: first((f) => f.text === true),
+      revealAsked: raw.revealed,
       visible: first((f) => f.ready === true),
       visibleWithText: first((f) => f.ready === true && f.text === true),
       words: first((f) => f.ready === true && f.words === true),
@@ -643,6 +669,41 @@ test.describe("chapter open timing", () => {
       const out = testInfo.outputPath("chapter-open.cpuprofile");
       fs.writeFileSync(out, JSON.stringify(profile));
       console.log(`cpu profile: ${out}`);
+    }
+
+    if (process.env.FLTS_PERF_TRACE) {
+      const browser = page.context().browser()!;
+      await settleAt(LONG_CHAPTER, longIds[Math.floor(longIds.length * 0.75)]);
+      await page.goto(`/book/${bookId}/0`);
+      await expect(
+        page.locator(".paragraphs-container.is-ready"),
+      ).toBeVisible();
+      await page.getByTestId("chapters-panel-handle").click();
+      const link = page
+        .getByTestId("chapter-row")
+        .nth(LONG_CHAPTER)
+        .locator("a");
+      await expect(link).toBeVisible();
+      await page.waitForTimeout(400);
+      await page.evaluate(() => ((window as any).__perf.probe = false));
+      await browser.startTracing(page, {
+        categories: [
+          "devtools.timeline",
+          "disabled-by-default-devtools.timeline",
+          "disabled-by-default-devtools.timeline.stack",
+          "disabled-by-default-devtools.timeline.invalidationTracking",
+          "blink.user_timing",
+        ],
+      });
+      await page.evaluate(() => performance.mark("perf-click"));
+      const run = await measureClick(page, cdp, link);
+      const trace = await browser.stopTracing();
+      await page.evaluate(() => ((window as any).__perf.probe = true));
+      const tracePath = testInfo.outputPath("chapter-open.trace.json");
+      fs.writeFileSync(tracePath, trace);
+      console.log(
+        `trace: ${tracePath} (visible at ${run.milestones.visible?.toFixed(0)} ms)`,
+      );
     }
 
     const out = path.join(

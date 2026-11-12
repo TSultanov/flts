@@ -79,13 +79,17 @@ export class ChapterViewModel {
   #restoreFallbackTimeout: ReturnType<typeof setTimeout> | null = null;
   #anchorRaf: number | null = null;
   #restoreResizeObserver: ResizeObserver | null = null;
-  #savedSnapType: string | null = null;
+  // Snapping waits for every column to have its target: with fewer, the
+  // browser pulls a restored or early scroll back to the ones that exist.
+  #snaps = $state(false);
   #columnCount = $state(1);
   #columnCountRaf: number | null = null;
   #isInitiallyReady = $state(false);
   #initialRevealFallbackTimeout: ReturnType<typeof setTimeout> | null = null;
   #initialRevealRaf: number | null = null;
   #noRestoreRevealHook: (() => void) | null = null;
+  #settleRaf: number | null = null;
+  #disposed = false;
 
   // Click-to-reveal words keyed `${paragraphId}:${flatIndex}`; ephemeral —
   // initial per-word visibility comes from card familiarity alone.
@@ -105,6 +109,10 @@ export class ChapterViewModel {
 
   get isInitiallyReady(): boolean {
     return this.#isInitiallyReady;
+  }
+
+  get snaps(): boolean {
+    return this.#snaps;
   }
 
   get columnCount(): number {
@@ -148,6 +156,9 @@ export class ChapterViewModel {
   }
 
   #recomputeColumnCount(): void {
+    // Each new snap target re-lays out the chapter, and nothing can be
+    // scrolled before the reveal.
+    if (!this.#isInitiallyReady) return;
     const container = this.#props.container;
     if (!container) return;
     const pageWidth = container.clientWidth;
@@ -219,11 +230,9 @@ export class ChapterViewModel {
         safeTargetIdx + RESTORE_PREFIX_BUFFER,
         ids.length,
       );
-      this.#store.fetchOriginals(ids.slice(0, headEnd));
-      this.#store.fetchOriginals(ids.slice(headEnd));
-      // A viewport-sized window of translations on each side of the
-      // target, so the IPC overlaps the originals fetch rather than
-      // trailing it. #recomputeMountWindow enqueues the rest later.
+      // With them, a viewport-sized window of translations on each side
+      // of the target. The chapter's tail comes on its own: nothing
+      // shown first depends on it.
       const pageHeight = this.#props.container?.clientHeight ?? 600;
       const paragraphsPerPage = Math.max(
         5,
@@ -234,7 +243,11 @@ export class ChapterViewModel {
         safeTargetIdx + paragraphsPerPage + 1,
         ids.length,
       );
-      this.#store.enqueueTranslations(ids.slice(eagerStart, eagerEnd));
+      this.#store.together(() => {
+        this.#store.fetchOriginals(ids.slice(0, headEnd));
+        this.#store.enqueueTranslations(ids.slice(eagerStart, eagerEnd));
+      });
+      this.#store.fetchOriginals(ids.slice(headEnd));
     }
 
     if (this.#initialParagraphSyncedFor === initialParagraphId) {
@@ -296,14 +309,7 @@ export class ChapterViewModel {
     this.#restoreTarget = paragraphIdToScrollTo;
     this.#restorePageOffset = pageOffsetToRestore;
 
-    // Suspend scroll-snap while columns are still growing: the browser
-    // would yank scrollLeft to a stale snap target between anchors.
-    // #finishRestore re-enables it.
     const container = this.#props.container;
-    if (container) {
-      this.#savedSnapType = container.style.scrollSnapType;
-      container.style.scrollSnapType = "none";
-    }
 
     // Approximate — registerParagraphReady and the ResizeObserver
     // re-anchor as data and layout land.
@@ -422,22 +428,8 @@ export class ChapterViewModel {
       this.#restoreResizeObserver.disconnect();
       this.#restoreResizeObserver = null;
     }
-    const wasRestoring = this.#restoreTarget != null;
     this.#restoreTarget = null;
     this.#isRestoring = false;
-
-    // Safe to re-enable: the final anchor left scrollLeft on a column
-    // boundary, so the browser has nothing to move.
-    const container = this.#props.container;
-    if (container && this.#savedSnapType !== null) {
-      container.style.scrollSnapType = this.#savedSnapType;
-      this.#savedSnapType = null;
-    }
-
-    if (wasRestoring) {
-      this.#recomputeMountWindow();
-      this.#recomputeColumnCount();
-    }
 
     this.#markInitiallyReady();
   }
@@ -454,9 +446,27 @@ export class ChapterViewModel {
       this.#initialRevealRaf = null;
     }
     this.#noRestoreRevealHook = null;
+    if (this.#disposed) return;
+    // The second frame is the one after the reveal is painted; what is
+    // left costs a layout each and need not hold the first sight back.
+    this.#settleRaf = requestAnimationFrame(() => {
+      this.#settleRaf = requestAnimationFrame(() => {
+        this.#settleRaf = null;
+        // A hidden chapter cannot be hit-tested, so a scroll made before
+        // the reveal is first seen here.
+        this.#updateVisibleParagraph();
+        this.#recomputeColumnCount();
+        this.#snaps = true;
+      });
+    });
   }
 
   dispose(): void {
+    this.#disposed = true;
+    if (this.#settleRaf !== null) {
+      cancelAnimationFrame(this.#settleRaf);
+      this.#settleRaf = null;
+    }
     this.#store.dispose();
     if (this.#scrollRaf !== null) {
       cancelAnimationFrame(this.#scrollRaf);

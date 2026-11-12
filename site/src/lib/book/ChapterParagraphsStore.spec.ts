@@ -187,6 +187,71 @@ describe("ChapterParagraphsStore originals", () => {
   });
 });
 
+describe("ChapterParagraphsStore.together", () => {
+  function opened() {
+    const stub = makeLibraryStub();
+    const store = new ChapterParagraphsStore(bookId, stub.library);
+    store.together(() => {
+      store.fetchOriginals([1, 2]);
+      store.enqueueTranslations([1]);
+    });
+    return { store, ...stub };
+  }
+
+  it("applies nothing until every request of the group has answered", async () => {
+    const { store, originalCalls, translationCalls } = opened();
+
+    translationCalls[0].d.resolve([{ id: 1, segments: seg("v1") }]);
+    await flush();
+    expect(store.getTranslation(1)).toBeNull();
+
+    originalCalls[0].d.resolve([{ id: 1, original: "one" }]);
+    await flush();
+    expect(store.getOriginal(1)).toBe("one");
+    expect(store.getTranslation(1)?.segments).toEqual(seg("v1"));
+    store.dispose();
+  });
+
+  it("does not hold requests made outside the group", async () => {
+    const { store, originalCalls } = opened();
+
+    store.fetchOriginals([3]);
+    originalCalls[1].d.resolve([{ id: 3, original: "three" }]);
+    await flush();
+    expect(store.getOriginal(3)).toBe("three");
+    expect(store.hasOriginal(1)).toBe(false);
+    store.dispose();
+  });
+
+  it("is not held up by a request that fails", async () => {
+    const { store, originalCalls, translationCalls } = opened();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    originalCalls[0].d.resolve([{ id: 1, original: "one" }]);
+    await flush();
+    expect(store.hasOriginal(1)).toBe(false);
+
+    translationCalls[0].d.reject(new Error("gone"));
+    await flush();
+    expect(store.getOriginal(1)).toBe("one");
+    store.dispose();
+  });
+
+  it("is not held up by a request that hangs, and still takes its late answer", async () => {
+    const { store, originalCalls, translationCalls } = opened();
+
+    originalCalls[0].d.resolve([{ id: 1, original: "one" }]);
+    await flush();
+    vi.advanceTimersByTime(30_000);
+    expect(store.getOriginal(1)).toBe("one");
+
+    translationCalls[0].d.resolve([{ id: 1, segments: seg("late") }]);
+    await flush();
+    expect(store.getTranslation(1)?.segments).toEqual(seg("late"));
+    store.dispose();
+  });
+});
+
 describe("ChapterParagraphsStore translation staleness", () => {
   it("drops the stale in-flight response and applies the refetch when paragraph_updated races a fetch", async () => {
     const { library, translationCalls } = makeLibraryStub();

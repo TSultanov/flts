@@ -126,6 +126,7 @@
         <div
             class="paragraphs-container"
             class:is-ready={vm.isInitiallyReady}
+            class:snaps={vm.snaps}
             style="column-width: {columnWidthHint}px"
             bind:clientHeight={columnWidthHint}
             bind:clientWidth={containerVisibleWidth}
@@ -223,15 +224,18 @@
         width: 100%;
         height: 100%;
         overflow-x: auto;
-        scroll-snap-type: x mandatory;
         column-gap: 0;
         column-fill: auto;
         -webkit-column-fill: auto;
-        opacity: 0;
+        visibility: hidden;
     }
 
     .paragraphs-container.is-ready {
-        opacity: 1;
+        visibility: visible;
+    }
+
+    .paragraphs-container.snaps {
+        scroll-snap-type: x mandatory;
     }
 
     /* One per column, absolute so they land on exact column boundaries
