@@ -34,3 +34,4 @@ coverage/
 test-results/
 playwright-report/
 playwright-report-real/
+dist-e2e

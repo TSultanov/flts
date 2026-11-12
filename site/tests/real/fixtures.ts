@@ -16,6 +16,13 @@ const repoRoot = path.resolve(
   "../../..",
 );
 
+/** `FLTS_E2E_PROFILE=release` runs optimized binaries: timings, not debugging. */
+const binDir = path.join(
+  repoRoot,
+  "target",
+  process.env.FLTS_E2E_PROFILE ?? "debug",
+);
+
 export type RealHarness = {
   llm: SimClient;
   lrclib: SimClient;
@@ -241,7 +248,7 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
       let stderrBuf = "";
 
       try {
-        sims = spawn(path.join(repoRoot, "target/debug/flts-e2e-sims"), {
+        sims = spawn(path.join(binDir, "flts-e2e-sims"), {
           // stdin stays piped and open: the sims exit on EOF.
           stdio: ["pipe", "pipe", "pipe"],
           env: cleanEnv(),
@@ -293,7 +300,7 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
         const launchApp = async (
           extraEnv: Record<string, string> = {},
         ): Promise<number> => {
-          app = spawn(path.join(repoRoot, "target/debug/app"), {
+          app = spawn(path.join(binDir, "app"), {
             stdio: ["pipe", "pipe", "pipe"],
             env: {
               ...cleanEnv(),

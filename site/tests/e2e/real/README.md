@@ -66,6 +66,32 @@ Build command behind the auto-build:
 cargo build -p app -p e2e-sims --features app/e2e-bridge
 ```
 
+### Timing a chapter
+
+`chapter-open-perf.spec.ts` is a measurement, not a gate, and runs only when
+asked. It seeds a long translated chapter and reports, from the click, when
+the chapter shows, every long frame after it, and what a page flip and a word
+tap cost.
+
+```sh
+# Numbers that mean something: built frontend, release backend, both engines.
+cargo build --release --target-dir target/e2e -p app -p e2e-sims --features app/e2e-bridge
+FLTS_PERF=1 FLTS_E2E_PROD=1 FLTS_E2E_PROFILE=e2e/release FLTS_E2E_SKIP_BUILD=1 \
+  pnpm test:e2e:real chapter-open-perf --workers=1
+```
+
+| Var                                   | Effect                                                                    |
+| ------------------------------------- | ------------------------------------------------------------------------- |
+| `FLTS_PERF=1`                         | runs the spec, and adds a `real-webkit` project beside Chromium           |
+| `FLTS_E2E_PROD=1`                     | serves a built frontend (`dist-e2e`, port 5182) instead of the dev server |
+| `FLTS_E2E_PROFILE`                    | directory under `target/` holding the binaries; default `debug`           |
+| `FLTS_PERF_TRACE=open\|interact`      | Chromium trace of a first-time open, or of the flips and taps             |
+| `FLTS_PERF_PROFILE=open\|interact`    | the same as a CPU profile                                                 |
+| `FLTS_PERF_PARAGRAPHS`, `_ITERATIONS` | chapter length (600) and runs per scenario (5)                            |
+
+A separate `--target-dir` keeps a plain release build from replacing the
+bridge-enabled binary mid-run.
+
 **Gotcha:** a plain `cargo build -p app` (or `cargo tauri dev`) overwrites
 `target/debug/app` with a _bridge-less_ binary. The next
 `FLTS_E2E_SKIP_BUILD=1` run then hangs until the "app bridge line" timeout.

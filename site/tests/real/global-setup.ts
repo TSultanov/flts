@@ -10,7 +10,8 @@ const repoRoot = path.resolve(
 
 const BUILD_CMD = "cargo build -p app -p e2e-sims --features app/e2e-bridge";
 
-const BINARIES = ["target/debug/app", "target/debug/flts-e2e-sims"];
+const PROFILE = process.env.FLTS_E2E_PROFILE ?? "debug";
+const BINARIES = [`target/${PROFILE}/app`, `target/${PROFILE}/flts-e2e-sims`];
 
 export default function globalSetup(): void {
   if (process.env.FLTS_E2E_SKIP_BUILD === "1") {
@@ -35,6 +36,7 @@ export default function globalSetup(): void {
     "e2e-sims",
     "--features",
     "app/e2e-bridge",
+    ...(PROFILE === "release" ? ["--release"] : []),
   ];
   const res = spawnSync("cargo", args, {
     cwd: repoRoot,

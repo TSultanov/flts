@@ -394,7 +394,11 @@ const CPU_KEYS = [
   "RecalcStyleCount",
 ];
 
-async function cpuMetrics(cdp: CDPSession): Promise<Record<string, number>> {
+async function cpuMetrics(
+  cdp: CDPSession | null,
+): Promise<Record<string, number>> {
+  // Chromium only.
+  if (!cdp) return Object.fromEntries(CPU_KEYS.map((k) => [k, NaN]));
   const { metrics } = await cdp.send("Performance.getMetrics");
   return Object.fromEntries(
     metrics
@@ -406,7 +410,7 @@ async function cpuMetrics(cdp: CDPSession): Promise<Record<string, number>> {
 /** Clicks `link` and records until translated words are on screen. */
 async function measureClick(
   page: Page,
-  cdp: CDPSession,
+  cdp: CDPSession | null,
   link: ReturnType<Page["locator"]>,
 ): Promise<Run> {
   await link.evaluate((a) => a.setAttribute("data-perf-arm", ""));
@@ -571,8 +575,11 @@ test.describe("chapter open timing", () => {
     );
 
     await page.addInitScript(instrument);
-    const cdp = await page.context().newCDPSession(page);
-    await cdp.send("Performance.enable");
+    const cdp =
+      testInfo.project.name === "real"
+        ? await page.context().newCDPSession(page)
+        : null;
+    await cdp?.send("Performance.enable");
 
     const report: Record<string, Run[]> = {};
 
@@ -639,16 +646,141 @@ test.describe("chapter open timing", () => {
       ],
     ];
 
-    for (const [name, run] of scenarios) {
-      const runs: Run[] = [];
-      // One unrecorded pass warms caches on both sides.
-      await run();
-      for (let i = 0; i < ITERATIONS; i++) runs.push(await run());
-      report[name] = runs;
-      console.log(summarize(name, runs));
+    // The view remembers where a chapter's paragraphs fell. "First time"
+    // runs open it with that forgotten, "again" with it kept.
+    await page.addInitScript(() => {
+      try {
+        if (localStorage.getItem("perf.forget")) {
+          localStorage.removeItem("flts.chapterLayout.v2");
+        }
+      } catch {
+        /* about:blank has no storage */
+      }
+    });
+    const remember = async (kept: boolean) => {
+      await page.goto("/");
+      await page.evaluate((kept) => {
+        if (kept) localStorage.removeItem("perf.forget");
+        else localStorage.setItem("perf.forget", "1");
+      }, kept);
+    };
+
+    for (const kept of [false, true]) {
+      await remember(kept);
+      for (const [name, run] of scenarios) {
+        const title = `${name} — ${kept ? "again" : "first time"}`;
+        const runs: Run[] = [];
+        // One unrecorded pass warms caches on both sides.
+        await run();
+        for (let i = 0; i < ITERATIONS; i++) runs.push(await run());
+        report[title] = runs;
+        console.log(summarize(title, runs));
+      }
     }
 
-    if (process.env.FLTS_PERF_PROFILE) {
+    // The reader is now 3/4 into the long chapter. What a flip and a tap
+    // cost there: the longest gap between two frames, 17 ms being none.
+    const interact = async (
+      label: string,
+      times: number,
+      action: (i: number) => Promise<void>,
+    ) => {
+      const gaps: number[] = [];
+      const layouts: number[] = [];
+      for (let i = 0; i < times; i++) {
+        await page.evaluate(() => {
+          const gap = { last: performance.now(), max: 0, on: true };
+          (window as any).__gap = gap;
+          const tick = () => {
+            if (!gap.on) return;
+            const now = performance.now();
+            gap.max = Math.max(gap.max, now - gap.last);
+            gap.last = now;
+            requestAnimationFrame(tick);
+          };
+          requestAnimationFrame(tick);
+        });
+        const before = await cpuMetrics(cdp);
+        await action(i);
+        await page.waitForTimeout(600);
+        const after = await cpuMetrics(cdp);
+        gaps.push(
+          await page.evaluate(() => {
+            const gap = (window as any).__gap;
+            gap.on = false;
+            return gap.max as number;
+          }),
+        );
+        layouts.push((after.LayoutDuration - before.LayoutDuration) * 1000);
+      }
+      console.log(
+        `  ${label.padEnd(22)} longest frame: median ${median(gaps).toFixed(0)} ms, worst ${Math.max(...gaps).toFixed(0)} ms; layout median ${median(layouts).toFixed(0)} ms`,
+      );
+      return { gaps, layouts };
+    };
+    const flip = (pages: number) => () =>
+      page.locator(".paragraphs-container").evaluate((c, n) => {
+        c.scrollBy({ left: n * c.clientWidth, behavior: "smooth" });
+      }, pages);
+    const tap = async (i: number) => {
+      const at = await page.evaluate((nth) => {
+        const c = document.querySelector(".paragraphs-container")!;
+        const frame = c.getBoundingClientRect();
+        const words = [...c.querySelectorAll(".word-span")].filter((w) => {
+          const r = w.getBoundingClientRect();
+          return (
+            r.left > frame.left &&
+            r.right < frame.right &&
+            r.top > frame.top + 40 &&
+            r.bottom < frame.bottom - 40
+          );
+        });
+        const r = words[5 + nth * 7]?.getBoundingClientRect();
+        return r ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null;
+      }, i);
+      if (at) await page.mouse.click(at.x, at.y);
+    };
+    const profiled = cdp && process.env.FLTS_PERF_PROFILE === "interact";
+    const traced = cdp && process.env.FLTS_PERF_TRACE === "interact";
+    if (traced) {
+      await page
+        .context()
+        .browser()!
+        .startTracing(page, {
+          categories: [
+            "devtools.timeline",
+            "disabled-by-default-devtools.timeline",
+            "blink.user_timing",
+          ],
+        });
+    }
+    if (profiled) {
+      await cdp.send("Profiler.enable");
+      await cdp.send("Profiler.setSamplingInterval", { interval: 100 });
+      await cdp.send("Profiler.start");
+    }
+    console.log("\n=== 3/4 into the long chapter ===");
+    const interactions: Record<string, unknown> = {
+      idle: await interact("nothing (baseline)", 4, async () => {}),
+      forward: await interact("flip forward", 10, flip(1)),
+      back: await interact("flip back", 10, flip(-1)),
+      tap: await interact("tap a word", 8, tap),
+    };
+
+    if (traced) {
+      const to = testInfo.outputPath("interact.trace.json");
+      fs.writeFileSync(to, await page.context().browser()!.stopTracing());
+      console.log(`trace: ${to}`);
+    }
+    if (profiled) {
+      const { profile } = await cdp.send("Profiler.stop");
+      const to = testInfo.outputPath("interact.cpuprofile");
+      fs.writeFileSync(to, JSON.stringify(profile));
+      console.log(`cpu profile: ${to}`);
+    }
+
+    if (cdp && process.env.FLTS_PERF_PROFILE === "open") {
+      await remember(false);
       await cdp.send("Profiler.enable");
       await cdp.send("Profiler.setSamplingInterval", { interval: 200 });
       await settleAt(LONG_CHAPTER, longIds[Math.floor(longIds.length * 0.75)]);
@@ -671,7 +803,8 @@ test.describe("chapter open timing", () => {
       console.log(`cpu profile: ${out}`);
     }
 
-    if (process.env.FLTS_PERF_TRACE) {
+    if (cdp && process.env.FLTS_PERF_TRACE === "open") {
+      await remember(false);
       const browser = page.context().browser()!;
       await settleAt(LONG_CHAPTER, longIds[Math.floor(longIds.length * 0.75)]);
       await page.goto(`/book/${bookId}/0`);
@@ -711,7 +844,7 @@ test.describe("chapter open timing", () => {
       "chapter-open-perf.json",
     );
     fs.mkdirSync(path.dirname(out), { recursive: true });
-    fs.writeFileSync(out, JSON.stringify(report));
+    fs.writeFileSync(out, JSON.stringify({ ...report, interactions }));
     console.log(`report: ${out}`);
   });
 });

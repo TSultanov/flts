@@ -5,6 +5,11 @@ import { defineConfig, devices } from "@playwright/test";
 // helpers branch on it (helpers/backend-mode.ts).
 process.env.PLAYWRIGHT_REAL ||= "true";
 
+// FLTS_E2E_PROD=1 serves the built frontend instead of the dev server, on its
+// own port so a running dev server is never mistaken for it.
+const prod = !!process.env.FLTS_E2E_PROD;
+const port = prod ? 5182 : 5181;
+
 export default defineConfig({
   testDir: "./tests/e2e",
   // Each ignore names what blocks it against a real backend.
@@ -41,13 +46,22 @@ export default defineConfig({
   ],
   globalSetup: "./tests/real/global-setup.ts",
   use: {
-    baseURL: "http://localhost:5181",
+    baseURL: `http://localhost:${port}`,
     trace: "retain-on-failure",
   },
-  projects: [{ name: "real", use: { ...devices["Desktop Chrome"] } }],
+  projects: [
+    { name: "real", use: { ...devices["Desktop Chrome"] } },
+    // The app's own engine family; only the timing spec is worth running twice.
+    ...(process.env.FLTS_PERF
+      ? [{ name: "real-webkit", use: { ...devices["Desktop Safari"] } }]
+      : []),
+  ],
   webServer: {
-    command: "PLAYWRIGHT_REAL=true pnpm dev --port 5181",
-    url: "http://localhost:5181",
+    command: prod
+      ? `PLAYWRIGHT_REAL=true pnpm exec vite build --outDir dist-e2e && PLAYWRIGHT_REAL=true pnpm exec vite preview --outDir dist-e2e --port ${port} --strictPort`
+      : `PLAYWRIGHT_REAL=true pnpm dev --port ${port}`,
+    url: `http://localhost:${port}`,
+    timeout: 180_000,
     reuseExistingServer: !process.env.CI,
   },
 });
