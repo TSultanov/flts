@@ -229,25 +229,32 @@ fn fail_commits(library: &Library, count: usize) {
 /// The first paragraph's history on a device, read fresh from its store.
 async fn first_paragraph(library: &Library, id: Uuid) -> History {
     let book = library.get_book(&id).await.unwrap();
-    history(book.snapshot().translation(&rus()).unwrap(), 0)
+    history(&book, rus(), 0).await
 }
 
 /// `(timestamp, text, model, total_tokens)` per version, oldest first.
 type History = Vec<(u64, String, String, Option<u64>)>;
 
-fn history(translation: &Translation, paragraph: usize) -> History {
-    translation
-        .versions(paragraph)
-        .iter()
+async fn history(book: &BookHandle, target: Language, paragraph: usize) -> History {
+    book.read(move |book| book.versions(&target, paragraph))
+        .await
+        .unwrap()
+        .into_iter()
         .map(|v| {
             (
-                v.timestamp,
-                v.sentence_view(0).full_translation.to_string(),
-                v.model.clone(),
-                v.total_tokens,
+                v.translation.timestamp,
+                v.translation.sentences[0].full_translation.clone(),
+                v.model,
+                v.translation.total_tokens,
             )
         })
         .collect()
+}
+
+async fn version_count(book: &BookHandle, target: Language) -> usize {
+    book.read(move |book| book.version_count(&target))
+        .await
+        .unwrap()
 }
 
 fn entry(timestamp: u64, text: &str, model: &str) -> History {
@@ -282,28 +289,26 @@ async fn assert_imported_book(library: &Library, id: Uuid) -> BookHandle {
     assert_eq!(snapshot.book.language, "eng");
     assert_eq!(snapshot.book.chapter_count(), 2);
     assert_eq!(snapshot.book.paragraphs_count(), 3);
+    let outline = book.read(|book| book.outline()).await.unwrap();
+    assert_eq!(outline.chapters.len(), 2);
     for chapter in 0..2 {
-        let (stored, original) = (
-            snapshot.book.chapter_view(chapter),
-            source.chapter_view(chapter),
-        );
-        assert_eq!(stored.title, original.title);
-        assert_eq!(stored.paragraph_count(), original.paragraph_count());
+        let (stored, original) = (&outline.chapters[chapter], source.chapter_view(chapter));
+        assert_eq!(stored.title.as_deref(), original.title.as_deref());
+        assert_eq!(stored.paragraphs.len(), original.paragraph_count());
         for paragraph in 0..original.paragraph_count() {
-            let (stored, original) = (
-                stored.paragraph_view(paragraph),
-                original.paragraph_view(paragraph),
-            );
-            assert_eq!(stored.id, original.id);
-            assert_eq!(stored.original_text, original.original_text);
-            assert_eq!(stored.original_html, original.original_html);
+            let original = original.paragraph_view(paragraph);
+            let number = stored.paragraphs[paragraph];
+            assert_eq!(number, original.id);
+            assert_eq!(outline.chapter_for_paragraph(number), Some(chapter));
+            let stored = book.read(move |book| book.paragraph(number)).await.unwrap();
+            assert_eq!(stored.text, original.original_text);
+            assert_eq!(stored.html.as_deref(), original.original_html.as_deref());
         }
     }
 
-    let translation = snapshot.translation(&rus()).unwrap();
-    assert_eq!(translation.version_count(), 5);
+    assert_eq!(version_count(&book, rus()).await, 5);
     assert_eq!(
-        history(translation, 0),
+        history(&book, rus(), 0).await,
         [
             entry(10, "old", FLASH),
             entry(20, "new", PRO),
@@ -311,27 +316,19 @@ async fn assert_imported_book(library: &Library, id: Uuid) -> BookHandle {
         ]
         .concat()
     );
-    assert_eq!(history(translation, 1), entry(5, "beta", FLASH));
-    assert_eq!(history(translation, 2), entry(7, "gamma", PRO));
+    assert_eq!(history(&book, rus(), 1).await, entry(5, "beta", FLASH));
+    assert_eq!(history(&book, rus(), 2).await, entry(7, "gamma", PRO));
     // Word-level detail survives too.
+    let versions = book.read(|book| book.versions(&rus(), 0)).await.unwrap();
+    assert_eq!(versions[2].translation, version(30, "theirs"));
+    assert_eq!(versions[1].translation, version(20, "new"));
     assert_eq!(
-        translation.paragraph_view(0).unwrap().to_import(),
-        version(30, "theirs")
+        book.read(|book| book.translation(&rus(), 0)).await.unwrap(),
+        Some(versions[2].clone())
     );
-    assert_eq!(
-        translation
-            .paragraph_view(0)
-            .unwrap()
-            .get_previous_version()
-            .unwrap()
-            .to_import(),
-        version(20, "new")
-    );
-    let german = snapshot
-        .translation(&Language::from_639_3("deu").unwrap())
-        .unwrap();
-    assert_eq!(german.version_count(), 1);
-    assert_eq!(history(german, 1), entry(8, "Beta", FLASH));
+    let german = Language::from_639_3("deu").unwrap();
+    assert_eq!(version_count(&book, german).await, 1);
+    assert_eq!(history(&book, german, 1).await, entry(8, "Beta", FLASH));
 
     assert_eq!(
         snapshot.summaries.entries,
@@ -505,11 +502,9 @@ async fn legacy_files_arriving_later_update_the_loaded_book() {
     let changes = library.refresh_from_peers().await.unwrap();
     assert!(changes.library);
     assert_eq!(changes.books, [id]);
-    let snapshot = book.snapshot();
-    let translation = snapshot.translation(&rus()).unwrap();
-    assert_eq!(translation.version_count(), 6);
+    assert_eq!(version_count(&book, rus()).await, 6);
     assert_eq!(
-        history(translation, 1),
+        history(&book, rus(), 1).await,
         [entry(5, "beta", FLASH), entry(40, "beta again", PRO)].concat()
     );
     assert!(!book_dir.exists());
@@ -899,10 +894,7 @@ async fn annotations_arriving_after_their_book_are_imported() {
 
     let book = library.get_book(&id).await.unwrap();
     let snapshot = book.snapshot();
-    assert_eq!(
-        history(snapshot.translation(&rus()).unwrap(), 0),
-        entry(10, "late", FLASH)
-    );
+    assert_eq!(history(&book, rus(), 0).await, entry(10, "late", FLASH));
     assert_eq!(snapshot.summaries.entries[1], summary(50, "late summary"));
     assert_eq!(book.reading_state().await.unwrap().unwrap().chapter_id, 1);
     assert_eq!(book.folder_path().await.unwrap(), ["Late"]);

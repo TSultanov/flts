@@ -279,11 +279,6 @@ impl Translation {
         versions
     }
 
-    pub(crate) fn latest_timestamp(&self, paragraph: usize) -> Option<u64> {
-        self.latest_version_view(paragraph)
-            .map(|view| view.timestamp)
-    }
-
     /// Latest version regardless of content; an empty head still carries the
     /// history behind it.
     fn latest_version_view(&'_ self, paragraph: usize) -> Option<ParagraphTranslationView<'_>> {

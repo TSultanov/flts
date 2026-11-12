@@ -6,7 +6,7 @@ use library::card;
 use library::epub_importer::EpubBook;
 use library::library::file_watcher::LibraryFileChange;
 use library::{
-    book::translation::ParagraphTranslationView,
+    book::words::ParagraphWords,
     library::{Library, library_book::BookReadingState},
 };
 use uuid::Uuid;
@@ -195,50 +195,43 @@ impl<'a> LibraryView<'a> {
         paragraph_id: usize,
         target_language: &Language,
     ) -> anyhow::Result<ParagraphView> {
-        let book = self.library.get_book(&book_id).await?.snapshot();
-
-        // The id comes from the frontend; indexing past the end would
-        // panic the command.
-        if paragraph_id >= book.book.paragraphs_count() {
+        let book = self.library.get_book(&book_id).await?;
+        let info = book.snapshot().book.clone();
+        // The id comes from the frontend.
+        if paragraph_id >= info.paragraphs_count() {
             anyhow::bail!(
                 "paragraph {paragraph_id} out of range for book {book_id} ({} paragraphs)",
-                book.book.paragraphs_count()
+                info.paragraphs_count()
             );
         }
-
-        // Must stay read-only: minting a translation would cement a book whose
-        // translations failed to load as untranslated, and diverge translation
-        // ids across synced devices.
-        let book_translation = book.translation(target_language);
-
-        let paragraph = book.book.paragraph_view(paragraph_id);
-        let original = paragraph.original_html.unwrap_or(paragraph.original_text);
-
-        let src_lang = Language::from_639_3(&book.book.language).ok_or_else(|| {
-            anyhow::anyhow!(
-                "book has invalid ISO-639-3 language code: {:?}",
-                book.book.language
-            )
-        })?;
-        let card_store = self.library.card_store();
-
-        let t_view = book_translation.and_then(|bt| bt.paragraph_view(paragraph_id));
-
-        let segments = if let Some(t) = t_view.as_ref() {
-            let mut slug_set: HashSet<String> = HashSet::new();
-            collect_paragraph_slugs(t, src_lang, &mut slug_set);
-            let slugs: Vec<String> = slug_set.into_iter().collect();
-            let fam = card_store
-                .familiarities(src_lang.to_639_3(), target_language.to_639_3(), &slugs)
-                .await;
-            Some(paragraph_to_segments(&original, t, &fam, src_lang))
-        } else {
-            None
+        let target = *target_language;
+        let (original, words) = book
+            .read(move |book| {
+                Ok((
+                    book.paragraph(paragraph_id)?,
+                    book.words(&target, paragraph_id)?,
+                ))
+            })
+            .await?;
+        let original = original.original().to_owned();
+        let src_lang = source_language(&info.language)?;
+        let segments = match words {
+            Some(words) => {
+                let mut slugs = HashSet::new();
+                collect_paragraph_slugs(&words, src_lang, &mut slugs);
+                let slugs: Vec<String> = slugs.into_iter().collect();
+                let fam = self
+                    .library
+                    .card_store()
+                    .familiarities(src_lang.to_639_3(), target_language.to_639_3(), &slugs)
+                    .await;
+                Some(paragraph_to_segments(&original, &words, &fam, src_lang))
+            }
+            None => None,
         };
-
         Ok(ParagraphView {
             id: paragraph_id,
-            original: original.to_string(),
+            original,
             segments,
         })
     }
@@ -248,17 +241,22 @@ impl<'a> LibraryView<'a> {
         book_id: Uuid,
         paragraph_ids: Vec<usize>,
     ) -> anyhow::Result<Vec<ParagraphOriginal>> {
-        let book = self.library.get_book(&book_id).await?.snapshot();
-        // The ids come from the frontend; one past the end must not panic.
-        Ok(paragraph_ids
-            .into_iter()
-            .filter(|id| *id < book.book.paragraphs_count())
-            .map(|id| {
-                let p = book.book.paragraph_view(id);
-                let original = p.original_html.unwrap_or(p.original_text).to_string();
-                ParagraphOriginal { id, original }
-            })
-            .collect())
+        let book = self.library.get_book(&book_id).await?;
+        let count = book.snapshot().book.paragraphs_count();
+        book.read(move |book| {
+            paragraph_ids
+                .into_iter()
+                // The ids come from the frontend; one past the end is skipped.
+                .filter(|id| *id < count)
+                .map(|id| {
+                    Ok(ParagraphOriginal {
+                        id,
+                        original: book.paragraph(id)?.original().to_owned(),
+                    })
+                })
+                .collect()
+        })
+        .await
     }
 
     pub async fn get_paragraph_translations_batch(
@@ -267,53 +265,50 @@ impl<'a> LibraryView<'a> {
         paragraph_ids: Vec<usize>,
         target_language: &Language,
     ) -> anyhow::Result<Vec<ParagraphTranslationSlice>> {
-        let book = self.library.get_book(&book_id).await?.snapshot();
-
-        // Read-only; see get_paragraph_view. No matching translation yields
-        // `segments: None` for every row.
-        let bt = book.translation(target_language);
-
-        let src_lang = Language::from_639_3(&book.book.language).ok_or_else(|| {
-            anyhow::anyhow!(
-                "book has invalid ISO-639-3 language code: {:?}",
-                book.book.language
-            )
-        })?;
-        let card_store = self.library.card_store();
+        let book = self.library.get_book(&book_id).await?;
+        let info = book.snapshot().book.clone();
+        let src_lang = source_language(&info.language)?;
+        let (count, target) = (info.paragraphs_count(), *target_language);
+        // An untranslated paragraph's text is not read: nothing is drawn from it.
+        let prepared = book
+            .read(move |book| {
+                paragraph_ids
+                    .into_iter()
+                    .filter(|id| *id < count)
+                    .map(|id| {
+                        Ok(match book.words(&target, id)? {
+                            Some(words) => {
+                                let original = book.paragraph(id)?.original().to_owned();
+                                (id, Some((original, words)))
+                            }
+                            None => (id, None),
+                        })
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()
+            })
+            .await?;
 
         // Union the batch's lemma slugs first so the card store is hit once.
-        // Ids past the end are skipped, as in get_paragraph_originals_batch.
-        let mut prepared: Vec<(usize, String, Option<ParagraphTranslationView<'_>>)> =
-            Vec::with_capacity(paragraph_ids.len());
-        let mut slug_set: HashSet<String> = HashSet::new();
-        for id in paragraph_ids {
-            if id >= book.book.paragraphs_count() {
-                continue;
-            }
-            let p = book.book.paragraph_view(id);
-            let original = p.original_html.unwrap_or(p.original_text).to_string();
-            let t_view = bt.as_ref().and_then(|bt| bt.paragraph_view(id));
-            if let Some(t) = t_view.as_ref() {
-                collect_paragraph_slugs(t, src_lang, &mut slug_set);
-            }
-            prepared.push((id, original, t_view));
+        let mut slugs = HashSet::new();
+        for (_, words) in prepared.iter().filter_map(|(_, p)| p.as_ref()) {
+            collect_paragraph_slugs(words, src_lang, &mut slugs);
         }
-
-        let slugs: Vec<String> = slug_set.into_iter().collect();
-        let fam = card_store
+        let slugs: Vec<String> = slugs.into_iter().collect();
+        let fam = self
+            .library
+            .card_store()
             .familiarities(src_lang.to_639_3(), target_language.to_639_3(), &slugs)
             .await;
 
-        let out = prepared
-            .iter()
-            .map(|(id, original, t_view)| {
-                let segments = t_view
-                    .as_ref()
-                    .map(|t| paragraph_to_segments(original, t, &fam, src_lang));
-                ParagraphTranslationSlice { id: *id, segments }
+        Ok(prepared
+            .into_iter()
+            .map(|(id, translated)| ParagraphTranslationSlice {
+                id,
+                segments: translated.map(|(original, words)| {
+                    paragraph_to_segments(&original, &words, &fam, src_lang)
+                }),
             })
-            .collect();
-        Ok(out)
+            .collect())
     }
 
     pub async fn list_books(
@@ -357,40 +352,35 @@ impl<'a> LibraryView<'a> {
         book_id: Uuid,
         target_language: Option<&Language>,
     ) -> anyhow::Result<Vec<ChapterView>> {
-        let book_guard = self.library.get_book(&book_id).await?.snapshot();
-        let chapters: Vec<ChapterView> = {
-            let translation_guard = target_language.and_then(|tl| book_guard.translation(tl));
-            book_guard
-                .book
-                .chapter_views()
-                .map(|chapter| {
-                    let total = chapter.paragraph_count();
-                    let translated = if let Some(t) = translation_guard.as_ref() {
-                        chapter
-                            .paragraphs()
-                            .filter(|p| t.is_paragraph_translated(p.id))
-                            .count()
-                    } else {
-                        0
+        let book = self.library.get_book(&book_id).await?;
+        let target = target_language.copied();
+        let chapters = book
+            .read(move |book| {
+                let outline = book.outline()?;
+                let mut chapters = Vec::with_capacity(outline.chapters.len());
+                for (id, chapter) in outline.chapters.iter().enumerate() {
+                    let total = chapter.paragraphs.len();
+                    let translated = match &target {
+                        Some(target) => book
+                            .translated(target, &chapter.paragraphs)?
+                            .into_iter()
+                            .filter(|translated| *translated)
+                            .count(),
+                        None => 0,
                     };
-                    let translation_ratio = if total == 0 {
-                        0.0
-                    } else {
-                        translated as f64 / total as f64
-                    };
-                    let id = chapter.idx;
-                    let title = chapter
-                        .title
-                        .map(|s| s.to_string())
-                        .unwrap_or("<no title>".to_owned());
-                    ChapterView {
+                    chapters.push(ChapterView {
                         id,
-                        title,
-                        translation_ratio,
-                    }
-                })
-                .collect()
-        };
+                        title: chapter.title.clone().unwrap_or("<no title>".to_owned()),
+                        translation_ratio: if total == 0 {
+                            0.0
+                        } else {
+                            translated as f64 / total as f64
+                        },
+                    });
+                }
+                Ok(chapters)
+            })
+            .await?;
         // Opening a book resumes summary generation; idempotent once complete.
         if let Ok(queue) = self.state.get_or_init_summary_generation_queue().await {
             if let Err(err) = queue.enqueue(book_id).await {
@@ -405,18 +395,17 @@ impl<'a> LibraryView<'a> {
         book_id: Uuid,
         chapter_id: usize,
     ) -> anyhow::Result<Vec<usize>> {
-        let book = self.library.get_book(&book_id).await?.snapshot();
-        // chapter_id is frontend/URL-supplied: chapter_view indexes raw, and
-        // panic = abort would take the app down.
-        if chapter_id >= book.book.chapter_count() {
-            return Ok(Vec::new());
-        }
-        Ok(book
-            .book
-            .chapter_view(chapter_id)
-            .paragraphs()
-            .map(|p| p.id)
-            .collect())
+        let book = self.library.get_book(&book_id).await?;
+        // chapter_id is frontend/URL-supplied; one past the end has none.
+        book.read(move |book| {
+            let outline = book.outline()?;
+            Ok(outline
+                .chapters
+                .get(chapter_id)
+                .map(|chapter| chapter.paragraphs.clone())
+                .unwrap_or_default())
+        })
+        .await
     }
 
     pub async fn get_word_info(
@@ -427,56 +416,45 @@ impl<'a> LibraryView<'a> {
         word_id: usize,
         target_language: &Language,
     ) -> anyhow::Result<Option<WordView>> {
-        let book = self.library.get_book(&book_id).await?.snapshot();
-        let source_language_code = book.book.language.clone();
-        // Read-only; see get_paragraph_view.
-        let Some(book_translation) = book.translation(target_language) else {
+        let book = self.library.get_book(&book_id).await?;
+        let source_language_code = book.snapshot().book.language.clone();
+        // The one read that takes the words' details.
+        let target = *target_language;
+        let Some(stored) = book
+            .read(move |book| book.translation(&target, paragraph_id))
+            .await?
+        else {
             return Ok(None);
         };
-
-        // Copy the view out before card I/O.
-        let mut view = {
-            let Some(paragraph) = book_translation.paragraph_view(paragraph_id) else {
-                return Ok(None);
-            };
-            // The frontend refetches on `book_updated` with its selected
-            // {sentence, word}, which a re-translation can shrink away. The
-            // views index raw, and panic = abort would take the app down.
-            if sentence_id >= paragraph.sentence_count() {
-                return Ok(None);
-            }
-            let sentence = paragraph.sentence_view(sentence_id);
-            if word_id >= sentence.word_count() {
-                return Ok(None);
-            }
-            let word = sentence.word_view(word_id);
-            WordView {
-                original: word.original.to_string(),
-                note: word.note.to_string(),
-                is_punctuation: word.is_punctuation,
-                contextual_translations: word
-                    .contextual_translations()
-                    .map(|ct| ct.translation.to_string())
-                    .collect(),
-                grammar: GrammarView {
-                    original_initial_form: word.grammar.original_initial_form.to_string(),
-                    target_initial_form: word.grammar.target_initial_form.to_string(),
-                    part_of_speech: word.grammar.part_of_speech.to_string(),
-                    plurality: word.grammar.plurality.map(|p| p.to_string()),
-                    person: word.grammar.person.map(|p| p.to_string()),
-                    tense: word.grammar.tense.map(|t| t.to_string()),
-                    case: word.grammar.case.map(|c| c.to_string()),
-                    other: word.grammar.other.map(|o| o.to_string()),
-                },
-                full_sentence_translation: sentence.full_translation.to_string(),
-                translation_model: paragraph.model,
-                source_language: source_language_code,
-                can_create_card: false,
-                has_card: false,
-            }
+        // The frontend refetches on `book_updated` with its selected
+        // {sentence, word}, which a re-translation can shrink away.
+        let Some(sentence) = stored.translation.sentences.get(sentence_id) else {
+            return Ok(None);
         };
-
-        drop(book);
+        let Some(word) = sentence.words.get(word_id) else {
+            return Ok(None);
+        };
+        let mut view = WordView {
+            original: word.original.clone(),
+            note: word.note.clone().unwrap_or_default(),
+            is_punctuation: word.is_punctuation,
+            contextual_translations: word.contextual_translations.clone(),
+            grammar: GrammarView {
+                original_initial_form: word.grammar.original_initial_form.clone(),
+                target_initial_form: word.grammar.target_initial_form.clone(),
+                part_of_speech: word.grammar.part_of_speech.clone(),
+                plurality: word.grammar.plurality.clone(),
+                person: word.grammar.person.clone(),
+                tense: word.grammar.tense.clone(),
+                case: word.grammar.case.clone(),
+                other: word.grammar.other.clone(),
+            },
+            full_sentence_translation: sentence.full_translation.clone(),
+            translation_model: stored.model.clone(),
+            source_language: source_language_code,
+            can_create_card: false,
+            has_card: false,
+        };
 
         let source_language = Language::from_639_3(&view.source_language);
         view.can_create_card = source_language.is_some()
@@ -605,18 +583,22 @@ impl<'a> LibraryView<'a> {
 
 /// Adds every non-punctuation lemma slug to `out`; the caller's `HashSet` dedups
 /// across paragraphs so each slug is loaded once.
+fn source_language(code: &str) -> anyhow::Result<Language> {
+    Language::from_639_3(code)
+        .ok_or_else(|| anyhow::anyhow!("book has invalid ISO-639-3 language code: {code:?}"))
+}
+
 fn collect_paragraph_slugs(
-    translation: &ParagraphTranslationView<'_>,
+    translation: &ParagraphWords,
     src_lang: Language,
     out: &mut HashSet<String>,
 ) {
-    for sentence in translation.sentences() {
-        for word in sentence.words() {
+    for sentence in &translation.sentences {
+        for word in &sentence.words {
             if word.is_punctuation {
                 continue;
             }
-            let lemma_canonical =
-                card::canonicalize_lemma(&word.grammar.original_initial_form, src_lang);
+            let lemma_canonical = card::canonicalize_lemma(&word.lemma, src_lang);
             if lemma_canonical.is_empty() {
                 continue;
             }
@@ -752,7 +734,7 @@ fn push_run(segments: &mut Vec<ParagraphSegment>, run: &[ProjChar]) {
 
 fn paragraph_to_segments(
     original: &str,
-    translation: &ParagraphTranslationView,
+    translation: &ParagraphWords,
     card_familiarity: &HashMap<String, f32>,
     src_lang: Language,
 ) -> Vec<ParagraphSegment> {
@@ -773,9 +755,9 @@ fn paragraph_to_segments(
     let mut sentence_idx = 0_usize;
     let mut flat_index = 0_usize;
 
-    for sentence in translation.sentences() {
+    for sentence in &translation.sentences {
         let mut word_idx = 0;
-        for word in sentence.words() {
+        for word in &sentence.words {
             if word.is_punctuation {
                 word_idx += 1;
                 continue;
@@ -824,13 +806,12 @@ fn paragraph_to_segments(
                 // first character; one span per word cannot represent a split.
                 let word_marks = proj[p_idx].marks.clone();
                 let translation_text = word
-                    .contextual_translations()
-                    .next()
-                    .map(|ct| sanitize_translation_text(ct.translation.as_ref()))
+                    .translation
+                    .as_deref()
+                    .map(sanitize_translation_text)
                     .filter(|t| !t.is_empty());
 
-                let lemma_canonical =
-                    card::canonicalize_lemma(&word.grammar.original_initial_form, src_lang);
+                let lemma_canonical = card::canonicalize_lemma(&word.lemma, src_lang);
                 let familiarity = if lemma_canonical.is_empty() {
                     None
                 } else {
@@ -938,7 +919,6 @@ mod tests {
     use super::{Mark, ParagraphSegment, paragraph_to_segments};
 
     use isolang::Language;
-    use library::book::translation::ParagraphTranslationView;
     use library::book::translation_import;
     use std::collections::HashMap;
 
@@ -982,15 +962,10 @@ mod tests {
         }
     }
 
-    fn view_from_import<'a>(
-        translation: &'a mut library::book::translation::Translation,
-        paragraph_index: usize,
+    fn view_from_import(
         pt: &translation_import::ParagraphTranslation,
-    ) -> ParagraphTranslationView<'a> {
-        translation.add_paragraph_translation(paragraph_index, pt, "gpt-5.2");
-        translation
-            .paragraph_view(paragraph_index)
-            .expect("paragraph view")
+    ) -> library::book::words::ParagraphWords {
+        library::book::words::ParagraphWords::of(pt)
     }
 
     fn word_seg(
@@ -1046,8 +1021,7 @@ mod tests {
             words: vec![word("Test", &["Prueba"], false)],
         }]);
 
-        let mut t = library::book::translation::Translation::create("spa", "eng");
-        let view = view_from_import(&mut t, 0, &pt);
+        let view = view_from_import(&pt);
         let segments = paragraph_to_segments(
             original,
             &view,
@@ -1080,8 +1054,7 @@ mod tests {
             ],
         }]);
 
-        let mut t = library::book::translation::Translation::create("spa", "eng");
-        let view = view_from_import(&mut t, 0, &pt);
+        let view = view_from_import(&pt);
         let segments = paragraph_to_segments(
             original,
             &view,
@@ -1108,8 +1081,7 @@ mod tests {
             words: vec![word("a", &["a"], false), word("b", &["b"], false)],
         }]);
 
-        let mut t = library::book::translation::Translation::create("spa", "eng");
-        let view = view_from_import(&mut t, 0, &pt);
+        let view = view_from_import(&pt);
         let segments = paragraph_to_segments(
             original,
             &view,
@@ -1141,8 +1113,7 @@ mod tests {
             ],
         }]);
 
-        let mut t = library::book::translation::Translation::create("deu", "eng");
-        let view = view_from_import(&mut t, 0, &pt);
+        let view = view_from_import(&pt);
         let segments = paragraph_to_segments(
             original,
             &view,
@@ -1171,8 +1142,7 @@ mod tests {
             words: vec![word("Just", &[], false), word("words", &[], false)],
         }]);
 
-        let mut t = library::book::translation::Translation::create("deu", "eng");
-        let view = view_from_import(&mut t, 0, &pt);
+        let view = view_from_import(&pt);
         let segments = paragraph_to_segments(
             original,
             &view,
@@ -1203,8 +1173,7 @@ mod tests {
             ],
         }]);
 
-        let mut t = library::book::translation::Translation::create("deu", "eng");
-        let view = view_from_import(&mut t, 0, &pt);
+        let view = view_from_import(&pt);
         let segments = paragraph_to_segments(
             original,
             &view,
@@ -1234,8 +1203,7 @@ mod tests {
             ],
         }]);
 
-        let mut t = library::book::translation::Translation::create("fra", "eng");
-        let view = view_from_import(&mut t, 0, &pt);
+        let view = view_from_import(&pt);
         let segments = paragraph_to_segments(
             original,
             &view,
@@ -1276,8 +1244,7 @@ mod tests {
             },
         ]);
 
-        let mut t = library::book::translation::Translation::create("deu", "eng");
-        let view = view_from_import(&mut t, 0, &pt);
+        let view = view_from_import(&pt);
         let segments = paragraph_to_segments(
             original,
             &view,
@@ -1314,8 +1281,7 @@ mod tests {
             ],
         }]);
 
-        let mut t = library::book::translation::Translation::create("deu", "eng");
-        let view = view_from_import(&mut t, 0, &pt);
+        let view = view_from_import(&pt);
         let segments = paragraph_to_segments(
             original,
             &view,
@@ -1343,8 +1309,7 @@ mod tests {
             words: vec![word("&period;", &[], true), word("&period;", &[], true)],
         }]);
 
-        let mut t = library::book::translation::Translation::create("deu", "eng");
-        let view = view_from_import(&mut t, 0, &pt);
+        let view = view_from_import(&pt);
         let segments = paragraph_to_segments(
             original,
             &view,
@@ -1367,8 +1332,7 @@ mod tests {
             ],
         }]);
 
-        let mut t = library::book::translation::Translation::create("spa", "eng");
-        let view = view_from_import(&mut t, 0, &pt);
+        let view = view_from_import(&pt);
 
         let mut fam = HashMap::new();
         fam.insert("hola".to_string(), 0.5_f32);
@@ -1413,8 +1377,7 @@ mod tests {
                 full_translation: "ignored".to_owned(),
                 words: words.iter().map(|w| word(w, &[], false)).collect(),
             }]);
-            let mut t = library::book::translation::Translation::create("fra", "eng");
-            let view = view_from_import(&mut t, 0, &pt);
+            let view = view_from_import(&pt);
             let segments = paragraph_to_segments(
                 original,
                 &view,
@@ -1453,8 +1416,7 @@ mod tests {
             ],
         }]);
 
-        let mut t = library::book::translation::Translation::create("fra", "eng");
-        let view = view_from_import(&mut t, 0, &pt);
+        let view = view_from_import(&pt);
         let segments = paragraph_to_segments(
             original,
             &view,

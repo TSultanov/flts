@@ -91,22 +91,22 @@ fn a_book_and_its_annotations_survive_a_reopen() {
             assert_eq!(listed[0].folder_path, ["a", "b"]);
 
             let loaded = db.load_book(id)?;
-            assert_eq!(loaded.book.chapter_count(), 2);
-            assert_eq!(loaded.book.chapter_view(0).title.as_deref(), Some("One"));
-            assert_eq!(loaded.book.chapter_view(1).title, None);
+            assert_eq!(loaded.info.chapter_count(), 2);
+            let outline = db.outline(id)?;
+            assert_eq!(outline.chapters[0].title.as_deref(), Some("One"));
+            assert_eq!(outline.chapters[1].title, None);
+            assert_eq!(db.paragraph(id, 0)?.html.as_deref(), Some("<p>alpha</p>"));
             assert_eq!(
-                loaded.book.paragraph_view(0).original_html.as_deref(),
-                Some("<p>alpha</p>")
-            );
-            assert_eq!(
-                loaded.book.chapter_view(1).paragraph_view(0).original_text,
+                db.paragraph(id, outline.chapters[1].paragraphs[0])?.text,
                 "gamma"
             );
-            let translation = &loaded.annotations.translations[0];
-            let view = translation.paragraph_view(1).unwrap();
-            assert_eq!(view.sentence_view(0).full_translation, "new");
-            assert_eq!(view.total_tokens, Some(7));
-            assert_eq!(view.get_previous_version().unwrap().timestamp, 10);
+            assert_eq!(listed[0].translations.len(), 1);
+            let current = db.paragraph_translation(id, "rus", 1)?.unwrap().translation;
+            assert_eq!(current.sentences[0].full_translation, "new");
+            assert_eq!(current.total_tokens, Some(7));
+            let versions = db.versions(id, "rus", 1)?;
+            assert_eq!(versions.len(), 2);
+            assert_eq!(versions[0].translation.timestamp, 10);
             assert!(loaded.annotations.summaries.entries[1].generated);
             assert!(!loaded.annotations.summaries.entries[0].generated);
             assert_eq!(
@@ -141,10 +141,7 @@ fn writing_the_same_delta_twice_adds_nothing() {
                     },
                 )?;
             }
-            assert_eq!(
-                db.load_book(id)?.annotations.translations[0].version_count(),
-                1
-            );
+            assert_eq!(db.version_count(id, "rus")?, 1);
             Ok(())
         })
         .unwrap();
@@ -205,11 +202,9 @@ fn two_devices_converge_through_their_shards() {
                 assert_eq!(listed.len(), 1, "one book, not one per device");
                 assert_eq!(listed[0].folder_path, ["shelf"]);
                 let loaded = db.load_book(id)?;
-                assert_eq!(loaded.book.paragraphs_count(), 3);
-                let translation = &loaded.annotations.translations[0];
-                assert_eq!(loaded.annotations.translations.len(), 1);
-                assert!(translation.paragraph_view(0).is_some());
-                assert!(translation.paragraph_view(2).is_some());
+                assert_eq!(loaded.info.paragraphs_count(), 3);
+                assert_eq!(listed[0].translations.len(), 1);
+                assert_eq!(db.translated(id, "rus", &[0, 1, 2])?, [true, false, true]);
                 Ok(())
             })
             .unwrap();
@@ -424,7 +419,7 @@ fn pruning_keeps_the_current_reading_position() {
     reopened
         .run_blocking(|db| {
             assert_eq!(db.user_state(id)?.reading_state.unwrap().page_offset, 4);
-            assert_eq!(db.load_book(id)?.book.paragraphs_count(), 3);
+            assert_eq!(db.load_book(id)?.info.paragraphs_count(), 3);
             Ok(())
         })
         .unwrap();
@@ -852,7 +847,7 @@ fn creating_a_book_again_completes_the_one_that_was_cut_short() {
     assert_eq!(created, id, "the same book, not a second one");
     b.run_blocking(|db| {
         assert_eq!(db.list_books()?.len(), 1);
-        assert_eq!(db.load_book(id)?.book.paragraphs_count(), 3);
+        assert_eq!(db.load_book(id)?.info.paragraphs_count(), 3);
         Ok(())
     })
     .unwrap();
@@ -862,7 +857,7 @@ fn creating_a_book_again_completes_the_one_that_was_cut_short() {
     b.run_blocking(|db| {
         db.refresh()?;
         assert_eq!(db.list_books()?.len(), 1);
-        assert_eq!(db.load_book(id)?.book.paragraphs_count(), 3);
+        assert_eq!(db.load_book(id)?.info.paragraphs_count(), 3);
         Ok(())
     })
     .unwrap();
@@ -886,7 +881,7 @@ fn a_store_told_its_identity_is_shared_reopens_as_a_new_writer() {
     assert!(!store.local_dir().join("rotate-writer").exists());
     store
         .run_blocking(|db| {
-            assert_eq!(db.load_book(id)?.book.paragraphs_count(), 3);
+            assert_eq!(db.load_book(id)?.info.paragraphs_count(), 3);
             db.persist(id, &position(1))?;
             assert_eq!(db.user_state(id)?.reading_state, Some(reading(1)));
             Ok(())
@@ -977,7 +972,7 @@ fn compaction_waits_for_a_quiet_moment_and_leaves_readers_alone() {
     assert!(store.compact_if_idle(Duration::ZERO).unwrap());
     store
         .run_blocking(|db| {
-            assert_eq!(db.load_book(id)?.book.paragraphs_count(), 3);
+            assert_eq!(db.load_book(id)?.info.paragraphs_count(), 3);
             db.persist(id, &position(2))?;
             assert_eq!(db.user_state(id)?.reading_state, Some(reading(2)));
             Ok(())
@@ -1040,7 +1035,7 @@ fn a_store_can_start_over_as_a_new_writer_without_reopening() {
     assert!(store.is_own_file(&own));
     store
         .run_blocking(|db| {
-            assert_eq!(db.load_book(id)?.book.paragraphs_count(), 3);
+            assert_eq!(db.load_book(id)?.info.paragraphs_count(), 3);
             db.persist(id, &position(1))?;
             assert!(db.health().shared_identity, "that is the user's to settle");
             db.settle_shared_identity()?;

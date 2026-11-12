@@ -153,18 +153,13 @@ async fn dump_summaries(
     let book = library
         .get_book(&book_id)
         .await
-        .map_err(|err| anyhow::anyhow!("Book {book_id} not found in library: {err}"))?
-        .snapshot();
+        .map_err(|err| anyhow::anyhow!("Book {book_id} not found in library: {err}"))?;
+    let outline = book.read(|book| book.outline()).await?;
+    let book = book.snapshot();
     let summaries = &book.summaries;
 
     let titles: Vec<Option<String>> = (0..summaries.entries.len())
-        .map(|i| {
-            book.book
-                .chapter_view(i)
-                .title
-                .as_ref()
-                .map(|t| t.to_string())
-        })
+        .map(|i| outline.chapters.get(i).and_then(|c| c.title.clone()))
         .collect();
 
     let generated = summaries.entries.iter().filter(|e| e.generated).count();
@@ -245,13 +240,12 @@ async fn translate_paragraph(
     worker_id: usize,
 ) -> anyhow::Result<()> {
     let book_handle = library.get_book(&book_id).await?;
-    let source_snapshot = book_handle.snapshot();
-    let (paragraph_text, chapter_id) = {
-        let book = &source_snapshot;
-        let paragraph = book.book.paragraph_view(paragraph_id);
-        let chapter_id = book.book.chapter_for_paragraph(paragraph_id).unwrap_or(0);
-        (paragraph.original_text.to_string(), chapter_id)
-    };
+    let (paragraph_text, chapter_id) = book_handle
+        .read(move |book| {
+            let chapter = book.outline()?.chapter_for_paragraph(paragraph_id);
+            Ok((book.paragraph(paragraph_id)?.text, chapter.unwrap_or(0)))
+        })
+        .await?;
     println!(
         "Worker {worker_id}: Translating paragraph {}: \"{}...\"",
         paragraph_id,
@@ -297,14 +291,29 @@ async fn translate_book(
     let queue;
 
     let source_lang = {
-        let book = library.get_book(&book_id).await?.snapshot();
+        let handle = library.get_book(&book_id).await?;
+        let book = handle.snapshot();
         let source_lang = Language::from_639_3(&book.book.language).unwrap();
 
         let paragraph_count = book.book.paragraphs_count();
-
-        let translation = book.translation(&target_lang);
-        let untranslated_paragraphs_count = paragraph_count
-            .saturating_sub(translation.map_or(0, |t| t.translated_paragraphs_count()));
+        let untranslated_ids: Vec<usize> = handle
+            .read(move |book| {
+                let outline = book.outline()?;
+                let mut ids = Vec::new();
+                for chapter in &outline.chapters {
+                    let translated = book.translated(&target_lang, &chapter.paragraphs)?;
+                    ids.extend(
+                        chapter
+                            .paragraphs
+                            .iter()
+                            .zip(translated)
+                            .filter(|(_, translated)| !translated)
+                            .map(|(id, _)| *id),
+                    );
+                }
+                Ok(ids)
+            })
+            .await?;
         println!(
             "Translating book {} from {} to {}",
             book.book.title,
@@ -312,21 +321,10 @@ async fn translate_book(
             target_lang.to_name()
         );
         println!(
-            "Found {untranslated_paragraphs_count} untranslated paragraphs out of {}",
+            "Found {} untranslated paragraphs out of {}",
+            untranslated_ids.len(),
             paragraph_count
         );
-
-        let untranslated_ids: Vec<usize> = {
-            let mut ids = Vec::new();
-            for chapter in book.book.chapter_views() {
-                for paragraph in chapter.paragraphs() {
-                    if translation.is_none_or(|t| t.paragraph_view(paragraph.id).is_none()) {
-                        ids.push(paragraph.id);
-                    }
-                }
-            }
-            ids
-        };
         queue = untranslated_ids;
 
         source_lang

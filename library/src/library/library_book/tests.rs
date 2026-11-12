@@ -7,6 +7,7 @@ use super::*;
 use crate::{
     book::chapter_summaries::ChapterSummary,
     library::{LibraryError, PeerChanges},
+    store::{StoredVersion, translation_uuid},
     test_utils::{
         TempDir, copy_shards, copy_shards_where, full_word, one_sentence_paragraph, peer_view,
     },
@@ -81,6 +82,39 @@ async fn translate(book: &BookHandle, paragraph: usize, timestamp: u64, text: &s
         .unwrap();
 }
 
+async fn current(book: &BookHandle, target: Language, paragraph: usize) -> Option<StoredVersion> {
+    book.read(move |b| b.translation(&target, paragraph))
+        .await
+        .unwrap()
+}
+
+async fn history(book: &BookHandle, paragraph: usize) -> Vec<StoredVersion> {
+    book.read(move |b| b.versions(&rus(), paragraph))
+        .await
+        .unwrap()
+}
+
+async fn version_count(book: &BookHandle) -> usize {
+    book.read(|b| b.version_count(&rus())).await.unwrap()
+}
+
+fn stored_current(
+    store: &LibraryStore,
+    id: Uuid,
+    target: &'static str,
+    paragraph: usize,
+) -> Option<StoredVersion> {
+    store
+        .run_blocking(|db| db.paragraph_translation(id, target, paragraph))
+        .unwrap()
+}
+
+fn stored_version_count(store: &LibraryStore, id: Uuid) -> usize {
+    store
+        .run_blocking(|db| db.version_count(id, "rus"))
+        .unwrap()
+}
+
 /// Two libraries standing for two devices that sync one folder.
 struct Devices {
     _dir: TempDir,
@@ -149,29 +183,30 @@ async fn everything_about_a_book_survives_a_reopen() {
     assert_eq!(snapshot.book.title, "Round trip");
     assert_eq!(snapshot.book.language, "eng");
     assert_eq!(snapshot.book.chapter_count(), 2);
-    assert_eq!(snapshot.book.chapter_view(0).title.as_deref(), Some("One"));
-    assert_eq!(snapshot.book.chapter_view(1).title, None);
+    let outline = book.read(|b| b.outline()).await.unwrap();
+    assert_eq!(outline.chapters.len(), 2);
+    assert_eq!(outline.chapters[0].title.as_deref(), Some("One"));
+    assert_eq!(outline.chapters[1].title, None);
+    assert_eq!(outline.chapters[0].paragraphs, [0, 1]);
+    assert_eq!(outline.chapters[1].paragraphs, [2]);
     for paragraph in 0..3 {
-        let (stored, original) = (
-            snapshot.book.paragraph_view(paragraph),
-            source.paragraph_view(paragraph),
-        );
-        assert_eq!(stored.original_text, original.original_text);
-        assert_eq!(stored.original_html, original.original_html);
+        let stored = book.read(move |b| b.paragraph(paragraph)).await.unwrap();
+        let original = source.paragraph_view(paragraph);
+        assert_eq!(stored.text, original.original_text);
+        assert_eq!(stored.html.as_deref(), original.original_html.as_deref());
     }
 
-    let translation = snapshot.translation(&rus()).unwrap();
-    assert_eq!(translation.id, listed_translation.id);
-    assert_eq!(translation.version_count(), 3);
-    let latest = translation.paragraph_view(0).unwrap();
-    assert_eq!(latest.to_import(), version(20, "новое"));
-    assert_eq!(latest.model, "model-a");
-    let previous = latest.get_previous_version().unwrap();
-    assert_eq!(previous.to_import(), version(10, "старое"));
-    assert!(previous.get_previous_version().is_none());
-    assert!(translation.paragraph_view(1).is_none());
+    assert_eq!(listed_translation.id, translation_uuid(id, "eng", "rus"));
+    assert_eq!(version_count(&book).await, 3);
+    let versions = history(&book, 0).await;
+    assert_eq!(versions.len(), 2);
+    assert_eq!(versions[1].translation, version(20, "новое"));
+    assert_eq!(versions[1].model, "model-a");
+    assert_eq!(current(&book, rus(), 0).await.as_ref(), Some(&versions[1]));
+    assert_eq!(versions[0].translation, version(10, "старое"));
+    assert_eq!(current(&book, rus(), 1).await, None);
     assert_eq!(
-        translation.paragraph_view(2).unwrap().to_import(),
+        current(&book, rus(), 2).await.unwrap().translation,
         version(30, "гамма")
     );
 
@@ -300,8 +335,14 @@ async fn a_failed_commit_leaves_the_changes_staged_for_the_next_publish() {
     let id = source.id;
     let mut book = stored_book(&store, source).await;
 
-    book.get_or_create_translation(&rus())
-        .add_paragraph_translation(0, &version(10, "первый"), "model-a");
+    book.add_translation(0, &rus(), version(10, "первый"), "model-a".into())
+        .await
+        .unwrap();
+    assert_eq!(
+        stored_current(&store, id, "rus", 0).unwrap().translation,
+        version(10, "первый"),
+        "readable before any commit"
+    );
     book.set_summary(1, summary(7, "second chapter"));
     fail_commits(&store, 1);
     assert!(book.persist().await.is_err());
@@ -312,20 +353,20 @@ async fn a_failed_commit_leaves_the_changes_staged_for_the_next_publish() {
     );
     {
         let (_dir, peer) = peer_view(&store);
-        let committed = LibraryBook::load(peer, id).await.unwrap();
-        assert!(
-            committed.get_translation(&rus()).is_none(),
+        assert_eq!(
+            stored_version_count(&peer, id),
+            0,
             "the failed commit published nothing"
         );
+        let committed = LibraryBook::load(peer, id).await.unwrap();
         assert!(!committed.summaries.entries[1].generated);
     }
 
     // Staged rows read back, so a reload keeps what the book holds.
     book.reload().await.unwrap();
-    let held = book.get_translation(&rus()).unwrap();
-    assert!(!held.is_changed());
+    assert!(!book.has_unsaved_changes());
     assert_eq!(
-        held.paragraph_view(0).unwrap().to_import(),
+        stored_current(&store, id, "rus", 0).unwrap().translation,
         version(10, "первый")
     );
     assert_eq!(
@@ -335,13 +376,12 @@ async fn a_failed_commit_leaves_the_changes_staged_for_the_next_publish() {
 
     store.run(|db| db.publish()).await.unwrap();
     let (_dir, peer) = peer_view(&store);
-    let stored = LibraryBook::load(peer, id).await.unwrap();
-    let translation = stored.get_translation(&rus()).unwrap();
-    assert_eq!(translation.translation.version_count(), 1);
+    assert_eq!(stored_version_count(&peer, id), 1);
     assert_eq!(
-        translation.paragraph_view(0).unwrap().to_import(),
+        stored_current(&peer, id, "rus", 0).unwrap().translation,
         version(10, "первый")
     );
+    let stored = LibraryBook::load(peer, id).await.unwrap();
     assert_eq!(stored.summaries.entries[1], summary(7, "second chapter"));
 }
 
@@ -362,7 +402,7 @@ async fn a_new_book_whose_commit_fails_is_stored_whole_by_the_next_one() {
     assert_eq!(
         peer.run_blocking(|db| db.load_book(id))
             .unwrap()
-            .book
+            .info
             .paragraphs_count(),
         3
     );
@@ -419,25 +459,32 @@ async fn the_newest_version_always_carries_the_newest_stamp() {
     let source = sample_book("Stamps");
     let id = source.id;
     let mut book = stored_book(&store, source).await;
-    let translation = book.get_or_create_translation(&rus());
-    translation.add_paragraph_translation(0, &version(10, "first"), "model-a");
-    translation.add_paragraph_translation(0, &version(5, "older clock"), "model-a");
-    translation.add_paragraph_translation(0, &version(11, "same stamp"), "model-a");
-    translation.add_paragraph_translation(0, &version(50, "later"), "model-b");
-    // Another paragraph has its own history.
-    translation.add_paragraph_translation(1, &version(3, "beta"), "model-a");
+    for (paragraph, stamp, text, model) in [
+        (0, 10, "first", "model-a"),
+        (0, 5, "older clock", "model-a"),
+        (0, 11, "same stamp", "model-a"),
+        (0, 50, "later", "model-b"),
+        // Another paragraph has its own history.
+        (1, 3, "beta", "model-a"),
+    ] {
+        book.add_translation(paragraph, &rus(), version(stamp, text), model.into())
+            .await
+            .unwrap();
+    }
     book.reload().await.unwrap();
 
-    for book in [book, LibraryBook::load(store, id).await.unwrap()] {
-        let translation = &book.get_translation(&rus()).unwrap().translation;
-        let history: Vec<(u64, String, String)> = translation
-            .versions(0)
-            .iter()
+    // Here, and as another device reads the shards.
+    let (_dir, peer) = peer_view(&store);
+    for store in [store, peer] {
+        let history: Vec<(u64, String, String)> = store
+            .run_blocking(|db| db.versions(id, "rus", 0))
+            .unwrap()
+            .into_iter()
             .map(|v| {
                 (
-                    v.timestamp,
-                    v.sentence_view(0).full_translation.to_string(),
-                    v.model.clone(),
+                    v.translation.timestamp,
+                    v.translation.sentences[0].full_translation.clone(),
+                    v.model,
                 )
             })
             .collect();
@@ -450,7 +497,20 @@ async fn the_newest_version_always_carries_the_newest_stamp() {
                 (50, "later".to_string(), "model-b".to_string()),
             ]
         );
-        assert_eq!(translation.paragraph_view(1).unwrap().timestamp, 3);
+        assert_eq!(
+            stored_current(&store, id, "rus", 0)
+                .unwrap()
+                .translation
+                .timestamp,
+            50
+        );
+        assert_eq!(
+            stored_current(&store, id, "rus", 1)
+                .unwrap()
+                .translation
+                .timestamp,
+            3
+        );
     }
 }
 
@@ -461,16 +521,15 @@ async fn an_untranslated_translation_is_not_stored() {
     let source = sample_book("Empty translation");
     let id = source.id;
     let mut book = stored_book(&store, source).await;
-    book.get_or_create_translation(&rus());
     book.reload().await.unwrap();
-    assert!(book.get_translation(&rus()).is_none());
-    assert!(
-        LibraryBook::load(store, id)
-            .await
-            .unwrap()
-            .get_translation(&rus())
-            .is_none()
-    );
+    assert!(!book.has_unsaved_changes());
+    let (_dir, peer) = peer_view(&store);
+    for store in [store, peer] {
+        let listed = store.run_blocking(|db| db.list_books()).unwrap();
+        assert!(listed[0].translations.is_empty());
+        assert_eq!(stored_version_count(&store, id), 0);
+        assert_eq!(stored_current(&store, id, "rus", 0), None);
+    }
 }
 
 #[tokio::test]
@@ -481,29 +540,35 @@ async fn translations_to_several_languages_coexist() {
     let id = source.id;
     let deu = Language::from_639_3("deu").unwrap();
     let mut book = stored_book(&store, source).await;
-    book.get_or_create_translation(&rus())
-        .add_paragraph_translation(0, &version(1, "альфа"), "model-a");
-    book.get_or_create_translation(&deu)
-        .add_paragraph_translation(0, &version(1, "Alpha"), "model-a");
+    book.add_translation(0, &rus(), version(1, "альфа"), "model-a".into())
+        .await
+        .unwrap();
+    book.add_translation(0, &deu, version(1, "Alpha"), "model-a".into())
+        .await
+        .unwrap();
     book.reload().await.unwrap();
 
-    let stored = LibraryBook::load(store, id).await.unwrap();
-    let text = |language: &Language| {
-        stored
-            .get_translation(language)
+    let (_dir, peer) = peer_view(&store);
+    let text = |language: &'static str| {
+        stored_current(&peer, id, language, 0)
             .unwrap()
-            .paragraph_view(0)
-            .unwrap()
-            .sentence_view(0)
+            .translation
+            .sentences[0]
             .full_translation
-            .to_string()
+            .clone()
     };
-    assert_eq!(text(&rus()), "альфа");
-    assert_eq!(text(&deu), "Alpha");
-    assert_ne!(
-        stored.get_translation(&rus()).unwrap().translation.id,
-        stored.get_translation(&deu).unwrap().translation.id
-    );
+    assert_eq!(text("rus"), "альфа");
+    assert_eq!(text("deu"), "Alpha");
+    let listed = peer.run_blocking(|db| db.list_books()).unwrap();
+    let mut ids: Vec<Uuid> = listed[0].translations.iter().map(|t| t.id).collect();
+    ids.sort();
+    let mut expected = [
+        translation_uuid(id, "eng", "rus"),
+        translation_uuid(id, "eng", "deu"),
+    ];
+    expected.sort();
+    assert_ne!(expected[0], expected[1]);
+    assert_eq!(ids, expected);
 }
 
 #[tokio::test]
@@ -528,13 +593,7 @@ async fn a_device_opening_on_synced_shards_sees_the_other_devices_books() {
     assert_eq!(listed[0].title, "Arrived");
     let loaded = b.get_book(&id).await.unwrap();
     assert_eq!(
-        loaded
-            .snapshot()
-            .translation(&rus())
-            .unwrap()
-            .paragraph_view(0)
-            .unwrap()
-            .to_import(),
+        current(&loaded, rus(), 0).await.unwrap().translation,
         version(10, "альфа")
     );
     a.close().await.unwrap();
@@ -564,7 +623,7 @@ async fn a_loaded_book_picks_up_another_devices_translation() {
 
     let on_b = devices.b.get_book(&id).await.unwrap();
     let bystander = devices.b.get_book(&other).await.unwrap();
-    assert!(on_b.snapshot().translation(&rus()).is_none());
+    assert_eq!(version_count(&on_b).await, 0);
     let mut watching = on_b.subscribe();
     watching.snapshot();
 
@@ -592,18 +651,13 @@ async fn a_loaded_book_picks_up_another_devices_translation() {
         .unwrap();
     let snapshot = on_b.snapshot();
     assert_eq!(
-        snapshot
-            .translation(&rus())
-            .unwrap()
-            .paragraph_view(0)
-            .unwrap()
-            .to_import(),
+        current(&on_b, rus(), 0).await.unwrap().translation,
         version(10, "с другого устройства")
     );
     assert_eq!(snapshot.summaries.entries[1], summary(9, "remote summary"));
     assert_eq!(on_b.reading_state().await.unwrap(), Some(reading(2)));
     assert_eq!(snapshot.status, BookStatus::Active);
-    assert!(bystander.snapshot().translation(&rus()).is_none());
+    assert_eq!(version_count(&bystander).await, 0);
     assert_eq!(
         devices.b.list_books().await.unwrap().len(),
         2,
@@ -645,20 +699,23 @@ async fn both_devices_translations_of_one_paragraph_are_kept() {
     assert_eq!(changes.paragraphs, [(id, 0), (id, 2)]);
 
     for book in [&on_a, &on_b] {
-        let snapshot = book.snapshot();
-        let translation = snapshot.translation(&rus()).unwrap();
-        assert_eq!(translation.version_count(), 4);
-        let history: Vec<(u64, String)> = translation
-            .versions(0)
-            .iter()
-            .map(|v| (v.timestamp, v.sentence_view(0).full_translation.to_string()))
+        assert_eq!(version_count(book).await, 4);
+        let history: Vec<(u64, String)> = history(book, 0)
+            .await
+            .into_iter()
+            .map(|v| {
+                (
+                    v.translation.timestamp,
+                    v.translation.sentences[0].full_translation.clone(),
+                )
+            })
             .collect();
         assert_eq!(
             history,
             [(10, "from a".to_string()), (20, "from b".to_string())]
         );
-        assert!(translation.paragraph_view(1).is_some());
-        assert!(translation.paragraph_view(2).is_some());
+        assert!(current(book, rus(), 1).await.is_some());
+        assert!(current(book, rus(), 2).await.is_some());
     }
     devices.a.close().await.unwrap();
     devices.b.close().await.unwrap();
@@ -712,11 +769,21 @@ async fn a_book_that_missed_a_reload_catches_up_on_the_next_refresh() {
     // Adopted, but the reload that should follow never happened.
     let adopted = devices.b.store().run(|db| db.refresh()).await.unwrap();
     assert!(adopted.books.contains_key(&id));
-    assert!(on_b.snapshot().translation(&rus()).is_none());
+    let behind = on_b.snapshot();
+    assert!(
+        behind.store_generation
+            < devices
+                .b
+                .store()
+                .read(move |db| Ok(db.book_generation(id)))
+                .await
+                .unwrap()
+    );
 
     let changes = devices.b.refresh_from_peers().await.unwrap();
     assert_eq!(changes.books, [id], "which paragraphs is no longer known");
-    assert!(on_b.snapshot().translation(&rus()).is_some());
+    assert!(on_b.snapshot().store_generation > behind.store_generation);
+    assert!(current(&on_b, rus(), 0).await.is_some());
     assert!(devices.b.refresh_from_peers().await.unwrap().is_empty());
     devices.a.close().await.unwrap();
     devices.b.close().await.unwrap();
@@ -894,8 +961,8 @@ async fn open_books_go_on_after_the_library_takes_a_new_identity() {
     drop((book, library));
 
     let library = Library::open(root).await.unwrap();
-    let stored = library.get_book(&id).await.unwrap().snapshot();
-    assert_eq!(stored.translation(&rus()).unwrap().version_count(), 2);
+    let stored = library.get_book(&id).await.unwrap();
+    assert_eq!(version_count(&stored).await, 2);
     assert!(!library.store_health().await.unwrap().shared_identity);
     library.close().await.unwrap();
 }

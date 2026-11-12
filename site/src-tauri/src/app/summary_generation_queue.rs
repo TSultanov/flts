@@ -136,13 +136,12 @@ async fn process_book(
         );
         let language = isolang::Language::from_639_3(&snapshot.book.language)
             .ok_or_else(|| anyhow::anyhow!("invalid source language"))?;
-        let chapter = snapshot.book.chapter_view(index);
-        let title = chapter.title.as_deref().map(str::to_owned);
-        let text = chapter
-            .paragraphs()
-            .map(|p| p.original_text.to_string())
-            .collect::<Vec<_>>()
-            .join("\n\n");
+        let (title, text) = handle
+            .read(move |book| {
+                let title = book.outline()?.chapters[index].title.clone();
+                Ok((title, book.chapter_text(index)?.join("\n\n")))
+            })
+            .await?;
         let prior = concat_prior_summaries(&snapshot.summaries, index);
         emit_progress(
             app,

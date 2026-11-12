@@ -37,11 +37,9 @@ async fn accepted_translation_survives_close_without_a_separate_saver() {
             .get_book(&id)
             .await
             .unwrap()
-            .snapshot()
-            .translation(&target)
+            .read(move |book| book.is_translated(&target, 0))
+            .await
             .unwrap()
-            .paragraph_view(0)
-            .is_some()
     );
     assert!(handle.flush().await.is_err());
     reopened.close().await.unwrap();

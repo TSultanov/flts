@@ -111,6 +111,8 @@ struct ChapterJob {
     book: BookHandle,
     snapshot: Arc<BookSnapshot>,
     chapter: usize,
+    /// The chapter's paragraphs, and how many of them were looked at.
+    paragraphs: Vec<usize>,
     offset: usize,
     model: String,
     use_cache: bool,
@@ -354,21 +356,25 @@ async fn scheduler(
     loop {
         while pending.len() < MAX_PENDING && !chapters.is_empty() {
             let chapter = chapters.front_mut().unwrap();
-            let view = chapter.snapshot.book.chapter_view(chapter.chapter);
-            if chapter.offset >= view.paragraph_count() {
+            let Some(&paragraph) = chapter.paragraphs.get(chapter.offset) else {
                 chapters.pop_front();
                 continue;
-            }
-            let paragraph = view.paragraph_view(chapter.offset).id;
+            };
             chapter.offset += 1;
             // Paragraphs translated since the request must not be paid for again.
-            let current = chapter.book.snapshot();
-            if activities.contains_key(&(chapter.snapshot.book.id, paragraph))
-                || current
-                    .translation(&context.target)
-                    .is_some_and(|t| t.is_paragraph_translated(paragraph))
-            {
-                continue;
+            let target = context.target;
+            let translated = chapter
+                .book
+                .read(move |book| book.is_translated(&target, paragraph))
+                .await;
+            match translated {
+                Ok(false) if !activities.contains_key(&(chapter.snapshot.book.id, paragraph)) => {}
+                Ok(_) => continue,
+                Err(err) => {
+                    log::warn!("chapter translation dropped: {err:#}");
+                    chapters.pop_front();
+                    continue;
+                }
             }
             changed = true;
             pending.push_back(admit(
@@ -454,9 +460,14 @@ async fn scheduler(
                             anyhow::ensure!(chapters.len() < 256, "translation queue busy");
                             let book = context.library.get_book(&book_id).await?; let snapshot = book.snapshot();
                             anyhow::ensure!(chapter < snapshot.book.chapter_count(), "chapter out of range");
-                            let translation = snapshot.translation(&context.target);
-                            let count = snapshot.book.chapter_view(chapter).paragraphs().filter(|p| translation.is_none_or(|t| !t.is_paragraph_translated(p.id))).count();
-                            if !chapters.iter().any(|c| c.snapshot.book.id == book_id && c.chapter == chapter) { chapters.push_back(ChapterJob {book, snapshot, chapter, offset: 0, model, use_cache}); }
+                            let target = context.target;
+                            let (paragraphs, count) = book.read(move |book| {
+                                let outline = book.outline()?;
+                                let paragraphs = outline.chapters.get(chapter).map(|c| c.paragraphs.clone()).unwrap_or_default();
+                                let count = book.translated(&target, &paragraphs)?.into_iter().filter(|t| !t).count();
+                                Ok((paragraphs, count))
+                            }).await?;
+                            if !chapters.iter().any(|c| c.snapshot.book.id == book_id && c.chapter == chapter) { chapters.push_back(ChapterJob {book, snapshot, chapter, paragraphs, offset: 0, model, use_cache}); }
                             Ok(count)
                         }.await;
                         let _ = reply.send(result);
@@ -508,12 +519,16 @@ async fn execute(
 ) -> anyhow::Result<()> {
     let source = Language::from_639_3(&job.snapshot.book.language)
         .ok_or_else(|| anyhow::anyhow!("invalid source language"))?;
-    let text = job
-        .snapshot
+    let paragraph = job.paragraph;
+    let (text, chapter) = job
         .book
-        .paragraph_view(job.paragraph)
-        .original_text
-        .to_string();
+        .read(move |book| {
+            Ok((
+                book.paragraph(paragraph)?.text,
+                book.outline()?.chapter_for_paragraph(paragraph),
+            ))
+        })
+        .await?;
     let api_key = context
         .keys
         .for_provider(context.provider)
@@ -538,11 +553,7 @@ async fn execute(
         .get_translation(TranslationContext {
             paragraph_text: &text,
             book_id: job.snapshot.book.id,
-            chapter_id: job
-                .snapshot
-                .book
-                .chapter_for_paragraph(job.paragraph)
-                .unwrap_or(0),
+            chapter_id: chapter.unwrap_or(0),
             use_cache: job.use_cache,
             callback: Some(Box::new(move |chars| {
                 progress.send_modify(|p| p.chars = chars);

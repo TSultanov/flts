@@ -1,9 +1,10 @@
 use super::{BookReadingState, BookUserState, LibraryBook};
-use crate::book::{
-    book::Book,
-    chapter_summaries::{ChapterSummaries, ChapterSummary},
-    translation::Translation,
-    translation_import::ParagraphTranslation,
+use crate::{
+    book::{
+        chapter_summaries::{ChapterSummaries, ChapterSummary},
+        translation_import::ParagraphTranslation,
+    },
+    store::{BookInfo, BookReader, LibraryStore},
 };
 use isolang::Language;
 use std::{sync::Arc, time::Duration};
@@ -18,23 +19,16 @@ pub enum BookStatus {
     Closed,
 }
 
+/// The parts of an open book held in memory. Its text and translations are
+/// read from the store: see `BookRef::read`.
 pub struct BookSnapshot {
-    pub book: Arc<Book>,
-    pub(super) translations: Vec<Arc<Translation>>,
+    pub book: Arc<BookInfo>,
     pub summaries: Arc<ChapterSummaries>,
     pub user_state: BookUserState,
     /// The store generation the annotations were read at.
     pub store_generation: u64,
     pub status: BookStatus,
 }
-impl BookSnapshot {
-    pub fn translation(&self, language: &Language) -> Option<&Translation> {
-        self.translations.iter().map(Arc::as_ref).find(|t| {
-            t.source_language == self.book.language && t.target_language == language.to_639_3()
-        })
-    }
-}
-
 type ResultReply<T> = oneshot::Sender<anyhow::Result<T>>;
 pub(crate) enum BookCommand {
     ApplyTranslation {
@@ -86,6 +80,8 @@ impl BookSubscription {
 }
 
 pub struct BookRef {
+    id: Uuid,
+    store: LibraryStore,
     pub(super) commands: mpsc::Sender<BookCommand>,
     snapshot: watch::Receiver<Arc<BookSnapshot>>,
     /// Admission gate; a watch so waiters observe every status change.
@@ -114,6 +110,16 @@ impl BookRef {
     pub fn is_alive(&self) -> bool {
         !self.commands.is_closed()
     }
+    /// Reads the book's text and translations straight from the store,
+    /// without waiting for the owner. What `apply_translation` has answered
+    /// for is there to read.
+    pub async fn read<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(BookReader<'_>) -> anyhow::Result<T> + Send + 'static,
+    ) -> anyhow::Result<T> {
+        let id = self.id;
+        self.store.read(move |db| f(db.book(id)?)).await
+    }
     async fn request<T>(
         &self,
         build: impl FnOnce(ResultReply<T>) -> BookCommand,
@@ -136,7 +142,7 @@ impl BookRef {
             .await
             .map_err(|_| anyhow::anyhow!("book deleted or session closed"))?
     }
-    /// In memory at once; `flush` says whether it reached the disk.
+    /// Readable at once; `flush` says whether it reached the disk.
     pub async fn apply_translation(
         &self,
         paragraph: usize,
@@ -233,6 +239,8 @@ pub(crate) fn owner(
     let (publish, snapshot) = watch::channel(book.snapshot());
     let (stop, stopped) = watch::channel(StopMode::Running);
     let reference = Arc::new(BookRef {
+        id: book.book.id,
+        store: book.store.clone(),
         commands,
         snapshot,
         admission: Arc::new(watch::channel(BookStatus::Active).0),
@@ -341,15 +349,9 @@ async fn run(
             model,
             reply,
         } => {
-            let result = (|| {
-                anyhow::ensure!(
-                    paragraph < book.book.paragraphs_count(),
-                    "paragraph {paragraph} is out of range"
-                );
-                book.get_or_create_translation(&target)
-                    .add_paragraph_translation(paragraph, &translation, &model);
-                Ok(())
-            })();
+            let result = book
+                .add_translation(paragraph, &target, translation, model)
+                .await;
             publish(book, tx, BookStatus::Active);
             let _ = reply.send(result);
         }
@@ -403,7 +405,7 @@ async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::Library;
+    use crate::{book::book::Book, library::Library};
 
     fn eng() -> Language {
         Language::from_639_3("eng").unwrap()
@@ -498,10 +500,12 @@ mod tests {
         LibraryBook::load(peer, id).await.unwrap()
     }
     async fn committed_versions(store: &crate::store::LibraryStore, id: Uuid) -> usize {
-        committed(store, id)
-            .await
-            .get_translation(&rus())
-            .map_or(0, |t| t.translation.version_count())
+        let (_dir, peer) = crate::test_utils::peer_view(store);
+        peer.run_blocking(|db| db.version_count(id, "rus")).unwrap()
+    }
+    /// Versions a reader of the book finds, committed or not.
+    async fn versions(book: &BookHandle) -> usize {
+        book.read(|book| book.version_count(&rus())).await.unwrap()
     }
     /// Waits for the sweep to retire a book nobody holds.
     async fn retired(library: &Library, id: Uuid) {
@@ -806,7 +810,7 @@ mod tests {
             Library::open(root.clone()).await.is_err(),
             "the lease stays with the session that still holds unsaved work"
         );
-        assert!(first.snapshot().translation(&rus()).is_some());
+        assert_eq!(versions(&first).await, 1);
         assert_eq!(committed_versions(library.store(), id).await, 0);
         assert!(library.close().await.is_err());
 
@@ -816,10 +820,7 @@ mod tests {
         drop(library);
         let library = Library::open(root).await.unwrap();
         let book = library.get_book(&id).await.unwrap();
-        assert_eq!(
-            book.snapshot().translation(&rus()).unwrap().version_count(),
-            1
-        );
+        assert_eq!(versions(&book).await, 1);
         library.close().await.unwrap();
     }
     #[tokio::test]
@@ -833,15 +834,7 @@ mod tests {
 
         let again = library.get_book(&id).await.unwrap();
         assert!(again.incarnation > first.incarnation);
-        assert_eq!(
-            again
-                .snapshot()
-                .translation(&rus())
-                .unwrap()
-                .version_count(),
-            1,
-            "staged rows read back"
-        );
+        assert_eq!(versions(&again).await, 1, "staged rows read back");
         fail_commits(library.store(), 0);
         again.flush().await.unwrap();
         assert_eq!(committed_versions(library.store(), id).await, 1);
@@ -888,10 +881,7 @@ mod tests {
             done.await.unwrap().unwrap();
         }
         assert_eq!(commits(&book).await, before + 1, "one commit for the batch");
-        assert_eq!(
-            book.snapshot().translation(&rus()).unwrap().version_count(),
-            2
-        );
+        assert_eq!(versions(&book).await, 2);
         assert_eq!(committed_versions(library.store(), id).await, 2);
         library.close().await.unwrap();
     }
@@ -913,7 +903,7 @@ mod tests {
         let error = flushed.await.unwrap().unwrap_err();
         assert!(error.to_string().contains("injected"), "{error:#}");
         assert!(book.flush().await.is_err());
-        assert!(book.snapshot().translation(&rus()).is_some());
+        assert_eq!(versions(&book).await, 1);
         assert_eq!(committed_versions(library.store(), id).await, 0);
 
         fail_commits(library.store(), 0);
@@ -936,15 +926,8 @@ mod tests {
 
         fail_commits(library.store(), 0);
         library.flush().await.unwrap();
+        assert_eq!(committed_versions(library.store(), id).await, 1);
         let stored = committed(library.store(), id).await;
-        assert_eq!(
-            stored
-                .get_translation(&rus())
-                .unwrap()
-                .translation
-                .version_count(),
-            1
-        );
         assert_eq!(stored.summaries.entries[0], summary("kept"));
         library.close().await.unwrap();
     }
@@ -1039,7 +1022,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("out of range"), "{error:#}");
-        assert!(book.snapshot().translation(&rus()).is_none());
+        assert_eq!(versions(&book).await, 0);
         library.close().await.unwrap();
     }
     #[tokio::test(start_paused = true)]
@@ -1067,7 +1050,7 @@ mod tests {
             reloaded.incarnation > owner,
             "the failed commit pinned nothing"
         );
-        assert!(reloaded.snapshot().translation(&rus()).is_some());
+        assert_eq!(versions(&reloaded).await, 1);
         assert_eq!(committed_versions(library.store(), id).await, 0);
 
         // Any later commit carries what was left staged.
@@ -1077,14 +1060,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(committed_versions(library.store(), id).await, 1);
-        assert_eq!(
-            reloaded
-                .snapshot()
-                .translation(&rus())
-                .unwrap()
-                .version_count(),
-            1
-        );
+        assert_eq!(versions(&reloaded).await, 1);
         library.close().await.unwrap();
     }
 }

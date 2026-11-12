@@ -48,17 +48,6 @@ impl Display for LibraryError {
 
 impl Error for LibraryError {}
 
-/// The chapter that owns `paragraph_id`, if any. Shared by the card paths so a
-/// card's provenance matches the chapter the reader clicked in.
-fn chapter_index_for_paragraph(
-    book: &crate::book::book::Book,
-    paragraph_id: usize,
-) -> Option<usize> {
-    book.chapter_views()
-        .find(|ch| (0..ch.paragraph_count()).any(|i| ch.paragraph_view(i).id == paragraph_id))
-        .map(|ch| ch.idx)
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CardCreationOutcome {
     Created,
@@ -312,56 +301,50 @@ impl Library {
         word_id: usize,
         target_language: Language,
     ) -> anyhow::Result<CardCreationOutcome> {
-        let book = self.get_book(&book_id).await?.snapshot();
-
-        let source_language = Language::from_639_3(&book.book.language).ok_or_else(|| {
-            anyhow::anyhow!(
-                "unknown source language code on book {book_id}: {}",
-                book.book.language
-            )
+        let book = self.get_book(&book_id).await?;
+        let language = book.snapshot().book.language.clone();
+        let source_language = Language::from_639_3(&language).ok_or_else(|| {
+            anyhow::anyhow!("unknown source language code on book {book_id}: {language}")
         })?;
-        let chapter_index =
-            chapter_index_for_paragraph(&book.book, paragraph_id).ok_or_else(|| {
-                anyhow::anyhow!("paragraph {paragraph_id} is not attached to any chapter")
-            })?;
-
-        let translation = book.translation(&target_language).ok_or_else(|| {
-            anyhow::anyhow!("book {book_id} has no translation to {target_language}")
+        let (chapter_index, translation) = book
+            .read(move |book| {
+                Ok((
+                    book.outline()?.chapter_for_paragraph(paragraph_id),
+                    book.translation(&target_language, paragraph_id)?,
+                ))
+            })
+            .await?;
+        let chapter_index = chapter_index.ok_or_else(|| {
+            anyhow::anyhow!("paragraph {paragraph_id} is not attached to any chapter")
         })?;
-
-        let update = {
-            let paragraph = translation
-                .paragraph_view(paragraph_id)
-                .ok_or_else(|| anyhow::anyhow!("paragraph {paragraph_id} is not translated"))?;
-            // The frontend can race a re-translation that shrinks the view;
-            // indexing raw would abort the process (panic = abort).
-            if sentence_id >= paragraph.sentence_count() {
-                anyhow::bail!("sentence {sentence_id} is out of range");
-            }
-            let sentence = paragraph.sentence_view(sentence_id);
-            if word_id >= sentence.word_count() {
-                anyhow::bail!("word {word_id} is out of range");
-            }
-            let word = sentence.word_view(word_id);
-            card_update_from_word(
-                CardWordFields {
-                    is_punctuation: word.is_punctuation,
-                    original_initial_form: word.grammar.original_initial_form.as_ref(),
-                    target_initial_form: word.grammar.target_initial_form.as_ref(),
-                    part_of_speech: word.grammar.part_of_speech.as_ref(),
-                },
-                &sentence.source_text(),
-                sentence.full_translation.as_ref(),
-                source_language,
-                target_language,
-                book_id,
-                chapter_index,
-                paragraph_id,
-            )
-            .map_err(|reason| anyhow::anyhow!("cannot add word to Anki: {reason}"))?
-        };
-
-        drop(book);
+        let paragraph = translation
+            .ok_or_else(|| anyhow::anyhow!("paragraph {paragraph_id} is not translated"))?
+            .translation;
+        // The frontend can race a re-translation that shrinks the paragraph.
+        let sentence = paragraph
+            .sentences
+            .get(sentence_id)
+            .ok_or_else(|| anyhow::anyhow!("sentence {sentence_id} is out of range"))?;
+        let word = sentence
+            .words
+            .get(word_id)
+            .ok_or_else(|| anyhow::anyhow!("word {word_id} is out of range"))?;
+        let update = card_update_from_word(
+            CardWordFields {
+                is_punctuation: word.is_punctuation,
+                original_initial_form: &word.grammar.original_initial_form,
+                target_initial_form: &word.grammar.target_initial_form,
+                part_of_speech: &word.grammar.part_of_speech,
+            },
+            &crate::card::render_example_source(sentence.words.iter().map(|w| w.original.as_str())),
+            &sentence.full_translation,
+            source_language,
+            target_language,
+            book_id,
+            chapter_index,
+            paragraph_id,
+        )
+        .map_err(|reason| anyhow::anyhow!("cannot add word to Anki: {reason}"))?;
 
         let created = self
             .card_store
@@ -1152,7 +1135,7 @@ mod library_tests {
             .await
             .unwrap_err();
         assert!(
-            err.to_string().contains("no translation"),
+            err.to_string().contains("is not translated"),
             "unexpected error: {err}"
         );
     }
@@ -1333,10 +1316,12 @@ mod library_tests {
     ) {
         let book = library.get_book(&book_id).await.unwrap();
         let paragraph = paragraph.clone();
-        book.modify(move |book| {
-            book.get_or_create_translation(&target_language)
-                .add_paragraph_translation(paragraph_id, &paragraph, "models/gemini-2.5-flash");
-        })
+        book.apply_translation(
+            paragraph_id,
+            target_language,
+            paragraph,
+            "models/gemini-2.5-flash".into(),
+        )
         .await
         .unwrap();
         book.flush().await.unwrap();

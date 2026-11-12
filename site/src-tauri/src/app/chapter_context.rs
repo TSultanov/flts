@@ -83,19 +83,14 @@ impl ChapterContextProvider for SummaryBackedChapterContext {
     }
 
     async fn chapter_text(&self, book_id: Uuid, chapter_index: usize) -> anyhow::Result<String> {
-        let book = self.current_library()?.get_book(&book_id).await?.snapshot();
-        if chapter_index >= book.book.chapter_count() {
+        let book = self.current_library()?.get_book(&book_id).await?;
+        if chapter_index >= book.snapshot().book.chapter_count() {
             anyhow::bail!("chapter index {chapter_index} out of range for book {book_id}");
         }
-        let chapter = book.book.chapter_view(chapter_index);
-        let mut text = String::new();
-        for (i, para) in chapter.paragraphs().enumerate() {
-            if i > 0 {
-                text.push_str("\n\n");
-            }
-            text.push_str(&para.original_text);
-        }
-        Ok(text)
+        let paragraphs = book
+            .read(move |book| book.chapter_text(chapter_index))
+            .await?;
+        Ok(paragraphs.join("\n\n"))
     }
 }
 

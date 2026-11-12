@@ -112,18 +112,27 @@ async fn same_timestamp_translations_from_two_devices_both_survive() {
 
     let mut histories = Vec::new();
     for book in [&ours, &theirs] {
-        let snapshot = book.snapshot();
-        let translation = snapshot.translation(&target_language).unwrap();
-        let latest = translation.paragraph_view(0).unwrap();
-        let previous = latest
-            .get_previous_version()
-            .expect("both versions survive: one latest, one previous");
-        assert!(previous.get_previous_version().is_none());
+        let versions = book
+            .read(move |book| book.versions(&target_language, 0))
+            .await
+            .unwrap();
+        let [previous, latest] = versions.as_slice() else {
+            panic!("both versions survive: one latest, one previous");
+        };
+        let current = book
+            .read(move |book| book.translation(&target_language, 0))
+            .await
+            .unwrap();
+        // Same version; only the history gives colliding stamps distinct ones.
+        assert_eq!(
+            current.map(|c| c.translation.sentences),
+            Some(latest.translation.sentences.clone())
+        );
         // The collision is resolved by bumping one timestamp.
-        assert!(previous.timestamp < latest.timestamp);
+        assert!(previous.translation.timestamp < latest.translation.timestamp);
         let texts = [
-            previous.sentence_view(0).full_translation.to_string(),
-            latest.sentence_view(0).full_translation.to_string(),
+            previous.translation.sentences[0].full_translation.clone(),
+            latest.translation.sentences[0].full_translation.clone(),
         ];
         assert!(texts.contains(&"main version".to_string()));
         assert!(texts.contains(&"conflict version".to_string()));

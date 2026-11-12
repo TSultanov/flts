@@ -8,11 +8,10 @@ use crate::{
     book::{
         book::Book,
         chapter_summaries::{ChapterSummaries, ChapterSummary},
-        translation::{ParagraphTranslationView, Translation},
         translation_import,
     },
     library::Library,
-    store::{Annotations, BookDelta, LibraryStore, LoadedBook, NewVersion, translation_uuid},
+    store::{Annotations, BookDelta, BookInfo, LibraryStore, LoadedBook, NewVersion},
 };
 
 mod handle;
@@ -42,12 +41,15 @@ pub struct BookUserState {
     pub folder_path: Vec<String>,
 }
 
+/// What an open book holds: its row, and the small things the reader
+/// changes. Its text and translations stay in the store and are read there.
 pub struct LibraryBook {
     store: LibraryStore,
-    pub book: Arc<Book>,
+    pub book: Arc<BookInfo>,
     /// The store generation the annotations were last read at.
     adopted: u64,
-    translations: Vec<LibraryTranslation>,
+    /// Translations staged in the store and not committed yet.
+    staged: bool,
     user_state: BookUserState,
     pending_reading_state: Option<BookReadingState>,
     pending_folder_path: Option<Vec<String>>,
@@ -59,113 +61,34 @@ pub struct LibraryBook {
     status: BookStatus,
 }
 
-pub struct LibraryTranslation {
-    translation: Translation,
-    /// Versions the store does not hold yet.
-    pending: Vec<NewVersion>,
-    /// The translation as last handed to a snapshot; dropped by every
-    /// mutation so the next snapshot clones again.
-    published: Option<Arc<Translation>>,
-}
-
-impl LibraryTranslation {
-    fn stored(translation: Translation) -> Self {
-        Self {
-            translation,
-            pending: Vec::new(),
-            published: None,
-        }
-    }
-
-    pub fn is_changed(&self) -> bool {
-        !self.pending.is_empty()
-    }
-
-    pub fn add_paragraph_translation(
-        &mut self,
-        paragraph_index: usize,
-        translation: &translation_import::ParagraphTranslation,
-        model: &str,
-    ) {
-        let mut translation = translation.clone();
-        // Versions order by timestamp once stored, so the newest must also
-        // carry the newest stamp.
-        if let Some(latest) = self.translation.latest_timestamp(paragraph_index)
-            && translation.timestamp <= latest
-        {
-            translation.timestamp = latest + 1;
-        }
-        self.translation
-            .add_paragraph_translation(paragraph_index, &translation, model);
-        self.pending.push(NewVersion {
-            source_language: self.translation.source_language.clone(),
-            target_language: self.translation.target_language.clone(),
-            paragraph: paragraph_index,
-            translation,
-            model: model.to_owned(),
-        });
-        self.published = None;
-    }
-
-    pub fn translated_paragraphs_count(&self) -> usize {
-        self.translation.translated_paragraphs_count()
-    }
-
-    pub fn paragraph_view(&'_ self, paragraph: usize) -> Option<ParagraphTranslationView<'_>> {
-        self.translation.paragraph_view(paragraph)
-    }
-}
-
 impl LibraryBook {
-    fn new(store: LibraryStore, book: Book) -> Self {
-        let summaries = Arc::new(ChapterSummaries::empty_for(book.id, book.chapter_count()));
-        Self {
+    pub(crate) async fn load(store: LibraryStore, id: Uuid) -> anyhow::Result<Self> {
+        let LoadedBook { info, annotations } = store.read(move |db| db.load_book(id)).await?;
+        Ok(Self {
             store,
-            book: Arc::new(book),
-            adopted: 0,
-            translations: vec![],
-            user_state: BookUserState::default(),
+            book: Arc::new(info),
+            adopted: annotations.generation,
+            staged: false,
+            user_state: annotations.user_state,
             pending_reading_state: None,
             pending_folder_path: None,
             #[cfg(test)]
             save_count: 0,
-            summaries,
+            summaries: Arc::new(annotations.summaries),
             dirty_summaries: Vec::new(),
             status: BookStatus::Active,
-        }
-    }
-
-    pub(crate) async fn load(store: LibraryStore, id: Uuid) -> anyhow::Result<Self> {
-        let LoadedBook { book, annotations } = store.read(move |db| db.load_book(id)).await?;
-        let mut book = Self::new(store, book);
-        book.adopt(annotations);
-        Ok(book)
+        })
     }
 
     fn adopt(&mut self, annotations: Annotations) {
-        self.translations = annotations
-            .translations
-            .into_iter()
-            .map(LibraryTranslation::stored)
-            .collect();
         self.summaries = Arc::new(annotations.summaries);
         self.user_state = annotations.user_state;
         self.adopted = annotations.generation;
     }
 
     pub(crate) fn snapshot(&mut self) -> Arc<BookSnapshot> {
-        let translations = self
-            .translations
-            .iter_mut()
-            .map(|t| {
-                t.published
-                    .get_or_insert_with(|| Arc::new(t.translation.clone()))
-                    .clone()
-            })
-            .collect();
         Arc::new(BookSnapshot {
             book: self.book.clone(),
-            translations,
             summaries: self.summaries.clone(),
             user_state: self.user_state.clone(),
             store_generation: self.adopted,
@@ -173,15 +96,15 @@ impl LibraryBook {
         })
     }
 
-    /// Changes the store has not been handed yet.
+    /// Changes not committed yet.
     pub fn has_unsaved_changes(&self) -> bool {
-        !self.delta().is_empty()
+        self.staged || !self.delta().is_empty()
     }
 
     pub(crate) fn only_position_unsaved(&self) -> bool {
         let delta = self.delta();
-        delta.reading_state.is_some()
-            && delta.versions.is_empty()
+        !self.staged
+            && delta.reading_state.is_some()
             && delta.summaries.is_empty()
             && delta.folder_path.is_none()
     }
@@ -189,11 +112,7 @@ impl LibraryBook {
     fn delta(&self) -> BookDelta {
         BookDelta {
             book: None,
-            versions: self
-                .translations
-                .iter()
-                .flat_map(|t| t.pending.iter().map(NewVersion::clone))
-                .collect(),
+            versions: Vec::new(),
             summaries: self
                 .dirty_summaries
                 .iter()
@@ -204,11 +123,35 @@ impl LibraryBook {
         }
     }
 
+    /// Stages a translation at once, so that whoever reads the paragraph
+    /// next finds it; the commit follows with the batch.
+    pub(crate) async fn add_translation(
+        &mut self,
+        paragraph: usize,
+        target: &Language,
+        translation: translation_import::ParagraphTranslation,
+        model: String,
+    ) -> anyhow::Result<()> {
+        let id = self.book.id;
+        let version = NewVersion {
+            source_language: self.book.language.clone(),
+            target_language: target.to_639_3().to_owned(),
+            paragraph,
+            translation,
+            model,
+        };
+        self.store
+            .run(move |db| db.add_version(id, version))
+            .await?;
+        self.staged = true;
+        Ok(())
+    }
+
     /// Hands everything unsaved to the store and commits. Once staged it is
     /// the store's to land, so a failed commit is reported and not kept here.
     pub(crate) async fn persist(&mut self) -> anyhow::Result<()> {
         let delta = self.delta();
-        if delta.is_empty() {
+        if delta.is_empty() && !self.staged {
             return Ok(());
         }
         #[cfg(test)]
@@ -223,9 +166,7 @@ impl LibraryBook {
                 Ok(db.publish().map_err(|err| format!("{err:#}")))
             })
             .await?;
-        for translation in &mut self.translations {
-            translation.pending.clear();
-        }
+        self.staged = false;
         self.dirty_summaries.clear();
         self.pending_reading_state = None;
         self.pending_folder_path = None;
@@ -248,24 +189,15 @@ impl LibraryBook {
             return Err(err);
         }
         let (id, chapters) = (self.book.id, self.book.chapter_count());
-        let loaded = self
+        let (loaded, changed_at) = self
             .store
-            .read(move |db| db.load_annotations(id, chapters))
+            .read(move |db| Ok((db.load_annotations(id, chapters)?, db.book_generation(id))))
             .await?;
-        let changed = loaded.translations.len() != self.translations.len()
-            || loaded.translations.iter().any(|loaded| {
-                self.translations
-                    .iter()
-                    .find(|held| held.translation.id == loaded.id)
-                    .is_none_or(|held| held.translation.version_count() != loaded.version_count())
-            })
+        // Translations are not held here; the store says when they changed.
+        let changed = changed_at > self.adopted
             || loaded.summaries.entries != self.summaries.entries
             || loaded.user_state != self.user_state;
-        if changed {
-            self.adopt(loaded);
-        } else {
-            self.adopted = loaded.generation;
-        }
+        self.adopt(loaded);
         Ok(changed)
     }
 
@@ -301,45 +233,11 @@ impl LibraryBook {
         self.user_state.folder_path = folder_path;
         self.persist().await
     }
-
-    fn translation_index(&self, target_language: &Language) -> Option<usize> {
-        let source_language = &self.book.language;
-        let target_language = target_language.to_639_3();
-        self.translations.iter().position(|t| {
-            &t.translation.source_language == source_language
-                && t.translation.target_language == target_language
-        })
-    }
-
-    pub fn get_translation(&self, target_language: &Language) -> Option<&LibraryTranslation> {
-        self.translation_index(target_language)
-            .map(|idx| &self.translations[idx])
-    }
-
-    pub fn get_or_create_translation(
-        &mut self,
-        target_language: &Language,
-    ) -> &mut LibraryTranslation {
-        let idx = match self.translation_index(target_language) {
-            Some(idx) => idx,
-            None => {
-                let source_language = &self.book.language;
-                let mut translation =
-                    Translation::create(source_language, target_language.to_639_3());
-                translation.id =
-                    translation_uuid(self.book.id, source_language, target_language.to_639_3());
-                self.translations
-                    .push(LibraryTranslation::stored(translation));
-                self.translations.len() - 1
-            }
-        };
-        &mut self.translations[idx]
-    }
 }
 
 impl Library {
     pub async fn create_book(&self, book: Book) -> anyhow::Result<BookHandle> {
-        let book = Arc::new(book);
+        let book: Arc<Book> = Arc::new(book);
         let id = self.store.run(move |db| db.create_book(book)).await?;
         self.get_book(&id).await
     }

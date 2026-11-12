@@ -56,8 +56,10 @@ pub struct ParagraphTranslation {
     total_tokens: Option<u64>,
     /// No sentences: an LLM refusal, which reads as untranslated.
     empty: bool,
-    /// JSON of `translation_import::ParagraphTranslation`.
-    content: Vec<u8>,
+    /// The halves `book::words::split` makes: reading a paragraph takes
+    /// the first, a look at one of its words the second as well.
+    words: Vec<u8>,
+    details: Vec<u8>,
 }
 
 /// Immutable; the newest timestamp per chapter is the current summary.

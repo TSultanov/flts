@@ -1,7 +1,8 @@
 ----------------------------- MODULE Ownership -----------------------------
 EXTENDS Naturals, FiniteSets, TLC
 CONSTANTS Books, Owners
-\* `unstaged`: changes only the owner holds. `staged`: changes handed to the
+\* `unstaged`: changes only the owner holds (a translation is never one: it is
+\* staged as it is applied). `staged`: changes handed to the
 \* store but not yet committed; the store lands those with or without an owner.
 VARIABLES phase, live, busy, unstaged, staged, queued, disk
 vars == <<phase, live, busy, unstaged, staged, queued, disk>>

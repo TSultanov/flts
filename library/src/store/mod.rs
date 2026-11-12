@@ -19,14 +19,16 @@ use crate::{
     book::{
         book::Book,
         chapter_summaries::{ChapterSummaries, ChapterSummary},
-        translation::Translation,
         translation_import,
     },
     card::{AnkiData, AnkiState, Card, Example},
     library::library_book::{BookReadingState, BookUserState},
 };
 
+mod reader;
 pub mod schema;
+
+pub use reader::BookReader;
 
 use schema::{AnkiStateCode, LibraryDb, ROOT, book_id, derived, from_db};
 
@@ -49,18 +51,106 @@ pub struct StoredBook {
     pub folder_path: Vec<String>,
 }
 
+/// A book's row: all of it that is held while the book is open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BookInfo {
+    pub id: Uuid,
+    pub title: String,
+    /// ISO 639-3.
+    pub language: String,
+    pub(crate) chapters: usize,
+    pub(crate) paragraphs: usize,
+}
+
+impl BookInfo {
+    pub fn chapter_count(&self) -> usize {
+        self.chapters
+    }
+
+    pub fn paragraphs_count(&self) -> usize {
+        self.paragraphs
+    }
+}
+
+pub struct ChapterOutline {
+    pub title: Option<String>,
+    /// Flat paragraph numbers, in reading order.
+    pub paragraphs: Vec<usize>,
+}
+
+/// Which paragraphs make up which chapter; no text.
+pub struct Outline {
+    pub chapters: Vec<ChapterOutline>,
+    chapter_of: Vec<u32>,
+}
+
+impl Outline {
+    pub fn chapter_for_paragraph(&self, paragraph: usize) -> Option<usize> {
+        self.chapter_of.get(paragraph).map(|c| *c as usize)
+    }
+}
+
+pub struct ParagraphText {
+    pub text: String,
+    pub html: Option<String>,
+}
+
+impl ParagraphText {
+    /// The markup if the book has any, else the plain text.
+    pub fn original(&self) -> &str {
+        self.html.as_deref().unwrap_or(&self.text)
+    }
+}
+
+/// One whole version of a paragraph's translation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredVersion {
+    pub translation: translation_import::ParagraphTranslation,
+    pub model: String,
+}
+
 pub struct LoadedBook {
-    pub book: Book,
+    pub info: BookInfo,
     pub annotations: Annotations,
 }
 
-/// Everything about a book but its immutable content.
+/// What an open book keeps in memory besides its row.
 pub struct Annotations {
-    pub translations: Vec<Translation>,
     pub summaries: ChapterSummaries,
     pub user_state: BookUserState,
     /// The store generation these were read at.
     pub generation: u64,
+}
+
+/// The newest version of each paragraph of one translation.
+#[derive(Default)]
+struct Latest {
+    by_paragraph: HashMap<u32, Newest>,
+    translated: usize,
+}
+
+#[derive(Clone, Copy)]
+struct Newest {
+    timestamp: u64,
+    id: Id<schema::ParagraphTranslation>,
+    empty: bool,
+}
+
+impl Latest {
+    fn note(&mut self, paragraph: u32, version: Newest) {
+        match self.by_paragraph.get_mut(&paragraph) {
+            Some(held) if (held.timestamp, held.id) > (version.timestamp, version.id) => {}
+            Some(held) => {
+                self.translated -= usize::from(!held.empty);
+                self.translated += usize::from(!version.empty);
+                *held = version;
+            }
+            None => {
+                self.translated += usize::from(!version.empty);
+                self.by_paragraph.insert(paragraph, version);
+            }
+        }
+    }
 }
 
 /// What a refresh changed in one book.
@@ -165,8 +255,10 @@ pub struct Inner {
     db: LibraryDb,
     writer: WriterId,
     unpublished: bool,
-    /// Translated-paragraph counts by translation, valid for a version count.
-    counts: Mutex<HashMap<dbsync::Uuid, (usize, usize)>>,
+    /// Read caches, dropped whenever rows arrive or leave by another way
+    /// than `insert_version`.
+    latest: Mutex<HashMap<dbsync::Uuid, Latest>>,
+    outlines: Mutex<HashMap<Uuid, Arc<Outline>>>,
     /// Books whose whole content is here; content never changes after that.
     complete: Mutex<HashSet<Uuid>>,
     /// Bumped by every refresh that changed a book, and the value it had
@@ -294,7 +386,8 @@ impl LibraryStore {
                 db,
                 writer,
                 unpublished: false,
-                counts: Mutex::default(),
+                latest: Mutex::default(),
+                outlines: Mutex::default(),
                 complete: Mutex::default(),
                 generation: 0,
                 changed_at: HashMap::new(),
@@ -335,7 +428,7 @@ impl LibraryStore {
             db.db = opened;
             db.writer = writer;
             db.rotating = false;
-            db.counts.lock().unwrap_or_else(|e| e.into_inner()).clear();
+            db.forget_read_caches();
             Ok(writer)
         })?;
         self.writer
@@ -443,12 +536,6 @@ fn u32_of(value: usize) -> anyhow::Result<u32> {
     u32::try_from(value).context("index does not fit the store")
 }
 
-fn version_content(
-    translation: &translation_import::ParagraphTranslation,
-) -> anyhow::Result<Vec<u8>> {
-    Ok(serde_json::to_vec(translation)?)
-}
-
 pub fn translation_uuid(book: Uuid, source: &str, target: &str) -> Uuid {
     from_db(
         derived::<schema::Translation>(
@@ -528,6 +615,9 @@ impl Inner {
         adopted.purged.dedup();
         for id in &adopted.purged {
             adopted.books.remove(id);
+        }
+        if adopted.any() || own.restored > 0 {
+            self.forget_read_caches();
         }
         if !adopted.books.is_empty() {
             self.generation += 1;
@@ -819,30 +909,7 @@ impl Inner {
     }
 
     fn translated_count(&self, translation: Id<schema::Translation>) -> anyhow::Result<usize> {
-        let versions = self
-            .db
-            .children_of::<schema::Translation, schema::ParagraphTranslation>(translation)?;
-        let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((seen, count)) = counts.get(&translation.uuid())
-            && *seen == versions.len()
-        {
-            return Ok(*count);
-        }
-        let table = &self.db.paragraph_translations;
-        let mut latest: HashMap<u32, (u64, Id<schema::ParagraphTranslation>, bool)> =
-            HashMap::new();
-        for version in &versions {
-            let key = (table.timestamp(*version)?, *version);
-            let entry = latest
-                .entry(table.paragraph(*version)?)
-                .or_insert((key.0, key.1, true));
-            if (entry.0, entry.1) <= key {
-                *entry = (key.0, key.1, table.empty(*version)?);
-            }
-        }
-        let count = latest.values().filter(|(_, _, empty)| !empty).count();
-        counts.insert(translation.uuid(), (versions.len(), count));
-        Ok(count)
+        self.with_latest(translation, |latest| latest.translated)
     }
 
     pub fn list_books(&self) -> anyhow::Result<Vec<StoredBook>> {
@@ -886,48 +953,6 @@ impl Inner {
         Ok(books)
     }
 
-    fn load_translation(&self, id: Id<schema::Translation>) -> anyhow::Result<Translation> {
-        let translations = &self.db.translations;
-        let mut translation = Translation::create(
-            &translations.source_language(id)?,
-            &translations.target_language(id)?,
-        );
-        translation.id = from_db(id.uuid());
-        let table = &self.db.paragraph_translations;
-        let mut versions = Vec::new();
-        for version in self
-            .db
-            .children_of::<schema::Translation, schema::ParagraphTranslation>(id)?
-        {
-            versions.push((
-                table.paragraph(version)?,
-                table.timestamp(version)?,
-                version,
-            ));
-        }
-        versions.sort_unstable();
-        let mut previous: Option<(u32, u64)> = None;
-        for (paragraph, stored_timestamp, version) in versions {
-            // Two devices can stamp the same second; keep both, in id order.
-            let timestamp = match previous {
-                Some((last, at)) if last == paragraph && stored_timestamp <= at => at + 1,
-                _ => stored_timestamp,
-            };
-            previous = Some((paragraph, timestamp));
-            let mut content: translation_import::ParagraphTranslation =
-                serde_json::from_slice(&table.content(version)?)
-                    .with_context(|| format!("paragraph translation {version}"))?;
-            content.timestamp = timestamp;
-            content.total_tokens = table.total_tokens(version)?;
-            translation.add_paragraph_translation(
-                paragraph as usize,
-                &content,
-                &table.model(version)?,
-            );
-        }
-        Ok(translation)
-    }
-
     fn load_summaries(&self, id: Uuid, chapters: usize) -> anyhow::Result<ChapterSummaries> {
         let mut summaries = ChapterSummaries::empty_for(id, chapters);
         let table = &self.db.chapter_summaries;
@@ -953,59 +978,16 @@ impl Inner {
         Ok(summaries)
     }
 
-    fn load_content(&self, id: Uuid) -> anyhow::Result<Book> {
-        let row = book_id(id);
-        let language = self.db.books.language(row)?.into_owned();
-        let language = isolang::Language::from_639_3(&language)
-            .with_context(|| format!("book {id} has an invalid language code {language:?}"))?;
-        let mut book = Book::create(id, &self.db.books.title(row)?, &language);
-        let mut paragraphs = Vec::new();
-        for chapter in self.db.children_of::<schema::Book, schema::Chapter>(row)? {
-            let index = book.push_chapter(self.db.chapters.title(chapter)?.as_deref());
-            for paragraph in self
-                .db
-                .children_of::<schema::Chapter, schema::Paragraph>(chapter)?
-            {
-                paragraphs.push((self.db.paragraphs.number(paragraph)?, index, paragraph));
-            }
-        }
-        // Flat ids are assigned in push order, so push in flat order.
-        paragraphs.sort_unstable();
-        for (at, (number, chapter, paragraph)) in paragraphs.into_iter().enumerate() {
-            anyhow::ensure!(number as usize == at, "book {id} is missing paragraph {at}");
-            book.push_paragraph(
-                chapter,
-                &self.db.paragraphs.text(paragraph)?,
-                self.db.paragraphs.html(paragraph)?.as_deref(),
-            );
-        }
-        anyhow::ensure!(
-            book.chapter_count() == self.db.books.chapters_count(row)? as usize
-                && book.paragraphs_count() == self.db.books.paragraphs_count(row)? as usize,
-            "book {id} has not fully arrived yet"
-        );
-        Ok(book)
-    }
-
     pub fn load_book(&self, id: Uuid) -> anyhow::Result<LoadedBook> {
-        anyhow::ensure!(self.has_book(id)?, "book {id} not found");
-        let book = self.load_content(id)?;
+        let info = self.book_info(id)?;
         Ok(LoadedBook {
-            annotations: self.load_annotations(id, book.chapter_count())?,
-            book,
+            annotations: self.load_annotations(id, info.chapters)?,
+            info,
         })
     }
 
     pub fn load_annotations(&self, id: Uuid, chapters: usize) -> anyhow::Result<Annotations> {
-        let mut translations = Vec::new();
-        for translation in self
-            .db
-            .children_of::<schema::Book, schema::Translation>(book_id(id))?
-        {
-            translations.push(self.load_translation(translation)?);
-        }
         Ok(Annotations {
-            translations,
             summaries: self.load_summaries(id, chapters)?,
             user_state: self.user_state(id)?,
             generation: self.generation,
@@ -1073,30 +1055,66 @@ impl Inner {
                 &version.target_language,
             )?;
         }
-        let content = version_content(&version.translation)?;
+        let (words, details) = crate::book::words::split(&version.translation)?;
         let id = derived::<schema::ParagraphTranslation>(
             translation.uuid(),
             &format!(
                 "{}/{}/{:016x}",
                 version.paragraph,
                 version.translation.timestamp,
-                fnv(&content)
+                fnv(&[words.as_slice(), details.as_slice()].concat())
             ),
         );
         if self.db.paragraph_translations.versions_of(id)?.is_empty() {
             inserted = true;
+            let paragraph = u32_of(version.paragraph)?;
+            let empty = version.translation.sentences.is_empty();
             self.db.paragraph_translations.insert(
                 id,
                 translation,
-                u32_of(version.paragraph)?,
+                paragraph,
                 version.translation.timestamp,
                 &version.model,
                 version.translation.total_tokens,
-                version.translation.sentences.is_empty(),
-                &content,
+                empty,
+                &words,
+                &details,
             )?;
+            let latest = self.latest.get_mut().unwrap_or_else(|e| e.into_inner());
+            if let Some(latest) = latest.get_mut(&translation.uuid()) {
+                latest.note(
+                    paragraph,
+                    Newest {
+                        timestamp: version.translation.timestamp,
+                        id,
+                        empty,
+                    },
+                );
+            }
         }
         Ok(inserted)
+    }
+
+    /// A translation made on this device, staged. Stored versions order by
+    /// stamp, so it is given one newer than what it replaces.
+    pub fn add_version(&mut self, book: Uuid, mut version: NewVersion) -> anyhow::Result<()> {
+        let info = self.book_info(book)?;
+        anyhow::ensure!(
+            version.paragraph < info.paragraphs,
+            "paragraph {} is out of range",
+            version.paragraph
+        );
+        let paragraph = u32_of(version.paragraph)?;
+        if let Some(translation) = self.translation_row(book, &version.target_language)?
+            && let Some(held) =
+                self.with_latest(translation, |l| l.by_paragraph.get(&paragraph).copied())?
+            && version.translation.timestamp <= held.timestamp
+        {
+            version.translation.timestamp = held.timestamp + 1;
+        }
+        self.unpublished = true;
+        self.insert_version(book, &version)?;
+        Ok(())
     }
 
     fn insert_summary(
@@ -1257,10 +1275,7 @@ impl Inner {
         }
         self.publish()?;
         self.db.reclaim_purged(self.writer)?;
-        self.counts
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
+        self.forget_read_caches();
         Ok(())
     }
 
