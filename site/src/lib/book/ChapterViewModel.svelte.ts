@@ -219,10 +219,8 @@ export class ChapterViewModel {
         safeTargetIdx + RESTORE_PREFIX_BUFFER,
         ids.length,
       );
-      this.#store.enqueueOriginals(ids.slice(0, headEnd));
-      if (headEnd < ids.length) {
-        this.#store.enqueueOriginals(ids.slice(headEnd));
-      }
+      this.#store.fetchOriginals(ids.slice(0, headEnd));
+      this.#store.fetchOriginals(ids.slice(headEnd));
       // A viewport-sized window of translations on each side of the
       // target, so the IPC overlaps the originals fetch rather than
       // trailing it. #recomputeMountWindow enqueues the rest later.

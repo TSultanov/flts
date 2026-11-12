@@ -126,8 +126,8 @@ describe("ChapterParagraphsStore.dispose", () => {
     expect(store.getTranslation(1)?.segments).toEqual(seg("v1"));
 
     // Leave a chunk queued to prove the pump goes quiet after dispose.
-    store.enqueueOriginals(range(0, 120));
-    expect(originalCalls.length).toBe(5);
+    store.enqueueTranslations(range(100, 220));
+    expect(translationCalls.length).toBe(6);
 
     // Schedule a cards refresh, then dispose before it fires.
     hubState.fire("cards_updated", null);
@@ -136,19 +136,54 @@ describe("ChapterParagraphsStore.dispose", () => {
 
     vi.advanceTimersByTime(1_000);
     await flush();
-    expect(translationCalls.length).toBe(1); // canceled timer fetched nothing
+    expect(translationCalls.length).toBe(6); // canceled timer fetched nothing
 
     // Post-dispose events reach no handler and trigger no fetches.
     hubState.fire("paragraph_updated", { bookId, paragraphId: 1 });
     hubState.fire("cards_updated", null);
     vi.advanceTimersByTime(1_000);
     await flush();
-    expect(translationCalls.length).toBe(1);
+    expect(translationCalls.length).toBe(6);
 
     // An in-flight resolution must not dispatch the queued chunk.
-    originalCalls[0].d.resolve([{ id: 0, original: "o0" }]);
+    translationCalls[1].d.resolve([]);
     await flush();
-    expect(originalCalls.length).toBe(5);
+    expect(translationCalls.length).toBe(6);
+  });
+});
+
+describe("ChapterParagraphsStore originals", () => {
+  it("asks for everything in one request and never twice", async () => {
+    const { library, originalCalls } = makeLibraryStub();
+    const store = new ChapterParagraphsStore(bookId, library);
+
+    store.fetchOriginals(range(0, 500));
+    expect(originalCalls.map((c) => c.ids)).toEqual([range(0, 500)]);
+
+    store.fetchOriginals(range(400, 600));
+    expect(originalCalls[1].ids).toEqual(range(500, 600));
+    store.fetchOriginals(range(0, 600));
+    expect(originalCalls.length).toBe(2);
+
+    expect(store.hasOriginal(3)).toBe(false);
+    originalCalls[0].d.resolve([{ id: 3, original: "three" }]);
+    await flush();
+    expect(store.getOriginal(3)).toBe("three");
+    store.dispose();
+  });
+
+  it("can be asked again for what a failed request did not bring", async () => {
+    const { library, originalCalls } = makeLibraryStub();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const store = new ChapterParagraphsStore(bookId, library);
+
+    store.fetchOriginals(range(0, 5));
+    originalCalls[0].d.reject(new Error("gone"));
+    await flush();
+
+    store.fetchOriginals(range(0, 5));
+    expect(originalCalls[1].ids).toEqual(range(0, 5));
+    store.dispose();
   });
 });
 
@@ -218,34 +253,22 @@ describe("ChapterParagraphsStore translation staleness", () => {
 });
 
 describe("ChapterParagraphsStore batch watchdog", () => {
-  it("releases hung slots after 30s, allows retries, and still applies a late response", async () => {
-    const { library, originalCalls } = makeLibraryStub();
+  it("releases hung slots after 30s and dispatches what queued behind them", async () => {
+    const { library, translationCalls } = makeLibraryStub();
     const store = new ChapterParagraphsStore(bookId, library);
 
-    store.enqueueOriginals(range(0, 100));
-    expect(originalCalls.length).toBe(5); // all slots hung
-
-    store.enqueueOriginals(range(100, 120));
-    expect(originalCalls.length).toBe(5); // queued behind the wedge
+    store.enqueueTranslations(range(0, 120));
+    expect(translationCalls.length).toBe(5); // all slots hung
 
     vi.advanceTimersByTime(30_000);
-    // Slots released → the queued chunk dispatches.
-    expect(originalCalls.length).toBe(6);
-    expect(originalCalls[5].ids).toEqual(range(100, 120));
+    expect(translationCalls.length).toBe(6);
+    expect(translationCalls[5].ids).toEqual(range(100, 120));
 
-    // Timed-out ids left the dedup set, so re-enqueueing retries them.
-    store.enqueueOriginals(range(0, 20));
-    expect(originalCalls.length).toBe(7);
-    expect(originalCalls[6].ids).toEqual(range(0, 20));
-
-    // A late response after its timeout still applies its rows...
-    originalCalls[0].d.resolve([{ id: 0, original: "late" }]);
+    // A late response frees no slot twice: 1 in flight, so 4 more dispatch.
+    translationCalls[0].d.resolve([]);
     await flush();
-    expect(store.getOriginal(0)).toBe("late");
-
-    // ...without releasing a slot twice: 2 in flight, so 3 of 5 dispatch.
-    store.enqueueOriginals(range(200, 300));
-    expect(originalCalls.length).toBe(10);
+    store.enqueueTranslations(range(200, 400));
+    expect(translationCalls.length).toBe(10);
     store.dispose();
   });
 

@@ -10,7 +10,7 @@ export type ParagraphTranslationSliceCache = {
 export const CHAPTER_STORE_KEY = Symbol("ChapterParagraphsStore");
 
 const BATCH_SIZE = 20;
-const MAX_INFLIGHT_PER_KIND = 5;
+const MAX_INFLIGHT = 5;
 const CARDS_REFRESH_DEBOUNCE_MS = 500;
 // Past this a batch is presumed hung: its slot is released and its ids
 // become retryable. A late response still applies.
@@ -23,9 +23,7 @@ export class ChapterParagraphsStore {
   #originals = new SvelteMap<number, string>();
   #translations = new SvelteMap<number, ParagraphTranslationSliceCache>();
 
-  #originalsQueue: number[] = [];
-  #originalsEnqueued = new Set<number>();
-  #originalsInflight = 0;
+  #originalsRequested = new Set<number>();
 
   #translationsQueue: number[] = [];
   #translationsEnqueued = new Set<number>();
@@ -139,14 +137,24 @@ export class ChapterParagraphsStore {
     return this.#translations.get(id) ?? null;
   }
 
-  enqueueOriginals(ids: readonly number[]): void {
-    for (const id of ids) {
-      if (this.#originals.has(id)) continue;
-      if (this.#originalsEnqueued.has(id)) continue;
-      this.#originalsEnqueued.add(id);
-      this.#originalsQueue.push(id);
-    }
-    this.#pumpOriginals();
+  // One request for all of `ids`: every arrival re-lays out the whole
+  // chapter, so a chapter fetched in pieces is laid out once per piece.
+  fetchOriginals(ids: readonly number[]): void {
+    const wanted = ids.filter((id) => !this.#originalsRequested.has(id));
+    if (wanted.length === 0) return;
+    for (const id of wanted) this.#originalsRequested.add(id);
+    this.#library
+      .getParagraphOriginalsBatch(this.#bookId, wanted)
+      .then((rows) => {
+        for (const row of rows) {
+          this.#originals.set(row.id, row.original);
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to fetch paragraph originals", err);
+        // Make these ids retryable.
+        for (const id of wanted) this.#originalsRequested.delete(id);
+      });
   }
 
   enqueueTranslations(ids: readonly number[]): void {
@@ -159,65 +167,10 @@ export class ChapterParagraphsStore {
     this.#pumpTranslations();
   }
 
-  // Returns a settle fn that releases the batch's slot exactly once —
-  // response or watchdog, whichever fires first.
-  #armBatchWatchdog(
-    chunk: readonly number[],
-    enqueued: Set<number>,
-    release: () => void,
-  ): () => void {
-    let settled = false;
-    const settleOnce = () => {
-      if (settled) return;
-      settled = true;
-      release();
-    };
-    const timer = setTimeout(() => {
-      for (const id of chunk) enqueued.delete(id);
-      settleOnce();
-    }, BATCH_WATCHDOG_MS);
-    return () => {
-      clearTimeout(timer);
-      settleOnce();
-    };
-  }
-
-  #pumpOriginals(): void {
-    if (this.#disposed) return;
-    while (
-      this.#originalsInflight < MAX_INFLIGHT_PER_KIND &&
-      this.#originalsQueue.length > 0
-    ) {
-      const chunk = this.#originalsQueue.splice(0, BATCH_SIZE);
-      this.#originalsInflight++;
-      const settle = this.#armBatchWatchdog(
-        chunk,
-        this.#originalsEnqueued,
-        () => {
-          this.#originalsInflight--;
-          this.#pumpOriginals();
-        },
-      );
-      this.#library
-        .getParagraphOriginalsBatch(this.#bookId, chunk)
-        .then((rows) => {
-          for (const row of rows) {
-            this.#originals.set(row.id, row.original);
-          }
-        })
-        .catch((err) => {
-          console.error("Failed to fetch paragraph originals batch", err);
-          // Make these ids retryable.
-          for (const id of chunk) this.#originalsEnqueued.delete(id);
-        })
-        .finally(settle);
-    }
-  }
-
   #pumpTranslations(): void {
     if (this.#disposed) return;
     while (
-      this.#translationsInflight < MAX_INFLIGHT_PER_KIND &&
+      this.#translationsInflight < MAX_INFLIGHT &&
       this.#translationsQueue.length > 0
     ) {
       const chunk = this.#translationsQueue.splice(0, BATCH_SIZE);
@@ -234,14 +187,19 @@ export class ChapterParagraphsStore {
           (this.#translationsInflightIds.get(id) ?? 0) + 1,
         );
       }
-      const settle = this.#armBatchWatchdog(
-        chunk,
-        this.#translationsEnqueued,
-        () => {
-          this.#translationsInflight--;
-          this.#pumpTranslations();
-        },
-      );
+      // Response or watchdog, whichever is first, frees the slot once.
+      let settled = false;
+      const settle = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(watchdog);
+        this.#translationsInflight--;
+        this.#pumpTranslations();
+      };
+      const watchdog = setTimeout(() => {
+        for (const id of chunk) this.#translationsEnqueued.delete(id);
+        settle();
+      }, BATCH_WATCHDOG_MS);
       this.#library
         .getParagraphTranslationsBatch(this.#bookId, chunk)
         .then((rows) => {
