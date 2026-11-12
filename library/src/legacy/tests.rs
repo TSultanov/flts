@@ -283,12 +283,12 @@ async fn assert_imported_book(library: &Library, id: Uuid) -> BookHandle {
     assert_eq!(counts, [("deu".to_string(), 1), ("rus".to_string(), 3)]);
 
     let book = library.get_book(&id).await.unwrap();
-    let snapshot = book.snapshot();
+    let summaries = book.summaries().await.unwrap();
     let source = source_book(id, "Legacy");
-    assert_eq!(snapshot.book.title, source.title);
-    assert_eq!(snapshot.book.language, "eng");
-    assert_eq!(snapshot.book.chapter_count(), 2);
-    assert_eq!(snapshot.book.paragraphs_count(), 3);
+    assert_eq!(book.info().title, source.title);
+    assert_eq!(book.info().language, "eng");
+    assert_eq!(book.info().chapter_count(), 2);
+    assert_eq!(book.info().paragraphs_count(), 3);
     let outline = book.read(|book| book.outline()).await.unwrap();
     assert_eq!(outline.chapters.len(), 2);
     for chapter in 0..2 {
@@ -331,7 +331,7 @@ async fn assert_imported_book(library: &Library, id: Uuid) -> BookHandle {
     assert_eq!(history(&book, german, 1).await, entry(8, "Beta", FLASH));
 
     assert_eq!(
-        snapshot.summaries.entries,
+        summaries.entries,
         [
             summary(200, "chapter one, second take"),
             summary(150, "chapter two")
@@ -690,8 +690,9 @@ async fn the_newest_readable_copy_of_the_book_is_the_book() {
     let book = library.get_book(&id).await.unwrap();
     assert_eq!(book.reading_state().await.unwrap(), None);
     assert!(
-        book.snapshot()
-            .summaries
+        book.summaries()
+            .await
+            .unwrap()
             .entries
             .iter()
             .all(|s| !s.generated)
@@ -893,9 +894,9 @@ async fn annotations_arriving_after_their_book_are_imported() {
     );
 
     let book = library.get_book(&id).await.unwrap();
-    let snapshot = book.snapshot();
+    let summaries = book.summaries().await.unwrap();
     assert_eq!(history(&book, rus(), 0).await, entry(10, "late", FLASH));
-    assert_eq!(snapshot.summaries.entries[1], summary(50, "late summary"));
+    assert_eq!(summaries.entries[1], summary(50, "late summary"));
     assert_eq!(book.reading_state().await.unwrap().unwrap().chapter_id, 1);
     assert_eq!(book.folder_path().await.unwrap(), ["Late"]);
     library.close().await.unwrap();

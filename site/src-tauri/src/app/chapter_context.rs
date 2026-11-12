@@ -46,22 +46,20 @@ impl ChapterContextProvider for SummaryBackedChapterContext {
 
         let library = self.current_library()?;
         let handle = library.get_book(&book_id).await?;
-        let mut rx = handle.subscribe();
+        let mut changed = handle.summaries_changed();
         let wait = async {
             loop {
-                let snapshot = rx.snapshot();
-                anyhow::ensure!(
-                    snapshot.status == library::library::BookStatus::Active,
-                    "book closed while waiting for summaries"
-                );
-                if snapshot
-                    .summaries
+                changed.borrow_and_update();
+                // Fails once the book is deleted or the library closed.
+                if handle
+                    .summaries()
+                    .await?
                     .ready_through()
                     .is_some_and(|ready| ready >= needed)
                 {
                     return Ok::<(), anyhow::Error>(());
                 }
-                rx.changed().await?;
+                changed.changed().await?;
             }
         };
         // "timed out" must stay in the message: it is what makes
@@ -78,13 +76,13 @@ impl ChapterContextProvider for SummaryBackedChapterContext {
 
     async fn prior_summaries(&self, book_id: Uuid, chapter_index: usize) -> anyhow::Result<String> {
         let library = self.current_library()?;
-        let snapshot = library.get_book(&book_id).await?.snapshot();
-        Ok(concat_prior_summaries(&snapshot.summaries, chapter_index))
+        let summaries = library.get_book(&book_id).await?.summaries().await?;
+        Ok(concat_prior_summaries(&summaries, chapter_index))
     }
 
     async fn chapter_text(&self, book_id: Uuid, chapter_index: usize) -> anyhow::Result<String> {
         let book = self.current_library()?.get_book(&book_id).await?;
-        if chapter_index >= book.snapshot().book.chapter_count() {
+        if chapter_index >= book.info().chapter_count() {
             anyhow::bail!("chapter index {chapter_index} out of range for book {book_id}");
         }
         let paragraphs = book

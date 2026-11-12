@@ -121,7 +121,7 @@ async fn trace_interaction_baseline() {
     // WorkerReadParagraph: get_or_create_translation + paragraph_view
     let span = TraceSpan::begin("t1", "WorkerReadParagraph").field("task", "t1");
     {
-        let _ = book_handle.snapshot().book.paragraph_view(0);
+        let _ = book_handle.read(|book| book.paragraph(0)).await.unwrap();
     }
     span.end();
 
@@ -298,7 +298,7 @@ async fn trace_interaction_concurrent() {
         // WorkerReadParagraph
         let span = TraceSpan::begin("t1", "WorkerReadParagraph").field("task", "t1");
         {
-            let _ = bh.snapshot().book.paragraph_view(0);
+            let _ = bh.read(|book| book.paragraph(0)).await.unwrap();
         }
         span.end();
 

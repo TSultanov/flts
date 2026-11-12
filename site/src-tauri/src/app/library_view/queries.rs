@@ -142,12 +142,13 @@ pub async fn get_book_summary_status(
 ) -> Result<BookSummaryStatusView, String> {
     let library = state.library().await?;
 
-    let snapshot = library
+    let summaries = library
         .get_book(&book_id)
         .await
         .map_err(|err| err.to_string())?
-        .snapshot();
-    let summaries = &snapshot.summaries;
+        .summaries()
+        .await
+        .map_err(|err| err.to_string())?;
     let actively_generating = summaries.entries.iter().position(|e| !e.generated);
     Ok(BookSummaryStatusView {
         total_chapters: summaries.entries.len(),

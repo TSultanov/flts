@@ -5,8 +5,8 @@ use uuid::Uuid;
 
 use super::*;
 use crate::{
-    book::chapter_summaries::ChapterSummary,
-    library::{LibraryError, PeerChanges},
+    book::{chapter_summaries::ChapterSummary, translation_import},
+    library::{LibraryError, PeerChanges, REPUBLISH_EVERY},
     store::{StoredVersion, translation_uuid},
     test_utils::{
         TempDir, copy_shards, copy_shards_where, full_word, one_sentence_paragraph, peer_view,
@@ -58,15 +58,92 @@ fn reading(page_offset: usize) -> BookReadingState {
     }
 }
 
-async fn stored_book(store: &LibraryStore, source: Book) -> LibraryBook {
-    let id = source.id;
+async fn stored_book(store: &LibraryStore, source: Book) -> Uuid {
     store
         .run(move |db| db.create_book(Arc::new(source)))
         .await
-        .unwrap();
-    LibraryBook::load(store.clone(), id).await.unwrap()
+        .unwrap()
 }
 
+/// Stages a translation into `target`, as a book of the library would.
+async fn stage_version(
+    store: &LibraryStore,
+    id: Uuid,
+    paragraph: usize,
+    target: &str,
+    translation: translation_import::ParagraphTranslation,
+    model: &str,
+) {
+    let version = NewVersion {
+        source_language: "eng".into(),
+        target_language: target.into(),
+        paragraph,
+        translation,
+        model: model.into(),
+    };
+    store
+        .run(move |db| db.add_version(id, version))
+        .await
+        .unwrap();
+}
+
+/// A library holding one book of one chapter and one paragraph.
+async fn fixture() -> (TempDir, Library, BookHandle) {
+    let dir = TempDir::new("flts_book");
+    let library = Library::open(dir.path.join("library")).await.unwrap();
+    let id = library
+        .create_book_plain("First", "hello", &eng())
+        .await
+        .unwrap();
+    let book = library.get_book(&id).await.unwrap();
+    (dir, library, book)
+}
+
+fn position(page_offset: usize) -> BookReadingState {
+    BookReadingState {
+        chapter_id: 0,
+        paragraph_id: 0,
+        page_offset,
+    }
+}
+
+/// What another device would read from the shards: only what was committed.
+fn committed_user_state(store: &LibraryStore, id: Uuid) -> BookUserState {
+    let (_dir, peer) = peer_view(store);
+    peer.run_blocking(|db| db.user_state(id)).unwrap()
+}
+
+fn committed_reading_state(store: &LibraryStore, id: Uuid) -> Option<BookReadingState> {
+    committed_user_state(store, id).reading_state
+}
+
+fn committed_versions(store: &LibraryStore, id: Uuid) -> usize {
+    let (_dir, peer) = peer_view(store);
+    stored_version_count(&peer, id)
+}
+
+fn committed_summaries(store: &LibraryStore, id: Uuid) -> Vec<ChapterSummary> {
+    let (_dir, peer) = peer_view(store);
+    peer.run_blocking(|db| db.summaries(id)).unwrap().entries
+}
+
+async fn summarize(book: &BookHandle, chapter: usize, summary: ChapterSummary) {
+    let written_from = book.summaries().await.unwrap();
+    book.apply_summary(&written_from, chapter, summary)
+        .await
+        .unwrap();
+}
+
+/// Waits in real time: paused time may run ahead of the blocking pool.
+async fn eventually(what: &str, mut holds: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !holds() {
+        assert!(std::time::Instant::now() < deadline, "{what}");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// Makes the next `count` commits fail; zero heals the store.
 fn fail_commits(store: &LibraryStore, count: usize) {
     store
         .run_blocking(|db| {
@@ -151,9 +228,7 @@ async fn everything_about_a_book_survives_a_reopen() {
         translate(&book, 0, 10, "старое").await;
         translate(&book, 0, 20, "новое").await;
         translate(&book, 2, 30, "гамма").await;
-        book.apply_summary(&book.snapshot(), 0, summary(5, "first chapter"))
-            .await
-            .unwrap();
+        summarize(&book, 0, summary(5, "first chapter")).await;
         book.update_reading_state(reading(3)).await.unwrap();
         book.update_folder_path(vec!["Shelf".into(), "Modern".into()])
             .await
@@ -179,10 +254,9 @@ async fn everything_about_a_book_survives_a_reopen() {
     assert_eq!(listed_translation.translated_paragraphs_count, 2);
 
     let book = library.get_book(&id).await.unwrap();
-    let snapshot = book.snapshot();
-    assert_eq!(snapshot.book.title, "Round trip");
-    assert_eq!(snapshot.book.language, "eng");
-    assert_eq!(snapshot.book.chapter_count(), 2);
+    assert_eq!(book.info().title, "Round trip");
+    assert_eq!(book.info().language, "eng");
+    assert_eq!(book.info().chapter_count(), 2);
     let outline = book.read(|b| b.outline()).await.unwrap();
     assert_eq!(outline.chapters.len(), 2);
     assert_eq!(outline.chapters[0].title.as_deref(), Some("One"));
@@ -210,8 +284,9 @@ async fn everything_about_a_book_survives_a_reopen() {
         version(30, "гамма")
     );
 
-    assert_eq!(snapshot.summaries.entries[0], summary(5, "first chapter"));
-    assert!(!snapshot.summaries.entries[1].generated);
+    let summaries = book.summaries().await.unwrap();
+    assert_eq!(summaries.entries[0], summary(5, "first chapter"));
+    assert!(!summaries.entries[1].generated);
     assert_eq!(book.reading_state().await.unwrap(), Some(reading(3)));
     assert_eq!(book.folder_path().await.unwrap(), ["Shelf", "Modern"]);
     library.close().await.unwrap();
@@ -232,7 +307,7 @@ async fn a_new_book_is_stored_by_its_creation_alone() {
     let root = dir.path.join("library");
     let library = Library::open(root.clone()).await.unwrap();
     let book = library.create_book(sample_book("Implicit")).await.unwrap();
-    let id = book.snapshot().book.id;
+    let id = book.id();
     drop(book);
     library.close().await.unwrap();
     drop(library);
@@ -285,8 +360,13 @@ async fn a_deleted_book_is_gone_for_good() {
 
     library.delete_book(&doomed).await.unwrap();
 
-    assert_eq!(held.snapshot().status, BookStatus::Closed);
-    assert!(held.flush().await.is_err());
+    assert!(held.read(|b| b.paragraph(0)).await.is_err());
+    assert!(held.reading_state().await.is_err());
+    assert!(
+        held.apply_translation(0, rus(), version(1, "поздно"), "model-a".into())
+            .await
+            .is_err()
+    );
     assert!(library.get_book(&doomed).await.is_err());
     let listed = library.list_books().await.unwrap();
     assert_eq!(listed.iter().map(|b| b.id).collect::<Vec<_>>(), [keep]);
@@ -308,7 +388,7 @@ async fn a_deleted_book_is_gone_for_good() {
 }
 
 #[tokio::test]
-async fn deleting_a_book_that_is_not_loaded_removes_it() {
+async fn deleting_a_book_nobody_holds_removes_it() {
     let dir = TempDir::new("flts_book");
     let root = dir.path.join("library");
     let id = {
@@ -331,24 +411,26 @@ async fn deleting_a_book_that_is_not_loaded_removes_it() {
 async fn a_failed_commit_leaves_the_changes_staged_for_the_next_publish() {
     let dir = TempDir::new("flts_book");
     let store = LibraryStore::open(&dir.path.join("library")).unwrap();
-    let source = sample_book("Retry");
-    let id = source.id;
-    let mut book = stored_book(&store, source).await;
+    let id = stored_book(&store, sample_book("Retry")).await;
+    let summaries =
+        |store: &LibraryStore| store.run_blocking(|db| db.summaries(id)).unwrap().entries;
 
-    book.add_translation(0, &rus(), version(10, "первый"), "model-a".into())
-        .await
-        .unwrap();
+    stage_version(&store, id, 0, "rus", version(10, "первый"), "model-a").await;
     assert_eq!(
         stored_current(&store, id, "rus", 0).unwrap().translation,
         version(10, "первый"),
         "readable before any commit"
     );
-    book.set_summary(1, summary(7, "second chapter"));
+    let written_from = summaries(&store)[..1].to_vec();
+    store
+        .run(move |db| db.set_summary(id, 1, &written_from, summary(7, "second chapter")))
+        .await
+        .unwrap();
     fail_commits(&store, 1);
-    assert!(book.persist().await.is_err());
+    assert!(store.run(|db| db.publish()).await.is_err());
 
     assert!(
-        !book.has_unsaved_changes(),
+        store.read(|db| Ok(db.has_unpublished())).await.unwrap(),
         "staged changes are the store's to land"
     );
     {
@@ -358,31 +440,25 @@ async fn a_failed_commit_leaves_the_changes_staged_for_the_next_publish() {
             0,
             "the failed commit published nothing"
         );
-        let committed = LibraryBook::load(peer, id).await.unwrap();
-        assert!(!committed.summaries.entries[1].generated);
+        assert!(!summaries(&peer)[1].generated);
     }
 
-    // Staged rows read back, so a reload keeps what the book holds.
-    book.reload().await.unwrap();
-    assert!(!book.has_unsaved_changes());
+    // Staged rows read back.
     assert_eq!(
         stored_current(&store, id, "rus", 0).unwrap().translation,
         version(10, "первый")
     );
-    assert_eq!(
-        book.snapshot().summaries.entries[1],
-        summary(7, "second chapter")
-    );
+    assert_eq!(summaries(&store)[1], summary(7, "second chapter"));
 
     store.run(|db| db.publish()).await.unwrap();
+    assert!(!store.read(|db| Ok(db.has_unpublished())).await.unwrap());
     let (_dir, peer) = peer_view(&store);
     assert_eq!(stored_version_count(&peer, id), 1);
     assert_eq!(
         stored_current(&peer, id, "rus", 0).unwrap().translation,
         version(10, "первый")
     );
-    let stored = LibraryBook::load(peer, id).await.unwrap();
-    assert_eq!(stored.summaries.entries[1], summary(7, "second chapter"));
+    assert_eq!(summaries(&peer)[1], summary(7, "second chapter"));
 }
 
 #[tokio::test]
@@ -400,9 +476,8 @@ async fn a_new_book_whose_commit_fails_is_stored_whole_by_the_next_one() {
     let (_dir, peer) = peer_view(&store);
     assert_eq!(peer.run_blocking(|db| db.list_books()).unwrap().len(), 1);
     assert_eq!(
-        peer.run_blocking(|db| db.load_book(id))
+        peer.run_blocking(|db| db.book_info(id))
             .unwrap()
-            .info
             .paragraphs_count(),
         3
     );
@@ -412,53 +487,77 @@ async fn a_new_book_whose_commit_fails_is_stored_whole_by_the_next_one() {
 async fn user_state_whose_commit_fails_is_published_by_the_next_commit() {
     let dir = TempDir::new("flts_book");
     let store = LibraryStore::open(&dir.path.join("library")).unwrap();
-    let source = sample_book("State");
-    let id = source.id;
-    let mut book = stored_book(&store, source).await;
+    let id = stored_book(&store, sample_book("State")).await;
 
     fail_commits(&store, 1);
-    book.set_reading_state(reading(4));
-    assert!(book.has_unsaved_changes());
-    assert!(book.update_folder_path(vec!["Shelf".into()]).await.is_err());
-    assert_eq!(book.snapshot().user_state.reading_state, Some(reading(4)));
-    assert_eq!(book.snapshot().user_state.folder_path, ["Shelf"]);
-    assert!(!book.has_unsaved_changes());
-    let committed = |store: &LibraryStore| {
-        let (_dir, peer) = peer_view(store);
-        peer.run_blocking(|db| db.user_state(id)).unwrap()
-    };
-    assert_eq!(committed(&store), BookUserState::default());
+    store
+        .run(move |db| db.set_user_state(id, Some(reading(4)), None))
+        .await
+        .unwrap();
+    let committing = store.run(move |db| {
+        db.set_user_state(id, None, Some(vec!["Shelf".into()]))?;
+        db.publish()
+    });
+    assert!(committing.await.is_err());
+    let held = store.run_blocking(|db| db.user_state(id)).unwrap();
+    assert_eq!(held.reading_state, Some(reading(4)));
+    assert_eq!(held.folder_path, ["Shelf"]);
+    assert_eq!(committed_user_state(&store, id), BookUserState::default());
 
     store.run(|db| db.publish()).await.unwrap();
-    let stored = committed(&store);
+    let stored = committed_user_state(&store, id);
     assert_eq!(stored.reading_state, Some(reading(4)));
     assert_eq!(stored.folder_path, ["Shelf"]);
 }
 
 #[tokio::test]
-async fn a_reading_position_is_stored_by_the_next_persist() {
-    let dir = TempDir::new("flts_book");
-    let store = LibraryStore::open(&dir.path.join("library")).unwrap();
-    let source = sample_book("Position");
-    let id = source.id;
-    let mut book = stored_book(&store, source).await;
+async fn a_folder_whose_commit_fails_is_reported_and_stays_readable() {
+    let (_dir, library, book) = fixture().await;
+    let id = book.id();
+    fail_commits(library.store(), usize::MAX);
+    let error = book
+        .update_folder_path(vec!["Shelf".into()])
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("injected"), "{error:#}");
+    assert_eq!(book.folder_path().await.unwrap(), ["Shelf"]);
+    assert!(
+        committed_user_state(library.store(), id)
+            .folder_path
+            .is_empty()
+    );
 
-    book.set_reading_state(reading(1));
-    book.set_reading_state(reading(2));
-    assert!(book.only_position_unsaved());
-    book.persist().await.unwrap();
-    assert!(!book.has_unsaved_changes());
-    let stored = LibraryBook::load(store, id).await.unwrap();
-    assert_eq!(stored.user_state.reading_state, Some(reading(2)));
+    fail_commits(library.store(), 0);
+    library.close().await.unwrap();
+    assert_eq!(
+        committed_user_state(library.store(), id).folder_path,
+        ["Shelf"]
+    );
+}
+
+#[tokio::test]
+async fn a_reading_position_is_stored_by_the_next_flush() {
+    let (_dir, library, book) = fixture().await;
+    let id = book.id();
+
+    book.update_reading_state(position(1)).await.unwrap();
+    book.update_reading_state(position(2)).await.unwrap();
+    assert_eq!(book.reading_state().await.unwrap(), Some(position(2)));
+    assert_eq!(committed_reading_state(library.store(), id), None);
+    book.flush().await.unwrap();
+    assert_eq!(
+        committed_reading_state(library.store(), id),
+        Some(position(2))
+    );
+    assert_eq!(book.reading_state().await.unwrap(), Some(position(2)));
+    library.close().await.unwrap();
 }
 
 #[tokio::test]
 async fn the_newest_version_always_carries_the_newest_stamp() {
     let dir = TempDir::new("flts_book");
     let store = LibraryStore::open(&dir.path.join("library")).unwrap();
-    let source = sample_book("Stamps");
-    let id = source.id;
-    let mut book = stored_book(&store, source).await;
+    let id = stored_book(&store, sample_book("Stamps")).await;
     for (paragraph, stamp, text, model) in [
         (0, 10, "first", "model-a"),
         (0, 5, "older clock", "model-a"),
@@ -467,11 +566,9 @@ async fn the_newest_version_always_carries_the_newest_stamp() {
         // Another paragraph has its own history.
         (1, 3, "beta", "model-a"),
     ] {
-        book.add_translation(paragraph, &rus(), version(stamp, text), model.into())
-            .await
-            .unwrap();
+        stage_version(&store, id, paragraph, "rus", version(stamp, text), model).await;
     }
-    book.reload().await.unwrap();
+    store.run(|db| db.publish()).await.unwrap();
 
     // Here, and as another device reads the shards.
     let (_dir, peer) = peer_view(&store);
@@ -518,11 +615,9 @@ async fn the_newest_version_always_carries_the_newest_stamp() {
 async fn an_untranslated_translation_is_not_stored() {
     let dir = TempDir::new("flts_book");
     let store = LibraryStore::open(&dir.path.join("library")).unwrap();
-    let source = sample_book("Empty translation");
-    let id = source.id;
-    let mut book = stored_book(&store, source).await;
-    book.reload().await.unwrap();
-    assert!(!book.has_unsaved_changes());
+    let id = stored_book(&store, sample_book("Empty translation")).await;
+    store.run(|db| db.publish()).await.unwrap();
+    assert!(!store.read(|db| Ok(db.has_unpublished())).await.unwrap());
     let (_dir, peer) = peer_view(&store);
     for store in [store, peer] {
         let listed = store.run_blocking(|db| db.list_books()).unwrap();
@@ -536,17 +631,10 @@ async fn an_untranslated_translation_is_not_stored() {
 async fn translations_to_several_languages_coexist() {
     let dir = TempDir::new("flts_book");
     let store = LibraryStore::open(&dir.path.join("library")).unwrap();
-    let source = sample_book("Polyglot");
-    let id = source.id;
-    let deu = Language::from_639_3("deu").unwrap();
-    let mut book = stored_book(&store, source).await;
-    book.add_translation(0, &rus(), version(1, "альфа"), "model-a".into())
-        .await
-        .unwrap();
-    book.add_translation(0, &deu, version(1, "Alpha"), "model-a".into())
-        .await
-        .unwrap();
-    book.reload().await.unwrap();
+    let id = stored_book(&store, sample_book("Polyglot")).await;
+    stage_version(&store, id, 0, "rus", version(1, "альфа"), "model-a").await;
+    stage_version(&store, id, 0, "deu", version(1, "Alpha"), "model-a").await;
+    store.run(|db| db.publish()).await.unwrap();
 
     let (_dir, peer) = peer_view(&store);
     let text = |language: &'static str| {
@@ -576,7 +664,7 @@ async fn a_device_opening_on_synced_shards_sees_the_other_devices_books() {
     let dir = TempDir::new("flts_devices");
     let a = Library::open(dir.path.join("a/library")).await.unwrap();
     let book = a.create_book(sample_book("Arrived")).await.unwrap();
-    let id = book.snapshot().book.id;
+    let id = book.id();
     translate(&book, 0, 10, "альфа").await;
     book.flush().await.unwrap();
 
@@ -601,10 +689,10 @@ async fn a_device_opening_on_synced_shards_sees_the_other_devices_books() {
 }
 
 #[tokio::test]
-async fn a_loaded_book_picks_up_another_devices_translation() {
+async fn a_held_book_picks_up_another_devices_translation() {
     let devices = Devices::new().await;
     let on_a = devices.a.create_book(sample_book("Shared")).await.unwrap();
-    let id = on_a.snapshot().book.id;
+    let id = on_a.id();
     let other = devices
         .a
         .create_book_plain("Bystander", "text", &eng())
@@ -618,19 +706,17 @@ async fn a_loaded_book_picks_up_another_devices_translation() {
             library: true,
             ..PeerChanges::default()
         },
-        "nothing is loaded yet, so no loaded book changed"
+        "a book arriving whole changes the shelf alone"
     );
 
     let on_b = devices.b.get_book(&id).await.unwrap();
     let bystander = devices.b.get_book(&other).await.unwrap();
     assert_eq!(version_count(&on_b).await, 0);
-    let mut watching = on_b.subscribe();
-    watching.snapshot();
+    let mut watching = on_b.summaries_changed();
+    watching.borrow_and_update();
 
     translate(&on_a, 0, 10, "с другого устройства").await;
-    on_a.apply_summary(&on_a.snapshot(), 1, summary(9, "remote summary"))
-        .await
-        .unwrap();
+    summarize(&on_a, 1, summary(9, "remote summary")).await;
     on_a.update_reading_state(reading(2)).await.unwrap();
     on_a.flush().await.unwrap();
     devices.sync_a_to_b();
@@ -649,14 +735,15 @@ async fn a_loaded_book_picks_up_another_devices_translation() {
         .await
         .expect("subscribers hear about the adopted change")
         .unwrap();
-    let snapshot = on_b.snapshot();
     assert_eq!(
         current(&on_b, rus(), 0).await.unwrap().translation,
         version(10, "с другого устройства")
     );
-    assert_eq!(snapshot.summaries.entries[1], summary(9, "remote summary"));
+    assert_eq!(
+        on_b.summaries().await.unwrap().entries[1],
+        summary(9, "remote summary")
+    );
     assert_eq!(on_b.reading_state().await.unwrap(), Some(reading(2)));
-    assert_eq!(snapshot.status, BookStatus::Active);
     assert_eq!(version_count(&bystander).await, 0);
     assert_eq!(
         devices.b.list_books().await.unwrap().len(),
@@ -677,7 +764,7 @@ async fn a_loaded_book_picks_up_another_devices_translation() {
 async fn both_devices_translations_of_one_paragraph_are_kept() {
     let devices = Devices::new().await;
     let on_a = devices.a.create_book(sample_book("Both")).await.unwrap();
-    let id = on_a.snapshot().book.id;
+    let id = on_a.id();
     on_a.flush().await.unwrap();
     devices.sync_a_to_b();
     devices.b.refresh_from_peers().await.unwrap();
@@ -687,7 +774,7 @@ async fn both_devices_translations_of_one_paragraph_are_kept() {
     translate(&on_a, 1, 15, "only a").await;
     on_a.flush().await.unwrap();
     translate(&on_b, 0, 20, "from b").await;
-    // Unsaved here when the other device's write arrives.
+    // Not flushed here when the other device's write arrives.
     translate(&on_b, 2, 25, "only b").await;
 
     devices.sync_a_to_b();
@@ -725,7 +812,7 @@ async fn both_devices_translations_of_one_paragraph_are_kept() {
 async fn another_devices_page_turn_touches_only_that_book() {
     let devices = Devices::new().await;
     let on_a = devices.a.create_book(sample_book("Read")).await.unwrap();
-    let id = on_a.snapshot().book.id;
+    let id = on_a.id();
     let other = devices
         .a
         .create_book_plain("Bystander", "text", &eng())
@@ -735,7 +822,6 @@ async fn another_devices_page_turn_touches_only_that_book() {
     devices.b.refresh_from_peers().await.unwrap();
     let on_b = devices.b.get_book(&id).await.unwrap();
     let bystander = devices.b.get_book(&other).await.unwrap();
-    let before = bystander.snapshot();
 
     on_a.update_reading_state(reading(2)).await.unwrap();
     on_a.flush().await.unwrap();
@@ -749,16 +835,16 @@ async fn another_devices_page_turn_touches_only_that_book() {
         "neither the shelf nor the cards changed"
     );
     assert_eq!(on_b.reading_state().await.unwrap(), Some(reading(2)));
-    assert!(Arc::ptr_eq(&before, &bystander.snapshot()));
+    assert_eq!(bystander.reading_state().await.unwrap(), None);
     devices.a.close().await.unwrap();
     devices.b.close().await.unwrap();
 }
 
 #[tokio::test]
-async fn a_book_that_missed_a_reload_catches_up_on_the_next_refresh() {
+async fn a_held_book_reads_what_the_store_adopted_without_the_library() {
     let devices = Devices::new().await;
     let on_a = devices.a.create_book(sample_book("Behind")).await.unwrap();
-    let id = on_a.snapshot().book.id;
+    let id = on_a.id();
     devices.sync_a_to_b();
     devices.b.refresh_from_peers().await.unwrap();
     let on_b = devices.b.get_book(&id).await.unwrap();
@@ -766,34 +852,23 @@ async fn a_book_that_missed_a_reload_catches_up_on_the_next_refresh() {
     translate(&on_a, 0, 10, "с другого устройства").await;
     on_a.flush().await.unwrap();
     devices.sync_a_to_b();
-    // Adopted, but the reload that should follow never happened.
     let adopted = devices.b.store().run(|db| db.refresh()).await.unwrap();
     assert!(adopted.books.contains_key(&id));
-    let behind = on_b.snapshot();
-    assert!(
-        behind.store_generation
-            < devices
-                .b
-                .store()
-                .read(move |db| Ok(db.book_generation(id)))
-                .await
-                .unwrap()
-    );
 
-    let changes = devices.b.refresh_from_peers().await.unwrap();
-    assert_eq!(changes.books, [id], "which paragraphs is no longer known");
-    assert!(on_b.snapshot().store_generation > behind.store_generation);
-    assert!(current(&on_b, rus(), 0).await.is_some());
+    assert_eq!(
+        current(&on_b, rus(), 0).await.unwrap().translation,
+        version(10, "с другого устройства")
+    );
     assert!(devices.b.refresh_from_peers().await.unwrap().is_empty());
     devices.a.close().await.unwrap();
     devices.b.close().await.unwrap();
 }
 
 #[tokio::test]
-async fn a_remote_delete_closes_the_loaded_book() {
+async fn a_remote_delete_ends_the_held_book() {
     let devices = Devices::new().await;
     let on_a = devices.a.create_book(sample_book("Doomed")).await.unwrap();
-    let id = on_a.snapshot().book.id;
+    let id = on_a.id();
     on_a.flush().await.unwrap();
     let kept = devices
         .a
@@ -815,13 +890,18 @@ async fn a_remote_delete_closes_the_loaded_book() {
     assert!(changes.library);
     assert!(!changes.books.contains(&id));
     assert_eq!(changes.deleted, [id]);
-    assert_eq!(on_b.snapshot().status, BookStatus::Closed);
     assert!(on_b.reading_state().await.is_err());
-    assert!(on_b.flush().await.is_err());
+    assert!(on_b.read(|b| b.paragraph(0)).await.is_err());
+    assert!(
+        on_b.apply_translation(1, rus(), version(20, "некуда"), "model-a".into())
+            .await
+            .is_err()
+    );
     assert!(devices.b.get_book(&id).await.is_err());
     let listed = devices.b.list_books().await.unwrap();
     assert_eq!(listed.iter().map(|b| b.id).collect::<Vec<_>>(), [kept]);
-    assert_eq!(kept_on_b.snapshot().status, BookStatus::Active);
+    assert_eq!(kept_on_b.info().title, "Kept");
+    assert_eq!(kept_on_b.reading_state().await.unwrap(), None);
     kept_on_b.flush().await.unwrap();
 
     // The delete must not bounce back as a resurrection.
@@ -840,9 +920,7 @@ async fn a_book_whose_rows_arrived_only_in_part_fails_to_load_until_the_rest_doe
         .create_book(sample_book("Partial"))
         .await
         .unwrap()
-        .snapshot()
-        .book
-        .id;
+        .id();
 
     let (from, to) = (
         devices.a.store().shared_dir().to_owned(),
@@ -888,7 +966,7 @@ async fn a_book_whose_rows_arrived_only_in_part_fails_to_load_until_the_rest_doe
     copy_shards(&from, &to);
     devices.b.refresh_from_peers().await.unwrap();
     let loaded = devices.b.get_book(&id).await.unwrap();
-    assert_eq!(loaded.snapshot().book.paragraphs_count(), 3);
+    assert_eq!(loaded.info().paragraphs_count(), 3);
     devices.a.close().await.unwrap();
     devices.b.close().await.unwrap();
 }
@@ -947,7 +1025,7 @@ async fn open_books_go_on_after_the_library_takes_a_new_identity() {
     let root = dir.path.join("library");
     let library = Library::open(root.clone()).await.unwrap();
     let book = library.create_book(sample_book("Carried")).await.unwrap();
-    let id = book.snapshot().book.id;
+    let id = book.id();
     translate(&book, 0, 10, "до").await;
     book.flush().await.unwrap();
     library.note_shared_identity().await.unwrap();
@@ -964,5 +1042,594 @@ async fn open_books_go_on_after_the_library_takes_a_new_identity() {
     let stored = library.get_book(&id).await.unwrap();
     assert_eq!(version_count(&stored).await, 2);
     assert!(!library.store_health().await.unwrap().shared_identity);
+    library.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_translation_is_readable_before_any_flush() {
+    let (_dir, library, book) = fixture().await;
+    let id = book.id();
+    // Nothing can reach the disk, so what reads back was never committed.
+    fail_commits(library.store(), usize::MAX);
+    translate(&book, 0, 10, "сразу").await;
+
+    assert_eq!(
+        current(&book, rus(), 0).await.unwrap().translation,
+        version(10, "сразу")
+    );
+    assert_eq!(version_count(&book).await, 1);
+    let again = library.get_book(&id).await.unwrap();
+    assert_eq!(
+        current(&again, rus(), 0).await.unwrap().translation,
+        version(10, "сразу")
+    );
+    assert_eq!(
+        library.list_books().await.unwrap()[0].translations_metadata[0].translated_paragraphs_count,
+        1
+    );
+    assert_eq!(committed_versions(library.store(), id), 0);
+
+    fail_commits(library.store(), 0);
+    library.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_translation_is_committed_without_a_flush() {
+    let (_dir, library, book) = fixture().await;
+    let id = book.id();
+    translate(&book, 0, 10, "само").await;
+    let store = library.store().clone();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while committed_versions(&store, id) == 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the commit follows in the background");
+    library.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_reading_position_whose_commit_fails_lands_on_close() {
+    let (_dir, library, book) = fixture().await;
+    let id = book.id();
+    let store = library.store().clone();
+    fail_commits(&store, usize::MAX);
+    book.update_reading_state(position(3)).await.unwrap();
+    assert_eq!(book.reading_state().await.unwrap(), Some(position(3)));
+    assert!(book.flush().await.is_err());
+    assert_eq!(book.reading_state().await.unwrap(), Some(position(3)));
+    assert_eq!(committed_reading_state(&store, id), None);
+
+    fail_commits(&store, 0);
+    drop(book);
+    library.close().await.unwrap();
+    assert_eq!(committed_reading_state(&store, id), Some(position(3)));
+}
+
+#[tokio::test(start_paused = true)]
+async fn page_turns_are_coalesced_into_one_commit() {
+    let (_dir, library, book) = fixture().await;
+    let id = book.id();
+    let store = library.store().clone();
+    let superseded = |store: &LibraryStore| store.run_blocking(|db| db.prune(&[])).unwrap();
+    assert_eq!(superseded(&store), 0);
+
+    for page in 1..=3 {
+        book.update_reading_state(position(page)).await.unwrap();
+    }
+    assert_eq!(book.reading_state().await.unwrap(), Some(position(3)));
+    assert!(
+        !store.run_blocking(|db| Ok(db.has_unpublished())).unwrap(),
+        "a page turn alone stages nothing"
+    );
+    assert_eq!(committed_reading_state(&store, id), None);
+
+    tokio::time::sleep(POSITION_DELAY + Duration::from_millis(100)).await;
+    eventually("the last position is committed", || {
+        committed_reading_state(&store, id) == Some(position(3))
+    })
+    .await;
+    assert_eq!(
+        superseded(&store),
+        0,
+        "one row for the run: no earlier one to drop"
+    );
+
+    // Each run of page turns after that replaces the row once.
+    for page in 4..=6 {
+        book.update_reading_state(position(page)).await.unwrap();
+    }
+    tokio::time::sleep(POSITION_DELAY + Duration::from_millis(100)).await;
+    eventually("the second run is committed", || {
+        committed_reading_state(&store, id) == Some(position(6))
+    })
+    .await;
+    assert_eq!(superseded(&store), 1);
+    library.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_reading_position_set_just_before_close_survives_a_reopen() {
+    let (_dir, library, book) = fixture().await;
+    let id = book.id();
+    let root = library.root().to_path_buf();
+    book.update_reading_state(position(4)).await.unwrap();
+    drop(book);
+    library.close().await.unwrap();
+    drop(library);
+
+    let library = Library::open(root).await.unwrap();
+    let book = library.get_book(&id).await.unwrap();
+    assert_eq!(book.reading_state().await.unwrap(), Some(position(4)));
+    library.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn library_flush_lands_a_reading_position_still_waiting() {
+    let (_dir, library, book) = fixture().await;
+    let id = book.id();
+    book.update_reading_state(position(5)).await.unwrap();
+    assert_eq!(committed_reading_state(library.store(), id), None);
+
+    library.flush().await.unwrap();
+    assert_eq!(
+        committed_reading_state(library.store(), id),
+        Some(position(5))
+    );
+    library.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_summary_is_readable_at_once_and_its_chapter_must_exist() {
+    let (_dir, library, book) = fixture().await;
+    let before = book.summaries().await.unwrap();
+    let mut heard = book.summaries_changed();
+    heard.borrow_and_update();
+    book.apply_summary(&before, 0, summary(1, "summary"))
+        .await
+        .unwrap();
+    let after = book.summaries().await.unwrap();
+    assert!(!before.entries[0].generated);
+    assert_eq!(after.entries[0], summary(1, "summary"));
+    assert!(heard.has_changed().unwrap());
+
+    book.flush().await.unwrap();
+    for chapter in [1, usize::MAX] {
+        let error = book
+            .apply_summary(&after, chapter, after.entries[0].clone())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("out of range"), "{error:#}");
+    }
+    assert_eq!(book.summaries().await.unwrap().entries, after.entries);
+    library.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn summaries_survive_a_reopen_and_the_newest_wins() {
+    let (_dir, library, book) = fixture().await;
+    let id = book.id();
+    let root = library.root().to_path_buf();
+    summarize(&book, 0, summary(1, "first")).await;
+    let newer = summary(2, "second");
+    summarize(&book, 0, newer.clone()).await;
+    book.flush().await.unwrap();
+    assert_eq!(book.summaries().await.unwrap().entries[0], newer);
+    drop(book);
+    library.close().await.unwrap();
+    drop(library);
+
+    let library = Library::open(root).await.unwrap();
+    let book = library.get_book(&id).await.unwrap();
+    assert_eq!(book.summaries().await.unwrap().entries, vec![newer]);
+    library.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_summary_stamped_no_newer_than_the_one_it_replaces_still_wins() {
+    let (_dir, library, book) = fixture().await;
+    let id = book.id();
+    let root = library.root().to_path_buf();
+    summarize(&book, 0, summary(5, "first")).await;
+    book.flush().await.unwrap();
+    summarize(&book, 0, summary(5, "second")).await;
+    assert_eq!(
+        book.summaries().await.unwrap().entries[0],
+        summary(6, "second")
+    );
+    summarize(&book, 0, summary(2, "third")).await;
+    let third = summary(7, "third");
+    assert_eq!(book.summaries().await.unwrap().entries[0], third);
+    book.flush().await.unwrap();
+    drop(book);
+    library.close().await.unwrap();
+    drop(library);
+
+    let library = Library::open(root).await.unwrap();
+    let book = library.get_book(&id).await.unwrap();
+    assert_eq!(book.summaries().await.unwrap().entries, vec![third]);
+    library.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_summary_written_from_changed_context_is_refused() {
+    let (_dir, library, _first) = fixture().await;
+    let mut source = Book::create(Uuid::new_v4(), "Chapters", &eng());
+    for text in ["one", "two"] {
+        let chapter = source.push_chapter(None);
+        source.push_paragraph(chapter, text, None);
+    }
+    let book = library.create_book(source).await.unwrap();
+    let stale = book.summaries().await.unwrap();
+    book.apply_summary(&stale, 0, summary(1, "first"))
+        .await
+        .unwrap();
+
+    let error = book
+        .apply_summary(&stale, 1, summary(1, "second"))
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("summary context changed"),
+        "{error:#}"
+    );
+    assert!(!book.summaries().await.unwrap().entries[1].generated);
+    summarize(&book, 1, summary(1, "second")).await;
+    assert_eq!(
+        book.summaries().await.unwrap().entries,
+        [summary(1, "first"), summary(1, "second")]
+    );
+    library.close().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn dropping_the_library_lands_accepted_work_and_releases_the_lease() {
+    let (_dir, library, book) = fixture().await;
+    let root = library.root().to_path_buf();
+    let id = book.id();
+    book.update_reading_state(position(2)).await.unwrap();
+    assert!(
+        Library::open(root.clone()).await.is_err(),
+        "the lease is held while the library lives"
+    );
+    drop(book);
+    drop(library);
+    let mut reopened = None;
+    for _ in 0..120 {
+        if let Ok(library) = Library::open(root.clone()).await {
+            reopened = Some(library);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let library = reopened.expect("lease released once the last library was dropped");
+    let book = library.get_book(&id).await.unwrap();
+    assert_eq!(book.reading_state().await.unwrap(), Some(position(2)));
+    drop(book);
+    library.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_failed_close_reports_keeps_the_lease_and_can_be_retried() {
+    let (_dir, library, book) = fixture().await;
+    let root = library.root().to_path_buf();
+    let id = book.id();
+    fail_commits(library.store(), usize::MAX);
+    translate(&book, 0, 1, "раз").await;
+
+    let error = library.close().await.unwrap_err();
+    assert!(error.to_string().contains("flush failed"), "{error:#}");
+    assert!(
+        Library::open(root.clone()).await.is_err(),
+        "the lease stays with the session that still holds unsaved work"
+    );
+    assert_eq!(version_count(&book).await, 1);
+    assert_eq!(committed_versions(library.store(), id), 0);
+    assert!(library.close().await.is_err());
+
+    fail_commits(library.store(), 0);
+    library.close().await.unwrap();
+    drop(book);
+    drop(library);
+    let library = Library::open(root).await.unwrap();
+    let book = library.get_book(&id).await.unwrap();
+    assert_eq!(version_count(&book).await, 1);
+    library.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_library_whose_close_failed_still_serves_its_books() {
+    let (_dir, library, first) = fixture().await;
+    let id = first.id();
+    fail_commits(library.store(), usize::MAX);
+    translate(&first, 0, 1, "раз").await;
+    assert!(library.close().await.is_err());
+
+    let again = library.get_book(&id).await.unwrap();
+    for book in [&first, &again] {
+        assert_eq!(version_count(book).await, 1, "staged rows read back");
+    }
+    first.update_reading_state(position(1)).await.unwrap();
+    assert!(again.flush().await.is_err());
+    assert_eq!(again.reading_state().await.unwrap(), Some(position(1)));
+    fail_commits(library.store(), 0);
+    again.flush().await.unwrap();
+    assert_eq!(committed_versions(library.store(), id), 1);
+    assert_eq!(
+        committed_reading_state(library.store(), id),
+        Some(position(1))
+    );
+    library.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn flushing_with_nothing_waiting_commits_nothing() {
+    let (_dir, library, book) = fixture().await;
+    translate(&book, 0, 1, "раз").await;
+    book.flush().await.unwrap();
+    // Any commit now would fail; a flush with nothing to land must not run one.
+    fail_commits(library.store(), usize::MAX);
+    book.flush().await.unwrap();
+    library.flush().await.unwrap();
+    fail_commits(library.store(), 0);
+    library.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_flush_reports_the_failed_commit_and_a_later_flush_lands_it() {
+    let (_dir, library, book) = fixture().await;
+    let id = book.id();
+    fail_commits(library.store(), usize::MAX);
+    translate(&book, 0, 1, "раз").await;
+    let error = book.flush().await.unwrap_err();
+    assert!(error.to_string().contains("injected"), "{error:#}");
+    assert!(book.flush().await.is_err());
+    assert_eq!(version_count(&book).await, 1);
+    assert_eq!(committed_versions(library.store(), id), 0);
+
+    fail_commits(library.store(), 0);
+    book.flush().await.unwrap();
+    assert_eq!(committed_versions(library.store(), id), 1);
+    library.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn library_flush_lands_what_a_failed_commit_left_staged() {
+    let (_dir, library, book) = fixture().await;
+    let id = book.id();
+    fail_commits(library.store(), usize::MAX);
+    translate(&book, 0, 1, "раз").await;
+    summarize(&book, 0, summary(1, "kept")).await;
+    assert!(book.flush().await.is_err());
+    assert!(library.flush().await.is_err());
+    assert_eq!(committed_versions(library.store(), id), 0);
+    assert!(!committed_summaries(library.store(), id)[0].generated);
+
+    fail_commits(library.store(), 0);
+    library.flush().await.unwrap();
+    assert_eq!(committed_versions(library.store(), id), 1);
+    assert_eq!(
+        committed_summaries(library.store(), id)[0],
+        summary(1, "kept")
+    );
+    library.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn any_later_commit_carries_what_a_failed_one_left_staged() {
+    let (_dir, library, first) = fixture().await;
+    let id = first.id();
+    let second = library
+        .create_book_plain("Second", "other", &eng())
+        .await
+        .unwrap();
+    let second = library.get_book(&second).await.unwrap();
+    fail_commits(library.store(), usize::MAX);
+    translate(&first, 0, 1, "раз").await;
+    assert!(first.flush().await.is_err());
+    drop(first);
+    assert_eq!(committed_versions(library.store(), id), 0);
+
+    fail_commits(library.store(), 0);
+    second
+        .update_folder_path(vec!["shelf".into()])
+        .await
+        .unwrap();
+    assert_eq!(committed_versions(library.store(), id), 1);
+    let reloaded = library.get_book(&id).await.unwrap();
+    assert_eq!(version_count(&reloaded).await, 1);
+    library.close().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_commit_is_republished_in_the_background() {
+    let (_dir, library, book) = fixture().await;
+    let id = book.id();
+    let store = library.store().clone();
+    let folder = |store: &LibraryStore| committed_user_state(store, id).folder_path;
+    fail_commits(&store, usize::MAX);
+    let error = book
+        .update_folder_path(vec!["shelf".into()])
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("injected"), "{error:#}");
+    assert_eq!(book.folder_path().await.unwrap(), ["shelf"]);
+    tokio::time::sleep(REPUBLISH_EVERY * 2).await;
+    assert!(folder(&store).is_empty());
+
+    fail_commits(&store, 0);
+    tokio::time::sleep(REPUBLISH_EVERY * 2).await;
+    eventually("the staged folder is committed with no one asking", || {
+        folder(&store) == ["shelf"]
+    })
+    .await;
+    assert_eq!(book.folder_path().await.unwrap(), ["shelf"]);
+    library.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn closing_a_library_with_nothing_waiting_commits_nothing() {
+    let (_dir, library, book) = fixture().await;
+    book.flush().await.unwrap();
+    // Any commit would fail and fail the close with it.
+    fail_commits(library.store(), usize::MAX);
+    drop(book);
+    library.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn user_state_is_readable_at_once() {
+    let (_dir, library, book) = fixture().await;
+    let id = book.id();
+    book.update_reading_state(position(2)).await.unwrap();
+    book.update_folder_path(vec!["shelf".into()]).await.unwrap();
+    let other = library.get_book(&id).await.unwrap();
+    for book in [&book, &other] {
+        assert_eq!(book.reading_state().await.unwrap(), Some(position(2)));
+        assert_eq!(book.folder_path().await.unwrap(), ["shelf"]);
+    }
+    library.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn user_state_survives_a_reopen() {
+    let (_dir, library, book) = fixture().await;
+    let id = book.id();
+    let root = library.root().to_path_buf();
+    book.update_reading_state(position(2)).await.unwrap();
+    book.update_folder_path(vec!["shelf".into()]).await.unwrap();
+    drop(book);
+    library.close().await.unwrap();
+    drop(library);
+
+    let library = Library::open(root).await.unwrap();
+    let book = library.get_book(&id).await.unwrap();
+    assert_eq!(book.reading_state().await.unwrap(), Some(position(2)));
+    assert_eq!(book.folder_path().await.unwrap(), ["shelf"]);
+    library.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_book_of_a_closed_library_rejects_reads_and_writes() {
+    let (_dir, library, book) = fixture().await;
+    let id = book.id();
+    let written_from = book.summaries().await.unwrap();
+    library.close().await.unwrap();
+    assert!(book.reading_state().await.is_err());
+    assert!(book.folder_path().await.is_err());
+    assert!(book.read(|b| b.paragraph(0)).await.is_err());
+    assert!(book.summaries().await.is_err());
+    assert!(
+        book.apply_translation(0, rus(), version(1, "поздно"), "model-a".into())
+            .await
+            .is_err()
+    );
+    assert!(
+        book.apply_summary(&written_from, 0, summary(1, "late"))
+            .await
+            .is_err()
+    );
+    assert!(book.update_folder_path(vec!["late".into()]).await.is_err());
+    assert!(book.flush().await.is_err());
+    assert!(library.get_book(&id).await.is_err());
+}
+
+#[tokio::test]
+async fn a_translation_of_a_missing_paragraph_is_rejected() {
+    let (_dir, library, book) = fixture().await;
+    let error = book
+        .apply_translation(1, rus(), version(1, "мимо"), "model-a".into())
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("out of range"), "{error:#}");
+    assert_eq!(version_count(&book).await, 0);
+    assert!(
+        !library
+            .store()
+            .read(|db| Ok(db.has_unpublished()))
+            .await
+            .unwrap()
+    );
+    library.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn writes_to_a_deleted_book_are_refused() {
+    let (_dir, library, book) = fixture().await;
+    let id = book.id();
+    let other = library.get_book(&id).await.unwrap();
+    let written_from = book.summaries().await.unwrap();
+    library.delete_book(&id).await.unwrap();
+
+    for book in [&book, &other] {
+        assert!(
+            book.apply_translation(0, rus(), version(1, "поздно"), "model-a".into())
+                .await
+                .is_err()
+        );
+        assert!(
+            book.apply_summary(&written_from, 0, summary(1, "late"))
+                .await
+                .is_err()
+        );
+        assert!(book.update_folder_path(vec!["late".into()]).await.is_err());
+        assert!(book.read(|b| b.paragraph(0)).await.is_err());
+        assert!(book.summaries().await.is_err());
+        assert!(book.reading_state().await.is_err());
+        assert!(book.folder_path().await.is_err());
+    }
+    // Nothing of the book is left to land.
+    library.flush().await.unwrap();
+    assert!(library.list_books().await.unwrap().is_empty());
+    let (_dir, peer) = peer_view(library.store());
+    assert!(!peer.run_blocking(|db| db.has_book(id)).unwrap());
+    library.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_reading_position_waiting_when_its_book_is_deleted_is_dropped() {
+    let (_dir, library, book) = fixture().await;
+    let id = book.id();
+    book.update_reading_state(position(1)).await.unwrap();
+    library.delete_book(&id).await.unwrap();
+
+    assert!(book.reading_state().await.is_err());
+    library.flush().await.unwrap();
+    library.close().await.unwrap();
+    let (_dir, peer) = peer_view(library.store());
+    assert!(!peer.run_blocking(|db| db.has_book(id)).unwrap());
+    assert_eq!(
+        peer.run_blocking(|db| db.user_state(id)).unwrap(),
+        BookUserState::default()
+    );
+}
+
+#[tokio::test]
+async fn a_reading_position_given_to_a_deleted_book_is_never_stored() {
+    let (_dir, library, book) = fixture().await;
+    let id = book.id();
+    library.delete_book(&id).await.unwrap();
+
+    let _ = book.update_reading_state(position(1)).await;
+    library.flush().await.unwrap();
+    assert!(book.reading_state().await.is_err());
+    library.close().await.unwrap();
+    let (_dir, peer) = peer_view(library.store());
+    assert!(!peer.run_blocking(|db| db.has_book(id)).unwrap());
+    assert_eq!(
+        peer.run_blocking(|db| db.user_state(id)).unwrap(),
+        BookUserState::default()
+    );
+}
+
+#[tokio::test]
+async fn a_reading_position_given_to_a_deleted_book_is_refused() {
+    let (_dir, library, book) = fixture().await;
+    let id = book.id();
+    library.delete_book(&id).await.unwrap();
+
+    assert!(book.update_reading_state(position(1)).await.is_err());
+    assert!(book.reading_state().await.is_err());
     library.close().await.unwrap();
 }

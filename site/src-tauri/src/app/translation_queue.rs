@@ -6,7 +6,7 @@ use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
 use isolang::Language;
 use library::{
     cache::TranslationsCache,
-    library::{BookHandle, BookSnapshot, Library},
+    library::{BookHandle, Library},
     translation_stats::TranslationSizeCache,
     translator::{
         ChapterContextProvider, TranslationContext, gemini_cache::GeminiPromptCache,
@@ -101,7 +101,6 @@ struct Progress {
 struct Job {
     request_id: usize,
     book: BookHandle,
-    snapshot: Arc<BookSnapshot>,
     paragraph: usize,
     model: String,
     use_cache: bool,
@@ -109,7 +108,6 @@ struct Job {
 }
 struct ChapterJob {
     book: BookHandle,
-    snapshot: Arc<BookSnapshot>,
     chapter: usize,
     /// The chapter's paragraphs, and how many of them were looked at.
     paragraphs: Vec<usize>,
@@ -265,7 +263,6 @@ impl TranslationQueue {
 }
 fn admit(
     book: BookHandle,
-    snapshot: Arc<BookSnapshot>,
     paragraph: usize,
     model: String,
     use_cache: bool,
@@ -276,7 +273,7 @@ fn admit(
     let request_id = *next_id;
     *next_id += 1;
     activities.insert(
-        (snapshot.book.id, paragraph),
+        (book.id(), paragraph),
         ParagraphTranslationActivity {
             request_id,
             progress_chars: 0,
@@ -286,18 +283,17 @@ fn admit(
     let _ = app.emit(
         "paragraph_translation_started",
         ParagraphTranslationStartedEvent {
-            book_id: snapshot.book.id,
+            book_id: book.id(),
             paragraph_id: paragraph,
             request_id,
             expected_chars: 0,
         },
     );
-    make_job(request_id, book, snapshot, paragraph, model, use_cache)
+    make_job(request_id, book, paragraph, model, use_cache)
 }
 fn make_job(
     request_id: usize,
     book: BookHandle,
-    snapshot: Arc<BookSnapshot>,
     paragraph: usize,
     model: String,
     use_cache: bool,
@@ -305,32 +301,11 @@ fn make_job(
     Job {
         request_id,
         book,
-        snapshot,
         paragraph,
         model,
         use_cache,
         attempt: 0,
     }
-}
-
-#[cfg(feature = "ownership-bench")]
-pub fn benchmark_pending_jobs(
-    book: &BookHandle,
-    snapshot: &Arc<BookSnapshot>,
-    count: usize,
-) -> impl Sized {
-    (0..count)
-        .map(|id| {
-            make_job(
-                id,
-                book.clone(),
-                snapshot.clone(),
-                id,
-                "benchmark".to_owned(),
-                false,
-            )
-        })
-        .collect::<VecDeque<_>>()
 }
 
 async fn scheduler(
@@ -368,7 +343,7 @@ async fn scheduler(
                 .read(move |book| book.is_translated(&target, paragraph))
                 .await;
             match translated {
-                Ok(false) if !activities.contains_key(&(chapter.snapshot.book.id, paragraph)) => {}
+                Ok(false) if !activities.contains_key(&(chapter.book.id(), paragraph)) => {}
                 Ok(_) => continue,
                 Err(err) => {
                     log::warn!("chapter translation dropped: {err:#}");
@@ -379,7 +354,6 @@ async fn scheduler(
             changed = true;
             pending.push_back(admit(
                 chapter.book.clone(),
-                chapter.snapshot.clone(),
                 paragraph,
                 chapter.model.clone(),
                 chapter.use_cache,
@@ -393,10 +367,7 @@ async fn scheduler(
                 break;
             };
             let (progress, observed) = watch::channel(Progress::default());
-            running.insert(
-                job.request_id,
-                (job.snapshot.book.id, job.paragraph, observed),
-            );
+            running.insert(job.request_id, (job.book.id(), job.paragraph, observed));
             let context = &context;
             workers.push(async move {
                 let result = AssertUnwindSafe(execute(&job, context, &progress))
@@ -423,7 +394,7 @@ async fn scheduler(
                     next = workers.next().now_or_never().flatten();
                     changed = true;
                     running.remove(&job.request_id);
-                    let id = job.snapshot.book.id;
+                    let id = job.book.id();
                     if let Err(error) = &result {
                         if should_requeue(error, job.attempt) {
                             job.attempt += 1;
@@ -447,9 +418,9 @@ async fn scheduler(
                         if let Some(activity) = activities.get(&(book_id, paragraph)) { let _ = reply.send(Ok(activity.request_id)); continue; }
                         if pending.len() >= MAX_PENDING { let _ = reply.send(Err(anyhow::anyhow!("translation queue busy"))); continue; }
                         let result = async {
-                            let book = context.library.get_book(&book_id).await?; let snapshot = book.snapshot();
-                            anyhow::ensure!(paragraph < snapshot.book.paragraphs_count(), "paragraph out of range");
-                            let job = admit(book, snapshot, paragraph, model, use_cache, &mut next_id, &mut activities, &app);
+                            let book = context.library.get_book(&book_id).await?;
+                            anyhow::ensure!(paragraph < book.info().paragraphs_count(), "paragraph out of range");
+                            let job = admit(book, paragraph, model, use_cache, &mut next_id, &mut activities, &app);
                             let id = job.request_id; pending.push_back(job); Ok(id)
                         }.await;
                         if result.is_ok() { publish.send_replace(Arc::new(activities.clone())); }
@@ -458,8 +429,8 @@ async fn scheduler(
                     Request::Chapter {book_id, chapter, model, use_cache, reply} => {
                         let result = async {
                             anyhow::ensure!(chapters.len() < 256, "translation queue busy");
-                            let book = context.library.get_book(&book_id).await?; let snapshot = book.snapshot();
-                            anyhow::ensure!(chapter < snapshot.book.chapter_count(), "chapter out of range");
+                            let book = context.library.get_book(&book_id).await?;
+                            anyhow::ensure!(chapter < book.info().chapter_count(), "chapter out of range");
                             let target = context.target;
                             let (paragraphs, count) = book.read(move |book| {
                                 let outline = book.outline()?;
@@ -467,7 +438,7 @@ async fn scheduler(
                                 let count = book.translated(&target, &paragraphs)?.into_iter().filter(|t| !t).count();
                                 Ok((paragraphs, count))
                             }).await?;
-                            if !chapters.iter().any(|c| c.snapshot.book.id == book_id && c.chapter == chapter) { chapters.push_back(ChapterJob {book, snapshot, chapter, paragraphs, offset: 0, model, use_cache}); }
+                            if !chapters.iter().any(|c| c.book.id() == book_id && c.chapter == chapter) { chapters.push_back(ChapterJob {book, chapter, paragraphs, offset: 0, model, use_cache}); }
                             Ok(count)
                         }.await;
                         let _ = reply.send(result);
@@ -517,7 +488,7 @@ async fn execute(
     context: &WorkerContext,
     progress: &watch::Sender<Progress>,
 ) -> anyhow::Result<()> {
-    let source = Language::from_639_3(&job.snapshot.book.language)
+    let source = Language::from_639_3(&job.book.info().language)
         .ok_or_else(|| anyhow::anyhow!("invalid source language"))?;
     let paragraph = job.paragraph;
     let (text, chapter) = job
@@ -552,7 +523,7 @@ async fn execute(
     let translation = translator
         .get_translation(TranslationContext {
             paragraph_text: &text,
-            book_id: job.snapshot.book.id,
+            book_id: job.book.id(),
             chapter_id: chapter.unwrap_or(0),
             use_cache: job.use_cache,
             callback: Some(Box::new(move |chars| {

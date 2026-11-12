@@ -118,23 +118,21 @@ async fn process_book(
 ) -> anyhow::Result<()> {
     let handle: BookHandle = library.get_book(&id).await?;
     loop {
-        let snapshot = handle.snapshot();
-        let Some(index) = snapshot.summaries.next_pending() else {
+        let summaries = handle.summaries().await?;
+        let book = handle.info();
+        let Some(index) = summaries.next_pending() else {
             emit_progress(
                 app,
                 id,
-                snapshot.summaries.entries.len(),
-                snapshot.summaries.entries.len(),
+                summaries.entries.len(),
+                summaries.entries.len(),
                 "done",
                 None,
             );
             return Ok(());
         };
-        anyhow::ensure!(
-            index < snapshot.book.chapter_count(),
-            "summary chapter out of range"
-        );
-        let language = isolang::Language::from_639_3(&snapshot.book.language)
+        anyhow::ensure!(index < book.chapter_count(), "summary chapter out of range");
+        let language = isolang::Language::from_639_3(&book.language)
             .ok_or_else(|| anyhow::anyhow!("invalid source language"))?;
         let (title, text) = handle
             .read(move |book| {
@@ -142,19 +140,12 @@ async fn process_book(
                 Ok((title, book.chapter_text(index)?.join("\n\n")))
             })
             .await?;
-        let prior = concat_prior_summaries(&snapshot.summaries, index);
-        emit_progress(
-            app,
-            id,
-            index,
-            snapshot.summaries.entries.len(),
-            "in_progress",
-            None,
-        );
+        let prior = concat_prior_summaries(&summaries, index);
+        emit_progress(app, id, index, summaries.entries.len(), "in_progress", None);
         let text = summarizer
             .generate(
                 &language,
-                &snapshot.book.title,
+                &book.title,
                 title.as_deref(),
                 &text,
                 if prior.is_empty() { None } else { Some(&prior) },
@@ -162,7 +153,7 @@ async fn process_book(
             .await?;
         handle
             .apply_summary(
-                &snapshot,
+                &summaries,
                 index,
                 ChapterSummary {
                     generated: true,
@@ -180,7 +171,7 @@ async fn process_book(
             app,
             id,
             index + 1,
-            snapshot.summaries.entries.len(),
+            summaries.entries.len(),
             "in_progress",
             None,
         );

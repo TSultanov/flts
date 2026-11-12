@@ -109,19 +109,6 @@ pub struct StoredVersion {
     pub model: String,
 }
 
-pub struct LoadedBook {
-    pub info: BookInfo,
-    pub annotations: Annotations,
-}
-
-/// What an open book keeps in memory besides its row.
-pub struct Annotations {
-    pub summaries: ChapterSummaries,
-    pub user_state: BookUserState,
-    /// The store generation these were read at.
-    pub generation: u64,
-}
-
 /// The newest version of each paragraph of one translation.
 #[derive(Default)]
 struct Latest {
@@ -261,10 +248,8 @@ pub struct Inner {
     outlines: Mutex<HashMap<Uuid, Arc<Outline>>>,
     /// Books whose whole content is here; content never changes after that.
     complete: Mutex<HashSet<Uuid>>,
-    /// Bumped by every refresh that changed a book, and the value it had
-    /// when each book last changed under its owner.
-    generation: u64,
-    changed_at: HashMap<Uuid, u64>,
+    /// Books an import added to since the last refresh reported.
+    imported_into: BTreeSet<Uuid>,
     odd_for: HashMap<PathBuf, u32>,
     waiting_for: u32,
     health: StoreHealth,
@@ -389,8 +374,7 @@ impl LibraryStore {
                 latest: Mutex::default(),
                 outlines: Mutex::default(),
                 complete: Mutex::default(),
-                generation: 0,
-                changed_at: HashMap::new(),
+                imported_into: BTreeSet::new(),
                 odd_for: HashMap::new(),
                 waiting_for: 0,
                 health: StoreHealth::default(),
@@ -619,10 +603,9 @@ impl Inner {
         if adopted.any() || own.restored > 0 {
             self.forget_read_caches();
         }
-        if !adopted.books.is_empty() {
-            self.generation += 1;
-            for id in adopted.books.keys() {
-                self.changed_at.insert(*id, self.generation);
+        for id in std::mem::take(&mut self.imported_into) {
+            if !adopted.purged.contains(&id) {
+                adopted.books.entry(id).or_default();
             }
         }
         Ok(adopted)
@@ -759,13 +742,6 @@ impl Inner {
         }
     }
 
-    /// The generation `id` last changed in under a refresh.
-    pub fn book_generation(&self, id: Uuid) -> u64 {
-        self.changed_at.get(&id).copied().unwrap_or(0)
-    }
-
-    /// Drops this device's superseded revisions that every device still in
-    /// use has seen past. `retired` names writers that will never catch up.
     pub fn prune(&mut self, retired: &[u64]) -> anyhow::Result<usize> {
         self.publish()?;
         let others: Vec<WriterId> = self
@@ -978,22 +954,6 @@ impl Inner {
         Ok(summaries)
     }
 
-    pub fn load_book(&self, id: Uuid) -> anyhow::Result<LoadedBook> {
-        let info = self.book_info(id)?;
-        Ok(LoadedBook {
-            annotations: self.load_annotations(id, info.chapters)?,
-            info,
-        })
-    }
-
-    pub fn load_annotations(&self, id: Uuid, chapters: usize) -> anyhow::Result<Annotations> {
-        Ok(Annotations {
-            summaries: self.load_summaries(id, chapters)?,
-            user_state: self.user_state(id)?,
-            generation: self.generation,
-        })
-    }
-
     /// Inserts whatever of the book is missing, so a book cut short by a
     /// failed commit is completed by writing it again.
     fn insert_book(&mut self, book: &Book) -> anyhow::Result<bool> {
@@ -1197,12 +1157,58 @@ impl Inner {
                 self.db.put_book_folder(row, &json)?;
             }
         }
-        // An import writes behind the owner's back; it must read again.
         if added && only_absent {
-            self.generation += 1;
-            self.changed_at.insert(id, self.generation);
+            self.imported_into.insert(id);
         }
         Ok(added)
+    }
+
+    /// Nobody was reading while the library opened, so what its import
+    /// added is news to no one.
+    pub fn forget_imported(&mut self) {
+        self.imported_into.clear();
+    }
+
+    /// A summary made on this device, staged. Refused when a summary before
+    /// `chapter` is not what it was written from; given a stamp newer than
+    /// the one it replaces, because the newest stamp is the current summary.
+    pub fn set_summary(
+        &mut self,
+        book: Uuid,
+        chapter: usize,
+        written_from: &[ChapterSummary],
+        mut summary: ChapterSummary,
+    ) -> anyhow::Result<()> {
+        let held = self.book(book)?.summaries()?;
+        anyhow::ensure!(
+            chapter < held.entries.len() && held.entries[..chapter] == *written_from,
+            "summary context changed"
+        );
+        let replaced = &held.entries[chapter];
+        if replaced.generated && summary.timestamp <= replaced.timestamp {
+            summary.timestamp = replaced.timestamp + 1;
+        }
+        self.unpublished = true;
+        self.insert_summary(book, chapter, &summary)?;
+        Ok(())
+    }
+
+    /// The reader's place or the book's folder, staged; a book that is gone
+    /// takes neither.
+    pub fn set_user_state(
+        &mut self,
+        book: Uuid,
+        reading_state: Option<BookReadingState>,
+        folder_path: Option<Vec<String>>,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(self.has_book(book)?, "book {book} not found");
+        let delta = BookDelta {
+            reading_state,
+            folder_path,
+            ..BookDelta::default()
+        };
+        self.stage(book, &delta, false)?;
+        Ok(())
     }
 
     /// A book of the same title and shape whose content is not all here: an

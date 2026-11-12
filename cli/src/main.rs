@@ -123,8 +123,8 @@ async fn add_book(
         let book_id = library
             .create_book_plain(title, &text, &Language::from_str(lang)?)
             .await?;
-        let book = library.get_book(&book_id).await?.snapshot();
-        println!("Created book {} (id: {})", book.book.title, book.book.id);
+        let book = library.get_book(&book_id).await?;
+        println!("Created book {} (id: {})", book.info().title, book.id());
     } else {
         Err(CliError::UnsupportedFormat(fmt.media_type().to_owned()))?
     }
@@ -138,8 +138,8 @@ async fn add_epub(library: &Library, path: &Path, lang: &str) -> anyhow::Result<
     let book_id = library
         .create_book_epub(&epub, &Language::from_str(lang)?)
         .await?;
-    let book = library.get_book(&book_id).await?.snapshot();
-    println!("Created book {} (id: {})", book.book.title, book.book.id);
+    let book = library.get_book(&book_id).await?;
+    println!("Created book {} (id: {})", book.info().title, book.id());
 
     Ok(())
 }
@@ -154,16 +154,17 @@ async fn dump_summaries(
         .get_book(&book_id)
         .await
         .map_err(|err| anyhow::anyhow!("Book {book_id} not found in library: {err}"))?;
-    let outline = book.read(|book| book.outline()).await?;
-    let book = book.snapshot();
-    let summaries = &book.summaries;
+    let (outline, summaries) = book
+        .read(|book| Ok((book.outline()?, book.summaries()?)))
+        .await?;
+    let summaries = &summaries;
 
     let titles: Vec<Option<String>> = (0..summaries.entries.len())
         .map(|i| outline.chapters.get(i).and_then(|c| c.title.clone()))
         .collect();
 
     let generated = summaries.entries.iter().filter(|e| e.generated).count();
-    println!("Book: {} ({})", book.book.title, book.book.id);
+    println!("Book: {} ({})", book.info().title, book.id());
     println!(
         "Chapters: {} generated, {} pending",
         generated,
@@ -292,10 +293,10 @@ async fn translate_book(
 
     let source_lang = {
         let handle = library.get_book(&book_id).await?;
-        let book = handle.snapshot();
-        let source_lang = Language::from_639_3(&book.book.language).unwrap();
+        let book = handle.info();
+        let source_lang = Language::from_639_3(&book.language).unwrap();
 
-        let paragraph_count = book.book.paragraphs_count();
+        let paragraph_count = book.paragraphs_count();
         let untranslated_ids: Vec<usize> = handle
             .read(move |book| {
                 let outline = book.outline()?;
@@ -316,7 +317,7 @@ async fn translate_book(
             .await?;
         println!(
             "Translating book {} from {} to {}",
-            book.book.title,
+            book.title,
             source_lang.to_name(),
             target_lang.to_name()
         );

@@ -14,7 +14,6 @@ name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
-ownership-bench = []
 manual-llm-diagnostics = ["library/manual-llm-diagnostics"]
 # Opt-in only. Never enable by default or in ship builds: it exposes the whole
 # invoke surface over a local socket.
@@ -79,10 +78,4 @@ tauri-plugin-barcode-scanner = "2"
 apple-native-keyring-store = { version = "1", features = ["protected"] }
 
 [dev-dependencies]
-criterion = "0.8.2"
 tempfile = "3"
-
-[[bench]]
-name = "ownership_bench"
-harness = false
-required-features = ["ownership-bench"]

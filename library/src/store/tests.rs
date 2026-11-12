@@ -90,8 +90,7 @@ fn a_book_and_its_annotations_survive_a_reopen() {
             assert_eq!(listed[0].translations[0].translated_paragraphs_count, 1);
             assert_eq!(listed[0].folder_path, ["a", "b"]);
 
-            let loaded = db.load_book(id)?;
-            assert_eq!(loaded.info.chapter_count(), 2);
+            assert_eq!(db.book_info(id)?.chapter_count(), 2);
             let outline = db.outline(id)?;
             assert_eq!(outline.chapters[0].title.as_deref(), Some("One"));
             assert_eq!(outline.chapters[1].title, None);
@@ -107,17 +106,11 @@ fn a_book_and_its_annotations_survive_a_reopen() {
             let versions = db.versions(id, "rus", 1)?;
             assert_eq!(versions.len(), 2);
             assert_eq!(versions[0].translation.timestamp, 10);
-            assert!(loaded.annotations.summaries.entries[1].generated);
-            assert!(!loaded.annotations.summaries.entries[0].generated);
-            assert_eq!(
-                loaded
-                    .annotations
-                    .user_state
-                    .reading_state
-                    .unwrap()
-                    .page_offset,
-                3
-            );
+            let summaries = db.summaries(id)?;
+            assert!(summaries.entries[1].generated);
+            assert!(!summaries.entries[0].generated);
+            let user_state = db.user_state(id)?;
+            assert_eq!(user_state.reading_state.unwrap().page_offset, 3);
             Ok(())
         })
         .unwrap();
@@ -201,8 +194,7 @@ fn two_devices_converge_through_their_shards() {
                 let listed = db.list_books()?;
                 assert_eq!(listed.len(), 1, "one book, not one per device");
                 assert_eq!(listed[0].folder_path, ["shelf"]);
-                let loaded = db.load_book(id)?;
-                assert_eq!(loaded.info.paragraphs_count(), 3);
+                assert_eq!(db.book_info(id)?.paragraphs_count(), 3);
                 assert_eq!(listed[0].translations.len(), 1);
                 assert_eq!(db.translated(id, "rus", &[0, 1, 2])?, [true, false, true]);
                 Ok(())
@@ -230,7 +222,8 @@ fn a_deleted_book_is_gone_and_its_id_is_spent() {
             assert!(db.list_books()?.is_empty());
             assert!(!db.has_book(id)?);
             assert!(db.knows_book(id)?);
-            assert!(db.load_book(id).is_err());
+            assert!(db.book_info(id).is_err());
+            assert!(db.book(id).is_err());
             Ok(())
         })
         .unwrap();
@@ -419,7 +412,7 @@ fn pruning_keeps_the_current_reading_position() {
     reopened
         .run_blocking(|db| {
             assert_eq!(db.user_state(id)?.reading_state.unwrap().page_offset, 4);
-            assert_eq!(db.load_book(id)?.info.paragraphs_count(), 3);
+            assert_eq!(db.book_info(id)?.paragraphs_count(), 3);
             Ok(())
         })
         .unwrap();
@@ -847,7 +840,7 @@ fn creating_a_book_again_completes_the_one_that_was_cut_short() {
     assert_eq!(created, id, "the same book, not a second one");
     b.run_blocking(|db| {
         assert_eq!(db.list_books()?.len(), 1);
-        assert_eq!(db.load_book(id)?.info.paragraphs_count(), 3);
+        assert_eq!(db.book_info(id)?.paragraphs_count(), 3);
         Ok(())
     })
     .unwrap();
@@ -857,7 +850,7 @@ fn creating_a_book_again_completes_the_one_that_was_cut_short() {
     b.run_blocking(|db| {
         db.refresh()?;
         assert_eq!(db.list_books()?.len(), 1);
-        assert_eq!(db.load_book(id)?.info.paragraphs_count(), 3);
+        assert_eq!(db.book_info(id)?.paragraphs_count(), 3);
         Ok(())
     })
     .unwrap();
@@ -881,7 +874,7 @@ fn a_store_told_its_identity_is_shared_reopens_as_a_new_writer() {
     assert!(!store.local_dir().join("rotate-writer").exists());
     store
         .run_blocking(|db| {
-            assert_eq!(db.load_book(id)?.info.paragraphs_count(), 3);
+            assert_eq!(db.book_info(id)?.paragraphs_count(), 3);
             db.persist(id, &position(1))?;
             assert_eq!(db.user_state(id)?.reading_state, Some(reading(1)));
             Ok(())
@@ -972,7 +965,7 @@ fn compaction_waits_for_a_quiet_moment_and_leaves_readers_alone() {
     assert!(store.compact_if_idle(Duration::ZERO).unwrap());
     store
         .run_blocking(|db| {
-            assert_eq!(db.load_book(id)?.info.paragraphs_count(), 3);
+            assert_eq!(db.book_info(id)?.paragraphs_count(), 3);
             db.persist(id, &position(2))?;
             assert_eq!(db.user_state(id)?.reading_state, Some(reading(2)));
             Ok(())
@@ -1035,7 +1028,7 @@ fn a_store_can_start_over_as_a_new_writer_without_reopening() {
     assert!(store.is_own_file(&own));
     store
         .run_blocking(|db| {
-            assert_eq!(db.load_book(id)?.info.paragraphs_count(), 3);
+            assert_eq!(db.book_info(id)?.paragraphs_count(), 3);
             db.persist(id, &position(1))?;
             assert!(db.health().shared_identity, "that is the user's to settle");
             db.settle_shared_identity()?;

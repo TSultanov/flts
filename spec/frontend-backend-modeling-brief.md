@@ -82,28 +82,27 @@
 
 ### Family 3: Unsaved In-Memory Modifications / Shutdown Persistence (MEDIUM)
 
-**Mechanism**: A book's owner task holds only the book's row, its chapter summaries and the reader's state; the text and the translations are read from the library store on demand (`BookRef::read`). A translation is staged in the store as soon as it is applied, so readers find it at once; the other changes of a batch are handed over as one `BookDelta`, and `LibraryBook::persist()` stages them and commits. Once staged, the rows are the store's: if the commit fails, the caller is told, the store keeps them staged, and they are committed by the next successful commit of anything, by a `flush`, by the store's periodic retry, or at `Library::close()`. Every part of a delta is idempotent. A reading position that is the only pending change waits up to two seconds for other changes before it is committed alone. There is no merge against on-disk files: concurrent writes from other devices are merged by the store and adopted by `Library::refresh_from_peers()`. On `RunEvent::Exit` the backend runs `AppState::shutdown()`; an abnormal termination loses what was not yet committed.
+**Mechanism**: Nothing of a book is held in memory but its row. Every read goes to the library store (`BookRef::read`), and every write is staged there as it is made: a translation or a summary at once, a folder change with its own commit. Only a reading position waits in memory, for up to two seconds, so that a run of page turns is one row. One library-wide task (`commit_when_due`) commits when a write asks for it and retries a failed commit every five seconds. Once staged, rows are the store's: if a commit fails, `flush()` reports it, the store keeps the rows staged, and they land with the next successful commit, a later `flush`, the retry, or `Library::close()`. There is no merge against on-disk files: concurrent writes from other devices are merged by the store and adopted by `Library::refresh_from_peers()`. On `RunEvent::Exit` the backend runs `AppState::shutdown()`; an abnormal termination loses what was not yet committed.
 
 **Evidence**:
 
-- Code analysis: `library/src/library/library_book/mod.rs` — `persist()` stages the delta, clears pending state, commits; `flush()` = `persist()` + store publish
-- Code analysis: `library/src/library/library_book/handle.rs` — the owner settles each command batch with one commit; `flush()` / `reload()` go through the book's mailbox
-- Code analysis: `library/src/library.rs` — `republish` retries a failed commit while the library is open; `close()` publishes last
+- Code analysis: `library/src/library/library_book/mod.rs` — `Writes::land()` stages waiting reading positions and commits; `BookRef` writes stage through the store
+- Code analysis: `library/src/library.rs` — `commit_when_due` commits and retries while the library is open; `hold_open` lands everything at close or when the last `Library` is dropped
 - Code analysis: `site/src-tauri/src/lib.rs` — `RunEvent::Exit` → `AppState::shutdown()` (`site/src-tauri/src/app/lifecycle.rs`)
 
 **Affected code paths**:
 
-- `BookHandle::apply_translation()` / `apply_summary()` / `flush()` → `LibraryBook::persist()` → store commit
-- `Library::refresh_from_peers()` → `BookHandle::reload()` — adopts other devices' rows
+- `BookHandle::apply_translation()` / `apply_summary()` / `update_reading_state()` / `flush()` → store stage → commit
+- `Library::refresh_from_peers()` — adopts other devices' rows
 - App shutdown — `AppState::shutdown()` → `Library::close()`
 
 **Suggested modeling approach**:
 
-- See `spec/ownership/Ownership.tla`: `unstaged[book]` (held only by the owner), `staged[book]` (held by the store, uncommitted), `disk[book]`
-- Invariant: `UnstagedPinned` — an owner is never let go while it alone holds a change
+- Per book: `waiting` (a reading position held in memory), `staged` (held by the store, uncommitted), `disk`
+- Invariant: a close that reports success leaves nothing `waiting` or `staged`
 
 **Priority**: Medium
-**Rationale**: The remaining risk is the window between an in-memory modification and its commit; abnormal termination loses whatever is still uncommitted.
+**Rationale**: The remaining risk is the window between a write and its commit; abnormal termination loses whatever is still uncommitted.
 
 ---
 

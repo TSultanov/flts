@@ -18,7 +18,7 @@
 - Each device appends rows to its own shard files (`*.dbs`) under `<library_root>/db/`; that directory is the only part that syncs. Row ids are derived from content, so devices writing the same thing name the same row.
 - The cache, lock and writer id are device-local, in `<parent>/.<root_name>.flts-local/` (inside the root only when the parent is unwritable).
 - The device roster is a separate dbsync store under `<library_root>/.flts/roster/` (`library/src/sync/roster.rs`).
-- An open book keeps only its row, summaries and reader state in memory. Text and translations are read from the store when asked for (`BookRef::read`, `library/src/store/reader.rs`); a paragraph's translation is stored in two halves (`library/src/book/words.rs`) so that drawing it does not read the per-word details.
+- A book handle (`BookRef`) holds only the book's row; there is no per-book task or cache. Writes are staged in the store as they are made and committed by one library-wide task (`commit_when_due` in `library/src/library.rs`). Text and translations are read from the store when asked for (`BookRef::read`, `library/src/store/reader.rs`); a paragraph's translation is stored in two halves (`library/src/book/words.rs`) so that drawing it does not read the per-word details.
 - The watcher (`library/src/library/file_watcher.rs`) reports changed shards; the library ignores its own and adopts other devices' rows.
 - The older file-per-book format (`<uuid>/book.dat`, `translation_*.dat`, …) is only read, by the one-way importer in `library/src/legacy.rs`; nothing writes it.
 - Settings stay in `config.json`; caches are plain files under the cache dir.

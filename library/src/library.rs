@@ -6,7 +6,7 @@ use std::{
 
 use isolang::Language;
 use log::trace;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use uuid::Uuid;
 
 use crate::{
@@ -14,22 +14,17 @@ use crate::{
     card::{Card, CardWordFields, card_update_from_word},
     epub_importer::EpubBook,
     library::{
-        file_watcher::LibraryFileChange, library_book::LibraryBook, library_card::LibraryCardStore,
+        file_watcher::LibraryFileChange, library_book::Writes, library_card::LibraryCardStore,
     },
     store::LibraryStore,
 };
 
-pub use library_book::{BookHandle, BookRef, BookSnapshot, BookStatus};
+pub use library_book::{BookHandle, BookRef};
 
 pub mod file_watcher;
 pub mod library_book;
 pub mod library_card;
-mod registry;
 mod session;
-
-/// Books pinned in the warm LRU. Beyond it a book stays reachable through the
-/// weak index until its last holder drops.
-pub const DEFAULT_BOOKS_CACHE_CAPACITY: usize = 8;
 
 #[derive(Debug)]
 pub enum LibraryError {
@@ -75,10 +70,10 @@ pub struct LibraryBookMetadata {
 pub struct PeerChanges {
     /// The shelf may differ: books, their folders or their translation counts.
     pub library: bool,
-    /// Loaded books whose summaries, position or folder changed, or whose
-    /// changed paragraphs are not known one by one.
+    /// Books whose summaries, position or folder changed, or whose changed
+    /// paragraphs are not known one by one.
     pub books: Vec<Uuid>,
-    /// Paragraphs of loaded books that gained a translation.
+    /// Paragraphs that gained a translation.
     pub paragraphs: Vec<(Uuid, usize)>,
     /// Books deleted on another device.
     pub deleted: Vec<Uuid>,
@@ -96,18 +91,17 @@ impl PeerChanges {
 const MAINTAIN_AFTER: std::time::Duration = std::time::Duration::from_secs(120);
 const MAINTAIN_EVERY: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
 
-type Closed = tokio::sync::watch::Receiver<(u64, Option<Result<(), String>>)>;
+type Closed = watch::Receiver<bool>;
 type Retired = std::sync::Arc<std::sync::Mutex<Vec<u64>>>;
 
 /// True once the library has closed, or was dropped.
 async fn closed_within(closed: &mut Closed, wait: std::time::Duration) -> bool {
-    let done = |closed: &Closed| closed.borrow().1.as_ref().is_some_and(Result::is_ok);
-    if done(closed) {
+    if *closed.borrow() {
         return true;
     }
     tokio::select! {
         _ = tokio::time::sleep(wait) => false,
-        changed = closed.changed() => changed.is_err() || done(closed),
+        changed = closed.changed() => changed.is_err() || *closed.borrow(),
     }
 }
 
@@ -141,22 +135,73 @@ async fn compact_when_idle(store: LibraryStore, mut closed: Closed) {
 /// How often a commit that failed is tried again on its own.
 const REPUBLISH_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Lands what a failed commit left staged, for as long as the library is open.
-async fn republish(store: LibraryStore, mut closed: Closed) {
-    while !closed_within(&mut closed, REPUBLISH_EVERY).await {
-        if store
+/// Commits when a book asks for it, and lands what a failed commit left
+/// staged, for as long as the library is open.
+async fn commit_when_due(writes: Arc<Writes>, mut closed: Closed) {
+    let mut asked = writes.commit_due.subscribe();
+    loop {
+        let due = *asked.borrow_and_update();
+        let wait = match due {
+            Some(at) => at.saturating_duration_since(tokio::time::Instant::now()),
+            None => REPUBLISH_EVERY,
+        };
+        tokio::select! {
+            closed = closed_within(&mut closed, wait) => if closed { break },
+            _ = asked.changed() => continue,
+        }
+        if due.is_some() {
+            // Whoever asked for an earlier commit meanwhile keeps its turn.
+            writes.commit_due.send_if_modified(|held| {
+                let ours = *held == due;
+                if ours {
+                    *held = None;
+                }
+                ours
+            });
+        } else if !writes
+            .store
             .read(|db| Ok(db.has_unpublished()))
             .await
             .unwrap_or(false)
-            && let Err(err) = store.run(|db| db.publish()).await
         {
-            log::debug!("library store still cannot commit: {err:#}");
+            continue;
+        }
+        if let Err(err) = writes.land().await {
+            log::debug!("library store cannot commit yet: {err:#}");
         }
     }
 }
 
-use registry::{BookRequest, serve_books};
-#[cfg(test)]
+type CloseReply = oneshot::Sender<Result<(), String>>;
+
+/// Holds the lease for as long as the library is open. Closes it when asked
+/// to, or when the last `Library` is dropped.
+async fn hold_open(
+    lease: session::LibraryLease,
+    writes: Arc<Writes>,
+    mut closes: mpsc::Receiver<CloseReply>,
+    closed: watch::Sender<bool>,
+) {
+    loop {
+        let reply = closes.recv().await;
+        if let Err(err) = writes.land().await {
+            log::warn!("library closing with unsaved changes: {err:#}");
+            if let Some(reply) = reply {
+                // Stays open, so the caller may try to close again.
+                let _ = reply.send(Err(format!("flush failed: {err:#}")));
+                continue;
+            }
+        }
+        writes.store.close().await;
+        drop(lease);
+        closed.send_replace(true);
+        if let Some(reply) = reply {
+            let _ = reply.send(Ok(()));
+        }
+        break;
+    }
+}
+
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -164,15 +209,15 @@ pub struct Library {
     library_root: PathBuf,
     store: LibraryStore,
     card_store: LibraryCardStore,
-    books: mpsc::Sender<BookRequest>,
-    close_control: tokio::sync::watch::Sender<u64>,
+    writes: Arc<Writes>,
+    closes: mpsc::Sender<CloseReply>,
     closed: Closed,
     retired: Retired,
 }
 
 impl Library {
     pub async fn open(library_root: PathBuf) -> anyhow::Result<Self> {
-        Self::open_with_capacity(library_root, DEFAULT_BOOKS_CACHE_CAPACITY).await
+        Self::open_inner(library_root, None).await
     }
 
     /// `open`, telling `progress` how far the import of old-format files is.
@@ -181,19 +226,11 @@ impl Library {
         library_root: PathBuf,
         progress: crate::legacy::Progress,
     ) -> anyhow::Result<Self> {
-        Self::open_inner(library_root, DEFAULT_BOOKS_CACHE_CAPACITY, Some(progress)).await
-    }
-
-    pub async fn open_with_capacity(
-        library_root: PathBuf,
-        cache_capacity: usize,
-    ) -> anyhow::Result<Self> {
-        Self::open_inner(library_root, cache_capacity, None).await
+        Self::open_inner(library_root, Some(progress)).await
     }
 
     async fn open_inner(
         library_root: PathBuf,
-        cache_capacity: usize,
         progress: Option<crate::legacy::Progress>,
     ) -> anyhow::Result<Self> {
         if !tokio::fs::try_exists(&library_root).await? {
@@ -207,19 +244,13 @@ impl Library {
             tokio::task::spawn_blocking(move || LibraryStore::open(&root)).await??
         };
         import_legacy(&library_root, &store, progress).await;
+        store.run(|db| Ok(db.forget_imported())).await?;
         let card_store = LibraryCardStore::new(store.clone());
-        let (books, requests) = mpsc::channel(256);
-        let (close_control, close_requests) = tokio::sync::watch::channel(0);
-        let (completion, closed) = tokio::sync::watch::channel((0, None));
-        tokio::spawn(serve_books(
-            lease,
-            store.clone(),
-            cache_capacity,
-            requests,
-            close_requests,
-            completion,
-        ));
-        tokio::spawn(republish(store.clone(), closed.clone()));
+        let writes = Writes::new(store.clone());
+        let (closes, close_requests) = mpsc::channel(4);
+        let (closing, closed) = watch::channel(false);
+        tokio::spawn(hold_open(lease, writes.clone(), close_requests, closing));
+        tokio::spawn(commit_when_due(writes.clone(), closed.clone()));
         tokio::spawn(compact_when_idle(store.clone(), closed.clone()));
         let retired = Retired::default();
         tokio::spawn(maintain_periodically(
@@ -232,8 +263,8 @@ impl Library {
             library_root,
             store,
             card_store,
-            books,
-            close_control,
+            writes,
+            closes,
             closed,
             retired,
         })
@@ -241,54 +272,6 @@ impl Library {
 
     pub fn card_store(&self) -> &LibraryCardStore {
         &self.card_store
-    }
-
-    async fn request<T>(
-        &self,
-        build: impl FnOnce(oneshot::Sender<T>) -> BookRequest,
-    ) -> anyhow::Result<T> {
-        let (reply, response) = oneshot::channel();
-        self.books
-            .send(build(reply))
-            .await
-            .map_err(|_| anyhow::anyhow!("book registry closed"))?;
-        response
-            .await
-            .map_err(|_| anyhow::anyhow!("book registry dropped reply"))
-    }
-
-    pub async fn get_book(&self, uuid: &Uuid) -> anyhow::Result<BookHandle> {
-        let id = *uuid;
-        self.request(|reply| BookRequest::Get { id, reply }).await?
-    }
-
-    /// The book if it is already loaded; never touches disk.
-    #[cfg(test)]
-    async fn cached_book(&self, id: Uuid) -> Option<BookHandle> {
-        self.request(|reply| BookRequest::Cached { id, reply })
-            .await
-            .ok()
-            .flatten()
-    }
-
-    /// Resolves once no load for `id` is in flight and the book is deleted.
-    pub(crate) async fn remove_book(&self, id: Uuid) -> anyhow::Result<()> {
-        self.request(|reply| BookRequest::Remove { id, reply })
-            .await?
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn cached_books(&self) -> Vec<BookHandle> {
-        self.request(|reply| BookRequest::Live { reply })
-            .await
-            .unwrap_or_default()
-    }
-
-    #[cfg(test)]
-    async fn inflight_loads(&self) -> usize {
-        self.request(|reply| BookRequest::Inflight { reply })
-            .await
-            .unwrap()
     }
 
     /// Create the card for one word in a translated paragraph, or report that
@@ -302,7 +285,7 @@ impl Library {
         target_language: Language,
     ) -> anyhow::Result<CardCreationOutcome> {
         let book = self.get_book(&book_id).await?;
-        let language = book.snapshot().book.language.clone();
+        let language = book.info().language.clone();
         let source_language = Language::from_639_3(&language).ok_or_else(|| {
             anyhow::anyhow!("unknown source language code on book {book_id}: {language}")
         })?;
@@ -422,52 +405,22 @@ impl Library {
                 log::warn!("could not remove the old copy of a deleted book: {err}");
             }
         }
-        let loaded = self.request(|reply| BookRequest::All { reply }).await?;
-        let ids: Vec<Uuid> = loaded.iter().map(|b| b.snapshot().book.id).collect();
-        let states = self
-            .store
-            .read(move |db| {
-                ids.iter()
-                    .map(|id| Ok((db.is_purged(*id)?, db.book_generation(*id))))
-                    .collect::<anyhow::Result<Vec<_>>>()
-            })
-            .await?;
-        for (book, (purged, generation)) in loaded.into_iter().zip(states) {
-            let snapshot = book.snapshot();
-            let id = snapshot.book.id;
-            if purged {
-                // Deleted elsewhere: only the owner and our leftovers remain.
-                let _ = self.remove_book(id).await;
-                if !changes.deleted.contains(&id) {
-                    changes.deleted.push(id);
-                }
-                continue;
+        for (id, change) in &adopted.books {
+            // Without a summary or state change, the paragraphs say it all.
+            if change.summaries || change.user_state || change.paragraphs.is_empty() {
+                changes.books.push(*id);
             }
-            // Behind for any reason, an earlier failed reload included.
-            if snapshot.store_generation >= generation {
-                continue;
-            }
-            match book.reload().await {
-                Ok(false) => {}
-                Ok(true) => match adopted.books.get(&id) {
-                    Some(change) if !change.summaries && !change.user_state => {
-                        if change.paragraphs.is_empty() {
-                            changes.books.push(id);
-                        }
-                        changes
-                            .paragraphs
-                            .extend(change.paragraphs.iter().map(|paragraph| (id, *paragraph)));
-                    }
-                    Some(change) => {
-                        changes.books.push(id);
-                        changes
-                            .paragraphs
-                            .extend(change.paragraphs.iter().map(|paragraph| (id, *paragraph)));
-                    }
-                    None => changes.books.push(id),
-                },
-                Err(err) => log::debug!("book {id} is not up to date yet: {err:#}"),
-            }
+            changes
+                .paragraphs
+                .extend(change.paragraphs.iter().map(|paragraph| (*id, *paragraph)));
+        }
+        changes.books.sort_unstable();
+        changes.paragraphs.sort_unstable();
+        if !adopted.books.is_empty() {
+            self.writes.note_summaries_changed();
+        }
+        for id in &changes.deleted {
+            self.writes.forget(*id);
         }
         Ok(changes)
     }
@@ -524,7 +477,7 @@ impl Library {
             book.push_paragraph(chapter_index, paragraph, None);
         }
 
-        Ok(self.create_book(book).await?.snapshot().book.id)
+        Ok(self.create_book(book).await?.id())
     }
 
     pub async fn create_book_epub(
@@ -540,45 +493,29 @@ impl Library {
             }
         }
 
-        Ok(self.create_book(book).await?.snapshot().book.id)
+        Ok(self.create_book(book).await?.id())
     }
 
     /// Ok once nothing of this device's is waiting for a commit.
     pub async fn flush(&self) -> anyhow::Result<()> {
-        let books = self.request(|reply| BookRequest::All { reply }).await?;
-        let results = futures_util::future::join_all(books.iter().map(|book| async move {
-            match book.flush().await {
-                // A book on its way out stages what it holds as it goes.
-                Err(_) if *book.admission.borrow() != BookStatus::Active => Ok(()),
-                result => result,
-            }
-        }))
-        .await;
-        for result in results {
-            result?;
-        }
-        self.store.run(|db| db.publish()).await
+        self.writes.land().await
     }
+
+    /// A close that could not commit fails and leaves the library open.
     pub async fn close(&self) -> anyhow::Result<()> {
-        if self.closed.borrow().1.as_ref().is_some_and(Result::is_ok) {
+        if *self.closed.borrow() {
             return Ok(());
         }
-        let mut done = self.closed.clone();
-        self.close_control
-            .send_modify(|epoch| *epoch = epoch.wrapping_add(1));
-        let epoch = *self.close_control.borrow();
-        loop {
-            let (completed, result) = done.borrow_and_update().clone();
-            if completed >= epoch {
-                if let Some(result) = result {
-                    return result.map_err(anyhow::Error::msg);
-                }
-            }
-            done.changed()
-                .await
-                .map_err(|_| anyhow::anyhow!("library closed without completion"))?;
+        let (reply, done) = oneshot::channel();
+        if self.closes.send(reply).await.is_err() {
+            return Ok(());
+        }
+        match done.await {
+            Ok(result) => result.map_err(anyhow::Error::msg),
+            Err(_) => Ok(()),
         }
     }
+
     pub fn root(&self) -> &Path {
         &self.library_root
     }
@@ -777,157 +714,7 @@ mod library_tests {
     }
 
     #[tokio::test]
-    async fn evicted_uuid_returns_same_arc_while_held() {
-        let temp_dir = TempDir::new("flts_test");
-        let library = Library::open_with_capacity(temp_dir.path.join("lib"), 2)
-            .await
-            .unwrap();
-
-        let id = make_saved_book(&library, "Pinned").await;
-        let held = library.get_book(&id).await.unwrap();
-
-        for i in 0..4 {
-            let _ = make_saved_book(&library, &format!("Filler {i}")).await;
-        }
-
-        let re_fetched = library.get_book(&id).await.unwrap();
-        assert!(
-            Arc::ptr_eq(&held, &re_fetched),
-            "expected same Arc instance while caller still holds it",
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn evicted_uuid_reloads_after_holder_drops() {
-        let temp_dir = TempDir::new("flts_test");
-        let library = Library::open_with_capacity(temp_dir.path.join("lib"), 2)
-            .await
-            .unwrap();
-
-        let id = make_saved_book(&library, "Dropped").await;
-        let first = library.get_book(&id).await.unwrap();
-        let first_owner = first.incarnation;
-
-        for i in 0..4 {
-            let _ = make_saved_book(&library, &format!("Filler {i}")).await;
-        }
-
-        drop(first);
-        // The sweep is what notices a dropped handle.
-        for _ in 0..100 {
-            if library.cached_book(id).await.is_none() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-
-        let reloaded = library.get_book(&id).await.unwrap();
-        assert!(
-            reloaded.incarnation > first_owner,
-            "expected a fresh owner after the last holder dropped",
-        );
-    }
-
-    #[tokio::test]
-    async fn weak_entry_cleared_when_book_dropped() {
-        let temp_dir = TempDir::new("flts_test");
-        let library = Library::open_with_capacity(temp_dir.path.join("lib"), 1)
-            .await
-            .unwrap();
-
-        let id = make_saved_book(&library, "Ephemeral").await;
-        let first_owner = library.get_book(&id).await.unwrap().incarnation;
-
-        for i in 0..3 {
-            let _ = make_saved_book(&library, &format!("Other {i}")).await;
-        }
-
-        let reloaded = library.get_book(&id).await.unwrap();
-        assert!(
-            reloaded.incarnation > first_owner,
-            "evicted book without holder must reload as a fresh instance",
-        );
-        assert_eq!(
-            Arc::strong_count(&reloaded),
-            2,
-            "expected exactly two strong refs: caller + LRU pin",
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn concurrent_get_book_single_flight_after_eviction() {
-        let temp_dir = TempDir::new("flts_test");
-        let library = Library::open_with_capacity(temp_dir.path.join("lib"), 1)
-            .await
-            .unwrap();
-        let id = evicted_book(&library).await;
-
-        let mut handles = Vec::new();
-        for _ in 0..8 {
-            let library = library.clone();
-            handles.push(tokio::spawn(async move { library.get_book(&id).await }));
-        }
-        let mut books = Vec::new();
-        for handle in handles {
-            books.push(
-                handle
-                    .await
-                    .unwrap()
-                    .expect("concurrent get_book must not fail"),
-            );
-        }
-
-        let first = &books[0];
-        for book in &books[1..] {
-            assert!(
-                Arc::ptr_eq(first, book),
-                "all concurrent callers must resolve to the same instance",
-            );
-        }
-        assert_eq!(
-            library.inflight_loads().await,
-            0,
-            "flights must be pruned once all callers are answered",
-        );
-    }
-
-    /// A saved book that capacity 1 has pushed out, so the next get loads it.
-    async fn evicted_book(library: &Library) -> Uuid {
-        let id = make_saved_book(library, "Raced").await;
-        let _ = make_saved_book(library, "Filler").await;
-        id
-    }
-
-    /// Occupies the store until the returned sender fires, parking every load.
-    async fn hold_store(library: &Library) -> std::sync::mpsc::Sender<()> {
-        let store = library.store().clone();
-        let (entered, held) = oneshot::channel();
-        let (release, released) = std::sync::mpsc::channel::<()>();
-        tokio::task::spawn_blocking(move || {
-            store
-                .run_blocking(|_| {
-                    let _ = entered.send(());
-                    let _ = released.recv();
-                    Ok(())
-                })
-                .unwrap()
-        });
-        held.await.unwrap();
-        release
-    }
-
-    async fn wait_for_inflight_load(library: &Library) {
-        for _ in 0..1000 {
-            if library.inflight_loads().await > 0 {
-                return;
-            }
-            tokio::task::yield_now().await;
-        }
-        panic!("load never became visible as in flight");
-    }
-
-    #[tokio::test]
-    async fn book_registry_exits_when_library_drops() {
+    async fn background_tasks_exit_when_the_library_drops() {
         let temp_dir = TempDir::new("flts_test");
         let baseline = tokio::runtime::Handle::current()
             .metrics()
@@ -948,11 +735,11 @@ mod library_tests {
             }
         })
         .await
-        .expect("registry task must exit once the library drops");
+        .expect("every background task must exit once the library drops");
     }
 
     #[tokio::test]
-    async fn get_book_error_reaches_every_waiter() {
+    async fn get_book_fails_for_every_caller_asking_for_a_missing_book() {
         let temp_dir = TempDir::new("flts_test");
         let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
         let missing = Uuid::new_v4();
@@ -966,74 +753,28 @@ mod library_tests {
         for get in gets {
             assert!(get.await.unwrap().is_err());
         }
-        assert_eq!(library.inflight_loads().await, 0);
     }
 
-    #[tokio::test]
-    async fn remove_during_load_caches_nothing() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_get_book_serves_every_caller() {
         let temp_dir = TempDir::new("flts_test");
-        let root = temp_dir.path.join("lib");
-        let library = Library::open_with_capacity(root.clone(), 1).await.unwrap();
-        let id = evicted_book(&library).await;
+        let library = Library::open(temp_dir.path.join("lib")).await.unwrap();
+        let id = make_saved_book(&library, "Raced").await;
 
-        let release = hold_store(&library).await;
-        let get = {
-            let library = library.clone();
-            tokio::spawn(async move { library.get_book(&id).await })
-        };
-        wait_for_inflight_load(&library).await;
-        let remove = {
-            let library = library.clone();
-            tokio::spawn(async move { library.remove_book(id).await })
-        };
-
-        assert!(
-            get.await.unwrap().is_err(),
-            "a get racing a remove must not hand out a book that is being deleted",
-        );
-        assert!(
-            !remove.is_finished(),
-            "remove must resolve only after the in-flight load finished",
-        );
-        release.send(()).unwrap();
-        remove.await.unwrap().unwrap();
-
-        assert!(library.cached_book(id).await.is_none());
-        assert_eq!(library.inflight_loads().await, 0);
-        assert!(library.get_book(&id).await.is_err());
-        let listed = library.list_books().await.unwrap();
-        assert!(listed.iter().all(|book| book.id != id));
-    }
-
-    #[tokio::test]
-    async fn cancelled_get_book_does_not_abort_load() {
-        let temp_dir = TempDir::new("flts_test");
-        let root = temp_dir.path.join("lib");
-        let library = Library::open_with_capacity(root.clone(), 1).await.unwrap();
-        let id = evicted_book(&library).await;
-
-        let release = hold_store(&library).await;
-        let get = {
-            let library = library.clone();
-            tokio::spawn(async move { library.get_book(&id).await })
-        };
-        wait_for_inflight_load(&library).await;
-        get.abort();
-        let _ = get.await;
-        assert_eq!(library.inflight_loads().await, 1);
-        release.send(()).unwrap();
-
-        // The abandoned load still lands; this get finds its book.
-        for _ in 0..1000 {
-            if library.inflight_loads().await == 0 {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        let gets: Vec<_> = (0..8)
+            .map(|_| {
+                let library = library.clone();
+                tokio::spawn(async move { library.get_book(&id).await })
+            })
+            .collect();
+        for get in gets {
+            let book = get
+                .await
+                .unwrap()
+                .expect("concurrent get_book must not fail");
+            assert_eq!(book.id(), id);
+            assert_eq!(book.info().title, "Raced");
         }
-        let cached = library.cached_book(id).await.expect("the load completed");
-        let fetched = library.get_book(&id).await.unwrap();
-        assert!(Arc::ptr_eq(&cached, &fetched));
-        assert_eq!(library.inflight_loads().await, 0);
     }
 
     fn spanish_paragraph() -> translation_import::ParagraphTranslation {
@@ -1285,25 +1026,6 @@ mod library_tests {
         assert_eq!(
             library.card_store().list_pairs().await.unwrap(),
             [("spa".to_string(), "rus".to_string())]
-        );
-    }
-
-    #[tokio::test]
-    async fn lru_capacity_respected() {
-        let temp_dir = TempDir::new("flts_test");
-        let capacity = 3;
-        let library = Library::open_with_capacity(temp_dir.path.join("lib"), capacity)
-            .await
-            .unwrap();
-
-        for i in 0..(capacity + 3) {
-            let _ = make_saved_book(&library, &format!("Book {i}")).await;
-        }
-
-        assert_eq!(
-            library.cached_books().await.len(),
-            capacity,
-            "warm LRU must not exceed capacity",
         );
     }
 

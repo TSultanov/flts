@@ -196,7 +196,7 @@ impl<'a> LibraryView<'a> {
         target_language: &Language,
     ) -> anyhow::Result<ParagraphView> {
         let book = self.library.get_book(&book_id).await?;
-        let info = book.snapshot().book.clone();
+        let info = book.info().clone();
         // The id comes from the frontend.
         if paragraph_id >= info.paragraphs_count() {
             anyhow::bail!(
@@ -242,7 +242,7 @@ impl<'a> LibraryView<'a> {
         paragraph_ids: Vec<usize>,
     ) -> anyhow::Result<Vec<ParagraphOriginal>> {
         let book = self.library.get_book(&book_id).await?;
-        let count = book.snapshot().book.paragraphs_count();
+        let count = book.info().paragraphs_count();
         book.read(move |book| {
             paragraph_ids
                 .into_iter()
@@ -266,7 +266,7 @@ impl<'a> LibraryView<'a> {
         target_language: &Language,
     ) -> anyhow::Result<Vec<ParagraphTranslationSlice>> {
         let book = self.library.get_book(&book_id).await?;
-        let info = book.snapshot().book.clone();
+        let info = book.info().clone();
         let src_lang = source_language(&info.language)?;
         let (count, target) = (info.paragraphs_count(), *target_language);
         // An untranslated paragraph's text is not read: nothing is drawn from it.
@@ -417,7 +417,7 @@ impl<'a> LibraryView<'a> {
         target_language: &Language,
     ) -> anyhow::Result<Option<WordView>> {
         let book = self.library.get_book(&book_id).await?;
-        let source_language_code = book.snapshot().book.language.clone();
+        let source_language_code = book.info().language.clone();
         // The one read that takes the words' details.
         let target = *target_language;
         let Some(stored) = book

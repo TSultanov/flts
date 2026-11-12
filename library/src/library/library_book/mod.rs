@@ -1,25 +1,26 @@
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use isolang::Language;
 use serde::{Deserialize, Serialize};
+use tokio::{sync::watch, time::Instant};
 use uuid::Uuid;
 
 use crate::{
     book::{
         book::Book,
         chapter_summaries::{ChapterSummaries, ChapterSummary},
-        translation_import,
+        translation_import::ParagraphTranslation,
     },
     library::Library,
-    store::{Annotations, BookDelta, BookInfo, LibraryStore, LoadedBook, NewVersion},
+    store::{BookInfo, BookReader, LibraryStore, NewVersion},
 };
 
-mod handle;
 #[cfg(test)]
 mod tests;
-
-pub use handle::{BookHandle, BookRef, BookSnapshot, BookStatus, BookSubscription};
-pub(crate) use handle::{StopMode, owner, serve_book};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BookReadingState {
@@ -41,208 +42,235 @@ pub struct BookUserState {
     pub folder_path: Vec<String>,
 }
 
-/// What an open book holds: its row, and the small things the reader
-/// changes. Its text and translations stay in the store and are read there.
-pub struct LibraryBook {
-    store: LibraryStore,
-    pub book: Arc<BookInfo>,
-    /// The store generation the annotations were last read at.
-    adopted: u64,
-    /// Translations staged in the store and not committed yet.
-    staged: bool,
-    user_state: BookUserState,
-    pending_reading_state: Option<BookReadingState>,
-    pending_folder_path: Option<Vec<String>>,
-    /// Commits attempted.
-    #[cfg(test)]
-    save_count: usize,
-    summaries: Arc<ChapterSummaries>,
-    dirty_summaries: Vec<usize>,
-    status: BookStatus,
+/// How long a reading position waits before it is committed. Flipping pages
+/// would otherwise be a commit, and a file for every other device to fetch,
+/// each.
+const POSITION_DELAY: Duration = Duration::from_secs(2);
+
+/// What every book of an open library writes through.
+pub(crate) struct Writes {
+    pub(crate) store: LibraryStore,
+    /// Reading positions not handed to the store yet: only the last one of
+    /// a run of page turns is worth a row.
+    positions: Mutex<HashMap<Uuid, BookReadingState>>,
+    /// When the next commit is due, for `Library::commit_when_due`.
+    pub(crate) commit_due: watch::Sender<Option<Instant>>,
+    /// Bumped whenever some book's summaries may have changed.
+    pub(crate) summaries_changed: watch::Sender<u64>,
 }
 
-impl LibraryBook {
-    pub(crate) async fn load(store: LibraryStore, id: Uuid) -> anyhow::Result<Self> {
-        let LoadedBook { info, annotations } = store.read(move |db| db.load_book(id)).await?;
-        Ok(Self {
+impl Writes {
+    pub(crate) fn new(store: LibraryStore) -> Arc<Self> {
+        Arc::new(Self {
             store,
-            book: Arc::new(info),
-            adopted: annotations.generation,
-            staged: false,
-            user_state: annotations.user_state,
-            pending_reading_state: None,
-            pending_folder_path: None,
-            #[cfg(test)]
-            save_count: 0,
-            summaries: Arc::new(annotations.summaries),
-            dirty_summaries: Vec::new(),
-            status: BookStatus::Active,
+            positions: Mutex::default(),
+            commit_due: watch::channel(None).0,
+            summaries_changed: watch::channel(0).0,
         })
     }
 
-    fn adopt(&mut self, annotations: Annotations) {
-        self.summaries = Arc::new(annotations.summaries);
-        self.user_state = annotations.user_state;
-        self.adopted = annotations.generation;
+    fn commit_within(&self, delay: Duration) {
+        let at = Instant::now() + delay;
+        self.commit_due.send_if_modified(|due| match due {
+            Some(held) if *held <= at => false,
+            _ => {
+                *due = Some(at);
+                true
+            }
+        });
     }
 
-    pub(crate) fn snapshot(&mut self) -> Arc<BookSnapshot> {
-        Arc::new(BookSnapshot {
-            book: self.book.clone(),
-            summaries: self.summaries.clone(),
-            user_state: self.user_state.clone(),
-            store_generation: self.adopted,
-            status: self.status,
-        })
+    pub(crate) fn note_summaries_changed(&self) {
+        self.summaries_changed
+            .send_modify(|n| *n = n.wrapping_add(1));
     }
 
-    /// Changes not committed yet.
-    pub fn has_unsaved_changes(&self) -> bool {
-        self.staged || !self.delta().is_empty()
+    pub(crate) fn forget(&self, book: Uuid) {
+        self.positions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&book);
     }
 
-    pub(crate) fn only_position_unsaved(&self) -> bool {
-        let delta = self.delta();
-        !self.staged
-            && delta.reading_state.is_some()
-            && delta.summaries.is_empty()
-            && delta.folder_path.is_none()
+    /// Commits everything this device has changed. What a failed commit
+    /// leaves is staged in the store, which lands it with its next one.
+    pub(crate) async fn land(&self) -> anyhow::Result<()> {
+        let positions =
+            std::mem::take(&mut *self.positions.lock().unwrap_or_else(|e| e.into_inner()));
+        self.store
+            .run(move |db| {
+                for (book, position) in positions {
+                    // The book may have been deleted since.
+                    if db.has_book(book)? {
+                        db.set_user_state(book, Some(position), None)?;
+                    }
+                }
+                db.publish()
+            })
+            .await
+    }
+}
+
+/// One book of an open library. It holds the book's row and nothing else:
+/// every read and write goes to the store.
+pub struct BookRef {
+    info: BookInfo,
+    writes: Arc<Writes>,
+}
+pub type BookHandle = Arc<BookRef>;
+
+impl BookRef {
+    pub fn info(&self) -> &BookInfo {
+        &self.info
     }
 
-    fn delta(&self) -> BookDelta {
-        BookDelta {
-            book: None,
-            versions: Vec::new(),
-            summaries: self
-                .dirty_summaries
-                .iter()
-                .map(|&chapter| (chapter, self.summaries.entries[chapter].clone()))
-                .collect(),
-            reading_state: self.pending_reading_state.clone(),
-            folder_path: self.pending_folder_path.clone(),
-        }
+    pub fn id(&self) -> Uuid {
+        self.info.id
     }
 
-    /// Stages a translation at once, so that whoever reads the paragraph
-    /// next finds it; the commit follows with the batch.
-    pub(crate) async fn add_translation(
-        &mut self,
+    /// Reads the book's text and translations from the store. What
+    /// `apply_translation` has answered for is there to read.
+    pub async fn read<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(BookReader<'_>) -> anyhow::Result<T> + Send + 'static,
+    ) -> anyhow::Result<T> {
+        let id = self.info.id;
+        self.writes.store.read(move |db| f(db.book(id)?)).await
+    }
+
+    pub async fn summaries(&self) -> anyhow::Result<ChapterSummaries> {
+        self.read(|book| book.summaries()).await
+    }
+
+    /// Changes whenever the summaries of some book may have.
+    pub fn summaries_changed(&self) -> watch::Receiver<u64> {
+        self.writes.summaries_changed.subscribe()
+    }
+
+    /// Readable at once; `flush` says whether it reached the disk.
+    pub async fn apply_translation(
+        &self,
         paragraph: usize,
-        target: &Language,
-        translation: translation_import::ParagraphTranslation,
+        target: Language,
+        translation: ParagraphTranslation,
         model: String,
     ) -> anyhow::Result<()> {
-        let id = self.book.id;
+        let id = self.info.id;
         let version = NewVersion {
-            source_language: self.book.language.clone(),
+            source_language: self.info.language.clone(),
             target_language: target.to_639_3().to_owned(),
             paragraph,
             translation,
             model,
         };
-        self.store
+        self.writes
+            .store
             .run(move |db| db.add_version(id, version))
             .await?;
-        self.staged = true;
+        self.writes.commit_within(Duration::ZERO);
         Ok(())
     }
 
-    /// Hands everything unsaved to the store and commits. Once staged it is
-    /// the store's to land, so a failed commit is reported and not kept here.
-    pub(crate) async fn persist(&mut self) -> anyhow::Result<()> {
-        let delta = self.delta();
-        if delta.is_empty() && !self.staged {
-            return Ok(());
+    /// Refused when a summary before `chapter` is no longer the one in
+    /// `written_from`: each one is written from those before it.
+    pub async fn apply_summary(
+        &self,
+        written_from: &ChapterSummaries,
+        chapter: usize,
+        summary: ChapterSummary,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            chapter < written_from.entries.len(),
+            "summary chapter out of range"
+        );
+        let id = self.info.id;
+        let prior = written_from.entries[..chapter].to_vec();
+        self.writes
+            .store
+            .run(move |db| db.set_summary(id, chapter, &prior, summary))
+            .await?;
+        self.writes.note_summaries_changed();
+        self.writes.commit_within(Duration::ZERO);
+        Ok(())
+    }
+
+    /// Ok once everything applied so far, to any book, is on disk.
+    pub async fn flush(&self) -> anyhow::Result<()> {
+        self.writes.land().await
+    }
+
+    async fn user_state(&self) -> anyhow::Result<BookUserState> {
+        let id = self.info.id;
+        self.writes
+            .store
+            .read(move |db| {
+                anyhow::ensure!(db.has_book(id)?, "book {id} not found");
+                db.user_state(id)
+            })
+            .await
+    }
+
+    pub async fn reading_state(&self) -> anyhow::Result<Option<BookReadingState>> {
+        let waiting = self
+            .writes
+            .positions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&self.info.id)
+            .cloned();
+        match waiting {
+            Some(position) => Ok(Some(position)),
+            None => Ok(self.user_state().await?.reading_state),
         }
-        #[cfg(test)]
-        {
-            self.save_count += 1;
-        }
-        let id = self.book.id;
-        let committed = self
+    }
+
+    pub async fn update_reading_state(&self, state: BookReadingState) -> anyhow::Result<()> {
+        // A deleted book takes no position; one deleted later drops it.
+        self.user_state().await?;
+        self.writes
+            .positions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(self.info.id, state);
+        self.writes.commit_within(POSITION_DELAY);
+        Ok(())
+    }
+
+    pub async fn folder_path(&self) -> anyhow::Result<Vec<String>> {
+        Ok(self.user_state().await?.folder_path)
+    }
+
+    pub async fn update_folder_path(&self, path: Vec<String>) -> anyhow::Result<()> {
+        let id = self.info.id;
+        self.writes
             .store
             .run(move |db| {
-                db.stage(id, &delta, false)?;
-                Ok(db.publish().map_err(|err| format!("{err:#}")))
+                db.set_user_state(id, None, Some(path))?;
+                db.publish()
             })
-            .await?;
-        self.staged = false;
-        self.dirty_summaries.clear();
-        self.pending_reading_state = None;
-        self.pending_folder_path = None;
-        committed.map_err(anyhow::Error::msg)
-    }
-
-    /// Ok once nothing of this device's is waiting for a commit.
-    pub(crate) async fn flush(&mut self) -> anyhow::Result<()> {
-        self.persist().await?;
-        self.store.run(|db| db.publish()).await
-    }
-
-    /// Adopts what the store holds now, including what other devices wrote.
-    /// True when anything a reader sees changed.
-    pub async fn reload(&mut self) -> anyhow::Result<bool> {
-        // Staged is enough: the store reads back what it was handed.
-        if let Err(err) = self.persist().await
-            && self.has_unsaved_changes()
-        {
-            return Err(err);
-        }
-        let (id, chapters) = (self.book.id, self.book.chapter_count());
-        let (loaded, changed_at) = self
-            .store
-            .read(move |db| Ok((db.load_annotations(id, chapters)?, db.book_generation(id))))
-            .await?;
-        // Translations are not held here; the store says when they changed.
-        let changed = changed_at > self.adopted
-            || loaded.summaries.entries != self.summaries.entries
-            || loaded.user_state != self.user_state;
-        self.adopt(loaded);
-        Ok(changed)
-    }
-
-    /// The newest stamp per chapter is the current summary once stored, so
-    /// a replacement must carry a newer one than what it replaces.
-    pub(crate) fn set_summary(&mut self, chapter: usize, mut summary: ChapterSummary) {
-        let held = &self.summaries.entries[chapter];
-        if held.generated && summary.timestamp <= held.timestamp {
-            summary.timestamp = held.timestamp + 1;
-        }
-        self.summaries_mut().entries[chapter] = summary;
-        self.mark_summary_dirty(chapter);
-    }
-
-    pub(crate) fn mark_summary_dirty(&mut self, chapter: usize) {
-        if !self.dirty_summaries.contains(&chapter) {
-            self.dirty_summaries.push(chapter);
-        }
-    }
-
-    pub(crate) fn summaries_mut(&mut self) -> &mut ChapterSummaries {
-        Arc::make_mut(&mut self.summaries)
-    }
-
-    /// Staged with the next commit; a page turn is not worth one of its own.
-    pub fn set_reading_state(&mut self, state: BookReadingState) {
-        self.pending_reading_state = Some(state.clone());
-        self.user_state.reading_state = Some(state);
-    }
-
-    pub async fn update_folder_path(&mut self, folder_path: Vec<String>) -> anyhow::Result<()> {
-        self.pending_folder_path = Some(folder_path.clone());
-        self.user_state.folder_path = folder_path;
-        self.persist().await
+            .await
     }
 }
 
 impl Library {
+    pub async fn get_book(&self, uuid: &Uuid) -> anyhow::Result<BookHandle> {
+        let id = *uuid;
+        let info = self.store.read(move |db| db.book_info(id)).await?;
+        Ok(Arc::new(BookRef {
+            info,
+            writes: self.writes.clone(),
+        }))
+    }
+
     pub async fn create_book(&self, book: Book) -> anyhow::Result<BookHandle> {
         let book: Arc<Book> = Arc::new(book);
         let id = self.store.run(move |db| db.create_book(book)).await?;
         self.get_book(&id).await
     }
 
+    /// Deletes the book's data for real; whatever is written to it later is refused.
     pub async fn delete_book(&self, uuid: &Uuid) -> anyhow::Result<()> {
-        self.remove_book(*uuid).await
+        self.writes.forget(*uuid);
+        self.store.delete_book(*uuid).await
     }
 }
