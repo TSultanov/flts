@@ -87,7 +87,7 @@ FLTS_PERF=1 FLTS_E2E_PROD=1 FLTS_E2E_PROFILE=e2e/release FLTS_E2E_SKIP_BUILD=1 \
 | `FLTS_E2E_PROFILE`                    | directory under `target/` holding the binaries; default `debug`           |
 | `FLTS_PERF_TRACE=open\|interact`      | Chromium trace of a first-time open, or of the flips and taps             |
 | `FLTS_PERF_PROFILE=open\|interact`    | the same as a CPU profile                                                 |
-| `FLTS_PERF_PARAGRAPHS`, `_ITERATIONS` | chapter length (600) and runs per scenario (5)                            |
+| `FLTS_PERF_PARAGRAPHS`, `_ITERATIONS` | chapter length (320) and runs per scenario (5)                            |
 
 `FLTS_PERF_APP=1` adds the same measurements taken in the app's own webview:
 the app is started with its window (`FLTS_E2E_WINDOW_URL`), loads the frontend

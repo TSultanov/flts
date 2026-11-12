@@ -10,7 +10,11 @@ import { MODEL, drained } from "../../real/spec-helpers";
  * A measurement, not a regression gate: run with FLTS_PERF=1.
  */
 
-const LONG_PARAGRAPHS = Number(process.env.FLTS_PERF_PARAGRAPHS ?? 600);
+// The shape of the heaviest chapters in a real library of 370: the one with
+// most paragraphs has 323, the one with most words about 11,300, and their
+// longest paragraphs run to some 400 words. The chapter made here is both at
+// once.
+const LONG_PARAGRAPHS = Number(process.env.FLTS_PERF_PARAGRAPHS ?? 320);
 const ITERATIONS = Number(process.env.FLTS_PERF_ITERATIONS ?? 5);
 const LONG_CHAPTER = 1;
 
@@ -129,8 +133,14 @@ function paragraph(
   vocab: string[],
   mark: string,
 ): Paragraph {
-  const dialogue = random() < 0.35;
-  const sentences = dialogue ? 1 : 2 + Math.floor(random() * 5);
+  const kind = random();
+  const dialogue = kind < 0.35;
+  // Mostly a few sentences; now and then a page-long block.
+  const sentences = dialogue
+    ? 1
+    : kind > 0.985
+      ? 14 + Math.floor(random() * 9)
+      : 1 + Math.floor(random() * 4);
   const text: string[] = [];
   const html: string[] = [];
   const s: unknown[] = [];
@@ -165,7 +175,7 @@ function paragraph(
   };
 }
 
-type Seeded = { bookId: string; longIds: number[] };
+type Seeded = { bookId: string; longIds: number[]; words: number };
 
 async function seedLongBook(h: RealHarness): Promise<Seeded> {
   const random = rng(20261112);
@@ -224,7 +234,11 @@ async function seedLongBook(h: RealHarness): Promise<Seeded> {
       { timeout: 600_000, intervals: [1000] },
     )
     .toBe(true);
-  return { bookId, longIds };
+  const words = chapters[LONG_CHAPTER].reduce(
+    (n, p) => n + p.text.split(" ").length,
+    0,
+  );
+  return { bookId, longIds, words };
 }
 
 /** Runs in the page before the app: frames, bridge traffic and long tasks. */
@@ -454,6 +468,84 @@ async function measureClick(
   };
 }
 
+/**
+ * Runs in the page, with the long chapter open. What the browser needs to
+ * take the same pages as ready-made HTML: to parse and insert it, and then
+ * to lay it out. The layout is owed however the elements are made; the first
+ * number is what would stand in for the script that makes them now.
+ */
+async function directHtml(arg: { bookId: string; prefix: number[] }) {
+  const c = document.querySelector(".paragraphs-container") as HTMLElement;
+  const host = c.cloneNode(false) as HTMLElement;
+  host.style.cssText += `;position:absolute;left:-99999px;top:0;width:${c.clientWidth}px;height:${c.clientHeight}px`;
+  c.parentElement!.appendChild(host);
+  const median = (xs: number[]) => xs.sort((a, b) => a - b)[xs.length >> 1];
+  const time = (html: string, onto = "") => {
+    const insert: number[] = [];
+    const layout: number[] = [];
+    for (let k = 0; k < 9; k++) {
+      host.innerHTML = onto;
+      void host.scrollWidth;
+      const t0 = performance.now();
+      host.insertAdjacentHTML("beforeend", html);
+      const t1 = performance.now();
+      void host.scrollWidth;
+      const t2 = performance.now();
+      insert.push(t1 - t0);
+      layout.push(t2 - t1);
+    }
+    return {
+      insert: +median(insert).toFixed(1),
+      layout: +median(layout).toFixed(1),
+      elements: host.querySelectorAll("*").length,
+      kib: Math.round(html.length / 1024),
+    };
+  };
+
+  const text = [...c.children].filter(
+    (e) =>
+      e.classList.contains("paragraph-wrapper") && !e.classList.contains("far"),
+  );
+  const mounted = text.filter((e) => e.querySelector(".word-span"));
+  const whole = c.innerHTML;
+  // The page as it stands: text near the reader, blocks for the rest.
+  const open = time(whole);
+  // A flip's worth: the paragraphs of a page or so, word spans and all.
+  const flip = time(
+    mounted
+      .slice(0, 8)
+      .map((e) => e.outerHTML)
+      .join(""),
+    whole,
+  );
+
+  // A first open deep in: every paragraph up to the reader as bare text.
+  const wrapperClass = text[0].className;
+  const plain = c.querySelector("p.original")?.className ?? "original";
+  const invoke =
+    (window as any).__bridgeDebugInvoke ??
+    (window as any).__TAURI_INTERNALS__.invoke;
+  const rows: Array<{ id: number; original: string }> = await invoke(
+    "get_paragraph_originals_batch",
+    { bookId: arg.bookId, paragraphIds: arg.prefix },
+  );
+  const first = time(
+    rows
+      .map(
+        (r) =>
+          `<div class="${wrapperClass}" data-paragraph-id="${r.id}"><p class="${plain}">${r.original}</p></div>`,
+      )
+      .join(""),
+  );
+  host.remove();
+  return {
+    open,
+    flip,
+    first,
+    here: { text: text.length, mounted: mounted.length },
+  };
+}
+
 function milestonesOf(raw: {
   frames: Array<Record<string, number | boolean>>;
   revealed: number | null;
@@ -559,9 +651,9 @@ test.describe("chapter open timing", () => {
   test("a long translated chapter", async ({ page, harness }, testInfo) => {
     test.setTimeout(1_200_000);
     const seedStart = Date.now();
-    const { bookId, longIds } = await seedLongBook(harness);
+    const { bookId, longIds, words } = await seedLongBook(harness);
     console.log(
-      `seeded ${longIds.length} translated paragraphs in ${((Date.now() - seedStart) / 1000).toFixed(0)} s`,
+      `seeded ${longIds.length} translated paragraphs, ${words} words, in ${((Date.now() - seedStart) / 1000).toFixed(0)} s`,
     );
     const shortIds = await harness.invoke<number[]>(
       "get_book_chapter_paragraph_ids",
@@ -800,6 +892,18 @@ test.describe("chapter open timing", () => {
       console.log(`cpu profile: ${to}`);
     }
 
+    if (process.env.FLTS_PERF_HTML) {
+      console.log(
+        "ready-made HTML:",
+        JSON.stringify(
+          await page.evaluate(directHtml, {
+            bookId,
+            prefix: longIds.slice(0, Math.floor(longIds.length * 0.75) + 10),
+          }),
+        ),
+      );
+    }
+
     // Times the view found its blocks wrong and drew the chapter again.
     const redraws = await page
       .locator(".paragraphs-container")
@@ -807,8 +911,12 @@ test.describe("chapter open timing", () => {
     console.log(`  whole-chapter redraws: ${redraws}`);
     expect(redraws).toBe("0");
 
-    if (cdp && process.env.FLTS_PERF_PROFILE === "open") {
-      await remember(false);
+    if (
+      cdp &&
+      (process.env.FLTS_PERF_PROFILE === "open" ||
+        process.env.FLTS_PERF_PROFILE === "again")
+    ) {
+      await remember(process.env.FLTS_PERF_PROFILE === "again");
       await cdp.send("Profiler.enable");
       await cdp.send("Profiler.setSamplingInterval", { interval: 200 });
       await settleAt(LONG_CHAPTER, longIds[Math.floor(longIds.length * 0.75)]);
@@ -831,8 +939,12 @@ test.describe("chapter open timing", () => {
       console.log(`cpu profile: ${out}`);
     }
 
-    if (cdp && process.env.FLTS_PERF_TRACE === "open") {
-      await remember(false);
+    if (
+      cdp &&
+      (process.env.FLTS_PERF_TRACE === "open" ||
+        process.env.FLTS_PERF_TRACE === "again")
+    ) {
+      await remember(process.env.FLTS_PERF_TRACE === "again");
       const browser = page.context().browser()!;
       await settleAt(LONG_CHAPTER, longIds[Math.floor(longIds.length * 0.75)]);
       await page.goto(`/book/${bookId}/0`);
@@ -851,8 +963,14 @@ test.describe("chapter open timing", () => {
         categories: [
           "devtools.timeline",
           "disabled-by-default-devtools.timeline",
-          "disabled-by-default-devtools.timeline.stack",
-          "disabled-by-default-devtools.timeline.invalidationTracking",
+          // What caused each layout; costly, so left out when only the
+          // times are wanted.
+          ...(process.env.FLTS_PERF_TRACE_LIGHT
+            ? []
+            : [
+                "disabled-by-default-devtools.timeline.stack",
+                "disabled-by-default-devtools.timeline.invalidationTracking",
+              ]),
           "blink.user_timing",
         ],
       });
@@ -1202,6 +1320,18 @@ test.describe("chapter open timing", () => {
         }, i),
       ),
     };
+
+    if (process.env.FLTS_PERF_HTML) {
+      console.log(
+        "ready-made HTML:",
+        JSON.stringify(
+          await inApp(directHtml, {
+            bookId,
+            prefix: longIds.slice(0, Math.floor(longIds.length * 0.75) + 10),
+          }),
+        ),
+      );
+    }
 
     // Times the view found its blocks wrong and drew the chapter again:
     // each is a long frame the numbers above would hide in their medians.
