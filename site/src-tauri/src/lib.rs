@@ -67,10 +67,25 @@ pub fn run() {
     #[allow(unused_mut)]
     let mut context = tauri::generate_context!();
     // Headless: the WS bridge stands in for the webview's IPC channel.
+    // Unless a harness wants the real webview, to time the frontend in it;
+    // it then says where that frontend is served.
+    #[cfg(feature = "e2e-bridge")]
+    let e2e_window = std::env::var("FLTS_E2E_WINDOW_URL")
+        .ok()
+        .and_then(|url| url.parse().ok());
     #[cfg(feature = "e2e-bridge")]
     if std::env::var("FLTS_E2E_BRIDGE_PORT").is_ok() {
-        context.config_mut().app.windows.clear();
+        match &e2e_window {
+            Some(url) => context.config_mut().build.dev_url = Some(tauri::Url::clone(url)),
+            None => context.config_mut().app.windows.clear(),
+        }
     }
+    // The saved window frame lives outside FLTS_CONFIG_DIR: a harness
+    // window must neither read nor write the user's.
+    #[cfg(feature = "e2e-bridge")]
+    let keep_window_state = e2e_window.is_none();
+    #[cfg(not(feature = "e2e-bridge"))]
+    let keep_window_state = true;
 
     #[allow(unused_mut)]
     let mut builder = Builder::default()
@@ -78,9 +93,11 @@ pub fn run() {
         .plugin(tauri_plugin_os::init());
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    {
+    if keep_window_state {
         builder = builder.plugin(tauri_plugin_window_state::Builder::new().build());
     }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let _ = keep_window_state;
 
     #[cfg(any(target_os = "android", target_os = "ios"))]
     {

@@ -10,6 +10,8 @@ process.env.PLAYWRIGHT_REAL ||= "true";
 const prod = !!process.env.FLTS_E2E_PROD;
 const port = prod ? 5182 : 5181;
 
+const APP_FRONTEND_PORT = 5183;
+
 export default defineConfig({
   testDir: "./tests/e2e",
   // Each ignore names what blocks it against a real backend.
@@ -56,12 +58,26 @@ export default defineConfig({
       ? [{ name: "real-webkit", use: { ...devices["Desktop Safari"] } }]
       : []),
   ],
-  webServer: {
-    command: prod
-      ? `PLAYWRIGHT_REAL=true pnpm exec vite build --outDir dist-e2e && PLAYWRIGHT_REAL=true pnpm exec vite preview --outDir dist-e2e --port ${port} --strictPort`
-      : `PLAYWRIGHT_REAL=true pnpm dev --port ${port}`,
-    url: `http://localhost:${port}`,
-    timeout: 180_000,
-    reuseExistingServer: !process.env.CI,
-  },
+  webServer: [
+    {
+      command: prod
+        ? `PLAYWRIGHT_REAL=true pnpm exec vite build --outDir dist-e2e && PLAYWRIGHT_REAL=true pnpm exec vite preview --outDir dist-e2e --port ${port} --strictPort`
+        : `PLAYWRIGHT_REAL=true pnpm dev --port ${port}`,
+      url: `http://localhost:${port}`,
+      timeout: 180_000,
+      reuseExistingServer: !process.env.CI,
+    },
+    // FLTS_PERF_APP=1: the frontend as shipped, with Tauri's own IPC, for
+    // the app's own webview to load (see chapter-open-perf.spec.ts).
+    ...(process.env.FLTS_PERF_APP
+      ? [
+          {
+            command: `env -u PLAYWRIGHT_REAL -u PLAYWRIGHT pnpm exec vite build --outDir dist-e2e-app && env -u PLAYWRIGHT_REAL -u PLAYWRIGHT pnpm exec vite preview --outDir dist-e2e-app --port ${APP_FRONTEND_PORT} --strictPort`,
+            url: `http://localhost:${APP_FRONTEND_PORT}`,
+            timeout: 180_000,
+            reuseExistingServer: !process.env.CI,
+          },
+        ]
+      : []),
+  ],
 });

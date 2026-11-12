@@ -81,7 +81,14 @@ pub const COMMANDS: &[&str] = &[
 /// Bridge-only commands with no `generate_handler!` counterpart: entry points
 /// production reaches only through a driver the harness cannot run headlessly
 /// (the Spotify poller). They call the same backend functions production does.
-pub const E2E_ONLY_COMMANDS: &[&str] = &["e2e_resolve_track"];
+pub const E2E_ONLY_COMMANDS: &[&str] = &["e2e_resolve_track", "e2e_eval"];
+
+/// Scripts run in the app's own webview (`e2e_eval`), waiting for the value
+/// each posts back to `/eval/{id}`.
+static EVALS: std::sync::Mutex<Vec<(u64, tokio::sync::oneshot::Sender<Value>)>> =
+    std::sync::Mutex::new(Vec::new());
+static NEXT_EVAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+static PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
 
 /// Backend events mirrored to every connected client; must track the emit
 /// call sites.
@@ -128,17 +135,64 @@ pub fn spawn(app: AppHandle, port: u16) {
             }
         };
 
+        PORT.store(actual, std::sync::atomic::Ordering::Relaxed);
         println!("FLTS_E2E_BRIDGE_LISTENING {}", json!({ "port": actual }));
         let _ = std::io::stdout().flush();
         info!("e2e bridge listening on 127.0.0.1:{actual}/bridge");
 
         let router = axum::Router::new()
             .route("/bridge", get(upgrade))
+            .route("/eval/{id}", axum::routing::post(eval_result))
             .with_state(app);
         if let Err(err) = axum::serve(listener, router).await {
             warn!("e2e bridge: serve ended: {err}");
         }
     });
+}
+
+async fn eval_result(axum::extract::Path(id): axum::extract::Path<u64>, body: String) {
+    let waiting = {
+        let mut evals = EVALS.lock().unwrap();
+        evals
+            .iter()
+            .position(|(waiting, _)| *waiting == id)
+            .map(|at| evals.swap_remove(at).1)
+    };
+    if let Some(reply) = waiting {
+        let value = serde_json::from_str(&body).unwrap_or(Value::String(body));
+        let _ = reply.send(value);
+    }
+}
+
+/// Runs `js` (a function body; its return value may be a promise) in the
+/// app's webview and returns `{ok}` or `{err}` as the page reported it.
+async fn eval_in_webview(app: &AppHandle, js: &str) -> Result<Value, Value> {
+    let window = app
+        .webview_windows()
+        .into_values()
+        .next()
+        .ok_or_else(|| json!("no webview: start the app with FLTS_E2E_WINDOW_URL"))?;
+    let id = NEXT_EVAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let port = PORT.load(std::sync::atomic::Ordering::Relaxed);
+    let (reply, result) = tokio::sync::oneshot::channel();
+    EVALS.lock().unwrap().push((id, reply));
+    let script = format!(
+        "(async () => {{ let r; try {{ r = {{ ok: (await (async () => {{ {js}\n }})()) ?? null }}; }} \
+         catch (e) {{ r = {{ err: String(e && e.stack || e) }}; }} \
+         fetch('http://127.0.0.1:{port}/eval/{id}', {{ method: 'POST', mode: 'no-cors', \
+         body: JSON.stringify(r === undefined ? null : r) }}); }})()"
+    );
+    window
+        .eval(script)
+        .map_err(|err| json!(format!("eval failed: {err}")))?;
+    match tokio::time::timeout(std::time::Duration::from_secs(60), result).await {
+        Ok(Ok(Value::Object(mut r))) if r.contains_key("ok") => Ok(r.remove("ok").unwrap()),
+        Ok(Ok(other)) => Err(other),
+        _ => {
+            EVALS.lock().unwrap().retain(|(waiting, _)| *waiting != id);
+            Err(json!("the webview did not answer"))
+        }
+    }
 }
 
 async fn upgrade(
@@ -502,6 +556,10 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: Value) -> Result<Value, Valu
         }
 
         // --- bridge-only (see E2E_ONLY_COMMANDS) ---
+        "e2e_eval" => {
+            let js = args!(args, { js: String });
+            eval_in_webview(app, &js).await
+        }
         "e2e_resolve_track" => {
             let (track_id, name, artist, album, duration_ms, target_lang, model) = args!(args, {
                 track_id: String, name: String, artist: String, album: Option<String>,

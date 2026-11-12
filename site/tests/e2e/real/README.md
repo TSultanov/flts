@@ -89,6 +89,17 @@ FLTS_PERF=1 FLTS_E2E_PROD=1 FLTS_E2E_PROFILE=e2e/release FLTS_E2E_SKIP_BUILD=1 \
 | `FLTS_PERF_PROFILE=open\|interact`    | the same as a CPU profile                                                 |
 | `FLTS_PERF_PARAGRAPHS`, `_ITERATIONS` | chapter length (600) and runs per scenario (5)                            |
 
+`FLTS_PERF_APP=1` adds the same measurements taken in the app's own webview:
+the app is started with its window (`FLTS_E2E_WINDOW_URL`), loads the frontend
+as shipped with Tauri's own IPC, and is driven through the bridge-only
+`e2e_eval` command, which runs a script in that webview and returns its value.
+It needs a display, and the window shows while it runs.
+
+```sh
+FLTS_PERF=1 FLTS_PERF_APP=1 FLTS_E2E_PROFILE=e2e/release FLTS_E2E_SKIP_BUILD=1 \
+  pnpm test:e2e:real chapter-open-perf --project=real -g "own webview" --workers=1
+```
+
 A separate `--target-dir` keeps a plain release build from replacing the
 bridge-enabled binary mid-run.
 

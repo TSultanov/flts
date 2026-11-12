@@ -440,23 +440,9 @@ async function measureClick(
       longTasks: p.longTasks,
     };
   });
-  const first = (pred: (f: Record<string, number | boolean>) => boolean) => {
-    const f = raw.frames.find(pred);
-    return f ? (f.t as number) : null;
-  };
   return {
     ...raw,
-    milestones: {
-      firstFrame: first(() => true),
-      oldGone: first((f) => f.container === true || f.paragraphs === 0),
-      container: first((f) => f.container === true),
-      paragraphIds: first((f) => (f.paragraphs as number) > 0),
-      textLaidOut: first((f) => f.text === true),
-      revealAsked: raw.revealed,
-      visible: first((f) => f.ready === true),
-      visibleWithText: first((f) => f.ready === true && f.text === true),
-      words: first((f) => f.ready === true && f.words === true),
-    },
+    milestones: milestonesOf(raw),
     cpu: Object.fromEntries(
       CPU_KEYS.map((k) => [
         k,
@@ -466,6 +452,41 @@ async function measureClick(
       ]),
     ),
   };
+}
+
+function milestonesOf(raw: {
+  frames: Array<Record<string, number | boolean>>;
+  revealed: number | null;
+}): Record<string, number | null> {
+  const first = (pred: (f: Record<string, number | boolean>) => boolean) => {
+    const f = raw.frames.find(pred);
+    return f ? (f.t as number) : null;
+  };
+  return {
+    firstFrame: first(() => true),
+    oldGone: first((f) => f.container === true || f.paragraphs === 0),
+    container: first((f) => f.container === true),
+    paragraphIds: first((f) => (f.paragraphs as number) > 0),
+    textLaidOut: first((f) => f.text === true),
+    revealAsked: raw.revealed,
+    visible: first((f) => f.ready === true),
+    visibleWithText: first((f) => f.ready === true && f.text === true),
+    words: first((f) => f.ready === true && f.words === true),
+  };
+}
+
+/** Longest frame before the reveal was asked for, and after. */
+function longestFrames(run: Run): [hidden: number, shown: number] {
+  const at = run.frames.map((f) => f.t as number);
+  const reveal = run.milestones.revealAsked ?? 0;
+  let hidden = 0;
+  let shown = 0;
+  for (let i = 1; i < at.length; i++) {
+    const gap = at[i] - at[i - 1];
+    if (at[i - 1] < reveal) hidden = Math.max(hidden, gap);
+    else shown = Math.max(shown, gap);
+  }
+  return [Math.round(hidden), Math.round(shown)];
 }
 
 const median = (xs: number[]) => {
@@ -845,6 +866,304 @@ test.describe("chapter open timing", () => {
     );
     fs.mkdirSync(path.dirname(out), { recursive: true });
     fs.writeFileSync(out, JSON.stringify({ ...report, interactions }));
+    console.log(`report: ${out}`);
+  });
+  // The engine the app ships with: its own window, its own IPC. Needs a
+  // display; the window shows while it runs.
+  test("a long translated chapter, in the app's own webview", async ({
+    harness,
+  }, testInfo) => {
+    test.skip(
+      !process.env.FLTS_PERF_APP || testInfo.project.name !== "real",
+      "run with FLTS_PERF_APP=1",
+    );
+    test.setTimeout(1_200_000);
+    const { bookId, longIds } = await seedLongBook(harness);
+    const shortIds = await harness.invoke<number[]>(
+      "get_book_chapter_paragraph_ids",
+      { bookId, chapterId: 0 },
+    );
+    await harness.restartApp({
+      env: { FLTS_E2E_WINDOW_URL: "http://localhost:5183" },
+    });
+
+    const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    /** Runs `fn` in the app's webview. */
+    const inApp = <T, A = null>(fn: (arg: A) => T | Promise<T>, arg?: A) =>
+      harness.invoke<T>("e2e_eval", {
+        js: `return (${fn.toString()})(${JSON.stringify(arg ?? null)});`,
+      });
+    const until = async (what: string, fn: () => boolean, ms = 30_000) => {
+      const deadline = Date.now() + ms;
+      for (;;) {
+        // A page between two documents answers nothing.
+        if (await inApp(fn).catch(() => false)) return;
+        if (Date.now() > deadline) throw new Error(`timed out: ${what}`);
+        await pause(100);
+      }
+    };
+    /** A full load of `path`, with the probes installed in the new page. */
+    const load = async (path: string, forget: boolean) => {
+      await inApp(
+        ({ path, forget }) => {
+          if (forget) localStorage.removeItem("flts.chapterLayout.v2");
+          (window as any).__leaving = true;
+          setTimeout(() => (location.href = path), 30);
+        },
+        { path, forget },
+      );
+      await until(
+        `load ${path}`,
+        () => !(window as any).__leaving && document.readyState === "complete",
+      );
+      await harness.invoke("e2e_eval", {
+        js: `if (!window.__perf) (${instrument.toString()})(); return true;`,
+      });
+    };
+    const settle = async (chapterId: number, paragraphId: number) => {
+      await load("/", false);
+      await pause(600);
+      await harness.invoke("save_book_reading_state", {
+        bookId,
+        chapterId,
+        paragraphId,
+        pageOffset: 0,
+      });
+    };
+    const collect = async (): Promise<Run> => {
+      await until("the chapter with its words", () => {
+        const f = (window as any).__perf.frames;
+        const last = f[f.length - 1];
+        return !!last && last.ready && last.words;
+      });
+      await pause(1500);
+      const raw = await inApp(() => {
+        const p = (window as any).__perf;
+        p.armed = false;
+        return {
+          frames: p.frames as Array<Record<string, number | boolean>>,
+          revealed: p.revealed as number | null,
+          invokes: [] as Array<Record<string, number | string>>,
+          events: [] as Array<{ t: number; name: string }>,
+          longTasks: [] as Array<{ t: number; ms: number }>,
+        };
+      });
+      return {
+        ...raw,
+        milestones: milestonesOf(raw),
+        cpu: Object.fromEntries(CPU_KEYS.map((k) => [k, NaN])),
+      };
+    };
+    const viaPanel = async (forget: boolean): Promise<Run> => {
+      await load(`/book/${bookId}/0`, forget);
+      await until(
+        "the short chapter",
+        () => !!document.querySelector(".paragraphs-container.is-ready"),
+      );
+      await pause(800);
+      await inApp(() =>
+        (
+          document.querySelector(
+            '[data-testid="chapters-panel-handle"]',
+          ) as HTMLElement
+        ).click(),
+      );
+      await until(
+        "the chapters panel",
+        () =>
+          document.querySelectorAll('[data-testid="chapter-row"] a').length > 1,
+      );
+      await pause(400);
+      await inApp((chapter) => {
+        const link = document.querySelectorAll<HTMLElement>(
+          '[data-testid="chapter-row"] a',
+        )[chapter];
+        link.setAttribute("data-perf-arm", "");
+        link.click();
+      }, LONG_CHAPTER);
+      return collect();
+    };
+    const deep = longIds[Math.floor(longIds.length * 0.75)];
+    const scenarios: Array<[string, (forget: boolean) => Promise<Run>]> = [
+      [
+        "switch chapter, from its start",
+        async (forget) => {
+          await settle(0, shortIds[0]);
+          return viaPanel(forget);
+        },
+      ],
+      [
+        "switch chapter, restoring a position 3/4 in",
+        async (forget) => {
+          await settle(LONG_CHAPTER, deep);
+          return viaPanel(forget);
+        },
+      ],
+      [
+        "open from the library, restoring a position 3/4 in",
+        async (forget) => {
+          await settle(LONG_CHAPTER, deep);
+          await load("/", forget);
+          await until(
+            "the library",
+            () => !!document.querySelector('a[href^="/book/"]'),
+          );
+          await pause(800);
+          await inApp((href) => {
+            const link = document.querySelector<HTMLElement>(
+              `a[href="${href}"]`,
+            )!;
+            link.setAttribute("data-perf-arm", "");
+            link.click();
+          }, `/book/${bookId}`);
+          return collect();
+        },
+      ],
+    ];
+
+    await until(
+      "the app's first page",
+      () => document.readyState === "complete",
+    );
+    console.log(await inApp(() => navigator.userAgent));
+    const report: Record<string, unknown> = {};
+    for (const forget of [true, false]) {
+      for (const [name, run] of scenarios) {
+        const title = `${name} — ${forget ? "first time" : "again"}`;
+        const runs: Run[] = [];
+        await run(forget);
+        for (let i = 0; i < ITERATIONS; i++) runs.push(await run(forget));
+        report[title] = runs;
+        const reveal = runs.map((r) => r.milestones.revealAsked ?? NaN);
+        console.log(
+          `=== ${title}\n  reveal asked: median ${median(reveal).toFixed(0)} ms [${reveal.map((x) => x.toFixed(0)).join(", ")}]\n  longest frame (hidden, shown): ${runs.map((r) => `(${longestFrames(r).join(", ")})`).join(" ")}`,
+        );
+      }
+    }
+
+    // 3/4 into the long chapter: flips and taps.
+    const longest = async (
+      label: string,
+      times: number,
+      action: (i: number) => Promise<unknown>,
+    ) => {
+      const gaps: number[] = [];
+      for (let i = 0; i < times; i++) {
+        await inApp(() => {
+          const gap = { last: performance.now(), max: 0, on: true };
+          (window as any).__gap = gap;
+          const tick = () => {
+            if (!gap.on) return;
+            const now = performance.now();
+            gap.max = Math.max(gap.max, now - gap.last);
+            gap.last = now;
+            requestAnimationFrame(tick);
+          };
+          requestAnimationFrame(tick);
+        });
+        await action(i);
+        await pause(600);
+        gaps.push(
+          await inApp(() => {
+            const gap = (window as any).__gap;
+            gap.on = false;
+            return gap.max as number;
+          }),
+        );
+      }
+      console.log(
+        `  ${label.padEnd(22)} longest frame: median ${median(gaps).toFixed(0)} ms, worst ${Math.max(...gaps).toFixed(0)} ms`,
+      );
+      return gaps;
+    };
+    const flip = (pages: number) => () =>
+      inApp((n) => {
+        const c = document.querySelector(".paragraphs-container")!;
+        c.scrollBy({ left: n * c.clientWidth, behavior: "smooth" });
+      }, pages);
+    if (process.env.FLTS_PERF_PROBE) {
+      console.log(
+        "probe",
+        JSON.stringify(
+          await inApp(async () => {
+            const c = document.querySelector(
+              ".paragraphs-container",
+            ) as HTMLElement;
+            const med = (xs: number[]) =>
+              xs.sort((a, b) => a - b)[xs.length >> 1];
+            const timeLayout = (dirty: () => () => void) => {
+              const xs: number[] = [];
+              for (let k = 0; k < 9; k++) {
+                const t = performance.now();
+                const undo = dirty();
+                void c.scrollWidth;
+                xs.push(performance.now() - t);
+                undo();
+                void c.scrollWidth;
+              }
+              return +med(xs).toFixed(1);
+            };
+            const word = [...c.querySelectorAll<HTMLElement>(".word-span")][40];
+            const text = c.querySelectorAll(
+              ".paragraph-wrapper:not(.far)",
+            ).length;
+            const far = c.querySelectorAll(".paragraph-wrapper.far").length;
+            const layout = timeLayout(() => {
+              const s = document.createElement("span");
+              s.style.cssText = "position:absolute;top:0;left:0";
+              s.textContent = "x";
+              word.appendChild(s);
+              return () => s.remove();
+            });
+            // The same with every block gone: what the blocks themselves cost.
+            const blocks = [
+              ...c.querySelectorAll<HTMLElement>(".paragraph-wrapper.far"),
+            ];
+            const frames: number[] = [];
+            await new Promise<void>((done) => {
+              let last = performance.now();
+              let n = 0;
+              const tick = () => {
+                const now = performance.now();
+                frames.push(+(now - last).toFixed(0));
+                last = now;
+                if (++n < 50) requestAnimationFrame(tick);
+                else done();
+              };
+              c.scrollBy({ left: c.clientWidth, behavior: "smooth" });
+              requestAnimationFrame(tick);
+            });
+            return { text, far, blocks: blocks.length, layout, frames };
+          }),
+        ),
+      );
+    }
+    console.log("\n=== 3/4 into the long chapter ===");
+    report.interactions = {
+      idle: await longest("nothing (baseline)", 4, async () => {}),
+      forward: await longest("flip forward", 10, flip(1)),
+      back: await longest("flip back", 10, flip(-1)),
+      tap: await longest("tap a word", 8, (i) =>
+        inApp((nth) => {
+          const c = document.querySelector(".paragraphs-container")!;
+          const frame = c.getBoundingClientRect();
+          const words = [
+            ...c.querySelectorAll<HTMLElement>(".word-span"),
+          ].filter((w) => {
+            const r = w.getBoundingClientRect();
+            return r.left > frame.left && r.right < frame.right;
+          });
+          words[5 + nth * 7]?.click();
+        }, i),
+      ),
+    };
+
+    const out = path.join(
+      process.env.FLTS_PERF_OUT ?? testInfo.outputDir,
+      "chapter-open-perf-app.json",
+    );
+    fs.mkdirSync(path.dirname(out), { recursive: true });
+    fs.writeFileSync(out, JSON.stringify(report));
     console.log(`report: ${out}`);
   });
 });
