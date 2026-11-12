@@ -1,7 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import { devices, type Page } from "@playwright/test";
 import { expect, test } from "./helpers/test";
-import { seedAndOpen } from "./helpers/paragraph";
+import { seedAndOpen, showUnmounted } from "./helpers/paragraph";
 import {
   pageFlipCases,
   pageFlipChapter,
@@ -236,6 +236,7 @@ test.describe("iPad final-paragraph page flips", () => {
       if (wrap) {
         expect(wrap.mounted).toBe(true);
         expect(wrap.starts.length).toBeGreaterThan(1);
+        await showUnmounted(page, punctuationId);
         expect(await paragraphWrap(page, punctuationId)).toEqual({
           mounted: false,
           starts: wrap.starts,
@@ -260,9 +261,6 @@ test.describe("iPad final-paragraph page flips", () => {
             sample.x < sample.scrollLeft + sample.pageWidth,
         ),
       ).toBe(true);
-      expect(before.mounted.some((id) => !after.mounted.includes(id))).toBe(
-        true,
-      );
       if (flip.finalRows[0] !== flip.initialRows[0]) {
         expect(flip.finalRows[0]).toBe(flip.initialRows[1]);
         expect(after.x).toBeCloseTo(before.x - before.pageWidth, 0);
@@ -271,6 +269,13 @@ test.describe("iPad final-paragraph page flips", () => {
         flip.finalRows[0],
         "The first line seen during the flip must still be first after snap",
       ).toBe(flip.initialRows[0]);
+      // Word spans can wrap a paragraph differently than its bare text did
+      // when the far blocks were sized. That is taken in where it happens;
+      // it must never make the view draw the whole chapter again.
+      await expect(page.locator(".paragraphs-container")).toHaveAttribute(
+        "data-layout-misses",
+        "0",
+      );
     });
   }
 });

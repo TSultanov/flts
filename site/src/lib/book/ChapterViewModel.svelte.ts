@@ -1,8 +1,15 @@
+import { SvelteSet } from "svelte/reactivity";
 import type { Library } from "../data/library";
 import type { UUID } from "../data/uuid";
 import type { WordSelection } from "./ParagraphViewModel.svelte";
 import { ChapterParagraphsStore } from "./ChapterParagraphsStore.svelte";
-import { ChapterLayout, columnsOf, type Extent } from "./ChapterLayout.svelte";
+import {
+  ChapterLayout,
+  KEPT_PAGES,
+  columnsOf,
+  engineHonoursBlocks,
+  type Extent,
+} from "./ChapterLayout.svelte";
 
 export type ChapterVMProps = {
   bookId: UUID;
@@ -25,6 +32,7 @@ export type WordClickInfo = {
 };
 
 const SIBLING_RADIUS = 2;
+const MOUNTS_PER_FRAME = 2;
 const GEOM_MOUNT_THRESHOLD = 2.0;
 const GEOM_UNMOUNT_THRESHOLD = 2.5;
 // Restore normally settles when every paragraph reports loaded; these caps
@@ -108,14 +116,19 @@ export class ChapterViewModel {
 
   // Click-to-reveal words keyed `${paragraphId}:${flatIndex}`; ephemeral —
   // initial per-word visibility comes from card familiarity alone.
-  #revealedWordKeys: Set<string> = $state(new Set());
+  // Per key, so a tap redraws one word and not every word on the pages.
+  #revealedWordKeys = new SvelteSet<string>();
 
   constructor(library: Library, props: ChapterVMProps) {
     this.#library = library;
     this.#props = props;
     this.#chapterId = props.chapterId;
     this.#store = new ChapterParagraphsStore(props.bookId, library);
-    this.#layout = new ChapterLayout(`${props.bookId}:${props.chapterId}`);
+    this.#layout = new ChapterLayout(
+      `${props.bookId}:${props.chapterId}`,
+      engineHonoursBlocks(),
+    );
+    this.#store.onTranslations = () => this.#scheduleAdvance();
     // Shows the chapter if neither reveal path ever fires.
     this.#initialRevealFallbackTimeout = setTimeout(() => {
       this.#initialRevealFallbackTimeout = null;
@@ -295,13 +308,8 @@ export class ChapterViewModel {
   }
 
   handleWordClick(info: WordClickInfo): WordSelection {
-    // New Set instance so `$state` notices the change.
     const key = `${info.paragraphId}:${info.flatIndex}`;
-    if (!this.#revealedWordKeys.has(key)) {
-      const next = new Set(this.#revealedWordKeys);
-      next.add(key);
-      this.#revealedWordKeys = next;
-    }
+    this.#revealedWordKeys.add(key);
     return {
       paragraphId: info.paragraphId,
       sentence: info.sentence,
@@ -683,7 +691,7 @@ export class ChapterViewModel {
     const children = this.#wrappersNear(
       container,
       Math.round(scrollLeft / pageWidth),
-      Math.ceil(GEOM_UNMOUNT_THRESHOLD) + 1,
+      KEPT_PAGES,
     );
     if (children.length === 0) {
       if (this.#mountedParagraphIds.size !== 0) {
@@ -722,6 +730,9 @@ export class ChapterViewModel {
       visibleIdx = 0;
     }
     const visibleCenter = wrappers[visibleIdx].center;
+    // With blocks, a paragraph's word spans go when its text does: taking
+    // them down a page earlier is work a flip can do without.
+    const stayMounted = this.#layout.whole;
 
     const next = new Set<number>();
     for (let i = 0; i < wrappers.length; i++) {
@@ -737,6 +748,8 @@ export class ChapterViewModel {
       let mount: boolean;
       if (geomDist <= GEOM_MOUNT_THRESHOLD) {
         mount = true;
+      } else if (stayMounted) {
+        mount = wasMounted;
       } else if (geomDist > GEOM_UNMOUNT_THRESHOLD) {
         mount = false;
       } else {
@@ -747,7 +760,22 @@ export class ChapterViewModel {
       }
     }
 
+    // A page's worth of word spans made at once is a late frame; a
+    // paragraph or two a frame is not, and they are two pages off yet.
     let changed = false;
+    if (stayMounted && this.#isInitiallyReady) {
+      const fresh = wrappers
+        .filter((w) => next.has(w.id) && !this.#mountedParagraphIds.has(w.id))
+        .sort(
+          (a, b) =>
+            Math.abs(a.center - visibleCenter) -
+            Math.abs(b.center - visibleCenter),
+        );
+      for (const later of fresh.slice(MOUNTS_PER_FRAME)) {
+        next.delete(later.id);
+        changed = true;
+      }
+    }
     if (!setsEqual(next, this.#mountedParagraphIds)) {
       this.#mountedParagraphIds = next;
       // Sole driver of translation fetches; the store dedups.

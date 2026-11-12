@@ -175,7 +175,9 @@
                         {bookId}
                         {chapterId}
                         {paragraphId}
-                        {selection}
+                        selection={selection?.paragraphId === paragraphId
+                            ? selection
+                            : null}
                         mounted={vm.isMounted(paragraphId)}
                         onWordClick={handleWordClick}
                         isWordRevealed={(flatIndex) =>

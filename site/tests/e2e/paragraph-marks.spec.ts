@@ -3,7 +3,7 @@ import {
   fillerHtml,
   multipageSpec,
   paragraphLocator,
-  scrollJustPast,
+  showUnmounted,
   scrollToParagraph,
   seedAndOpen,
   segmentsOfHtml,
@@ -133,8 +133,7 @@ test.describe("Paragraph marks (chromium only)", () => {
     await page.waitForTimeout(300);
     const mounted = await snapshot();
 
-    await scrollJustPast(page, MARKED);
-    await expect(p.locator(".word-span")).toHaveCount(0);
+    await showUnmounted(page, MARKED);
     const virtualized = await snapshot();
 
     expect(virtualized).toEqual(mounted);

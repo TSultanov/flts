@@ -800,6 +800,13 @@ test.describe("chapter open timing", () => {
       console.log(`cpu profile: ${to}`);
     }
 
+    // Times the view found its blocks wrong and drew the chapter again.
+    const redraws = await page
+      .locator(".paragraphs-container")
+      .getAttribute("data-layout-misses");
+    console.log(`  whole-chapter redraws: ${redraws}`);
+    expect(redraws).toBe("0");
+
     if (cdp && process.env.FLTS_PERF_PROFILE === "open") {
       await remember(false);
       await cdp.send("Profiler.enable");
@@ -898,7 +905,26 @@ test.describe("chapter open timing", () => {
       for (;;) {
         // A page between two documents answers nothing.
         if (await inApp(fn).catch(() => false)) return;
-        if (Date.now() > deadline) throw new Error(`timed out: ${what}`);
+        if (Date.now() > deadline) {
+          const state = await inApp(() => {
+            const c = document.querySelector<HTMLElement>(
+              ".paragraphs-container",
+            );
+            const f = (window as any).__perf?.frames ?? [];
+            return {
+              at: location.pathname,
+              view: c?.className,
+              redraws: c?.dataset["layoutMisses"],
+              text: c?.querySelectorAll(".paragraph-wrapper:not(.far)").length,
+              words: c?.querySelectorAll(".word-span").length,
+              scrollLeft: c?.scrollLeft,
+              frames: f.length,
+              last: f[f.length - 1],
+              hidden: document.hidden,
+            };
+          }).catch((e) => String(e));
+          throw new Error(`timed out: ${what}: ${JSON.stringify(state)}`);
+        }
         await pause(100);
       }
     };
@@ -1025,6 +1051,11 @@ test.describe("chapter open timing", () => {
       "the app's first page",
       () => document.readyState === "complete",
     );
+    // A window that is not on screen draws no frames: nothing to time.
+    test.skip(
+      await inApp(() => document.hidden),
+      "the app window is not visible (display asleep or covered?)",
+    );
     console.log(await inApp(() => navigator.userAgent));
     const report: Record<string, unknown> = {};
     for (const forget of [true, false]) {
@@ -1119,6 +1150,20 @@ test.describe("chapter open timing", () => {
             const blocks = [
               ...c.querySelectorAll<HTMLElement>(".paragraph-wrapper.far"),
             ];
+            for (const b of blocks) b.style.display = "none";
+            void c.scrollWidth;
+            const other = [
+              ...c.querySelectorAll<HTMLElement>(".word-span"),
+            ][40];
+            const layoutNoBlocks = timeLayout(() => {
+              const s = document.createElement("span");
+              s.style.cssText = "position:absolute;top:0;left:0";
+              s.textContent = "x";
+              other.appendChild(s);
+              return () => s.remove();
+            });
+            for (const b of blocks) b.style.display = "";
+            void c.scrollWidth;
             const frames: number[] = [];
             await new Promise<void>((done) => {
               let last = performance.now();
@@ -1133,7 +1178,7 @@ test.describe("chapter open timing", () => {
               c.scrollBy({ left: c.clientWidth, behavior: "smooth" });
               requestAnimationFrame(tick);
             });
-            return { text, far, blocks: blocks.length, layout, frames };
+            return { text, far, layout, layoutNoBlocks, frames };
           }),
         ),
       );
@@ -1157,6 +1202,16 @@ test.describe("chapter open timing", () => {
         }, i),
       ),
     };
+
+    // Times the view found its blocks wrong and drew the chapter again:
+    // each is a long frame the numbers above would hide in their medians.
+    const misses = await inApp(
+      () =>
+        (document.querySelector(".paragraphs-container") as HTMLElement)
+          .dataset["layoutMisses"],
+    );
+    console.log(`  whole-chapter redraws: ${misses}`);
+    expect(misses).toBe("0");
 
     const out = path.join(
       process.env.FLTS_PERF_OUT ?? testInfo.outputDir,

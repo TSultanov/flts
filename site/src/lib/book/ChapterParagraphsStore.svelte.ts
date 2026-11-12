@@ -63,6 +63,8 @@ export class ChapterParagraphsStore {
   #translationsEpoch = new Map<number, number>();
 
   #together: Together | null = null;
+  /** Called when translations have been put in: what is drawn may change size. */
+  onTranslations: (() => void) | null = null;
 
   #cardsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   #unsubscribers: Array<() => void> = [];
@@ -262,6 +264,7 @@ export class ChapterParagraphsStore {
               }
               this.#applyTranslationRow(row.id, row.segments ?? null);
             }
+            this.onTranslations?.();
           }),
         )
         .catch((err) => {

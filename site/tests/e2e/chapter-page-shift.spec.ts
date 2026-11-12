@@ -480,8 +480,12 @@ test.describe("Chapter paging vs virtualization (chromium only)", () => {
         };
         await scrollTo(120);
         const mounted = at(120);
-        // Out of the mount window, still drawn as text.
-        c.scrollLeft += 3 * c.clientWidth;
+        // Far enough to become a block, then back to three pages off:
+        // text again, but not near enough to be mounted.
+        const column = Math.round(c.scrollLeft / c.clientWidth);
+        c.scrollLeft = 0;
+        await new Promise((r) => setTimeout(r, 600));
+        c.scrollLeft = (column + 3) * c.clientWidth;
         await new Promise((r) => setTimeout(r, 600));
         const virtualized = at(120);
         return { mounted, virtualized };

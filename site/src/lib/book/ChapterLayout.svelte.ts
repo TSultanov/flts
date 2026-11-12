@@ -26,7 +26,7 @@ type Shape = {
 // Pages on each side of the reader drawn as text, and the wider span a
 // paragraph already drawn is kept for.
 const NEAR_PAGES = 4;
-const KEPT_PAGES = 5;
+export const KEPT_PAGES = 5;
 
 const HELD: Extent = Object.freeze({ lead: false, breaks: 0, fill: 0 });
 
@@ -71,10 +71,6 @@ function between(start: Place, next: Place): Extent {
   };
 }
 
-function same(a: Extent, b: Extent): boolean {
-  return a.breaks === b.breaks && Math.abs(a.fill - b.fill) < 0.5;
-}
-
 // Where boxes fall in the flow of columns.
 function places(container: HTMLElement) {
   const frame = container.getBoundingClientRect();
@@ -111,6 +107,48 @@ export function columnsOf(container: HTMLElement): number {
   return end === null ? 1 : end.column + 1;
 }
 
+let honoured: boolean | null = null;
+
+/**
+ * Whether this engine lays the blocks out as they are meant: a few of them
+ * in a small column box, each checked for where it fell. Asked once.
+ */
+export function engineHonoursBlocks(): boolean {
+  if (honoured !== null) return honoured;
+  const host = document.createElement("div");
+  host.style.cssText =
+    "position:absolute;left:-9999px;top:0;width:100px;height:100px;" +
+    "column-width:100px;column-gap:0;column-fill:auto;overflow:hidden;" +
+    "visibility:hidden";
+  const end =
+    '<i style="display:block;height:1px;break-after:column;' +
+    '-webkit-column-break-after:always"></i>';
+  const fill = (px: number) => `<i style="display:block;height:${px}px"></i>`;
+  // Text, a block into the next column, one across two, one sent to a
+  // column's top, text; then a block within a column and one out of it.
+  host.innerHTML =
+    '<div style="height:60px"></div>' +
+    `<div>${end}${fill(40)}</div>` +
+    `<div>${end}${end}${fill(10)}</div>` +
+    '<div style="break-before:column;-webkit-column-break-before:always">' +
+    `${fill(30)}</div>` +
+    '<div style="height:20px"></div>' +
+    `<div>${fill(75)}</div><div>${end}${fill(5)}</div>` +
+    '<div style="height:10px"></div>';
+  document.body.appendChild(host);
+  const frame = host.getBoundingClientRect();
+  const falls = (child: number, column: number, y: number) => {
+    const r = host.children[child].getBoundingClientRect();
+    return (
+      Math.round((r.left - frame.left) / 100) === column &&
+      Math.abs(r.top - frame.top - y) < 0.5
+    );
+  };
+  honoured = falls(4, 4, 30) && falls(7, 6, 5);
+  host.remove();
+  return honoured;
+}
+
 export class ChapterLayout {
   #chapter: string;
   #count = 0;
@@ -126,8 +164,13 @@ export class ChapterLayout {
   #misplaced = $state(0);
   #misses = $state(0);
 
-  constructor(chapter: string) {
+  #enabled: boolean;
+
+  /** `enabled` false draws every paragraph as text, as an engine that
+   * does not honour the blocks needs. */
+  constructor(chapter: string, enabled = true) {
     this.#chapter = chapter;
+    this.#enabled = enabled;
   }
 
   /** Every paragraph is drawn and has its place. */
@@ -142,7 +185,7 @@ export class ChapterLayout {
 
   /** The blocks were given up: every paragraph is drawn as text. */
   get off(): boolean {
-    return this.#misplaced >= 2 || givenUp;
+    return !this.#enabled || this.#misplaced >= 2 || givenUp;
   }
 
   #memo(page: HTMLElement): string {
@@ -343,32 +386,81 @@ export class ChapterLayout {
   }
 
   /**
-   * With the blocks drawn: is the text between them the size it was measured
-   * at, and the chapter as long? If not, everything is drawn again and
-   * measured afresh; twice in a row, and the blocks are given up.
+   * With the blocks drawn, the text between them says where it really is.
+   * A paragraph can take other room than it did when measured: drawn with
+   * its word spans it may wrap differently than as bare text. That is taken
+   * as it is found, and everything after it moves along, as it would with
+   * no blocks at all. What must hold is that the text begins where the
+   * blocks before it were made to end, and that the chapter is as long as
+   * its parts: if not, an engine is not honouring the blocks, everything is
+   * drawn again, and twice in a row the blocks are given up.
    */
   verify(container: HTMLElement): boolean {
     const { measured, near } = this.#shape;
     if (this.off || near === null || measured === 0) return true;
+    const to = Math.min(near.to, measured - 1);
+    if (to < near.from) return true;
     const at = places(container);
     const wrappers = container.getElementsByClassName("paragraph-wrapper");
-    let inPlace = wrappers.length === this.#count;
-    const to = Math.min(near.to, measured - 1);
-    for (let i = near.from; inPlace && i <= to; i++) {
-      const start = at.start(wrappers[i]);
+    // To the pixel is enough: it only moves what is drawn as blocks, and
+    // those are measured again when they are text.
+    const height = Math.max(1, container.clientHeight);
+    const flow = (p: Place) => p.column * height + p.y;
+
+    const first = at.start(wrappers[near.from]);
+    const expected = this.#starts[near.from];
+    let honoured =
+      wrappers.length === this.#count &&
+      first !== null &&
+      first.column === expected.column &&
+      Math.abs(first.y - expected.y) < 0.5;
+
+    let moved = false;
+    for (let i = near.from; honoured && i <= to; i++) {
       const next =
         i + 1 < this.#count ? at.start(wrappers[i + 1]) : at.end(wrappers[i]);
-      inPlace =
-        start !== null &&
-        next !== null &&
-        start.column === this.#starts[i].column &&
-        Math.abs(start.y - this.#starts[i].y) < 0.5 &&
-        same(between(start, next), this.#extents[i]);
+      if (next === null) {
+        honoured = false;
+        break;
+      }
+      const was = this.#starts[i + 1];
+      if (next.column === was.column && Math.abs(next.y - was.y) < 0.5) {
+        continue;
+      }
+      moved = true;
+      if (i === to) {
+        // Past the text, where nothing can be asked: by as much as the
+        // text grew or shrank.
+        const by = flow(next) - flow(was);
+        for (let k = i + 2; k < this.#starts.length; k++) {
+          const f = flow(this.#starts[k]) + by;
+          const column = Math.max(0, Math.floor((f + 0.25) / height));
+          this.#starts[k] = { column, y: Math.max(0, f - column * height) };
+        }
+      }
+      this.#starts[i + 1] = next;
     }
-    if (inPlace && this.whole && columnsOf(container) !== this.#columns) {
-      inPlace = false;
+
+    if (honoured && moved) {
+      // Every block from here on is made anew from the places it now has.
+      for (let i = near.from; i < measured; i++) {
+        this.#extents[i] = between(this.#starts[i], this.#starts[i + 1]);
+        this.#leading[i] = undefined;
+      }
+      if (this.whole) {
+        const end = this.#starts[this.#count];
+        this.#columns = Math.max(1, end.column + (end.y > 0.5 ? 1 : 0));
+        this.#remember(container);
+      }
+      this.#shape = { ...this.#shape };
+    } else if (
+      honoured &&
+      this.whole &&
+      columnsOf(container) !== this.#columns
+    ) {
+      honoured = false;
     }
-    if (inPlace) {
+    if (honoured) {
       this.#misplaced = 0;
       return true;
     }

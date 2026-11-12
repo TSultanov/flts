@@ -256,20 +256,48 @@ export async function scrollToParagraph(
 }
 
 /**
- * Leaves `paragraphId` drawn as text but out of the mount window: far enough
- * for its WordSpans to go, too near for a placeholder block to replace it.
+ * Leaves `paragraphId` drawn as text without its word spans. Those stay for
+ * as long as the paragraph is text, so it is first sent far enough to become
+ * a block, then brought back to a few pages from the reader.
  */
-export async function scrollJustPast(
+export async function showUnmounted(
   page: Page,
   paragraphId: number,
 ): Promise<void> {
+  await page.waitForSelector(".paragraphs-container.is-whole");
+  const container = page.locator(".paragraphs-container");
   const target = paragraphLocator(page, paragraphId);
-  for (let step = 3; step < 12; step++) {
-    await scrollToParagraph(page, paragraphId + step);
-    await page.waitForTimeout(300);
+  const goTo = async (column: number) => {
+    await container.evaluate((c, column) => {
+      c.scrollLeft = column * c.clientWidth;
+    }, column);
+    await page.waitForTimeout(400);
+  };
+  const where = () =>
+    container.evaluate((c, id) => {
+      const frame = c.getBoundingClientRect();
+      const rects = c
+        .querySelector(`.paragraph-wrapper[data-paragraph-id="${id}"]`)!
+        .getClientRects();
+      const column = (r: DOMRect) =>
+        Math.round((r.left - frame.left + c.scrollLeft) / frame.width);
+      return {
+        first: column(rects[0]),
+        last: column(rects[rects.length - 1]),
+        pages: Math.round(c.scrollWidth / frame.width),
+      };
+    }, paragraphId);
+
+  const { first, pages } = await where();
+  await goTo(first > pages / 2 ? 0 : pages - 1);
+  await expect(target).toHaveClass(/far/);
+  for (const away of [3, 4]) {
+    const { first, last, pages } = await where();
+    await goTo(last + away < pages ? last + away : first - away);
     if ((await target.locator(".word-span").count()) === 0) break;
   }
   await expect(target).not.toHaveClass(/far/);
+  await expect(target.locator(".word-span")).toHaveCount(0);
 }
 
 /** Per-idx-stable sentence shape, so wrapped widths stay deterministic. */

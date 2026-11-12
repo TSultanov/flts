@@ -135,36 +135,73 @@ describe("ChapterLayout", () => {
     expect(new ChapterLayout("book:2").open(ids, 3, container)).toBe(false);
   });
 
-  it("drops what it remembered when the text no longer fits it", async () => {
+  // Sixty columns, so most of the chapter is far from either end.
+  const long = () =>
+    page(
+      STARTS.map(([c, y]) => [c * 15, y] as At),
+      [END[0] * 15, END[1]],
+    );
+
+  it("takes a paragraph's new room as it finds it, and moves the rest along", async () => {
     const ChapterLayout = await fresh();
-    const container = page(STARTS, END);
+    const container = long();
     const layout = measured(ChapterLayout, container);
     layout.moveNear(0);
     expect(layout.verify(container)).toBe(true);
+    expect(layout.blockFor(ids[3])).toEqual({
+      lead: false,
+      breaks: 0,
+      fill: 40,
+    });
 
-    // The same paragraphs, each now taking half a column.
-    const moved = page(
-      STARTS.map((_, i) => [Math.floor(i / 2), (i % 2) * 50] as At),
-      [6, 0],
+    // Paragraph 1 now runs 30 further down; all after it follow.
+    const grown = page(
+      STARTS.map(([c, y], i) => [c * 15, i >= 2 ? y + 30 : y] as At),
+      [END[0] * 15, END[1] + 30],
     );
-    expect(layout.verify(moved)).toBe(false);
+    expect(layout.verify(grown)).toBe(true);
+    expect(layout.misses).toBe(0);
+    // Paragraph 4 began 60 down column 15 and ended at the top of column
+    // 30: thirty further down, it now ends thirty into that column.
+    expect(layout.blockFor(ids[4])).toEqual({
+      lead: false,
+      breaks: 15,
+      fill: 30,
+    });
+    // And it is what is remembered.
+    const again = new ChapterLayout("book:1");
+    expect(again.open(ids, 3, container)).toBe(true);
+    again.moveNear(0);
+    expect(again.blockFor(ids[4])).toEqual(layout.blockFor(ids[4]));
+  });
+
+  // Every paragraph a column further than the blocks were made for.
+  const displaced = () =>
+    page(
+      STARTS.map(([c, y]) => [c * 15 + 1, y] as At),
+      [END[0] * 15 + 1, END[1]],
+    );
+
+  it("draws everything again when text is not where the blocks before it end", async () => {
+    const ChapterLayout = await fresh();
+    const container = long();
+    const layout = measured(ChapterLayout, container);
+    layout.moveNear(30);
+
+    expect(layout.verify(displaced())).toBe(false);
     expect(layout.misses).toBe(1);
     expect(layout.whole).toBe(false);
     expect(layout.blockFor(ids[11])).toBeNull();
-    expect(new ChapterLayout("book:1").open(ids, 3, moved)).toBe(false);
+    expect(new ChapterLayout("book:1").open(ids, 3, container)).toBe(false);
   });
 
   it("gives the blocks up after two failures in a row", async () => {
     const ChapterLayout = await fresh();
-    const container = page(STARTS, END);
-    const moved = page(
-      STARTS.map((_, i) => [Math.floor(i / 2), (i % 2) * 50] as At),
-      [6, 0],
-    );
+    const container = long();
     const layout = measured(ChapterLayout, container);
     for (let round = 0; round < 2; round++) {
-      layout.moveNear(0);
-      expect(layout.verify(moved)).toBe(false);
+      layout.moveNear(30);
+      expect(layout.verify(displaced())).toBe(false);
       while (layout.advance(container, all, 4));
     }
     expect(layout.off).toBe(true);
